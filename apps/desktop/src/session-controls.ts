@@ -6,6 +6,15 @@ import type { OwnedCodingSessionRecord } from "../../../types/codex-owned-task";
 import type { ConversationPage } from "../../../types/conversation";
 import { ownedCodexChatOutcome } from "./session-activity";
 
+/** Metadata can arrive before a provider-specific interactive view is installed. */
+export function unsupportedOwnedSessionReason(
+  record: OwnedCodingSessionRecord | undefined,
+): string | null {
+  return record?.provider === "gemini" && record.mode === "chat"
+    ? "Gemini ACP Chat is saved, but its interactive view is unavailable here. Export retains the complete private native history."
+    : null;
+}
+
 export function ownedSessionControls(input: {
   record: OwnedCodingSessionRecord;
   page: ConversationPage | null;
@@ -17,6 +26,7 @@ export function ownedSessionControls(input: {
   readError?: string;
 }) {
   const current = input.page?.turns.at(-1);
+  const unsupported = unsupportedOwnedSessionReason(input.record);
   const active =
     !!current && ["accepted", "running", "cancelling"].includes(current.phase);
   const scoped =
@@ -46,7 +56,9 @@ export function ownedSessionControls(input: {
               input.record.mode === "chat" &&
               chat
             ? serializeCodexChat(chat.launch, chat.capabilities)
-            : input.record.provider === "gemini" && gemini
+            : input.record.provider === "gemini" &&
+                input.record.mode === "task" &&
+                gemini
               ? serializeGeminiTask(gemini.launch, gemini.capabilities)
               : null;
     if (serialized)
@@ -73,35 +85,37 @@ export function ownedSessionControls(input: {
         : "Claude";
   const ready =
     input.loaded && input.live && !input.feedInterrupted && !input.readError;
-  const resumeReason = !scoped
-    ? "This saved conversation does not match an ordinary session in this project."
-    : input.record.mode !== "chat"
-      ? `This ${provider} route supports one-turn Tasks. Start another session explicitly.`
-      : !(input.record.provider === "claude" && snapshot && commandPreview) &&
-          !nativeChat
-        ? "The saved launch does not verify a supported Chat route."
-        : !ready
-          ? "Reconnect the private conversation before continuing this Chat."
-          : !input.page?.binding ||
-              input.page.binding.provider !== input.record.provider ||
-              input.page.binding.version !==
-                (nativeChat
-                  ? chat?.capabilities.version
-                  : snapshot?.capabilities.version)
-            ? `A confirmed ${provider} conversation id and matching CLI version are required.`
-            : input.record.provider === "claude" &&
-                !snapshot?.capabilities.flags.includes("--resume")
-              ? "The saved CLI capability report does not support exact conversation resume."
-              : active ||
-                  input.pending ||
-                  input.stopping ||
-                  current?.phase === "unknown"
-                ? "Check the current turn and pending changes before sending another follow-up."
-                : !current
-                  ? "No accepted conversation turn is recorded yet."
-                  : current.phase !== "completed"
-                    ? "The current turn has not completed. Check its outcome before continuing this Chat."
-                    : null;
+  const resumeReason =
+    unsupported ??
+    (!scoped
+      ? "This saved conversation does not match an ordinary session in this project."
+      : input.record.mode !== "chat"
+        ? `This ${provider} route supports one-turn Tasks. Start another session explicitly.`
+        : !(input.record.provider === "claude" && snapshot && commandPreview) &&
+            !nativeChat
+          ? "The saved launch does not verify a supported Chat route."
+          : !ready
+            ? "Reconnect the private conversation before continuing this Chat."
+            : !input.page?.binding ||
+                input.page.binding.provider !== input.record.provider ||
+                input.page.binding.version !==
+                  (nativeChat
+                    ? chat?.capabilities.version
+                    : snapshot?.capabilities.version)
+              ? `A confirmed ${provider} conversation id and matching CLI version are required.`
+              : input.record.provider === "claude" &&
+                  !snapshot?.capabilities.flags.includes("--resume")
+                ? "The saved CLI capability report does not support exact conversation resume."
+                : active ||
+                    input.pending ||
+                    input.stopping ||
+                    current?.phase === "unknown"
+                  ? "Check the current turn and pending changes before sending another follow-up."
+                  : !current
+                    ? "No accepted conversation turn is recorded yet."
+                    : current.phase !== "completed"
+                      ? "The current turn has not completed. Check its outcome before continuing this Chat."
+                      : null);
   return {
     commandPreview,
     resume: {
@@ -113,20 +127,23 @@ export function ownedSessionControls(input: {
     stop: {
       available:
         scoped &&
+        !unsupported &&
         active &&
         !nativeEnded &&
         !!input.page?.controllable &&
         !input.stopping &&
         current?.phase !== "cancelling",
-      reason: !scoped
-        ? "This saved conversation does not match an ordinary session in this project."
-        : input.stopping || current?.phase === "cancelling"
-          ? "Stop is pending until the owned process confirms cancellation."
-          : !active || nativeEnded
-            ? "There is no active owned turn to stop."
-            : !input.page?.controllable
-              ? "This hearth does not own the saved running process."
-              : "The existing Stop action requests cancellation of this owned process only.",
+      reason:
+        unsupported ??
+        (!scoped
+          ? "This saved conversation does not match an ordinary session in this project."
+          : input.stopping || current?.phase === "cancelling"
+            ? "Stop is pending until the owned process confirms cancellation."
+            : !active || nativeEnded
+              ? "There is no active owned turn to stop."
+              : !input.page?.controllable
+                ? "This hearth does not own the saved running process."
+                : "The existing Stop action requests cancellation of this owned process only."),
     },
     fork: {
       available: false,

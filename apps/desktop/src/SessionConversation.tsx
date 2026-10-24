@@ -34,6 +34,7 @@ import { CodexChatTerminal } from "./CodexChatTerminal";
 import { CodexChatUsage } from "./CodexChatUsage";
 import { SessionLibraryControls } from "./SessionLibraryControls";
 import { SessionReply } from "./SessionReply";
+import { unsupportedOwnedSessionReason } from "./session-controls";
 import type { SessionLibraryClient } from "./session-library-client";
 import { useCodexChatDecisions } from "./use-codex-chat-decisions";
 
@@ -209,6 +210,38 @@ export function SessionConversation({
       feed.current.scrollTop = feed.current.scrollHeight;
     else if (lastSequence) setAway(true);
   }, [lastSequence]);
+  const unsupported = unsupportedOwnedSessionReason(record);
+  if (unsupported)
+    return (
+      <section
+        class="af-owned-session"
+        aria-label="Session conversation"
+        data-session-mode={record?.mode ?? "unknown"}
+      >
+        <header class="af-owned-session-header">
+          <h2>Gemini ACP Chat</h2>
+        </header>
+        <p role="status">{unsupported}</p>
+        <Button
+          href={desktopHref({
+            projectId,
+            destination: "sessions",
+            selection: null,
+          })}
+        >
+          All sessions
+        </Button>
+        {record && library && (
+          <SessionLibraryControls
+            record={record}
+            session={view}
+            library={library}
+            writesAllowed={writesAllowed}
+            onContinue={() => {}}
+          />
+        )}
+      </section>
+    );
   return (
     <section
       class="af-owned-session"

@@ -34,6 +34,13 @@ import {
 import { codexExecCapabilitiesSchema } from "./codex-task";
 import { preparedCodexTaskSchema } from "./codex-task-runtime-protocol";
 import {
+  geminiChatDecisionIntentSchema,
+  geminiChatPrivateFrameSchema,
+  validGeminiChatHistory,
+  validGeminiChatPage,
+} from "./gemini-chat-owned-journal";
+import { preparedGeminiChatSchema } from "./gemini-chat-runtime-protocol";
+import {
   geminiTaskPrivateFrameSchema,
   validGeminiTaskHistory,
 } from "./gemini-owned-journal";
@@ -110,6 +117,20 @@ const codexChatUser = z
       JSON.stringify(value.about) ===
         JSON.stringify(value.codexChat.launch.context?.about ?? []),
   );
+const geminiChatUser = z
+  .object({
+    kind: z.literal("user"),
+    text,
+    about: z.array(object).max(16),
+    geminiChat: preparedGeminiChatSchema,
+  })
+  .strict()
+  .refine(
+    (value) =>
+      value.text === value.geminiChat.launch.prompt &&
+      JSON.stringify(value.about) ===
+        JSON.stringify(value.geminiChat.launch.context?.about ?? []),
+  );
 const codingUsage = z
   .object({
     kind: z.literal("coding-usage"),
@@ -167,6 +188,9 @@ export const ownedCodingEventSchema = z.union([
   codexChatDecisionIntentSchema,
   geminiUser,
   geminiTaskPrivateFrameSchema,
+  geminiChatUser,
+  geminiChatPrivateFrameSchema,
+  geminiChatDecisionIntentSchema,
 ]);
 const frame = z
   .object({
@@ -185,11 +209,21 @@ const inProject = (value: {
   value.frames.every(
     ({ event }) =>
       event.kind !== "user" ||
-      !(event.codexTask ?? event.codexChat ?? event.geminiTask) ||
-      ((event.codexTask ?? event.codexChat ?? event.geminiTask)?.launch.context
-        ?.projectId === value.projectId &&
+      !(
+        event.codexTask ??
+        event.codexChat ??
+        event.geminiTask ??
+        event.geminiChat
+      ) ||
+      ((
+        event.codexTask ??
+        event.codexChat ??
+        event.geminiTask ??
+        event.geminiChat
+      )?.launch.context?.projectId === value.projectId &&
         (!value.binding ||
-          (value.binding.provider === (event.geminiTask ? "gemini" : "codex") &&
+          (value.binding.provider ===
+            (event.geminiTask || event.geminiChat ? "gemini" : "codex") &&
             z.string().uuid().safeParse(value.binding.sessionId).success))),
   ) &&
   value.frames.every(
@@ -220,7 +254,9 @@ function reportedTurn(
       event.kind !== "coding-usage" &&
       event.kind !== "coding-chat" &&
       event.kind !== "coding-chat-decision" &&
-      event.kind !== "coding-gemini-task"
+      event.kind !== "coding-gemini-task" &&
+      event.kind !== "coding-gemini-chat" &&
+      event.kind !== "coding-gemini-chat-decision"
     )
       return true;
     if (
@@ -268,9 +304,21 @@ function reportedTurn(
       // are valid without a binding; no other provider frame gains identity.
       if (
         !complete &&
-        (event.kind === "coding-chat" || event.kind === "coding-gemini-task") &&
+        (event.kind === "coding-chat" ||
+          event.kind === "coding-gemini-task" ||
+          event.kind === "coding-gemini-chat") &&
         event.event.kind === "process" &&
         value.binding === null
+      )
+        return true;
+      if (
+        !complete &&
+        value.binding === null &&
+        event.kind === "coding-gemini-chat" &&
+        event.event.kind === "outcome" &&
+        event.event.outcome.phase !== "completed" &&
+        event.event.outcome.sessionId === null &&
+        event.event.outcome.usage === null
       )
         return true;
       if (
@@ -288,6 +336,12 @@ function reportedTurn(
     }
     if (event.kind === "coding-gemini-task" && !user.geminiTask) return false;
     if (
+      (event.kind === "coding-gemini-chat" ||
+        event.kind === "coding-gemini-chat-decision") &&
+      !user.geminiChat
+    )
+      return false;
+    if (
       (event.kind === "coding-chat" || event.kind === "coding-chat-decision") &&
       !user.codexChat
     )
@@ -304,7 +358,11 @@ function reportedTurn(
         user.shift.cliVersion === event.version
       );
     const snapshot =
-      user.session ?? user.codexTask ?? user.codexChat ?? user.geminiTask;
+      user.session ??
+      user.codexTask ??
+      user.codexChat ??
+      user.geminiTask ??
+      user.geminiChat;
     return (
       snapshot?.provider === event.provider &&
       snapshot.capabilities.version === event.version
@@ -618,11 +676,13 @@ export const ownedCodingStateSchema = stateSchema
   .refine(inProject)
   .refine((value) => reportedTurn(value, true))
   .refine(nativeChatHistory)
+  .refine(validGeminiChatHistory)
   .refine(validGeminiTaskHistory);
 export const ownedCodingPageSchema = conversationPageSchema
   .extend({ frames: z.array(frame).max(100) })
   .strict()
   .refine(inProject)
+  .refine(validGeminiChatPage)
   .refine((value) => reportedTurn(value, false));
 const prepared = z
   .object({
@@ -644,6 +704,10 @@ const preparedChat = prepared
 const preparedGemini = prepared
   .omit({ codexTask: true })
   .extend({ geminiTask: preparedGeminiTaskSchema })
+  .strict();
+const preparedGeminiChat = prepared
+  .omit({ codexTask: true })
+  .extend({ geminiChat: preparedGeminiChatSchema })
   .strict();
 const preparedShift = z
   .object({
@@ -672,6 +736,19 @@ const preparedShift = z
 export function parseOwnedPreparedConversationSend(
   input: unknown,
 ): PreparedConversationSend {
+  if (
+    typeof input === "object" &&
+    input !== null &&
+    Object.hasOwn(input, "geminiChat")
+  ) {
+    const parsed = preparedGeminiChat.safeParse(input);
+    if (!parsed.success)
+      throw new ConversationError(
+        400,
+        "Expected a bounded private owned Gemini Chat.",
+      );
+    return parsed.data;
+  }
   if (
     typeof input === "object" &&
     input !== null &&

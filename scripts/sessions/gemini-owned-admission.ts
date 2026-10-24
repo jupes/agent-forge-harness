@@ -138,7 +138,11 @@ export function createGeminiOwnedTaskService(options: {
       raw: unknown,
     ): Promise<GeminiTaskStartReceipt> {
       const request = parseOwnedSessionStart(raw);
-      if (!("provider" in request) || request.provider !== "gemini")
+      if (
+        !("provider" in request) ||
+        request.provider !== "gemini" ||
+        request.launch.mode !== "task"
+      )
         throw new ConversationError(
           400,
           "An explicit Gemini CLI Task provider is required.",
@@ -181,7 +185,13 @@ export function createGeminiOwnedTaskService(options: {
           return metadata;
         },
       );
-      initial.set(session.id, geminiTaskLaunchFromStart(projectId, request));
+      initial.set(
+        session.id,
+        geminiTaskLaunchFromStart(projectId, {
+          ...request,
+          launch: { ...request.launch, mode: "task" },
+        }),
+      );
       try {
         const receipt = await serviceFor(session).send(projectId, {
           requestId: request.requestId,

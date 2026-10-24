@@ -92,7 +92,7 @@ export async function runGeminiChatFixture() {
       reply(value.id, {
         protocolVersion: 1,
         agentInfo: { name: "gemini-cli", version: "0.65.0" },
-        agentCapabilities: { loadSession: true },
+        agentCapabilities: { loadSession: mode !== "no-load" },
       });
     else if (value.method === "session/new")
       reply(value.id, { sessionId: native });
@@ -117,7 +117,14 @@ export async function runGeminiChatFixture() {
         update("agent_message_chunk", {
           content: { type: "text", text: "Historical after new prompt" },
         });
-      if (["hang-tree", "ignore-cancel", "normal-orphan"].includes(mode)) {
+      if (
+        [
+          "hang-tree",
+          "ignore-cancel",
+          "normal-orphan",
+          "permission-tree",
+        ].includes(mode)
+      ) {
         const helper = Bun.spawn([process.execPath, "--helper"], {
           stdin: "ignore",
           stdout: "inherit",

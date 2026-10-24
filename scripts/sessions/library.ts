@@ -101,6 +101,7 @@ export function createSessionLibrary(options: {
               ...(user.codexTask ? { codexTask: user.codexTask } : {}),
               ...(user.codexChat ? { codexChat: user.codexChat } : {}),
               ...(user.geminiTask ? { geminiTask: user.geminiTask } : {}),
+              ...(user.geminiChat ? { geminiChat: user.geminiChat } : {}),
             }),
           )
           .digest("hex");

@@ -10,7 +10,10 @@ import {
 } from "./codex-owned-metadata";
 import { serializeCodexTask } from "./codex-task";
 import { preparedCodexTaskSchema } from "./codex-task-runtime-protocol";
-import { geminiOwnedSessionSchema } from "./gemini-owned-metadata";
+import {
+  geminiChatOwnedSessionSchema,
+  geminiOwnedSessionSchema,
+} from "./gemini-owned-metadata";
 import {
   ownedSessionSchema,
   sessionProjectIdSchema,
@@ -23,6 +26,7 @@ export const ownedCodingSessionSchema = z.union([
   codexOwnedSessionSchema,
   codexChatOwnedSessionSchema,
   geminiOwnedSessionSchema,
+  geminiChatOwnedSessionSchema,
 ]);
 const codexStartReceiptSchema = z
   .object({
@@ -36,6 +40,17 @@ const codexStartReceiptSchema = z
       value.session.requestId === value.receipt.turn.requestId,
   ) satisfies z.ZodType<CodexTaskStartReceipt>;
 export const ownedCodingStartReceiptSchema = z.union([
+  z
+    .object({
+      session: geminiChatOwnedSessionSchema,
+      receipt: conversationReceiptSchema,
+    })
+    .strict()
+    .refine(
+      (value) =>
+        value.session.id === value.receipt.conversationId &&
+        value.session.requestId === value.receipt.turn.requestId,
+    ),
   sessionStartReceiptSchema,
   codexStartReceiptSchema,
   z

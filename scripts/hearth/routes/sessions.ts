@@ -1,5 +1,6 @@
 import type { CodexChatDecisionRequest } from "../../../types/codex-owned-chat";
 import type { OwnedSessionStartRequest } from "../../../types/codex-owned-task";
+import type { GeminiChatDecisionRequest } from "../../../types/gemini-owned-chat";
 import type { LedgerEventInput } from "../../../types/hearth";
 import type { SessionMessage } from "../../../types/session-turn";
 import { ConversationError } from "../../conversations/error";
@@ -19,12 +20,16 @@ import type { createCodexChatRuntime } from "../../sessions/codex-chat-runtime";
 import { createCodexTaskPreview } from "../../sessions/codex-owned-preview";
 import { parseOwnedSessionStart } from "../../sessions/codex-owned-protocol";
 import type { createCodexTaskRuntime } from "../../sessions/codex-task-runtime";
+import { createGeminiChatPreview } from "../../sessions/gemini-chat-owned-preview";
+import { parseGeminiChatDecision } from "../../sessions/gemini-chat-owned-protocol";
+import type { createGeminiChatRuntime } from "../../sessions/gemini-chat-runtime";
 import { createGeminiTaskPreview } from "../../sessions/gemini-owned-preview";
 import type { createGeminiTaskRuntime } from "../../sessions/gemini-task-runtime";
 import {
   createOwnedCodingSessionService,
   unavailableCodexChatRuntime,
   unavailableCodexTaskRuntime,
+  unavailableGeminiChatRuntime,
   unavailableGeminiTaskRuntime,
 } from "../../sessions/owned-coding-service";
 import { createSessionPreview } from "../../sessions/preview";
@@ -88,10 +93,15 @@ export function createOwnedSessionRoutes(
     codexTaskRuntime?: ReturnType<typeof createCodexTaskRuntime> | undefined;
     codexChatRuntime?: ReturnType<typeof createCodexChatRuntime> | undefined;
     geminiTaskRuntime?: ReturnType<typeof createGeminiTaskRuntime> | undefined;
+    geminiChatRuntime?: ReturnType<typeof createGeminiChatRuntime> | undefined;
   } = {},
 ) {
-  const { codexTaskRuntime, codexChatRuntime, geminiTaskRuntime } =
-    providerRuntimes;
+  const {
+    codexTaskRuntime,
+    codexChatRuntime,
+    geminiTaskRuntime,
+    geminiChatRuntime,
+  } = providerRuntimes;
   const feed = createConversationFeed();
   const recordMetadata = createOwnedSessionLedger(home, deps);
   const validateScope = createSessionScopeValidator(home, deps, load);
@@ -115,6 +125,11 @@ export function createOwnedSessionRoutes(
     runtime: codexChatRuntime ?? unavailableCodexChatRuntime,
     validateScope,
   });
+  const prepareGeminiChatPreview = createGeminiChatPreview({
+    root: deps.root,
+    runtime: geminiChatRuntime ?? unavailableGeminiChatRuntime,
+    validateScope,
+  });
   const service = createOwnedCodingSessionService({
     home,
     root: deps.root,
@@ -122,6 +137,7 @@ export function createOwnedSessionRoutes(
     codexTaskRuntime,
     codexChatRuntime,
     geminiTaskRuntime,
+    geminiChatRuntime,
     onApprovalChange: (sessionId) => feed.changed(sessionId),
     validateScope,
     onChange: (session, update) => {
@@ -335,7 +351,9 @@ export function createOwnedSessionRoutes(
     effect: ({ projectId, input }) =>
       answer(200, () => {
         if ("provider" in input && input.provider === "gemini")
-          return prepareGeminiPreview(projectId, input);
+          return input.launch.mode === "chat"
+            ? prepareGeminiChatPreview(projectId, input)
+            : prepareGeminiPreview(projectId, input);
         return "provider" in input
           ? input.launch.mode === "chat"
             ? prepareChatPreview(projectId, input)
@@ -396,7 +414,9 @@ export function createOwnedSessionRoutes(
         return service.approvals(projectId, sessionId, requestId);
       }),
   };
-  const decide: ActionRoute<Address & { input: CodexChatDecisionRequest }> = {
+  const decide: ActionRoute<
+    Address & { input: CodexChatDecisionRequest | GeminiChatDecisionRequest }
+  > = {
     kind: "action",
     method: "POST",
     path: "/projects/:id/sessions/:sessionId/approval-decisions",
@@ -412,7 +432,12 @@ export function createOwnedSessionRoutes(
           ok: true,
           value: {
             ...selected.value,
-            input: parseCodexChatDecision(request.body),
+            input:
+              typeof request.body === "object" &&
+              request.body !== null &&
+              Object.hasOwn(request.body, "optionId")
+                ? parseGeminiChatDecision(request.body)
+                : parseCodexChatDecision(request.body),
           },
         };
       } catch {
