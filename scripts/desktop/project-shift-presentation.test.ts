@@ -65,3 +65,16 @@ test("only a successfully verified empty page shows the empty list and a backgro
   expect(content(checking)).toContain("Checking project shifts");
   expect(content(checking)).not.toContain("No project shifts reported");
 });
+
+test("read-state transitions retain one keyed DOM boundary instead of borrowing the adjacent focused list", () => {
+  const states = [
+    render(),
+    render({ page: empty, loading: true }),
+    render({ page: empty }),
+    render({ page: empty, error: "Read unavailable" }),
+  ];
+  for (const tree of states) {
+    expect(tree.type).toBe("div");
+    expect(tree.key).toBe("shift-read-state");
+  }
+});
