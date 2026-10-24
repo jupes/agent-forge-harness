@@ -14,6 +14,7 @@ export async function runGeminiChatFixture() {
     version?: string;
     help?: string;
     replyText?: string;
+    helpNonce?: string;
   } = {};
   if (log && existsSync(`${log}.control`)) {
     try {
@@ -41,8 +42,22 @@ export async function runGeminiChatFixture() {
     return;
   }
   if (argv.includes("--help")) {
-    record({ kind: "help" });
-    if (mode === "hold-help") await Bun.sleep(400);
+    if (mode === "hold-help") {
+      const nonce = control.helpNonce;
+      if (
+        !log ||
+        typeof nonce !== "string" ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(
+          nonce,
+        )
+      )
+        throw Error("Missing owned help-probe handshake");
+      record({ kind: "help", nonce, pid: process.pid });
+      // The existing supervised five-second probe owns this wait and its tree.
+      const release = `${log}.help-release`;
+      while (!existsSync(release) || readFileSync(release, "utf8") !== nonce)
+        await Bun.sleep(10);
+    } else record({ kind: "help" });
     console.log(
       control.help ??
         "--acp --model --approval-mode --sandbox --policy --include-directories",
