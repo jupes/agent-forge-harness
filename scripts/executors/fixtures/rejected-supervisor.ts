@@ -2,7 +2,10 @@
 import { mock } from "bun:test";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import type { InteractiveSuperviseOptions } from "../supervisor";
+import type {
+  InteractiveSuperviseOptions,
+  SuperviseOptions,
+} from "../supervisor";
 import type { ChildExit } from "../types";
 
 function deferred<T>() {
@@ -16,9 +19,13 @@ function deferred<T>() {
 }
 let current = { done: deferred<ChildExit>(), ready: deferred<void>() };
 mock.module(join(import.meta.dir, "..", "supervisor.ts"), () => ({
-  supervise(options: InteractiveSuperviseOptions) {
+  supervise(options: InteractiveSuperviseOptions | SuperviseOptions) {
     const control = current;
     void control.done.promise.catch(() => undefined);
+    if (!("stdinMode" in options)) {
+      options.onLine("fixture identity");
+      control.ready.resolve();
+    }
     return {
       pid: 424241,
       providerPid: Promise.resolve(424242),
@@ -39,9 +46,18 @@ mock.module(join(import.meta.dir, "..", "supervisor.ts"), () => ({
 const { createCliAdapter } = await import("../cli-adapter");
 const { runExec } = await import("../exec-runtime");
 const { BUILTIN_SMITHS } = await import("../../config/defaults");
-const root = process.argv[2];
-if (!root || !existsSync(join(root, ".git")))
+const [root, mode = "private", ...extra] = process.argv.slice(2);
+if (
+  !root ||
+  !existsSync(join(root, ".git")) ||
+  extra.length ||
+  !["private", "generic"].includes(mode)
+)
   throw Error("Missing fixture root");
+const privateCapture = mode === "private";
+const cleanupReason = privateCapture
+  ? "fixture private kernel diagnostic"
+  : "Owned process group cleanup could not be confirmed.";
 const smith = BUILTIN_SMITHS["claude-journeyman"];
 if (!smith) throw Error("Missing fixture smith");
 const adapter = createCliAdapter({
@@ -70,7 +86,7 @@ const handle = await adapter.spawn({
   smith,
   prompt: "private fixture prompt",
   env: { PATH: "" },
-  privateCapture: capture,
+  ...(privateCapture ? { privateCapture: capture } : {}),
 });
 const result = handle.done.then(
   () => "completed",
@@ -83,7 +99,7 @@ const events = (async () => {
 })();
 await current.ready.promise;
 await Bun.sleep(0);
-current.done.reject(Error("fixture private kernel diagnostic"));
+current.done.reject(Error(cleanupReason));
 const rejected = await result;
 const stopRejected = await handle.stop("Unknown cleanup").then(
   () => false,
@@ -117,7 +133,7 @@ const running = runExec(
     env: { PATH: "" },
     adapters: { claude: adapter },
     sink() {},
-    privateCapture: capture,
+    ...(privateCapture ? { privateCapture: capture } : {}),
   },
 ).then(
   (value) => value,
@@ -125,7 +141,7 @@ const running = runExec(
 );
 await current.ready.promise;
 await Bun.sleep(0);
-current.done.reject(Error("fixture private kernel diagnostic"));
+current.done.reject(Error(cleanupReason));
 const execution = await Promise.race([
   running,
   Bun.sleep(200).then(() => null),

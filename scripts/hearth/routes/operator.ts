@@ -69,6 +69,7 @@ import { createProjectActivityRoutes } from "./project-activity";
 import { projectBeadWriteRoutes } from "./project-bead-writes";
 import { projectBeadsRoute } from "./project-beads";
 import { projectOverviewRoute } from "./project-overview";
+import { createProjectRunRoutes } from "./project-runs";
 import { projectShiftOptionsRoute, projectShiftRoutes } from "./project-shifts";
 import {
   projectSnapshotReader,
@@ -391,6 +392,10 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
   const { counts } = beadsReads(deps);
   const { projects, preferences } = projectRoutes(deps.projectHome);
   const projectSnapshot = projectSnapshotReader(deps.projectHome, deps);
+  const projectRuns = createProjectRunRoutes(
+    deps,
+    projectSnapshotReader(deps.projectHome, deps, { membershipOnly: true }),
+  );
   const scopedShifts = projectShiftRoutes(deps, projectSnapshot);
   const conversations = conversationRoutes(
     deps.projectHome,
@@ -480,6 +485,8 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     observations.detail,
     activity.list,
     activity.detail,
+    projectRuns.list,
+    projectRuns.detail,
     projectBeadsRoute(deps, projectSnapshot),
     projectShiftOptionsRoute(
       deps,

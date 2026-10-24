@@ -31,6 +31,7 @@ import {
 } from "./ProjectActivity";
 import { BeadPanel, beadHref, ProjectBeads } from "./ProjectBeads";
 import { ProjectOverview } from "./ProjectOverview";
+import { ProjectRuns } from "./ProjectRuns";
 import { ProjectSessions, SessionInspector } from "./ProjectSessions";
 import { ProjectShifts } from "./ProjectShifts";
 import { ProjectsHome } from "./ProjectsHome";
@@ -41,6 +42,7 @@ import {
   emptyActivityFilters,
   parseActivityFilters,
 } from "./project-activity-model";
+import { parseRunFilters, runsHref } from "./project-runs-model";
 import { ClaudeSessionComposer, SessionComposer } from "./SessionComposer";
 import { SessionConversation } from "./SessionConversation";
 import { Smiths } from "./Smiths";
@@ -50,6 +52,7 @@ import { useKeeper } from "./use-keeper";
 import { useKeeperProposals } from "./use-keeper-proposals";
 import { useKeeperSessionReviews } from "./use-keeper-session-reviews";
 import { useProjectActivity } from "./use-project-activity";
+import { useProjectRuns } from "./use-project-runs";
 import { useProjectShifts } from "./use-project-shifts";
 import { useProjects } from "./use-projects";
 import { useProviders } from "./use-providers";
@@ -100,6 +103,17 @@ export function DesktopApp(): JSX.Element {
     selectedActivityId,
   );
   const writesAllowed = recovery?.connection.writesAllowed ?? false;
+  const runFilters =
+    route.destination === "runs"
+      ? parseRunFilters(window.location.hash)
+      : { filters: null, error: "" };
+  const runs = useProjectRuns(
+    route.destination === "runs" ? (project?.id ?? null) : null,
+    summary?.workspace ?? null,
+    route.destination === "runs" && route.selection?.kind === "run"
+      ? route.selection.id
+      : null,
+  );
   const beads = useBeads(
     route.destination === "beads" ||
       (route.destination === "workbench" && route.selection?.kind === "bead")
@@ -612,6 +626,19 @@ export function DesktopApp(): JSX.Element {
                 destination: "workbench",
                 selection: { kind: "bead", id },
               }).slice(1);
+            }}
+          />
+        ) : route.destination === "runs" && project ? (
+          <ProjectRuns
+            key={project.id}
+            projectId={project.id}
+            controller={runs}
+            filters={runFilters.filters}
+            filterError={runFilters.error}
+            onFilter={(filters) => {
+              window.location.hash = runsHref(project.id, null, filters).slice(
+                1,
+              );
             }}
           />
         ) : route.destination === "activity" && project ? (

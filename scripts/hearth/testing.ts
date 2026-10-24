@@ -554,6 +554,7 @@ export async function startTestHearth(
       geminiChatRuntime: unavailableGeminiChatRuntime,
       runBd: (args, options) => bd.run(args, options),
       configHome,
+      forgeGateLogRoot: join(home, "fixture-gate-logs"),
       launchShift: shifts.launch,
       projectShiftRuntime: null,
       mintShiftId: () => shifts.mint(),

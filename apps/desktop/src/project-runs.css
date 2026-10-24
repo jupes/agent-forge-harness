@@ -1,0 +1,219 @@
+.af-project-runs {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+.af-project-runs p {
+  margin: 6px 0;
+  line-height: 1.55;
+}
+.af-runs-heading,
+.af-runs-actions,
+.af-runs-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: end;
+}
+.af-runs-heading {
+  justify-content: space-between;
+  align-items: start;
+}
+.af-runs-heading h2 {
+  font-size: 17px;
+  font-weight: 500;
+  margin: 0;
+}
+.af-runs-filters label {
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+}
+.af-runs-filters input,
+.af-runs-filters select {
+  background: var(--color-surface);
+  border: 1px solid var(--color-divider);
+  border-radius: 5px;
+  color: var(--color-text);
+  min-height: 34px;
+  max-width: 100%;
+  padding: 6px 8px;
+}
+.af-project-runs :is(a, button, summary, input, select):focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 3px;
+}
+.af-project-runs :is(a, summary) {
+  min-height: 24px;
+  display: inline-block;
+  padding-block: 3px;
+}
+.af-runs-note,
+.af-runs-source,
+.af-project-runs small {
+  color: var(--color-neutral-400);
+  font-size: 12px;
+}
+.af-project-runs small {
+  display: block;
+  margin-top: 5px;
+  line-height: 1.45;
+}
+.af-project-runs code,
+.af-runs-source {
+  overflow-wrap: anywhere;
+}
+.af-runs-notice,
+.af-runs-error {
+  padding: 12px;
+  border-left: 2px solid var(--color-divider);
+  background: var(--color-surface);
+}
+.af-runs-error {
+  border-left-color: var(--color-danger, #ff887d);
+}
+.af-project-runs .af-run-fail {
+  color: var(--color-danger, #ff887d);
+}
+.af-runs-table-wrap {
+  overflow-x: auto;
+  max-width: 100%;
+}
+.af-project-runs table {
+  border-collapse: collapse;
+  font-size: 12px;
+  text-align: left;
+  width: 100%;
+}
+.af-project-runs :is(td, th) {
+  padding: 12px 10px;
+  border-bottom: 1px solid var(--color-divider);
+  vertical-align: top;
+  min-width: 65px;
+}
+.af-project-runs th {
+  font-weight: 500;
+}
+.af-project-runs tbody th {
+  min-width: 140px;
+}
+.af-project-runs td {
+  overflow-wrap: anywhere;
+}
+.af-runs-empty {
+  border: 1px solid var(--color-divider);
+  border-radius: 8px;
+  padding: 28px 20px;
+}
+.af-runs-empty h3 {
+  margin: 0 0 10px;
+  font-size: 16px;
+  font-weight: 500;
+}
+.af-runs-source {
+  padding-top: 12px;
+  border-top: 1px solid var(--color-divider);
+}
+.af-runs-loading {
+  display: grid;
+  gap: 12px;
+}
+.af-runs-skeleton {
+  display: grid;
+  gap: 12px;
+}
+.af-runs-skeleton i {
+  height: 32px;
+  background: var(--color-divider);
+  border-radius: 5px;
+}
+.af-run-detail {
+  display: grid;
+  gap: 24px;
+  min-width: 0;
+}
+.af-run-detail h3 {
+  font-size: 21px;
+  font-weight: 500;
+  margin: 6px 0;
+  overflow-wrap: anywhere;
+}
+.af-run-detail h4 {
+  font-size: 15px;
+  font-weight: 500;
+  margin: 0 0 12px;
+}
+.af-run-detail h5 {
+  font-size: 13px;
+  font-weight: 500;
+  margin: 0 0 8px;
+}
+.af-run-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 14px;
+  margin: 0;
+}
+.af-run-facts dt {
+  font-size: 12px;
+  color: var(--color-neutral-400);
+}
+.af-run-facts dd {
+  margin: 6px 0 0;
+  overflow-wrap: anywhere;
+}
+.af-run-phases {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  list-style: none;
+  padding: 0;
+  gap: 10px;
+}
+.af-run-phases li {
+  border: 1px solid var(--color-divider);
+  border-radius: 8px;
+  padding: 14px 12px;
+  min-width: 0;
+}
+.af-run-phases [data-state="active"] {
+  border-color: var(--color-accent);
+}
+.af-run-phases [data-state="locked"] {
+  color: var(--color-neutral-400);
+}
+.af-run-artifact {
+  font-size: 11px;
+}
+.af-run-detail details {
+  border-top: 1px solid var(--color-divider);
+  padding: 10px 0;
+}
+.af-run-detail summary {
+  cursor: pointer;
+  font-size: 12px;
+}
+.af-run-reviews {
+  list-style: none;
+  padding: 0;
+  display: grid;
+  gap: 12px;
+}
+.af-run-reviews li {
+  padding: 14px;
+  border: 1px solid var(--color-divider);
+  border-radius: 8px;
+}
+.af-run-review-summary {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 1200px) {
+  .af-run-phases {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .af-project-runs * {
+    scroll-behavior: auto;
+  }
+}

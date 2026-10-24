@@ -154,6 +154,7 @@ const RUN_STATE = JSON.stringify({
   schemaVersion: 2,
   slug: "demo",
   feature: "Demo run",
+  epic: "alpha-epic",
   phase: "research",
   completed: ["research"],
   artifacts: { research: "plans/research/demo.md" },
@@ -1757,6 +1758,8 @@ const ACTIONS: Record<string, ActionFixture> = {
 
 /** A concrete path per read row; a row with none fails the suite. */
 const READS: Record<string, string> = {
+  "GET /projects/:id/runs": `/projects/${FIXTURE_PROJECT_ID}/runs`,
+  "GET /projects/:id/runs/:slug": `/projects/${FIXTURE_PROJECT_ID}/runs/demo`,
   "GET /projects/:id/shifts": `/projects/${FIXTURE_PROJECT_ID}/shifts`,
   "GET /projects/:id/shifts/requests/:requestId": `/projects/${FIXTURE_PROJECT_ID}/shifts/requests/${FIXTURE_SHIFT_START.requestId}`,
   "GET /projects/:id/shifts/requests/:requestId/attempts": `/projects/${FIXTURE_PROJECT_ID}/shifts/requests/${FIXTURE_SHIFT_START.requestId}/attempts`,

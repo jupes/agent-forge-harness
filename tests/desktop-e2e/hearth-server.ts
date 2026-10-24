@@ -104,6 +104,8 @@ async function main() {
     councilLedger: operatorCouncilLedger(),
     port: Number(process.env["HEARTH_PORT"] ?? 0),
     api: {
+      // Run inspection never reads this machine's hook log during the fixture suite.
+      forgeGateLogRoot: join(home, "run-gate-logs"),
       geminiChatRuntime: {
         prepare: (input) => geminiChat.prepare(input),
         run: async (...args) => {
