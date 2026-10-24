@@ -8,7 +8,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { expect, type Page, test } from "@playwright/test";
+import { expect, type Page, type Route, test } from "@playwright/test";
 import { runsHref } from "../../apps/desktop/src/project-runs-model";
 import type { ForgeState } from "../../scripts/forge/phases";
 import { OPERATOR_HEADER } from "../../scripts/hearth/paths";
@@ -35,6 +35,7 @@ function dispatches() {
       ["codex-chat-fixture-calls.jsonl", "process"],
       ["gemini-chat-fixture-calls.json", "start"],
       ["keeper-fixture-starts.jsonl", "started"],
+      ["coding-fixture-starts.jsonl", "line"],
     ] as const
   ).map(([name, kind]) => {
     const path = join(HEARTH_HOME, name);
@@ -53,6 +54,7 @@ function dispatches() {
     }
     if (!Array.isArray(values))
       throw Error("Incomplete inert provider dispatch recording");
+    if (kind === "line") return values.length;
     return values.filter(
       (entry: unknown) =>
         entry &&
@@ -230,6 +232,35 @@ async function protectedRead(page: Page, path: string) {
     { path, token, header: OPERATOR_HEADER },
   );
 }
+/** Playwright's server-side forward must retain the browser's declared same-origin boundary. */
+async function forwardRun(route: Route) {
+  const response = await route.fetch({
+    headers: {
+      ...route.request().headers(),
+      Origin: new URL(route.request().url()).origin,
+      "Sec-Fetch-Site": "same-origin",
+    },
+  });
+  expect(response.status()).toBe(200);
+  let envelope: unknown;
+  try {
+    envelope = await response.json();
+  } catch {
+    throw Error("Incomplete forwarded run read");
+  }
+  if (
+    !envelope ||
+    typeof envelope !== "object" ||
+    !("ok" in envelope) ||
+    envelope.ok !== true ||
+    !("data" in envelope)
+  )
+    throw Error("The forwarded run read was not a verified protected answer");
+  if (new URL(route.request().url()).pathname.endsWith("/runs"))
+    projectRunsPageSchema.parse(envelope.data);
+  else projectRunDetailSchema.parse(envelope.data);
+  return response;
+}
 const href = (project = alpha.id, slug: string | null = null) =>
   `/index.html${runsHref(project, slug)}`;
 
@@ -338,6 +369,26 @@ test("scoped Runs keyboard inspection preserves real phase, review and gate trut
     ),
   ).toBe(true);
   await page.screenshot({
+    path: "apps/desktop/docs/screenshots/runs-gate-history.png",
+    fullPage: true,
+    mask: [
+      page.locator(".af-runs-source code"),
+      page.locator(".af-run-artifact code"),
+    ],
+    maskColor: "#3f424d",
+    style: ".af-project-runs time { visibility: hidden !important; }",
+  });
+  // The shell scrolls its main pane, so fullPage alone cannot reveal the heading/phases.
+  // Capture the overview separately after the functional compact-layout/focus checks.
+  await page.setViewportSize({ width: 1280, height: 1100 });
+  await page.locator("main").evaluate((element) => element.scrollTo(0, 0));
+  await page.evaluate(async () => {
+    await document.fonts.ready;
+    await new Promise<void>((resolve) =>
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+    );
+  });
+  await page.screenshot({
     path: "apps/desktop/docs/screenshots/runs-inspection.png",
     fullPage: true,
     mask: [
@@ -347,6 +398,7 @@ test("scoped Runs keyboard inspection preserves real phase, review and gate trut
     maskColor: "#3f424d",
     style: ".af-project-runs time { visibility: hidden !important; }",
   });
+  await page.setViewportSize({ width: 1100, height: 700 });
   await detail.getByRole("link", { name: "Open run Activity" }).click();
   await expect(page.getByLabel("Run filter", { exact: true })).toHaveValue(
     fixture.primary,
@@ -401,7 +453,7 @@ test("Runs filters and verified empty/loading/error states never claim unavailab
         });
         return;
       }
-      const response = await route.fetch();
+      const response = await forwardRun(route);
       entered.release();
       await release.promise;
       await route.fulfill({ response });
@@ -473,7 +525,7 @@ test("late run and project answers cannot replace a newer scoped selection and f
     `**/__agent-forge/projects/${alpha.id}/runs/${fixture.primary}`,
     async (route) => {
       try {
-        const response = await route.fetch();
+        const response = await forwardRun(route);
         entered.release();
         await release.promise;
         await route.fulfill({ response });
@@ -555,7 +607,7 @@ test("a failed initial read stays unknown and a held old project list cannot pop
         return;
       }
       try {
-        const response = await route.fetch();
+        const response = await forwardRun(route);
         entered.release();
         await release.promise;
         await route.fulfill({ response });
