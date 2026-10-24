@@ -255,6 +255,94 @@ for (const limit of ["pages", "bytes", "malformed"] as const) {
   });
 }
 
+test("a verified proposal admission is adopted without an ordinary Start, clearing another draft or triggering its navigation", () => {
+  let posts = 0;
+  const client = createSessionsClient({
+    identities: sessionStartFixture().identities,
+    canWrite: () => true,
+    requestId: () => requestId,
+    list: async () => [],
+    read: async () => page,
+    post: async () => {
+      posts++;
+      return { state: "unknown", message: "No dispatch" };
+    },
+    stream: () => () => ({ close() {} }),
+  });
+  client.editComposer(projectId, {
+    prompt: "Keep the normal new-session draft",
+  });
+  client.chooseComposerProvider(projectId, "gemini");
+  client.chooseGeminiMode(projectId, "chat");
+  client.editGeminiChatComposer(projectId, { model: "explicit-gemini-model" });
+  const original = { ...input, requestId };
+  expect(
+    client.adoptStartReceipt(projectId, original, {
+      session: record,
+      receipt: { conversationId: id, revision: 2, turn },
+    }),
+  ).toBe(true);
+  expect(client.project(projectId).records).toEqual([record]);
+  expect(client.project(projectId).composer.prompt).toBe(
+    "Keep the normal new-session draft",
+  );
+  expect(client.project(projectId).lastStarted).toBeNull();
+  expect(client.project(projectId).composerProvider).toBe("gemini");
+  expect(client.project(projectId).geminiMode).toBe("chat");
+  expect(client.project(projectId).geminiChatComposer.model).toBe(
+    "explicit-gemini-model",
+  );
+  expect(client.session(projectId, id).receiptRevision).toBe(2);
+  expect(
+    client.adoptStartReceipt("project-other", original, {
+      session: record,
+      receipt: { conversationId: id, revision: 2, turn },
+    }),
+  ).toBe(false);
+  expect(posts).toBe(0);
+  client.dispose();
+});
+
+test("proposal admission cannot adopt a valid managed Shift receipt into ordinary session controls", () => {
+  const client = createSessionsClient({
+    identities: sessionStartFixture().identities,
+    canWrite: () => true,
+    requestId: () => requestId,
+    list: async () => [],
+    read: async () => page,
+    post: async () => ({ state: "unknown", message: "No dispatch" }),
+    stream: () => () => ({ close() {} }),
+  });
+  const task = {
+    ...input,
+    requestId,
+    beadId: "alpha-1",
+    launch: { ...input.launch, mode: "task" as const },
+  };
+  const managed = {
+    ...record,
+    mode: "task",
+    beadId: task.beadId,
+    origin: {
+      kind: "shift",
+      projectId,
+      originalRequestId: requestId,
+      shiftId: "shift-20261023-080000-1234",
+      runId: "bounded-run-1",
+      beadId: task.beadId,
+      attempt: 1,
+    },
+  };
+  expect(
+    client.adoptStartReceipt(projectId, task, {
+      session: managed,
+      receipt: { conversationId: id, revision: 2, turn },
+    }),
+  ).toBe(false);
+  expect(client.project(projectId).records).toEqual([]);
+  client.dispose();
+});
+
 test("lost Start responses retain the immutable original until its actual admitted turn is found; reads never start another provider", async () => {
   const sent: SessionStartRequest[] = [];
   let listed = false,
