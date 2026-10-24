@@ -35,6 +35,57 @@ function deferred<T>() {
   });
   return { promise, resolve };
 }
+function captureFinished(
+  entered: Promise<ChildExit | null>,
+  original: Promise<unknown>,
+): Promise<ChildExit | null> {
+  return Promise.race([
+    entered,
+    original.then(() => {
+      throw Error("The original execution settled before private finish entry");
+    }),
+  ]);
+}
+
+test("private finish entry is observed while original execution remains held", async () => {
+  const entered = deferred<ChildExit | null>(),
+    original = deferred<void>();
+  const exit: ChildExit = {
+    exitCode: 0,
+    stopped: false,
+    timedOut: false,
+    stderr: "",
+  };
+  let observed: ChildExit | null | undefined;
+  const waiting = captureFinished(entered.promise, original.promise).then(
+    (value) => {
+      observed = value;
+      return value;
+    },
+  );
+  try {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(observed).toBeUndefined();
+    entered.resolve(exit);
+    expect(await waiting).toBe(exit);
+  } finally {
+    original.resolve();
+    entered.resolve(exit);
+    await waiting;
+  }
+});
+
+test("early original execution refusal or completion cannot invent private finish entry", async () => {
+  const failure = new Error("fixture original execution failed");
+  await expect(
+    captureFinished(new Promise(() => {}), Promise.reject(failure)),
+  ).rejects.toBe(failure);
+  await expect(
+    captureFinished(new Promise(() => {}), Promise.resolve()),
+  ).rejects.toThrow(
+    "The original execution settled before private finish entry",
+  );
+});
 function setup(mode = "ok") {
   const root = realpathSync.native(scratch.make("owned exec capture "));
   mkdirSync(join(root, ".git"));
@@ -70,10 +121,12 @@ test("private capture retains the actual canonical input before spawn, then sett
   const f = setup(),
     entered = deferred<void>(),
     release = deferred<void>(),
-    finish = deferred<void>();
+    finish = deferred<void>(),
+    finishEntered = deferred<ChildExit | null>();
   const order: string[] = [],
     lines: string[] = [];
-  let actual: unknown,
+  let providerPid = 0,
+    actual: unknown,
     exit: ChildExit | null = null;
   const pending = claudeAdapter.spawn({
     ...f.request,
@@ -87,6 +140,7 @@ test("private capture retains the actual canonical input before spawn, then sett
           holdTree() {},
           started(pid) {
             expect(pid).toBeGreaterThan(0);
+            providerPid = pid;
             order.push("process");
           },
           line(line) {
@@ -96,6 +150,7 @@ test("private capture retains the actual canonical input before spawn, then sett
           async finish(result) {
             exit = result;
             order.push("exit");
+            finishEntered.resolve(result);
             await finish.promise;
           },
         };
@@ -127,7 +182,7 @@ test("private capture retains the actual canonical input before spawn, then sett
       settled = true;
       return result;
     });
-    for (let retry = 0; !exit && retry < 100; retry++) await Bun.sleep(10);
+    expect(await captureFinished(finishEntered.promise, done)).toBe(exit);
     expect(exit).toMatchObject({
       exitCode: 0,
       stopped: false,
@@ -138,6 +193,8 @@ test("private capture retains the actual canonical input before spawn, then sett
     expect(order[1]).toBe("process");
     expect(lines.length).toBeGreaterThan(0);
     const child = JSON.parse(readFileSync(f.dump, "utf8"));
+    expect(child.pid).toBe(providerPid);
+    expect(alive(providerPid)).toBe(false);
     expect(actual).toMatchObject({
       command: [process.execPath, fake, ...child.argv],
       stdin: child.stdin,
