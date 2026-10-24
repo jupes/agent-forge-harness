@@ -84,6 +84,7 @@ import {
   stopRequested,
   writeShiftRecord,
 } from "./shift-store";
+import { publishShiftTerminalRecord } from "./shift-terminal-store";
 
 // ── Options ─────────────────────────────────────────────────────────────────
 
@@ -1435,7 +1436,15 @@ export async function runShift(
   record.state = "stopped";
   record.reason = stopReason;
   record.endedAt = now().toISOString();
-  const unpublished = save();
+  let unpublished: string | null = null;
+  try {
+    await (deps.writeRecord ?? publishShiftTerminalRecord)(
+      deps.shiftsDir,
+      record,
+    );
+  } catch (error) {
+    unpublished = error instanceof Error ? error.message : String(error);
+  }
   if (unpublished !== null)
     return {
       ok: false,
