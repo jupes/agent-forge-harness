@@ -88,6 +88,7 @@ export async function verifyKeeperSessionReview(
   const originalHash = await tools.evaluate(socket, "location.hash"),
     posts: string[] = [],
     statuses: number[] = [];
+  let beforeTraversal: unknown = null;
   const observe = (event: MessageEvent) => {
     let value: unknown;
     try {
@@ -136,13 +137,14 @@ export async function verifyKeeperSessionReview(
   const card = `Array.from(document.querySelectorAll('.af-proposal-card')).find(card=>card.querySelector('h3')?.textContent===${JSON.stringify(title)})`;
   const review = `document.querySelector('dialog[aria-labelledby="af-keeper-session-review-title"][open]')`;
   const opener = `Array.from((${card})?.querySelectorAll('button')??[]).find(button=>button.textContent.trim()==='Review & start')`;
-  const key = async (name: string, code: number) => {
+  const key = async (name: string, code: number, modifiers = 0) => {
     for (const type of ["keyDown", "keyUp"])
       await tools.command(socket, "Input.dispatchKeyEvent", {
         type,
         key: name,
         code: name,
         windowsVirtualKeyCode: code,
+        modifiers,
         ...(type === "keyDown" && name === "Enter"
           ? { text: "\r", unmodifiedText: "\r" }
           : {}),
@@ -194,13 +196,28 @@ export async function verifyKeeperSessionReview(
       `!(${review}) && document.activeElement===(${opener})`,
       "Native Escape did not return review focus to its exact card.",
     );
+    beforeTraversal = await tools.evaluate(
+      socket,
+      `(() => {const button=${opener},style=getComputedStyle(button);return {focusVisible:button.matches(':focus-visible'),width:style.outlineWidth,style:style.outlineStyle};})()`,
+    );
+    // Match the browser review proof: preserve immediate return focus, then
+    // establish keyboard traversal before asserting the themed focus ring.
+    await key("Tab", 9);
+    await key("Tab", 9, 8);
+    await tools.waitForPage(
+      socket,
+      `document.activeElement===(${opener}) && (${opener}).matches(':focus-visible')`,
+      "Native keyboard traversal did not return visible focus to its exact card.",
+    );
     if (
       !(await tools.evaluate(
         socket,
         `getComputedStyle(${opener}).outlineWidth==='2px' && getComputedStyle(${opener}).outlineStyle==='solid'`,
       ))
     )
-      throw Error("Native review return focus lost its visible 2px outline.");
+      throw Error(
+        "Native review keyboard traversal lost its visible 2px outline.",
+      );
     await key("Enter", 13);
     await tools.waitForPage(
       socket,
@@ -231,7 +248,7 @@ export async function verifyKeeperSessionReview(
     const state = await tools
       .evaluate(
         socket,
-        `(() => {const dialog=${review},input=dialog?.querySelector('[aria-label="Session prompt"]'),button=${opener};return {dialogOpen:!!dialog,promptMatches:input?.value===${JSON.stringify(prompt)},promptReadOnly:input?.readOnly??null,choicesUnavailable:!!dialog?.textContent.includes('Session choices could not be loaded.'),claudeOnlyReason:!!dialog?.textContent.includes('Keeper session reviews support Claude here.'),openerConnected:!!button?.isConnected,openerFocused:document.activeElement===button};})()`,
+        `(() => {const dialog=${review},input=dialog?.querySelector('[aria-label="Session prompt"]'),button=${opener},style=button?getComputedStyle(button):null;return {dialogOpen:!!dialog,promptMatches:input?.value===${JSON.stringify(prompt)},promptReadOnly:input?.readOnly??null,choicesUnavailable:!!dialog?.textContent.includes('Session choices could not be loaded.'),claudeOnlyReason:!!dialog?.textContent.includes('Keeper session reviews support Claude here.'),openerConnected:!!button?.isConnected,openerFocused:document.activeElement===button,openerFocusVisible:button?.matches(':focus-visible')??null,outlineWidth:style?.outlineWidth??null,outlineStyle:style?.outlineStyle??null};})()`,
       )
       .catch(() => ({ stateUnavailable: true }));
     const screenshot = await tools
@@ -241,7 +258,7 @@ export async function verifyKeeperSessionReview(
         () => false,
       );
     throw new Error(
-      `${error instanceof Error ? error.message : "Native review failed."} Probe facts: ${JSON.stringify({ state, protectedStatuses: statuses.slice(-8), screenshot })}`,
+      `${error instanceof Error ? error.message : "Native review failed."} Probe facts: ${JSON.stringify({ beforeTraversal, state, protectedStatuses: statuses.slice(-8), screenshot })}`,
       { cause: error },
     );
   } finally {
