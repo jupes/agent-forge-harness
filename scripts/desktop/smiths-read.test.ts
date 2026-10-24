@@ -3,6 +3,43 @@ import { MAX_SMITHS_READ_BYTES } from "../../apps/desktop/src/smiths-protocol";
 import { createSmithsReads } from "../../apps/desktop/src/smiths-read";
 import { createOperatorClient } from "../../docs/js/operator";
 import { TOKEN_ROUTE } from "../hearth/paths";
+import { MAX_SMITH_VERIFICATION_BYTES } from "../smith-verification";
+
+test("the fixed verification read uses its own smaller receiving cap and no write request", async () => {
+  let cancelled = false;
+  const paths: string[] = [];
+  const client = createOperatorClient(async (url, init) => {
+    if (url === TOKEN_ROUTE)
+      return Response.json({
+        ok: true,
+        data: { token: "verification-token" },
+        error: null,
+      });
+    paths.push(url);
+    expect(init?.method).not.toBe("POST");
+    return new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(
+            new Uint8Array(MAX_SMITH_VERIFICATION_BYTES + 1025),
+          );
+        },
+        cancel() {
+          cancelled = true;
+        },
+      }),
+    );
+  });
+  const reads = createSmithsReads({
+    reader: client.read,
+    options: { staticCopy: false },
+  });
+  await expect(
+    reads.verification(new AbortController().signal),
+  ).rejects.toThrow("limit");
+  expect(cancelled).toBe(true);
+  expect(paths).toEqual(["/__agent-forge/smiths/verification"]);
+});
 
 test("the actual Smiths read wiring caps and cancels a protected response while receiving", async () => {
   let cancelled = false;

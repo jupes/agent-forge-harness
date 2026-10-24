@@ -1728,6 +1728,7 @@ const READS: Record<string, string> = {
   "GET /worktrees": "/worktrees",
   "GET /eligibility": "/eligibility",
   "GET /smiths": "/smiths",
+  "GET /smiths/verification": "/smiths/verification",
   "GET /config": "/config",
   "GET /beads/options": "/beads/options",
   "GET /beads/counts": "/beads/counts",
