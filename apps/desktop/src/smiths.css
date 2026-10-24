@@ -188,6 +188,21 @@
   padding: 8px;
   font-size: 12px;
 }
+.af-smith-verification {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.af-smith-verification-facts {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px 16px;
+}
+.af-smith-verification-value {
+  margin: 0;
+}
+.af-smith-verification-text {
+  white-space: pre-wrap;
+}
 @media (max-width: 1200px) {
   .af-smith-benches {
     grid-template-columns: 1fr;

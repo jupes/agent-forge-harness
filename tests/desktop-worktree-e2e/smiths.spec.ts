@@ -8,10 +8,17 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
+import { APPRENTICE_VERIFICATION } from "../../scripts/smith-verification";
 import type { LedgerEventInput } from "../../types/hearth";
 import { seedObservationEvents } from "../desktop-e2e/observed-session-fixtures";
+import {
+  readState,
+  type StandInIssue,
+  withStateLock,
+  writeState,
+} from "../e2e/bd-stand-in-state";
 import { openSettled, reloadSettled } from "../e2e/fixtures";
-import { HEARTH_HOME, isRunHome } from "../e2e/servers";
+import { BD_STAND_IN_STATE, HEARTH_HOME, isRunHome } from "../e2e/servers";
 import { checkedFixtureRoot, fixturePlan, REPOSITORY } from "./environment";
 
 let fixtureSmith = "";
@@ -57,6 +64,39 @@ test.afterEach(() => {
 function unchangedConfig() {
   for (const saved of savedFiles)
     expect(readFileSync(saved.file)).toEqual(saved.fixture);
+}
+function seedVerification(title = "Owner verification remains pending") {
+  const task: StandInIssue & { notes: string } = {
+    id: APPRENTICE_VERIFICATION,
+    title,
+    issue_type: "task",
+    priority: 0,
+    status: "open",
+    labels: ["verification"],
+    description:
+      "Visible task <script>stays inert</script>\nNo automatic provider verification.",
+    acceptance_criteria: "The owner records the actual native result.",
+    notes: "[No mutation](javascript:close())",
+    created_at: "2026-10-23T00:00:00Z",
+    updated_at: "2026-10-23T00:00:00Z",
+  };
+  const previous = withStateLock(BD_STAND_IN_STATE, () => {
+    const rows = readState(BD_STAND_IN_STATE),
+      old = rows[APPRENTICE_VERIFICATION];
+    writeState(BD_STAND_IN_STATE, { ...rows, [APPRENTICE_VERIFICATION]: task });
+    return old;
+  });
+  return {
+    task,
+    restore() {
+      withStateLock(BD_STAND_IN_STATE, () => {
+        const rows = readState(BD_STAND_IN_STATE);
+        if (previous) rows[APPRENTICE_VERIFICATION] = previous;
+        else delete rows[APPRENTICE_VERIFICATION];
+        writeState(BD_STAND_IN_STATE, rows);
+      });
+    },
+  };
 }
 function seedRecordedWork() {
   const workspace = fixturePlan()
@@ -122,7 +162,7 @@ test("Smiths inspects actual temporary config provenance and workspace scoreboar
   ).toBeDisabled();
   await expect(
     page.getByRole("button", { name: "Open verification task", exact: true }),
-  ).toBeDisabled();
+  ).toBeEnabled();
   await expect(config).toContainText("agent-forge-harness-cla5.6.6.1");
   const search = page.getByRole("searchbox", {
     name: "Filter smiths and scoreboard",
@@ -201,6 +241,173 @@ test("Smiths inspects actual temporary config provenance and workspace scoreboar
   unchangedConfig();
   expect(providerStarts()).toEqual(starts);
   expect(posts).toEqual([]);
+});
+
+test("Smiths opens its actual fixed global verification task with keyboard focus and retry, without project membership or writes", async ({
+  page,
+}) => {
+  const seeded = seedVerification(),
+    starts = providerStarts(),
+    posts: string[] = [],
+    reads: string[] = [];
+  page.on("request", (request) => {
+    if (request.url().includes("/__agent-forge/")) {
+      if (request.method() === "POST") posts.push(request.url());
+      if (
+        new URL(request.url()).pathname === "/__agent-forge/smiths/verification"
+      )
+        reads.push(request.url());
+    }
+  });
+  try {
+    await page.setViewportSize({ width: 1100, height: 700 });
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await openSettled(page, "/index.html#/desktop/smiths");
+    const opener = page.getByRole("button", {
+      name: "Open verification task",
+      exact: true,
+    });
+    await expect(opener).toBeEnabled();
+    expect(reads).toEqual([]);
+    await opener.focus();
+    await page.keyboard.press("Tab");
+    await page.keyboard.press("Shift+Tab");
+    await expect(opener).toBeFocused();
+    await expect(opener).toHaveCSS("outline-width", "2px");
+    await page.keyboard.press("Enter");
+    const dialog = page.getByRole("dialog", {
+      name: "Apprentice verification task",
+      exact: true,
+    });
+    await expect(dialog).toContainText(seeded.task.title);
+    await expect(dialog).toContainText("P0");
+    await expect(dialog).toContainText(
+      "Visible task <script>stays inert</script>",
+    );
+    await expect(dialog).toContainText(seeded.task.acceptance_criteria!);
+    await expect(
+      dialog.locator("script, img, a, input, textarea, select"),
+    ).toHaveCount(0);
+    await expect(dialog).toContainText(
+      "Task status does not certify live model or effort support.",
+    );
+    await expect(
+      dialog.getByRole("button", { name: "Close dialog", exact: true }),
+    ).toBeFocused();
+    await page.screenshot({
+      path: "apps/desktop/docs/screenshots/smiths-verification.png",
+      mask: [
+        dialog.locator(".af-smith-verification-facts code"),
+        dialog.locator("time"),
+      ],
+      maskColor: "#3f424d",
+    });
+    await page.keyboard.press("Escape");
+    await expect(opener).toBeFocused();
+    await reloadSettled(page);
+    await expect(dialog).not.toBeVisible();
+    let failed = false;
+    await page.route("**/__agent-forge/smiths/verification", async (route) => {
+      if (!failed) {
+        failed = true;
+        await route.fulfill({
+          status: 503,
+          json: {
+            ok: false,
+            data: null,
+            error: "The verification record is temporarily unavailable.",
+          },
+        });
+      } else await route.continue();
+    });
+    await opener.click();
+    await expect(dialog.getByRole("alert")).toContainText(
+      "temporarily unavailable",
+    );
+    await expect(dialog).not.toContainText(seeded.task.title);
+    await dialog
+      .getByRole("button", { name: "Retry verification read", exact: true })
+      .click();
+    await expect(dialog).toContainText(seeded.task.title);
+    expect(readState(BD_STAND_IN_STATE)[APPRENTICE_VERIFICATION]).toEqual(
+      seeded.task,
+    );
+    const calls = readFileSync(join(BD_STAND_IN_STATE, "calls.jsonl"), "utf8");
+    expect(calls).toContain(
+      JSON.stringify(["--readonly", "show", APPRENTICE_VERIFICATION, "--json"]),
+    );
+    unchangedConfig();
+    expect(providerStarts()).toEqual(starts);
+    expect(posts).toEqual([]);
+  } finally {
+    seeded.restore();
+  }
+});
+
+test("closing and navigating away from a held actual verification read fences its late private body", async ({
+  page,
+}) => {
+  const seeded = seedVerification("Old held verification record");
+  let release: (() => void) | undefined, arrived: (() => void) | undefined;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const started = new Promise<void>((resolve) => {
+    arrived = resolve;
+  });
+  let first = true;
+  await page.route("**/__agent-forge/smiths/verification", async (route) => {
+    if (!first) {
+      await route.continue();
+      return;
+    }
+    first = false;
+    const response = await route.fetch({
+      headers: {
+        ...route.request().headers(),
+        Origin: new URL(route.request().url()).origin,
+      },
+    });
+    expect(response.status()).toBe(200);
+    arrived?.();
+    await held;
+    await route.fulfill({ response });
+  });
+  try {
+    await openSettled(page, "/index.html#/desktop/smiths");
+    const opener = page.getByRole("button", {
+      name: "Open verification task",
+      exact: true,
+    });
+    await opener.click();
+    await started;
+    const dialog = page.getByRole("dialog", {
+      name: "Apprentice verification task",
+      exact: true,
+    });
+    await expect(dialog.getByRole("status")).toContainText(
+      "Reading the verification task",
+    );
+    await expect(
+      dialog.getByRole("button", {
+        name: "Refresh verification task",
+        exact: true,
+      }),
+    ).toBeDisabled();
+    await page.keyboard.press("Escape");
+    await expect(opener).toBeFocused();
+    await page.getByRole("link", { name: "Projects", exact: true }).click();
+    release?.();
+    await expect(page.locator("main")).not.toContainText(seeded.task.title);
+    await page.getByRole("link", { name: "Smiths", exact: true }).click();
+    await expect(dialog).not.toBeVisible();
+    await opener.click();
+    await expect(dialog).toContainText(seeded.task.title);
+    unchangedConfig();
+  } finally {
+    release?.();
+    seeded.restore();
+  }
 });
 
 test("failed configuration and scoreboard refreshes independently retain actual verified reads and Retry recovers", async ({

@@ -81,6 +81,7 @@ import { createSessionObservationRoutes } from "./session-observations";
 import { createSessionWorktreeRoutes } from "./session-worktrees";
 import { createOwnedSessionRoutes } from "./sessions";
 import { shiftRoutes } from "./shifts";
+import { smithVerificationRoute } from "./smith-verification";
 
 type CouncilService = ReturnType<typeof createCouncilService>;
 
@@ -456,6 +457,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     queue,
     reservations,
     smiths,
+    smithVerificationRoute(deps),
     config,
     worktrees,
     eligibility,

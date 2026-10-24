@@ -1,10 +1,12 @@
 import { useState } from "preact/hooks";
 import { Button } from "../../../docs/js/ds/Button";
 import { EmptyState } from "../../../docs/js/ds/EmptyState";
+import { APPRENTICE_VERIFICATION } from "../../../scripts/smith-verification";
 import type { ScoreboardRow } from "../../../types/hearth";
 import { PROVIDER_USAGE_COUNTS } from "../../../types/hearth";
+import { SmithVerificationTask } from "./SmithVerificationTask";
 import { SCOREBOARD_RANGES } from "./smiths-client";
-import { APPRENTICE_VERIFICATION, metric, scoreboardKey } from "./smiths-model";
+import { metric, scoreboardKey } from "./smiths-model";
 import type { SmithsController } from "./use-smiths";
 import "./smiths.css";
 
@@ -451,14 +453,11 @@ export function Smiths({
             <aside class="af-smith-note">
               Apprentice effort support remains unverified. Verification task:{" "}
               <code>{APPRENTICE_VERIFICATION}</code>.{" "}
-              <Button
-                disabled
-                title="A global bead reader is unavailable. The task ID is retained so you can find its current record in a project that includes it."
-              >
-                Open verification task
-              </Button>{" "}
-              A global bead reader is unavailable here. These values do not
-              certify live model support.
+              <SmithVerificationTask
+                key={workspace ?? "unavailable"}
+                workspace={workspace}
+              />{" "}
+              These values do not certify live model support.
             </aside>
           </>
         )}

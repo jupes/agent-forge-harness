@@ -9,7 +9,6 @@ export const SMITH_FIELDS = [
   "enabled",
   "tags",
 ] as const;
-export const APPRENTICE_VERIFICATION = "agent-forge-harness-cla5.6.6.1";
 
 export function inspectSmiths(raw: unknown) {
   const loaded = savedSmithConfigSchema.parse(boundedSmithsValue(raw));
