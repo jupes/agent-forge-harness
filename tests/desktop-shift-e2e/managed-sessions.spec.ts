@@ -317,6 +317,17 @@ test("a held original cannot open a private feed after navigation, and a mismatc
     await openSettled(page, `/index.html${href}`);
     await expect(managed(page)).toContainText("Verified saved turn: completed");
     expect(feeds).toBeGreaterThan(0);
+    const verifiedFeeds = feeds;
+    // Keep the same component/document while the source query becomes invalid.
+    await page.evaluate((hash) => {
+      window.location.hash = hash;
+    }, wrong);
+    await expect(managed(page).getByRole("alert")).toContainText(
+      "managed Shift source could not be verified",
+    );
+    await expect(activity(page)).toHaveCount(0);
+    await expect(managed(page)).not.toContainText("Coding reply 🌱!");
+    expect(feeds).toBe(verifiedFeeds);
     expect(posts).toEqual([]);
     expect(readFileSync(join(STATE, "claude.json"), "utf8")).toBe(provider);
     expect(mutationCalls()).toEqual(writes);
