@@ -121,9 +121,11 @@ jobs:
           name: playwright-test-results-${{ matrix.shard }}
           path: test-results/
           retention-days: 14
+      # The expanded 110+ journey suite can pass at the former 8-minute limit.
+      # Bound the whole suite separately; individual test deadlines stay fixed.
       - name: Run desktop browser journeys
         if: matrix.shard == 1
-        timeout-minutes: 8
+        timeout-minutes: 12
         run: bun run verify:desktop
       - name: Upload desktop traces and failure screenshots
         if: failure()
