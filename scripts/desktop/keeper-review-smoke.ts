@@ -222,6 +222,25 @@ export async function verifyKeeperSessionReview(
         throw Error(
           "The native review changed private history or session admission.",
         );
+  } catch (error) {
+    // Preserve the failing screen before finally restores the prior route.
+    // These facts deliberately omit the prompt, private replies and source IDs.
+    const state = await tools
+      .evaluate(
+        socket,
+        `(() => {const dialog=${review},input=dialog?.querySelector('[aria-label="Session prompt"]'),button=${opener};return {dialogOpen:!!dialog,promptMatches:input?.value===${JSON.stringify(prompt)},promptReadOnly:input?.readOnly??null,choicesUnavailable:!!dialog?.textContent.includes('Session choices could not be loaded.'),claudeOnlyReason:!!dialog?.textContent.includes('Keeper session reviews support Claude here.'),openerConnected:!!button?.isConnected,openerFocused:document.activeElement===button};})()`,
+      )
+      .catch(() => ({ stateUnavailable: true }));
+    const screenshot = await tools
+      .screenshot(socket, "native-keeper-session-review-failure.png")
+      .then(
+        () => true,
+        () => false,
+      );
+    throw new Error(
+      `${error instanceof Error ? error.message : "Native review failed."} Probe facts: ${JSON.stringify({ state, protectedStatuses: statuses.slice(-8), screenshot })}`,
+      { cause: error },
+    );
   } finally {
     socket.removeEventListener("message", observe);
     if (typeof originalHash === "string")
