@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import type {
   CodexChatCapabilities,
   CodexChatLaunch,
+  CodexChatTurnPlan,
 } from "../../types/codex-chat";
 import {
   codexChatLaunchSchema,
@@ -123,6 +124,506 @@ const commandItem = (overrides: Record<string, unknown> = {}) => ({
   exitCode: null,
   durationMs: null,
   ...overrides,
+});
+const reasoningItem = (overrides: Record<string, unknown> = {}) => ({
+  type: "reasoning",
+  id: "native-summary",
+  summary: [],
+  content: ["RAW_SENTINEL"],
+  ...overrides,
+});
+const summaryFrame = (method: string, extra: Record<string, unknown> = {}) =>
+  notify(method, { threadId, turnId, itemId: "native-summary", ...extra });
+
+test("turn plans retain mutable and repeated native replacement snapshots without creating items or turn completion", () => {
+  const decoder = stream(),
+    first = {
+      threadId,
+      turnId,
+      explanation: null,
+      plan: [{ step: "Original step", status: "completed" }],
+    },
+    update = (value: unknown) =>
+      decoder.accept(notify("turn/plan/updated", value)).events;
+  const expected: CodexChatTurnPlan = {
+    kind: "turn-plan",
+    source: "turn/plan/updated",
+    threadId,
+    turnId,
+    explanation: null,
+    plan: [
+      {
+        step: { text: "Original step", truncated: false },
+        status: "completed",
+      },
+    ],
+    truncated: false,
+  };
+  expect(update(first)).toEqual([expected]);
+  expect(update(first)).toEqual([expected]);
+  expect(decoder.state().terminal).toBeNull();
+  const changed = update({
+    ...first,
+    explanation: "A revised plan",
+    plan: [
+      { step: "Changed step", status: "pending" },
+      { step: "Additional step", status: "inProgress" },
+    ],
+  });
+  expect(changed[0]).toMatchObject({
+    explanation: { text: "A revised plan" },
+    plan: [
+      { step: { text: "Changed step" }, status: "pending" },
+      { status: "inProgress" },
+    ],
+  });
+  expect(update({ ...first, explanation: "", plan: [] })).toEqual([
+    { ...expected, explanation: { text: "", truncated: false }, plan: [] },
+  ]);
+  expect(expected).not.toHaveProperty("itemId");
+  expect(
+    decoder.accept(
+      notify("item/plan/delta", {
+        threadId,
+        turnId,
+        itemId: "unreported-plan-item",
+        delta: "Experimental independent text",
+      }),
+    ).events,
+  ).toEqual([]);
+  expect(
+    decoder.accept(
+      notify("turn/diff/updated", {
+        threadId,
+        turnId,
+        diff: "Separate unreported diff",
+      }),
+    ).events,
+  ).toEqual([]);
+});
+
+test("turn plans refuse missing or foreign native scope, malformed statuses and post-terminal reports", () => {
+  const decoder = stream(),
+    valid = {
+      threadId,
+      turnId,
+      explanation: null,
+      plan: [{ step: "Supplied", status: "pending" }],
+    };
+  for (const change of [
+    { threadId: turnId },
+    { turnId: threadId },
+    { threadId: undefined },
+    { turnId: undefined },
+    { explanation: undefined },
+    { explanation: 3 },
+    { plan: null },
+    { plan: [{ step: "bad", status: "in-progress" }] },
+    { plan: [{ step: 7, status: "pending" }] },
+  ])
+    expect(() =>
+      decoder.accept(notify("turn/plan/updated", { ...valid, ...change })),
+    ).toThrow();
+  decoder.accept(
+    notify("turn/completed", {
+      threadId,
+      turn: { id: turnId, status: "completed", error: null, items: [] },
+    }),
+  );
+  expect(() => decoder.accept(notify("turn/plan/updated", valid))).toThrow(
+    "terminal",
+  );
+});
+
+test("turn plans clip combined UTF-8 explanation and steps and share the command and summary budget", () => {
+  const decoder = stream(),
+    report = decoder.accept(
+      notify("turn/plan/updated", {
+        threadId,
+        turnId,
+        explanation: "🌱".repeat(4095),
+        plan: [{ step: "🌱more", status: "completed" }],
+      }),
+    ).events[0];
+  expect(report).toMatchObject({
+    kind: "turn-plan",
+    explanation: { truncated: false },
+    plan: [{ step: { text: "🌱", truncated: true }, status: "completed" }],
+    truncated: true,
+  });
+  const list = decoder.accept(
+    notify("turn/plan/updated", {
+      threadId,
+      turnId,
+      explanation: null,
+      plan: Array.from({ length: 129 }, () => ({
+        step: "x",
+        status: "pending",
+      })),
+    }),
+  ).events[0];
+  if (list?.kind !== "turn-plan") throw Error("Missing bounded native plan");
+  expect(list.plan).toHaveLength(128);
+  expect(list.truncated).toBe(true);
+  const combined = stream();
+  for (let index = 0; index < 20; index++)
+    combined.accept(
+      notify("item/started", {
+        threadId,
+        turnId,
+        item: commandItem({
+          id: `budget-command-${index}`,
+          command: "x".repeat(16_384),
+          aggregatedOutput: "y".repeat(16_384),
+        }),
+      }),
+    );
+  for (let index = 0; index < 40; index++)
+    combined.accept(
+      notify("item/started", {
+        threadId,
+        turnId,
+        item: reasoningItem({
+          id: `budget-summary-${index}`,
+          summary: ["z".repeat(16_384)],
+        }),
+      }),
+    );
+  let accepted = 0;
+  for (; accepted < 100; accepted++) {
+    try {
+      combined.accept(
+        notify("turn/plan/updated", {
+          threadId,
+          turnId,
+          explanation: null,
+          plan: [{ step: "p".repeat(16_384), status: "completed" }],
+        }),
+      );
+    } catch (cause) {
+      expect(String(cause)).toContain("private report bound");
+      break;
+    }
+  }
+  expect(accepted).toBeGreaterThan(0);
+  expect(accepted).toBeLessThan(100);
+});
+
+test("explicit reasoning summaries preserve independent indexed streams and snapshots without inventing an unannounced prefix", () => {
+  const decoder = stream(),
+    started = notify("item/started", {
+      threadId,
+      turnId,
+      item: reasoningItem(),
+    });
+  expect(decoder.accept(started).events[0]).toMatchObject({
+    kind: "reasoning-summary",
+    update: { kind: "snapshot", summary: [], closure: "open" },
+    partial: true,
+  });
+  expect(decoder.accept(started).events).toEqual([]);
+  const part = summaryFrame("item/reasoning/summaryPartAdded", {
+    summaryIndex: 0,
+  });
+  expect(decoder.accept(part).events[0]).toMatchObject({
+    update: { kind: "part-added", summaryIndex: 0 },
+  });
+  expect(decoder.accept(part).events).toEqual([]);
+  expect(
+    decoder.accept(
+      summaryFrame("item/reasoning/summaryTextDelta", {
+        summaryIndex: 0,
+        delta: "Announced visible summary",
+      }),
+    ).events[0],
+  ).toMatchObject({
+    update: { kind: "delta", summaryIndex: 0, prefixMissing: false },
+  });
+  expect(
+    decoder.accept(
+      summaryFrame("item/reasoning/summaryTextDelta", {
+        summaryIndex: 1,
+        delta: "Unannounced suffix",
+      }),
+    ).events[0],
+  ).toMatchObject({ update: { summaryIndex: 1, prefixMissing: true } });
+  decoder.accept(
+    summaryFrame("item/reasoning/summaryPartAdded", { summaryIndex: 1 }),
+  );
+  expect(
+    decoder.accept(
+      summaryFrame("item/reasoning/summaryTextDelta", {
+        summaryIndex: 1,
+        delta: " still incomplete",
+      }),
+    ).events[0],
+  ).toMatchObject({ update: { prefixMissing: true } });
+  const completed = notify("item/completed", {
+    threadId,
+    turnId,
+    item: reasoningItem({ summary: ["Different final summary snapshot"] }),
+  });
+  const report = decoder.accept(completed).events[0];
+  expect(report).toMatchObject({
+    source: "item/completed",
+    update: {
+      summary: [{ text: "Different final summary snapshot", truncated: false }],
+      closure: "item-ended",
+    },
+    partial: false,
+  });
+  expect(JSON.stringify(report)).not.toContain("RAW_SENTINEL");
+  expect(decoder.accept(completed).events).toEqual([]);
+  const ended = decoder.accept(
+    notify("turn/completed", {
+      threadId,
+      turn: {
+        id: turnId,
+        status: "interrupted",
+        error: null,
+        items: [
+          reasoningItem({ summary: ["Different final summary snapshot"] }),
+        ],
+      },
+    }),
+  );
+  expect(ended.events[0]).toMatchObject({
+    source: "turn/completed",
+    update: { closure: "turn-ended", turnStatus: "interrupted" },
+  });
+  const finalOnly = stream().accept(
+    notify("turn/completed", {
+      threadId,
+      turn: {
+        id: turnId,
+        status: "interrupted",
+        error: null,
+        items: [reasoningItem({ summary: ["Saved at interruption"] })],
+      },
+    }),
+  );
+  expect(finalOnly.events[0]).toMatchObject({
+    partial: true,
+    update: { closure: "turn-ended", turnStatus: "interrupted" },
+  });
+});
+
+test("the native decoder shares its existing 256 item limit across messages, commands and summaries", () => {
+  const decoder = stream();
+  for (let index = 0; index < 255; index++)
+    decoder.accept(
+      notify("item/started", {
+        threadId,
+        turnId,
+        item: {
+          type: "agentMessage",
+          id: `message-${index}`,
+          text: "Visible text",
+        },
+      }),
+    );
+  expect(
+    decoder.accept(
+      notify("item/started", {
+        threadId,
+        turnId,
+        item: reasoningItem(),
+      }),
+    ).events,
+  ).toHaveLength(1);
+  expect(() =>
+    decoder.accept(
+      notify("item/started", {
+        threadId,
+        turnId,
+        item: commandItem(),
+      }),
+    ),
+  ).toThrow("bound");
+});
+
+test("reasoning summaries refuse foreign or malformed parts and closed content while raw content cannot create summary facts", () => {
+  const decoder = stream();
+  expect(() =>
+    decoder.accept(
+      summaryFrame("item/reasoning/summaryTextDelta", {
+        summaryIndex: 0,
+        delta: "unknown",
+      }),
+    ),
+  ).toThrow("known reasoning item");
+  decoder.accept(
+    notify("item/started", { threadId, turnId, item: reasoningItem() }),
+  );
+  for (const change of [
+    { threadId: turnId },
+    { turnId: threadId },
+    { itemId: "unknown" },
+    { summaryIndex: -1 },
+    { summaryIndex: 128 },
+    { summaryIndex: 0.5 },
+    { summaryIndex: undefined, contentIndex: 0 },
+    { delta: 123 },
+  ])
+    expect(() =>
+      decoder.accept(
+        summaryFrame("item/reasoning/summaryTextDelta", {
+          summaryIndex: 0,
+          delta: "visible",
+          ...change,
+        }),
+      ),
+    ).toThrow();
+  for (const method of [
+    "item/reasoning/textDelta",
+    "rawResponseItem/completed",
+  ])
+    expect(
+      decoder.accept(
+        summaryFrame(method, {
+          contentIndex: 0,
+          delta: "RAW_SENTINEL",
+          item: { type: "reasoning", encrypted_content: "RAW_SENTINEL" },
+        }),
+      ).events,
+    ).toEqual([]);
+  expect(() =>
+    decoder.accept(
+      notify("item/started", {
+        threadId,
+        turnId,
+        item: reasoningItem({ summary: [123] }),
+      }),
+    ),
+  ).toThrow();
+  const completed = notify("item/completed", {
+    threadId,
+    turnId,
+    item: reasoningItem({ summary: ["final"] }),
+  });
+  decoder.accept(completed);
+  expect(() =>
+    decoder.accept(
+      summaryFrame("item/reasoning/summaryTextDelta", {
+        summaryIndex: 0,
+        delta: "late",
+      }),
+    ),
+  ).toThrow("known reasoning item");
+  expect(() =>
+    decoder.accept(
+      notify("item/completed", {
+        threadId,
+        turnId,
+        item: reasoningItem({ summary: ["conflicting final"] }),
+      }),
+    ),
+  ).toThrow("final report");
+  decoder.accept(
+    notify("turn/completed", {
+      threadId,
+      turn: { id: turnId, status: "completed", items: [], error: null },
+    }),
+  );
+  expect(() =>
+    decoder.accept(
+      summaryFrame("item/reasoning/summaryPartAdded", { summaryIndex: 0 }),
+    ),
+  ).toThrow("terminal");
+});
+
+test("reasoning streams clip per item on UTF-8 boundaries without repairing gaps or mixing interleaved items", () => {
+  const decoder = stream();
+  for (const id of ["native-summary", "other-summary"])
+    decoder.accept(
+      notify("item/started", { threadId, turnId, item: reasoningItem({ id }) }),
+    );
+  decoder.accept(
+    summaryFrame("item/reasoning/summaryPartAdded", { summaryIndex: 0 }),
+  );
+  const output = (delta: string, extra: Record<string, unknown> = {}) =>
+    decoder.accept(
+      summaryFrame("item/reasoning/summaryTextDelta", {
+        summaryIndex: 0,
+        delta,
+        ...extra,
+      }),
+    ).events;
+  expect(output("🌱".repeat(4095))[0]).toMatchObject({
+    update: { content: { text: "🌱".repeat(4095), truncated: false } },
+  });
+  expect(output("\0🌱")[0]).toMatchObject({
+    update: { content: { text: "�", truncated: true } },
+  });
+  expect(output("cannot resume")).toEqual([]);
+  expect(
+    output("Independent other item", { itemId: "other-summary" })[0],
+  ).toMatchObject({
+    itemId: "other-summary",
+    update: {
+      content: { text: "Independent other item", truncated: false },
+      prefixMissing: true,
+    },
+  });
+  expect(output("", { summaryIndex: 1 })).toEqual([]);
+  decoder.accept(
+    summaryFrame("item/reasoning/summaryPartAdded", { summaryIndex: 1 }),
+  );
+  expect(output("x", { summaryIndex: 1 })[0]).toMatchObject({
+    update: { prefixMissing: false, content: { text: "x", truncated: false } },
+  });
+  const list = stream().accept(
+    notify("item/completed", {
+      threadId,
+      turnId,
+      item: reasoningItem({ summary: Array.from({ length: 129 }, () => "x") }),
+    }),
+  );
+  expect(list.events[0]).toMatchObject({ update: { truncated: true } });
+  if (
+    list.events[0]?.kind !== "reasoning-summary" ||
+    list.events[0].update.kind !== "snapshot"
+  )
+    throw Error("Missing bounded summary snapshot");
+  expect(list.events[0].update.summary).toHaveLength(128);
+  expect(list.events[0].update.summary[0]).toEqual({
+    text: "x",
+    truncated: false,
+  });
+});
+
+test("native summaries and commands consume one shared rich-report budget", () => {
+  const decoder = stream();
+  for (let index = 0; index < 40; index++)
+    decoder.accept(
+      notify("item/started", {
+        threadId,
+        turnId,
+        item: commandItem({
+          id: `command-${index}`,
+          command: "x".repeat(16_384),
+          aggregatedOutput: "y".repeat(16_384),
+        }),
+      }),
+    );
+  let summaries = 0;
+  expect(() => {
+    for (let index = 0; index < 64; index++) {
+      decoder.accept(
+        notify("item/completed", {
+          threadId,
+          turnId,
+          item: reasoningItem({
+            id: `summary-${index}`,
+            summary: ["z".repeat(16_384)],
+          }),
+        }),
+      );
+      summaries++;
+    }
+  }).toThrow("private report bound");
+  expect(summaries).toBeGreaterThan(0);
+  expect(summaries).toBeLessThan(64);
 });
 
 test("native command reports retain streamed versus aggregate output, exact duplicates and standalone declined completion", () => {

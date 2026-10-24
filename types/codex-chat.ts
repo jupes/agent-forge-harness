@@ -80,6 +80,49 @@ export interface CodexChatApproval {
 }
 
 /** Separate private protocol; never accepted by sealed Keeper or existing Task codecs. */
+export interface CodexChatReasoningSummary {
+  kind: "reasoning-summary";
+  source:
+    | "item/started"
+    | "item/reasoning/summaryPartAdded"
+    | "item/reasoning/summaryTextDelta"
+    | "item/completed"
+    | "turn/completed";
+  threadId: string;
+  turnId: string;
+  itemId: string;
+  partial: boolean;
+  update:
+    | {
+        kind: "snapshot";
+        summary: ReportedText[];
+        truncated: boolean;
+        closure: "open" | "item-ended" | "turn-ended";
+        turnStatus: "completed" | "failed" | "interrupted" | null;
+      }
+    | { kind: "part-added"; summaryIndex: number }
+    | {
+        kind: "delta";
+        summaryIndex: number;
+        content: ReportedText;
+        prefixMissing: boolean;
+      };
+}
+
+/** A mutable native turn snapshot; step status never establishes turn completion. */
+export interface CodexChatTurnPlan {
+  kind: "turn-plan";
+  source: "turn/plan/updated";
+  threadId: string;
+  turnId: string;
+  explanation: ReportedText | null;
+  plan: {
+    step: ReportedText;
+    status: "pending" | "inProgress" | "completed";
+  }[];
+  truncated: boolean;
+}
+
 export type CodexChatEvent =
   | {
       kind: "process";
@@ -100,6 +143,8 @@ export type CodexChatEvent =
   | { kind: "turn"; threadId: string; turnId: string }
   | { kind: "text"; itemId: string; text: string }
   | CodexChatCommand
+  | CodexChatReasoningSummary
+  | CodexChatTurnPlan
   | { kind: "usage"; usage: CodexChatUsage }
   | { kind: "outcome"; outcome: CodexChatOutcome }
   | { kind: "reroute"; fromModel: string; toModel: string; reason: string }

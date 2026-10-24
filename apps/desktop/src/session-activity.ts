@@ -12,6 +12,14 @@ import type {
   ReportedText,
 } from "../../../types/session-activity";
 import type { CodexChatDecisionView } from "./codex-chat-decisions";
+import {
+  type NativeChatReasoningReport,
+  nativeChatReasoningSummaries,
+} from "./native-chat-reasoning";
+import {
+  type NativeChatTurnPlanReport,
+  nativeChatTurnPlan,
+} from "./native-chat-turn-plan";
 
 export interface NativeChatCommandReport {
   version: string;
@@ -25,6 +33,8 @@ export interface NativeChatCommandReport {
 export interface OwnedSessionTurn {
   activities: CodingActivityEvent[];
   nativeCommands: NativeChatCommandReport[];
+  nativeSummaries: NativeChatReasoningReport[];
+  nativePlan: NativeChatTurnPlanReport | null;
   usage: ClaudeCodingUsageEvent | CodexCodingUsageEvent | null;
   outcome: CodingOutcomeEvent | null;
   observedModel: string | null;
@@ -41,6 +51,8 @@ export function ownedSessionTurn(
   const result: OwnedSessionTurn = {
     activities: [],
     nativeCommands: [],
+    nativeSummaries: nativeChatReasoningSummaries(page, turnId),
+    nativePlan: nativeChatTurnPlan(page, turnId),
     usage: null,
     outcome: null,
     observedModel: null,
