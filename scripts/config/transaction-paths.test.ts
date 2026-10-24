@@ -1,5 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, lstatSync, mkdirSync, renameSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  realpathSync,
+  renameSync,
+} from "node:fs";
 import { join } from "node:path";
 import { scratchDirs } from "../test-scratch";
 import {
@@ -19,8 +25,8 @@ test("own parent creation authorizes only its exact new directories, even when a
   const expected = configAddress(file);
   const transition = createConfigParentTransition(expected, expected.anchor);
   expect(transition.created.map((anchor) => anchor.path)).toEqual([
-    outer,
-    inner,
+    realpathSync.native(outer),
+    realpathSync.native(inner),
   ]);
   expect(() =>
     verifyConfigParentTransition(expected, transition),

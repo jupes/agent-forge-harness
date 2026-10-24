@@ -3,6 +3,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   symlinkSync,
   writeFileSync,
 } from "fs";
@@ -121,7 +122,7 @@ describe("forge:config", () => {
     );
     expect(out).toEqual({
       code: 0,
-      stdout: `shift.max_usd = 5  (written to ${file})`,
+      stdout: `shift.max_usd = 5  (written to ${realpathSync.native(file)})`,
       stderr: "",
     });
     expect(readFileSync(file, "utf8")).toBe("[shift]\nmax_usd = 5\n");
@@ -173,13 +174,18 @@ describe("forge:config set", () => {
     } catch {
       throw Error("Invalid scalar alias fixture envelope");
     }
+    const published = realpathSync.native(file);
+    expect(published).not.toBe(file);
+    expect(published).toBe(
+      join(realpathSync.native(physical), "agent-forge.toml"),
+    );
     expect(body).toEqual({
       ok: true,
       data: {
         ok: true,
         key: "shift.max_usd",
         value: 5,
-        file,
+        file: published,
         created: !present,
       },
       error: null,
@@ -240,7 +246,11 @@ describe("forge:config set", () => {
     const file = join(opts.home, ".agent-forge", "config.toml");
     expect(JSON.parse(out.stdout)).toMatchObject({
       ok: true,
-      data: { key: "smiths.claude-master.enabled", value: false, file },
+      data: {
+        key: "smiths.claude-master.enabled",
+        value: false,
+        file: realpathSync.native(file),
+      },
       error: null,
     });
     expect(readFileSync(file, "utf8")).toBe(

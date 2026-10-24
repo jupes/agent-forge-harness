@@ -4,6 +4,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   writeFileSync,
 } from "fs";
 import { join } from "path";
@@ -87,7 +88,7 @@ describe("set: replacing a value keeps the rest of the file", () => {
     const outcome = await set(box, "workflow.default_crew", "claude-master");
     expect(outcome).toMatchObject({
       ok: true,
-      file: box.workspaceFile,
+      file: realpathSync.native(box.workspaceFile),
       created: false,
     });
     const after = readFileSync(box.workspaceFile, "utf8");
@@ -216,7 +217,7 @@ describe("set: adding a key or a table", () => {
     );
     expect(outcome).toMatchObject({
       ok: true,
-      file: box.userFile,
+      file: realpathSync.native(box.userFile),
       created: true,
       value: ["fast", "big"],
     });
@@ -401,7 +402,7 @@ describe("set: [shift] keys", () => {
     const box = sandbox();
     expect(await set(box, "shift.concurrency", "3", "user")).toMatchObject({
       ok: true,
-      file: box.userFile,
+      file: realpathSync.native(box.userFile),
     });
     expect(readFileSync(box.userFile, "utf8")).toBe(
       "[shift]\nconcurrency = 3\n",

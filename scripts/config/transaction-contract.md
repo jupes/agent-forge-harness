@@ -41,6 +41,10 @@ Smith creation is provided here.
 
 `setConfigValue` and `runConfigCli` now return promises, and every caller must
 await them. Public CLI syntax, JSON envelopes and exit codes remain the same.
+Publication `file` fields and the CLI's "written to" path now use the canonical
+physical spelling of the rename target. A parent alias or Windows short name may
+therefore differ from the supplied path; this output-spelling refinement is
+intentional. Legacy disk-reader/get provenance retains its supplied source labels.
 Scalar repair still precedes global loading. The scanner preserves comments,
 order, BOM and line endings; shared lazy byte-layer validation preserves loader
 failure order and the env-pass rule. The synchronous `withProcessHomes` helper
@@ -55,7 +59,8 @@ those surfaces.
 
 Evidence for agent-forge-harness-cla5.7.6.4 (Serialize cooperating configuration
 writers under one transaction lock): the focused same-process matrix passed
-122 tests / 607 assertions; the separately owned actual Windows scratch matrix
+124 tests / 621 assertions, including deterministic absent/present parent-alias
+publication paths; the separately owned actual Windows scratch matrix
 passed four tests / 33 assertions. That matrix proves two profiles and checkout
 spellings preserve both changes, actual lock-owner death releases the same
 persistent mutex, child-only moved-home writes stay isolated, and an actual
