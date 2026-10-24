@@ -6,6 +6,11 @@ import type {
 } from "./codex-owned-chat";
 import type { CodexCodingUsageEvent } from "./codex-owned-task";
 import type { PreparedCodexTask } from "./codex-task-runtime";
+import type { PreparedGeminiChat } from "./gemini-chat-runtime";
+import type {
+  GeminiChatDecisionIntent,
+  GeminiChatPrivateFrame,
+} from "./gemini-owned-chat";
 import type { GeminiTaskPrivateFrame } from "./gemini-owned-task";
 import type { PreparedGeminiTask } from "./gemini-task-runtime";
 import type { KeeperReadKind } from "./keeper";
@@ -45,6 +50,7 @@ export interface PreparedConversationSend extends ConversationSend {
   codexTask?: PreparedCodexTask | undefined;
   codexChat?: PreparedCodexChat | undefined;
   geminiTask?: PreparedGeminiTask | undefined;
+  geminiChat?: PreparedGeminiChat | undefined;
   shift?: ShiftTurnSnapshot | undefined;
 }
 
@@ -83,6 +89,7 @@ export type ConversationEvent =
       codexTask?: PreparedCodexTask | undefined;
       codexChat?: PreparedCodexChat | undefined;
       geminiTask?: PreparedGeminiTask | undefined;
+      geminiChat?: PreparedGeminiChat | undefined;
       shift?: ShiftTurnSnapshot | undefined;
     }
   | ({ kind: "identity" } & ConversationBinding)
@@ -120,7 +127,9 @@ export type ConversationEvent =
   | CodingOutcomeEvent
   | CodexChatPrivateEvent
   | CodexChatDecisionIntent
-  | GeminiTaskPrivateFrame;
+  | GeminiTaskPrivateFrame
+  | GeminiChatPrivateFrame
+  | GeminiChatDecisionIntent;
 
 export interface ConversationFrame {
   seq: number;

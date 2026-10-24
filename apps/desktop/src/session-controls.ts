@@ -1,9 +1,13 @@
 import { serializeClaudeLaunch } from "../../../scripts/sessions/claude-launch";
 import { serializeCodexChat } from "../../../scripts/sessions/codex-app-server-protocol";
 import { serializeCodexTask } from "../../../scripts/sessions/codex-task";
-import { serializeGeminiTask } from "../../../scripts/sessions/gemini-task";
+import {
+  serializeGeminiChat,
+  serializeGeminiTask,
+} from "../../../scripts/sessions/gemini-task";
 import type { OwnedCodingSessionRecord } from "../../../types/codex-owned-task";
 import type { ConversationPage } from "../../../types/conversation";
+import { geminiChatOutcome } from "./gemini-chat-presentation";
 import { ownedCodexChatOutcome } from "./session-activity";
 
 export function ownedSessionControls(input: {
@@ -33,6 +37,7 @@ export function ownedSessionControls(input: {
   const codex = first?.kind === "user" ? first.codexTask : undefined;
   const chat = first?.kind === "user" ? first.codexChat : undefined;
   const gemini = first?.kind === "user" ? first.geminiTask : undefined;
+  const geminiChat = first?.kind === "user" ? first.geminiChat : undefined;
   let commandPreview: string | null = null;
   try {
     const serialized =
@@ -46,25 +51,43 @@ export function ownedSessionControls(input: {
               input.record.mode === "chat" &&
               chat
             ? serializeCodexChat(chat.launch, chat.capabilities)
-            : input.record.provider === "gemini" && gemini
+            : input.record.provider === "gemini" &&
+                input.record.mode === "task" &&
+                gemini
               ? serializeGeminiTask(gemini.launch, gemini.capabilities)
-              : null;
+              : input.record.provider === "gemini" &&
+                  input.record.mode === "chat" &&
+                  geminiChat
+                ? serializeGeminiChat(
+                    geminiChat.launch,
+                    geminiChat.capabilities,
+                  )
+                : null;
     if (serialized)
       commandPreview = `${serialized.equivalentCommand}\n\n${serialized.stdinNote}`;
   } catch {
     /* Unsupported snapshots never become invented commands. */
   }
-  const nativeChat =
+  const codexNativeChat =
     input.record.provider === "codex" &&
     input.record.mode === "chat" &&
     !!chat &&
     !!commandPreview;
+  const geminiNativeChat =
+    input.record.provider === "gemini" &&
+    input.record.mode === "chat" &&
+    !!geminiChat &&
+    !!commandPreview;
+  const nativeChat = codexNativeChat || geminiNativeChat;
   const nativePermissions =
-    nativeChat && chat?.launch.approvalPolicy === "on-request";
+    geminiNativeChat ||
+    (codexNativeChat && chat?.launch.approvalPolicy === "on-request");
   const nativeEnded =
     nativeChat &&
     !!current &&
-    !!ownedCodexChatOutcome(input.page, current.requestId);
+    !!(geminiNativeChat
+      ? geminiChatOutcome(input.page, current.requestId)
+      : ownedCodexChatOutcome(input.page, current.requestId));
   const provider =
     input.record.provider === "codex"
       ? "Codex"
@@ -85,9 +108,11 @@ export function ownedSessionControls(input: {
           : !input.page?.binding ||
               input.page.binding.provider !== input.record.provider ||
               input.page.binding.version !==
-                (nativeChat
-                  ? chat?.capabilities.version
-                  : snapshot?.capabilities.version)
+                (geminiNativeChat
+                  ? geminiChat?.capabilities.version
+                  : codexNativeChat
+                    ? chat?.capabilities.version
+                    : snapshot?.capabilities.version)
             ? `A confirmed ${provider} conversation id and matching CLI version are required.`
             : input.record.provider === "claude" &&
                 !snapshot?.capabilities.flags.includes("--resume")

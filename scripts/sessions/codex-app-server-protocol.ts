@@ -6,6 +6,8 @@ import type {
   CodexChatDecision,
   CodexChatEvent,
   CodexChatLaunch,
+  CodexChatReasoningSummary,
+  CodexChatTurnPlan,
   CodexChatUsage,
   PreparedCodexChat,
 } from "../../types/codex-chat";
@@ -253,6 +255,38 @@ const nativeCommand = item.extend({
   exitCode: z.number().int().min(-2_147_483_648).max(2_147_483_647).nullable(),
   durationMs: z.number().safe().nonnegative().nullable(),
 });
+const nativeReasoning = z.object({
+  type: z.literal("reasoning"),
+  id,
+  summary: z.array(z.string().max(1_048_576)).max(4096),
+});
+const nativeTurnPlan = z.object({
+  explanation: z.string().max(1_048_576).nullable(),
+  plan: z
+    .array(
+      z.object({
+        step: z.string().max(1_048_576),
+        status: z.enum(["pending", "inProgress", "completed"]),
+      }),
+    )
+    .max(4096),
+});
+const summaryIndex = z
+  .number()
+  .int()
+  .min(0)
+  .max(SESSION_ACTIVITY_LIMITS.items - 1);
+const prefix = (text: string, capacity: number) => {
+  let retained = "",
+    used = 0;
+  for (const character of text) {
+    const size = encoder.encode(character).byteLength;
+    if (used + size > capacity) break;
+    retained += character;
+    used += size;
+  }
+  return { text: retained, bytes: used };
+};
 const counts = z.object({
   inputTokens: z.number().safe().nonnegative(),
   outputTokens: z.number().safe().nonnegative(),
@@ -277,7 +311,7 @@ export function createCodexChatStream(options: {
     frameBytes = 0,
     frameCount = 0,
     textBytes = 0,
-    commandBytes = 0;
+    richReportBytes = 0;
   const items = new Map<
     string,
     {
@@ -291,6 +325,16 @@ export function createCodexChatStream(options: {
         outputBytes: number;
         outputTruncated: boolean;
         report: CodexChatCommand;
+      };
+      reasoning?: {
+        started: string | null;
+        completed: string | null;
+        turnStatus: "completed" | "failed" | "interrupted" | null;
+        streamBytes: number;
+        parts: Map<
+          number,
+          { announced: boolean; prefixMissing: boolean; truncated: boolean }
+        >;
       };
     }
   >();
@@ -338,17 +382,15 @@ export function createCodexChatStream(options: {
     });
     return suffix ? [{ kind: "text", itemId, text: suffix }] : [];
   };
-  const commandReport = (report: CodexChatCommand): CodexChatEvent[] => {
+  const richReport = (
+    report: CodexChatCommand | CodexChatReasoningSummary | CodexChatTurnPlan,
+  ): CodexChatEvent[] => {
     const bytes = encoder.encode(JSON.stringify(report)).byteLength;
     if (bytes > SESSION_ACTIVITY_LIMITS.eventBytes)
-      throw new Error(
-        "Codex command activity exceeds its private event bound.",
-      );
-    commandBytes += bytes;
-    if (commandBytes > SESSION_ACTIVITY_LIMITS.aggregateBytes)
-      throw new Error(
-        "Codex command activity exceeds its private report bound.",
-      );
+      throw new Error("Codex rich activity exceeds its private event bound.");
+    richReportBytes += bytes;
+    if (richReportBytes > SESSION_ACTIVITY_LIMITS.aggregateBytes)
+      throw new Error("Codex rich activity exceeds its private report bound.");
     return [report];
   };
   const command = (
@@ -422,7 +464,7 @@ export function createCodexChatStream(options: {
         report,
       },
     });
-    return commandReport(report);
+    return richReport(report);
   };
   const commandDelta = (params: Record<string, unknown>): CodexChatEvent[] => {
     const itemId = id.parse(params.itemId),
@@ -459,7 +501,164 @@ export function createCodexChatStream(options: {
       exitCode: null,
       durationMs: null,
     };
-    return commandReport(report);
+    return richReport(report);
+  };
+  const reasoning = (
+    value: unknown,
+    source: "item/started" | "item/completed" | "turn/completed",
+    turnStatus: "completed" | "failed" | "interrupted" | null = null,
+  ): CodexChatEvent[] => {
+    if (!threadId || !turnId)
+      throw Error("Codex summary has no owned native turn identity.");
+    const current = nativeReasoning.parse(value),
+      previous = items.get(current.id),
+      signature = JSON.stringify(current);
+    if (previous && previous.type !== "reasoning")
+      throw Error("Codex summary item identity changed.");
+    if (previous?.completed) {
+      if (
+        source === "item/started" ||
+        previous.reasoning?.completed !== signature
+      )
+        throw Error("Codex summary changed after its final report.");
+      // The enclosing turn's final snapshot supplies distinct terminal facts;
+      // it never reopens this completed item's stream.
+      if (source !== "turn/completed") return [];
+      if (previous.reasoning.turnStatus !== null) {
+        if (previous.reasoning.turnStatus !== turnStatus)
+          throw Error(
+            "Codex final summary turn status conflicts with its original.",
+          );
+        return [];
+      }
+    }
+    if (source === "item/started" && previous?.reasoning?.started) {
+      if (previous.reasoning.started === signature) return [];
+      throw Error("Codex summary started report conflicts with its original.");
+    }
+    if (!previous && items.size >= 256)
+      throw Error("Codex items exceed their protocol bound.");
+    if ((source === "turn/completed") !== (turnStatus !== null))
+      throw Error("Codex summary final source lacks its native turn status.");
+    let remaining = SESSION_ACTIVITY_LIMITS.textBytes,
+      truncated = current.summary.length > SESSION_ACTIVITY_LIMITS.items;
+    const summary = current.summary
+      .slice(0, SESSION_ACTIVITY_LIMITS.items)
+      .map((value) => {
+        const normalized = reportedText(value),
+          retained = prefix(normalized.text, remaining);
+        remaining -= retained.bytes;
+        const part = {
+          text: retained.text,
+          truncated:
+            normalized.truncated ||
+            retained.text.length < normalized.text.length,
+        };
+        truncated ||= part.truncated;
+        return part;
+      });
+    const report: CodexChatReasoningSummary = {
+      kind: "reasoning-summary",
+      source,
+      threadId,
+      turnId,
+      itemId: current.id,
+      partial:
+        source === "item/started" ||
+        (source === "turn/completed" && turnStatus !== "completed"),
+      update: {
+        kind: "snapshot",
+        summary,
+        truncated,
+        closure:
+          source === "item/started"
+            ? "open"
+            : source === "item/completed"
+              ? "item-ended"
+              : "turn-ended",
+        turnStatus,
+      },
+    };
+    items.set(current.id, {
+      type: "reasoning",
+      text: "",
+      completed: source !== "item/started",
+      reasoning: {
+        started:
+          source === "item/started"
+            ? signature
+            : (previous?.reasoning?.started ?? null),
+        completed: source === "item/started" ? null : signature,
+        turnStatus,
+        streamBytes: previous?.reasoning?.streamBytes ?? 0,
+        parts: previous?.reasoning?.parts ?? new Map(),
+      },
+    });
+    return richReport(report);
+  };
+  const reasoningPart = (
+    params: Record<string, unknown>,
+    source:
+      | "item/reasoning/summaryPartAdded"
+      | "item/reasoning/summaryTextDelta",
+  ): CodexChatEvent[] => {
+    const itemId = id.parse(params.itemId),
+      index = summaryIndex.parse(params.summaryIndex),
+      previous = items.get(itemId),
+      current = previous?.reasoning;
+    if (
+      !threadId ||
+      !turnId ||
+      !current ||
+      previous.type !== "reasoning" ||
+      previous.completed
+    )
+      throw Error("Codex summary has no active known reasoning item.");
+    const part = current.parts.get(index) ?? {
+      announced: false,
+      prefixMissing: true,
+      truncated: false,
+    };
+    if (source === "item/reasoning/summaryPartAdded") {
+      if (part.announced) return [];
+      if (!current.parts.has(index)) part.prefixMissing = false;
+      part.announced = true;
+      current.parts.set(index, part);
+      return richReport({
+        kind: "reasoning-summary",
+        source,
+        threadId,
+        turnId,
+        itemId,
+        partial: true,
+        update: { kind: "part-added", summaryIndex: index },
+      });
+    }
+    const delta = reportedText(z.string().max(1_048_576).parse(params.delta));
+    if (part.truncated) return [];
+    const retained = prefix(
+      delta.text,
+      SESSION_ACTIVITY_LIMITS.textBytes - current.streamBytes,
+    );
+    part.truncated =
+      delta.truncated || retained.text.length < delta.text.length;
+    if (!retained.text && !part.truncated) return [];
+    current.parts.set(index, part);
+    current.streamBytes += retained.bytes;
+    return richReport({
+      kind: "reasoning-summary",
+      source,
+      threadId,
+      turnId,
+      itemId,
+      partial: true,
+      update: {
+        kind: "delta",
+        summaryIndex: index,
+        content: { text: retained.text, truncated: part.truncated },
+        prefixMissing: part.prefixMissing,
+      },
+    });
   };
   return {
     thread(value: unknown): {
@@ -689,11 +888,60 @@ export function createCodexChatStream(options: {
             );
           else if (final.type === "commandExecution")
             events.push(...command(value, "turn/completed"));
+          else if (final.type === "reasoning")
+            events.push(...reasoning(value, "turn/completed", finished.status));
         }
         terminal = finished.status;
+      } else if (frame.method === "turn/plan/updated") {
+        scoped(params);
+        if (terminal)
+          throw Error("Codex plan arrived after its terminal result.");
+        const supplied = nativeTurnPlan.parse(params);
+        let remaining = SESSION_ACTIVITY_LIMITS.textBytes,
+          truncated = supplied.plan.length > SESSION_ACTIVITY_LIMITS.items;
+        const retain = (value: string) => {
+          const normalized = reportedText(value),
+            retained = prefix(normalized.text, remaining);
+          remaining -= retained.bytes;
+          const text = {
+            text: retained.text,
+            truncated:
+              normalized.truncated ||
+              retained.text.length < normalized.text.length,
+          };
+          truncated ||= text.truncated;
+          return text;
+        };
+        const explanation =
+            supplied.explanation === null ? null : retain(supplied.explanation),
+          plan = supplied.plan
+            .slice(0, SESSION_ACTIVITY_LIMITS.items)
+            .map((value) => ({
+              step: retain(value.step),
+              status: value.status,
+            }));
+        events.push(
+          ...richReport({
+            kind: "turn-plan",
+            source: "turn/plan/updated",
+            threadId: codexNativeUuidSchema.parse(threadId),
+            turnId: codexNativeUuidSchema.parse(turnId),
+            explanation,
+            plan,
+            truncated,
+          }),
+        );
       } else if (frame.method === "serverRequest/resolved") {
         scoped(params, false);
         resolved.push(nativeRequestId.parse(params.requestId));
+      } else if (
+        frame.method === "item/reasoning/summaryPartAdded" ||
+        frame.method === "item/reasoning/summaryTextDelta"
+      ) {
+        scoped(params);
+        if (terminal)
+          throw Error("Codex summary arrived after its terminal result.");
+        events.push(...reasoningPart(params, frame.method));
       } else if (frame.method === "item/commandExecution/outputDelta") {
         scoped(params);
         if (terminal)
@@ -728,6 +976,8 @@ export function createCodexChatStream(options: {
           throw new Error("Codex item identity changed.");
         if (current.type === "commandExecution")
           events.push(...command(params.item, frame.method));
+        else if (current.type === "reasoning")
+          events.push(...reasoning(params.item, frame.method));
         else if (current.type === "agentMessage")
           events.push(
             ...message(

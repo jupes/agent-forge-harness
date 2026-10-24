@@ -13,6 +13,13 @@ import type {
 import type { PreparedCodexTask } from "./codex-task-runtime";
 import type { ConversationReceipt } from "./conversation";
 import type {
+  GeminiChatOwnedMetadata,
+  GeminiChatOwnedRecord,
+  GeminiChatPreviewReceipt,
+  GeminiChatStartReceipt,
+  GeminiChatStartRequest,
+} from "./gemini-owned-chat";
+import type {
   GeminiOwnedSessionMetadata,
   GeminiOwnedSessionRecord,
   GeminiTaskPreviewReceipt,
@@ -46,12 +53,14 @@ export type OwnedSessionStartRequest =
   | SessionStartRequest
   | CodexTaskStartRequest
   | CodexChatStartRequest
-  | GeminiTaskStartRequest;
+  | GeminiTaskStartRequest
+  | GeminiChatStartRequest;
 export type OwnedSessionStartInput =
   | Omit<SessionStartRequest, "requestId">
   | Omit<CodexTaskStartRequest, "requestId">
   | Omit<CodexChatStartRequest, "requestId">
-  | Omit<GeminiTaskStartRequest, "requestId">;
+  | Omit<GeminiTaskStartRequest, "requestId">
+  | Omit<GeminiChatStartRequest, "requestId">;
 
 export interface CodexOwnedSessionMetadata
   extends Omit<OwnedSessionMetadata, "provider" | "mode" | "requestedEffort"> {
@@ -66,12 +75,14 @@ export type OwnedCodingSessionRecord =
   | OwnedSessionRecord
   | CodexOwnedSessionRecord
   | CodexChatOwnedRecord
-  | GeminiOwnedSessionRecord;
+  | GeminiOwnedSessionRecord
+  | GeminiChatOwnedRecord;
 export type OwnedCodingSessionMetadata =
   | OwnedSessionMetadata
   | CodexOwnedSessionMetadata
   | CodexChatOwnedMetadata
-  | GeminiOwnedSessionMetadata;
+  | GeminiOwnedSessionMetadata
+  | GeminiChatOwnedMetadata;
 export interface CodexTaskStartReceipt {
   session: CodexOwnedSessionRecord;
   receipt: ConversationReceipt;
@@ -80,7 +91,8 @@ export type OwnedCodingSessionStartReceipt =
   | SessionStartReceipt
   | CodexTaskStartReceipt
   | CodexChatStartReceipt
-  | GeminiTaskStartReceipt;
+  | GeminiTaskStartReceipt
+  | GeminiChatStartReceipt;
 export interface CodexTaskPreviewReceipt {
   provider: "codex";
   projectId: string;
@@ -92,7 +104,8 @@ export type OwnedCodingSessionPreviewReceipt =
   | SessionPreviewReceipt
   | CodexTaskPreviewReceipt
   | GeminiTaskPreviewReceipt
-  | CodexChatPreviewReceipt;
+  | CodexChatPreviewReceipt
+  | GeminiChatPreviewReceipt;
 
 /** Reported counts in the owned coding journal only; no model, cost or allowance is inferred. */
 export interface CodexCodingUsageEvent {

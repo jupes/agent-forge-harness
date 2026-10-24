@@ -8,9 +8,147 @@ import type {
   ReportedText,
 } from "../../../types/session-activity";
 import type {
+  NativeChatReasoningReport,
+  NativeChatSummarySnapshot,
+} from "./native-chat-reasoning";
+import type { NativeChatTurnPlanReport } from "./native-chat-turn-plan";
+import type {
   NativeChatCommandReport,
   OwnedSessionTurn,
 } from "./session-activity";
+
+function nativePlan(value: NativeChatTurnPlanReport) {
+  const report = value.report;
+  return (
+    <details
+      class="af-session-activity-item"
+      key={`plan:${report.threadId}:${report.turnId}`}
+    >
+      <summary>Reported turn plan</summary>
+      <p class="af-session-report-label">
+        Latest reported snapshot in this view
+      </p>
+      {report.explanation === null ? (
+        <p class="af-session-note">Explanation not reported</p>
+      ) : (
+        text("Reported explanation", report.explanation)
+      )}
+      {report.plan.length ? (
+        <ol class="af-session-reported-plan">
+          {report.plan.map((part, index) => (
+            <li key={index}>
+              <span>{part.step.text || "No step text reported"}</span> ·{" "}
+              <small>
+                {part.status === "inProgress"
+                  ? "In progress"
+                  : part.status === "pending"
+                    ? "Pending"
+                    : "Completed"}
+              </small>
+              {part.step.truncated && (
+                <p class="af-session-note">
+                  Step truncated. The saved report is incomplete.
+                </p>
+              )}
+            </li>
+          ))}
+        </ol>
+      ) : (
+        <p class="af-session-note">No steps reported</p>
+      )}
+      {report.truncated && (
+        <p class="af-session-note">
+          Plan truncated. The saved report is incomplete.
+        </p>
+      )}
+      <p class="af-session-note">
+        Step status does not confirm that the chat turn has finished. This
+        supplied plan grants no permission or execution control.
+      </p>
+      <p class="af-session-report-source">
+        Source: app-server {report.source} · codex {value.version} · Thread:{" "}
+        {report.threadId} · Native turn: {report.turnId}
+      </p>
+    </details>
+  );
+}
+
+function summarySnapshot(label: string, value: NativeChatSummarySnapshot) {
+  return (
+    <div class="af-session-report-body">
+      <p class="af-session-report-label">{label}</p>
+      {value.summary.length ? (
+        value.summary.map((part, index) =>
+          text(`${label} · Part ${index + 1}`, part),
+        )
+      ) : (
+        <p class="af-session-note">
+          No summary text was reported in this snapshot.
+        </p>
+      )}
+      {value.truncated && (
+        <p class="af-session-note">
+          Summary snapshot truncated. The saved report is incomplete.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function nativeSummary(value: NativeChatReasoningReport) {
+  const report = value.report,
+    finalSnapshot = value.turnSnapshot ?? value.itemSnapshot;
+  return (
+    <details
+      class="af-session-activity-item"
+      key={`summary:${report.threadId}:${report.turnId}:${report.itemId}`}
+    >
+      <summary>
+        Reported reasoning summary{report.partial ? " · Partial report" : ""}
+      </summary>
+      {value.initialSnapshot &&
+        summarySnapshot("Initial reported snapshot", value.initialSnapshot)}
+      {value.parts.map((part) => (
+        <div class="af-session-report-body" key={part.index}>
+          {part.content ? (
+            text(`Streamed summary · Native index ${part.index}`, part.content)
+          ) : (
+            <p class="af-session-note">
+              Text not reported for this part (native index {part.index}).
+            </p>
+          )}
+          {part.prefixMissing && (
+            <p class="af-session-note">
+              Earlier text for this part is missing. This stream is incomplete.
+            </p>
+          )}
+        </div>
+      ))}
+      {finalSnapshot &&
+        summarySnapshot("Final reported snapshot", finalSnapshot)}
+      {value.earlierReportsMissing && (
+        <p class="af-session-note">
+          Earlier reasoning reports are not available in this view. Streams may
+          be incomplete.
+        </p>
+      )}
+      {value.turnSnapshot && (
+        <p class="af-session-note">
+          Reported native turn status: {value.turnSnapshot.turnStatus}
+        </p>
+      )}
+      <p class="af-session-note">
+        Snapshots and streamed parts are separate supplied reports. This summary
+        grants no permission or execution control.
+      </p>
+      <p class="af-session-report-source">
+        Latest source: app-server {report.source} · codex {value.version} ·
+        Thread: {report.threadId} · Native turn: {report.turnId} · Item:{" "}
+        {report.itemId}
+      </p>
+    </details>
+  );
+}
 
 function text(label: string, value: ReportedText) {
   return (
@@ -300,7 +438,11 @@ function activity(event: CodingActivityEvent) {
 
 /** All payloads remain inert text; reported paths never trigger local file reads. */
 export function SessionActivity({ value }: { value: OwnedSessionTurn }) {
-  const count = value.activities.length + value.nativeCommands.length;
+  const count =
+    value.activities.length +
+    value.nativeCommands.length +
+    value.nativeSummaries.length +
+    (value.nativePlan ? 1 : 0);
   if (!count) return null;
   return (
     <section class="af-session-activity" aria-label="Reported session activity">
@@ -309,6 +451,8 @@ export function SessionActivity({ value }: { value: OwnedSessionTurn }) {
       </h3>
       {value.activities.map(activity)}
       {value.nativeCommands.map(nativeCommand)}
+      {value.nativeSummaries.map(nativeSummary)}
+      {value.nativePlan && nativePlan(value.nativePlan)}
     </section>
   );
 }

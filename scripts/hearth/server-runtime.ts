@@ -53,6 +53,7 @@ import type { SessionRuntime } from "../sessions/admission";
 import { createClaudeSessionTransport } from "../sessions/claude-transport";
 import { createCodexChatRuntime } from "../sessions/codex-chat-runtime";
 import { createCodexTaskRuntime } from "../sessions/codex-task-runtime";
+import { createGeminiChatRuntime } from "../sessions/gemini-chat-runtime";
 import { createGeminiTaskRuntime } from "../sessions/gemini-task-runtime";
 import { createAttendedProjectShiftLauncher } from "../shifts/launch-runtime";
 import { createOwnedProjectShiftLauncher } from "../shifts/owned-launcher";
@@ -188,6 +189,7 @@ export interface OperatorApiOverrides {
   codexTaskRuntime?: ReturnType<typeof createCodexTaskRuntime>;
   codexChatRuntime?: ReturnType<typeof createCodexChatRuntime>;
   geminiTaskRuntime?: ReturnType<typeof createGeminiTaskRuntime>;
+  geminiChatRuntime?: ReturnType<typeof createGeminiChatRuntime>;
   /** Restricted Keeper transport; tests supply a fake, never a real provider. */
   conversationTransport?: ConversationTransport;
   keeperRuntime?: KeeperRuntime;
@@ -454,6 +456,17 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
     geminiTaskRuntime:
       options.api?.geminiTaskRuntime ??
       createGeminiTaskRuntime({
+        root,
+        home,
+        ...(options.api?.configHome
+          ? { configHome: options.api.configHome }
+          : {}),
+        environment: options.environment ?? process.env,
+        operatorToken: expectedToken,
+      }),
+    geminiChatRuntime:
+      options.api?.geminiChatRuntime ??
+      createGeminiChatRuntime({
         root,
         home,
         ...(options.api?.configHome

@@ -12,6 +12,7 @@ import type {
   OwnedConversationAddress,
   PreparedConversationSend,
 } from "../../types/conversation";
+import type { PreparedGeminiChat } from "../../types/gemini-chat-runtime";
 import type { PreparedGeminiTask } from "../../types/gemini-task-runtime";
 import type { KeeperBriefSnapshot } from "../../types/keeper-brief";
 import type {
@@ -33,6 +34,7 @@ import { createProjectStore } from "../projects/store";
 import { withQueueLock } from "../scheduler/queue-lock";
 import { preparedCodexChatSchema } from "../sessions/codex-app-server-protocol";
 import { preparedCodexTaskSchema } from "../sessions/codex-task-runtime-protocol";
+import { preparedGeminiChatSchema } from "../sessions/gemini-chat-runtime-protocol";
 import { preparedGeminiTaskSchema } from "../sessions/gemini-task-runtime-protocol";
 import { sessionTurnSnapshotSchema } from "../sessions/turn-protocol";
 import { conversationPage, validateConversationPageQuery } from "./page";
@@ -96,6 +98,13 @@ interface ConversationOptions {
         resume: ConversationBinding | null;
       }) => Promise<PreparedGeminiTask>)
     | undefined;
+  prepareGeminiChat?:
+    | ((request: {
+        project: ProjectRecord;
+        input: SessionMessage;
+        resume: ConversationBinding | null;
+      }) => Promise<PreparedGeminiChat>)
+    | undefined;
 }
 
 const activePhase = (phase: string) =>
@@ -116,6 +125,7 @@ export function createConversationService(options: ConversationOptions) {
     (options.prepareSession ||
       options.prepareCodexTask ||
       options.prepareCodexChat ||
+      options.prepareGeminiChat ||
       options.prepareGeminiTask) &&
     !options.address
   )
@@ -128,6 +138,7 @@ export function createConversationService(options: ConversationOptions) {
       options.prepareSession,
       options.prepareCodexTask,
       options.prepareCodexChat,
+      options.prepareGeminiChat,
       options.prepareGeminiTask,
     ].filter(Boolean).length > 1
   )
@@ -409,6 +420,7 @@ export function createConversationService(options: ConversationOptions) {
         options.prepareSession ||
         options.prepareCodexTask ||
         options.prepareCodexChat ||
+        options.prepareGeminiChat ||
         options.prepareGeminiTask
           ? parseSessionSend(rawInput)
           : parseConversationSend(rawInput);
@@ -428,6 +440,19 @@ export function createConversationService(options: ConversationOptions) {
             (frame) =>
               frame.turnId === input.requestId && frame.event.kind === "user",
           )?.event;
+        if (options.prepareGeminiChat) {
+          if (
+            user?.kind !== "user" ||
+            !user.geminiChat ||
+            JSON.stringify(wireInput.attachments ?? []) !==
+              JSON.stringify(user.geminiChat.launch.attachments ?? [])
+          )
+            throw new ConversationError(
+              409,
+              "This request id already names different content. Read the original request.",
+            );
+          return { ...privateInput, geminiChat: user.geminiChat };
+        }
         if (options.prepareGeminiTask) {
           if (
             user?.kind !== "user" ||
@@ -497,6 +522,7 @@ export function createConversationService(options: ConversationOptions) {
         (options.prepareSession ||
           options.prepareCodexTask ||
           options.prepareCodexChat ||
+          options.prepareGeminiChat ||
           options.prepareGeminiTask) &&
         purpose !== "message"
       )
@@ -747,6 +773,33 @@ export function createConversationService(options: ConversationOptions) {
                     "The private Gemini Task could not be verified. No turn was accepted.",
                   );
                 input = { ...privateInput, geminiTask: snapshot.data };
+              }
+            }
+            if (options.prepareGeminiChat) {
+              const latest = store.read(projectId);
+              if (
+                latest.turns.some((turn) => turn.requestId === input.requestId)
+              )
+                input = original();
+              else {
+                const snapshot = preparedGeminiChatSchema.safeParse(
+                  await options.prepareGeminiChat({
+                    project: projectFor(projectId),
+                    input: wireInput,
+                    resume: latest.binding,
+                  }),
+                );
+                if (
+                  !snapshot.success ||
+                  snapshot.data.launch.prompt !== wireInput.text ||
+                  JSON.stringify(snapshot.data.launch.attachments ?? []) !==
+                    JSON.stringify(wireInput.attachments ?? [])
+                )
+                  throw new ConversationError(
+                    503,
+                    "The private Gemini Chat could not be verified. No turn was accepted.",
+                  );
+                input = { ...privateInput, geminiChat: snapshot.data };
               }
             }
             if (closed || abort.signal.aborted)

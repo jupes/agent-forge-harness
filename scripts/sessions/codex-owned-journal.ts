@@ -34,6 +34,13 @@ import {
 import { codexExecCapabilitiesSchema } from "./codex-task";
 import { preparedCodexTaskSchema } from "./codex-task-runtime-protocol";
 import {
+  geminiChatDecisionIntentSchema,
+  geminiChatPrivateFrameSchema,
+  validGeminiChatHistory,
+  validGeminiChatPage,
+} from "./gemini-chat-owned-journal";
+import { preparedGeminiChatSchema } from "./gemini-chat-runtime-protocol";
+import {
   geminiTaskPrivateFrameSchema,
   validGeminiTaskHistory,
 } from "./gemini-owned-journal";
@@ -110,6 +117,20 @@ const codexChatUser = z
       JSON.stringify(value.about) ===
         JSON.stringify(value.codexChat.launch.context?.about ?? []),
   );
+const geminiChatUser = z
+  .object({
+    kind: z.literal("user"),
+    text,
+    about: z.array(object).max(16),
+    geminiChat: preparedGeminiChatSchema,
+  })
+  .strict()
+  .refine(
+    (value) =>
+      value.text === value.geminiChat.launch.prompt &&
+      JSON.stringify(value.about) ===
+        JSON.stringify(value.geminiChat.launch.context?.about ?? []),
+  );
 const codingUsage = z
   .object({
     kind: z.literal("coding-usage"),
@@ -167,6 +188,9 @@ export const ownedCodingEventSchema = z.union([
   codexChatDecisionIntentSchema,
   geminiUser,
   geminiTaskPrivateFrameSchema,
+  geminiChatUser,
+  geminiChatPrivateFrameSchema,
+  geminiChatDecisionIntentSchema,
 ]);
 const frame = z
   .object({
@@ -185,11 +209,21 @@ const inProject = (value: {
   value.frames.every(
     ({ event }) =>
       event.kind !== "user" ||
-      !(event.codexTask ?? event.codexChat ?? event.geminiTask) ||
-      ((event.codexTask ?? event.codexChat ?? event.geminiTask)?.launch.context
-        ?.projectId === value.projectId &&
+      !(
+        event.codexTask ??
+        event.codexChat ??
+        event.geminiTask ??
+        event.geminiChat
+      ) ||
+      ((
+        event.codexTask ??
+        event.codexChat ??
+        event.geminiTask ??
+        event.geminiChat
+      )?.launch.context?.projectId === value.projectId &&
         (!value.binding ||
-          (value.binding.provider === (event.geminiTask ? "gemini" : "codex") &&
+          (value.binding.provider ===
+            (event.geminiTask || event.geminiChat ? "gemini" : "codex") &&
             z.string().uuid().safeParse(value.binding.sessionId).success))),
   ) &&
   value.frames.every(
@@ -220,7 +254,9 @@ function reportedTurn(
       event.kind !== "coding-usage" &&
       event.kind !== "coding-chat" &&
       event.kind !== "coding-chat-decision" &&
-      event.kind !== "coding-gemini-task"
+      event.kind !== "coding-gemini-task" &&
+      event.kind !== "coding-gemini-chat" &&
+      event.kind !== "coding-gemini-chat-decision"
     )
       return true;
     if (
@@ -231,7 +267,12 @@ function reportedTurn(
         value.binding.sessionId !== event.event.outcome.threadId)
     )
       return false;
-    if (event.kind === "coding-chat" && event.event.kind === "command") {
+    if (
+      event.kind === "coding-chat" &&
+      (event.event.kind === "command" ||
+        event.event.kind === "reasoning-summary" ||
+        event.event.kind === "turn-plan")
+    ) {
       if (
         value.binding?.provider !== "codex" ||
         value.binding.sessionId !== event.event.threadId ||
@@ -263,9 +304,21 @@ function reportedTurn(
       // are valid without a binding; no other provider frame gains identity.
       if (
         !complete &&
-        (event.kind === "coding-chat" || event.kind === "coding-gemini-task") &&
+        (event.kind === "coding-chat" ||
+          event.kind === "coding-gemini-task" ||
+          event.kind === "coding-gemini-chat") &&
         event.event.kind === "process" &&
         value.binding === null
+      )
+        return true;
+      if (
+        !complete &&
+        value.binding === null &&
+        event.kind === "coding-gemini-chat" &&
+        event.event.kind === "outcome" &&
+        event.event.outcome.phase !== "completed" &&
+        event.event.outcome.sessionId === null &&
+        event.event.outcome.usage === null
       )
         return true;
       if (
@@ -283,6 +336,12 @@ function reportedTurn(
     }
     if (event.kind === "coding-gemini-task" && !user.geminiTask) return false;
     if (
+      (event.kind === "coding-gemini-chat" ||
+        event.kind === "coding-gemini-chat-decision") &&
+      !user.geminiChat
+    )
+      return false;
+    if (
       (event.kind === "coding-chat" || event.kind === "coding-chat-decision") &&
       !user.codexChat
     )
@@ -299,7 +358,11 @@ function reportedTurn(
         user.shift.cliVersion === event.version
       );
     const snapshot =
-      user.session ?? user.codexTask ?? user.codexChat ?? user.geminiTask;
+      user.session ??
+      user.codexTask ??
+      user.codexChat ??
+      user.geminiTask ??
+      user.geminiChat;
     return (
       snapshot?.provider === event.provider &&
       snapshot.capabilities.version === event.version
@@ -317,10 +380,25 @@ function nativeChatHistory(value: {
     pid: number | undefined;
     nativeTurn: string | undefined;
     terminal: boolean;
-    commandBytes: number;
-    commandsEnded: boolean;
+    richReportBytes: number;
+    richTurnEnded: boolean;
+    finalNativeStatus: "completed" | "failed" | "interrupted" | null;
+    itemKinds: Map<string, "text" | "command" | "reasoning-summary">;
     closedCommands: Set<string>;
     commands: Map<string, CodexChatCommand>;
+    summaries: Map<
+      string,
+      {
+        closed: boolean;
+        turnEnded: boolean;
+        snapshot: string;
+        streamBytes: number;
+        parts: Map<
+          number,
+          { announced: boolean; prefixMissing: boolean; truncated: boolean }
+        >;
+      }
+    >;
     approvals: Map<string, CodexChatApproval>;
     intents: Map<string, CodexChatDecision>;
   };
@@ -337,10 +415,13 @@ function nativeChatHistory(value: {
         pid: undefined,
         nativeTurn: undefined,
         terminal: false,
-        commandBytes: 0,
-        commandsEnded: false,
+        richReportBytes: 0,
+        richTurnEnded: false,
+        finalNativeStatus: null,
+        itemKinds: new Map(),
         closedCommands: new Set(),
         commands: new Map(),
+        summaries: new Map(),
         approvals: new Map(),
         intents: new Map(),
       };
@@ -386,7 +467,10 @@ function nativeChatHistory(value: {
         (outcome.threadId !== null &&
           (value.binding?.provider !== "codex" ||
             outcome.threadId !== value.binding.sessionId)) ||
-        (outcome.turnId !== null && outcome.turnId !== turn.nativeTurn)
+        (outcome.turnId !== null && outcome.turnId !== turn.nativeTurn) ||
+        (outcome.phase === "completed" &&
+          turn.finalNativeStatus !== null &&
+          turn.finalNativeStatus !== "completed")
       )
         return false;
       turn.terminal = true;
@@ -404,19 +488,108 @@ function nativeChatHistory(value: {
       continue;
     }
     if (value.binding?.provider !== "codex") return false;
-    if (native.kind === "command") {
+    if (
+      native.kind === "text" ||
+      native.kind === "command" ||
+      native.kind === "reasoning-summary"
+    ) {
+      const previous = turn.itemKinds.get(native.itemId);
+      // The live decoder keeps one native item map across these kinds. Repeated
+      // text fragments keep the same identity; a different kind cannot borrow it.
+      if (
+        (previous !== undefined && previous !== native.kind) ||
+        (previous === undefined && turn.itemKinds.size >= 256)
+      )
+        return false;
+      turn.itemKinds.set(native.itemId, native.kind);
+    }
+    if (
+      native.kind === "command" ||
+      native.kind === "reasoning-summary" ||
+      native.kind === "turn-plan"
+    ) {
       if (
         turn.pid === undefined ||
         native.threadId !== value.binding.sessionId ||
         native.turnId !== turn.nativeTurn ||
-        turn.closedCommands.has(native.itemId) ||
-        (turn.commandsEnded && native.source !== "turn/completed")
+        (turn.richTurnEnded && native.source !== "turn/completed")
       )
         return false;
-      turn.commandBytes += new TextEncoder().encode(
+      turn.richReportBytes += new TextEncoder().encode(
         JSON.stringify(native),
       ).byteLength;
-      if (turn.commandBytes > SESSION_ACTIVITY_LIMITS.aggregateBytes)
+      if (turn.richReportBytes > SESSION_ACTIVITY_LIMITS.aggregateBytes)
+        return false;
+      if (native.source === "turn/completed") turn.richTurnEnded = true;
+    }
+    if (native.kind === "reasoning-summary") {
+      if (turn.commands.has(native.itemId)) return false;
+      const previous = turn.summaries.get(native.itemId),
+        update = native.update;
+      const signature =
+        update.kind === "snapshot"
+          ? JSON.stringify([update.summary, update.truncated])
+          : "";
+      if (
+        previous?.closed &&
+        (update.kind !== "snapshot" ||
+          update.closure !== "turn-ended" ||
+          previous.turnEnded ||
+          previous.snapshot !== signature)
+      )
+        return false;
+      if (update.kind === "snapshot") {
+        if (
+          (update.closure === "open" && previous) ||
+          (!previous && turn.summaries.size + turn.commands.size >= 256)
+        )
+          return false;
+        if (update.closure === "turn-ended") {
+          if (
+            turn.finalNativeStatus !== null &&
+            turn.finalNativeStatus !== update.turnStatus
+          )
+            return false;
+          turn.finalNativeStatus = update.turnStatus;
+        }
+        turn.summaries.set(native.itemId, {
+          closed: update.closure !== "open",
+          turnEnded: update.closure === "turn-ended",
+          snapshot: signature,
+          streamBytes: previous?.streamBytes ?? 0,
+          parts: previous?.parts ?? new Map(),
+        });
+      } else {
+        if (!previous) return false;
+        const part = previous.parts.get(update.summaryIndex) ?? {
+          announced: false,
+          prefixMissing: true,
+          truncated: false,
+        };
+        if (update.kind === "part-added") {
+          if (part.announced) return false;
+          if (!previous.parts.has(update.summaryIndex))
+            part.prefixMissing = false;
+          part.announced = true;
+        } else {
+          if (part.truncated || update.prefixMissing !== part.prefixMissing)
+            return false;
+          previous.streamBytes += new TextEncoder().encode(
+            update.content.text,
+          ).byteLength;
+          if (previous.streamBytes > SESSION_ACTIVITY_LIMITS.textBytes)
+            return false;
+          part.truncated = update.content.truncated;
+        }
+        previous.parts.set(update.summaryIndex, part);
+      }
+      continue;
+    }
+    if (native.kind === "command") {
+      if (
+        turn.summaries.has(native.itemId) ||
+        turn.closedCommands.has(native.itemId)
+      )
         return false;
       const previous = turn.commands.get(native.itemId);
       if (
@@ -447,7 +620,8 @@ function nativeChatHistory(value: {
         turn.commands.set(native.itemId, { ...native, output });
       } else {
         if (native.source === "item/started" && previous) return false;
-        if (!previous && turn.commands.size >= 256) return false;
+        if (!previous && turn.commands.size + turn.summaries.size >= 256)
+          return false;
         turn.commands.set(native.itemId, native);
       }
       if (
@@ -455,7 +629,6 @@ function nativeChatHistory(value: {
         native.source === "turn/completed"
       )
         turn.closedCommands.add(native.itemId);
-      if (native.source === "turn/completed") turn.commandsEnded = true;
       continue;
     }
     if (native.kind === "turn" || native.kind === "identity") {
@@ -503,11 +676,13 @@ export const ownedCodingStateSchema = stateSchema
   .refine(inProject)
   .refine((value) => reportedTurn(value, true))
   .refine(nativeChatHistory)
+  .refine(validGeminiChatHistory)
   .refine(validGeminiTaskHistory);
 export const ownedCodingPageSchema = conversationPageSchema
   .extend({ frames: z.array(frame).max(100) })
   .strict()
   .refine(inProject)
+  .refine(validGeminiChatPage)
   .refine((value) => reportedTurn(value, false));
 const prepared = z
   .object({
@@ -529,6 +704,10 @@ const preparedChat = prepared
 const preparedGemini = prepared
   .omit({ codexTask: true })
   .extend({ geminiTask: preparedGeminiTaskSchema })
+  .strict();
+const preparedGeminiChat = prepared
+  .omit({ codexTask: true })
+  .extend({ geminiChat: preparedGeminiChatSchema })
   .strict();
 const preparedShift = z
   .object({
@@ -557,6 +736,19 @@ const preparedShift = z
 export function parseOwnedPreparedConversationSend(
   input: unknown,
 ): PreparedConversationSend {
+  if (
+    typeof input === "object" &&
+    input !== null &&
+    Object.hasOwn(input, "geminiChat")
+  ) {
+    const parsed = preparedGeminiChat.safeParse(input);
+    if (!parsed.success)
+      throw new ConversationError(
+        400,
+        "Expected a bounded private owned Gemini Chat.",
+      );
+    return parsed.data;
+  }
   if (
     typeof input === "object" &&
     input !== null &&

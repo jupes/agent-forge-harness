@@ -1,6 +1,7 @@
 import type { CodexChatDecisionRequest } from "../../types/codex-owned-chat";
 import type { OwnedCodingSessionRecord } from "../../types/codex-owned-task";
 import type { ConversationObject } from "../../types/conversation";
+import type { GeminiChatDecisionRequest } from "../../types/gemini-owned-chat";
 import type { OwnedSessionMetadata } from "../../types/owned-session";
 import type { ClaudeSessionLaunch } from "../../types/session-launch";
 import type { SessionMessage } from "../../types/session-turn";
@@ -10,10 +11,14 @@ import { resolveCheckout } from "../ledger/workspace";
 import { workspaceKey } from "../projects/scope";
 import { createOwnedSessionService, type SessionRuntime } from "./admission";
 import { createCodexOwnedChatService } from "./codex-chat-owned-admission";
+import { parseCodexChatDecision } from "./codex-chat-owned-protocol";
 import type { createCodexChatRuntime } from "./codex-chat-runtime";
 import { createCodexOwnedTaskService } from "./codex-owned-admission";
 import { parseOwnedSessionStart } from "./codex-owned-protocol";
 import type { createCodexTaskRuntime } from "./codex-task-runtime";
+import { createGeminiOwnedChatService } from "./gemini-chat-owned-admission";
+import { parseGeminiChatDecision } from "./gemini-chat-owned-protocol";
+import type { createGeminiChatRuntime } from "./gemini-chat-runtime";
 import { createGeminiOwnedTaskService } from "./gemini-owned-admission";
 import type { createGeminiTaskRuntime } from "./gemini-task-runtime";
 import { requireOrdinarySession } from "./managed-origin";
@@ -58,6 +63,22 @@ export const unavailableGeminiTaskRuntime: ReturnType<
     throw new ConversationError(503, "The Gemini Task runtime is unavailable.");
   },
 };
+export const unavailableGeminiChatRuntime: ReturnType<
+  typeof createGeminiChatRuntime
+> = {
+  async prepare() {
+    throw new ConversationError(
+      503,
+      "The Gemini ACP Chat runtime is unavailable.",
+    );
+  },
+  async run() {
+    throw new ConversationError(
+      503,
+      "The Gemini ACP Chat runtime is unavailable.",
+    );
+  },
+};
 /** Routing only. Neither a smith name nor a provider fallback can select an execution branch. */
 export function createOwnedCodingSessionService(options: {
   root: string;
@@ -66,6 +87,7 @@ export function createOwnedCodingSessionService(options: {
   codexTaskRuntime?: ReturnType<typeof createCodexTaskRuntime> | undefined;
   codexChatRuntime?: ReturnType<typeof createCodexChatRuntime> | undefined;
   geminiTaskRuntime?: ReturnType<typeof createGeminiTaskRuntime> | undefined;
+  geminiChatRuntime?: ReturnType<typeof createGeminiChatRuntime> | undefined;
   onApprovalChange?(sessionId: string): void;
   validateScope(
     projectId: string,
@@ -95,21 +117,41 @@ export function createOwnedCodingSessionService(options: {
     ...options,
     runtime: options.geminiTaskRuntime ?? unavailableGeminiTaskRuntime,
   });
+  const geminiChat = createGeminiOwnedChatService({
+    ...options,
+    runtime: options.geminiChatRuntime ?? unavailableGeminiChatRuntime,
+  });
   const selected = (projectId: string, sessionId: string) => {
     const record = registry.lookup(projectId, sessionId);
     requireOrdinarySession(record);
-    if (record.provider === "gemini") return gemini;
+    if (record.provider === "gemini")
+      return record.mode === "chat" ? geminiChat : gemini;
     return record.provider === "codex"
       ? record.mode === "chat"
         ? chat
         : codex
       : claude;
   };
+  const selectedChat = (projectId: string, sessionId: string) => {
+    const record = registry.lookup(projectId, sessionId);
+    requireOrdinarySession(record);
+    if (
+      record.mode !== "chat" ||
+      (record.provider !== "codex" && record.provider !== "gemini")
+    )
+      throw new ConversationError(
+        409,
+        "This session has no native Chat permission protocol.",
+      );
+    return record.provider === "gemini" ? geminiChat : chat;
+  };
   return {
     start(projectId: string, raw: unknown) {
       const request = parseOwnedSessionStart(raw);
       if ("provider" in request && request.provider === "gemini")
-        return gemini.start(projectId, request);
+        return request.launch.mode === "chat"
+          ? geminiChat.start(projectId, request)
+          : gemini.start(projectId, request);
       return "provider" in request
         ? request.launch.mode === "chat"
           ? chat.start(projectId, request)
@@ -136,14 +178,40 @@ export function createOwnedCodingSessionService(options: {
         );
     },
     approvals(projectId: string, sessionId: string, requestId?: string) {
-      return chat.approvals(projectId, sessionId, requestId);
+      return selectedChat(projectId, sessionId).approvals(
+        projectId,
+        sessionId,
+        requestId,
+      );
     },
     decide(
       projectId: string,
       sessionId: string,
-      request: CodexChatDecisionRequest,
+      request: CodexChatDecisionRequest | GeminiChatDecisionRequest,
     ) {
-      return chat.decide(projectId, sessionId, request);
+      const record = registry.lookup(projectId, sessionId);
+      requireOrdinarySession(record);
+      if (record.mode !== "chat")
+        throw new ConversationError(
+          409,
+          "This session has no native Chat permission protocol.",
+        );
+      if (record.provider === "gemini")
+        return geminiChat.decide(
+          projectId,
+          sessionId,
+          parseGeminiChatDecision(request),
+        );
+      if (record.provider === "codex")
+        return chat.decide(
+          projectId,
+          sessionId,
+          parseCodexChatDecision(request),
+        );
+      throw new ConversationError(
+        409,
+        "This session has no native Chat permission protocol.",
+      );
     },
     stop(projectId: string, sessionId: string, requestId: string) {
       return selected(projectId, sessionId).stop(
@@ -161,6 +229,7 @@ export function createOwnedCodingSessionService(options: {
         codex.close(),
         chat.close(),
         gemini.close(),
+        geminiChat.close(),
       ]);
     },
   };

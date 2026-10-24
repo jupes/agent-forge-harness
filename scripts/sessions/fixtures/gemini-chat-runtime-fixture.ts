@@ -9,7 +9,13 @@ export async function runGeminiChatFixture() {
     return;
   }
   const log = process.env.GEMINI_CHAT_LOG;
-  let control: { mode?: string; version?: string; help?: string } = {};
+  let control: {
+    mode?: string;
+    version?: string;
+    help?: string;
+    replyText?: string;
+    helpNonce?: string;
+  } = {};
   if (log && existsSync(`${log}.control`)) {
     try {
       control = JSON.parse(readFileSync(`${log}.control`, "utf8"));
@@ -36,8 +42,22 @@ export async function runGeminiChatFixture() {
     return;
   }
   if (argv.includes("--help")) {
-    record({ kind: "help" });
-    if (mode === "hold-help") await Bun.sleep(400);
+    if (mode === "hold-help") {
+      const nonce = control.helpNonce;
+      if (
+        !log ||
+        typeof nonce !== "string" ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(
+          nonce,
+        )
+      )
+        throw Error("Missing owned help-probe handshake");
+      record({ kind: "help", nonce, pid: process.pid });
+      // The existing supervised five-second probe owns this wait and its tree.
+      const release = `${log}.help-release`;
+      while (!existsSync(release) || readFileSync(release, "utf8") !== nonce)
+        await Bun.sleep(10);
+    } else record({ kind: "help" });
     console.log(
       control.help ??
         "--acp --model --approval-mode --sandbox --policy --include-directories",
@@ -92,7 +112,7 @@ export async function runGeminiChatFixture() {
       reply(value.id, {
         protocolVersion: 1,
         agentInfo: { name: "gemini-cli", version: "0.65.0" },
-        agentCapabilities: { loadSession: true },
+        agentCapabilities: { loadSession: mode !== "no-load" },
       });
     else if (value.method === "session/new")
       reply(value.id, { sessionId: native });
@@ -117,7 +137,14 @@ export async function runGeminiChatFixture() {
         update("agent_message_chunk", {
           content: { type: "text", text: "Historical after new prompt" },
         });
-      if (["hang-tree", "ignore-cancel", "normal-orphan"].includes(mode)) {
+      if (
+        [
+          "hang-tree",
+          "ignore-cancel",
+          "normal-orphan",
+          "permission-tree",
+        ].includes(mode)
+      ) {
         const helper = Bun.spawn([process.execPath, "--helper"], {
           stdin: "ignore",
           stdout: "inherit",
@@ -127,7 +154,10 @@ export async function runGeminiChatFixture() {
         record({ kind: "helper", pid: helper.pid });
       }
       update("agent_message_chunk", {
-        content: { type: "text", text: "Private ACP reply 🌱" },
+        content: {
+          type: "text",
+          text: control.replyText ?? "Private ACP reply 🌱",
+        },
       });
       if (["hang-tree", "ignore-cancel"].includes(mode)) return;
       if (mode === "missing-result") process.exit(0);
@@ -207,6 +237,9 @@ export async function runGeminiChatFixture() {
         status: "completed",
       });
       complete();
+      // This successful fixture leaves its helper for the held-tree owner to reap.
+      // The helper must not keep the native provider alive after its actual result.
+      if (mode === "permission-tree") process.exit(0);
     } else throw Error("Unsupported client fixture method");
   };
   let buffer = "";

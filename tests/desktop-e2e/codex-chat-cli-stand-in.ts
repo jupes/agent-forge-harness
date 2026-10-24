@@ -28,6 +28,10 @@ if (
     "provider-error",
     "command-activity",
     "command-activity-held",
+    "reasoning-summary",
+    "reasoning-summary-held",
+    "turn-plan",
+    "turn-plan-held",
   ].includes(String(mode))
 )
   throw Error("Unknown isolated Chat fixture mode.");

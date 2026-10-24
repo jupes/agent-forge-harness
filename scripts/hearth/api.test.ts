@@ -42,6 +42,7 @@ import { serializeClaudeLaunch } from "../sessions/claude-launch";
 import { sessionLibraryReadSchema } from "../sessions/library-protocol";
 import { sessionPreviewReceiptSchema } from "../sessions/protocol";
 import { createSessionRegistry } from "../sessions/registry";
+import { APPRENTICE_VERIFICATION } from "../smith-verification";
 import type { ActionContext, ActionRoute, ApiRoute } from "./api";
 import { sessionsPath, tokenPath } from "./home";
 import { createSessionStore, sessionCookieName } from "./launch";
@@ -152,6 +153,30 @@ const RUN_STATE = JSON.stringify({
 });
 
 const key = (route: ApiRoute): string => `${route.method} ${route.path}`;
+
+/** The common read matrix needs a real-shaped fixed record, independently of project membership. */
+function seedSmithVerificationRead(h: TestHearth): void {
+  const previous = h.bd.answer;
+  h.bd.answer = (args) =>
+    args.length === 4 &&
+    args[0] === "--readonly" &&
+    args[1] === "show" &&
+    args[2] === APPRENTICE_VERIFICATION &&
+    args[3] === "--json"
+      ? {
+          status: 0,
+          stdout: JSON.stringify([
+            {
+              id: APPRENTICE_VERIFICATION,
+              title: "Owner verification",
+              status: "open",
+              priority: 2,
+            },
+          ]),
+          stderr: "",
+        }
+      : previous?.(args);
+}
 
 test("an effect receives its actual persisted operator audit id; HTTP input cannot choose that trace", async () => {
   let calls = 0;
@@ -1728,6 +1753,7 @@ const READS: Record<string, string> = {
   "GET /worktrees": "/worktrees",
   "GET /eligibility": "/eligibility",
   "GET /smiths": "/smiths",
+  "GET /smiths/verification": "/smiths/verification",
   "GET /config": "/config",
   "GET /beads/options": "/beads/options",
   "GET /beads/counts": "/beads/counts",
@@ -2318,6 +2344,7 @@ describe("a read row or the stream while another connection holds the write lock
     await seedProjectShiftAttempt(h);
     seedProjectBeadWriteFixture(h);
     activityReadMembership(h);
+    seedSmithVerificationRead(h);
     const rows = h.hearth.routes.filter(
       (route) => route.kind === "read" || route.kind === "stream",
     );
@@ -3282,6 +3309,7 @@ describe("every read row (iterating the table)", () => {
     await seedProjectShiftAttempt(h);
     seedProjectBeadWriteFixture(h);
     seedActivityReadFixture(h);
+    seedSmithVerificationRead(h);
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");
     for (const row of rows) {
@@ -3313,6 +3341,7 @@ describe("every read row (iterating the table)", () => {
     await seedProjectShiftAttempt(h);
     seedProjectBeadWriteFixture(h);
     const before = seedActivityReadFixture(h);
+    seedSmithVerificationRead(h);
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");
     const refused: Array<[string, Record<string, string>]> = [
@@ -3344,10 +3373,24 @@ describe("every read row (iterating the table)", () => {
       });
     }
     expect(h.events()).toEqual(before);
-    // The read rows run `bd list` (the queue, eligibility) and `bd export` (the Beads counts), and nothing that writes.
+    // The read rows run list/export and only the fixed readonly verification show, never a write.
     expect(
-      h.bd.calls.every((args) => args[0] === "list" || args[0] === "export"),
+      h.bd.calls.every(
+        (args) =>
+          args[0] === "list" ||
+          args[0] === "export" ||
+          JSON.stringify(args) ===
+            JSON.stringify([
+              "--readonly",
+              "show",
+              APPRENTICE_VERIFICATION,
+              "--json",
+            ]),
+      ),
     ).toBe(true);
+    expect(h.bd.calls.filter((args) => args[0] === "--readonly")).toEqual([
+      ["--readonly", "show", APPRENTICE_VERIFICATION, "--json"],
+    ]);
   });
 });
 

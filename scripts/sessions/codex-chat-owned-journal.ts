@@ -4,6 +4,8 @@ import type {
   CodexChatCommand,
   CodexChatEvent,
   CodexChatOutcome,
+  CodexChatReasoningSummary,
+  CodexChatTurnPlan,
 } from "../../types/codex-chat";
 import type {
   CodexChatDecisionIntent,
@@ -57,6 +59,118 @@ const usage = z
     }),
   );
 const decision = z.enum(["accept", "decline", "cancel"]);
+export const codexChatTurnPlanSchema = z
+  .object({
+    kind: z.literal("turn-plan"),
+    source: z.literal("turn/plan/updated"),
+    threadId: codexNativeUuidSchema,
+    turnId: codexNativeUuidSchema,
+    explanation: reportedTextSchema.nullable(),
+    plan: z
+      .array(
+        z
+          .object({
+            step: reportedTextSchema,
+            status: z.enum(["pending", "inProgress", "completed"]),
+          })
+          .strict(),
+      )
+      .max(SESSION_ACTIVITY_LIMITS.items),
+    truncated: z.boolean(),
+  })
+  .strict()
+  .refine((value) => {
+    const values = [
+      ...(value.explanation ? [value.explanation] : []),
+      ...value.plan.map((part) => part.step),
+    ];
+    return (
+      new TextEncoder().encode(JSON.stringify(value)).byteLength <=
+        SESSION_ACTIVITY_LIMITS.eventBytes &&
+      values.reduce(
+        (total, part) => total + new TextEncoder().encode(part.text).byteLength,
+        0,
+      ) <= SESSION_ACTIVITY_LIMITS.textBytes &&
+      (value.truncated || !values.some((part) => part.truncated))
+    );
+  }) satisfies z.ZodType<CodexChatTurnPlan>;
+const summaryIndex = z
+  .number()
+  .int()
+  .min(0)
+  .max(SESSION_ACTIVITY_LIMITS.items - 1);
+export const codexChatReasoningSummarySchema = z
+  .object({
+    kind: z.literal("reasoning-summary"),
+    source: z.enum([
+      "item/started",
+      "item/reasoning/summaryPartAdded",
+      "item/reasoning/summaryTextDelta",
+      "item/completed",
+      "turn/completed",
+    ]),
+    threadId: codexNativeUuidSchema,
+    turnId: codexNativeUuidSchema,
+    itemId: name.max(160),
+    partial: z.boolean(),
+    update: z.discriminatedUnion("kind", [
+      z
+        .object({
+          kind: z.literal("snapshot"),
+          summary: z
+            .array(reportedTextSchema)
+            .max(SESSION_ACTIVITY_LIMITS.items),
+          truncated: z.boolean(),
+          closure: z.enum(["open", "item-ended", "turn-ended"]),
+          turnStatus: z.enum(["completed", "failed", "interrupted"]).nullable(),
+        })
+        .strict(),
+      z.object({ kind: z.literal("part-added"), summaryIndex }).strict(),
+      z
+        .object({
+          kind: z.literal("delta"),
+          summaryIndex,
+          content: reportedTextSchema,
+          prefixMissing: z.boolean(),
+        })
+        .strict(),
+    ]),
+  })
+  .strict()
+  .refine((value) => {
+    const update = value.update;
+    if (
+      new TextEncoder().encode(JSON.stringify(value)).byteLength >
+      SESSION_ACTIVITY_LIMITS.eventBytes
+    )
+      return false;
+    if (update.kind === "part-added")
+      return (
+        value.source === "item/reasoning/summaryPartAdded" && value.partial
+      );
+    if (update.kind === "delta")
+      return (
+        value.source === "item/reasoning/summaryTextDelta" && value.partial
+      );
+    if (
+      update.summary.reduce(
+        (total, part) => total + new TextEncoder().encode(part.text).byteLength,
+        0,
+      ) > SESSION_ACTIVITY_LIMITS.textBytes ||
+      (!update.truncated && update.summary.some((part) => part.truncated))
+    )
+      return false;
+    return value.source === "item/started"
+      ? update.closure === "open" && update.turnStatus === null && value.partial
+      : value.source === "item/completed"
+        ? update.closure === "item-ended" &&
+          update.turnStatus === null &&
+          !value.partial
+        : value.source === "turn/completed" &&
+          update.closure === "turn-ended" &&
+          update.turnStatus !== null &&
+          value.partial === (update.turnStatus !== "completed");
+  }) satisfies z.ZodType<CodexChatReasoningSummary>;
 export const codexChatCommandSchema = z
   .object({
     kind: z.literal("command"),
@@ -154,6 +268,8 @@ export const codexChatApprovalSchema = z
   ) satisfies z.ZodType<CodexChatApproval>;
 const nativeEvent = z.discriminatedUnion("kind", [
   codexChatCommandSchema,
+  codexChatReasoningSummarySchema,
+  codexChatTurnPlanSchema,
   z
     .object({
       kind: z.literal("process"),

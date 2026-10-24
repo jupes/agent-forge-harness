@@ -84,6 +84,7 @@ import {
   stopRequested,
   writeShiftRecord,
 } from "./shift-store";
+import { publishShiftTerminalRecord } from "./shift-terminal-store";
 
 // ── Options ─────────────────────────────────────────────────────────────────
 
@@ -321,6 +322,8 @@ export interface ShiftDeps {
   lockWaitMs?: number | undefined;
   /** Where the shift's record and stop request are (`<home>/shifts`). */
   shiftsDir: string;
+  /** Trusted filesystem boundary; the canonical atomic record writer by default. */
+  writeRecord?: typeof writeShiftRecord;
   /** Where its worktrees go: `<main>/trees/<id>`. */
   mainCheckout: string;
   /** Says whether the host is too busy to admit more: CPU or memory in use at or above `threshold` (`[shift] throttle`). */
@@ -621,10 +624,10 @@ export async function runShift(
     admitted: 0,
     beads: [],
   };
-  /** The record is a report: one that cannot be written stops nothing once the shift runs. */
+  /** Intermediate reports are best effort; admission and terminal publication must be confirmed. */
   const save = (): string | null => {
     try {
-      writeShiftRecord(deps.shiftsDir, record);
+      (deps.writeRecord ?? writeShiftRecord)(deps.shiftsDir, record);
       return null;
     } catch (error) {
       return error instanceof Error ? error.message : String(error);
@@ -1433,7 +1436,20 @@ export async function runShift(
   record.state = "stopped";
   record.reason = stopReason;
   record.endedAt = now().toISOString();
-  save();
+  let unpublished: string | null = null;
+  try {
+    await (deps.writeRecord ?? publishShiftTerminalRecord)(
+      deps.shiftsDir,
+      record,
+    );
+  } catch (error) {
+    unpublished = error instanceof Error ? error.message : String(error);
+  }
+  if (unpublished !== null)
+    return {
+      ok: false,
+      error: `the shift's terminal record could not be published (${unpublished}); its terminal state is unconfirmed; read the original shift before recovering`,
+    };
   const unrecorded = await storeEvent(append, {
     kind: "shift.stopped",
     workspace,

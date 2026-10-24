@@ -1,5 +1,9 @@
 import { z } from "zod";
 import type {
+  GeminiChatOwnedMetadata,
+  GeminiChatOwnedRecord,
+} from "../../types/gemini-owned-chat";
+import type {
   GeminiOwnedSessionMetadata,
   GeminiOwnedSessionRecord,
 } from "../../types/gemini-owned-task";
@@ -47,3 +51,21 @@ export const geminiOwnedSessionSchema = geminiOwnedMetadataFieldsSchema
       validOwnedSessionOrigin(value) &&
       (!value.origin || value.origin.projectId === value.projectId),
   ) satisfies z.ZodType<GeminiOwnedSessionRecord>;
+
+export const geminiChatOwnedMetadataSchema = geminiOwnedMetadataFieldsSchema
+  .extend({ mode: z.literal("chat") })
+  .strict()
+  .refine(
+    (value) => !value.origin,
+  ) satisfies z.ZodType<GeminiChatOwnedMetadata>;
+export const geminiChatOwnedSessionSchema = geminiOwnedMetadataFieldsSchema
+  .extend({
+    mode: z.literal("chat"),
+    projectId: sessionProjectIdSchema,
+    id: ownedSessionIdSchema,
+    requestId: sessionRequestIdSchema,
+    requestHash: sessionRequestHashSchema,
+    createdAt: z.iso.datetime(),
+  })
+  .strict()
+  .refine((value) => !value.origin) satisfies z.ZodType<GeminiChatOwnedRecord>;

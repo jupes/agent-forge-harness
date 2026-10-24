@@ -32,20 +32,13 @@ import "./session.css";
 import { CodexChatApprovals } from "./CodexChatApprovals";
 import { CodexChatTerminal } from "./CodexChatTerminal";
 import { CodexChatUsage } from "./CodexChatUsage";
+import { GeminiChatConversation } from "./GeminiChatConversation";
 import { SessionLibraryControls } from "./SessionLibraryControls";
 import { SessionReply } from "./SessionReply";
 import type { SessionLibraryClient } from "./session-library-client";
 import { useCodexChatDecisions } from "./use-codex-chat-decisions";
 
-export function SessionConversation({
-  projectId,
-  sessionId,
-  client,
-  keeper,
-  writesAllowed,
-  library,
-  archived = false,
-}: {
+export interface SessionConversationProps {
   projectId: string;
   sessionId: string;
   client: SessionsClient;
@@ -53,7 +46,30 @@ export function SessionConversation({
   writesAllowed: boolean;
   library?: SessionLibraryClient;
   archived?: boolean;
-}) {
+}
+export function SessionConversation(props: SessionConversationProps) {
+  const record = props.client
+    .project(props.projectId)
+    .records.find((item) => item.id === props.sessionId);
+  return record?.provider === "gemini" && record.mode === "chat" ? (
+    <GeminiChatConversation
+      key={`${props.projectId}:${props.sessionId}`}
+      {...props}
+      record={record}
+    />
+  ) : (
+    <StandardSessionConversation {...props} />
+  );
+}
+function StandardSessionConversation({
+  projectId,
+  sessionId,
+  client,
+  keeper,
+  writesAllowed,
+  library,
+  archived = false,
+}: SessionConversationProps) {
   const view = client.session(projectId, sessionId),
     record = client
       .project(projectId)

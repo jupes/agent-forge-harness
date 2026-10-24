@@ -36,6 +36,7 @@ import { childOf } from "../scheduler/queue-fixture";
 import {
   unavailableCodexChatRuntime,
   unavailableCodexTaskRuntime,
+  unavailableGeminiChatRuntime,
   unavailableGeminiTaskRuntime,
 } from "../sessions/owned-coding-service";
 import { makeOwnerOnly } from "./acl-windows";
@@ -550,6 +551,7 @@ export async function startTestHearth(
       codexTaskRuntime: unavailableCodexTaskRuntime,
       codexChatRuntime: unavailableCodexChatRuntime,
       geminiTaskRuntime: unavailableGeminiTaskRuntime,
+      geminiChatRuntime: unavailableGeminiChatRuntime,
       runBd: (args, options) => bd.run(args, options),
       configHome,
       launchShift: shifts.launch,

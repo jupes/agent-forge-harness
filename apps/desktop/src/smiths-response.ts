@@ -1,7 +1,10 @@
 import { MAX_SMITHS_READ_BYTES } from "./smiths-protocol";
 
 /** Complete bounded UTF-8 envelope, used inside the existing protected read deadline. */
-export async function readSmithsResponse(response: Response): Promise<unknown> {
+export async function readSmithsResponse(
+  response: Response,
+  maxBytes = MAX_SMITHS_READ_BYTES,
+): Promise<unknown> {
   const reader = response.body?.getReader();
   if (!reader) throw Error("This read returned no complete body.");
   const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -12,10 +15,10 @@ export async function readSmithsResponse(response: Response): Promise<unknown> {
       const chunk = await reader.read();
       if (chunk.done) break;
       bytes += chunk.value.byteLength;
-      if (bytes > MAX_SMITHS_READ_BYTES + 1024) {
+      if (bytes > maxBytes + 1024) {
         await reader.cancel();
         throw Error(
-          "This read exceeds its 2 MiB limit. Earlier verified values are kept.",
+          "This read exceeds its receiving limit. Earlier verified values are kept.",
         );
       }
       try {
