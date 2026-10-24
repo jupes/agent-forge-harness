@@ -631,6 +631,9 @@ export function DesktopApp(): JSX.Element {
             workspace={summary?.workspace ?? ""}
             sessionId={selectedSession}
             owner={managedSelection.error ? null : selectedOwner}
+            {...(observations.project(project.id).data
+              ? { metadataAsOf: observations.project(project.id).data!.asOf }
+              : {})}
             {...(managedSelection.selection
               ? { expectedRequestId: managedSelection.selection.requestId }
               : {})}

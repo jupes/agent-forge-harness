@@ -21,6 +21,7 @@ export function ManagedShiftSession({
   owner,
   expectedRequestId,
   parent,
+  metadataAsOf,
 }: {
   projectId: string;
   workspace: string;
@@ -28,6 +29,7 @@ export function ManagedShiftSession({
   owner: unknown;
   expectedRequestId?: string;
   parent: SessionObservationDetail["parent"] | undefined;
+  metadataAsOf?: string;
 }) {
   const [, paint] = useState(0),
     held = useRef<ReturnType<typeof createManagedShiftSessionClient> | null>(
@@ -66,6 +68,15 @@ export function ManagedShiftSession({
         <p class="af-wb-eyebrow">App-owned · read-only attendance</p>
         <h1>Shift session</h1>
         <p class="af-observed-address">{sessionId}</p>
+        {metadataAsOf && (
+          <p>
+            Metadata index checked{" "}
+            <time data-managed-metadata dateTime={metadataAsOf}>
+              {new Date(metadataAsOf).toLocaleString()}
+            </time>
+            .
+          </p>
+        )}
         <p>
           Running attempts cannot receive Chat turns here. Whole-Shift controls
           remain in the original Shift view. Ended-session continuation is

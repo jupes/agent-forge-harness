@@ -66,7 +66,11 @@ export function ProjectShifts({
   const attending =
     originalRequestId === undefined ? localAttending : originalRequestId;
   useEffect(() => {
-    if (!originalRequestId || view.loading) return;
+    if (!originalRequestId) {
+      checkedOriginal.current = null;
+      return;
+    }
+    if (view.loading) return;
     const key = `${scope.projectId}:${scope.workspace}:${originalRequestId}`;
     if (checkedOriginal.current === key) return;
     checkedOriginal.current = key;
