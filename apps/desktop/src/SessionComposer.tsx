@@ -26,6 +26,7 @@ import {
 import "./session.css";
 import { CodexChatComposer } from "./CodexChatComposer";
 import { CodexTaskComposer } from "./CodexTaskComposer";
+import { GeminiChatComposer } from "./GeminiChatComposer";
 import { GeminiTaskComposer } from "./GeminiTaskComposer";
 
 export interface SessionComposerProps {
@@ -40,7 +41,11 @@ export interface SessionComposerProps {
 export function SessionComposer(props: SessionComposerProps) {
   const view = props.client.project(props.project.id);
   return view.composerProvider === "gemini" ? (
-    <GeminiTaskComposer {...props} />
+    view.geminiMode === "chat" ? (
+      <GeminiChatComposer {...props} />
+    ) : (
+      <GeminiTaskComposer {...props} />
+    )
   ) : view.composerProvider === "codex" ? (
     view.codexMode === "chat" ? (
       <CodexChatComposer {...props} />
@@ -423,7 +428,7 @@ function ClaudeSessionComposer({
         >
           Gm · Gemini
           <small>
-            Task ·{" "}
+            Task and Chat ·{" "}
             {geminiReadiness
               ? readinessLabel(geminiReadiness.state)
               : "Readiness not reported"}{" "}

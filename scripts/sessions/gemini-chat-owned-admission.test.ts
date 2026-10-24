@@ -437,13 +437,14 @@ test("opaque native once permission persists original intent before one callback
     pending: false,
     stopping: false,
   });
-  expect(controls.commandPreview).toBeNull();
+  expect(controls.commandPreview).toContain("--acp");
+  expect(controls.commandPreview).not.toContain("--output-format");
   expect([
     controls.resume.available,
     controls.stop.available,
     controls.permissions.available,
-  ]).toEqual([false, false, false]);
-  expect(controls.resume.reason).toContain("Gemini ACP Chat");
+  ]).toEqual([false, true, true]);
+  expect(controls.resume.reason).toContain("current turn");
   expect(offered.approval.options.map((item) => item.kind)).toEqual([
     "allow_once",
     "reject_once",
