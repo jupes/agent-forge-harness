@@ -251,14 +251,12 @@ export function ProjectRuns({
                         </td>
                         <td>{mode(run.mode)}</td>
                         <td>
-                          <span title="ForgeState does not record a Full or Mini route.">
+                          <span title="Run type (Full or Mini) is not reported.">
                             —
                           </span>
                         </td>
                         <td>
-                          <span title="ForgeState does not record when this run started.">
-                            —
-                          </span>
+                          <span title="Run start time is not reported.">—</span>
                         </td>
                         <td>{time(run.updatedAt)}</td>
                       </tr>
