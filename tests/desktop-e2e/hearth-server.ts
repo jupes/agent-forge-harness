@@ -10,6 +10,7 @@ import { createProviderLoginService } from "../../scripts/providers/login";
 import { createClaudeSessionTransport } from "../../scripts/sessions/claude-transport";
 import { createCodexChatRuntime } from "../../scripts/sessions/codex-chat-runtime";
 import { createCodexTaskRuntime } from "../../scripts/sessions/codex-task-runtime";
+import { createGeminiChatRuntime } from "../../scripts/sessions/gemini-chat-runtime";
 import { createGeminiTaskRuntime } from "../../scripts/sessions/gemini-task-runtime";
 
 async function main() {
@@ -76,12 +77,66 @@ async function main() {
       timeoutMs: 5000,
       approvalTimeoutMs: 45_000,
     });
+  const geminiChatOptions = {
+    root,
+    home,
+    configHome: join(home, "gemini-native-fixture"),
+    command: [
+      join(
+        home,
+        "bd-stand-in",
+        "bin",
+        process.platform === "win32" ? "gemini-chat.exe" : "gemini-chat",
+      ),
+    ],
+    operatorToken: () => token,
+    timeoutMs: 60_000,
+    permissionTimeoutMs: 45_000,
+  };
+  const geminiChat = createGeminiChatRuntime(geminiChatOptions),
+    deadlineGeminiChat = createGeminiChatRuntime({
+      ...geminiChatOptions,
+      timeoutMs: 5000,
+    });
   const hearth = await createHearth({
     root,
     home,
     councilLedger: operatorCouncilLedger(),
     port: Number(process.env["HEARTH_PORT"] ?? 0),
     api: {
+      geminiChatRuntime: {
+        prepare: (input) => geminiChat.prepare(input),
+        run: async (...args) => {
+          let hold = false;
+          const control = join(home, "gemini-chat-fixture-calls.json.control");
+          if (existsSync(control)) {
+            try {
+              hold =
+                JSON.parse(readFileSync(control, "utf8")).holdOutcome === true;
+            } catch {
+              throw Error("Invalid inert ACP control");
+            }
+          }
+          const result = await (hold ? deadlineGeminiChat : geminiChat).run(
+            ...args,
+          );
+          if (hold) {
+            writeFileSync(
+              join(home, "gemini-chat-outcome-held.json"),
+              JSON.stringify(result),
+            );
+            const until = Date.now() + 10_000;
+            while (!existsSync(join(home, "gemini-chat-outcome-release"))) {
+              if (Date.now() >= until)
+                throw Error(
+                  "The bounded ACP final-metadata fixture was not released",
+                );
+              await Bun.sleep(10);
+            }
+          }
+          return result;
+        },
+      },
       geminiTaskRuntime: createGeminiTaskRuntime({
         root,
         home,

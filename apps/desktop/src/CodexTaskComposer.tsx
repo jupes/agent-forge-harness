@@ -312,7 +312,7 @@ export function CodexTaskComposer({
         >
           Gm · Gemini
           <small>
-            Task ·{" "}
+            Task and Chat ·{" "}
             {geminiReadiness
               ? readinessLabel(geminiReadiness.state)
               : "Readiness not reported"}{" "}

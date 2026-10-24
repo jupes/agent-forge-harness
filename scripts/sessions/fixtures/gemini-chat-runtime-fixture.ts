@@ -9,7 +9,12 @@ export async function runGeminiChatFixture() {
     return;
   }
   const log = process.env.GEMINI_CHAT_LOG;
-  let control: { mode?: string; version?: string; help?: string } = {};
+  let control: {
+    mode?: string;
+    version?: string;
+    help?: string;
+    replyText?: string;
+  } = {};
   if (log && existsSync(`${log}.control`)) {
     try {
       control = JSON.parse(readFileSync(`${log}.control`, "utf8"));
@@ -134,7 +139,10 @@ export async function runGeminiChatFixture() {
         record({ kind: "helper", pid: helper.pid });
       }
       update("agent_message_chunk", {
-        content: { type: "text", text: "Private ACP reply 🌱" },
+        content: {
+          type: "text",
+          text: control.replyText ?? "Private ACP reply 🌱",
+        },
       });
       if (["hang-tree", "ignore-cancel"].includes(mode)) return;
       if (mode === "missing-result") process.exit(0);
@@ -214,6 +222,9 @@ export async function runGeminiChatFixture() {
         status: "completed",
       });
       complete();
+      // This successful fixture leaves its helper for the held-tree owner to reap.
+      // The helper must not keep the native provider alive after its actual result.
+      if (mode === "permission-tree") process.exit(0);
     } else throw Error("Unsupported client fixture method");
   };
   let buffer = "";

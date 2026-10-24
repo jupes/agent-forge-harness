@@ -198,6 +198,7 @@ export function GeminiTaskComposer({
       const fresh = client.project(project.id);
       if (
         fresh.composerProvider !== "gemini" ||
+        fresh.geminiMode !== "task" ||
         !matchesGeminiTaskPreview(
           project.id,
           fresh.composer,
@@ -311,7 +312,7 @@ export function GeminiTaskComposer({
         <button type="button" aria-pressed="true">
           Gm · Gemini
           <small>
-            Task ·{" "}
+            Task and Chat ·{" "}
             {geminiReadiness
               ? readinessLabel(geminiReadiness.state)
               : "Readiness not reported"}{" "}
@@ -592,10 +593,19 @@ export function GeminiTaskComposer({
           </label>
           <label>
             Run as
-            <select aria-label="Session mode" value="task">
+            <select
+              aria-label="Session mode"
+              value="task"
+              onChange={(event) =>
+                client.chooseGeminiMode(
+                  project.id,
+                  event.currentTarget.value === "chat" ? "chat" : "task",
+                )
+              }
+            >
               <option value="task">Task · one run, then ends</option>
-              <option value="chat" disabled>
-                Chat · native approval view unavailable
+              <option value="chat">
+                Chat · native session and once permissions
               </option>
             </select>
           </label>
