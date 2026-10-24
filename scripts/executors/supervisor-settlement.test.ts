@@ -90,3 +90,61 @@ test("a rejected owned cleanup closes the real adapter iterator, preserves unkno
     await child.exited;
   }
 });
+
+test("a rejected cleanup without private capture closes the generic iterator and returns the exact controlled exec refusal", async () => {
+  const root = scratch.make("rejected generic supervisor ");
+  mkdirSync(join(root, ".git"));
+  const child = Bun.spawn(
+    [
+      process.execPath,
+      join(import.meta.dir, "fixtures/rejected-supervisor.ts"),
+      root,
+      "generic",
+    ],
+    { env: buildChildEnv(process.env, []), stdout: "pipe", stderr: "pipe" },
+  );
+  const deadline = setTimeout(() => child.kill(), 5000);
+  try {
+    const [stdout, stderr, exit] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    expect({ exit, stderr }).toEqual({ exit: 0, stderr: "" });
+    let reply: unknown;
+    try {
+      reply = JSON.parse(stdout);
+    } catch {
+      throw Error("Invalid isolated generic cleanup fixture reply");
+    }
+    expect(reply).toMatchObject({
+      ok: true,
+      data: {
+        first: {
+          rejected: "Owned process group cleanup could not be confirmed.",
+          stopRejected: true,
+          iteratorClosed: true,
+          falseCompletion: false,
+          finishes: [],
+          mirrorRemoved: true,
+        },
+        execution: {
+          code: 2,
+          body: {
+            ok: false,
+            data: null,
+            error: "Owned process group cleanup could not be confirmed.",
+          },
+        },
+      },
+      error: null,
+    });
+    expect(stdout).not.toContain("privateCaptureFailed");
+    expect(stdout).not.toContain(PRIVATE_CAPTURE_FAILURE);
+    expect(stdout).not.toContain("private fixture prompt");
+  } finally {
+    clearTimeout(deadline);
+    if (child.exitCode === null) child.kill();
+    await child.exited;
+  }
+});

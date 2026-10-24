@@ -178,6 +178,8 @@ export function hearthCouncilRunner(
 }
 
 export interface OperatorApiOverrides {
+  /** Trusted fixture/embedding source; never an HTTP field. */
+  forgeGateLogRoot?: string;
   /** Trusted attended project launcher; null explicitly holds Start. Never public request data. */
   projectShiftRuntime?: ProjectShiftRuntime | null | undefined;
   /** Fixed status probes only; tests supply a fixture and never inspect real accounts. */
@@ -522,6 +524,7 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
         : (options.api?.projectShiftRuntime ??
           createAttendedProjectShiftLauncher(shiftStarts)),
     bdTimeoutMs: options.api?.bdTimeoutMs,
+    forgeGateLogRoot: options.api?.forgeGateLogRoot,
     configHome: options.api?.configHome,
     git: options.api?.git,
     streamPollMs: options.api?.streamPollMs,
