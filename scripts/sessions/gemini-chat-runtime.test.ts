@@ -17,6 +17,10 @@ import type {
 } from "../../types/gemini-chat-runtime";
 import { killTree } from "../executors/supervisor";
 import { scratchDirs } from "../test-scratch";
+import {
+  heldHelpEntry,
+  readProbeFailure,
+} from "./fixtures/gemini-chat-probe-witness";
 import { createGeminiChatRuntime } from "./gemini-chat-runtime";
 
 const scratch = scratchDirs(),
@@ -24,92 +28,6 @@ const scratch = scratchDirs(),
 afterEach(() => scratch.cleanup());
 afterAll(() => binaries.cleanup());
 let command: string;
-
-/** The original supervised run bounds readiness; no second deadline is invented here. */
-async function heldHelpEntry(
-  read: () => Record<string, unknown>[],
-  nonce: string,
-  original: Promise<unknown>,
-): Promise<{ pid: number }> {
-  const controller = new AbortController();
-  const waiting = (async () => {
-    while (!controller.signal.aborted) {
-      const found = read().find(
-        (row) => row.kind === "help" && row.nonce === nonce,
-      );
-      if (found) {
-        const pid = found.pid;
-        if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0)
-          throw Error("Invalid owned help-probe process witness");
-        return { pid };
-      }
-      await Bun.sleep(10);
-    }
-    return null;
-  })();
-  try {
-    const entry = await Promise.race([
-      waiting,
-      original.then(() => {
-        throw Error(
-          "The original run settled before its held help-probe entry",
-        );
-      }),
-    ]);
-    if (!entry) throw Error("The help-probe witness was cancelled");
-    return entry;
-  } finally {
-    controller.abort();
-    await waiting;
-  }
-}
-
-test("the help-entry witness ignores another nonce and retains the exact owned process", async () => {
-  const nonce = randomUUID(),
-    records: Record<string, unknown>[] = [
-      { kind: "help", nonce: randomUUID(), pid: 123 },
-    ];
-  let settled = false,
-    finishOriginal = () => {};
-  const original = new Promise<void>((resolve) => {
-    finishOriginal = resolve;
-  });
-  const waiting = heldHelpEntry(() => records, nonce, original).then(
-    (entry) => {
-      settled = true;
-      return entry;
-    },
-  );
-  try {
-    await new Promise<void>((resolve) => setImmediate(resolve));
-    expect(settled).toBe(false);
-    records.push({ kind: "help", nonce, pid: 456 });
-    expect(await waiting).toEqual({ pid: 456 });
-  } finally {
-    finishOriginal();
-    await waiting;
-  }
-});
-
-test("early run refusal and completion cancel the marker waiter without another read", async () => {
-  const failure = new Error("fixture capability probe refused");
-  let reads = 0;
-  const read = () => {
-    reads++;
-    return [];
-  };
-  await expect(
-    heldHelpEntry(read, randomUUID(), Promise.reject(failure)),
-  ).rejects.toBe(failure);
-  await expect(
-    heldHelpEntry(read, randomUUID(), Promise.resolve()),
-  ).rejects.toThrow(
-    "The original run settled before its held help-probe entry",
-  );
-  const ended = reads;
-  await Bun.sleep(20);
-  expect(reads).toBe(ended);
-});
 
 beforeAll(async () => {
   command = join(
@@ -564,7 +482,7 @@ test("abandoning held preparation aborts and joins its actual probe without a Ch
   let pid = 0,
     bodyFailed = false;
   try {
-    const entry = await heldHelpEntry(f.records, helpNonce, original);
+    const entry = await heldHelpEntry(f.log, helpNonce, original);
     pid = entry.pid;
     expect(alive(pid)).toBe(true);
     expect(events).toEqual([]);
@@ -575,6 +493,11 @@ test("abandoning held preparation aborts and joins its actual probe without a Ch
     controller.abort();
     writeFileSync(`${f.log}.help-release`, helpNonce);
     const outcome = await pending;
+    if (bodyFailed)
+      console.error(
+        "Owned Gemini probe fixture failure:",
+        readProbeFailure(f.log, helpNonce),
+      );
     if (!bodyFailed)
       expect(outcome).toMatchObject({
         phase: "failed",
@@ -920,7 +843,7 @@ test.each([
       },
     );
     if (during) {
-      const entry = await heldHelpEntry(f.records, helpNonce, original);
+      const entry = await heldHelpEntry(f.log, helpNonce, original);
       heldPid = entry.pid;
       expect(f.records().filter((row) => row.kind === "help")).toHaveLength(2);
       expect(alive(heldPid)).toBe(true);
@@ -951,6 +874,11 @@ test.each([
     controller.abort();
     if (during) writeFileSync(`${f.log}.help-release`, helpNonce);
     if (pending) await pending;
+    if (during && pending && !heldPid)
+      console.error(
+        "Owned Gemini probe fixture failure:",
+        readProbeFailure(f.log, helpNonce),
+      );
     if (heldPid) expect(await gone(heldPid)).toBe(true);
     detach();
   }
