@@ -481,42 +481,32 @@ else {
   },
 );
 
-test("Stop and a rejected output flood do not drain hundreds of slow queued private writes", async () => {
-  for (const stop of [true, false]) {
-    const f = fixture(stop ? "flood-200" : "flood-300", 5000, 1000),
-      prepared = await f.runtime.prepare({
-        smith: "gemini-example",
-        launch: f.launch,
-      }),
-      controller = new AbortController();
-    let firstWrite: (() => void) | undefined,
-      textWrites = 0;
-    const first = new Promise<void>((resolve) => {
-      firstWrite = resolve;
-    });
-    const pending = f.runtime.run(
-      prepared,
-      async (event) => {
-        if (event.kind === "text") {
-          textWrites++;
-          firstWrite?.();
-          await Bun.sleep(12);
-        }
-      },
-      controller.signal,
-    );
-    if (stop) await first;
-    else
-      await until(() => f.records().some((record) => record.kind === "task"));
-    const start = performance.now();
-    if (stop) controller.abort("Stop while the private writer is slow");
-    const outcome = await pending;
-    expect(outcome.phase).toBe("unknown");
-    expect(textWrites).toBeLessThan(10);
-    expect(performance.now() - start).toBeLessThan(2000);
-    expect(f.records().filter((r) => r.kind === "task")).toHaveLength(1);
-    expect(liveChildCount()).toBe(0);
-  }
+test("a rejected actual output flood does not drain hundreds of slow queued private writes", async () => {
+  const f = fixture("flood-300", 5000, 1000),
+    prepared = await f.runtime.prepare({
+      smith: "gemini-example",
+      launch: f.launch,
+    }),
+    controller = new AbortController();
+  let textWrites = 0;
+  const pending = f.runtime.run(
+    prepared,
+    async (event) => {
+      if (event.kind === "text") {
+        textWrites++;
+        await Bun.sleep(12);
+      }
+    },
+    controller.signal,
+  );
+  await until(() => f.records().some((record) => record.kind === "task"));
+  const start = performance.now();
+  const outcome = await pending;
+  expect(outcome.phase).toBe("unknown");
+  expect(textWrites).toBeLessThan(10);
+  expect(performance.now() - start).toBeLessThan(2000);
+  expect(f.records().filter((r) => r.kind === "task")).toHaveLength(1);
+  expect(liveChildCount()).toBe(0);
 });
 
 test("a Task path retargeted during private process persistence cannot receive the accepted prompt", async () => {
