@@ -1,3 +1,4 @@
+import { Database } from "bun:sqlite";
 import { afterEach, expect, test } from "bun:test";
 import {
   existsSync,
@@ -327,5 +328,38 @@ test("finished publishers are closed and exceptions release the lock", async () 
   await withConfigTransaction(context, (tx) => transactions.push(tx));
   for (const tx of transactions)
     expect(() => tx.publish(Buffer.from("# late\n"))).toThrow("closed");
+  expect(existsSync(context.files.workspace)).toBe(false);
+});
+
+test("a persistent mutex name replaced while its caller waits cannot validate a different acquired database", async () => {
+  const b = box();
+  const context = b.prepare();
+  await withConfigTransaction(context, () => {});
+  const holder = new Database(context.lockFile);
+  holder.exec("BEGIN EXCLUSIVE");
+  let closed = false;
+  let called = false;
+  const waiting = withConfigTransaction(context, () => {
+    called = true;
+  });
+  try {
+    expect(called).toBe(false);
+    // The old held DB is closed before the fixture renames it, including on Windows.
+    // The queued caller has already captured its original identity before awaiting.
+    holder.exec("ROLLBACK");
+    holder.close();
+    closed = true;
+    renameSync(context.lockFile, `${context.lockFile}.retained`);
+    writeFileSync(context.lockFile, "", { flag: "wx" });
+    await expect(waiting).rejects.toMatchObject({
+      reason: "changed",
+      replacementAttempted: false,
+    });
+    expect(called).toBe(false);
+  } finally {
+    if (!closed) holder.close();
+    await waiting.catch(() => {});
+  }
+  expect(existsSync(`${context.lockFile}.retained`)).toBe(true);
   expect(existsSync(context.files.workspace)).toBe(false);
 });

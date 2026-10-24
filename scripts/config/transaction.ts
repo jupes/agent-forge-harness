@@ -5,24 +5,36 @@ import {
   constants,
   fstatSync,
   lstatSync,
-  mkdirSync,
   openSync,
   readFileSync,
-  realpathSync,
   renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { ensurePrivateHome } from "../hearth/home-guard";
 import { withQueueLock } from "../scheduler/queue-lock";
 import { type LoadOptions, machineConfigFile } from "./load";
+import {
+  ConfigTransactionError,
+  configChanged as changed,
+  invalidConfigPath as refuse,
+} from "./transaction-error";
+import {
+  type ConfigAddress as Address,
+  type ConfigParentAnchor as Anchor,
+  configAddress as address,
+  checkedConfigAddress as checkedAddress,
+  createConfigParentTransition,
+  type ConfigFileIdentity as Identity,
+  configFileIdentity as identity,
+  verifyConfigParentTransition,
+} from "./transaction-paths";
+import { windowsConfigLeafKind } from "./transaction-windows";
 import type { ConfigByteSource, ConfigTarget } from "./write";
 
-type Identity = Readonly<{ dev: string; ino: string }>;
-type Anchor = Readonly<{ path: string; identity: Identity }>;
-type Address = Readonly<{ requested: string; file: string; anchor: Anchor }>;
+export { ConfigTransactionError } from "./transaction-error";
 
 export interface PreparedConfigTransaction {
   readonly target: ConfigTarget;
@@ -54,23 +66,6 @@ export type ConfigPairedRevision = Readonly<
   Record<ConfigTarget, ConfigFileRevision>
 >;
 
-export class ConfigTransactionError extends Error {
-  constructor(
-    readonly reason:
-      | "invalid"
-      | "changed"
-      | "closed"
-      | "busy"
-      | "unusable"
-      | "unconfirmed",
-    message: string,
-    /** True once replacement was attempted; never a durable write receipt. */
-    readonly replacementAttempted = false,
-  ) {
-    super(message);
-  }
-}
-
 export interface ConfigPublication {
   file: string;
   created: boolean;
@@ -85,48 +80,16 @@ export interface ConfigWriteTransaction {
 }
 
 const same = (a: unknown, b: unknown) => Bun.deepEquals(a, b, true);
-const identity = (info: { dev: bigint; ino: bigint }): Identity =>
-  Object.freeze({ dev: String(info.dev), ino: String(info.ino) });
 const hash = (bytes: Uint8Array) =>
   createHash("sha256").update(bytes).digest("hex");
 const codeOf = (error: unknown) => (error as NodeJS.ErrnoException)?.code;
-const refuse = (message: string): never => {
-  throw new ConfigTransactionError("invalid", message);
-};
-const changed = (): never => {
-  throw new ConfigTransactionError(
-    "changed",
-    "The paired configuration paths or bytes changed; review them again before writing.",
-  );
-};
 
-/** Resolve a rename address through its existing parent, never through its leaf. */
-function address(requested: string): Address {
-  const full = resolve(requested);
-  const missing: string[] = [];
-  let parent = dirname(full);
-  for (;;) {
-    try {
-      const canonical = realpathSync.native(parent);
-      const info = lstatSync(canonical, { bigint: true });
-      if (!info.isDirectory() || info.isSymbolicLink())
-        refuse("A configuration parent is not a plain directory.");
-      return Object.freeze({
-        requested: full,
-        file: join(canonical, ...missing, basename(full)),
-        anchor: Object.freeze({ path: canonical, identity: identity(info) }),
-      });
-    } catch (error) {
-      if (codeOf(error) !== "ENOENT") throw error;
-      const next = dirname(parent);
-      if (next === parent)
-        refuse("A configuration parent could not be resolved.");
-      missing.unshift(basename(parent));
-      parent = next;
-    }
-  }
+function checkWindowsLeaf(file: string): void {
+  if (process.platform === "win32" && windowsConfigLeafKind(file) !== "plain")
+    refuse(
+      `${file}: a reparse point or unverified configuration leaf is not written; edit it by hand.`,
+    );
 }
-
 /** Capture actual OS-user coordination, locations and env before any await; NOWRITE. */
 export function prepareConfigTransaction(input: {
   options: LoadOptions;
@@ -161,19 +124,6 @@ export function prepareConfigTransaction(input: {
   return context;
 }
 
-function checkedAddress(expected: Address): Address {
-  const current = address(expected.requested);
-  const anchor = lstatSync(expected.anchor.path, { bigint: true });
-  if (
-    !anchor.isDirectory() ||
-    anchor.isSymbolicLink() ||
-    !same(identity(anchor), expected.anchor.identity) ||
-    current.file !== expected.file
-  )
-    changed();
-  return current;
-}
-
 function capture(expected: Address) {
   const current = checkedAddress(expected);
   let fd: number | undefined;
@@ -185,6 +135,7 @@ function capture(expected: Address) {
       refuse(
         `${current.file}: linked, multiply linked or non-file configuration leaves are not written; edit them by hand.`,
       );
+    checkWindowsLeaf(current.file);
     fd = openSync(
       current.file,
       constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
@@ -199,6 +150,7 @@ function capture(expected: Address) {
     const bytes = readFileSync(fd);
     const after = fstatSync(fd, { bigint: true });
     const named = lstatSync(current.file, { bigint: true });
+    checkWindowsLeaf(current.file);
     const stable = (info: typeof opened) => ({
       identity: identity(info),
       size: info.size,
@@ -245,10 +197,29 @@ function mutexIdentity(file: string): Identity | null {
       refuse(
         "The configuration mutex is linked or invalid; its data has been kept.",
       );
+    checkWindowsLeaf(file);
     return identity(info);
   } catch (error) {
     if (codeOf(error) === "ENOENT") return null;
     throw error;
+  }
+}
+
+/** Create only an absent persistent mutex, without replacing any existing inode. */
+function initializeMutex(file: string): Identity {
+  const existing = mutexIdentity(file);
+  if (existing !== null) return existing;
+  let fd: number | undefined;
+  try {
+    fd = openSync(file, "wx", 0o600);
+    const created = identity(fstatSync(fd, { bigint: true }));
+    if (!same(mutexIdentity(file), created)) changed();
+    return created;
+  } catch (error) {
+    if (codeOf(error) !== "EEXIST") throw error;
+    return mutexIdentity(file) ?? changed();
+  } finally {
+    if (fd !== undefined) closeSync(fd);
   }
 }
 
@@ -297,26 +268,6 @@ function copiedSources(
   });
 }
 
-function createSelectedParent(expected: Address): void {
-  const current = checkedAddress(expected);
-  const directories: string[] = [];
-  let path = dirname(current.file);
-  while (path !== current.anchor.path) {
-    directories.unshift(path);
-    const next = dirname(path);
-    if (next === path) changed();
-    path = next;
-  }
-  for (const directory of directories) {
-    checkedAddress(expected);
-    // EEXIST is a race, not proof that this operation created the reviewed parent.
-    mkdirSync(directory);
-    const info = lstatSync(directory, { bigint: true });
-    if (!info.isDirectory() || info.isSymbolicLink()) changed();
-  }
-  checkedAddress(expected);
-}
-
 /** One held transaction, shared by scalar CLI writes and the future create coordinator. */
 export async function withConfigTransaction<T>(
   context: PreparedConfigTransaction,
@@ -345,17 +296,15 @@ export async function withConfigTransaction<T>(
   // The mutex is binary SQLite, not one of home-guard's checked text files.
   ensurePrivateHome(dirname(context.lockFile));
   checkedAddress(state.coordination);
-  mutexIdentity(context.lockFile);
+  const expectedMutex = initializeMutex(context.lockFile);
   const run = async () => {
     assertOpen();
     checkedAddress(state.coordination);
-    const heldMutex = mutexIdentity(context.lockFile);
-    if (heldMutex === null)
-      refuse("The held configuration mutex could not be checked.");
     const assertMutex = () => {
       checkedAddress(state.coordination);
-      if (!same(mutexIdentity(context.lockFile), heldMutex)) changed();
+      if (!same(mutexIdentity(context.lockFile), expectedMutex)) changed();
     };
+    assertMutex();
     const found = snapshot(context);
     if (
       expectedRevision !== undefined &&
@@ -382,15 +331,21 @@ export async function withConfigTransaction<T>(
         const bytes = Buffer.from(candidate);
         if (!same(snapshot(context).revision, found.revision)) changed();
         const selected = state.addresses[context.target];
-        createSelectedParent(selected);
+        const transition = createConfigParentTransition(
+          selected,
+          found.revision[context.target].parent,
+        );
         const before = snapshot(context);
         for (const target of ["user", "workspace"] as const) {
           const current = before.revision[target];
           const previous = found.revision[target];
-          if (target === context.target) {
-            if (!same(current.leaf, previous.leaf)) changed();
-          } else if (!same(current, previous)) changed();
+          const authorized =
+            target === context.target
+              ? { ...previous, parent: transition.after }
+              : previous;
+          if (!same(current, authorized)) changed();
         }
+        verifyConfigParentTransition(selected, transition);
         const file = context.files[context.target];
         const temporary = `${file}.${process.pid}.${randomUUID()}.tmp`;
         let attempted = false;
@@ -404,11 +359,21 @@ export async function withConfigTransaction<T>(
             closeSync(fd);
           }
           assertMutex();
+          verifyConfigParentTransition(selected, transition);
           if (!same(snapshot(context).revision, before.revision)) changed();
           attempted = true;
           replacementAttempted = true;
           renameSync(temporary, file);
-          const after = capture(selected);
+          assertMutex();
+          verifyConfigParentTransition(selected, transition);
+          const afterFound = snapshot(context);
+          verifyConfigParentTransition(selected, transition);
+          const unselected = context.target === "user" ? "workspace" : "user";
+          if (
+            !same(afterFound.revision[unselected], before.revision[unselected])
+          )
+            changed();
+          const after = afterFound.values[context.target];
           if (
             after.bytes === null ||
             !after.bytes.equals(bytes) ||
