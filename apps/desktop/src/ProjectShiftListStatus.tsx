@@ -8,7 +8,7 @@ export type ShiftListRead = Pick<
 /** Presentation only: original identities and commands remain with the app-root client. */
 export function ProjectShiftListStatus({ view }: { view: ShiftListRead }) {
   return (
-    <>
+    <div key="shift-read-state" class="af-shift-read-state">
       {(view.loading || (!view.page && !view.error)) && (
         <div class="af-shift-read-status">
           <p role="status" aria-live="polite">
@@ -30,6 +30,6 @@ export function ProjectShiftListStatus({ view }: { view: ShiftListRead }) {
         !view.error &&
         view.page?.items.length === 0 &&
         !view.identity && <p>No project shifts reported.</p>}
-    </>
+    </div>
   );
 }
