@@ -6,7 +6,6 @@ import {
   fstatSync,
   lstatSync,
   openSync,
-  readFileSync,
   renameSync,
   rmSync,
   writeFileSync,
@@ -31,6 +30,10 @@ import {
   configFileIdentity as identity,
   verifyConfigParentTransition,
 } from "./transaction-paths";
+import {
+  checkedConfigSourceLimit,
+  readConfigDescriptor,
+} from "./transaction-read";
 import { windowsConfigLeafKind } from "./transaction-windows";
 import type { ConfigByteSource, ConfigTarget } from "./write";
 
@@ -46,6 +49,7 @@ export interface PreparedConfigTransaction {
 interface Prepared {
   addresses: Record<ConfigTarget, Address>;
   coordination: Address;
+  maxSourceBytes: number | undefined;
 }
 const contexts = new WeakMap<PreparedConfigTransaction, Prepared>();
 
@@ -96,10 +100,13 @@ export function prepareConfigTransaction(input: {
   target: ConfigTarget;
   /** Trusted internal test seam; never supplied by an operator request. */
   coordinationRoot?: string;
+  /** Trusted caller policy for every source capture/readback, never a public request field. */
+  maxSourceBytes?: number;
 }): PreparedConfigTransaction {
   if (input.target !== "user" && input.target !== "workspace")
     refuse("Expected user or workspace target.");
-  const osHome = homedir();
+  const maxSourceBytes = checkedConfigSourceLimit(input.maxSourceBytes),
+    osHome = homedir();
   const addresses = {
     user: address(machineConfigFile(input.options)),
     workspace: address(join(input.options.harnessRoot, "agent-forge.toml")),
@@ -120,11 +127,11 @@ export function prepareConfigTransaction(input: {
     env: Object.freeze({ ...(input.options.env ?? process.env) }),
     lockFile: coordination.file,
   });
-  contexts.set(context, { addresses, coordination });
+  contexts.set(context, { addresses, coordination, maxSourceBytes });
   return context;
 }
 
-function capture(expected: Address) {
+function capture(expected: Address, maxSourceBytes: number | undefined) {
   const current = checkedAddress(expected);
   let fd: number | undefined;
   let present = false;
@@ -147,7 +154,7 @@ function capture(expected: Address) {
       opened.nlink !== 1n
     )
       changed();
-    const bytes = readFileSync(fd);
+    const bytes = readConfigDescriptor(fd, opened.size, maxSourceBytes);
     const after = fstatSync(fd, { bigint: true });
     const named = lstatSync(current.file, { bigint: true });
     checkWindowsLeaf(current.file);
@@ -231,9 +238,9 @@ function prepared(context: PreparedConfigTransaction): Prepared {
 }
 
 function snapshot(context: PreparedConfigTransaction) {
-  const { addresses } = prepared(context);
-  const user = capture(addresses.user);
-  const workspace = capture(addresses.workspace);
+  const { addresses, maxSourceBytes } = prepared(context);
+  const user = capture(addresses.user, maxSourceBytes);
+  const workspace = capture(addresses.workspace, maxSourceBytes);
   return {
     values: { user, workspace },
     revision: Object.freeze({

@@ -2,10 +2,11 @@
 
 This is the interface and state-machine checkpoint for
 agent-forge-harness-cla5.7.6.5 (Create complete Smith configurations through the
-protected backend). Only browser-safe types, codecs and their pure tests are
-implemented at this checkpoint. The coordinator, bounded transaction extension,
-private persistence and protected routes described below are subsequent work in
-the same child. There is no new writer, API, provider execution or UI yet.
+protected backend). Browser-safe types/codecs and the trusted bounded-FD
+transaction extension are implemented with their focused no-child tests. The
+coordinator, private persistence and protected routes described below remain
+subsequent work in the same child.
+There is no new complete-Smith writer, API, provider execution or UI yet.
 
 ## Public domain input
 
@@ -133,8 +134,8 @@ Store only the original, owner selector/hash, before evidence, candidate
 hash/length, relevant review and receipt. Full candidate/config bytes are not
 needed because an orphan is never reconstructed for execution.
 
-The next implementation adds an optional trusted `maxSourceBytes` to prepared
-transaction state. Undefined preserves the scalar writer's current behavior.
+The transaction extension adds optional trusted `maxSourceBytes` to prepared
+private transaction state. Undefined preserves the scalar writer's behavior.
 The create backend supplies the fixed1MiB limit. Every optimistic/held capture,
 recheck and publication readback must check descriptor size before allocation
 and read at most limit+1 bytes **from that same descriptor**, including growth
