@@ -82,7 +82,12 @@ async function start(page: Page) {
     .getByRole("button", { name: "Start reviewed shift", exact: true })
     .click();
   await expect(dialog).not.toBeVisible();
-  return shifts(page).locator("[data-shift]").last();
+  const row = shifts(page).locator("[data-shift]").last();
+  await expect(
+    row.getByRole("button", { name: "Close private activity", exact: true }),
+  ).toHaveAttribute("aria-expanded", "true");
+  await expect(activity(page)).toBeVisible();
+  return row;
 }
 function mutationCalls() {
   return fixtureCalls().filter(
@@ -136,7 +141,6 @@ test("an actual managed attempt survives direct reload and Back with its exact o
   await expect(row).toHaveAttribute("data-phase", "stopped", {
     timeout: 20000,
   });
-  await row.getByRole("button", { name: "Attend shift", exact: true }).click();
   await expect(activity(page)).toContainText("Verified saved turn: completed");
   const { href, selected } = await attemptLink(page),
     provider = readFileSync(join(STATE, "claude.json"), "utf8"),
@@ -233,7 +237,6 @@ test("a running managed attempt remains read-only and only its owning original o
   });
   const shiftId = await row.getAttribute("data-shift");
   if (!shiftId) throw Error("No actual running Shift identity.");
-  await row.getByRole("button", { name: "Attend shift", exact: true }).click();
   const { selected } = await attemptLink(page),
     posts = watchInspectionPosts(page);
   try {
@@ -280,7 +283,6 @@ test("a held original cannot open a private feed after navigation, and a mismatc
   await expect(row).toHaveAttribute("data-phase", "stopped", {
     timeout: 20000,
   });
-  await row.getByRole("button", { name: "Attend shift", exact: true }).click();
   await expect(activity(page)).toContainText("Verified saved turn: completed");
   const { href, selected } = await attemptLink(page),
     provider = readFileSync(join(STATE, "claude.json"), "utf8"),
