@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  symlinkSync,
+  writeFileSync,
+} from "fs";
 import { join } from "path";
 import { scratchDirs } from "../test-scratch";
 import { runConfigCli as runConfigCliImpl } from "./cli";
@@ -134,6 +140,60 @@ describe("forge:config", () => {
 });
 
 describe("forge:config set", () => {
+  test.each([
+    "absent",
+    "present",
+  ])("publication through an owned parent alias keeps the exact %s leaf bytes and physical path", async (presence) => {
+    const root = scratch.make("forge-config-cli-alias-");
+    const physical = join(root, "physical workspace"),
+      alias = join(root, "workspace alias");
+    mkdirSync(physical);
+    symlinkSync(
+      physical,
+      alias,
+      process.platform === "win32" ? "junction" : "dir",
+    );
+    const file = join(alias, "agent-forge.toml"),
+      present = presence === "present";
+    if (present)
+      writeFileSync(
+        file,
+        "# keep this exact comment\r\n[shift]\r\nmax_usd = 3\r\n",
+      );
+    expect(existsSync(file)).toBe(present);
+    const opts = { harnessRoot: alias, home: root, env: {} };
+    const out = await runConfigCli(
+      ["set", "shift.max_usd", "5", "--workspace", "--json"],
+      opts,
+    );
+    expect(out.code).toBe(0);
+    let body: unknown;
+    try {
+      body = JSON.parse(out.stdout);
+    } catch {
+      throw Error("Invalid scalar alias fixture envelope");
+    }
+    expect(body).toEqual({
+      ok: true,
+      data: {
+        ok: true,
+        key: "shift.max_usd",
+        value: 5,
+        file,
+        created: !present,
+      },
+      error: null,
+    });
+    expect(readFileSync(file, "utf8")).toBe(
+      present
+        ? "# keep this exact comment\r\n[shift]\r\nmax_usd = 5\r\n"
+        : "[shift]\nmax_usd = 5\n",
+    );
+    expect((await runConfigCli(["get", "shift.max_usd"], opts)).stdout).toBe(
+      `5  (from ${file})`,
+    );
+  });
+
   test("set --workspace creates the workspace file, and get then reports the value from it", async () => {
     const opts = setup();
     const file = join(opts.harnessRoot, "agent-forge.toml");
