@@ -3,6 +3,7 @@ import { Button } from "../../../docs/js/ds/Button";
 import type { GeminiChatOwnedRecord } from "../../../types/gemini-owned-chat";
 import { GeminiChatActivity } from "./GeminiChatActivity";
 import { GeminiChatApprovals } from "./GeminiChatApprovals";
+import { geminiChatPermissionAddress } from "./gemini-chat-authority";
 import { geminiChatOutcome } from "./gemini-chat-presentation";
 import { keeperTurns } from "./keeper-model";
 import { desktopHref } from "./navigation";
@@ -41,12 +42,15 @@ export function GeminiChatConversation({
   });
   const verified =
     view.loaded && view.live && !view.readError && !view.feedInterrupted;
-  const permissionActionable =
-    writesAllowed &&
-    !archived &&
-    verified &&
-    controls.permissions.available &&
-    !outcome;
+  const readPermissionAddress = () =>
+    geminiChatPermissionAddress({
+      projectId,
+      sessionId,
+      client,
+      writesAllowed,
+      archived,
+    });
+  const permissionActionable = readPermissionAddress().actionable;
   const revision =
     view.page?.frames
       .filter(
@@ -65,6 +69,7 @@ export function GeminiChatConversation({
     enabled: true,
     actionable: permissionActionable,
     approvalRevision: revision,
+    readCurrent: readPermissionAddress,
   });
   const prompt = useRef<HTMLTextAreaElement>(null),
     feed = useRef<HTMLDivElement>(null),

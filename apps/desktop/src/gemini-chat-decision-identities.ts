@@ -23,8 +23,14 @@ export interface GeminiChatDecisionIdentities {
   reserve(
     input: Omit<GeminiChatDecisionIdentity, "requestId">,
     mint: () => string,
+    stillCurrent: () => boolean,
   ): Promise<{ identity: GeminiChatDecisionIdentity; created: boolean }>;
   release(identity: GeminiChatDecisionIdentity): Promise<void>;
+}
+export class GeminiChatDecisionChanged extends Error {
+  constructor() {
+    super("The native permission is no longer current. No decision was sent.");
+  }
 }
 export function decisionBody(
   identity: GeminiChatDecisionIdentity,
@@ -93,7 +99,7 @@ export function createGeminiChatDecisionIdentities(deps: {
         ) ?? null,
       );
     },
-    reserve(input, mint) {
+    reserve(input, mint, stillCurrent) {
       const copied = structuredClone(input);
       return deps.withLock(() => {
         const value = read(),
@@ -107,6 +113,9 @@ export function createGeminiChatDecisionIdentities(deps: {
           throw Error(
             "Original approval decision storage is full. Uncertain decisions were kept.",
           );
+        // The lock may have waited while private terminal/scope truth changed.
+        // Refuse before minting or saving a fresh identity, inside the same lock.
+        if (!stillCurrent()) throw new GeminiChatDecisionChanged();
         const identity = identitySchema.parse({ ...copied, requestId: mint() });
         if (value.records.some((item) => item.requestId === identity.requestId))
           throw Error(

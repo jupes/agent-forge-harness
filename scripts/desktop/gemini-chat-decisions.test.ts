@@ -42,6 +42,7 @@ test("only offered once option ids or explicit cancellation can be sent; changin
       storage: fixture.storage,
       withLock: fixture.withLock,
     }),
+    current: () => ({ ...address, turnRequestId, actionable: true }),
     canWrite: () => true,
     requestId: () => requestId,
     read: async () => ({ pending: [offer], receipt: null }),
@@ -61,7 +62,7 @@ test("only offered once option ids or explicit cancellation can be sent; changin
     turnRequestId: null,
     actionable: false,
   });
-  expect(client.view()?.pending).toEqual([]);
+  expect(client.view()).toBeNull();
   await client.decide(approvalId, "native-allow");
   expect(sent).toEqual([]);
   client.activate({ ...address, turnRequestId, actionable: true });
@@ -89,6 +90,7 @@ test("approval reserves bounded metadata before POST and a lost answer or recrea
   const make = () =>
     createGeminiChatDecisions({
       identities: identities(),
+      current: () => ({ ...address, turnRequestId, actionable: true }),
       canWrite: () => true,
       requestId: () => {
         minted++;
@@ -142,7 +144,11 @@ test("only an exact protected recorded-intent receipt clears a restored original
     approvalId,
     optionId: "native-reject",
   };
-  await identities.reserve(original, () => requestId);
+  await identities.reserve(
+    original,
+    () => requestId,
+    () => true,
+  );
   const receipt = {
     ...original,
     requestId,
@@ -154,6 +160,7 @@ test("only an exact protected recorded-intent receipt clears a restored original
   const queries: (string | undefined)[] = [];
   const client = createGeminiChatDecisions({
     identities,
+    current: () => ({ ...address, turnRequestId, actionable: true }),
     canWrite: () => false,
     requestId: () => {
       throw Error("Must not mint");
@@ -203,6 +210,7 @@ test("a delayed live read after Stop or a foreign accepted turn cannot revive ap
   let answer: Promise<unknown> = waiting;
   const client = createGeminiChatDecisions({
     identities,
+    current: () => ({ ...address, turnRequestId, actionable: true }),
     canWrite: () => true,
     requestId: () => requestId,
     read: () => answer,
@@ -248,6 +256,7 @@ test("same-scope background checks retain the reviewed offer and cannot repopula
   });
   const client = createGeminiChatDecisions({
     identities,
+    current: () => ({ ...address, turnRequestId, actionable: true }),
     canWrite: () => true,
     requestId: () => requestId,
     read: async () =>
@@ -288,6 +297,7 @@ test("Stop while the origin lock is pending releases only the proven-unsent rese
   });
   const client = createGeminiChatDecisions({
     identities,
+    current: () => ({ ...address, turnRequestId, actionable: true }),
     canWrite: () => true,
     requestId: () => requestId,
     read: async () => ({ pending: [offer], receipt: null }),
@@ -325,6 +335,7 @@ test("a protected refresh that withdraws an offer during origin-lock acquisition
   });
   const client = createGeminiChatDecisions({
     identities,
+    current: () => ({ ...address, turnRequestId, actionable: true }),
     canWrite: () => true,
     requestId: () => requestId,
     read: async () => ({
@@ -369,7 +380,11 @@ test("a failed durable erase stays latched despite a matching receipt and malfor
     approvalId,
     optionId: null,
   };
-  await identities.reserve(original, () => requestId);
+  await identities.reserve(
+    original,
+    () => requestId,
+    () => true,
+  );
   failSave = true;
   const receipt = {
     ...original,
@@ -379,6 +394,7 @@ test("a failed durable erase stays latched despite a matching receipt and malfor
   };
   const client = createGeminiChatDecisions({
     identities,
+    current: () => ({ ...address, turnRequestId, actionable: true }),
     canWrite: () => true,
     requestId: () => {
       throw Error("Must not mint");
@@ -399,9 +415,13 @@ test("a failed durable erase stays latched despite a matching receipt and malfor
     GEMINI_CHAT_DECISION_IDENTITIES,
     "{future-or-corrupt",
   );
-  await expect(identities.reserve(original, () => requestId)).rejects.toThrow(
-    "could not be verified",
-  );
+  await expect(
+    identities.reserve(
+      original,
+      () => requestId,
+      () => true,
+    ),
+  ).rejects.toThrow("could not be verified");
   expect(storage.storage.getItem(GEMINI_CHAT_DECISION_IDENTITIES)).toBe(
     "{future-or-corrupt",
   );

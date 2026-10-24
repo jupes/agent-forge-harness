@@ -9,8 +9,10 @@ import type {
   GeminiChatDecisionReceipt,
   GeminiChatDecisionRequest,
 } from "../../../types/gemini-owned-chat";
+import type { GeminiChatDecisionAddress } from "./gemini-chat-authority";
 import {
   decisionBody,
+  GeminiChatDecisionChanged,
   type GeminiChatDecisionIdentities,
   type GeminiChatDecisionIdentity,
 } from "./gemini-chat-decision-identities";
@@ -30,15 +32,11 @@ export interface GeminiChatDecisionView {
   posting: boolean;
   receipt: GeminiChatDecisionReceipt | null;
 }
-type Address = {
-  projectId: string;
-  sessionId: string;
-  turnRequestId: string | null;
-  actionable: boolean;
-};
+type Address = GeminiChatDecisionAddress;
 /** Owns original decisions, never native callbacks. History reads cannot resend or answer a live offer. */
 export function createGeminiChatDecisions(deps: {
   identities: GeminiChatDecisionIdentities;
+  current(): Address | null;
   canWrite(): boolean;
   requestId(): string;
   read(
@@ -91,12 +89,26 @@ export function createGeminiChatDecisions(deps: {
     }
     return entry;
   };
-  const live = (entry: GeminiChatDecisionView) =>
-    !disposed &&
-    selected === entry &&
-    entry.actionable &&
-    !!entry.turnRequestId &&
-    deps.canWrite();
+  const observed = () => {
+    try {
+      return deps.current();
+    } catch {
+      return null;
+    }
+  };
+  const live = (entry: GeminiChatDecisionView, current = observed()) => {
+    return (
+      !disposed &&
+      selected === entry &&
+      entry.actionable &&
+      !!entry.turnRequestId &&
+      current?.projectId === entry.projectId &&
+      current.sessionId === entry.sessionId &&
+      current.turnRequestId === entry.turnRequestId &&
+      current.actionable &&
+      deps.canWrite()
+    );
+  };
   const confirm = async (entry: GeminiChatDecisionView, raw: unknown) => {
     const parsed = geminiChatDecisionReceiptSchema.safeParse(raw),
       identity = entry.identity;
@@ -151,7 +163,19 @@ export function createGeminiChatDecisions(deps: {
       tell();
     },
     view() {
-      return selected;
+      const current = observed(),
+        entry = selected;
+      if (
+        !entry ||
+        current?.projectId !== entry.projectId ||
+        current.sessionId !== entry.sessionId
+      )
+        return null;
+      // Synchronous projection must not wait for the activation effect. Retain
+      // same-scope original receipts, but never old live offers for a new turn.
+      return live(entry, current)
+        ? entry
+        : { ...entry, pending: [], actionable: false, loading: false };
     },
     refreshIdentities() {
       for (const entry of entries.values()) hydrate(entry);
@@ -266,6 +290,13 @@ export function createGeminiChatDecisions(deps: {
         return;
       const turn = offered.turnRequestId,
         current = generation;
+      const stillOffered = () =>
+        live(entry) &&
+        entry.turnRequestId === turn &&
+        generation === current &&
+        entry.pending.some(
+          (item) => JSON.stringify(item) === JSON.stringify(offered),
+        );
       entry.posting = true;
       entry.error = "";
       tell();
@@ -279,6 +310,7 @@ export function createGeminiChatDecisions(deps: {
             optionId,
           },
           deps.requestId,
+          stillOffered,
         );
         entry.identity = reserved.identity;
         if (!reserved.created) {
@@ -314,10 +346,14 @@ export function createGeminiChatDecisions(deps: {
         else
           entry.notice =
             "The original approval decision is unconfirmed. Check its protected receipt; it will not be resent automatically.";
-      } catch {
-        entry.error =
-          "The original approval decision could not be completed or verified. Saved data was kept; check the original receipt.";
+      } catch (error) {
         hydrate(entry);
+        if (error instanceof GeminiChatDecisionChanged) {
+          entry.notice = error.message;
+          entry.error = "";
+        } else
+          entry.error =
+            "The original approval decision could not be completed or verified. Saved data was kept; check the original receipt.";
       } finally {
         entry.posting = false;
         tell();

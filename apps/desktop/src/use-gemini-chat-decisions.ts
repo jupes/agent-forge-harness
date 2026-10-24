@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "preact/hooks";
 import { actionOutcome } from "../../../docs/js/action-outcome";
 import { operatorPost, operatorRead } from "../../../docs/js/operator";
 import { pageReads, readOperatorRoute } from "../../../docs/js/use-stream";
+import type { GeminiChatDecisionAddress } from "./gemini-chat-authority";
 import {
   createGeminiChatDecisionIdentities,
   GEMINI_CHAT_DECISION_IDENTITIES,
@@ -15,9 +16,10 @@ export function useGeminiChatDecisions(input: {
   enabled: boolean;
   actionable: boolean;
   approvalRevision: number;
+  readCurrent(): GeminiChatDecisionAddress;
 }) {
-  const allowed = useRef(input.actionable);
-  allowed.current = input.actionable;
+  const selection = useRef(input);
+  selection.current = input;
   const [, paint] = useState(0),
     held = useRef<ReturnType<typeof createGeminiChatDecisions> | null>(null);
   if (!held.current) {
@@ -30,7 +32,17 @@ export function useGeminiChatDecisions(input: {
     const path = (project: string, session: string) =>
       `/projects/${encodeURIComponent(project)}/sessions/${encodeURIComponent(session)}`;
     held.current = createGeminiChatDecisions({
-      canWrite: () => allowed.current,
+      canWrite: () => selection.current.actionable,
+      current: () => {
+        const now = selection.current;
+        if (!now.enabled) return null;
+        const fresh = now.readCurrent();
+        return fresh.projectId === now.projectId &&
+          fresh.sessionId === now.sessionId &&
+          fresh.turnRequestId === now.turnRequestId
+          ? fresh
+          : { ...fresh, actionable: false };
+      },
       requestId: () => crypto.randomUUID(),
       identities: createGeminiChatDecisionIdentities({
         storage,
