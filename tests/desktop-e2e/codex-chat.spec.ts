@@ -259,31 +259,6 @@ test("native Chat reasoning summaries remain explicit, inert and independently i
   await page.keyboard.press("Tab");
   await expect(first).toBeFocused();
   await expect(first).toHaveCSS("outline-width", "2px");
-  if (process.env.CODEX_CHAT_REASONING_SHOTS) {
-    await page.setViewportSize({ width: 1280, height: 1100 });
-    await activity.evaluate((node) => node.scrollIntoView({ block: "center" }));
-    await expect
-      .poll(() =>
-        activity.evaluate((node) => {
-          const outer = node
-              .closest(".af-owned-transcript")
-              ?.getBoundingClientRect(),
-            inner = node.getBoundingClientRect();
-          return Boolean(
-            outer && inner.top >= outer.top && inner.bottom <= outer.bottom,
-          );
-        }),
-      )
-      .toBe(true);
-    await activity.screenshot({
-      path: join(
-        process.env.CODEX_CHAT_REASONING_SHOTS,
-        "native-chat-reasoning-summary.png",
-      ),
-      maskColor: "#1c1d24",
-    });
-    await page.setViewportSize({ width: 1100, height: 700 });
-  }
   const beforeReload = saved(record.id).frames;
   expect(JSON.stringify(beforeReload)).not.toContain(
     "RAW_REASONING_MUST_NOT_PERSIST",
@@ -333,6 +308,46 @@ test("native Chat reasoning summaries remain explicit, inert and independently i
   await expect(
     page.getByText("Visible summary one.", { exact: true }),
   ).toHaveCount(0);
+  if (process.env.CODEX_CHAT_REASONING_SHOTS) {
+    // All functional checks above use the minimum desktop size. Capture this
+    // longer disclosure afterward in a taller review-only viewport.
+    await openSettled(
+      page,
+      `/index.html#/desktop/project/${alpha.id}/sessions?selectionKind=session&selectionId=${record.id}`,
+    );
+    await expect(disclosure).not.toHaveAttribute("open");
+    await heading.click();
+    await expect(first).toHaveText("Visible summary one.");
+    await page.setViewportSize({ width: 1280, height: 1600 });
+    await activity.evaluate((node) => node.scrollIntoView({ block: "center" }));
+    await expect
+      .poll(() =>
+        activity.evaluate((node) => {
+          const outer = node
+              .closest(".af-owned-transcript")
+              ?.getBoundingClientRect(),
+            inner = node.getBoundingClientRect();
+          return Boolean(
+            outer && inner.top >= outer.top && inner.bottom <= outer.bottom,
+          );
+        }),
+      )
+      .toBe(true);
+    await activity.screenshot({
+      path: join(
+        process.env.CODEX_CHAT_REASONING_SHOTS,
+        "native-chat-reasoning-summary.png",
+      ),
+      maskColor: "#1c1d24",
+    });
+    await page.setViewportSize({ width: 1100, height: 700 });
+    expect(saved(record.id).frames).toEqual(beforeReload);
+    expect(
+      calls().filter(
+        (row) => row.kind === "rpc" && row.method === "turn/start",
+      ),
+    ).toHaveLength(starts + 1);
+  }
 });
 
 test("actual Stop preserves a partial native reasoning summary without inventing a final snapshot, reply or permission authority", async ({
