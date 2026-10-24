@@ -168,7 +168,7 @@ export async function verifyKeeperSessionReview(
     );
     await tools.waitForPage(
       socket,
-      `(() => {const dialog=${review};if(!dialog)return false;const buttons=[...dialog.querySelectorAll('button')],provider=label=>buttons.find(button=>button.textContent.trim().startsWith(label));return provider('Cx · Codex')?.disabled && provider('Gm · Gemini')?.disabled && provider('Cl · Claude')?.textContent.includes('Not installed') && dialog.textContent.includes('Keeper session reviews support Claude here.') && buttons.find(button=>button.textContent.trim()==='Start')?.disabled && dialog.querySelector('[aria-label="Session repository"]')?.value===${JSON.stringify(fixture.workspace)} && dialog.querySelector('[aria-label="Session mode"]')?.value==='task';})()`,
+      `(() => {const dialog=${review};if(!dialog)return false;const buttons=[...dialog.querySelectorAll('button')],provider=label=>buttons.find(button=>button.textContent.trim().startsWith(label));return provider('Cx · Codex')?.disabled && provider('Gm · Gemini')?.disabled && provider('Cl · Claude')?.textContent.includes('Not installed') && dialog.textContent.includes('Keeper session reviews support Claude here.') && buttons.find(button=>button.textContent.trim()==='Start')?.disabled && dialog.querySelector('[aria-label="Session repository"]')?.value===${JSON.stringify(fixture.workspace)} && dialog.querySelector('[aria-label="Session smith"]')?.value==='claude-journeyman' && dialog.querySelector('[aria-label="Session mode"]')?.value==='task';})()`,
       "Native review lost its Claude-only or unavailable-CLI boundary.",
     );
     if (!statuses.includes(404))

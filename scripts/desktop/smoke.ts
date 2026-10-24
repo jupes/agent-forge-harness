@@ -148,6 +148,36 @@ async function main(): Promise<void> {
   const fakeBdSource = join(temp, "fake-bd.ts");
   const fakeBdExecutable = join(fakeBin, "bd.exe");
   const fakeBdCalls = join(temp, "fake-bd-calls.jsonl");
+  const fakeGitSource = join(temp, "fake-readonly-git.ts");
+  const fakeGitExecutable = join(fakeBin, "git.exe");
+  assertWithin(temp, fakeGitSource);
+  assertWithin(temp, fakeGitExecutable);
+  writeFileSync(
+    fakeGitSource,
+    `import {realpathSync,statSync} from "node:fs";import {join} from "node:path";
+const roots=${JSON.stringify([fixtureRoot, join(temp, "selected checkout")])};
+const normal=value=>value.replaceAll("\\\\","/").toLowerCase();
+const here=realpathSync.native(process.cwd());
+if(!roots.some(root=>{try{return normal(realpathSync.native(root))===normal(here)}catch{return false}})||!statSync(join(here,".git")).isDirectory())throw Error("Foreign native Git fixture cwd");
+const args=JSON.stringify(process.argv.slice(2)),answer=value=>{process.stdout.write(value);process.exit(0)};
+if(args===JSON.stringify(["rev-parse","--show-toplevel"]))answer(here+"\\n");
+if(args===JSON.stringify(["rev-parse","--path-format=absolute","--git-common-dir"]))answer(join(here,".git")+"\\n");
+if(args===JSON.stringify(["worktree","list","--porcelain","-z"]))answer("worktree "+here+"\\0HEAD "+"0".repeat(40)+"\\0detached\\0\\0");
+process.stderr.write("Native fixture Git is read-only and has no forwarding path.\\n");process.exit(1);`,
+    "utf8",
+  );
+  await runBounded(
+    [
+      process.execPath,
+      "build",
+      "--compile",
+      fakeGitSource,
+      "--outfile",
+      fakeGitExecutable,
+    ],
+    30_000,
+    "Could not prepare isolated read-only Git stub.",
+  );
   writeFileSync(
     fakeBdSource,
     `import {appendFileSync} from "node:fs";appendFileSync(${JSON.stringify(fakeBdCalls)},JSON.stringify(process.argv)+"\\n");const row={id:"fixture-epic",title:"Native fixture epic",issue_type:"epic",status:"open",labels:["project:native-fixture"],created_at:"2026-10-21T00:00:00Z",updated_at:"2026-10-21T00:00:00Z"};process.stdout.write(process.argv.includes("export")?JSON.stringify(row)+"\\n":"[]\\n");\n`,
