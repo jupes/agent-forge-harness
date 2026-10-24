@@ -23,6 +23,7 @@ import {
   sessionStartBody,
   validateSessionAttachments,
 } from "./session-composer";
+import type { SessionComposerOwner } from "./session-composer-owner";
 import "./session.css";
 import { CodexChatComposer } from "./CodexChatComposer";
 import { CodexTaskComposer } from "./CodexTaskComposer";
@@ -80,7 +81,7 @@ const templates = [
   ],
 ] as const;
 
-function ClaudeSessionComposer({
+export function ClaudeSessionComposer({
   project,
   client,
   keeper,
@@ -90,7 +91,7 @@ function ClaudeSessionComposer({
   providers,
 }: {
   project: ProjectRecord;
-  client: SessionsClient;
+  client: SessionComposerOwner;
   keeper: KeeperClient;
   writesAllowed: boolean;
   onCancel(): void;
@@ -136,7 +137,9 @@ function ClaudeSessionComposer({
         if (!Array.isArray(smiths.smiths) || !Array.isArray(worktrees))
           throw new Error("The launch choices could not be read.");
         setSettings({ smiths, worktrees });
-        if (!client.project(project.id).composer.initialized) {
+        if (client.initializeComposer) {
+          client.initializeComposer(project, smiths, worktrees);
+        } else if (!client.project(project.id).composer.initialized) {
           const original = client.project(project.id).composer,
             selected = smiths.smiths.find(
               (item) => item.name === smiths.defaultSmith,
@@ -188,6 +191,7 @@ function ClaudeSessionComposer({
   useEffect(() => {
     const original = worktreeAction.original;
     if (
+      !view.inputLocked &&
       created &&
       original &&
       draft.where === "new" &&
@@ -208,6 +212,7 @@ function ClaudeSessionComposer({
         },
       });
   }, [
+    view.inputLocked,
     created?.path,
     worktreeAction.original,
     draft.where,
@@ -260,6 +265,7 @@ function ClaudeSessionComposer({
     claudeReadiness?.authentication.mode !== "signed-out" &&
     writesAllowed &&
     !project.archived &&
+    !view.inputLocked &&
     !busy &&
     !view.pendingStart &&
     !view.startIdentity &&
@@ -288,6 +294,7 @@ function ClaudeSessionComposer({
       view.pendingStart ||
       view.startIdentity ||
       view.startIdentityError ||
+      view.inputLocked ||
       !writesAllowed
     )
       return;
@@ -398,7 +405,11 @@ function ClaudeSessionComposer({
         role="group"
         aria-label="Provider"
       >
-        <button type="button" aria-pressed="true">
+        <button
+          type="button"
+          aria-pressed={!view.providerUnavailable}
+          disabled={!!view.providerUnavailable}
+        >
           Cl · Claude
           <small>
             {claudeReadiness
@@ -410,7 +421,8 @@ function ClaudeSessionComposer({
         <button
           type="button"
           aria-pressed="false"
-          onClick={() => client.chooseComposerProvider(project.id, "codex")}
+          disabled={!client.chooseComposerProvider}
+          onClick={() => client.chooseComposerProvider?.(project.id, "codex")}
         >
           Cx · Codex
           <small>
@@ -424,7 +436,8 @@ function ClaudeSessionComposer({
         <button
           type="button"
           aria-pressed="false"
-          onClick={() => client.chooseComposerProvider(project.id, "gemini")}
+          disabled={!client.chooseComposerProvider}
+          onClick={() => client.chooseComposerProvider?.(project.id, "gemini")}
         >
           Gm · Gemini
           <small>
@@ -447,6 +460,18 @@ function ClaudeSessionComposer({
           </button>
         ))}
       </div>
+      {!client.chooseComposerProvider && (
+        <p role="status">
+          Keeper session reviews support Claude here. Other providers remain
+          available from New session.
+        </p>
+      )}
+      {view.providerUnavailable && (
+        <p role="status">
+          The proposed {view.providerUnavailable} session cannot be started from
+          this review. No provider was selected automatically.
+        </p>
+      )}
       {claudeReadiness?.authentication.mode === "signed-out" && (
         <p role="status">
           Claude reports signed out. Sign in with its own CLI, then recheck
@@ -462,6 +487,7 @@ function ClaudeSessionComposer({
           rows={5}
           maxLength={16_384}
           value={draft.prompt}
+          readOnly={!!view.inputLocked}
           onInput={(event) => {
             edit({ prompt: event.currentTarget.value });
             setCaret(event.currentTarget.selectionStart);
@@ -500,7 +526,7 @@ function ClaudeSessionComposer({
         client={keeper}
         text={draft.prompt}
         caret={caret}
-        visible={pickerVisible}
+        visible={pickerVisible && !view.inputLocked}
         region={pickerRegion}
         aboutCount={draft.about.length}
         recipient="this session"
@@ -515,6 +541,7 @@ function ClaudeSessionComposer({
           Templates
           <select
             aria-label="Session template"
+            disabled={!!view.inputLocked}
             value=""
             onChange={(event) => {
               const template = templates.find(
@@ -538,7 +565,7 @@ function ClaudeSessionComposer({
             aria-label="Session attachments"
             multiple
             accept=".txt,.md,.json,.csv,.yaml,.yml,.ts,.js,.tsx,.jsx,.py,.rs,image/png,image/jpeg,image/gif,image/webp"
-            disabled={attaching || !!view.pendingStart}
+            disabled={attaching || !!view.pendingStart || !!view.inputLocked}
             onChange={(event) => {
               const files = [...(event.currentTarget.files ?? [])];
               event.currentTarget.value = "";
@@ -576,6 +603,7 @@ function ClaudeSessionComposer({
             <button
               type="button"
               aria-label={`Remove attachment ${item.name}`}
+              disabled={!!view.inputLocked}
               onClick={() =>
                 edit({
                   attachments: draft.attachments.filter(
@@ -594,6 +622,7 @@ function ClaudeSessionComposer({
             <button
               type="button"
               aria-label={`Remove ${item.kind} ${item.id} context`}
+              disabled={!!view.inputLocked}
               onClick={() =>
                 edit({ about: draft.about.filter((value) => value !== item) })
               }
@@ -603,7 +632,7 @@ function ClaudeSessionComposer({
           </span>
         ))}
       </div>
-      <fieldset>
+      <fieldset disabled={view.inputLocked}>
         <legend>Context</legend>
         <div class="af-session-composer-row">
           <label>
@@ -793,7 +822,7 @@ function ClaudeSessionComposer({
           </label>
         </div>
       </fieldset>
-      <fieldset>
+      <fieldset disabled={view.inputLocked}>
         <legend>Smith preset</legend>
         <label>
           Source smith
@@ -850,7 +879,7 @@ function ClaudeSessionComposer({
           Save as smith unavailable
         </Button>
       </fieldset>
-      <fieldset>
+      <fieldset disabled={view.inputLocked}>
         <legend>Provider options</legend>
         <div class="af-session-composer-row">
           <label>
@@ -1007,7 +1036,8 @@ function ClaudeSessionComposer({
             !!view.pendingStart ||
             !!view.startIdentity ||
             !!view.startIdentityError ||
-            !settings
+            !settings ||
+            !!view.inputLocked
           }
           onClick={() => {
             void check();
@@ -1052,7 +1082,7 @@ function ClaudeSessionComposer({
                 onClick={() => {
                   void client.retryStart(project.id);
                 }}
-                disabled={!writesAllowed || view.starting}
+                disabled={!writesAllowed || project.archived || view.starting}
               >
                 Retry original Start
               </Button>
