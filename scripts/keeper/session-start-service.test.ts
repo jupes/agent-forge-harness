@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { ConversationState } from "../../types/conversation";
 import { ConversationError } from "../conversations/error";
 import { conversationFile } from "../conversations/paths";
@@ -24,6 +25,208 @@ import {
   keeperProposalFile,
 } from "./proposal-store";
 import { createKeeperSessionStartService } from "./session-start-service";
+
+function changeReadScope(
+  home: string,
+  workspace: string,
+  change: "removed" | "retargeted" | "archived",
+) {
+  const catalog = projectCatalogFixture(
+    change === "retargeted" ? join(workspace, "foreign") : workspace,
+  );
+  const project = catalog.projects[0];
+  if (!project) throw Error("Missing current project fixture");
+  if (change === "removed") catalog.projects = [];
+  else if (change === "archived") project.archived = true;
+  writeOwnerOnly(projectCatalogPath(home), JSON.stringify(catalog));
+}
+
+test.each([
+  "removed",
+  "retargeted",
+  "archived",
+] as const)("a %s project is rechecked across the held journal read even without a session reservation", async (change) => {
+  const h = await startTestHearth();
+  let entered = () => {},
+    release = () => {},
+    listed = 0;
+  const waiting = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const journal = createKeeperProposalStore(h.home);
+  const service = createKeeperSessionStartService({
+    home: h.home,
+    root: h.root,
+    sessions: {
+      async start() {
+        throw Error("No session dispatch is allowed");
+      },
+      list() {
+        listed++;
+        return [];
+      },
+      async read() {
+        throw Error("No reserved private session exists");
+      },
+    },
+    prepare: async () => {
+      throw Error("A recovery read cannot prepare a launch");
+    },
+  });
+  let writing: ReturnType<typeof journal.startSession> | undefined;
+  try {
+    const proposal = await seedKeeperSessionStartSource(h);
+    const original = {
+      sourceHash: proposal.sourceHash,
+      expectedRevision: 0,
+      start: sessionStartFixture(h),
+    };
+    writing = journal.startSession(
+      {
+        projectId: FIXTURE_PROJECT_ID,
+        proposalId: proposal.id,
+        request: original,
+        auditEventId: 1,
+      },
+      {
+        prepare: async () => ({ proposal, workspace: h.workspace }),
+        async execute() {
+          entered();
+          await gate;
+          return { phase: "unknown", message: "No dispatch", objects: [] };
+        },
+      },
+    );
+    await waiting; // The durable intent exists and its real journal lease is held.
+    const pending = service.read(FIXTURE_PROJECT_ID, proposal.id).then(
+      (value) => ({ value, error: null }),
+      (error: unknown) => ({ value: null, error }),
+    );
+    expect(listed).toBe(0); // The saved-journal await has not returned.
+    changeReadScope(h.home, h.workspace, change);
+    release();
+    const observed = await pending;
+    await writing;
+    if (change === "archived") {
+      expect(observed.error).toBeNull();
+      expect(observed.value?.original).toEqual(original);
+      expect(observed.value?.session).toBeNull();
+      expect(observed.value?.receipt).toBeNull();
+      expect(listed).toBe(1);
+    } else {
+      expect(observed.value).toBeNull();
+      expect(observed.error).toMatchObject({
+        status: change === "removed" ? 404 : 409,
+      });
+      expect(listed).toBe(0);
+    }
+    expect(createSessionRegistry(h.home).list(FIXTURE_PROJECT_ID)).toEqual([]);
+  } finally {
+    release();
+    await writing;
+    await service.close();
+    await h.close();
+  }
+});
+
+test.each([
+  "removed",
+  "retargeted",
+  "archived",
+] as const)("a %s project is rechecked after an already captured private page is held", async (change) => {
+  const h = await startTestHearth();
+  const fake = fakeSessionRuntime();
+  const sessions = createOwnedSessionService({
+    home: h.home,
+    root: h.root,
+    runtime: fake.runtime,
+    validateScope: async () => {},
+  });
+  let held = false,
+    entered = () => {},
+    release = () => {};
+  const waiting = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const service = createKeeperSessionStartService({
+    home: h.home,
+    root: h.root,
+    sessions: {
+      start: sessions.start,
+      list: sessions.list,
+      async read(projectId, sessionId, query) {
+        const page = await sessions.read(projectId, sessionId, query);
+        if (held) {
+          entered();
+          await gate;
+        }
+        return page;
+      },
+    },
+    prepare: async () => {},
+  });
+  try {
+    const proposal = await seedKeeperSessionStartSource(h);
+    const original = {
+      sourceHash: proposal.sourceHash,
+      expectedRevision: 0,
+      start: sessionStartFixture(h),
+    };
+    const accepted = await service.start(
+      FIXTURE_PROJECT_ID,
+      proposal.id,
+      original,
+      1,
+    );
+    if (!accepted.session) throw Error("No correlated original session");
+    await waitOwnedTurn(h, accepted.session, original.start.requestId);
+    const address = {
+      kind: "session" as const,
+      projectId: FIXTURE_PROJECT_ID,
+      sessionId: accepted.session.id,
+    };
+    const path = conversationFile(h.home, FIXTURE_PROJECT_ID, address);
+    const bytes = readFileSync(path);
+    const originalBytes = readFileSync(
+      keeperProposalFile(h.home, FIXTURE_PROJECT_ID),
+    );
+    held = true;
+    const pending = service.read(FIXTURE_PROJECT_ID, proposal.id).then(
+      (value) => ({ value, error: null }),
+      (error: unknown) => ({ value: null, error }),
+    );
+    await waiting;
+    changeReadScope(h.home, h.workspace, change);
+    release();
+    const observed = await pending;
+    if (change === "archived") {
+      expect(observed.error).toBeNull();
+      expect(observed.value?.original).toEqual(original);
+      expect(observed.value?.receipt?.turn.phase).toBe("completed");
+    } else {
+      expect(observed.value).toBeNull();
+      expect(observed.error).toMatchObject({
+        status: change === "removed" ? 404 : 409,
+      });
+    }
+    expect(readFileSync(path)).toEqual(bytes);
+    expect(
+      readFileSync(keeperProposalFile(h.home, FIXTURE_PROJECT_ID)),
+    ).toEqual(originalBytes);
+    expect(fake.runs).toHaveLength(1);
+  } finally {
+    release();
+    await service.close();
+    await sessions.close();
+    await h.close();
+  }
+});
 
 test("the verified proposal binds the edited full Start to its original owned turn, and restart reads never dispatch", async () => {
   const h = await startTestHearth();
