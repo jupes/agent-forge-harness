@@ -626,7 +626,7 @@ export function DesktopApp(): JSX.Element {
           selectedSession &&
           managedSession ? (
           <ManagedShiftSession
-            key={`${project.id}:${summary?.workspace}:${selectedSession}:${managedSelection.selection?.requestId}:${JSON.stringify(selectedOwner)}`}
+            key={`${project.id}:${summary?.workspace}:${selectedSession}`}
             projectId={project.id}
             workspace={summary?.workspace ?? ""}
             sessionId={selectedSession}

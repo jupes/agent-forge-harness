@@ -264,6 +264,28 @@ test("a selected metadata origin cannot open a differently attributed private at
   f.observer.close();
 });
 
+test("a changed receipt address cannot project the held observer before replacement effects run", async () => {
+  const f = fixture();
+  await f.observer.refresh();
+  f.emit(page());
+  const address = { projectId, originalRequestId, shiftId, workspace };
+  expect(f.observer.forAddress(address)?.page?.frames).toHaveLength(100);
+  expect(
+    f.observer.forAddress({
+      ...address,
+      originalRequestId: "42509d94-d509-4653-af8b-f4792fc04899",
+    }),
+  ).toBeNull();
+  expect(
+    f.observer.forAddress({
+      ...address,
+      selectedSessionId: "session-6ee84d5e-7727-479e-9182-b862eb904afa",
+    }),
+  ).toBeNull();
+  expect(f.observer.forAddress({ ...address })?.page?.frames).toHaveLength(100);
+  f.observer.close();
+});
+
 test("the dedicated observer reads beyond100 private frames and never gains per-attempt control authority", async () => {
   const f = fixture();
   await f.observer.refresh();

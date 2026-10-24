@@ -7,6 +7,7 @@ import { managedShiftHref } from "./managed-shift-navigation";
 import {
   createManagedShiftSessionClient,
   managedShiftTarget,
+  managedShiftTargetKey,
 } from "./managed-shift-session-client";
 import { observationHref } from "./ObservedSessionDetail";
 import { ProjectShiftAttempts } from "./ProjectShiftAttempts";
@@ -46,7 +47,7 @@ export function ManagedShiftSession({
       owner,
       expectedRequestId,
     ),
-    targetKey = JSON.stringify(target);
+    targetKey = managedShiftTargetKey(target);
   useEffect(() => {
     void client.activate(target);
     return () => {
@@ -54,7 +55,7 @@ export function ManagedShiftSession({
     };
   }, [client, targetKey]);
   useEffect(() => () => client.close(), [client]);
-  const view = client.get(),
+  const view = client.forTarget(target),
     receipt = target ? view.receipt : null;
   return (
     <section

@@ -20,20 +20,45 @@ export interface ShiftAttemptView {
   error: string | null;
   notice: string;
 }
-/** Dedicated private observer. It has no action/Stop/send dependency or process-control authority. */
-export function createShiftAttemptObserver(deps: {
+export interface ShiftAttemptAddress {
   projectId: string;
   originalRequestId: string;
   shiftId: string;
   workspace: string;
-  /** A direct link pins one address; absence retains the original follow-latest view. */
   selectedSessionId?: string;
   expectedOrigin?: ProjectShiftAttemptOrigin;
-  read(): Promise<unknown>;
-  stream(sessionId: string): StreamTransport;
-  changed(): void;
-  timers?: Timers;
-}) {
+}
+export function shiftAttemptAddressKey(address: ShiftAttemptAddress): string {
+  const origin = address.expectedOrigin;
+  return JSON.stringify([
+    address.projectId,
+    address.originalRequestId,
+    address.shiftId,
+    workspaceKey(address.workspace),
+    address.selectedSessionId ?? null,
+    origin
+      ? [
+          origin.kind,
+          origin.projectId,
+          origin.originalRequestId,
+          origin.shiftId,
+          origin.runId,
+          origin.beadId,
+          origin.attempt,
+        ]
+      : null,
+  ]);
+}
+/** Dedicated private observer. It has no action/Stop/send dependency or process-control authority. */
+export function createShiftAttemptObserver(
+  deps: ShiftAttemptAddress & {
+    read(): Promise<unknown>;
+    stream(sessionId: string): StreamTransport;
+    changed(): void;
+    timers?: Timers;
+  },
+) {
+  const addressKey = shiftAttemptAddressKey(deps);
   const state: ShiftAttemptView = {
     index: null,
     selectedId: null,
@@ -270,6 +295,10 @@ export function createShiftAttemptObserver(deps: {
   };
   return {
     get: () => state,
+    forAddress: (address: ShiftAttemptAddress) =>
+      !disposed && shiftAttemptAddressKey(address) === addressKey
+        ? state
+        : null,
     async refresh() {
       if (disposed || state.loading) return;
       state.loading = true;

@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import {
   createManagedShiftSessionClient,
   managedShiftTarget,
+  managedShiftTargetKey,
 } from "../../apps/desktop/src/managed-shift-session-client";
 import type { ProjectShiftReceipt } from "../../types/project-shifts";
 import { projectShiftRequestHash } from "../shifts/registry";
@@ -131,6 +132,29 @@ test("a held prior original cannot replace the new selection after its read sett
     next.origin.originalRequestId,
   );
   expect(client.get().loading).toBe(false);
+  client.close();
+});
+
+test("render projection is fenced to the current immutable target before selection effects run", async () => {
+  const client = createManagedShiftSessionClient({
+    read: async () => receipt(),
+    changed() {},
+  });
+  await client.activate(target);
+  const next = {
+    ...target,
+    sessionId: "session-6ee84d5e-7727-479e-9182-b862eb904afa",
+  };
+  expect(client.forTarget(target).receipt).not.toBeNull();
+  expect(client.forTarget(next).receipt).toBeNull();
+  expect(client.forTarget(next).loading).toBe(true);
+  expect(client.forTarget(null).receipt).toBeNull();
+  expect(
+    client.forTarget({ ...target, origin: { ...target.origin } }).receipt,
+  ).not.toBeNull();
+  expect(
+    managedShiftTargetKey({ ...target, origin: { ...target.origin } }),
+  ).toBe(managedShiftTargetKey(target));
   client.close();
 });
 

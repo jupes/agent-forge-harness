@@ -14,7 +14,9 @@ import { keeperTurns } from "./keeper-model";
 import { managedShiftHref } from "./managed-shift-navigation";
 import {
   createShiftAttemptObserver,
+  type ShiftAttemptAddress,
   type ShiftAttemptObserver,
+  shiftAttemptAddressKey,
 } from "./project-shift-attempt-client";
 import {
   SessionActivity,
@@ -39,15 +41,19 @@ export function ProjectShiftAttempts({
   const { intent } = receipt;
   const [, paint] = useState(0),
     held = useRef<ShiftAttemptObserver | null>(null);
+  const address: ShiftAttemptAddress = {
+    projectId: intent.projectId,
+    originalRequestId: intent.request.requestId,
+    shiftId: intent.shiftId,
+    workspace: intent.workspace,
+    ...(selectedSessionId !== undefined ? { selectedSessionId } : {}),
+    ...(expectedOrigin !== undefined ? { expectedOrigin } : {}),
+  };
+  const addressKey = shiftAttemptAddressKey(address);
   useEffect(() => {
     const base = `/projects/${encodeURIComponent(intent.projectId)}/shifts/requests/${encodeURIComponent(intent.request.requestId)}/attempts`;
     const observer = createShiftAttemptObserver({
-      projectId: intent.projectId,
-      originalRequestId: intent.request.requestId,
-      shiftId: intent.shiftId,
-      workspace: intent.workspace,
-      ...(selectedSessionId !== undefined ? { selectedSessionId } : {}),
-      ...(expectedOrigin !== undefined ? { expectedOrigin } : {}),
+      ...address,
       changed: () => paint((value) => value + 1),
       read: () =>
         readOperatorRoute(base, { ...pageReads(), fetch: operatorRead }),
@@ -73,16 +79,9 @@ export function ProjectShiftAttempts({
       window.clearInterval(timer);
       observer.close();
     };
-  }, [
-    intent.projectId,
-    intent.request.requestId,
-    intent.shiftId,
-    intent.workspace,
-    selectedSessionId,
-    JSON.stringify(expectedOrigin),
-  ]);
-  const observer = held.current,
-    view = observer?.get(),
+  }, [addressKey]);
+  const view = held.current?.forAddress(address),
+    observer = view ? held.current : null,
     page = view?.page;
   const current = page?.turns[0],
     first = page?.frames[0]?.event;
@@ -105,7 +104,7 @@ export function ProjectShiftAttempts({
           </p>
         </div>
         <Button
-          aria-disabled={view?.loading}
+          aria-disabled={!observer || view?.loading}
           onClick={() => {
             if (!view?.loading) void observer?.refresh();
           }}

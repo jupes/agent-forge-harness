@@ -11,6 +11,25 @@ export interface ManagedShiftTarget {
   origin: ProjectShiftAttemptOrigin;
 }
 
+export function managedShiftTargetKey(
+  target: ManagedShiftTarget | null,
+): string | null {
+  if (!target) return null;
+  const { origin } = target;
+  return JSON.stringify([
+    target.projectId,
+    workspaceKey(target.workspace),
+    target.sessionId,
+    origin.kind,
+    origin.projectId,
+    origin.originalRequestId,
+    origin.shiftId,
+    origin.runId,
+    origin.beadId,
+    origin.attempt,
+  ]);
+}
+
 /** A checked metadata address selects the dedicated reader; it does not authorize the body. */
 export function managedShiftTarget(
   projectId: string,
@@ -52,11 +71,17 @@ export function createManagedShiftSessionClient(deps: {
     error: "",
   };
   let epoch = 0,
-    closed = false;
+    closed = false,
+    activeKey: string | null = null;
   return {
     get: () => state,
+    forTarget: (target: ManagedShiftTarget | null) =>
+      !closed && managedShiftTargetKey(target) === activeKey
+        ? state
+        : { receipt: null, loading: target !== null, error: "" },
     async activate(target: ManagedShiftTarget | null) {
       const owner = ++epoch;
+      activeKey = managedShiftTargetKey(target);
       state.receipt = null;
       state.loading = target !== null;
       state.error = "";
@@ -90,6 +115,7 @@ export function createManagedShiftSessionClient(deps: {
     close() {
       closed = true;
       epoch++;
+      activeKey = null;
       state.receipt = null;
       state.loading = false;
     },
