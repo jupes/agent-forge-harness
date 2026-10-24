@@ -194,7 +194,7 @@ export async function verifyAttendedProjectShifts(
       .parse(
         await tools.evaluate(
           current,
-          "Array.from(document.querySelectorAll('.af-shift-row')).map(row=>row.getAttribute('data-shift'))",
+          "Array.from(document.querySelectorAll('.af-shift-row[data-shift]')).map(row=>row.getAttribute('data-shift'))",
         ),
       );
     await tools.waitForPage(
