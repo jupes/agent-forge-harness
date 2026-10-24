@@ -222,6 +222,9 @@ export async function runGeminiChatFixture() {
         status: "completed",
       });
       complete();
+      // This successful fixture leaves its helper for the held-tree owner to reap.
+      // The helper must not keep the native provider alive after its actual result.
+      if (mode === "permission-tree") process.exit(0);
     } else throw Error("Unsupported client fixture method");
   };
   let buffer = "";

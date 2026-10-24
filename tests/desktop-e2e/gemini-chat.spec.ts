@@ -105,6 +105,18 @@ function running(pid: number) {
     return false;
   }
 }
+function expectLatestTreeDead() {
+  const processCall = calls()
+      .filter((row) => row.kind === "start")
+      .at(-1),
+    helper = calls()
+      .filter((row) => row.kind === "helper")
+      .at(-1);
+  if (!processCall?.pid || !helper?.pid)
+    throw Error("No actual inert ACP tree witness");
+  expect(running(processCall.pid)).toBe(false);
+  expect(running(helper.pid)).toBe(false);
+}
 function deferred() {
   let release = () => {};
   const promise = new Promise<void>((resolve) => {
@@ -486,6 +498,7 @@ test("Gemini ACP composer keyboard-starts two explicit native turns with once ch
   await keyboardFocus(page, allow);
   await page.keyboard.press("Enter");
   await expect.poll(() => saved(record.id).turns[0]?.phase).toBe("completed");
+  expectLatestTreeDead();
   if (decisionFailure) throw decisionFailure;
   expect(startBodies).toHaveLength(1);
   const original = geminiChatStartSchema.parse(startBodies[0]);
@@ -562,6 +575,7 @@ test("Gemini ACP composer keyboard-starts two explicit native turns with once ch
     .getByRole("button", { name: "Reject once", exact: true })
     .click();
   await expect.poll(() => saved(record.id).turns[1]?.phase).toBe("completed");
+  expectLatestTreeDead();
   expect(promptCount()).toBe(before + 2);
   expect(answerCount()).toBe(answers + 2);
   expect(decisionBodies).toHaveLength(2);
