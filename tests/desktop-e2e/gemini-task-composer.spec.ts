@@ -240,10 +240,17 @@ test("Gemini bead composer keeps native defaults omitted, reviews private text a
     "disabled",
     true,
   );
-  await expect(dialog.locator('option[value="chat"]')).toHaveJSProperty(
-    "disabled",
-    true,
-  );
+  const sessionMode = dialog.getByRole("combobox", {
+    name: "Session mode",
+    exact: true,
+  });
+  await expect(sessionMode).toHaveValue("task");
+  await expect(
+    sessionMode.getByRole("option", {
+      name: "Chat · native session and once permissions",
+      exact: true,
+    }),
+  ).toHaveJSProperty("disabled", false);
   await expect(
     dialog
       .getByRole("combobox", { name: "Session provider route" })
