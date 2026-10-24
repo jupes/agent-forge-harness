@@ -24,6 +24,93 @@ const scratch = scratchDirs(),
 afterEach(() => scratch.cleanup());
 afterAll(() => binaries.cleanup());
 let command: string;
+
+/** The original supervised run bounds readiness; no second deadline is invented here. */
+async function heldHelpEntry(
+  read: () => Record<string, unknown>[],
+  nonce: string,
+  original: Promise<unknown>,
+): Promise<{ pid: number }> {
+  const controller = new AbortController();
+  const waiting = (async () => {
+    while (!controller.signal.aborted) {
+      const found = read().find(
+        (row) => row.kind === "help" && row.nonce === nonce,
+      );
+      if (found) {
+        const pid = found.pid;
+        if (typeof pid !== "number" || !Number.isSafeInteger(pid) || pid <= 0)
+          throw Error("Invalid owned help-probe process witness");
+        return { pid };
+      }
+      await Bun.sleep(10);
+    }
+    return null;
+  })();
+  try {
+    const entry = await Promise.race([
+      waiting,
+      original.then(() => {
+        throw Error(
+          "The original run settled before its held help-probe entry",
+        );
+      }),
+    ]);
+    if (!entry) throw Error("The help-probe witness was cancelled");
+    return entry;
+  } finally {
+    controller.abort();
+    await waiting;
+  }
+}
+
+test("the help-entry witness ignores another nonce and retains the exact owned process", async () => {
+  const nonce = randomUUID(),
+    records: Record<string, unknown>[] = [
+      { kind: "help", nonce: randomUUID(), pid: 123 },
+    ];
+  let settled = false,
+    finishOriginal = () => {};
+  const original = new Promise<void>((resolve) => {
+    finishOriginal = resolve;
+  });
+  const waiting = heldHelpEntry(() => records, nonce, original).then(
+    (entry) => {
+      settled = true;
+      return entry;
+    },
+  );
+  try {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(settled).toBe(false);
+    records.push({ kind: "help", nonce, pid: 456 });
+    expect(await waiting).toEqual({ pid: 456 });
+  } finally {
+    finishOriginal();
+    await waiting;
+  }
+});
+
+test("early run refusal and completion cancel the marker waiter without another read", async () => {
+  const failure = new Error("fixture capability probe refused");
+  let reads = 0;
+  const read = () => {
+    reads++;
+    return [];
+  };
+  await expect(
+    heldHelpEntry(read, randomUUID(), Promise.reject(failure)),
+  ).rejects.toBe(failure);
+  await expect(
+    heldHelpEntry(read, randomUUID(), Promise.resolve()),
+  ).rejects.toThrow(
+    "The original run settled before its held help-probe entry",
+  );
+  const ended = reads;
+  await Bun.sleep(20);
+  expect(reads).toBe(ended);
+});
+
 beforeAll(async () => {
   command = join(
     binaries.make("gemini-chat-binary-"),
@@ -448,6 +535,54 @@ test.each(
     expect(outcome.reason).toBe("Synthetic authentication required");
 });
 
+test("abandoning held preparation aborts and joins its actual probe without a Chat prompt", async () => {
+  const f = fixture(),
+    helpNonce = randomUUID(),
+    controller = new AbortController(),
+    prepared = await f.runtime.prepare({
+      smith: "gemini-example",
+      launch: f.launch,
+    });
+  writeFileSync(
+    `${f.log}.control`,
+    JSON.stringify({ mode: "hold-help", helpNonce }),
+  );
+  const events: GeminiChatRuntimeEvent[] = [];
+  const original = f.runtime.run(
+    { prepared, requestId: randomUUID(), resume: null },
+    async (event) => {
+      events.push(event);
+    },
+    controller.signal,
+    noPermission,
+  );
+  // Keep the original rejection observed even if a readiness assertion fails.
+  const pending = original.then(
+    (outcome) => outcome,
+    (error: unknown) => error,
+  );
+  let pid = 0;
+  try {
+    const entry = await heldHelpEntry(f.records, helpNonce, original);
+    pid = entry.pid;
+    expect(alive(pid)).toBe(true);
+    expect(events).toEqual([]);
+  } finally {
+    controller.abort();
+    writeFileSync(`${f.log}.help-release`, helpNonce);
+    const outcome = await pending;
+    expect(outcome).toMatchObject({
+      phase: "failed",
+      reason: "The Gemini Chat prompt was stopped before dispatch.",
+      sessionId: null,
+    });
+    if (pid) expect(await gone(pid)).toBe(true);
+  }
+  expect(events).toEqual([]);
+  expect(f.records().filter((row) => row.kind === "start")).toEqual([]);
+  expect(methodCount(f, "session/prompt")).toBe(0);
+});
+
 test.each([
   "process",
   "identity",
@@ -736,13 +871,21 @@ test.each([
     cwd: link,
     context: { projectId: "test-project", repository: f.root, worktree: link },
   };
+  const controller = new AbortController(),
+    helpNonce = randomUUID();
+  let pending: Promise<unknown> | undefined,
+    heldPid = 0,
+    settled = false;
   try {
     const prepared = await f.runtime.prepare({
       smith: "gemini-example",
       launch,
     });
     if (during)
-      writeFileSync(`${f.log}.control`, JSON.stringify({ mode: "hold-help" }));
+      writeFileSync(
+        `${f.log}.control`,
+        JSON.stringify({ mode: "hold-help", helpNonce }),
+      );
     const retarget = () => {
       detach();
       symlinkSync(
@@ -753,28 +896,33 @@ test.each([
     };
     if (!during) retarget();
     let persisted = 0;
-    const pending = f.runtime
-      .run(
-        { prepared, requestId: randomUUID(), resume: null },
-        async () => {
-          persisted++;
-        },
-        new AbortController().signal,
-        noPermission,
-      )
-      .then(
-        () => null,
-        (error: unknown) => error,
-      );
+    const original = f.runtime.run(
+      { prepared, requestId: randomUUID(), resume: null },
+      async () => {
+        persisted++;
+      },
+      controller.signal,
+      noPermission,
+    );
+    pending = original.then(
+      () => {
+        settled = true;
+        return null;
+      },
+      (error: unknown) => {
+        settled = true;
+        return error;
+      },
+    );
     if (during) {
-      const deadline = Date.now() + 3000;
-      while (
-        f.records().filter((row) => row.kind === "help").length < 2 &&
-        Date.now() < deadline
-      )
-        await Bun.sleep(10);
+      const entry = await heldHelpEntry(f.records, helpNonce, original);
+      heldPid = entry.pid;
       expect(f.records().filter((row) => row.kind === "help")).toHaveLength(2);
+      expect(alive(heldPid)).toBe(true);
+      expect(settled).toBe(false);
       retarget();
+      expect(settled).toBe(false);
+      writeFileSync(`${f.log}.help-release`, helpNonce);
     }
     const refusal = await pending;
     expect(refusal).toBeInstanceOf(Error);
@@ -795,6 +943,10 @@ test.each([
     if (!during)
       expect(f.records().map((row) => row.kind)).toEqual(["version", "help"]);
   } finally {
+    controller.abort();
+    if (during) writeFileSync(`${f.log}.help-release`, helpNonce);
+    if (pending) await pending;
+    if (heldPid) expect(await gone(heldPid)).toBe(true);
     detach();
   }
 });
