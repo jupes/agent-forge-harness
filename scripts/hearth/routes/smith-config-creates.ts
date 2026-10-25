@@ -104,7 +104,7 @@ export function smithConfigCreateRoutes(service: SmithCreateService) {
     kind: "action",
     method: "POST",
     path: "/config/smiths/preview",
-    action: "config.smith.preview",
+    action: "smith.config.preview",
     validate: previewRequest,
     subject: (input) => ({ target: input.target }),
     effect(input) {
@@ -126,7 +126,7 @@ export function smithConfigCreateRoutes(service: SmithCreateService) {
     kind: "action",
     method: "POST",
     path: "/config/smiths/creates",
-    action: "config.smith.create",
+    action: "smith.config.create",
     validate: createRequest,
     subject: (input) => ({ target: input.target }),
     async effect(input) {

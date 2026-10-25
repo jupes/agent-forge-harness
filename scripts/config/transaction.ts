@@ -100,24 +100,26 @@ export function prepareConfigTransaction(input: {
   target: ConfigTarget;
   /** Trusted internal test seam; never supplied by an operator request. */
   coordinationRoot?: string;
+  /** Frozen trusted logical selectors; their current physical parents are resolved per preparation. */
+  fileSelectors?: Readonly<Record<ConfigTarget, string>>;
   /** Trusted caller policy for every source capture/readback, never a public request field. */
   maxSourceBytes?: number;
 }): PreparedConfigTransaction {
   if (input.target !== "user" && input.target !== "workspace")
     refuse("Expected user or workspace target.");
   const maxSourceBytes = checkedConfigSourceLimit(input.maxSourceBytes),
-    osHome = homedir();
-  const addresses = {
-    user: address(machineConfigFile(input.options)),
-    workspace: address(join(input.options.harnessRoot, "agent-forge.toml")),
-  };
-  const coordination = address(
-    join(
+    coordinationRoot =
       input.coordinationRoot ??
-        join(osHome, ".agent-forge-config-transactions"),
-      "write.lock.db",
-    ),
-  );
+      join(homedir(), ".agent-forge-config-transactions");
+  const fileSelectors = input.fileSelectors ?? {
+    user: machineConfigFile(input.options),
+    workspace: join(input.options.harnessRoot, "agent-forge.toml"),
+  };
+  const addresses = {
+    user: address(fileSelectors.user),
+    workspace: address(fileSelectors.workspace),
+  };
+  const coordination = address(join(coordinationRoot, "write.lock.db"));
   const context: PreparedConfigTransaction = Object.freeze({
     target: input.target,
     files: Object.freeze({

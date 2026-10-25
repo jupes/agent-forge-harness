@@ -1,6 +1,7 @@
 /** Trusted preview/create coordinator; routes and request authority live above it. */
 import { createHash } from "node:crypto";
 import { lstatSync, realpathSync } from "node:fs";
+import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type {
   SmithConfigCreateReceipt,
@@ -8,7 +9,7 @@ import type {
   SmithConfigPreviewRequest,
 } from "../../types/smith-config-create";
 import { agentForgeHome } from "../agent-forge-home";
-import type { LoadOptions } from "./load";
+import { type LoadOptions, machineConfigFile } from "./load";
 import {
   createSmithCreateJournalCore,
   SmithCreateJournalError,
@@ -25,7 +26,6 @@ import {
 import {
   type ConfigPairedRevision,
   type ConfigWriteTransaction,
-  type PreparedConfigTransaction,
   prepareConfigTransaction,
   readConfigTransactionSources,
   withConfigTransaction,
@@ -147,21 +147,22 @@ export function createSmithCreateService(
       harnessRoot: checkout.path,
       env: EMPTY_ENV,
     }),
+    fileSelectors = Object.freeze({
+      user: resolve(machineConfigFile(options)),
+      workspace: resolve(join(checkout.path, "agent-forge.toml")),
+    }),
+    coordinationRoot = resolve(
+      controls.coordinationRoot ??
+        join(homedir(), ".agent-forge-config-transactions"),
+    ),
     prepare = (target: "user" | "workspace") =>
       prepareConfigTransaction({
         options,
         target,
         maxSourceBytes: SMITH_CONFIG_CREATE_LIMITS.sourceBytes,
-        ...(controls.coordinationRoot === undefined
-          ? {}
-          : { coordinationRoot: controls.coordinationRoot }),
+        coordinationRoot,
+        fileSelectors,
       }),
-    contexts: Readonly<
-      Record<"user" | "workspace", PreparedConfigTransaction>
-    > = Object.freeze({
-      user: prepare("user"),
-      workspace: prepare("workspace"),
-    }),
     owner: SmithCreateOwner = Object.freeze({
       version: 1,
       checkout: {
@@ -170,8 +171,8 @@ export function createSmithCreateService(
         ino: checkout.ino,
       },
       profile,
-      userSelector: contexts.user.files.user,
-      workspaceSelector: contexts.workspace.files.workspace,
+      userSelector: canonical(fileSelectors.user),
+      workspaceSelector: canonical(fileSelectors.workspace),
     }),
     storage = controls.storage ?? createSmithCreateJournalStorage(profile),
     journal = createSmithCreateJournalCore(storage, owner, controls.now),
@@ -205,7 +206,7 @@ export function createSmithCreateService(
     const checked = smithConfigPreviewRequestSchema.safeParse(value);
     if (!checked.success)
       throw new Error("Invalid Smith create preview request.");
-    const found = readSources(contexts[checked.data.target]);
+    const found = readSources(prepare(checked.data.target));
     return snapshotCandidate(checked.data, found.revision, found.sources);
   };
 
@@ -221,8 +222,9 @@ export function createSmithCreateService(
       return await journal.reserve(request, async (writer) => {
         let attemptedMarkerBegan = false;
         try {
+          const context = prepare(request.target);
           await runTransaction(
-            contexts[request.target],
+            context,
             (transaction: ConfigWriteTransaction) => {
               if (
                 JSON.stringify(revisionTokens(transaction.revision)) !==

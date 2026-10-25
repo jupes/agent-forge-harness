@@ -5,6 +5,8 @@ import {
   mkdirSync,
   readFileSync,
   realpathSync,
+  rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -404,4 +406,89 @@ test("real private journal and config publication survive recreation after curre
   expect(duplicate).toEqual(created);
   expect(readFileSync(workspaceFile)).toEqual(beforeDuplicate);
   expect(beforeDuplicate).toEqual(corrupt);
+});
+
+test("logical config selectors survive parent alias retarget while new work resolves the current physical target", async () => {
+  const base = scratch.make("smith-create-alias-retarget-"),
+    checkout = join(base, "checkout"),
+    profile = join(base, "profile"),
+    home = join(base, "os-home"),
+    targetA = join(base, "config-a"),
+    targetB = join(base, "config-b"),
+    alias = join(home, ".agent-forge"),
+    coordinationRoot = join(base, "global-lock");
+  for (const path of [checkout, profile, home, targetA, targetB])
+    mkdirSync(path);
+  const link = (target: string) =>
+    symlinkSync(
+      target,
+      alias,
+      process.platform === "win32" ? "junction" : "dir",
+    );
+  link(realpathSync.native(targetA));
+  const options = {
+      harnessRoot: realpathSync.native(checkout),
+      home: realpathSync.native(home),
+      env: {},
+    },
+    controls = {
+      profileHome: realpathSync.native(profile),
+      coordinationRoot,
+    },
+    first = createSmithCreateService({ options }, controls),
+    reviewed = first.preview({ target: "user", smith }),
+    originalRequest: SmithConfigCreateRequest = {
+      requestId: randomUUID().toLowerCase(),
+      target: "user",
+      smith,
+      expectedRevision: reviewed.expectedRevision,
+    };
+
+  const original = await first.create(originalRequest);
+  expect(original.result.phase).toBe("confirmed");
+  expect(
+    original.result.phase === "confirmed" && original.result.publication.file,
+  ).toBe(join(realpathSync.native(targetA), "config.toml"));
+  const bytesA = readFileSync(join(targetA, "config.toml"));
+
+  rmSync(alias, { recursive: true, force: true });
+  link(realpathSync.native(targetB));
+  let previewReads = 0;
+  const recreated = createSmithCreateService(
+    { options },
+    {
+      ...controls,
+      readSources(context) {
+        previewReads++;
+        return readConfigTransactionSources(context);
+      },
+    },
+  );
+  expect(recreated.readOriginal(originalRequest.requestId)).toEqual(original);
+  expect(await recreated.create(originalRequest)).toEqual(original);
+  expect(previewReads).toBe(0);
+  expect(readFileSync(join(targetA, "config.toml"))).toEqual(bytesA);
+  expect(existsSync(join(targetB, "config.toml"))).toBe(false);
+
+  const nextSmith = { ...smith, name: "after-alias-retarget" },
+    nextPreview = first.preview({ target: "user", smith: nextSmith });
+  expect(nextPreview.file).toBe(
+    join(realpathSync.native(targetB), "config.toml"),
+  );
+  const nextRequest: SmithConfigCreateRequest = {
+    requestId: randomUUID().toLowerCase(),
+    target: "user",
+    smith: nextSmith,
+    expectedRevision: nextPreview.expectedRevision,
+  };
+  const nextReceipt = await first.create(nextRequest);
+  expect(nextReceipt.result.phase).toBe("confirmed");
+  expect(
+    nextReceipt.result.phase === "confirmed" &&
+      nextReceipt.result.publication.file,
+  ).toBe(join(realpathSync.native(targetB), "config.toml"));
+  expect(readFileSync(join(targetA, "config.toml"))).toEqual(bytesA);
+  expect(readFileSync(join(targetB, "config.toml"), "utf8")).toContain(
+    "after-alias-retarget",
+  );
 });

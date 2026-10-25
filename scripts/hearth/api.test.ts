@@ -3490,6 +3490,7 @@ describe("every read row (iterating the table)", () => {
     seedProjectBeadWriteFixture(h);
     const before = seedActivityReadFixture(h);
     seedSmithVerificationRead(h);
+    await seedSmithCreateOriginal(h);
     await seedKeeperSessionStartHistory(h);
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");

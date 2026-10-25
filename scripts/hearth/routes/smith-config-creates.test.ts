@@ -147,8 +147,8 @@ test("a post-confirmation lost response, changed-body collision and exact retry 
   expect(firstResponse.status).toBe(503);
   expect((await firstResponse.json()).error).toContain("response loss");
   expect(h.events(["operator.action"]).map((event) => event.payload)).toEqual([
-    { action: "config.smith.preview", surface: "api", target: "workspace" },
-    { action: "config.smith.create", surface: "api", target: "workspace" },
+    { action: "smith.config.preview", surface: "api", target: "workspace" },
+    { action: "smith.config.create", surface: "api", target: "workspace" },
   ]);
 
   const originalResponse = await fetch(

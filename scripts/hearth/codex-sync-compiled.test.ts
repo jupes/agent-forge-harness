@@ -1,12 +1,18 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
+import { randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   writeFileSync,
 } from "node:fs";
 import { join, resolve } from "node:path";
+import {
+  smithConfigCreateReceiptSchema,
+  smithConfigPreviewSchema,
+} from "../config/smith-create-protocol";
 import { syncCodexSkills } from "../executors/codex-sync";
 import { buildChildEnv } from "../executors/env";
 import { verifyKeeperReader } from "../keeper/verify-reader";
@@ -14,11 +20,28 @@ import { createCodexTaskRuntime } from "../sessions/codex-task-runtime";
 import { verifyProjectShiftEntry } from "../shifts/verify-entry";
 import { syncCodex } from "../sync-codex";
 import { scratchDirs } from "../test-scratch";
+import { lockPath } from "./home";
+import { readLock } from "./lock";
+import { OPERATOR_HEADER } from "./paths";
 
 const scratch = scratchDirs();
 const root = resolve(import.meta.dir, "../..");
 let executable: string;
 let provider: string;
+type CompiledSmithChild = Bun.Subprocess<"ignore", "ignore", "pipe">;
+const withTimeout = async <T>(value: Promise<T>, ms: number, label: string) => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      value,
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(label)), ms);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+};
 function environment(home: string) {
   const base = Object.fromEntries(
     Object.entries(buildChildEnv(process.env, [])).filter(
@@ -315,3 +338,206 @@ test("the same compiled production entry retains the sealed Keeper reader", asyn
 test("the same compiled production entry consumes only an authorized original and never repeats engine admission", async () => {
   await verifyProjectShiftEntry([executable]);
 }, 15_000);
+
+test("compiled Smith create survives restart and serves its immutable original before corrupt config reads", async () => {
+  const root = realpathSync.native(plantedRoot());
+  const profilePath = join(root, ".compiled-smith-profile");
+  mkdirSync(profilePath);
+  const profile = realpathSync.native(profilePath);
+  const privateHome = join(profile, "private-home");
+  const configFile = join(root, "agent-forge.toml");
+  const smith = {
+    name: "compiled-receipt-smith",
+    provider: "custom",
+    model: "reviewed-model",
+    effort: "high",
+    enabled: true,
+    tags: ["compiled-checkpoint"],
+  };
+  const startServer = (): {
+    child: CompiledSmithChild;
+    privateHome: string;
+    stderr: Promise<string>;
+  } => {
+    const child = Bun.spawn([executable, "--root", root], {
+      cwd: root,
+      env: { ...environment(profile), HEARTH_PORT: "0" },
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "pipe",
+      windowsHide: true,
+    });
+    return { child, privateHome, stderr: new Response(child.stderr).text() };
+  };
+  const stopChild = async (
+    server: ReturnType<typeof startServer>,
+    assertGraceful: boolean,
+  ) => {
+    let graceful = true,
+      code: number;
+    if (server.child.exitCode !== null) code = server.child.exitCode;
+    else {
+      server.child.kill("SIGTERM");
+      try {
+        code = await withTimeout(
+          server.child.exited,
+          3000,
+          "Graceful hearth stop timed out",
+        );
+      } catch {
+        graceful = false;
+        server.child.kill("SIGKILL");
+        code = await withTimeout(
+          server.child.exited,
+          3000,
+          "Hard-stopped hearth did not exit",
+        );
+      }
+    }
+    const stderr = await withTimeout(
+      server.stderr,
+      3000,
+      "Hearth stderr did not drain",
+    );
+    const result = { code, stderr, graceful };
+    if (assertGraceful)
+      expect(result, JSON.stringify(result)).toEqual({
+        code: 0,
+        stderr: "",
+        graceful: true,
+      });
+    return result;
+  };
+  const waitForServer = async (server: ReturnType<typeof startServer>) => {
+    const deadline = Date.now() + 10_000;
+    let lock = readLock(lockPath(server.privateHome, root));
+    while (
+      !lock ||
+      lock.pid !== server.child.pid ||
+      !existsSync(lock.tokenFile)
+    ) {
+      if (server.child.exitCode !== null || Date.now() > deadline) {
+        const detail = await stopChild(server, false);
+        throw new Error(
+          `Compiled Smith hearth failed to publish its lock/token (${detail.code}): ${detail.stderr.slice(-2000)}`,
+        );
+      }
+      await Bun.sleep(20);
+      lock = readLock(lockPath(server.privateHome, root));
+    }
+    expect(lock.pid).toBe(server.child.pid);
+    return {
+      url: `http://127.0.0.1:${lock.port}`,
+      token: readFileSync(lock.tokenFile, "utf8").trim(),
+    };
+  };
+  const stopServer = async (server: ReturnType<typeof startServer>) => {
+    await stopChild(server, true);
+  };
+  const send = (
+    server: Awaited<ReturnType<typeof waitForServer>>,
+    path: string,
+    init: RequestInit = {},
+  ) =>
+    fetch(`${server.url}${path}`, {
+      ...init,
+      headers: {
+        Origin: server.url,
+        [OPERATOR_HEADER]: server.token,
+        ...(init.headers ?? {}),
+      },
+      signal: AbortSignal.timeout(5000),
+    });
+
+  let first = startServer();
+  try {
+    const firstAddress = await waitForServer(first);
+    const previewResponse = await send(
+      firstAddress,
+      "/__agent-forge/config/smiths/preview",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target: "workspace", smith }),
+      },
+    );
+    expect(previewResponse.status).toBe(200);
+    const previewBody = await previewResponse.json();
+    expect(previewBody.ok).toBe(true);
+    const preview = smithConfigPreviewSchema.parse(previewBody.data);
+    const request = {
+      requestId: randomUUID().toLowerCase(),
+      target: "workspace" as const,
+      smith,
+      expectedRevision: preview.expectedRevision,
+    };
+    const createResponse = await send(
+      firstAddress,
+      "/__agent-forge/config/smiths/creates",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(request),
+      },
+    );
+    expect(createResponse.status).toBe(200);
+    const createBody = await createResponse.json();
+    expect(createBody.ok).toBe(true);
+    const receipt = smithConfigCreateReceiptSchema.parse(createBody.data);
+    expect(receipt.result.phase).toBe("confirmed");
+    expect(existsSync(join(privateHome, "smith-create-journal"))).toBe(true);
+    expect(existsSync(join(privateHome, "config.toml"))).toBe(false);
+    await stopServer(first);
+
+    const corrupt = "this is not valid TOML = [\n";
+    writeFileSync(configFile, corrupt);
+    first = startServer();
+    const restarted = await waitForServer(first);
+    const originalResponse = await send(
+      restarted,
+      `/__agent-forge/smiths/creates/${request.requestId}`,
+    );
+    expect(originalResponse.status).toBe(200);
+    const originalBody = await originalResponse.json();
+    expect(smithConfigCreateReceiptSchema.parse(originalBody.data)).toEqual(
+      receipt,
+    );
+
+    const retryResponse = await send(
+      restarted,
+      "/__agent-forge/config/smiths/creates",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(request),
+      },
+    );
+    expect(retryResponse.status).toBe(200);
+    const retryBody = await retryResponse.json();
+    expect(smithConfigCreateReceiptSchema.parse(retryBody.data)).toEqual(
+      receipt,
+    );
+
+    const changed = {
+      ...request,
+      smith: { ...smith, model: "different-model" },
+    };
+    const conflict = await send(
+      restarted,
+      "/__agent-forge/config/smiths/creates",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(changed),
+      },
+    );
+    expect(conflict.status).toBe(409);
+    expect((await conflict.json()).error).toBe(
+      "The request ID belongs to a different saved Smith create.",
+    );
+    expect(readFileSync(configFile, "utf8")).toBe(corrupt);
+    expect(existsSync(join(privateHome, "config.toml"))).toBe(false);
+  } finally {
+    if (first.child.exitCode === null) await stopChild(first, false);
+  }
+}, 30_000);
