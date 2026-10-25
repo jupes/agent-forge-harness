@@ -116,6 +116,32 @@ export function createKeeperShiftStartService(options: Options) {
       return null;
     return shift;
   };
+  const outcome = (shift: ProjectShiftReceipt): KeeperProposalExecution => {
+    if (shift.observation.actual !== null)
+      return {
+        phase: "done",
+        message:
+          "The canonical Shift record is verified. Its current execution outcome is reported separately below.",
+        objects: [],
+      };
+    if (
+      shift.observation.phase === "failed" ||
+      (shift.observation.phase === "stopped" &&
+        typeof shift.intent.startupStop?.completedAt === "string")
+    )
+      return {
+        phase: "failed",
+        message:
+          "The canonical Shift service confirmed startup ended before a Shift record was available. The original will not be sent again automatically.",
+        objects: [],
+      };
+    return {
+      phase: "unknown",
+      message:
+        "The canonical Shift service has not confirmed a Shift record. Inspect the original request; it will not be sent again automatically.",
+      objects: [],
+    };
+  };
   const read = async (
     projectId: string,
     proposalId: string,
@@ -154,14 +180,20 @@ export function createKeeperShiftStartService(options: Options) {
       if ((error as { status?: unknown } | null)?.status !== 404) throw error;
     }
     readable(projectId, true);
+    const liveOutcome = shift
+      ? outcome(shift)
+      : {
+          phase: "unknown" as const,
+          message:
+            "The canonical Shift original could not be confirmed. Its saved request has been kept and will not repeat automatically.",
+        };
     const record =
-      shift === null && saved.record.phase === "done"
+      saved.record.phase === "done" && liveOutcome.phase !== "done"
         ? {
             ...saved.record,
-            phase: "unknown" as const,
+            phase: liveOutcome.phase,
             pending: false,
-            message:
-              "The canonical Shift original could not be confirmed. Its saved request has been kept and will not repeat automatically.",
+            message: liveOutcome.message,
           }
         : saved.record;
     const result = keeperShiftStartReceiptSchema.safeParse({
@@ -252,12 +284,7 @@ export function createKeeperShiftStartService(options: Options) {
                   "The canonical Shift Start response could not be verified. Inspect the original request; it will not be sent again automatically.",
                 objects: [],
               };
-            return {
-              phase: "done",
-              message:
-                "The original Keeper Shift Start was recorded by the canonical Shift service. Read its current outcome below.",
-              objects: [],
-            };
+            return outcome(shift);
           } catch {
             return {
               phase: "unknown",

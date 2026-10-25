@@ -171,7 +171,7 @@ export function keeperShiftStartHashes(
   return { startHash, reviewHash };
 }
 
-/** The four compact proposal fields must still agree with the complete reviewed request. */
+/** Optional prefill comparison; edited full bounds are authorized by the reviewed request hash. */
 export function keeperShiftProposalMatches(
   proposal: KeeperShiftStartProposal,
   request: KeeperShiftStartRequest,

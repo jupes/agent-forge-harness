@@ -119,6 +119,8 @@ function receipt(
   projectId: string,
   workspace: string,
   start: typeof request.start,
+  phase: ProjectShiftReceipt["observation"]["phase"] = "unknown",
+  actual: ProjectShiftReceipt["observation"]["actual"] = null,
 ): ProjectShiftReceipt {
   const at = "2026-10-25T06:30:00.000Z";
   return {
@@ -129,14 +131,23 @@ function receipt(
       request: start,
       requestHash: projectShiftRequestHash(projectId, workspace, start),
       createdAt: at,
-      attemptedAt: at,
+      attemptedAt: phase === "reserved" ? null : at,
+      ...(phase === "stopped" || phase === "stopping"
+        ? {
+            startupStop: {
+              requestedAt: at,
+              completedAt: phase === "stopped" ? at : null,
+            },
+          }
+        : {}),
     },
     observation: {
       shiftId,
       requestId: start.requestId,
-      phase: "unknown",
-      reason: "The fake Shift result is unconfirmed.",
-      actual: null,
+      phase,
+      reason:
+        phase === "unknown" ? "The fake Shift result is unconfirmed." : null,
+      actual,
     },
   };
 }
@@ -148,7 +159,28 @@ test("a reviewed Keeper Shift binds the edited original to one canonical start a
   const shifts = {
     async start(projectId: string, start: typeof request.start) {
       starts++;
-      saved = receipt(projectId, f.workspace, start);
+      saved = receipt(projectId, f.workspace, start, "running", {
+        startedAt: "2026-10-25T06:30:00.000Z",
+        endedAt: null,
+        deadline: "2026-10-25T07:30:00.000Z",
+        concurrency: 3,
+        forMs: 3_600_000,
+        maxBeads: 7,
+        maxUsd: 20,
+        repairs: 4,
+        throttle: null,
+        base: "master",
+        epic: null,
+        smith: null,
+        runTimeoutMs: null,
+        spentUsd: 0,
+        unpriced: 0,
+        admitted: null,
+        reviewed: 0,
+        running: 0,
+        halted: 0,
+        host: null,
+      });
       return saved;
     },
     read(projectId: string, requestId: string) {
@@ -188,6 +220,16 @@ test("a reviewed Keeper Shift binds the edited original to one canonical start a
     expect(
       readFileSync(keeperProposalFile(f.home, FIXTURE_PROJECT_ID)),
     ).toEqual(savedBytes);
+    saved = receipt(FIXTURE_PROJECT_ID, f.workspace, f.body.start, "unknown");
+    const downgraded = await service.read(
+      FIXTURE_PROJECT_ID,
+      f.proposal.id,
+      f.body.start.requestId,
+    );
+    expect(downgraded.record.phase).toBe("unknown");
+    expect(
+      readFileSync(keeperProposalFile(f.home, FIXTURE_PROJECT_ID)),
+    ).toEqual(savedBytes);
     await expect(
       service.start(
         FIXTURE_PROJECT_ID,
@@ -215,9 +257,103 @@ test("a reviewed Keeper Shift binds the edited original to one canonical start a
       13,
     );
     expect(retry.original).toEqual(f.body);
+    expect(retry.record.phase).toBe("unknown");
     expect(retry.record.auditEventId).toBe(12);
     expect(starts).toBe(1);
     await restarted.close();
+  } finally {
+    await service.close();
+  }
+});
+
+test.each([
+  ["running", "done"],
+  ["throttled", "done"],
+  ["needs-recovery", "done"],
+  ["failed", "failed"],
+  ["stopped", "failed"],
+  ["reserved", "unknown"],
+  ["starting", "unknown"],
+  ["stopping", "unknown"],
+  ["unknown", "unknown"],
+] as const)("canonical observation %s maps to a truthful Keeper outcome and exact retry never replays", async (observed, expected) => {
+  const f = await fixture();
+  let starts = 0;
+  const verifiedActual = {
+    startedAt: "2026-10-25T06:30:00.000Z",
+    endedAt: null,
+    deadline: "2026-10-25T07:30:00.000Z",
+    concurrency: 3,
+    forMs: 3_600_000,
+    maxBeads: 7,
+    maxUsd: 20,
+    repairs: 4,
+    throttle: null,
+    base: "master",
+    epic: null,
+    smith: null,
+    runTimeoutMs: null,
+    spentUsd: 0,
+    unpriced: 0,
+    admitted: null,
+    reviewed: 0,
+    running: 0,
+    halted: 0,
+    host: null,
+  };
+  const actual = expected === "done" ? verifiedActual : null;
+  let saved = receipt(
+    FIXTURE_PROJECT_ID,
+    f.workspace,
+    f.body.start,
+    observed,
+    actual,
+  );
+  const service = createKeeperShiftStartService({
+    home: f.home,
+    root: f.workspace,
+    shifts: {
+      async start(projectId: string, start: typeof request.start) {
+        starts++;
+        saved = receipt(projectId, f.workspace, start, observed, actual);
+        return saved;
+      },
+      read() {
+        return saved;
+      },
+    },
+  });
+  try {
+    const first = await service.start(
+      FIXTURE_PROJECT_ID,
+      f.proposal.id,
+      f.body,
+      18,
+    );
+    expect(first.record.phase).toBe(expected);
+    const retry = await service.start(
+      FIXTURE_PROJECT_ID,
+      f.proposal.id,
+      f.body,
+      19,
+    );
+    expect(retry.record.phase).toBe(expected);
+    expect(starts).toBe(1);
+    if (expected !== "done") {
+      saved = receipt(
+        FIXTURE_PROJECT_ID,
+        f.workspace,
+        f.body.start,
+        "running",
+        verifiedActual,
+      );
+      const inspected = await service.read(
+        FIXTURE_PROJECT_ID,
+        f.proposal.id,
+        f.body.start.requestId,
+      );
+      expect(inspected.record.phase).toBe(expected);
+    }
   } finally {
     await service.close();
   }
