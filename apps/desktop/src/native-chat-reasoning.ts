@@ -1,6 +1,7 @@
 import type { CodexChatReasoningSummary } from "../../../types/codex-chat";
 import type { ConversationPage } from "../../../types/conversation";
 import type { ReportedText } from "../../../types/session-activity";
+import { nativeChatTurnFinalReport } from "./native-chat-turn-closure";
 
 export type NativeChatSummarySnapshot = Extract<
   CodexChatReasoningSummary["update"],
@@ -40,13 +41,28 @@ export function nativeChatReasoningSummaries(
           : [],
       ),
     );
+  if (!nativeTurns.size)
+    for (const { event } of frames)
+      if (
+        event.kind === "coding-chat" &&
+        event.version === binding.version &&
+        (event.event.kind === "command" ||
+          event.event.kind === "file-change" ||
+          event.event.kind === "reasoning-summary" ||
+          event.event.kind === "turn-plan" ||
+          event.event.kind === "mcp-tool-call" ||
+          event.event.kind === "web-search") &&
+        event.event.threadId === binding.sessionId
+      )
+        nativeTurns.add(event.event.turnId);
   if (nativeTurns.size > 1) return [];
   const expectedTurn = [...nativeTurns][0];
   const reports = new Map<
     string,
     NativeChatReasoningReport & { indexed: Map<number, NativeChatSummaryPart> }
   >();
-  let terminal = false;
+  let terminal = false,
+    turnEnded = false;
   for (const { event } of frames) {
     if (event.kind !== "coding-chat" || event.version !== binding.version)
       continue;
@@ -59,8 +75,13 @@ export function nativeChatReasoningSummaries(
       terminal = true;
       continue;
     }
+    const finalReport =
+      expectedTurn !== undefined &&
+      nativeChatTurnFinalReport(report, binding.sessionId, expectedTurn);
+    if (finalReport) turnEnded = true;
     if (
       terminal ||
+      (turnEnded && !finalReport) ||
       report.kind !== "reasoning-summary" ||
       report.threadId !== binding.sessionId ||
       (expectedTurn && report.turnId !== expectedTurn)

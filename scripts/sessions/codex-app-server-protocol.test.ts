@@ -162,7 +162,11 @@ const webSearchItem = (overrides: Record<string, unknown> = {}) => ({
   type: "webSearch",
   id: "native-web-search",
   query: "literal <script> query",
-  action: { type: "search", query: "literal <script> query" },
+  action: {
+    type: "search",
+    query: "literal <script> query",
+    queries: null,
+  },
   results: [{ title: "Literal title", url: "https://example.invalid/path" }],
   ...overrides,
 });
@@ -395,7 +399,7 @@ test("native web-search snapshots retain bounded literal action/results and exac
   expect(completed.events[0]).toMatchObject({
     source: "item/completed",
     action: {
-      json: '{"type":"search","query":"literal <script> query"}',
+      json: '{"type":"search","query":"literal <script> query","queries":null}',
       truncated: false,
     },
     results: {
@@ -427,9 +431,40 @@ test("native web-search snapshots retain bounded literal action/results and exac
 });
 
 test("native web-search action uses the pinned discriminated union and identity fences", () => {
+  for (const action of [
+    { type: "search", query: null, queries: [] },
+    { type: "openPage", url: "" },
+    { type: "findInPage", url: "https://example.invalid", pattern: null },
+    { type: "findInPage", url: null, pattern: "" },
+    { type: "other" },
+  ]) {
+    const parsed = stream().accept(
+      notify("item/started", {
+        threadId,
+        turnId,
+        item: webSearchItem({ action }),
+      }),
+    ).events[0];
+    expect(parsed).toMatchObject({
+      kind: "web-search",
+      action: { json: JSON.stringify(action), truncated: false },
+    });
+  }
   for (const invalid of [
-    { action: { type: "search", query: "x", url: "unexpected" } },
-    { action: { type: "open_page", query: "unexpected" } },
+    {
+      action: { type: "search", query: "x", queries: null, url: "unexpected" },
+    },
+    { action: { type: "openPage" } },
+    { action: { type: "findInPage", url: null } },
+    { action: { type: "open_page", url: "https://example.invalid" } },
+    {
+      action: {
+        type: "find_in_page",
+        url: "https://example.invalid",
+        pattern: "docs",
+      },
+    },
+    { action: { type: "search", query: "x" } },
     { action: { type: "invented", query: "x" } },
   ])
     expect(() =>

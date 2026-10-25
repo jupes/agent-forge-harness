@@ -1,5 +1,6 @@
 import type { CodexChatWebSearch } from "../../../types/codex-chat";
 import type { ConversationPage } from "../../../types/conversation";
+import { nativeChatTurnFinalReport } from "./native-chat-turn-closure";
 
 export interface NativeChatWebSearchReport {
   version: string;
@@ -30,13 +31,19 @@ export function nativeChatWebSearches(
       if (
         event.kind === "coding-chat" &&
         event.version === binding.version &&
-        event.event.kind === "web-search" &&
+        (event.event.kind === "command" ||
+          event.event.kind === "file-change" ||
+          event.event.kind === "reasoning-summary" ||
+          event.event.kind === "turn-plan" ||
+          event.event.kind === "mcp-tool-call" ||
+          event.event.kind === "web-search") &&
         event.event.threadId === binding.sessionId
       )
         nativeTurns.add(event.event.turnId);
   if (nativeTurns.size !== 1) return [];
-  const nativeTurn = [...nativeTurns][0],
-    reports = new Map<string, NativeChatWebSearchReport>();
+  const nativeTurn = nativeTurns.values().next().value;
+  if (nativeTurn === undefined) return [];
+  const reports = new Map<string, NativeChatWebSearchReport>();
   let terminal = false,
     turnEnded = false;
   for (const { event } of frames) {
@@ -52,15 +59,11 @@ export function nativeChatWebSearches(
       terminal = true;
       continue;
     }
-    const finalReport =
-      (report.kind === "command" ||
-        report.kind === "file-change" ||
-        report.kind === "reasoning-summary" ||
-        report.kind === "mcp-tool-call" ||
-        report.kind === "web-search") &&
-      report.source === "turn/completed" &&
-      report.threadId === binding.sessionId &&
-      report.turnId === nativeTurn;
+    const finalReport = nativeChatTurnFinalReport(
+      report,
+      binding.sessionId,
+      nativeTurn,
+    );
     if (finalReport) turnEnded = true;
     if (
       terminal ||

@@ -354,21 +354,21 @@ const nativeWebSearchAction = z.discriminatedUnion("type", [
   z
     .object({
       type: z.literal("search"),
-      query: z.string().max(1_048_576).optional(),
-      queries: z.array(z.string().max(1_048_576)).max(4096).optional(),
+      query: z.string().max(1_048_576).nullable(),
+      queries: z.array(z.string().max(1_048_576)).max(4096).nullable(),
     })
     .strict(),
   z
     .object({
-      type: z.literal("open_page"),
-      url: z.string().max(1_048_576).optional(),
+      type: z.literal("openPage"),
+      url: z.string().max(1_048_576).nullable(),
     })
     .strict(),
   z
     .object({
-      type: z.literal("find_in_page"),
-      url: z.string().max(1_048_576).optional(),
-      pattern: z.string().max(1_048_576).optional(),
+      type: z.literal("findInPage"),
+      url: z.string().max(1_048_576).nullable(),
+      pattern: z.string().max(1_048_576).nullable(),
     })
     .strict(),
   z.object({ type: z.literal("other") }).strict(),

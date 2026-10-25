@@ -276,7 +276,8 @@ function reportedTurn(
         event.event.kind === "file-change" ||
         event.event.kind === "reasoning-summary" ||
         event.event.kind === "turn-plan" ||
-        event.event.kind === "mcp-tool-call")
+        event.event.kind === "mcp-tool-call" ||
+        event.event.kind === "web-search")
     ) {
       if (
         value.binding?.provider !== "codex" ||
@@ -625,10 +626,11 @@ function nativeChatHistory(value: {
     }
     if (native.kind === "web-search") {
       const previous = turn.webSearches.get(native.itemId),
-        identity = native.query,
+        identity = JSON.stringify(native.query),
         signature = JSON.stringify([native.action, native.results]);
       if (
-        (previous !== undefined && previous.query !== identity) ||
+        (previous !== undefined &&
+          JSON.stringify(previous.query) !== identity) ||
         (previous !== undefined &&
           previous.closure !== "open" &&
           (native.closure !== "turn-ended" ||

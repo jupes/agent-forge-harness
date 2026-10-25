@@ -178,14 +178,14 @@ export interface CodexChatMcpToolCall {
 export type CodexChatWebSearchAction =
   | {
       type: "search";
-      query?: string | undefined;
-      queries?: string[] | undefined;
+      query: string | null;
+      queries: string[] | null;
     }
-  | { type: "open_page"; url?: string | undefined }
+  | { type: "openPage"; url: string | null }
   | {
-      type: "find_in_page";
-      url?: string | undefined;
-      pattern?: string | undefined;
+      type: "findInPage";
+      url: string | null;
+      pattern: string | null;
     }
   | { type: "other" };
 

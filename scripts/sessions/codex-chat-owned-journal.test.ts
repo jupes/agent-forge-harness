@@ -10,6 +10,10 @@ import {
 import { startTestHearth } from "../hearth/testing";
 import { FIXTURE_PROJECT_ID } from "../projects/testing";
 import {
+  createCodexChatStream,
+  parseCodexAppServerFrame,
+} from "./codex-app-server-protocol";
+import {
   codexChatCommandSchema,
   codexChatMcpToolCallSchema,
   codexChatPrivateEventSchema,
@@ -183,6 +187,19 @@ test("private native web-search snapshots retain nullable versus empty JSON and 
     closure: "item-ended",
   };
   expect(codexChatWebSearchSchema.safeParse(completed).success).toBe(true);
+  for (const action of [
+    { type: "search", query: null, queries: [] },
+    { type: "openPage", url: "" },
+    { type: "findInPage", url: "https://example.invalid", pattern: null },
+    { type: "findInPage", url: null, pattern: "" },
+    { type: "other" },
+  ])
+    expect(
+      codexChatWebSearchSchema.safeParse({
+        ...completed,
+        action: { json: JSON.stringify(action), truncated: false },
+      }).success,
+    ).toBe(true);
   expect(completed.results).not.toEqual(started.results);
   const privateEvent = {
     kind: "coding-chat",
@@ -195,6 +212,9 @@ test("private native web-search snapshots retain nullable versus empty JSON and 
   );
   expect(eventSchema.safeParse(privateEvent).success).toBe(false);
   for (const change of [
+    { action: { json: '{"type":"search","query":"x"}', truncated: false } },
+    { action: { json: '{"type":"open_page","url":null}', truncated: false } },
+    { action: { json: '{"type":"openPage"}', truncated: false } },
     {
       action: { json: '{"type":"other","url":"unexpected"}', truncated: false },
     },
@@ -332,9 +352,157 @@ test("whole and partial WebSearch history keeps the native binding and rejects f
     controllable: false,
   };
   expect(ownedCodingPageSchema.safeParse(partialPage).success).toBe(true);
+  const invalidPartialPages = [
+    {
+      ...partialPage,
+      frames: [
+        ...partialPage.frames.slice(0, -1),
+        frame(5, native({ ...report, threadId: nativeTurnId })),
+      ],
+    },
+    {
+      ...partialPage,
+      frames: [
+        ...partialPage.frames.slice(0, -1),
+        frame(5, native({ ...report, turnId: threadId })),
+      ],
+    },
+    {
+      ...partialPage,
+      frames: [
+        ...partialPage.frames.slice(0, -1),
+        {
+          ...reportFrame,
+          event: { ...native(report), version: "other-version" },
+        },
+      ],
+    },
+    {
+      ...partialPage,
+      binding: { ...partialPage.binding, sessionId: "foreign-thread" },
+    },
+  ];
+  for (const changed of invalidPartialPages)
+    expect(ownedCodingPageSchema.safeParse(changed).success).toBe(false);
   const foreign = structuredClone(state);
   foreign.frames[4]!.event = native({ ...report, threadId: nativeTurnId });
   expect(ownedCodingStateSchema.safeParse(foreign).success).toBe(false);
+
+  const decoder = createCodexChatStream({
+      launch: {
+        mode: "chat",
+        cwd: "/fixture",
+        model: "exact-model",
+        sandbox: "read-only",
+        approvalPolicy: "on-request",
+        prompt: "Private search fixture",
+        context: {
+          projectId: "project-search",
+          repository: "/fixture",
+          worktree: "/fixture",
+          about: [],
+        },
+      },
+      version: "0.163.0-alpha.10.2",
+      resumeThreadId: threadId,
+    }),
+    completedItem = {
+      type: "webSearch",
+      id: "native-search",
+      query: "find docs",
+      action: { type: "search", query: "find docs", queries: null },
+      results: [{ title: "Docs", url: "https://example.invalid" }],
+    },
+    parseFrame = (method: string, params: unknown) =>
+      parseCodexAppServerFrame(JSON.stringify({ method, params }));
+  decoder.thread({
+    thread: {
+      id: threadId,
+      sessionId: threadId,
+      forkedFromId: null,
+      parentThreadId: null,
+      status: { type: "idle" },
+    },
+    model: "exact-model",
+    modelProvider: "openai",
+    cwd: "/fixture",
+    approvalPolicy: "on-request",
+    approvalsReviewer: "user",
+    sandbox: {
+      type: "readOnly",
+      writableRoots: [],
+      networkAccess: false,
+      excludeTmpdirEnvVar: true,
+      excludeSlashTmp: true,
+    },
+    reasoningEffort: "medium",
+  });
+  decoder.armTurn();
+  decoder.turn({ turn: { id: nativeTurnId, status: "inProgress" } });
+  const decoderReports = [
+    ...decoder.accept(
+      parseFrame("item/started", {
+        threadId,
+        turnId: nativeTurnId,
+        item: { ...completedItem, action: null, results: null },
+      }),
+    ).events,
+  ];
+  decoderReports.push(
+    ...decoder.accept(
+      parseFrame("item/completed", {
+        threadId,
+        turnId: nativeTurnId,
+        item: completedItem,
+      }),
+    ).events,
+    ...decoder.accept(
+      parseFrame("turn/completed", {
+        threadId,
+        turn: {
+          id: nativeTurnId,
+          status: "completed",
+          error: null,
+          items: [completedItem],
+        },
+      }),
+    ).events,
+  );
+  const decoderFrames = [
+      ...prefix,
+      ...decoderReports.map((value, index) =>
+        frame(prefix.length + index + 1, native(value)),
+      ),
+    ],
+    decodedState = JSON.parse(
+      JSON.stringify({
+        ...state,
+        revision: decoderFrames.length,
+        turns: [{ ...state.turns[0], phase: "completed" }],
+        frames: decoderFrames,
+      }),
+    );
+  expect(ownedCodingStateSchema.safeParse(decodedState).success).toBe(true);
+
+  const changedQuery = structuredClone(decodedState);
+  changedQuery.frames.at(-1).event.event.query.text = "different query";
+  expect(ownedCodingStateSchema.safeParse(changedQuery).success).toBe(false);
+
+  const changedClosure = structuredClone(decodedState),
+    finalReport = changedClosure.frames.find(
+      (candidate: { event: { event?: { source?: string } } }) =>
+        candidate.event.event?.source === "turn/completed",
+    );
+  finalReport.event.event.source = "item/completed";
+  finalReport.event.event.closure = "item-ended";
+  finalReport.event.event.partial = false;
+  finalReport.event.event.turnStatus = null;
+  expect(ownedCodingStateSchema.safeParse(changedClosure).success).toBe(false);
+
+  const changedResults = structuredClone(decodedState);
+  changedResults.frames.at(-1).event.event.results.json =
+    '[{"title":"changed"}]';
+  expect(ownedCodingStateSchema.safeParse(changedResults).success).toBe(false);
 });
 
 test("whole native Chat history keeps text, command and summary item kinds distinct while preserving legacy text fragments and the shared item bound", async () => {
