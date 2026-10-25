@@ -17,7 +17,9 @@ arguments, nullable result/error/duration and optional presentation/context
 metadata. Results distinguish the content array, nullable structured content,
 and nullable `_meta`. Progress is a separate thread/turn/item-bound notification
 with supplied text. This snapshot view retains full item snapshots only;
-progress, `_meta`, app/plugin/context hints and resource bodies are omitted.
+progress, `_meta` and app/plugin/context hints are omitted. Resource-shaped JSON
+already supplied in a result remains bounded literal text; there is no
+presentation-resource fetch or enrichment.
 
 The private family carries source, checked version, thread/turn/item identity,
 reported status, arguments, result, error, duration, partial state and item/turn
