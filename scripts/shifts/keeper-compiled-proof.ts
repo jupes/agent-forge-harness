@@ -49,10 +49,14 @@ const envelope = z
 const sessionData = z.object({ key: z.string().regex(/^[0-9a-f]{64}$/) });
 const tokenData = z.object({ token: z.string().regex(/^[0-9a-f]{64}$/) });
 const admission = z.object({ pid: z.number().int().positive() }).passthrough();
+const refusalEnvelope = z
+  .object({ ok: z.literal(false), data: z.null(), error: z.string().max(512) })
+  .strict();
 const READY_MS = 20_000;
 const STOP_MS = 12_000;
 const REQUEST_MS = 10_000;
 const DRAIN_MS = 5_000;
+const REFUSAL_BODY_MAX_BYTES = 4_096;
 
 type Host = {
   process: ReturnType<typeof Bun.spawn>;
@@ -457,6 +461,76 @@ async function cancelBody(response: Response): Promise<void> {
   );
 }
 
+/** Read only a bounded standard refusal envelope; never include arbitrary response bodies in test output. */
+export async function keeperStartFailureDiagnostic(
+  response: Response,
+): Promise<string> {
+  const reader = response.body?.getReader();
+  if (!reader) return `status=${response.status}; refusal=missing-body`;
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  try {
+    for (;;) {
+      const { done, value } = await waitBounded(
+        reader.read(),
+        "Keeper Start refusal body read",
+        REQUEST_MS,
+      );
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > REFUSAL_BODY_MAX_BYTES) {
+        let cancellation = "oversized";
+        try {
+          await waitBounded(
+            reader.cancel(),
+            "Keeper Start refusal body cancellation",
+            REQUEST_MS,
+          );
+        } catch {
+          cancellation = "oversized-cancel-incomplete";
+        }
+        return `status=${response.status}; refusal=${cancellation}`;
+      }
+      chunks.push(value);
+    }
+    const content = new Uint8Array(bytes);
+    let offset = 0;
+    for (const chunk of chunks) {
+      content.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    let raw: unknown;
+    try {
+      raw = JSON.parse(
+        new TextDecoder("utf-8", { fatal: true }).decode(content),
+      );
+    } catch {
+      return `status=${response.status}; refusal=malformed`;
+    }
+    const parsed = refusalEnvelope.safeParse(raw);
+    return parsed.success
+      ? `status=${response.status}; refusal=${JSON.stringify(parsed.data.error)}`
+      : `status=${response.status}; refusal=malformed`;
+  } catch {
+    try {
+      await waitBounded(
+        reader.cancel(),
+        "Keeper Start refusal body cancellation after read failure",
+        REQUEST_MS,
+      );
+    } catch {
+      // A diagnostic cleanup failure must not replace the primary HTTP failure.
+    }
+    return `status=${response.status}; refusal=unavailable`;
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      // Keep the action refusal as the test's primary error.
+    }
+  }
+}
+
 async function portCanBind(port: number): Promise<boolean> {
   const server = createServer();
   try {
@@ -662,8 +736,12 @@ export async function runKeeperShiftCompiledProof(
       tokenA = await sessionToken(originA, session),
       action = await postStart(originA, startPath, tokenA, reviewed);
     if (action.status !== 200) {
-      await cancelBody(action);
-      throw new Error("The reviewed Keeper start was not accepted");
+      const details = await keeperStartFailureDiagnostic(action).catch(
+        () => `status=${action.status}; refusal=unavailable`,
+      );
+      throw new Error(
+        `The reviewed Keeper start was not accepted (${details})`,
+      );
     }
     await cancelBody(action);
 
