@@ -91,8 +91,7 @@ test("the packaged MCP probe inspects literal snapshots, compiles its WebView as
     socket = new EventTarget(),
     remove = spyOn(socket, "removeEventListener"),
     expressions: string[] = [];
-  let screenshot = "",
-    posts = false;
+  let screenshot = "";
   const tools = {
     async evaluate(_socket: EventTarget, expression: string) {
       expressions.push(expression);
@@ -117,7 +116,6 @@ test("the packaged MCP probe inspects literal snapshots, compiles its WebView as
     async screenshot(_socket: EventTarget, name: string) {
       screenshot = name;
       expect(expressions.at(-1)).toContain("identifiers masked");
-      expect(posts).toBe(false);
     },
   };
   await verifyNativeMcpToolCalls(socket, record, home, tools);
@@ -178,4 +176,48 @@ test("the MCP inspection rejects POSTs without retaining their bodies and always
   expect(expressions.at(-1)).toBe('location.hash="#/desktop/projects"');
   expect(screenshot).toBe(false);
   expect(remove).toHaveBeenCalledTimes(1);
+});
+
+test("route cleanup failures fail a successful probe but never replace its original assertion failure", async () => {
+  for (const assertionFails of [false, true]) {
+    const root = scratch.make("native-mcp-cleanup-"),
+      home = join(root, "home");
+    mkdirSync(join(root, ".git"));
+    const record = await seedNativeMcpToolCallSession(
+        home,
+        root,
+        "project-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      ),
+      socket = new EventTarget(),
+      remove = spyOn(socket, "removeEventListener"),
+      cause = Error("Original WebView assertion"),
+      restore = Error("Route restore failed");
+    let screenshot = false;
+    const tools = {
+      async evaluate(_socket: EventTarget, expression: string) {
+        if (expression === "location.hash") return "#/desktop/projects";
+        if (expression.includes("#/desktop/projects")) throw restore;
+        return undefined;
+      },
+      async enableRequests() {},
+      async waitForPage(_socket: EventTarget, expression: string) {
+        new Function(`return (${expression});`);
+        if (assertionFails) throw cause;
+      },
+      async pressTab() {},
+      async screenshot() {
+        screenshot = true;
+      },
+    };
+    const result = verifyNativeMcpToolCalls(socket, record, home, tools);
+    if (assertionFails) await expect(result).rejects.toBe(cause);
+    else
+      await expect(result).rejects.toMatchObject({
+        message:
+          "The packaged MCP probe could not restore its original route and observer.",
+        cause: restore,
+      });
+    expect(screenshot).toBe(!assertionFails);
+    expect(remove).toHaveBeenCalledTimes(1);
+  }
 });

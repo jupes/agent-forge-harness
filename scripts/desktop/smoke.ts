@@ -868,6 +868,7 @@ process.stderr.write("Native fixture Git is read-only and has no forwarding path
           scopedProjectActivityMetadataTested: true,
           completeOwnedTranscriptDownloadTested: true,
           nativeCodexFileSnapshotsTested: true,
+          nativeCodexMcpSnapshotsTested: true,
           reversibleOwnedArchiveTested: true,
           focusOutline,
           childrenStopped: true,

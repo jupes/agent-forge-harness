@@ -219,7 +219,9 @@ export async function verifyNativeMcpToolCalls<Socket extends EventTarget>(
     failed = `Array.from(document.querySelectorAll('.af-session-activity-item')).find(d=>d.querySelector('.af-session-report-source')?.textContent?.includes('Item: native-smoke-mcp-null'))`,
     clipped = `Array.from(document.querySelectorAll('.af-session-activity-item')).find(d=>d.querySelector('.af-session-report-source')?.textContent?.includes('Item: native-smoke-mcp-clipped-error'))`,
     originalHash = await tools.evaluate(socket, "location.hash");
-  let posts = 0;
+  let posts = 0,
+    probeFailed = false,
+    probeError: unknown;
   const observe = (event: Event) => {
     if (!(event instanceof MessageEvent)) return;
     let value: unknown;
@@ -289,14 +291,35 @@ export async function verifyNativeMcpToolCalls<Socket extends EventTarget>(
     // The screenshot is captured only after all assertions, with all report identity text masked.
     await tools.evaluate(
       socket,
-      `document.querySelectorAll('.af-session-report-source').forEach(p=>{p.textContent='Native app-server snapshot · identifiers masked';});document.querySelectorAll('[data-session-id],[data-project-id]').forEach(e=>{e.removeAttribute('data-session-id');e.removeAttribute('data-project-id');});`,
+      `document.querySelectorAll('.af-session-report-source').forEach(p=>{p.textContent='Native app-server snapshot · identifiers masked';});document.querySelectorAll('[data-session-id],[data-project-id]').forEach(e=>{e.removeAttribute('data-session-id');e.removeAttribute('data-project-id');});const ids=/(?:project-)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|native-smoke-mcp-[a-z-]+/gi,walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);for(let n;(n=walker.nextNode());)n.nodeValue=n.nodeValue?.replace(ids,'[masked]');for(const e of document.querySelectorAll('*'))for(const a of e.attributes)a.value=a.value.replace(ids,'[masked]');`,
     );
     await tools.screenshot(socket, "native-chat-mcp-tool-calls.png");
-  } finally {
-    socket.removeEventListener("message", observe);
-    if (typeof originalHash === "string")
-      await tools
-        .evaluate(socket, `location.hash=${JSON.stringify(originalHash)}`)
-        .catch(() => undefined);
+  } catch (error) {
+    probeFailed = true;
+    probeError = error;
   }
+  let cleanupError: unknown;
+  try {
+    socket.removeEventListener("message", observe);
+  } catch (error) {
+    cleanupError = error;
+  }
+  try {
+    if (typeof originalHash !== "string")
+      throw Error(
+        "The packaged MCP probe could not record its original route.",
+      );
+    await tools.evaluate(
+      socket,
+      `location.hash=${JSON.stringify(originalHash)}`,
+    );
+  } catch (error) {
+    cleanupError ??= error;
+  }
+  if (probeFailed) throw probeError;
+  if (cleanupError !== undefined)
+    throw Error(
+      "The packaged MCP probe could not restore its original route and observer.",
+      { cause: cleanupError },
+    );
 }
