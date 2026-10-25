@@ -603,8 +603,33 @@ test("native Chat web-search reports retain literal snapshots through export and
       await expect(screenshotMain).toContainText("WEB_SEARCH_RESULT_LITERAL");
       const viewport = page.viewportSize();
       try {
-        await page.setViewportSize({ width: 1280, height: 900 });
-        await screenshotMain.scrollIntoViewIfNeeded();
+        await page.setViewportSize({ width: 1280, height: 1400 });
+        const finalNote = screenshotMain.locator(".af-session-note").last();
+        await finalNote.scrollIntoViewIfNeeded();
+        const noteFullyVisible = await finalNote.evaluate((note) => {
+          const bounds = note.getBoundingClientRect();
+          if (
+            bounds.height <= 0 ||
+            bounds.top < 0 ||
+            bounds.bottom > window.innerHeight
+          )
+            return false;
+          for (
+            let parent = note.parentElement;
+            parent;
+            parent = parent.parentElement
+          ) {
+            const style = getComputedStyle(parent);
+            if (!["auto", "scroll", "hidden", "clip"].includes(style.overflowY))
+              continue;
+            const clip = parent.getBoundingClientRect(),
+              top = clip.top + parent.clientTop,
+              bottom = top + parent.clientHeight;
+            if (bounds.top < top || bounds.bottom > bottom) return false;
+          }
+          return true;
+        });
+        expect(noteFullyVisible).toBe(true);
         await screenshotMain.screenshot({
           path: join(
             process.env.CODEX_CHAT_WEB_SEARCH_SHOTS,
