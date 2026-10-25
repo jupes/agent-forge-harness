@@ -3,6 +3,7 @@ import type {
   CodexChatApproval,
   CodexChatCommand,
   CodexChatDecision,
+  CodexChatFileChange,
   PreparedCodexChat,
 } from "../../types/codex-chat";
 import type { CodexCodingUsageEvent } from "../../types/codex-owned-task";
@@ -270,6 +271,7 @@ function reportedTurn(
     if (
       event.kind === "coding-chat" &&
       (event.event.kind === "command" ||
+        event.event.kind === "file-change" ||
         event.event.kind === "reasoning-summary" ||
         event.event.kind === "turn-plan")
     ) {
@@ -383,7 +385,11 @@ function nativeChatHistory(value: {
     richReportBytes: number;
     richTurnEnded: boolean;
     finalNativeStatus: "completed" | "failed" | "interrupted" | null;
-    itemKinds: Map<string, "text" | "command" | "reasoning-summary">;
+    itemKinds: Map<
+      string,
+      "text" | "command" | "reasoning-summary" | "file-change"
+    >;
+    fileChanges: Map<string, CodexChatFileChange>;
     closedCommands: Set<string>;
     commands: Map<string, CodexChatCommand>;
     summaries: Map<
@@ -419,6 +425,7 @@ function nativeChatHistory(value: {
         richTurnEnded: false,
         finalNativeStatus: null,
         itemKinds: new Map(),
+        fileChanges: new Map(),
         closedCommands: new Set(),
         commands: new Map(),
         summaries: new Map(),
@@ -491,6 +498,7 @@ function nativeChatHistory(value: {
     if (
       native.kind === "text" ||
       native.kind === "command" ||
+      native.kind === "file-change" ||
       native.kind === "reasoning-summary"
     ) {
       const previous = turn.itemKinds.get(native.itemId);
@@ -505,6 +513,7 @@ function nativeChatHistory(value: {
     }
     if (
       native.kind === "command" ||
+      native.kind === "file-change" ||
       native.kind === "reasoning-summary" ||
       native.kind === "turn-plan"
     ) {
@@ -521,6 +530,35 @@ function nativeChatHistory(value: {
       if (turn.richReportBytes > SESSION_ACTIVITY_LIMITS.aggregateBytes)
         return false;
       if (native.source === "turn/completed") turn.richTurnEnded = true;
+    }
+    if (native.kind === "file-change") {
+      const previous = turn.fileChanges.get(native.itemId);
+      const signature = (report: CodexChatFileChange) =>
+        JSON.stringify([report.status, report.changes, report.truncated]);
+      if (
+        previous &&
+        previous.closure !== "open" &&
+        (native.closure !== "turn-ended" ||
+          previous.closure === "turn-ended" ||
+          signature(previous) !== signature(native))
+      )
+        return false;
+      if (
+        (native.source === "item/started" && previous !== undefined) ||
+        (native.source === "item/fileChange/patchUpdated" &&
+          previous === undefined)
+      )
+        return false;
+      if (native.source === "turn/completed") {
+        if (
+          turn.finalNativeStatus !== null &&
+          turn.finalNativeStatus !== native.turnStatus
+        )
+          return false;
+        turn.finalNativeStatus = native.turnStatus;
+      }
+      turn.fileChanges.set(native.itemId, native);
+      continue;
     }
     if (native.kind === "reasoning-summary") {
       if (turn.commands.has(native.itemId)) return false;

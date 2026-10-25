@@ -193,6 +193,372 @@ async function composer(page: Page, capture = false, alreadyOpen = false) {
   return dialog;
 }
 
+test("native Chat file snapshots remain literal and read-only through keyboard inspection, complete export and saved reload", async ({
+  page,
+}) => {
+  mode("file-changes");
+  await page.setViewportSize({ width: 1100, height: 700 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  const starts = calls().filter(
+      (row) => row.kind === "rpc" && row.method === "turn/start",
+    ).length,
+    answers = calls().filter((row) => row.kind === "answer").length,
+    posts: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "POST") posts.push(request.url());
+  });
+  const { pane, record } = await startedChat(page);
+  await expect.poll(() => saved(record.id).turns[0]?.phase).toBe("completed");
+  const activity = pane.getByRole("region", {
+      name: "Reported session activity",
+      exact: true,
+    }),
+    reports = activity.locator("details"),
+    main = reports.filter({ hasText: "Item: reported-files-a" }),
+    heading = main.locator("summary"),
+    postMark = posts.length;
+  await expect(reports).toHaveCount(4);
+  await expect(main).not.toHaveAttribute("open");
+  await expect(heading).toHaveText("File changes · Reported completed");
+  await heading.focus();
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("Shift+Tab");
+  await expect(heading).toBeFocused();
+  await expect(heading).toHaveCSS("outline-width", "2px");
+  await page.keyboard.press("Enter");
+  await expect(main).toContainText("Latest full snapshot in this view");
+  await expect(main.locator("li")).toHaveCount(2);
+  await expect(main).toContainText("FILE_REPORT_MUST_NOT_CREATE.txt");
+  await expect(main).toContainText("inert/<script>.ts");
+  await expect(main).toContainText("Provider reported an empty diff");
+  await expect(main).not.toContainText("superseded.ts");
+  const patch = main.getByRole("region", {
+    name: "Reported native diff",
+    exact: true,
+  });
+  await expect(patch).toHaveText(
+    "-old native line\n+<script>native patch stays text</script>",
+  );
+  await page.keyboard.press("Tab");
+  await expect(patch).toBeFocused();
+  await expect(patch).toHaveCSS("outline-width", "2px");
+  await expect(main).toContainText(
+    "Native turn reported completed. Item status is reported independently",
+  );
+  await expect(main).toContainText("app-server turn/completed");
+  const failed = reports.filter({ hasText: "Item: reported-files-failed" }),
+    declined = reports.filter({ hasText: "Item: reported-files-declined" }),
+    clipped = reports.filter({ hasText: "Item: reported-files-clipped" });
+  await failed.locator("summary").click();
+  await expect(failed.locator("summary")).toHaveText(
+    "File changes · Reported failed",
+  );
+  await expect(failed).toContainText("-reported failed patch");
+  await declined.locator("summary").click();
+  await expect(declined.locator("summary")).toHaveText(
+    "File changes · Reported declined",
+  );
+  await expect(declined).toContainText("+reported declined patch");
+  await clipped.locator("summary").click();
+  await expect(clipped).toContainText("Snapshot truncated");
+  await expect(clipped).toContainText("Diff text truncated");
+  await expect(
+    activity.locator("a, button, script, iframe, img, form"),
+  ).toHaveCount(0);
+  await expect(
+    pane.getByRole("button", { name: "Allow once", exact: true }),
+  ).toHaveCount(0);
+  expect(existsSync(join(workspace, "FILE_REPORT_MUST_NOT_CREATE.txt"))).toBe(
+    false,
+  );
+  const beforeReload = saved(record.id).frames,
+    files = beforeReload.filter(
+      (frame) =>
+        frame.event.kind === "coding-chat" &&
+        frame.event.event.kind === "file-change",
+    );
+  expect(files).toHaveLength(15);
+  expect(files[2]?.event).toMatchObject({ event: { changes: [] } });
+  await pane
+    .getByRole("button", { name: "Session actions", exact: true })
+    .click();
+  const download = page.waitForEvent("download");
+  await page
+    .getByRole("dialog", { name: "Session actions", exact: true })
+    .getByRole("button", { name: "Export saved transcript", exact: true })
+    .click();
+  const path = await (await download).path();
+  if (!path) throw Error("No complete private native-file transcript download");
+  let raw: unknown;
+  try {
+    raw = JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    throw Error("Invalid complete native-file transcript");
+  }
+  expect(sessionTranscriptExportSchema.parse(raw).conversation.frames).toEqual(
+    beforeReload,
+  );
+  await reloadSettled(page);
+  await expect(main).not.toHaveAttribute("open");
+  await heading.click();
+  await expect(patch).toHaveText(
+    "-old native line\n+<script>native patch stays text</script>",
+  );
+  await expect(main).not.toContainText("superseded.ts");
+  expect(saved(record.id).frames).toEqual(beforeReload);
+  expect(posts).toHaveLength(postMark);
+  expect(
+    calls().filter((row) => row.kind === "rpc" && row.method === "turn/start"),
+  ).toHaveLength(starts + 1);
+  expect(calls().filter((row) => row.kind === "answer")).toHaveLength(answers);
+  if (process.env.CODEX_CHAT_FILE_SHOTS) {
+    await page.setViewportSize({ width: 1280, height: 1100 });
+    await main.evaluate((node) => node.scrollIntoView({ block: "center" }));
+    await expect
+      .poll(() =>
+        main.evaluate((node) => {
+          const outer = node
+              .closest(".af-owned-transcript")
+              ?.getBoundingClientRect(),
+            inner = node.getBoundingClientRect();
+          return Boolean(
+            outer && inner.top >= outer.top && inner.bottom <= outer.bottom,
+          );
+        }),
+      )
+      .toBe(true);
+    await main.screenshot({
+      path: join(
+        process.env.CODEX_CHAT_FILE_SHOTS,
+        "native-chat-file-changes.png",
+      ),
+      mask: [main.locator(".af-session-report-source")],
+      maskColor: "#1c1d24",
+    });
+    await page.setViewportSize({ width: 1100, height: 700 });
+  }
+  await openSettled(
+    page,
+    `/index.html#/desktop/project/${beta.id}/sessions?selectionKind=session&selectionId=${record.id}`,
+  );
+  await expect(
+    page.getByRole("region", {
+      name: "Reported session activity",
+      exact: true,
+    }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByText("FILE_REPORT_MUST_NOT_CREATE.txt", { exact: true }),
+  ).toHaveCount(0);
+  expect(posts).toHaveLength(postMark);
+  expect(existsSync(join(workspace, "FILE_REPORT_MUST_NOT_CREATE.txt"))).toBe(
+    false,
+  );
+});
+
+test("actual Stop retains the exact intended private native file snapshots and ends the provider/helper without inventing completion", async ({
+  page,
+}) => {
+  mode("file-changes-held");
+  await page.setViewportSize({ width: 1100, height: 700 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  const callMark = calls().length,
+    starts = calls().filter(
+      (row) => row.kind === "rpc" && row.method === "turn/start",
+    ).length,
+    answers = calls().filter((row) => row.kind === "answer").length,
+    { pane, record } = await startedChat(page),
+    activity = pane.getByRole("region", {
+      name: "Reported session activity",
+      exact: true,
+    }),
+    main = activity
+      .locator("details")
+      .filter({ hasText: "Item: reported-files-a" });
+  await expect
+    .poll(() => {
+      const state = saved(record.id),
+        files = state.frames.flatMap((frame) =>
+          frame.event.kind === "coding-chat" &&
+          frame.event.event.kind === "file-change"
+            ? [frame.event.event]
+            : [],
+        );
+      return files.map((report) => ({
+        source: report.source,
+        item: report.itemId,
+        status: report.status,
+        partial: report.partial,
+        paths: report.changes.map((change) => change.path.text),
+      }));
+    })
+    .toEqual([
+      {
+        source: "item/started",
+        item: "reported-files-a",
+        status: "inProgress",
+        partial: true,
+        paths: ["FILE_REPORT_MUST_NOT_CREATE.txt", "empty-native.ts"],
+      },
+      {
+        source: "item/fileChange/patchUpdated",
+        item: "reported-files-a",
+        status: "inProgress",
+        partial: true,
+        paths: ["superseded.ts"],
+      },
+      {
+        source: "item/fileChange/patchUpdated",
+        item: "reported-files-a",
+        status: "inProgress",
+        partial: true,
+        paths: [],
+      },
+      {
+        source: "item/fileChange/patchUpdated",
+        item: "reported-files-a",
+        status: "inProgress",
+        partial: true,
+        paths: ["FILE_REPORT_MUST_NOT_CREATE.txt", "empty-native.ts"],
+      },
+    ]);
+  await expect
+    .poll(
+      () =>
+        calls()
+          .slice(callMark)
+          .filter((row) => row.kind === "tree").length,
+    )
+    .toBe(1);
+  await main.locator("summary").click();
+  await expect(main.locator("summary")).toHaveText(
+    "File changes · Reported in progress · Partial report",
+  );
+  await expect(
+    main.getByRole("region", { name: "Reported native diff", exact: true }),
+  ).toHaveText("-old native line\n+<script>native patch stays text</script>");
+  await expect(main).toContainText("last observed item status");
+  await expect(main).not.toContainText("superseded.ts");
+  await expect(
+    activity.locator("a, button, script, iframe, img, form"),
+  ).toHaveCount(0);
+  const stop = pane.getByRole("button", { name: "Stop session", exact: true });
+  await stop.focus();
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("Shift+Tab");
+  await expect(stop).toBeFocused();
+  await expect(stop).toHaveCSS("outline-width", "2px");
+  await page.keyboard.press("Enter");
+  await expect.poll(() => saved(record.id).turns[0]?.phase).toBe("cancelled");
+  await expect(pane.locator("[data-session-state]")).toHaveAttribute(
+    "data-session-state",
+    "stopped",
+  );
+  const state = saved(record.id),
+    tree = calls()
+      .slice(callMark)
+      .find((row) => row.kind === "tree");
+  expect(
+    state.frames.filter(
+      (frame) =>
+        frame.event.kind === "coding-chat" &&
+        frame.event.event.kind === "file-change",
+    ),
+  ).toHaveLength(4);
+  for (const pid of [tree?.pid, tree?.childPid]) {
+    if (typeof pid !== "number")
+      throw Error("Missing witnessed stopped native-file PID");
+    let alive = false;
+    try {
+      const zombie =
+        process.platform === "linux" &&
+        /\) Z(?: |$)/.test(readFileSync(`/proc/${pid}/stat`, "utf8"));
+      if (!zombie) {
+        process.kill(pid, 0);
+        alive = true;
+      }
+    } catch {
+      /* No live owned process. */
+    }
+    expect(alive).toBe(false);
+  }
+  await reloadSettled(page);
+  await main.locator("summary").click();
+  await expect(main).toContainText("Partial report");
+  await expect(main).not.toContainText("Native turn reported completed");
+  expect(saved(record.id).frames).toEqual(state.frames);
+  expect(
+    calls().filter((row) => row.kind === "rpc" && row.method === "turn/start"),
+  ).toHaveLength(starts + 1);
+  expect(calls().filter((row) => row.kind === "answer")).toHaveLength(answers);
+  expect(existsSync(join(workspace, "FILE_REPORT_MUST_NOT_CREATE.txt"))).toBe(
+    false,
+  );
+});
+
+test("an inspectable native file diff still cannot grant Allow or turn inspection into a permission decision", async ({
+  page,
+}) => {
+  mode("file-changes-approval");
+  const answers = calls().filter((row) => row.kind === "answer").length,
+    { pane, record } = await startedChat(page),
+    activity = pane.getByRole("region", {
+      name: "Reported session activity",
+      exact: true,
+    }),
+    main = activity
+      .locator("details")
+      .filter({ hasText: "Item: reported-files-a" });
+  await expect
+    .poll(
+      () =>
+        saved(record.id).frames.filter(
+          (frame) =>
+            frame.event.kind === "coding-chat" &&
+            frame.event.event.kind === "file-change",
+        ).length,
+    )
+    .toBe(4);
+  await main.locator("summary").click();
+  await expect(
+    main.getByRole("region", { name: "Reported native diff", exact: true }),
+  ).toHaveText("-old native line\n+<script>native patch stays text</script>");
+  const approval = pane.getByRole("article", {
+    name: "Native file approval",
+    exact: true,
+  });
+  await expect(approval).toBeVisible();
+  await expect(approval).toContainText(
+    "Actual file-change details are unavailable. Allow is disabled.",
+  );
+  await expect(
+    approval.getByRole("button", { name: "Allow once", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    approval.getByRole("button", {
+      name: "Allow once · unavailable",
+      exact: true,
+    }),
+  ).toBeDisabled();
+  expect(calls().filter((row) => row.kind === "answer")).toHaveLength(answers);
+  await approval.getByRole("button", { name: "Decline", exact: true }).click();
+  await expect.poll(() => saved(record.id).turns[0]?.phase).toBe("completed");
+  await expect(main.locator("summary")).toHaveText(
+    "File changes · Reported declined",
+  );
+  expect(calls().filter((row) => row.kind === "answer")).toHaveLength(
+    answers + 1,
+  );
+  expect(
+    calls()
+      .filter((row) => row.kind === "answer")
+      .at(-1)?.result,
+  ).toEqual({ decision: "decline" });
+  expect(existsSync(join(workspace, "FILE_REPORT_MUST_NOT_CREATE.txt"))).toBe(
+    false,
+  );
+});
+
 test("native Chat turn plans keep only the latest supplied snapshot through keyboard inspection, complete export and saved reload", async ({
   page,
 }) => {

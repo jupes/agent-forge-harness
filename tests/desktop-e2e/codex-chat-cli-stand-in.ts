@@ -32,6 +32,9 @@ if (
     "reasoning-summary-held",
     "turn-plan",
     "turn-plan-held",
+    "file-changes",
+    "file-changes-held",
+    "file-changes-approval",
   ].includes(String(mode))
 )
   throw Error("Unknown isolated Chat fixture mode.");
