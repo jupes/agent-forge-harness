@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
 import { keeperShiftStartHashesInBrowser } from "../../apps/desktop/src/keeper-shift-hash";
+import { createKeeperShiftIdentities } from "../../apps/desktop/src/keeper-shift-identities";
 import {
   acceptKeeperShiftReceipt,
   buildKeeperShiftStart,
@@ -12,6 +13,8 @@ import {
   keeperShiftReceiptStatus,
   prefillKeeperShiftDraft,
 } from "../../apps/desktop/src/keeper-shift-review";
+import { createKeeperShiftReviewOwner } from "../../apps/desktop/src/keeper-shift-review-owner";
+import type { ActionOutcome } from "../../docs/js/action-outcome";
 import type {
   KeeperProposal,
   KeeperProposalRecord,
@@ -210,6 +213,17 @@ function actualShift(): NonNullable<
   };
 }
 
+function identities() {
+  const values = new Map<string, string>();
+  return createKeeperShiftIdentities({
+    storage: {
+      getItem: (key) => values.get(key) ?? null,
+      setItem: (key, value) => values.set(key, value),
+    },
+    withLock: async (work) => await work(),
+  });
+}
+
 test("proposal bounds prefill the complete canonical form while every default source remains available", () => {
   const options = shiftOptions(),
     draft = prefillKeeperShiftDraft(source, options);
@@ -401,6 +415,7 @@ test("Keeper identity and review renderer entrypoints build without a Node crypt
   for (const entrypoint of [
     "../../apps/desktop/src/keeper-shift-identities.ts",
     "../../apps/desktop/src/keeper-shift-review.ts",
+    "../../apps/desktop/src/use-keeper-shift-reviews.ts",
   ]) {
     const built = await Bun.build({
       entrypoints: [join(import.meta.dir, entrypoint)],
@@ -412,4 +427,192 @@ test("Keeper identity and review renderer entrypoints build without a Node crypt
     for (const forbidden of ["node:crypto", 'from "crypto"', "createHash"])
       expect(output).not.toContain(forbidden);
   }
+});
+
+test("the app-root owner keeps a lost Start held and only explicit retry resends the exact reviewed UUID", async () => {
+  const calls: KeeperShiftStartRequest[] = [];
+  const replies: ActionOutcome[] = [
+    { state: "unknown", message: "The Start reply was lost." },
+    { state: "done", data: receiptFor("done", "running", actualShift()) },
+  ];
+  const owner = createKeeperShiftReviewOwner({
+    canWrite: () => true,
+    requestId: () => requestId,
+    identities: identities(),
+    readOptions: async () => shiftOptions(),
+    readOriginal: async () => null,
+    postStart: async (_projectId, _proposalId, request) => {
+      calls.push(structuredClone(request));
+      const reply = replies.shift();
+      if (!reply) throw Error("Unexpected POST");
+      return reply;
+    },
+  });
+  const review = owner.get(source, 4);
+  await owner.open(review);
+  expect(review.state.status).toBe("ready");
+  owner.edit(review, {
+    for: "90m",
+    concurrency: "3",
+    maxBeads: "8",
+    maxUsd: "12",
+    repairs: "3",
+    epic: "alpha-epic",
+    smith: "claude-journeyman",
+    runTimeout: "10m",
+  });
+  await owner.start(review);
+  expect(review.state.status).toBe("held");
+  expect(review.state.original).toEqual(fullRequest());
+  expect(calls).toHaveLength(1);
+
+  await owner.check(review);
+  expect(review.state.status).toBe("held");
+  expect(calls).toHaveLength(1);
+  await owner.retry(review);
+  expect(calls).toHaveLength(2);
+  expect(calls[1]).toEqual(calls[0]);
+  expect(review.state.status).toBe("recorded");
+  owner.dispose();
+});
+
+test("failed options keep a saved identity and later protected original recovery remains available", async () => {
+  const savedIdentities = identities();
+  await savedIdentities.reserve(source, workspace, () => requestId);
+  let available = false,
+    originalReads = 0;
+  const receipt = receiptFor("done", "running", actualShift());
+  const owner = createKeeperShiftReviewOwner({
+    canWrite: () => true,
+    requestId: () => "a13c01ee-e854-4d0e-8d6c-a246304d74a2",
+    identities: savedIdentities,
+    readOptions: async () => {
+      if (!available) throw Error("Options are offline.");
+      return shiftOptions();
+    },
+    readOriginal: async (_projectId, _proposalId, id) => {
+      originalReads += 1;
+      expect(id).toBe(requestId);
+      return receipt;
+    },
+    postStart: async () => {
+      throw Error("Recovery reads must not POST.");
+    },
+  });
+  const review = owner.get(source, 4);
+  await owner.open(review);
+  expect(review.state.requestId).toBe(requestId);
+  expect(review.state.status).toBe("held");
+  expect(originalReads).toBe(0);
+
+  available = true;
+  await owner.check(review);
+  expect(originalReads).toBe(1);
+  expect(review.state.status).toBe("recorded");
+  expect(review.state.original).toEqual(receipt.original);
+  owner.dispose();
+});
+
+test("saved identity metadata survives unavailable options without crossing changed source or workspace", async () => {
+  const values = new Map<string, string>();
+  const savedIdentities = createKeeperShiftIdentities({
+    storage: {
+      getItem: (key) => values.get(key) ?? null,
+      setItem: (key, value) => values.set(key, value),
+    },
+    withLock: async (work) => await work(),
+  });
+  await savedIdentities.reserve(source, workspace, () => requestId);
+  expect(savedIdentities.read(source)?.requestId).toBe(requestId);
+  expect(() => savedIdentities.read(source, "C:/retargeted")).toThrow(
+    "changed proposal source or workspace",
+  );
+  const changedSource = {
+    ...structuredClone(source),
+    sourceHash: "c".repeat(64),
+  };
+  expect(() => savedIdentities.read(changedSource)).toThrow(
+    "changed proposal source or workspace",
+  );
+  const privateData = [...values.values()].join("\n");
+  expect(privateData).toContain(requestId);
+  expect(privateData).not.toContain("90m");
+  expect(privateData).not.toContain("runTimeout");
+});
+
+test("closing a review while its protected original read is pending blocks the late receipt from reopening it", async () => {
+  const savedIdentities = identities();
+  await savedIdentities.reserve(source, workspace, () => requestId);
+  let resolveOriginal!: (value: unknown) => void, markRead!: () => void;
+  const reading = new Promise<unknown>((resolve) => {
+    resolveOriginal = resolve;
+  });
+  const readStarted = new Promise<void>((resolve) => {
+    markRead = resolve;
+  });
+  const owner = createKeeperShiftReviewOwner({
+    canWrite: () => true,
+    requestId: () => "a13c01ee-e854-4d0e-8d6c-a246304d74a2",
+    identities: savedIdentities,
+    readOptions: async () => shiftOptions(),
+    readOriginal: async () => {
+      markRead();
+      return reading;
+    },
+    postStart: async () => {
+      throw Error("A recovery read cannot post.");
+    },
+  });
+  const review = owner.get(source, 4),
+    opening = owner.open(review);
+  await readStarted;
+  owner.close(review);
+  resolveOriginal(receiptFor("done", "running", actualShift()));
+  await opening;
+  expect(review.state.status).toBe("held");
+  expect(review.state.receipt).toBeNull();
+  owner.dispose();
+});
+
+test("opening another proposal while one Start is pending cannot paint or enable the other review", async () => {
+  let resolvePost!: (outcome: ActionOutcome) => void, markPosted!: () => void;
+  const posted = new Promise<void>((resolve) => {
+    markPosted = resolve;
+  });
+  const owner = createKeeperShiftReviewOwner({
+    canWrite: () => true,
+    requestId: () => requestId,
+    identities: identities(),
+    readOptions: async () => shiftOptions(),
+    readOriginal: async () => null,
+    postStart: () =>
+      new Promise<ActionOutcome>((resolve) => {
+        resolvePost = resolve;
+        markPosted();
+      }),
+  });
+  const first = owner.get(source, 4);
+  await owner.open(first);
+  const start = owner.start(first);
+  await posted;
+  expect(first.starting).toBe(true);
+
+  const anotherSource: KeeperProposal = {
+    ...structuredClone(source),
+    id: "proposal-2a5832fa-7a21-403b-8184-44892f0d8d86-0",
+    sourceHash: "b".repeat(64),
+  };
+  const second = owner.get(anotherSource, 5);
+  await owner.open(second);
+  expect(second.state.status).toBe("ready");
+  resolvePost({
+    state: "done",
+    data: receiptFor("done", "running", actualShift()),
+  });
+  await start;
+  expect(first.state.status).toBe("held");
+  expect(first.state.original?.start.requestId).toBe(requestId);
+  expect(second.state.status).toBe("ready");
+  expect(second.state.original).toBeNull();
+  owner.dispose();
 });

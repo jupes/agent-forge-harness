@@ -25,7 +25,8 @@ const journalSchema = z
 export type KeeperShiftIdentity = z.infer<typeof identitySchema>;
 
 export interface KeeperShiftIdentities {
-  read(source: KeeperProposal, workspace: string): KeeperShiftIdentity | null;
+  /** Read saved identity metadata without granting access to its protected original. */
+  read(source: KeeperProposal, workspace?: string): KeeperShiftIdentity | null;
   reserve(
     source: KeeperProposal,
     workspace: string,
@@ -87,7 +88,7 @@ export function createKeeperShiftIdentities(deps: {
   const find = (
     records: KeeperShiftIdentity[],
     source: KeeperProposal,
-    workspace: string,
+    workspace?: string,
   ) => {
     proposalFor(source);
     const held = records.find(
@@ -97,7 +98,7 @@ export function createKeeperShiftIdentities(deps: {
     if (
       held &&
       (held.sourceHash !== source.sourceHash ||
-        held.workspace !== workspaceKey(workspace))
+        (workspace !== undefined && held.workspace !== workspaceKey(workspace)))
     )
       throw Error(
         "The held Shift identity belongs to a changed proposal source or workspace. A replacement is locked.",
