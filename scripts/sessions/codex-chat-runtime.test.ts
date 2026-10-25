@@ -723,6 +723,7 @@ test("explicit Stop confirms actual native tree cleanup while a private writer n
   controller.abort();
   const result = await running;
   expect(result.phase).toBe("unknown");
+  expect(result.reason).toBe("The private Chat writer exceeded its deadline.");
   expect(result.stopped).toBe(true);
   expect(await stoppedTree(pids)).toBe(true);
   const before = persisted.length;
@@ -796,7 +797,8 @@ test("a rejected private writer and queue pressure remain failures even with exi
       { prepared: snapshot, resume: null },
       async (event) => {
         count++;
-        if (mode === "normal") return Promise.reject(undefined);
+        if (mode === "normal")
+          return Promise.reject(new Error("synthetic private writer secret"));
         if (event.kind === "text") await new Promise(() => {});
       },
       new AbortController().signal,
@@ -804,9 +806,49 @@ test("a rejected private writer and queue pressure remain failures even with exi
     );
     expect(result.phase).toBe("unknown");
     expect(count).toBeLessThanOrEqual(256);
+    if (mode === "normal") {
+      expect(result.reason).toBe("The private Chat writer failed.");
+      expect(result.reason).not.toContain("synthetic private writer secret");
+    }
     const pids = treeRecord(f.records());
     if (pids) expect(await stoppedTree(pids)).toBe(true);
   }
+});
+
+test("a private writer that exceeds its bounded deadline has a fixed reason without changing unknown outcome", async () => {
+  const f = fixture("hang-text"),
+    runtime = createCodexChatRuntime({
+      ...f.options,
+      persistenceTimeoutMs: 100,
+    });
+  const snapshot = await runtime.prepare({
+    smith: "codex-journeyman",
+    launch: f.launch,
+  });
+  let writing = false;
+  const resultPromise = runtime.run(
+    { prepared: snapshot, resume: null },
+    async (event) => {
+      if (event.kind === "text") {
+        writing = true;
+        await new Promise<void>(() => {});
+      }
+    },
+    new AbortController().signal,
+    decline,
+  );
+  await until(() => (writing ? true : null));
+  const result = await resultPromise;
+  expect(result).toMatchObject({
+    phase: "unknown",
+    reason: "The private Chat writer exceeded its deadline.",
+    timedOut: false,
+  });
+  expect(result.reason).not.toContain(
+    "Private Chat persistence did not settle",
+  );
+  const pids = treeRecord(f.records());
+  if (pids) expect(await stoppedTree(pids)).toBe(true);
 });
 
 test.each([

@@ -140,9 +140,15 @@ test.afterEach(async ({ page }) => {
               reasonClass:
                 turn.reason === null
                   ? null
-                  : turn.reason.includes("private Chat writer")
-                    ? "private-writer-failure-or-deadline"
-                    : "other",
+                  : turn.reason === "The private Chat writer failed."
+                    ? "private-writer-rejected"
+                    : turn.reason ===
+                        "The private Chat writer exceeded its deadline."
+                      ? "private-writer-deadline"
+                      : turn.reason ===
+                          "The private Chat writer exceeded its queue bound."
+                        ? "private-writer-queue-bound"
+                        : "other",
             })),
             frames: frames.map(({ event }) =>
               event.kind === "coding-chat"
