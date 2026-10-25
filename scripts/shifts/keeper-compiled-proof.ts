@@ -51,6 +51,8 @@ const tokenData = z.object({ token: z.string().regex(/^[0-9a-f]{64}$/) });
 const admission = z.object({ pid: z.number().int().positive() }).passthrough();
 const READY_MS = 20_000;
 const STOP_MS = 12_000;
+const REQUEST_MS = 10_000;
+const DRAIN_MS = 5_000;
 
 type Host = {
   process: ReturnType<typeof Bun.spawn>;
@@ -62,6 +64,7 @@ type Host = {
   stdoutDone: Promise<void>;
   stderrDone: Promise<void>;
   exited: Promise<number>;
+  outputAbort: AbortController;
   outputError: string | null;
 };
 
@@ -93,10 +96,15 @@ function compile(entry: string, target: string): void {
 function drain(
   stream: ReadableStream<Uint8Array>,
   record: (text: string) => void,
+  signal: AbortSignal,
 ): Promise<void> {
   return (async () => {
     const reader = stream.getReader(),
-      decoder = new TextDecoder();
+      decoder = new TextDecoder(),
+      cancel = () => {
+        void reader.cancel().catch(() => undefined);
+      };
+    signal.addEventListener("abort", cancel, { once: true });
     try {
       for (;;) {
         const { done, value } = await reader.read();
@@ -106,6 +114,7 @@ function drain(
       const rest = decoder.decode();
       if (rest) record(rest);
     } finally {
+      signal.removeEventListener("abort", cancel);
       reader.releaseLock();
     }
   })();
@@ -121,7 +130,6 @@ async function startHost(
   home: string,
   bin: string,
   userHome: string,
-  providerRecord: string,
   owned: Host[],
 ): Promise<Host> {
   const base = Object.fromEntries(
@@ -140,7 +148,6 @@ async function startHost(
         LOCALAPPDATA: userHome,
         AGENT_FORGE_HOME: home,
         CODING_FIXTURE_MODE: "rich",
-        CODING_FIXTURE_RECORD: providerRecord,
         HEARTH_PORT: "0",
       },
       stdin: "ignore",
@@ -150,6 +157,7 @@ async function startHost(
   let readyResolve: ((port: number) => void) | undefined,
     readyReject: ((error: Error) => void) | undefined,
     startupText = "";
+  const outputAbort = new AbortController();
   const ready = new Promise<number>((resolveReady, rejectReady) => {
     readyResolve = resolveReady;
     readyReject = rejectReady;
@@ -163,6 +171,7 @@ async function startHost(
     stderr: "",
     stdoutDone: Promise.resolve(),
     stderrDone: Promise.resolve(),
+    outputAbort,
     exited: child.exited.then((code) => {
       host.exitCode = code;
       readyReject?.(new Error(`Compiled hearth exited before ready (${code})`));
@@ -171,25 +180,33 @@ async function startHost(
     outputError: null,
   };
   owned.push(host);
-  host.stdoutDone = drain(child.stdout, (chunk) => {
-    host.stdout = addTail(host.stdout, chunk);
-    startupText = addTail(startupText, chunk);
-    const match = /hearth listening on http:\/\/127\.0\.0\.1:(\d+)/.exec(
-      startupText,
-    );
-    if (match) {
-      const port = Number(match[1]);
-      if (Number.isSafeInteger(port) && port > 0) {
-        host.port = port;
-        readyResolve?.(port);
+  host.stdoutDone = drain(
+    child.stdout,
+    (chunk) => {
+      host.stdout = addTail(host.stdout, chunk);
+      startupText = addTail(startupText, chunk);
+      const match = /hearth listening on http:\/\/127\.0\.0\.1:(\d+)/.exec(
+        startupText,
+      );
+      if (match) {
+        const port = Number(match[1]);
+        if (Number.isSafeInteger(port) && port > 0) {
+          host.port = port;
+          readyResolve?.(port);
+        }
       }
-    }
-  }).catch((error: unknown) => {
+    },
+    outputAbort.signal,
+  ).catch((error: unknown) => {
     host.outputError = error instanceof Error ? error.message : String(error);
   });
-  host.stderrDone = drain(child.stderr, (chunk) => {
-    host.stderr = addTail(host.stderr, chunk);
-  }).catch((error: unknown) => {
+  host.stderrDone = drain(
+    child.stderr,
+    (chunk) => {
+      host.stderr = addTail(host.stderr, chunk);
+    },
+    outputAbort.signal,
+  ).catch((error: unknown) => {
     host.outputError = error instanceof Error ? error.message : String(error);
   });
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -216,43 +233,107 @@ async function startHost(
 }
 
 async function stopHost(host: Host): Promise<void> {
+  const errors: unknown[] = [];
   if (host.exitCode === null) {
     try {
+      // Bun's Windows child signal is a termination request, not proof of graceful app shutdown.
       host.process.kill("SIGTERM");
     } catch {
-      /* The bounded fallback below owns this process tree if it is still alive. */
+      // The bounded wait and owner fallback below determine whether it remains alive.
     }
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const stopped = await Promise.race([
-      host.exited.then(() => true),
-      new Promise<boolean>((resolveStopped) => {
-        timer = setTimeout(() => resolveStopped(false), STOP_MS);
-      }),
-    ]);
-    if (timer) clearTimeout(timer);
-    if (!stopped) {
-      killTree(host.pid);
-      await Promise.race([
-        host.exited,
-        Bun.sleep(STOP_MS).then(() => {
-          throw new Error("Compiled hearth tree did not exit after owner kill");
-        }),
-      ]);
+    try {
+      await waitBounded(host.exited, "Compiled hearth exit", STOP_MS);
+    } catch {
+      try {
+        killTree(host.pid);
+        await waitBounded(
+          host.exited,
+          "Compiled hearth tree exit after owner kill",
+          STOP_MS,
+        );
+      } catch (error) {
+        errors.push(error);
+      }
     }
   }
-  await Promise.all([host.stdoutDone, host.stderrDone]);
+  if (host.exitCode === null) {
+    try {
+      killTree(host.pid);
+      await waitBounded(
+        host.exited,
+        "Compiled hearth tree exit after final owner kill",
+        STOP_MS,
+      );
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  if (host.exitCode !== null && host.port !== null) {
+    try {
+      await waitUntil(
+        async () => ((await portCanBind(host.port!)) ? true : null),
+        "Compiled hearth port release",
+        STOP_MS,
+      );
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  for (const [name, drain] of [
+    ["stdout", host.stdoutDone],
+    ["stderr", host.stderrDone],
+  ] as const) {
+    try {
+      await waitBounded(drain, `Compiled hearth ${name} drain`, DRAIN_MS);
+    } catch (error) {
+      errors.push(error);
+      host.outputAbort.abort();
+      try {
+        await waitBounded(
+          drain,
+          `Compiled hearth ${name} drain after cancellation`,
+          STOP_MS,
+        );
+      } catch (cancelError) {
+        errors.push(cancelError);
+      }
+    }
+  }
   if (host.outputError !== null)
-    throw new Error("Compiled hearth output did not drain cleanly");
+    errors.push(new Error("Compiled hearth output did not drain cleanly"));
+  if (errors.length)
+    throw new AggregateError(errors, "Compiled hearth cleanup failed");
+}
+
+async function waitBounded<T>(
+  operation: Promise<T>,
+  label: string,
+  timeoutMs: number,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      operation,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`${label} exceeded its ${timeoutMs}ms bound`)),
+          timeoutMs,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 async function waitUntil<T>(
-  read: () => T | null,
+  read: () => T | null | Promise<T | null>,
   label: string,
   timeoutMs = 30_000,
 ): Promise<T> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const value = read();
+    const value = await read();
     if (value !== null) return value;
     await Bun.sleep(25);
   }
@@ -275,7 +356,7 @@ async function acquireOperatorSession(
   const token = readToken(tokenPath(home, root));
   if (token === null)
     throw new Error("Compiled hearth token was not published");
-  const launch = await fetch(`${origin}${LAUNCH_ROUTE}`, {
+  const launch = await boundedFetch(`${origin}${LAUNCH_ROUTE}`, {
     method: "POST",
     headers: {
       Origin: origin,
@@ -283,12 +364,14 @@ async function acquireOperatorSession(
       [SURFACE_HEADER]: "api",
     },
   });
-  if (launch.status !== 200)
+  if (launch.status !== 200) {
+    await cancelBody(launch);
     throw new Error("Compiled hearth refused its local launch fixture");
+  }
   const launchValue = z
     .object({ secret: z.string().regex(/^[0-9a-f]{64}$/) })
     .parse(parseEnvelope(await launch.text(), "Launch response"));
-  const session = await fetch(`${origin}${SESSION_ROUTE}`, {
+  const session = await boundedFetch(`${origin}${SESSION_ROUTE}`, {
     method: "POST",
     headers: {
       Origin: origin,
@@ -296,13 +379,15 @@ async function acquireOperatorSession(
       [SURFACE_HEADER]: "api",
     },
   });
-  if (session.status !== 200)
+  if (session.status !== 200) {
+    await cancelBody(session);
     throw new Error("Compiled hearth refused its same-origin session fixture");
-  const cookie = session.headers.get("set-cookie")?.split(";", 1)[0];
-  if (!cookie) throw new Error("Compiled hearth session cookie was absent");
+  }
   const key = sessionData.parse(
     parseEnvelope(await session.text(), "Session response"),
   ).key;
+  const cookie = session.headers.get("set-cookie")?.split(";", 1)[0];
+  if (!cookie) throw new Error("Compiled hearth session cookie was absent");
   return { cookie, key };
 }
 
@@ -310,17 +395,19 @@ async function sessionToken(
   origin: string,
   session: { cookie: string; key: string },
 ) {
-  const response = await fetch(`${origin}${TOKEN_ROUTE}`, {
+  const response = await boundedFetch(`${origin}${TOKEN_ROUTE}`, {
     headers: {
       Origin: origin,
       Cookie: session.cookie,
       [SESSION_KEY_HEADER]: session.key,
     },
   });
-  if (response.status !== 200)
+  if (response.status !== 200) {
+    await cancelBody(response);
     throw new Error(
       "The persisted dashboard session did not survive host restart",
     );
+  }
   return tokenData.parse(parseEnvelope(await response.text(), "Token response"))
     .token;
 }
@@ -330,11 +417,13 @@ async function readOk(
   path: string,
   token: string,
 ): Promise<unknown> {
-  const response = await fetch(`${origin}${path}`, {
+  const response = await boundedFetch(`${origin}${path}`, {
     headers: { Origin: origin, [OPERATOR_HEADER]: token },
   });
-  if (response.status !== 200)
+  if (response.status !== 200) {
+    await cancelBody(response);
     throw new Error("Protected Keeper/Shift read did not succeed");
+  }
   return parseEnvelope(await response.text(), "Protected read");
 }
 
@@ -344,7 +433,7 @@ async function postStart(
   token: string,
   request: KeeperShiftStartRequest,
 ): Promise<Response> {
-  return fetch(`${origin}${path}`, {
+  return boundedFetch(`${origin}${path}`, {
     method: "POST",
     headers: {
       Origin: origin,
@@ -354,6 +443,18 @@ async function postStart(
     },
     body: JSON.stringify(request),
   });
+}
+
+function boundedFetch(input: string, init: RequestInit): Promise<Response> {
+  return fetch(input, { ...init, signal: AbortSignal.timeout(REQUEST_MS) });
+}
+
+async function cancelBody(response: Response): Promise<void> {
+  await waitBounded(
+    response.body?.cancel() ?? Promise.resolve(),
+    "HTTP response body cancellation",
+    REQUEST_MS,
+  );
 }
 
 async function portCanBind(port: number): Promise<boolean> {
@@ -464,7 +565,7 @@ export async function runKeeperShiftCompiledProof(
     );
     writeFileSync(
       join(root, "agent-forge.toml"),
-      '[execution.env]\npass=["CODING_FIXTURE_MODE","CODING_FIXTURE_RECORD"]\n[shift]\nthrottle=1.0\n',
+      '[execution.env]\npass=["CODING_FIXTURE_MODE"]\n[shift]\nthrottle=1.0\n',
     );
     writeFileSync(
       join(stateDir, "tracker.json"),
@@ -517,7 +618,7 @@ export async function runKeeperShiftCompiledProof(
       ).replaceAll("\\", "/");
     writeFileSync(
       providerEntry,
-      `import {appendFileSync} from "node:fs"; import {runCodingCliFixture} from ${JSON.stringify(providerFixture)}; const args=process.argv.slice(2); if(!args.includes("--version")&&!args.includes("--help")) appendFileSync(${JSON.stringify(admissionsFile)}, JSON.stringify({pid:process.pid,cwd:process.cwd()})+"\\n"); await runCodingCliFixture();`,
+      `import {appendFileSync} from "node:fs"; import {runCodingCliFixture} from ${JSON.stringify(providerFixture)}; const args=process.argv.slice(2); if(args.includes("--version")){console.log("2.1.293 (Claude Code fixture)");} else if(args.includes("--help")){console.log("--print --output-format --verbose --model --effort --permission-mode --allowedTools");} else if(args.slice(-2).join(" ")==="auth status"){console.log(JSON.stringify({authMethod:"api_key",loggedIn:true}));} else if(args.includes("-p")&&args.includes("--output-format")&&args[args.indexOf("--output-format")+1]==="stream-json"){appendFileSync(${JSON.stringify(admissionsFile)}, JSON.stringify({pid:process.pid,cwd:process.cwd()})+"\\n"); await runCodingCliFixture();} else {process.exitCode=2;}`,
     );
     compile(providerEntry, provider);
 
@@ -554,15 +655,17 @@ export async function runKeeperShiftCompiledProof(
         home,
         bin,
         userHome,
-        join(stateDir, "provider.json"),
         owned,
       ),
       originA = `http://127.0.0.1:${hostA.port}`,
       session = await acquireOperatorSession(originA, home, root),
       tokenA = await sessionToken(originA, session),
       action = await postStart(originA, startPath, tokenA, reviewed);
-    expect(action.status).toBe(200);
-    await action.body?.cancel();
+    if (action.status !== 200) {
+      await cancelBody(action);
+      throw new Error("The reviewed Keeper start was not accepted");
+    }
+    await cancelBody(action);
 
     const savedIntent = createProjectShiftRegistry({ home, root }).read(
       FIXTURE_PROJECT_ID,
@@ -648,7 +751,6 @@ export async function runKeeperShiftCompiledProof(
         home,
         bin,
         userHome,
-        join(stateDir, "provider.json"),
         owned,
       ),
       originB = `http://127.0.0.1:${hostB.port}`,
@@ -670,7 +772,10 @@ export async function runKeeperShiftCompiledProof(
     expect(admissions(admissionsFile)).toHaveLength(1);
 
     const exact = await postStart(originB, startPath, tokenB, reviewed);
-    expect(exact.status).toBe(200);
+    if (exact.status !== 200) {
+      await cancelBody(exact);
+      throw new Error("The exact Keeper retry did not return its original");
+    }
     const exactBody = keeperShiftStartReceiptSchema.parse(
       parseEnvelope(await exact.text(), "Exact Keeper retry"),
     );
@@ -681,8 +786,11 @@ export async function runKeeperShiftCompiledProof(
     const edited = structuredClone(reviewed);
     edited.start.options.maxBeads = 2;
     const changed = await postStart(originB, startPath, tokenB, edited);
-    expect(changed.status).toBe(409);
-    await changed.body?.cancel();
+    if (changed.status !== 409) {
+      await cancelBody(changed);
+      throw new Error("The changed Keeper body was not refused");
+    }
+    await cancelBody(changed);
     expect(admissions(admissionsFile)).toHaveLength(1);
     const finalActions = queryEvents(
       { workspace: root, kinds: ["operator.action"] },
@@ -717,7 +825,6 @@ export async function runKeeperShiftCompiledProof(
       await stopHost(host);
     } catch (error) {
       cleanupErrors.push(error);
-      killTree(host.pid);
     }
   }
   for (const ledger of ledgers) {
