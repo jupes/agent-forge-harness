@@ -10,6 +10,7 @@ import {
 } from "../sessions/codex-owned-journal";
 import { scratchDirs } from "../test-scratch";
 import {
+  hasVisibleNativePatchFocus,
   seedNativeFileChangeSession,
   verifyNativeFileChanges,
 } from "./native-file-change-smoke";
@@ -120,7 +121,8 @@ test("the native file probe observes reads without refusing and cleans its local
       remove = spyOn(socket, "removeEventListener"),
       expressions: string[] = [],
       cause = Error("Original native page assertion");
-    let screenshot = false;
+    let screenshot = false,
+      focusExpression = "";
     const tools = {
       async evaluate(_socket: EventTarget, expression: string) {
         expressions.push(expression);
@@ -132,6 +134,7 @@ test("the native file probe observes reads without refusing and cleans its local
       async waitForPage(_socket: EventTarget, expression: string) {
         // Compile the actual WebView expression without executing any DOM or I/O.
         new Function(`return (${expression});`);
+        if (expression.includes("focusVisible")) focusExpression = expression;
         if (fail) throw cause;
       },
       async pressTab() {
@@ -156,7 +159,94 @@ test("the native file probe observes reads without refusing and cleans its local
       ).rejects.toBe(cause);
     else await verifyNativeFileChanges(socket, record, home, tools);
     expect(screenshot).toBe(fail);
+    if (!fail)
+      expect(focusExpression).toContain(hasVisibleNativePatchFocus.toString());
     expect(remove).toHaveBeenCalledTimes(1);
     expect(expressions.at(-1)).toBe('location.hash="#/desktop/projects"');
   }
+});
+
+test("the native focus failure reports only bounded style and active-element facts", async () => {
+  const root = scratch.make("native-file-focus-diagnostic-"),
+    home = join(root, "home"),
+    record = await seedNativeFileChangeSession(
+      home,
+      root,
+      "project-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    ),
+    socket = new EventTarget();
+  let wait = 0,
+    diagnosticExpression = "",
+    screenshot = false;
+  const tools = {
+    async evaluate(_socket: EventTarget, expression: string) {
+      if (expression === "location.hash") return "#/desktop/projects";
+      if (expression.includes("outlineWidthCssPx")) {
+        diagnosticExpression = expression;
+        return {
+          reportFound: true,
+          preFound: true,
+          preConnected: true,
+          activeIsPre: true,
+          activeTag: "PRE",
+          focusVisible: true,
+          outlineWidth: "1.71429px",
+          outlineWidthCssPx: 1.71429,
+          outlineStyle: "solid",
+          specifiedCssPx: 2,
+          dpr: 1.2,
+          textContent: "PRIVATE_CONTENT_MUST_NOT_APPEAR",
+        };
+      }
+      return undefined;
+    },
+    async enableRequests() {},
+    async waitForPage() {
+      wait++;
+      if (wait === 3) throw Error("Focus wait failed");
+    },
+    async pressTab() {},
+    async screenshot() {
+      screenshot = true;
+    },
+  };
+  const failure = await verifyNativeFileChanges(
+    socket,
+    record,
+    home,
+    tools,
+  ).catch((error: unknown) => error);
+  expect(failure).toBeInstanceOf(Error);
+  expect((failure as Error).message).toContain('"activeIsPre":true');
+  expect((failure as Error).message).toContain('"specifiedCssPx":2');
+  expect((failure as Error).message).not.toContain(
+    "PRIVATE_CONTENT_MUST_NOT_APPEAR",
+  );
+  expect(diagnosticExpression).toContain("outlineWidthCssPx");
+  expect(screenshot).toBe(true);
+});
+
+test("visible patch focus requires a focused solid declared two-pixel outline within one device pixel", () => {
+  const facts = {
+    activeIsPre: true,
+    focusVisible: true,
+    outlineStyle: "solid",
+    specifiedCssPx: 2,
+    outlineWidthCssPx: 1.71429,
+    dpr: 1.75,
+  };
+  expect(hasVisibleNativePatchFocus(facts)).toBe(true);
+  for (const changed of [
+    { activeIsPre: false },
+    { focusVisible: false },
+    { outlineStyle: "dashed" },
+    { specifiedCssPx: 1.99 },
+    { outlineWidthCssPx: 0 },
+    { outlineWidthCssPx: Number.NaN },
+    { dpr: 0 },
+    { dpr: Number.POSITIVE_INFINITY },
+    { outlineWidthCssPx: 2 - 1 / 1.75 },
+    { outlineWidthCssPx: 1.4 },
+  ])
+    expect(hasVisibleNativePatchFocus({ ...facts, ...changed })).toBe(false);
 });
