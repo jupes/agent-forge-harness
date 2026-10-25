@@ -335,6 +335,20 @@ test("native MCP tool calls refuse identity changes, malformed lifecycle and pos
   ).toThrow();
 });
 
+test("native MCP tool calls refuse foreign thread and turn identities", () => {
+  for (const change of [{ threadId: turnId }, { turnId: threadId }])
+    expect(() =>
+      stream().accept(
+        notify("item/started", {
+          threadId,
+          turnId,
+          ...change,
+          item: mcpToolCallItem(),
+        }),
+      ),
+    ).toThrow();
+});
+
 test("native file changes retain distinct full replacement snapshots, exact statuses and one matching final closure", () => {
   const decoder = stream();
   const changes = [
@@ -974,37 +988,38 @@ test("explicit reasoning summaries preserve independent indexed streams and snap
 });
 
 test("the native decoder shares its existing 256 item limit across messages, commands, summaries and MCP calls", () => {
-  const decoder = stream();
-  for (let index = 0; index < 255; index++)
-    decoder.accept(
-      notify("item/started", {
-        threadId,
-        turnId,
-        item: {
-          type: "agentMessage",
-          id: `message-${index}`,
-          text: "Visible text",
-        },
-      }),
-    );
-  expect(
-    decoder.accept(
-      notify("item/started", {
-        threadId,
-        turnId,
-        item: mcpToolCallItem(),
-      }),
-    ).events,
-  ).toHaveLength(1);
-  expect(() =>
-    decoder.accept(
-      notify("item/started", {
-        threadId,
-        turnId,
-        item: commandItem(),
-      }),
-    ),
-  ).toThrow("bound");
+  for (const lastItem of [
+    reasoningItem({ id: "last-reasoning" }),
+    mcpToolCallItem({ id: "last-mcp" }),
+  ]) {
+    const decoder = stream();
+    for (let index = 0; index < 255; index++)
+      decoder.accept(
+        notify("item/started", {
+          threadId,
+          turnId,
+          item: {
+            type: "agentMessage",
+            id: `message-${index}`,
+            text: "Visible text",
+          },
+        }),
+      );
+    expect(
+      decoder.accept(
+        notify("item/started", { threadId, turnId, item: lastItem }),
+      ).events,
+    ).toHaveLength(1);
+    expect(() =>
+      decoder.accept(
+        notify("item/started", {
+          threadId,
+          turnId,
+          item: commandItem(),
+        }),
+      ),
+    ).toThrow("bound");
+  }
 });
 
 test("native MCP fields share one UTF-8 report budget and the existing rich-event aggregate", () => {
@@ -1062,6 +1077,59 @@ test("native MCP fields share one UTF-8 report budget and the existing rich-even
   }).toThrow("private report bound");
   expect(accepted).toBeGreaterThan(0);
   expect(accepted).toBeLessThan(160);
+});
+
+test("commands, file changes and MCP calls consume the same native rich-report aggregate", () => {
+  const decoder = stream();
+  for (let index = 0; index < 40; index++)
+    decoder.accept(
+      notify("item/started", {
+        threadId,
+        turnId,
+        item: commandItem({
+          id: `mixed-command-${index}`,
+          command: "x".repeat(16_384),
+          aggregatedOutput: "y".repeat(16_384),
+        }),
+      }),
+    );
+  for (let index = 0; index < 40; index++)
+    decoder.accept(
+      notify("item/started", {
+        threadId,
+        turnId,
+        item: {
+          type: "fileChange",
+          id: `mixed-files-${index}`,
+          status: "inProgress",
+          changes: [
+            {
+              path: `file-${index}.txt`,
+              kind: { type: "add" },
+              diff: "z".repeat(16_384),
+            },
+          ],
+        },
+      }),
+    );
+  let mcpCalls = 0;
+  expect(() => {
+    for (let index = 0; index < 100; index++) {
+      decoder.accept(
+        notify("item/started", {
+          threadId,
+          turnId,
+          item: mcpToolCallItem({
+            id: `mixed-mcp-${index}`,
+            server: "m".repeat(16_384),
+          }),
+        }),
+      );
+      mcpCalls++;
+    }
+  }).toThrow("private report bound");
+  expect(mcpCalls).toBeGreaterThan(0);
+  expect(mcpCalls).toBeLessThan(100);
 });
 
 test("reasoning summaries refuse foreign or malformed parts and closed content while raw content cannot create summary facts", () => {
