@@ -440,7 +440,7 @@ test("private native MCP snapshots reload as collapsed, literal, inert reports",
     await reloadSettled(page);
     await expect(page.locator("[data-session-state]")).toHaveAttribute(
       "data-session-state",
-      "ended",
+      "idle",
     );
     expect(saved(record.id).frames).toEqual(before.frames);
     const reopened = page
