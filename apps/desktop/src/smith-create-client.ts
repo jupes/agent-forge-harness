@@ -108,10 +108,16 @@ export function createSmithConfigCreateClient(deps: {
   const entry = (requestId: string) =>
     state.entries.find((item) => item.identity.requestId === requestId);
   const canStart = () => {
-    const current = state.activeRequestId ? entry(state.activeRequestId) : null;
-    return (
-      !current || current.state === "not-sent" || current.state === "refused"
-    );
+    try {
+      return (
+        !deps.identities.list().some((identity) => {
+          const current = entry(identity.requestId);
+          return current === undefined || current.state === "held";
+        }) && !state.entries.some((item) => item.state === "held")
+      );
+    } catch {
+      return false;
+    }
   };
   const installReceipt = async (
     held: SmithCreateEntry,
@@ -218,7 +224,7 @@ export function createSmithConfigCreateClient(deps: {
             "The Smith candidate could not be verified. No create request was sent.";
         }
       } finally {
-        if (!disposed && ticket === generation) {
+        if (!disposed) {
           state.previewing = false;
           emit();
         }

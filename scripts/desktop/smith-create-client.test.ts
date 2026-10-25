@@ -153,6 +153,68 @@ test("create requires a current reviewed preview and an identity that read-backs
   value.client.dispose();
 });
 
+test("editing during a pending preview clears its stale busy state", async () => {
+  let releaseFirst: ((value: unknown) => void) | undefined,
+    previewCalls = 0;
+  const value = setup({
+    preview: async (input) => {
+      previewCalls++;
+      if (previewCalls === 1)
+        return await new Promise<unknown>((resolve) => {
+          releaseFirst = resolve;
+        });
+      return preview(input);
+    },
+  });
+  value.client.setDraft("workspace", smith);
+  const pending = value.client.preview();
+  expect(value.client.get().previewing).toBe(true);
+  const changed = { ...smith, model: "edited-while-reviewing" };
+  value.client.setDraft("workspace", changed);
+  if (!releaseFirst) throw Error("The first preview was not deferred");
+  releaseFirst(preview({ target: "workspace", smith }));
+  await pending;
+
+  expect(value.client.get()).toMatchObject({
+    previewing: false,
+    preview: null,
+    smith: changed,
+  });
+  await value.client.preview();
+  expect(previewCalls).toBe(2);
+  expect(value.client.get().preview?.review.after).toEqual(changed);
+  value.client.dispose();
+});
+
+test("a confirmed original remains while a later explicit create uses a new UUID", async () => {
+  const value = setup();
+  value.client.setDraft("workspace", smith);
+  await value.client.preview();
+  await value.client.create();
+  const first = value.client.get().entries[0];
+  if (!first) throw Error("Missing first confirmed receipt");
+
+  const nextSmith = { ...smith, name: "codex-next-smith" };
+  value.client.setDraft("workspace", nextSmith);
+  await value.client.preview();
+  await value.client.create();
+
+  expect(value.posted.map((request) => request.requestId)).toEqual(ids);
+  expect(value.client.get().entries).toMatchObject([
+    {
+      identity: { requestId: ids[0] },
+      state: "confirmed",
+      receipt: first.receipt,
+    },
+    {
+      identity: { requestId: ids[1] },
+      state: "confirmed",
+      request: { smith: nextSmith },
+    },
+  ]);
+  value.client.dispose();
+});
+
 test("editing invalidates preview and a sent generic 503 stays held through reload and GET-only recovery", async () => {
   const first = setup({
     post: async () => ({
@@ -175,11 +237,13 @@ test("editing invalidates preview and a sent generic 503 stays held through relo
   expect(first.client.get().entries[0]?.state).toBe("held");
   first.client.dispose();
 
+  let recoveryPreviewCalls = 0;
   const restarted = createSmithConfigCreateClient({
     identities: first.identities,
     canWrite: () => true,
     requestId: () => ids[1]!,
     preview: async () => {
+      recoveryPreviewCalls++;
       throw Error("Recovery must not prepare a new preview");
     },
     post: async () => {
@@ -193,9 +257,16 @@ test("editing invalidates preview and a sent generic 503 stays held through relo
   await restarted.recover();
   expect(first.readIds).toEqual([heldId]);
   expect(first.posted).toHaveLength(1);
+  expect(restarted.get().activeRequestId).toBeNull();
   expect(restarted.get().entries).toMatchObject([
     { identity: { requestId: heldId }, request: null, state: "held" },
   ]);
+  restarted.setDraft("workspace", { ...smith, model: "after-unknown" });
+  await restarted.preview();
+  await restarted.create();
+  expect(recoveryPreviewCalls).toBe(0);
+  expect(first.posted).toHaveLength(1);
+  expect(first.identities.list()).toHaveLength(1);
   restarted.dispose();
 });
 
