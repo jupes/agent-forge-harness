@@ -12,8 +12,10 @@
 
 import { randomUUID } from "node:crypto";
 import {
+  lstatSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -25,6 +27,7 @@ import type { LedgerEvent, LedgerEventInput } from "../../types/hearth";
 import { fakeConversationTransport } from "../conversations/testing";
 import { operatorCouncilLedger } from "../council/ledger-wiring";
 import type { CommandRunner } from "../council/pr-source";
+import { liveChildCount } from "../executors/supervisor";
 import { appendEvent } from "../ledger/append";
 import { closeLedger } from "../ledger/db";
 import { queryEvents } from "../ledger/query";
@@ -61,6 +64,13 @@ import type {
   ShiftLauncher,
   ShiftLaunchSpec,
 } from "./shift-launcher";
+import {
+  cleanupEvidenceJson,
+  GEMINI_PREVIEW_DIAGNOSTIC_CASE,
+  geminiPreviewDiagnosticResources,
+  restartManagerLockerPids,
+  windowsCleanupDiagnosticEnabled,
+} from "./windows-cleanup-diagnostic";
 
 const REPO = resolve(import.meta.dir, "..", "..");
 
@@ -602,8 +612,82 @@ export async function startTestHearth(
     async close() {
       await hearth.close();
       closeLedger(ledger);
-      for (const dir of [home, root, configHome, ...(main ? [main] : [])])
-        rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
+      for (const dir of [home, root, configHome, ...(main ? [main] : [])]) {
+        const diagnostic =
+          dir === root &&
+          process.platform === "win32" &&
+          windowsCleanupDiagnosticEnabled(process.env);
+        const resources = diagnostic
+          ? geminiPreviewDiagnosticResources(root).filter((path) => {
+              try {
+                const info = lstatSync(path);
+                return info.isFile() && !info.isSymbolicLink();
+              } catch {
+                return false;
+              }
+            })
+          : [];
+        const evidence = (
+          operation:
+            | "before-remove-fixture-root"
+            | "remove-fixture-root-failed",
+          errorCode: string | null,
+        ) => {
+          const fallback = () => {
+            try {
+              process.stderr.write(
+                `AF_WINDOWS_CLEANUP_DIAGNOSTIC ${cleanupEvidenceJson({
+                  case: GEMINI_PREVIEW_DIAGNOSTIC_CASE,
+                  operation,
+                  target: root,
+                  errorCode,
+                  liveChildCount: liveChildCount(),
+                  resources,
+                  rootEntries: [],
+                  rootEntriesTruncated: false,
+                  lockerPids: null,
+                  lockerProbe: "unavailable",
+                })}\n`,
+              );
+            } catch {
+              // Diagnostics must never replace the fixture cleanup outcome.
+            }
+          };
+          try {
+            const entries = readdirSync(root).sort(),
+              lockerPids = restartManagerLockerPids(resources);
+            process.stderr.write(
+              `AF_WINDOWS_CLEANUP_DIAGNOSTIC ${cleanupEvidenceJson({
+                case: GEMINI_PREVIEW_DIAGNOSTIC_CASE,
+                operation,
+                target: root,
+                errorCode,
+                liveChildCount: liveChildCount(),
+                resources,
+                rootEntries: entries.slice(0, 64),
+                rootEntriesTruncated: entries.length > 64,
+                lockerPids,
+                lockerProbe: lockerPids === null ? "unavailable" : "ok",
+              })}\n`,
+            );
+          } catch {
+            fallback();
+          }
+        };
+        if (diagnostic) evidence("before-remove-fixture-root", null);
+        try {
+          rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
+        } catch (error) {
+          if (diagnostic)
+            evidence(
+              "remove-fixture-root-failed",
+              typeof error === "object" && error !== null && "code" in error
+                ? String(error.code)
+                : null,
+            );
+          throw error;
+        }
+      }
     },
   };
 }
