@@ -322,18 +322,47 @@ test("protected original recovery restores the exact full request and refuses a 
   await expect(acceptKeeperShiftReceipt(current, foreign)).rejects.toThrow();
 });
 
-test("an already admitted saved unknown outcome cannot upgrade on a later receipt", async () => {
-  const first = await acceptKeeperShiftReceipt(
-      readyReview(),
-      receiptFor("unknown", null, null),
+test("admitted unknown and failed outcomes stay sticky across repeated done receipts and read holds", async () => {
+  for (const phase of ["unknown", "failed"] as const) {
+    const first = await acceptKeeperShiftReceipt(
+        readyReview(),
+        receiptFor(phase, null, null),
+      ),
+      held = holdKeeperShiftReview(first, "The protected read failed."),
+      second = await acceptKeeperShiftReceipt(
+        held,
+        receiptFor("done", "running", actualShift()),
+      ),
+      third = await acceptKeeperShiftReceipt(
+        second,
+        receiptFor("done", "running", actualShift()),
+      );
+    expect(first.status).toBe(phase);
+    expect(second.status).toBe(phase);
+    expect(third.status).toBe(phase);
+    expect(third.admittedOutcome).toBe(phase);
+    expect(third.original).toEqual(first.original);
+  }
+});
+
+test("an initially held review can recover its first verified receipt and a recorded outcome can downgrade", async () => {
+  const held = initializeKeeperShiftReview(
+      createKeeperShiftReview(source, 4),
+      shiftOptions(),
+      requestId,
     ),
-    later = await acceptKeeperShiftReceipt(
-      first,
+    recovered = await acceptKeeperShiftReceipt(
+      held,
       receiptFor("done", "running", actualShift()),
+    ),
+    downgraded = await acceptKeeperShiftReceipt(
+      recovered,
+      receiptFor("done", null, null),
     );
-  expect(first.status).toBe("unknown");
-  expect(later.status).toBe("unknown");
-  expect(later.original).toEqual(first.original);
+  expect(held.receipt).toBeNull();
+  expect(recovered.status).toBe("recorded");
+  expect(downgraded.status).toBe("unknown");
+  expect(downgraded.admittedOutcome).toBe("unknown");
 });
 
 test("saved done may downgrade on weaker live evidence, while saved failed or unknown never upgrades", () => {

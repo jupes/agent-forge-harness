@@ -39,6 +39,11 @@ export interface KeeperShiftReviewState {
   original: KeeperShiftStartRequest | null;
   receipt: KeeperShiftStartReceipt | null;
   status: KeeperShiftReviewStatus;
+  /** First verified outcome, retained separately from transient loading/held presentation. */
+  admittedOutcome: Extract<
+    KeeperShiftReviewStatus,
+    "recorded" | "failed" | "unknown"
+  > | null;
   notice: string;
 }
 
@@ -87,6 +92,7 @@ export function createKeeperShiftReview(
     original: null,
     receipt: null,
     status: "loading",
+    admittedOutcome: null,
     notice: "Loading the current Shift options. Nothing has started.",
   };
 }
@@ -284,13 +290,13 @@ export async function acceptKeeperShiftReceipt(
     throw Error(
       "The saved Shift original did not match this proposal and exact review.",
     );
-  const priorTerminalStatus =
-    state.receipt?.record.phase === "failed"
-      ? "failed"
-      : state.receipt?.record.phase === "unknown"
-        ? keeperShiftReceiptStatus(state.receipt)
-        : null;
-  const status = priorTerminalStatus ?? keeperShiftReceiptStatus(receipt),
+  const observedStatus = keeperShiftReceiptStatus(receipt);
+  const admittedOutcome =
+    state.admittedOutcome === null ||
+    (state.admittedOutcome === "recorded" && observedStatus !== "recorded")
+      ? observedStatus
+      : state.admittedOutcome;
+  const status = admittedOutcome,
     notice =
       status === "recorded"
         ? "The canonical Shift record is verified. Its execution state is shown separately."
@@ -305,6 +311,7 @@ export async function acceptKeeperShiftReceipt(
     receipt: structuredClone(receipt),
     draft: savedDraft(receipt.original),
     status,
+    admittedOutcome,
     notice,
   };
 }
