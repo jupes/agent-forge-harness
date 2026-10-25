@@ -1,14 +1,16 @@
 import { expect, test } from "bun:test";
-import { mkdirSync, symlinkSync } from "node:fs";
+import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ProjectShiftStartRequest } from "../../types/project-shifts";
 import { resolveCheckout } from "../ledger/workspace";
 import { workspaceKey } from "../projects/scope";
 import { FIXTURE_PROJECT_ID, projectCatalogFixture } from "../projects/testing";
+import { SHIFTS_DIR } from "../scheduler/shift-store";
 import { scratchDirs } from "../test-scratch";
 import {
-  canonicalKeeperProofRoot,
   keeperStartFailureDiagnostic,
+  keeperWaitFacts,
+  physicalKeeperProofRoot,
 } from "./keeper-compiled-proof";
 import { projectShiftRequestHash } from "./registry";
 
@@ -21,13 +23,13 @@ test("compiled Keeper fixture shares the disk-canonical workspace for scope and 
     mkdirSync(join(actual, ".git"), { recursive: true });
     symlinkSync(actual, alias, "junction");
 
-    const canonical = canonicalKeeperProofRoot(alias),
+    const physical = physicalKeeperProofRoot(alias),
       served = resolveCheckout(alias).workspace,
       catalogRoot =
-        projectCatalogFixture(canonical).projects[0]?.workspaces[0]?.root;
-    expect(canonical).toBe(served);
-    expect(workspaceKey(alias)).not.toBe(workspaceKey(canonical));
-    expect(catalogRoot).toBe(canonical);
+        projectCatalogFixture(served).projects[0]?.workspaces[0]?.root;
+    expect(workspaceKey(physical)).toBe(workspaceKey(served));
+    expect(workspaceKey(alias)).not.toBe(workspaceKey(served));
+    expect(catalogRoot).toBe(served);
     expect(workspaceKey(catalogRoot ?? "")).toBe(workspaceKey(served));
 
     const request: ProjectShiftStartRequest = {
@@ -48,8 +50,9 @@ test("compiled Keeper fixture shares the disk-canonical workspace for scope and 
 
     if (process.platform === "win32") {
       const extended = `\\\\?\\${alias}`;
-      expect(workspaceKey(extended)).not.toBe(workspaceKey(canonical));
-      expect(canonicalKeeperProofRoot(extended)).toBe(canonical);
+      expect(physical).not.toBe(served);
+      expect(workspaceKey(extended)).not.toBe(workspaceKey(served));
+      expect(physicalKeeperProofRoot(extended)).toBe(physical);
     }
   } finally {
     scratch.cleanup();
@@ -101,4 +104,63 @@ test("Keeper compiled proof hides malformed, oversized and nonstandard refusal b
     "status=503; refusal=oversized",
   );
   expect(cancelled).toBe(true);
+});
+
+test("Keeper first-admission timeout facts omit native-tool arguments and stay bounded", () => {
+  const scratch = scratchDirs();
+  try {
+    const home = scratch.make("compiled Keeper wait facts "),
+      shiftId = "shift-20261025-120000-abcd",
+      shiftDir = join(home, SHIFTS_DIR),
+      stateDir = join(home, "fixture"),
+      admissionsFile = join(stateDir, "provider-admissions.jsonl"),
+      callsFile = join(stateDir, "calls.jsonl");
+    mkdirSync(shiftDir, { recursive: true });
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(
+      join(shiftDir, `${shiftId}.json`),
+      JSON.stringify({
+        shiftId,
+        pid: 12345,
+        workspace: "C:/fixture",
+        startedAt: "2026-10-25T12:00:00.000Z",
+        deadline: "2026-10-25T12:01:00.000Z",
+        state: "stopped",
+        reason: "The inert native fixture refused worktree creation.",
+        options: {},
+        spentUsd: 0,
+        unpriced: 0,
+        beads: [],
+      }),
+    );
+    writeFileSync(admissionsFile, `${JSON.stringify({ pid: 12345 })}\n`);
+    writeFileSync(
+      callsFile,
+      `${JSON.stringify({
+        tool: "C:/fixture/bin/git.exe",
+        args: [
+          "worktree",
+          "add",
+          "-b",
+          "branch",
+          "--",
+          "C:/PRIVATE/path",
+          "SECRET_ARGUMENT",
+        ],
+      })}\n`,
+    );
+
+    const facts = keeperWaitFacts(home, shiftId, admissionsFile, callsFile);
+    expect(facts).toContain("shiftState=stopped");
+    expect(facts).toContain(
+      "The inert native fixture refused worktree creation.",
+    );
+    expect(facts).toContain("admissionCount=1");
+    expect(facts).toContain("git:worktree add");
+    expect(facts).not.toContain("PRIVATE");
+    expect(facts).not.toContain("SECRET_ARGUMENT");
+    expect(facts.length).toBeLessThanOrEqual(800);
+  } finally {
+    scratch.cleanup();
+  }
 });
