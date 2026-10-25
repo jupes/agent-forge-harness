@@ -2,6 +2,7 @@ import { z } from "zod";
 import type {
   KeeperShiftStartIntent,
   KeeperShiftStartProposal,
+  KeeperShiftStartReceipt,
   KeeperShiftStartRequest,
 } from "../../types/keeper-shift-start";
 import { parseDuration } from "../config/duration";
@@ -12,8 +13,12 @@ import {
   sessionProjectIdSchema,
   sessionRequestHashSchema,
 } from "../sessions/protocol";
-import { projectShiftStartSchema } from "../shifts/protocol";
+import {
+  projectShiftReceiptSchema,
+  projectShiftStartSchema,
+} from "../shifts/protocol";
 import { canonicalProjectShiftStart } from "../shifts/start-input";
+import { keeperProposalRecordSchema } from "./proposal-protocol";
 
 if (typeof window !== "undefined") z.config({ jitless: true });
 
@@ -72,6 +77,67 @@ export const keeperShiftStartIntentSchema: z.ZodType<KeeperShiftStartIntent> = z
       intent.reviewHash === hashes.reviewHash
     );
   });
+
+export const keeperShiftStartReceiptSchema: z.ZodType<KeeperShiftStartReceipt> =
+  z
+    .object({
+      projectId: sessionProjectIdSchema,
+      proposalId: keeperShiftProposalIdSchema,
+      revision: count,
+      record: keeperProposalRecordSchema,
+      workspace: ownedSessionMetadataSchema.shape.workspace,
+      original: keeperShiftStartRequestSchema,
+      startHash: sessionRequestHashSchema,
+      shift: projectShiftReceiptSchema.nullable(),
+    })
+    .strict()
+    .refine((value) => {
+      const action = value.record.draft.action;
+      if (
+        value.record.id !== value.proposalId ||
+        value.record.projectId !== value.projectId ||
+        value.record.sourceHash !== value.original.sourceHash ||
+        value.record.requestId !== value.original.start.requestId ||
+        value.record.operation !== "approve" ||
+        action.kind !== "start-shift"
+      )
+        return false;
+      const proposal = {
+        durationMinutes: action.durationMinutes,
+        concurrency: action.concurrency,
+        beadLimit: action.beadLimit,
+        spendLimitUsd: action.spendLimitUsd,
+      };
+      const hashes = keeperShiftStartHashes(
+        value.projectId,
+        value.proposalId,
+        value.workspace,
+        proposal,
+        value.original,
+      );
+      if (
+        value.startHash !== hashes.startHash ||
+        value.record.requestHash !== hashes.reviewHash
+      )
+        return false;
+      return (
+        value.shift === null ||
+        (value.shift.intent.projectId === value.projectId &&
+          workspaceKey(value.shift.intent.workspace) ===
+            workspaceKey(value.workspace) &&
+          value.shift.intent.requestHash === value.startHash &&
+          canonicalProjectShiftStart(
+            value.projectId,
+            value.workspace,
+            value.shift.intent.request,
+          ) ===
+            canonicalProjectShiftStart(
+              value.projectId,
+              value.workspace,
+              value.original.start,
+            ))
+      );
+    });
 
 /** Stable review and start hashes; the full canonical request includes every optional bound. */
 export function keeperShiftStartHashes(

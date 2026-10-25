@@ -1,4 +1,8 @@
-import type { ProjectShiftStartRequest } from "./project-shifts";
+import type { KeeperProposalRecord } from "./keeper-proposal";
+import type {
+  ProjectShiftReceipt,
+  ProjectShiftStartRequest,
+} from "./project-shifts";
 
 /** Full human-reviewed project Shift request bound to one Keeper proposal source. */
 export interface KeeperShiftStartRequest {
@@ -26,4 +30,16 @@ export interface KeeperShiftStartIntent {
   startHash: string;
   reviewHash: string;
   createdAt: string;
+}
+
+/** Protected Keeper review projection; the original is inspectable without retrying it. */
+export interface KeeperShiftStartReceipt {
+  projectId: string;
+  proposalId: string;
+  revision: number;
+  record: KeeperProposalRecord;
+  workspace: string;
+  original: KeeperShiftStartRequest;
+  startHash: string;
+  shift: ProjectShiftReceipt | null;
 }

@@ -568,8 +568,8 @@ test("version 3 preserves session and Shift originals across both admission dire
     (await reopened.readShiftStart(projectId, shiftProposal.id))?.intent,
   ).toEqual(firstShift.intent);
   expect(
-    (await reopened.readSessionStart(projectId, laterSessionProposal.id))?.intent
-      .original,
+    (await reopened.readSessionStart(projectId, laterSessionProposal.id))
+      ?.intent.original,
   ).toEqual(laterSessionRequest);
   expect(
     (await reopened.readShiftStart(projectId, laterShiftProposal.id))?.intent
