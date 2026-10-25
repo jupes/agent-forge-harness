@@ -560,24 +560,21 @@ test("version 3 preserves session and Shift originals across both admission dire
   );
   if (!firstShift || !laterShift)
     throw new Error("A Shift original was not retained in the journal.");
+  const reopened = createKeeperProposalStore(home);
   expect(
-    (
-      await createKeeperProposalStore(home).readSessionStart(
-        projectId,
-        laterSessionProposal.id,
-      )
-    )?.intent.original,
+    (await reopened.readSessionStart(projectId, proposal.id))?.intent,
+  ).toEqual(priorSession.intent);
+  expect(
+    (await reopened.readShiftStart(projectId, shiftProposal.id))?.intent,
+  ).toEqual(firstShift.intent);
+  expect(
+    (await reopened.readSessionStart(projectId, laterSessionProposal.id))?.intent
+      .original,
   ).toEqual(laterSessionRequest);
   expect(
-    (
-      await createKeeperProposalStore(home).readShiftStart(
-        projectId,
-        laterShiftProposal.id,
-      )
-    )?.intent.original,
+    (await reopened.readShiftStart(projectId, laterShiftProposal.id))?.intent
+      .original,
   ).toEqual(laterShiftRequest);
-  expect(firstShift?.intent.original).toEqual(request);
-  expect(laterShift?.intent.original).toEqual(laterShiftRequest);
   const bytes = readFileSync(keeperProposalFile(home, projectId), "utf8");
   let saved: unknown;
   try {
@@ -590,7 +587,8 @@ test("version 3 preserves session and Shift originals across both admission dire
 
 test("missing audit, refused preparation and corrupt or future journals preserve data and start nothing", async () => {
   const { home, store } = fixture();
-  let effects = 0;
+  let effects = 0,
+    shiftPrepares = 0;
   const input = {
     projectId,
     proposalId: proposal.id,
@@ -602,6 +600,19 @@ test("missing audit, refused preparation and corrupt or future journals preserve
       throw new Error("Synthetic scope refusal");
     },
     execute: async () => {
+      effects++;
+      return { phase: "done" as const, message: "Must not start", objects: [] };
+    },
+  };
+  const shiftCallbacks = {
+    async prepare() {
+      shiftPrepares++;
+      return {
+        proposal: shiftProposal,
+        workspace: "C:/fixture/repository",
+      };
+    },
+    async execute() {
       effects++;
       return { phase: "done" as const, message: "Must not start", objects: [] };
     },
@@ -620,11 +631,23 @@ test("missing audit, refused preparation and corrupt or future journals preserve
   ]) {
     writeOwnerOnly(keeperProposalFile(home, projectId), bytes);
     await expect(store.startSession(input, callbacks)).rejects.toThrow("kept");
+    await expect(
+      store.startShift(
+        {
+          projectId,
+          proposalId: shiftProposal.id,
+          request: shiftOriginal,
+          auditEventId: 2,
+        },
+        shiftCallbacks,
+      ),
+    ).rejects.toThrow("kept");
     expect(readFileSync(keeperProposalFile(home, projectId), "utf8")).toBe(
       bytes,
     );
   }
   expect(effects).toBe(0);
+  expect(shiftPrepares).toBe(0);
 });
 
 test("row and byte bounds refuse overflow without evicting any original or invoking its effect", async () => {
