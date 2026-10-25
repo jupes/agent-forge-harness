@@ -5,6 +5,7 @@ import type {
   CodexChatCommand,
   CodexChatDecision,
   CodexChatEvent,
+  CodexChatFileChange,
   CodexChatLaunch,
   CodexChatReasoningSummary,
   CodexChatTurnPlan,
@@ -260,6 +261,34 @@ const nativeReasoning = z.object({
   id,
   summary: z.array(z.string().max(1_048_576)).max(4096),
 });
+const nativeFileChanges = z
+  .array(
+    z
+      .object({
+        path: z.string().min(1).max(1_048_576),
+        kind: z.discriminatedUnion("type", [
+          z.object({ type: z.literal("add") }).strict(),
+          z.object({ type: z.literal("delete") }).strict(),
+          z
+            .object({
+              type: z.literal("update"),
+              move_path: z.string().max(1_048_576).nullable(),
+            })
+            .strict(),
+        ]),
+        diff: z.string().max(1_048_576),
+      })
+      .strict(),
+  )
+  .max(4096);
+const nativeFileChange = z
+  .object({
+    type: z.literal("fileChange"),
+    id,
+    status: z.enum(["inProgress", "completed", "failed", "declined"]),
+    changes: nativeFileChanges,
+  })
+  .strict();
 const nativeTurnPlan = z.object({
   explanation: z.string().max(1_048_576).nullable(),
   plan: z
@@ -336,6 +365,13 @@ export function createCodexChatStream(options: {
           { announced: boolean; prefixMissing: boolean; truncated: boolean }
         >;
       };
+      fileChange?: {
+        started: string | null;
+        patch: string | null;
+        snapshot: string;
+        turnStatus: "completed" | "failed" | "interrupted" | null;
+        status: CodexChatFileChange["status"];
+      };
     }
   >();
   const scoped = (params: Record<string, unknown>, requireTurn = true) => {
@@ -383,7 +419,11 @@ export function createCodexChatStream(options: {
     return suffix ? [{ kind: "text", itemId, text: suffix }] : [];
   };
   const richReport = (
-    report: CodexChatCommand | CodexChatReasoningSummary | CodexChatTurnPlan,
+    report:
+      | CodexChatCommand
+      | CodexChatReasoningSummary
+      | CodexChatTurnPlan
+      | CodexChatFileChange,
   ): CodexChatEvent[] => {
     const bytes = encoder.encode(JSON.stringify(report)).byteLength;
     if (bytes > SESSION_ACTIVITY_LIMITS.eventBytes)
@@ -392,6 +432,123 @@ export function createCodexChatStream(options: {
     if (richReportBytes > SESSION_ACTIVITY_LIMITS.aggregateBytes)
       throw new Error("Codex rich activity exceeds its private report bound.");
     return [report];
+  };
+  const fileChange = (
+    value: unknown,
+    source: CodexChatFileChange["source"],
+    turnStatus: CodexChatFileChange["turnStatus"] = null,
+  ): CodexChatEvent[] => {
+    if (!threadId || !turnId)
+      throw Error("Codex file change has no owned native turn identity.");
+    const current = nativeFileChange.parse(value),
+      previous = items.get(current.id),
+      prior = previous?.fileChange,
+      signature = JSON.stringify(current);
+    if (previous && previous.type !== "fileChange")
+      throw Error("Codex file-change item identity changed.");
+    if (
+      ((source === "item/started" ||
+        source === "item/fileChange/patchUpdated") &&
+        current.status !== "inProgress") ||
+      (source === "item/completed" && current.status === "inProgress") ||
+      (source === "turn/completed") !== (turnStatus !== null)
+    )
+      throw Error(
+        "Codex file-change status conflicts with its lifecycle source.",
+      );
+    if (previous?.completed) {
+      if (source === "item/completed" && prior?.snapshot === signature)
+        return [];
+      if (source !== "turn/completed" || prior?.snapshot !== signature)
+        throw Error("Codex file change changed after its completed report.");
+      if (prior.turnStatus !== null) {
+        if (prior.turnStatus !== turnStatus)
+          throw Error(
+            "Codex final file-change turn status conflicts with its original.",
+          );
+        return [];
+      }
+    }
+    if (source === "item/started" && prior?.started) {
+      if (prior.started === signature) return [];
+      throw Error(
+        "Codex file-change started report conflicts with its original.",
+      );
+    }
+    if (source === "item/fileChange/patchUpdated") {
+      if (!prior || previous?.completed)
+        throw Error("Codex patch update has no active known file-change item.");
+      if (prior.patch === signature) return [];
+    }
+    if (!previous && items.size >= 256)
+      throw Error("Codex items exceed their protocol bound.");
+    let remaining = SESSION_ACTIVITY_LIMITS.textBytes,
+      truncated = current.changes.length > SESSION_ACTIVITY_LIMITS.items;
+    const retain = (value: string) => {
+      const normalized = reportedText(value),
+        kept = prefix(normalized.text, remaining);
+      remaining -= kept.bytes;
+      const result = {
+        text: kept.text,
+        truncated:
+          normalized.truncated || kept.text.length < normalized.text.length,
+      };
+      truncated ||= result.truncated;
+      return result;
+    };
+    const changes = current.changes
+      .slice(0, SESSION_ACTIVITY_LIMITS.items)
+      .map((change) => ({
+        path: retain(change.path),
+        kind:
+          change.kind.type === "update"
+            ? {
+                type: "update" as const,
+                move_path:
+                  change.kind.move_path === null
+                    ? null
+                    : retain(change.kind.move_path),
+              }
+            : { type: change.kind.type },
+        diff: retain(change.diff),
+      }));
+    const report: CodexChatFileChange = {
+      kind: "file-change",
+      source,
+      threadId,
+      turnId,
+      itemId: current.id,
+      status: current.status,
+      changes,
+      truncated,
+      partial:
+        current.status === "inProgress" ||
+        (source === "turn/completed" && turnStatus !== "completed"),
+      closure:
+        source === "turn/completed"
+          ? "turn-ended"
+          : source === "item/completed"
+            ? "item-ended"
+            : "open",
+      turnStatus,
+    };
+    items.set(current.id, {
+      type: "fileChange",
+      text: "",
+      completed: source === "item/completed" || source === "turn/completed",
+      fileChange: {
+        started:
+          source === "item/started" ? signature : (prior?.started ?? null),
+        patch:
+          source === "item/fileChange/patchUpdated"
+            ? signature
+            : (prior?.patch ?? null),
+        snapshot: signature,
+        turnStatus,
+        status: current.status,
+      },
+    });
+    return richReport(report);
   };
   const command = (
     value: unknown,
@@ -890,6 +1047,10 @@ export function createCodexChatStream(options: {
             events.push(...command(value, "turn/completed"));
           else if (final.type === "reasoning")
             events.push(...reasoning(value, "turn/completed", finished.status));
+          else if (final.type === "fileChange")
+            events.push(
+              ...fileChange(value, "turn/completed", finished.status),
+            );
         }
         terminal = finished.status;
       } else if (frame.method === "turn/plan/updated") {
@@ -942,6 +1103,35 @@ export function createCodexChatStream(options: {
         if (terminal)
           throw Error("Codex summary arrived after its terminal result.");
         events.push(...reasoningPart(params, frame.method));
+      } else if (frame.method === "item/fileChange/patchUpdated") {
+        scoped(params);
+        if (terminal)
+          throw Error("Codex patch update arrived after its terminal result.");
+        const supplied = z
+          .object({
+            threadId: codexNativeUuidSchema,
+            turnId: codexNativeUuidSchema,
+            itemId: id,
+            changes: nativeFileChanges,
+          })
+          .strict()
+          .parse(params);
+        const previous = items.get(supplied.itemId);
+        if (!previous?.fileChange || previous.completed)
+          throw Error(
+            "Codex patch update has no active known file-change item.",
+          );
+        events.push(
+          ...fileChange(
+            {
+              type: "fileChange",
+              id: supplied.itemId,
+              changes: supplied.changes,
+              status: previous.fileChange.status,
+            },
+            frame.method,
+          ),
+        );
       } else if (frame.method === "item/commandExecution/outputDelta") {
         scoped(params);
         if (terminal)
@@ -978,6 +1168,8 @@ export function createCodexChatStream(options: {
           events.push(...command(params.item, frame.method));
         else if (current.type === "reasoning")
           events.push(...reasoning(params.item, frame.method));
+        else if (current.type === "fileChange")
+          events.push(...fileChange(params.item, frame.method));
         else if (current.type === "agentMessage")
           events.push(
             ...message(
