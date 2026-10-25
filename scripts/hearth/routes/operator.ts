@@ -84,6 +84,7 @@ import { createSessionObservationRoutes } from "./session-observations";
 import { createSessionWorktreeRoutes } from "./session-worktrees";
 import { createOwnedSessionRoutes } from "./sessions";
 import { shiftRoutes } from "./shifts";
+import { smithConfigCreateRoutes } from "./smith-config-creates";
 import { smithVerificationRoute } from "./smith-verification";
 
 type CouncilService = ReturnType<typeof createCouncilService>;
@@ -91,6 +92,8 @@ type CouncilService = ReturnType<typeof createCouncilService>;
 export interface OperatorDeps extends ReadDeps {
   providerInspector: ProviderInspector;
   providerLogin: ProviderLoginService;
+  /** Captured once by server-runtime; never selected from a request. */
+  smithCreateService: Parameters<typeof smithConfigCreateRoutes>[0];
   /** Machine-private home; the project catalog is shared above workspaces. */
   projectHome: string;
   conversationTransport?: ConversationTransport | undefined;
@@ -460,6 +463,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     projectSnapshot,
   );
   const providerLogins = createProviderLoginRoutes(deps.providerLogin);
+  const smithCreates = smithConfigCreateRoutes(deps.smithCreateService);
   const observations = createSessionObservationRoutes(deps, projectSnapshot);
   const activity = createProjectActivityRoutes(deps, projectSnapshot);
   const reads: ReadRoute[] = [
@@ -473,6 +477,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     reservations,
     smiths,
     smithVerificationRoute(deps),
+    ...smithCreates.reads,
     config,
     worktrees,
     eligibility,
@@ -543,6 +548,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       conversations.events,
       ownedSessions.events,
       ...actions(deps),
+      ...smithCreates.actions,
       providers.doctor,
       ...providerLogins.actions,
       preferences,
