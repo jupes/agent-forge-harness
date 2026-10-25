@@ -628,7 +628,7 @@ test("Runs filters and verified empty/loading/error states never claim unavailab
   await expect(runMode).toHaveValue("auto");
   await expect(runMode).toBeFocused();
   await page.getByRole("button", { name: "Apply run filters" }).click();
-  await expect(page).toHaveURL(/mode=auto/);
+  await expect(page).toHaveURL(/runMode=auto/);
   await expect(
     table.getByRole("link", { name: "Historical unattended run", exact: true }),
   ).toBeVisible();
