@@ -95,7 +95,13 @@ test("the packaged MCP probe inspects literal snapshots, compiles its WebView as
   const tools = {
     async evaluate(_socket: EventTarget, expression: string) {
       expressions.push(expression);
-      return expression === "location.hash" ? "#/desktop/projects" : undefined;
+      return expression === "location.hash"
+        ? "#/desktop/projects"
+        : expression.includes("const ids=")
+          ? []
+          : expression.includes("const saved=new Map")
+            ? true
+            : undefined;
     },
     async enableRequests() {},
     async waitForPage(_socket: EventTarget, expression: string) {
@@ -196,6 +202,8 @@ test("route cleanup failures fail a successful probe but never replace its origi
     const tools = {
       async evaluate(_socket: EventTarget, expression: string) {
         if (expression === "location.hash") return "#/desktop/projects";
+        if (expression.includes("const ids=")) return [];
+        if (expression.includes("const saved=new Map")) return true;
         if (expression.includes("#/desktop/projects")) throw restore;
         return undefined;
       },
@@ -220,4 +228,53 @@ test("route cleanup failures fail a successful probe but never replace its origi
     expect(screenshot).toBe(!assertionFails);
     expect(remove).toHaveBeenCalledTimes(1);
   }
+});
+
+test("the screenshot restores masked text after capture failure and preserves the capture error", async () => {
+  const root = scratch.make("native-mcp-shot-failure-"),
+    home = join(root, "home");
+  mkdirSync(join(root, ".git"));
+  const record = await seedNativeMcpToolCallSession(
+      home,
+      root,
+      "project-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    ),
+    socket = new EventTarget(),
+    expressions: string[] = [],
+    captureError = Error("Original screenshot capture failure");
+  let textRestored = false;
+  const tools = {
+    async evaluate(_socket: EventTarget, expression: string) {
+      expressions.push(expression);
+      if (expression === "location.hash") return "#/desktop/projects";
+      if (expression.includes("const ids="))
+        return [
+          { index: 0, text: "Fixture project and native item identifiers" },
+        ];
+      if (expression.includes("const saved=new Map")) {
+        textRestored = true;
+        return true;
+      }
+      return undefined;
+    },
+    async enableRequests() {},
+    async waitForPage(_socket: EventTarget, expression: string) {
+      new Function(`return (${expression});`);
+    },
+    async pressTab() {},
+    async screenshot() {
+      throw captureError;
+    },
+  };
+  await expect(
+    verifyNativeMcpToolCalls(socket, record, home, tools),
+  ).rejects.toBe(captureError);
+  const restoreTextAt = expressions.findIndex((expression) =>
+    expression.includes("const saved=new Map"),
+  );
+  expect(textRestored).toBe(true);
+  expect(restoreTextAt).toBeGreaterThan(
+    expressions.findIndex((expression) => expression.includes("const ids=")),
+  );
+  expect(expressions.at(-1)).toBe('location.hash="#/desktop/projects"');
 });

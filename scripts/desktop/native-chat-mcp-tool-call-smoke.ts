@@ -202,6 +202,29 @@ interface NativeMcpPageTools<Socket extends EventTarget> {
   screenshot(socket: Socket, name: string): Promise<unknown>;
 }
 
+interface MaskedTextNode {
+  index: number;
+  text: string;
+}
+
+function isMaskedTextNodes(value: unknown): value is MaskedTextNode[] {
+  return (
+    Array.isArray(value) &&
+    value.length <= 2048 &&
+    value.every(
+      (entry) =>
+        !!entry &&
+        typeof entry === "object" &&
+        "index" in entry &&
+        Number.isSafeInteger(entry.index) &&
+        entry.index >= 0 &&
+        "text" in entry &&
+        typeof entry.text === "string" &&
+        Buffer.byteLength(entry.text) <= 16_384,
+    )
+  );
+}
+
 /** Inspect only the admitted historical report in the packaged WebView. */
 export async function verifyNativeMcpToolCalls<Socket extends EventTarget>(
   socket: Socket,
@@ -288,12 +311,46 @@ export async function verifyNativeMcpToolCalls<Socket extends EventTarget>(
       throw Error(
         "Inspecting the packaged MCP report changed its saved private bytes.",
       );
-    // The screenshot is captured only after all assertions, with all report identity text masked.
-    await tools.evaluate(
-      socket,
-      `document.querySelectorAll('.af-session-report-source').forEach(p=>{p.textContent='Native app-server snapshot · identifiers masked';});document.querySelectorAll('[data-session-id],[data-project-id]').forEach(e=>{e.removeAttribute('data-session-id');e.removeAttribute('data-project-id');});const ids=/(?:project-)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|native-smoke-mcp-[a-z-]+/gi,walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);for(let n;(n=walker.nextNode());)n.nodeValue=n.nodeValue?.replace(ids,'[masked]');for(const e of document.querySelectorAll('*'))for(const a of e.attributes)a.value=a.value.replace(ids,'[masked]');`,
-    );
-    await tools.screenshot(socket, "native-chat-mcp-tool-calls.png");
+    // The screenshot follows every assertion. Text changes are local and restored immediately after capture.
+    const maskedValue = await tools.evaluate(
+        socket,
+        `(() => {const ids=/(?:project-)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|native-smoke-mcp-[a-z-]+/gi,sourceCount=new Map(),changed=[],walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);let index=0,node;while((node=walker.nextNode())){const original=node.nodeValue??'',source=node.parentElement?.closest('.af-session-report-source');let masked=original.replace(ids,'[masked]');if(source){const count=sourceCount.get(source)??0;sourceCount.set(source,count+1);masked=count===0?'Native app-server snapshot · identifiers masked':'';}if(masked!==original){changed.push({index,text:original});node.nodeValue=masked;}index++;}return changed;})()`,
+      ),
+      maskedText = isMaskedTextNodes(maskedValue) ? maskedValue : null;
+    if (!maskedText)
+      throw Error(
+        "The packaged MCP screenshot could not save its temporary text mask.",
+      );
+    let screenshotFailed = false,
+      screenshotError: unknown,
+      textRestoreError: unknown;
+    try {
+      await tools.screenshot(socket, "native-chat-mcp-tool-calls.png");
+    } catch (error) {
+      screenshotFailed = true;
+      screenshotError = error;
+    } finally {
+      try {
+        const restored = await tools.evaluate(
+          socket,
+          `(() => {const saved=new Map(${JSON.stringify(maskedText)}.map(entry=>[entry.index,entry.text])),walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);let index=0,node,count=0;while((node=walker.nextNode())){if(saved.has(index)){node.nodeValue=saved.get(index);count++;}index++;}return count===saved.size;})()`,
+        );
+        if (restored !== true)
+          textRestoreError = Error(
+            "The packaged MCP screenshot did not restore masked text.",
+          );
+      } catch (error) {
+        textRestoreError ??= error;
+      }
+    }
+    if (screenshotFailed) throw screenshotError;
+    if (textRestoreError !== undefined)
+      throw Error(
+        "The packaged MCP screenshot could not restore its temporary text mask.",
+        {
+          cause: textRestoreError,
+        },
+      );
   } catch (error) {
     probeFailed = true;
     probeError = error;
