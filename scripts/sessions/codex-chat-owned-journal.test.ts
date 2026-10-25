@@ -11,6 +11,7 @@ import { startTestHearth } from "../hearth/testing";
 import { FIXTURE_PROJECT_ID } from "../projects/testing";
 import {
   codexChatCommandSchema,
+  codexChatMcpToolCallSchema,
   codexChatPrivateEventSchema,
   codexChatReasoningSummarySchema,
   codexChatTurnPlanSchema,
@@ -80,6 +81,80 @@ test("private turn plans retain explicit nullable and empty reports but refuse i
   ).toBe(false);
 });
 
+test("private native MCP snapshots keep null, empty, error and closure facts distinct and reject raw hints", () => {
+  const started = {
+    kind: "mcp-tool-call",
+    source: "item/started",
+    threadId: "0199a213-81c0-7800-8aa1-bbab2a035a53",
+    turnId: "0199a213-81c0-7800-8aa1-bbab2a035a54",
+    itemId: "native-mcp-call",
+    server: { text: "local-server", truncated: false },
+    tool: { text: "search_files", truncated: false },
+    status: "inProgress",
+    arguments: { json: "null", truncated: false },
+    result: null,
+    error: null,
+    durationMs: null,
+    partial: true,
+    closure: "open",
+    turnStatus: null,
+  };
+  expect(codexChatMcpToolCallSchema.safeParse(started).success).toBe(true);
+  const completed = {
+    ...started,
+    source: "item/completed",
+    status: "failed",
+    result: {
+      content: { json: "[]", truncated: false },
+      structuredContent: { json: "null", truncated: false },
+    },
+    error: { text: "Reported failure", truncated: false },
+    durationMs: 0,
+    partial: false,
+    closure: "item-ended",
+  };
+  expect(codexChatMcpToolCallSchema.safeParse(completed).success).toBe(true);
+  const privateEvent = {
+    kind: "coding-chat",
+    provider: "codex",
+    version: "0.163.0-alpha.10.2",
+    event: completed,
+  };
+  expect(codexChatPrivateEventSchema.safeParse(privateEvent).success).toBe(
+    true,
+  );
+  expect(eventSchema.safeParse(privateEvent).success).toBe(false);
+  for (const change of [
+    { source: "item/mcpToolCall/progress" },
+    { status: "success" },
+    { closure: "turn-ended" },
+    { partial: true },
+    { mcpAppResourceUri: "file:///private" },
+    { _meta: { internal: true } },
+    { result: { content: { json: "[]", truncated: false } } },
+    {
+      server: { text: "x".repeat(16_384), truncated: false },
+      tool: { text: "y", truncated: false },
+    },
+  ])
+    expect(
+      codexChatMcpToolCallSchema.safeParse({ ...completed, ...change }).success,
+    ).toBe(false);
+  expect(
+    codexChatMcpToolCallSchema.safeParse({
+      ...completed,
+      source: "turn/completed",
+      closure: "turn-ended",
+      turnStatus: "interrupted",
+      partial: true,
+      result: {
+        content: { json: "[]", truncated: false },
+        structuredContent: null,
+      },
+    }).success,
+  ).toBe(true);
+});
+
 test("whole native Chat history keeps text, command and summary item kinds distinct while preserving legacy text fragments and the shared item bound", async () => {
   const h = await startTestHearth();
   try {
@@ -127,6 +202,41 @@ test("whole native Chat history keeps text, command and summary item kinds disti
         durationMs: null,
         partial: true,
       }),
+      mcpToolCall = codexChatMcpToolCallSchema.parse({
+        kind: "mcp-tool-call",
+        source: "item/started",
+        threadId: native.threadId,
+        turnId: native.turnId,
+        itemId: "shared-item",
+        server: { text: "local", truncated: false },
+        tool: { text: "search", truncated: false },
+        status: "inProgress",
+        arguments: { json: "{}", truncated: false },
+        result: null,
+        error: null,
+        durationMs: null,
+        partial: true,
+        closure: "open",
+        turnStatus: null,
+      }),
+      mcpCompleted = codexChatMcpToolCallSchema.parse({
+        ...mcpToolCall,
+        source: "item/completed",
+        status: "completed",
+        result: {
+          content: { json: "[]", truncated: false },
+          structuredContent: null,
+        },
+        durationMs: 27,
+        partial: false,
+        closure: "item-ended",
+      }),
+      mcpFinal = codexChatMcpToolCallSchema.parse({
+        ...mcpCompleted,
+        source: "turn/completed",
+        closure: "turn-ended",
+        turnStatus: "completed",
+      }),
       text: CodexChatEvent = {
         kind: "text",
         itemId: "shared-item",
@@ -150,12 +260,26 @@ test("whole native Chat history keeps text, command and summary item kinds disti
         ],
       }).success;
     expect(accepts([text, text])).toBe(true);
-    for (const report of [summary, command]) {
+    for (const report of [summary, command, mcpToolCall]) {
       expect(accepts([report])).toBe(true);
       expect(accepts([text, report])).toBe(false);
       expect(accepts([report, text])).toBe(false);
       expect(accepts([{ ...text, itemId: "other-text" }, report])).toBe(true);
     }
+    expect(accepts([mcpToolCall, mcpCompleted, mcpFinal])).toBe(true);
+    expect(
+      accepts([
+        mcpToolCall,
+        mcpCompleted,
+        {
+          ...mcpFinal,
+          result: {
+            content: { json: '[{"changed":true}]', truncated: false },
+            structuredContent: null,
+          },
+        },
+      ]),
+    ).toBe(false);
     const texts = Array.from(
       { length: 256 },
       (_, index): CodexChatEvent => ({
@@ -165,7 +289,27 @@ test("whole native Chat history keeps text, command and summary item kinds disti
     );
     expect(accepts(texts)).toBe(true);
     expect(accepts([...texts.slice(0, 255), summary])).toBe(true);
-    expect(accepts([...texts, summary])).toBe(false);
+    expect(accepts([...texts, mcpToolCall])).toBe(false);
+    const mcpFrame = {
+        ...turn,
+        seq: turn.seq + 1,
+        event: {
+          kind: "coding-chat",
+          provider: "codex",
+          version: "0.163.0-alpha.10.2",
+          event: mcpToolCall,
+        },
+      },
+      partialPage = {
+        ...state,
+        frames: [turn, mcpFrame],
+        more: false,
+        nextCursor: mcpFrame.seq,
+        lastSequence: mcpFrame.seq,
+        request: state.turns[0],
+        controllable: false,
+      };
+    expect(ownedCodingPageSchema.safeParse(partialPage).success).toBe(true);
   } finally {
     await h.close();
   }
