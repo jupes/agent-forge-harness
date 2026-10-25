@@ -13,29 +13,25 @@
  */
 
 import { createHash } from "node:crypto";
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  renameSync,
-  rmSync,
-  writeFileSync,
-} from "fs";
-import { dirname, join } from "path";
 import { BENCH_NAMES, type Smith } from "../../types/hearth";
 import { validateSmith } from "../hearth/validate";
 import { BUILTIN_SHIFT, BUILTIN_SMITHS } from "./defaults";
 import {
+  decodeConfigText,
   type ForgeConfig,
   type LoadedConfig,
   type LoadOptions,
-  loadConfig,
+  loadConfigFromByteContents,
   loadConfigFromContents,
-  machineConfigFile,
-  readConfigText,
   SHIFT_KEYS,
   type ShiftKey,
 } from "./load";
+import {
+  type ConfigWriteTransaction,
+  type PreparedConfigTransaction,
+  prepareConfigTransaction,
+  withConfigTransaction,
+} from "./transaction";
 
 export type ConfigTarget = "user" | "workspace";
 
@@ -370,10 +366,10 @@ function parse(text: string): Table {
 }
 
 /** The parsed file, or an empty table when it is absent or does not parse (the loader reports that). */
-function parsedFile(file: string): Table {
-  if (!existsSync(file)) return {};
+function parsedSource(source: ConfigByteSource): Table {
+  if (source.bytes === null) return {};
   try {
-    return parse(readConfigText(file));
+    return parse(decodeConfigText(source.file, source.bytes));
   } catch {
     return {};
   }
@@ -628,28 +624,81 @@ function firstWorkspacePassRefusal(
   return `creating ${workspaceFile} would stop execution.env.pass from ${userFile} (${userPassList.join(", ")}) applying: a workspace file never inherits it. Keep it there first: bun run forge:config set execution.env.pass "${userPassList.join(",")}" --workspace`;
 }
 
-/** Write one value into the user or the workspace config file. Nothing is written on a refusal. */
-export function setConfigValue(request: {
-  key: string;
-  raw: string;
-  target: ConfigTarget;
-  options: LoadOptions;
-}): SetOutcome {
-  const { key, raw, target, options } = request;
-  const userFile = machineConfigFile(options);
-  const workspaceFile = join(options.harnessRoot, "agent-forge.toml");
-  const file = target === "user" ? userFile : workspaceFile;
-  const fail = (error: string): SetOutcome => ({ ok: false, error });
+export interface ConfigWriteControls {
+  /** Trusted internal test seam, never an operator request field. */
+  coordinationRoot?: string;
+  waitMs?: number;
+  signal?: AbortSignal;
+}
 
+/** Serialize a scalar CLI write; a replacement failure is explicitly unconfirmed. */
+export async function setConfigValue(
+  request: {
+    key: string;
+    raw: string;
+    target: ConfigTarget;
+    options: LoadOptions;
+  },
+  controls: ConfigWriteControls = {},
+): Promise<SetOutcome> {
+  const { key, raw, target, options } = request;
+  const fail = (error: string): SetOutcome => ({ ok: false, error });
   const shape = keyShape(key);
   if (typeof shape === "string") return fail(shape);
   const typed = typedValue(shape.kind, raw);
   if (typeof typed === "string") return fail(`${key}: ${typed}`);
-  const { value } = typed;
+  const contents = { ...options.contents };
+  try {
+    // All paths/env are captured synchronously before the first await.
+    const context = prepareConfigTransaction({
+      options,
+      target,
+      ...(controls.coordinationRoot === undefined
+        ? {}
+        : { coordinationRoot: controls.coordinationRoot }),
+    });
+    return await withConfigTransaction(
+      context,
+      (transaction) =>
+        setConfigValueHeld({
+          key,
+          shape,
+          value: typed.value,
+          context,
+          transaction,
+          contents,
+        }),
+      controls,
+    );
+  } catch (error) {
+    return fail(error instanceof Error ? error.message : String(error));
+  }
+}
 
-  const userDoc = parsedFile(userFile);
-  const workspaceDoc = parsedFile(workspaceFile);
-  const workspaceExists = existsSync(workspaceFile);
+function setConfigValueHeld({
+  key,
+  shape,
+  value,
+  context,
+  transaction,
+  contents,
+}: {
+  key: string;
+  shape: KeyShape;
+  value: unknown;
+  context: PreparedConfigTransaction;
+  transaction: ConfigWriteTransaction;
+  contents: { user?: string; workspace?: string };
+}): SetOutcome {
+  const target = context.target;
+  const sources = transaction.sources;
+  const userFile = context.files.user;
+  const workspaceFile = context.files.workspace;
+  const file = context.files[target];
+  const fail = (error: string): SetOutcome => ({ ok: false, error });
+  const userDoc = parsedSource(sources.user);
+  const workspaceDoc = parsedSource(sources.workspace);
+  const workspaceExists = sources.workspace.bytes !== null;
 
   if (shape.smith !== undefined) {
     const known = new Set([
@@ -680,10 +729,12 @@ export function setConfigValue(request: {
     replacedUserPass = userPassList;
   }
 
-  const existed = existsSync(file);
   let original = "";
   try {
-    if (existed) original = readConfigText(file);
+    original = decodeConfigText(
+      file,
+      sources[target].bytes ?? new Uint8Array(),
+    );
   } catch (error) {
     return fail(error instanceof Error ? error.message : String(error));
   }
@@ -719,31 +770,42 @@ export function setConfigValue(request: {
       `${file}: the edit would change more than ${key}; change it by hand`,
     );
   try {
-    loadConfig({
-      ...options,
-      contents: { ...options.contents, [target]: next },
+    loadConfigFromByteContents({
+      sources: {
+        user: {
+          file: userFile,
+          bytes:
+            target === "user"
+              ? Buffer.from(next)
+              : contents.user === undefined
+                ? sources.user.bytes
+                : Buffer.from(contents.user),
+        },
+        workspace: {
+          file: workspaceFile,
+          bytes:
+            target === "workspace"
+              ? Buffer.from(next)
+              : contents.workspace === undefined
+                ? sources.workspace.bytes
+                : Buffer.from(contents.workspace),
+        },
+      },
+      env: context.env,
     });
   } catch (error) {
     return fail(error instanceof Error ? error.message : String(error));
   }
 
-  mkdirSync(dirname(file), { recursive: true });
-  const temporary = `${file}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`;
-  try {
-    writeFileSync(temporary, bom ? `${BOM}${next}` : next);
-    renameSync(temporary, file);
-  } catch (error) {
-    rmSync(temporary, { force: true });
-    return fail(
-      `${file}: could not be written (${error instanceof Error ? error.message : String(error)})`,
-    );
-  }
+  const publication = transaction.publish(
+    Buffer.from(bom ? `${BOM}${next}` : next),
+  );
   return {
     ok: true,
     key,
     value,
-    file,
-    created: !existed,
+    file: publication.file,
+    created: publication.created,
     ...(replacedUserPass !== undefined ? { replacedUserPass } : {}),
   };
 }

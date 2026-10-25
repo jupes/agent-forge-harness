@@ -234,14 +234,17 @@ const BOM = "\uFEFF";
  * parse could take it for an empty file that still counts as present.
  */
 export function readConfigText(file: string): string {
-  const bytes = readFileSync(file);
+  return decodeConfigText(file, readFileSync(file));
+}
+
+export function decodeConfigText(file: string, bytes: Uint8Array): string {
   const [first, second] = bytes;
   if (
     (first === 0xff && second === 0xfe) ||
     (first === 0xfe && second === 0xff)
   )
     throw new Error(`${file}: is saved as UTF-16; save it as UTF-8`);
-  return bytes.toString("utf8");
+  return Buffer.from(bytes).toString("utf8");
 }
 
 function readToml(file: string, content?: string): Table {
@@ -327,6 +330,30 @@ export function loadConfigFromContents(input: {
   return mergeConfig(input.env, [
     layer(user, workspace.text === null),
     layer(workspace, true),
+  ]);
+}
+
+/** Captured raw layers for the serialized scalar writer; retain legacy lazy decoding order. */
+export function loadConfigFromByteContents(input: {
+  sources: Record<
+    "user" | "workspace",
+    { file: string; bytes: Uint8Array | null }
+  >;
+  env: Readonly<Record<string, string | undefined>>;
+}): LoadedConfig {
+  const layer = (
+    { file, bytes }: { file: string; bytes: Uint8Array | null },
+    secure: boolean,
+  ): ConfigLayer => ({
+    file,
+    secure,
+    present: () => bytes !== null,
+    read: () =>
+      parseTomlText(file, decodeConfigText(file, bytes ?? new Uint8Array())),
+  });
+  return mergeConfig(input.env, [
+    layer(input.sources.user, input.sources.workspace.bytes === null),
+    layer(input.sources.workspace, true),
   ]);
 }
 
