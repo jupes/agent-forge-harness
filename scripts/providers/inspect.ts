@@ -85,12 +85,13 @@ export function createProviderInspector(options: {
   run?: (
     command: readonly string[],
     env: Record<string, string>,
+    launchOptions?: { windowsHide: true },
   ) => Promise<ProbeResult>;
 }): ProviderInspector {
   const now = options.now ?? Date.now;
   const run =
     options.run ??
-    (async (command, env) => {
+    (async (command, env, launchOptions) => {
       let stdout = "",
         valid = true;
       try {
@@ -101,6 +102,7 @@ export function createProviderInspector(options: {
           stdin: "",
           timeoutMs: options.timeoutMs ?? 3000,
           maxLineBytes: 65_536,
+          ...launchOptions,
           onLine(line) {
             if (stdout.length + line.length > 131_072) {
               valid = false;
@@ -182,7 +184,9 @@ export function createProviderInspector(options: {
           delete env[key];
       env["AGENT_FORGE_ADAPTER"] = "1";
       env["AGENT_FORGE_HOME"] = options.home;
-      const version = await run([...(command ?? [path]), "--version"], env);
+      const version = await run([...(command ?? [path]), "--version"], env, {
+        windowsHide: true,
+      });
       installation.versionOk = version.valid && version.exitCode === 0;
       installation.version = version.valid
         ? (version.stdout.match(/\b\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?\b/)?.[0] ??
@@ -222,6 +226,7 @@ export function createProviderInspector(options: {
         const status = await run(
           [...(command ?? [path]), ...definition.status],
           env,
+          { windowsHide: true },
         );
         if (status.valid)
           authentication =

@@ -35,6 +35,8 @@ if (
     "file-changes",
     "file-changes-held",
     "file-changes-approval",
+    "mcp-tool-calls",
+    "mcp-tool-calls-held",
   ].includes(String(mode))
 )
   throw Error("Unknown isolated Chat fixture mode.");
