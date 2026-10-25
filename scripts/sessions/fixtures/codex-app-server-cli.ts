@@ -341,6 +341,82 @@ const mcpCallPrefix = async () => {
     count: 3,
   });
 };
+const webSearchMain = (
+  query = "<script>WEB_SEARCH_QUERY_LITERAL</script>",
+  id = "reported-web-search-main",
+) => ({
+  type: "webSearch",
+  id,
+  query,
+  action: {
+    type: "search",
+    query: "WEB_SEARCH_ACTION_QUERY_LITERAL",
+    queries: ["WEB_SEARCH_ACTION_QUERY_LITERAL"],
+  },
+  results: [
+    {
+      title: "<img>WEB_SEARCH_RESULT_LITERAL</img>",
+      url: "https://fixture.invalid/WEB_SEARCH_URL_IS_LITERAL",
+    },
+  ],
+});
+const finishWebSearch = async () => {
+  const scope = { threadId, turnId },
+    main = webSearchMain(),
+    empty = {
+      type: "webSearch",
+      id: "reported-web-search-empty",
+      query: "",
+      action: null,
+      results: null,
+    },
+    absent = {
+      type: "webSearch",
+      id: "reported-web-search-absent",
+      query: "WEB_SEARCH_NULL_RESULT_QUERY",
+      action: null,
+      results: null,
+    },
+    clipped = webSearchMain(
+      `WEB_SEARCH_CLIPPED_QUERY_${"x".repeat(20_000)}`,
+      "reported-web-search-clipped",
+    ),
+    emptyCompleted = { ...empty, results: [] },
+    items = [
+      { started: { ...main, action: null, results: null }, completed: main },
+      { started: empty, completed: emptyCompleted },
+      { started: absent, completed: absent },
+      {
+        started: { ...clipped, action: null, results: null },
+        completed: clipped,
+      },
+    ];
+  for (const pair of items) {
+    await send({
+      method: "item/started",
+      params: { ...scope, item: pair.started },
+    });
+    await send({
+      method: "item/completed",
+      params: { ...scope, item: pair.completed },
+    });
+  }
+  await finish([main, emptyCompleted, absent, clipped]);
+};
+const webSearchPrefix = async () => {
+  const scope = { threadId, turnId },
+    item = {
+      type: "webSearch",
+      id: "reported-web-search-main",
+      query: "<script>WEB_SEARCH_QUERY_LITERAL</script>",
+      action: null,
+      results: null,
+    };
+  await send({
+    method: "item/started",
+    params: { ...scope, item },
+  });
+};
 const reader = Bun.stdin.stream().getReader(),
   decoder = new TextDecoder();
 let pending = "";
@@ -516,6 +592,11 @@ while (true) {
         await finishMcpToolCalls();
       } else if (mode === "mcp-tool-calls-held") {
         await mcpCallPrefix();
+        hangTree();
+      } else if (mode === "web-search") {
+        await finishWebSearch();
+      } else if (mode === "web-search-held") {
+        await webSearchPrefix();
         hangTree();
       } else if (mode?.startsWith("file-changes")) {
         await fileChangePrefix();

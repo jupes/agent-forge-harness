@@ -247,6 +247,7 @@ export function projectShiftRoutes(
     },
   );
   return {
+    service,
     routes: [
       list,
       original,
