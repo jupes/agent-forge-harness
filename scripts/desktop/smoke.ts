@@ -41,6 +41,10 @@ import {
   verifyNativeMcpToolCalls,
 } from "./native-chat-mcp-tool-call-smoke";
 import {
+  seedNativeWebSearchSession,
+  verifyNativeWebSearches,
+} from "./native-chat-web-search-smoke";
+import {
   seedNativeFileChangeSession,
   verifyNativeFileChanges,
 } from "./native-file-change-smoke";
@@ -350,6 +354,11 @@ process.stderr.write("Native fixture Git is read-only and has no forwarding path
       resolveCheckout(selectedRoot).workspace,
       project.id,
     );
+    const nativeWebSearchSession = await seedNativeWebSearchSession(
+      desktopSmokeHome,
+      resolveCheckout(selectedRoot).workspace,
+      project.id,
+    );
     const fixtureLedger = ledgerPath({ AGENT_FORGE_HOME: desktopSmokeHome });
     const seeded = appendEvent(
       {
@@ -641,6 +650,27 @@ process.stderr.write("Native fixture Git is read-only and has no forwarding path
           });
       },
     });
+    await verifyNativeWebSearches(
+      socket,
+      nativeWebSearchSession,
+      desktopSmokeHome,
+      {
+        evaluate,
+        waitForPage,
+        async enableRequests(page) {
+          await cdp(page, "Network.enable", {});
+        },
+        async pressTab(page) {
+          for (const type of ["keyDown", "keyUp"])
+            await cdp(page, "Input.dispatchKeyEvent", {
+              type,
+              key: "Tab",
+              code: "Tab",
+              windowsVirtualKeyCode: 9,
+            });
+        },
+      },
+    );
     await evaluate(socket, `location.hash = '#/desktop/projects'`);
     await waitForPage(
       socket,
@@ -869,6 +899,7 @@ process.stderr.write("Native fixture Git is read-only and has no forwarding path
           completeOwnedTranscriptDownloadTested: true,
           nativeCodexFileSnapshotsTested: true,
           nativeCodexMcpSnapshotsTested: true,
+          nativeCodexWebSearchSnapshotsTested: true,
           reversibleOwnedArchiveTested: true,
           focusOutline,
           childrenStopped: true,

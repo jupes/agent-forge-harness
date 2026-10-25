@@ -14,6 +14,7 @@ import type {
   NativeChatSummarySnapshot,
 } from "./native-chat-reasoning";
 import type { NativeChatTurnPlanReport } from "./native-chat-turn-plan";
+import type { NativeChatWebSearchReport } from "./native-chat-web-search";
 import type {
   NativeChatCommandReport,
   OwnedSessionTurn,
@@ -189,6 +190,56 @@ function nativeMcpToolCall(value: NativeChatMcpToolCallReport) {
       <p class="af-session-note">
         Arguments, results and errors are supplied display text. This report
         does not invoke tools or fetch resources.
+      </p>
+    </details>
+  );
+}
+
+function nativeWebSearch(value: NativeChatWebSearchReport) {
+  const report = value.report,
+    queryLabel = report.query.text
+      ? report.query.text
+      : report.query.truncated
+        ? "Query text truncated"
+        : "Empty query text reported";
+  return (
+    <details
+      class="af-session-activity-item"
+      key={`web-search:${report.threadId}:${report.turnId}:${report.itemId}`}
+    >
+      <summary>
+        Web search · {queryLabel}
+        {report.partial ? " · Partial report" : ""}
+      </summary>
+      <p class="af-session-report-label">
+        Latest reported snapshot in this view
+      </p>
+      {text("Reported query", report.query)}
+      {report.action === null ? (
+        <p class="af-session-note">Action not reported</p>
+      ) : (
+        json("Reported action", report.action)
+      )}
+      {report.results === null ? (
+        <p class="af-session-note">Results not reported</p>
+      ) : (
+        json("Reported results", report.results)
+      )}
+      <p class="af-session-note">
+        {report.closure === "turn-ended"
+          ? `Reported closure: turn-ended. Native turn reported ${report.turnStatus}.`
+          : report.closure === "item-ended"
+            ? "Reported closure: item-ended. Native turn completion is not established by this report."
+            : "Reported closure: open. Native turn completion is not established by this report."}
+      </p>
+      <p class="af-session-report-source">
+        Latest source: app-server {report.source} · codex {value.version} ·
+        Thread: {report.threadId} · Native turn: {report.turnId} · Item:{" "}
+        {report.itemId}
+      </p>
+      <p class="af-session-note">
+        Query, action and results are supplied display text. This saved report
+        does not run a search or open reported pages.
       </p>
     </details>
   );
@@ -620,6 +671,7 @@ export function SessionActivity({ value }: { value: OwnedSessionTurn }) {
     value.nativeCommands.length +
     value.nativeFileChanges.length +
     value.nativeMcpToolCalls.length +
+    value.nativeWebSearches.length +
     value.nativeSummaries.length +
     (value.nativePlan ? 1 : 0);
   if (!count) return null;
@@ -632,6 +684,7 @@ export function SessionActivity({ value }: { value: OwnedSessionTurn }) {
       {value.nativeCommands.map(nativeCommand)}
       {value.nativeFileChanges.map(nativeFiles)}
       {value.nativeMcpToolCalls.map(nativeMcpToolCall)}
+      {value.nativeWebSearches.map(nativeWebSearch)}
       {value.nativeSummaries.map(nativeSummary)}
       {value.nativePlan && nativePlan(value.nativePlan)}
     </section>

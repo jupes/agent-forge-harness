@@ -158,6 +158,18 @@ const mcpToolCallItem = (overrides: Record<string, unknown> = {}) => ({
   durationMs: null,
   ...overrides,
 });
+const webSearchItem = (overrides: Record<string, unknown> = {}) => ({
+  type: "webSearch",
+  id: "native-web-search",
+  query: "literal <script> query",
+  action: {
+    type: "search",
+    query: "literal <script> query",
+    queries: null,
+  },
+  results: [{ title: "Literal title", url: "https://example.invalid/path" }],
+  ...overrides,
+});
 const summaryFrame = (method: string, extra: Record<string, unknown> = {}) =>
   notify(method, { threadId, turnId, itemId: "native-summary", ...extra });
 
@@ -347,6 +359,153 @@ test("native MCP tool calls refuse foreign thread and turn identities", () => {
         }),
       ),
     ).toThrow();
+});
+
+test("native web-search snapshots retain bounded literal action/results and exact item/turn closure", () => {
+  const decoder = stream(),
+    started = decoder.accept(
+      notify("item/started", {
+        threadId,
+        turnId,
+        item: webSearchItem({ action: null, results: null }),
+      }),
+    );
+  expect(started.events[0]).toMatchObject({
+    kind: "web-search",
+    source: "item/started",
+    threadId,
+    turnId,
+    itemId: "native-web-search",
+    query: { text: "literal <script> query", truncated: false },
+    action: null,
+    results: null,
+    partial: true,
+    closure: "open",
+    turnStatus: null,
+  });
+  expect(started.events[0]).not.toHaveProperty("status");
+  expect(started.events[0]).not.toHaveProperty("durationMs");
+  const completedItem = webSearchItem({
+    results: [
+      {
+        title: "Literal <script> result",
+        url: "https://example.invalid/result",
+      },
+    ],
+  });
+  const completed = decoder.accept(
+    notify("item/completed", { threadId, turnId, item: completedItem }),
+  );
+  expect(completed.events[0]).toMatchObject({
+    source: "item/completed",
+    action: {
+      json: '{"type":"search","query":"literal <script> query","queries":null}',
+      truncated: false,
+    },
+    results: {
+      json: '[{"title":"Literal <script> result","url":"https://example.invalid/result"}]',
+      truncated: false,
+    },
+    partial: false,
+    closure: "item-ended",
+    turnStatus: null,
+  });
+  expect(
+    decoder.accept(
+      notify("turn/completed", {
+        threadId,
+        turn: {
+          id: turnId,
+          status: "interrupted",
+          error: null,
+          items: [completedItem],
+        },
+      }),
+    ).events[0],
+  ).toMatchObject({
+    source: "turn/completed",
+    partial: true,
+    closure: "turn-ended",
+    turnStatus: "interrupted",
+  });
+});
+
+test("native web-search action uses the pinned discriminated union and identity fences", () => {
+  for (const action of [
+    { type: "search", query: null, queries: [] },
+    { type: "openPage", url: "" },
+    { type: "findInPage", url: "https://example.invalid", pattern: null },
+    { type: "findInPage", url: null, pattern: "" },
+    { type: "other" },
+  ]) {
+    const parsed = stream().accept(
+      notify("item/started", {
+        threadId,
+        turnId,
+        item: webSearchItem({ action }),
+      }),
+    ).events[0];
+    expect(parsed).toMatchObject({
+      kind: "web-search",
+      action: { json: JSON.stringify(action), truncated: false },
+    });
+  }
+  for (const invalid of [
+    {
+      action: { type: "search", query: "x", queries: null, url: "unexpected" },
+    },
+    { action: { type: "openPage" } },
+    { action: { type: "findInPage", url: null } },
+    { action: { type: "open_page", url: "https://example.invalid" } },
+    {
+      action: {
+        type: "find_in_page",
+        url: "https://example.invalid",
+        pattern: "docs",
+      },
+    },
+    { action: { type: "search", query: "x" } },
+    { action: { type: "invented", query: "x" } },
+  ])
+    expect(() =>
+      stream().accept(
+        notify("item/started", {
+          threadId,
+          turnId,
+          item: webSearchItem(invalid),
+        }),
+      ),
+    ).toThrow();
+  for (const change of [{ threadId: turnId }, { turnId: threadId }])
+    expect(() =>
+      stream().accept(
+        notify("item/started", {
+          threadId,
+          turnId,
+          ...change,
+          item: webSearchItem(),
+        }),
+      ),
+    ).toThrow();
+});
+
+test("native web-search text and JSON share one UTF-8 report budget with truthful zero-retained clipping", () => {
+  const event = stream().accept(
+    notify("item/started", {
+      threadId,
+      turnId,
+      item: webSearchItem({
+        query: "q".repeat(16_384),
+        action: { type: "other" },
+        results: [],
+      }),
+    }),
+  ).events[0];
+  if (event?.kind !== "web-search")
+    throw Error("Missing native web-search report");
+  expect(event.query).toEqual({ text: "q".repeat(16_384), truncated: false });
+  expect(event.action).toEqual({ json: "", truncated: true });
+  expect(event.results).toEqual({ json: "", truncated: true });
 });
 
 test("native file changes retain distinct full replacement snapshots, exact statuses and one matching final closure", () => {
@@ -991,6 +1150,7 @@ test("the native decoder shares its existing 256 item limit across messages, com
   for (const lastItem of [
     reasoningItem({ id: "last-reasoning" }),
     mcpToolCallItem({ id: "last-mcp" }),
+    webSearchItem({ id: "last-web-search" }),
   ]) {
     const decoder = stream();
     for (let index = 0; index < 255; index++)
@@ -1314,6 +1474,42 @@ test("native summaries and commands consume one shared rich-report budget", () =
   }).toThrow("private report bound");
   expect(summaries).toBeGreaterThan(0);
   expect(summaries).toBeLessThan(64);
+});
+
+test("native web-search reports consume the existing mixed-family rich-report budget", () => {
+  const decoder = stream();
+  for (let index = 0; index < 40; index++)
+    decoder.accept(
+      notify("item/started", {
+        threadId,
+        turnId,
+        item: commandItem({
+          id: `budget-command-${index}`,
+          command: "x".repeat(16_384),
+          aggregatedOutput: "y".repeat(16_384),
+        }),
+      }),
+    );
+  let searches = 0;
+  expect(() => {
+    for (let index = 0; index < 128; index++) {
+      decoder.accept(
+        notify("item/started", {
+          threadId,
+          turnId,
+          item: webSearchItem({
+            id: `budget-search-${index}`,
+            query: "q".repeat(16_384),
+            action: null,
+            results: null,
+          }),
+        }),
+      );
+      searches++;
+    }
+  }).toThrow("private report bound");
+  expect(searches).toBeGreaterThan(0);
+  expect(searches).toBeLessThan(128);
 });
 
 test("native command reports retain streamed versus aggregate output, exact duplicates and standalone declined completion", () => {

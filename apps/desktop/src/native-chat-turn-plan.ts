@@ -1,5 +1,6 @@
 import type { CodexChatTurnPlan } from "../../../types/codex-chat";
 import type { ConversationPage } from "../../../types/conversation";
+import { nativeChatTurnFinalReport } from "./native-chat-turn-closure";
 
 export interface NativeChatTurnPlanReport {
   version: string;
@@ -24,19 +25,25 @@ export function nativeChatTurnPlan(
           : [],
       ),
     );
-  // A protected partial page can omit the earlier native-turn frame. Its
+  // A protected partial page can omit the earlier native-turn frame. Its rich
   // replacement snapshots are complete reports, but cannot disagree on scope.
   if (!nativeTurns.size)
     for (const { event } of frames)
       if (
         event.kind === "coding-chat" &&
         event.version === binding.version &&
-        event.event.kind === "turn-plan" &&
+        (event.event.kind === "command" ||
+          event.event.kind === "file-change" ||
+          event.event.kind === "reasoning-summary" ||
+          event.event.kind === "turn-plan" ||
+          event.event.kind === "mcp-tool-call" ||
+          event.event.kind === "web-search") &&
         event.event.threadId === binding.sessionId
       )
         nativeTurns.add(event.event.turnId);
   if (nativeTurns.size !== 1) return null;
-  const nativeTurn = [...nativeTurns][0];
+  const nativeTurn = nativeTurns.values().next().value;
+  if (nativeTurn === undefined) return null;
   let latest: NativeChatTurnPlanReport | null = null,
     terminal = false;
   for (const { event } of frames) {
@@ -52,12 +59,7 @@ export function nativeChatTurnPlan(
       terminal = true;
       continue;
     }
-    if (
-      (report.kind === "command" || report.kind === "reasoning-summary") &&
-      report.source === "turn/completed" &&
-      report.threadId === binding.sessionId &&
-      report.turnId === nativeTurn
-    ) {
+    if (nativeChatTurnFinalReport(report, binding.sessionId, nativeTurn)) {
       terminal = true;
       continue;
     }
