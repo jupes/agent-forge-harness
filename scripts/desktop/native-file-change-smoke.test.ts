@@ -10,6 +10,7 @@ import {
 } from "../sessions/codex-owned-journal";
 import { scratchDirs } from "../test-scratch";
 import {
+  hasVisibleNativePatchFocus,
   seedNativeFileChangeSession,
   verifyNativeFileChanges,
 } from "./native-file-change-smoke";
@@ -219,4 +220,29 @@ test("the native focus failure reports only bounded style and active-element fac
   );
   expect(diagnosticExpression).toContain("outlineWidthCssPx");
   expect(screenshot).toBe(true);
+});
+
+test("visible patch focus requires a focused solid declared two-pixel outline within one device pixel", () => {
+  const facts = {
+    activeIsPre: true,
+    focusVisible: true,
+    outlineStyle: "solid",
+    specifiedCssPx: 2,
+    outlineWidthCssPx: 1.71429,
+    dpr: 1.75,
+  };
+  expect(hasVisibleNativePatchFocus(facts)).toBe(true);
+  for (const changed of [
+    { activeIsPre: false },
+    { focusVisible: false },
+    { outlineStyle: "dashed" },
+    { specifiedCssPx: 1.99 },
+    { outlineWidthCssPx: 0 },
+    { outlineWidthCssPx: Number.NaN },
+    { dpr: 0 },
+    { dpr: Number.POSITIVE_INFINITY },
+    { outlineWidthCssPx: 2 - 1 / 1.75 },
+    { outlineWidthCssPx: 1.4 },
+  ])
+    expect(hasVisibleNativePatchFocus({ ...facts, ...changed })).toBe(false);
 });

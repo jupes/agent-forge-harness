@@ -187,6 +187,31 @@ interface FileChangePageTools<Socket extends EventTarget> {
   screenshot(socket: Socket, name: string): Promise<unknown>;
 }
 
+export function hasVisibleNativePatchFocus(facts: {
+  activeIsPre: unknown;
+  focusVisible: unknown;
+  outlineStyle: unknown;
+  specifiedCssPx: unknown;
+  outlineWidthCssPx: unknown;
+  dpr: unknown;
+}): boolean {
+  const width = facts.outlineWidthCssPx,
+    dpr = facts.dpr;
+  return (
+    facts.activeIsPre === true &&
+    facts.focusVisible === true &&
+    facts.outlineStyle === "solid" &&
+    facts.specifiedCssPx === 2 &&
+    typeof width === "number" &&
+    Number.isFinite(width) &&
+    width > 0 &&
+    typeof dpr === "number" &&
+    Number.isFinite(dpr) &&
+    dpr > 0 &&
+    Math.abs(width - 2) * dpr < 1
+  );
+}
+
 function boundedFocusFacts(value: unknown) {
   if (!value || typeof value !== "object") return { available: false as const };
   const facts = value as Record<string, unknown>;
@@ -278,7 +303,7 @@ export async function verifyNativeFileChanges<Socket extends EventTarget>(
     try {
       await tools.waitForPage(
         socket,
-        `(() => { const p=${report}.querySelector('pre'); return document.activeElement===p && getComputedStyle(p).outlineWidth==='2px'; })()`,
+        `(() => {const d=${report},p=d?.querySelector('pre'),style=p?getComputedStyle(p):null;let specified=null;try{for(const sheet of document.styleSheets)for(const rule of sheet.cssRules??[])if(rule.selectorText===':focus-visible'){const value=Number.parseFloat(rule.style.getPropertyValue('outline-width')||rule.style.getPropertyValue('outline'));if(Number.isFinite(value))specified=value;}}catch{}const width=style?Number.parseFloat(style.outlineWidth):NaN,dpr=devicePixelRatio;return document.activeElement===p&&p?.matches(':focus-visible')===true&&style?.outlineStyle==='solid'&&specified===2&&Number.isFinite(width)&&width>0&&Number.isFinite(dpr)&&dpr>0&&Math.abs(width-2)*dpr<1;})()`,
         "The packaged native patch region did not support visible keyboard focus.",
       );
     } catch (error) {
