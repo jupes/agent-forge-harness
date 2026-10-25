@@ -5,10 +5,11 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   writeFileSync,
 } from "node:fs";
 import { createServer } from "node:net";
-import { join, resolve } from "node:path";
+import { basename, join, resolve } from "node:path";
 import { z } from "zod";
 import type { KeeperShiftStartRequest } from "../../types/keeper-shift-start";
 import { createConversationStore } from "../conversations/store";
@@ -33,6 +34,7 @@ import { keeperProposals } from "../keeper/proposals";
 import { keeperShiftStartReceiptSchema } from "../keeper/shift-start-protocol";
 import { closeLedger } from "../ledger/db";
 import { queryEvents } from "../ledger/query";
+import { resolveCheckout } from "../ledger/workspace";
 import { projectCatalogPath } from "../projects/store";
 import { FIXTURE_PROJECT_ID, projectCatalogFixture } from "../projects/testing";
 import { readShiftRecord, SHIFTS_DIR } from "../scheduler/shift-store";
@@ -49,10 +51,25 @@ const envelope = z
 const sessionData = z.object({ key: z.string().regex(/^[0-9a-f]{64}$/) });
 const tokenData = z.object({ token: z.string().regex(/^[0-9a-f]{64}$/) });
 const admission = z.object({ pid: z.number().int().positive() }).passthrough();
+const nativeCall = z
+  .object({
+    tool: z.string().max(64),
+    args: z.array(z.string().max(2048)).max(64),
+  })
+  .passthrough();
+const refusalEnvelope = z
+  .object({ ok: z.literal(false), data: z.null(), error: z.string().max(512) })
+  .strict();
 const READY_MS = 20_000;
 const STOP_MS = 12_000;
 const REQUEST_MS = 10_000;
 const DRAIN_MS = 5_000;
+const REFUSAL_BODY_MAX_BYTES = 4_096;
+
+/** Physical root spelling for fixture I/O and child arguments. */
+export function physicalKeeperProofRoot(root: string): string {
+  return realpathSync.native(resolve(root));
+}
 
 type Host = {
   process: ReturnType<typeof Bun.spawn>;
@@ -348,6 +365,59 @@ function admissions(file: string): Array<z.infer<typeof admission>> {
     .map((line) => admission.parse(parseJson(line, "Provider admission log")));
 }
 
+export function keeperWaitFacts(
+  home: string,
+  shiftId: string,
+  admissionsFile: string,
+  nativeCallsFile: string,
+): string {
+  const row = readShiftRecord(join(home, SHIFTS_DIR), shiftId);
+  let admissionCount = "unreadable";
+  try {
+    admissionCount = String(admissions(admissionsFile).length);
+  } catch {
+    // Preserve the timeout and report only the fact that the fixture log was unreadable.
+  }
+  let methods: string[] = [];
+  try {
+    if (existsSync(nativeCallsFile)) {
+      methods = readFileSync(nativeCallsFile, "utf8")
+        .split(/\r?\n/)
+        .filter(Boolean)
+        .slice(-12)
+        .flatMap((line) => {
+          let raw: unknown;
+          try {
+            raw = JSON.parse(line);
+          } catch {
+            return [];
+          }
+          const parsed = nativeCall.safeParse(raw);
+          if (!parsed.success) return [];
+          const tool = basename(parsed.data.tool).replace(/\.exe$/i, ""),
+            method = parsed.data.args
+              .slice(0, 2)
+              .map((part) =>
+                /^[A-Za-z0-9_.-]{1,32}$/.test(part) ? part : "arg",
+              )
+              .join(" ");
+          return /^[A-Za-z0-9_.-]{1,32}$/.test(tool)
+            ? [`${tool}:${method || "unknown"}`]
+            : [];
+        });
+    }
+  } catch {
+    methods = ["unreadable"];
+  }
+  const rawReason = row?.reason ?? row?.error;
+  const reason = typeof rawReason === "string" ? rawReason : "none";
+  const boundedReason = reason
+    .replace(/[\r\n\t]/g, " ")
+    .replace(/[^\x20-\x7e]/g, "?")
+    .slice(0, 160);
+  return `shiftState=${row?.state ?? "missing"}; reason=${boundedReason}; admissionCount=${admissionCount}; nativeMethods=${methods.join(",").slice(0, 512) || "none"}`;
+}
+
 async function acquireOperatorSession(
   origin: string,
   home: string,
@@ -457,6 +527,76 @@ async function cancelBody(response: Response): Promise<void> {
   );
 }
 
+/** Read only a bounded standard refusal envelope; never include arbitrary response bodies in test output. */
+export async function keeperStartFailureDiagnostic(
+  response: Response,
+): Promise<string> {
+  const reader = response.body?.getReader();
+  if (!reader) return `status=${response.status}; refusal=missing-body`;
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  try {
+    for (;;) {
+      const { done, value } = await waitBounded(
+        reader.read(),
+        "Keeper Start refusal body read",
+        REQUEST_MS,
+      );
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > REFUSAL_BODY_MAX_BYTES) {
+        let cancellation = "oversized";
+        try {
+          await waitBounded(
+            reader.cancel(),
+            "Keeper Start refusal body cancellation",
+            REQUEST_MS,
+          );
+        } catch {
+          cancellation = "oversized-cancel-incomplete";
+        }
+        return `status=${response.status}; refusal=${cancellation}`;
+      }
+      chunks.push(value);
+    }
+    const content = new Uint8Array(bytes);
+    let offset = 0;
+    for (const chunk of chunks) {
+      content.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    let raw: unknown;
+    try {
+      raw = JSON.parse(
+        new TextDecoder("utf-8", { fatal: true }).decode(content),
+      );
+    } catch {
+      return `status=${response.status}; refusal=malformed`;
+    }
+    const parsed = refusalEnvelope.safeParse(raw);
+    return parsed.success
+      ? `status=${response.status}; refusal=${JSON.stringify(parsed.data.error)}`
+      : `status=${response.status}; refusal=malformed`;
+  } catch {
+    try {
+      await waitBounded(
+        reader.cancel(),
+        "Keeper Start refusal body cancellation after read failure",
+        REQUEST_MS,
+      );
+    } catch {
+      // A diagnostic cleanup failure must not replace the primary HTTP failure.
+    }
+    return `status=${response.status}; refusal=unavailable`;
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      // Keep the action refusal as the test's primary error.
+    }
+  }
+}
+
 async function portCanBind(port: number): Promise<boolean> {
   const server = createServer();
   try {
@@ -532,7 +672,9 @@ export async function runKeeperShiftCompiledProof(
     ledgers: string[] = [];
   let primaryError: unknown;
   try {
-    const root = resolve(scratch.make("compiled keeper shift ")),
+    const root = physicalKeeperProofRoot(
+        scratch.make("compiled keeper shift "),
+      ),
       home = scratch.track(privateTempDir("compiled-keeper-home-")),
       bin = join(root, "bin"),
       stateDir = join(root, "fixture"),
@@ -554,6 +696,7 @@ export async function runKeeperShiftCompiledProof(
       join(root, ".claude", "agents"),
     ])
       mkdirSync(directory, { recursive: true });
+    const workspace = resolveCheckout(root).workspace;
     writeFileSync(
       join(root, "attended-native-fixture.marker"),
       "agent-forge-attended-native-fixture-v1",
@@ -590,7 +733,7 @@ export async function runKeeperShiftCompiledProof(
     writeFileSync(join(stateDir, "trees.json"), "[]");
     writeOwnerOnly(
       projectCatalogPath(home),
-      JSON.stringify(projectCatalogFixture(root)),
+      JSON.stringify(projectCatalogFixture(workspace)),
     );
 
     const toolsEntry = join(stateDir, "tools.ts"),
@@ -645,7 +788,7 @@ export async function runKeeperShiftCompiledProof(
       canonicalPath = `${API_PREFIX}/projects/${FIXTURE_PROJECT_ID}/shifts/requests/${reviewed.start.requestId}`,
       originalHash = projectShiftRequestHash(
         FIXTURE_PROJECT_ID,
-        root,
+        workspace,
         reviewed.start,
       );
 
@@ -662,8 +805,12 @@ export async function runKeeperShiftCompiledProof(
       tokenA = await sessionToken(originA, session),
       action = await postStart(originA, startPath, tokenA, reviewed);
     if (action.status !== 200) {
-      await cancelBody(action);
-      throw new Error("The reviewed Keeper start was not accepted");
+      const details = await keeperStartFailureDiagnostic(action).catch(
+        () => `status=${action.status}; refusal=unavailable`,
+      );
+      throw new Error(
+        `The reviewed Keeper start was not accepted (${details})`,
+      );
     }
     await cancelBody(action);
 
@@ -672,12 +819,21 @@ export async function runKeeperShiftCompiledProof(
       reviewed.start.requestId,
     );
     expect(savedIntent.requestHash).toBe(originalHash);
-    await waitUntil(() => {
-      const row = readShiftRecord(join(home, SHIFTS_DIR), savedIntent.shiftId);
-      return admissions(admissionsFile).length === 1 && row?.state === "stopped"
-        ? row
-        : null;
-    }, "the first canonical Shift and provider admission");
+    try {
+      await waitUntil(() => {
+        const row = readShiftRecord(
+            join(home, SHIFTS_DIR),
+            savedIntent.shiftId,
+          ),
+          count = admissions(admissionsFile).length;
+        return count === 1 && row?.state === "stopped" ? row : null;
+      }, "the first canonical Shift and provider admission");
+    } catch (error) {
+      throw new Error(
+        `The first canonical Shift and provider admission did not complete (${keeperWaitFacts(home, savedIntent.shiftId, admissionsFile, join(stateDir, "calls.jsonl"))})`,
+        { cause: error },
+      );
+    }
     const firstAdmissions = admissions(admissionsFile);
     expect(firstAdmissions).toHaveLength(1);
     const providerPid = firstAdmissions[0]?.pid;
@@ -687,7 +843,7 @@ export async function runKeeperShiftCompiledProof(
         await readOk(originA, canonicalPath, tokenA),
       ),
       startEvents = queryEvents(
-        { workspace: root, kinds: ["operator.action", "shift.started"] },
+        { workspace, kinds: ["operator.action", "shift.started"] },
         { path: ledger },
       ),
       keeperActions = startEvents.filter(
@@ -793,7 +949,7 @@ export async function runKeeperShiftCompiledProof(
     await cancelBody(changed);
     expect(admissions(admissionsFile)).toHaveLength(1);
     const finalActions = queryEvents(
-      { workspace: root, kinds: ["operator.action"] },
+      { workspace, kinds: ["operator.action"] },
       { path: ledger },
     ).filter(
       (event) =>
