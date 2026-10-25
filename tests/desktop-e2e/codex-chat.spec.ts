@@ -108,91 +108,122 @@ test.afterEach(async ({ page }) => {
       "native Chat web-search reports retain literal snapshots through export and reload without retrying the turn" &&
     info.status !== info.expectedStatus
   ) {
-    const created = records().filter((record) => !previous.has(record.id));
-    let fixtureRows: ReturnType<typeof calls> = [];
     try {
-      fixtureRows = calls();
+      const allCreated = records().filter((record) => !previous.has(record.id));
+      let fixtureRows: ReturnType<typeof calls> = [];
+      try {
+        fixtureRows = calls();
+      } catch {
+        // The bounded attachment is best effort; never replace the test result.
+      }
+      const safeMethod = (method: unknown) =>
+        typeof method === "string" && /^[a-zA-Z0-9/._-]{1,80}$/.test(method)
+          ? method
+          : "other";
+      const created = allCreated.slice(0, 6);
+      const callLimit = 32;
+      const turnLimit = 8;
+      const frameLimit = 48;
+      let turnsTruncated = false;
+      let framesTruncated = false;
+      const journals = created.map((record) => {
+        try {
+          const state = saved(record.id);
+          const turns = state.turns.slice(0, turnLimit);
+          const frames = state.frames.slice(0, frameLimit);
+          turnsTruncated ||= state.turns.length > turns.length;
+          framesTruncated ||= state.frames.length > frames.length;
+          return {
+            readable: true,
+            turns: turns.map((turn) => ({
+              phase: turn.phase,
+              reasonClass:
+                turn.reason === null
+                  ? null
+                  : turn.reason.includes("private Chat writer")
+                    ? "private-writer-failure-or-deadline"
+                    : "other",
+            })),
+            frames: frames.map(({ event }) =>
+              event.kind === "coding-chat"
+                ? {
+                    family: event.kind,
+                    nativeKind: event.event.kind,
+                    source:
+                      "source" in event.event
+                        ? safeMethod(event.event.source)
+                        : null,
+                  }
+                : { family: event.kind },
+            ),
+            truncated: {
+              turns: state.turns.length > turns.length,
+              frames: state.frames.length > frames.length,
+            },
+          };
+        } catch {
+          return { readable: false };
+        }
+      });
+      const payload = {
+        truncated: {
+          sessions: allCreated.length > created.length,
+          calls: fixtureRows.length > callLimit,
+          turns: turnsTruncated,
+          frames: framesTruncated,
+        },
+        createdSessionCount: allCreated.length,
+        nativeFixtureCalls: fixtureRows.slice(0, callLimit).map((row) => ({
+          kind: safeMethod(row.kind),
+          ...(row.kind === "rpc" ? { method: safeMethod(row.method) } : {}),
+        })),
+        journals,
+      };
+      await info.attach("native-chat-web-search-failure-facts.json", {
+        contentType: "application/json",
+        body: Buffer.from(JSON.stringify(payload)),
+      });
     } catch {
-      // Preserve the original assertion result if the private fixture log is corrupt.
+      // Diagnostic collection and attachment must not alter the primary result.
     }
-    const safeMethod = (method: unknown) =>
-      typeof method === "string" && /^[a-zA-Z0-9/._-]{1,80}$/.test(method)
-        ? method
-        : "other";
-    await info.attach("native-chat-web-search-failure-facts.json", {
-      contentType: "application/json",
-      body: Buffer.from(
-        JSON.stringify({
-          createdSessionCount: created.length,
-          nativeFixtureCalls: fixtureRows.map((row) => ({
-            kind: safeMethod(row.kind),
-            ...(row.kind === "rpc" ? { method: safeMethod(row.method) } : {}),
-          })),
-          journals: created.map((record) => {
-            try {
-              const state = saved(record.id);
-              return {
-                readable: true,
-                turns: state.turns.map((turn) => ({
-                  phase: turn.phase,
-                  reasonClass:
-                    turn.reason === null
-                      ? null
-                      : turn.reason.includes("private Chat writer")
-                        ? "private-writer-failure-or-deadline"
-                        : "other",
-                })),
-                frames: state.frames.map(({ event }) =>
-                  event.kind === "coding-chat"
-                    ? {
-                        family: event.kind,
-                        nativeKind: event.event.kind,
-                        source:
-                          "source" in event.event
-                            ? safeMethod(event.event.source)
-                            : null,
-                      }
-                    : { family: event.kind },
-                ),
-              };
-            } catch {
-              return { readable: false };
-            }
-          }),
-        }),
-      ),
-    });
   }
   await page.unrouteAll({ behavior: "ignoreErrors" });
   for (const record of records().filter((item) => !previous.has(item.id))) {
-    const active = saved(record.id).turns.find((turn) =>
-      ["accepted", "running", "cancelling"].includes(turn.phase),
-    );
-    if (!active) continue;
-    const token = await pageToken(page);
-    await page.evaluate(
-      async ({ project, id, requestId, token, header }) => {
-        await fetch(`/__agent-forge/projects/${project}/sessions/${id}/stop`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", [header]: token },
-          body: JSON.stringify({ requestId }),
-        });
-      },
-      {
-        project: record.projectId,
-        id: record.id,
-        requestId: active.requestId,
-        token,
-        header: OPERATOR_HEADER,
-      },
-    );
-    await expect
-      .poll(() =>
-        saved(record.id).turns.some((turn) =>
-          ["accepted", "running", "cancelling"].includes(turn.phase),
-        ),
-      )
-      .toBe(false);
+    try {
+      const active = saved(record.id).turns.find((turn) =>
+        ["accepted", "running", "cancelling"].includes(turn.phase),
+      );
+      if (!active) continue;
+      const token = await pageToken(page);
+      await page.evaluate(
+        async ({ project, id, requestId, token, header }) => {
+          await fetch(
+            `/__agent-forge/projects/${project}/sessions/${id}/stop`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json", [header]: token },
+              body: JSON.stringify({ requestId }),
+            },
+          );
+        },
+        {
+          project: record.projectId,
+          id: record.id,
+          requestId: active.requestId,
+          token,
+          header: OPERATOR_HEADER,
+        },
+      );
+      await expect
+        .poll(() =>
+          saved(record.id).turns.some((turn) =>
+            ["accepted", "running", "cancelling"].includes(turn.phase),
+          ),
+        )
+        .toBe(false);
+    } catch {
+      // Keep attempting Stop for other fixture sessions if one journal vanished.
+    }
   }
 });
 async function composer(page: Page, capture = false, alreadyOpen = false) {
