@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { ownedSessionLifecycle } from "../../apps/desktop/src/session-activity";
 import type {
   CodexChatCommand,
+  CodexChatFileChange,
   CodexChatReasoningSummary,
   CodexChatTurnPlan,
 } from "../../types/codex-chat";
@@ -222,6 +223,334 @@ test("the native summary Stop fixture witness rejects every incomplete prefix an
     ...reports.slice(5),
   ];
   expect(heldSummaryFixtureReady(reordered)).toBe(false);
+});
+
+const heldFileChanges: CodexChatFileChange["changes"][] = [
+  [
+    {
+      path: { text: "FILE_REPORT_MUST_NOT_CREATE.txt", truncated: false },
+      kind: {
+        type: "update",
+        move_path: { text: "inert/<script>.ts", truncated: false },
+      },
+      diff: {
+        text: "-old native line\n+<script>native patch stays text</script>",
+        truncated: false,
+      },
+    },
+    {
+      path: { text: "empty-native.ts", truncated: false },
+      kind: { type: "add" },
+      diff: { text: "", truncated: false },
+    },
+  ],
+  [
+    {
+      path: { text: "superseded.ts", truncated: false },
+      kind: { type: "delete" },
+      diff: { text: "-superseded", truncated: false },
+    },
+  ],
+  [],
+];
+// The fourth report restores the first complete snapshot. A→B→empty→A is not a delta stream.
+heldFileChanges.push(structuredClone(heldFileChanges[0] ?? []));
+function nativeFiles(
+  frames: readonly ConversationFrame[],
+): CodexChatFileChange[] {
+  return frames.flatMap((frame) =>
+    frame.event.kind === "coding-chat" &&
+    frame.event.event.kind === "file-change"
+      ? [frame.event.event]
+      : [],
+  );
+}
+function heldFileFixtureReady(
+  reports: readonly CodexChatFileChange[],
+): boolean {
+  return (
+    reports.length === heldFileChanges.length &&
+    reports.every(
+      (report, index) =>
+        report.kind === "file-change" &&
+        report.source ===
+          (index === 0 ? "item/started" : "item/fileChange/patchUpdated") &&
+        report.threadId === "0199a213-81c0-7800-8aa1-bbab2a035a53" &&
+        report.turnId === "0199a213-81c0-7800-8aa1-bbab2a035a54" &&
+        report.itemId === "reported-files-a" &&
+        report.status === "inProgress" &&
+        report.partial &&
+        report.closure === "open" &&
+        report.turnStatus === null &&
+        !report.truncated &&
+        Bun.deepEquals(report.changes, heldFileChanges[index], true),
+    )
+  );
+}
+
+test("the native file Stop witness refuses every incomplete or reordered prefix and mismatched full snapshot", () => {
+  const reports: CodexChatFileChange[] = heldFileChanges.map(
+    (changes, index) => ({
+      kind: "file-change",
+      source: index === 0 ? "item/started" : "item/fileChange/patchUpdated",
+      threadId: "0199a213-81c0-7800-8aa1-bbab2a035a53",
+      turnId: "0199a213-81c0-7800-8aa1-bbab2a035a54",
+      itemId: "reported-files-a",
+      status: "inProgress",
+      changes: structuredClone(changes),
+      partial: true,
+      closure: "open",
+      turnStatus: null,
+      truncated: false,
+    }),
+  );
+  for (let length = 0; length < reports.length; length++)
+    expect(heldFileFixtureReady(reports.slice(0, length))).toBe(false);
+  expect(heldFileFixtureReady(reports)).toBe(true);
+  for (const delta of [
+    { threadId: randomUUID() },
+    { turnId: randomUUID() },
+    { itemId: "foreign" },
+    { partial: false },
+    { changes: [] },
+  ]) {
+    const changed = structuredClone(reports);
+    Object.assign(changed[3] ?? {}, delta);
+    expect(heldFileFixtureReady(changed)).toBe(false);
+  }
+  const changed = structuredClone(reports),
+    second = changed[1],
+    third = changed[2];
+  if (!second || !third) throw Error("Missing exact fixture prefix");
+  changed[1] = third;
+  changed[2] = second;
+  expect(heldFileFixtureReady(changed)).toBe(false);
+});
+
+test("actual native file snapshots remain private and exact across whole/partial reads, export, recreation and original retry", async () => {
+  const f = await fixture("file-changes");
+  let service = f.open();
+  const start = await service.start(f.project.id, f.request),
+    sessionId = start.session.id;
+  await service.settled(f.project.id, sessionId);
+  const page = await service.read(f.project.id, sessionId),
+    files = nativeFiles(page.frames);
+  expect(page.turns[0]?.phase).toBe("completed");
+  expect(files).toHaveLength(15);
+  expect(heldFileFixtureReady(files.slice(0, 4))).toBe(true);
+  const main = files.filter((report) => report.itemId === "reported-files-a");
+  expect(
+    main.map((report) => [report.source, report.status, report.closure]),
+  ).toEqual([
+    ["item/started", "inProgress", "open"],
+    ["item/fileChange/patchUpdated", "inProgress", "open"],
+    ["item/fileChange/patchUpdated", "inProgress", "open"],
+    ["item/fileChange/patchUpdated", "inProgress", "open"],
+    ["item/completed", "completed", "item-ended"],
+    ["turn/completed", "completed", "turn-ended"],
+  ]);
+  expect(main[2]?.changes).toEqual([]);
+  expect(main[5]?.changes).toEqual(heldFileChanges[0]);
+  expect(
+    files
+      .filter((report) => report.source === "turn/completed")
+      .map((report) => report.status),
+  ).toEqual(["completed", "failed", "declined", "completed"]);
+  expect(
+    files.find((report) => report.itemId === "reported-files-clipped")
+      ?.truncated,
+  ).toBe(true);
+  expect(ownedCodingPageSchema.safeParse(page).success).toBe(true);
+  for (const frame of page.frames.filter(
+    (frame) =>
+      frame.event.kind === "coding-chat" &&
+      frame.event.event.kind === "file-change",
+  )) {
+    const partial = await service.read(f.project.id, sessionId, {
+      after: frame.seq - 1,
+      limit: 1,
+    });
+    expect(partial.frames).toEqual([frame]);
+    expect(ownedCodingPageSchema.safeParse(partial).success).toBe(true);
+    expect(
+      ownedCodingPageSchema.safeParse({
+        ...partial,
+        binding: {
+          provider: "codex",
+          sessionId: randomUUID(),
+          version: "0.163.0-alpha.10.2",
+        },
+      }).success,
+    ).toBe(false);
+  }
+  const exported = createSessionLibrary({
+    root: f.root,
+    home: f.home,
+  }).exportTranscript(f.project.id, sessionId);
+  expect(sessionTranscriptExportSchema.safeParse(exported).success).toBe(true);
+  expect(nativeFiles(exported.conversation.frames)).toEqual(files);
+  expect(existsSync(join(f.root, "FILE_REPORT_MUST_NOT_CREATE.txt"))).toBe(
+    false,
+  );
+  const storePath = conversationFile(f.home, f.project.id, {
+      kind: "session",
+      projectId: f.project.id,
+      sessionId,
+    }),
+    bytes = readFileSync(storePath),
+    registry = readFileSync(sessionRegistryFile(f.home));
+  await service.close();
+  service = f.open();
+  expect((await service.read(f.project.id, sessionId)).frames).toEqual(
+    page.frames,
+  );
+  await service.start(f.project.id, f.request);
+  expect(f.records().filter((row) => row.method === "turn/start")).toHaveLength(
+    1,
+  );
+  expect(readFileSync(storePath)).toEqual(bytes);
+  expect(readFileSync(sessionRegistryFile(f.home))).toEqual(registry);
+});
+
+test.each([
+  "Stop",
+  "deadline",
+] as const)("actual %s retains the exact intended native file prefix and dead native/helper facts without replay", async (action) => {
+  const f = await fixture("file-changes-held");
+  let service = f.open();
+  const start = await service.start(f.project.id, f.request),
+    sessionId = start.session.id,
+    deadline = Date.now() + 4000;
+  let running = await service.read(f.project.id, sessionId),
+    tree: Record<string, unknown> | undefined;
+  while (
+    !heldFileFixtureReady(nativeFiles(running.frames)) ||
+    !(tree = f.records().find((row) => row.kind === "tree"))
+  ) {
+    if (Date.now() > deadline)
+      throw Error(
+        "The exact four native file reports and held helper did not reach private storage",
+      );
+    await Bun.sleep(20);
+    running = await service.read(f.project.id, sessionId);
+  }
+  expect(running.turns[0]?.phase).toBe("running");
+  expect(f.records().filter((row) => row.method === "turn/start")).toHaveLength(
+    1,
+  );
+  if (action === "Stop")
+    await service.stop(f.project.id, sessionId, f.request.requestId);
+  await service.settled(f.project.id, sessionId);
+  await service.close();
+  service = f.open();
+  const page = await service.read(f.project.id, sessionId),
+    files = nativeFiles(page.frames);
+  expect(heldFileFixtureReady(files)).toBe(true);
+  expect(files).toEqual(nativeFiles(running.frames));
+  for (const pid of [tree.pid, tree.childPid]) {
+    if (typeof pid !== "number")
+      throw Error("Missing witnessed native fixture PID");
+    const live = () => {
+      try {
+        if (
+          process.platform === "linux" &&
+          /\) Z(?: |$)/.test(readFileSync(`/proc/${pid}/stat`, "utf8"))
+        )
+          return false;
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    expect(live()).toBe(false);
+  }
+  expect(
+    page.frames.find(
+      (frame) =>
+        frame.event.kind === "coding-chat" &&
+        frame.event.event.kind === "outcome",
+    )?.event,
+  ).toMatchObject({
+    event: {
+      outcome: {
+        // The native Chat runtime intentionally keeps a deadline uncertain;
+        // this is independent of its fully captured partial file reports.
+        phase: action === "deadline" ? "unknown" : "failed",
+        reason:
+          action === "deadline"
+            ? "The Codex Chat turn exceeded its deadline."
+            : "The Codex Chat turn was stopped.",
+        threadId: "0199a213-81c0-7800-8aa1-bbab2a035a53",
+        turnId: "0199a213-81c0-7800-8aa1-bbab2a035a54",
+        timedOut: action === "deadline",
+        stopped: true,
+      },
+    },
+  });
+  expect(
+    nativeFiles(
+      createSessionLibrary({ root: f.root, home: f.home }).exportTranscript(
+        f.project.id,
+        sessionId,
+      ).conversation.frames,
+    ),
+  ).toEqual(files);
+  await service.start(f.project.id, f.request);
+  expect(f.records().filter((row) => row.method === "turn/start")).toHaveLength(
+    1,
+  );
+  expect(existsSync(join(f.root, "FILE_REPORT_MUST_NOT_CREATE.txt"))).toBe(
+    false,
+  );
+});
+
+test("actual inspectable native patches do not enable file Allow or expose a saved diff as approval authority", async () => {
+  const f = await fixture("file-changes-approval"),
+    service = f.open(),
+    start = await service.start(f.project.id, f.request),
+    sessionId = start.session.id,
+    deadline = Date.now() + 4000;
+  let offer = (await service.approvals(f.project.id, sessionId)).pending[0];
+  while (!offer) {
+    if (Date.now() > deadline)
+      throw Error("Native file approval did not become available");
+    await Bun.sleep(20);
+    offer = (await service.approvals(f.project.id, sessionId)).pending[0];
+  }
+  expect(
+    heldFileFixtureReady(
+      nativeFiles((await service.read(f.project.id, sessionId)).frames),
+    ),
+  ).toBe(true);
+  expect(offer.approval.availableDecisions).toEqual(["decline", "cancel"]);
+  expect(offer.detailsUnavailableReason).toBe(
+    "Actual file-change details are unavailable. Allow is disabled.",
+  );
+  expect(JSON.stringify(offer)).not.toContain("native patch stays text");
+  const request = {
+    requestId: randomUUID(),
+    turnRequestId: offer.turnRequestId,
+    approvalId: offer.approval.id,
+    decision: "accept" as const,
+  };
+  await expect(
+    service.decide(f.project.id, sessionId, request),
+  ).rejects.toThrow();
+  expect(f.records().filter((row) => row.kind === "answer")).toHaveLength(0);
+  await service.decide(f.project.id, sessionId, {
+    ...request,
+    decision: "decline",
+  });
+  await service.settled(f.project.id, sessionId);
+  expect(f.records().filter((row) => row.kind === "answer")).toHaveLength(1);
+  expect(
+    nativeFiles((await service.read(f.project.id, sessionId)).frames).find(
+      (report) =>
+        report.itemId === "reported-files-a" &&
+        report.source === "turn/completed",
+    )?.status,
+  ).toBe("declined");
 });
 
 test("actual native mutable turn plans stay exact through private whole and partial reads, complete export, recreation and original retry", async () => {

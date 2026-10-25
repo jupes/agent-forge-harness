@@ -135,6 +135,371 @@ const reasoningItem = (overrides: Record<string, unknown> = {}) => ({
 const summaryFrame = (method: string, extra: Record<string, unknown> = {}) =>
   notify(method, { threadId, turnId, itemId: "native-summary", ...extra });
 
+test("native file changes retain distinct full replacement snapshots, exact statuses and one matching final closure", () => {
+  const decoder = stream();
+  const changes = [
+    {
+      path: "new.txt",
+      kind: { type: "add" },
+      diff: "+new <script>literal</script>",
+    },
+    { path: "old.txt", kind: { type: "delete" }, diff: "-old" },
+    {
+      path: "from.txt",
+      kind: { type: "update", move_path: "../native-display-only/to.txt" },
+      diff: "",
+    },
+  ];
+  const item = {
+    type: "fileChange",
+    id: "native-files",
+    status: "inProgress",
+    changes,
+  };
+  const report = (source: string, value = item) =>
+    decoder.accept(notify(source, { threadId, turnId, item: value })).events;
+  const started = report("item/started");
+  expect(started).toEqual([
+    {
+      kind: "file-change",
+      source: "item/started",
+      threadId,
+      turnId,
+      itemId: "native-files",
+      status: "inProgress",
+      closure: "open",
+      turnStatus: null,
+      partial: true,
+      truncated: false,
+      changes: [
+        {
+          path: { text: "new.txt", truncated: false },
+          kind: { type: "add" },
+          diff: { text: "+new <script>literal</script>", truncated: false },
+        },
+        {
+          path: { text: "old.txt", truncated: false },
+          kind: { type: "delete" },
+          diff: { text: "-old", truncated: false },
+        },
+        {
+          path: { text: "from.txt", truncated: false },
+          kind: {
+            type: "update",
+            move_path: {
+              text: "../native-display-only/to.txt",
+              truncated: false,
+            },
+          },
+          diff: { text: "", truncated: false },
+        },
+      ],
+    },
+  ]);
+  const first = started[0];
+  if (first?.kind !== "file-change")
+    throw Error("Missing native file snapshot");
+  expect(report("item/started")).toEqual([]);
+  const update = () =>
+    decoder.accept(
+      notify("item/fileChange/patchUpdated", {
+        threadId,
+        turnId,
+        itemId: item.id,
+        changes: [],
+      }),
+    ).events;
+  expect(update()).toEqual([
+    { ...first, source: "item/fileChange/patchUpdated", changes: [] },
+  ]);
+  expect(update()).toEqual([]);
+  expect(decoder.state().terminal).toBeNull();
+  const final = { ...item, changes: [], status: "declined" };
+  const completed = report("item/completed", final);
+  expect(completed).toEqual([
+    {
+      ...first,
+      source: "item/completed",
+      changes: [],
+      status: "declined",
+      closure: "item-ended",
+      partial: false,
+    },
+  ]);
+  const closed = completed[0];
+  if (closed?.kind !== "file-change")
+    throw Error("Missing closed file snapshot");
+  expect(report("item/completed", final)).toEqual([]);
+  const ended = decoder.accept(
+    notify("turn/completed", {
+      threadId,
+      turn: { id: turnId, status: "failed", error: {}, items: [final] },
+    }),
+  ).events;
+  expect(ended).toEqual([
+    {
+      ...closed,
+      source: "turn/completed",
+      closure: "turn-ended",
+      turnStatus: "failed",
+      partial: true,
+    },
+  ]);
+  expect(decoder.state().terminal).toBe("failed");
+});
+
+test("file-change wire rejects malformed kinds, missing native bodies, foreign identities and any completed-item reopening", () => {
+  const original = {
+    type: "fileChange",
+    id: "native-files",
+    status: "inProgress",
+    changes: [
+      { path: "a", kind: { type: "update", move_path: null }, diff: "native" },
+    ],
+  };
+  const send = (
+    decoder: ReturnType<typeof stream>,
+    item: unknown,
+    method = "item/started",
+  ) => decoder.accept(notify(method, { threadId, turnId, item }));
+  for (const item of [
+    {
+      ...original,
+      changes: [{ path: "a", kind: { type: "rename" }, diff: "" }],
+    },
+    {
+      ...original,
+      changes: [{ path: "a", kind: { type: "update" }, diff: "" }],
+    },
+    { ...original, changes: [{ path: "a", kind: { type: "add" } }] },
+    {
+      ...original,
+      changes: [{ path: "", kind: { type: "delete" }, diff: "" }],
+    },
+    {
+      ...original,
+      changes: [
+        { path: "a", kind: { type: "add" }, diff: "", raw: "unrecognized" },
+      ],
+    },
+    { ...original, status: "applied" },
+    { ...original, status: "completed" },
+  ])
+    expect(() => send(stream(), item)).toThrow();
+  const patch = { threadId, turnId, itemId: original.id, changes: [] };
+  expect(() =>
+    stream().accept(notify("item/fileChange/patchUpdated", patch)),
+  ).toThrow("active known");
+  for (const change of [
+    { threadId: "0199a213-81c0-7800-8aa1-bbab2a035a55" },
+    { turnId: "0199a213-81c0-7800-8aa1-bbab2a035a55" },
+    { status: "completed" },
+    { itemId: "unknown" },
+  ]) {
+    const decoder = stream();
+    send(decoder, original);
+    expect(() =>
+      decoder.accept(
+        notify("item/fileChange/patchUpdated", { ...patch, ...change }),
+      ),
+    ).toThrow();
+  }
+  const decoder = stream();
+  send(decoder, original);
+  expect(() => send(decoder, commandItem({ id: original.id }))).toThrow(
+    "identity",
+  );
+  const completed = { ...original, status: "failed" };
+  send(decoder, completed, "item/completed");
+  expect(() =>
+    decoder.accept(notify("item/fileChange/patchUpdated", patch)),
+  ).toThrow("active known");
+  expect(() => send(decoder, original)).toThrow("completed");
+  expect(() =>
+    send(decoder, { ...completed, changes: [] }, "item/completed"),
+  ).toThrow("completed");
+  expect(() =>
+    decoder.accept(
+      notify("turn/completed", {
+        threadId,
+        turn: {
+          id: turnId,
+          status: "completed",
+          error: null,
+          items: [{ ...completed, changes: [] }],
+        },
+      }),
+    ),
+  ).toThrow("completed");
+});
+
+test("file replacement snapshots retain UTF-8 prefixes and explicit truncation; empty strings and all native patch statuses remain distinct", () => {
+  const item = {
+    type: "fileChange",
+    id: "native-files",
+    status: "inProgress",
+    changes: [{ path: "x", kind: { type: "add" }, diff: "🌱".repeat(5000) }],
+  };
+  const decoder = stream();
+  const report = decoder.accept(
+    notify("item/started", { threadId, turnId, item }),
+  ).events[0];
+  if (report?.kind !== "file-change")
+    throw Error("Missing bounded native file snapshot");
+  expect(report.truncated).toBe(true);
+  expect(report.changes[0]?.diff).toEqual({
+    text: "🌱".repeat(4095),
+    truncated: true,
+  });
+  const snapshot = (diff: string) =>
+    decoder.accept(
+      notify("item/fileChange/patchUpdated", {
+        threadId,
+        turnId,
+        itemId: item.id,
+        changes: [{ path: "x", kind: { type: "add" }, diff }],
+      }),
+    ).events;
+  for (const text of ["A", "B", "A", ""]) {
+    const event = snapshot(text)[0];
+    if (event?.kind !== "file-change")
+      throw Error("Missing distinct replacement snapshot");
+    expect(event.changes[0]?.diff).toEqual({ text, truncated: false });
+  }
+  expect(
+    decoder.accept(
+      notify("item/fileChange/outputDelta", {
+        threadId,
+        turnId,
+        itemId: item.id,
+        delta: "DEPRECATED NOT RETAINED",
+      }),
+    ).events,
+  ).toEqual([]);
+  const many = stream().accept(
+    notify("item/started", {
+      threadId,
+      turnId,
+      item: {
+        ...item,
+        changes: Array.from({ length: 129 }, () => ({
+          path: "x",
+          kind: { type: "add" },
+          diff: "",
+        })),
+      },
+    }),
+  ).events[0];
+  if (many?.kind !== "file-change")
+    throw Error("Missing item-limited file snapshot");
+  expect(many.changes).toHaveLength(128);
+  expect(many.truncated).toBe(true);
+  for (const status of ["completed", "failed", "declined"] as const) {
+    const ended = stream().accept(
+      notify("item/completed", {
+        threadId,
+        turnId,
+        item: { ...item, status, changes: [] },
+      }),
+    ).events[0];
+    expect(ended).toMatchObject({
+      status,
+      partial: false,
+      closure: "item-ended",
+      turnStatus: null,
+    });
+  }
+  const final = stream().accept(
+    notify("turn/completed", {
+      threadId,
+      turn: {
+        id: turnId,
+        status: "completed",
+        error: null,
+        items: [{ ...item, changes: [] }],
+      },
+    }),
+  ).events[0];
+  expect(final).toMatchObject({
+    status: "inProgress",
+    partial: true,
+    closure: "turn-ended",
+    turnStatus: "completed",
+  });
+});
+
+test("file snapshots share the existing private event, aggregate and native item bounds with other rich reports", () => {
+  const file = {
+    type: "fileChange",
+    id: "native-files",
+    status: "inProgress",
+    changes: [
+      { path: "x", kind: { type: "add" }, diff: "\u0001".repeat(16_383) },
+    ],
+  };
+  expect(() =>
+    stream().accept(notify("item/started", { threadId, turnId, item: file })),
+  ).toThrow("private event bound");
+  const decoder = stream();
+  let retainedBytes = 0,
+    refusal = "";
+  for (let index = 0; index < 140; index++) {
+    try {
+      const events =
+        index % 2 === 0
+          ? decoder.accept(
+              notify("item/started", {
+                threadId,
+                turnId,
+                item: {
+                  ...file,
+                  id: `file-${index}`,
+                  changes: [
+                    {
+                      path: "x",
+                      kind: { type: "add" },
+                      diff: "y".repeat(16_383),
+                    },
+                  ],
+                },
+              }),
+            ).events
+          : decoder.accept(
+              notify("turn/plan/updated", {
+                threadId,
+                turnId,
+                explanation: "z".repeat(16_384),
+                plan: [],
+              }),
+            ).events;
+      for (const event of events)
+        retainedBytes += new TextEncoder().encode(
+          JSON.stringify(event),
+        ).byteLength;
+    } catch (error) {
+      refusal = error instanceof Error ? error.message : "unexpected";
+      break;
+    }
+  }
+  expect(refusal).toContain("private report bound");
+  expect(retainedBytes).toBeGreaterThan(1_048_576);
+  expect(retainedBytes).toBeLessThanOrEqual(2_097_152);
+  const limited = stream();
+  for (let index = 0; index < 256; index++)
+    limited.accept(
+      notify("item/started", {
+        threadId,
+        turnId,
+        item: { ...file, id: `file-${index}`, changes: [] },
+      }),
+    );
+  expect(() =>
+    limited.accept(
+      notify("item/started", { threadId, turnId, item: commandItem() }),
+    ),
+  ).toThrow("items");
+});
+
 test("turn plans retain mutable and repeated native replacement snapshots without creating items or turn completion", () => {
   const decoder = stream(),
     first = {
@@ -962,7 +1327,7 @@ function approval(
               exitCode: null,
               durationMs: null,
             }
-          : {}),
+          : { status: "inProgress", changes: [] }),
       },
     }),
   );

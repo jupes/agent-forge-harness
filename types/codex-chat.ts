@@ -123,6 +123,34 @@ export interface CodexChatTurnPlan {
   truncated: boolean;
 }
 
+/** Full native replacement snapshots. Reported paths/diffs are private display text, never file authority. */
+export interface CodexChatFileChange {
+  kind: "file-change";
+  source:
+    | "item/started"
+    | "item/fileChange/patchUpdated"
+    | "item/completed"
+    | "turn/completed";
+  threadId: string;
+  turnId: string;
+  itemId: string;
+  /** patchUpdated carries the last observed native item status; it reports no new status itself. */
+  status: "inProgress" | "completed" | "failed" | "declined";
+  changes: {
+    path: ReportedText;
+    kind:
+      | { type: "add" }
+      | { type: "delete" }
+      | { type: "update"; move_path: ReportedText | null };
+    /** An empty native string stays explicitly empty; it is never reconstructed from files. */
+    diff: ReportedText;
+  }[];
+  truncated: boolean;
+  partial: boolean;
+  closure: "open" | "item-ended" | "turn-ended";
+  turnStatus: "completed" | "failed" | "interrupted" | null;
+}
+
 export type CodexChatEvent =
   | {
       kind: "process";
@@ -145,6 +173,7 @@ export type CodexChatEvent =
   | CodexChatCommand
   | CodexChatReasoningSummary
   | CodexChatTurnPlan
+  | CodexChatFileChange
   | { kind: "usage"; usage: CodexChatUsage }
   | { kind: "outcome"; outcome: CodexChatOutcome }
   | { kind: "reroute"; fromModel: string; toModel: string; reason: string }
