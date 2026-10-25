@@ -37,11 +37,20 @@ import type { ChildExit } from "./types";
 /** How much of a child's stderr is kept: the end, where a failure says why. */
 export const STDERR_TAIL_CHARS = 4000;
 
+type SuperviseSpawn = (
+  command: string[],
+  options: Bun.SpawnOptions.SpawnOptions<"pipe", "pipe", "pipe">,
+) => Bun.Subprocess<"pipe", "pipe", "pipe">;
+
 export interface SuperviseOptions {
   command: string[];
   cwd: string;
   env: Record<string, string>;
   stdin?: string | undefined;
+  /** Opt in to hiding automated console windows on Windows. */
+  windowsHide?: boolean | undefined;
+  /** Trusted pre-spawn observation seam for tests; never supplied by callers. */
+  spawn?: SuperviseSpawn | undefined;
   timeoutMs?: number | undefined;
   onLine: (line: string) => void;
   /** Optional protocol bound, including output that never sends a newline. */
@@ -355,11 +364,16 @@ export function supervise(
   let prematureControl = false;
   const proc = (() => {
     try {
-      return Bun.spawn<"pipe", "pipe", "pipe">(bootstrap ?? options.command, {
+      const launch: SuperviseSpawn =
+        options.spawn ??
+        ((command, spawnOptions) =>
+          Bun.spawn<"pipe", "pipe", "pipe">(command, spawnOptions));
+      return launch(bootstrap ?? options.command, {
         cwd: isolated ?? options.cwd,
         env: interactive ? bootstrapEnv : options.env,
         stdin: "pipe",
         ...(process.platform === "win32" ? {} : { detached: true }),
+        ...(options.windowsHide === true ? { windowsHide: true } : {}),
         stdout: "pipe",
         stderr: "pipe",
         ...(interactive

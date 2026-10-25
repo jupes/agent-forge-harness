@@ -674,10 +674,26 @@ describe("POST /queue/:id/reassign", () => {
 
   test("an open stream gets the audit row and then a bead.transitioned delta for the bead; a /queue read made after that delta shows the new smith", async () => {
     const { h, tracker } = await start([backed("demo-1", "queued")]);
+    let enterUpdate: () => void = () => {};
+    const updateEntered = new Promise<void>((resolve) => {
+      enterUpdate = resolve;
+    });
     // GET /queue reads the same in-memory tracker the reassign writes.
-    h.bd.answer = (args) =>
-      tracker.answer(args) ??
-      answerQueueList(args, [...tracker.beads.values()]);
+    h.bd.answer = async (args) => {
+      if (args[0] === "update") {
+        enterUpdate();
+        // Keep the confirmed POST pending longer than one stream-read budget.
+        await Bun.sleep(2200);
+      }
+      return (
+        tracker.answer(args) ??
+        answerQueueList(args, [...tracker.beads.values()]) ?? {
+          status: 1,
+          stdout: "",
+          stderr: "Unarranged fixture queue command",
+        }
+      );
+    };
     const smiths = async (): Promise<Array<[string, string | undefined]>> => {
       const response = await fetch(`${h.api}/queue`, { headers: h.headers() });
       const body = (await response.json()) as OperatorEnvelope<QueueEntry[]>;
@@ -687,6 +703,9 @@ describe("POST /queue/:id/reassign", () => {
     const client = await openEventStream(`${h.api}/stream`, {
       Origin: h.hearth.url,
     });
+    let posted: Promise<Answer<QueueReassignResult>> | undefined;
+    let testFailed = false;
+    let testFailure: unknown;
     try {
       const first = await client.next();
       expect(first?.event).toBe("snapshot");
@@ -695,9 +714,12 @@ describe("POST /queue/:id/reassign", () => {
         undefined,
       ]);
 
-      const posted = post(h, "/queue/demo-1/reassign", {
+      posted = post<QueueReassignResult>(h, "/queue/demo-1/reassign", {
         smith: "claude-master",
       });
+      await updateEntered;
+      expect((await posted).status).toBe(200);
+
       const deltas: LedgerEvent[] = [];
       while (deltas.length < 2) {
         const message = await client.next(2000);
@@ -720,10 +742,27 @@ describe("POST /queue/:id/reassign", () => {
         ],
       ]);
       expect(await smiths()).toEqual([["demo-1", "claude-master"]]);
-      expect((await posted).status).toBe(200);
+    } catch (error) {
+      testFailed = true;
+      testFailure = error;
+    }
+    let cleanupFailure: unknown;
+    try {
+      if (posted) expect((await posted).status).toBe(200);
+    } catch (error) {
+      cleanupFailure = error;
     } finally {
       client.close();
     }
+    if (testFailed) {
+      if (cleanupFailure !== undefined && testFailure instanceof Error)
+        Object.defineProperty(testFailure, "cause", {
+          value: cleanupFailure,
+          configurable: true,
+        });
+      throw testFailure;
+    }
+    if (cleanupFailure !== undefined) throw cleanupFailure;
   });
 
   test("a smith that is not configured, is disabled, or is not a name: 400, nothing appended, bd not called", async () => {
