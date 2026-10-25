@@ -718,6 +718,7 @@ describe("POST /queue/:id/reassign", () => {
         smith: "claude-master",
       });
       await updateEntered;
+      expect((await posted).status).toBe(200);
 
       const deltas: LedgerEvent[] = [];
       while (deltas.length < 2) {
