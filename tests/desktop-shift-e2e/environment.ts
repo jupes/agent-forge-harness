@@ -79,7 +79,7 @@ export function prepareFixture(bun: string) {
       `import {ensurePrivateHome} from ${JSON.stringify(resolve("scripts/hearth/home-guard.ts").replaceAll("\\", "/"))};ensurePrivateHome(process.argv[1]);`,
       HOME,
     ],
-    { encoding: "utf8", timeout: 10000 },
+    { encoding: "utf8", timeout: 10000, windowsHide: true },
   );
   if (privateHome.status !== 0)
     throw Error(
@@ -126,7 +126,7 @@ export function prepareFixture(bun: string) {
     const result = spawnSync(
       bun,
       ["build", "--compile", source, "--outfile", path],
-      { encoding: "utf8", timeout: 60000 },
+      { encoding: "utf8", timeout: 60000, windowsHide: true },
     );
     if (result.status !== 0)
       throw Error(
@@ -148,9 +148,9 @@ export function prepareFixture(bun: string) {
   const providerSource = join(STATE, "provider.ts");
   writeFileSync(
     providerSource,
-    `import {readFileSync} from "node:fs";import {basename} from "node:path";import {runCodingCliFixture} from ${JSON.stringify(resolve("scripts/sessions/fixtures/coding-cli-fixture.ts").replaceAll("\\", "/"))};import {runCodexTaskRuntimeFixture} from ${JSON.stringify(resolve("scripts/sessions/fixtures/codex-task-runtime-fixture.ts").replaceAll("\\", "/"))};
+    `import {readFileSync} from "node:fs";import {basename} from "node:path";import {isConsoleWindowVisible} from ${JSON.stringify(resolve("scripts/providers/fixtures/console-visibility.ts").replaceAll("\\", "/"))};import {runCodingCliFixture} from ${JSON.stringify(resolve("scripts/sessions/fixtures/coding-cli-fixture.ts").replaceAll("\\", "/"))};import {runCodexTaskRuntimeFixture} from ${JSON.stringify(resolve("scripts/sessions/fixtures/codex-task-runtime-fixture.ts").replaceAll("\\", "/"))};
     const args=process.argv.slice(2);
-    if(JSON.stringify(args)===JSON.stringify(["auth","status"])){console.log(JSON.stringify({loggedIn:false,authMethod:"none"}));process.exitCode=1;}
+    if(JSON.stringify(args)===JSON.stringify(["auth","status"])){console.log(JSON.stringify({loggedIn:false,authMethod:"none",consoleWindowVisible:isConsoleWindowVisible()}));process.exitCode=1;}
     else if(JSON.stringify(args)===JSON.stringify(["login","status"])){console.error("Not logged in");process.exitCode=1;}
     else if(args[0]==="-e"){if(args.length!==2||args[1]!=="setInterval(() => {}, 1000)")throw Error("Inert helper refused");await new Promise(()=>setInterval(()=>{},1000));}
     else{let mode;try{mode=JSON.parse(readFileSync(${JSON.stringify(join(STATE, "mode.json"))},"utf8"));}catch{throw Error("Invalid fixture mode");}if(!["rich","hang-tree"].includes(mode))throw Error("Unsupported fixture mode");process.env.CODING_FIXTURE_MODE=mode;process.env.CODEX_RUNTIME_MODE=mode;process.env.CODING_FIXTURE_RECORD=${JSON.stringify(join(STATE, "claude.json"))};process.env.CODEX_RUNTIME_LOG=${JSON.stringify(join(STATE, "codex.jsonl"))};if(basename(process.execPath).startsWith("codex"))await runCodexTaskRuntimeFixture();else await runCodingCliFixture();}`,
@@ -167,7 +167,7 @@ export function prepareFixture(bun: string) {
     const result = spawnSync(
       join(BIN, process.platform === "win32" ? `${name}.exe` : name),
       [...args],
-      { encoding: "utf8", timeout: 10000 },
+      { encoding: "utf8", timeout: 10000, windowsHide: true },
     );
     if (
       result.status !== 1 ||
@@ -177,11 +177,31 @@ export function prepareFixture(bun: string) {
       throw Error(
         "A fixed non-generating status fixture created a provider turn.",
       );
+    if (process.platform === "win32" && name === "claude") {
+      let status: unknown;
+      try {
+        status = JSON.parse(result.stdout);
+      } catch {
+        throw Error(
+          "The synthetic auth status did not report console visibility.",
+        );
+      }
+      if (
+        typeof status !== "object" ||
+        status === null ||
+        !("consoleWindowVisible" in status) ||
+        status.consoleWindowVisible !== false
+      )
+        throw Error(
+          "The synthetic auth check opened a visible console window.",
+        );
+    }
   }
   const refused = spawnSync(tools, ["export"], {
     cwd: process.cwd(),
     encoding: "utf8",
     timeout: 10000,
+    windowsHide: true,
   });
   if (refused.status === 0)
     throw Error("The attended fixture did not refuse the actual checkout.");
