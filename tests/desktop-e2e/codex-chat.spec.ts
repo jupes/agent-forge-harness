@@ -102,6 +102,67 @@ test.beforeEach(() => {
   mode("approval-command");
 });
 test.afterEach(async ({ page }) => {
+  const info = test.info();
+  if (
+    info.title ===
+      "native Chat web-search reports retain literal snapshots through export and reload without retrying the turn" &&
+    info.status !== info.expectedStatus
+  ) {
+    const created = records().filter((record) => !previous.has(record.id));
+    let fixtureRows: ReturnType<typeof calls> = [];
+    try {
+      fixtureRows = calls();
+    } catch {
+      // Preserve the original assertion result if the private fixture log is corrupt.
+    }
+    const safeMethod = (method: unknown) =>
+      typeof method === "string" && /^[a-zA-Z0-9/._-]{1,80}$/.test(method)
+        ? method
+        : "other";
+    await info.attach("native-chat-web-search-failure-facts.json", {
+      contentType: "application/json",
+      body: Buffer.from(
+        JSON.stringify({
+          createdSessionCount: created.length,
+          nativeFixtureCalls: fixtureRows.map((row) => ({
+            kind: safeMethod(row.kind),
+            ...(row.kind === "rpc" ? { method: safeMethod(row.method) } : {}),
+          })),
+          journals: created.map((record) => {
+            try {
+              const state = saved(record.id);
+              return {
+                readable: true,
+                turns: state.turns.map((turn) => ({
+                  phase: turn.phase,
+                  reasonClass:
+                    turn.reason === null
+                      ? null
+                      : turn.reason.includes("private Chat writer")
+                        ? "private-writer-failure-or-deadline"
+                        : "other",
+                })),
+                frames: state.frames.map(({ event }) =>
+                  event.kind === "coding-chat"
+                    ? {
+                        family: event.kind,
+                        nativeKind: event.event.kind,
+                        source:
+                          "source" in event.event
+                            ? safeMethod(event.event.source)
+                            : null,
+                      }
+                    : { family: event.kind },
+                ),
+              };
+            } catch {
+              return { readable: false };
+            }
+          }),
+        }),
+      ),
+    });
+  }
   await page.unrouteAll({ behavior: "ignoreErrors" });
   for (const record of records().filter((item) => !previous.has(item.id))) {
     const active = saved(record.id).turns.find((turn) =>
