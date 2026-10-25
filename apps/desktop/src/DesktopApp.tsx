@@ -225,13 +225,18 @@ export function DesktopApp(): JSX.Element {
     setSessionReview(review);
     void reviews.open(review);
   };
-  const openShiftReview = (source: KeeperProposal, revision: number) => {
+  const openShiftReview = (
+    source: KeeperProposal,
+    revision: number,
+    originalOnly = false,
+    requestId?: string,
+  ) => {
     if (!project || source.projectId !== project.id) return;
     shiftReviewOpener.current =
       document.activeElement instanceof HTMLElement
         ? document.activeElement
         : null;
-    const entry = shiftReviews.get(source, revision);
+    const entry = shiftReviews.get(source, revision, originalOnly, requestId);
     setShiftReview(entry);
     void shiftReviews.owner.open(entry);
   };

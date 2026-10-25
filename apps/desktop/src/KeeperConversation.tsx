@@ -194,7 +194,12 @@ export function KeeperConversation({
     | ((source: KeeperProposal, revision: number, requestId?: string) => void)
     | undefined;
   onReviewShift?:
-    | ((source: KeeperProposal, revision: number) => void)
+    | ((
+        source: KeeperProposal,
+        revision: number,
+        originalOnly?: boolean,
+        requestId?: string,
+      ) => void)
     | undefined;
   active?: boolean;
 }): JSX.Element {

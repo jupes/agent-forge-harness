@@ -95,7 +95,11 @@ export function useKeeperShiftReviews(writesAllowed: boolean) {
   useEffect(() => () => owner.dispose(), [owner]);
   return {
     owner,
-    get: (source: KeeperProposal, revision: number) =>
-      owner.get(source, revision),
+    get: (
+      source: KeeperProposal,
+      revision: number,
+      originalOnly = false,
+      requestId?: string,
+    ) => owner.get(source, revision, originalOnly, requestId),
   };
 }

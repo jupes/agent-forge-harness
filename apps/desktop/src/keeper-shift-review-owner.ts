@@ -1,6 +1,9 @@
 import type { ActionOutcome } from "../../../docs/js/action-outcome";
 import { workspaceKey } from "../../../scripts/projects/scope";
-import { projectShiftOptionsSchema } from "../../../scripts/shifts/protocol";
+import {
+  projectShiftOptionsSchema,
+  shiftRequestIdSchema,
+} from "../../../scripts/shifts/protocol";
 import type { KeeperProposal } from "../../../types/keeper-proposal";
 import type { KeeperShiftStartRequest } from "../../../types/keeper-shift-start";
 import type { KeeperShiftIdentities } from "./keeper-shift-identities";
@@ -21,6 +24,10 @@ export interface KeeperShiftReviewEntry {
   visible: boolean;
   readGeneration: number;
   deliveryGeneration: number;
+  /** Set by a recorded Keeper card so its recovery action can never create a new Start. */
+  originalOnly: boolean;
+  /** Conflicting or malformed recorded UUIDs remain held until this entry is discarded. */
+  identityConflict: boolean;
 }
 
 const checkMessage =
@@ -120,8 +127,22 @@ export function createKeeperShiftReviewOwner(deps: {
       entry.state = { ...entry.state, scopeVerified: false };
     tell(entry);
     try {
+      if (entry.identityConflict) {
+        hold(
+          entry,
+          "The recorded Keeper UUID conflicts with the held original. No replacement or request was sent.",
+        );
+        return;
+      }
       const savedIdentity = deps.identities.read(entry.state.source);
       if (!isReadCurrent(entry, generation)) return;
+      if (entry.originalOnly && !savedIdentity && !entry.state.requestId) {
+        entry.state = holdKeeperShiftReview(
+          entry.state,
+          "No saved original UUID is available in this app profile. A recorded Keeper action cannot start a replacement Shift.",
+        );
+        return;
+      }
       if (savedIdentity && entry.state.requestId === null)
         entry.state = {
           ...entry.state,
@@ -155,12 +176,17 @@ export function createKeeperShiftReviewOwner(deps: {
       );
       if (
         entry.state.requestId !== null &&
-        (!held || held.requestId !== entry.state.requestId)
+        held !== null &&
+        held.requestId !== entry.state.requestId
       )
         throw Error(
           "The saved Shift identity could not be matched to this protected original.",
         );
-      const requestId = held?.requestId ?? null;
+      if (entry.state.requestId !== null && !held && !entry.originalOnly)
+        throw Error(
+          "The saved Shift identity could not be matched to this protected original.",
+        );
+      const requestId = held?.requestId ?? entry.state.requestId;
       entry.state = initializeKeeperShiftReview(
         entry.state,
         checked.data,
@@ -228,7 +254,12 @@ export function createKeeperShiftReviewOwner(deps: {
   };
 
   return {
-    get(source: KeeperProposal, revision: number): KeeperShiftReviewEntry {
+    get(
+      source: KeeperProposal,
+      revision: number,
+      originalOnly = false,
+      requestId?: string,
+    ): KeeperShiftReviewEntry {
       const key = keyOf(source);
       let entry = entries.get(key);
       if (!entry) {
@@ -239,8 +270,33 @@ export function createKeeperShiftReviewOwner(deps: {
           visible: false,
           readGeneration: 0,
           deliveryGeneration: 0,
+          originalOnly,
+          identityConflict: false,
         };
         entries.set(key, entry);
+      }
+      if (originalOnly) entry.originalOnly = true;
+      if (requestId !== undefined) {
+        const parsed = shiftRequestIdSchema.safeParse(requestId);
+        if (
+          !parsed.success ||
+          (entry.state.requestId !== null &&
+            entry.state.requestId !== parsed.data)
+        ) {
+          entry.identityConflict = true;
+          hold(
+            entry,
+            "The recorded Keeper UUID is malformed or conflicts with the held original. No replacement or request was sent.",
+          );
+        } else {
+          entry.state = {
+            ...entry.state,
+            requestId: parsed.data,
+            status: "held",
+            notice:
+              "The recorded Keeper UUID is being recovered from its protected original. No new Start will be sent.",
+          };
+        }
       }
       if (!sameProposalSource(source, entry.state.source)) {
         const notice =
@@ -267,6 +323,8 @@ export function createKeeperShiftReviewOwner(deps: {
     async start(entry: KeeperShiftReviewEntry) {
       if (
         disposed ||
+        entry.originalOnly ||
+        entry.identityConflict ||
         entry.loading ||
         entry.starting ||
         entry.state.status !== "ready" ||
@@ -373,6 +431,7 @@ export function createKeeperShiftReviewOwner(deps: {
         requestId = entry.state.requestId;
       if (
         disposed ||
+        entry.identityConflict ||
         entry.loading ||
         entry.starting ||
         !original ||

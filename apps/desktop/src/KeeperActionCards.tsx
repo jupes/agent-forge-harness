@@ -324,7 +324,12 @@ function ActionCard({
     | ((source: KeeperProposal, revision: number, requestId?: string) => void)
     | undefined;
   onReviewShift?:
-    | ((source: KeeperProposal, revision: number) => void)
+    | ((
+        source: KeeperProposal,
+        revision: number,
+        originalOnly?: boolean,
+        requestId?: string,
+      ) => void)
     | undefined;
 }): JSX.Element {
   const state = client.get(projectId),
@@ -426,6 +431,20 @@ function ActionCard({
             </button>
           ) : (
             <p>Activity details are unavailable in this read.</p>
+          )}
+          {shiftReview && record.phase !== "dismissed" && (
+            <Button
+              onClick={() =>
+                onReviewShift?.(
+                  card.proposal,
+                  state.page?.revision ?? state.fence,
+                  true,
+                  record.requestId,
+                )
+              }
+            >
+              Review original Start
+            </Button>
           )}
         </>
       ) : (
@@ -543,7 +562,12 @@ export function KeeperActionCards({
     | ((source: KeeperProposal, revision: number, requestId?: string) => void)
     | undefined;
   onReviewShift?:
-    | ((source: KeeperProposal, revision: number) => void)
+    | ((
+        source: KeeperProposal,
+        revision: number,
+        originalOnly?: boolean,
+        requestId?: string,
+      ) => void)
     | undefined;
 }): JSX.Element {
   const state = client.get(projectId);

@@ -520,6 +520,110 @@ test("failed options keep a saved identity and later protected original recovery
   owner.dispose();
 });
 
+test("a recorded-card original-only review never prepares a new Start without its saved UUID", async () => {
+  let optionsReads = 0,
+    originalReads = 0,
+    startPosts = 0;
+  const owner = createKeeperShiftReviewOwner({
+    canWrite: () => true,
+    requestId: () => requestId,
+    identities: identities(),
+    readOptions: async () => {
+      optionsReads += 1;
+      return shiftOptions();
+    },
+    readOriginal: async () => {
+      originalReads += 1;
+      return null;
+    },
+    postStart: async () => {
+      startPosts += 1;
+      return { state: "unknown", message: "Unexpected Start" };
+    },
+  });
+  const review = owner.get(source, 4, true);
+  await owner.open(review);
+  await owner.start(review);
+  await owner.retry(review);
+  expect(review.state.status).toBe("held");
+  expect(review.state.requestId).toBeNull();
+  expect(optionsReads).toBe(0);
+  expect(originalReads).toBe(0);
+  expect(startPosts).toBe(0);
+  owner.dispose();
+});
+
+test("a recorded-card UUID recovers its exact protected original without local identity metadata", async () => {
+  const protectedReads: string[] = [],
+    owner = createKeeperShiftReviewOwner({
+      canWrite: () => true,
+      requestId: () => "a13c01ee-e854-4d0e-8d6c-a246304d74a2",
+      identities: identities(),
+      readOptions: async () => shiftOptions(),
+      readOriginal: async (_projectId, _proposalId, id) => {
+        protectedReads.push(id);
+        return receiptFor("done", "running", actualShift());
+      },
+      postStart: async () => {
+        throw Error("Recovery must not send a Start");
+      },
+    });
+  const review = owner.get(source, 4, true, requestId);
+  await owner.open(review);
+  expect(protectedReads).toEqual([requestId]);
+  expect(review.state.status).toBe("recorded");
+  expect(review.state.requestId).toBe(requestId);
+  expect(review.state.original).toEqual(fullRequest());
+  owner.dispose();
+});
+
+test("a conflicting or malformed recorded UUID stays held through open, check, start and retry", async () => {
+  let optionsReads = 0,
+    originalReads = 0,
+    startPosts = 0;
+  const owner = createKeeperShiftReviewOwner({
+    canWrite: () => true,
+    requestId: () => requestId,
+    identities: identities(),
+    readOptions: async () => {
+      optionsReads += 1;
+      return shiftOptions();
+    },
+    readOriginal: async () => {
+      originalReads += 1;
+      return receiptFor("done", "running", actualShift());
+    },
+    postStart: async () => {
+      startPosts += 1;
+      return { state: "unknown", message: "Unexpected Start" };
+    },
+  });
+  const held = owner.get(source, 4);
+  held.state.requestId = "a13c01ee-e854-4d0e-8d6c-a246304d74a2";
+  const conflicting = owner.get(source, 4, true, requestId);
+  await owner.open(conflicting);
+  await owner.check(conflicting);
+  await owner.start(conflicting);
+  await owner.retry(conflicting);
+  expect(conflicting.identityConflict).toBe(true);
+  expect(conflicting.state.requestId).toBe(
+    "a13c01ee-e854-4d0e-8d6c-a246304d74a2",
+  );
+  expect(conflicting.state.status).toBe("held");
+  expect(optionsReads).toBe(0);
+  expect(originalReads).toBe(0);
+  expect(startPosts).toBe(0);
+
+  const malformed = owner.get(source, 4, true, "not-a-uuid");
+  await owner.open(malformed);
+  expect(malformed.identityConflict).toBe(true);
+  expect(malformed.state.status).toBe("held");
+  expect(optionsReads).toBe(0);
+  expect(originalReads).toBe(0);
+  expect(startPosts).toBe(0);
+  owner.dispose();
+});
+
 test("saved identity metadata survives unavailable options without crossing changed source or workspace", async () => {
   const values = new Map<string, string>();
   const savedIdentities = createKeeperShiftIdentities({
