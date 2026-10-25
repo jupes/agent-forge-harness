@@ -98,6 +98,7 @@ function childEnv(
 }
 
 interface Ran {
+  pid: number;
   exitCode: number;
   stdout: string;
   stderr: string;
@@ -122,7 +123,7 @@ async function hook(
     new Response(child.stdout).text(),
     new Response(child.stderr).text(),
   ]);
-  return { exitCode: await child.exited, stdout, stderr };
+  return { pid: child.pid, exitCode: await child.exited, stdout, stderr };
 }
 
 function events(box: Box): LedgerEvent[] {
@@ -707,8 +708,9 @@ describe("the hook scripts, given a hook payload on stdin", () => {
           closeLedger();
         }
         const runs = await Promise.all(
-          Array.from({ length: 8 }, (_, index) =>
-            hook(
+          Array.from({ length: 8 }, async (_, index) => {
+            const began = performance.now();
+            const ran = await hook(
               box,
               LEDGER_HOOK,
               payload("PostToolUse", box, {
@@ -716,10 +718,36 @@ describe("the hook scripts, given a hook payload on stdin", () => {
                 tool_name: "Grep",
                 tool_input: { pattern: `p-${index}` },
               }),
-            ),
-          ),
+            );
+            return {
+              ...ran,
+              index,
+              elapsedMs: Math.round(performance.now() - began),
+            };
+          }),
         );
-        expect(runs.map((ran) => ran.exitCode)).toEqual(Array(8).fill(0));
+        // Fail-open hooks can all exit zero after refusing an event. Retain
+        // bounded child failure facts without printing stdout or tool inputs.
+        const diagnostic = JSON.stringify({
+          ledger,
+          children: runs.map((ran) => ({
+            index: ran.index,
+            pid: ran.pid,
+            elapsedMs: ran.elapsedMs,
+            exitCode: ran.exitCode,
+            stdoutLength: ran.stdout.length,
+            stderr: ran.stderr
+              .replaceAll(box.cwd, "<fixture-cwd>")
+              .replaceAll(box.home, "<fixture-home>")
+              .replaceAll(box.userHome, "<fixture-user-home>")
+              .slice(0, 1024),
+            stderrTruncated: ran.stderr.length > 1024,
+          })),
+        });
+        expect(
+          runs.map((ran) => ran.exitCode),
+          diagnostic,
+        ).toEqual(Array(8).fill(0));
 
         const child = events(box).filter((event) => event.sessionId === "S:A");
         const started = child.filter(
@@ -728,12 +756,15 @@ describe("the hook scripts, given a hook payload on stdin", () => {
         const tools = child.filter((event) => event.kind === "tool.called");
         // A writer that stays locked out past its retry drops its event by
         // design, so the count is bounded rather than exact.
-        expect(started.length).toBeLessThanOrEqual(1);
-        expect(tools.length).toBeGreaterThanOrEqual(7);
-        expect(tools.length).toBeLessThanOrEqual(8);
-        expect(started.length + tools.length).toBeGreaterThanOrEqual(8);
+        expect(started.length, diagnostic).toBeLessThanOrEqual(1);
+        expect(tools.length, diagnostic).toBeGreaterThanOrEqual(7);
+        expect(tools.length, diagnostic).toBeLessThanOrEqual(8);
+        expect(
+          started.length + tools.length,
+          diagnostic,
+        ).toBeGreaterThanOrEqual(8);
         for (const event of started)
-          expect(event.payload).toMatchObject({
+          expect(event.payload, diagnostic).toMatchObject({
             kind: "subagent",
             parentSessionId: "S",
           });
