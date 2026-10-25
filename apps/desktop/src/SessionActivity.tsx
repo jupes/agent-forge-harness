@@ -8,6 +8,7 @@ import type {
   ReportedText,
 } from "../../../types/session-activity";
 import type { NativeChatFileChangeReport } from "./native-chat-file-changes";
+import type { NativeChatMcpToolCallReport } from "./native-chat-mcp-tool-calls";
 import type {
   NativeChatReasoningReport,
   NativeChatSummarySnapshot,
@@ -117,6 +118,77 @@ function nativeFiles(value: NativeChatFileChangeReport) {
       <p class="af-session-note">
         This saved report does not authorize applying a patch or deciding a
         permission. Reported paths are display text only.
+      </p>
+    </details>
+  );
+}
+
+function nativeMcpToolCall(value: NativeChatMcpToolCallReport) {
+  const report = value.report,
+    status = report.status === "inProgress" ? "in progress" : report.status;
+  return (
+    <details
+      class="af-session-activity-item"
+      key={`mcp:${report.threadId}:${report.turnId}:${report.itemId}`}
+    >
+      <summary>
+        MCP tool call · {report.server.text || "Server text truncated"} ·{" "}
+        {report.tool.text || "Tool text truncated"} · Reported {status}
+        {report.partial ? " · Partial report" : ""}
+      </summary>
+      <p class="af-session-report-label">Latest full snapshot in this view</p>
+      {report.server.truncated && (
+        <p class="af-session-note">Server name truncated</p>
+      )}
+      {report.tool.truncated && (
+        <p class="af-session-note">Tool name truncated</p>
+      )}
+      {json("Arguments", report.arguments)}
+      {report.result === null ? (
+        <p class="af-session-note">
+          Result not reported (native result was null).
+        </p>
+      ) : (
+        <>
+          {json("Result content", report.result.content)}
+          {report.result.structuredContent === null ? (
+            <p class="af-session-note">Structured content not reported</p>
+          ) : (
+            json("Structured content", report.result.structuredContent)
+          )}
+        </>
+      )}
+      {report.error === null ? (
+        <p class="af-session-note">No error reported</p>
+      ) : report.error.text ? (
+        text("Reported error text", report.error)
+      ) : report.error.truncated ? (
+        <p class="af-session-note">
+          Error text truncated before any content was retained
+        </p>
+      ) : (
+        <p class="af-session-note">Reported error text was empty</p>
+      )}
+      {report.durationMs === null ? (
+        <p class="af-session-note">Duration not reported</p>
+      ) : (
+        <p class="af-session-note">Reported duration: {report.durationMs} ms</p>
+      )}
+      <p class="af-session-note">
+        {report.closure === "turn-ended"
+          ? `Native turn reported ${report.turnStatus}. Item status is reported independently.`
+          : report.closure === "item-ended"
+            ? "Item report ended; native turn completion is not established by this report."
+            : "Item report is open; native turn completion is not established by this report."}
+      </p>
+      <p class="af-session-report-source">
+        Latest source: app-server {report.source} · codex {value.version} ·
+        Thread: {report.threadId} · Native turn: {report.turnId} · Item:{" "}
+        {report.itemId}
+      </p>
+      <p class="af-session-note">
+        Arguments, results and errors are supplied display text. This report
+        does not invoke tools or fetch resources.
       </p>
     </details>
   );
@@ -547,6 +619,7 @@ export function SessionActivity({ value }: { value: OwnedSessionTurn }) {
     value.activities.length +
     value.nativeCommands.length +
     value.nativeFileChanges.length +
+    value.nativeMcpToolCalls.length +
     value.nativeSummaries.length +
     (value.nativePlan ? 1 : 0);
   if (!count) return null;
@@ -558,6 +631,7 @@ export function SessionActivity({ value }: { value: OwnedSessionTurn }) {
       {value.activities.map(activity)}
       {value.nativeCommands.map(nativeCommand)}
       {value.nativeFileChanges.map(nativeFiles)}
+      {value.nativeMcpToolCalls.map(nativeMcpToolCall)}
       {value.nativeSummaries.map(nativeSummary)}
       {value.nativePlan && nativePlan(value.nativePlan)}
     </section>

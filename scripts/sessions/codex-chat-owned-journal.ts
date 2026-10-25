@@ -4,6 +4,7 @@ import type {
   CodexChatCommand,
   CodexChatEvent,
   CodexChatFileChange,
+  CodexChatMcpToolCall,
   CodexChatOutcome,
   CodexChatReasoningSummary,
   CodexChatTurnPlan,
@@ -14,6 +15,7 @@ import type {
 } from "../../types/codex-owned-chat";
 import type { CodexExecUsage } from "../../types/codex-task";
 import {
+  reportedJsonSchema,
   reportedTextSchema,
   SESSION_ACTIVITY_LIMITS,
 } from "./activity-protocol";
@@ -130,6 +132,69 @@ export const codexChatFileChangeSchema = z
         SESSION_ACTIVITY_LIMITS.eventBytes
     );
   }) satisfies z.ZodType<CodexChatFileChange>;
+export const codexChatMcpToolCallSchema = z
+  .object({
+    kind: z.literal("mcp-tool-call"),
+    source: z.enum(["item/started", "item/completed", "turn/completed"]),
+    threadId: codexNativeUuidSchema,
+    turnId: codexNativeUuidSchema,
+    itemId: name.max(160),
+    server: reportedTextSchema,
+    tool: reportedTextSchema,
+    status: z.enum(["inProgress", "completed", "failed"]),
+    arguments: reportedJsonSchema,
+    result: z
+      .object({
+        content: reportedJsonSchema,
+        structuredContent: reportedJsonSchema.nullable(),
+      })
+      .strict()
+      .nullable(),
+    error: reportedTextSchema.nullable(),
+    durationMs: count.nullable(),
+    partial: z.boolean(),
+    closure: z.enum(["open", "item-ended", "turn-ended"]),
+    turnStatus: z.enum(["completed", "failed", "interrupted"]).nullable(),
+  })
+  .strict()
+  .refine((value) => {
+    const final = value.source === "turn/completed",
+      ended = value.source === "item/completed",
+      values = [
+        value.server,
+        value.tool,
+        value.arguments,
+        ...(value.result === null
+          ? []
+          : [
+              value.result.content,
+              ...(value.result.structuredContent === null
+                ? []
+                : [value.result.structuredContent]),
+            ]),
+        ...(value.error === null ? [] : [value.error]),
+      ];
+    return (
+      (final
+        ? value.closure === "turn-ended" && value.turnStatus !== null
+        : value.turnStatus === null &&
+          (ended
+            ? value.closure === "item-ended" && value.status !== "inProgress"
+            : value.closure === "open" && value.status === "inProgress")) &&
+      value.partial ===
+        (value.status === "inProgress" ||
+          (final && value.turnStatus !== "completed")) &&
+      values.reduce(
+        (total, part) =>
+          total +
+          new TextEncoder().encode("text" in part ? part.text : part.json)
+            .byteLength,
+        0,
+      ) <= SESSION_ACTIVITY_LIMITS.textBytes &&
+      new TextEncoder().encode(JSON.stringify(value)).byteLength <=
+        SESSION_ACTIVITY_LIMITS.eventBytes
+    );
+  }) satisfies z.ZodType<CodexChatMcpToolCall>;
 export const codexChatTurnPlanSchema = z
   .object({
     kind: z.literal("turn-plan"),
@@ -342,6 +407,7 @@ const nativeEvent = z.discriminatedUnion("kind", [
   codexChatCommandSchema,
   codexChatReasoningSummarySchema,
   codexChatTurnPlanSchema,
+  codexChatMcpToolCallSchema,
   z
     .object({
       kind: z.literal("process"),

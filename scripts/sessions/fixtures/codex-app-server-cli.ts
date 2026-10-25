@@ -215,6 +215,132 @@ const finishFileChanges = async (status = "completed") => {
   }
   await finish([main, ...others]);
 };
+const mcpMain = (status: "inProgress" | "completed" = "inProgress") => ({
+  type: "mcpToolCall",
+  id: "reported-mcp-main",
+  server: "fixture-mcp-server",
+  tool: "inspect_result",
+  status,
+  arguments: {
+    path: "FILE_MCP_MUST_NOT_CREATE.txt",
+    query: "<script>MCP_ARGUMENT_LITERAL</script>",
+  },
+  appContext: {
+    connectorId: "MCP_HINT_CONNECTOR_MUST_NOT_PERSIST",
+    linkId: null,
+    resourceUri: "file:///MCP_HINT_CONTEXT_RESOURCE_MUST_NOT_PERSIST",
+    appName: "MCP_HINT_APP_MUST_NOT_PERSIST",
+    actionName: "MCP_HINT_ACTION_MUST_NOT_PERSIST",
+  },
+  mcpAppResourceUri: "file:///MCP_HINT_LEGACY_RESOURCE_MUST_NOT_PERSIST",
+  mcpAppUi: {
+    resourceUri: "file:///MCP_HINT_UI_RESOURCE_MUST_NOT_PERSIST",
+    preferredModelDisplayMode: "inline",
+  },
+  pluginId: "MCP_HINT_PLUGIN_MUST_NOT_PERSIST",
+  readOnlyHint: true,
+  result:
+    status === "inProgress"
+      ? null
+      : {
+          content: [
+            {
+              type: "text",
+              text: "<img>MCP_RESULT_LITERAL</img>",
+            },
+          ],
+          structuredContent: { path: "file:///MCP_RESULT_URI_IS_LITERAL" },
+          _meta: { private: "MCP_META_MUST_NOT_PERSIST" },
+        },
+  error: null,
+  durationMs: status === "inProgress" ? null : 27,
+});
+const mcpOtherCalls = () => [
+  {
+    type: "mcpToolCall",
+    id: "reported-mcp-failed",
+    server: "fixture-mcp-server",
+    tool: "report_failure",
+    status: "failed",
+    arguments: { query: "failure is separate from an absent result" },
+    appContext: null,
+    mcpAppUi: null,
+    pluginId: null,
+    readOnlyHint: null,
+    result: null,
+    error: { message: "MCP_ERROR_TEXT_SENTINEL" },
+    durationMs: 0,
+  },
+  {
+    type: "mcpToolCall",
+    id: "reported-mcp-empty",
+    server: "fixture-mcp-server",
+    tool: "report_empty",
+    status: "completed",
+    arguments: null,
+    appContext: null,
+    mcpAppUi: null,
+    pluginId: null,
+    readOnlyHint: null,
+    result: { content: [], structuredContent: null, _meta: null },
+    error: null,
+    durationMs: null,
+  },
+  {
+    type: "mcpToolCall",
+    id: "reported-mcp-clipped",
+    server: "fixture-mcp-server",
+    tool: "report_clipped",
+    status: "completed",
+    arguments: { query: "x".repeat(40_000) },
+    appContext: null,
+    mcpAppUi: null,
+    pluginId: null,
+    readOnlyHint: null,
+    result: null,
+    error: null,
+    durationMs: null,
+  },
+];
+const finishMcpToolCalls = async () => {
+  const scope = { threadId, turnId },
+    started = mcpMain(),
+    completed = mcpMain("completed"),
+    others = mcpOtherCalls();
+  await send({ method: "item/started", params: { ...scope, item: started } });
+  await send({ method: "item/started", params: { ...scope, item: started } });
+  await send({
+    method: "item/completed",
+    params: { ...scope, item: completed },
+  });
+  for (const item of others)
+    await send({ method: "item/completed", params: { ...scope, item } });
+  await finish([completed, ...others]);
+};
+const mcpCallPrefix = async () => {
+  const scope = { threadId, turnId },
+    started = mcpMain(),
+    completed = mcpMain("completed"),
+    open = {
+      ...mcpMain(),
+      id: "reported-mcp-open",
+      tool: "inspect_while_turn_is_open",
+      arguments: { query: "y".repeat(40_000) },
+    };
+  await send({ method: "item/started", params: { ...scope, item: started } });
+  await send({
+    method: "item/completed",
+    params: { ...scope, item: completed },
+  });
+  await send({ method: "item/started", params: { ...scope, item: open } });
+  record({
+    kind: "mcp-prefix-published",
+    threadId,
+    turnId,
+    itemIds: [started.id, open.id],
+    count: 3,
+  });
+};
 const reader = Bun.stdin.stream().getReader(),
   decoder = new TextDecoder();
 let pending = "";
@@ -386,6 +512,11 @@ while (true) {
         hangTree();
         await finish();
         record({ kind: "terminal-published", threadId, turnId });
+      } else if (mode === "mcp-tool-calls") {
+        await finishMcpToolCalls();
+      } else if (mode === "mcp-tool-calls-held") {
+        await mcpCallPrefix();
+        hangTree();
       } else if (mode?.startsWith("file-changes")) {
         await fileChangePrefix();
         if (mode === "file-changes-held") hangTree();

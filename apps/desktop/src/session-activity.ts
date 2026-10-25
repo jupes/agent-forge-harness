@@ -17,6 +17,10 @@ import {
   nativeChatFileChanges,
 } from "./native-chat-file-changes";
 import {
+  type NativeChatMcpToolCallReport,
+  nativeChatMcpToolCalls,
+} from "./native-chat-mcp-tool-calls";
+import {
   type NativeChatReasoningReport,
   nativeChatReasoningSummaries,
 } from "./native-chat-reasoning";
@@ -38,6 +42,7 @@ export interface OwnedSessionTurn {
   activities: CodingActivityEvent[];
   nativeCommands: NativeChatCommandReport[];
   nativeFileChanges: NativeChatFileChangeReport[];
+  nativeMcpToolCalls: NativeChatMcpToolCallReport[];
   nativeSummaries: NativeChatReasoningReport[];
   nativePlan: NativeChatTurnPlanReport | null;
   usage: ClaudeCodingUsageEvent | CodexCodingUsageEvent | null;
@@ -57,6 +62,7 @@ export function ownedSessionTurn(
     activities: [],
     nativeCommands: [],
     nativeFileChanges: nativeChatFileChanges(page, turnId),
+    nativeMcpToolCalls: nativeChatMcpToolCalls(page, turnId),
     nativeSummaries: nativeChatReasoningSummaries(page, turnId),
     nativePlan: nativeChatTurnPlan(page, turnId),
     usage: null,
