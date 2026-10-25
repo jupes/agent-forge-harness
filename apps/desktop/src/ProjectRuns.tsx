@@ -1,4 +1,4 @@
-import { useEffect, useState } from "preact/hooks";
+import { useLayoutEffect, useState } from "preact/hooks";
 import { Button } from "../../../docs/js/ds/Button";
 import type {
   ProjectRunDetail,
@@ -74,7 +74,7 @@ export function ProjectRuns({
   const { view, client } = controller;
   const filterKey = JSON.stringify(filters);
   const [draft, setDraft] = useState(filters ?? emptyRunFilters());
-  useEffect(() => {
+  useLayoutEffect(() => {
     setDraft(filters ?? emptyRunFilters());
   }, [filterKey]);
   const selected = view?.selectedSlug ?? null;
