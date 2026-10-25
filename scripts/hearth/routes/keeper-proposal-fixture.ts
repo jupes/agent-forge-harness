@@ -36,6 +36,7 @@ export async function seedKeeperProposalSource(
       },
     },
   ],
+  sourceRequestId = FIXTURE_KEEPER_PROPOSAL_SOURCE,
 ) {
   writeOwnerOnly(
     projectCatalogPath(h.home),
@@ -76,52 +77,34 @@ export async function seedKeeperProposalSource(
     await Bun.sleep(5);
     state = store.read(FIXTURE_PROJECT_ID);
   }
-  if (
-    !state.turns.some(
-      (turn) => turn.requestId === FIXTURE_KEEPER_PROPOSAL_SOURCE,
-    )
-  ) {
+  if (!state.turns.some((turn) => turn.requestId === sourceRequestId)) {
     const owner = randomUUID();
     await store.accept(FIXTURE_PROJECT_ID, {
-      requestId: FIXTURE_KEEPER_PROPOSAL_SOURCE,
+      requestId: sourceRequestId,
       expectedRevision: state.revision,
       text: "Propose decisions",
       about: [],
     });
-    await store.start(
-      FIXTURE_PROJECT_ID,
-      FIXTURE_KEEPER_PROPOSAL_SOURCE,
-      owner,
-    );
-    await store.append(
-      FIXTURE_PROJECT_ID,
-      FIXTURE_KEEPER_PROPOSAL_SOURCE,
-      owner,
-      {
-        kind: "identity",
-        ...(state.binding ?? {
-          provider: "claude",
-          sessionId: randomUUID(),
-          version: "fixture",
-        }),
-      },
-    );
-    await store.append(
-      FIXTURE_PROJECT_ID,
-      FIXTURE_KEEPER_PROPOSAL_SOURCE,
-      owner,
-      {
-        kind: "text",
-        text: JSON.stringify({
-          kind: "keeper.proposals.v1",
-          message: "These are suggestions only.",
-          proposals: drafts,
-        }),
-      },
-    );
+    await store.start(FIXTURE_PROJECT_ID, sourceRequestId, owner);
+    await store.append(FIXTURE_PROJECT_ID, sourceRequestId, owner, {
+      kind: "identity",
+      ...(state.binding ?? {
+        provider: "claude",
+        sessionId: randomUUID(),
+        version: "fixture",
+      }),
+    });
+    await store.append(FIXTURE_PROJECT_ID, sourceRequestId, owner, {
+      kind: "text",
+      text: JSON.stringify({
+        kind: "keeper.proposals.v1",
+        message: "These are suggestions only.",
+        proposals: drafts,
+      }),
+    });
     await store.finish(
       FIXTURE_PROJECT_ID,
-      FIXTURE_KEEPER_PROPOSAL_SOURCE,
+      sourceRequestId,
       owner,
       "completed",
       null,
