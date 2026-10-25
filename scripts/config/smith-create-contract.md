@@ -47,7 +47,9 @@ scope metadata in browser storage, then checks the same protected original on
 startup. Confirmed and refused receipts remain inspectable. A missing,
 malformed, generic 404/503, or held server response remains held and offers
 only an explicit check of that original UUID; it never triggers a resend or
-replacement identity. Browser persistence is guarded by a shared origin lock.
+replacement identity. Browser metadata is scoped to the trusted current
+workspace, and browser storage remains subject to the browser's origin
+partitioning.
 
 ## Review and historical response
 

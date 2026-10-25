@@ -222,10 +222,10 @@ export function Smiths({
         <SmithCreateFormView
           state={creates.state}
           canWrite={creates.canWrite}
-          canStart={creates.client.canStart()}
-          onDraft={(target, smith) => creates.client.setDraft(target, smith)}
-          onPreview={() => void creates.client.preview()}
-          onCreate={() => void creates.client.create()}
+          canStart={creates.client?.canStart() ?? false}
+          onDraft={(target, smith) => creates.client?.setDraft(target, smith)}
+          onPreview={() => void creates.client?.preview()}
+          onCreate={() => void creates.client?.create()}
         />
       </Dialog>
       <div class="af-smith-filters">
@@ -266,7 +266,7 @@ export function Smiths({
       <SmithCreateReceiptsView
         entries={creates.state.entries}
         canWrite={creates.canWrite}
-        onCheck={(requestId) => void creates.client.check(requestId)}
+        onCheck={(requestId) => void creates.client?.check(requestId)}
       />
       <section
         aria-label="Saved smith configuration"

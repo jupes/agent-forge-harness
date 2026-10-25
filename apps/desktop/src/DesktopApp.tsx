@@ -104,7 +104,10 @@ export function DesktopApp(): JSX.Element {
     selectedActivityId,
   );
   const writesAllowed = recovery?.connection.writesAllowed ?? false;
-  const smithCreates = useSmithCreate(writesAllowed);
+  const smithCreates = useSmithCreate(
+    writesAllowed,
+    providers.data?.workspace ?? null,
+  );
   const runFilters =
     route.destination === "runs"
       ? parseRunFilters(window.location.hash)
