@@ -254,7 +254,7 @@ test("audit refusal prevents preview and create service effects", async () => {
   expect(existsSync(join(h.root, "agent-forge.toml"))).toBe(false);
 });
 
-test("unusable captured selectors hold Smith routes without blocking Hearth startup", async () => {
+test("an unusable current config source blocks preview but not original lookup or Hearth reads", async () => {
   const h = await startTestHearth({
     api: { configHome: import.meta.path },
   });
@@ -263,14 +263,19 @@ test("unusable captured selectors hold Smith routes without blocking Hearth star
     headers: h.headers(h.hearth.token),
   });
   expect(unrelated.status).toBe(200);
+  const preview = await post(h, "/config/smiths/preview", {
+    target: "workspace",
+    smith,
+  });
+  expect(preview.status).toBe(503);
   const response = await fetch(`${h.api}/smiths/creates/${randomUUID()}`, {
     headers: h.headers(h.hearth.token),
   });
-  expect(response.status).toBe(503);
+  expect(response.status).toBe(404);
   expect(await response.json()).toEqual({
     ok: false,
     data: null,
-    error: "The saved Smith create original is unavailable.",
+    error: "No saved Smith create original exists.",
   });
   expect(existsSync(join(h.home, "smith-create-journal"))).toBe(false);
 });
