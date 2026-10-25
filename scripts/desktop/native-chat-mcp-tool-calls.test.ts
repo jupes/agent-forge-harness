@@ -140,7 +140,7 @@ test("native MCP projection keeps null, explicit empty, truncation and omitted J
   expect(textOf(view)).toContain("[]");
   expect(textOf(view)).toContain("null");
   expect(textOf(view)).toContain("Structured content not reported");
-  expect(textOf(view)).toContain("No error text retained");
+  expect(textOf(view)).toContain("Reported error text was empty");
   expect(textOf(view)).toContain("0 ms");
   expect(textOf(view)).toContain("Reported failed");
 
@@ -163,6 +163,24 @@ test("native MCP projection keeps null, explicit empty, truncation and omitted J
   );
   expect(textOf(clippedView)).toContain("Reported error text truncated");
   expect(textOf(clippedView)).not.toContain("[]");
+
+  const zeroRetainedError = SessionActivity({
+    value: ownedSessionTurn(
+      page([
+        event({
+          ...explicitEmpty,
+          error: { text: "", truncated: true },
+        }),
+      ]),
+      appTurn,
+    ),
+  });
+  expect(textOf(zeroRetainedError)).toContain(
+    "Error text truncated before any content was retained",
+  );
+  expect(textOf(zeroRetainedError)).not.toContain(
+    "Reported error text was empty",
+  );
 });
 
 test("native MCP projection cannot borrow another application turn, binding, version or native turn", () => {

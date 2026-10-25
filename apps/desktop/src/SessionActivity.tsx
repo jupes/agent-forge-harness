@@ -162,8 +162,12 @@ function nativeMcpToolCall(value: NativeChatMcpToolCallReport) {
         <p class="af-session-note">No error reported</p>
       ) : report.error.text ? (
         text("Reported error text", report.error)
+      ) : report.error.truncated ? (
+        <p class="af-session-note">
+          Error text truncated before any content was retained
+        </p>
       ) : (
-        <p class="af-session-note">No error text retained</p>
+        <p class="af-session-note">Reported error text was empty</p>
       )}
       {report.durationMs === null ? (
         <p class="af-session-note">Duration not reported</p>
