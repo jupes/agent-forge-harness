@@ -480,6 +480,246 @@ test("private native MCP snapshots reload as collapsed, literal, inert reports",
   expect(inspectionPosts).toEqual([]);
 });
 
+test("native Chat web-search reports retain literal snapshots through export and reload without retrying the turn", async ({
+  page,
+}) => {
+  mode("web-search");
+  await page.setViewportSize({ width: 1100, height: 700 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  const starts = calls().filter(
+      (row) => row.kind === "rpc" && row.method === "turn/start",
+    ).length,
+    { pane, record } = await startedChat(page);
+  await expect.poll(() => saved(record.id).turns[0]?.phase).toBe("completed");
+  const inspectionPosts: string[] = [],
+    onInspectionRequest = (request: Request) => {
+      if (request.method() === "POST") inspectionPosts.push(request.url());
+    };
+  page.on("request", onInspectionRequest);
+  try {
+    const before = saved(record.id),
+      serialized = JSON.stringify(before.frames),
+      reports = before.frames.filter(
+        (frame) =>
+          frame.event.kind === "coding-chat" &&
+          frame.event.event.kind === "web-search",
+      );
+    expect(reports).toHaveLength(12);
+    expect(serialized).not.toContain("WEB_SEARCH_HINT_");
+    expect(serialized).not.toContain("WEB_SEARCH_META_");
+
+    const activity = pane.getByRole("region", {
+        name: "Reported session activity",
+        exact: true,
+      }),
+      searches = activity.locator("details").filter({
+        has: page.locator("summary", { hasText: /^Web search/ }),
+      }),
+      main = searches.filter({ hasText: "Item: reported-web-search-main" });
+    await expect(activity).toBeVisible();
+    await expect(searches).toHaveCount(4);
+    await expect(main).not.toHaveAttribute("open", "");
+    const summary = main.locator("summary");
+    await summary.focus();
+    await page.keyboard.press("Tab");
+    await page.keyboard.press("Shift+Tab");
+    await expect(summary).toBeFocused();
+    await expect(summary).toHaveCSS("outline-width", "2px");
+    await page.keyboard.press("Enter");
+    await expect(main).toContainText("WEB_SEARCH_QUERY_LITERAL");
+    await expect(main).toContainText("WEB_SEARCH_ACTION_QUERY_LITERAL");
+    await expect(main).toContainText("WEB_SEARCH_RESULT_LITERAL");
+    await expect(main).toContainText("WEB_SEARCH_URL_IS_LITERAL");
+    await expect(main).toContainText("Reported closure: turn-ended");
+    await expect(main).toContainText("Native turn reported completed");
+    const result = main.getByRole("region", {
+      name: "Reported results report",
+      exact: true,
+    });
+    await result.focus();
+    await expect(result).toBeFocused();
+    await expect(result).toHaveCSS("outline-width", "2px");
+
+    const empty = searches.filter({
+        hasText: "Item: reported-web-search-empty",
+      }),
+      absent = searches.filter({
+        hasText: "Item: reported-web-search-absent",
+      }),
+      clipped = searches.filter({
+        hasText: "Item: reported-web-search-clipped",
+      });
+    await expect(empty).toContainText("Empty query text reported");
+    await expect(empty).toContainText("[]");
+    await expect(empty).toContainText("Action not reported");
+    await expect(absent).toContainText("Results not reported");
+    await expect(absent).toContainText("Action not reported");
+    await expect(clipped).toContainText("Reported query truncated");
+    await expect(clipped).toContainText("Reported results truncated");
+    await expect(
+      activity.locator("a, img, script, iframe, button, form"),
+    ).toHaveCount(0);
+
+    const beforeExport = saved(record.id).frames;
+    expect(beforeExport).toEqual(before.frames);
+    await pane
+      .getByRole("button", { name: "Session actions", exact: true })
+      .click();
+    const download = page.waitForEvent("download");
+    await page
+      .getByRole("dialog", { name: "Session actions", exact: true })
+      .getByRole("button", { name: "Export saved transcript", exact: true })
+      .click();
+    const path = await (await download).path();
+    if (!path) throw Error("No complete private WebSearch transcript download");
+    const exported = sessionTranscriptExportSchema.parse(
+      JSON.parse(readFileSync(path, "utf8")),
+    ).conversation;
+    expect(exported.frames).toEqual(beforeExport);
+
+    await reloadSettled(page);
+    await expect(page.locator("[data-session-state]")).toHaveAttribute(
+      "data-session-state",
+      "idle",
+    );
+    expect(saved(record.id).frames).toEqual(beforeExport);
+    const reopened = page
+      .getByRole("region", { name: "Reported session activity", exact: true })
+      .locator("details")
+      .filter({ has: page.locator("summary", { hasText: /^Web search/ }) });
+    await expect(reopened).toHaveCount(4);
+    for (const disclosure of await reopened.all())
+      await expect(disclosure).not.toHaveAttribute("open", "");
+    expect(
+      calls().filter(
+        (row) => row.kind === "rpc" && row.method === "turn/start",
+      ),
+    ).toHaveLength(starts + 1);
+    if (process.env.CODEX_CHAT_WEB_SEARCH_SHOTS) {
+      const screenshotMain = reopened.filter({
+        hasText: "Item: reported-web-search-main",
+      });
+      await screenshotMain.locator("summary").press("Enter");
+      await expect(screenshotMain).toContainText("WEB_SEARCH_RESULT_LITERAL");
+      const viewport = page.viewportSize();
+      try {
+        await page.setViewportSize({ width: 1280, height: 900 });
+        await screenshotMain.scrollIntoViewIfNeeded();
+        await screenshotMain.screenshot({
+          path: join(
+            process.env.CODEX_CHAT_WEB_SEARCH_SHOTS,
+            "native-chat-web-search.png",
+          ),
+          mask: [screenshotMain.locator(".af-session-report-source")],
+          maskColor: "#1c1d24",
+        });
+      } finally {
+        if (viewport) await page.setViewportSize(viewport);
+        if ((await screenshotMain.getAttribute("open")) !== null)
+          await screenshotMain.locator("summary").press("Enter");
+      }
+    }
+  } finally {
+    page.off("request", onInspectionRequest);
+  }
+  expect(inspectionPosts).toEqual([]);
+});
+
+test("actual Stop preserves a partial native WebSearch snapshot without inventing turn completion", async ({
+  page,
+}) => {
+  mode("web-search-held");
+  await page.setViewportSize({ width: 1100, height: 700 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  const starts = calls().filter(
+      (row) => row.kind === "rpc" && row.method === "turn/start",
+    ).length,
+    answers = calls().filter((row) => row.kind === "answer").length,
+    callMark = calls().length,
+    { pane, record } = await startedChat(page),
+    activity = pane.getByRole("region", {
+      name: "Reported session activity",
+      exact: true,
+    }),
+    report = activity
+      .locator("details")
+      .filter({ hasText: "Item: reported-web-search-main" });
+  await expect
+    .poll(() =>
+      saved(record.id).frames.filter(
+        (frame) =>
+          frame.event.kind === "coding-chat" &&
+          frame.event.event.kind === "web-search",
+      ),
+    )
+    .toHaveLength(1);
+  await expect
+    .poll(
+      () =>
+        calls()
+          .slice(callMark)
+          .filter((row) => row.kind === "tree").length,
+    )
+    .toBe(1);
+  await report.locator("summary").click();
+  await expect(report.locator("summary")).toContainText("Partial report");
+  await expect(report).toContainText("WEB_SEARCH_QUERY_LITERAL");
+  await expect(report).toContainText("Reported closure: open");
+  await expect(report).not.toContainText("Native turn reported");
+  await expect(
+    activity.locator("a, img, script, iframe, button, form"),
+  ).toHaveCount(0);
+  const stop = pane.getByRole("button", { name: "Stop session", exact: true });
+  await stop.focus();
+  await page.keyboard.press("Tab");
+  await page.keyboard.press("Shift+Tab");
+  await expect(stop).toBeFocused();
+  await expect(stop).toHaveCSS("outline-width", "2px");
+  await page.keyboard.press("Enter");
+  await expect.poll(() => saved(record.id).turns[0]?.phase).toBe("cancelled");
+  await expect(pane.locator("[data-session-state]")).toHaveAttribute(
+    "data-session-state",
+    "stopped",
+  );
+  const final = saved(record.id),
+    tree = calls()
+      .slice(callMark)
+      .find((row) => row.kind === "tree");
+  expect(
+    final.frames.filter(
+      (frame) =>
+        frame.event.kind === "coding-chat" &&
+        frame.event.event.kind === "web-search",
+    ),
+  ).toHaveLength(1);
+  for (const pid of [tree?.pid, tree?.childPid]) {
+    if (typeof pid !== "number")
+      throw Error("Missing witnessed stopped WebSearch process PID");
+    let alive = false;
+    try {
+      const zombie =
+        process.platform === "linux" &&
+        /\) Z(?: |$)/.test(readFileSync(`/proc/${pid}/stat`, "utf8"));
+      if (!zombie) {
+        process.kill(pid, 0);
+        alive = true;
+      }
+    } catch {
+      /* No live owned process. */
+    }
+    expect(alive).toBe(false);
+  }
+  await reloadSettled(page);
+  await report.locator("summary").click();
+  await expect(report).toContainText("Partial report");
+  await expect(report).not.toContainText("Native turn reported");
+  expect(saved(record.id).frames).toEqual(final.frames);
+  expect(
+    calls().filter((row) => row.kind === "rpc" && row.method === "turn/start"),
+  ).toHaveLength(starts + 1);
+  expect(calls().filter((row) => row.kind === "answer")).toHaveLength(answers);
+});
+
 test("actual Stop retains the exact intended private native file snapshots and ends the provider/helper without inventing completion", async ({
   page,
 }) => {
