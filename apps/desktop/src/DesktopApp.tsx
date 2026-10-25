@@ -59,6 +59,7 @@ import { useProviders } from "./use-providers";
 import { useSessionLibrary } from "./use-session-library";
 import { useSessionObservations } from "./use-session-observations";
 import { useSessions } from "./use-sessions";
+import { useSmithCreate } from "./use-smith-create";
 import { useSmiths } from "./use-smiths";
 import { useWorkbench } from "./use-workbench";
 
@@ -103,6 +104,7 @@ export function DesktopApp(): JSX.Element {
     selectedActivityId,
   );
   const writesAllowed = recovery?.connection.writesAllowed ?? false;
+  const smithCreates = useSmithCreate(writesAllowed);
   const runFilters =
     route.destination === "runs"
       ? parseRunFilters(window.location.hash)
@@ -737,6 +739,7 @@ export function DesktopApp(): JSX.Element {
         ) : route.destination === "smiths" ? (
           <Smiths
             controller={smiths}
+            creates={smithCreates}
             workspace={providers.data?.workspace ?? null}
           />
         ) : route.destination === "inbox" ? (

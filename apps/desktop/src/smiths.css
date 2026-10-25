@@ -203,6 +203,88 @@
 .af-smith-verification-text {
   white-space: pre-wrap;
 }
+.af-smith-create-dialog {
+  width: min(760px, calc(100vw - 32px));
+}
+.af-smith-create {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+.af-smith-create > label {
+  display: grid;
+  gap: 5px;
+  font-size: 12px;
+}
+.af-smith-create input:not([type="checkbox"]),
+.af-smith-create select,
+.af-smith-create textarea {
+  min-height: 32px;
+  width: 100%;
+  background: var(--color-surface);
+  color: var(--color-text);
+  border: 1px solid var(--color-divider);
+  border-radius: 4px;
+  padding: 6px 8px;
+  font: inherit;
+}
+.af-smith-create-enabled {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.af-smith-create-actions {
+  display: flex;
+  justify-content: end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.af-smith-create-review,
+.af-smith-create-receipts article {
+  border: 1px solid var(--color-divider);
+  border-radius: 6px;
+  padding: 12px;
+  min-width: 0;
+}
+.af-smith-create-review h3,
+.af-smith-create-receipts h3 {
+  margin: 0 0 10px;
+}
+.af-smiths .af-smith-create-review dl,
+.af-smiths .af-smith-create-receipts dl {
+  display: grid;
+  grid-template-columns: minmax(120px, 0.8fr) minmax(0, 1.8fr);
+  gap: 6px 12px;
+  margin: 0;
+}
+.af-smiths .af-smith-create-review dt,
+.af-smiths .af-smith-create-receipts dt {
+  color: var(--color-neutral-400);
+}
+.af-smiths .af-smith-create-review dd,
+.af-smiths .af-smith-create-receipts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.af-smith-create-receipts {
+  display: grid;
+  gap: 10px;
+}
+.af-smith-create-receipts article {
+  display: grid;
+  gap: 8px;
+}
+@media (max-width: 700px) {
+  .af-smiths .af-smith-create-review dl,
+  .af-smiths .af-smith-create-receipts dl {
+    grid-template-columns: 1fr;
+    gap: 2px;
+  }
+  .af-smiths .af-smith-create-review dd,
+  .af-smiths .af-smith-create-receipts dd {
+    margin-bottom: 8px;
+  }
+}
 @media (max-width: 1200px) {
   .af-smith-benches {
     grid-template-columns: 1fr;

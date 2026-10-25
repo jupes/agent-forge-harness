@@ -6,6 +6,7 @@ import {
 } from "../../apps/desktop/src/smith-create-client";
 import {
   createSmithCreateIdentities,
+  SMITH_CREATE_IDENTITIES,
   smithConfigCreateInputHash,
 } from "../../apps/desktop/src/smith-create-identities";
 import type {
@@ -319,6 +320,37 @@ test("NotSent is distinct and never turns a later generic response into a refusa
   );
   expect(value.posted).toHaveLength(1);
   value.client.dispose();
+});
+
+test("unreadable identity metadata fails closed before review or create", async () => {
+  const storage = new Map([[SMITH_CREATE_IDENTITIES, "not-json"]]);
+  const identities = createSmithCreateIdentities({
+    scope,
+    storage: {
+      getItem(key) {
+        return storage.get(key) ?? null;
+      },
+      setItem(key, value) {
+        storage.set(key, value);
+      },
+    },
+    withLock: async (work) => work(),
+  });
+  const client = createSmithConfigCreateClient({
+    identities,
+    canWrite: () => true,
+    requestId: () => ids[0]!,
+    preview: async () => preview({ target: "workspace", smith }),
+    post: async () => ({ state: "unknown", message: "must not post" }),
+    readOriginal: async () => null,
+  });
+
+  expect(client.canStart()).toBe(false);
+  await client.preview();
+  await client.create();
+  expect(client.get().preview).toBeNull();
+  expect(client.get().notice).toContain("could not be verified");
+  client.dispose();
 });
 
 test("the renderer create dependency graph bundles for a browser without server journal or Node filesystem modules", async () => {

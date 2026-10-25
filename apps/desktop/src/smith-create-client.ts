@@ -163,6 +163,9 @@ export function createSmithConfigCreateClient(deps: {
     get(): SmithCreateClientState {
       return structuredClone(state);
     },
+    canStart(): boolean {
+      return !disposed && canStart();
+    },
     subscribe(listener: () => void) {
       listeners.add(listener);
       return () => listeners.delete(listener);
@@ -181,14 +184,15 @@ export function createSmithConfigCreateClient(deps: {
       emit();
     },
     async preview() {
-      if (
-        disposed ||
-        state.previewing ||
-        state.creating ||
-        !canStart() ||
-        !deps.canWrite()
-      )
+      if (disposed || state.previewing || state.creating || !deps.canWrite())
         return;
+      if (!canStart()) {
+        state.preview = null;
+        state.notice =
+          "Saved Smith create identities could not be verified. No new request can start.";
+        emit();
+        return;
+      }
       const checked = smithConfigPreviewRequestSchema.safeParse({
         target: state.target,
         smith: state.smith,
