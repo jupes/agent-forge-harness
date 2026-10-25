@@ -131,6 +131,13 @@ export const smithConfigPreviewSchema = z
   ) satisfies z.ZodType<SmithConfigPreview>;
 
 const nullablePreview = smithConfigPreviewSchema.nullable();
+export const smithConfigCreateRefusalSchema = z.enum([
+  "stale-revision",
+  "invalid-candidate",
+  "source-unavailable",
+  "cancelled-before-attempt",
+  "write-refused-before-attempt",
+]);
 const result = z.discriminatedUnion("phase", [
   z
     .object({
@@ -157,13 +164,7 @@ const result = z.discriminatedUnion("phase", [
     .object({
       phase: z.literal("refused"),
       refusedAt: z.iso.datetime(),
-      reason: z.enum([
-        "stale-revision",
-        "invalid-candidate",
-        "source-unavailable",
-        "cancelled-before-attempt",
-        "write-refused-before-attempt",
-      ]),
+      reason: smithConfigCreateRefusalSchema,
       preview: nullablePreview,
     })
     .strict(),
