@@ -187,6 +187,56 @@ interface FileChangePageTools<Socket extends EventTarget> {
   screenshot(socket: Socket, name: string): Promise<unknown>;
 }
 
+export function hasVisibleNativePatchFocus(facts: {
+  activeIsPre: unknown;
+  focusVisible: unknown;
+  outlineStyle: unknown;
+  specifiedCssPx: unknown;
+  outlineWidthCssPx: unknown;
+  dpr: unknown;
+}): boolean {
+  const width = facts.outlineWidthCssPx,
+    dpr = facts.dpr;
+  return (
+    facts.activeIsPre === true &&
+    facts.focusVisible === true &&
+    facts.outlineStyle === "solid" &&
+    facts.specifiedCssPx === 2 &&
+    typeof width === "number" &&
+    Number.isFinite(width) &&
+    width > 0 &&
+    typeof dpr === "number" &&
+    Number.isFinite(dpr) &&
+    dpr > 0 &&
+    Math.abs(width - 2) * dpr < 1
+  );
+}
+
+function boundedFocusFacts(value: unknown) {
+  if (!value || typeof value !== "object") return { available: false as const };
+  const facts = value as Record<string, unknown>;
+  const shortString = (input: unknown) =>
+    typeof input === "string" ? input.slice(0, 32) : null;
+  const finiteNumber = (input: unknown) =>
+    typeof input === "number" && Number.isFinite(input) ? input : null;
+  const boolean = (input: unknown) =>
+    typeof input === "boolean" ? input : null;
+  return {
+    available: true as const,
+    reportFound: boolean(facts["reportFound"]),
+    preFound: boolean(facts["preFound"]),
+    preConnected: boolean(facts["preConnected"]),
+    activeIsPre: boolean(facts["activeIsPre"]),
+    activeTag: shortString(facts["activeTag"]),
+    focusVisible: boolean(facts["focusVisible"]),
+    outlineWidth: shortString(facts["outlineWidth"]),
+    outlineWidthCssPx: finiteNumber(facts["outlineWidthCssPx"]),
+    outlineStyle: shortString(facts["outlineStyle"]),
+    specifiedCssPx: finiteNumber(facts["specifiedCssPx"]),
+    dpr: finiteNumber(facts["dpr"]),
+  };
+}
+
 /** Inspect saved fixture bytes in the actual packaged WebView; never dispatch a provider or touch a reported path. */
 export async function verifyNativeFileChanges<Socket extends EventTarget>(
   socket: Socket,
@@ -250,11 +300,27 @@ export async function verifyNativeFileChanges<Socket extends EventTarget>(
     );
     await tools.evaluate(socket, `${report}.querySelector('summary').focus()`);
     await tools.pressTab(socket);
-    await tools.waitForPage(
-      socket,
-      `(() => { const p=${report}.querySelector('pre'); return document.activeElement===p && getComputedStyle(p).outlineWidth==='2px'; })()`,
-      "The packaged native patch region did not support visible keyboard focus.",
-    );
+    try {
+      const focusPredicate = hasVisibleNativePatchFocus.toString();
+      await tools.waitForPage(
+        socket,
+        `(() => {const d=${report},p=d?.querySelector('pre'),style=p?getComputedStyle(p):null;let specified=null;try{for(const sheet of document.styleSheets)for(const rule of sheet.cssRules??[])if(rule.selectorText===':focus-visible'){const value=Number.parseFloat(rule.style.getPropertyValue('outline-width')||rule.style.getPropertyValue('outline'));if(Number.isFinite(value))specified=value;}}catch{}const width=style?Number.parseFloat(style.outlineWidth):NaN,dpr=devicePixelRatio,proof=${focusPredicate};return proof({activeIsPre:document.activeElement===p,focusVisible:p?.matches(':focus-visible')===true,outlineStyle:style?.outlineStyle,specifiedCssPx:specified,outlineWidthCssPx:width,dpr});})()`,
+        "The packaged native patch region did not support visible keyboard focus.",
+      );
+    } catch (error) {
+      const diagnostic = await tools
+        .evaluate(
+          socket,
+          `(() => {const d=${report},p=d?.querySelector('pre'),style=p?getComputedStyle(p):null;let specifiedCssPx=null;try{for(const sheet of document.styleSheets)for(const rule of sheet.cssRules??[])if(rule.selectorText===':focus-visible'){const value=Number.parseFloat(rule.style.getPropertyValue('outline-width')||rule.style.getPropertyValue('outline'));if(Number.isFinite(value))specifiedCssPx=value;}}catch{}const width=style?Number.parseFloat(style.outlineWidth):NaN;return {reportFound:!!d,preFound:!!p,preConnected:p?.isConnected??null,activeIsPre:document.activeElement===p,activeTag:document.activeElement?.tagName??null,focusVisible:p?.matches(':focus-visible')??null,outlineWidth:style?.outlineWidth??null,outlineWidthCssPx:Number.isFinite(width)?width:null,outlineStyle:style?.outlineStyle??null,specifiedCssPx,dpr:devicePixelRatio};})()`,
+        )
+        .catch(() => null);
+      const facts = boundedFocusFacts(diagnostic);
+      const reason =
+        error instanceof Error
+          ? error.message.slice(0, 240)
+          : "The focus assertion did not complete.";
+      throw Error(`${reason} Bounded focus facts: ${JSON.stringify(facts)}`);
+    }
     if (posts) throw Error("The native file inspection sent a POST.");
     if (!readFileSync(file).equals(before))
       throw Error(
