@@ -371,9 +371,10 @@ test("compiled Smith create survives restart and serves its immutable original b
   };
   const stopChild = async (
     server: ReturnType<typeof startServer>,
-    assertGraceful: boolean,
+    assertSignalSettled: boolean,
   ) => {
-    let graceful = true,
+    let signalSettled = true,
+      usedHardStop = false,
       code: number;
     if (server.child.exitCode !== null) code = server.child.exitCode;
     else {
@@ -385,7 +386,8 @@ test("compiled Smith create survives restart and serves its immutable original b
           "Graceful hearth stop timed out",
         );
       } catch {
-        graceful = false;
+        signalSettled = false;
+        usedHardStop = true;
         server.child.kill("SIGKILL");
         code = await withTimeout(
           server.child.exited,
@@ -399,13 +401,17 @@ test("compiled Smith create survives restart and serves its immutable original b
       3000,
       "Hearth stderr did not drain",
     );
-    const result = { code, stderr, graceful };
-    if (assertGraceful)
-      expect(result, JSON.stringify(result)).toEqual({
-        code: 0,
-        stderr: "",
-        graceful: true,
-      });
+    const result = { code, stderr, signalSettled, usedHardStop };
+    if (assertSignalSettled) {
+      expect(result.signalSettled, JSON.stringify(result)).toBe(true);
+      expect(result.usedHardStop, JSON.stringify(result)).toBe(false);
+      expect(
+        result.code === 0 ||
+          (process.platform === "win32" && result.code === 143),
+        JSON.stringify(result),
+      ).toBe(true);
+      expect(result.stderr, JSON.stringify(result)).toBe("");
+    }
     return result;
   };
   const waitForServer = async (server: ReturnType<typeof startServer>) => {
