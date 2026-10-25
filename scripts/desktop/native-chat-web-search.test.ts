@@ -4,6 +4,7 @@ import { nativeChatMcpToolCalls } from "../../apps/desktop/src/native-chat-mcp-t
 import { nativeChatReasoningSummaries } from "../../apps/desktop/src/native-chat-reasoning";
 import { nativeChatTurnPlan } from "../../apps/desktop/src/native-chat-turn-plan";
 import { nativeChatWebSearches } from "../../apps/desktop/src/native-chat-web-search";
+import { SessionActivity } from "../../apps/desktop/src/SessionActivity";
 import { ownedSessionTurn } from "../../apps/desktop/src/session-activity";
 import type {
   CodexChatEvent,
@@ -13,6 +14,7 @@ import type {
   ConversationEvent,
   ConversationPage,
 } from "../../types/conversation";
+import { attrs, findAll, textOf } from "../dashboard/ds/vnode";
 
 const threadId = "0199a213-81c0-7800-8aa1-bbab2a035a53",
   nativeTurn = "0199a213-81c0-7800-8aa1-bbab2a035a54",
@@ -355,4 +357,97 @@ test("native turn report closures fence stale sibling projections and retain mat
       appTurn,
     ),
   ).toEqual([{ version, report: searchFinal }]);
+});
+
+test("native web-search reports are collapsed, literal and inert with truthful null, empty and clipping facts", () => {
+  const final: CodexChatWebSearch = {
+      ...started,
+      source: "turn/completed",
+      query: { text: "literal query <tag>", truncated: false },
+      action: {
+        json: '{"type":"openPage","url":"https://example.invalid/<literal>"}',
+        truncated: false,
+      },
+      results: {
+        json: '[{"title":"<literal>","url":"https://example.invalid"}]',
+        truncated: false,
+      },
+      partial: false,
+      closure: "turn-ended",
+      turnStatus: "completed",
+    },
+    view = SessionActivity({
+      value: ownedSessionTurn(page([event(final)]), appTurn),
+    });
+
+  expect(textOf(view)).toContain("Web search · literal query <tag>");
+  expect(textOf(view)).toContain("Latest reported snapshot in this view");
+  expect(textOf(view)).toContain("https://example.invalid/<literal>");
+  expect(textOf(view)).toContain('"title":"<literal>"');
+  expect(textOf(view)).toContain("Native turn reported completed");
+  expect(textOf(view)).toContain("Reported closure: turn-ended");
+  expect(textOf(view)).not.toContain("Reported completed");
+  expect(textOf(view)).not.toContain("duration");
+  const disclosures = findAll(view, "details");
+  expect(disclosures).toHaveLength(1);
+  expect(attrs(disclosures[0]).open).toBeUndefined();
+  expect(findAll(view, "pre")).toHaveLength(3);
+  for (const region of findAll(view, "pre"))
+    expect(attrs(region)).toMatchObject({ role: "region", tabIndex: 0 });
+  for (const tag of ["button", "a", "script", "iframe", "img", "form"])
+    expect(findAll(view, tag)).toHaveLength(0);
+
+  const explicitEmpty: CodexChatWebSearch = {
+      ...final,
+      source: "item/completed",
+      query: { text: "", truncated: false },
+      action: { json: "[]", truncated: false },
+      results: { json: "null", truncated: false },
+      closure: "item-ended",
+      turnStatus: null,
+    },
+    emptyView = SessionActivity({
+      value: ownedSessionTurn(page([event(explicitEmpty)]), appTurn),
+    });
+  expect(textOf(emptyView)).toContain("[]");
+  expect(textOf(emptyView)).toContain("null");
+  expect(textOf(emptyView)).toContain("Empty query text reported");
+  expect(textOf(emptyView)).toContain("Reported closure: item-ended");
+  expect(textOf(emptyView)).not.toContain("Native turn reported");
+
+  const unavailable: CodexChatWebSearch = {
+      ...explicitEmpty,
+      source: "item/started",
+      query: { text: "query", truncated: false },
+      action: null,
+      results: null,
+      partial: true,
+      closure: "open",
+    },
+    unavailableView = SessionActivity({
+      value: ownedSessionTurn(page([event(unavailable)]), appTurn),
+    });
+  expect(textOf(unavailableView)).toContain("Action not reported");
+  expect(textOf(unavailableView)).toContain("Results not reported");
+  expect(textOf(unavailableView)).toContain("Reported activity 1");
+
+  const omitted: CodexChatWebSearch = {
+      ...final,
+      query: { text: "partial", truncated: true },
+      action: null,
+      results: { json: "", truncated: true, omitted: "size" },
+      partial: true,
+      closure: "open",
+      turnStatus: null,
+    },
+    omittedView = SessionActivity({
+      value: ownedSessionTurn(page([event(omitted)]), appTurn),
+    });
+  expect(textOf(omittedView)).toContain("Action not reported");
+  expect(textOf(omittedView)).toContain(
+    "Reported results truncated (size limit)",
+  );
+  expect(textOf(omittedView)).toContain("Reported query truncated");
+  expect(textOf(omittedView)).toContain("Reported closure: open");
+  expect(textOf(omittedView)).not.toContain("Native turn reported");
 });
