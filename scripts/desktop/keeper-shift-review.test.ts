@@ -1,7 +1,10 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
 import { keeperShiftStartHashesInBrowser } from "../../apps/desktop/src/keeper-shift-hash";
-import { createKeeperShiftIdentities } from "../../apps/desktop/src/keeper-shift-identities";
+import {
+  createKeeperShiftIdentities,
+  type KeeperShiftIdentities,
+} from "../../apps/desktop/src/keeper-shift-identities";
 import {
   acceptKeeperShiftReceipt,
   buildKeeperShiftStart,
@@ -464,10 +467,14 @@ test("the app-root owner keeps a lost Start held and only explicit retry resends
   await owner.start(review);
   expect(review.state.status).toBe("held");
   expect(review.state.original).toEqual(fullRequest());
+  expect(review.state.draft?.for).toBe("90m");
+  expect(review.state.draft?.maxBeads).toBe("8");
   expect(calls).toHaveLength(1);
 
   await owner.check(review);
   expect(review.state.status).toBe("held");
+  expect(review.state.draft?.for).toBe("90m");
+  expect(review.state.draft?.maxBeads).toBe("8");
   expect(calls).toHaveLength(1);
   await owner.retry(review);
   expect(calls).toHaveLength(2);
@@ -571,6 +578,220 @@ test("closing a review while its protected original read is pending blocks the l
   await opening;
   expect(review.state.status).toBe("held");
   expect(review.state.receipt).toBeNull();
+  owner.dispose();
+});
+
+test("closing after explicit Start owns identity reservation does not strand the UUID or cancel delivery", async () => {
+  const backing = identities();
+  let finishReservation!: (
+      result: Awaited<ReturnType<KeeperShiftIdentities["reserve"]>>,
+    ) => void,
+    markReserve!: () => void;
+  const reservation = new Promise<
+    Awaited<ReturnType<KeeperShiftIdentities["reserve"]>>
+  >((resolve) => {
+    finishReservation = resolve;
+  });
+  const reserveStarted = new Promise<void>((resolve) => {
+    markReserve = resolve;
+  });
+  const delayed: KeeperShiftIdentities = {
+    read: backing.read,
+    reserve: async () => {
+      markReserve();
+      return reservation;
+    },
+  };
+  let writable = true;
+  const calls: KeeperShiftStartRequest[] = [],
+    owner = createKeeperShiftReviewOwner({
+      canWrite: () => writable,
+      requestId: () => requestId,
+      identities: delayed,
+      readOptions: async () => shiftOptions(),
+      readOriginal: async () => null,
+      postStart: async (_projectId, _proposalId, request) => {
+        calls.push(structuredClone(request));
+        return {
+          state: "done",
+          data: receiptFor("done", "running", actualShift()),
+        };
+      },
+    });
+  const review = owner.get(source, 4);
+  await owner.open(review);
+  owner.edit(review, {
+    for: "90m",
+    concurrency: "3",
+    maxBeads: "8",
+    maxUsd: "12",
+    repairs: "3",
+    epic: "alpha-epic",
+    smith: "claude-journeyman",
+    runTimeout: "10m",
+  });
+  const starting = owner.start(review);
+  await reserveStarted;
+  expect(review.state.original).toEqual(fullRequest());
+  owner.close(review);
+  writable = false;
+  finishReservation(await backing.reserve(source, workspace, () => requestId));
+  await starting;
+  expect(calls).toHaveLength(0);
+  expect(review.state.requestId).toBe(requestId);
+  expect(review.state.original).toEqual(fullRequest());
+  expect(review.state.status).toBe("held");
+
+  writable = true;
+  await owner.retry(review);
+  expect(calls).toEqual([fullRequest()]);
+  expect(review.state.requestId).toBe(requestId);
+  expect(review.state.status).toBe("recorded");
+  owner.dispose();
+});
+
+test("an uncertain identity save retains the full request so an explicit retry can reserve and deliver it unchanged", async () => {
+  const backing = identities();
+  let failures = 1;
+  const calls: KeeperShiftStartRequest[] = [],
+    owner = createKeeperShiftReviewOwner({
+      canWrite: () => true,
+      requestId: () => requestId,
+      identities: {
+        read: backing.read,
+        reserve: async (...args) => {
+          if (failures > 0) {
+            failures -= 1;
+            throw Error("Storage reply was lost.");
+          }
+          return backing.reserve(...args);
+        },
+      },
+      readOptions: async () => shiftOptions(),
+      readOriginal: async () => null,
+      postStart: async (_projectId, _proposalId, request) => {
+        calls.push(structuredClone(request));
+        return {
+          state: "done",
+          data: receiptFor("done", "running", actualShift()),
+        };
+      },
+    });
+  const review = owner.get(source, 4);
+  await owner.open(review);
+  owner.edit(review, {
+    for: "90m",
+    concurrency: "3",
+    maxBeads: "8",
+    maxUsd: "12",
+    repairs: "3",
+    epic: "alpha-epic",
+    smith: "claude-journeyman",
+    runTimeout: "10m",
+  });
+  await owner.start(review);
+  expect(review.state.status).toBe("held");
+  expect(review.state.requestId).toBeNull();
+  expect(review.state.original).toEqual(fullRequest());
+  expect(calls).toHaveLength(0);
+  await owner.retry(review);
+  expect(calls).toEqual([fullRequest()]);
+  expect(review.state.status).toBe("recorded");
+  owner.dispose();
+});
+
+test("a newer proposal revision observed during asynchronous hashing aborts before identity reservation", async () => {
+  let reservations = 0;
+  const backing = identities(),
+    owner = createKeeperShiftReviewOwner({
+      canWrite: () => true,
+      requestId: () => requestId,
+      identities: {
+        read: backing.read,
+        reserve: async (...args) => {
+          reservations += 1;
+          return backing.reserve(...args);
+        },
+      },
+      readOptions: async () => shiftOptions(),
+      readOriginal: async () => null,
+      postStart: async () => ({
+        state: "unknown",
+        message: "Unexpected POST",
+      }),
+    });
+  const review = owner.get(source, 4);
+  await owner.open(review);
+  const starting = owner.start(review);
+  expect(owner.get(source, 5)).toBe(review);
+  await starting;
+  expect(review.state.revision).toBe(5);
+  expect(review.state.requestId).toBeNull();
+  expect(review.state.original).toBeNull();
+  expect(review.state.status).toBe("held");
+  expect(reservations).toBe(0);
+  owner.dispose();
+});
+
+test("a body changed under the same proposal hash is held instead of silently reusing the old review", async () => {
+  const owner = createKeeperShiftReviewOwner({
+    canWrite: () => true,
+    requestId: () => requestId,
+    identities: identities(),
+    readOptions: async () => shiftOptions(),
+    readOriginal: async () => null,
+    postStart: async () => ({
+      state: "unknown",
+      message: "Unexpected POST",
+    }),
+  });
+  const review = owner.get(source, 4);
+  await owner.open(review);
+  const changed = structuredClone(source);
+  if (changed.draft.action.kind !== "start-shift")
+    throw Error("Wrong proposal fixture");
+  changed.draft.action.durationMinutes += 1;
+  expect(owner.get(changed, 4)).toBe(review);
+  expect(review.state.status).toBe("held");
+  expect(review.state.notice).toContain(
+    "changed without a new source identity",
+  );
+  owner.dispose();
+});
+
+test("closing and reopening during options read starts a fresh read without stale loading state", async () => {
+  let finishFirst!: (value: ProjectShiftOptions) => void,
+    optionReads = 0;
+  const firstOptions = new Promise<ProjectShiftOptions>((resolve) => {
+    finishFirst = resolve;
+  });
+  const owner = createKeeperShiftReviewOwner({
+    canWrite: () => true,
+    requestId: () => requestId,
+    identities: identities(),
+    readOptions: async () => {
+      optionReads += 1;
+      return optionReads === 1 ? firstOptions : shiftOptions();
+    },
+    readOriginal: async () => null,
+    postStart: async () => ({
+      state: "unknown",
+      message: "Unexpected POST",
+    }),
+  });
+  const review = owner.get(source, 4),
+    firstOpen = owner.open(review);
+  expect(review.loading).toBe(true);
+  owner.close(review);
+  const secondOpen = owner.open(review);
+  await secondOpen;
+  expect(review.state.status).toBe("ready");
+  expect(review.loading).toBe(false);
+  finishFirst(shiftOptions());
+  await firstOpen;
+  expect(review.state.status).toBe("ready");
+  expect(review.loading).toBe(false);
+  expect(optionReads).toBe(2);
   owner.dispose();
 });
 

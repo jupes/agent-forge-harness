@@ -104,7 +104,9 @@ export function initializeKeeperShiftReview(
   knownRequestId: string | null = null,
 ): KeeperShiftReviewState {
   const id =
-    knownRequestId === null ? null : shiftRequestIdSchema.parse(knownRequestId);
+    knownRequestId === null
+      ? state.requestId
+      : shiftRequestIdSchema.parse(knownRequestId);
   if (options.projectId !== state.source.projectId)
     return holdKeeperShiftReview(
       state,
@@ -119,7 +121,19 @@ export function initializeKeeperShiftReview(
       "The current Shift workspace could not be verified.",
     );
   }
-  const draft = prefillKeeperShiftDraft(state.source, options);
+  const draft = state.original
+    ? savedDraft(state.original)
+    : prefillKeeperShiftDraft(state.source, options);
+  if (id === null && state.original !== null)
+    return {
+      ...state,
+      options: structuredClone(options),
+      workspace,
+      draft,
+      status: "held",
+      notice:
+        "The exact reviewed Start is retained, but its identity was not confirmed in storage. Explicitly retry the same original to save its UUID before delivery.",
+    };
   if (id !== null)
     return {
       ...state,

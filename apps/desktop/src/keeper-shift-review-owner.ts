@@ -17,7 +17,9 @@ export interface KeeperShiftReviewEntry {
   state: KeeperShiftReviewState;
   loading: boolean;
   starting: boolean;
-  generation: number;
+  visible: boolean;
+  readGeneration: number;
+  deliveryGeneration: number;
 }
 
 const checkMessage =
@@ -43,15 +45,23 @@ export function createKeeperShiftReviewOwner(deps: {
   const entries = new Map<string, KeeperShiftReviewEntry>();
   const listeners = new Set<() => void>();
   let disposed = false;
-  const tell = () => {
-    if (!disposed) for (const listener of [...listeners]) listener();
+  const tell = (entry?: KeeperShiftReviewEntry) => {
+    if (!disposed && (!entry || entry.visible))
+      for (const listener of [...listeners]) listener();
   };
   const keyOf = (source: KeeperProposal) =>
     `${source.projectId}:${source.id}:${source.sourceHash}`;
-  const isCurrent = (entry: KeeperShiftReviewEntry, generation: number) =>
+  const isReadCurrent = (entry: KeeperShiftReviewEntry, generation: number) =>
     !disposed &&
+    entry.visible &&
     entries.get(keyOf(entry.state.source)) === entry &&
-    entry.generation === generation;
+    entry.readGeneration === generation;
+  const isDeliveryCurrent = (
+    entry: KeeperShiftReviewEntry,
+    generation: number,
+  ) =>
+    entries.get(keyOf(entry.state.source)) === entry &&
+    entry.deliveryGeneration === generation;
   const hold = (entry: KeeperShiftReviewEntry, notice: string) => {
     entry.state = holdKeeperShiftReview(entry.state, notice);
   };
@@ -65,7 +75,7 @@ export function createKeeperShiftReviewOwner(deps: {
       entry.state.source.id,
       requestId,
     );
-    if (!isCurrent(entry, generation)) return;
+    if (!isReadCurrent(entry, generation)) return;
     if (raw === null) {
       hold(
         entry,
@@ -74,16 +84,21 @@ export function createKeeperShiftReviewOwner(deps: {
       return;
     }
     const accepted = await acceptKeeperShiftReceipt(entry.state, raw);
-    if (isCurrent(entry, generation)) entry.state = accepted;
+    if (isReadCurrent(entry, generation)) entry.state = accepted;
   };
   const open = async (entry: KeeperShiftReviewEntry) => {
-    if (disposed || entry.loading || entry.starting) return;
-    const generation = ++entry.generation;
+    if (disposed) return;
+    entry.visible = true;
+    if (entry.starting) {
+      tell(entry);
+      return;
+    }
+    const generation = ++entry.readGeneration;
     entry.loading = true;
-    tell();
+    tell(entry);
     try {
       const savedIdentity = deps.identities.read(entry.state.source);
-      if (!isCurrent(entry, generation)) return;
+      if (!isReadCurrent(entry, generation)) return;
       if (savedIdentity && entry.state.requestId === null)
         entry.state = {
           ...entry.state,
@@ -95,7 +110,7 @@ export function createKeeperShiftReviewOwner(deps: {
       const checked = projectShiftOptionsSchema.safeParse(
         await deps.readOptions(entry.state.source.projectId),
       );
-      if (!isCurrent(entry, generation)) return;
+      if (!isReadCurrent(entry, generation)) return;
       if (
         !checked.success ||
         checked.data.projectId !== entry.state.source.projectId
@@ -120,7 +135,7 @@ export function createKeeperShiftReviewOwner(deps: {
       );
       if (requestId !== null) await readOriginal(entry, requestId, generation);
     } catch (error) {
-      if (isCurrent(entry, generation))
+      if (isReadCurrent(entry, generation))
         hold(
           entry,
           error instanceof Error
@@ -128,8 +143,10 @@ export function createKeeperShiftReviewOwner(deps: {
             : "The current Shift review could not be checked. Its saved identity is kept.",
         );
     } finally {
-      entry.loading = false;
-      if (isCurrent(entry, generation)) tell();
+      if (isReadCurrent(entry, generation)) {
+        entry.loading = false;
+        tell(entry);
+      }
     }
   };
   const sendOriginal = async (
@@ -153,16 +170,16 @@ export function createKeeperShiftReviewOwner(deps: {
             : `The Start reply was lost. ${checkMessage}`,
       };
     }
-    if (!isCurrent(entry, generation)) return;
+    if (!isDeliveryCurrent(entry, generation)) return;
     if (outcome.state === "done") {
       try {
         const accepted = await acceptKeeperShiftReceipt(
           entry.state,
           outcome.data,
         );
-        if (isCurrent(entry, generation)) entry.state = accepted;
+        if (isDeliveryCurrent(entry, generation)) entry.state = accepted;
       } catch (error) {
-        if (isCurrent(entry, generation))
+        if (isDeliveryCurrent(entry, generation))
           hold(
             entry,
             error instanceof Error
@@ -171,6 +188,7 @@ export function createKeeperShiftReviewOwner(deps: {
           );
       }
     } else hold(entry, outcome.message);
+    tell(entry);
   };
 
   return {
@@ -182,9 +200,18 @@ export function createKeeperShiftReviewOwner(deps: {
           state: createKeeperShiftReview(source, revision),
           loading: false,
           starting: false,
-          generation: 0,
+          visible: false,
+          readGeneration: 0,
+          deliveryGeneration: 0,
         };
         entries.set(key, entry);
+      }
+      if (JSON.stringify(source) !== JSON.stringify(entry.state.source)) {
+        hold(
+          entry,
+          "The proposal source changed without a new source identity. Check the current Keeper reply before continuing.",
+        );
+        tell(entry);
       }
       if (!entry.state.original && !entry.state.requestId)
         entry.state = {
@@ -200,7 +227,7 @@ export function createKeeperShiftReviewOwner(deps: {
     ) {
       if (disposed || entry.loading || entry.starting) return;
       entry.state = editKeeperShiftDraft(entry.state, update);
-      tell();
+      tell(entry);
     },
     async start(entry: KeeperShiftReviewEntry) {
       if (
@@ -213,26 +240,65 @@ export function createKeeperShiftReviewOwner(deps: {
       )
         return;
       entry.starting = true;
-      const generation = ++entry.generation;
-      tell();
+      const generation = ++entry.deliveryGeneration;
+      const reviewSnapshot = JSON.stringify({
+        source: entry.state.source,
+        revision: entry.state.revision,
+        options: entry.state.options,
+        workspace: entry.state.workspace,
+        draft: entry.state.draft,
+      });
+      tell(entry);
       try {
         const id = deps.requestId();
-        const built = await buildKeeperShiftStart(entry.state, id);
-        if (!isCurrent(entry, generation)) return;
+        const frozen = structuredClone(entry.state);
+        const built = await buildKeeperShiftStart(frozen, id);
+        if (!isDeliveryCurrent(entry, generation)) return;
         if (!built.ok) {
           entry.state = { ...entry.state, notice: built.reason };
           return;
         }
+        const currentSnapshot = JSON.stringify({
+          source: entry.state.source,
+          revision: entry.state.revision,
+          options: entry.state.options,
+          workspace: entry.state.workspace,
+          draft: entry.state.draft,
+        });
+        if (
+          currentSnapshot !== reviewSnapshot ||
+          entry.state.status !== "ready" ||
+          entry.state.requestId !== null ||
+          entry.state.original !== null
+        ) {
+          entry.state = {
+            ...entry.state,
+            status: "held",
+            notice:
+              "The proposal review changed while its Start was being prepared. Reopen and review the current options before starting.",
+          };
+          return;
+        }
+        // Retain this complete body in the app-root owner before awaiting storage.
+        // Only the UUID and proposal metadata enter local storage.
+        entry.state = {
+          ...entry.state,
+          original: structuredClone(built.request),
+          status: "held",
+          notice: "Saving the exact reviewed Start identity before delivery.",
+        };
+        tell(entry);
         const reserved = await deps.identities.reserve(
-          entry.state.source,
-          entry.state.workspace,
+          frozen.source,
+          frozen.workspace as string,
           () => id,
         );
-        if (!isCurrent(entry, generation)) return;
+        if (!isDeliveryCurrent(entry, generation)) return;
         if (reserved.identity.requestId !== id || !reserved.created) {
           entry.state = {
             ...entry.state,
             requestId: reserved.identity.requestId,
+            original: null,
             status: "held",
             notice:
               "A Shift identity was already saved. Check that exact protected original before continuing.",
@@ -242,17 +308,16 @@ export function createKeeperShiftReviewOwner(deps: {
         entry.state = {
           ...entry.state,
           requestId: id,
-          original: structuredClone(built.request),
           status: "held",
           notice: "The exact reviewed Start is being sent once.",
         };
-        if (!isCurrent(entry, generation) || !deps.canWrite()) {
+        if (!deps.canWrite()) {
           hold(entry, `The connection changed before Start. ${checkMessage}`);
           return;
         }
         await sendOriginal(entry, built.request, generation);
       } catch (error) {
-        if (isCurrent(entry, generation))
+        if (isDeliveryCurrent(entry, generation))
           hold(
             entry,
             error instanceof Error
@@ -261,7 +326,7 @@ export function createKeeperShiftReviewOwner(deps: {
           );
       } finally {
         entry.starting = false;
-        if (isCurrent(entry, generation)) tell();
+        if (isDeliveryCurrent(entry, generation)) tell(entry);
       }
     },
     async check(entry: KeeperShiftReviewEntry) {
@@ -277,21 +342,49 @@ export function createKeeperShiftReviewOwner(deps: {
         entry.starting ||
         !original ||
         !workspace ||
-        !requestId ||
         !["held", "unknown"].includes(entry.state.status) ||
         !deps.canWrite()
       )
         return;
       entry.starting = true;
-      const generation = ++entry.generation;
-      tell();
+      const generation = ++entry.deliveryGeneration;
+      tell(entry);
       try {
-        const held = deps.identities.read(entry.state.source, workspace);
-        if (!held || held.requestId !== requestId)
-          throw Error("The saved Shift identity does not match its original.");
+        const held = requestId
+          ? deps.identities.read(entry.state.source, workspace)
+          : await deps.identities.reserve(
+              entry.state.source,
+              workspace,
+              () => original.start.requestId,
+            );
+        if (!isDeliveryCurrent(entry, generation)) return;
+        const heldIdentity = held && "identity" in held ? held.identity : held;
+        if (
+          !heldIdentity ||
+          heldIdentity.requestId !== original.start.requestId
+        ) {
+          entry.state = {
+            ...entry.state,
+            requestId: heldIdentity?.requestId ?? null,
+            original: null,
+            status: "held",
+            notice:
+              "The saved Shift identity does not match its exact original. No request was sent.",
+          };
+          return;
+        }
+        entry.state = {
+          ...entry.state,
+          requestId: original.start.requestId,
+          status: "held",
+        };
+        if (!deps.canWrite()) {
+          hold(entry, `The connection changed before Start. ${checkMessage}`);
+          return;
+        }
         await sendOriginal(entry, original, generation);
       } catch (error) {
-        if (isCurrent(entry, generation))
+        if (isDeliveryCurrent(entry, generation))
           hold(
             entry,
             error instanceof Error
@@ -300,14 +393,13 @@ export function createKeeperShiftReviewOwner(deps: {
           );
       } finally {
         entry.starting = false;
-        if (isCurrent(entry, generation)) tell();
+        if (isDeliveryCurrent(entry, generation)) tell(entry);
       }
     },
     close(entry: KeeperShiftReviewEntry) {
-      entry.generation += 1;
-      if (entry.state.requestId || entry.state.original)
-        hold(entry, `This review is closed. ${checkMessage}`);
-      tell();
+      entry.visible = false;
+      entry.readGeneration += 1;
+      entry.loading = false;
     },
     subscribe(listener: () => void) {
       listeners.add(listener);
