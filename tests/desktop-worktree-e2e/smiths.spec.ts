@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   existsSync,
   readFileSync,
@@ -6,9 +6,9 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join } from "node:path";
 import { expect, test } from "@playwright/test";
+import { canonicalSmithConfigCreateRequest } from "../../scripts/config/smith-create-protocol";
 import { APPRENTICE_VERIFICATION } from "../../scripts/smith-verification";
 import type { LedgerEventInput } from "../../types/hearth";
 import { seedObservationEvents } from "../desktop-e2e/observed-session-fixtures";
@@ -20,7 +20,13 @@ import {
 } from "../e2e/bd-stand-in-state";
 import { openSettled, reloadSettled } from "../e2e/fixtures";
 import { BD_STAND_IN_STATE, HEARTH_HOME, isRunHome } from "../e2e/servers";
-import { checkedFixtureRoot, fixturePlan, REPOSITORY } from "./environment";
+import {
+  checkedEmptyHome,
+  checkedFixtureRoot,
+  EMPTY_HOME,
+  fixturePlan,
+  REPOSITORY,
+} from "./environment";
 
 let fixtureSmith = "";
 let savedFiles: { file: string; before: Buffer | null; fixture: Buffer }[] = [];
@@ -258,14 +264,13 @@ test("creates a reviewed Smith in the temporary workspace config and recovers it
     )
       posts.push(new URL(request.url()).pathname);
   });
+  const fixtureRoot = checkedFixtureRoot();
+  checkedEmptyHome();
   if (
     !isRunHome(HEARTH_HOME) ||
     !realpathSync
       .native(REPOSITORY)
-      .startsWith(
-        `${checkedFixtureRoot()}${process.platform === "win32" ? "\\" : "/"}`,
-      ) ||
-    !resolve(HEARTH_HOME).startsWith(resolve(tmpdir()))
+      .startsWith(`${fixtureRoot}${process.platform === "win32" ? "\\" : "/"}`)
   )
     throw Error("Smith creation requires only the owned temporary homes.");
 
@@ -305,7 +310,7 @@ test("creates a reviewed Smith in the temporary workspace config and recovers it
   expect(written).toContain('model = "browser-fixture-model"');
   expect(
     existsSync(
-      join(HEARTH_HOME, ".agent-forge-config-transactions", "write.lock.db"),
+      join(EMPTY_HOME, ".agent-forge-config-transactions", "write.lock.db"),
     ),
   ).toBe(true);
   expect(posts).toEqual([
@@ -353,6 +358,7 @@ test("a source-proven NotSent retires across reload, while a lost response stays
     )
       originalReads.push(response.status());
   });
+  checkedEmptyHome();
   if (!isRunHome(HEARTH_HOME) || !checkedFixtureRoot())
     throw Error("Smith identity recovery requires the owned temporary homes.");
 
@@ -426,7 +432,109 @@ test("a source-proven NotSent retires across reload, while a lost response stays
   expect(providerStarts()).toEqual(starts);
 });
 
-test("a lost create response remains held after the protected original returns 404", async ({
+test("a correlated stale-revision refusal reads back its exact original after reload", async ({
+  page,
+}) => {
+  const starts = providerStarts(),
+    posts: string[] = [],
+    originalReads: number[] = [],
+    name = `browser-refused-${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+  page.on("request", (request) => {
+    const path = new URL(request.url()).pathname;
+    if (request.method() === "POST" && path.startsWith("/__agent-forge/"))
+      posts.push(path);
+  });
+  page.on("response", (response) => {
+    if (
+      response.request().method() === "GET" &&
+      new URL(response.url()).pathname.startsWith(
+        "/__agent-forge/smiths/creates/",
+      )
+    )
+      originalReads.push(response.status());
+  });
+  checkedEmptyHome();
+  if (!isRunHome(HEARTH_HOME) || !checkedFixtureRoot())
+    throw Error("Smith refusal recovery requires the owned temporary homes.");
+
+  await page.setViewportSize({ width: 1100, height: 700 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await openSettled(page, "/index.html#/desktop/smiths");
+  await page.getByRole("button", { name: "New smith", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Create a Smith" });
+  await dialog.getByLabel("Smith name").fill(name);
+  await dialog.getByLabel("Provider").fill("codex");
+  await dialog.getByLabel("Model").fill("browser-stale-revision-model");
+  await dialog.getByLabel("Effort").fill("high");
+  await dialog.getByRole("button", { name: "Review candidate" }).click();
+  await expect(
+    dialog.getByRole("region", { name: "Candidate review" }),
+  ).toBeVisible();
+
+  writeFileSync(
+    join(REPOSITORY, "agent-forge.toml"),
+    `${readFileSync(join(REPOSITORY, "agent-forge.toml"), "utf8")}\n# stale paired revision fixture\n`,
+  );
+  const refused = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname ===
+        "/__agent-forge/config/smiths/creates",
+  );
+  await dialog.getByRole("button", { name: "Create Smith" }).click();
+  expect((await refused).status()).toBe(409);
+  await expect(
+    page.getByRole("region", { name: "Original Smith create receipts" }),
+  ).toContainText("Refused before publication");
+  expect(
+    readFileSync(join(REPOSITORY, "agent-forge.toml"), "utf8"),
+  ).not.toContain(`[smiths.${name}]`);
+
+  const originalRead = page.waitForResponse(
+    (response) =>
+      response.request().method() === "GET" &&
+      new URL(response.url()).pathname.startsWith(
+        "/__agent-forge/smiths/creates/",
+      ),
+  );
+  await reloadSettled(page);
+  const recovered = await originalRead;
+  expect(recovered.status()).toBe(200);
+  const receipt = (await recovered.json()) as {
+    data: {
+      inputHash: string;
+      original: { smith: { name: string; model: string } };
+      result: { phase: string; reason?: string };
+    };
+  };
+  expect(receipt.data.original.smith).toEqual({
+    name,
+    provider: "codex",
+    model: "browser-stale-revision-model",
+    effort: "high",
+    enabled: true,
+    tags: [],
+  });
+  expect(receipt.data.result).toMatchObject({
+    phase: "refused",
+    reason: "stale-revision",
+  });
+  expect(receipt.data.inputHash).toMatch(/^[a-f0-9]{64}$/);
+  await expect(
+    page.getByRole("region", { name: "Original Smith create receipts" }),
+  ).toContainText(name);
+  await expect(
+    page.getByRole("region", { name: "Original Smith create receipts" }),
+  ).toContainText("stale-revision");
+  expect(originalReads).toEqual([200]);
+  expect(posts).toEqual([
+    "/__agent-forge/config/smiths/preview",
+    "/__agent-forge/config/smiths/creates",
+  ]);
+  expect(providerStarts()).toEqual(starts);
+});
+
+test("an unavailable create response remains held when the protected original returns 404", async ({
   page,
 }) => {
   const posts: string[] = [],
@@ -446,6 +554,7 @@ test("a lost create response remains held after the protected original returns 4
     )
       originalReads.push(response.status());
   });
+  checkedEmptyHome();
   if (!isRunHome(HEARTH_HOME) || !checkedFixtureRoot())
     throw Error("Smith identity recovery requires the owned temporary homes.");
 
@@ -491,7 +600,6 @@ test("a lost create response remains held after the protected original returns 4
   );
   await reloadSettled(page);
   expect((await missingOriginal).status()).toBe(404);
-  originalReads.push(404);
   await expect(
     page.getByRole("region", { name: "Original Smith create receipts" }),
   ).toContainText("Outcome held");
@@ -511,6 +619,106 @@ test("a lost create response remains held after the protected original returns 4
   expect(
     readFileSync(join(REPOSITORY, "agent-forge.toml"), "utf8"),
   ).not.toContain(`[smiths.${name}]`);
+});
+
+test("a reply lost after actual temporary publication recovers the exact original without a second write", async ({
+  page,
+}) => {
+  const starts = providerStarts(),
+    posts: string[] = [],
+    name = `browser-lost-after-write-${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+  let original: Record<string, unknown> | null = null,
+    savedServerStatus: number | null = null;
+  page.on("request", (request) => {
+    const path = new URL(request.url()).pathname;
+    if (request.method() === "POST" && path.startsWith("/__agent-forge/")) {
+      posts.push(path);
+      if (path === "/__agent-forge/config/smiths/creates")
+        original = request.postDataJSON() as Record<string, unknown>;
+    }
+  });
+  checkedEmptyHome();
+  if (!isRunHome(HEARTH_HOME) || !checkedFixtureRoot())
+    throw Error("Smith recovery requires the owned temporary homes.");
+
+  await page.setViewportSize({ width: 1100, height: 700 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await openSettled(page, "/index.html#/desktop/smiths");
+  await page.getByRole("button", { name: "New smith", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Create a Smith" });
+  await dialog.getByLabel("Smith name").fill(name);
+  await dialog.getByLabel("Provider").fill("codex");
+  await dialog.getByLabel("Model").fill("browser-lost-after-write-model");
+  await dialog.getByLabel("Effort").fill("high");
+  await dialog.getByLabel("Tags").fill("real-write\nrecover-original");
+  await dialog.getByRole("button", { name: "Review candidate" }).click();
+  await expect(
+    dialog.getByRole("region", { name: "Candidate review" }),
+  ).toContainText(join(REPOSITORY, "agent-forge.toml"));
+
+  await page.route("**/config/smiths/creates", async (route) => {
+    const response = await route.fetch();
+    savedServerStatus = response.status();
+    await route.abort();
+  });
+  const failedReply = page.waitForEvent("requestfailed", (request) =>
+    new URL(request.url()).pathname.endsWith("/config/smiths/creates"),
+  );
+  await dialog.getByRole("button", { name: "Create Smith" }).click();
+  await failedReply;
+  expect(savedServerStatus).toBe(200);
+  await expect(
+    page.getByRole("region", { name: "Original Smith create receipts" }),
+  ).toContainText("Outcome held");
+  expect(original).not.toBeNull();
+  const posted = original!;
+  expect(posted).toMatchObject({
+    target: "workspace",
+    smith: { name, provider: "codex", model: "browser-lost-after-write-model" },
+  });
+  const written = readFileSync(join(REPOSITORY, "agent-forge.toml"), "utf8");
+  expect(written).toContain(`[smiths.${name}]`);
+  expect([
+    ...written.matchAll(new RegExp(`\\[smiths\\.${name}\\]`, "g")),
+  ]).toHaveLength(1);
+  expect(posts).toEqual([
+    "/__agent-forge/config/smiths/preview",
+    "/__agent-forge/config/smiths/creates",
+  ]);
+  await page.unroute("**/config/smiths/creates");
+
+  const originalRead = page.waitForResponse(
+    (response) =>
+      response.request().method() === "GET" &&
+      new URL(response.url()).pathname ===
+        `/__agent-forge/smiths/creates/${String(posted["requestId"])}`,
+  );
+  await reloadSettled(page);
+  const recoveredResponse = await originalRead;
+  expect(recoveredResponse.status()).toBe(200);
+  const receipt = (await recoveredResponse.json()) as {
+    data: { inputHash: string; original: Record<string, unknown> };
+  };
+  expect(receipt.data.original).toEqual(posted);
+  expect(receipt.data.inputHash).toBe(
+    createHash("sha256")
+      .update(canonicalSmithConfigCreateRequest(posted))
+      .digest("hex"),
+  );
+  await expect(
+    page.getByRole("region", { name: "Original Smith create receipts" }),
+  ).toContainText("Confirmed");
+  await expect(
+    page.getByRole("region", { name: "Original Smith create receipts" }),
+  ).toContainText(name);
+  expect(readFileSync(join(REPOSITORY, "agent-forge.toml"), "utf8")).toBe(
+    written,
+  );
+  expect(posts).toEqual([
+    "/__agent-forge/config/smiths/preview",
+    "/__agent-forge/config/smiths/creates",
+  ]);
+  expect(providerStarts()).toEqual(starts);
 });
 
 test("Smiths opens its actual fixed global verification task with keyboard focus and retry, without project membership or writes", async ({

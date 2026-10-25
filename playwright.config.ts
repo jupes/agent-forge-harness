@@ -110,9 +110,6 @@ export default defineConfig({
         ...standInEnvironment(),
         HEARTH_PORT: String(HEARTH_PORT),
         AGENT_FORGE_HOME: HEARTH_HOME,
-        // Smith's OS-user-global config mutex uses homedir(); keep this child-only and scratch-owned.
-        HOME: HEARTH_HOME,
-        USERPROFILE: HEARTH_HOME,
         // One spec starts a (simulated) council run. Its artifacts go to this
         // run's own home, not to reports/ in the checkout.
         COUNCIL_RUNS_DIR: join(HEARTH_HOME, "council-runs"),

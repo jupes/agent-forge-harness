@@ -396,31 +396,42 @@ export function createSmithConfigCreateClient(deps: {
           continue;
         }
         if (!identity) continue;
-        if (
-          identity.retired &&
-          identity.retirement !== "correlated-confirmation"
-        ) {
+        if (identity.retired && identity.retirement === "operator-not-sent") {
           if (held) {
             held.identity = identity;
-            held.state =
-              identity.retirement === "correlated-refusal"
-                ? "refused"
-                : "not-sent";
+            held.state = "not-sent";
             held.notice =
-              identity.retirement === "correlated-refusal"
-                ? "A correlated preattempt refusal was saved. Review again before starting a new request."
-                : "The request was proven not sent. Review again before starting a new request.";
+              "The request was proven not sent. Review again before starting a new request.";
           }
           continue;
+        }
+        if (held && identity.retired) {
+          held.identity = identity;
+          held.state =
+            identity.retirement === "correlated-refusal"
+              ? "refused"
+              : "confirmed";
+          held.notice =
+            identity.retirement === "correlated-refusal"
+              ? "A correlated refusal was saved. Checking its protected original for review details."
+              : "A correlated confirmation was saved. Checking its protected original for review details.";
         }
         if (!held) {
           held = {
             identity,
             request: null,
             receipt: null,
-            state: "held",
+            state: identity.retired
+              ? identity.retirement === "correlated-refusal"
+                ? "refused"
+                : identity.retirement === "correlated-confirmation"
+                  ? "confirmed"
+                  : "not-sent"
+              : "held",
             checking: false,
-            notice: "Checking the saved original only; no create will be sent.",
+            notice: identity.retired
+              ? "Checking the saved correlated original for review details only."
+              : "Checking the saved original only; no create will be sent.",
           };
           state.entries.push(held);
         }
@@ -432,11 +443,25 @@ export function createSmithConfigCreateClient(deps: {
           if (!disposed) {
             const installed = await installReceipt(held, raw);
             if (installed) await retireVerifiedReceipt(held);
+            else if (
+              identity.retired &&
+              identity.retirement !== "operator-not-sent"
+            )
+              held.notice =
+                "The saved outcome remains verified, but its protected receipt details could not be checked. No create was resent.";
           }
         } catch {
           if (!disposed && held.state === "held")
             held.notice =
               "The original receipt could not be read. Its UUID remains held; check it again without resending.";
+          else if (
+            !disposed &&
+            identity.retired &&
+            (identity.retirement === "correlated-refusal" ||
+              identity.retirement === "correlated-confirmation")
+          )
+            held.notice =
+              "The saved outcome remains verified, but its protected receipt details could not be read. No create was resent.";
         } finally {
           if (!disposed) {
             held.checking = false;
@@ -491,16 +516,13 @@ export function createSmithConfigCreateClient(deps: {
             identity.retirement === "correlated-refusal"
               ? "A correlated preattempt refusal was saved. Review again before starting a new request."
               : identity.retirement === "correlated-confirmation"
-                ? "A correlated confirmation was saved. Checking the protected original for its receipt."
+                ? "A correlated confirmation was saved. Checking the protected original for review details."
                 : "The request was proven not sent. Review again before starting a new request.";
         }
       }
       emit();
       for (const identity of identities)
-        if (
-          !identity.retired ||
-          identity.retirement === "correlated-confirmation"
-        )
+        if (!identity.retired || identity.retirement !== "operator-not-sent")
           await client.check(identity.requestId);
     },
     dispose() {

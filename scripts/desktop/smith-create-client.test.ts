@@ -377,16 +377,18 @@ test("a proven NotSent settlement survives reload and permits a later explicit c
 });
 
 test("a refusal receipt is retired durably and does not strand the next create after reload", async () => {
+  let refusal: SmithConfigCreateReceipt | null = null;
+  let originalReads = 0;
   const first = setup({
-    post: async (request) => ({
-      state: "sent",
-      value: await receipt(request, {
+    post: async (request) => {
+      refusal = await receipt(request, {
         phase: "refused",
         refusedAt: "2026-10-25T20:00:00.000Z",
         reason: "stale-revision",
         preview: preview(request),
-      }),
-    }),
+      });
+      return { state: "sent", value: refusal };
+    },
   });
   first.client.setDraft("workspace", smith);
   await first.client.preview();
@@ -403,8 +405,11 @@ test("a refusal receipt is retired durably and does not strand the next create a
     requestId: () => ids[1]!,
     preview: async (input) => preview(input),
     post: async (request) => ({ state: "sent", value: await receipt(request) }),
-    readOriginal: async () => {
-      throw Error("A retired refusal needs no ambiguous recovery read.");
+    readOriginal: async (requestId) => {
+      first.readIds.push(requestId);
+      if (originalReads++ === 0)
+        throw Error("404 The protected original is temporarily missing.");
+      return refusal;
     },
   });
   await restarted.recover();
@@ -412,6 +417,22 @@ test("a refusal receipt is retired durably and does not strand the next create a
   expect(restarted.get().entries[0]).toMatchObject({
     identity: { requestId: ids[0], retired: true },
     state: "refused",
+    receipt: null,
+  });
+  expect(first.readIds).toEqual([ids[0]!]);
+  expect(restarted.get().entries[0]?.notice).toContain(
+    "saved outcome remains verified",
+  );
+  await restarted.check(ids[0]!);
+  expect(first.readIds).toEqual([ids[0]!, ids[0]!]);
+  expect(restarted.get().entries[0]).toMatchObject({
+    identity: { requestId: ids[0], retirement: "correlated-refusal" },
+    state: "refused",
+    receipt: {
+      requestId: ids[0],
+      original: { smith: { name: smith.name } },
+      result: { phase: "refused", reason: "stale-revision" },
+    },
   });
   restarted.setDraft("workspace", { ...smith, name: "after-refusal" });
   await restarted.preview();

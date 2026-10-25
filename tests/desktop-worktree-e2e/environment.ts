@@ -19,7 +19,13 @@ export const FIXTURE_ROOT = (process.env[
   "AGENT_FORGE_WORKTREE_FIXTURE_ROOT"
 ] ||= mkdtempSync(join(tmpdir(), "agent-forge-desktop-worktree-")));
 export const REPOSITORY = join(FIXTURE_ROOT, "repository");
-export const EMPTY_HOME = join(FIXTURE_ROOT, "empty-home");
+/**
+ * A dedicated OS home outside FIXTURE_ROOT. The Hearth's process-global config
+ * transaction mutex is persistent, so fixture teardown must never remove it.
+ */
+export const EMPTY_HOME = process.env["AGENT_FORGE_WORKTREE_OS_HOME"]
+  ? resolve(process.env["AGENT_FORGE_WORKTREE_OS_HOME"])
+  : mkdtempSync(join(tmpdir(), "agent-forge-worktree-empty-home-"));
 export const PLAN = join(FIXTURE_ROOT, "fixture-plan.json");
 export const CALLS = join(FIXTURE_ROOT, "git-calls.jsonl");
 
@@ -32,6 +38,19 @@ export function checkedFixtureRoot() {
   )
     throw new Error(
       "The Git browser fixture is outside its owned temporary directory.",
+    );
+  return value;
+}
+export function checkedEmptyHome() {
+  const value = realpathSync.native(EMPTY_HOME);
+  if (
+    lstatSync(EMPTY_HOME).isSymbolicLink() ||
+    realpathSync.native(dirname(value)) !== realpathSync.native(tmpdir()) ||
+    !/^agent-forge-worktree-empty-home-[a-zA-Z0-9]+$/.test(basename(value)) ||
+    resolve(value) === resolve(checkedFixtureRoot())
+  )
+    throw new Error(
+      "The OS home for temporary worktree tests must be a separate, owned temp directory.",
     );
   return value;
 }
@@ -78,6 +97,7 @@ export function prepareRepository() {
   if (existsSync(PLAN)) return;
   mkdirSync(REPOSITORY, { recursive: true });
   mkdirSync(EMPTY_HOME, { recursive: true });
+  checkedEmptyHome();
   mkdirSync(join(EMPTY_HOME, "hooks"), { recursive: true });
   writeFileSync(join(EMPTY_HOME, "empty.gitconfig"), "");
   const git = realGit();
@@ -179,4 +199,5 @@ export function removeRepository() {
   } catch {
     /* Windows may retain the server cwd until teardown; this generated temp directory is never reused. */
   }
+  // EMPTY_HOME is intentionally retained: it may contain the persistent user-global config mutex.
 }
