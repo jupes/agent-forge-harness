@@ -308,8 +308,42 @@ test("whole native Chat history keeps text, command and summary item kinds disti
         lastSequence: mcpFrame.seq,
         request: state.turns[0],
         controllable: false,
-      };
+      },
+      wholeState = { ...state, frames: [...prefix, mcpFrame] };
     expect(ownedCodingPageSchema.safeParse(partialPage).success).toBe(true);
+    expect(ownedCodingStateSchema.safeParse(wholeState).success).toBe(true);
+    for (const binding of [
+      { ...partialPage.binding, sessionId: randomUUID() },
+      { ...partialPage.binding, version: "other" },
+    ]) {
+      expect(
+        ownedCodingPageSchema.safeParse({ ...partialPage, binding }).success,
+      ).toBe(false);
+      expect(
+        ownedCodingStateSchema.safeParse({ ...wholeState, binding }).success,
+      ).toBe(false);
+    }
+    const foreignTurnFrame = structuredClone(mcpFrame);
+    if (
+      foreignTurnFrame.event.kind !== "coding-chat" ||
+      foreignTurnFrame.event.event.kind !== "mcp-tool-call"
+    )
+      throw Error("Missing native MCP fixture frame");
+    foreignTurnFrame.event.event.turnId = randomUUID();
+    const foreignTurnPage = {
+      ...partialPage,
+      frames: [turn, foreignTurnFrame],
+    };
+    const foreignTurnState = {
+      ...wholeState,
+      frames: [...prefix, foreignTurnFrame],
+    };
+    expect(ownedCodingPageSchema.safeParse(foreignTurnPage).success).toBe(
+      false,
+    );
+    expect(ownedCodingStateSchema.safeParse(foreignTurnState).success).toBe(
+      false,
+    );
   } finally {
     await h.close();
   }

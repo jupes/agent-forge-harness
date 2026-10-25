@@ -274,7 +274,8 @@ function reportedTurn(
       (event.event.kind === "command" ||
         event.event.kind === "file-change" ||
         event.event.kind === "reasoning-summary" ||
-        event.event.kind === "turn-plan")
+        event.event.kind === "turn-plan" ||
+        event.event.kind === "mcp-tool-call")
     ) {
       if (
         value.binding?.provider !== "codex" ||
