@@ -27,6 +27,7 @@ import { REVIEW_NOTE_LIMIT } from "../dashboard/forge-run-model";
 import { hashText } from "../hash-text";
 import { createKeeperProposalStore } from "../keeper/proposal-store";
 import { keeperSessionStartReceiptSchema } from "../keeper/session-start-protocol";
+import { keeperShiftStartRequestSchema } from "../keeper/shift-start-protocol";
 import { type AppendResult, appendEvent } from "../ledger/append";
 import { setSessionModel } from "../ledger/session-models";
 import { createProjectStore, projectCatalogPath } from "../projects/store";
@@ -72,6 +73,15 @@ import {
   seedKeeperSessionStartHistory,
   seedKeeperSessionStartSource,
 } from "./routes/keeper-session-start-fixture";
+import {
+  FIXTURE_KEEPER_SHIFT_HISTORY,
+  FIXTURE_KEEPER_SHIFT_HISTORY_REQUEST,
+  FIXTURE_KEEPER_SHIFT_PROPOSAL,
+  FIXTURE_KEEPER_SHIFT_REQUEST,
+  keeperShiftStartFixture,
+  seedKeeperShiftStartHistory,
+  seedKeeperShiftStartSource,
+} from "./routes/keeper-shift-start-fixture";
 import { seedProjectBeadWriteFixture } from "./routes/project-bead-write-fixture";
 import {
   FIXTURE_SHIFT_ATTEMPT_SESSION_ID,
@@ -971,6 +981,58 @@ const ACTIONS: Record<string, ActionFixture> = {
       },
     };
   })(),
+  "POST /projects/:id/keeper/proposals/:proposalId/shift-start": (() => {
+    const valid: ActionFixture["valid"] = {
+      path: `/projects/${FIXTURE_PROJECT_ID}/keeper/proposals/${FIXTURE_KEEPER_SHIFT_PROPOSAL}/shift-start`,
+      body: {},
+      status: 200,
+      target: FIXTURE_KEEPER_SHIFT_PROPOSAL,
+    };
+    return {
+      valid,
+      invalid: { path: valid.path, body: { sourceHash: "invalid" } },
+      prepare: async (h: TestHearth) => {
+        const proposal = (await seedKeeperShiftStartSource(h))[0];
+        if (!proposal) throw new Error("Missing fixture Keeper Shift proposal");
+        const { revision } = await createKeeperProposalStore(h.home).read(
+          FIXTURE_PROJECT_ID,
+        );
+        const collision = (
+          await createKeeperProposalStore(h.home).read(FIXTURE_PROJECT_ID)
+        ).records.find(
+          (record) =>
+            record.id === proposal.id ||
+            record.requestId === FIXTURE_KEEPER_SHIFT_REQUEST,
+        );
+        if (collision)
+          throw new Error(
+            `Keeper Shift API fixture collided with ${collision.id}/${collision.requestId}`,
+          );
+        valid.target = proposal.id;
+        valid.path = `/projects/${FIXTURE_PROJECT_ID}/keeper/proposals/${proposal.id}/shift-start`;
+        valid.body = keeperShiftStartFixture(
+          proposal.sourceHash,
+          FIXTURE_KEEPER_SHIFT_REQUEST,
+          revision,
+        );
+        if (!keeperShiftStartRequestSchema.safeParse(valid.body).success)
+          throw new Error("Invalid fixture Keeper Shift request");
+      },
+      happened: async (h: TestHearth) => {
+        expect(h.events(["operator.action"]).at(-1)?.payload).toMatchObject({
+          action: "keeper.proposal.shift.start",
+          target: valid.target,
+        });
+        const original = await createKeeperProposalStore(h.home).readShiftStart(
+          FIXTURE_PROJECT_ID,
+          valid.target ?? FIXTURE_KEEPER_SHIFT_PROPOSAL,
+        );
+        expect(original?.intent.original).toEqual(
+          keeperShiftStartRequestSchema.parse(valid.body),
+        );
+      },
+    };
+  })(),
   "POST /projects/:id/sessions/preview": {
     valid: {
       path: `/projects/${FIXTURE_PROJECT_ID}/sessions/preview`,
@@ -1772,6 +1834,7 @@ const READS: Record<string, string> = {
   "GET /projects/:id/workbench": `/projects/${FIXTURE_PROJECT_ID}/workbench`,
   "GET /projects/:id/shifts/options": `/projects/${FIXTURE_PROJECT_ID}/shifts/options`,
   "GET /projects/:id/keeper/proposals/:proposalId/session-start": `/projects/${FIXTURE_PROJECT_ID}/keeper/proposals/${FIXTURE_KEEPER_SESSION_HISTORY}/session-start`,
+  "GET /projects/:id/keeper/proposals/:proposalId/shift-start/:requestId": `/projects/${FIXTURE_PROJECT_ID}/keeper/proposals/${FIXTURE_KEEPER_SHIFT_HISTORY}/shift-start/${FIXTURE_KEEPER_SHIFT_HISTORY_REQUEST}`,
   "GET /projects/:id/session-worktrees/:requestId": `/projects/${FIXTURE_PROJECT_ID}/session-worktrees/${FIXTURE_WORKTREE_REQUEST}`,
   "GET /projects/:id/sessions": `/projects/${FIXTURE_PROJECT_ID}/sessions`,
   "GET /projects/:id/session-observations": `/projects/${FIXTURE_PROJECT_ID}/session-observations`,
@@ -2397,9 +2460,10 @@ describe("a read row or the stream while another connection holds the write lock
     await seedProjectShift(h);
     await seedProjectShiftAttempt(h);
     seedProjectBeadWriteFixture(h);
-    activityReadMembership(h);
-    seedSmithVerificationRead(h);
     await seedKeeperSessionStartHistory(h);
+    await seedKeeperShiftStartHistory(h);
+    seedSmithVerificationRead(h);
+    activityReadMembership(h);
     const rows = h.hearth.routes.filter(
       (route) => route.kind === "read" || route.kind === "stream",
     );
@@ -3364,8 +3428,10 @@ describe("every read row (iterating the table)", () => {
     await seedProjectShiftAttempt(h);
     seedProjectBeadWriteFixture(h);
     seedActivityReadFixture(h);
-    seedSmithVerificationRead(h);
     await seedKeeperSessionStartHistory(h);
+    await seedKeeperShiftStartHistory(h);
+    seedSmithVerificationRead(h);
+    activityReadMembership(h);
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");
     for (const row of rows) {
@@ -3397,8 +3463,10 @@ describe("every read row (iterating the table)", () => {
     await seedProjectShiftAttempt(h);
     seedProjectBeadWriteFixture(h);
     const before = seedActivityReadFixture(h);
-    seedSmithVerificationRead(h);
     await seedKeeperSessionStartHistory(h);
+    await seedKeeperShiftStartHistory(h);
+    seedSmithVerificationRead(h);
+    activityReadMembership(h);
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");
     const refused: Array<[string, Record<string, string>]> = [
