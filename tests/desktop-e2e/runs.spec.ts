@@ -27,6 +27,18 @@ const releases: Array<() => void> = [];
 let beforeDispatches: number[] = [];
 let streams = 0;
 let fixture: ReturnType<typeof seedRuns>;
+type RunsFilterEffectGate = {
+  arm(): void;
+  status(): {
+    timerHeld: boolean;
+    frameHeld: boolean;
+    captures: number;
+  };
+  release(): Promise<void>;
+};
+type RunsFilterEffectGateWindow = Window & {
+  __runsFilterEffectGate?: RunsFilterEffectGate;
+};
 function dispatches() {
   return (
     [
@@ -436,6 +448,101 @@ test("scoped Runs keyboard inspection preserves real phase, review and gate trut
 test("Runs filters and verified empty/loading/error states never claim unavailable sources are empty", async ({
   page,
 }) => {
+  await page.addInitScript(() => {
+    const originalSetTimeout = (
+      window.setTimeout as unknown as (
+        callback: TimerHandler,
+        delay?: number,
+        ...args: unknown[]
+      ) => number
+    ).bind(window);
+    const originalClearTimeout = (
+      window.clearTimeout as unknown as (id?: number) => void
+    ).bind(window);
+    const originalRequestAnimationFrame =
+      window.requestAnimationFrame.bind(window);
+    const originalCancelAnimationFrame =
+      window.cancelAnimationFrame.bind(window);
+    const heldTimerId = -1;
+    const heldFrameId = -2;
+    let armed = false;
+    let heldTimer:
+      | { callback: TimerHandler; delay: number; args: unknown[] }
+      | undefined;
+    let heldFrame: FrameRequestCallback | undefined;
+    let captures = 0;
+
+    window.setTimeout = ((
+      callback: TimerHandler,
+      delay?: number,
+      ...args: unknown[]
+    ) => {
+      if (
+        armed &&
+        delay === 35 &&
+        typeof callback === "function" &&
+        !heldTimer
+      ) {
+        const candidate = { callback, delay, args };
+        heldTimer = candidate;
+        queueMicrotask(() => {
+          if (armed && heldTimer === candidate && !heldFrame) {
+            heldTimer = undefined;
+            originalSetTimeout(callback, delay, ...args);
+          }
+        });
+        return heldTimerId;
+      }
+      return originalSetTimeout(callback, delay, ...args);
+    }) as unknown as typeof window.setTimeout;
+    window.clearTimeout = ((id?: number) => {
+      if (id !== heldTimerId) originalClearTimeout(id);
+    }) as unknown as typeof window.clearTimeout;
+    window.requestAnimationFrame = ((callback) => {
+      if (armed && heldTimer && !heldFrame) {
+        heldFrame = callback;
+        captures += 1;
+        return heldFrameId;
+      }
+      return originalRequestAnimationFrame(callback);
+    }) as typeof window.requestAnimationFrame;
+    window.cancelAnimationFrame = ((id) => {
+      if (id !== heldFrameId) originalCancelAnimationFrame(id);
+    }) as typeof window.cancelAnimationFrame;
+
+    (window as RunsFilterEffectGateWindow).__runsFilterEffectGate = {
+      arm() {
+        heldTimer = undefined;
+        heldFrame = undefined;
+        captures = 0;
+        armed = true;
+      },
+      status() {
+        return {
+          timerHeld: !!heldTimer,
+          frameHeld: !!heldFrame,
+          captures,
+        };
+      },
+      async release() {
+        armed = false;
+        const timer = heldTimer;
+        const frame = heldFrame;
+        heldTimer = undefined;
+        heldFrame = undefined;
+        window.setTimeout =
+          originalSetTimeout as unknown as typeof window.setTimeout;
+        window.clearTimeout =
+          originalClearTimeout as unknown as typeof window.clearTimeout;
+        window.requestAnimationFrame = originalRequestAnimationFrame;
+        window.cancelAnimationFrame = originalCancelAnimationFrame;
+        if (frame) frame(performance.now());
+        else if (timer)
+          originalSetTimeout(timer.callback, timer.delay, ...timer.args);
+        await new Promise<void>((resolve) => originalSetTimeout(resolve, 0));
+      },
+    };
+  });
   const entered = held(),
     release = held();
   let fail = false;
@@ -480,12 +587,48 @@ test("Runs filters and verified empty/loading/error states never claim unavailab
   await expect(page.getByLabel("Find runs", { exact: true })).toHaveValue(
     "no matching title",
   );
-  await page.getByRole("button", { name: "Clear run filters" }).click();
-  await expect(table).toBeVisible();
-  await page
-    .getByRole("combobox", { name: "Run mode", exact: true })
-    .selectOption("auto");
+  const runMode = page.getByRole("combobox", { name: "Run mode", exact: true });
+  await page.evaluate(() => {
+    const gate = (window as RunsFilterEffectGateWindow).__runsFilterEffectGate;
+    if (!gate) throw new Error("Runs filter effect gate was not installed");
+    gate.arm();
+  });
+  try {
+    await page.getByRole("button", { name: "Clear run filters" }).click();
+    await expect(
+      table.getByRole("link", { name: "Scoped forge delivery", exact: true }),
+    ).toBeVisible();
+    const heldEffect = await page.evaluate(() => {
+      const gate = (window as RunsFilterEffectGateWindow)
+        .__runsFilterEffectGate;
+      if (!gate) throw new Error("Runs filter effect gate was not installed");
+      return gate.status();
+    });
+    console.log(`Runs filter effect gate: ${JSON.stringify(heldEffect)}`);
+    expect([
+      { timerHeld: false, frameHeld: false, captures: 0 },
+      { timerHeld: true, frameHeld: true, captures: 1 },
+    ]).toContainEqual(heldEffect);
+    await runMode.focus();
+    await runMode.selectOption("auto");
+    await page.evaluate(async () => {
+      const gate = (window as RunsFilterEffectGateWindow)
+        .__runsFilterEffectGate;
+      if (!gate) throw new Error("Runs filter effect gate was not installed");
+      await gate.release();
+    });
+  } finally {
+    await page.evaluate(async () => {
+      const gate = (window as RunsFilterEffectGateWindow)
+        .__runsFilterEffectGate;
+      if (!gate) throw new Error("Runs filter effect gate was not installed");
+      await gate.release();
+    });
+  }
+  await expect(runMode).toHaveValue("auto");
+  await expect(runMode).toBeFocused();
   await page.getByRole("button", { name: "Apply run filters" }).click();
+  await expect(page).toHaveURL(/runMode=auto/);
   await expect(
     table.getByRole("link", { name: "Historical unattended run", exact: true }),
   ).toBeVisible();
