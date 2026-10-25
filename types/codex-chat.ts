@@ -174,6 +174,35 @@ export interface CodexChatMcpToolCall {
   turnStatus: "completed" | "failed" | "interrupted" | null;
 }
 
+/** Native Codex web-search snapshots are supplied reports, never fetch authority. */
+export type CodexChatWebSearchAction =
+  | {
+      type: "search";
+      query: string | null;
+      queries: string[] | null;
+    }
+  | { type: "openPage"; url: string | null }
+  | {
+      type: "findInPage";
+      url: string | null;
+      pattern: string | null;
+    }
+  | { type: "other" };
+
+export interface CodexChatWebSearch {
+  kind: "web-search";
+  source: "item/started" | "item/completed" | "turn/completed";
+  threadId: string;
+  turnId: string;
+  itemId: string;
+  query: ReportedText;
+  action: ReportedJson | null;
+  results: ReportedJson | null;
+  partial: boolean;
+  closure: "open" | "item-ended" | "turn-ended";
+  turnStatus: "completed" | "failed" | "interrupted" | null;
+}
+
 export type CodexChatEvent =
   | {
       kind: "process";
@@ -198,6 +227,7 @@ export type CodexChatEvent =
   | CodexChatTurnPlan
   | CodexChatFileChange
   | CodexChatMcpToolCall
+  | CodexChatWebSearch
   | { kind: "usage"; usage: CodexChatUsage }
   | { kind: "outcome"; outcome: CodexChatOutcome }
   | { kind: "reroute"; fromModel: string; toModel: string; reason: string }

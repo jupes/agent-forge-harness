@@ -24,6 +24,8 @@ redacted reasoning payloads are never reconstructed or retained as visible text.
 
 Native Chat MCP tool-call snapshot rendering and its packaged synthetic smoke
 are documented in [native-chat-mcp-tool-calls](./native-chat-mcp-tool-calls.md).
+Native Chat web-search snapshot boundaries and their pinned app-server contract
+are documented in [native-chat-web-search](./native-chat-web-search.md).
 
 Each report has a literal provider source, checked CLI version and native item
 identity. Text is capped at 16 KiB of UTF-8, JSON at 32 KiB, one event at 64 KiB,

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { KeeperProposal } from "../../types/keeper-proposal";
 import type { KeeperSessionStartRequest } from "../../types/keeper-session-start";
+import type { KeeperShiftStartRequest } from "../../types/keeper-shift-start";
 import { writeOwnerOnly } from "../hearth/token";
 import {
   createKeeperProposalStore,
@@ -58,6 +59,44 @@ const original: KeeperSessionStartRequest = {
         },
       ],
       outputSchema: { type: "object", properties: { ok: { type: "boolean" } } },
+    },
+  },
+};
+const shiftSourceRequestId = "2a5832fa-7a21-403b-8184-44892f0d8d86";
+const shiftProposal: KeeperProposal = {
+  id: `proposal-${shiftSourceRequestId}-0`,
+  projectId,
+  sourceRequestId: shiftSourceRequestId,
+  sourceHash: "c".repeat(64),
+  createdAt: "2026-10-23T04:00:00.000Z",
+  draft: {
+    title: "Review a project Shift",
+    detail: "Review the full bounds before starting",
+    action: {
+      kind: "start-shift",
+      durationMinutes: 45,
+      concurrency: 2,
+      beadLimit: 5,
+      spendLimitUsd: 8,
+    },
+  },
+};
+const shiftOriginal: KeeperShiftStartRequest = {
+  sourceHash: shiftProposal.sourceHash,
+  expectedRevision: 0,
+  start: {
+    requestId: "c14cc7eb-3231-4930-a288-d411c5ee0426",
+    expectedCatalogRevision: 12,
+    options: {
+      for: "45m",
+      concurrency: 2,
+      maxBeads: 9,
+      maxUsd: 12,
+      repairs: 1,
+      base: "main",
+      epic: "cla5.5",
+      smith: "claude-journeyman",
+      runTimeout: "300s",
     },
   },
 };
@@ -268,9 +307,288 @@ test("the first session intent upgrades a legacy journal without losing existing
   expect(readFileSync(keeperProposalFile(home, projectId), "utf8")).toBe(bytes);
 });
 
+test("a Shift review saves both the compact proposal and editable full original before its one effect, then keeps unknown outcomes inert", async () => {
+  const { home, store } = fixture();
+  let prepares = 0,
+    effects = 0;
+  const input = {
+    projectId,
+    proposalId: shiftProposal.id,
+    request: shiftOriginal,
+    auditEventId: 14,
+  };
+  const saved = await store.startShift(input, {
+    async prepare() {
+      prepares++;
+      return { proposal: shiftProposal, workspace: "C:/fixture/repository" };
+    },
+    async execute(intent) {
+      effects++;
+      const durable = await createKeeperProposalStore(home).readShiftStart(
+        projectId,
+        shiftProposal.id,
+      );
+      expect(durable?.intent).toEqual(intent);
+      expect(durable?.intent.proposal).toEqual({
+        durationMinutes: 45,
+        concurrency: 2,
+        beadLimit: 5,
+        spendLimitUsd: 8,
+      });
+      expect(durable?.intent.original).toEqual(shiftOriginal);
+      expect(durable?.record).toMatchObject({
+        phase: "approved",
+        pending: true,
+        auditEventId: 14,
+      });
+      throw Error("Synthetic lost Shift Start response");
+    },
+  });
+  if (!saved) throw new Error("The durable Shift Start receipt is missing.");
+  expect(saved.record.phase).toBe("unknown");
+  expect(saved.record.pending).toBe(false);
+  expect(prepares).toBe(1);
+  expect(effects).toBe(1);
+
+  const restarted = createKeeperProposalStore(home);
+  const retried = await restarted.startShift(input, {
+    async prepare() {
+      throw Error("Exact retry must not reread source or replay.");
+    },
+    async execute() {
+      effects++;
+      return { phase: "done", message: "Must not replay", objects: [] };
+    },
+  });
+  if (!retried) throw new Error("The exact Shift retry lost its original.");
+  expect(retried.intent).toEqual(saved.intent);
+  expect(retried.record.phase).toBe("unknown");
+  expect(effects).toBe(1);
+  const publicPage = await restarted.read(projectId);
+  expect(JSON.stringify(publicPage)).not.toContain('"shiftStarts"');
+  expect(JSON.stringify(publicPage)).not.toContain('"original"');
+
+  const changed = [
+    { ...shiftOriginal, sourceHash: "f".repeat(64) },
+    { ...shiftOriginal, expectedRevision: 1 },
+    {
+      ...shiftOriginal,
+      start: {
+        ...shiftOriginal.start,
+        options: { ...shiftOriginal.start.options, maxUsd: 13 },
+      },
+    },
+    {
+      ...shiftOriginal,
+      start: { ...shiftOriginal.start, requestId: randomUUID() },
+    },
+  ];
+  for (const request of changed)
+    await expect(
+      restarted.startShift(
+        { ...input, request },
+        {
+          async prepare() {
+            prepares++;
+            return {
+              proposal: shiftProposal,
+              workspace: "C:/fixture/repository",
+            };
+          },
+          async execute() {
+            effects++;
+            return { phase: "done", message: "Must not execute", objects: [] };
+          },
+        },
+      ),
+    ).rejects.toThrow();
+  expect(prepares).toBe(1);
+  expect(effects).toBe(1);
+});
+
+test("version 3 preserves session and Shift originals across both admission directions and ordinary dismiss", async () => {
+  const { home, store } = fixture();
+  await store.startSession(
+    { projectId, proposalId: proposal.id, request: original, auditEventId: 3 },
+    {
+      prepare: async () => ({ proposal, workspace: "C:/fixture/repository" }),
+      execute: async () => ({
+        phase: "done",
+        message: "Original session accepted.",
+        objects: [],
+      }),
+    },
+  );
+  const priorSession = await store.readSessionStart(projectId, proposal.id);
+  if (!priorSession) throw new Error("The session intent was not saved.");
+  const collision = {
+    ...shiftOriginal,
+    start: { ...shiftOriginal.start, requestId: original.start.requestId },
+  };
+  await expect(
+    store.startShift(
+      {
+        projectId,
+        proposalId: shiftProposal.id,
+        request: collision,
+        auditEventId: 4,
+      },
+      {
+        prepare: async () => ({
+          proposal: shiftProposal,
+          workspace: "C:/fixture/repository",
+        }),
+        execute: async () => ({
+          phase: "done",
+          message: "Must not execute",
+          objects: [],
+        }),
+      },
+    ),
+  ).rejects.toThrow();
+  const request = { ...shiftOriginal, expectedRevision: 2 };
+  const firstShift = await store.startShift(
+    {
+      projectId,
+      proposalId: shiftProposal.id,
+      request,
+      auditEventId: 5,
+    },
+    {
+      prepare: async () => ({
+        proposal: shiftProposal,
+        workspace: "C:/fixture/repository",
+      }),
+      execute: async () => ({
+        phase: "done",
+        message: "Original Shift accepted.",
+        objects: [],
+      }),
+    },
+  );
+  expect(
+    (
+      await createKeeperProposalStore(home).readSessionStart(
+        projectId,
+        proposal.id,
+      )
+    )?.intent,
+  ).toEqual(priorSession?.intent);
+  expect(
+    (
+      await createKeeperProposalStore(home).readShiftStart(
+        projectId,
+        shiftProposal.id,
+      )
+    )?.intent.original,
+  ).toEqual(request);
+
+  const laterSessionProposal = {
+    ...proposal,
+    id: `proposal-${sourceRequestId}-1`,
+  };
+  const laterSessionRequest: KeeperSessionStartRequest = {
+    ...original,
+    expectedRevision: 4,
+    start: { ...original.start, requestId: randomUUID() },
+  };
+  await store.startSession(
+    {
+      projectId,
+      proposalId: laterSessionProposal.id,
+      request: laterSessionRequest,
+      auditEventId: 6,
+    },
+    {
+      prepare: async () => ({
+        proposal: laterSessionProposal,
+        workspace: "C:/fixture/repository",
+      }),
+      execute: async () => ({
+        phase: "done",
+        message: "Later session accepted.",
+        objects: [],
+      }),
+    },
+  );
+  const dismissedSourceId = "3a5832fa-7a21-403b-8184-44892f0d8d86";
+  const dismissedProposal = {
+    ...shiftProposal,
+    id: `proposal-${dismissedSourceId}-0`,
+    sourceRequestId: dismissedSourceId,
+    sourceHash: "d".repeat(64),
+  };
+  await store.dismiss({
+    projectId,
+    proposal: dismissedProposal,
+    requestId: randomUUID(),
+    expectedRevision: 6,
+    draft: dismissedProposal.draft,
+    auditEventId: 7,
+  });
+  const laterShiftSourceId = "4a5832fa-7a21-403b-8184-44892f0d8d86";
+  const laterShiftProposal: KeeperProposal = {
+    ...shiftProposal,
+    id: `proposal-${laterShiftSourceId}-0`,
+    sourceRequestId: laterShiftSourceId,
+    sourceHash: "e".repeat(64),
+  };
+  const laterShiftRequest: KeeperShiftStartRequest = {
+    ...request,
+    sourceHash: laterShiftProposal.sourceHash,
+    expectedRevision: 7,
+    start: { ...request.start, requestId: randomUUID() },
+  };
+  const laterShift = await store.startShift(
+    {
+      projectId,
+      proposalId: laterShiftProposal.id,
+      request: laterShiftRequest,
+      auditEventId: 8,
+    },
+    {
+      prepare: async () => ({
+        proposal: laterShiftProposal,
+        workspace: "C:/fixture/repository",
+      }),
+      execute: async () => ({
+        phase: "done",
+        message: "Later Shift accepted.",
+        objects: [],
+      }),
+    },
+  );
+  if (!firstShift || !laterShift)
+    throw new Error("A Shift original was not retained in the journal.");
+  const reopened = createKeeperProposalStore(home);
+  expect(
+    (await reopened.readSessionStart(projectId, proposal.id))?.intent,
+  ).toEqual(priorSession.intent);
+  expect(
+    (await reopened.readShiftStart(projectId, shiftProposal.id))?.intent,
+  ).toEqual(firstShift.intent);
+  expect(
+    (await reopened.readSessionStart(projectId, laterSessionProposal.id))
+      ?.intent.original,
+  ).toEqual(laterSessionRequest);
+  expect(
+    (await reopened.readShiftStart(projectId, laterShiftProposal.id))?.intent
+      .original,
+  ).toEqual(laterShiftRequest);
+  const bytes = readFileSync(keeperProposalFile(home, projectId), "utf8");
+  let saved: unknown;
+  try {
+    saved = JSON.parse(bytes);
+  } catch {
+    throw new Error("The upgraded Keeper journal is invalid JSON.");
+  }
+  expect(saved).toMatchObject({ version: 3 });
+});
+
 test("missing audit, refused preparation and corrupt or future journals preserve data and start nothing", async () => {
   const { home, store } = fixture();
-  let effects = 0;
+  let effects = 0,
+    shiftPrepares = 0;
   const input = {
     projectId,
     proposalId: proposal.id,
@@ -286,6 +604,19 @@ test("missing audit, refused preparation and corrupt or future journals preserve
       return { phase: "done" as const, message: "Must not start", objects: [] };
     },
   };
+  const shiftCallbacks = {
+    async prepare() {
+      shiftPrepares++;
+      return {
+        proposal: shiftProposal,
+        workspace: "C:/fixture/repository",
+      };
+    },
+    async execute() {
+      effects++;
+      return { phase: "done" as const, message: "Must not start", objects: [] };
+    },
+  };
   await expect(
     store.startSession({ ...input, auditEventId: 0 }, callbacks),
   ).rejects.toThrow("audit");
@@ -293,14 +624,30 @@ test("missing audit, refused preparation and corrupt or future journals preserve
     "scope refusal",
   );
   expect((await store.read(projectId)).records).toHaveLength(0);
-  for (const bytes of ['{"version":3,"private":"keep"}', "{bad JSON"]) {
+  for (const bytes of [
+    '{"version":3,"private":"keep"}',
+    '{"version":4,"private":"keep"}',
+    "{bad JSON",
+  ]) {
     writeOwnerOnly(keeperProposalFile(home, projectId), bytes);
     await expect(store.startSession(input, callbacks)).rejects.toThrow("kept");
+    await expect(
+      store.startShift(
+        {
+          projectId,
+          proposalId: shiftProposal.id,
+          request: shiftOriginal,
+          auditEventId: 2,
+        },
+        shiftCallbacks,
+      ),
+    ).rejects.toThrow("kept");
     expect(readFileSync(keeperProposalFile(home, projectId), "utf8")).toBe(
       bytes,
     );
   }
   expect(effects).toBe(0);
+  expect(shiftPrepares).toBe(0);
 });
 
 test("row and byte bounds refuse overflow without evicting any original or invoking its effect", async () => {

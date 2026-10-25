@@ -54,6 +54,7 @@ import { createKeeperBriefPreparer } from "./keeper-briefs-source";
 import { keeperProposalRoutes } from "./keeper-proposals";
 import { keeperAboutValidator, keeperReadRoute } from "./keeper-read";
 import { createKeeperSessionStartRoutes } from "./keeper-session-start";
+import { createKeeperShiftStartRoutes } from "./keeper-shift-start";
 import {
   beadsReads,
   fail,
@@ -400,6 +401,11 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     projectSnapshotReader(deps.projectHome, deps, { membershipOnly: true }),
   );
   const scopedShifts = projectShiftRoutes(deps, projectSnapshot);
+  const keeperShiftStarts = createKeeperShiftStartRoutes(
+    deps.projectHome,
+    deps,
+    scopedShifts.service,
+  );
   const conversations = conversationRoutes(
     deps.projectHome,
     deps.root,
@@ -508,6 +514,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     conversations.recovery,
     proposals.read,
     keeperSessionStarts.read,
+    keeperShiftStarts.read,
     ownedSessions.list,
     ownedSessions.read,
     ownedSessions.approvals,
@@ -558,6 +565,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       proposals.approve,
       proposals.dismiss,
       keeperSessionStarts.start,
+      keeperShiftStarts.start,
       conversations.stop,
       ownedSessions.start,
       ownedSessions.preview,
@@ -583,9 +591,10 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       }),
     ],
     close: async () => {
-      scopedShifts.close();
       live.close();
       await providerLogins.close();
+      await keeperShiftStarts.close();
+      scopedShifts.close();
       await keeperSessionStarts.close();
       await ownedSessions.close();
       await proposals.close();

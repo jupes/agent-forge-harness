@@ -17,6 +17,7 @@ import { FIXTURE_PROJECT_ID, projectCatalogFixture } from "../projects/testing";
 import { createSessionRegistry } from "../sessions/registry";
 import { scratchDirs } from "../test-scratch";
 import { createProjectShiftAttemptReader } from "./attempt-read";
+import { runKeeperShiftCompiledProof } from "./keeper-compiled-proof";
 import { createOwnedProjectShiftLauncher } from "./owned-launcher";
 import { projectShiftReceiptSchema } from "./protocol";
 import {
@@ -50,6 +51,7 @@ function parse(text: string): unknown {
 }
 
 test("the actual compiled production hearth executes attended input through fixed bootstrap and sync modes without ambient Bun or source", async () => {
+  let lastCompiledHearth: string | null = null;
   for (const providerKind of ["claude", "codex"] as const) {
     const root = realpathSync.native(scratch.make("compiled attended shift ")),
       home = join(root, "home"),
@@ -107,6 +109,7 @@ test("the actual compiled production hearth executes attended input through fixe
       tools = join(bin, `bd${extension}`),
       toolSource = join(state, "tools.ts");
     compile(join(source, "hearth/compiled-entry.ts"), hearth);
+    lastCompiledHearth = hearth;
     writeFileSync(
       toolSource,
       `import {runAttendedNativeToolFixture} from ${JSON.stringify(join(import.meta.dir, "fixtures/native-tools.ts").replaceAll("\\", "/"))}; await runAttendedNativeToolFixture(${JSON.stringify(root)});`,
@@ -320,4 +323,9 @@ test("the actual compiled production hearth executes attended input through fixe
       JSON.stringify(queryEvents({ workspace: root }, { path: ledger })),
     ).not.toContain(actual.stdin);
   }
+  if (lastCompiledHearth === null)
+    throw new Error(
+      "No compiled production hearth was available for Keeper proof",
+    );
+  await runKeeperShiftCompiledProof(lastCompiledHearth);
 }, 120000);
