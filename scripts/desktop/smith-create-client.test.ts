@@ -1,0 +1,266 @@
+import { expect, test } from "bun:test";
+import { resolve } from "node:path";
+import {
+  createSmithConfigCreateClient,
+  type SmithCreatePostResult,
+} from "../../apps/desktop/src/smith-create-client";
+import {
+  createSmithCreateIdentities,
+  smithConfigCreateInputHash,
+} from "../../apps/desktop/src/smith-create-identities";
+import type {
+  SmithConfigCreateReceipt,
+  SmithConfigCreateRequest,
+  SmithConfigPreview,
+  SmithConfigPreviewRequest,
+} from "../../types/smith-config-create";
+
+const scope = "http://127.0.0.1:8888",
+  ids = [
+    "18da5c95-3218-439c-a33d-e5662465f505",
+    "28da5c95-3218-439c-a33d-e5662465f506",
+  ];
+const smith = {
+  name: "codex-new-smith",
+  provider: "codex",
+  model: "gpt-example-exact",
+  effort: "high",
+  enabled: true,
+  tags: ["reviewed"],
+};
+const revision = {
+  version: 1 as const,
+  user: "a".repeat(64),
+  workspace: "b".repeat(64),
+};
+const file = "C:\\fixture\\agent-forge.toml";
+function preview(input: SmithConfigPreviewRequest): SmithConfigPreview {
+  return {
+    version: 1,
+    target: input.target,
+    file,
+    expectedRevision: revision,
+    candidate: { sha256: "c".repeat(64), byteLength: 100, created: false },
+    review: {
+      before: null,
+      after: structuredClone(input.smith),
+      provenance: {
+        provider: file,
+        model: file,
+        effort: file,
+        enabled: file,
+        tags: file,
+      },
+    },
+  };
+}
+async function receipt(
+  request: SmithConfigCreateRequest,
+  result: SmithConfigCreateReceipt["result"] = {
+    phase: "confirmed",
+    completedAt: "2026-10-25T20:00:00.000Z",
+    preview: preview(request),
+    publication: { file, created: false, sha256: "c".repeat(64) },
+  },
+): Promise<SmithConfigCreateReceipt> {
+  return {
+    version: 1,
+    requestId: request.requestId,
+    ownerScopeHash: "d".repeat(64),
+    inputHash: await smithConfigCreateInputHash(request),
+    createdAt: "2026-10-25T19:59:00.000Z",
+    original: structuredClone(request),
+    result,
+  };
+}
+function setup(
+  options: {
+    canWrite?: () => boolean;
+    post?: (
+      request: SmithConfigCreateRequest,
+    ) => Promise<SmithCreatePostResult>;
+    preview?: (input: SmithConfigPreviewRequest) => Promise<unknown>;
+    readOriginal?: (requestId: string) => Promise<unknown>;
+  } = {},
+) {
+  const values = new Map<string, string>();
+  const storage = {
+    getItem(key: string) {
+      return values.get(key) ?? null;
+    },
+    setItem(key: string, value: string) {
+      values.set(key, value);
+    },
+  };
+  let locked = false,
+    nextId = 0;
+  const identities = createSmithCreateIdentities({
+    scope,
+    storage,
+    withLock: async <T>(work: () => T | Promise<T>) => {
+      if (locked) throw Error("lock was not serialized");
+      locked = true;
+      try {
+        return await work();
+      } finally {
+        locked = false;
+      }
+    },
+  });
+  const posted: SmithConfigCreateRequest[] = [],
+    readIds: string[] = [];
+  const client = createSmithConfigCreateClient({
+    identities,
+    canWrite: options.canWrite ?? (() => true),
+    requestId: () => ids[nextId++] ?? ids[ids.length - 1]!,
+    preview: options.preview ?? (async (input) => preview(input)),
+    post: async (request) => {
+      posted.push(structuredClone(request));
+      return (
+        options.post?.(request) ??
+        Promise.resolve({ state: "sent", value: await receipt(request) })
+      );
+    },
+    readOriginal: async (requestId) => {
+      readIds.push(requestId);
+      return options.readOriginal?.(requestId) ?? null;
+    },
+  });
+  return { client, identities, storage, posted, readIds };
+}
+
+test("create requires a current reviewed preview and an identity that read-backs before the one POST", async () => {
+  const value = setup();
+  value.client.setDraft("workspace", smith);
+  await value.client.create();
+  expect(value.posted).toHaveLength(0);
+  await value.client.preview();
+  expect(value.client.get().preview?.file).toBe(file);
+  await value.client.create();
+  expect(value.posted).toHaveLength(1);
+  const posted = value.posted[0];
+  if (!posted) throw Error("Missing create request");
+  expect(value.identities.read(posted.requestId)).toMatchObject({
+    requestId: posted.requestId,
+    target: "workspace",
+    scope,
+    inputHash: await smithConfigCreateInputHash(posted),
+  });
+  expect(value.client.get().entries[0]).toMatchObject({
+    state: "confirmed",
+    receipt: { original: posted, result: { phase: "confirmed" } },
+  });
+  value.client.dispose();
+});
+
+test("editing invalidates preview and a sent generic 503 stays held through reload and GET-only recovery", async () => {
+  const first = setup({
+    post: async () => ({
+      state: "sent",
+      value: { ok: false, error: "unavailable" },
+    }),
+    readOriginal: async () => ({ ok: false, error: "No saved original" }),
+  });
+  first.client.setDraft("workspace", smith);
+  await first.client.preview();
+  first.client.setDraft("workspace", { ...smith, model: "changed-model" });
+  expect(first.client.get().preview).toBeNull();
+  await first.client.create();
+  expect(first.posted).toHaveLength(0);
+  await first.client.preview();
+  await first.client.create();
+  expect(first.posted).toHaveLength(1);
+  const heldId = first.posted[0]?.requestId;
+  if (!heldId) throw Error("Missing held request id");
+  expect(first.client.get().entries[0]?.state).toBe("held");
+  first.client.dispose();
+
+  const restarted = createSmithConfigCreateClient({
+    identities: first.identities,
+    canWrite: () => true,
+    requestId: () => ids[1]!,
+    preview: async () => {
+      throw Error("Recovery must not prepare a new preview");
+    },
+    post: async () => {
+      throw Error("Recovery must never resend a create");
+    },
+    readOriginal: async (requestId) => {
+      first.readIds.push(requestId);
+      return { ok: false, error: "No saved original" };
+    },
+  });
+  await restarted.recover();
+  expect(first.readIds).toEqual([heldId]);
+  expect(first.posted).toHaveLength(1);
+  expect(restarted.get().entries).toMatchObject([
+    { identity: { requestId: heldId }, request: null, state: "held" },
+  ]);
+  restarted.dispose();
+});
+
+test("only an exact correlated preattempt refusal permits a new explicit UUID", async () => {
+  let calls = 0;
+  const value = setup({
+    post: async (request) => {
+      calls++;
+      return {
+        state: "sent",
+        value:
+          calls === 1
+            ? await receipt(request, {
+                phase: "refused",
+                refusedAt: "2026-10-25T20:00:00.000Z",
+                reason: "stale-revision",
+                preview: preview(request),
+              })
+            : await receipt(request),
+      };
+    },
+  });
+  value.client.setDraft("workspace", smith);
+  await value.client.preview();
+  await value.client.create();
+  expect(value.client.get().entries[0]?.state).toBe("refused");
+  await value.client.preview();
+  await value.client.create();
+  expect(value.posted.map((request) => request.requestId)).toEqual(ids);
+  expect(value.client.get().entries.map((entry) => entry.state)).toEqual([
+    "refused",
+    "confirmed",
+  ]);
+  value.client.dispose();
+});
+
+test("NotSent is distinct and never turns a later generic response into a refusal", async () => {
+  const value = setup({
+    post: async () => ({
+      state: "not-sent",
+      message: "Operator token unavailable.",
+    }),
+  });
+  value.client.setDraft("workspace", smith);
+  await value.client.preview();
+  await value.client.create();
+  expect(value.client.get().entries[0]).toMatchObject({ state: "not-sent" });
+  expect(value.client.get().entries[0]?.notice).toContain(
+    "No request was sent",
+  );
+  expect(value.posted).toHaveLength(1);
+  value.client.dispose();
+});
+
+test("the renderer create dependency graph bundles for a browser without server journal or Node filesystem modules", async () => {
+  const result = await Bun.build({
+    entrypoints: [
+      resolve(import.meta.dir, "../../apps/desktop/src/smith-create-client.ts"),
+    ],
+    target: "browser",
+  });
+  expect(result.success).toBe(true);
+  const bundle = (
+    await Promise.all(result.outputs.map((output) => output.text()))
+  ).join("\n");
+  expect(bundle).not.toMatch(/node:(?:crypto|fs|path|sqlite)/);
+  expect(bundle).not.toContain("smith-create-journal");
+});
