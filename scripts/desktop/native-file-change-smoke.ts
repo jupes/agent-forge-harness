@@ -301,9 +301,10 @@ export async function verifyNativeFileChanges<Socket extends EventTarget>(
     await tools.evaluate(socket, `${report}.querySelector('summary').focus()`);
     await tools.pressTab(socket);
     try {
+      const focusPredicate = hasVisibleNativePatchFocus.toString();
       await tools.waitForPage(
         socket,
-        `(() => {const d=${report},p=d?.querySelector('pre'),style=p?getComputedStyle(p):null;let specified=null;try{for(const sheet of document.styleSheets)for(const rule of sheet.cssRules??[])if(rule.selectorText===':focus-visible'){const value=Number.parseFloat(rule.style.getPropertyValue('outline-width')||rule.style.getPropertyValue('outline'));if(Number.isFinite(value))specified=value;}}catch{}const width=style?Number.parseFloat(style.outlineWidth):NaN,dpr=devicePixelRatio;return document.activeElement===p&&p?.matches(':focus-visible')===true&&style?.outlineStyle==='solid'&&specified===2&&Number.isFinite(width)&&width>0&&Number.isFinite(dpr)&&dpr>0&&Math.abs(width-2)*dpr<1;})()`,
+        `(() => {const d=${report},p=d?.querySelector('pre'),style=p?getComputedStyle(p):null;let specified=null;try{for(const sheet of document.styleSheets)for(const rule of sheet.cssRules??[])if(rule.selectorText===':focus-visible'){const value=Number.parseFloat(rule.style.getPropertyValue('outline-width')||rule.style.getPropertyValue('outline'));if(Number.isFinite(value))specified=value;}}catch{}const width=style?Number.parseFloat(style.outlineWidth):NaN,dpr=devicePixelRatio,proof=${focusPredicate};return proof({activeIsPre:document.activeElement===p,focusVisible:p?.matches(':focus-visible')===true,outlineStyle:style?.outlineStyle,specifiedCssPx:specified,outlineWidthCssPx:width,dpr});})()`,
         "The packaged native patch region did not support visible keyboard focus.",
       );
     } catch (error) {

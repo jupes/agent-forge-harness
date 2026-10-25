@@ -121,7 +121,8 @@ test("the native file probe observes reads without refusing and cleans its local
       remove = spyOn(socket, "removeEventListener"),
       expressions: string[] = [],
       cause = Error("Original native page assertion");
-    let screenshot = false;
+    let screenshot = false,
+      focusExpression = "";
     const tools = {
       async evaluate(_socket: EventTarget, expression: string) {
         expressions.push(expression);
@@ -133,6 +134,7 @@ test("the native file probe observes reads without refusing and cleans its local
       async waitForPage(_socket: EventTarget, expression: string) {
         // Compile the actual WebView expression without executing any DOM or I/O.
         new Function(`return (${expression});`);
+        if (expression.includes("focusVisible")) focusExpression = expression;
         if (fail) throw cause;
       },
       async pressTab() {
@@ -157,6 +159,8 @@ test("the native file probe observes reads without refusing and cleans its local
       ).rejects.toBe(cause);
     else await verifyNativeFileChanges(socket, record, home, tools);
     expect(screenshot).toBe(fail);
+    if (!fail)
+      expect(focusExpression).toContain(hasVisibleNativePatchFocus.toString());
     expect(remove).toHaveBeenCalledTimes(1);
     expect(expressions.at(-1)).toBe('location.hash="#/desktop/projects"');
   }
