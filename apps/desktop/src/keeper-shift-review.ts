@@ -34,6 +34,8 @@ export interface KeeperShiftReviewState {
   revision: number;
   options: ProjectShiftOptions | null;
   workspace: string | null;
+  /** Current workspace and Start availability were checked for the held original. */
+  scopeVerified: boolean;
   draft: ProjectShiftDraft | null;
   requestId: string | null;
   original: KeeperShiftStartRequest | null;
@@ -87,6 +89,7 @@ export function createKeeperShiftReview(
     revision,
     options: null,
     workspace: null,
+    scopeVerified: false,
     draft: null,
     requestId: null,
     original: null,
@@ -108,19 +111,35 @@ export function initializeKeeperShiftReview(
       ? state.requestId
       : shiftRequestIdSchema.parse(knownRequestId);
   if (options.projectId !== state.source.projectId)
-    return holdKeeperShiftReview(
-      state,
-      "Current Shift options belong to another project.",
-    );
+    return {
+      ...holdKeeperShiftReview(
+        state,
+        "Current Shift options belong to another project.",
+      ),
+      scopeVerified: false,
+    };
   let workspace: string;
   try {
     workspace = workspaceKey(options.workspace);
   } catch {
-    return holdKeeperShiftReview(
-      state,
-      "The current Shift workspace could not be verified.",
-    );
+    return {
+      ...holdKeeperShiftReview(
+        state,
+        "The current Shift workspace could not be verified.",
+      ),
+      scopeVerified: false,
+    };
   }
+  if (state.original !== null && state.workspace !== workspace)
+    return {
+      ...state,
+      options: structuredClone(options),
+      scopeVerified: false,
+      draft: savedDraft(state.original),
+      status: "held",
+      notice:
+        "The current project workspace changed. The exact saved original and UUID are retained; no request was sent.",
+    };
   const draft = state.original
     ? savedDraft(state.original)
     : prefillKeeperShiftDraft(state.source, options);
@@ -129,6 +148,9 @@ export function initializeKeeperShiftReview(
       ...state,
       options: structuredClone(options),
       workspace,
+      scopeVerified:
+        options.availability.start &&
+        (state.original === null || state.workspace === workspace),
       draft,
       status: "held",
       notice:
@@ -139,6 +161,9 @@ export function initializeKeeperShiftReview(
       ...state,
       options: structuredClone(options),
       workspace,
+      scopeVerified:
+        options.availability.start &&
+        (state.original === null || state.workspace === workspace),
       draft,
       requestId: id,
       status: "held",
@@ -150,6 +175,7 @@ export function initializeKeeperShiftReview(
       ...state,
       options: structuredClone(options),
       workspace,
+      scopeVerified: false,
       draft,
       status: "held",
       notice:
@@ -160,6 +186,7 @@ export function initializeKeeperShiftReview(
     ...state,
     options: structuredClone(options),
     workspace,
+    scopeVerified: true,
     draft,
     status: "ready",
     notice:
@@ -320,6 +347,7 @@ export async function acceptKeeperShiftReceipt(
   return {
     ...state,
     workspace: workspaceKey(receipt.workspace),
+    scopeVerified: true,
     requestId: receipt.original.start.requestId,
     original: structuredClone(receipt.original),
     receipt: structuredClone(receipt),

@@ -634,20 +634,116 @@ test("closing after explicit Start owns identity reservation does not strand the
   await reserveStarted;
   expect(review.state.original).toEqual(fullRequest());
   owner.close(review);
-  writable = false;
   finishReservation(await backing.reserve(source, workspace, () => requestId));
   await starting;
-  expect(calls).toHaveLength(0);
-  expect(review.state.requestId).toBe(requestId);
-  expect(review.state.original).toEqual(fullRequest());
-  expect(review.state.status).toBe("held");
-
-  writable = true;
-  await owner.retry(review);
   expect(calls).toEqual([fullRequest()]);
   expect(review.state.requestId).toBe(requestId);
   expect(review.state.status).toBe("recorded");
   owner.dispose();
+});
+
+test("retry refuses a retained original when the project workspace was retargeted", async () => {
+  const backing = identities();
+  let currentOptions = shiftOptions(),
+    reservations = 0;
+  const calls: KeeperShiftStartRequest[] = [];
+  const owner = createKeeperShiftReviewOwner({
+    canWrite: () => true,
+    requestId: () => requestId,
+    identities: {
+      read: backing.read,
+      reserve: async (...args) => {
+        reservations += 1;
+        return await backing.reserve(...args);
+      },
+    },
+    readOptions: async () => currentOptions,
+    readOriginal: async () => null,
+    postStart: async (_projectId, _proposalId, request) => {
+      calls.push(structuredClone(request));
+      return { state: "unknown", message: "The Start reply was lost." };
+    },
+  });
+  const review = owner.get(source, 4);
+  await owner.open(review);
+  owner.edit(review, {
+    for: "90m",
+    concurrency: "3",
+    maxBeads: "8",
+    maxUsd: "12",
+    repairs: "3",
+    epic: "alpha-epic",
+    smith: "claude-journeyman",
+    runTimeout: "10m",
+  });
+  await owner.start(review);
+  expect(review.state.original).toEqual(fullRequest());
+  expect(reservations).toBe(1);
+  expect(calls).toHaveLength(1);
+
+  currentOptions = { ...shiftOptions(), workspace: "C:/retargeted" };
+  await owner.check(review);
+  expect(review.state.scopeVerified).toBe(false);
+  expect(review.state.workspace).toBe(workspace.toLowerCase());
+  expect(review.state.requestId).toBe(requestId);
+  expect(review.state.original).toEqual(fullRequest());
+  await owner.retry(review);
+  expect(review.state.scopeVerified).toBe(false);
+  expect(review.state.original).toEqual(fullRequest());
+  expect(reservations).toBe(1);
+  expect(calls).toHaveLength(1);
+  owner.dispose();
+});
+
+test("retry keeps the UUID and original when current options are archived or unavailable", async () => {
+  for (const current of [
+    { ...shiftOptions(), availability: { start: false, reason: "Archived." } },
+    new Error("Options are offline."),
+  ]) {
+    const backing = identities();
+    let optionsReads = 0;
+    const calls: KeeperShiftStartRequest[] = [];
+    const owner = createKeeperShiftReviewOwner({
+      canWrite: () => true,
+      requestId: () => requestId,
+      identities: backing,
+      readOptions: async () => {
+        optionsReads += 1;
+        if (optionsReads === 1) return shiftOptions();
+        if (current instanceof Error) throw current;
+        return current;
+      },
+      readOriginal: async () => null,
+      postStart: async (_projectId, _proposalId, request) => {
+        calls.push(structuredClone(request));
+        return { state: "unknown", message: "The Start reply was lost." };
+      },
+    });
+    const review = owner.get(source, 4);
+    await owner.open(review);
+    owner.edit(review, {
+      for: "90m",
+      concurrency: "3",
+      maxBeads: "8",
+      maxUsd: "12",
+      repairs: "3",
+      epic: "alpha-epic",
+      smith: "claude-journeyman",
+      runTimeout: "10m",
+    });
+    await owner.start(review);
+    const original = structuredClone(review.state.original);
+    expect(original).toEqual(fullRequest());
+
+    await owner.check(review);
+    expect(review.state.scopeVerified).toBe(false);
+    await owner.retry(review);
+    expect(review.state.requestId).toBe(requestId);
+    expect(review.state.original).toEqual(original);
+    expect(review.state.scopeVerified).toBe(false);
+    expect(calls).toHaveLength(1);
+    owner.dispose();
+  }
 });
 
 test("an uncertain identity save retains the full request so an explicit retry can reserve and deliver it unchanged", async () => {

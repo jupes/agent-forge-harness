@@ -1,4 +1,5 @@
 import type { ActionOutcome } from "../../../docs/js/action-outcome";
+import { workspaceKey } from "../../../scripts/projects/scope";
 import { projectShiftOptionsSchema } from "../../../scripts/shifts/protocol";
 import type { KeeperProposal } from "../../../types/keeper-proposal";
 import type { KeeperShiftStartRequest } from "../../../types/keeper-shift-start";
@@ -115,6 +116,8 @@ export function createKeeperShiftReviewOwner(deps: {
     }
     const generation = ++entry.readGeneration;
     entry.loading = true;
+    if (entry.state.original)
+      entry.state = { ...entry.state, scopeVerified: false };
     tell(entry);
     try {
       const savedIdentity = deps.identities.read(entry.state.source);
@@ -136,6 +139,16 @@ export function createKeeperShiftReviewOwner(deps: {
         checked.data.projectId !== entry.state.source.projectId
       )
         throw Error("Current Shift options belong to another project.");
+      if (entry.state.original) {
+        if (
+          !checked.data.availability.start ||
+          !entry.state.workspace ||
+          workspaceKey(checked.data.workspace) !== entry.state.workspace
+        )
+          throw Error(
+            "The current project workspace or Start availability changed. The saved original is retained; review its current scope before retrying.",
+          );
+      }
       const held = deps.identities.read(
         entry.state.source,
         checked.data.workspace,
@@ -155,13 +168,16 @@ export function createKeeperShiftReviewOwner(deps: {
       );
       if (requestId !== null) await readOriginal(entry, requestId, generation);
     } catch (error) {
-      if (isReadCurrent(entry, generation))
+      if (isReadCurrent(entry, generation)) {
+        if (entry.state.original)
+          entry.state = { ...entry.state, scopeVerified: false };
         hold(
           entry,
           error instanceof Error
             ? `${error.message} The saved identity is kept; check the original before continuing.`
             : "The current Shift review could not be checked. Its saved identity is kept.",
         );
+      }
     } finally {
       if (isReadCurrent(entry, generation)) {
         entry.loading = false;
@@ -367,8 +383,30 @@ export function createKeeperShiftReviewOwner(deps: {
         return;
       entry.starting = true;
       const generation = ++entry.deliveryGeneration;
+      entry.state = { ...entry.state, scopeVerified: false };
       tell(entry);
       try {
+        const checked = projectShiftOptionsSchema.safeParse(
+          await deps.readOptions(entry.state.source.projectId),
+        );
+        if (!isDeliveryCurrent(entry, generation)) return;
+        if (
+          !checked.success ||
+          checked.data.projectId !== entry.state.source.projectId ||
+          !checked.data.availability.start ||
+          workspaceKey(checked.data.workspace) !== workspace
+        ) {
+          hold(
+            entry,
+            "The current project workspace or Start availability changed. The saved UUID and exact original are retained; no request was sent.",
+          );
+          return;
+        }
+        entry.state = {
+          ...entry.state,
+          options: structuredClone(checked.data),
+          scopeVerified: true,
+        };
         const held = requestId
           ? deps.identities.read(entry.state.source, workspace)
           : await deps.identities.reserve(
@@ -403,13 +441,15 @@ export function createKeeperShiftReviewOwner(deps: {
         }
         await sendOriginal(entry, original, generation);
       } catch (error) {
-        if (isDeliveryCurrent(entry, generation))
+        if (isDeliveryCurrent(entry, generation)) {
+          entry.state = { ...entry.state, scopeVerified: false };
           hold(
             entry,
             error instanceof Error
               ? `${error.message} ${checkMessage}`
               : `The original Shift identity could not be verified. ${checkMessage}`,
           );
+        }
       } finally {
         entry.starting = false;
         if (isDeliveryCurrent(entry, generation)) tell(entry);
