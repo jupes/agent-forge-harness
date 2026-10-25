@@ -28,6 +28,10 @@ import {
   type NativeChatTurnPlanReport,
   nativeChatTurnPlan,
 } from "./native-chat-turn-plan";
+import {
+  type NativeChatWebSearchReport,
+  nativeChatWebSearches,
+} from "./native-chat-web-search";
 
 export interface NativeChatCommandReport {
   version: string;
@@ -43,6 +47,7 @@ export interface OwnedSessionTurn {
   nativeCommands: NativeChatCommandReport[];
   nativeFileChanges: NativeChatFileChangeReport[];
   nativeMcpToolCalls: NativeChatMcpToolCallReport[];
+  nativeWebSearches: NativeChatWebSearchReport[];
   nativeSummaries: NativeChatReasoningReport[];
   nativePlan: NativeChatTurnPlanReport | null;
   usage: ClaudeCodingUsageEvent | CodexCodingUsageEvent | null;
@@ -63,6 +68,7 @@ export function ownedSessionTurn(
     nativeCommands: [],
     nativeFileChanges: nativeChatFileChanges(page, turnId),
     nativeMcpToolCalls: nativeChatMcpToolCalls(page, turnId),
+    nativeWebSearches: nativeChatWebSearches(page, turnId),
     nativeSummaries: nativeChatReasoningSummaries(page, turnId),
     nativePlan: nativeChatTurnPlan(page, turnId),
     usage: null,

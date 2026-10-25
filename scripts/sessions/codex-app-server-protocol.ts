@@ -11,6 +11,8 @@ import type {
   CodexChatReasoningSummary,
   CodexChatTurnPlan,
   CodexChatUsage,
+  CodexChatWebSearch,
+  CodexChatWebSearchAction,
   PreparedCodexChat,
 } from "../../types/codex-chat";
 import {
@@ -348,6 +350,38 @@ const nativeMcpToolCall = z
     durationMs: z.number().safe().nonnegative().nullable(),
   })
   .strict();
+const nativeWebSearchAction = z.discriminatedUnion("type", [
+  z
+    .object({
+      type: z.literal("search"),
+      query: z.string().max(1_048_576).optional(),
+      queries: z.array(z.string().max(1_048_576)).max(4096).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("open_page"),
+      url: z.string().max(1_048_576).optional(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("find_in_page"),
+      url: z.string().max(1_048_576).optional(),
+      pattern: z.string().max(1_048_576).optional(),
+    })
+    .strict(),
+  z.object({ type: z.literal("other") }).strict(),
+]) satisfies z.ZodType<CodexChatWebSearchAction>;
+const nativeWebSearch = z
+  .object({
+    type: z.literal("webSearch"),
+    id,
+    query: z.string().max(1_048_576),
+    action: nativeWebSearchAction.nullable(),
+    results: z.array(jsonValue).max(4096).nullable(),
+  })
+  .strict();
 const nativeTurnPlan = z.object({
   explanation: z.string().max(1_048_576).nullable(),
   plan: z
@@ -437,6 +471,12 @@ export function createCodexChatStream(options: {
         completed: string | null;
         turnStatus: "completed" | "failed" | "interrupted" | null;
       };
+      webSearch?: {
+        identity: string;
+        started: string | null;
+        completed: string | null;
+        turnStatus: "completed" | "failed" | "interrupted" | null;
+      };
     }
   >();
   const scoped = (params: Record<string, unknown>, requireTurn = true) => {
@@ -489,7 +529,8 @@ export function createCodexChatStream(options: {
       | CodexChatReasoningSummary
       | CodexChatTurnPlan
       | CodexChatFileChange
-      | CodexChatMcpToolCall,
+      | CodexChatMcpToolCall
+      | CodexChatWebSearch,
   ): CodexChatEvent[] => {
     const bytes = encoder.encode(JSON.stringify(report)).byteLength;
     if (bytes > SESSION_ACTIVITY_LIMITS.eventBytes)
@@ -736,6 +777,108 @@ export function createCodexChatStream(options: {
       text: "",
       completed: source !== "item/started",
       mcpToolCall: {
+        identity,
+        started:
+          source === "item/started" ? snapshot : (prior?.started ?? null),
+        completed: source === "item/started" ? null : snapshot,
+        turnStatus,
+      },
+    });
+    return richReport(report);
+  };
+  const webSearch = (
+    value: unknown,
+    source: CodexChatWebSearch["source"],
+    turnStatus: CodexChatWebSearch["turnStatus"] = null,
+  ): CodexChatEvent[] => {
+    if (!threadId || !turnId)
+      throw Error("Codex web-search report has no owned native turn identity.");
+    const current = nativeWebSearch.parse(value),
+      previous = items.get(current.id),
+      prior = previous?.webSearch,
+      identity = current.query,
+      snapshot = JSON.stringify([
+        current.query,
+        current.action,
+        current.results,
+      ]);
+    if (previous && previous.type !== "webSearch")
+      throw Error("Codex web-search item identity changed.");
+    if ((source === "turn/completed") !== (turnStatus !== null))
+      throw Error("Codex web-search closure conflicts with its turn status.");
+    if (prior && prior.identity !== identity)
+      throw Error("Codex web-search query changed across snapshots.");
+    if (previous?.completed) {
+      if (source === "item/completed" && prior?.completed === snapshot)
+        return [];
+      if (source !== "turn/completed" || prior?.completed !== snapshot)
+        throw Error("Codex web-search changed after its completed report.");
+      if (prior.turnStatus !== null) {
+        if (prior.turnStatus !== turnStatus)
+          throw Error(
+            "Codex web-search final turn status conflicts with its original.",
+          );
+        return [];
+      }
+    }
+    if (source === "item/started" && prior?.started) {
+      if (prior.started === snapshot) return [];
+      throw Error(
+        "Codex web-search started report conflicts with its original.",
+      );
+    }
+    if (!previous && items.size >= 256)
+      throw Error("Codex items exceed their protocol bound.");
+
+    let remaining = SESSION_ACTIVITY_LIMITS.textBytes;
+    const retainText = (raw: string) => {
+      const normalized = reportedText(raw),
+        retained = prefix(normalized.text, remaining);
+      remaining -= retained.bytes;
+      return {
+        text: retained.text,
+        truncated:
+          normalized.truncated || retained.text.length < normalized.text.length,
+      };
+    };
+    const retainJson = (raw: unknown) => {
+      const normalized = reportedJson(raw),
+        retained = prefix(normalized.json, remaining);
+      remaining -= retained.bytes;
+      return {
+        json: retained.text,
+        truncated:
+          normalized.truncated || retained.text.length < normalized.json.length,
+        ...(normalized.omitted === undefined
+          ? {}
+          : { omitted: normalized.omitted }),
+      };
+    };
+    const report: CodexChatWebSearch = {
+      kind: "web-search",
+      source,
+      threadId,
+      turnId,
+      itemId: current.id,
+      query: retainText(current.query),
+      action: current.action === null ? null : retainJson(current.action),
+      results: current.results === null ? null : retainJson(current.results),
+      partial:
+        source === "item/started" ||
+        (source === "turn/completed" && turnStatus !== "completed"),
+      closure:
+        source === "turn/completed"
+          ? "turn-ended"
+          : source === "item/completed"
+            ? "item-ended"
+            : "open",
+      turnStatus,
+    };
+    items.set(current.id, {
+      type: "webSearch",
+      text: "",
+      completed: source !== "item/started",
+      webSearch: {
         identity,
         started:
           source === "item/started" ? snapshot : (prior?.started ?? null),
@@ -1250,6 +1393,8 @@ export function createCodexChatStream(options: {
             events.push(
               ...mcpToolCall(value, "turn/completed", finished.status),
             );
+          else if (final.type === "webSearch")
+            events.push(...webSearch(value, "turn/completed", finished.status));
         }
         terminal = finished.status;
       } else if (frame.method === "turn/plan/updated") {
@@ -1371,6 +1516,8 @@ export function createCodexChatStream(options: {
           events.push(...fileChange(params.item, frame.method));
         else if (current.type === "mcpToolCall")
           events.push(...mcpToolCall(params.item, frame.method));
+        else if (current.type === "webSearch")
+          events.push(...webSearch(params.item, frame.method));
         else if (current.type === "agentMessage")
           events.push(
             ...message(

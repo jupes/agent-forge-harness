@@ -15,6 +15,7 @@ import {
   codexChatPrivateEventSchema,
   codexChatReasoningSummarySchema,
   codexChatTurnPlanSchema,
+  codexChatWebSearchSchema,
 } from "./codex-chat-owned-journal";
 import {
   ownedCodingPageSchema,
@@ -153,6 +154,187 @@ test("private native MCP snapshots keep null, empty, error and closure facts dis
       },
     }).success,
   ).toBe(true);
+});
+
+test("private native web-search snapshots retain nullable versus empty JSON and validate the pinned action union", () => {
+  const started = {
+    kind: "web-search",
+    source: "item/started",
+    threadId: "0199a213-81c0-7800-8aa1-bbab2a035a53",
+    turnId: "0199a213-81c0-7800-8aa1-bbab2a035a54",
+    itemId: "native-web-search",
+    query: { text: "find docs", truncated: false },
+    action: null,
+    results: null,
+    partial: true,
+    closure: "open",
+    turnStatus: null,
+  };
+  expect(codexChatWebSearchSchema.safeParse(started).success).toBe(true);
+  const completed = {
+    ...started,
+    source: "item/completed",
+    action: {
+      json: '{"type":"search","query":"find docs","queries":["docs"]}',
+      truncated: false,
+    },
+    results: { json: "[]", truncated: false },
+    partial: false,
+    closure: "item-ended",
+  };
+  expect(codexChatWebSearchSchema.safeParse(completed).success).toBe(true);
+  expect(completed.results).not.toEqual(started.results);
+  const privateEvent = {
+    kind: "coding-chat",
+    provider: "codex",
+    version: "0.163.0-alpha.10.2",
+    event: completed,
+  };
+  expect(codexChatPrivateEventSchema.safeParse(privateEvent).success).toBe(
+    true,
+  );
+  expect(eventSchema.safeParse(privateEvent).success).toBe(false);
+  for (const change of [
+    {
+      action: { json: '{"type":"other","url":"unexpected"}', truncated: false },
+    },
+    { action: { json: '{"type":"unknown"}', truncated: false } },
+    { results: { json: "{}", truncated: false } },
+    { status: "completed" },
+    { durationMs: 10 },
+    { source: "item/webSearch/progress" },
+    { closure: "turn-ended" },
+    { partial: true },
+    { itemId: undefined },
+  ])
+    expect(
+      codexChatWebSearchSchema.safeParse({ ...completed, ...change }).success,
+    ).toBe(false);
+  expect(
+    codexChatWebSearchSchema.safeParse({
+      ...completed,
+      source: "turn/completed",
+      partial: true,
+      closure: "turn-ended",
+      turnStatus: "interrupted",
+      results: { json: "", truncated: true, omitted: "size" },
+    }).success,
+  ).toBe(true);
+});
+
+test("whole and partial WebSearch history keeps the native binding and rejects foreign report scope", () => {
+  const requestId = "053567e4-1b60-47ea-aa1b-c4e05a4819b8",
+    threadId = "0199a213-81c0-7800-8aa1-bbab2a035a53",
+    nativeTurnId = "0199a213-81c0-7800-8aa1-bbab2a035a54",
+    at = "2026-10-25T00:00:00.000Z",
+    report = codexChatWebSearchSchema.parse({
+      kind: "web-search",
+      source: "item/started",
+      threadId,
+      turnId: nativeTurnId,
+      itemId: "native-search",
+      query: { text: "find docs", truncated: false },
+      action: null,
+      results: null,
+      partial: true,
+      closure: "open",
+      turnStatus: null,
+    }),
+    user = {
+      kind: "user",
+      text: "Private search fixture",
+      about: [],
+      codexChat: {
+        version: 1,
+        provider: "codex",
+        smith: "codex-journeyman",
+        cwd: "/fixture",
+        canonicalCwd: "/fixture",
+        capabilities: { version: "0.163.0-alpha.10.2", flags: ["--stdio"] },
+        launch: {
+          mode: "chat",
+          model: "exact-model",
+          cwd: "/fixture",
+          sandbox: "read-only",
+          approvalPolicy: "on-request",
+          prompt: "Private search fixture",
+          context: {
+            projectId: "project-search",
+            repository: "/fixture",
+            worktree: "/fixture",
+            about: [],
+          },
+        },
+      },
+    },
+    process = {
+      kind: "process",
+      pid: 2000,
+      smith: "codex-journeyman",
+      requestedModel: "exact-model",
+      requestedEffort: "default",
+    },
+    native = (event: unknown) => ({
+      kind: "coding-chat",
+      provider: "codex",
+      version: "0.163.0-alpha.10.2",
+      event,
+    }),
+    frame = (seq: number, event: unknown) => ({
+      seq,
+      turnId: requestId,
+      at,
+      event,
+    }),
+    prefix = [
+      frame(1, user),
+      frame(2, process),
+      frame(3, {
+        kind: "identity",
+        provider: "codex",
+        sessionId: threadId,
+        version: "0.163.0-alpha.10.2",
+      }),
+      frame(4, native({ kind: "turn", threadId, turnId: nativeTurnId })),
+    ],
+    reportFrame = frame(5, native(report)),
+    state = {
+      version: 1,
+      projectId: "project-search",
+      conversationId: "session-search",
+      revision: 5,
+      binding: {
+        provider: "codex",
+        sessionId: threadId,
+        version: "0.163.0-alpha.10.2",
+      },
+      turns: [
+        {
+          requestId,
+          hash: "a".repeat(64),
+          phase: "running",
+          createdAt: at,
+          updatedAt: at,
+          reason: null,
+          owner: "8eaf6b78-7fb5-4c0a-ad01-19ad9660789b",
+        },
+      ],
+      frames: [...prefix, reportFrame],
+    };
+  expect(ownedCodingStateSchema.safeParse(state).success).toBe(true);
+  const partialPage = {
+    ...state,
+    frames: [prefix[0], prefix[1], prefix[2], prefix[3], reportFrame],
+    more: false,
+    lastSequence: 5,
+    nextCursor: 5,
+    request: state.turns[0],
+    controllable: false,
+  };
+  expect(ownedCodingPageSchema.safeParse(partialPage).success).toBe(true);
+  const foreign = structuredClone(state);
+  foreign.frames[4]!.event = native({ ...report, threadId: nativeTurnId });
+  expect(ownedCodingStateSchema.safeParse(foreign).success).toBe(false);
 });
 
 test("whole native Chat history keeps text, command and summary item kinds distinct while preserving legacy text fragments and the shared item bound", async () => {

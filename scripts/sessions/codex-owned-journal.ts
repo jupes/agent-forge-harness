@@ -5,6 +5,7 @@ import type {
   CodexChatDecision,
   CodexChatFileChange,
   CodexChatMcpToolCall,
+  CodexChatWebSearch,
   PreparedCodexChat,
 } from "../../types/codex-chat";
 import type { CodexCodingUsageEvent } from "../../types/codex-owned-task";
@@ -389,10 +390,16 @@ function nativeChatHistory(value: {
     finalNativeStatus: "completed" | "failed" | "interrupted" | null;
     itemKinds: Map<
       string,
-      "text" | "command" | "reasoning-summary" | "file-change" | "mcp-tool-call"
+      | "text"
+      | "command"
+      | "reasoning-summary"
+      | "file-change"
+      | "mcp-tool-call"
+      | "web-search"
     >;
     fileChanges: Map<string, CodexChatFileChange>;
     mcpToolCalls: Map<string, CodexChatMcpToolCall>;
+    webSearches: Map<string, CodexChatWebSearch>;
     closedCommands: Set<string>;
     commands: Map<string, CodexChatCommand>;
     summaries: Map<
@@ -430,6 +437,7 @@ function nativeChatHistory(value: {
         itemKinds: new Map(),
         fileChanges: new Map(),
         mcpToolCalls: new Map(),
+        webSearches: new Map(),
         closedCommands: new Set(),
         commands: new Map(),
         summaries: new Map(),
@@ -504,6 +512,7 @@ function nativeChatHistory(value: {
       native.kind === "command" ||
       native.kind === "file-change" ||
       native.kind === "mcp-tool-call" ||
+      native.kind === "web-search" ||
       native.kind === "reasoning-summary"
     ) {
       const previous = turn.itemKinds.get(native.itemId);
@@ -520,6 +529,7 @@ function nativeChatHistory(value: {
       native.kind === "command" ||
       native.kind === "file-change" ||
       native.kind === "mcp-tool-call" ||
+      native.kind === "web-search" ||
       native.kind === "reasoning-summary" ||
       native.kind === "turn-plan"
     ) {
@@ -611,6 +621,35 @@ function nativeChatHistory(value: {
         turn.finalNativeStatus = native.turnStatus;
       }
       turn.mcpToolCalls.set(native.itemId, native);
+      continue;
+    }
+    if (native.kind === "web-search") {
+      const previous = turn.webSearches.get(native.itemId),
+        identity = native.query,
+        signature = JSON.stringify([native.action, native.results]);
+      if (
+        (previous !== undefined && previous.query !== identity) ||
+        (previous !== undefined &&
+          previous.closure !== "open" &&
+          (native.closure !== "turn-ended" ||
+            previous.closure === "turn-ended" ||
+            JSON.stringify([previous.action, previous.results]) !==
+              signature)) ||
+        (native.source === "item/started" && previous !== undefined) ||
+        (native.source === "item/completed" &&
+          previous?.closure !== "open" &&
+          previous !== undefined)
+      )
+        return false;
+      if (native.source === "turn/completed") {
+        if (
+          turn.finalNativeStatus !== null &&
+          turn.finalNativeStatus !== native.turnStatus
+        )
+          return false;
+        turn.finalNativeStatus = native.turnStatus;
+      }
+      turn.webSearches.set(native.itemId, native);
       continue;
     }
     if (native.kind === "reasoning-summary") {
