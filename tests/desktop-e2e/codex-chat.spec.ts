@@ -450,6 +450,30 @@ test("private native MCP snapshots reload as collapsed, literal, inert reports",
     await expect(reopened).toHaveCount(4);
     for (const disclosure of await reopened.all())
       await expect(disclosure).not.toHaveAttribute("open", "");
+    if (process.env.CODEX_CHAT_MCP_SHOTS) {
+      const screenshotMain = reopened.filter({
+        has: page.locator("summary", { hasText: "inspect_result" }),
+      });
+      await screenshotMain.locator("summary").press("Enter");
+      await expect(screenshotMain).toContainText("MCP_ARGUMENT_LITERAL");
+      const viewport = page.viewportSize();
+      try {
+        await page.setViewportSize({ width: 1280, height: 900 });
+        await screenshotMain.scrollIntoViewIfNeeded();
+        await screenshotMain.screenshot({
+          path: join(
+            process.env.CODEX_CHAT_MCP_SHOTS,
+            "native-chat-mcp-tool-calls.png",
+          ),
+          mask: [screenshotMain.locator(".af-session-report-source")],
+          maskColor: "#1c1d24",
+        });
+      } finally {
+        if (viewport) await page.setViewportSize(viewport);
+        if ((await screenshotMain.getAttribute("open")) !== null)
+          await screenshotMain.locator("summary").press("Enter");
+      }
+    }
   } finally {
     page.off("request", onInspectionRequest);
   }
