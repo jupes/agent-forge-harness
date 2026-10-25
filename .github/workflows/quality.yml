@@ -157,6 +157,17 @@ jobs:
           name: desktop-shift-playwright-test-results
           path: test-results/desktop-shifts/
           retention-days: 14
+      - name: Run desktop original Start recovery after an owned hearth restart
+        if: matrix.shard == 1
+        timeout-minutes: 4
+        run: bun run verify:desktop-restart
+      - name: Upload desktop restart traces and failure screenshots
+        if: failure() && matrix.shard == 1
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-restart-playwright-test-results
+          path: test-results-desktop-restart/
+          retention-days: 14
 
   # Stable name for branch protection; skipped/cancelled shards must fail it.
   playwright:
