@@ -5,6 +5,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   writeFileSync,
 } from "node:fs";
 import { createServer } from "node:net";
@@ -14,6 +15,7 @@ import type { KeeperShiftStartRequest } from "../../types/keeper-shift-start";
 import { createConversationStore } from "../conversations/store";
 import { buildChildEnv } from "../executors/env";
 import { killTree } from "../executors/supervisor";
+import { comparableCheckout } from "../forge/runs";
 import { tokenPath } from "../hearth/home";
 import { isPidAlive } from "../hearth/lock";
 import {
@@ -57,6 +59,11 @@ const STOP_MS = 12_000;
 const REQUEST_MS = 10_000;
 const DRAIN_MS = 5_000;
 const REFUSAL_BODY_MAX_BYTES = 4_096;
+
+/** One disk-canonical fixture root for both the project catalog and hearth owner. */
+export function canonicalKeeperProofRoot(root: string): string {
+  return comparableCheckout(realpathSync.native(resolve(root)));
+}
 
 type Host = {
   process: ReturnType<typeof Bun.spawn>;
@@ -606,7 +613,9 @@ export async function runKeeperShiftCompiledProof(
     ledgers: string[] = [];
   let primaryError: unknown;
   try {
-    const root = resolve(scratch.make("compiled keeper shift ")),
+    const root = canonicalKeeperProofRoot(
+        scratch.make("compiled keeper shift "),
+      ),
       home = scratch.track(privateTempDir("compiled-keeper-home-")),
       bin = join(root, "bin"),
       stateDir = join(root, "fixture"),
