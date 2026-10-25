@@ -75,7 +75,7 @@ test("a Keeper Shift review retains the full strict original and every optional 
   ).toBe(false);
 });
 
-test("the four proposed values remain bound and must agree with the reviewed request", () => {
+test("the proposal values are a prefill suggestion, while the full form remains editable", () => {
   expect(keeperShiftStartProposalSchema.parse(proposal)).toEqual(proposal);
   expect(keeperShiftProposalMatches(proposal, reviewed)).toBe(true);
   expect(
@@ -117,6 +117,24 @@ test("the private intent binds the complete request, proposal source, revision a
   expect(
     keeperShiftStartIntentSchema.safeParse({ ...original, unknown: true })
       .success,
+  ).toBe(false);
+  const edited = {
+    ...reviewed,
+    start: {
+      ...reviewed.start,
+      options: { ...reviewed.start.options, maxUsd: 12, maxBeads: 9 },
+    },
+  };
+  const editedIntent = intent(edited);
+  expect(keeperShiftProposalMatches(proposal, edited)).toBe(false);
+  expect(keeperShiftStartIntentSchema.safeParse(editedIntent).success).toBe(
+    true,
+  );
+  expect(
+    keeperShiftStartIntentSchema.safeParse({
+      ...editedIntent,
+      original: { ...edited, start: reviewed.start },
+    }).success,
   ).toBe(false);
 });
 

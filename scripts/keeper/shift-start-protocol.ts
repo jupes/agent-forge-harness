@@ -69,8 +69,7 @@ export const keeperShiftStartIntentSchema: z.ZodType<KeeperShiftStartIntent> = z
     );
     return (
       intent.startHash === hashes.startHash &&
-      intent.reviewHash === hashes.reviewHash &&
-      keeperShiftProposalMatches(intent.proposal, intent.original)
+      intent.reviewHash === hashes.reviewHash
     );
   });
 
@@ -135,8 +134,7 @@ export function sameKeeperShiftStart(
     );
     return (
       intent.startHash === hashes.startHash &&
-      intent.reviewHash === hashes.reviewHash &&
-      keeperShiftProposalMatches(intent.proposal, intent.original)
+      intent.reviewHash === hashes.reviewHash
     );
   };
   return (
