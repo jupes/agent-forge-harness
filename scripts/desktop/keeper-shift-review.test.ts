@@ -577,6 +577,42 @@ test("a recorded-card UUID recovers its exact protected original without local i
   owner.dispose();
 });
 
+test("an explicit retry after unknown recovery reserves the exact recorded UUID when local metadata is absent", async () => {
+  const savedIdentities = identities();
+  const protectedReads: string[] = [],
+    posts: KeeperShiftStartRequest[] = [],
+    owner = createKeeperShiftReviewOwner({
+      canWrite: () => true,
+      requestId: () => "a13c01ee-e854-4d0e-8d6c-a246304d74a2",
+      identities: savedIdentities,
+      readOptions: async () => shiftOptions(),
+      readOriginal: async (_projectId, _proposalId, id) => {
+        protectedReads.push(id);
+        return receiptFor("unknown", null, null);
+      },
+      postStart: async (_projectId, _proposalId, request) => {
+        posts.push(structuredClone(request));
+        return { state: "unknown", message: "Still uncertain." };
+      },
+    });
+  const review = owner.get(source, 4, true, requestId);
+  await owner.open(review);
+  expect(protectedReads).toEqual([requestId]);
+  expect(posts).toEqual([]);
+  expect(review.state.status).toBe("unknown");
+  expect(review.state.original).toEqual(fullRequest());
+  expect(savedIdentities.read(source, workspace)).toBeNull();
+
+  await owner.retry(review);
+
+  expect(protectedReads).toEqual([requestId]);
+  expect(posts).toEqual([fullRequest()]);
+  expect(savedIdentities.read(source, workspace)?.requestId).toBe(requestId);
+  expect(review.state.requestId).toBe(requestId);
+  expect(review.state.original).toEqual(fullRequest());
+  owner.dispose();
+});
+
 test("a conflicting or malformed recorded UUID stays held through open, check, start and retry", async () => {
   let optionsReads = 0,
     originalReads = 0,

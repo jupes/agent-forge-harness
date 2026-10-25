@@ -1,7 +1,11 @@
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
-import { keeperShiftStartHashes } from "../../scripts/keeper/shift-start-protocol";
+import { keeperProposalPageSchema } from "../../scripts/keeper/proposal-protocol";
+import {
+  keeperShiftStartHashes,
+  keeperShiftStartReceiptSchema,
+} from "../../scripts/keeper/shift-start-protocol";
 import { keeperShiftStartRequestSchema } from "../../scripts/keeper/shift-start-wire";
 import type { KeeperProposal } from "../../types/keeper-proposal";
 import type { KeeperShiftStartRequest } from "../../types/keeper-shift-start";
@@ -158,67 +162,94 @@ test("recorded Shift cards reopen the saved original after reload from Keeper an
   page,
 }) => {
   const requestId = "913c01ee-e854-4d0e-8d6c-a246304d74a1";
-  const sourcePage: { proposal: KeeperProposal | null; revision: number } = {
-    proposal: null,
-    revision: 0,
+  const sourceRequestId = "1a5832fa-7a21-403b-8184-44892f0d8d86";
+  const action = {
+    kind: "start-shift" as const,
+    durationMinutes: 45,
+    concurrency: 3,
+    beadLimit: 8,
+    spendLimitUsd: 12,
   };
+  const proposal: KeeperProposal = {
+    id: `proposal-${sourceRequestId}-0`,
+    projectId: alpha.id,
+    sourceRequestId,
+    sourceHash: "a".repeat(64),
+    createdAt: "2026-10-25T12:00:00.000Z",
+    draft: {
+      title: "Review a bounded Shift",
+      detail: "A proposal opens the complete current Shift form.",
+      action,
+    },
+  };
+  const revision = 1;
+  const original = {
+    sourceHash: proposal.sourceHash,
+    expectedRevision: revision,
+    start: {
+      requestId,
+      expectedCatalogRevision: 7,
+      options: {
+        for: "45m",
+        concurrency: 3,
+        maxBeads: 8,
+        maxUsd: 12,
+        repairs: 2,
+        base: "main",
+      },
+    },
+  };
+  const hashes = keeperShiftStartHashes(
+    alpha.id,
+    proposal.id,
+    workspace,
+    action,
+    original,
+  );
+  const proposalRecord = {
+    ...proposal,
+    requestId,
+    requestHash: hashes.reviewHash,
+    operation: "approve" as const,
+    auditEventId: 1,
+    phase: "done" as const,
+    pending: false,
+    updatedAt: "2026-10-25T12:01:00.000Z",
+    message: "Fixture original is done.",
+    objects: [],
+  };
+  const proposalPage = keeperProposalPageSchema.parse({
+    projectId: alpha.id,
+    revision,
+    conversationRevision: 1,
+    request: null,
+    asOf: "2026-10-25T12:01:00.000Z",
+    complete: true,
+    problems: [],
+    proposals: [
+      {
+        proposal,
+        record: proposalRecord,
+        available: false,
+        destinationAvailable: true,
+        reason: null,
+        activity: null,
+      },
+    ],
+  });
   let phase: "approved" | "unknown" | "failed" | "done" = "done";
   const proposalPath = `**/projects/${alpha.id}/keeper/proposals?*`;
   await page.route(proposalPath, async (route) => {
-    const response = await route.fetch();
-    const body = await response.json();
-    const card = body.data?.proposals?.find(
-      (item: { proposal?: { draft?: { action?: { kind?: string } } } }) =>
-        item.proposal?.draft?.action?.kind === "start-shift",
-    );
-    if (card) {
-      sourcePage.proposal = card.proposal;
-      sourcePage.revision = body.data.revision;
-      const original = {
-        sourceHash: card.proposal.sourceHash,
-        expectedRevision: body.data.revision,
-        start: {
-          requestId,
-          expectedCatalogRevision: 7,
-          options: {
-            for: "45m",
-            concurrency: 3,
-            maxBeads: 8,
-            maxUsd: 12,
-            repairs: 2,
-            base: "main",
-          },
-        },
-      };
-      const bounds = card.proposal.draft.action;
-      if (bounds.kind !== "start-shift")
-        throw new Error("Expected Shift proposal");
-      const hashes = keeperShiftStartHashes(
-        alpha.id,
-        card.proposal.id,
-        workspace,
-        {
-          durationMinutes: bounds.durationMinutes,
-          concurrency: bounds.concurrency,
-          beadLimit: bounds.beadLimit,
-          spendLimitUsd: bounds.spendLimitUsd,
-        },
-        original,
-      );
-      card.record = {
-        ...card.proposal,
-        requestId,
-        requestHash: hashes.reviewHash,
-        operation: "approve",
-        auditEventId: 1,
-        phase,
-        pending: false,
-        updatedAt: new Date().toISOString(),
-        message: `Fixture original is ${phase}.`,
-        objects: [],
-      };
-    }
-    await route.fulfill({ response, json: body });
+    const body = keeperProposalPageSchema.parse({
+      ...proposalPage,
+      proposals: proposalPage.proposals.map((card) => ({
+        ...card,
+        record: card.record
+          ? { ...card.record, phase, message: `Fixture original is ${phase}.` }
+          : null,
+      })),
+    });
+    await route.fulfill({ json: { ok: true, data: body, error: null } });
   });
   await page.route(`**/projects/${alpha.id}/shifts/options`, async (route) => {
     await route.fulfill({
@@ -262,67 +293,23 @@ test("recorded Shift cards reopen the saved original after reload from Keeper an
     `**/__agent-forge/projects/${alpha.id}/keeper/proposals/*/shift-start/*`,
     async (route) => {
       protectedReads.push(route.request().url());
-      const proposal = sourcePage.proposal;
-      if (!proposal) throw new Error("Missing Keeper proposal source");
-      const action = proposal.draft.action;
-      if (action.kind !== "start-shift")
-        throw new Error("Expected Shift proposal");
-      const original = {
-        sourceHash: proposal.sourceHash,
-        expectedRevision: sourcePage.revision,
-        start: {
-          requestId,
-          expectedCatalogRevision: 7,
-          options: {
-            for: "45m",
-            concurrency: 3,
-            maxBeads: 8,
-            maxUsd: 12,
-            repairs: 2,
-            base: "main",
-          },
-        },
-      };
-      const hashes = keeperShiftStartHashes(
-        alpha.id,
-        proposal.id,
-        workspace,
-        {
-          durationMinutes: action.durationMinutes,
-          concurrency: action.concurrency,
-          beadLimit: action.beadLimit,
-          spendLimitUsd: action.spendLimitUsd,
-        },
-        original,
-      );
+      const proposal = proposalPage.proposals[0]!.proposal;
       const record = {
-        ...proposal,
-        requestId,
-        requestHash: hashes.reviewHash,
-        operation: "approve",
-        auditEventId: 1,
+        ...proposalRecord,
         phase,
-        pending: false,
-        updatedAt: new Date().toISOString(),
         message: `Fixture original is ${phase}.`,
-        objects: [],
       };
-      await route.fulfill({
-        json: {
-          ok: true,
-          data: {
-            projectId: alpha.id,
-            proposalId: proposal.id,
-            revision: sourcePage.revision,
-            record,
-            workspace,
-            original,
-            startHash: hashes.startHash,
-            shift: null,
-          },
-          error: null,
-        },
+      const receipt = keeperShiftStartReceiptSchema.parse({
+        projectId: alpha.id,
+        proposalId: proposal.id,
+        revision,
+        record,
+        workspace,
+        original,
+        startHash: hashes.startHash,
+        shift: null,
       });
+      await route.fulfill({ json: { ok: true, data: receipt, error: null } });
     },
   );
 
@@ -330,7 +317,7 @@ test("recorded Shift cards reopen the saved original after reload from Keeper an
   await expect(
     page.getByRole("article", { name: "Review a bounded Shift", exact: true }),
   ).toContainText("Fixture original is done.");
-  expect(sourcePage.proposal).not.toBeNull();
+  expect(proposalPage.proposals[0]?.proposal).toEqual(proposal);
 
   for (const nextPhase of ["approved", "unknown", "failed", "done"] as const) {
     phase = nextPhase;

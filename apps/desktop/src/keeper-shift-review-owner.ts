@@ -466,8 +466,11 @@ export function createKeeperShiftReviewOwner(deps: {
           options: structuredClone(checked.data),
           scopeVerified: true,
         };
-        const held = requestId
+        const saved = requestId
           ? deps.identities.read(entry.state.source, workspace)
+          : null;
+        const held = saved
+          ? { identity: saved, created: false }
           : await deps.identities.reserve(
               entry.state.source,
               workspace,
@@ -481,11 +484,10 @@ export function createKeeperShiftReviewOwner(deps: {
         ) {
           entry.state = {
             ...entry.state,
-            requestId: heldIdentity?.requestId ?? null,
-            original: null,
+            requestId: original.start.requestId,
             status: "held",
             notice:
-              "The saved Shift identity does not match its exact original. No request was sent.",
+              "The saved Shift identity conflicts with its exact original. The original is retained and no request was sent.",
           };
           return;
         }
