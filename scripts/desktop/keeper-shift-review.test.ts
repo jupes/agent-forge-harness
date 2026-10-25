@@ -746,6 +746,44 @@ test("retry keeps the UUID and original when current options are archived or una
   }
 });
 
+test("recovering a protected original does not certify an archived current scope", async () => {
+  const saved = identities();
+  await saved.reserve(source, workspace, () => requestId);
+  let optionsReads = 0;
+  const calls: KeeperShiftStartRequest[] = [];
+  const archived = {
+    ...shiftOptions(),
+    availability: { start: false, reason: "Project is archived." },
+  };
+  const owner = createKeeperShiftReviewOwner({
+    canWrite: () => true,
+    requestId: () => requestId,
+    identities: saved,
+    readOptions: async () => {
+      optionsReads += 1;
+      return archived;
+    },
+    readOriginal: async () => receiptFor("unknown", null, null),
+    postStart: async (_projectId, _proposalId, request) => {
+      calls.push(structuredClone(request));
+      return { state: "unknown", message: "Unexpected Start." };
+    },
+  });
+  const review = owner.get(source, 4);
+  await owner.open(review);
+  expect(review.state.original).toEqual(fullRequest());
+  expect(review.state.status).toBe("unknown");
+  expect(review.state.scopeVerified).toBe(false);
+
+  await owner.retry(review);
+  expect(optionsReads).toBe(2);
+  expect(review.state.requestId).toBe(requestId);
+  expect(review.state.original).toEqual(fullRequest());
+  expect(review.state.scopeVerified).toBe(false);
+  expect(calls).toHaveLength(0);
+  owner.dispose();
+});
+
 test("an uncertain identity save retains the full request so an explicit retry can reserve and deliver it unchanged", async () => {
   const backing = identities();
   let failures = 1;

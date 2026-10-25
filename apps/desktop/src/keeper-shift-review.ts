@@ -347,7 +347,6 @@ export async function acceptKeeperShiftReceipt(
   return {
     ...state,
     workspace: workspaceKey(receipt.workspace),
-    scopeVerified: true,
     requestId: receipt.original.start.requestId,
     original: structuredClone(receipt.original),
     receipt: structuredClone(receipt),
