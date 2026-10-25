@@ -2,7 +2,10 @@ import { expect, test } from "bun:test";
 import { resolve } from "node:path";
 import { createSmithCreateApi } from "../../apps/desktop/src/smith-create-api";
 import { smithConfigCreateInputHash } from "../../apps/desktop/src/smith-create-identities";
-import { smithCreateMetadataScope } from "../../apps/desktop/src/smith-create-scope";
+import {
+  smithCreateMetadataScope,
+  smithCreateScopeAllowsWrite,
+} from "../../apps/desktop/src/smith-create-scope";
 import { NotSent } from "../../docs/js/operator";
 import type {
   SmithConfigCreateReceipt,
@@ -217,6 +220,9 @@ test("saved create metadata is scoped to the trusted workspace, not the page URL
   );
   expect(smithCreateMetadataScope(null)).toBeNull();
   expect(smithCreateMetadataScope("x".repeat(513))).toBeNull();
+  expect(smithCreateScopeAllowsWrite(true, first, first)).toBe(true);
+  expect(smithCreateScopeAllowsWrite(true, second, first)).toBe(false);
+  expect(smithCreateScopeAllowsWrite(false, first, first)).toBe(false);
 });
 
 test("the root-owned create client and review form keep a browser-only dependency graph", async () => {

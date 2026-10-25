@@ -7,7 +7,10 @@ import {
   createSmithCreateIdentities,
   SMITH_CREATE_IDENTITIES,
 } from "./smith-create-identities";
-import { smithCreateMetadataScope } from "./smith-create-scope";
+import {
+  smithCreateMetadataScope,
+  smithCreateScopeAllowsWrite,
+} from "./smith-create-scope";
 
 const api = createSmithCreateApi({ post: operatorPost, read: operatorRead });
 
@@ -38,6 +41,8 @@ export function useSmithCreate(
   const allowed = useRef(writesAllowed);
   allowed.current = writesAllowed;
   const scope = smithCreateMetadataScope(trustedWorkspace);
+  const currentScope = useRef(scope);
+  currentScope.current = scope;
   const client = useMemo(() => {
     if (scope === null) return null;
     let storage: Storage | null = null;
@@ -62,7 +67,12 @@ export function useSmithCreate(
           );
         },
       }),
-      canWrite: () => allowed.current,
+      canWrite: () =>
+        smithCreateScopeAllowsWrite(
+          allowed.current,
+          currentScope.current,
+          scope,
+        ),
       requestId: () => crypto.randomUUID(),
       preview: api.preview,
       post: api.create,

@@ -6,3 +6,12 @@ export function smithCreateMetadataScope(
     ? workspace
     : null;
 }
+
+/** A retired workspace client loses write authority before its cleanup effect runs. */
+export function smithCreateScopeAllowsWrite(
+  writesAllowed: boolean,
+  currentScope: string | null,
+  clientScope: string,
+): boolean {
+  return writesAllowed && currentScope === clientScope;
+}
