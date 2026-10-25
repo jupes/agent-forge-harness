@@ -46,5 +46,8 @@ starts collapsed, query and JSON regions support keyboard scrolling, and the
 view exposes only supplied text plus the explicit closure facts. It has no
 button, anchor, form, image, fetch, or tool-invocation surface.
 
+The masked [browser fixture capture](screenshots/native-chat-web-search.png)
+shows only synthetic report values after the functional browser assertions.
+
 Related boundaries: [private session activity](./private-session-activity.md)
 and [native MCP tool-call reports](./native-chat-mcp-tool-calls.md).
