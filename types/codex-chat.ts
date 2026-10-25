@@ -3,7 +3,7 @@ import type {
   CodexModelEffortEvidence,
   CodexTaskLaunch,
 } from "./codex-task";
-import type { ReportedText } from "./session-activity";
+import type { ReportedJson, ReportedText } from "./session-activity";
 
 /** A private native report only; these paths and bodies grant no execution or approval authority. */
 export interface CodexChatCommand {
@@ -151,6 +151,58 @@ export interface CodexChatFileChange {
   turnStatus: "completed" | "failed" | "interrupted" | null;
 }
 
+/** Native MCP tool output is a bounded private report, never an invocation or resource link. */
+export interface CodexChatMcpToolCall {
+  kind: "mcp-tool-call";
+  source: "item/started" | "item/completed" | "turn/completed";
+  threadId: string;
+  turnId: string;
+  itemId: string;
+  server: ReportedText;
+  tool: ReportedText;
+  status: "inProgress" | "completed" | "failed";
+  arguments: ReportedJson;
+  result: {
+    /** The complete content array is inert JSON text; `[]` remains distinct from a null result. */
+    content: ReportedJson;
+    structuredContent: ReportedJson | null;
+  } | null;
+  error: ReportedText | null;
+  durationMs: number | null;
+  partial: boolean;
+  closure: "open" | "item-ended" | "turn-ended";
+  turnStatus: "completed" | "failed" | "interrupted" | null;
+}
+
+/** Native Codex web-search snapshots are supplied reports, never fetch authority. */
+export type CodexChatWebSearchAction =
+  | {
+      type: "search";
+      query: string | null;
+      queries: string[] | null;
+    }
+  | { type: "openPage"; url: string | null }
+  | {
+      type: "findInPage";
+      url: string | null;
+      pattern: string | null;
+    }
+  | { type: "other" };
+
+export interface CodexChatWebSearch {
+  kind: "web-search";
+  source: "item/started" | "item/completed" | "turn/completed";
+  threadId: string;
+  turnId: string;
+  itemId: string;
+  query: ReportedText;
+  action: ReportedJson | null;
+  results: ReportedJson | null;
+  partial: boolean;
+  closure: "open" | "item-ended" | "turn-ended";
+  turnStatus: "completed" | "failed" | "interrupted" | null;
+}
+
 export type CodexChatEvent =
   | {
       kind: "process";
@@ -174,6 +226,8 @@ export type CodexChatEvent =
   | CodexChatReasoningSummary
   | CodexChatTurnPlan
   | CodexChatFileChange
+  | CodexChatMcpToolCall
+  | CodexChatWebSearch
   | { kind: "usage"; usage: CodexChatUsage }
   | { kind: "outcome"; outcome: CodexChatOutcome }
   | { kind: "reroute"; fromModel: string; toModel: string; reason: string }

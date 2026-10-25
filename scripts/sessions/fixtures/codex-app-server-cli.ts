@@ -215,6 +215,208 @@ const finishFileChanges = async (status = "completed") => {
   }
   await finish([main, ...others]);
 };
+const mcpMain = (status: "inProgress" | "completed" = "inProgress") => ({
+  type: "mcpToolCall",
+  id: "reported-mcp-main",
+  server: "fixture-mcp-server",
+  tool: "inspect_result",
+  status,
+  arguments: {
+    path: "FILE_MCP_MUST_NOT_CREATE.txt",
+    query: "<script>MCP_ARGUMENT_LITERAL</script>",
+  },
+  appContext: {
+    connectorId: "MCP_HINT_CONNECTOR_MUST_NOT_PERSIST",
+    linkId: null,
+    resourceUri: "file:///MCP_HINT_CONTEXT_RESOURCE_MUST_NOT_PERSIST",
+    appName: "MCP_HINT_APP_MUST_NOT_PERSIST",
+    actionName: "MCP_HINT_ACTION_MUST_NOT_PERSIST",
+  },
+  mcpAppResourceUri: "file:///MCP_HINT_LEGACY_RESOURCE_MUST_NOT_PERSIST",
+  mcpAppUi: {
+    resourceUri: "file:///MCP_HINT_UI_RESOURCE_MUST_NOT_PERSIST",
+    preferredModelDisplayMode: "inline",
+  },
+  pluginId: "MCP_HINT_PLUGIN_MUST_NOT_PERSIST",
+  readOnlyHint: true,
+  result:
+    status === "inProgress"
+      ? null
+      : {
+          content: [
+            {
+              type: "text",
+              text: "<img>MCP_RESULT_LITERAL</img>",
+            },
+          ],
+          structuredContent: { path: "file:///MCP_RESULT_URI_IS_LITERAL" },
+          _meta: { private: "MCP_META_MUST_NOT_PERSIST" },
+        },
+  error: null,
+  durationMs: status === "inProgress" ? null : 27,
+});
+const mcpOtherCalls = () => [
+  {
+    type: "mcpToolCall",
+    id: "reported-mcp-failed",
+    server: "fixture-mcp-server",
+    tool: "report_failure",
+    status: "failed",
+    arguments: { query: "failure is separate from an absent result" },
+    appContext: null,
+    mcpAppUi: null,
+    pluginId: null,
+    readOnlyHint: null,
+    result: null,
+    error: { message: "MCP_ERROR_TEXT_SENTINEL" },
+    durationMs: 0,
+  },
+  {
+    type: "mcpToolCall",
+    id: "reported-mcp-empty",
+    server: "fixture-mcp-server",
+    tool: "report_empty",
+    status: "completed",
+    arguments: null,
+    appContext: null,
+    mcpAppUi: null,
+    pluginId: null,
+    readOnlyHint: null,
+    result: { content: [], structuredContent: null, _meta: null },
+    error: null,
+    durationMs: null,
+  },
+  {
+    type: "mcpToolCall",
+    id: "reported-mcp-clipped",
+    server: "fixture-mcp-server",
+    tool: "report_clipped",
+    status: "completed",
+    arguments: { query: "x".repeat(40_000) },
+    appContext: null,
+    mcpAppUi: null,
+    pluginId: null,
+    readOnlyHint: null,
+    result: null,
+    error: null,
+    durationMs: null,
+  },
+];
+const finishMcpToolCalls = async () => {
+  const scope = { threadId, turnId },
+    started = mcpMain(),
+    completed = mcpMain("completed"),
+    others = mcpOtherCalls();
+  await send({ method: "item/started", params: { ...scope, item: started } });
+  await send({ method: "item/started", params: { ...scope, item: started } });
+  await send({
+    method: "item/completed",
+    params: { ...scope, item: completed },
+  });
+  for (const item of others)
+    await send({ method: "item/completed", params: { ...scope, item } });
+  await finish([completed, ...others]);
+};
+const mcpCallPrefix = async () => {
+  const scope = { threadId, turnId },
+    started = mcpMain(),
+    completed = mcpMain("completed"),
+    open = {
+      ...mcpMain(),
+      id: "reported-mcp-open",
+      tool: "inspect_while_turn_is_open",
+      arguments: { query: "y".repeat(40_000) },
+    };
+  await send({ method: "item/started", params: { ...scope, item: started } });
+  await send({
+    method: "item/completed",
+    params: { ...scope, item: completed },
+  });
+  await send({ method: "item/started", params: { ...scope, item: open } });
+  record({
+    kind: "mcp-prefix-published",
+    threadId,
+    turnId,
+    itemIds: [started.id, open.id],
+    count: 3,
+  });
+};
+const webSearchMain = (
+  query = "<script>WEB_SEARCH_QUERY_LITERAL</script>",
+  id = "reported-web-search-main",
+) => ({
+  type: "webSearch",
+  id,
+  query,
+  action: {
+    type: "search",
+    query: "WEB_SEARCH_ACTION_QUERY_LITERAL",
+    queries: ["WEB_SEARCH_ACTION_QUERY_LITERAL"],
+  },
+  results: [
+    {
+      title: "<img>WEB_SEARCH_RESULT_LITERAL</img>",
+      url: "https://fixture.invalid/WEB_SEARCH_URL_IS_LITERAL",
+    },
+  ],
+});
+const finishWebSearch = async () => {
+  const scope = { threadId, turnId },
+    main = webSearchMain(),
+    empty = {
+      type: "webSearch",
+      id: "reported-web-search-empty",
+      query: "",
+      action: null,
+      results: null,
+    },
+    absent = {
+      type: "webSearch",
+      id: "reported-web-search-absent",
+      query: "WEB_SEARCH_NULL_RESULT_QUERY",
+      action: null,
+      results: null,
+    },
+    clipped = webSearchMain(
+      `WEB_SEARCH_CLIPPED_QUERY_${"x".repeat(20_000)}`,
+      "reported-web-search-clipped",
+    ),
+    emptyCompleted = { ...empty, results: [] },
+    items = [
+      { started: { ...main, action: null, results: null }, completed: main },
+      { started: empty, completed: emptyCompleted },
+      { started: absent, completed: absent },
+      {
+        started: { ...clipped, action: null, results: null },
+        completed: clipped,
+      },
+    ];
+  for (const pair of items) {
+    await send({
+      method: "item/started",
+      params: { ...scope, item: pair.started },
+    });
+    await send({
+      method: "item/completed",
+      params: { ...scope, item: pair.completed },
+    });
+  }
+  await finish([main, emptyCompleted, absent, clipped]);
+};
+const webSearchPrefix = async () => {
+  const scope = { threadId, turnId },
+    item = {
+      type: "webSearch",
+      id: "reported-web-search-main",
+      query: "<script>WEB_SEARCH_QUERY_LITERAL</script>",
+      action: null,
+      results: null,
+    };
+  await send({
+    method: "item/started",
+    params: { ...scope, item },
+  });
+};
 const reader = Bun.stdin.stream().getReader(),
   decoder = new TextDecoder();
 let pending = "";
@@ -386,6 +588,16 @@ while (true) {
         hangTree();
         await finish();
         record({ kind: "terminal-published", threadId, turnId });
+      } else if (mode === "mcp-tool-calls") {
+        await finishMcpToolCalls();
+      } else if (mode === "mcp-tool-calls-held") {
+        await mcpCallPrefix();
+        hangTree();
+      } else if (mode === "web-search") {
+        await finishWebSearch();
+      } else if (mode === "web-search-held") {
+        await webSearchPrefix();
+        hangTree();
       } else if (mode?.startsWith("file-changes")) {
         await fileChangePrefix();
         if (mode === "file-changes-held") hangTree();

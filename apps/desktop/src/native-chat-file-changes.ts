@@ -1,5 +1,6 @@
 import type { CodexChatFileChange } from "../../../types/codex-chat";
 import type { ConversationPage } from "../../../types/conversation";
+import { nativeChatTurnFinalReport } from "./native-chat-turn-closure";
 
 export interface NativeChatFileChangeReport {
   version: string;
@@ -25,20 +26,27 @@ export function nativeChatFileChanges(
       ),
     );
   // A protected partial page may omit the earlier turn announcement. Its full
-  // snapshots can stand alone only when all their supplied native turns agree.
+  // rich snapshots can stand alone only when all supplied native turns agree.
   if (!nativeTurns.size)
     for (const { event } of frames)
       if (
         event.kind === "coding-chat" &&
         event.version === binding.version &&
-        event.event.kind === "file-change" &&
+        (event.event.kind === "command" ||
+          event.event.kind === "file-change" ||
+          event.event.kind === "reasoning-summary" ||
+          event.event.kind === "turn-plan" ||
+          event.event.kind === "mcp-tool-call" ||
+          event.event.kind === "web-search") &&
         event.event.threadId === binding.sessionId
       )
         nativeTurns.add(event.event.turnId);
   if (nativeTurns.size !== 1) return [];
-  const nativeTurn = [...nativeTurns][0],
-    reports = new Map<string, NativeChatFileChangeReport>();
-  let terminal = false;
+  const nativeTurn = nativeTurns.values().next().value;
+  if (nativeTurn === undefined) return [];
+  const reports = new Map<string, NativeChatFileChangeReport>();
+  let terminal = false,
+    turnEnded = false;
   for (const { event } of frames) {
     if (event.kind !== "coding-chat" || event.version !== binding.version)
       continue;
@@ -52,8 +60,15 @@ export function nativeChatFileChanges(
       terminal = true;
       continue;
     }
+    const finalReport = nativeChatTurnFinalReport(
+      report,
+      binding.sessionId,
+      nativeTurn,
+    );
+    if (finalReport) turnEnded = true;
     if (
       terminal ||
+      (turnEnded && !finalReport) ||
       report.kind !== "file-change" ||
       report.threadId !== binding.sessionId ||
       report.turnId !== nativeTurn

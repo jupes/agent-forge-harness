@@ -4,9 +4,12 @@ import type {
   CodexChatCommand,
   CodexChatEvent,
   CodexChatFileChange,
+  CodexChatMcpToolCall,
   CodexChatOutcome,
   CodexChatReasoningSummary,
   CodexChatTurnPlan,
+  CodexChatWebSearch,
+  CodexChatWebSearchAction,
 } from "../../types/codex-chat";
 import type {
   CodexChatDecisionIntent,
@@ -14,6 +17,7 @@ import type {
 } from "../../types/codex-owned-chat";
 import type { CodexExecUsage } from "../../types/codex-task";
 import {
+  reportedJsonSchema,
   reportedTextSchema,
   SESSION_ACTIVITY_LIMITS,
 } from "./activity-protocol";
@@ -130,6 +134,157 @@ export const codexChatFileChangeSchema = z
         SESSION_ACTIVITY_LIMITS.eventBytes
     );
   }) satisfies z.ZodType<CodexChatFileChange>;
+export const codexChatMcpToolCallSchema = z
+  .object({
+    kind: z.literal("mcp-tool-call"),
+    source: z.enum(["item/started", "item/completed", "turn/completed"]),
+    threadId: codexNativeUuidSchema,
+    turnId: codexNativeUuidSchema,
+    itemId: name.max(160),
+    server: reportedTextSchema,
+    tool: reportedTextSchema,
+    status: z.enum(["inProgress", "completed", "failed"]),
+    arguments: reportedJsonSchema,
+    result: z
+      .object({
+        content: reportedJsonSchema,
+        structuredContent: reportedJsonSchema.nullable(),
+      })
+      .strict()
+      .nullable(),
+    error: reportedTextSchema.nullable(),
+    durationMs: count.nullable(),
+    partial: z.boolean(),
+    closure: z.enum(["open", "item-ended", "turn-ended"]),
+    turnStatus: z.enum(["completed", "failed", "interrupted"]).nullable(),
+  })
+  .strict()
+  .refine((value) => {
+    const final = value.source === "turn/completed",
+      ended = value.source === "item/completed",
+      values = [
+        value.server,
+        value.tool,
+        value.arguments,
+        ...(value.result === null
+          ? []
+          : [
+              value.result.content,
+              ...(value.result.structuredContent === null
+                ? []
+                : [value.result.structuredContent]),
+            ]),
+        ...(value.error === null ? [] : [value.error]),
+      ];
+    return (
+      (final
+        ? value.closure === "turn-ended" && value.turnStatus !== null
+        : value.turnStatus === null &&
+          (ended
+            ? value.closure === "item-ended" && value.status !== "inProgress"
+            : value.closure === "open" && value.status === "inProgress")) &&
+      value.partial ===
+        (value.status === "inProgress" ||
+          (final && value.turnStatus !== "completed")) &&
+      values.reduce(
+        (total, part) =>
+          total +
+          new TextEncoder().encode("text" in part ? part.text : part.json)
+            .byteLength,
+        0,
+      ) <= SESSION_ACTIVITY_LIMITS.textBytes &&
+      new TextEncoder().encode(JSON.stringify(value)).byteLength <=
+        SESSION_ACTIVITY_LIMITS.eventBytes
+    );
+  }) satisfies z.ZodType<CodexChatMcpToolCall>;
+const codexChatWebSearchActionSchema = z.discriminatedUnion("type", [
+  z
+    .object({
+      type: z.literal("search"),
+      query: z.string().max(1_048_576).nullable(),
+      queries: z.array(z.string().max(1_048_576)).max(4096).nullable(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("openPage"),
+      url: z.string().max(1_048_576).nullable(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("findInPage"),
+      url: z.string().max(1_048_576).nullable(),
+      pattern: z.string().max(1_048_576).nullable(),
+    })
+    .strict(),
+  z.object({ type: z.literal("other") }).strict(),
+]) satisfies z.ZodType<CodexChatWebSearchAction>;
+const reportedWebSearchActionSchema = reportedJsonSchema
+  .nullable()
+  .refine((value) => {
+    if (value === null || value.truncated) return true;
+    try {
+      codexChatWebSearchActionSchema.parse(JSON.parse(value.json));
+      return true;
+    } catch {
+      return false;
+    }
+  });
+const reportedWebSearchResultsSchema = reportedJsonSchema
+  .nullable()
+  .refine((value) => {
+    if (value === null || value.truncated) return true;
+    try {
+      return Array.isArray(JSON.parse(value.json));
+    } catch {
+      return false;
+    }
+  });
+export const codexChatWebSearchSchema = z
+  .object({
+    kind: z.literal("web-search"),
+    source: z.enum(["item/started", "item/completed", "turn/completed"]),
+    threadId: codexNativeUuidSchema,
+    turnId: codexNativeUuidSchema,
+    itemId: name.max(160),
+    query: reportedTextSchema,
+    action: reportedWebSearchActionSchema,
+    results: reportedWebSearchResultsSchema,
+    partial: z.boolean(),
+    closure: z.enum(["open", "item-ended", "turn-ended"]),
+    turnStatus: z.enum(["completed", "failed", "interrupted"]).nullable(),
+  })
+  .strict()
+  .refine((value) => {
+    const final = value.source === "turn/completed",
+      ended = value.source === "item/completed";
+    return (
+      (final
+        ? value.closure === "turn-ended" && value.turnStatus !== null
+        : value.turnStatus === null &&
+          (ended
+            ? value.closure === "item-ended" && !value.partial
+            : value.closure === "open" && value.partial)) &&
+      value.partial ===
+        (value.source === "item/started" ||
+          (final && value.turnStatus !== "completed")) &&
+      (!value.action || value.action.json !== "" || value.action.truncated) &&
+      (!value.results ||
+        value.results.json !== "" ||
+        value.results.truncated) &&
+      new TextEncoder().encode(JSON.stringify(value)).byteLength <=
+        SESSION_ACTIVITY_LIMITS.eventBytes &&
+      new TextEncoder().encode(value.query.text).byteLength +
+        (value.action
+          ? new TextEncoder().encode(value.action.json).byteLength
+          : 0) +
+        (value.results
+          ? new TextEncoder().encode(value.results.json).byteLength
+          : 0) <=
+        SESSION_ACTIVITY_LIMITS.textBytes
+    );
+  }) satisfies z.ZodType<CodexChatWebSearch>;
 export const codexChatTurnPlanSchema = z
   .object({
     kind: z.literal("turn-plan"),
@@ -342,6 +497,8 @@ const nativeEvent = z.discriminatedUnion("kind", [
   codexChatCommandSchema,
   codexChatReasoningSummarySchema,
   codexChatTurnPlanSchema,
+  codexChatMcpToolCallSchema,
+  codexChatWebSearchSchema,
   z
     .object({
       kind: z.literal("process"),

@@ -17,13 +17,22 @@ import {
   nativeChatFileChanges,
 } from "./native-chat-file-changes";
 import {
+  type NativeChatMcpToolCallReport,
+  nativeChatMcpToolCalls,
+} from "./native-chat-mcp-tool-calls";
+import {
   type NativeChatReasoningReport,
   nativeChatReasoningSummaries,
 } from "./native-chat-reasoning";
+import { nativeChatTurnFinalReport } from "./native-chat-turn-closure";
 import {
   type NativeChatTurnPlanReport,
   nativeChatTurnPlan,
 } from "./native-chat-turn-plan";
+import {
+  type NativeChatWebSearchReport,
+  nativeChatWebSearches,
+} from "./native-chat-web-search";
 
 export interface NativeChatCommandReport {
   version: string;
@@ -38,6 +47,8 @@ export interface OwnedSessionTurn {
   activities: CodingActivityEvent[];
   nativeCommands: NativeChatCommandReport[];
   nativeFileChanges: NativeChatFileChangeReport[];
+  nativeMcpToolCalls: NativeChatMcpToolCallReport[];
+  nativeWebSearches: NativeChatWebSearchReport[];
   nativeSummaries: NativeChatReasoningReport[];
   nativePlan: NativeChatTurnPlanReport | null;
   usage: ClaudeCodingUsageEvent | CodexCodingUsageEvent | null;
@@ -53,10 +64,31 @@ export function ownedSessionTurn(
 ): OwnedSessionTurn {
   const activities = new Map<string, CodingActivityEvent>();
   const commands = new Map<string, NativeChatCommandReport>();
+  const frames = (page?.frames ?? []).filter(
+      (frame) => frame.turnId === turnId,
+    ),
+    nativeTurns = new Set(
+      frames.flatMap(({ event }) =>
+        event.kind === "coding-chat" &&
+        event.version === page?.binding?.version &&
+        "threadId" in event.event &&
+        "turnId" in event.event &&
+        event.event.threadId === page?.binding?.sessionId
+          ? [event.event.turnId]
+          : [],
+      ),
+    ),
+    nativeTurn =
+      nativeTurns.size === 1
+        ? (nativeTurns.values().next().value ?? null)
+        : null;
+  let nativeTurnEnded = false;
   const result: OwnedSessionTurn = {
     activities: [],
     nativeCommands: [],
     nativeFileChanges: nativeChatFileChanges(page, turnId),
+    nativeMcpToolCalls: nativeChatMcpToolCalls(page, turnId),
+    nativeWebSearches: nativeChatWebSearches(page, turnId),
     nativeSummaries: nativeChatReasoningSummaries(page, turnId),
     nativePlan: nativeChatTurnPlan(page, turnId),
     usage: null,
@@ -64,9 +96,19 @@ export function ownedSessionTurn(
     observedModel: null,
     requestedModel: null,
   };
-  for (const frame of page?.frames ?? []) {
-    if (frame.turnId !== turnId) continue;
+  for (const frame of frames) {
     const event = frame.event;
+    const finalNativeReport =
+      page?.binding?.provider === "codex" &&
+      nativeTurn !== null &&
+      event.kind === "coding-chat" &&
+      event.version === page.binding.version &&
+      nativeChatTurnFinalReport(
+        event.event,
+        page.binding.sessionId,
+        nativeTurn,
+      );
+    if (finalNativeReport) nativeTurnEnded = true;
     if (event.kind === "coding-activity") {
       const key = JSON.stringify([
         event.provider,
@@ -91,7 +133,8 @@ export function ownedSessionTurn(
       if (
         page?.binding?.provider !== "codex" ||
         page.binding.sessionId !== report.threadId ||
-        page.binding.version !== event.version
+        page.binding.version !== event.version ||
+        (nativeTurnEnded && !finalNativeReport)
       )
         continue;
       const key = JSON.stringify([

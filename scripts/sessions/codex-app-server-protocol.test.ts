@@ -132,8 +132,381 @@ const reasoningItem = (overrides: Record<string, unknown> = {}) => ({
   content: ["RAW_SENTINEL"],
   ...overrides,
 });
+const mcpToolCallItem = (overrides: Record<string, unknown> = {}) => ({
+  type: "mcpToolCall",
+  id: "native-mcp-call",
+  server: "local-server",
+  tool: "search_files",
+  status: "inProgress",
+  arguments: { query: "literal <script> prompt" },
+  appContext: {
+    connectorId: "connector-secret",
+    linkId: null,
+    resourceUri: "file:///private/resource",
+    appName: "Private app hint",
+    actionName: "Private action hint",
+  },
+  mcpAppResourceUri: "file:///private/legacy-resource",
+  mcpAppUi: {
+    resourceUri: "file:///private/ui-resource",
+    preferredModelDisplayMode: "inline",
+  },
+  pluginId: "private-plugin-id",
+  readOnlyHint: true,
+  result: null,
+  error: null,
+  durationMs: null,
+  ...overrides,
+});
+const webSearchItem = (overrides: Record<string, unknown> = {}) => ({
+  type: "webSearch",
+  id: "native-web-search",
+  query: "literal <script> query",
+  action: {
+    type: "search",
+    query: "literal <script> query",
+    queries: null,
+  },
+  results: [{ title: "Literal title", url: "https://example.invalid/path" }],
+  ...overrides,
+});
 const summaryFrame = (method: string, extra: Record<string, unknown> = {}) =>
   notify(method, { threadId, turnId, itemId: "native-summary", ...extra });
+
+test("native MCP tool calls preserve literal snapshots and separate item and turn closure", () => {
+  const decoder = stream(),
+    started = decoder.accept(
+      notify("item/started", {
+        threadId,
+        turnId,
+        item: mcpToolCallItem(),
+      }),
+    );
+  expect(started.events).toHaveLength(1);
+  expect(started.events[0]).toMatchObject({
+    kind: "mcp-tool-call",
+    source: "item/started",
+    threadId,
+    turnId,
+    itemId: "native-mcp-call",
+    status: "inProgress",
+    arguments: {
+      json: '{"query":"literal <script> prompt"}',
+      truncated: false,
+    },
+    result: null,
+    error: null,
+    durationMs: null,
+    partial: true,
+    closure: "open",
+    turnStatus: null,
+  });
+  const completedItem = mcpToolCallItem({
+    status: "completed",
+    result: {
+      content: [{ type: "text", text: "Returned <script> as text" }],
+      structuredContent: { matches: 2 },
+      _meta: { private: "omit this" },
+    },
+    durationMs: 27,
+  });
+  const completed = decoder.accept(
+    notify("item/completed", { threadId, turnId, item: completedItem }),
+  );
+  expect(completed.events[0]).toMatchObject({
+    source: "item/completed",
+    status: "completed",
+    result: {
+      content: {
+        json: '[{"type":"text","text":"Returned <script> as text"}]',
+        truncated: false,
+      },
+      structuredContent: { json: '{"matches":2}', truncated: false },
+    },
+    error: null,
+    durationMs: 27,
+    partial: false,
+    closure: "item-ended",
+    turnStatus: null,
+  });
+  expect(JSON.stringify(completed.events)).not.toContain("private-resource");
+  expect(JSON.stringify(completed.events)).not.toContain("private-plugin-id");
+  expect(JSON.stringify(completed.events)).not.toContain("omit this");
+  expect(
+    decoder.accept(
+      notify("item/completed", { threadId, turnId, item: completedItem }),
+    ).events,
+  ).toEqual([]);
+  const ended = decoder.accept(
+    notify("turn/completed", {
+      threadId,
+      turn: {
+        id: turnId,
+        status: "completed",
+        error: null,
+        items: [completedItem],
+      },
+    }),
+  );
+  expect(ended.events[0]).toMatchObject({
+    source: "turn/completed",
+    closure: "turn-ended",
+    turnStatus: "completed",
+    partial: false,
+  });
+  const partial = stream().accept(
+    notify("turn/completed", {
+      threadId,
+      turn: {
+        id: turnId,
+        status: "interrupted",
+        error: null,
+        items: [
+          mcpToolCallItem({
+            result: {
+              content: [],
+              structuredContent: null,
+              _meta: null,
+            },
+            error: { message: "Native error <literal>" },
+          }),
+        ],
+      },
+    }),
+  );
+  expect(partial.events[0]).toMatchObject({
+    status: "inProgress",
+    result: {
+      content: { json: "[]", truncated: false },
+      structuredContent: null,
+    },
+    error: { text: "Native error <literal>", truncated: false },
+    partial: true,
+    closure: "turn-ended",
+    turnStatus: "interrupted",
+  });
+});
+
+test("native MCP tool calls refuse identity changes, malformed lifecycle and post-terminal snapshots", () => {
+  const decoder = stream(),
+    started = mcpToolCallItem();
+  decoder.accept(notify("item/started", { threadId, turnId, item: started }));
+  for (const change of [
+    { server: "different-server" },
+    { tool: "different-tool" },
+    { arguments: { query: "changed" } },
+    { type: "commandExecution" },
+  ])
+    expect(() =>
+      decoder.accept(
+        notify("item/completed", {
+          threadId,
+          turnId,
+          item: mcpToolCallItem({ ...change, status: "completed" }),
+        }),
+      ),
+    ).toThrow();
+  expect(() =>
+    decoder.accept(
+      notify("item/started", {
+        threadId,
+        turnId,
+        item: mcpToolCallItem({ status: "completed" }),
+      }),
+    ),
+  ).toThrow();
+  const complete = mcpToolCallItem({
+    status: "failed",
+    error: { message: "reported failure" },
+  });
+  decoder.accept(
+    notify("item/completed", { threadId, turnId, item: complete }),
+  );
+  expect(() =>
+    decoder.accept(
+      notify("item/completed", {
+        threadId,
+        turnId,
+        item: mcpToolCallItem({
+          status: "failed",
+          error: { message: "changed failure" },
+        }),
+      }),
+    ),
+  ).toThrow();
+  decoder.accept(
+    notify("turn/completed", {
+      threadId,
+      turn: { id: turnId, status: "failed", error: null, items: [complete] },
+    }),
+  );
+  expect(() =>
+    decoder.accept(
+      notify("item/completed", { threadId, turnId, item: complete }),
+    ),
+  ).toThrow();
+});
+
+test("native MCP tool calls refuse foreign thread and turn identities", () => {
+  for (const change of [{ threadId: turnId }, { turnId: threadId }])
+    expect(() =>
+      stream().accept(
+        notify("item/started", {
+          threadId,
+          turnId,
+          ...change,
+          item: mcpToolCallItem(),
+        }),
+      ),
+    ).toThrow();
+});
+
+test("native web-search snapshots retain bounded literal action/results and exact item/turn closure", () => {
+  const decoder = stream(),
+    started = decoder.accept(
+      notify("item/started", {
+        threadId,
+        turnId,
+        item: webSearchItem({ action: null, results: null }),
+      }),
+    );
+  expect(started.events[0]).toMatchObject({
+    kind: "web-search",
+    source: "item/started",
+    threadId,
+    turnId,
+    itemId: "native-web-search",
+    query: { text: "literal <script> query", truncated: false },
+    action: null,
+    results: null,
+    partial: true,
+    closure: "open",
+    turnStatus: null,
+  });
+  expect(started.events[0]).not.toHaveProperty("status");
+  expect(started.events[0]).not.toHaveProperty("durationMs");
+  const completedItem = webSearchItem({
+    results: [
+      {
+        title: "Literal <script> result",
+        url: "https://example.invalid/result",
+      },
+    ],
+  });
+  const completed = decoder.accept(
+    notify("item/completed", { threadId, turnId, item: completedItem }),
+  );
+  expect(completed.events[0]).toMatchObject({
+    source: "item/completed",
+    action: {
+      json: '{"type":"search","query":"literal <script> query","queries":null}',
+      truncated: false,
+    },
+    results: {
+      json: '[{"title":"Literal <script> result","url":"https://example.invalid/result"}]',
+      truncated: false,
+    },
+    partial: false,
+    closure: "item-ended",
+    turnStatus: null,
+  });
+  expect(
+    decoder.accept(
+      notify("turn/completed", {
+        threadId,
+        turn: {
+          id: turnId,
+          status: "interrupted",
+          error: null,
+          items: [completedItem],
+        },
+      }),
+    ).events[0],
+  ).toMatchObject({
+    source: "turn/completed",
+    partial: true,
+    closure: "turn-ended",
+    turnStatus: "interrupted",
+  });
+});
+
+test("native web-search action uses the pinned discriminated union and identity fences", () => {
+  for (const action of [
+    { type: "search", query: null, queries: [] },
+    { type: "openPage", url: "" },
+    { type: "findInPage", url: "https://example.invalid", pattern: null },
+    { type: "findInPage", url: null, pattern: "" },
+    { type: "other" },
+  ]) {
+    const parsed = stream().accept(
+      notify("item/started", {
+        threadId,
+        turnId,
+        item: webSearchItem({ action }),
+      }),
+    ).events[0];
+    expect(parsed).toMatchObject({
+      kind: "web-search",
+      action: { json: JSON.stringify(action), truncated: false },
+    });
+  }
+  for (const invalid of [
+    {
+      action: { type: "search", query: "x", queries: null, url: "unexpected" },
+    },
+    { action: { type: "openPage" } },
+    { action: { type: "findInPage", url: null } },
+    { action: { type: "open_page", url: "https://example.invalid" } },
+    {
+      action: {
+        type: "find_in_page",
+        url: "https://example.invalid",
+        pattern: "docs",
+      },
+    },
+    { action: { type: "search", query: "x" } },
+    { action: { type: "invented", query: "x" } },
+  ])
+    expect(() =>
+      stream().accept(
+        notify("item/started", {
+          threadId,
+          turnId,
+          item: webSearchItem(invalid),
+        }),
+      ),
+    ).toThrow();
+  for (const change of [{ threadId: turnId }, { turnId: threadId }])
+    expect(() =>
+      stream().accept(
+        notify("item/started", {
+          threadId,
+          turnId,
+          ...change,
+          item: webSearchItem(),
+        }),
+      ),
+    ).toThrow();
+});
+
+test("native web-search text and JSON share one UTF-8 report budget with truthful zero-retained clipping", () => {
+  const event = stream().accept(
+    notify("item/started", {
+      threadId,
+      turnId,
+      item: webSearchItem({
+        query: "q".repeat(16_384),
+        action: { type: "other" },
+        results: [],
+      }),
+    }),
+  ).events[0];
+  if (event?.kind !== "web-search")
+    throw Error("Missing native web-search report");
+  expect(event.query).toEqual({ text: "q".repeat(16_384), truncated: false });
+  expect(event.action).toEqual({ json: "", truncated: true });
+  expect(event.results).toEqual({ json: "", truncated: true });
+});
 
 test("native file changes retain distinct full replacement snapshots, exact statuses and one matching final closure", () => {
   const decoder = stream();
@@ -773,38 +1146,150 @@ test("explicit reasoning summaries preserve independent indexed streams and snap
   });
 });
 
-test("the native decoder shares its existing 256 item limit across messages, commands and summaries", () => {
+test("the native decoder shares its existing 256 item limit across messages, commands, summaries and MCP calls", () => {
+  for (const lastItem of [
+    reasoningItem({ id: "last-reasoning" }),
+    mcpToolCallItem({ id: "last-mcp" }),
+    webSearchItem({ id: "last-web-search" }),
+  ]) {
+    const decoder = stream();
+    for (let index = 0; index < 255; index++)
+      decoder.accept(
+        notify("item/started", {
+          threadId,
+          turnId,
+          item: {
+            type: "agentMessage",
+            id: `message-${index}`,
+            text: "Visible text",
+          },
+        }),
+      );
+    expect(
+      decoder.accept(
+        notify("item/started", { threadId, turnId, item: lastItem }),
+      ).events,
+    ).toHaveLength(1);
+    expect(() =>
+      decoder.accept(
+        notify("item/started", {
+          threadId,
+          turnId,
+          item: commandItem(),
+        }),
+      ),
+    ).toThrow("bound");
+  }
+});
+
+test("native MCP fields share one UTF-8 report budget and the existing rich-event aggregate", () => {
+  const clipped = stream().accept(
+    notify("item/started", {
+      threadId,
+      turnId,
+      item: mcpToolCallItem({
+        server: "s".repeat(16_383),
+        tool: "🌱",
+        arguments: { query: "bounded" },
+        result: {
+          content: [{ text: "returned" }],
+          structuredContent: { total: 1 },
+          _meta: null,
+        },
+        error: { message: "reported" },
+      }),
+    }),
+  ).events[0];
+  if (clipped?.kind !== "mcp-tool-call")
+    throw Error("Missing native MCP report");
+  const retained = [
+    clipped.server.text,
+    clipped.tool.text,
+    clipped.arguments.json,
+    clipped.result?.content.json ?? "",
+    clipped.result?.structuredContent?.json ?? "",
+    clipped.error?.text ?? "",
+  ].join("");
+  expect(new TextEncoder().encode(retained).byteLength).toBe(16_384);
+  expect(clipped.server.truncated).toBe(false);
+  expect(clipped.tool).toEqual({ text: "", truncated: true });
+  expect(clipped.arguments.truncated).toBe(true);
+  expect(clipped.result?.content.truncated).toBe(true);
+  expect(clipped.result?.structuredContent?.truncated).toBe(true);
+  expect(clipped.error?.truncated).toBe(true);
+
+  const pressured = stream();
+  let accepted = 0;
+  expect(() => {
+    for (let index = 0; index < 160; index++) {
+      pressured.accept(
+        notify("item/started", {
+          threadId,
+          turnId,
+          item: mcpToolCallItem({
+            id: `bounded-mcp-${index}`,
+            server: "s".repeat(16_384),
+          }),
+        }),
+      );
+      accepted++;
+    }
+  }).toThrow("private report bound");
+  expect(accepted).toBeGreaterThan(0);
+  expect(accepted).toBeLessThan(160);
+});
+
+test("commands, file changes and MCP calls consume the same native rich-report aggregate", () => {
   const decoder = stream();
-  for (let index = 0; index < 255; index++)
+  for (let index = 0; index < 40; index++)
+    decoder.accept(
+      notify("item/started", {
+        threadId,
+        turnId,
+        item: commandItem({
+          id: `mixed-command-${index}`,
+          command: "x".repeat(16_384),
+          aggregatedOutput: "y".repeat(16_384),
+        }),
+      }),
+    );
+  for (let index = 0; index < 40; index++)
     decoder.accept(
       notify("item/started", {
         threadId,
         turnId,
         item: {
-          type: "agentMessage",
-          id: `message-${index}`,
-          text: "Visible text",
+          type: "fileChange",
+          id: `mixed-files-${index}`,
+          status: "inProgress",
+          changes: [
+            {
+              path: `file-${index}.txt`,
+              kind: { type: "add" },
+              diff: "z".repeat(16_384),
+            },
+          ],
         },
       }),
     );
-  expect(
-    decoder.accept(
-      notify("item/started", {
-        threadId,
-        turnId,
-        item: reasoningItem(),
-      }),
-    ).events,
-  ).toHaveLength(1);
-  expect(() =>
-    decoder.accept(
-      notify("item/started", {
-        threadId,
-        turnId,
-        item: commandItem(),
-      }),
-    ),
-  ).toThrow("bound");
+  let mcpCalls = 0;
+  expect(() => {
+    for (let index = 0; index < 100; index++) {
+      decoder.accept(
+        notify("item/started", {
+          threadId,
+          turnId,
+          item: mcpToolCallItem({
+            id: `mixed-mcp-${index}`,
+            server: "m".repeat(16_384),
+          }),
+        }),
+      );
+      mcpCalls++;
+    }
+  }).toThrow("private report bound");
+  expect(mcpCalls).toBeGreaterThan(0);
+  expect(mcpCalls).toBeLessThan(100);
 });
 
 test("reasoning summaries refuse foreign or malformed parts and closed content while raw content cannot create summary facts", () => {
@@ -989,6 +1474,42 @@ test("native summaries and commands consume one shared rich-report budget", () =
   }).toThrow("private report bound");
   expect(summaries).toBeGreaterThan(0);
   expect(summaries).toBeLessThan(64);
+});
+
+test("native web-search reports consume the existing mixed-family rich-report budget", () => {
+  const decoder = stream();
+  for (let index = 0; index < 40; index++)
+    decoder.accept(
+      notify("item/started", {
+        threadId,
+        turnId,
+        item: commandItem({
+          id: `budget-command-${index}`,
+          command: "x".repeat(16_384),
+          aggregatedOutput: "y".repeat(16_384),
+        }),
+      }),
+    );
+  let searches = 0;
+  expect(() => {
+    for (let index = 0; index < 128; index++) {
+      decoder.accept(
+        notify("item/started", {
+          threadId,
+          turnId,
+          item: webSearchItem({
+            id: `budget-search-${index}`,
+            query: "q".repeat(16_384),
+            action: null,
+            results: null,
+          }),
+        }),
+      );
+      searches++;
+    }
+  }).toThrow("private report bound");
+  expect(searches).toBeGreaterThan(0);
+  expect(searches).toBeLessThan(128);
 });
 
 test("native command reports retain streamed versus aggregate output, exact duplicates and standalone declined completion", () => {

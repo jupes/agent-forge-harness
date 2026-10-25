@@ -22,6 +22,11 @@ selection or launch authority. A path in a report is never read by this producer
 Reasoning means a supplied visible summary or thinking block. Encrypted and
 redacted reasoning payloads are never reconstructed or retained as visible text.
 
+Native Chat MCP tool-call snapshot rendering and its packaged synthetic smoke
+are documented in [native-chat-mcp-tool-calls](./native-chat-mcp-tool-calls.md).
+Native Chat web-search snapshot boundaries and their pinned app-server contract
+are documented in [native-chat-web-search](./native-chat-web-search.md).
+
 Each report has a literal provider source, checked CLI version and native item
 identity. Text is capped at 16 KiB of UTF-8, JSON at 32 KiB, one event at 64 KiB,
 one turn at 2 MiB/4096 activity events, and lists at 128 entries. JSON has a

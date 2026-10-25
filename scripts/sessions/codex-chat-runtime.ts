@@ -65,6 +65,7 @@ function bounded<T>(
   ms: number,
   signal: AbortSignal | undefined,
   message: string,
+  timeoutError?: Error,
 ): Promise<T> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
@@ -82,7 +83,8 @@ function bounded<T>(
       if (result.ok) resolve(result.value);
       else reject(result.error);
     };
-    const abort = () => finish({ ok: false, error: new Error(message) });
+    const abort = () =>
+      finish({ ok: false, error: timeoutError ?? new Error(message) });
     const timer = setTimeout(abort, ms);
     signal?.addEventListener("abort", abort, { once: true });
     try {
@@ -94,6 +96,12 @@ function bounded<T>(
       finish({ ok: false, error });
     }
   });
+}
+class CodexChatPersistenceDeadlineError extends Error {
+  constructor() {
+    super("Private Chat persistence deadline exceeded.");
+    this.name = "CodexChatPersistenceDeadlineError";
+  }
 }
 const freeze = (value: unknown): void => {
   if (value && typeof value === "object") {
@@ -346,12 +354,15 @@ export function createCodexChatRuntime(options: CodexChatRuntimeOptions) {
                 // save retains its own bounded chance to preserve that report.
                 undefined,
                 "Private Chat persistence did not settle.",
+                new CodexChatPersistenceDeadlineError(),
               );
-            } catch {
+            } catch (error) {
               privateWriteFailed = true;
               latch(
                 "unknown",
-                "The private Chat writer failed or exceeded its deadline.",
+                error instanceof CodexChatPersistenceDeadlineError
+                  ? "The private Chat writer exceeded its deadline."
+                  : "The private Chat writer failed.",
               );
             }
           })

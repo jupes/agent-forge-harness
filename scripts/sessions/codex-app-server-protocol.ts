@@ -7,12 +7,19 @@ import type {
   CodexChatEvent,
   CodexChatFileChange,
   CodexChatLaunch,
+  CodexChatMcpToolCall,
   CodexChatReasoningSummary,
   CodexChatTurnPlan,
   CodexChatUsage,
+  CodexChatWebSearch,
+  CodexChatWebSearchAction,
   PreparedCodexChat,
 } from "../../types/codex-chat";
-import { reportedText, SESSION_ACTIVITY_LIMITS } from "./activity-protocol";
+import {
+  reportedJson,
+  reportedText,
+  SESSION_ACTIVITY_LIMITS,
+} from "./activity-protocol";
 import {
   codexExecCapabilitiesSchema,
   codexTaskLaunchSchema,
@@ -289,6 +296,92 @@ const nativeFileChange = z
     changes: nativeFileChanges,
   })
   .strict();
+const jsonValue = z
+  .unknown()
+  .refine((value) => value !== undefined)
+  .refine((value) => {
+    try {
+      reportedJson(value);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+const nativeMcpToolCall = z
+  .object({
+    type: z.literal("mcpToolCall"),
+    id,
+    server: z.string().max(1_048_576),
+    tool: z.string().max(1_048_576),
+    status: z.enum(["inProgress", "completed", "failed"]),
+    arguments: jsonValue,
+    appContext: z
+      .object({
+        connectorId: z.string().max(1_048_576),
+        linkId: z.string().max(1_048_576).nullable(),
+        resourceUri: z.string().max(1_048_576).nullable(),
+        appName: z.string().max(1_048_576).nullable(),
+        actionName: z.string().max(1_048_576).nullable(),
+      })
+      .strict()
+      .nullable(),
+    mcpAppResourceUri: z.string().max(1_048_576).optional(),
+    mcpAppUi: z
+      .object({
+        resourceUri: z.string().max(1_048_576),
+        preferredModelDisplayMode: z.enum(["inline", "fullscreen"]),
+      })
+      .strict()
+      .nullable(),
+    pluginId: z.string().max(1_048_576).nullable(),
+    readOnlyHint: z.boolean().nullable(),
+    result: z
+      .object({
+        content: z.array(jsonValue).max(4096),
+        structuredContent: jsonValue.nullable(),
+        _meta: jsonValue.nullable(),
+      })
+      .strict()
+      .nullable(),
+    error: z
+      .object({ message: z.string().max(1_048_576) })
+      .strict()
+      .nullable(),
+    durationMs: z.number().safe().nonnegative().nullable(),
+  })
+  .strict();
+const nativeWebSearchAction = z.discriminatedUnion("type", [
+  z
+    .object({
+      type: z.literal("search"),
+      query: z.string().max(1_048_576).nullable(),
+      queries: z.array(z.string().max(1_048_576)).max(4096).nullable(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("openPage"),
+      url: z.string().max(1_048_576).nullable(),
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal("findInPage"),
+      url: z.string().max(1_048_576).nullable(),
+      pattern: z.string().max(1_048_576).nullable(),
+    })
+    .strict(),
+  z.object({ type: z.literal("other") }).strict(),
+]) satisfies z.ZodType<CodexChatWebSearchAction>;
+const nativeWebSearch = z
+  .object({
+    type: z.literal("webSearch"),
+    id,
+    query: z.string().max(1_048_576),
+    action: nativeWebSearchAction.nullable(),
+    results: z.array(jsonValue).max(4096).nullable(),
+  })
+  .strict();
 const nativeTurnPlan = z.object({
   explanation: z.string().max(1_048_576).nullable(),
   plan: z
@@ -372,6 +465,18 @@ export function createCodexChatStream(options: {
         turnStatus: "completed" | "failed" | "interrupted" | null;
         status: CodexChatFileChange["status"];
       };
+      mcpToolCall?: {
+        identity: string;
+        started: string | null;
+        completed: string | null;
+        turnStatus: "completed" | "failed" | "interrupted" | null;
+      };
+      webSearch?: {
+        identity: string;
+        started: string | null;
+        completed: string | null;
+        turnStatus: "completed" | "failed" | "interrupted" | null;
+      };
     }
   >();
   const scoped = (params: Record<string, unknown>, requireTurn = true) => {
@@ -423,7 +528,9 @@ export function createCodexChatStream(options: {
       | CodexChatCommand
       | CodexChatReasoningSummary
       | CodexChatTurnPlan
-      | CodexChatFileChange,
+      | CodexChatFileChange
+      | CodexChatMcpToolCall
+      | CodexChatWebSearch,
   ): CodexChatEvent[] => {
     const bytes = encoder.encode(JSON.stringify(report)).byteLength;
     if (bytes > SESSION_ACTIVITY_LIMITS.eventBytes)
@@ -546,6 +653,237 @@ export function createCodexChatStream(options: {
         snapshot: signature,
         turnStatus,
         status: current.status,
+      },
+    });
+    return richReport(report);
+  };
+  const mcpToolCall = (
+    value: unknown,
+    source: CodexChatMcpToolCall["source"],
+    turnStatus: CodexChatMcpToolCall["turnStatus"] = null,
+  ): CodexChatEvent[] => {
+    if (!threadId || !turnId)
+      throw Error("Codex MCP tool call has no owned native turn identity.");
+    const current = nativeMcpToolCall.parse(value),
+      previous = items.get(current.id),
+      prior = previous?.mcpToolCall,
+      identity = JSON.stringify([
+        current.server,
+        current.tool,
+        current.arguments,
+      ]),
+      snapshot = JSON.stringify([
+        current.status,
+        current.server,
+        current.tool,
+        current.arguments,
+        current.result === null
+          ? null
+          : [current.result.content, current.result.structuredContent],
+        current.error,
+        current.durationMs,
+      ]);
+    if (previous && previous.type !== "mcpToolCall")
+      throw Error("Codex MCP tool-call item identity changed.");
+    if (
+      (source === "item/started" && current.status !== "inProgress") ||
+      (source === "item/completed" && current.status === "inProgress") ||
+      (source === "turn/completed") !== (turnStatus !== null)
+    )
+      throw Error(
+        "Codex MCP tool-call status conflicts with its lifecycle source.",
+      );
+    if (prior && prior.identity !== identity)
+      throw Error("Codex MCP tool-call identity changed across snapshots.");
+    if (previous?.completed) {
+      if (source === "item/completed" && prior?.completed === snapshot)
+        return [];
+      if (source !== "turn/completed" || prior?.completed !== snapshot)
+        throw Error("Codex MCP tool call changed after its completed report.");
+      if (prior.turnStatus !== null) {
+        if (prior.turnStatus !== turnStatus)
+          throw Error(
+            "Codex MCP final turn status conflicts with its original.",
+          );
+        return [];
+      }
+    }
+    if (source === "item/started" && prior?.started) {
+      if (prior.started === snapshot) return [];
+      throw Error("Codex MCP started report conflicts with its original.");
+    }
+    if (!previous && items.size >= 256)
+      throw Error("Codex items exceed their protocol bound.");
+
+    let remaining = SESSION_ACTIVITY_LIMITS.textBytes;
+    const retainText = (value: string) => {
+      const normalized = reportedText(value),
+        retained = prefix(normalized.text, remaining);
+      remaining -= retained.bytes;
+      return {
+        text: retained.text,
+        truncated:
+          normalized.truncated || retained.text.length < normalized.text.length,
+      };
+    };
+    const retainJson = (value: unknown) => {
+      const normalized = reportedJson(value),
+        retained = prefix(normalized.json, remaining);
+      remaining -= retained.bytes;
+      return {
+        json: retained.text,
+        truncated:
+          normalized.truncated || retained.text.length < normalized.json.length,
+        ...(normalized.omitted === undefined
+          ? {}
+          : { omitted: normalized.omitted }),
+      };
+    };
+    const report: CodexChatMcpToolCall = {
+      kind: "mcp-tool-call",
+      source,
+      threadId,
+      turnId,
+      itemId: current.id,
+      server: retainText(current.server),
+      tool: retainText(current.tool),
+      status: current.status,
+      arguments: retainJson(current.arguments),
+      result:
+        current.result === null
+          ? null
+          : {
+              content: retainJson(current.result.content),
+              structuredContent:
+                current.result.structuredContent === null
+                  ? null
+                  : retainJson(current.result.structuredContent),
+            },
+      error: current.error === null ? null : retainText(current.error.message),
+      durationMs: current.durationMs,
+      partial:
+        current.status === "inProgress" ||
+        (source === "turn/completed" && turnStatus !== "completed"),
+      closure:
+        source === "turn/completed"
+          ? "turn-ended"
+          : source === "item/completed"
+            ? "item-ended"
+            : "open",
+      turnStatus,
+    };
+    items.set(current.id, {
+      type: "mcpToolCall",
+      text: "",
+      completed: source !== "item/started",
+      mcpToolCall: {
+        identity,
+        started:
+          source === "item/started" ? snapshot : (prior?.started ?? null),
+        completed: source === "item/started" ? null : snapshot,
+        turnStatus,
+      },
+    });
+    return richReport(report);
+  };
+  const webSearch = (
+    value: unknown,
+    source: CodexChatWebSearch["source"],
+    turnStatus: CodexChatWebSearch["turnStatus"] = null,
+  ): CodexChatEvent[] => {
+    if (!threadId || !turnId)
+      throw Error("Codex web-search report has no owned native turn identity.");
+    const current = nativeWebSearch.parse(value),
+      previous = items.get(current.id),
+      prior = previous?.webSearch,
+      identity = current.query,
+      snapshot = JSON.stringify([
+        current.query,
+        current.action,
+        current.results,
+      ]);
+    if (previous && previous.type !== "webSearch")
+      throw Error("Codex web-search item identity changed.");
+    if ((source === "turn/completed") !== (turnStatus !== null))
+      throw Error("Codex web-search closure conflicts with its turn status.");
+    if (prior && prior.identity !== identity)
+      throw Error("Codex web-search query changed across snapshots.");
+    if (previous?.completed) {
+      if (source === "item/completed" && prior?.completed === snapshot)
+        return [];
+      if (source !== "turn/completed" || prior?.completed !== snapshot)
+        throw Error("Codex web-search changed after its completed report.");
+      if (prior.turnStatus !== null) {
+        if (prior.turnStatus !== turnStatus)
+          throw Error(
+            "Codex web-search final turn status conflicts with its original.",
+          );
+        return [];
+      }
+    }
+    if (source === "item/started" && prior?.started) {
+      if (prior.started === snapshot) return [];
+      throw Error(
+        "Codex web-search started report conflicts with its original.",
+      );
+    }
+    if (!previous && items.size >= 256)
+      throw Error("Codex items exceed their protocol bound.");
+
+    let remaining = SESSION_ACTIVITY_LIMITS.textBytes;
+    const retainText = (raw: string) => {
+      const normalized = reportedText(raw),
+        retained = prefix(normalized.text, remaining);
+      remaining -= retained.bytes;
+      return {
+        text: retained.text,
+        truncated:
+          normalized.truncated || retained.text.length < normalized.text.length,
+      };
+    };
+    const retainJson = (raw: unknown) => {
+      const normalized = reportedJson(raw),
+        retained = prefix(normalized.json, remaining);
+      remaining -= retained.bytes;
+      return {
+        json: retained.text,
+        truncated:
+          normalized.truncated || retained.text.length < normalized.json.length,
+        ...(normalized.omitted === undefined
+          ? {}
+          : { omitted: normalized.omitted }),
+      };
+    };
+    const report: CodexChatWebSearch = {
+      kind: "web-search",
+      source,
+      threadId,
+      turnId,
+      itemId: current.id,
+      query: retainText(current.query),
+      action: current.action === null ? null : retainJson(current.action),
+      results: current.results === null ? null : retainJson(current.results),
+      partial:
+        source === "item/started" ||
+        (source === "turn/completed" && turnStatus !== "completed"),
+      closure:
+        source === "turn/completed"
+          ? "turn-ended"
+          : source === "item/completed"
+            ? "item-ended"
+            : "open",
+      turnStatus,
+    };
+    items.set(current.id, {
+      type: "webSearch",
+      text: "",
+      completed: source !== "item/started",
+      webSearch: {
+        identity,
+        started:
+          source === "item/started" ? snapshot : (prior?.started ?? null),
+        completed: source === "item/started" ? null : snapshot,
+        turnStatus,
       },
     });
     return richReport(report);
@@ -1051,6 +1389,12 @@ export function createCodexChatStream(options: {
             events.push(
               ...fileChange(value, "turn/completed", finished.status),
             );
+          else if (final.type === "mcpToolCall")
+            events.push(
+              ...mcpToolCall(value, "turn/completed", finished.status),
+            );
+          else if (final.type === "webSearch")
+            events.push(...webSearch(value, "turn/completed", finished.status));
         }
         terminal = finished.status;
       } else if (frame.method === "turn/plan/updated") {
@@ -1170,6 +1514,10 @@ export function createCodexChatStream(options: {
           events.push(...reasoning(params.item, frame.method));
         else if (current.type === "fileChange")
           events.push(...fileChange(params.item, frame.method));
+        else if (current.type === "mcpToolCall")
+          events.push(...mcpToolCall(params.item, frame.method));
+        else if (current.type === "webSearch")
+          events.push(...webSearch(params.item, frame.method));
         else if (current.type === "agentMessage")
           events.push(
             ...message(
