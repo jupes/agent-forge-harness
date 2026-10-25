@@ -216,13 +216,15 @@ test("a confirmed original remains while a later explicit create uses a new UUID
   value.client.dispose();
 });
 
-test("editing invalidates preview and a sent generic 503 stays held through reload and GET-only recovery", async () => {
+test("editing invalidates preview and a lost response stays held after a missing-original GET", async () => {
   const first = setup({
     post: async () => ({
       state: "sent",
       value: { ok: false, error: "unavailable" },
     }),
-    readOriginal: async () => ({ ok: false, error: "No saved original" }),
+    readOriginal: async () => {
+      throw Error("404 No saved original");
+    },
   });
   first.client.setDraft("workspace", smith);
   await first.client.preview();
@@ -252,7 +254,7 @@ test("editing invalidates preview and a sent generic 503 stays held through relo
     },
     readOriginal: async (requestId) => {
       first.readIds.push(requestId);
-      return { ok: false, error: "No saved original" };
+      throw Error("404 No saved original");
     },
   });
   await restarted.recover();
@@ -268,6 +270,8 @@ test("editing invalidates preview and a sent generic 503 stays held through relo
   expect(recoveryPreviewCalls).toBe(0);
   expect(first.posted).toHaveLength(1);
   expect(first.identities.list()).toHaveLength(1);
+  expect(first.identities.read(heldId)?.retired).toBe(false);
+  expect(restarted.canStart()).toBe(false);
   restarted.dispose();
 });
 
@@ -318,8 +322,171 @@ test("NotSent is distinct and never turns a later generic response into a refusa
   expect(value.client.get().entries[0]?.notice).toContain(
     "No request was sent",
   );
+  expect(value.identities.read(ids[0]!)?.retired).toBe(true);
   expect(value.posted).toHaveLength(1);
   value.client.dispose();
+});
+
+test("a proven NotSent settlement survives reload and permits a later explicit create", async () => {
+  const first = setup({
+    post: async () => ({
+      state: "not-sent",
+      message: "Operator token unavailable.",
+    }),
+  });
+  first.client.setDraft("workspace", smith);
+  await first.client.preview();
+  await first.client.create();
+  expect(first.identities.read(ids[0]!)?.retired).toBe(true);
+  first.client.dispose();
+
+  const restarted = createSmithConfigCreateClient({
+    identities: first.identities,
+    canWrite: () => true,
+    requestId: () => ids[1]!,
+    preview: async (input) => preview(input),
+    post: async (request) => {
+      first.posted.push(structuredClone(request));
+      return { state: "sent", value: await receipt(request) };
+    },
+    readOriginal: async (requestId) => {
+      first.readIds.push(requestId);
+      throw Error("A retired request must not be recovered from the server.");
+    },
+  });
+  await restarted.recover();
+  expect(restarted.canStart()).toBe(true);
+  expect(restarted.get().entries).toMatchObject([
+    {
+      identity: { requestId: ids[0], retired: true },
+      state: "not-sent",
+    },
+  ]);
+  expect(first.readIds).toEqual([]);
+
+  const nextSmith = { ...smith, name: "codex-next-after-not-sent" };
+  restarted.setDraft("workspace", nextSmith);
+  await restarted.preview();
+  await restarted.create();
+  expect(first.posted.map((request) => request.requestId)).toEqual(ids);
+  expect(restarted.get().entries.map((entry) => entry.state)).toEqual([
+    "not-sent",
+    "confirmed",
+  ]);
+  restarted.dispose();
+});
+
+test("a refusal receipt is retired durably and does not strand the next create after reload", async () => {
+  const first = setup({
+    post: async (request) => ({
+      state: "sent",
+      value: await receipt(request, {
+        phase: "refused",
+        refusedAt: "2026-10-25T20:00:00.000Z",
+        reason: "stale-revision",
+        preview: preview(request),
+      }),
+    }),
+  });
+  first.client.setDraft("workspace", smith);
+  await first.client.preview();
+  await first.client.create();
+  expect(first.identities.read(ids[0]!)).toMatchObject({
+    retired: true,
+    retirement: "correlated-refusal",
+  });
+  first.client.dispose();
+
+  const restarted = createSmithConfigCreateClient({
+    identities: first.identities,
+    canWrite: () => true,
+    requestId: () => ids[1]!,
+    preview: async (input) => preview(input),
+    post: async (request) => ({ state: "sent", value: await receipt(request) }),
+    readOriginal: async () => {
+      throw Error("A retired refusal needs no ambiguous recovery read.");
+    },
+  });
+  await restarted.recover();
+  expect(restarted.canStart()).toBe(true);
+  expect(restarted.get().entries[0]).toMatchObject({
+    identity: { requestId: ids[0], retired: true },
+    state: "refused",
+  });
+  restarted.setDraft("workspace", { ...smith, name: "after-refusal" });
+  await restarted.preview();
+  await restarted.create();
+  expect(restarted.get().entries.map((entry) => entry.state)).toEqual([
+    "refused",
+    "confirmed",
+  ]);
+  restarted.dispose();
+});
+
+test("disposing during an identity reservation durably retires the proven-undispatched UUID", async () => {
+  const value = setup();
+  let release: (() => void) | undefined;
+  const pendingReservation = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const reserve = value.identities.reserve.bind(value.identities);
+  value.identities.reserve = async (request) => {
+    await pendingReservation;
+    return reserve(request);
+  };
+  value.client.setDraft("workspace", smith);
+  await value.client.preview();
+  const pending = value.client.create();
+  value.client.dispose();
+  if (!release) throw Error("Reservation was not deferred");
+  release();
+  await pending;
+  expect(value.posted).toHaveLength(0);
+  expect(value.identities.read(ids[0]!)).toMatchObject({
+    retired: true,
+    retirement: "operator-not-sent",
+  });
+});
+
+test("a verified NotSent response still retires after disposal while storage readback failure stays held", async () => {
+  let releasePost: ((value: SmithCreatePostResult) => void) | undefined,
+    started: (() => void) | undefined;
+  const postStarted = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  const pending = setup({
+    post: async () => {
+      started?.();
+      return await new Promise<SmithCreatePostResult>((resolve) => {
+        releasePost = resolve;
+      });
+    },
+  });
+  pending.client.setDraft("workspace", smith);
+  await pending.client.preview();
+  const create = pending.client.create();
+  await postStarted;
+  pending.client.dispose();
+  releasePost?.({ state: "not-sent", message: "Operator access was refused." });
+  await create;
+  expect(pending.identities.read(ids[0]!)?.retired).toBe(true);
+
+  const failure = setup({
+    post: async () => ({
+      state: "not-sent",
+      message: "Operator token unavailable.",
+    }),
+  });
+  failure.identities.retire = async () => {
+    throw Error("Readback failed.");
+  };
+  failure.client.setDraft("workspace", smith);
+  await failure.client.preview();
+  await failure.client.create();
+  expect(failure.identities.read(ids[0]!)).toMatchObject({ retired: false });
+  expect(failure.client.get().entries[0]?.state).toBe("held");
+  expect(failure.client.canStart()).toBe(false);
+  failure.client.dispose();
 });
 
 test("unreadable identity metadata fails closed before review or create", async () => {

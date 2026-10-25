@@ -6,7 +6,8 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { expect, test } from "@playwright/test";
 import { APPRENTICE_VERIFICATION } from "../../scripts/smith-verification";
 import type { LedgerEventInput } from "../../types/hearth";
@@ -159,7 +160,7 @@ test("Smiths inspects actual temporary config provenance and workspace scoreboar
   ).toContainText("66.7% · weight 2 · Disabled");
   await expect(
     page.getByRole("button", { name: "New smith", exact: true }),
-  ).toBeDisabled();
+  ).toBeEnabled();
   await expect(
     page.getByRole("button", { name: "Open verification task", exact: true }),
   ).toBeEnabled();
@@ -216,6 +217,7 @@ test("Smiths inspects actual temporary config provenance and workspace scoreboar
     .selectOption("24h");
   await expect(rows.getByRole("row")).toHaveCount(2);
   await expect(rows).not.toContainText("recorded-old");
+  expect(posts).toEqual([]);
   await board
     .getByRole("heading", { name: "Recorded scoreboard", exact: true })
     .scrollIntoViewIfNeeded();
@@ -241,6 +243,274 @@ test("Smiths inspects actual temporary config provenance and workspace scoreboar
   unchangedConfig();
   expect(providerStarts()).toEqual(starts);
   expect(posts).toEqual([]);
+});
+
+test("creates a reviewed Smith in the temporary workspace config and recovers its receipt after reload", async ({
+  page,
+}) => {
+  const starts = providerStarts(),
+    posts: string[] = [],
+    createdName = `browser-create-${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      request.url().includes("/__agent-forge/")
+    )
+      posts.push(new URL(request.url()).pathname);
+  });
+  if (
+    !isRunHome(HEARTH_HOME) ||
+    !realpathSync
+      .native(REPOSITORY)
+      .startsWith(
+        `${checkedFixtureRoot()}${process.platform === "win32" ? "\\" : "/"}`,
+      ) ||
+    !resolve(HEARTH_HOME).startsWith(resolve(tmpdir()))
+  )
+    throw Error("Smith creation requires only the owned temporary homes.");
+
+  await page.setViewportSize({ width: 1100, height: 700 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await openSettled(page, "/index.html#/desktop/smiths");
+  await page.getByRole("button", { name: "New smith", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Create a Smith" });
+  await dialog.getByLabel("Smith name").fill(createdName);
+  await dialog.getByLabel("Provider").fill("codex");
+  await dialog.getByLabel("Model").fill("browser-fixture-model");
+  await dialog.getByLabel("Effort").fill("high");
+  await dialog.getByLabel("Tags").fill("browser-fixture\nreviewed");
+  await dialog.getByRole("button", { name: "Review candidate" }).click();
+  await expect(
+    dialog.getByRole("region", { name: "Candidate review" }),
+  ).toContainText(join(REPOSITORY, "agent-forge.toml"));
+  await expect(
+    dialog.getByRole("region", { name: "Candidate review" }),
+  ).toContainText(createdName);
+  expect(posts).toEqual(["/__agent-forge/config/smiths/preview"]);
+  unchangedConfig();
+
+  const createResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname ===
+        "/__agent-forge/config/smiths/creates",
+  );
+  await dialog.getByRole("button", { name: "Create Smith" }).click();
+  expect((await createResponse).status()).toBe(200);
+  await expect(
+    page.getByRole("region", { name: "Original Smith create receipts" }),
+  ).toContainText(createdName);
+  const written = readFileSync(join(REPOSITORY, "agent-forge.toml"), "utf8");
+  expect(written).toContain(`[smiths.${createdName}]`);
+  expect(written).toContain('model = "browser-fixture-model"');
+  expect(
+    existsSync(
+      join(HEARTH_HOME, ".agent-forge-config-transactions", "write.lock.db"),
+    ),
+  ).toBe(true);
+  expect(posts).toEqual([
+    "/__agent-forge/config/smiths/preview",
+    "/__agent-forge/config/smiths/creates",
+  ]);
+
+  const originalRead = page.waitForResponse(
+    (response) =>
+      response.request().method() === "GET" &&
+      new URL(response.url()).pathname.startsWith(
+        "/__agent-forge/smiths/creates/",
+      ),
+  );
+  await reloadSettled(page);
+  expect((await originalRead).status()).toBe(200);
+  await expect(
+    page.getByRole("region", { name: "Original Smith create receipts" }),
+  ).toContainText(createdName);
+  expect(posts).toEqual([
+    "/__agent-forge/config/smiths/preview",
+    "/__agent-forge/config/smiths/creates",
+  ]);
+  expect(providerStarts()).toEqual(starts);
+});
+
+test("a source-proven NotSent retires across reload, while a lost response stays held on 404", async ({
+  page,
+}) => {
+  const starts = providerStarts(),
+    posts: string[] = [],
+    originalReads: number[] = [],
+    notSentName = `browser-not-sent-${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+  page.on("request", (request) => {
+    const path = new URL(request.url()).pathname;
+    if (request.method() === "POST" && path.startsWith("/__agent-forge/"))
+      posts.push(path);
+  });
+  page.on("response", (response) => {
+    if (
+      response.request().method() === "GET" &&
+      new URL(response.url()).pathname.startsWith(
+        "/__agent-forge/smiths/creates/",
+      )
+    )
+      originalReads.push(response.status());
+  });
+  if (!isRunHome(HEARTH_HOME) || !checkedFixtureRoot())
+    throw Error("Smith identity recovery requires the owned temporary homes.");
+
+  await page.setViewportSize({ width: 1100, height: 700 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await openSettled(page, "/index.html#/desktop/smiths");
+  await page.getByRole("button", { name: "New smith", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Create a Smith" });
+  await dialog.getByLabel("Smith name").fill(notSentName);
+  await dialog.getByLabel("Provider").fill("codex");
+  await dialog.getByLabel("Model").fill("browser-not-sent-model");
+  await dialog.getByLabel("Effort").fill("high");
+  await dialog.getByRole("button", { name: "Review candidate" }).click();
+  await expect(
+    dialog.getByRole("region", { name: "Candidate review" }),
+  ).toBeVisible();
+
+  await page.route("**/config/smiths/creates", (route) =>
+    route.fulfill({
+      status: 403,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: false,
+        data: null,
+        error: "Operator access refused before any effect.",
+      }),
+    }),
+  );
+  const refused = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname ===
+        "/__agent-forge/config/smiths/creates",
+  );
+  await dialog.getByRole("button", { name: "Create Smith" }).click();
+  expect((await refused).status()).toBe(403);
+  await expect(
+    page.getByRole("region", { name: "Original Smith create receipts" }),
+  ).toContainText("Not sent");
+  expect(
+    readFileSync(join(REPOSITORY, "agent-forge.toml"), "utf8"),
+  ).not.toContain(`[smiths.${notSentName}]`);
+  await page.unroute("**/config/smiths/creates");
+
+  await reloadSettled(page);
+  await expect(
+    page.getByRole("region", { name: "Original Smith create receipts" }),
+  ).toContainText("Not sent");
+  expect(originalReads).toEqual([]);
+  await page.getByRole("button", { name: "New smith", exact: true }).click();
+  const afterReload = `browser-after-not-sent-${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+  await page.getByLabel("Smith name").fill(afterReload);
+  await page.getByLabel("Provider").fill("codex");
+  await page.getByLabel("Model").fill("browser-after-not-sent-model");
+  await page.getByLabel("Effort").fill("high");
+  await page.getByRole("button", { name: "Review candidate" }).click();
+  await expect(
+    page.getByRole("region", { name: "Candidate review" }),
+  ).toContainText(afterReload);
+  const created = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname ===
+        "/__agent-forge/config/smiths/creates",
+  );
+  await page.getByRole("button", { name: "Create Smith" }).click();
+  expect((await created).status()).toBe(200);
+  expect(readFileSync(join(REPOSITORY, "agent-forge.toml"), "utf8")).toContain(
+    `[smiths.${afterReload}]`,
+  );
+  expect(providerStarts()).toEqual(starts);
+});
+
+test("a lost create response remains held after the protected original returns 404", async ({
+  page,
+}) => {
+  const posts: string[] = [],
+    originalReads: number[] = [],
+    name = `browser-uncertain-${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+  page.on("request", (request) => {
+    const path = new URL(request.url()).pathname;
+    if (request.method() === "POST" && path.startsWith("/__agent-forge/"))
+      posts.push(path);
+  });
+  page.on("response", (response) => {
+    if (
+      response.request().method() === "GET" &&
+      new URL(response.url()).pathname.startsWith(
+        "/__agent-forge/smiths/creates/",
+      )
+    )
+      originalReads.push(response.status());
+  });
+  if (!isRunHome(HEARTH_HOME) || !checkedFixtureRoot())
+    throw Error("Smith identity recovery requires the owned temporary homes.");
+
+  await page.setViewportSize({ width: 1100, height: 700 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await openSettled(page, "/index.html#/desktop/smiths");
+  await page.getByRole("button", { name: "New smith", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Create a Smith" });
+  await dialog.getByLabel("Smith name").fill(name);
+  await dialog.getByLabel("Provider").fill("codex");
+  await dialog.getByLabel("Model").fill("browser-lost-reply-model");
+  await dialog.getByLabel("Effort").fill("high");
+  await dialog.getByRole("button", { name: "Review candidate" }).click();
+  await expect(
+    dialog.getByRole("region", { name: "Candidate review" }),
+  ).toBeVisible();
+  await page.route("**/config/smiths/creates", (route) =>
+    route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: false, data: null, error: "unavailable" }),
+    }),
+  );
+  const unavailable = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname ===
+        "/__agent-forge/config/smiths/creates",
+  );
+  await dialog.getByRole("button", { name: "Create Smith" }).click();
+  expect((await unavailable).status()).toBe(503);
+  await expect(
+    page.getByRole("region", { name: "Original Smith create receipts" }),
+  ).toContainText("Outcome held");
+  await page.unroute("**/config/smiths/creates");
+
+  const missingOriginal = page.waitForResponse(
+    (response) =>
+      response.request().method() === "GET" &&
+      new URL(response.url()).pathname.startsWith(
+        "/__agent-forge/smiths/creates/",
+      ),
+  );
+  await reloadSettled(page);
+  expect((await missingOriginal).status()).toBe(404);
+  originalReads.push(404);
+  await expect(
+    page.getByRole("region", { name: "Original Smith create receipts" }),
+  ).toContainText("Outcome held");
+  await page.getByRole("button", { name: "New smith", exact: true }).click();
+  const recovered = page.getByRole("dialog", { name: "Create a Smith" });
+  await expect(
+    recovered.getByRole("button", { name: "Review candidate" }),
+  ).toBeDisabled();
+  await expect(
+    recovered.getByRole("button", { name: "Create Smith" }),
+  ).toBeDisabled();
+  expect(originalReads).toEqual([404]);
+  expect(posts).toEqual([
+    "/__agent-forge/config/smiths/preview",
+    "/__agent-forge/config/smiths/creates",
+  ]);
+  expect(
+    readFileSync(join(REPOSITORY, "agent-forge.toml"), "utf8"),
+  ).not.toContain(`[smiths.${name}]`);
 });
 
 test("Smiths opens its actual fixed global verification task with keyboard focus and retry, without project membership or writes", async ({
