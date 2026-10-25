@@ -6,6 +6,7 @@ import {
   readdirSync,
   readFileSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -76,6 +77,20 @@ test("read-only inspect and operation scan do not create journal state", () => {
   expect(storage.inspect(id)).toBeNull();
   expect([...storage.operations()]).toEqual([]);
   expect(existsSync(join(home, "smith-create-journal"))).toBe(false);
+});
+
+test("profile resolution refuses a linked ancestor before creating an absent tail", () => {
+  const base = scratch.make("smith-create-linked-profile-"),
+    target = join(base, "target"),
+    alias = join(base, "alias"),
+    linkedProfile = join(alias, "absent", "profile");
+  mkdirSync(target);
+  symlinkSync(target, alias, process.platform === "win32" ? "junction" : "dir");
+
+  expect(() => createSmithCreateJournalStorage(linkedProfile)).toThrow(
+    "trusted Smith create directory is not canonical",
+  );
+  expect(existsSync(join(target, "absent"))).toBe(false);
 });
 
 test("existing private directories remain visible to bounded scans", async () => {

@@ -5,7 +5,6 @@ import {
   type BigIntStats,
   closeSync,
   constants,
-  existsSync,
   fstatSync,
   fsyncSync,
   linkSync,
@@ -38,6 +37,7 @@ import {
   SMITH_CONFIG_CREATE_LIMITS,
   smithConfigRequestIdSchema,
 } from "./smith-create-protocol";
+import { canonicalSmithCreateDirectory } from "./smith-create-trusted-directory";
 import { windowsConfigLeafKind } from "./transaction-windows";
 
 const JOURNAL_DIRECTORY = "smith-create-journal";
@@ -279,19 +279,7 @@ function removeStageOnlyWhenUnpublished(
 export function createSmithCreateJournalStorage(
   profileHome: string = agentForgeHome(),
 ): SmithCreateJournalStorage {
-  const profile = resolve(profileHome);
-  let existingProfileAncestor = profile;
-  while (!existsSync(existingProfileAncestor)) {
-    const parent = dirname(existingProfileAncestor);
-    if (parent === existingProfileAncestor) break;
-    existingProfileAncestor = parent;
-  }
-  if (
-    !existsSync(existingProfileAncestor) ||
-    canonicalPath(realpathSync.native(existingProfileAncestor)) !==
-      canonicalPath(existingProfileAncestor)
-  )
-    throw new Error("The Smith create profile path is not canonical.");
+  const profile = canonicalSmithCreateDirectory(profileHome);
   const root = join(profile, JOURNAL_DIRECTORY),
     records = join(root, RECORDS_DIRECTORY),
     locks = join(root, LOCKS_DIRECTORY),

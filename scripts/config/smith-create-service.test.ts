@@ -11,12 +11,14 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import type { SmithConfigCreateRequest } from "../../types/smith-config-create";
+import { bunFfi } from "../hearth/acl-windows";
 import { scratchDirs } from "../test-scratch";
 import type {
   SmithCreateJournalEntry,
   SmithCreateJournalStorage,
 } from "./smith-create-journal-core";
 import { createSmithCreateService } from "./smith-create-service";
+import { canonicalSmithCreateDirectory } from "./smith-create-trusted-directory";
 import type { ConfigWriteTransaction } from "./transaction";
 import { readConfigTransactionSources } from "./transaction";
 import {
@@ -26,6 +28,25 @@ import {
 
 const scratch = scratchDirs();
 afterEach(() => scratch.cleanup());
+
+function shortWindowsPath(path: string): string {
+  const { dlopen, FFIType } = bunFfi(),
+    { GetShortPathNameW } = dlopen("kernel32.dll", {
+      GetShortPathNameW: {
+        args: [FFIType.ptr, FFIType.ptr, FFIType.u32],
+        returns: FFIType.u32,
+      },
+    }).symbols,
+    output = Buffer.alloc(32_768 * 2),
+    length = GetShortPathNameW(
+      Buffer.from(`${path}\0`, "utf16le"),
+      output,
+      32_768,
+    );
+  if (length === 0 || length >= 32_768)
+    throw new Error("Windows did not provide a bounded short path.");
+  return output.toString("utf16le", 0, length * 2);
+}
 
 const smith = {
   name: "service-smith",
@@ -221,6 +242,26 @@ test("preview is read-only; create orders original, locks, attempted and one pub
   expect(f.storage.exclusiveCalls).toBe(heldLockCount);
   expect(f.counts()).toEqual({ globalCalls: 1, publishCalls: 1 });
 });
+
+test.skipIf(process.platform !== "win32")(
+  "8.3 profile aliases resolve to the same service owner and historical receipt",
+  async () => {
+    const f = fixture(),
+      alias = shortWindowsPath(f.profile);
+    expect(alias.toLowerCase()).not.toBe(f.profile.toLowerCase());
+    expect(canonicalSmithCreateDirectory(alias)).toBe(f.profile);
+
+    const service = f.create({ profileHome: alias }),
+      request = await requestFor(service),
+      receipt = await service.create(request),
+      counts = f.counts(),
+      recreated = f.create({ profileHome: f.profile });
+    expect(receipt.result.phase).toBe("confirmed");
+    expect(recreated.readOriginal(request.requestId)).toEqual(receipt);
+    expect(await recreated.create(request)).toEqual(receipt);
+    expect(f.counts()).toEqual(counts);
+  },
+);
 
 test("a stale paired revision refuses before candidate preparation or publication", async () => {
   const f = fixture(),
