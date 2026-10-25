@@ -747,6 +747,32 @@ test("a body changed under the same proposal hash is held instead of silently re
   });
   const review = owner.get(source, 4);
   await owner.open(review);
+  let notifications = 0;
+  owner.subscribe(() => {
+    notifications += 1;
+  });
+  const notificationsBeforeRead = notifications;
+  const reordered = {
+    createdAt: source.createdAt,
+    sourceHash: source.sourceHash,
+    sourceRequestId: source.sourceRequestId,
+    projectId: source.projectId,
+    id: source.id,
+    draft: {
+      action: {
+        spendLimitUsd: 8,
+        beadLimit: 5,
+        concurrency: 2,
+        durationMinutes: 45,
+        kind: "start-shift" as const,
+      },
+      detail: source.draft.detail,
+      title: source.draft.title,
+    },
+  };
+  expect(owner.get(reordered, 4)).toBe(review);
+  expect(review.state.status).toBe("ready");
+  expect(notifications).toBe(notificationsBeforeRead);
   const changed = structuredClone(source);
   if (changed.draft.action.kind !== "start-shift")
     throw Error("Wrong proposal fixture");
@@ -756,6 +782,9 @@ test("a body changed under the same proposal hash is held instead of silently re
   expect(review.state.notice).toContain(
     "changed without a new source identity",
   );
+  expect(notifications).toBe(notificationsBeforeRead);
+  expect(owner.get(changed, 4)).toBe(review);
+  expect(notifications).toBe(notificationsBeforeRead);
   owner.dispose();
 });
 

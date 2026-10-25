@@ -25,6 +25,26 @@ export interface KeeperShiftReviewEntry {
 const checkMessage =
   "Check the original Keeper Shift request; it will not be replayed automatically.";
 
+function sameProposalSource(left: KeeperProposal, right: KeeperProposal) {
+  const leftAction = left.draft.action;
+  const rightAction = right.draft.action;
+  return (
+    left.id === right.id &&
+    left.projectId === right.projectId &&
+    left.sourceRequestId === right.sourceRequestId &&
+    left.sourceHash === right.sourceHash &&
+    left.createdAt === right.createdAt &&
+    left.draft.title === right.draft.title &&
+    left.draft.detail === right.draft.detail &&
+    leftAction.kind === "start-shift" &&
+    rightAction.kind === "start-shift" &&
+    leftAction.durationMinutes === rightAction.durationMinutes &&
+    leftAction.concurrency === rightAction.concurrency &&
+    leftAction.beadLimit === rightAction.beadLimit &&
+    leftAction.spendLimitUsd === rightAction.spendLimitUsd
+  );
+}
+
 /** One app-root owner for Keeper Shift review, its original identity and explicit transport. */
 export function createKeeperShiftReviewOwner(deps: {
   canWrite(): boolean;
@@ -206,12 +226,11 @@ export function createKeeperShiftReviewOwner(deps: {
         };
         entries.set(key, entry);
       }
-      if (JSON.stringify(source) !== JSON.stringify(entry.state.source)) {
-        hold(
-          entry,
-          "The proposal source changed without a new source identity. Check the current Keeper reply before continuing.",
-        );
-        tell(entry);
+      if (!sameProposalSource(source, entry.state.source)) {
+        const notice =
+          "The proposal source changed without a new source identity. Check the current Keeper reply before continuing.";
+        if (entry.state.status !== "held" || entry.state.notice !== notice)
+          hold(entry, notice);
       }
       if (!entry.state.original && !entry.state.requestId)
         entry.state = {
