@@ -23,9 +23,8 @@ export const REPOSITORY = join(FIXTURE_ROOT, "repository");
  * A dedicated OS home outside FIXTURE_ROOT. The Hearth's process-global config
  * transaction mutex is persistent, so fixture teardown must never remove it.
  */
-export const EMPTY_HOME = process.env["AGENT_FORGE_WORKTREE_OS_HOME"]
-  ? resolve(process.env["AGENT_FORGE_WORKTREE_OS_HOME"])
-  : mkdtempSync(join(tmpdir(), "agent-forge-worktree-empty-home-"));
+export const EMPTY_HOME = (process.env["AGENT_FORGE_WORKTREE_OS_HOME"] ||=
+  mkdtempSync(join(tmpdir(), "agent-forge-worktree-empty-home-")));
 export const PLAN = join(FIXTURE_ROOT, "fixture-plan.json");
 export const CALLS = join(FIXTURE_ROOT, "git-calls.jsonl");
 
