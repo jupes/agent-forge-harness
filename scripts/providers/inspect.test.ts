@@ -1,11 +1,72 @@
 import { afterEach, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { z } from "zod";
 import { liveChildCount } from "../executors/supervisor";
 import { scratchDirs } from "../test-scratch";
 import { createProviderInspector } from "./inspect";
 
 const scratch = scratchDirs();
+const visibilityObservation = z
+  .object({
+    pid: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+    args: z.array(z.string()),
+    consoleWindowVisible: z.boolean().nullable(),
+  })
+  .strict();
 afterEach(() => scratch.cleanup());
+
+async function expectPidExited(pid: number): Promise<void> {
+  const deadline = Date.now() + 1000;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(pid, 0);
+    } catch {
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw Error(
+    `Provider fixture process ${pid} remained alive after inspection.`,
+  );
+}
+
+test("fixed version and authentication probes request hidden child windows", async () => {
+  const launches: {
+    command: readonly string[];
+    windowsHide: boolean | undefined;
+  }[] = [];
+  const inspector = createProviderInspector({
+    root: "/fixture",
+    home: "/private-fixture",
+    environment: {},
+    which: (binary) => `/fixture/${binary}`,
+    run: async (command, _env, launchOptions?: { windowsHide: true }) => {
+      launches.push({ command, windowsHide: launchOptions?.windowsHide });
+      return command.includes("--version")
+        ? { exitCode: 0, stdout: "Claude Code 2.1.293", valid: true }
+        : {
+            exitCode: 1,
+            stdout: '{"authMethod":"none","loggedIn":false}',
+            valid: true,
+          };
+    },
+  });
+
+  const inspected = await inspector.inspect("claude", []);
+
+  expect(inspected.installation.versionOk).toBe(true);
+  expect(inspected.authentication.mode).toBe("signed-out");
+  expect(
+    launches.map(({ command, windowsHide }) => ({
+      command,
+      windowsHide,
+    })),
+  ).toEqual([
+    { command: ["/fixture/claude", "--version"], windowsHide: true },
+    { command: ["/fixture/claude", "auth", "status"], windowsHide: true },
+  ]);
+});
 
 test("inspection runs only fixed version/status commands with filtered environment; CLI success alone does not authenticate", async () => {
   const calls: { command: readonly string[]; env: Record<string, string> }[] =
@@ -109,4 +170,61 @@ test("actual supervised status fixture bounds output and time, strips private fi
     expect(JSON.stringify(report)).not.toContain("private@example.test");
     expect(liveChildCount()).toBe(before);
   }
+});
+
+test("actual inspector probes stay bounded and do not show native console windows", async () => {
+  const root = scratch.make("provider-hidden-status-");
+  const record = join(root, "observations.jsonl");
+  const before = liveChildCount();
+  const inspector = createProviderInspector({
+    root,
+    home: root,
+    environment: {
+      ...process.env,
+      READINESS_FIXTURE: "visibility",
+      READINESS_FIXTURE_RECORD: record,
+    },
+    commands: {
+      claude: [
+        process.execPath,
+        join(import.meta.dir, "fixtures/status-cli.ts"),
+      ],
+    },
+    timeoutMs: 2000,
+  });
+
+  const report = await inspector.inspect("claude", [
+    "READINESS_FIXTURE",
+    "READINESS_FIXTURE_RECORD",
+  ]);
+
+  expect(report.installation.versionOk).toBe(true);
+  expect(report.installation.version).toBe("2.1.293");
+  expect(report.authentication.mode).toBe("signed-out");
+  expect(liveChildCount()).toBe(before);
+
+  const observations = readFileSync(record, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => {
+      try {
+        return visibilityObservation.parse(JSON.parse(line));
+      } catch {
+        throw Error("The status fixture wrote an invalid observation.");
+      }
+    });
+  expect(observations).toHaveLength(2);
+  expect(observations.map(({ args }) => args)).toEqual([
+    ["--version"],
+    ["auth", "status"],
+  ]);
+  expect(new Set(observations.map(({ pid }) => pid)).size).toBe(2);
+  for (const { pid } of observations) await expectPidExited(pid);
+  expect(
+    observations.map(({ consoleWindowVisible }) => consoleWindowVisible),
+  ).toEqual(
+    Array.from({ length: 2 }, () =>
+      process.platform === "win32" ? false : null,
+    ),
+  );
 });

@@ -1,8 +1,8 @@
 /** Trusted preview/create coordinator; routes and request authority live above it. */
 import { createHash } from "node:crypto";
-import { lstatSync, realpathSync } from "node:fs";
+import { lstatSync } from "node:fs";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import type {
   SmithConfigCreateReceipt,
   SmithConfigPreview,
@@ -23,6 +23,7 @@ import {
   smithConfigPreviewRequestSchema,
   smithConfigPreviewSchema,
 } from "./smith-create-protocol";
+import { canonicalSmithCreateDirectory } from "./smith-create-trusted-directory";
 import {
   type ConfigPairedRevision,
   type ConfigWriteTransaction,
@@ -66,14 +67,9 @@ const revisionTokens = (revision: ConfigPairedRevision) => ({
 });
 
 function canonicalDirectory(path: string, label: string) {
-  const requested = resolve(path),
-    real = realpathSync.native(requested),
+  const real = canonicalSmithCreateDirectory(path),
     info = lstatSync(real, { bigint: true });
-  if (
-    canonical(requested) !== canonical(real) ||
-    !info.isDirectory() ||
-    info.isSymbolicLink()
-  )
+  if (!info.isDirectory() || info.isSymbolicLink())
     throw new Error(`The trusted Smith create ${label} is not canonical.`);
   return {
     path: real,
@@ -83,14 +79,7 @@ function canonicalDirectory(path: string, label: string) {
 }
 
 function canonicalProfile(path: string): string {
-  const requested = resolve(path),
-    anchorFile = configAddress(
-      join(requested, ".smith-create-profile-anchor"),
-    ).file,
-    physical = dirname(anchorFile);
-  if (canonical(requested) !== canonical(physical))
-    throw new Error("The trusted Smith create profile is not canonical.");
-  return physical;
+  return canonicalSmithCreateDirectory(path);
 }
 
 function refusalFor(error: unknown) {

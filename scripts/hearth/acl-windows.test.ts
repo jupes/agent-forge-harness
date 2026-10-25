@@ -292,6 +292,20 @@ test.skipIf(!ON_WINDOWS)(
 );
 
 test.skipIf(!ON_WINDOWS)(
+  "Windows: a newly created file is owned by the process token's default owner SID",
+  () => {
+    const root = mkdtempSync(join(tmpdir(), "af token owner "));
+    temps.push(root);
+    const file = join(root, "created-by-this-token");
+    writeFileSync(file, "fixture");
+    const acl = nativeWindowsAcl();
+    const owner = acl.defaultOwnerSid?.();
+    expect(owner).toMatch(/^S-1-\d+(?:-\d+)+$/);
+    expect(acl.read(file).owner).toBe(owner ?? null);
+  },
+);
+
+test.skipIf(!ON_WINDOWS)(
   "Windows: a folder and a file read back as the owner-only ACL once it is applied, and as inherited before",
   () => {
     const root = mkdtempSync(join(tmpdir(), "af acl native "));

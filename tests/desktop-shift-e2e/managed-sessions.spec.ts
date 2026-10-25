@@ -39,7 +39,12 @@ function privateJournal(sessionId: string): string {
       FIXTURE_PROJECT_ID,
       sessionId,
     ],
-    { encoding: "utf8", timeout: 10000, maxBuffer: 1024 * 1024 },
+    {
+      encoding: "utf8",
+      timeout: 10000,
+      maxBuffer: 1024 * 1024,
+      windowsHide: true,
+    },
   );
   if (result.status !== 0)
     throw Error("The isolated private journal could not be read.");

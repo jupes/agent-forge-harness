@@ -6,7 +6,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { expect, type Page, test } from "@playwright/test";
+import { expect, type Page, type Request, test } from "@playwright/test";
 import { z } from "zod";
 import { OPERATOR_HEADER } from "../../scripts/hearth/paths";
 import { serializeCodexChat } from "../../scripts/sessions/codex-app-server-protocol";
@@ -354,6 +354,130 @@ test("native Chat file snapshots remain literal and read-only through keyboard i
   expect(existsSync(join(workspace, "FILE_REPORT_MUST_NOT_CREATE.txt"))).toBe(
     false,
   );
+});
+
+test("private native MCP snapshots reload as collapsed, literal, inert reports", async ({
+  page,
+}) => {
+  mode("mcp-tool-calls");
+  await page.setViewportSize({ width: 1100, height: 700 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  const { pane, record } = await startedChat(page);
+  await expect.poll(() => saved(record.id).turns[0]?.phase).toBe("completed");
+  const inspectionPosts: string[] = [];
+  const onInspectionRequest = (request: Request) => {
+    if (request.method() === "POST") inspectionPosts.push(request.url());
+  };
+  page.on("request", onInspectionRequest);
+  try {
+    const before = saved(record.id),
+      serialized = JSON.stringify(before.frames),
+      reports = before.frames.filter(
+        (frame) =>
+          frame.event.kind === "coding-chat" &&
+          frame.event.event.kind === "mcp-tool-call",
+      );
+    expect(reports).toHaveLength(9);
+    expect(serialized).not.toContain("MCP_HINT_");
+    expect(serialized).not.toContain("MCP_META_MUST_NOT_PERSIST");
+
+    const activity = pane.getByRole("region", {
+        name: "Reported session activity",
+        exact: true,
+      }),
+      calls = activity.locator("details").filter({
+        has: page.locator("summary", { hasText: /^MCP tool call/ }),
+      });
+    await expect(activity).toBeVisible();
+    await expect(calls).toHaveCount(4);
+    const main = calls.filter({
+      has: page.locator("summary", { hasText: "inspect_result" }),
+    });
+    await expect(main).not.toHaveAttribute("open", "");
+    await main.locator("summary").focus();
+    await page.keyboard.press("Tab");
+    await page.keyboard.press("Shift+Tab");
+    await expect(main.locator("summary")).toBeFocused();
+    await expect(main.locator("summary")).toHaveCSS("outline-width", "2px");
+    await main.locator("summary").press("Enter");
+    await expect(main).toContainText("MCP_ARGUMENT_LITERAL");
+    await expect(main).toContainText("MCP_RESULT_LITERAL");
+    await expect(main).toContainText("MCP_RESULT_URI_IS_LITERAL");
+    await expect(main).toContainText("Reported duration: 27 ms");
+    const argumentsReport = main.getByRole("region", {
+      name: "Arguments report",
+      exact: true,
+    });
+    await argumentsReport.focus();
+    await expect(argumentsReport).toBeFocused();
+    await expect(argumentsReport).toHaveCSS("outline-width", "2px");
+    await expect(
+      main.locator("a, img, script, iframe, button, form"),
+    ).toHaveCount(0);
+
+    const failed = calls.filter({
+        has: page.locator("summary", { hasText: "report_failure" }),
+      }),
+      empty = calls.filter({
+        has: page.locator("summary", { hasText: "report_empty" }),
+      }),
+      clipped = calls.filter({
+        has: page.locator("summary", { hasText: "report_clipped" }),
+      });
+    await failed.locator("summary").click();
+    await expect(failed).toContainText("MCP_ERROR_TEXT_SENTINEL");
+    await expect(failed).toContainText(
+      "Result not reported (native result was null)",
+    );
+    await empty.locator("summary").click();
+    await expect(empty).toContainText("[]");
+    await expect(empty).toContainText("Structured content not reported");
+    await clipped.locator("summary").click();
+    await expect(clipped).toContainText("Arguments truncated (size limit)");
+    await expect(activity).not.toContainText("MCP_HINT_");
+    await expect(activity).not.toContainText("MCP_META_MUST_NOT_PERSIST");
+
+    await reloadSettled(page);
+    await expect(page.locator("[data-session-state]")).toHaveAttribute(
+      "data-session-state",
+      "idle",
+    );
+    expect(saved(record.id).frames).toEqual(before.frames);
+    const reopened = page
+      .getByRole("region", { name: "Reported session activity", exact: true })
+      .locator("details")
+      .filter({ has: page.locator("summary", { hasText: /^MCP tool call/ }) });
+    await expect(reopened).toHaveCount(4);
+    for (const disclosure of await reopened.all())
+      await expect(disclosure).not.toHaveAttribute("open", "");
+    if (process.env.CODEX_CHAT_MCP_SHOTS) {
+      const screenshotMain = reopened.filter({
+        has: page.locator("summary", { hasText: "inspect_result" }),
+      });
+      await screenshotMain.locator("summary").press("Enter");
+      await expect(screenshotMain).toContainText("MCP_ARGUMENT_LITERAL");
+      const viewport = page.viewportSize();
+      try {
+        await page.setViewportSize({ width: 1280, height: 900 });
+        await screenshotMain.scrollIntoViewIfNeeded();
+        await screenshotMain.screenshot({
+          path: join(
+            process.env.CODEX_CHAT_MCP_SHOTS,
+            "native-chat-mcp-tool-calls.png",
+          ),
+          mask: [screenshotMain.locator(".af-session-report-source")],
+          maskColor: "#1c1d24",
+        });
+      } finally {
+        if (viewport) await page.setViewportSize(viewport);
+        if ((await screenshotMain.getAttribute("open")) !== null)
+          await screenshotMain.locator("summary").press("Enter");
+      }
+    }
+  } finally {
+    page.off("request", onInspectionRequest);
+  }
+  expect(inspectionPosts).toEqual([]);
 });
 
 test("actual Stop retains the exact intended private native file snapshots and ends the provider/helper without inventing completion", async ({

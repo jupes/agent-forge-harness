@@ -14,6 +14,32 @@ const FAKE = join(import.meta.dir, "fixtures", "fake-cli.ts");
 const hang = [process.execPath, FAKE, "--fake-mode", "hang"];
 const PARENT = join(import.meta.dir, "fixtures", "supervising-parent.ts");
 
+test("supervise forwards Windows console hiding only when explicitly requested", () => {
+  const before = liveChildCount();
+  const launches: { windowsHide: boolean | undefined }[] = [];
+  const spawn: NonNullable<Parameters<typeof supervise>[0]["spawn"]> = (
+    _command,
+    options,
+  ) => {
+    launches.push({ windowsHide: options.windowsHide });
+    throw new Error("intercepted before spawning");
+  };
+  const base = {
+    command: ["synthetic-provider"],
+    cwd: process.cwd(),
+    env: {},
+    onLine: () => {},
+    spawn,
+  };
+
+  expect(() => supervise({ ...base, windowsHide: true })).toThrow(
+    "intercepted before spawning",
+  );
+  expect(() => supervise(base)).toThrow("intercepted before spawning");
+  expect(launches).toEqual([{ windowsHide: true }, { windowsHide: undefined }]);
+  expect(liveChildCount()).toBe(before);
+});
+
 test("a parent with an empty PATH can stop the provider and its descendant", async () => {
   const env = Object.fromEntries(
     Object.entries(buildChildEnv(process.env, [])).filter(

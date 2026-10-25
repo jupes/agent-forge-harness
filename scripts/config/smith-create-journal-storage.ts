@@ -5,7 +5,6 @@ import {
   type BigIntStats,
   closeSync,
   constants,
-  existsSync,
   fstatSync,
   fsyncSync,
   linkSync,
@@ -38,6 +37,7 @@ import {
   SMITH_CONFIG_CREATE_LIMITS,
   smithConfigRequestIdSchema,
 } from "./smith-create-protocol";
+import { canonicalSmithCreateDirectory } from "./smith-create-trusted-directory";
 import { windowsConfigLeafKind } from "./transaction-windows";
 
 const JOURNAL_DIRECTORY = "smith-create-journal";
@@ -61,6 +61,15 @@ type MutexState = Readonly<{
   identity: FileIdentity;
   sidecars: ReadonlyMap<string, FileIdentity>;
 }>;
+
+/** Only a known new SQLite entry may be normalized from this process token's owner. */
+export function isTrustedNewSmithSidecarOwner(
+  owner: string | null,
+  userSid: string,
+  defaultOwnerSid: string,
+): boolean {
+  return owner === userSid || owner === defaultOwnerSid;
+}
 
 function identity(info: BigIntStats): FileIdentity {
   return { dev: String(info.dev), ino: String(info.ino) };
@@ -279,19 +288,7 @@ function removeStageOnlyWhenUnpublished(
 export function createSmithCreateJournalStorage(
   profileHome: string = agentForgeHome(),
 ): SmithCreateJournalStorage {
-  const profile = resolve(profileHome);
-  let existingProfileAncestor = profile;
-  while (!existsSync(existingProfileAncestor)) {
-    const parent = dirname(existingProfileAncestor);
-    if (parent === existingProfileAncestor) break;
-    existingProfileAncestor = parent;
-  }
-  if (
-    !existsSync(existingProfileAncestor) ||
-    canonicalPath(realpathSync.native(existingProfileAncestor)) !==
-      canonicalPath(existingProfileAncestor)
-  )
-    throw new Error("The Smith create profile path is not canonical.");
+  const profile = canonicalSmithCreateDirectory(profileHome);
   const root = join(profile, JOURNAL_DIRECTORY),
     records = join(root, RECORDS_DIRECTORY),
     locks = join(root, LOCKS_DIRECTORY),
@@ -355,7 +352,13 @@ export function createSmithCreateJournalStorage(
       ) {
         if (process.platform === "win32") {
           const acl = nativeWindowsAcl();
-          if (acl.read(entry.path).owner !== acl.userSid())
+          if (
+            !isTrustedNewSmithSidecarOwner(
+              acl.read(entry.path).owner,
+              acl.userSid(),
+              acl.defaultOwnerSid?.() ?? acl.userSid(),
+            )
+          )
             throw new Error(
               "The new private Smith create SQLite sidecar has a foreign owner.",
             );

@@ -115,7 +115,7 @@ function seed(mode: "reset" | "corrupt" | "gallery", witnessPid = process.pid) {
       mode,
       String(witnessPid),
     ],
-    { encoding: "utf8", timeout: 15000 },
+    { encoding: "utf8", timeout: 15000, windowsHide: true },
   );
   if (result.status !== 0)
     throw Error(
@@ -329,6 +329,7 @@ test("protected metadata renders Throttled and every canonical stopped reason wi
 }) => {
   const witness = spawn(bunPath(), ["-e", "setTimeout(() => {}, 90000)"], {
     stdio: "ignore",
+    windowsHide: true,
   });
   await new Promise<void>((resolve, reject) => {
     witness.once("spawn", resolve);

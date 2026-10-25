@@ -6,6 +6,7 @@ import { ownedSessionLifecycle } from "../../apps/desktop/src/session-activity";
 import type {
   CodexChatCommand,
   CodexChatFileChange,
+  CodexChatMcpToolCall,
   CodexChatReasoningSummary,
   CodexChatTurnPlan,
 } from "../../types/codex-chat";
@@ -287,6 +288,148 @@ function heldFileFixtureReady(
     )
   );
 }
+
+const heldMcpReports: CodexChatMcpToolCall[] = [
+  {
+    kind: "mcp-tool-call",
+    source: "item/started",
+    threadId: "0199a213-81c0-7800-8aa1-bbab2a035a53",
+    turnId: "0199a213-81c0-7800-8aa1-bbab2a035a54",
+    itemId: "reported-mcp-main",
+    server: { text: "fixture-mcp-server", truncated: false },
+    tool: { text: "inspect_result", truncated: false },
+    status: "inProgress",
+    arguments: {
+      json: '{"path":"FILE_MCP_MUST_NOT_CREATE.txt","query":"<script>MCP_ARGUMENT_LITERAL</script>"}',
+      truncated: false,
+    },
+    result: null,
+    error: null,
+    durationMs: null,
+    partial: true,
+    closure: "open",
+    turnStatus: null,
+  },
+  {
+    kind: "mcp-tool-call",
+    source: "item/completed",
+    threadId: "0199a213-81c0-7800-8aa1-bbab2a035a53",
+    turnId: "0199a213-81c0-7800-8aa1-bbab2a035a54",
+    itemId: "reported-mcp-main",
+    server: { text: "fixture-mcp-server", truncated: false },
+    tool: { text: "inspect_result", truncated: false },
+    status: "completed",
+    arguments: {
+      json: '{"path":"FILE_MCP_MUST_NOT_CREATE.txt","query":"<script>MCP_ARGUMENT_LITERAL</script>"}',
+      truncated: false,
+    },
+    result: {
+      content: {
+        json: '[{"type":"text","text":"<img>MCP_RESULT_LITERAL</img>"}]',
+        truncated: false,
+      },
+      structuredContent: {
+        json: '{"path":"file:///MCP_RESULT_URI_IS_LITERAL"}',
+        truncated: false,
+      },
+    },
+    error: null,
+    durationMs: 27,
+    partial: false,
+    closure: "item-ended",
+    turnStatus: null,
+  },
+  {
+    kind: "mcp-tool-call",
+    source: "item/started",
+    threadId: "0199a213-81c0-7800-8aa1-bbab2a035a53",
+    turnId: "0199a213-81c0-7800-8aa1-bbab2a035a54",
+    itemId: "reported-mcp-open",
+    server: { text: "fixture-mcp-server", truncated: false },
+    tool: { text: "inspect_while_turn_is_open", truncated: false },
+    status: "inProgress",
+    arguments: {
+      json: JSON.stringify({ query: "y".repeat(40_000) }).slice(
+        0,
+        16_384 -
+          new TextEncoder().encode(
+            "fixture-mcp-serverinspect_while_turn_is_open",
+          ).byteLength,
+      ),
+      truncated: true,
+      omitted: "size",
+    },
+    result: null,
+    error: null,
+    durationMs: null,
+    partial: true,
+    closure: "open",
+    turnStatus: null,
+  },
+];
+function nativeMcpCalls(
+  frames: readonly ConversationFrame[],
+): CodexChatMcpToolCall[] {
+  return frames.flatMap((frame) =>
+    frame.event.kind === "coding-chat" &&
+    frame.event.event.kind === "mcp-tool-call"
+      ? [frame.event.event]
+      : [],
+  );
+}
+function heldMcpFixtureReady(
+  reports: readonly CodexChatMcpToolCall[],
+): boolean {
+  const open = reports[2],
+    argumentBytes =
+      16_384 -
+      new TextEncoder().encode("fixture-mcp-serverinspect_while_turn_is_open")
+        .byteLength;
+  return (
+    reports.length === heldMcpReports.length &&
+    Bun.deepEquals(reports[0], heldMcpReports[0], true) &&
+    Bun.deepEquals(reports[1], heldMcpReports[1], true) &&
+    open?.source === "item/started" &&
+    open.threadId === heldMcpReports[2]?.threadId &&
+    open.turnId === heldMcpReports[2]?.turnId &&
+    open.itemId === heldMcpReports[2]?.itemId &&
+    open.server.text === "fixture-mcp-server" &&
+    open.tool.text === "inspect_while_turn_is_open" &&
+    open.status === "inProgress" &&
+    open.partial &&
+    open.closure === "open" &&
+    open.arguments.truncated &&
+    open.arguments.omitted === "size" &&
+    open.arguments.json ===
+      JSON.stringify({ query: "y".repeat(40_000) }).slice(0, argumentBytes)
+  );
+}
+
+test("the native MCP Stop witness requires the exact complete prefix and bounded open call", () => {
+  for (let length = 0; length < heldMcpReports.length; length++)
+    expect(heldMcpFixtureReady(heldMcpReports.slice(0, length))).toBe(false);
+  expect(heldMcpFixtureReady(heldMcpReports)).toBe(true);
+  for (const change of [
+    { threadId: randomUUID() },
+    { turnId: randomUUID() },
+    { itemId: "foreign-call" },
+    { closure: "item-ended" as const },
+    {
+      arguments: { json: "changed", truncated: true, omitted: "size" as const },
+    },
+  ]) {
+    const changed = structuredClone(heldMcpReports);
+    Object.assign(changed[2] ?? {}, change);
+    expect(heldMcpFixtureReady(changed)).toBe(false);
+  }
+  const reordered = structuredClone(heldMcpReports);
+  const first = reordered[0],
+    second = reordered[1];
+  if (!first || !second) throw Error("Missing native MCP fixture prefix");
+  reordered[0] = second;
+  reordered[1] = first;
+  expect(heldMcpFixtureReady(reordered)).toBe(false);
+});
 
 test("the native file Stop witness refuses every incomplete or reordered prefix and mismatched full snapshot", () => {
   const reports: CodexChatFileChange[] = heldFileChanges.map(
@@ -1186,6 +1329,205 @@ test.each([
   expect(JSON.stringify(exported)).not.toContain(
     "RAW_REASONING_MUST_NOT_PERSIST",
   );
+});
+
+test("actual native MCP snapshots remain private and exact across whole/partial reads, export, recreation and original retry", async () => {
+  const f = await fixture("mcp-tool-calls");
+  let service = f.open();
+  const start = await service.start(f.project.id, f.request),
+    sessionId = start.session.id;
+  await service.settled(f.project.id, sessionId);
+  const page = await service.read(f.project.id, sessionId),
+    reports = nativeMcpCalls(page.frames),
+    main = reports.filter((report) => report.itemId === "reported-mcp-main"),
+    failed = reports.find((report) => report.itemId === "reported-mcp-failed"),
+    empty = reports.find((report) => report.itemId === "reported-mcp-empty"),
+    clipped = reports.find(
+      (report) => report.itemId === "reported-mcp-clipped",
+    );
+  expect(page.turns[0]?.phase).toBe("completed");
+  expect(reports).toHaveLength(9);
+  expect(
+    main.map((report) => [report.source, report.status, report.closure]),
+  ).toEqual([
+    ["item/started", "inProgress", "open"],
+    ["item/completed", "completed", "item-ended"],
+    ["turn/completed", "completed", "turn-ended"],
+  ]);
+  expect(main[0]?.result).toBeNull();
+  expect(main[1]?.result).toEqual({
+    content: {
+      json: '[{"type":"text","text":"<img>MCP_RESULT_LITERAL</img>"}]',
+      truncated: false,
+    },
+    structuredContent: {
+      json: '{"path":"file:///MCP_RESULT_URI_IS_LITERAL"}',
+      truncated: false,
+    },
+  });
+  expect(failed).toMatchObject({
+    status: "failed",
+    result: null,
+    error: { text: "MCP_ERROR_TEXT_SENTINEL", truncated: false },
+    durationMs: 0,
+    partial: false,
+  });
+  expect(empty).toMatchObject({
+    status: "completed",
+    arguments: { json: "null", truncated: false },
+    result: {
+      content: { json: "[]", truncated: false },
+      structuredContent: null,
+    },
+  });
+  expect(clipped?.arguments.truncated).toBe(true);
+  expect(clipped?.arguments.omitted).toBe("size");
+  expect(ownedCodingPageSchema.safeParse(page).success).toBe(true);
+  for (const frame of page.frames.filter(
+    (candidate) =>
+      candidate.event.kind === "coding-chat" &&
+      candidate.event.event.kind === "mcp-tool-call",
+  )) {
+    const partial = await service.read(f.project.id, sessionId, {
+      after: frame.seq - 1,
+      limit: 1,
+    });
+    expect(partial.frames).toEqual([frame]);
+    expect(ownedCodingPageSchema.safeParse(partial).success).toBe(true);
+    expect(eventSchema.safeParse(frame.event).success).toBe(false);
+    expect(
+      ownedCodingPageSchema.safeParse({
+        ...partial,
+        binding: {
+          provider: "codex",
+          sessionId: randomUUID(),
+          version: "0.163.0-alpha.10.2",
+        },
+      }).success,
+    ).toBe(false);
+  }
+  const privateJson = JSON.stringify(page.frames);
+  for (const secret of [
+    "MCP_HINT_",
+    "MCP_META_MUST_NOT_PERSIST",
+    "MCP_HINT_APP_MUST_NOT_PERSIST",
+    "MCP_HINT_PLUGIN_MUST_NOT_PERSIST",
+  ])
+    expect(privateJson).not.toContain(secret);
+  const exported = createSessionLibrary({
+    root: f.root,
+    home: f.home,
+  }).exportTranscript(f.project.id, sessionId);
+  expect(sessionTranscriptExportSchema.safeParse(exported).success).toBe(true);
+  expect(nativeMcpCalls(exported.conversation.frames)).toEqual(reports);
+  expect(JSON.stringify(exported)).not.toContain("MCP_HINT_");
+  expect(existsSync(join(f.root, "FILE_MCP_MUST_NOT_CREATE.txt"))).toBe(false);
+  const storePath = conversationFile(f.home, f.project.id, {
+      kind: "session",
+      projectId: f.project.id,
+      sessionId,
+    }),
+    bytes = readFileSync(storePath),
+    registry = readFileSync(sessionRegistryFile(f.home));
+  await service.close();
+  service = f.open();
+  expect((await service.read(f.project.id, sessionId)).frames).toEqual(
+    page.frames,
+  );
+  await service.start(f.project.id, f.request);
+  expect(f.records().filter((row) => row.method === "turn/start")).toHaveLength(
+    1,
+  );
+  expect(readFileSync(storePath)).toEqual(bytes);
+  expect(readFileSync(sessionRegistryFile(f.home))).toEqual(registry);
+});
+
+test("actual native MCP Stop preserves the exact partial report prefix, export and retry without replay", async () => {
+  const f = await fixture("mcp-tool-calls-held");
+  let service = f.open();
+  const start = await service.start(f.project.id, f.request),
+    sessionId = start.session.id,
+    deadline = Date.now() + 4000;
+  let running = await service.read(f.project.id, sessionId),
+    tree: Record<string, unknown> | undefined,
+    reports = nativeMcpCalls(running.frames);
+  while (
+    !heldMcpFixtureReady(reports) ||
+    !(tree = f.records().find((row) => row.kind === "tree"))
+  ) {
+    if (Date.now() > deadline)
+      throw Error(
+        "The exact native MCP prefix and held helper did not reach storage",
+      );
+    await Bun.sleep(20);
+    running = await service.read(f.project.id, sessionId);
+    reports = nativeMcpCalls(running.frames);
+  }
+  expect(running.turns[0]?.phase).toBe("running");
+  expect(f.records().filter((row) => row.method === "turn/start")).toHaveLength(
+    1,
+  );
+  await service.stop(f.project.id, sessionId, f.request.requestId);
+  await service.settled(f.project.id, sessionId);
+  await service.close();
+  service = f.open();
+  const page = await service.read(f.project.id, sessionId),
+    savedReports = nativeMcpCalls(page.frames);
+  expect(heldMcpFixtureReady(savedReports)).toBe(true);
+  expect(savedReports).toEqual(reports);
+  expect(
+    page.frames.find(
+      (frame) =>
+        frame.event.kind === "coding-chat" &&
+        frame.event.event.kind === "outcome",
+    )?.event,
+  ).toMatchObject({
+    event: {
+      outcome: {
+        phase: "failed",
+        reason: "The Codex Chat turn was stopped.",
+        threadId: "0199a213-81c0-7800-8aa1-bbab2a035a53",
+        turnId: "0199a213-81c0-7800-8aa1-bbab2a035a54",
+        stopped: true,
+        timedOut: false,
+      },
+    },
+  });
+  for (const pid of [tree.pid, tree.childPid]) {
+    if (typeof pid !== "number")
+      throw Error("Missing witnessed native fixture PID");
+    const live = () => {
+      try {
+        if (
+          process.platform === "linux" &&
+          /\) Z(?: |$)/.test(readFileSync(`/proc/${pid}/stat`, "utf8"))
+        )
+          return false;
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    expect(live()).toBe(false);
+  }
+  const exported = createSessionLibrary({
+    root: f.root,
+    home: f.home,
+  }).exportTranscript(f.project.id, sessionId);
+  expect(nativeMcpCalls(exported.conversation.frames)).toEqual(savedReports);
+  const storePath = conversationFile(f.home, f.project.id, {
+      kind: "session",
+      projectId: f.project.id,
+      sessionId,
+    }),
+    bytes = readFileSync(storePath);
+  await service.start(f.project.id, f.request);
+  expect(f.records().filter((row) => row.method === "turn/start")).toHaveLength(
+    1,
+  );
+  expect(readFileSync(storePath)).toEqual(bytes);
+  expect(existsSync(join(f.root, "FILE_MCP_MUST_NOT_CREATE.txt"))).toBe(false);
 });
 
 test.each([
