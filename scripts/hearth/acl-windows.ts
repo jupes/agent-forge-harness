@@ -71,6 +71,8 @@ export interface FolderRead {
 export interface WindowsAcl {
   /** This process's user, `S-1-…`. */
   userSid(): string;
+  /** The default owner SID for new objects in this process token. */
+  defaultOwnerSid?(): string;
   /** Replace `path`'s DACL with the owner-only one and make this user its owner. Throws on an API error. */
   apply(path: string, target: AclTarget): void;
   /** `path`'s owner and DACL. Throws on an API error. A junction's are its own, not its target's. */
@@ -370,6 +372,8 @@ const PROTECTED_DACL_SECURITY_INFORMATION = 0x80000000;
 const TOKEN_QUERY = 0x0008;
 /** `TokenUser`, the `TOKEN_INFORMATION_CLASS` that holds the token's user. */
 const TOKEN_USER = 1;
+/** `TokenOwner`, the default owner SID for objects created by this token. */
+const TOKEN_OWNER = 4;
 /** `GetCurrentProcess()`: the pseudo-handle of this process. */
 const CURRENT_PROCESS = -1;
 /** In a security descriptor's control word. */
@@ -543,15 +547,19 @@ function copyOut(api: Api, at: Pointer, length: number): Uint8Array {
   return new Uint8Array(api.ffi.toArrayBuffer(at, 0, length)).slice();
 }
 
-/** The user of this process's token, `S-1-…`. */
-function processUserSid(api: Api): string {
+/** Read a SID pointer from a process-token information structure. */
+function processTokenSid(
+  api: Api,
+  informationClass: number,
+  description: string,
+): string {
   const handle = new BigUint64Array(1);
   if (api.advapi32.OpenProcessToken(CURRENT_PROCESS, TOKEN_QUERY, handle) === 0)
     throw new Error(
-      "Windows refused OpenProcessToken: this user's SID could not be read",
+      `Windows refused OpenProcessToken: ${description} could not be read`,
     );
   try {
-    // `TOKEN_USER`: a pointer to the SID (in the same buffer), then its attributes.
+    // Both TOKEN_USER and TOKEN_OWNER begin with a pointer to the SID.
     const info = new Uint8Array(256);
     // Taken before the call and passed as is: the SID pointer it writes is an
     // address in this buffer, read back as an offset from this one.
@@ -559,21 +567,21 @@ function processUserSid(api: Api): string {
     const needed = new Uint32Array(1);
     const ok = api.advapi32.GetTokenInformation(
       handle[0] ?? 0n,
-      TOKEN_USER,
+      informationClass,
       base,
       info.length,
       needed,
     );
     if (ok === 0)
       throw new Error(
-        "Windows refused GetTokenInformation: this user's SID could not be read",
+        `Windows refused GetTokenInformation: ${description} could not be read`,
       );
     const sidAt =
       Number(new DataView(info.buffer).getBigUint64(0, true)) - base;
     const length = sidLength(info, sidAt);
     if (sidAt < 0 || length === null)
       throw new Error(
-        "this user's SID could not be read from the process token",
+        `${description} could not be read from the process token`,
       );
     return sidText(info.subarray(sidAt, sidAt + length));
   } finally {
@@ -581,14 +589,29 @@ function processUserSid(api: Api): string {
   }
 }
 
+/** The user SID of this process token. */
+function processUserSid(api: Api): string {
+  return processTokenSid(api, TOKEN_USER, "this user's SID");
+}
+
+/** The default owner SID used for objects created by this process token. */
+function processDefaultOwnerSid(api: Api): string {
+  return processTokenSid(api, TOKEN_OWNER, "the default owner SID");
+}
+
 function nativeAcl(api: Api): WindowsAcl {
-  let user: string | undefined;
+  let user: string | undefined, defaultOwner: string | undefined;
   const userSid = (): string => {
     user ??= processUserSid(api);
     return user;
   };
+  const defaultOwnerSid = (): string => {
+    defaultOwner ??= processDefaultOwnerSid(api);
+    return defaultOwner;
+  };
   return {
     userSid,
+    defaultOwnerSid,
     apply(path, target) {
       const sid = userSid();
       const name = wide(path);

@@ -62,6 +62,15 @@ type MutexState = Readonly<{
   sidecars: ReadonlyMap<string, FileIdentity>;
 }>;
 
+/** Only a known new SQLite entry may be normalized from this process token's owner. */
+export function isTrustedNewSmithSidecarOwner(
+  owner: string | null,
+  userSid: string,
+  defaultOwnerSid: string,
+): boolean {
+  return owner === userSid || owner === defaultOwnerSid;
+}
+
 function identity(info: BigIntStats): FileIdentity {
   return { dev: String(info.dev), ino: String(info.ino) };
 }
@@ -343,7 +352,13 @@ export function createSmithCreateJournalStorage(
       ) {
         if (process.platform === "win32") {
           const acl = nativeWindowsAcl();
-          if (acl.read(entry.path).owner !== acl.userSid())
+          if (
+            !isTrustedNewSmithSidecarOwner(
+              acl.read(entry.path).owner,
+              acl.userSid(),
+              acl.defaultOwnerSid?.() ?? acl.userSid(),
+            )
+          )
             throw new Error(
               "The new private Smith create SQLite sidecar has a foreign owner.",
             );

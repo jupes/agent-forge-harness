@@ -11,12 +11,15 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import type { SmithConfigPreview } from "../../types/smith-config-create";
-import { nativeWindowsAcl } from "../hearth/acl-windows";
+import { assertOwnerOnly, nativeWindowsAcl } from "../hearth/acl-windows";
 import { ensurePrivateHome } from "../hearth/home-guard";
 import { scratchDirs } from "../test-scratch";
 import { createSmithCreateJournalCore } from "./smith-create-journal-core";
 import type { SmithCreateOwner } from "./smith-create-journal-protocol";
-import { createSmithCreateJournalStorage } from "./smith-create-journal-storage";
+import {
+  createSmithCreateJournalStorage,
+  isTrustedNewSmithSidecarOwner,
+} from "./smith-create-journal-storage";
 
 const scratch = scratchDirs();
 afterEach(() => scratch.cleanup());
@@ -69,6 +72,34 @@ const preview = (originalRequest = original): SmithConfigPreview => {
   };
 };
 
+test("only the current user or this token's default owner is trusted for a new SQLite sidecar", () => {
+  const user = "S-1-5-21-1000",
+    elevatedDefaultOwner = "S-1-5-32-544";
+  expect(isTrustedNewSmithSidecarOwner(user, user, elevatedDefaultOwner)).toBe(
+    true,
+  );
+  expect(
+    isTrustedNewSmithSidecarOwner(
+      elevatedDefaultOwner,
+      user,
+      elevatedDefaultOwner,
+    ),
+  ).toBe(true);
+  expect(
+    isTrustedNewSmithSidecarOwner("S-1-5-18", user, elevatedDefaultOwner),
+  ).toBe(false);
+  expect(
+    isTrustedNewSmithSidecarOwner(
+      elevatedDefaultOwner,
+      user,
+      "S-1-5-21-1000-1001",
+    ),
+  ).toBe(false);
+  expect(isTrustedNewSmithSidecarOwner(null, user, elevatedDefaultOwner)).toBe(
+    false,
+  );
+});
+
 test("read-only inspect and operation scan do not create journal state", () => {
   const home = profile();
   mkdirSync(home);
@@ -93,11 +124,25 @@ test("profile resolution refuses a linked ancestor before creating an absent tai
   expect(existsSync(join(target, "absent"))).toBe(false);
 });
 
-test("existing private directories remain visible to bounded scans", async () => {
+test("SQLite-created lock sidecars are normalized before exclusive work", async () => {
   const home = profile();
   mkdirSync(home);
   const storage = createSmithCreateJournalStorage(home);
-  await storage.exclusive(async () => undefined);
+  await storage.exclusive(async () => {
+    const lockDirectory = join(home, "smith-create-journal", "locks"),
+      sidecars = readdirSync(lockDirectory).filter(
+        (name) => name !== "journal.sqlite",
+      );
+    if (process.platform === "win32") {
+      expect(sidecars.length).toBeGreaterThan(0);
+      const acl = nativeWindowsAcl();
+      for (const name of sidecars) {
+        const path = join(lockDirectory, name);
+        expect(acl.read(path).owner).toBe(acl.userSid());
+        assertOwnerOnly(path, "file", acl);
+      }
+    }
+  });
 
   expect(storage.inspect(id)).toBeNull();
   expect([...storage.operations()]).toEqual([]);
