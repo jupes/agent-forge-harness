@@ -57,8 +57,10 @@ test("identity list is a strict scoped GET and returns a defensive page copy", a
   const result = await server.list(scope);
 
   expect(method).toBe("GET");
-  expect(url).toBe(`/projects/${scope.projectId}/session-start-identities`);
-  expect(readLimit).toBeGreaterThan(256 * 1024);
+  expect(url).toBe(
+    `/__agent-forge/projects/${scope.projectId}/session-start-identities`,
+  );
+  expect(readLimit).toBe(256 * 1024);
   expect(result).toEqual(page);
   expect(result).not.toBe(page);
   result.identities[0]!.state = "retired";
