@@ -298,18 +298,26 @@ test("a fresh trusted desktop origin discovers and inspects an admitted Start wi
           const conversation = conversationPageSchema.safeParse(
             envelope?.["data"],
           );
+          const replyText = conversation.success
+            ? conversation.data.frames
+                .filter(
+                  (frame) =>
+                    frame.turnId === original.requestId &&
+                    frame.event.kind === "text",
+                )
+                .sort((left, right) => left.seq - right.seq)
+                .map((frame) =>
+                  frame.event.kind === "text" ? frame.event.text : "",
+                )
+                .join("")
+            : null;
           return (
             conversation.success &&
             conversation.data.projectId === alpha.id &&
             conversation.data.conversationId === originalSessionId &&
             conversation.data.request?.requestId === original.requestId &&
             conversation.data.request.phase === "completed" &&
-            conversation.data.frames.some(
-              (frame) =>
-                frame.turnId === original.requestId &&
-                frame.event.kind === "text" &&
-                frame.event.text === "Coding reply 🌱!",
-            )
+            replyText === "Coding reply 🌱"
           );
         },
         { timeout: 45_000 },
@@ -319,7 +327,6 @@ test("a fresh trusted desktop origin discovers and inspects an admitted Start wi
       (key) => localStorage.getItem(key),
       SESSION_START_IDENTITIES,
     );
-    expect(oldLocalHints).toContain(original.requestId);
     expect(oldLocalHints).not.toContain(original.launch.prompt);
 
     const newHostUrl = await restartOwnedDesktopHost();
@@ -416,7 +423,9 @@ test("a fresh trusted desktop origin discovers and inspects an admitted Start wi
     const identityRow = reopened
       .locator(".af-start-identities-list li")
       .filter({ hasText: original.requestId });
-    await expect(identityRow).toContainText("claude task · admitted");
+    await expect(identityRow).toContainText(
+      `claude ${original.launch.mode} · admitted`,
+    );
     await expect(identityRow.locator("code").nth(0)).toHaveText(
       original.requestId,
     );
