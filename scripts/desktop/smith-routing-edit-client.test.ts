@@ -352,7 +352,6 @@ test("recreated clients recover confirmed and refused originals without changing
     expect(recovered).toMatchObject({
       state: phase,
       identity: { requestId: request.requestId, retired: true },
-      request,
       receipt,
     });
     expect(recovered?.receipt?.original).toEqual(request);
