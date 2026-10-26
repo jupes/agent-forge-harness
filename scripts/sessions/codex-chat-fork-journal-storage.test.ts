@@ -327,6 +327,113 @@ test("a peer waits read-only for the same empty mutex to become private", async 
   expect(after.size).toBeGreaterThan(0n);
 });
 
+test("a non-empty inherited mutex is refused without mutation", async () => {
+  const home = join(scratch.make("codex-fork-profile-"), "profile");
+  mkdirSync(home, { recursive: true });
+  await createCodexChatForkJournalStorage(home, {
+    platform: "win32",
+    acl: fakeAcl(),
+  }).exclusive(async () => undefined);
+  const mutex = join(
+      home,
+      CODEX_CHAT_FORK_JOURNAL_DIRECTORY,
+      "locks",
+      "journal.sqlite",
+    ),
+    marker = "preserve the existing non-empty mutex bytes";
+  writeFileSync(mutex, marker, { flag: "a" });
+  const before = lstatSync(mutex, { bigint: true }),
+    acl = fakeAcl(),
+    read = acl.read.bind(acl);
+  let aclRepairs = 0,
+    enteredWork = false;
+  const apply = acl.apply.bind(acl);
+  acl.apply = (path, target) => {
+    if (path === mutex) aclRepairs++;
+    apply(path, target);
+  };
+  acl.read = (path) =>
+    path === mutex ? unprotectedReading("file") : read(path);
+
+  await expect(
+    createCodexChatForkJournalStorage(home, {
+      platform: "win32",
+      acl,
+    }).exclusive(async () => {
+      enteredWork = true;
+    }),
+  ).rejects.toThrow();
+
+  const after = lstatSync(mutex, { bigint: true });
+  expect(enteredWork).toBe(false);
+  expect(aclRepairs).toBe(0);
+  expect(readFileSync(mutex, "utf8")).toBe(marker);
+  expect(after.dev).toBe(before.dev);
+  expect(after.ino).toBe(before.ino);
+});
+
+test("a peer waits when a fresh mutex appears after the empty-directory preflight", async () => {
+  const root = scratch.make("codex-fork-root-"),
+    home = join(scratch.make("codex-fork-profile-"), "profile"),
+    acl = fakeAcl();
+  mkdirSync(home, { recursive: true });
+  const locks = join(home, CODEX_CHAT_FORK_JOURNAL_DIRECTORY, "locks"),
+    mutex = join(locks, "journal.sqlite"),
+    strictRead = acl.read.bind(acl);
+  let lockDirectoryReads = 0,
+    mutexAclReads = 0,
+    inserted = false,
+    privacyReady = false,
+    mutexAclApplications = 0,
+    insertedIdentity = "";
+  const apply = acl.apply.bind(acl);
+  acl.apply = (path, target) => {
+    if (path === mutex) mutexAclApplications++;
+    apply(path, target);
+  };
+  acl.read = (path) => {
+    if (path === locks) {
+      lockDirectoryReads++;
+      // Arming point: the seventh lock-directory read is inspectLockMetadata's
+      // preflight, after ensureMutex has observed an empty names snapshot.
+      // Earlier lock reads belong to checkedDirectory, checkRootLayout, and
+      // ensureMutex's stable-directory checks.
+      if (lockDirectoryReads === 7) {
+        expect(readdirSync(locks)).toEqual([]);
+        writeFileSync(mutex, "", { flag: "wx" });
+        inserted = true;
+        const info = lstatSync(mutex, { bigint: true });
+        insertedIdentity = `${info.dev}:${info.ino}`;
+      }
+    }
+    if (path === mutex && inserted) {
+      mutexAclReads++;
+      if (mutexAclReads <= 3) return unprotectedReading("file");
+      privacyReady = true;
+    }
+    return strictRead(path);
+  };
+
+  const result = await journal(root, home, acl).reserve(
+    projectId,
+    parentSessionId,
+    {
+      requestId,
+      throughTurnRequestId,
+    },
+  );
+  const after = lstatSync(mutex, { bigint: true });
+
+  expect(inserted).toBe(true);
+  expect(privacyReady).toBe(true);
+  expect(result.state).toBe("reserved");
+  expect(mutexAclApplications).toBe(0);
+  expect(insertedIdentity).toBe(`${after.dev}:${after.ino}`);
+  expect(
+    readdirSync(join(home, CODEX_CHAT_FORK_JOURNAL_DIRECTORY, "events")),
+  ).toHaveLength(1);
+});
+
 test("a mutex that stays non-private times out untouched before callback", async () => {
   const home = join(scratch.make("codex-fork-profile-"), "profile"),
     acl = fakeAcl();
