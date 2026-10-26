@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
+  copyFileSync,
   lstatSync,
   readdirSync,
   readFileSync,
@@ -16,7 +17,6 @@ import { FILE_ALL_ACCESS, SYSTEM_SID } from "../hearth/acl-windows";
 import { scratchDirs } from "../test-scratch";
 import {
   createRestartIdentityJournal,
-  orderRestartIdentityNames,
   type RestartIdentityInput,
   RestartIdentityJournalError,
 } from "./restart-index";
@@ -43,6 +43,15 @@ const request = (
 
 function fakeAcl() {
   const protectedPaths = new Map<string, AclTarget>();
+  const overrides = new Map<string, AclReading>();
+  let failNextRead: ((path: string) => boolean) | undefined;
+  let failNextFolderRead: ((name: string | null) => boolean) | undefined;
+  let afterNextRead: ((path: string) => boolean) | undefined;
+  let afterNextReadEffect: ((path: string) => void) | undefined;
+  let afterNextFolderRead: ((name: string | null) => boolean) | undefined;
+  let afterNextFolderReadEffect:
+    | ((folder: string, name: string | null) => void)
+    | undefined;
   const key = (path: string) => {
     const info = lstatSync(path, { bigint: true });
     return `${info.dev}:${info.ino}`;
@@ -63,17 +72,35 @@ function fakeAcl() {
       protectedPaths.set(key(path), target);
     },
     read(path) {
-      const target =
-        protectedPaths.get(key(path)) ??
-        (protectedPaths.get(key(dirname(path))) === "directory"
-          ? "file"
-          : undefined);
-      if (target === undefined)
-        throw new Error("unrecognized ACL fixture path");
-      return reading(target);
+      if (failNextRead?.(path)) {
+        failNextRead = undefined;
+        throw new Error("injected ACL read failure");
+      }
+      let result = overrides.get(key(path));
+      if (result === undefined) {
+        const target =
+          protectedPaths.get(key(path)) ??
+          (protectedPaths.get(key(dirname(path))) === "directory"
+            ? "file"
+            : undefined);
+        if (target === undefined)
+          throw new Error("unrecognized ACL fixture path");
+        result = reading(target);
+      }
+      if (afterNextRead?.(path)) {
+        const effect = afterNextReadEffect;
+        afterNextRead = undefined;
+        afterNextReadEffect = undefined;
+        effect?.(path);
+      }
+      return result;
     },
     readInFolder(folder, name, maxBytes) {
-      const directory = reading("directory");
+      if (failNextFolderRead?.(name)) {
+        failNextFolderRead = undefined;
+        throw new Error("injected opened-file read failure");
+      }
+      const directory = overrides.get(key(folder)) ?? reading("directory");
       if (name === null) return { folder: directory, file: null };
       const file = join(folder, name);
       let bytes: Uint8Array;
@@ -88,9 +115,15 @@ function fakeAcl() {
       const target = protectedPaths.get(key(file));
       if (target === undefined)
         throw new Error("unrecognized ACL fixture file");
+      if (afterNextFolderRead?.(name)) {
+        const effect = afterNextFolderReadEffect;
+        afterNextFolderRead = undefined;
+        afterNextFolderReadEffect = undefined;
+        effect?.(folder, name);
+      }
       return {
         folder: directory,
-        file: { reading: reading(target), bytes },
+        file: { reading: overrides.get(key(file)) ?? reading(target), bytes },
       };
     },
   };
@@ -98,6 +131,29 @@ function fakeAcl() {
     acl,
     protect(path: string, target: AclTarget) {
       acl.apply(path, target);
+    },
+    override(path: string, value: AclReading) {
+      overrides.set(key(path), value);
+    },
+    failAclReadOnce(predicate: (path: string) => boolean) {
+      failNextRead = predicate;
+    },
+    failFileReadOnce(predicate: (name: string | null) => boolean) {
+      failNextFolderRead = predicate;
+    },
+    afterAclReadOnce(
+      predicate: (path: string) => boolean,
+      effect: (path: string) => void,
+    ) {
+      afterNextRead = predicate;
+      afterNextReadEffect = effect;
+    },
+    afterFileReadOnce(
+      predicate: (name: string | null) => boolean,
+      effect: (folder: string, name: string | null) => void,
+    ) {
+      afterNextFolderRead = predicate;
+      afterNextFolderReadEffect = effect;
     },
   };
 }
@@ -110,6 +166,15 @@ const storageOptions = () => ({
   platform: "win32" as const,
   acl: fakeAcl().acl,
 });
+
+function replaceFileIdentity(path: string): void {
+  const replacement = `${path}.replacement`;
+  const displaced = `${path}.displaced`;
+  copyFileSync(path, replacement);
+  renameSync(path, displaced);
+  renameSync(replacement, path);
+  unlinkSync(displaced);
+}
 
 test("a reserved identity persists as one strict metadata event and exact reserve is idempotent", async () => {
   const home = profile();
@@ -187,6 +252,325 @@ test("only the first durable attempted fence authorizes dispatch", async () => {
   });
 });
 
+test("simultaneous independent first claims grant dispatch to exactly one caller", async () => {
+  const home = profile();
+  const options = storageOptions();
+  const identity = request();
+  const first = createRestartIdentityJournal(home, options);
+  const second = createRestartIdentityJournal(home, options);
+
+  const claims = await Promise.all([
+    first.beginAttempt(identity),
+    second.beginAttempt(identity),
+  ]);
+  expect(claims.filter((claim) => claim.mayDispatch)).toHaveLength(1);
+  expect(claims.filter((claim) => !claim.mayDispatch)).toHaveLength(1);
+  expect(claims.every((claim) => claim.row.state === "attempted")).toBe(true);
+});
+
+test("cancellation wins before the fence or loses after the fence, never both", async () => {
+  const identity = request();
+
+  const cancelFirstHome = profile();
+  const cancelFirstOptions = storageOptions();
+  const cancelFirst = createRestartIdentityJournal(
+    cancelFirstHome,
+    cancelFirstOptions,
+  );
+  await cancelFirst.reserve(identity);
+  await cancelFirst.retireReserved(identity);
+  await expect(cancelFirst.beginAttempt(identity)).rejects.toBeInstanceOf(
+    RestartIdentityJournalError,
+  );
+  expect(
+    (
+      await cancelFirst.list({
+        address: identity.address,
+        workspace: identity.workspace,
+      })
+    )[0]?.state,
+  ).toBe("retired");
+
+  const fenceFirstHome = profile();
+  const fenceFirstOptions = storageOptions();
+  const fenceFirst = createRestartIdentityJournal(
+    fenceFirstHome,
+    fenceFirstOptions,
+  );
+  await fenceFirst.reserve(identity);
+  const claim = await fenceFirst.beginAttempt(identity);
+  expect(claim.mayDispatch).toBe(true);
+  await expect(fenceFirst.retireReserved(identity)).rejects.toBeInstanceOf(
+    RestartIdentityJournalError,
+  );
+  expect(
+    (
+      await fenceFirst.list({
+        address: identity.address,
+        workspace: identity.workspace,
+      })
+    )[0]?.state,
+  ).toBe("attempted");
+});
+
+test("a post-publication readback failure keeps the fence and disables repeat dispatch", async () => {
+  const home = profile();
+  const fixture = fakeAcl();
+  const options = { platform: "win32" as const, acl: fixture.acl };
+  const identity = request();
+  const journal = createRestartIdentityJournal(home, options);
+  await journal.reserve(identity);
+  fixture.failFileReadOnce(
+    (name) => name?.startsWith("event-00000002-") ?? false,
+  );
+
+  await expect(journal.beginAttempt(identity)).rejects.toBeInstanceOf(
+    RestartIdentityJournalError,
+  );
+  const recovered = createRestartIdentityJournal(home, options);
+  expect(
+    (
+      await recovered.lookup(
+        { address: identity.address, workspace: identity.workspace },
+        identity.requestId,
+      )
+    )?.state,
+  ).toBe("attempted");
+  expect((await recovered.beginAttempt(identity)).mayDispatch).toBe(false);
+});
+
+test("a post-publication ACL failure preserves ambiguous stage evidence and blocks reads", async () => {
+  const home = profile();
+  const fixture = fakeAcl();
+  const options = { platform: "win32" as const, acl: fixture.acl };
+  const identity = request();
+  const journal = createRestartIdentityJournal(home, options);
+  await journal.reserve(identity);
+  fixture.failAclReadOnce(
+    (path) => path.endsWith(".json") && path.includes("event-00000002-"),
+  );
+
+  await expect(journal.beginAttempt(identity)).rejects.toBeInstanceOf(
+    RestartIdentityJournalError,
+  );
+  const directory = join(home, "restart-identities");
+  const staged = readdirSync(directory).filter((name) => name.endsWith(".tmp"));
+  expect(staged).toHaveLength(1);
+  expect(lstatSync(join(directory, staged[0]!)).nlink).toBe(2);
+  await expect(
+    createRestartIdentityJournal(home, options).list({
+      address: identity.address,
+      workspace: identity.workspace,
+    }),
+  ).rejects.toBeInstanceOf(RestartIdentityJournalError);
+});
+
+test("nonprivate profile, index, event, lock, and sidecar ACLs all fail closed", async () => {
+  const identity = request();
+  const badAcl: AclReading = {
+    owner: "S-1-5-21-9-9-9-9999",
+    protected: true,
+    entries: [
+      { type: 0, flags: 0, mask: FILE_ALL_ACCESS, sid: "S-1-5-21-9-9-9-9999" },
+    ],
+  };
+  const assertUnavailable = async (
+    home: string,
+    options: { platform: "win32"; acl: WindowsAcl },
+  ) => {
+    await expect(
+      createRestartIdentityJournal(home, options).list({
+        address: identity.address,
+        workspace: identity.workspace,
+      }),
+    ).rejects.toBeInstanceOf(RestartIdentityJournalError);
+  };
+
+  const profileHome = profile();
+  const profileFixture = fakeAcl();
+  const profileOptions = {
+    platform: "win32" as const,
+    acl: profileFixture.acl,
+  };
+  await createRestartIdentityJournal(profileHome, profileOptions).reserve(
+    identity,
+  );
+  profileFixture.override(profileHome, badAcl);
+  await assertUnavailable(profileHome, profileOptions);
+
+  const indexHome = profile();
+  const indexFixture = fakeAcl();
+  const indexOptions = { platform: "win32" as const, acl: indexFixture.acl };
+  await createRestartIdentityJournal(indexHome, indexOptions).reserve(identity);
+  indexFixture.override(join(indexHome, "restart-identities"), badAcl);
+  await assertUnavailable(indexHome, indexOptions);
+
+  const eventHome = profile();
+  const eventFixture = fakeAcl();
+  const eventOptions = { platform: "win32" as const, acl: eventFixture.acl };
+  await createRestartIdentityJournal(eventHome, eventOptions).reserve(identity);
+  const eventDirectory = join(eventHome, "restart-identities");
+  const eventName = readdirSync(eventDirectory).find((name) =>
+    name.startsWith("event-"),
+  );
+  expect(eventName).toBeDefined();
+  eventFixture.override(join(eventDirectory, eventName!), badAcl);
+  await assertUnavailable(eventHome, eventOptions);
+
+  const lockHome = profile();
+  const lockFixture = fakeAcl();
+  const lockOptions = { platform: "win32" as const, acl: lockFixture.acl };
+  await createRestartIdentityJournal(lockHome, lockOptions).reserve(identity);
+  lockFixture.override(
+    join(lockHome, "restart-identities", "transaction.lock.db"),
+    badAcl,
+  );
+  await assertUnavailable(lockHome, lockOptions);
+
+  const sidecarHome = profile();
+  const sidecarFixture = fakeAcl();
+  const sidecarOptions = {
+    platform: "win32" as const,
+    acl: sidecarFixture.acl,
+  };
+  await createRestartIdentityJournal(sidecarHome, sidecarOptions).reserve(
+    identity,
+  );
+  const sidecarPath = join(
+    sidecarHome,
+    "restart-identities",
+    "transaction.lock.db-wal",
+  );
+  writeFileSync(sidecarPath, "sidecar");
+  sidecarFixture.protect(sidecarPath, "file");
+  sidecarFixture.override(sidecarPath, badAcl);
+  await assertUnavailable(sidecarHome, sidecarOptions);
+});
+
+test("event and lock inode substitutions during checked reads fail closed", async () => {
+  const identity = request();
+
+  const eventHome = profile();
+  const eventFixture = fakeAcl();
+  const eventOptions = { platform: "win32" as const, acl: eventFixture.acl };
+  await createRestartIdentityJournal(eventHome, eventOptions).reserve(identity);
+  eventFixture.afterFileReadOnce(
+    (name) => name?.startsWith("event-") ?? false,
+    (folder, name) => {
+      const path = join(folder, name!);
+      replaceFileIdentity(path);
+      eventFixture.protect(path, "file");
+    },
+  );
+  await expect(
+    createRestartIdentityJournal(eventHome, eventOptions).list({
+      address: identity.address,
+      workspace: identity.workspace,
+    }),
+  ).rejects.toBeInstanceOf(RestartIdentityJournalError);
+
+  const lockHome = profile();
+  const lockFixture = fakeAcl();
+  const lockOptions = { platform: "win32" as const, acl: lockFixture.acl };
+  await createRestartIdentityJournal(lockHome, lockOptions).reserve(identity);
+  const lockPath = join(lockHome, "restart-identities", "transaction.lock.db");
+  lockFixture.afterAclReadOnce(
+    (path) => path === lockPath,
+    (path) => {
+      replaceFileIdentity(path);
+      lockFixture.protect(path, "file");
+    },
+  );
+  await expect(
+    createRestartIdentityJournal(lockHome, lockOptions).list({
+      address: identity.address,
+      workspace: identity.workspace,
+    }),
+  ).rejects.toBeInstanceOf(RestartIdentityJournalError);
+});
+
+test("event replay rejects duplicate keys and future versions", async () => {
+  const identity = request();
+
+  const duplicateHome = profile();
+  const duplicateOptions = storageOptions();
+  await createRestartIdentityJournal(duplicateHome, duplicateOptions).reserve(
+    identity,
+  );
+  const duplicateDirectory = join(duplicateHome, "restart-identities");
+  const duplicateName = readdirSync(duplicateDirectory).find((name) =>
+    name.startsWith("event-"),
+  );
+  expect(duplicateName).toBeDefined();
+  const duplicatePath = join(duplicateDirectory, duplicateName!);
+  const duplicateText = readFileSync(duplicatePath, "utf8").replace(
+    '"version":1',
+    '"version":1,"version":1',
+  );
+  writeFileSync(duplicatePath, duplicateText);
+  const duplicateDigest = createHash("sha256")
+    .update(duplicateText)
+    .digest("hex");
+  renameSync(
+    duplicatePath,
+    join(duplicateDirectory, `event-00000001-${duplicateDigest}.json`),
+  );
+  await expect(
+    createRestartIdentityJournal(duplicateHome, duplicateOptions).list({
+      address: identity.address,
+      workspace: identity.workspace,
+    }),
+  ).rejects.toBeInstanceOf(RestartIdentityJournalError);
+
+  const futureHome = profile();
+  const futureOptions = storageOptions();
+  await createRestartIdentityJournal(futureHome, futureOptions).reserve(
+    identity,
+  );
+  const futureDirectory = join(futureHome, "restart-identities");
+  const futureName = readdirSync(futureDirectory).find((name) =>
+    name.startsWith("event-"),
+  );
+  expect(futureName).toBeDefined();
+  const futurePath = join(futureDirectory, futureName!);
+  const futureEvent = JSON.parse(readFileSync(futurePath, "utf8")) as Record<
+    string,
+    unknown
+  >;
+  futureEvent.version = 2;
+  const futureText = JSON.stringify(futureEvent);
+  writeFileSync(futurePath, futureText);
+  const futureDigest = createHash("sha256").update(futureText).digest("hex");
+  renameSync(
+    futurePath,
+    join(futureDirectory, `event-00000001-${futureDigest}.json`),
+  );
+  await expect(
+    createRestartIdentityJournal(futureHome, futureOptions).list({
+      address: identity.address,
+      workspace: identity.workspace,
+    }),
+  ).rejects.toBeInstanceOf(RestartIdentityJournalError);
+});
+
+test("a UUID cannot be reused from another project or workspace scope", async () => {
+  const journal = createRestartIdentityJournal(profile(), storageOptions());
+  const identity = request();
+  await journal.reserve(identity);
+
+  await expect(
+    journal.reserve(
+      request({
+        address: {
+          family: "owned-session-start",
+          projectId: "project-223e4567-e89b-42d3-a456-426614174000",
+        },
+        workspace: "c:/served/other-repo",
+      }),
+    ),
+  ).rejects.toBeInstanceOf(RestartIdentityJournalError);
+});
+
 test("recovery replays the complete hash chain when enumeration is reverse-created", async () => {
   const home = profile();
   const options = storageOptions();
@@ -223,18 +607,6 @@ test("recovery replays the complete hash chain when enumeration is reverse-creat
       workspace: identity.workspace,
     }),
   ).toMatchObject([{ requestId: identity.requestId, state: "retired" }]);
-});
-
-test("journal name ordering normalizes reverse filesystem enumeration without filtering entries", () => {
-  const later = "event-00000002-" + "b".repeat(64) + ".json";
-  const earlier = "event-00000001-" + "a".repeat(64) + ".json";
-  const unknown = "candidate.tmp";
-
-  expect(orderRestartIdentityNames([later, unknown, earlier])).toEqual([
-    unknown,
-    earlier,
-    later,
-  ]);
 });
 
 test("replay still rejects namespace debris and a missing sequence predecessor", async () => {

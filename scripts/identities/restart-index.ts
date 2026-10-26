@@ -211,11 +211,6 @@ function identityError(): never {
   throw unavailable();
 }
 
-/** @internal Deterministic event order independent of filesystem enumeration. */
-export function orderRestartIdentityNames(names: readonly string[]): string[] {
-  return [...names].sort();
-}
-
 function readBytes(path: string): number {
   const info = lstatSync(path, { bigint: true });
   if (
@@ -448,7 +443,7 @@ function entries(directory: string): string[] {
     const names: string[] = [];
     while (true) {
       const entry = handle.readSync();
-      if (entry === null) return orderRestartIdentityNames(names);
+      if (entry === null) return names.sort();
       names.push(entry.name);
       if (names.length > MAX_RESTART_IDENTITY_NAMESPACE_ENTRIES)
         identityError();
