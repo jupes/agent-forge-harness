@@ -37,6 +37,7 @@ import {
 } from "./environment";
 
 let fixtureSmith = "";
+let fixtureAlternativeSmith = "";
 let savedFiles: { file: string; before: Buffer | null; fixture: Buffer }[] = [];
 const screenshotPath = (name: string) =>
   join(
@@ -63,7 +64,8 @@ test.beforeEach(() => {
       "Smiths fixtures require only the owned temporary repository and run home.",
     );
   fixtureSmith = `inspection-${randomUUID().slice(0, 8)}`;
-  const machine = `[smiths.${fixtureSmith}]\nprovider="claude"\nmodel="saved-machine-model"\neffort="medium"\ntags=["rank:apprentice", "inspection"]\n`;
+  fixtureAlternativeSmith = `inspection-alt-${randomUUID().slice(0, 8)}`;
+  const machine = `[smiths.${fixtureSmith}]\nprovider="claude"\nmodel="saved-machine-model"\neffort="medium"\ntags=["rank:apprentice", "inspection"]\n\n[smiths.${fixtureAlternativeSmith}]\nprovider="codex"\nmodel="saved-alternative-model"\neffort="low"\n`;
   const workspace = `\uFEFF# Preserved inspection fixture\r\n[workflow]\r\ndefault_crew="${fixtureSmith}"\r\n[smiths.${fixtureSmith}]\r\neffort="low"\r\nenabled=false\r\n[benches]\r\nlow=["${fixtureSmith}:2", "codex-journeyman:1"]\r\n`;
   savedFiles = [
     { file: join(HEARTH_HOME, "config.toml"), content: machine },
@@ -1055,7 +1057,7 @@ test("a stale paired layer refuses an edit without changing the selected target 
   expect(providerStarts()).toEqual(starts);
 });
 
-test("reviews and saves an explicit free-text default routing edit, then reloads its receipt", async ({
+test("reviews a manually entered configured default name and reloads its receipt", async ({
   page,
 }) => {
   const starts = providerStarts();
@@ -1104,7 +1106,7 @@ test("reviews and saves an explicit free-text default routing edit, then reloads
     dialog.getByRole("button", { name: "Review routing edit", exact: true }),
   ).toBeDisabled();
   await dialog.getByLabel("Workspace configuration", { exact: true }).check();
-  const value = `free-text-routing-${randomUUID().slice(0, 8)}`;
+  const value = fixtureAlternativeSmith;
   await dialog.getByLabel("Default Smith name", { exact: true }).fill(value);
   const previewed = page.waitForResponse(
     (response) =>
@@ -1156,7 +1158,7 @@ test("reviews and saves an explicit free-text default routing edit, then reloads
     page.getByRole("region", { name: "Original Smith routing edit receipts" }),
   ).toContainText("Confirmed");
   const written = readFileSync(join(REPOSITORY, "agent-forge.toml"), "utf8");
-  expect(written).toContain(`default_crew = "${value}"`);
+  expect(written).toContain(`default_crew="${value}"`);
   expect(posts).toEqual([
     "/__agent-forge/config/smiths/routing-edits/preview",
     "/__agent-forge/config/smiths/routing-edits",
@@ -1192,6 +1194,54 @@ test("reviews and saves an explicit free-text default routing edit, then reloads
   expect(providerStarts()).toEqual(starts);
 });
 
+test("an unconfigured default name is refused before any routing write", async ({
+  page,
+}) => {
+  const starts = providerStarts();
+  const posts: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "POST")
+      posts.push(new URL(request.url()).pathname);
+  });
+  await page.setViewportSize({ width: 900, height: 700 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await openSettled(page, "/index.html#/desktop/smiths");
+  const before = savedFiles.map((saved) => readFileSync(saved.file));
+  await page
+    .getByRole("button", { name: "Edit saved default", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog", {
+    name: "Edit saved routing",
+    exact: true,
+  });
+  await dialog.getByLabel("Workspace configuration", { exact: true }).check();
+  await dialog
+    .getByLabel("Default Smith name", { exact: true })
+    .fill(`not-configured-${randomUUID().slice(0, 8)}`);
+  const preview = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname ===
+        "/__agent-forge/config/smiths/routing-edits/preview",
+  );
+  await dialog
+    .getByRole("button", { name: "Review routing edit", exact: true })
+    .click();
+  const response = await preview;
+  expect(response.status()).toBe(503);
+  const payload = (await response.json()) as { error: string };
+  expect(payload.error.toLowerCase()).toContain("unknown smith");
+  await expect(
+    dialog.getByRole("button", {
+      name: "Save reviewed routing edit",
+      exact: true,
+    }),
+  ).toBeDisabled();
+  expect(posts).toEqual(["/__agent-forge/config/smiths/routing-edits/preview"]);
+  expect(savedFiles.map((saved) => readFileSync(saved.file))).toEqual(before);
+  expect(providerStarts()).toEqual(starts);
+});
+
 test("keeps duplicate fractional bench rows ordered through review, save, and reload", async ({
   page,
 }) => {
@@ -1217,20 +1267,16 @@ test("keeps duplicate fractional bench rows ordered through review, save, and re
     exact: true,
   });
   await dialog.getByLabel("Workspace configuration", { exact: true }).check();
-  await dialog
-    .getByLabel("Smith name 1", { exact: true })
-    .fill("duplicate-free-text");
+  await dialog.getByLabel("Smith name 1", { exact: true }).fill(fixtureSmith);
   await dialog.getByLabel("Weight 1", { exact: true }).fill("0.125");
   await dialog
     .getByLabel("Smith name 2", { exact: true })
-    .fill("other-free-text");
+    .fill(fixtureAlternativeSmith);
   await dialog.getByLabel("Weight 2", { exact: true }).fill("0.25");
   await dialog
     .getByRole("button", { name: "Add bench row", exact: true })
     .click();
-  await dialog
-    .getByLabel("Smith name 3", { exact: true })
-    .fill("duplicate-free-text");
+  await dialog.getByLabel("Smith name 3", { exact: true }).fill(fixtureSmith);
   await dialog.getByLabel("Weight 3", { exact: true }).fill("0.5");
   await dialog
     .getByRole("button", { name: "Move entry 3 up", exact: true })
@@ -1250,11 +1296,9 @@ test("keeps duplicate fractional bench rows ordered through review, save, and re
     exact: true,
   });
   await expect(review).toContainText(
-    '"smith":"duplicate-free-text","weight":0.125',
+    `"smith":"${fixtureSmith}","weight":0.125`,
   );
-  await expect(review).toContainText(
-    '"smith":"duplicate-free-text","weight":0.5',
-  );
+  await expect(review).toContainText(`"smith":"${fixtureSmith}","weight":0.5`);
   const saved = page.waitForResponse(
     (response) =>
       response.request().method() === "POST" &&
@@ -1282,9 +1326,9 @@ test("keeps duplicate fractional bench rows ordered through review, save, and re
     };
   };
   expect(body.data.original.change.entries).toEqual([
-    { smith: "duplicate-free-text", weight: 0.125 },
-    { smith: "duplicate-free-text", weight: 0.5 },
-    { smith: "other-free-text", weight: 0.25 },
+    { smith: fixtureSmith, weight: 0.125 },
+    { smith: fixtureSmith, weight: 0.5 },
+    { smith: fixtureAlternativeSmith, weight: 0.25 },
   ]);
   expect(posts).toEqual([
     "/__agent-forge/config/smiths/routing-edits/preview",
@@ -1441,7 +1485,7 @@ test("a routing edit reply lost after publication recovers the exact original wi
     exact: true,
   });
   await dialog.getByLabel("Workspace configuration", { exact: true }).check();
-  const value = `lost-routing-${randomUUID().slice(0, 8)}`;
+  const value = fixtureAlternativeSmith;
   await dialog.getByLabel("Default Smith name", { exact: true }).fill(value);
   const previewed = page.waitForResponse(
     (response) =>
@@ -1481,7 +1525,7 @@ test("a routing edit reply lost after publication recovers the exact original wi
   expect(original).not.toBeNull();
   const posted = smithRoutingEditRequestSchema.parse(original);
   expect(readFileSync(join(REPOSITORY, "agent-forge.toml"), "utf8")).toContain(
-    `default_crew = "${value}"`,
+    `default_crew="${value}"`,
   );
   expect(posts).toEqual([
     "/__agent-forge/config/smiths/routing-edits/preview",

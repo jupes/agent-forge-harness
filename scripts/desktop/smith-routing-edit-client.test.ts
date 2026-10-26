@@ -325,6 +325,42 @@ test("exact confirmed and refused receipts install with their terminal state", a
   });
 });
 
+test("recreated clients recover confirmed and refused originals without changing terminal state", async () => {
+  for (const phase of ["confirmed", "refused"] as const) {
+    const receipt = await receiptFor(request, phase);
+    const f = fixture(
+      { state: "sent", value: { ok: true, data: receipt, error: null } },
+      async () => receipt,
+    );
+    await f.client.preview();
+    await f.client.save();
+    expect(f.client.get().entries[0]).toMatchObject({
+      state: phase,
+      receipt,
+    });
+    f.client.dispose();
+
+    const reopened = f.createClient();
+    await reopened.recover();
+    const recovered = reopened.get().entries[0];
+    expect(f.counts()).toEqual({ posts: 1, reads: 1, reserves: 1 });
+    expect(recovered).toMatchObject({
+      state: phase,
+      identity: { requestId: request.requestId, retired: true },
+      request,
+      receipt,
+    });
+    expect(recovered?.receipt?.original).toEqual(request);
+    expect(recovered?.receipt?.inputHash).toBe(
+      await smithRoutingEditInputHash(request),
+    );
+    await reopened.recover();
+    expect(reopened.get().entries[0]?.state).toBe(phase);
+    expect(f.counts().posts).toBe(1);
+    reopened.dispose();
+  }
+});
+
 test("malformed, hash-mismatched, and paired-revision-mismatched receipts stay held", async () => {
   const mismatchedRevision: SmithRoutingEditRequest = {
     ...request,

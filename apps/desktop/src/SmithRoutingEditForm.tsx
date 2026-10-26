@@ -203,8 +203,8 @@ export function SmithRoutingEditFormView({
             }
           />
           <small>
-            Free text is allowed; this editor does not require a configured
-            Smith.
+            Type a Smith name; the server verifies it is configured before
+            preparing a write.
           </small>
         </label>
       ) : (
@@ -286,8 +286,8 @@ export function SmithRoutingEditFormView({
             Add bench row
           </button>
           <small>
-            Rows remain ordered and duplicate names are kept. Enter any positive
-            finite fractional weight.
+            Rows remain ordered and duplicate names are kept. Each name must be
+            configured; weights may be positive finite fractions.
           </small>
         </section>
       )}
