@@ -1616,13 +1616,13 @@ test("closing a held verification read fences its late body and recovers after a
     });
     await page.getByRole("link", { name: "Smiths", exact: true }).click();
     await expect(dialog).not.toBeVisible();
-    expect(configurationFailureInjected).toBe(true);
     const config = page.getByRole("region", {
       name: "Saved smith configuration",
     });
     await expect(config.getByRole("alert")).toContainText(
       "Configuration could not be verified",
     );
+    expect(configurationFailureInjected).toBe(true);
     const retryConfiguration = config.getByRole("button", {
       name: "Retry configuration",
       exact: true,
