@@ -642,7 +642,6 @@ test("restart proof keeps exact launch presence and binds all five provider mode
   if (!legacy) throw Error("Missing Claude Chat proof fixture");
   const identity = writeSource(legacy);
   const journal = createRestartIdentityJournal(legacy.home);
-  await journal.reserve(identity);
   const eventBytes = () =>
     readdirSync(join(legacy.home, "restart-identities"))
       .filter((name) => /^event-\d{8}-[a-f0-9]{64}\.json$/.test(name))
@@ -651,7 +650,7 @@ test("restart proof keeps exact launch presence and binds all five provider mode
         name,
         readFileSync(join(legacy.home, "restart-identities", name)),
       ]);
-  const beforeRetire = eventBytes();
+  const beforeCrossScope = eventBytes();
   let providerCalls = 0;
   const service = createOwnedCodingSessionService({
     home: legacy.home,
@@ -669,6 +668,30 @@ test("restart proof keeps exact launch presence and binds all five provider mode
     },
     async validateScope() {},
   });
+  const foreignProjectId = `project-${randomUUID()}`;
+  await expect(
+    service.start(foreignProjectId, legacy.request),
+  ).rejects.toMatchObject({ status: 409 } satisfies Partial<ConversationError>);
+  expect(providerCalls).toBe(0);
+  expect(eventBytes()).toEqual(beforeCrossScope);
+  await expect(
+    service.reserveIdentity(foreignProjectId, legacy.request),
+  ).rejects.toMatchObject({ status: 409 } satisfies Partial<ConversationError>);
+  expect(eventBytes()).toEqual(beforeCrossScope);
+  mutateFirstUser(legacy, (event) => {
+    event.text = "altered private original";
+  });
+  await expect(
+    service.reserveIdentity(legacy.projectId, legacy.request),
+  ).rejects.toMatchObject({
+    status: 503,
+    message:
+      "The original Session Start could not be verified. Its identity remains held; retrying will not dispatch another provider request.",
+  } satisfies Partial<ConversationError>);
+  expect(eventBytes()).toEqual(beforeCrossScope);
+  writeSource(legacy);
+  await journal.reserve(identity);
+  const beforeRetire = eventBytes();
   await expect(
     service.retireIdentity(
       legacy.projectId,
@@ -686,40 +709,129 @@ test("restart proof keeps exact launch presence and binds all five provider mode
       identity.requestId,
     ),
   ).toMatchObject({ state: "reserved" });
-  await expect(
-    service.start(randomUUID(), legacy.request),
-  ).rejects.toMatchObject({ status: 409 } satisfies Partial<ConversationError>);
-  expect(providerCalls).toBe(0);
-  expect(eventBytes()).toEqual(beforeRetire);
-  const foreignProjectId = randomUUID();
-  await expect(
-    service.reserveIdentity(foreignProjectId, legacy.request),
-  ).rejects.toMatchObject({ status: 409 } satisfies Partial<ConversationError>);
-  expect(eventBytes()).toEqual(beforeRetire);
 
-  const foreignIdentity = {
-    ...identity,
+  const isolated = await fixture(),
+    foreignRequest = {
+      smith: "coding",
+      repository: isolated.root,
+      worktree: isolated.root,
+      requestId: randomUUID(),
+      launch: {
+        mode: "chat" as const,
+        model: "sonnet",
+        prompt: "isolated Claude original",
+        attachments: [],
+      },
+    },
+    foreignLaunch = {
+      ...foreignRequest.launch,
+      context: {
+        projectId: isolated.project.id,
+        repository: isolated.root,
+        worktree: isolated.root,
+        about: [],
+      },
+    },
+    foreignHash = createHash("sha256")
+      .update(canonicalOwnedSessionStart(foreignRequest))
+      .digest("hex"),
+    foreignSource: ProofSource = {
+      home: isolated.home,
+      root: isolated.root,
+      projectId: isolated.project.id,
+      request: foreignRequest,
+      session: makeMetadata(
+        {
+          provider: "claude",
+          mode: "chat",
+          projectId: isolated.project.id,
+          root: isolated.root,
+        },
+        foreignRequest,
+        foreignHash,
+      ),
+      provider: "claude",
+      mode: "chat",
+      event: {
+        kind: "user",
+        text: foreignRequest.launch.prompt,
+        about: [],
+        session: {
+          version: 1,
+          provider: "claude",
+          smith: foreignRequest.smith,
+          cwd: isolated.root,
+          launch: foreignLaunch,
+          capabilities: {
+            version: "2.1.296",
+            flags: ["--print", "--model", "--resume"],
+          },
+        },
+      },
+      forbiddenFields: ["resumeSessionId"],
+    },
+    isolatedIdentity = writeSource(foreignSource),
+    isolatedJournal = createRestartIdentityJournal(isolated.home),
+    isolatedService = createOwnedCodingSessionService({
+      home: isolated.home,
+      root: isolated.root,
+      runtime: {
+        provider: "claude",
+        async prepare() {
+          providerCalls++;
+          throw Error("collision proof must not prepare a provider");
+        },
+        async run() {
+          providerCalls++;
+          throw Error("collision proof must not dispatch a provider");
+        },
+      },
+      async validateScope() {},
+    }),
+    isolatedForeignProjectId = `project-${randomUUID()}`;
+  const isolatedForeignIdentity = {
+    ...isolatedIdentity,
     address: {
       family: "owned-session-start" as const,
-      projectId: foreignProjectId,
+      projectId: isolatedForeignProjectId,
     },
   };
-  await journal.reserve(foreignIdentity);
-  const beforeForeignRetire = eventBytes();
+  await isolatedJournal.reserve(isolatedForeignIdentity);
+  const beforeForeignRetire = readdirSync(
+    join(isolated.home, "restart-identities"),
+  )
+    .filter((name) => /^event-\d{8}-[a-f0-9]{64}\.json$/.test(name))
+    .sort()
+    .map((name) => [
+      name,
+      readFileSync(join(isolated.home, "restart-identities", name)),
+    ]);
   await expect(
-    service.retireIdentity(
-      foreignProjectId,
-      identity.requestId,
-      identity.requestHash,
+    isolatedService.retireIdentity(
+      isolatedForeignProjectId,
+      isolatedIdentity.requestId,
+      isolatedIdentity.requestHash,
     ),
   ).rejects.toMatchObject({ status: 409 } satisfies Partial<ConversationError>);
-  expect(eventBytes()).toEqual(beforeForeignRetire);
   expect(
-    await journal.lookup(
-      { address: foreignIdentity.address, workspace: identity.workspace },
-      identity.requestId,
+    readdirSync(join(isolated.home, "restart-identities"))
+      .filter((name) => /^event-\d{8}-[a-f0-9]{64}\.json$/.test(name))
+      .sort()
+      .map((name) => [
+        name,
+        readFileSync(join(isolated.home, "restart-identities", name)),
+      ]),
+  ).toEqual(beforeForeignRetire);
+  expect(
+    await isolatedJournal.lookup(
+      {
+        address: isolatedForeignIdentity.address,
+        workspace: isolatedIdentity.workspace,
+      },
+      isolatedIdentity.requestId,
     ),
   ).toMatchObject({ state: "reserved" });
   expect(providerCalls).toBe(0);
+  await isolatedService.close();
   await service.close();
 });
