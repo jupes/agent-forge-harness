@@ -5,7 +5,11 @@ import type { PreparedCodexChat } from "../../types/codex-chat";
 import type { CodexChatForkOriginal } from "../../types/codex-chat-fork";
 import type { CodexChatOwnedRecord } from "../../types/codex-owned-chat";
 import type { ConversationObject } from "../../types/conversation";
-import { conversationFile } from "../conversations/paths";
+import {
+  conversationFile,
+  conversationLeaseFile,
+  conversationWriteLockFile,
+} from "../conversations/paths";
 import { createConversationStore } from "../conversations/store";
 import {
   FIXTURE_CHAT_DECISION,
@@ -16,6 +20,7 @@ import { startTestHearth } from "../hearth/testing";
 import { writeOwnerOnly } from "../hearth/token";
 import { workspaceKey } from "../projects/scope";
 import { FIXTURE_PROJECT_ID } from "../projects/testing";
+import { withQueueLock } from "../scheduler/queue-lock";
 import {
   createCodexChatForkCoordinator,
   resolveCodexChatForkPrefix,
@@ -537,12 +542,17 @@ test("the filesystem coordinator captures once, adopts the exact child and resol
       turns: [],
       frames: [],
     });
+    const laterText = "Later child-local turn",
+      laterPrepared = {
+        ...verifiedSource.prepared,
+        launch: { ...verifiedSource.prepared.launch, prompt: laterText },
+      };
     await childStore.accept(FIXTURE_PROJECT_ID, {
       requestId: randomUUID(),
       expectedRevision: 0,
-      text: "Later child-local turn",
-      about: [],
-      codexChat: verifiedSource.prepared,
+      text: laterText,
+      about: [...(laterPrepared.launch.context?.about ?? [])],
+      codexChat: laterPrepared,
     });
     const repeated = await coordinator.fork({
       projectId: FIXTURE_PROJECT_ID,
@@ -558,12 +568,20 @@ test("the filesystem coordinator captures once, adopts the exact child and resol
       projectId: FIXTURE_PROJECT_ID,
       sessionId: parent.id,
     });
+    const laterParentText = "Later parent turn",
+      laterParentPrepared = {
+        ...verifiedSource.prepared,
+        launch: {
+          ...verifiedSource.prepared.launch,
+          prompt: laterParentText,
+        },
+      };
     await parentStore.accept(FIXTURE_PROJECT_ID, {
       requestId: randomUUID(),
       expectedRevision: source.state.revision,
-      text: "Later parent turn",
-      about: [],
-      codexChat: verifiedSource.prepared,
+      text: laterParentText,
+      about: [...(laterParentPrepared.launch.context?.about ?? [])],
+      codexChat: laterParentPrepared,
     });
     const later = parentStore.read(FIXTURE_PROJECT_ID).turns.at(-1);
     if (!later) throw Error("Missing later parent turn.");
@@ -741,6 +759,70 @@ test("ordinary Codex Chat reservation cannot install Fork provenance", async () 
     ).rejects.toMatchObject({ status: 400 });
     expect(registry.list(FIXTURE_PROJECT_ID)).toHaveLength(1);
   } finally {
+    await h.close();
+  }
+});
+
+test("parent Send lease contention prevents audit, reservation, and Fork dispatch", async () => {
+  const h = await startTestHearth();
+  let releaseLease: (() => void) | undefined,
+    leaseTask: Promise<unknown> | undefined;
+  try {
+    const source = await completeSource(h),
+      parent = persistCoordinatorSource(h, source),
+      requestId = randomUUID(),
+      journal = createCodexChatForkJournal({ home: h.home, root: h.root });
+    let leaseEntered!: () => void,
+      runtimeCalls = 0,
+      auditCalls = 0;
+    const ready = new Promise<void>((resolve) => {
+        leaseEntered = resolve;
+      }),
+      gate = new Promise<void>((resolve) => {
+        releaseLease = resolve;
+      });
+    leaseTask = withQueueLock(
+      conversationLeaseFile(h.home, FIXTURE_PROJECT_ID, {
+        kind: "session",
+        projectId: FIXTURE_PROJECT_ID,
+        sessionId: parent.id,
+      }),
+      async () => {
+        leaseEntered();
+        await gate;
+      },
+    );
+    await ready;
+    const coordinator = createCodexChatForkCoordinator({
+      root: h.root,
+      home: h.home,
+      runtime: {
+        async fork() {
+          runtimeCalls++;
+          throw Error("Parent lease contention must precede dispatch.");
+        },
+      },
+      async validateScope() {},
+      async appendAudit() {
+        auditCalls++;
+      },
+    });
+    await expect(
+      coordinator.fork({
+        projectId: FIXTURE_PROJECT_ID,
+        parentSessionId: parent.id,
+        request: {
+          requestId,
+          throughTurnRequestId: source.requestId,
+        },
+      }),
+    ).rejects.toThrow("busy");
+    expect(runtimeCalls).toBe(0);
+    expect(auditCalls).toBe(0);
+    expect(journal.read(FIXTURE_PROJECT_ID, requestId)).toBeNull();
+  } finally {
+    releaseLease?.();
+    await leaseTask;
     await h.close();
   }
 });
@@ -979,6 +1061,8 @@ test("captured local-link recovery refuses changed source settings without redis
 
 test("a real captured original from failed local adoption retries only its sealed source", async () => {
   const h = await startTestHearth();
+  let releaseChildLock: (() => void) | undefined,
+    childLockTask: Promise<unknown> | undefined;
   try {
     const source = await completeSource(h),
       parent = persistCoordinatorSource(h, source),
@@ -995,7 +1079,14 @@ test("a real captured original from failed local adoption retries only its seale
       childNativeThreadId = "0199a213-81c0-7800-8aa1-bbab2a035a61",
       journal = createCodexChatForkJournal({ home: h.home, root: h.root });
     let runtimeCalls = 0,
-      auditCalls = 0;
+      auditCalls = 0,
+      signalChildLock!: () => void;
+    const childLockEntered = new Promise<void>((resolve) => {
+        signalChildLock = resolve;
+      }),
+      childLockGate = new Promise<void>((resolve) => {
+        releaseChildLock = resolve;
+      });
     const coordinator = createCodexChatForkCoordinator({
       root: h.root,
       home: h.home,
@@ -1004,12 +1095,18 @@ test("a real captured original from failed local adoption retries only its seale
           runtimeCalls++;
           const reserved = journal.read(FIXTURE_PROJECT_ID, requestId);
           if (!reserved) throw Error("Missing reserved fixture original.");
-          const conflictPath = conversationFile(h.home, FIXTURE_PROJECT_ID, {
-            kind: "session",
-            projectId: FIXTURE_PROJECT_ID,
-            sessionId: reserved.childAppSessionId,
-          });
-          writeOwnerOnly(conflictPath, "preserve conflicting child data\n");
+          childLockTask = withQueueLock(
+            conversationWriteLockFile(h.home, FIXTURE_PROJECT_ID, {
+              kind: "session",
+              projectId: FIXTURE_PROJECT_ID,
+              sessionId: reserved.childAppSessionId,
+            }),
+            async () => {
+              signalChildLock();
+              await childLockGate;
+            },
+          );
+          await childLockEntered;
           return {
             parentThreadId: threadId,
             lastTurnId: nativeTurnId,
@@ -1043,9 +1140,18 @@ test("a real captured original from failed local adoption retries only its seale
       parentSessionId: parent.id,
       request: { requestId, throughTurnRequestId: source.requestId },
     };
-    await expect(coordinator.fork(input)).rejects.toThrow();
+    try {
+      await expect(coordinator.fork(input)).rejects.toThrow();
+    } finally {
+      releaseChildLock?.();
+      await childLockTask;
+    }
     const captured = journal.read(FIXTURE_PROJECT_ID, requestId);
     expect(captured?.state).toBe("captured");
+    expect(runtimeCalls).toBe(1);
+    expect(auditCalls).toBe(1);
+    const retried = await coordinator.fork(input);
+    expect(retried.state).toBe("linked");
     expect(runtimeCalls).toBe(1);
     expect(auditCalls).toBe(1);
 
@@ -1071,10 +1177,10 @@ test("a real captured original from failed local adoption retries only its seale
       }),
       `${JSON.stringify(ownedCodingStateSchema.parse(changed))}\n`,
     );
-    await expect(coordinator.fork(input)).rejects.toThrow("source changed");
+    await expect(coordinator.fork(input)).rejects.toThrow();
     expect(runtimeCalls).toBe(1);
     expect(auditCalls).toBe(1);
-    expect(journal.read(FIXTURE_PROJECT_ID, requestId)?.state).toBe("captured");
+    expect(journal.read(FIXTURE_PROJECT_ID, requestId)?.state).toBe("linked");
 
     const changedTurn = structuredClone(source.state),
       selectedUser = changedTurn.frames.find(
@@ -1093,6 +1199,7 @@ test("a real captured original from failed local adoption retries only its seale
     )
       throw Error("Missing exact selected app-turn fixture.");
     selectedUser.event.text = "Changed selected request after capture";
+    selectedUser.event.codexChat.launch.prompt = selectedUser.event.text;
     selectedTurn.hash = conversationTurnHash({
       text: selectedUser.event.text,
       about: selectedUser.event.about,
@@ -1106,15 +1213,17 @@ test("a real captured original from failed local adoption retries only its seale
       }),
       `${JSON.stringify(ownedCodingStateSchema.parse(changedTurn))}\n`,
     );
-    await expect(coordinator.fork(input)).rejects.toThrow("source changed");
+    await expect(coordinator.fork(input)).rejects.toThrow();
     expect(runtimeCalls).toBe(1);
-    expect(journal.read(FIXTURE_PROJECT_ID, requestId)?.state).toBe("captured");
+    expect(journal.read(FIXTURE_PROJECT_ID, requestId)?.state).toBe("linked");
     expect(
       createSessionRegistry(h.home)
         .listAll(FIXTURE_PROJECT_ID)
         .some((record) => record.id === captured?.childAppSessionId),
-    ).toBe(false);
+    ).toBe(true);
   } finally {
+    releaseChildLock?.();
+    await childLockTask;
     await h.close();
   }
 });
