@@ -68,7 +68,11 @@ afterEach(async () => {
   for (const release of releaseHeld.splice(0)) release();
   for (const h of opened.splice(0).reverse()) await h.close();
 });
-async function fixture(mode = "approval-command", holdDecision = false) {
+async function fixture(
+  mode = "approval-command",
+  holdDecision = false,
+  holdForkReply = false,
+) {
   let h: TestHearth,
     actual: ReturnType<typeof createCodexChatRuntime> | undefined;
   let activeStartInput: unknown;
@@ -78,10 +82,24 @@ async function fixture(mode = "approval-command", holdDecision = false) {
   };
   let release: () => void = () => {},
     held = false;
+  let releaseForkReply: () => void = () => {},
+    markForkEffectReached: () => void = () => {},
+    markForkReplyReleased: () => void = () => {},
+    forkReplyHeld = false;
   const answerGate = new Promise<void>((resolve) => {
     release = resolve;
   });
+  const forkReplyGate = new Promise<void>((resolve) => {
+    releaseForkReply = resolve;
+  });
+  const forkEffectReached = new Promise<void>((resolve) => {
+    markForkEffectReached = resolve;
+  });
+  const forkReplyReleased = new Promise<void>((resolve) => {
+    markForkReplyReleased = resolve;
+  });
   releaseHeld.push(release);
+  releaseHeld.push(releaseForkReply);
   h = await startTestHearth({
     files: {
       "agent-forge.toml":
@@ -136,19 +154,38 @@ async function fixture(mode = "approval-command", holdDecision = false) {
       },
       decorate: (routes) =>
         routes.map((route) =>
-          route.kind === "action" && route.action === "session.approval.decide"
+          route.kind === "action" && route.action === "session.fork"
             ? {
                 ...route,
                 effect: async (input, context) => {
                   const result = await route.effect(input, context);
-                  if (holdDecision && !held && result.status === 200) {
-                    held = true;
-                    await answerGate;
+                  if (
+                    holdForkReply &&
+                    !forkReplyHeld &&
+                    result.status === 200
+                  ) {
+                    forkReplyHeld = true;
+                    markForkEffectReached();
+                    await forkReplyGate;
+                    markForkReplyReleased();
                   }
                   return result;
                 },
               }
-            : route,
+            : route.kind === "action" &&
+                route.action === "session.approval.decide"
+              ? {
+                  ...route,
+                  effect: async (input, context) => {
+                    const result = await route.effect(input, context);
+                    if (holdDecision && !held && result.status === 200) {
+                      held = true;
+                      await answerGate;
+                    }
+                    return result;
+                  },
+                }
+              : route,
         ),
     },
   });
@@ -257,6 +294,9 @@ async function fixture(mode = "approval-command", holdDecision = false) {
     records,
     release,
     held: () => held,
+    forkEffectReached,
+    releaseForkReply,
+    forkReplyReleased,
   };
 }
 
@@ -672,5 +712,91 @@ test("protected Fork routes publish one audited native Fork and recover its exac
   ).toBe(409);
   expect(
     f.records().filter((row) => row.method === "thread/fork"),
+  ).toHaveLength(1);
+});
+
+test("a lost Fork reply is recovered by exact original GET without repeating the native effect", async () => {
+  const f = await fixture("fork", false, true),
+    start = await f.post("", f.request);
+  expect(start.status).toBe(202);
+  const started = ownedCodingStartReceiptSchema.parse(
+      (await start.json()).data,
+    ),
+    parentSessionId = started.session.id,
+    completed = await f.settle(parentSessionId),
+    selectedTurn = completed.turns.find(
+      (turn) => turn.requestId === f.request.requestId,
+    );
+  if (!selectedTurn) throw Error("The completed parent turn was not saved");
+
+  const request = {
+      requestId: randomUUID(),
+      throughTurnRequestId: selectedTurn.requestId,
+    },
+    route = `/${parentSessionId}/forks`,
+    originalUrl = `${f.h.api}/projects/${FIXTURE_PROJECT_ID}/codex-chat-forks/${request.requestId}`,
+    controller = new AbortController();
+  const lostReply = f.post(
+    route,
+    request,
+    f.h.headers(f.h.hearth.token),
+    controller.signal,
+  );
+  void lostReply.catch(() => {});
+  let reachedEffect = false,
+    effectTimer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      f.forkEffectReached,
+      new Promise<never>((_resolve, reject) => {
+        effectTimer = setTimeout(
+          () =>
+            reject(Error("Fork effect did not reach the held reply boundary")),
+          5_000,
+        );
+      }),
+    ]);
+    reachedEffect = true;
+    expect(
+      f.records().filter((row) => row.method === "thread/fork"),
+    ).toHaveLength(1);
+    controller.abort();
+    await expect(lostReply).rejects.toThrow();
+  } finally {
+    if (effectTimer !== undefined) clearTimeout(effectTimer);
+    controller.abort();
+    f.releaseForkReply();
+  }
+  if (reachedEffect) await f.forkReplyReleased;
+
+  const recovered = await fetch(originalUrl, {
+      headers: f.h.headers(f.h.hearth.token),
+    }),
+    recoveredEnvelope = await recovered.json(),
+    original = codexChatForkIdentityMetadataSchema.parse(
+      recoveredEnvelope.data,
+    );
+  expect(recovered.status).toBe(200);
+  expect(recovered.headers.get("cache-control")).toBe("no-store");
+  expect(original).toMatchObject({
+    family: "codex-chat-fork",
+    requestId: request.requestId,
+    parentSessionId,
+    throughTurnRequestId: selectedTurn.requestId,
+    state: "linked",
+  });
+
+  const duplicate = await f.post(route, request);
+  expect(duplicate.status).toBe(200);
+  expect((await duplicate.json()).data).toMatchObject({
+    requestId: request.requestId,
+    state: "linked",
+    childSessionId: original.childSessionId,
+  });
+  expect(
+    f.records().filter((row) => row.method === "thread/fork"),
+  ).toHaveLength(1);
+  expect(
+    f.records().filter((row) => row.method === "thread/start"),
   ).toHaveLength(1);
 });

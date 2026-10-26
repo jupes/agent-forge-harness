@@ -1,6 +1,10 @@
 /** Strict browser-safe wire contract for the read-only operation identity page. */
 import { z } from "zod";
-import type { SessionOperationIdentityPage } from "../../types/session-operation-identities";
+import type {
+  CodexChatForkIdentityMetadata,
+  SessionOperationIdentityPage,
+} from "../../types/session-operation-identities";
+import type { SessionStartIdentityMetadata } from "../../types/session-start-identities";
 import { workspaceKey } from "../projects/scope";
 import {
   ownedSessionIdSchema,
@@ -121,4 +125,42 @@ export function sessionOperationIdentityEnvelopeBytes(
   return new TextEncoder().encode(
     JSON.stringify({ ok: true, data, error: null }),
   ).byteLength;
+}
+
+/** Reads both complete sources and publishes no partial page on either failure. */
+export async function readSessionOperationIdentityPage(input: {
+  projectId: string;
+  workspace: string;
+  readStarts(): Promise<SessionStartIdentityMetadata[]>;
+  readForks(): Promise<CodexChatForkIdentityMetadata[]>;
+}): Promise<SessionOperationIdentityPage> {
+  const [startRows, forkRows] = await Promise.all([
+    Promise.resolve().then(() => input.readStarts()),
+    Promise.resolve().then(() => input.readForks()),
+  ]);
+  const operations = [
+    ...startRows.map((row) => ({
+      family: "owned-session-start" as const,
+      ...row,
+    })),
+    ...forkRows,
+  ].sort((left, right) =>
+    `${left.family}\0${left.requestId}`.localeCompare(
+      `${right.family}\0${right.requestId}`,
+    ),
+  );
+  if (operations.length > SESSION_OPERATION_IDENTITY_LIMITS.operations)
+    throw new Error("The operation identity page exceeds its row limit.");
+  const page = sessionOperationIdentityPageSchema.safeParse({
+    version: 1,
+    scope: { projectId: input.projectId, workspace: input.workspace },
+    operations,
+  });
+  if (
+    !page.success ||
+    sessionOperationIdentityEnvelopeBytes(page.data) >
+      SESSION_OPERATION_IDENTITY_LIMITS.responseBytes
+  )
+    throw new Error("The operation identity page exceeds its response bound.");
+  return page.data;
 }
