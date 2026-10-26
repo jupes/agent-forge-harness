@@ -9,7 +9,7 @@ import {
 import { keeperShiftStartRequestSchema } from "../../scripts/keeper/shift-start-wire";
 import type { KeeperProposal } from "../../types/keeper-proposal";
 import type { KeeperShiftStartRequest } from "../../types/keeper-shift-start";
-import { openSettled } from "../e2e/fixtures";
+import { openSettled, reloadSettled } from "../e2e/fixtures";
 import { HEARTH_HOME } from "../e2e/servers";
 import { alpha, seedKeeper, seedProjects, workspace } from "./project-fixtures";
 
@@ -357,6 +357,7 @@ test("recorded Shift cards reopen the saved original after reload from Keeper an
       .getByRole("link", { name: "Overview", exact: true })
       .first()
       .click();
+    await reloadSettled(page);
     await page.getByRole("button", { name: "Ask Keeper", exact: true }).click();
     const drawer = page.getByRole("dialog", { name: "Forge Keeper · Alpha" });
     const drawerCard = drawer.getByRole("article", {
@@ -394,4 +395,12 @@ test("recorded Shift cards reopen the saved original after reload from Keeper an
     protectedReads.every((url) => url.includes(encodeURIComponent(requestId))),
   ).toBe(true);
   expect(starts).toEqual([]);
+  if (process.env["AGENT_FORGE_CAPTURE_KEEPER_SHIFT_PROOF"] === "1") {
+    const screenshot = test.info().outputPath("keeper-shift-recorded-card.png");
+    await page.screenshot({ path: screenshot, fullPage: true });
+    await test.info().attach("Recorded Keeper Shift card", {
+      path: screenshot,
+      contentType: "image/png",
+    });
+  }
 });
