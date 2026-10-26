@@ -455,6 +455,7 @@ test("a proven NotSent refusal enables an exact Keeper retry and the original re
   const review = client.get(source, 4);
   await client.open(review);
   review.owner.initializeComposer?.({ id: projectId }, smiths, [main]);
+  review.owner.editComposer(projectId, { effort: "" });
   const expected = sessionStartBody(review.view.composer);
 
   await review.owner.start(projectId, expected);
@@ -500,6 +501,54 @@ test("a protected original read can restore retryability from its durable NotSen
   expect(sent).toHaveLength(1);
   expect(sent[0]).toEqual(durableNotSent.original);
   expect(review.view.retryStartAvailable).toBe(false);
+  client.dispose();
+});
+
+test.each([
+  "legacy",
+  "attempted",
+  "not-found",
+  "unavailable",
+] as const)("a later %s Keeper read clears stale durable retry eligibility", async (laterRead) => {
+  const sent: KeeperSessionStartRequest[] = [];
+  const durableNotSent = Object.assign(await savedStart(false), {
+    session: null,
+    retryAvailable: true,
+  });
+  let raw: unknown = durableNotSent;
+  const client = createKeeperSessionReviews({
+    identities: identityFixture().identities,
+    canWrite: () => true,
+    requestId: () => {
+      throw new Error("Recovery must retain the original UUID");
+    },
+    read: async () => {
+      if (laterRead === "unavailable" && raw !== durableNotSent)
+        throw new Error("Identity metadata is unavailable");
+      return raw;
+    },
+    post: async (_project, _proposal, input) => {
+      sent.push(structuredClone(input));
+      return { state: "unknown", message: "Check the original again" };
+    },
+    createWorktree: async () => ({ state: "refused", message: "No Git" }),
+    readWorktree: async () => null,
+    adopt: () => true,
+  });
+  const review = client.get(source, 4);
+  await client.open(review);
+  expect(review.view.retryStartAvailable).toBe(true);
+  if (laterRead === "legacy") {
+    const legacy = { ...durableNotSent } as Record<string, unknown>;
+    delete legacy["retryAvailable"];
+    raw = legacy;
+  } else if (laterRead === "attempted")
+    raw = { ...durableNotSent, retryAvailable: false };
+  else raw = null;
+  await review.owner.refresh(projectId);
+  expect(review.view.retryStartAvailable).toBe(false);
+  await review.owner.retryStart(projectId);
+  expect(sent).toEqual([]);
   client.dispose();
 });
 

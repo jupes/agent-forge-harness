@@ -211,6 +211,10 @@ export function createKeeperSessionReviews(deps: {
       retryableNotSent.set(entry, result.retryAvailable);
       if (result.retryAvailable) retryProofSource.set(entry, "server");
       else retryProofSource.delete(entry);
+    } else if (retryProofSource.get(entry) === "server") {
+      // A legacy/partial protected read cannot preserve stale server proof.
+      retryableNotSent.set(entry, false);
+      retryProofSource.delete(entry);
     }
     entry.view.retryStartAvailable = retryableNotSent.get(entry) === true;
     entry.view.notice = result.record.message;
