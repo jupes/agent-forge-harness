@@ -81,6 +81,11 @@ describe("Gemini Chat browser failure facts", () => {
       ok: false,
       reason: "invalid",
     });
+    for (const hostileReason of ["__proto__", "constructor", "toString"])
+      expect(
+        normalizeGeminiChatFailureFacts({ turnReason: hostileReason })
+          .turnReasonCategory,
+      ).toBe("other");
   });
 
   test("attaches before caller cleanup and preserves the original assertion error", async () => {

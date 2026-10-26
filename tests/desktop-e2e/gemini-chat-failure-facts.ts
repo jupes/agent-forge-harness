@@ -79,7 +79,7 @@ function reasonCategory(value: unknown): string | null {
       "provider_outcome_unconfirmed",
     "The supervised turn was stopped.": "supervised_turn_stopped",
   };
-  if (exact[value]) return exact[value] ?? "other";
+  if (Object.hasOwn(exact, value)) return exact[value] ?? "other";
   if (value.startsWith("Gemini exited with code "))
     return "provider_exit_failure";
   if (value.startsWith("Gemini stopped with "))
