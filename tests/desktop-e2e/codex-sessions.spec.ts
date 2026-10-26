@@ -320,7 +320,6 @@ test("bead-prefilled Codex Task preserves honest effort controls and private con
     releaseIdentityRead = resolve;
   });
   await page.route(identityPath, async (route) => {
-    if (route.request().method() === "POST") identityPostCount++;
     if (route.request().method() !== "GET") {
       await route.continue();
       return;
@@ -350,14 +349,17 @@ test("bead-prefilled Codex Task preserves honest effort controls and private con
       identityReadHeld = true;
       await identityReadReleased;
     }
-    await route.fulfill({ response, json: envelope.data });
+    await route.fulfill({ response });
   });
   page.on("request", (request) => {
+    if (request.method() !== "POST") return;
+    const pathname = new URL(request.url()).pathname;
     if (
-      request.method() === "POST" &&
-      new URL(request.url()).pathname ===
-        `/__agent-forge/projects/${alpha.id}/sessions`
+      pathname ===
+      `/__agent-forge/projects/${alpha.id}/session-start-identities`
     )
+      identityPostCount++;
+    if (pathname === `/__agent-forge/projects/${alpha.id}/sessions`)
       startPostCount++;
   });
   await page.setViewportSize({ width: 1100, height: 700 });
