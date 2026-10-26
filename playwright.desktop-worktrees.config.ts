@@ -2,8 +2,8 @@ import "./tests/desktop-worktree-e2e/environment";
 import { defineConfig } from "@playwright/test";
 import base from "./playwright.desktop.config";
 import {
-  EMPTY_HOME,
   FIXTURE_ROOT,
+  OS_HOME,
   prepareRepository,
   REPOSITORY,
 } from "./tests/desktop-worktree-e2e/environment";
@@ -27,9 +27,9 @@ export default defineConfig({
       env: {
         ...server.env,
         AGENT_FORGE_WORKTREE_FIXTURE_ROOT: FIXTURE_ROOT,
-        AGENT_FORGE_WORKTREE_OS_HOME: EMPTY_HOME,
-        HOME: EMPTY_HOME,
-        USERPROFILE: EMPTY_HOME,
+        AGENT_FORGE_WORKTREE_OS_HOME: OS_HOME,
+        HOME: OS_HOME,
+        USERPROFILE: OS_HOME,
       },
     }),
   ),

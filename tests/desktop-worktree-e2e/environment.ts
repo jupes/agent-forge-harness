@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, delimiter, dirname, join, resolve } from "node:path";
+import { desktopWorktreeHomeLayout } from "./home-layout";
 
 // Imported before the ordinary Playwright config and its shared server constants.
 process.env["PORT"] ??= "8891";
@@ -23,8 +24,12 @@ export const REPOSITORY = join(FIXTURE_ROOT, "repository");
  * A dedicated OS home outside FIXTURE_ROOT. The Hearth's process-global config
  * transaction mutex is persistent, so fixture teardown must never remove it.
  */
-export const EMPTY_HOME = (process.env["AGENT_FORGE_WORKTREE_OS_HOME"] ||=
+const serverOsHome = (process.env["AGENT_FORGE_WORKTREE_OS_HOME"] ||=
   mkdtempSync(join(tmpdir(), "agent-forge-worktree-empty-home-")));
+const homeLayout = desktopWorktreeHomeLayout(FIXTURE_ROOT, serverOsHome);
+/** Git-only empty config home. It is owned by and removed with FIXTURE_ROOT. */
+export const EMPTY_HOME = homeLayout.gitHome;
+export const OS_HOME = homeLayout.serverOsHome;
 export const PLAN = join(FIXTURE_ROOT, "fixture-plan.json");
 export const CALLS = join(FIXTURE_ROOT, "git-calls.jsonl");
 
@@ -40,10 +45,10 @@ export function checkedFixtureRoot() {
     );
   return value;
 }
-export function checkedEmptyHome() {
-  const value = realpathSync.native(EMPTY_HOME);
+export function checkedOsHome() {
+  const value = realpathSync.native(OS_HOME);
   if (
-    lstatSync(EMPTY_HOME).isSymbolicLink() ||
+    lstatSync(OS_HOME).isSymbolicLink() ||
     realpathSync.native(dirname(value)) !== realpathSync.native(tmpdir()) ||
     !/^agent-forge-worktree-empty-home-[a-zA-Z0-9]+$/.test(basename(value)) ||
     resolve(value) === resolve(checkedFixtureRoot())
@@ -96,7 +101,8 @@ export function prepareRepository() {
   if (existsSync(PLAN)) return;
   mkdirSync(REPOSITORY, { recursive: true });
   mkdirSync(EMPTY_HOME, { recursive: true });
-  checkedEmptyHome();
+  mkdirSync(OS_HOME, { recursive: true });
+  checkedOsHome();
   mkdirSync(join(EMPTY_HOME, "hooks"), { recursive: true });
   writeFileSync(join(EMPTY_HOME, "empty.gitconfig"), "");
   const git = realGit();
@@ -198,5 +204,5 @@ export function removeRepository() {
   } catch {
     /* Windows may retain the server cwd until teardown; this generated temp directory is never reused. */
   }
-  // EMPTY_HOME is intentionally retained: it may contain the persistent user-global config mutex.
+  // OS_HOME is intentionally retained: it may contain the persistent user-global config mutex.
 }

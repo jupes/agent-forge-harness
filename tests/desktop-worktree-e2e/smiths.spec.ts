@@ -21,10 +21,10 @@ import {
 import { openSettled, reloadSettled } from "../e2e/fixtures";
 import { BD_STAND_IN_STATE, HEARTH_HOME, isRunHome } from "../e2e/servers";
 import {
-  checkedEmptyHome,
   checkedFixtureRoot,
-  EMPTY_HOME,
+  checkedOsHome,
   fixturePlan,
+  OS_HOME,
   REPOSITORY,
 } from "./environment";
 
@@ -271,7 +271,7 @@ test("creates a reviewed Smith in the temporary workspace config and recovers it
       posts.push(new URL(request.url()).pathname);
   });
   const fixtureRoot = checkedFixtureRoot();
-  checkedEmptyHome();
+  checkedOsHome();
   if (
     !isRunHome(HEARTH_HOME) ||
     !realpathSync
@@ -329,7 +329,7 @@ test("creates a reviewed Smith in the temporary workspace config and recovers it
   expect(written).toContain('model = "browser-fixture-model"');
   expect(
     existsSync(
-      join(EMPTY_HOME, ".agent-forge-config-transactions", "write.lock.db"),
+      join(OS_HOME, ".agent-forge-config-transactions", "write.lock.db"),
     ),
   ).toBe(true);
   expect(posts).toEqual([
@@ -377,7 +377,7 @@ test("a source-proven NotSent retires across reload, while a lost response stays
     )
       originalReads.push(response.status());
   });
-  checkedEmptyHome();
+  checkedOsHome();
   if (!isRunHome(HEARTH_HOME) || !checkedFixtureRoot())
     throw Error("Smith identity recovery requires the owned temporary homes.");
 
@@ -472,7 +472,7 @@ test("a correlated stale-revision refusal reads back its exact original after re
     )
       originalReads.push(response.status());
   });
-  checkedEmptyHome();
+  checkedOsHome();
   if (!isRunHome(HEARTH_HOME) || !checkedFixtureRoot())
     throw Error("Smith refusal recovery requires the owned temporary homes.");
 
@@ -573,7 +573,7 @@ test("an unavailable create response remains held when the protected original re
     )
       originalReads.push(response.status());
   });
-  checkedEmptyHome();
+  checkedOsHome();
   if (!isRunHome(HEARTH_HOME) || !checkedFixtureRoot())
     throw Error("Smith identity recovery requires the owned temporary homes.");
 
@@ -656,7 +656,7 @@ test("a reply lost after actual temporary publication recovers the exact origina
         original = request.postDataJSON() as Record<string, unknown>;
     }
   });
-  checkedEmptyHome();
+  checkedOsHome();
   if (!isRunHome(HEARTH_HOME) || !checkedFixtureRoot())
     throw Error("Smith recovery requires the owned temporary homes.");
 
