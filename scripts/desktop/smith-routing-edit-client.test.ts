@@ -62,6 +62,22 @@ const preview: SmithRoutingEditPreview = smithRoutingEditPreviewSchema.parse({
     provenanceAfter: "workspace",
   },
 });
+function previewFor(
+  input: SmithRoutingEditPreviewRequest,
+): SmithRoutingEditPreview {
+  const reviewedValue =
+    input.change.kind === "default" ? input.change.smith : input.change.entries;
+  return smithRoutingEditPreviewSchema.parse({
+    ...preview,
+    target: input.target,
+    review: {
+      ...preview.review,
+      change: input.change,
+      targetAfter: reviewedValue,
+      effectiveAfter: reviewedValue,
+    },
+  });
+}
 function fixture(
   result:
     | SmithRoutingEditPostResult
@@ -83,8 +99,9 @@ function fixture(
     requestIdValue = request.requestId,
     writable = true,
     failRetire = false,
+    created = 0,
     previewer: (value: SmithRoutingEditPreviewRequest) => Promise<unknown> =
-      async () => preview,
+      async (value) => previewFor(value),
     posted: SmithRoutingEditRequest | null = null;
   const identities: SmithRoutingEditIdentities = {
     read: (id) => saved.get(id) ?? null,
@@ -103,7 +120,15 @@ function fixture(
       const previous = saved.get(identity.requestId);
       if (previous && JSON.stringify(previous) !== JSON.stringify(identity))
         throw Error("UUID conflict");
+      if (
+        !previous &&
+        [...saved.values()].some(
+          (item) => item.scope === scope && !item.retired,
+        )
+      )
+        throw Error("unresolved original");
       saved.set(identity.requestId, identity);
+      if (!previous) created++;
       if (reserveGate) await reserveGate;
       return { identity: saved.get(identity.requestId)!, created: !previous };
     },
@@ -114,12 +139,12 @@ function fixture(
       return updated;
     },
   };
-  const createClient = () => {
+  const createClient = (requestIdOverride?: string) => {
     const client = createSmithRoutingEditClient({
       identities: () => identities,
       scope: () => scope,
       canWrite: () => writable,
-      requestId: () => requestIdValue,
+      requestId: () => requestIdOverride ?? requestIdValue,
       preview: async (value) => previewer(value),
       post: async (value, reservation) => {
         posts++;
@@ -141,6 +166,7 @@ function fixture(
     createClient,
     saved,
     counts: () => ({ posts, reads, reserves }),
+    createdCount: () => created,
     get posted() {
       return posted;
     },
@@ -166,6 +192,13 @@ function fixture(
       previewer = value;
     },
   };
+}
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve: (value: T) => resolve(value) };
 }
 
 test("browser hash matches producer canonical bytes and preserves duplicate fractional ordered rows", async () => {
@@ -237,6 +270,100 @@ test("preview receives a detached draft so dependency mutation cannot alter save
   expect(f.posted?.change).toEqual(change);
 });
 
+test("a stale preview completion cannot leave the changed draft busy or install its candidate", async () => {
+  const f = fixture({ state: "unknown", message: "unused" });
+  const oldResponse = deferred<unknown>();
+  f.setPreviewer(async () => oldResponse.promise);
+  const oldPreview = f.client.preview();
+  f.client.setDraft("workspace", {
+    ...change,
+    entries: [...change.entries, { smith: "next", weight: 0.75 }],
+  });
+  try {
+    oldResponse.resolve(
+      previewFor({
+        target: "workspace",
+        change,
+      }),
+    );
+    await oldPreview;
+    expect(f.client.get().previewing).toBe(false);
+    expect(f.client.get().preview).toBeNull();
+  } finally {
+    oldResponse.resolve(preview);
+  }
+});
+
+test("an older preview completion preserves the busy flag and candidate of the latest draft", async () => {
+  const f = fixture({ state: "unknown", message: "unused" });
+  const oldResponse = deferred<unknown>();
+  const currentResponse = deferred<unknown>();
+  let calls = 0;
+  f.setPreviewer(async () =>
+    ++calls === 1 ? oldResponse.promise : currentResponse.promise,
+  );
+  const oldPreview = f.client.preview();
+  const latestChange: SmithRoutingEditChange = {
+    ...change,
+    entries: [...change.entries, { smith: "latest", weight: 0.75 }],
+  };
+  f.client.setDraft("workspace", latestChange);
+  const latestPreview = f.client.preview();
+  try {
+    oldResponse.resolve(previewFor({ target: "workspace", change }));
+    await oldPreview;
+    expect(f.client.get().previewing).toBe(true);
+    expect(f.client.get().preview).toBeNull();
+    currentResponse.resolve(
+      previewFor({ target: "workspace", change: latestChange }),
+    );
+    await latestPreview;
+    expect(f.client.get().previewing).toBe(false);
+    expect(f.client.get().preview?.review.change).toEqual(latestChange);
+  } finally {
+    oldResponse.resolve(preview);
+    currentResponse.resolve(preview);
+  }
+});
+
+test("a stale scope save cannot clear the busy flag of a new scope save", async () => {
+  const firstStarted = deferred<void>();
+  const secondStarted = deferred<void>();
+  const firstResult = deferred<SmithRoutingEditPostResult>();
+  const secondResult = deferred<SmithRoutingEditPostResult>();
+  let calls = 0;
+  const f = fixture(async () => {
+    calls++;
+    if (calls === 1) {
+      firstStarted.resolve();
+      return firstResult.promise;
+    }
+    secondStarted.resolve();
+    return secondResult.promise;
+  });
+  await f.client.preview();
+  const oldSave = f.client.save();
+  try {
+    await firstStarted.promise;
+    f.scope = "workspace-B";
+    f.client.get();
+    f.setRequestId("f730e793-e617-4c93-bdaf-b1e30ba706e5");
+    f.client.setDraft("workspace", change);
+    await f.client.preview();
+    const newSave = f.client.save();
+    await secondStarted.promise;
+    firstResult.resolve({ state: "unknown", message: "old scope uncertain" });
+    await oldSave;
+    expect(f.client.get().saving).toBe(true);
+    secondResult.resolve({ state: "unknown", message: "new scope uncertain" });
+    await newSave;
+    expect(f.client.get().saving).toBe(false);
+  } finally {
+    firstResult.resolve({ state: "unknown", message: "release first" });
+    secondResult.resolve({ state: "unknown", message: "release second" });
+  }
+});
+
 test("lost submit reply and protected 404 stay held after recovery without another POST", async () => {
   const f = fixture({ state: "unknown", message: "lost reply" });
   await f.client.preview();
@@ -281,7 +408,19 @@ test("overlapping saves share one reservation and one submit", async () => {
   const second = f.createClient();
   await Promise.all([f.client.preview(), second.preview()]);
   await Promise.all([f.client.save(), second.save()]);
-  expect(f.counts()).toMatchObject({ posts: 1, reserves: 1 });
+  expect(f.counts()).toMatchObject({ posts: 1, reserves: 2 });
+  expect(f.createdCount()).toBe(1);
+  expect(f.saved.size).toBe(1);
+});
+
+test("independent clients racing different UUIDs create one active original and one effect", async () => {
+  const f = fixture({ state: "unknown", message: "uncertain" });
+  const second = f.createClient("f730e793-e617-4c93-bdaf-b1e30ba706e5");
+  await Promise.all([f.client.preview(), second.preview()]);
+  await Promise.all([f.client.save(), second.save()]);
+  expect(f.counts()).toMatchObject({ posts: 1, reserves: 2 });
+  expect(f.createdCount()).toBe(1);
+  expect(f.saved.size).toBe(1);
 });
 
 test("retirement readback failure stays held and a protected mismatch never retires", async () => {
