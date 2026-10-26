@@ -741,7 +741,7 @@ export function supervise(
       exited = true;
       // A terminal witness, not time spent draining/confirming cleanup, owns
       // attribution once the wrapper has exited.
-      if (interactive && timer) clearTimeout(timer);
+      if (timer) clearTimeout(timer);
       if (process.platform !== "win32") exitedGroups.add(proc.pid);
       if (interactive) {
         // Windows retains an owned job handle; POSIX descendants keep their process group alive.
