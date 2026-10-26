@@ -42,6 +42,11 @@ type SuperviseSpawn = (
   options: Bun.SpawnOptions.SpawnOptions<"pipe", "pipe", "pipe">,
 ) => Bun.Subprocess<"pipe", "pipe", "pipe">;
 
+type WindowsStoppedGuard = ReturnType<typeof guardTree> & {
+  /** Trusted Windows stop-settlement fixture seam; never supplied by callers. */
+  settleStopped?: () => Promise<void>;
+};
+
 export interface SuperviseOptions {
   command: string[];
   cwd: string;
@@ -51,6 +56,10 @@ export interface SuperviseOptions {
   windowsHide?: boolean | undefined;
   /** Trusted pre-spawn observation seam for tests; never supplied by callers. */
   spawn?: SuperviseSpawn | undefined;
+  /** Trusted noninteractive Windows stop-settlement seam for tests only. */
+  windowsStoppedGuard?:
+    | ((pid: number) => WindowsStoppedGuard | null)
+    | undefined;
   timeoutMs?: number | undefined;
   onLine: (line: string) => void;
   /** Optional protocol bound, including output that never sends a newline. */
@@ -400,7 +409,9 @@ export function supervise(
         : process.platform === "win32"
           ? guardSuspendedWindowsProcess(proc.pid)
           : guardRequiredTree(proc.pid)
-      : guardTree(proc.pid);
+      : process.platform === "win32" && options.windowsStoppedGuard
+        ? options.windowsStoppedGuard(proc.pid)
+        : guardTree(proc.pid);
   let guard: ReturnType<typeof guardTree> | null;
   try {
     guard = selectGuard();

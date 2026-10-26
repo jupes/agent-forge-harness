@@ -392,6 +392,72 @@ describe("supervise", () => {
     expect((await child.done).stopped).toBe(true);
   });
 
+  test("Windows Stop stays pending until its owned-job settlement finishes", async () => {
+    if (process.platform !== "win32") return;
+    let releaseSettlement!: () => void,
+      enterSettlement!: () => void,
+      stopSettled = false,
+      guardReleased = false;
+    const settlement = new Promise<void>((resolve) => {
+      releaseSettlement = resolve;
+    });
+    const entered = new Promise<void>((resolve) => {
+      enterSettlement = resolve;
+    });
+    const child = supervise({
+      command: hang,
+      cwd: process.cwd(),
+      env: { PATH: process.env.PATH ?? "" },
+      onLine: () => undefined,
+      windowsStoppedGuard: () => ({
+        release() {
+          guardReleased = true;
+        },
+        async settleStopped() {
+          enterSettlement();
+          await settlement;
+        },
+      }),
+    });
+    const stopping = child.stop("test").then(() => {
+      stopSettled = true;
+    });
+    try {
+      const first = await Promise.race([
+        entered.then(() => "settlement" as const),
+        stopping.then(() => "stop-settled" as const),
+        Bun.sleep(5000).then(() => "deadline" as const),
+      ]);
+      expect(first).toBe("settlement");
+      expect(stopSettled).toBe(false);
+    } finally {
+      releaseSettlement();
+    }
+    await stopping;
+    expect(stopSettled).toBe(true);
+    expect(guardReleased).toBe(true);
+  });
+
+  test("Windows Stop refuses when its guard cannot prove descendant settlement", async () => {
+    if (process.platform !== "win32") return;
+    let guardReleased = false;
+    const child = supervise({
+      command: hang,
+      cwd: process.cwd(),
+      env: { PATH: process.env.PATH ?? "" },
+      onLine: () => undefined,
+      windowsStoppedGuard: () => ({
+        release() {
+          guardReleased = true;
+        },
+      }),
+    });
+    await expect(child.stop("test")).rejects.toThrow(
+      "Windows owned process cleanup could not be confirmed.",
+    );
+    expect(guardReleased).toBe(true);
+  });
+
   test("delivers stdout one line at a time, including a final unterminated line", async () => {
     const lines: string[] = [];
     const child = supervise({
