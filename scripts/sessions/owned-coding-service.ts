@@ -32,7 +32,10 @@ import {
 import { resolveCheckout } from "../ledger/workspace";
 import { workspaceKey } from "../projects/scope";
 import { createOwnedSessionService, type SessionRuntime } from "./admission";
-import { createCodexChatForkCoordinator } from "./codex-chat-fork-coordinator";
+import {
+  CodexChatForkOriginalConflict,
+  createCodexChatForkCoordinator,
+} from "./codex-chat-fork-coordinator";
 import { CodexChatForkJournalError } from "./codex-chat-fork-journal";
 import { createCodexOwnedChatService } from "./codex-chat-owned-admission";
 import { parseCodexChatDecision } from "./codex-chat-owned-protocol";
@@ -429,6 +432,11 @@ export function createOwnedCodingSessionService(options: {
         return forkMetadata(original);
       } catch (error) {
         if (error instanceof ConversationError) throw error;
+        if (error instanceof CodexChatForkOriginalConflict)
+          throw new ConversationError(
+            409,
+            "This Fork UUID belongs to another immutable source.",
+          );
         if (error instanceof CodexChatForkJournalError)
           throw forkJournalFailure(error);
         throw new ConversationError(
@@ -462,7 +470,9 @@ export function createOwnedCodingSessionService(options: {
       try {
         const [startRows, forkRows] = await Promise.all([
           identities.list(scopeFor(projectId)),
-          Promise.resolve().then(() => forkCoordinator.listOriginals(projectId)),
+          Promise.resolve().then(() =>
+            forkCoordinator.listOriginals(projectId),
+          ),
         ]);
         const operations = [
           ...startRows.map((row) => ({

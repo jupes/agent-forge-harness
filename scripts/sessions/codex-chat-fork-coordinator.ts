@@ -54,6 +54,14 @@ export type CodexChatForkCoordinatorResult =
       reason: "unknown-native-outcome" | "invalid-native-outcome";
     };
 
+/** A known immutable UUID/source collision, distinct from uncertain failures. */
+export class CodexChatForkOriginalConflict extends Error {
+  constructor() {
+    super("This Fork UUID belongs to another immutable source.");
+    this.name = "CodexChatForkOriginalConflict";
+  }
+}
+
 function same(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
@@ -68,6 +76,7 @@ function verifiedCaptureForSource(
     throughNativeTurnId: raw.lastTurnId,
     protocolVersion: raw.cliVersion,
   };
+
   if (
     !codexNativeUuidSchema.safeParse(raw.threadId).success ||
     raw.threadId === source.parent.threadId ||
@@ -347,9 +356,7 @@ export function createCodexChatForkCoordinator(
               existing.throughTurnRequestId !==
                 intent.data.throughTurnRequestId)
           )
-            throw new Error(
-              "This Fork UUID belongs to another immutable source.",
-            );
+            throw new CodexChatForkOriginalConflict();
           if (existing?.state === "linked") return linkedResult(existing);
           if (existing?.state === "held")
             return { state: "held", reason: existing.heldReason } as const;
