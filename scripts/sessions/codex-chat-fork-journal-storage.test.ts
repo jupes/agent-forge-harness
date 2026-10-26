@@ -8,6 +8,7 @@ import {
   readFileSync,
   rmSync,
   symlinkSync,
+  truncateSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -79,14 +80,25 @@ function fakeAcl(): WindowsAcl {
   };
 }
 
-function journal(root: string, home: string) {
+function journal(root: string, home: string, acl = fakeAcl()) {
   return createCodexChatForkJournal({
     root,
     home,
     now: () => "2026-10-25T00:00:00.000Z",
     createChildAppSessionId: () => childSessionId,
-    storageOptions: { platform: "win32", acl: fakeAcl() },
+    storageOptions: { platform: "win32", acl },
   });
+}
+
+function unprotectedReading(target: "directory" | "file"): AclReading {
+  return {
+    ...privateReading(target),
+    protected: false,
+    entries: [
+      ...(privateReading(target).entries ?? []),
+      { type: 0, flags: 0x10, mask: 1, sid: "S-1-1-0" },
+    ],
+  };
 }
 
 function ref(record: CodexChatForkOriginal) {
@@ -258,6 +270,106 @@ test("existing inherited read access is refused before mutation or SQLite", asyn
   expect(enteredWork).toBe(false);
   expect(after.ino).toBe(before.ino);
   expect(after.mtimeNs).toBe(before.mtimeNs);
+});
+
+test("a peer waits read-only for the same empty mutex to become private", async () => {
+  const root = scratch.make("codex-fork-root-"),
+    home = join(scratch.make("codex-fork-profile-"), "profile"),
+    acl = fakeAcl();
+  mkdirSync(home, { recursive: true });
+  await createCodexChatForkJournalStorage(home, {
+    platform: "win32",
+    acl,
+  }).exclusive(async () => undefined);
+  const mutex = join(
+      home,
+      CODEX_CHAT_FORK_JOURNAL_DIRECTORY,
+      "locks",
+      "journal.sqlite",
+    ),
+    strictRead = acl.read.bind(acl);
+  truncateSync(mutex);
+  const before = lstatSync(mutex, { bigint: true });
+  let ready = false,
+    repairs = 0;
+  acl.read = (path) =>
+    path === mutex && !ready ? unprotectedReading("file") : strictRead(path);
+  const apply = acl.apply.bind(acl);
+  acl.apply = (path, target) => {
+    if (path === mutex) repairs++;
+    apply(path, target);
+  };
+  setTimeout(() => {
+    ready = true;
+  }, 40);
+
+  const first = journal(root, home, acl),
+    second = journal(root, home, acl),
+    reserved = await Promise.all([
+      first.reserve(projectId, parentSessionId, {
+        requestId,
+        throughTurnRequestId,
+      }),
+      second.reserve(projectId, parentSessionId, {
+        requestId,
+        throughTurnRequestId,
+      }),
+    ]);
+
+  expect(reserved[0]).toEqual(reserved[1]);
+  expect(reserved[0].state).toBe("reserved");
+  expect(
+    readdirSync(join(home, CODEX_CHAT_FORK_JOURNAL_DIRECTORY, "events")),
+  ).toHaveLength(1);
+  expect(repairs).toBe(0);
+  const after = lstatSync(mutex, { bigint: true });
+  expect(after.ino).toBe(before.ino);
+  expect(after.size).toBeGreaterThan(0n);
+});
+
+test("a mutex that stays non-private times out untouched before callback", async () => {
+  const home = join(scratch.make("codex-fork-profile-"), "profile"),
+    acl = fakeAcl();
+  mkdirSync(home, { recursive: true });
+  await createCodexChatForkJournalStorage(home, {
+    platform: "win32",
+    acl,
+  }).exclusive(async () => undefined);
+  const mutex = join(
+      home,
+      CODEX_CHAT_FORK_JOURNAL_DIRECTORY,
+      "locks",
+      "journal.sqlite",
+    ),
+    strictRead = acl.read.bind(acl);
+  truncateSync(mutex);
+  const before = lstatSync(mutex, { bigint: true });
+  let repairs = 0,
+    enteredWork = false;
+  acl.read = (path) =>
+    path === mutex ? unprotectedReading("file") : strictRead(path);
+  const apply = acl.apply.bind(acl);
+  acl.apply = (path, target) => {
+    if (path === mutex) repairs++;
+    apply(path, target);
+  };
+  const storage = createCodexChatForkJournalStorage(home, {
+    platform: "win32",
+    acl,
+    waitMs: 50,
+  });
+
+  await expect(
+    storage.exclusive(async () => {
+      enteredWork = true;
+    }),
+  ).rejects.toThrow("did not become owner-only");
+  const after = lstatSync(mutex, { bigint: true });
+  expect(enteredWork).toBe(false);
+  expect(repairs).toBe(0);
+  expect(after.ino).toBe(before.ino);
+  expect(after.mtimeNs).toBe(before.mtimeNs);
+  expect(readFileSync(mutex)).toHaveLength(0);
 });
 
 test("a junction ancestor is refused before creating any nested profile component", async () => {

@@ -331,6 +331,119 @@ export function createCodexChatForkJournalStorage(
     return info;
   };
 
+  const waitForPrivateMutex = async (
+    expectedRoot: FileIdentity,
+    expectedLocks: FileIdentity,
+    expectedMutex?: FileIdentity,
+  ): Promise<FileIdentity> => {
+    if ((options.platform ?? process.platform) !== "win32")
+      throw new Error(
+        "An existing non-private Fork mutex cannot be waited on.",
+      );
+    const initial = assertPlainLockFile(mutex, expectedMutex),
+      mutexIdentity = identity(initial),
+      acl = options.acl ?? nativeWindowsAcl(),
+      owner = acl.read(mutex).owner;
+    if (
+      !trustedNewSidecarOwner(
+        owner,
+        acl.userSid(),
+        acl.defaultOwnerSid?.() ?? acl.userSid(),
+      )
+    )
+      throw new Error(
+        "The existing Fork mutex is not a safe initialization candidate.",
+      );
+    let initiallyPrivate = false;
+    try {
+      assertPrivateMetadata(mutex, "file", initial, options);
+      initiallyPrivate = true;
+    } catch (error) {
+      if (initial.size !== 0n)
+        throw new Error(
+          "The existing Fork mutex is not a safe initialization candidate.",
+          { cause: error },
+        );
+    }
+    if (initiallyPrivate) {
+      assertPlainLockFile(mutex, mutexIdentity);
+      assertPrivateMetadata(
+        root,
+        "directory",
+        lstatSync(root, { bigint: true }),
+        options,
+      );
+      assertPrivateMetadata(
+        locks,
+        "directory",
+        lstatSync(locks, { bigint: true }),
+        options,
+      );
+      assertStableDirectory(root, expectedRoot);
+      assertStableDirectory(locks, expectedLocks);
+      return mutexIdentity;
+    }
+
+    const requestedWait = options.waitMs ?? 1_000,
+      waitMs = Number.isFinite(requestedWait)
+        ? Math.max(0, Math.min(requestedWait, 1_000))
+        : 1_000,
+      deadline = Date.now() + waitMs;
+    for (;;) {
+      assertStableDirectory(root, expectedRoot);
+      assertStableDirectory(locks, expectedLocks);
+      const info = assertPlainLockFile(mutex, mutexIdentity),
+        currentOwner = acl.read(mutex).owner;
+      if (
+        !trustedNewSidecarOwner(
+          currentOwner,
+          acl.userSid(),
+          acl.defaultOwnerSid?.() ?? acl.userSid(),
+        )
+      )
+        throw new Error(
+          "The existing Fork mutex changed during initialization.",
+        );
+      let isPrivate = false;
+      try {
+        assertPrivateMetadata(mutex, "file", info, options);
+        isPrivate = true;
+      } catch (error) {
+        if (info.size !== 0n)
+          throw new Error(
+            "The unprotected Fork mutex changed during initialization.",
+            {
+              cause: error,
+            },
+          );
+        if (Date.now() >= deadline)
+          throw new Error(
+            "The existing Fork mutex did not become owner-only before the initialization deadline.",
+            { cause: error },
+          );
+      }
+      if (isPrivate) {
+        assertPlainLockFile(mutex, mutexIdentity);
+        assertPrivateMetadata(
+          root,
+          "directory",
+          lstatSync(root, { bigint: true }),
+          options,
+        );
+        assertPrivateMetadata(
+          locks,
+          "directory",
+          lstatSync(locks, { bigint: true }),
+          options,
+        );
+        assertStableDirectory(root, expectedRoot);
+        assertStableDirectory(locks, expectedLocks);
+        return mutexIdentity;
+      }
+      await new Promise<void>((resolveWait) => setTimeout(resolveWait, 10));
+    }
+  };
+
   const secureNewSidecar = (
     path: string,
     expected: FileIdentity,
@@ -470,19 +583,42 @@ export function createCodexChatForkJournalStorage(
     inspectLockMetadata();
   };
 
-  const ensureMutex = (
+  const ensureMutex = async (
     rootIdentity: FileIdentity,
     lockIdentity: FileIdentity,
-  ): MutexState => {
+  ): Promise<MutexState> => {
     assertStableDirectory(root, rootIdentity);
     assertStableDirectory(locks, lockIdentity);
-    // Existing files are verified as-is before attempting exclusive creation.
-    inspectLockMetadata(new Map(), false, false);
+    // A peer can observe an owner's empty mutex between exclusive creation and
+    // ACL protection. Wait only for that exact, empty, owned file to settle.
+    const existingNames = directoryNames(locks, MUTEX_ENTRIES.size + 1).sort();
+    let readyMutex: FileIdentity | undefined;
+    if (existingNames.length === 1 && existingNames[0] === MUTEX_FILE) {
+      const info = assertPlainLockFile(mutex),
+        existingIdentity = identity(info);
+      try {
+        assertPrivateMetadata(mutex, "file", info, options);
+        readyMutex = existingIdentity;
+      } catch {
+        if ((options.platform ?? process.platform) !== "win32")
+          throw new Error("The existing Fork mutex is not owner-only.");
+        readyMutex = await waitForPrivateMutex(
+          rootIdentity,
+          lockIdentity,
+          existingIdentity,
+        );
+      }
+    } else {
+      inspectLockMetadata(new Map(), false, false);
+    }
     let descriptor: number | undefined, expectedMutex: FileIdentity | undefined;
-    try {
-      descriptor = openSync(mutex, "wx", 0o600);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    if (readyMutex === undefined) {
+      try {
+        descriptor = openSync(mutex, "wx", 0o600);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        readyMutex = await waitForPrivateMutex(rootIdentity, lockIdentity);
+      }
     }
     if (descriptor !== undefined) {
       try {
@@ -541,7 +677,7 @@ export function createCodexChatForkJournalStorage(
     }
     assertStableDirectory(root, rootIdentity);
     assertStableDirectory(locks, lockIdentity);
-    const mutexInfo = assertPrivateLockFile(mutex, expectedMutex),
+    const mutexInfo = assertPrivateLockFile(mutex, expectedMutex ?? readyMutex),
       mutexIdentity = identity(mutexInfo),
       sidecars = inspectLockMetadata(new Map([[MUTEX_FILE, mutexIdentity]]));
     return { identity: mutexIdentity, sidecars };
@@ -818,7 +954,7 @@ export function createCodexChatForkJournalStorage(
       )
         throw new Error("The private Codex Fork root changed during setup.");
       checkRootLayout();
-      const mutexState = ensureMutex(rootIdentity, locksIdentity);
+      const mutexState = await ensureMutex(rootIdentity, locksIdentity);
       let knownSidecars = assertMutex(
         mutexState.identity,
         rootIdentity,
