@@ -76,7 +76,15 @@ export interface CodexChatForkMutexDiagnostic {
     | "creator-open"
     | "creator-protection"
     | "creator-readback"
-    | "sidecar-layout";
+    | "sidecar-layout"
+    | "exclusive-setup"
+    | "exclusive-ensure-mutex"
+    | "exclusive-pre-lock-assert"
+    | "exclusive-queue"
+    | "exclusive-in-lock-assert"
+    | "exclusive-in-lock-work"
+    | "exclusive-in-lock-finalize"
+    | "exclusive-post-lock-assert";
   fileSize: number | null;
   identityStable: boolean | null;
   failure: "privacy" | "identity" | "other";
@@ -1046,65 +1054,85 @@ export function createCodexChatForkJournalStorage(
         throw new Error(
           "The private Codex Fork journal lock cannot be nested.",
         );
-      ensureDirectoryChain(profile);
-      ensurePrivateHome(profile, undefined, homeOptions);
-      const rootIdentity = checkedDirectory(root),
-        eventsIdentity = checkedDirectory(events),
-        locksIdentity = checkedDirectory(locks);
-      if (
-        !sameIdentity(rootIdentity, identity(lstatSync(root, { bigint: true })))
-      )
-        throw new Error("The private Codex Fork root changed during setup.");
-      checkRootLayout();
-      const mutexState = await ensureMutex(rootIdentity, locksIdentity);
-      let knownSidecars = assertMutex(
-        mutexState.identity,
-        rootIdentity,
-        locksIdentity,
-        mutexState.sidecars,
-      );
-      const locked = await withQueueLock(
-        mutex,
-        async () => {
-          knownSidecars = assertMutex(
-            mutexState.identity,
+      let phase: CodexChatForkMutexDiagnostic["phase"] = "exclusive-setup",
+        expectedMutex: FileIdentity | undefined;
+      try {
+        ensureDirectoryChain(profile);
+        ensurePrivateHome(profile, undefined, homeOptions);
+        const rootIdentity = checkedDirectory(root),
+          eventsIdentity = checkedDirectory(events),
+          locksIdentity = checkedDirectory(locks);
+        if (
+          !sameIdentity(
             rootIdentity,
-            locksIdentity,
-            knownSidecars,
-            true,
-          );
-          if (insideExclusive)
-            throw new Error(
-              "The private Codex Fork mutex cannot be re-entered.",
-            );
-          insideExclusive = true;
-          try {
-            assertStableDirectory(events, eventsIdentity);
-            return await work();
-          } finally {
-            insideExclusive = false;
+            identity(lstatSync(root, { bigint: true })),
+          )
+        )
+          throw new Error("The private Codex Fork root changed during setup.");
+        checkRootLayout();
+        phase = "exclusive-ensure-mutex";
+        const mutexState = await ensureMutex(rootIdentity, locksIdentity);
+        expectedMutex = mutexState.identity;
+        phase = "exclusive-pre-lock-assert";
+        let knownSidecars = assertMutex(
+          mutexState.identity,
+          rootIdentity,
+          locksIdentity,
+          mutexState.sidecars,
+        );
+        phase = "exclusive-queue";
+        const locked = await withQueueLock(
+          mutex,
+          async () => {
+            phase = "exclusive-in-lock-assert";
             knownSidecars = assertMutex(
               mutexState.identity,
               rootIdentity,
               locksIdentity,
               knownSidecars,
+              true,
             );
-            assertStableDirectory(root, rootIdentity);
-            assertStableDirectory(events, eventsIdentity);
-            assertStableDirectory(locks, locksIdentity);
-          }
-        },
-        options.waitMs === undefined ? {} : { waitMs: options.waitMs },
-      );
-      if (!locked.ok)
-        throw new Error("The private Codex Fork profile mutex is unavailable.");
-      assertMutex(
-        mutexState.identity,
-        rootIdentity,
-        locksIdentity,
-        knownSidecars,
-      );
-      return locked.value;
+            if (insideExclusive)
+              throw new Error(
+                "The private Codex Fork mutex cannot be re-entered.",
+              );
+            insideExclusive = true;
+            try {
+              assertStableDirectory(events, eventsIdentity);
+              phase = "exclusive-in-lock-work";
+              return await work();
+            } finally {
+              insideExclusive = false;
+              phase = "exclusive-in-lock-finalize";
+              knownSidecars = assertMutex(
+                mutexState.identity,
+                rootIdentity,
+                locksIdentity,
+                knownSidecars,
+              );
+              assertStableDirectory(root, rootIdentity);
+              assertStableDirectory(events, eventsIdentity);
+              assertStableDirectory(locks, locksIdentity);
+            }
+          },
+          options.waitMs === undefined ? {} : { waitMs: options.waitMs },
+        );
+        if (!locked.ok)
+          throw new Error(
+            "The private Codex Fork profile mutex is unavailable.",
+          );
+        phase = "exclusive-post-lock-assert";
+        assertMutex(
+          mutexState.identity,
+          rootIdentity,
+          locksIdentity,
+          knownSidecars,
+        );
+        return locked.value;
+      } catch (error) {
+        reportMutexDiagnostic(phase, error, expectedMutex);
+        throw error;
+      }
     },
   };
 }
