@@ -46,7 +46,7 @@ const fields = {
 const name = z
   .string()
   .min(1)
-  .max(128)
+  .max(256)
   .refine((value) => !(value in Object.prototype));
 const smithSchema = z
   .object({ name, ...fields })

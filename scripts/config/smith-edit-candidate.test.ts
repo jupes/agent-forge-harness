@@ -188,6 +188,31 @@ test("unknown, prototype and immutable-name-invalid requests are refused", () =>
   );
 });
 
+test("an existing 129-character Smith name remains editable without changing its identity", () => {
+  const name = "n".repeat(129),
+    current: Smith = {
+      name,
+      provider: "future-provider",
+      model: "old-model",
+      effort: "custom",
+      enabled: true,
+      tags: ["rank:journeyman"],
+    },
+    wanted: Smith = { ...current, model: "new-model" },
+    workspace = Buffer.from(
+      `[smiths.${JSON.stringify(name)}]\nprovider = "future-provider"\nmodel = "old-model"\neffort = "custom"\nenabled = true\ntags = ["rank:journeyman"]\n`,
+    ),
+    candidate = accepted(
+      buildSmithEditCandidate(
+        request(wanted),
+        { ...sources, workspace: { ...sources.workspace, bytes: workspace } },
+        {},
+      ),
+    );
+  expect(candidate.smith.name).toBe(name);
+  expect(candidate.review.effectiveAfter).toEqual(wanted);
+});
+
 test("unsupported TOML and first-workspace env-pass changes are refused", () => {
   refused(
     buildSmithEditCandidate(
