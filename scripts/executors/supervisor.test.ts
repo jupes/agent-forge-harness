@@ -441,6 +441,63 @@ describe("supervise", () => {
     expect(guardReleased).toBe(true);
   });
 
+  test("Windows Stop cleanup after root exit does not consume the work timeout", async () => {
+    if (process.platform !== "win32") return;
+    const timeoutMs = 1000;
+    let releaseSettlement!: () => void, enterSettlement!: () => void;
+    const settlement = new Promise<void>((resolve) => {
+        releaseSettlement = resolve;
+      }),
+      entered = new Promise<void>((resolve) => {
+        enterSettlement = resolve;
+      });
+    let childPid = 0,
+      stopSettled = false;
+    const child = supervise({
+      command: hang,
+      cwd: process.cwd(),
+      env: { PATH: process.env.PATH ?? "" },
+      onLine: () => undefined,
+      timeoutMs,
+      windowsStoppedGuard: () => ({
+        release() {},
+        async settleStopped() {
+          killTree(childPid);
+          enterSettlement();
+          await settlement;
+        },
+      }),
+    });
+    childPid = child.pid;
+    const stopDeadline = Date.now() + timeoutMs + 100,
+      stopping = child.stop("explicit-stop").then(() => {
+        stopSettled = true;
+      });
+    try {
+      expect(
+        await Promise.race([
+          entered.then(() => "settling" as const),
+          Bun.sleep(2000).then(() => "deadline" as const),
+        ]),
+      ).toBe("settling");
+      expect(await goneWithin(child.pid, 1000)).toBe(true);
+      const remaining = stopDeadline - Date.now();
+      if (remaining > 0) await Bun.sleep(remaining);
+      expect(Date.now()).toBeGreaterThanOrEqual(stopDeadline);
+      expect(stopSettled).toBe(false);
+      releaseSettlement();
+      const result = await child.done;
+      expect(result.stopped).toBe(true);
+      expect(result.timedOut).toBe(false);
+      await stopping;
+    } finally {
+      releaseSettlement();
+      if (running(child.pid)) killTree(child.pid);
+      await child.done.catch(() => undefined);
+      await stopping.catch(() => undefined);
+    }
+  });
+
   test("Windows Stop refuses when its guard cannot prove descendant settlement", async () => {
     if (process.platform !== "win32") return;
     let guardTerminated = false,
