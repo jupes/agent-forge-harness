@@ -26,10 +26,10 @@ import {
   smithRoutingEditReceiptSchema,
 } from "./smith-routing-edit-journal-protocol";
 import {
-  SMITH_ROUTING_EDIT_LIMITS,
   smithRoutingEditPreviewSchema,
   smithRoutingEditRequestIdSchema,
   smithRoutingEditRequestSchema,
+  smithRoutingEditSuccessEnvelopeWithin,
 } from "./smith-routing-edit-protocol";
 
 export interface SmithRoutingEditJournalWriter {
@@ -402,12 +402,7 @@ export function createSmithRoutingEditJournalCore(
             original,
             result,
           };
-          const text = JSON.stringify(value);
-          if (
-            text === undefined ||
-            new TextEncoder().encode(text).byteLength >
-              SMITH_ROUTING_EDIT_LIMITS.responseBytes
-          )
+          if (!smithRoutingEditSuccessEnvelopeWithin(value))
             throw new ReceiptTooLarge();
           const checked = smithRoutingEditReceiptSchema.safeParse(value);
           if (!checked.success) held();

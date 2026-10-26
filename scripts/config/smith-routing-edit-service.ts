@@ -23,6 +23,7 @@ import {
   smithRoutingEditPreviewRequestSchema,
   smithRoutingEditPreviewSchema,
   smithRoutingEditRequestSchema,
+  smithRoutingEditSuccessEnvelopeWithin,
 } from "./smith-routing-edit-protocol";
 import {
   type ConfigPairedRevision,
@@ -111,13 +112,7 @@ function previewFrom(
     },
     review: candidate.review,
   };
-  let bytes: number;
-  try {
-    bytes = new TextEncoder().encode(JSON.stringify(value)).byteLength;
-  } catch {
-    throw new Error("The routing preview is invalid.");
-  }
-  if (bytes > SMITH_ROUTING_EDIT_LIMITS.responseBytes)
+  if (!smithRoutingEditSuccessEnvelopeWithin(value))
     throw new PreviewTooLarge();
   const checked = smithRoutingEditPreviewSchema.safeParse(value);
   if (!checked.success) throw new Error("The routing preview is invalid.");

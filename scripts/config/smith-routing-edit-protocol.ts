@@ -30,6 +30,14 @@ function encodedWithin(value: unknown, max: number): boolean {
   }
 }
 
+/** Count the exact successful HTTP envelope, not only its data payload. */
+export function smithRoutingEditSuccessEnvelopeWithin(
+  value: unknown,
+  max = SMITH_ROUTING_EDIT_LIMITS.responseBytes,
+): boolean {
+  return encodedWithin({ ok: true, data: value, error: null }, max);
+}
+
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
 export const smithRoutingEditRequestIdSchema = z
   .uuid()
@@ -175,9 +183,7 @@ export const smithRoutingEditPreviewSchema: z.ZodType<SmithRoutingEditPreview> =
       review: smithRoutingEditReviewSchema,
     })
     .strict()
-    .refine((preview) =>
-      encodedWithin(preview, SMITH_ROUTING_EDIT_LIMITS.responseBytes),
-    );
+    .refine((preview) => smithRoutingEditSuccessEnvelopeWithin(preview));
 
 /** Stable versioned original bytes; list order and duplicate bench rows are significant. */
 export function canonicalSmithRoutingEditRequest(raw: unknown): string {

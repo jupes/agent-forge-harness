@@ -17,6 +17,7 @@ import {
   smithRoutingEditPreviewSchema,
   smithRoutingEditRequestIdSchema,
   smithRoutingEditRequestSchema,
+  smithRoutingEditSuccessEnvelopeWithin,
 } from "./smith-routing-edit-protocol";
 
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
@@ -218,10 +219,8 @@ export const smithRoutingEditReceiptSchema = z
     )
       fail("The routing publication differs from its reviewed candidate.");
   })
-  .refine(
-    (value) =>
-      new TextEncoder().encode(JSON.stringify(value)).byteLength <=
-      SMITH_ROUTING_EDIT_LIMITS.responseBytes,
+  .refine((value) =>
+    smithRoutingEditSuccessEnvelopeWithin(value),
   ) satisfies z.ZodType<SmithRoutingEditReceipt>;
 
 export function parseSmithRoutingEditJournalRecord(text: string): unknown {
