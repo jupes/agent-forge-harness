@@ -59,14 +59,14 @@ const attemptReplySchema = z
           "0199a213-81c0-7800-8aa1-bbab2a035a58",
         ]),
         state: z.literal("reserved"),
-        storageErrors: z.array(z.string().max(500)).max(1),
+        storageErrors: z.array(z.string().max(160)).max(8),
       })
       .strict(),
     z
       .object({
         ok: z.literal(false),
         reason: z.enum(["conflict", "held", "unexpected"]),
-        storageErrors: z.array(z.string().max(500)).max(1),
+        storageErrors: z.array(z.string().max(160)).max(8),
       })
       .strict(),
   ]);
@@ -204,20 +204,19 @@ function journalImport(root: string, home: string): string {
   return `
     ${imports()}
     import { createCodexChatForkJournalStorage } from ${JSON.stringify(join(import.meta.dir, "codex-chat-fork-journal-storage.ts"))};
-    const storage = createCodexChatForkJournalStorage(${JSON.stringify(home)});
     const storageErrors = [];
+    const storage = createCodexChatForkJournalStorage(${JSON.stringify(home)}, {
+      onMutexDiagnostic(diagnostic) {
+        storageErrors.push(
+          [diagnostic.phase, diagnostic.fileSize ?? "unknown", diagnostic.identityStable ?? "unknown", diagnostic.failure].join("|").slice(0, 160),
+        );
+      },
+    });
     const tracedStorage = {
       listEvents: () => storage.listEvents(),
       read: (entry, maxBytes) => storage.read(entry, maxBytes),
       writeOnce: (name, text) => storage.writeOnce(name, text),
-      async exclusive(work) {
-        try { return await storage.exclusive(work); }
-        catch (error) {
-          const message = error instanceof Error ? error.message : String(error);
-          storageErrors.push(message.replaceAll(${JSON.stringify(home)}, "[profile]").replaceAll(${JSON.stringify(root)}, "[workspace]").slice(0, 500));
-          throw error;
-        }
-      },
+      exclusive: (work) => storage.exclusive(work),
     };
     const journal = createCodexChatForkJournal({root:${JSON.stringify(root)},home:${JSON.stringify(home)},storage:tracedStorage});`;
 }

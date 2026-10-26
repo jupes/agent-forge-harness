@@ -63,12 +63,17 @@ jobs:
         env:
           AGENT_FORGE_TEST_PROBE_DIAGNOSTICS: "1"
 
-  # The browser suite (tests/e2e). Its config starts the hearth and the
-  # dashboard itself; see tests/e2e/AGENTS.md for what a green run does and
-  # does not prove.
+  # The browser suites (tests/e2e and tests/desktop-e2e). Their configs start
+  # the hearth and dashboard; see tests/e2e/AGENTS.md for the isolated fixtures
+  # and what a green run does and does not prove.
   e2e:
     name: Playwright (shard ${{ matrix.shard }}/3)
     runs-on: ubuntu-latest
+    # Match the locked @playwright/test version and avoid per-run apt/browser
+    # downloads. The image contains browser binaries and system dependencies.
+    container:
+      image: mcr.microsoft.com/playwright:v1.63.0-noble@sha256:eff16c30e6f3f4af0a03fa4b706120d5e9b0891c344a27d64559aff5900a4a27
+      options: --init --ipc=host
     timeout-minutes: 20
     strategy:
       fail-fast: false
@@ -76,6 +81,11 @@ jobs:
         shard: [1, 2, 3]
     steps:
       - uses: actions/checkout@v4
+      - name: Install unzip required by setup-bun
+        timeout-minutes: 2
+        run: |
+          apt-get update -o Acquire::Retries=2 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends -o Acquire::Retries=2 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 unzip
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: ${{ env.BUN_VERSION }}
@@ -89,28 +99,8 @@ jobs:
           path: ~/.bun/install/cache
           key: bun-${{ runner.os }}-${{ env.BUN_VERSION }}-${{ hashFiles('bun.lock') }}
       - run: bun install --frozen-lockfile
-      # Fails when the version comes back empty: that would give every release
-      # the same cache key.
-      - name: Read the installed Playwright version
-        id: playwright
-        run: |
-          version="$(bunx playwright --version | awk '{print $2}')"
-          test -n "$version"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-      # Keyed by what is installed (the headless shell only), so a change of
-      # version or of install flags cannot hit a cache without the browser.
-      - name: Cache the browser
-        id: browser
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ steps.playwright.outputs.version }}-chromium-headless-shell
-      - name: Install the browser and its system libraries
-        if: steps.browser.outputs.cache-hit != 'true'
-        run: bunx playwright install --with-deps --only-shell chromium
-      - name: Install the browser's system libraries
-        if: steps.browser.outputs.cache-hit == 'true'
-        run: bunx playwright install-deps chromium
+      - name: Verify installed Playwright matches browser image
+        run: test "$(bunx playwright --version | awk '{print $2}')" = "1.63.0"
       # Shorter than the job's limit. The intent: a hung suite fails this step,
       # rather than the job being cancelled, so the upload below still runs.
       - name: Run the browser suite
@@ -124,12 +114,11 @@ jobs:
           name: playwright-test-results-${{ matrix.shard }}
           path: test-results/
           retention-days: 14
-      # The expanded 110+ journey suite can pass at the former 8-minute limit.
-      # Bound the whole suite separately; individual test deadlines stay fixed.
-      - name: Run desktop browser journeys
-        if: matrix.shard == 1
+      # Each isolated matrix job runs its disjoint desktop test shard. The
+      # complete suite stays required; worker/test concurrency remains serial.
+      - name: Run desktop browser journey shard
         timeout-minutes: 12
-        run: bun run verify:desktop
+        run: bun run verify:desktop -- --shard=${{ matrix.shard }}/3
       - name: Upload desktop traces and failure screenshots
         if: failure()
         uses: actions/upload-artifact@v4

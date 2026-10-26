@@ -5,14 +5,18 @@ import { join } from "node:path";
 import { parse } from "yaml";
 
 interface Step {
+  name?: string;
+  if?: string;
   uses?: string;
   run?: string;
+  "timeout-minutes"?: number;
   with?: Record<string, string>;
 }
 interface Job {
   name?: string;
   if?: string;
   needs?: string;
+  container?: { image: string; options?: string };
   strategy?: { "fail-fast": boolean; matrix: { shard: number[] } };
   steps: Step[];
 }
@@ -69,12 +73,24 @@ test("every dependency install first restores a Bun download cache keyed by OS, 
   }
 });
 
-test("the workflow declares a 3-shard matrix, per-shard artifacts and an aggregate that requires every shard's success", () => {
+test("the pinned browser image and every required serial suite remain bounded and aggregated", () => {
   const shards = workflow.jobs["e2e"];
+  expect(shards?.container).toEqual({
+    image:
+      "mcr.microsoft.com/playwright:v1.63.0-noble@sha256:eff16c30e6f3f4af0a03fa4b706120d5e9b0891c344a27d64559aff5900a4a27",
+    options: "--init --ipc=host",
+  });
   expect(shards?.strategy).toEqual({
     "fail-fast": false,
     matrix: { shard: [1, 2, 3] },
   });
+  expect(
+    shards?.steps.some(
+      (step) =>
+        step.name === "Verify installed Playwright matches browser image" &&
+        step.run?.includes('= "1.63.0"'),
+    ),
+  ).toBe(true);
   expect(
     shards?.steps.some(
       (step) =>
@@ -83,13 +99,79 @@ test("the workflow declares a 3-shard matrix, per-shard artifacts and an aggrega
   ).toBe(true);
   expect(
     shards?.steps.some(
-      (step) => step.with?.["path"] === "~/.cache/ms-playwright",
+      (step) =>
+        step.name === "Run the browser suite" &&
+        step.run === "bun run verify:ui -- --shard=${{ matrix.shard }}/3" &&
+        step["timeout-minutes"] === 12,
     ),
   ).toBe(true);
+  expect(
+    shards?.steps.some(
+      (step) =>
+        step.name === "Run desktop browser journey shard" &&
+        step.run ===
+          "bun run verify:desktop -- --shard=${{ matrix.shard }}/3" &&
+        step["timeout-minutes"] === 12,
+    ),
+  ).toBe(true);
+  for (const [name, run, minutes] of [
+    [
+      "Run desktop temporary Git worktree journey",
+      "bun run verify:desktop-worktrees",
+      4,
+    ],
+    [
+      "Run actual attended project shift journeys",
+      "bun run verify:desktop-shifts",
+      6,
+    ],
+    [
+      "Run desktop original Start recovery after an owned hearth restart",
+      "bun run verify:desktop-restart",
+      4,
+    ],
+  ] as const) {
+    expect(
+      shards?.steps.some(
+        (step) =>
+          step.name === name &&
+          step.run === run &&
+          step.if === "matrix.shard == 1" &&
+          step["timeout-minutes"] === minutes,
+      ),
+    ).toBe(true);
+  }
   expect(
     shards?.steps.find((step) => step.uses === "actions/upload-artifact@v4")
       ?.with?.["name"],
   ).toBe("playwright-test-results-${{ matrix.shard }}");
+  for (const [name, artifact] of [
+    [
+      "Upload desktop traces and failure screenshots",
+      "desktop-playwright-test-results-${{ matrix.shard }}",
+    ],
+    [
+      "Upload desktop worktree traces and failure screenshots",
+      "desktop-worktree-playwright-test-results",
+    ],
+    [
+      "Upload attended project shift traces and failure screenshots",
+      "desktop-shift-playwright-test-results",
+    ],
+    [
+      "Upload desktop restart traces and failure screenshots",
+      "desktop-restart-playwright-test-results",
+    ],
+  ] as const) {
+    expect(
+      shards?.steps.some(
+        (step) =>
+          step.name === name &&
+          step.uses === "actions/upload-artifact@v4" &&
+          step.with?.["name"] === artifact,
+      ),
+    ).toBe(true);
+  }
   const aggregate = workflow.jobs["playwright"];
   expect(aggregate?.name).toBe("Playwright");
   expect(aggregate?.needs).toBe("e2e");
