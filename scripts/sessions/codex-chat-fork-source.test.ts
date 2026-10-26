@@ -585,11 +585,7 @@ test("the filesystem coordinator captures once, adopts the exact child and resol
     });
     const later = parentStore.read(FIXTURE_PROJECT_ID).turns.at(-1);
     if (!later) throw Error("Missing later parent turn.");
-    await parentStore.start(
-      FIXTURE_PROJECT_ID,
-      later.requestId,
-      "fixture-owner",
-    );
+    await parentStore.start(FIXTURE_PROJECT_ID, later.requestId, randomUUID());
     const prefix = resolveCodexChatForkPrefix({
       origin: first.origin,
       parent,
@@ -607,6 +603,20 @@ test("the filesystem coordinator captures once, adopts the exact child and resol
       source.requestId,
     ]);
     expect(prefix.frames).toEqual(source.state.frames);
+    expect(() =>
+      resolveCodexChatForkPrefix({
+        origin: first.origin,
+        parent,
+        parentState: parentStore.read(FIXTURE_PROJECT_ID),
+        original:
+          journal.read(FIXTURE_PROJECT_ID, selectedRequestId) ??
+          (() => {
+            throw Error("Missing linked Fork original.");
+          })(),
+        child: { ...child, requestedModel: "other-model" },
+        childState: childStore.read(FIXTURE_PROJECT_ID),
+      }),
+    ).toThrow("invalid or conflicting");
     expect(
       await coordinator.fork({
         projectId: FIXTURE_PROJECT_ID,
@@ -615,6 +625,31 @@ test("the filesystem coordinator captures once, adopts the exact child and resol
       }),
     ).toEqual(first);
     expect(runtimeCalls).toBe(1);
+
+    const registry = createSessionRegistry(h.home),
+      registryRecords = registry.listAll(FIXTURE_PROJECT_ID),
+      tamperedChild = { ...child, requestedModel: "other-model" };
+    writeOwnerOnly(
+      sessionRegistryFile(h.home),
+      JSON.stringify({
+        version: 1,
+        records: registryRecords.map((record) =>
+          record.id === child.id ? tamperedChild : record,
+        ),
+      }),
+    );
+    await expect(
+      coordinator.fork({
+        projectId: FIXTURE_PROJECT_ID,
+        parentSessionId: parent.id,
+        request,
+      }),
+    ).rejects.toThrow("linked Fork child registry proof");
+    expect(runtimeCalls).toBe(1);
+    writeOwnerOnly(
+      sessionRegistryFile(h.home),
+      JSON.stringify({ version: 1, records: registryRecords }),
+    );
   } finally {
     await h.close();
   }

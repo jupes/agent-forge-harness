@@ -267,9 +267,17 @@ export function createCodexChatForkCoordinator(
     if (
       child.provider !== "codex" ||
       child.mode !== "chat" ||
+      child.workspace !== parent.workspace ||
+      child.repository !== parent.repository ||
+      child.worktree !== parent.worktree ||
+      child.beadId !== parent.beadId ||
+      child.smith !== parent.smith ||
+      child.requestedModel !== parent.requestedModel ||
+      child.requestedEffort !== parent.requestedEffort ||
       !same(child.origin, origin) ||
       child.requestId !== original.requestId ||
       child.requestHash !== original.requestHash ||
+      child.createdAt !== original.createdAt ||
       original.link.childAppSessionId !== child.id ||
       original.link.childRequestId !== child.requestId ||
       original.link.childRequestHash !== child.requestHash ||
@@ -573,8 +581,16 @@ export function resolveCodexChatForkPrefix(input: {
       workspaceKey(input.child.workspace) ||
     input.child.provider !== "codex" ||
     input.child.mode !== "chat" ||
+    input.child.workspace !== input.parent.workspace ||
+    input.child.repository !== input.parent.repository ||
+    input.child.worktree !== input.parent.worktree ||
+    input.child.beadId !== input.parent.beadId ||
+    input.child.smith !== input.parent.smith ||
+    input.child.requestedModel !== input.parent.requestedModel ||
+    input.child.requestedEffort !== input.parent.requestedEffort ||
     input.child.projectId !== origin.projectId ||
     input.child.id !== original.childAppSessionId ||
+    input.child.createdAt !== original.createdAt ||
     input.child.origin?.kind !== "codex-chat-fork" ||
     !same(input.child.origin, origin) ||
     original.projectId !== origin.projectId ||
