@@ -471,6 +471,38 @@ test("a proven NotSent refusal enables an exact Keeper retry and the original re
   client.dispose();
 });
 
+test("a protected original read can restore retryability from its durable NotSent identity after reload", async () => {
+  const sent: KeeperSessionStartRequest[] = [];
+  const durableNotSent = Object.assign(await savedStart(false), {
+    session: null,
+    retryAvailable: true,
+  });
+  const client = createKeeperSessionReviews({
+    identities: identityFixture().identities,
+    canWrite: () => true,
+    requestId: () => {
+      throw new Error("Recovery must retain the original UUID");
+    },
+    read: async () => durableNotSent,
+    post: async (_project, _proposal, input) => {
+      sent.push(structuredClone(input));
+      return { state: "unknown", message: "Check the original again" };
+    },
+    createWorktree: async () => ({ state: "refused", message: "No Git" }),
+    readWorktree: async () => null,
+    adopt: () => true,
+  });
+  const review = client.get(source, 4);
+  await client.open(review);
+  expect(review.view.retryStartAvailable).toBe(true);
+  expect(sent).toEqual([]);
+  await review.owner.retryStart(projectId);
+  expect(sent).toHaveLength(1);
+  expect(sent[0]).toEqual(durableNotSent.original);
+  expect(review.view.retryStartAvailable).toBe(false);
+  client.dispose();
+});
+
 test("confirmed original admission wins over a delayed malformed POST and foreign projects cannot edit or dispatch its draft", async () => {
   let finish:
     | ((value: import("../../docs/js/action-outcome").ActionOutcome) => void)
