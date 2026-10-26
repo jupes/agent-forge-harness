@@ -542,6 +542,7 @@ test("the filesystem coordinator captures once, adopts the exact child and resol
       expectedRevision: 0,
       text: "Later child-local turn",
       about: [],
+      codexChat: verifiedSource.prepared,
     });
     const repeated = await coordinator.fork({
       projectId: FIXTURE_PROJECT_ID,
@@ -562,6 +563,7 @@ test("the filesystem coordinator captures once, adopts the exact child and resol
       expectedRevision: source.state.revision,
       text: "Later parent turn",
       about: [],
+      codexChat: verifiedSource.prepared,
     });
     const later = parentStore.read(FIXTURE_PROJECT_ID).turns.at(-1);
     if (!later) throw Error("Missing later parent turn.");
@@ -970,6 +972,261 @@ test("captured local-link recovery refuses changed source settings without redis
         .listAll(FIXTURE_PROJECT_ID)
         .some((record) => record.id === reserved.childAppSessionId),
     ).toBe(false);
+  } finally {
+    await h.close();
+  }
+});
+
+test("a real captured original from failed local adoption retries only its sealed source", async () => {
+  const h = await startTestHearth();
+  try {
+    const source = await completeSource(h),
+      parent = persistCoordinatorSource(h, source),
+      verified = resolveCodexChatForkSource({
+        owner: parent,
+        state: source.state,
+        projectId: FIXTURE_PROJECT_ID,
+        conversationId: parent.id,
+        workspaceKey: h.workspace,
+        selectedTurnRequestId: source.requestId,
+      });
+    if (!verified.eligible) throw Error("Fixture source is not eligible.");
+    const requestId = randomUUID(),
+      childNativeThreadId = "0199a213-81c0-7800-8aa1-bbab2a035a61",
+      journal = createCodexChatForkJournal({ home: h.home, root: h.root });
+    let runtimeCalls = 0,
+      auditCalls = 0;
+    const coordinator = createCodexChatForkCoordinator({
+      root: h.root,
+      home: h.home,
+      runtime: {
+        async fork() {
+          runtimeCalls++;
+          const reserved = journal.read(FIXTURE_PROJECT_ID, requestId);
+          if (!reserved) throw Error("Missing reserved fixture original.");
+          const conflictPath = conversationFile(h.home, FIXTURE_PROJECT_ID, {
+            kind: "session",
+            projectId: FIXTURE_PROJECT_ID,
+            sessionId: reserved.childAppSessionId,
+          });
+          writeOwnerOnly(conflictPath, "preserve conflicting child data\n");
+          return {
+            parentThreadId: threadId,
+            lastTurnId: nativeTurnId,
+            threadId: childNativeThreadId,
+            forkedFromId: threadId,
+            cliVersion: version,
+            status: "idle" as const,
+            canAcceptDirectInput: true as const,
+            settings: {
+              model: verified.prepared.launch.model,
+              modelProvider: verified.sourceSettings.modelProvider,
+              serviceTier: verified.sourceSettings.serviceTier,
+              cwd: verified.prepared.canonicalCwd,
+              approvalPolicy: verified.prepared.launch.approvalPolicy,
+              approvalsReviewer: "user" as const,
+              sandbox: verified.prepared.launch.sandbox,
+              reasoningEffort: verified.sourceSettings.reasoningEffort,
+            },
+            runtimeWorkspaceRoots: [h.workspace],
+            writableRoots: [],
+          };
+        },
+      },
+      async validateScope() {},
+      async appendAudit() {
+        auditCalls++;
+      },
+    });
+    const input = {
+      projectId: FIXTURE_PROJECT_ID,
+      parentSessionId: parent.id,
+      request: { requestId, throughTurnRequestId: source.requestId },
+    };
+    await expect(coordinator.fork(input)).rejects.toThrow();
+    const captured = journal.read(FIXTURE_PROJECT_ID, requestId);
+    expect(captured?.state).toBe("captured");
+    expect(runtimeCalls).toBe(1);
+    expect(auditCalls).toBe(1);
+
+    const changed = structuredClone(source.state),
+      configFrame = changed.frames.find(
+        (frame) =>
+          frame.turnId === source.requestId &&
+          frame.event.kind === "coding-chat" &&
+          frame.event.event.kind === "configuration",
+      );
+    if (
+      !configFrame ||
+      configFrame.event.kind !== "coding-chat" ||
+      configFrame.event.event.kind !== "configuration"
+    )
+      throw Error("Missing selected native configuration fixture.");
+    configFrame.event.event.serviceTier = "priority";
+    writeOwnerOnly(
+      conversationFile(h.home, FIXTURE_PROJECT_ID, {
+        kind: "session",
+        projectId: FIXTURE_PROJECT_ID,
+        sessionId: parent.id,
+      }),
+      `${JSON.stringify(ownedCodingStateSchema.parse(changed))}\n`,
+    );
+    await expect(coordinator.fork(input)).rejects.toThrow("source changed");
+    expect(runtimeCalls).toBe(1);
+    expect(auditCalls).toBe(1);
+    expect(journal.read(FIXTURE_PROJECT_ID, requestId)?.state).toBe("captured");
+
+    const changedTurn = structuredClone(source.state),
+      selectedUser = changedTurn.frames.find(
+        (frame) =>
+          frame.turnId === source.requestId && frame.event.kind === "user",
+      ),
+      selectedTurn = changedTurn.turns.find(
+        (turn) => turn.requestId === source.requestId,
+      );
+    if (
+      !selectedUser ||
+      selectedUser.event.kind !== "user" ||
+      !("codexChat" in selectedUser.event) ||
+      !selectedUser.event.codexChat ||
+      !selectedTurn
+    )
+      throw Error("Missing exact selected app-turn fixture.");
+    selectedUser.event.text = "Changed selected request after capture";
+    selectedTurn.hash = conversationTurnHash({
+      text: selectedUser.event.text,
+      about: selectedUser.event.about,
+      codexChat: selectedUser.event.codexChat,
+    });
+    writeOwnerOnly(
+      conversationFile(h.home, FIXTURE_PROJECT_ID, {
+        kind: "session",
+        projectId: FIXTURE_PROJECT_ID,
+        sessionId: parent.id,
+      }),
+      `${JSON.stringify(ownedCodingStateSchema.parse(changedTurn))}\n`,
+    );
+    await expect(coordinator.fork(input)).rejects.toThrow("source changed");
+    expect(runtimeCalls).toBe(1);
+    expect(journal.read(FIXTURE_PROJECT_ID, requestId)?.state).toBe("captured");
+    expect(
+      createSessionRegistry(h.home)
+        .listAll(FIXTURE_PROJECT_ID)
+        .some((record) => record.id === captured?.childAppSessionId),
+    ).toBe(false);
+  } finally {
+    await h.close();
+  }
+});
+
+test("Fork adoption refuses a child ID already claimed by another owner", async () => {
+  const h = await startTestHearth();
+  try {
+    const source = await completeSource(h),
+      parent = persistCoordinatorSource(h, source),
+      verified = resolveCodexChatForkSource({
+        owner: parent,
+        state: source.state,
+        projectId: FIXTURE_PROJECT_ID,
+        conversationId: parent.id,
+        workspaceKey: h.workspace,
+        selectedTurnRequestId: source.requestId,
+      });
+    if (!verified.eligible) throw Error("Fixture source is not eligible.");
+    const selected = source.state.turns[0];
+    if (!selected) throw Error("Missing selected source turn.");
+    const requestId = randomUUID(),
+      seal = {
+        parentRequestHash: parent.requestHash,
+        parentTurnHash: selected.hash,
+        parentNativeThreadId: verified.parent.threadId,
+        throughNativeTurnId: verified.lastTurnId,
+        sourceSettingsHash: codexChatForkSourceSettingsHash(
+          verified.sourceSettings,
+        ),
+      },
+      journal = createCodexChatForkJournal({ home: h.home, root: h.root }),
+      reserved = await journal.reserve(
+        FIXTURE_PROJECT_ID,
+        parent.id,
+        { requestId, throughTurnRequestId: source.requestId },
+        seal,
+      ),
+      ref = {
+        projectId: reserved.projectId,
+        workspaceKey: reserved.workspaceKey,
+        requestId: reserved.requestId,
+        requestHash: reserved.requestHash,
+        parentSessionId: reserved.parentSessionId,
+        throughTurnRequestId: reserved.throughTurnRequestId,
+        protocolVersion: reserved.protocolVersion,
+        childAppSessionId: reserved.childAppSessionId,
+        sourceSeal: reserved.sourceSeal,
+      },
+      attempt = await journal.markAttempted(ref);
+    if (!attempt.mayDispatch) throw Error("Fixture attempt was not claimed.");
+    const childNativeThreadId = "0199a213-81c0-7800-8aa1-bbab2a035a61",
+      capture = {
+        parentNativeThreadId: verified.parent.threadId,
+        childNativeThreadId,
+        throughNativeTurnId: verified.lastTurnId,
+        protocolVersion: CODEX_CHAT_FORK_PROTOCOL_VERSION,
+      },
+      original = await journal.capture(ref, capture);
+    if (original.state !== "captured") throw Error("Fixture capture failed.");
+    const child = {
+        provider: "codex" as const,
+        mode: "chat" as const,
+        workspace: parent.workspace,
+        repository: parent.repository,
+        worktree: parent.worktree,
+        ...(parent.beadId === undefined ? {} : { beadId: parent.beadId }),
+        smith: parent.smith,
+        requestedModel: parent.requestedModel,
+        requestedEffort: parent.requestedEffort,
+        origin: {
+          kind: "codex-chat-fork" as const,
+          projectId: FIXTURE_PROJECT_ID,
+          parentSessionId: parent.id,
+          throughTurnRequestId: source.requestId,
+          parentTurnHash: selected.hash,
+          parentNativeThreadId: capture.parentNativeThreadId,
+          throughNativeTurnId: capture.throughNativeTurnId,
+          childNativeThreadId,
+          captureHash: codexChatForkCaptureHash(capture),
+          protocolVersion: CODEX_CHAT_FORK_PROTOCOL_VERSION,
+        },
+        projectId: FIXTURE_PROJECT_ID,
+        id: reserved.childAppSessionId,
+        requestId: reserved.requestId,
+        requestHash: reserved.requestHash,
+        createdAt: reserved.createdAt,
+      },
+      conflictingOwner = codexChatOwnedSessionSchema.parse({
+        ...child,
+        requestId: randomUUID(),
+        requestHash: "d".repeat(64),
+        origin: undefined,
+      });
+    const registry = createSessionRegistry(h.home, "codex", "chat"),
+      records = registry.listAll(FIXTURE_PROJECT_ID);
+    writeOwnerOnly(
+      sessionRegistryFile(h.home),
+      JSON.stringify({
+        version: 1,
+        records: [...records, conflictingOwner],
+      }),
+    );
+    let bootstrapCalls = 0;
+    await expect(
+      registry.adoptForkChild(child, parent, original, async () => {
+        bootstrapCalls++;
+      }),
+    ).rejects.toMatchObject({ status: 409 });
+    expect(bootstrapCalls).toBe(0);
+    expect(
+      registry.read(FIXTURE_PROJECT_ID, reserved.childAppSessionId),
+    ).toEqual(conflictingOwner);
   } finally {
     await h.close();
   }
