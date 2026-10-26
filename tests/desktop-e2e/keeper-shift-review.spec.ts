@@ -1,6 +1,6 @@
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { expect, test } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
 import { keeperProposalPageSchema } from "../../scripts/keeper/proposal-protocol";
 import {
   keeperShiftStartHashes,
@@ -18,6 +18,33 @@ const conversation = join(
   "conversations",
   `keeper-${alpha.id}.json`,
 );
+
+async function captureMockedKeeperShiftProof(
+  page: Page,
+  label: string,
+  fixtureIds: string[],
+) {
+  if (process.env["AGENT_FORGE_CAPTURE_KEEPER_SHIFT_PROOF"] !== "1") return;
+  const screenshot = test.info().outputPath(`mocked-keeper-shift-${label}.png`);
+  await page.screenshot({
+    path: screenshot,
+    fullPage: true,
+    mask: [
+      page.getByText(
+        /(?:proposal-)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i,
+      ),
+      page.getByText(
+        /[A-Za-z]:\\[^<>"|?*]+|\/(?:Users|home|tmp|var)\/[^<>"|?*]+/i,
+      ),
+      ...fixtureIds.map((id) => page.getByText(id, { exact: false })),
+    ],
+    maskColor: "#333333",
+  });
+  await test.info().attach(`Mocked Keeper Shift ${label}`, {
+    path: screenshot,
+    contentType: "image/png",
+  });
+}
 
 test.beforeEach(() => {
   seedProjects();
@@ -318,6 +345,12 @@ test("recorded Shift cards reopen the saved original after reload from Keeper an
     page.getByRole("article", { name: "Review a bounded Shift", exact: true }),
   ).toContainText("Fixture original is done.");
   expect(proposalPage.proposals[0]?.proposal).toEqual(proposal);
+  await captureMockedKeeperShiftProof(page, "full-keeper", [
+    requestId,
+    sourceRequestId,
+    proposal.id,
+    workspace,
+  ]);
 
   for (const nextPhase of ["approved", "unknown", "failed", "done"] as const) {
     phase = nextPhase;
@@ -351,6 +384,13 @@ test("recorded Shift cards reopen the saved original after reload from Keeper an
               ? 5
               : 7,
       );
+    if (nextPhase === "approved")
+      await captureMockedKeeperShiftProof(page, "review-dialog", [
+        requestId,
+        sourceRequestId,
+        proposal.id,
+        workspace,
+      ]);
     await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
 
     await page
@@ -365,6 +405,13 @@ test("recorded Shift cards reopen the saved original after reload from Keeper an
       exact: true,
     });
     await expect(drawerCard).toContainText(`Fixture original is ${nextPhase}.`);
+    if (nextPhase === "approved")
+      await captureMockedKeeperShiftProof(page, "drawer", [
+        requestId,
+        sourceRequestId,
+        proposal.id,
+        workspace,
+      ]);
     await drawerCard
       .getByRole("button", { name: "Review original Start", exact: true })
       .click();
@@ -395,12 +442,4 @@ test("recorded Shift cards reopen the saved original after reload from Keeper an
     protectedReads.every((url) => url.includes(encodeURIComponent(requestId))),
   ).toBe(true);
   expect(starts).toEqual([]);
-  if (process.env["AGENT_FORGE_CAPTURE_KEEPER_SHIFT_PROOF"] === "1") {
-    const screenshot = test.info().outputPath("keeper-shift-recorded-card.png");
-    await page.screenshot({ path: screenshot, fullPage: true });
-    await test.info().attach("Recorded Keeper Shift card", {
-      path: screenshot,
-      contentType: "image/png",
-    });
-  }
 });
