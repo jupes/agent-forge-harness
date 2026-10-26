@@ -10,7 +10,7 @@ export interface SessionStartIdentityMetadata {
   requestHash: string;
   provider: "claude" | "codex" | "gemini";
   mode: "task" | "chat";
-  state: "reserved" | "attempted" | "admitted" | "retired";
+  state: "reserved" | "attempted" | "not-sent" | "admitted" | "retired";
 }
 
 export interface SessionStartIdentityPage {

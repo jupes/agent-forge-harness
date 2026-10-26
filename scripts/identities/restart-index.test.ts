@@ -17,6 +17,7 @@ import { dirname, join } from "node:path";
 import type { AclReading, AclTarget, WindowsAcl } from "../hearth/acl-windows";
 import { FILE_ALL_ACCESS, SYSTEM_SID } from "../hearth/acl-windows";
 import { scratchDirs } from "../test-scratch";
+import { provePreacceptNotSent } from "./preaccept-not-sent-proof";
 import {
   createRestartIdentityJournal,
   type RestartIdentityInput,
@@ -262,15 +263,105 @@ test("only the first durable attempted fence authorizes dispatch", async () => {
   expect(first).toEqual({
     row: { ...identity, state: "attempted" },
     mayDispatch: true,
+    attemptGeneration: 1,
   });
   expect(recovered).toEqual({
     row: { ...identity, state: "attempted" },
     mayDispatch: false,
+    attemptGeneration: 1,
   });
   expect(repeated).toEqual({
     row: { ...identity, state: "attempted" },
     mayDispatch: false,
+    attemptGeneration: 1,
   });
+});
+
+test("only an opaque proof for the current attempt settles durable not-sent", async () => {
+  const home = profile();
+  const options = storageOptions();
+  const identity = request();
+  const journal = createRestartIdentityJournal(home, options);
+  await journal.reserve(identity);
+  const claim = await journal.beginAttempt(identity);
+  const validProof = provePreacceptNotSent({
+    ...identity,
+    attemptGeneration: claim.attemptGeneration,
+  });
+
+  await expect(
+    journal.settleNotSent(
+      { ...identity, requestHash: "b".repeat(64) },
+      validProof,
+    ),
+  ).rejects.toBeInstanceOf(RestartIdentityJournalError);
+  await expect(
+    journal.settleNotSent(identity, {} as never),
+  ).rejects.toBeInstanceOf(RestartIdentityJournalError);
+  expect(
+    (
+      await journal.lookup(
+        { address: identity.address, workspace: identity.workspace },
+        identity.requestId,
+      )
+    )?.state,
+  ).toBe("attempted");
+
+  expect(await journal.settleNotSent(identity, validProof)).toMatchObject({
+    ...identity,
+    state: "not-sent",
+  });
+  const recovered = createRestartIdentityJournal(home, options);
+  expect(
+    (
+      await recovered.lookup(
+        { address: identity.address, workspace: identity.workspace },
+        identity.requestId,
+      )
+    )?.state,
+  ).toBe("not-sent");
+  await expect(recovered.retireReserved(identity)).rejects.toBeInstanceOf(
+    RestartIdentityJournalError,
+  );
+
+  const retry = await recovered.beginAttempt(identity);
+  expect(retry).toMatchObject({ mayDispatch: true, attemptGeneration: 2 });
+  await expect(
+    recovered.settleNotSent(
+      identity,
+      provePreacceptNotSent({
+        ...identity,
+        attemptGeneration: claim.attemptGeneration,
+      }),
+    ),
+  ).rejects.toBeInstanceOf(RestartIdentityJournalError);
+  expect(
+    await createRestartIdentityJournal(home, options).beginAttempt(identity),
+  ).toMatchObject({ mayDispatch: false, attemptGeneration: 2 });
+});
+
+test("concurrent explicit retries after not-sent grant one new generation", async () => {
+  const home = profile();
+  const options = storageOptions();
+  const identity = request();
+  const firstJournal = createRestartIdentityJournal(home, options);
+  await firstJournal.reserve(identity);
+  const firstClaim = await firstJournal.beginAttempt(identity);
+  await firstJournal.settleNotSent(
+    identity,
+    provePreacceptNotSent({
+      ...identity,
+      attemptGeneration: firstClaim.attemptGeneration,
+    }),
+  );
+
+  const results = await Promise.all([
+    firstJournal.beginAttempt(identity),
+    createRestartIdentityJournal(home, options).beginAttempt(identity),
+  ]);
+  expect(results.filter((result) => result.mayDispatch)).toHaveLength(1);
+  expect(results.filter((result) => !result.mayDispatch)).toHaveLength(1);
+  expect(results.every((result) => result.attemptGeneration === 2)).toBe(true);
 });
 
 test("simultaneous independent first claims grant dispatch to exactly one caller", async () => {

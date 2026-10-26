@@ -46,6 +46,24 @@ describe("Session Start identity wire protocol", () => {
     });
   });
 
+  test("projects not-sent truth without exposing the private attempt generation", () => {
+    const notSent = { ...identity, state: "not-sent" as const };
+    expect(
+      sessionStartIdentityPageSchema.parse({
+        version: 1,
+        scope,
+        identities: [notSent],
+      }),
+    ).toEqual({ version: 1, scope, identities: [notSent] });
+    expect(
+      sessionStartIdentityPageSchema.safeParse({
+        version: 1,
+        scope,
+        identities: [{ ...notSent, attemptGeneration: 2 }],
+      }).success,
+    ).toBe(false);
+  });
+
   test("rejects private fields, noncanonical scopes, duplicate UUIDs and unsupported versions", () => {
     expect(
       sessionStartIdentityPageSchema.safeParse({

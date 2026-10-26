@@ -37,6 +37,10 @@ import {
   sessionRequestIdSchema,
 } from "../sessions/identity-protocol";
 import { canonicalTrustedDirectory } from "../trusted-directory";
+import {
+  type PreacceptNotSentProof,
+  readPreacceptNotSentProof,
+} from "./preaccept-not-sent-proof";
 
 export const MAX_RESTART_IDENTITY_ROWS = 1_000;
 export const MAX_RESTART_IDENTITY_EVENTS = 3_000;
@@ -85,7 +89,7 @@ const baseSchema = z
   })
   .strict();
 export const restartIdentityRowSchema = baseSchema.extend({
-  state: z.enum(["reserved", "attempted", "admitted", "retired"]),
+  state: z.enum(["reserved", "attempted", "not-sent", "admitted", "retired"]),
 });
 export type RestartIdentityRow = z.infer<typeof restartIdentityRowSchema>;
 export type RestartIdentityInput = z.infer<typeof baseSchema>;
@@ -96,6 +100,7 @@ export type RestartIdentityScope = Pick<
 export type RestartIdentityOperation =
   | "reserve"
   | "attempt"
+  | "not-sent"
   | "admit"
   | "retire";
 
@@ -104,7 +109,13 @@ const eventSchema = z
     version: z.literal(1),
     sequence: z.number().int().min(1).max(MAX_RESTART_IDENTITY_EVENTS),
     parentDigest: HASH.nullable(),
-    operation: z.enum(["reserve", "attempt", "admit", "retire"]),
+    operation: z.enum(["reserve", "attempt", "not-sent", "admit", "retire"]),
+    attemptGeneration: z
+      .number()
+      .int()
+      .min(1)
+      .max(MAX_RESTART_IDENTITY_EVENTS)
+      .optional(),
     row: restartIdentityRowSchema,
   })
   .strict();
@@ -117,6 +128,7 @@ type StoredEvent = {
 };
 type JournalState = {
   rows: Map<string, RestartIdentityRow>;
+  generations: Map<string, number>;
   events: StoredEvent[];
   bytes: number;
 };
@@ -148,9 +160,15 @@ export interface RestartIdentityJournal<TProof = never> {
     scope: RestartIdentityScope,
     requestId: string,
   ): Promise<RestartIdentityRow | null>;
-  beginAttempt(
+  beginAttempt(input: RestartIdentityInput): Promise<{
+    row: RestartIdentityRow;
+    mayDispatch: boolean;
+    attemptGeneration: number;
+  }>;
+  settleNotSent(
     input: RestartIdentityInput,
-  ): Promise<{ row: RestartIdentityRow; mayDispatch: boolean }>;
+    proof: PreacceptNotSentProof,
+  ): Promise<RestartIdentityRow>;
   admit(input: RestartIdentityInput): Promise<{
     row: RestartIdentityRow;
     evidence: TProof;
@@ -186,7 +204,9 @@ const scopeMatches = (row: RestartIdentityRow, scope: RestartIdentityScope) =>
   row.address.projectId === scope.address.projectId &&
   row.workspace === scope.workspace;
 const isActive = (row: RestartIdentityRow) =>
-  row.state === "reserved" || row.state === "attempted";
+  row.state === "reserved" ||
+  row.state === "attempted" ||
+  row.state === "not-sent";
 const unavailable = () =>
   new RestartIdentityJournalError(
     "unavailable",
@@ -532,7 +552,12 @@ function validateRowTransition(state: JournalState, stored: StoredEvent): void {
   const row = event.row;
   const prior = state.rows.get(rowKey(row.requestId));
   if (event.operation === "reserve") {
-    if (row.state !== "reserved" || prior !== undefined) identityError();
+    if (
+      row.state !== "reserved" ||
+      prior !== undefined ||
+      event.attemptGeneration !== undefined
+    )
+      identityError();
     if (state.rows.size >= MAX_RESTART_IDENTITY_ROWS) identityError();
     if (
       [...state.rows.values()].some(
@@ -545,7 +570,22 @@ function validateRowTransition(state: JournalState, stored: StoredEvent): void {
   } else if (event.operation === "attempt") {
     if (row.state !== "attempted") identityError();
     if (prior !== undefined) {
-      if (prior.state !== "reserved" || !sameBase(prior, row)) identityError();
+      const previousGeneration = state.generations.get(row.requestId) ?? 0;
+      const expectedGeneration =
+        prior.state === "reserved"
+          ? 1
+          : prior.state === "not-sent"
+            ? previousGeneration + 1
+            : 0;
+      if (
+        (prior.state !== "reserved" && prior.state !== "not-sent") ||
+        !sameBase(prior, row) ||
+        (event.attemptGeneration !== undefined &&
+          event.attemptGeneration !== expectedGeneration) ||
+        (prior.state === "not-sent" && event.attemptGeneration === undefined)
+      )
+        identityError();
+      state.generations.set(row.requestId, expectedGeneration);
     } else if (
       [...state.rows.values()].some(
         (item) =>
@@ -556,12 +596,38 @@ function validateRowTransition(state: JournalState, stored: StoredEvent): void {
       identityError();
     } else if (state.rows.size >= MAX_RESTART_IDENTITY_ROWS) {
       identityError();
+    } else {
+      if (
+        event.attemptGeneration !== undefined &&
+        event.attemptGeneration !== 1
+      )
+        identityError();
+      state.generations.set(row.requestId, 1);
     }
+    if (
+      prior !== undefined &&
+      event.attemptGeneration === undefined &&
+      prior.state === "reserved"
+    )
+      state.generations.set(row.requestId, 1);
+  } else if (event.operation === "not-sent") {
+    const generation = state.generations.get(row.requestId);
+    if (
+      row.state !== "not-sent" ||
+      prior?.state !== "attempted" ||
+      !sameBase(prior, row) ||
+      generation === undefined ||
+      event.attemptGeneration !== generation
+    )
+      identityError();
   } else if (event.operation === "admit") {
+    const generation = state.generations.get(row.requestId);
     if (
       row.state !== "admitted" ||
-      prior?.state !== "attempted" ||
-      !sameBase(prior, row)
+      (prior?.state !== "attempted" && prior?.state !== "not-sent") ||
+      !sameBase(prior, row) ||
+      (event.attemptGeneration !== undefined &&
+        event.attemptGeneration !== generation)
     )
       identityError();
   } else {
@@ -577,7 +643,12 @@ function validateRowTransition(state: JournalState, stored: StoredEvent): void {
 
 function replay(events: StoredEvent[]): JournalState {
   if (events.length > MAX_RESTART_IDENTITY_EVENTS) identityError();
-  const state: JournalState = { rows: new Map(), events: [], bytes: 0 };
+  const state: JournalState = {
+    rows: new Map(),
+    generations: new Map(),
+    events: [],
+    bytes: 0,
+  };
   let parentDigest: string | null = null;
   for (let index = 0; index < events.length; index++) {
     const stored = events[index];
@@ -650,6 +721,7 @@ function append(
   state: JournalState,
   operation: RestartIdentityOperation,
   row: RestartIdentityRow,
+  attemptGeneration: number | undefined,
   options: HomeCheckOptions,
 ): StoredEvent {
   if (
@@ -664,6 +736,7 @@ function append(
     sequence,
     parentDigest,
     operation,
+    ...(attemptGeneration === undefined ? {} : { attemptGeneration }),
     row,
   };
   const text = eventText(event);
@@ -829,12 +902,14 @@ export function createRestartIdentityJournal<TProof = never>(
     state: JournalState,
     operation: RestartIdentityOperation,
     row: RestartIdentityRow,
+    attemptGeneration?: number,
   ): RestartIdentityRow => {
     const stored = append(
       ensurePaths().directory,
       state,
       operation,
       row,
+      attemptGeneration,
       options,
     );
     appendRow(state, stored);
@@ -902,10 +977,32 @@ export function createRestartIdentityJournal<TProof = never>(
           if (!exactRow(existing, input) || existing.state === "retired")
             throw conflict();
           if (existing.state === "attempted" || existing.state === "admitted")
-            return { row: existing, mayDispatch: false };
+            return {
+              row: existing,
+              mayDispatch: false,
+              attemptGeneration: state.generations.get(input.requestId) ?? 1,
+            };
+          if (existing.state === "not-sent") {
+            const attemptGeneration =
+              (state.generations.get(input.requestId) ?? 0) + 1;
+            const row = commit(
+              state,
+              "attempt",
+              { ...existing, state: "attempted" },
+              attemptGeneration,
+            );
+            return { row, mayDispatch: true, attemptGeneration };
+          }
+          const attemptGeneration = 1;
           return {
-            row: commit(state, "attempt", { ...existing, state: "attempted" }),
+            row: commit(
+              state,
+              "attempt",
+              { ...existing, state: "attempted" },
+              attemptGeneration,
+            ),
             mayDispatch: true,
+            attemptGeneration,
           };
         }
         if (
@@ -913,11 +1010,41 @@ export function createRestartIdentityJournal<TProof = never>(
           state.rows.size >= MAX_RESTART_IDENTITY_ROWS
         )
           throw conflict();
+        const attemptGeneration = 1;
         return {
-          row: commit(state, "attempt", { ...input, state: "attempted" }),
+          row: commit(
+            state,
+            "attempt",
+            { ...input, state: "attempted" },
+            attemptGeneration,
+          ),
           mayDispatch: true,
+          attemptGeneration,
         };
       });
+    },
+    async settleNotSent(raw, proof) {
+      const input = validateInput(raw);
+      if (typeof proof !== "object" || proof === null) throw conflict();
+      const claim = await withState((state) => {
+        const existing = state.rows.get(input.requestId);
+        const generation = state.generations.get(input.requestId);
+        if (
+          existing === undefined ||
+          !exactRow(existing, input) ||
+          existing.state !== "attempted" ||
+          generation === undefined ||
+          !readPreacceptNotSentProof(proof, input, generation)
+        )
+          throw conflict();
+        return commit(
+          state,
+          "not-sent",
+          { ...existing, state: "not-sent" },
+          generation,
+        );
+      });
+      return claim;
     },
     async admit(raw) {
       const input = validateInput(raw);
@@ -936,7 +1063,12 @@ export function createRestartIdentityJournal<TProof = never>(
           throw conflict();
         if (existing.state === "admitted") return existing;
         if (existing.state !== "attempted") throw conflict();
-        return commit(state, "admit", { ...existing, state: "admitted" });
+        return commit(
+          state,
+          "admit",
+          { ...existing, state: "admitted" },
+          state.generations.get(input.requestId),
+        );
       });
       return { row, evidence };
     },

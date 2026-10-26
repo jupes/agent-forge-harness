@@ -49,7 +49,7 @@ export const sessionStartIdentityMetadataSchema = z
     requestHash: sessionRequestHashSchema,
     provider: z.enum(["claude", "codex", "gemini"]),
     mode: z.enum(["task", "chat"]),
-    state: z.enum(["reserved", "attempted", "admitted", "retired"]),
+    state: z.enum(["reserved", "attempted", "not-sent", "admitted", "retired"]),
   })
   .strict();
 export const sessionStartIdentityPageSchema = z
