@@ -206,6 +206,23 @@ const API_SMITH_EDIT_SMITH = {
   enabled: false,
   tags: ["rank:master", "api-edit"],
 };
+const API_SMITH_EDIT_ACTION_SMITH = {
+  name: "api-edit-action-fixture",
+  provider: "claude",
+  model: "api-edit-model",
+  effort: "high",
+  enabled: false,
+  tags: ["api-edit-fixture"],
+};
+
+function seedSmithEditActionTarget(h: TestHearth): void {
+  const directory = join(h.configHome, ".agent-forge");
+  mkdirSync(directory, { recursive: true });
+  writeOwnerOnly(
+    join(directory, "config.toml"),
+    `[smiths.${API_SMITH_EDIT_ACTION_SMITH.name}]\nprovider = "claude"\nmodel = "api-edit-original-model"\neffort = "high"\nenabled = true\ntags = ["api-edit-fixture"]\n`,
+  );
+}
 
 async function seedSmithCreateOriginal(h: TestHearth): Promise<void> {
   const service = createSmithCreateService(
@@ -1041,23 +1058,24 @@ const ACTIONS: Record<string, ActionFixture> = {
     valid: {
       path: "/config/smiths/edits/preview",
       body: {
-        target: "workspace",
-        name: API_SMITH_EDIT_SMITH.name,
-        smith: API_SMITH_EDIT_SMITH,
+        target: "user",
+        name: API_SMITH_EDIT_ACTION_SMITH.name,
+        smith: API_SMITH_EDIT_ACTION_SMITH,
       },
       status: 200,
-      target: "workspace",
+      target: "user",
       audit: { family: "smith-config-edit" },
     },
     invalid: {
       path: "/config/smiths/edits/preview",
       body: {
-        target: "workspace",
-        name: API_SMITH_EDIT_SMITH.name,
-        smith: API_SMITH_EDIT_SMITH,
+        target: "user",
+        name: API_SMITH_EDIT_ACTION_SMITH.name,
+        smith: API_SMITH_EDIT_ACTION_SMITH,
         path: "arbitrary",
       },
     },
+    prepare: async (h) => seedSmithEditActionTarget(h),
     happened: async (_h, answer) => {
       expect(smithConfigEditPreviewSchema.safeParse(answer).success).toBe(true);
     },
@@ -1067,9 +1085,9 @@ const ACTIONS: Record<string, ActionFixture> = {
       path: "/config/smiths/edits",
       body: {
         requestId: API_SMITH_EDIT_ID,
-        target: "workspace",
-        name: API_SMITH_EDIT_SMITH.name,
-        smith: API_SMITH_EDIT_SMITH,
+        target: "user",
+        name: API_SMITH_EDIT_ACTION_SMITH.name,
+        smith: API_SMITH_EDIT_ACTION_SMITH,
         expectedRevision: {
           version: 1,
           user: "a".repeat(64),
@@ -1077,15 +1095,15 @@ const ACTIONS: Record<string, ActionFixture> = {
         },
       },
       status: 200,
-      target: "workspace",
+      target: "user",
       audit: {
         family: "smith-config-edit",
         requestId: API_SMITH_EDIT_ID,
         inputHash: smithEditInputHash({
           requestId: API_SMITH_EDIT_ID,
-          target: "workspace",
-          name: API_SMITH_EDIT_SMITH.name,
-          smith: API_SMITH_EDIT_SMITH,
+          target: "user",
+          name: API_SMITH_EDIT_ACTION_SMITH.name,
+          smith: API_SMITH_EDIT_ACTION_SMITH,
           expectedRevision: {
             version: 1,
             user: "a".repeat(64),
@@ -1099,19 +1117,26 @@ const ACTIONS: Record<string, ActionFixture> = {
       body: { requestId: "invalid" },
     },
     prepare: async (h) => {
-      const response = await post(h, "/config/smiths/edits/preview", {
-        target: "workspace",
-        name: API_SMITH_EDIT_SMITH.name,
-        smith: API_SMITH_EDIT_SMITH,
+      seedSmithEditActionTarget(h);
+      const checked = createSmithEditService(
+        {
+          options: {
+            harnessRoot: h.root,
+            home: h.configHome,
+            env: {},
+          },
+        },
+        { profileHome: h.home, coordinationRoot: h.home },
+      ).preview({
+        target: "user",
+        name: API_SMITH_EDIT_ACTION_SMITH.name,
+        smith: API_SMITH_EDIT_ACTION_SMITH,
       });
-      const checked = smithConfigEditPreviewSchema.parse(
-        (await envelope(response)).data,
-      );
       const request: SmithConfigEditRequest = {
         requestId: API_SMITH_EDIT_ID,
-        target: "workspace",
-        name: API_SMITH_EDIT_SMITH.name,
-        smith: API_SMITH_EDIT_SMITH,
+        target: "user",
+        name: API_SMITH_EDIT_ACTION_SMITH.name,
+        smith: API_SMITH_EDIT_ACTION_SMITH,
         expectedRevision: checked.expectedRevision,
       };
       ACTIONS["POST /config/smiths/edits"]!.valid.body = request;
