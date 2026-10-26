@@ -15,11 +15,11 @@
  *   when the harness has ended, however it ended, and the watcher then kills
  *   the child's process group.
  *
- * `release()`, called once the child has exited on its own or been killed,
- * stands the guard down without ending anything: the job's kill-on-close is
- * cleared before its handle is closed, and the watcher is killed before its
- * pipe is closed. So what a child that exited left running is left running,
- * as it was before this guard.
+ * `release()`, called after normal completion, stands the guard down without
+ * ending anything: the job's kill-on-close is cleared before its handle is
+ * closed, and the watcher is killed before its pipe is closed. A stopped
+ * Windows child instead keeps its job until `settleStopped()` confirms that
+ * every remaining member has physically exited.
  *
  * Not covered: on Windows, a process the child starts before it is assigned
  * to the job (the assignment follows `Bun.spawn` at once, ahead of the
@@ -30,12 +30,20 @@
  */
 
 import { dlopen, FFIType, ptr } from "bun:ffi";
+import {
+  type JobMembers,
+  settleWindowsJob,
+  WINDOWS_JOB_SETTLEMENT_MS,
+  type WindowsJobSettlementApi,
+} from "./windows-job-settlement";
 
 export interface TreeGuard {
   /** Stand the guard down, ending nothing. Safe to call more than once. */
   release(): void;
   /** Windows only: close the kill-on-close job without clearing its limit. */
   terminate?(): void;
+  /** Windows only: terminate and physically settle this exact owned job. */
+  settleStopped?(): Promise<void>;
 }
 
 const UNGUARDED: TreeGuard = { release: () => undefined };
@@ -52,6 +60,18 @@ const EXTENDED_LIMIT_SIZE = 144;
 const LIMIT_FLAGS_OFFSET = 16;
 /** `PROCESS_SET_QUOTA | PROCESS_TERMINATE`: what `AssignProcessToJobObject` needs. */
 const ASSIGN_ACCESS = 0x0100 | 0x0001;
+const JOB_OBJECT_BASIC_PROCESS_ID_LIST = 3;
+const JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION = 1;
+const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+const SYNCHRONIZE = 0x0010_0000;
+const ASSIGNED_ROOT_ACCESS =
+  ASSIGN_ACCESS | PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE;
+const WAIT_OBJECT_0 = 0;
+const WAIT_TIMEOUT = 258;
+
+function isNullHandle(value: unknown): boolean {
+  return value === null || value === 0 || value === 0n;
+}
 
 function openKernel32() {
   return dlopen("kernel32.dll", {
@@ -67,6 +87,26 @@ function openKernel32() {
       args: [FFIType.ptr, FFIType.ptr],
       returns: FFIType.i32,
     },
+    TerminateJobObject: {
+      args: [FFIType.ptr, FFIType.u32],
+      returns: FFIType.i32,
+    },
+    QueryInformationJobObject: {
+      args: [FFIType.ptr, FFIType.i32, FFIType.ptr, FFIType.u32, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    IsProcessInJob: {
+      args: [FFIType.ptr, FFIType.ptr, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    GetProcessTimes: {
+      args: [FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr],
+      returns: FFIType.i32,
+    },
+    WaitForSingleObject: {
+      args: [FFIType.ptr, FFIType.u32],
+      returns: FFIType.u32,
+    },
     OpenProcess: {
       args: [FFIType.u32, FFIType.i32, FFIType.u32],
       returns: FFIType.ptr,
@@ -76,6 +116,7 @@ function openKernel32() {
 }
 
 type Kernel32 = ReturnType<typeof openKernel32>;
+type KernelHandle = ReturnType<Kernel32["CreateJobObjectW"]>;
 let kernel32: Kernel32 | null | undefined;
 
 /** kernel32's job functions, loaded once; null when they cannot be loaded. */
@@ -91,7 +132,11 @@ function jobApi(): Kernel32 | null {
 }
 
 /** Set the job's limit flags (and nothing else): kill-on-close, or none. */
-function setLimitFlags(api: Kernel32, job: number, flags: number): boolean {
+function setLimitFlags(
+  api: Kernel32,
+  job: KernelHandle,
+  flags: number,
+): boolean {
   const info = new Uint8Array(EXTENDED_LIMIT_SIZE);
   new DataView(info.buffer).setUint32(LIMIT_FLAGS_OFFSET, flags, true);
   return (
@@ -104,35 +149,244 @@ function setLimitFlags(api: Kernel32, job: number, flags: number): boolean {
   );
 }
 
+function processCreationTime(
+  api: Kernel32,
+  processHandle: KernelHandle,
+): string | null {
+  const creation = new Uint32Array(2),
+    exit = new Uint32Array(2),
+    kernel = new Uint32Array(2),
+    user = new Uint32Array(2);
+  if (
+    api.GetProcessTimes(
+      processHandle,
+      ptr(creation),
+      ptr(exit),
+      ptr(kernel),
+      ptr(user),
+    ) === 0
+  )
+    return null;
+  return ((BigInt(creation[1] ?? 0) << 32n) | BigInt(creation[0] ?? 0))
+    .toString(16)
+    .padStart(16, "0");
+}
+
+/** Query the exact job's bounded process list and the minimum identity facts. */
+function windowsJobSettlementApi(
+  api: Kernel32,
+): WindowsJobSettlementApi<KernelHandle, KernelHandle> {
+  return {
+    terminate(job) {
+      return api.TerminateJobObject(job, 1) !== 0;
+    },
+    totalProcesses(job) {
+      const buffer = new Uint8Array(48),
+        returned = new Uint32Array(1);
+      if (
+        api.QueryInformationJobObject(
+          job,
+          JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION,
+          ptr(buffer),
+          buffer.byteLength,
+          ptr(returned),
+        ) === 0 ||
+        returned[0] === undefined ||
+        returned[0] !== buffer.byteLength
+      )
+        return null;
+      return new DataView(buffer.buffer).getUint32(36, true);
+    },
+    activeProcesses(job) {
+      const buffer = new Uint8Array(48),
+        returned = new Uint32Array(1);
+      if (
+        api.QueryInformationJobObject(
+          job,
+          JOB_OBJECT_BASIC_ACCOUNTING_INFORMATION,
+          ptr(buffer),
+          buffer.byteLength,
+          ptr(returned),
+        ) === 0 ||
+        returned[0] === undefined ||
+        returned[0] !== buffer.byteLength
+      )
+        return null;
+      return new DataView(buffer.buffer).getUint32(40, true);
+    },
+    members(job): JobMembers | null {
+      if (process.arch !== "x64") return null;
+      const capacity = 64,
+        headerBytes = 8,
+        pointerBytes = 8,
+        buffer = new Uint8Array(headerBytes + capacity * pointerBytes),
+        returned = new Uint32Array(1);
+      if (
+        api.QueryInformationJobObject(
+          job,
+          JOB_OBJECT_BASIC_PROCESS_ID_LIST,
+          ptr(buffer),
+          buffer.byteLength,
+          ptr(returned),
+        ) === 0
+      )
+        return null;
+      const view = new DataView(buffer.buffer),
+        assigned = view.getUint32(0, true),
+        count = view.getUint32(4, true),
+        requiredBytes = headerBytes + count * pointerBytes;
+      if (
+        assigned > capacity ||
+        count > capacity ||
+        assigned !== count ||
+        returned[0] === undefined ||
+        returned[0] < requiredBytes ||
+        returned[0] % pointerBytes !== 0 ||
+        returned[0] > buffer.byteLength
+      )
+        return { processIds: [], complete: false };
+      const processIds: number[] = [];
+      for (let index = 0; index < count; index++) {
+        const pid = view.getBigUint64(headerBytes + index * pointerBytes, true);
+        if (pid > BigInt(Number.MAX_SAFE_INTEGER))
+          return { processIds: [], complete: false };
+        processIds.push(Number(pid));
+      }
+      return { processIds, complete: true };
+    },
+    openProcess(pid) {
+      const handle = api.OpenProcess(
+        PROCESS_QUERY_LIMITED_INFORMATION | SYNCHRONIZE,
+        0,
+        pid,
+      );
+      return isNullHandle(handle) ? null : handle;
+    },
+    belongsToJob(processHandle, job) {
+      const result = new Uint32Array(1);
+      if (api.IsProcessInJob(processHandle, job, ptr(result)) === 0)
+        return null;
+      return result[0] === 1;
+    },
+    creationTime(processHandle) {
+      return processCreationTime(api, processHandle);
+    },
+    signaled(processHandle) {
+      const result = api.WaitForSingleObject(processHandle, 0);
+      if (result === WAIT_OBJECT_0) return true;
+      if (result === WAIT_TIMEOUT) return false;
+      return null;
+    },
+    closeProcess(processHandle) {
+      if (api.CloseHandle(processHandle) === 0)
+        throw new Error("Windows process handle close failed.");
+    },
+    now() {
+      return performance.now();
+    },
+    sleep: Bun.sleep,
+  };
+}
+
 function jobGuard(pid: number): TreeGuard {
   const api = jobApi();
   if (api === null) return UNGUARDED;
   const job = api.CreateJobObjectW(null, null);
-  if (job === null) return UNGUARDED;
-  const child = api.OpenProcess(ASSIGN_ACCESS, 0, pid);
+  if (isNullHandle(job)) return UNGUARDED;
+  const child = api.OpenProcess(ASSIGNED_ROOT_ACCESS, 0, pid);
   const assigned =
-    child !== null &&
+    !isNullHandle(child) &&
     setLimitFlags(api, job, KILL_ON_JOB_CLOSE) &&
     api.AssignProcessToJobObject(job, child) !== 0;
-  if (child !== null) api.CloseHandle(child);
-  if (!assigned) {
+  if (!assigned || isNullHandle(child)) {
+    if (!isNullHandle(child)) api.CloseHandle(child);
     // An empty job, or one the child is not in: closing it ends nothing.
     setLimitFlags(api, job, 0);
     api.CloseHandle(job);
     return UNGUARDED;
   }
-  let held = true;
+  let rootCreationTime: string | null = null;
+  try {
+    rootCreationTime = processCreationTime(api, child);
+  } catch {
+    // Keep the ownership guard; a stop will fail closed without this identity.
+  }
+  const assignedRootHandle = child;
+  let rootHandle: KernelHandle | null = assignedRootHandle;
+  let held = true,
+    preserveKillOnClose = false;
+  const closeRootHandle = () => {
+    if (rootHandle === null) return;
+    const handle = rootHandle;
+    rootHandle = null;
+    if (api.CloseHandle(handle) === 0)
+      throw new Error("Windows process handle close failed.");
+  };
+  const closeWithKillOnClose = () => {
+    if (!held) return;
+    preserveKillOnClose = true;
+    try {
+      if (api.CloseHandle(job) !== 0) held = false;
+    } finally {
+      closeRootHandle();
+    }
+  };
   return {
     terminate() {
-      if (!held) return;
-      held = false;
-      api.CloseHandle(job);
+      closeWithKillOnClose();
+    },
+    async settleStopped() {
+      if (!held || rootHandle === null || rootCreationTime === null) {
+        try {
+          closeWithKillOnClose();
+        } catch {
+          // Preserve kill-on-close if the root identity or close cannot be confirmed.
+        }
+        throw new Error(
+          "Windows owned process cleanup could not be confirmed.",
+        );
+      }
+      const assignedRoot = {
+        pid,
+        handle: rootHandle,
+        creationTime: rootCreationTime,
+      };
+      rootHandle = null;
+      try {
+        await settleWindowsJob(
+          windowsJobSettlementApi(api),
+          job,
+          assignedRoot,
+          WINDOWS_JOB_SETTLEMENT_MS,
+        );
+        preserveKillOnClose = true;
+        if (api.CloseHandle(job) === 0)
+          throw new Error(
+            "Windows owned process cleanup could not be confirmed.",
+          );
+        held = false;
+      } catch {
+        // Closing the retained job with kill-on-close still set is the fail-closed fallback.
+        try {
+          closeWithKillOnClose();
+        } catch {
+          // Leave the only job handle retained and kill-on-close enabled if close itself fails.
+        }
+        throw new Error(
+          "Windows owned process cleanup could not be confirmed.",
+        );
+      }
     },
     release() {
       if (!held) return;
+      if (preserveKillOnClose) {
+        closeWithKillOnClose();
+        return;
+      }
       held = false;
       setLimitFlags(api, job, 0);
       api.CloseHandle(job);
+      closeRootHandle();
     },
   };
 }

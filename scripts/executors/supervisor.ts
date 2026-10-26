@@ -457,6 +457,13 @@ export function supervise(
   let exited = false;
   let settled = false;
   let interrupted = false;
+  let windowsStopSettlement: Promise<void> | null = null,
+    preserveWindowsStopGuard = false;
+  let rejectWindowsStopFailure: (error: Error) => void = () => undefined;
+  const windowsStopFailure = new Promise<never>((_, reject) => {
+    rejectWindowsStopFailure = reject;
+  });
+  void windowsStopFailure.catch(() => undefined);
   let inputFailure: Error | null = null;
   const inputWaiters = new Set<(error: Error) => void>();
   const failInput = (error: Error) => {
@@ -465,13 +472,75 @@ export function supervise(
     for (const reject of inputWaiters) reject(inputFailure);
     inputWaiters.clear();
   };
+  const startWindowsStopSettlement = () => {
+    if (
+      interactive ||
+      process.platform !== "win32" ||
+      windowsStopSettlement !== null
+    )
+      return;
+    const settleStopped = guard.settleStopped;
+    if (!settleStopped) {
+      preserveWindowsStopGuard = true;
+      try {
+        guard.terminate?.();
+      } catch {
+        // Keep the guard unreleased if its stop capability is unavailable.
+      }
+      windowsStopSettlement = Promise.reject(
+        new Error("Windows owned process cleanup could not be confirmed."),
+      );
+      rejectWindowsStopFailure(
+        new Error("Windows owned process cleanup could not be confirmed."),
+      );
+    } else {
+      try {
+        // The guard captures and retains the current job members synchronously
+        // before its first await and before killTree can stop the root.
+        windowsStopSettlement = settleStopped.call(guard).catch(() => {
+          preserveWindowsStopGuard = true;
+          try {
+            guard.terminate?.();
+          } catch {
+            // The guard remains unreleased on uncertain cleanup.
+          }
+          const error = new Error(
+            "Windows owned process cleanup could not be confirmed.",
+          );
+          rejectWindowsStopFailure(error);
+          throw error;
+        });
+      } catch {
+        preserveWindowsStopGuard = true;
+        try {
+          guard.terminate?.();
+        } catch {
+          // The guard remains unreleased on uncertain cleanup.
+        }
+        const error = new Error(
+          "Windows owned process cleanup could not be confirmed.",
+        );
+        windowsStopSettlement = Promise.reject(error);
+        rejectWindowsStopFailure(error);
+      }
+    }
+    void windowsStopSettlement.catch(() => undefined);
+  };
+  const awaitWindowsStopSettlement = async () => {
+    if (!interactive && process.platform === "win32" && windowsStopSettlement)
+      await windowsStopSettlement;
+  };
   const kill = () => {
     if (settled) return;
     interrupted = true;
     failInput(new Error("Interactive stdin is closed."));
     if (interactive && process.platform === "win32") guard.terminate?.();
-    else if (!exited) killTree(proc.pid);
-    else if (process.platform !== "win32") killExitedProcessGroup(proc.pid);
+    else if (!interactive && process.platform === "win32") {
+      startWindowsStopSettlement();
+      if (!windowsStopSettlement || preserveWindowsStopGuard)
+        killTree(proc.pid);
+    } else if (!exited) killTree(proc.pid);
+    else killExitedProcessGroup(proc.pid);
   };
 
   const timer =
@@ -668,7 +737,7 @@ export function supervise(
   });
   const done = (async (): Promise<ChildExit> => {
     try {
-      const exitCode = await proc.exited;
+      const exitCode = await Promise.race([proc.exited, windowsStopFailure]);
       exited = true;
       // A terminal witness, not time spent draining/confirming cleanup, owns
       // attribution once the wrapper has exited.
@@ -680,6 +749,7 @@ export function supervise(
         else killExitedProcessGroup(proc.pid);
         failInput(new Error("Interactive stdin is closed."));
       }
+      await awaitWindowsStopSettlement();
       if (
         process.platform !== "win32" &&
         (interactive || stopped || timedOut)
@@ -692,7 +762,9 @@ export function supervise(
         );
       }
       await pumped.catch(() => undefined);
+      await awaitWindowsStopSettlement();
       const stderr = await stderrTail;
+      await awaitWindowsStopSettlement();
       if (interactive && !interrupted && !terminalReceived) {
         let receiptDeadline: ReturnType<typeof setTimeout> | undefined;
         try {
@@ -724,7 +796,13 @@ export function supervise(
     } finally {
       settled = true;
       if (timer) clearTimeout(timer);
-      guard.release();
+      if (preserveWindowsStopGuard) {
+        try {
+          guard.terminate?.();
+        } catch {
+          // Preserve the retained guard when termination cannot be confirmed.
+        }
+      } else guard.release();
       live.delete(proc.pid);
       exitedGroups.delete(proc.pid);
       cleanupIsolated();

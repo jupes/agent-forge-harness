@@ -404,6 +404,7 @@ describe("supervise", () => {
     const entered = new Promise<void>((resolve) => {
       enterSettlement = resolve;
     });
+    let childPid = 0;
     const child = supervise({
       command: hang,
       cwd: process.cwd(),
@@ -414,11 +415,13 @@ describe("supervise", () => {
           guardReleased = true;
         },
         async settleStopped() {
+          killTree(childPid);
           enterSettlement();
           await settlement;
         },
       }),
     });
+    childPid = child.pid;
     const stopping = child.stop("test").then(() => {
       stopSettled = true;
     });
@@ -440,7 +443,8 @@ describe("supervise", () => {
 
   test("Windows Stop refuses when its guard cannot prove descendant settlement", async () => {
     if (process.platform !== "win32") return;
-    let guardReleased = false;
+    let guardTerminated = false,
+      guardReleased = false;
     const child = supervise({
       command: hang,
       cwd: process.cwd(),
@@ -450,12 +454,43 @@ describe("supervise", () => {
         release() {
           guardReleased = true;
         },
+        terminate() {
+          guardTerminated = true;
+        },
       }),
     });
     await expect(child.stop("test")).rejects.toThrow(
       "Windows owned process cleanup could not be confirmed.",
     );
-    expect(guardReleased).toBe(true);
+    expect(guardTerminated).toBe(true);
+    expect(guardReleased).toBe(false);
+  });
+
+  test("Windows Stop surfaces settlement refusal while the root is still pending", async () => {
+    if (process.platform !== "win32") return;
+    const child = supervise({
+      command: hang,
+      cwd: process.cwd(),
+      env: { PATH: process.env.PATH ?? "" },
+      onLine: () => undefined,
+      windowsStoppedGuard: () => ({
+        release() {},
+        terminate() {},
+        async settleStopped() {
+          await Bun.sleep(50);
+          throw new Error("unconfirmed");
+        },
+      }),
+    });
+    try {
+      await expect(child.stop("test")).rejects.toThrow(
+        "Windows owned process cleanup could not be confirmed.",
+      );
+      expect(running(child.pid)).toBe(true);
+    } finally {
+      killTree(child.pid);
+      await child.done.catch(() => undefined);
+    }
   });
 
   test("delivers stdout one line at a time, including a final unterminated line", async () => {
