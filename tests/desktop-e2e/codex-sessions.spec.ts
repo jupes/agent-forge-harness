@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, type Locator, type Page, test } from "@playwright/test";
+import { z } from "zod";
 import { OPERATOR_HEADER } from "../../scripts/hearth/paths";
 import { ownedCodingStateSchema } from "../../scripts/sessions/codex-owned-journal";
 import { codexTaskStartSchema } from "../../scripts/sessions/codex-owned-protocol";
@@ -11,6 +12,14 @@ import { openSettled, reloadSettled } from "../e2e/fixtures";
 import { pageToken } from "../e2e/launch-link";
 import { HEARTH_HOME } from "../e2e/servers";
 import { alpha, beta, seedProjects, workspace } from "./project-fixtures";
+
+const sessionStartIdentitySuccessEnvelopeSchema = z
+  .object({
+    ok: z.literal(true),
+    data: sessionStartIdentityPageSchema,
+    error: z.null(),
+  })
+  .strict();
 
 interface Call {
   kind: string;
@@ -300,6 +309,57 @@ test("bead-prefilled Codex Task preserves honest effort controls and private con
   page,
 }) => {
   const before = tasks().length;
+  const identityPath = `**/__agent-forge/projects/${alpha.id}/session-start-identities`;
+  let identityReadCount = 0,
+    identityPostCount = 0,
+    startPostCount = 0,
+    holdNextIdentityRead = false,
+    identityReadHeld = false,
+    releaseIdentityRead: () => void = () => {};
+  const identityReadReleased = new Promise<void>((resolve) => {
+    releaseIdentityRead = resolve;
+  });
+  await page.route(identityPath, async (route) => {
+    if (route.request().method() === "POST") identityPostCount++;
+    if (route.request().method() !== "GET") {
+      await route.continue();
+      return;
+    }
+    const response = await route.fetch({
+      headers: {
+        ...(await route.request().allHeaders()),
+        Origin: new URL(route.request().url()).origin,
+        "Sec-Fetch-Site": "same-origin",
+      },
+    });
+    const envelope = sessionStartIdentitySuccessEnvelopeSchema.safeParse(
+      await response.json(),
+    );
+    if (
+      response.status() !== 200 ||
+      !envelope.success ||
+      envelope.data.data.scope.projectId !== alpha.id ||
+      envelope.data.data.scope.workspace !== workspace
+    )
+      throw Error(
+        "The real Session Start identity page could not be verified.",
+      );
+    identityReadCount++;
+    if (holdNextIdentityRead) {
+      holdNextIdentityRead = false;
+      identityReadHeld = true;
+      await identityReadReleased;
+    }
+    await route.fulfill({ response, json: envelope.data });
+  });
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      new URL(request.url()).pathname ===
+        `/__agent-forge/projects/${alpha.id}/sessions`
+    )
+      startPostCount++;
+  });
   await page.setViewportSize({ width: 1100, height: 700 });
   await page.emulateMedia({ reducedMotion: "reduce" });
   await openSettled(
@@ -314,6 +374,14 @@ test("bead-prefilled Codex Task preserves honest effort controls and private con
     .getByRole("button", { name: "Start session", exact: true })
     .click();
   const dialog = await chooseCodex(page);
+  await expect.poll(() => identityReadCount).toBeGreaterThan(0);
+  const identityRegion = dialog.getByRole("region", {
+      name: "Original Start requests",
+      exact: true,
+    }),
+    identityCheckStatus = identityRegion
+      .getByRole("status")
+      .filter({ hasText: "Checking the server-owned identity page" });
   await expect(
     dialog.getByRole("textbox", { name: "Session bead", exact: true }),
   ).toHaveValue("alpha-epic");
@@ -330,6 +398,7 @@ test("bead-prefilled Codex Task preserves honest effort controls and private con
   await dialog
     .getByRole("textbox", { name: "Session prompt", exact: true })
     .fill(prompt);
+  const readsBeforeUnavailablePreview = identityReadCount;
   await dialog
     .getByRole("button", { name: "Check supported options", exact: true })
     .click();
@@ -338,6 +407,13 @@ test("bead-prefilled Codex Task preserves honest effort controls and private con
       .getByRole("status")
       .filter({ hasText: "lack exact capability evidence" }),
   ).toBeVisible();
+  await expect
+    .poll(() => identityReadCount)
+    .toBe(readsBeforeUnavailablePreview + 1);
+  await expect(identityCheckStatus).not.toBeVisible();
+  await expect(
+    identityRegion.getByRole("button", { name: "Check server", exact: true }),
+  ).toBeEnabled();
   await expect(
     dialog.getByRole("combobox", { name: "Session effort", exact: true }),
   ).toHaveValue("medium");
@@ -361,21 +437,52 @@ test("bead-prefilled Codex Task preserves honest effort controls and private con
   await dialog
     .getByRole("combobox", { name: "Session sandbox", exact: true })
     .selectOption("workspace-write");
-  await dialog
-    .getByRole("button", { name: "Check supported options", exact: true })
-    .click();
   const equivalent = dialog.getByRole("region", {
     name: "Equivalent session command",
     exact: true,
   });
-  await expect(equivalent).toContainText("workspace-write");
-  await expect(equivalent).not.toContainText("PRIVATE CODEX");
   expect(tasks()).toHaveLength(before);
   await page.setViewportSize({ width: 1280, height: 900 });
+  const readsBeforeSuccessfulPreview = identityReadCount;
+  holdNextIdentityRead = true;
+  try {
+    await dialog
+      .getByRole("button", { name: "Check supported options", exact: true })
+      .click();
+    await expect(equivalent).toContainText("workspace-write");
+    await expect(equivalent).not.toContainText("PRIVATE CODEX");
+    await expect.poll(() => identityReadHeld).toBe(true);
+    expect(identityReadCount).toBe(readsBeforeSuccessfulPreview + 1);
+    await expect(identityCheckStatus).toContainText(
+      "Checking the server-owned identity page",
+    );
+    const startButton = dialog.getByRole("button", {
+      name: "Start",
+      exact: true,
+    });
+    await expect(startButton).toBeDisabled();
+    await dialog
+      .getByRole("textbox", { name: "Session prompt", exact: true })
+      .focus();
+    await page.keyboard.press("Control+Enter");
+    expect(identityPostCount).toBe(0);
+    expect(startPostCount).toBe(0);
+    expect(tasks()).toHaveLength(before);
+    expect(records().filter((record) => !previous.has(record.id))).toHaveLength(
+      0,
+    );
+  } finally {
+    releaseIdentityRead();
+  }
+  await expect(identityCheckStatus).not.toBeVisible();
+  await expect(
+    dialog.getByRole("button", { name: "Start", exact: true }),
+  ).toBeEnabled();
   await captureShot(page, "codex-task-composer.png", {
     style:
       '[aria-label="Session repository"], [aria-label="Registered session worktree"], [aria-label="Equivalent session command"] { visibility: hidden !important; }',
   });
+  await page.unroute(identityPath);
   await dialog.locator(".af-dialog-body").evaluate((node) => {
     node.scrollTop = 0;
   });
@@ -414,6 +521,8 @@ test("bead-prefilled Codex Task preserves honest effort controls and private con
   if (!record) throw Error("Missing owned Task receipt.");
   await expect.poll(() => journal(record.id).turns[0]?.phase).toBe("completed");
   expect(posted).toBe(1);
+  expect(identityPostCount).toBe(1);
+  expect(startPostCount).toBe(1);
   expect(tasks()).toHaveLength(before + 1);
   const actual = tasks().at(-1);
   if (!actual) throw Error("Missing native Task.");
