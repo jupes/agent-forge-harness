@@ -277,5 +277,15 @@ describe("dashboard server environment", () => {
         file.endsWith("/scripts/dashboard/server-environment.ts"),
       ),
     ).toBe(true);
+    expect(
+      graph.files.some((file) =>
+        file.endsWith("/scripts/config/smith-create-service.ts"),
+      ),
+    ).toBe(true);
+    expect(
+      graph.files.some((file) =>
+        file.endsWith("/scripts/hearth/routes/smith-config-creates.ts"),
+      ),
+    ).toBe(true);
   });
 });

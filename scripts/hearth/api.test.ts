@@ -19,6 +19,11 @@ import type {
 } from "../../types/hearth";
 import type { OwnedSessionRecord } from "../../types/owned-session";
 import { type LoadedConfig, loadConfig } from "../config/load";
+import {
+  smithConfigCreateReceiptSchema,
+  smithConfigPreviewSchema,
+} from "../config/smith-create-protocol";
+import { createSmithCreateService } from "../config/smith-create-service";
 import { createConversationStore } from "../conversations/store";
 import { runCouncilCli } from "../council/cli";
 import type { CommandResult, CommandRunner } from "../council/pr-source";
@@ -170,6 +175,39 @@ const RUN_STATE = JSON.stringify({
   artifacts: { research: "plans/research/demo.md" },
   updatedAt: "2026-10-01T00:00:00.000Z",
 });
+
+const API_SMITH_CREATE_ID = "dc9078cf-6200-4fed-aeb8-2be646ee7953";
+const API_SMITH_CREATE_SMITH = {
+  name: "api-route-smith",
+  provider: "custom",
+  model: "fixture-model",
+  effort: "high",
+  enabled: true,
+  tags: ["fixture"],
+};
+
+async function seedSmithCreateOriginal(h: TestHearth): Promise<void> {
+  const service = createSmithCreateService(
+    {
+      options: {
+        harnessRoot: h.root,
+        home: h.configHome,
+        env: {},
+      },
+    },
+    { profileHome: h.home, coordinationRoot: h.home },
+  );
+  const preview = service.preview({
+    target: "workspace",
+    smith: API_SMITH_CREATE_SMITH,
+  });
+  await service.create({
+    requestId: API_SMITH_CREATE_ID,
+    target: "workspace",
+    smith: API_SMITH_CREATE_SMITH,
+    expectedRevision: preview.expectedRevision,
+  });
+}
 
 const key = (route: ApiRoute): string => `${route.method} ${route.path}`;
 
@@ -873,6 +911,57 @@ function ownedSessionFixture(
 
 /** One entry per action row of the table; a row with none fails the suite. */
 const ACTIONS: Record<string, ActionFixture> = {
+  "POST /config/smiths/preview": {
+    valid: {
+      path: "/config/smiths/preview",
+      body: { target: "workspace", smith: API_SMITH_CREATE_SMITH },
+      status: 200,
+      target: "workspace",
+    },
+    invalid: {
+      path: "/config/smiths/preview",
+      body: {
+        target: "workspace",
+        smith: API_SMITH_CREATE_SMITH,
+        path: "arbitrary",
+      },
+    },
+    happened: async (_h, answer) => {
+      expect(smithConfigPreviewSchema.safeParse(answer).success).toBe(true);
+    },
+  },
+  "POST /config/smiths/creates": {
+    valid: {
+      path: "/config/smiths/creates",
+      body: {},
+      status: 200,
+      target: "workspace",
+    },
+    invalid: {
+      path: "/config/smiths/creates",
+      body: { requestId: "invalid" },
+    },
+    prepare: async (h) => {
+      const preview = await post(h, "/config/smiths/preview", {
+        target: "workspace",
+        smith: API_SMITH_CREATE_SMITH,
+      });
+      const checked = smithConfigPreviewSchema.parse(
+        (await envelope(preview)).data,
+      );
+      ACTIONS["POST /config/smiths/creates"]!.valid.body = {
+        requestId: API_SMITH_CREATE_ID,
+        target: "workspace",
+        smith: API_SMITH_CREATE_SMITH,
+        expectedRevision: checked.expectedRevision,
+      };
+    },
+    happened: async (_h, answer) => {
+      expect(smithConfigCreateReceiptSchema.parse(answer).result.phase).toBe(
+        "confirmed",
+      );
+    },
+  },
   "POST /providers/:provider/sign-in": {
     valid: {
       path: "/providers/claude/sign-in",
@@ -1865,6 +1954,7 @@ const READS: Record<string, string> = {
   "GET /eligibility": "/eligibility",
   "GET /smiths": "/smiths",
   "GET /smiths/verification": "/smiths/verification",
+  "GET /smiths/creates/:requestId": `/smiths/creates/${API_SMITH_CREATE_ID}`,
   "GET /config": "/config",
   "GET /beads/options": "/beads/options",
   "GET /beads/counts": "/beads/counts",
@@ -2464,6 +2554,7 @@ describe("a read row or the stream while another connection holds the write lock
     await seedKeeperShiftStartHistory(h);
     seedSmithVerificationRead(h);
     activityReadMembership(h);
+    await seedSmithCreateOriginal(h);
     const rows = h.hearth.routes.filter(
       (route) => route.kind === "read" || route.kind === "stream",
     );
@@ -3432,6 +3523,7 @@ describe("every read row (iterating the table)", () => {
     await seedKeeperShiftStartHistory(h);
     seedSmithVerificationRead(h);
     activityReadMembership(h);
+    await seedSmithCreateOriginal(h);
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");
     for (const row of rows) {
@@ -3467,6 +3559,7 @@ describe("every read row (iterating the table)", () => {
     await seedKeeperShiftStartHistory(h);
     seedSmithVerificationRead(h);
     activityReadMembership(h);
+    await seedSmithCreateOriginal(h);
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");
     const refused: Array<[string, Record<string, string>]> = [
