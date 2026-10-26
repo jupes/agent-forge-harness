@@ -46,6 +46,9 @@ export const unavailableCodexChatRuntime: ReturnType<
   async prepare() {
     throw new ConversationError(503, "The Codex Chat runtime is unavailable.");
   },
+  async fork() {
+    throw new ConversationError(503, "The Codex Chat runtime is unavailable.");
+  },
   async run() {
     throw new ConversationError(503, "The Codex Chat runtime is unavailable.");
   },
