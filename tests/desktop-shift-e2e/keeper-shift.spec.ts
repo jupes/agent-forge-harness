@@ -58,7 +58,7 @@ function seedShiftProposal() {
     await store.append(projectId, requestId, owner, { kind: "identity", provider: "claude", sessionId: randomUUID(), version: "fixture" });
     await store.append(projectId, requestId, owner, eventSchema.parse({ kind: "text", text }));
     await store.finish(projectId, requestId, owner, "completed", null);
-    process.stdout.write(JSON.stringify({ sourceRequestId: requestId }) + "\n");
+    process.stdout.write(JSON.stringify({ sourceRequestId: requestId }) + "\\n");
   `;
   const seeded = spawnSync(
     bunPath(),
@@ -134,7 +134,7 @@ function shiftAdmissionEvidence(shiftId: string) {
     const [workspace, path, proposalId, shiftId] = process.argv.slice(1);
     const audit = queryEvents({ workspace, kinds: ["operator.action"] }, { path }).filter(event => event.payload.action === "keeper.proposal.shift.start" && event.payload.target === proposalId);
     const execution = queryEvents({ workspace, shiftId }, { path }).filter(event => event.kind === "shift.started" || event.kind === "session.started");
-    process.stdout.write(JSON.stringify([...audit, ...execution].map(event => ({ id: event.id, kind: event.kind, payload: event.payload, executor: event.executor ?? null }))) + "\n");
+    process.stdout.write(JSON.stringify([...audit, ...execution].map(event => ({ id: event.id, kind: event.kind, payload: event.payload, executor: event.executor ?? null }))) + "\\n");
   `;
   const read = spawnSync(
     bunPath(),
