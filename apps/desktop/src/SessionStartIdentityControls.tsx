@@ -92,9 +92,7 @@ export function SessionStartIdentityControls(props: {
         </div>
         <Button
           disabled={
-            !!props.view.identityLoading ||
-            typeof props.view.identityGeneration !== "number" ||
-            !props.client.refreshIdentities
+            !!props.view.identityLoading || !props.client.refreshIdentities
           }
           onClick={() => void props.client.refreshIdentities?.(props.projectId)}
         >
