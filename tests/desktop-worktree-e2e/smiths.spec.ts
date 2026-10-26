@@ -30,6 +30,12 @@ import {
 
 let fixtureSmith = "";
 let savedFiles: { file: string; before: Buffer | null; fixture: Buffer }[] = [];
+const screenshotPath = (name: string) =>
+  join(
+    process.env["AGENT_FORGE_WORKTREE_SCREENSHOT_DIR"] ??
+      "apps/desktop/docs/screenshots",
+    name,
+  );
 const providerStarts = () =>
   ["keeper-fixture-starts.jsonl", "coding-fixture-starts.jsonl"].map((name) => {
     const file = join(HEARTH_HOME, name);
@@ -193,7 +199,7 @@ test("Smiths inspects actual temporary config provenance and workspace scoreboar
     .getByRole("heading", { name: "Saved smiths", exact: true })
     .scrollIntoViewIfNeeded();
   await page.screenshot({
-    path: "apps/desktop/docs/screenshots/smiths-inspection.png",
+    path: screenshotPath("smiths-inspection.png"),
     mask: [page.locator(".af-smith-path"), page.locator("time")],
     maskColor: "#3f424d",
   });
@@ -228,7 +234,7 @@ test("Smiths inspects actual temporary config provenance and workspace scoreboar
     .getByRole("heading", { name: "Recorded scoreboard", exact: true })
     .scrollIntoViewIfNeeded();
   await page.screenshot({
-    path: "apps/desktop/docs/screenshots/smiths-scoreboard.png",
+    path: screenshotPath("smiths-scoreboard.png"),
     mask: [page.locator(".af-smith-path"), page.locator("time")],
     maskColor: "#3f424d",
   });
@@ -291,6 +297,19 @@ test("creates a reviewed Smith in the temporary workspace config and recovers it
   await expect(
     dialog.getByRole("region", { name: "Candidate review" }),
   ).toContainText(createdName);
+  const candidateReview = dialog.getByRole("region", {
+    name: "Candidate review",
+  });
+  const proofDirectory = process.env["AGENT_FORGE_WORKTREE_SCREENSHOT_DIR"];
+  if (proofDirectory)
+    await page.screenshot({
+      path: join(proofDirectory, "smith-create-candidate.png"),
+      mask: [
+        candidateReview.locator("dd").filter({ hasText: REPOSITORY }),
+        candidateReview.locator("dd").filter({ hasText: HEARTH_HOME }),
+      ],
+      maskColor: "#3f424d",
+    });
   expect(posts).toEqual(["/__agent-forge/config/smiths/preview"]);
   unchangedConfig();
 
@@ -779,7 +798,7 @@ test("Smiths opens its actual fixed global verification task with keyboard focus
       dialog.getByRole("button", { name: "Close dialog", exact: true }),
     ).toBeFocused();
     await page.screenshot({
-      path: "apps/desktop/docs/screenshots/smiths-verification.png",
+      path: screenshotPath("smiths-verification.png"),
       mask: [
         dialog.locator(".af-smith-verification-facts code"),
         dialog.locator("time"),
