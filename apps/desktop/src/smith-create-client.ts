@@ -41,6 +41,8 @@ export interface SmithCreateClientState {
   notice: string;
 }
 
+type SmithReceiptInstall = "installed" | "invalid" | "terminal-conflict";
+
 const sameSmith = (
   left: SmithConfigPreviewRequest["smith"],
   right: SmithConfigPreviewRequest["smith"],
@@ -121,7 +123,7 @@ export function createSmithConfigCreateClient(deps: {
   const installReceipt = async (
     held: SmithCreateEntry,
     raw: unknown,
-  ): Promise<boolean> => {
+  ): Promise<SmithReceiptInstall> => {
     const parsed = smithConfigCreateReceiptSchema.safeParse(receiptValue(raw));
     let stored: SmithCreateIdentity | null = null;
     try {
@@ -140,14 +142,34 @@ export function createSmithConfigCreateClient(deps: {
     ) {
       held.notice =
         "The original Smith create could not be verified. Its UUID remains held; check the original again.";
-      return false;
+      return "invalid";
+    }
+    const savedTerminalPhase =
+      stored?.retired && stored.retirement === "correlated-confirmation"
+        ? "confirmed"
+        : stored?.retired && stored.retirement === "correlated-refusal"
+          ? "refused"
+          : null;
+    const terminalPhase = savedTerminalPhase ?? held.receipt?.result.phase;
+    if (
+      (terminalPhase === "confirmed" || terminalPhase === "refused") &&
+      parsed.data.result.phase !== terminalPhase
+    ) {
+      const terminalName =
+        terminalPhase === "confirmed" ? "confirmation" : "refusal";
+      held.notice = `The protected receipt conflicts with the saved correlated ${terminalName}. The saved ${terminalPhase} remains verified; no create was resent.`;
+      return "terminal-conflict";
     }
     const previous = held.receipt?.result.phase;
     if (
       (previous === "confirmed" || previous === "refused") &&
       parsed.data.result.phase !== previous
-    )
-      return true;
+    ) {
+      const terminalName =
+        previous === "confirmed" ? "confirmation" : "refusal";
+      held.notice = `The protected receipt conflicts with the saved correlated ${terminalName}. The saved ${previous} remains verified; no create was resent.`;
+      return "terminal-conflict";
+    }
     held.receipt = structuredClone(parsed.data);
     held.state = parsed.data.result.phase;
     held.notice =
@@ -156,7 +178,7 @@ export function createSmithConfigCreateClient(deps: {
         : parsed.data.result.phase === "refused"
           ? `Smith create was refused before publication: ${parsed.data.result.reason}. Review again before starting a new request.`
           : "Smith create outcome is held. Check the same original request; it will not be sent again automatically.";
-    return true;
+    return "installed";
   };
   const retire = async (
     held: SmithCreateEntry,
@@ -358,15 +380,16 @@ export function createSmithConfigCreateClient(deps: {
             "The create outcome is unknown. Check this original request; it will not be sent again automatically.";
           state.notice = held.notice;
         } else {
-          let installed = false;
+          let installed: SmithReceiptInstall = "invalid";
           try {
             installed = await installReceipt(held, outcome.value);
           } catch {
             held.notice =
               "The create response could not be checked. Its UUID remains held; check the original receipt.";
           }
-          if (installed) installed = await retireVerifiedReceipt(held);
-          if (!installed) held.state = "held";
+          if (installed === "installed") {
+            if (!(await retireVerifiedReceipt(held))) held.state = "held";
+          } else if (installed === "invalid") held.state = "held";
           state.notice = held.notice;
         }
         state.preview = null;
@@ -442,8 +465,9 @@ export function createSmithConfigCreateClient(deps: {
           const raw = await deps.readOriginal(id);
           if (!disposed) {
             const installed = await installReceipt(held, raw);
-            if (installed) await retireVerifiedReceipt(held);
+            if (installed === "installed") await retireVerifiedReceipt(held);
             else if (
+              installed === "invalid" &&
               identity.retired &&
               identity.retirement !== "operator-not-sent"
             )

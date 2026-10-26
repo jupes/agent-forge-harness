@@ -444,6 +444,115 @@ test("a refusal receipt is retired durably and does not strand the next create a
   restarted.dispose();
 });
 
+test("a retired refusal preserves its terminal state when protected readback conflicts", async () => {
+  const conflictingResults: SmithConfigCreateReceipt["result"][] = [
+    {
+      phase: "confirmed",
+      completedAt: "2026-10-25T20:01:00.000Z",
+      preview: preview({ target: "workspace", smith }),
+      publication: { file, created: false, sha256: "c".repeat(64) },
+    },
+    {
+      phase: "held",
+      stage: "attempted",
+      preview: preview({ target: "workspace", smith }),
+    },
+  ];
+
+  for (const conflictingResult of conflictingResults) {
+    const first = setup({
+      post: async (request) => ({
+        state: "sent",
+        value: await receipt(request, {
+          phase: "refused",
+          refusedAt: "2026-10-25T20:00:00.000Z",
+          reason: "stale-revision",
+          preview: preview(request),
+        }),
+      }),
+    });
+    first.client.setDraft("workspace", smith);
+    await first.client.preview();
+    await first.client.create();
+    first.client.dispose();
+
+    const original = first.posted[0]!;
+    const conflicting = await receipt(original, conflictingResult);
+    const restarted = createSmithConfigCreateClient({
+      identities: first.identities,
+      canWrite: () => true,
+      requestId: () => ids[1]!,
+      preview: async (input) => preview(input),
+      post: async (request) => {
+        first.posted.push(structuredClone(request));
+        return { state: "sent", value: await receipt(request) };
+      },
+      readOriginal: async (requestId) => {
+        first.readIds.push(requestId);
+        return conflicting;
+      },
+    });
+    await restarted.recover();
+
+    expect(restarted.canStart()).toBe(true);
+    expect(restarted.get().entries[0]).toMatchObject({
+      identity: { requestId: ids[0], retirement: "correlated-refusal" },
+      state: "refused",
+      receipt: null,
+    });
+    expect(restarted.get().entries[0]?.notice).toContain(
+      "conflicts with the saved correlated refusal",
+    );
+    expect(first.posted).toHaveLength(1);
+    expect(first.readIds).toEqual([ids[0]!]);
+    restarted.dispose();
+  }
+});
+
+test("a retired confirmation preserves its terminal state when protected readback refuses", async () => {
+  const first = setup();
+  first.client.setDraft("workspace", smith);
+  await first.client.preview();
+  await first.client.create();
+  first.client.dispose();
+
+  const original = first.posted[0]!;
+  const conflicting = await receipt(original, {
+    phase: "refused",
+    refusedAt: "2026-10-25T20:01:00.000Z",
+    reason: "stale-revision",
+    preview: preview(original),
+  });
+  const restarted = createSmithConfigCreateClient({
+    identities: first.identities,
+    canWrite: () => true,
+    requestId: () => ids[1]!,
+    preview: async (input) => preview(input),
+    post: async (request) => {
+      first.posted.push(structuredClone(request));
+      return { state: "sent", value: await receipt(request) };
+    },
+    readOriginal: async (requestId) => {
+      first.readIds.push(requestId);
+      return conflicting;
+    },
+  });
+  await restarted.recover();
+
+  expect(restarted.canStart()).toBe(true);
+  expect(restarted.get().entries[0]).toMatchObject({
+    identity: { requestId: ids[0], retirement: "correlated-confirmation" },
+    state: "confirmed",
+    receipt: null,
+  });
+  expect(restarted.get().entries[0]?.notice).toContain(
+    "conflicts with the saved correlated confirmation",
+  );
+  expect(first.posted).toHaveLength(1);
+  expect(first.readIds).toEqual([ids[0]!]);
+  restarted.dispose();
+});
+
 test("disposing during an identity reservation durably retires the proven-undispatched UUID", async () => {
   const value = setup();
   let release: (() => void) | undefined;
