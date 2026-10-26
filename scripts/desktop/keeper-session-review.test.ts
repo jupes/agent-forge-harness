@@ -230,6 +230,7 @@ test("reload restores the full saved envelope without dispatch, and a registry-o
     },
   });
   const review = client.get(source, 4);
+  expect(review.owner.purpose).toBe("keeper-proposal");
   await client.open(review);
   const original = review.original;
   expect(original?.start.launch.attachments).toHaveLength(2);

@@ -351,6 +351,7 @@ export function createKeeperSessionReviews(deps: {
       expectedRequestId: null,
       result: null,
       owner: {
+        purpose: "keeper-proposal",
         project: (id) => {
           if (id !== entry.source.projectId)
             throw new Error("This proposal belongs to another project.");

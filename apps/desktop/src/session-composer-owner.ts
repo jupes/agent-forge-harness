@@ -8,6 +8,7 @@ import type { createSessionWorktreeClient } from "./session-worktree-client";
 
 /** One form; ordinary and proposal starts retain separate immutable action owners. */
 export interface SessionComposerOwner {
+  purpose: "ordinary-session" | "keeper-proposal";
   project(id: string): Pick<
     SessionProjectView,
     | "composer"

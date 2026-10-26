@@ -210,6 +210,7 @@ for (const item of sixStartInputs) {
       stream: () => () => ({ close() {} }),
     });
 
+    expect(client.purpose).toBe("ordinary-session");
     await client.refreshIdentities(projectId);
     await client.start(projectId, item.input);
 

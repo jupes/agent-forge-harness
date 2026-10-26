@@ -1020,6 +1020,7 @@ export function createSessionsClient(deps: {
     await check(entry.projectId, entry.id);
   };
   const client = {
+    purpose: "ordinary-session" as const,
     worktrees: createSessionWorktreeClient({
       canWrite: deps.canWrite,
       requestId: deps.requestId,

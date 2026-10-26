@@ -268,10 +268,11 @@ export function ClaudeSessionComposer({
   }
   const busy = checking || attaching || view.starting;
   const identityReady =
-    !!view.identityPage &&
-    !view.identityLoading &&
-    view.identityGeneration !== null &&
-    view.identityGeneration !== undefined;
+    client.purpose === "keeper-proposal" ||
+    (!!view.identityPage &&
+      !view.identityLoading &&
+      view.identityGeneration !== null &&
+      view.identityGeneration !== undefined);
   const canStart =
     claudeReadiness?.authentication.mode !== "signed-out" &&
     writesAllowed &&
@@ -1077,15 +1078,17 @@ export function ClaudeSessionComposer({
           </p>
         )}
         {view.notice && <p role="status">{view.notice}</p>}
-        <SessionStartIdentityControls
-          projectId={project.id}
-          view={view}
-          client={client}
-          request={recoveryInput}
-          writesAllowed={writesAllowed}
-          archived={project.archived}
-          onOpenOriginal={onOpenOriginal}
-        />
+        {client.purpose === "ordinary-session" && (
+          <SessionStartIdentityControls
+            projectId={project.id}
+            view={view}
+            client={client}
+            request={recoveryInput}
+            writesAllowed={writesAllowed}
+            archived={project.archived}
+            onOpenOriginal={onOpenOriginal}
+          />
+        )}
         <div class="af-session-composer-actions">
           <Button onClick={onCancel}>
             {view.pendingStart || view.startIdentity
