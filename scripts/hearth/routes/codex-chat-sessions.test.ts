@@ -592,7 +592,7 @@ test("file Allow stays unavailable without actual diffs, current/foreign scope r
 });
 
 test("protected Fork routes publish one audited native Fork and recover its exact metadata-only original", async () => {
-  const f = await fixture("fork"),
+  const f = await fixture("fork-service-tier-null"),
     start = await f.post("", f.request);
   expect(start.status).toBe(202);
   const started = ownedCodingStartReceiptSchema.parse(
@@ -727,7 +727,7 @@ test("protected Fork routes publish one audited native Fork and recover its exac
 });
 
 test("a lost Fork reply is recovered by exact original GET without repeating the native effect", async () => {
-  const f = await fixture("fork", false, true),
+  const f = await fixture("fork-service-tier-null", false, true),
     start = await f.post("", f.request);
   expect(start.status).toBe(202);
   const started = ownedCodingStartReceiptSchema.parse(
