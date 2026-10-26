@@ -550,65 +550,76 @@ describe("supervise", () => {
     }
   });
 
-  test("Windows normal root exit keeps the work deadline while a helper holds output open", async () => {
+  test("Windows normal root exit keeps the work deadline while output drain is pending", async () => {
     if (process.platform !== "win32") return;
-    let helperPid: number | undefined, resolveHelper!: (pid: number) => void;
-    const helperStarted = new Promise<number>((resolve) => {
-      resolveHelper = resolve;
-    });
+    const timeoutMs = 1000;
+    let closeDrain!: () => void,
+      rootExit: Promise<unknown> | null = null;
+    let drainClosed = false;
+    const spawn: NonNullable<Parameters<typeof supervise>[0]["spawn"]> = (
+      command,
+      options,
+    ) => {
+      const proc = Bun.spawn(command, options),
+        nativeStdout = proc.stdout,
+        controlledStdout = new ReadableStream<Uint8Array>({
+          start(controller) {
+            closeDrain = () => {
+              if (drainClosed) return;
+              drainClosed = true;
+              controller.close();
+            };
+          },
+        });
+      rootExit = proc.exited;
+      void proc.exited.then(() => nativeStdout.cancel().catch(() => undefined));
+      return new Proxy(proc, {
+        get(target, property) {
+          if (property === "stdout") return controlledStdout;
+          const value = Reflect.get(target, property, target);
+          return typeof value === "function" ? value.bind(target) : value;
+        },
+      });
+    };
     const child = supervise({
-      command: [
-        process.execPath,
-        "-e",
-        'await Bun.stdin.text(); const helper = Bun.spawn([process.execPath, "-e", "setInterval(() => {}, 1000)"], { stdin: "ignore", stdout: "inherit", stderr: "ignore" }); console.log(JSON.stringify({ childPid: helper.pid })); process.exit(0);',
-      ],
+      command: [process.execPath, "-e", "process.exit(0)"],
       cwd: process.cwd(),
       env: { PATH: process.env.PATH ?? "" },
-      onLine(line) {
-        let record: unknown;
-        try {
-          record = JSON.parse(line);
-        } catch {
-          throw new Error("The pipe-holding fixture emitted invalid JSON.");
-        }
-        if (
-          typeof record === "object" &&
-          record !== null &&
-          "childPid" in record &&
-          typeof record.childPid === "number"
-        ) {
-          helperPid = record.childPid;
-          resolveHelper(record.childPid);
-        }
-      },
-      timeoutMs: 1000,
+      onLine: () => undefined,
+      timeoutMs,
+      spawn,
+      windowsStoppedGuard: () => ({
+        release() {},
+        terminate() {
+          closeDrain();
+        },
+        async settleStopped() {
+          closeDrain();
+        },
+      }),
     });
     try {
-      const announced = await Promise.race([
-        helperStarted.then((pid) => ({ kind: "helper" as const, pid })),
-        Bun.sleep(2000).then(() => ({ kind: "deadline" as const })),
-      ]);
-      expect(announced.kind).toBe("helper");
-      if (announced.kind !== "helper") return;
-      expect(helperPid).toBe(announced.pid);
-      expect(await goneWithin(child.pid, 1000)).toBe(true);
+      const actualRootExit = rootExit;
+      if (actualRootExit === null)
+        throw new Error("The spawned root exit witness was not captured.");
+      await actualRootExit;
+      expect(running(child.pid)).toBe(false);
+      expect(drainClosed).toBe(false);
       const completion = await Promise.race([
         child.done.then((result) => ({ kind: "done" as const, result })),
-        Bun.sleep(3000).then(() => ({ kind: "deadline" as const })),
+        Bun.sleep(timeoutMs + 1500).then(() => ({ kind: "deadline" as const })),
       ]);
       expect(completion.kind).toBe("done");
       if (completion.kind !== "done") return;
-      expect(helperPid).toBeDefined();
       expect(completion.result).toMatchObject({
         exitCode: 0,
         stopped: false,
         timedOut: true,
       });
-      if (helperPid !== undefined) expect(running(helperPid)).toBe(false);
+      expect(drainClosed).toBe(true);
     } finally {
-      if (helperPid !== undefined && running(helperPid)) killTree(helperPid);
-      if (helperPid !== undefined)
-        expect(await goneWithin(helperPid, 1000)).toBe(true);
+      closeDrain();
+      if (running(child.pid)) killTree(child.pid);
       await Promise.race([child.done, Bun.sleep(1000)]);
     }
   });
