@@ -93,17 +93,22 @@ async function completeSource(
       event: ownedCodingEventSchema.parse(event),
     });
   };
-  append({
-    kind: "coding-chat",
-    provider: "codex",
-    version,
-    event: {
-      kind: "identity",
-      provider: "codex",
-      threadId,
-      version,
-    },
-  });
+  if (
+    !frames.some(
+      (frame) => frame.turnId === requestId && frame.event.kind === "identity",
+    )
+  )
+    frames.push({
+      seq: frames.length + 1,
+      turnId: requestId,
+      at,
+      event: {
+        kind: "identity",
+        provider: "codex",
+        sessionId: threadId,
+        version,
+      },
+    });
   append({
     kind: "coding-chat",
     provider: "codex",
@@ -238,6 +243,33 @@ test("Fork source requires explicit tier evidence while preserving known null an
       ),
     };
     expect(resolve(source.state, omittedAboutOwner).eligible).toBe(true);
+
+    const nestedIdentity = structuredClone(source.state),
+      selectedFrame = nestedIdentity.frames.find(
+        (frame) => frame.turnId === source.requestId,
+      );
+    if (!selectedFrame)
+      throw Error("Missing selected turn for identity-conflict fixture.");
+    nestedIdentity.frames.push({
+      seq: nestedIdentity.frames.length + 1,
+      turnId: source.requestId,
+      at: selectedFrame.at,
+      event: ownedCodingEventSchema.parse({
+        kind: "coding-chat",
+        provider: "codex",
+        version,
+        event: { kind: "identity", provider: "codex", threadId, version },
+      }),
+    });
+    nestedIdentity.revision = nestedIdentity.frames.length;
+    const parsedNestedIdentity =
+      ownedCodingStateSchema.safeParse(nestedIdentity);
+    if (!parsedNestedIdentity.success)
+      throw Error("Identity-conflict fixture is not a valid owned state.");
+    expect(resolve(parsedNestedIdentity.data)).toEqual({
+      eligible: false,
+      reason: "source-incomplete",
+    });
 
     const changedTurnHash = structuredClone(source.state);
     if (!changedTurnHash.turns[0]) throw Error("Missing selected app turn.");

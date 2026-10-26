@@ -119,6 +119,12 @@ export function resolveCodexChatForkSource(input: {
       (frame) => frame.turnId === input.selectedTurnRequestId,
     ),
     userFrames = frames.filter((frame) => frame.event.kind === "user"),
+    identities = frames.filter((frame) => frame.event.kind === "identity"),
+    nestedIdentities = frames.filter(
+      (frame) =>
+        frame.event.kind === "coding-chat" &&
+        frame.event.event.kind === "identity",
+    ),
     nativeEvents = frames.flatMap((frame) =>
       frame.event.kind === "coding-chat" && frame.event.provider === "codex"
         ? [frame.event.event]
@@ -195,21 +201,21 @@ export function resolveCodexChatForkSource(input: {
   )
     return { eligible: false, reason: "binding-mismatch" };
 
-  const identities = nativeEvents.filter((event) => event.kind === "identity"),
-    configurations = nativeEvents.filter(
+  const configurations = nativeEvents.filter(
       (event) => event.kind === "configuration",
     ),
     turns = nativeEvents.filter((event) => event.kind === "turn"),
     outcomes = nativeEvents.filter((event) => event.kind === "outcome");
   if (
     identities.length !== 1 ||
+    nestedIdentities.length !== 0 ||
     configurations.length !== 1 ||
     turns.length !== 1 ||
     outcomes.length !== 1
   )
     return { eligible: false, reason: "source-incomplete" };
 
-  const identity = identities[0],
+  const identity = identities[0]?.event,
     configuration = configurations[0],
     turn = turns[0],
     outcome = outcomes[0];
@@ -225,7 +231,8 @@ export function resolveCodexChatForkSource(input: {
   )
     return { eligible: false, reason: "source-incomplete" };
   if (
-    identity.threadId !== binding.threadId ||
+    identity.provider !== binding.provider ||
+    identity.sessionId !== binding.threadId ||
     identity.version !== binding.version ||
     turn.threadId !== binding.threadId ||
     outcome.outcome.threadId !== binding.threadId ||
