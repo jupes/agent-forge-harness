@@ -550,6 +550,69 @@ describe("supervise", () => {
     }
   });
 
+  test("Windows normal root exit keeps the work deadline while a helper holds output open", async () => {
+    if (process.platform !== "win32") return;
+    let helperPid: number | undefined, resolveHelper!: (pid: number) => void;
+    const helperStarted = new Promise<number>((resolve) => {
+      resolveHelper = resolve;
+    });
+    const child = supervise({
+      command: [
+        process.execPath,
+        "-e",
+        'await Bun.stdin.text(); const helper = Bun.spawn([process.execPath, "-e", "setInterval(() => {}, 1000)"], { stdin: "ignore", stdout: "inherit", stderr: "ignore" }); console.log(JSON.stringify({ childPid: helper.pid })); process.exit(0);',
+      ],
+      cwd: process.cwd(),
+      env: { PATH: process.env.PATH ?? "" },
+      onLine(line) {
+        let record: unknown;
+        try {
+          record = JSON.parse(line);
+        } catch {
+          throw new Error("The pipe-holding fixture emitted invalid JSON.");
+        }
+        if (
+          typeof record === "object" &&
+          record !== null &&
+          "childPid" in record &&
+          typeof record.childPid === "number"
+        ) {
+          helperPid = record.childPid;
+          resolveHelper(record.childPid);
+        }
+      },
+      timeoutMs: 1000,
+    });
+    try {
+      const announced = await Promise.race([
+        helperStarted.then((pid) => ({ kind: "helper" as const, pid })),
+        Bun.sleep(2000).then(() => ({ kind: "deadline" as const })),
+      ]);
+      expect(announced.kind).toBe("helper");
+      if (announced.kind !== "helper") return;
+      expect(helperPid).toBe(announced.pid);
+      expect(await goneWithin(child.pid, 1000)).toBe(true);
+      const completion = await Promise.race([
+        child.done.then((result) => ({ kind: "done" as const, result })),
+        Bun.sleep(3000).then(() => ({ kind: "deadline" as const })),
+      ]);
+      expect(completion.kind).toBe("done");
+      if (completion.kind !== "done") return;
+      expect(helperPid).toBeDefined();
+      expect(completion.result).toMatchObject({
+        exitCode: 0,
+        stopped: false,
+        timedOut: true,
+      });
+      if (helperPid !== undefined) expect(running(helperPid)).toBe(false);
+    } finally {
+      if (helperPid !== undefined && running(helperPid)) killTree(helperPid);
+      if (helperPid !== undefined)
+        expect(await goneWithin(helperPid, 1000)).toBe(true);
+      await Promise.race([child.done, Bun.sleep(1000)]);
+    }
+  });
+
   test("delivers stdout one line at a time, including a final unterminated line", async () => {
     const lines: string[] = [];
     const child = supervise({
