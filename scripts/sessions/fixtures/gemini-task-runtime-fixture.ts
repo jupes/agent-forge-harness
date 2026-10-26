@@ -1,4 +1,5 @@
 import { appendFileSync, existsSync, readFileSync } from "node:fs";
+import { publishGeminiTaskHelp } from "./gemini-task-recording-witness";
 
 export async function runGeminiTaskRuntimeFixture() {
   const argv = process.argv.slice(2);
@@ -25,6 +26,7 @@ export async function runGeminiTaskRuntimeFixture() {
   }
   if (argv.includes("--help")) {
     record({ kind: "help" });
+    if (log) publishGeminiTaskHelp(log, process.pid);
     if (mode === "hold-help") await Bun.sleep(400);
     console.log(
       control.help ??
