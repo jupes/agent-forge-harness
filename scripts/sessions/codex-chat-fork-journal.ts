@@ -7,6 +7,7 @@ import type {
   CodexChatForkLink,
   CodexChatForkOriginal,
   CodexChatForkOriginalRef,
+  CodexChatForkSourceSeal,
 } from "../../types/codex-chat-fork";
 import { resolveCheckout } from "../ledger/workspace";
 import { workspaceKey } from "../projects/scope";
@@ -33,6 +34,7 @@ import {
   codexChatForkOriginalHash,
   codexChatForkOriginalRefSchema,
   codexChatForkOriginalSchema,
+  codexChatForkSourceSealSchema,
 } from "./codex-chat-fork-protocol";
 import {
   ownedSessionIdSchema,
@@ -113,6 +115,7 @@ const immutableIdentity = (record: CodexChatForkOriginal) => ({
   throughTurnRequestId: record.throughTurnRequestId,
   protocolVersion: record.protocolVersion,
   childAppSessionId: record.childAppSessionId,
+  ...(record.sourceSeal === undefined ? {} : { sourceSeal: record.sourceSeal }),
   createdAt: record.createdAt,
 });
 const matchesRef = (
@@ -126,7 +129,8 @@ const matchesRef = (
   record.parentSessionId === ref.parentSessionId &&
   record.throughTurnRequestId === ref.throughTurnRequestId &&
   record.protocolVersion === ref.protocolVersion &&
-  record.childAppSessionId === ref.childAppSessionId;
+  record.childAppSessionId === ref.childAppSessionId &&
+  same(record.sourceSeal ?? null, ref.sourceSeal ?? null);
 const same = (left: unknown, right: unknown) =>
   JSON.stringify(left) === JSON.stringify(right);
 const sameRecord = (left: unknown, right: unknown) => {
@@ -425,10 +429,13 @@ export function createCodexChatForkJournal(
       projectId: string,
       parentSessionId: string,
       raw: CodexChatForkIntent,
+      rawSourceSeal: CodexChatForkSourceSeal,
     ): Promise<CodexChatForkOriginal> {
       const intent = codexChatForkIntentSchema.safeParse(raw);
+      const sourceSeal = codexChatForkSourceSealSchema.safeParse(rawSourceSeal);
       if (
         !intent.success ||
+        !sourceSeal.success ||
         !sessionProjectIdSchema.safeParse(projectId).success ||
         !ownedSessionIdSchema.safeParse(parentSessionId).success
       )
@@ -453,7 +460,8 @@ export function createCodexChatForkJournal(
             existing.parentSessionId !== parentSessionId ||
             existing.throughTurnRequestId !==
               intent.data.throughTurnRequestId ||
-            existing.requestHash !== requestHash
+            existing.requestHash !== requestHash ||
+            !same(existing.sourceSeal ?? null, sourceSeal.data)
           )
             return conflict();
           return existing;
@@ -490,6 +498,7 @@ export function createCodexChatForkJournal(
           throughTurnRequestId: intent.data.throughTurnRequestId,
           protocolVersion: CODEX_CHAT_FORK_PROTOCOL_VERSION,
           childAppSessionId,
+          sourceSeal: sourceSeal.data,
           state: "reserved",
           createdAt: at,
           updatedAt: at,
@@ -518,6 +527,7 @@ export function createCodexChatForkJournal(
             chain.originals.get(expected.requestId),
             expected,
           );
+        if (!current.sourceSeal) return { record: current, mayDispatch: false };
         if (current.state !== "reserved")
           return { record: current, mayDispatch: false };
         const at = now(),
@@ -538,6 +548,7 @@ export function createCodexChatForkJournal(
             expected,
           ),
           checkedCapture = codexChatForkCaptureSchema.safeParse(rawCapture);
+        if (!current.sourceSeal) return held();
         if (!checkedCapture.success) {
           if (current.state === "held") return current;
           if (current.state !== "attempted") return conflict();
@@ -601,6 +612,7 @@ export function createCodexChatForkJournal(
             chain.originals.get(expected.requestId),
             expected,
           );
+        if (!current.sourceSeal) return held();
         if (current.state === "linked") {
           if (sameLink(current.link, checkedLink.data)) return current;
           return conflict();
@@ -638,6 +650,7 @@ export function createCodexChatForkJournal(
             chain.originals.get(expected.requestId),
             expected,
           );
+        if (!current.sourceSeal) return held();
         if (current.state === "held") {
           if (current.heldReason === reason.data) return current;
           return conflict();

@@ -191,6 +191,7 @@ export function createProjectShiftAttemptReader(options: {
     const origin = record.origin;
     if (
       !origin ||
+      origin.kind !== "shift" ||
       origin.projectId !== intent.projectId ||
       origin.originalRequestId !== intent.request.requestId ||
       origin.shiftId !== intent.shiftId ||
