@@ -82,6 +82,32 @@ async function within<T>(
 }
 
 describe("bounded operator requests", () => {
+  test("an opted-in POST cap cancels an oversized response before buffering it", async () => {
+    const calls: string[] = [];
+    let cancelled = false;
+    const client = createOperatorClient(async (url) => {
+      calls.push(url);
+      if (url === TOKEN_ROUTE)
+        return Response.json({ ok: true, data: { token: "t" }, error: null });
+      return new Response(
+        new ReadableStream<Uint8Array<ArrayBuffer>>({
+          start(controller) {
+            controller.enqueue(new Uint8Array([1, 2, 3]));
+          },
+          cancel() {
+            cancelled = true;
+          },
+        }),
+      );
+    });
+
+    await expect(
+      client.post("/finite-post", {}, { maxBodyBytes: 2 }),
+    ).rejects.toThrow("exceeds its byte limit");
+    expect(calls).toEqual([TOKEN_ROUTE, "/finite-post"]);
+    expect(cancelled).toBe(true);
+  });
+
   test("successful streams stay streaming and keep caller cancellation after the header timer is cleared", async () => {
     const timers = new Set<() => void>();
     let streamSignal: AbortSignal | null | undefined;

@@ -368,7 +368,12 @@ export function launchSettled(): Promise<LaunchOutcome> {
 
 // ── The operator client ─────────────────────────────────────────────────────
 
-export type OperatorPost = (url: string, body: unknown) => Promise<Response>;
+export type OperatorPost = (
+  url: string,
+  body: unknown,
+  /** Opt-in receiving cap, before whole-body buffering; omitted by existing callers. */
+  limits?: { maxBodyBytes: number },
+) => Promise<Response>;
 
 /** A GET (or what `init` says) with the operator token added to its headers. */
 export type OperatorRead = (
@@ -470,7 +475,11 @@ export function createOperatorClient(
     }
   };
 
-  const send = async (url: string, body: unknown): Promise<Response> => {
+  const send = async (
+    url: string,
+    body: unknown,
+    limits?: { maxBodyBytes: number },
+  ): Promise<Response> => {
     const check = (): void => {
       const problem = options.postProblem?.(url);
       if (problem) throw new NotSent(problem);
@@ -478,7 +487,10 @@ export function createOperatorClient(
     check();
     const held = await heldToken();
     check();
-    return fetchImpl(url, {
+    const post = limits
+      ? boundedFetch(originalFetch, options, limits.maxBodyBytes)
+      : fetchImpl;
+    return post(url, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
