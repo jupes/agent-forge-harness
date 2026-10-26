@@ -141,6 +141,11 @@ export function createOwnedCodingSessionService(options: {
       503,
       "The original Session Start could not be verified. Its identity remains held; retrying will not dispatch another provider request.",
     );
+  const registryConflict = () =>
+    new ConversationError(
+      409,
+      "This Session Start UUID is already bound to another project or workspace.",
+    );
   const scopeFor = (projectId: string) => ({
     address: { family: "owned-session-start" as const, projectId },
     workspace,
@@ -444,6 +449,7 @@ export function createOwnedCodingSessionService(options: {
         } catch {
           throw held();
         }
+        if (original.kind === "conflict") throw registryConflict();
         if (original.kind === "invalid") throw held();
         if (original.kind === "verified") {
           try {
@@ -488,6 +494,7 @@ export function createOwnedCodingSessionService(options: {
       } catch {
         throw held();
       }
+      if (source.kind === "conflict") throw registryConflict();
       if (source.kind === "invalid") throw held();
       if (source.kind === "verified") {
         try {

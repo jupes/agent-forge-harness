@@ -19,6 +19,7 @@ export type VerifiedOriginalStart = {
 export type OriginalStartProofRead =
   | { kind: "missing" }
   | { kind: "invalid" }
+  | { kind: "conflict" }
   | { kind: "verified"; value: VerifiedOriginalStart };
 
 function sameRegistrySession(
@@ -133,9 +134,15 @@ export function readVerifiedOriginalStart(options: {
   if (session === null) return { kind: "missing" };
   if (
     session.origin !== undefined ||
+    session.requestId !== options.identity.requestId
+  )
+    return { kind: "invalid" };
+  if (
     session.projectId !== options.identity.address.projectId ||
-    workspaceKey(session.workspace) !== options.identity.workspace ||
-    session.requestId !== options.identity.requestId ||
+    workspaceKey(session.workspace) !== options.identity.workspace
+  )
+    return { kind: "conflict" };
+  if (
     session.requestHash !== options.identity.requestHash ||
     session.provider !== options.identity.provider ||
     session.mode !== options.identity.mode

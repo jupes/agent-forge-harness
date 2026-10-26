@@ -652,16 +652,19 @@ test("restart proof keeps exact launch presence and binds all five provider mode
         readFileSync(join(legacy.home, "restart-identities", name)),
       ]);
   const beforeRetire = eventBytes();
+  let providerCalls = 0;
   const service = createOwnedCodingSessionService({
     home: legacy.home,
     root: legacy.root,
     runtime: {
       provider: "claude",
       async prepare() {
-        throw Error("retirement must not prepare a provider");
+        providerCalls++;
+        throw Error("identity reconciliation must not prepare a provider");
       },
       async run() {
-        throw Error("retirement must not dispatch a provider");
+        providerCalls++;
+        throw Error("identity reconciliation must not dispatch a provider");
       },
     },
     async validateScope() {},
@@ -683,5 +686,10 @@ test("restart proof keeps exact launch presence and binds all five provider mode
       identity.requestId,
     ),
   ).toMatchObject({ state: "reserved" });
+  await expect(
+    service.start(randomUUID(), legacy.request),
+  ).rejects.toMatchObject({ status: 409 } satisfies Partial<ConversationError>);
+  expect(providerCalls).toBe(0);
+  expect(eventBytes()).toEqual(beforeRetire);
   await service.close();
 });

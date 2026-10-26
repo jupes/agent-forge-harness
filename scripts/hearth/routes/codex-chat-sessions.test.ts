@@ -305,6 +305,9 @@ test("protected HTTP Chat with a compiled native provider preserves two turns an
     f.request,
     "admitted",
   );
+  const id = started.session.id,
+    pending = await f.waitApproval(id);
+  expect(pending.actionable).toBe(true);
   const beforeDuplicateStart = JSON.stringify(f.records());
   const duplicateStart = await f.post("", f.request);
   expect(duplicateStart.status).toBe(202);
@@ -320,9 +323,6 @@ test("protected HTTP Chat with a compiled native provider preserves two turns an
     f.request,
     "admitted",
   );
-  const id = started.session.id,
-    pending = await f.waitApproval(id);
-  expect(pending.actionable).toBe(true);
   expect(pending.approval).not.toHaveProperty("nativeRequestId");
   expect(
     (
