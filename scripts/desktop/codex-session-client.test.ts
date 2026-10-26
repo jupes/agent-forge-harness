@@ -5,6 +5,8 @@ import type {
   OwnedCodingSessionRecord,
   OwnedSessionStartRequest,
 } from "../../types/codex-owned-task";
+import { codexTaskLaunchFromStart } from "../sessions/codex-owned-preparation";
+import { preparedCodexTaskSchema } from "../sessions/codex-task-runtime-protocol";
 import { sessionStartFixture } from "./session-start-fixture";
 
 const projectId = "project-a5832fa0-7a21-403b-8184-44892f0d8d86";
@@ -44,9 +46,21 @@ const record = {
   createdAt: at,
 };
 record.requestHash = await sessionStartHash({ ...input, requestId });
+const originalTaskSnapshot = preparedCodexTaskSchema.parse({
+  version: 1,
+  provider: "codex",
+  smith: input.smith,
+  cwd: input.worktree,
+  canonicalCwd: input.worktree,
+  launch: codexTaskLaunchFromStart(projectId, input),
+  capabilities: {
+    version: "0.163.0-alpha.10.2",
+    flags: ["--json", "--color", "--sandbox", "--model", "--cd", "--config"],
+  },
+});
 const turn = {
   requestId,
-  hash: "a".repeat(64),
+  hash: record.requestHash,
   phase: "completed" as const,
   createdAt: at,
   updatedAt: at,
@@ -64,10 +78,22 @@ const page = {
     version: "0.163.0-alpha.10.2",
   },
   turns: [turn],
-  frames: [],
+  frames: [
+    {
+      seq: 1,
+      turnId: requestId,
+      at,
+      event: {
+        kind: "user" as const,
+        text: input.launch.prompt,
+        about: input.about,
+        codexTask: originalTaskSnapshot,
+      },
+    },
+  ],
   more: false,
-  nextCursor: 0,
-  lastSequence: 0,
+  nextCursor: 1,
+  lastSequence: 1,
   request: turn,
   controllable: false,
 };

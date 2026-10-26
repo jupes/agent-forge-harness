@@ -5,6 +5,7 @@ import { OPERATOR_HEADER } from "../../scripts/hearth/paths";
 import { ownedCodingStateSchema } from "../../scripts/sessions/codex-owned-journal";
 import { codexTaskStartSchema } from "../../scripts/sessions/codex-owned-protocol";
 import { ownedCodingSessionSchema } from "../../scripts/sessions/codex-owned-wire-protocol";
+import { sessionStartIdentityPageSchema } from "../../scripts/sessions/identity-protocol";
 import type { CodexTaskStartRequest } from "../../types/codex-owned-task";
 import { openSettled, reloadSettled } from "../e2e/fixtures";
 import { pageToken } from "../e2e/launch-link";
@@ -179,11 +180,19 @@ test("an explicit identity check recovers from an unavailable initial GET withou
   let identityGets = 0;
   let identityPosts = 0;
   let startPosts = 0;
+  const recoveredPageRef: {
+    current: ReturnType<typeof sessionStartIdentityPageSchema.parse> | null;
+  } = { current: null };
   await page.route(
     `**/__agent-forge/projects/${alpha.id}/session-start-identities`,
     async (route) => {
       if (route.request().method() === "POST") identityPosts++;
-      if (route.request().method() === "GET" && identityGets++ === 0) {
+      if (route.request().method() !== "GET") {
+        await route.continue();
+        return;
+      }
+      identityGets++;
+      if (identityGets === 1) {
         await route.fulfill({
           status: 503,
           contentType: "application/json",
@@ -195,7 +204,23 @@ test("an explicit identity check recovers from an unavailable initial GET withou
         });
         return;
       }
-      await route.continue();
+      const response = await route.fetch({
+        headers: {
+          ...(await route.request().allHeaders()),
+          Origin: new URL(route.request().url()).origin,
+          "Sec-Fetch-Site": "same-origin",
+        },
+      });
+      const envelope = (await response.json()) as {
+        ok?: boolean;
+        data?: unknown;
+      };
+      if (response.status() !== 200 || envelope.ok !== true)
+        throw Error("The real Session Start identity page could not be read.");
+      recoveredPageRef.current = sessionStartIdentityPageSchema.parse(
+        envelope.data,
+      );
+      await route.fulfill({ response, json: envelope });
     },
   );
   page.on("request", (request) => {
@@ -211,6 +236,10 @@ test("an explicit identity check recovers from an unavailable initial GET withou
   await expect.poll(() => identityGets).toBe(1);
   await page.getByRole("button", { name: "New session", exact: true }).click();
   const dialog = await chooseCodex(page);
+  const identityRegion = dialog.getByRole("region", {
+    name: "Original Start requests",
+    exact: true,
+  });
   await expect(
     dialog.getByRole("button", { name: "Start", exact: true }),
   ).toBeDisabled();
@@ -221,12 +250,35 @@ test("an explicit identity check recovers from an unavailable initial GET withou
   await expect(checkServer).toBeEnabled();
   await checkServer.click();
   await expect.poll(() => identityGets).toBe(2);
-  await expect(
-    dialog.getByText(
-      "No server-owned Start identity is recorded for this workspace.",
-      { exact: true },
-    ),
-  ).toBeVisible();
+  const recoveredPage = recoveredPageRef.current;
+  if (!recoveredPage)
+    throw Error("The recovered protected identity page was not captured.");
+  expect(recoveredPage.scope.projectId).toBe(alpha.id);
+  const identityRows = identityRegion.locator(".af-start-identities-list li");
+  await expect(identityRows).toHaveCount(recoveredPage.identities.length);
+  if (recoveredPage.identities.length === 0) {
+    await expect(
+      identityRegion.getByText(
+        "No server-owned Start identity is recorded for this workspace.",
+        { exact: true },
+      ),
+    ).toBeVisible();
+  } else {
+    await expect(
+      identityRegion.getByText(
+        "No server-owned Start identity is recorded for this workspace.",
+        { exact: true },
+      ),
+    ).toHaveCount(0);
+    for (const [index, identity] of recoveredPage.identities.entries()) {
+      const row = identityRows.nth(index);
+      await expect(row).toContainText(
+        `${identity.provider} ${identity.mode} · ${identity.state}`,
+      );
+      await expect(row.locator("code").nth(0)).toHaveText(identity.requestId);
+      await expect(row.locator("code").nth(1)).toHaveText(identity.requestHash);
+    }
+  }
   await dialog
     .getByRole("textbox", { name: "Session prompt", exact: true })
     .fill("No Start until the identity page can be checked");
