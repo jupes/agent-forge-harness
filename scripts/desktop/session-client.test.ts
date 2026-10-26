@@ -24,7 +24,20 @@ import { sessionStartHash } from "../../apps/desktop/src/session-start-identitie
 import type { SessionStartIdentityServer } from "../../apps/desktop/src/session-start-identity-server";
 import type { ActionOutcome } from "../../docs/js/action-outcome";
 import type { StreamHandlers } from "../../docs/js/use-stream";
-import { canonicalOwnedSessionStart } from "../../scripts/sessions/codex-owned-protocol";
+import { preparedCodexChatSchema } from "../../scripts/sessions/codex-app-server-protocol";
+import { codexChatLaunchFromStart } from "../../scripts/sessions/codex-chat-owned-preparation";
+import { codexTaskLaunchFromStart } from "../../scripts/sessions/codex-owned-preparation";
+import {
+  canonicalOwnedSessionStart,
+  parseOwnedSessionStart,
+} from "../../scripts/sessions/codex-owned-protocol";
+import { preparedCodexTaskSchema } from "../../scripts/sessions/codex-task-runtime-protocol";
+import { geminiChatLaunchFromStart } from "../../scripts/sessions/gemini-chat-owned-preparation";
+import { preparedGeminiChatSchema } from "../../scripts/sessions/gemini-chat-runtime-protocol";
+import { geminiTaskLaunchFromStart } from "../../scripts/sessions/gemini-owned-preparation";
+import { preparedGeminiTaskSchema } from "../../scripts/sessions/gemini-task-runtime-protocol";
+import { sessionTurnSnapshotSchema } from "../../scripts/sessions/turn-protocol";
+import type { OwnedCodingSessionRecord } from "../../types/codex-owned-task";
 import type { OwnedSessionRecord } from "../../types/owned-session";
 import type { SessionStartRequest } from "../../types/session-requests";
 import { sessionStartFixture } from "./session-start-fixture";
@@ -150,6 +163,360 @@ const sixStartInputs = [
     }),
   },
 ] as const;
+
+async function sourceValidOriginal(item: (typeof sixStartInputs)[number]) {
+  const original = parseOwnedSessionStart({
+      ...item.input,
+      requestId,
+    }),
+    provider: "claude" | "codex" | "gemini" =
+      "provider" in original ? original.provider : "claude",
+    mode = original.launch.mode,
+    requestHash = await sessionStartHash(original),
+    session = {
+      id,
+      projectId,
+      requestId,
+      requestHash,
+      mode,
+      provider,
+      workspace: "/repo",
+      repository: original.repository,
+      worktree: original.worktree,
+      ...(original.beadId === undefined ? {} : { beadId: original.beadId }),
+      smith: original.smith,
+      requestedModel: original.launch.model ?? null,
+      requestedEffort:
+        "effort" in original.launch ? (original.launch.effort ?? null) : null,
+      ...(provider === "gemini" ? { route: "gemini-cli" as const } : {}),
+      createdAt: at,
+    } as OwnedCodingSessionRecord,
+    context = {
+      projectId,
+      repository: original.repository,
+      worktree: original.worktree,
+      ...(original.beadId === undefined ? {} : { beadId: original.beadId }),
+      about: structuredClone(original.about ?? []),
+    };
+
+  let snapshot: unknown,
+    field: "session" | "codexTask" | "codexChat" | "geminiTask" | "geminiChat";
+  if (!("provider" in original)) {
+    field = "session";
+    snapshot = sessionTurnSnapshotSchema.parse({
+      version: 1,
+      provider,
+      smith: original.smith,
+      cwd: original.worktree,
+      launch: { ...original.launch, context },
+      capabilities: { version: "2.1.0", flags: ["--print", "--model"] },
+    });
+  } else {
+    if (original.provider === "codex" && original.launch.mode === "task") {
+      field = "codexTask";
+      const { requestId: _requestId, ...request } = original,
+        launch = codexTaskLaunchFromStart(
+          projectId,
+          request as Parameters<typeof codexTaskLaunchFromStart>[1],
+        );
+      snapshot = preparedCodexTaskSchema.parse({
+        version: 1,
+        provider,
+        smith: original.smith,
+        cwd: original.worktree,
+        canonicalCwd: original.worktree,
+        launch,
+        capabilities: {
+          version: "0.163.0-alpha.10.2",
+          flags: [
+            "--json",
+            "--color",
+            "--sandbox",
+            "--model",
+            "--cd",
+            "--config",
+          ],
+        },
+      });
+    } else if (original.provider === "codex") {
+      field = "codexChat";
+      const { requestId: _requestId, ...request } = original,
+        launch = codexChatLaunchFromStart(
+          projectId,
+          request as Parameters<typeof codexChatLaunchFromStart>[1],
+        );
+      snapshot = preparedCodexChatSchema.parse({
+        version: 1,
+        provider,
+        smith: original.smith,
+        cwd: original.worktree,
+        canonicalCwd: original.worktree,
+        launch,
+        capabilities: { version: "0.163.0-alpha.10.2", flags: ["--stdio"] },
+      });
+    } else if (original.launch.mode === "task") {
+      field = "geminiTask";
+      const { requestId: _requestId, ...request } = original,
+        launch = geminiTaskLaunchFromStart(
+          projectId,
+          request as Parameters<typeof geminiTaskLaunchFromStart>[1],
+        );
+      snapshot = preparedGeminiTaskSchema.parse({
+        version: 1,
+        provider,
+        smith: original.smith,
+        canonicalRoot: "/repo",
+        canonicalCwd: original.worktree,
+        command: ["/repo/gemini"],
+        paths: [original.repository, original.worktree],
+        launch,
+        capabilities: {
+          version: "0.65.0",
+          flags: ["--output-format", "--model"],
+        },
+      });
+    } else {
+      field = "geminiChat";
+      const { requestId: _requestId, ...request } = original,
+        launch = geminiChatLaunchFromStart(
+          projectId,
+          request as Parameters<typeof geminiChatLaunchFromStart>[1],
+        );
+      snapshot = preparedGeminiChatSchema.parse({
+        version: 1,
+        provider,
+        smith: original.smith,
+        canonicalRoot: "/repo",
+        canonicalCwd: original.worktree,
+        command: ["/repo/gemini"],
+        paths: [original.repository, original.worktree],
+        launch,
+        capabilities: { version: "0.65.0", flags: ["--acp", "--model"] },
+      });
+    }
+  }
+
+  const originalTurn = {
+    ...turn,
+    hash: requestHash,
+  };
+  return {
+    original,
+    session,
+    event: {
+      kind: "user" as const,
+      text: original.launch.prompt,
+      about: structuredClone(original.about ?? []),
+      [field]: snapshot,
+    },
+    originalTurn,
+    provider,
+    mode,
+    requestHash,
+  };
+}
+
+async function inspectSourceValidOriginal(
+  item: (typeof sixStartInputs)[number],
+  mutate?: (source: Awaited<ReturnType<typeof sourceValidOriginal>>) => {
+    session?: OwnedCodingSessionRecord;
+    identityHash?: string;
+    event?: unknown;
+    turns?: (typeof turn)[];
+    request?: typeof turn;
+    frames?: typeof page.frames;
+  },
+) {
+  const source = await sourceValidOriginal(item),
+    changed = mutate?.(source),
+    selectedSession = changed?.session ?? source.session,
+    scope = { projectId, workspace: "/repo", generation: 1 },
+    identityServer: SessionStartIdentityServer = {
+      async list(current) {
+        return {
+          version: 1,
+          scope: {
+            family: "owned-session-start",
+            projectId: current.projectId,
+            workspace: current.workspace,
+          },
+          identities: [
+            {
+              version: 1,
+              requestId,
+              requestHash: changed?.identityHash ?? source.requestHash,
+              provider: source.provider,
+              mode: source.mode,
+              state: "admitted",
+            },
+          ],
+        };
+      },
+      async reserve() {
+        throw Error("Inspection must not reserve");
+      },
+      async retire() {
+        throw Error("Inspection must not retire");
+      },
+    },
+    client = createSessionsClient({
+      identityServer,
+      identityScope: () => scope,
+      canWrite: () => true,
+      requestId: () => requestId,
+      list: async () => [selectedSession],
+      read: async (_project, sessionId, query) => {
+        expect(sessionId).toBe(id);
+        expect(query).toEqual({ after: 0, requestId });
+        return {
+          ...page,
+          revision: changed?.frames ? changed.frames.length : 2,
+          lastSequence: changed?.frames?.at(-1)?.seq ?? 1,
+          nextCursor: changed?.frames?.at(-1)?.seq ?? 1,
+          turns: changed?.turns ?? [source.originalTurn],
+          frames: changed?.frames ?? [
+            {
+              seq: 1,
+              turnId: requestId,
+              at,
+              event: (changed?.event ??
+                source.event) as (typeof page.frames)[number]["event"],
+            },
+          ],
+          request: changed?.request ?? source.originalTurn,
+        };
+      },
+      post: async () => {
+        throw Error("Inspection must not post");
+      },
+      stream: () => () => ({ close() {} }),
+    });
+  try {
+    await client.refreshIdentities(projectId);
+    return await client.inspectIdentity(projectId, requestId);
+  } finally {
+    client.dispose();
+  }
+}
+
+for (const item of sixStartInputs) {
+  test(`${item.name} original identity inspection verifies its source-built frame snapshot`, async () => {
+    expect(await inspectSourceValidOriginal(item)).toBe(true);
+  });
+}
+
+test("original Start inspection uses the request-correlated receipt outside the recent-turn window", async () => {
+  const item = sixStartInputs[0]!,
+    source = await sourceValidOriginal(item),
+    recentTurns = Array.from({ length: 50 }, (_, index) => {
+      const recentId = `00000000-0000-4000-8000-${String(index + 1).padStart(12, "0")}`;
+      return { ...source.originalTurn, requestId: recentId };
+    }),
+    laterFrames = recentTurns.map((recent, index) => ({
+      seq: index + 2,
+      turnId: recent.requestId,
+      at,
+      event: {
+        kind: "user" as const,
+        text: `Later prompt ${index}`,
+        about: [],
+      },
+    }));
+
+  expect(
+    await inspectSourceValidOriginal(item, () => ({
+      turns: recentTurns,
+      frames: [
+        {
+          seq: 1,
+          turnId: requestId,
+          at,
+          event: source.event as (typeof page.frames)[number]["event"],
+        },
+        ...laterFrames,
+      ],
+      request: source.originalTurn,
+    })),
+  ).toBe(true);
+});
+
+test("original Start inspection refuses conflicting list and request receipts", async () => {
+  const item = sixStartInputs[0]!,
+    source = await sourceValidOriginal(item);
+
+  expect(
+    await inspectSourceValidOriginal(item, () => ({
+      turns: [{ ...source.originalTurn, hash: "f".repeat(64) }],
+      request: source.originalTurn,
+    })),
+  ).toBe(false);
+});
+
+test("original Start inspection refuses changed mode, provider, registry hash, and Gemini server-only paths", async () => {
+  const [claude, codexTask, geminiTask] = [
+    sixStartInputs[0]!,
+    sixStartInputs[2]!,
+    sixStartInputs[4]!,
+  ];
+  const claudeSource = await sourceValidOriginal(claude),
+    codexSource = await sourceValidOriginal(codexTask),
+    geminiSource = await sourceValidOriginal(geminiTask),
+    claudeEvent = claudeSource.event as Record<string, unknown>,
+    claudeSnapshot = claudeEvent["session"] as Record<string, unknown>,
+    claudeLaunch = claudeSnapshot["launch"] as Record<string, unknown>,
+    codexEvent = codexSource.event as Record<string, unknown>,
+    codexSnapshot = codexEvent["codexTask"] as Record<string, unknown>,
+    geminiEvent = geminiSource.event as Record<string, unknown>,
+    geminiSnapshot = geminiEvent["geminiTask"] as Record<string, unknown>,
+    geminiLaunch = geminiSnapshot["launch"] as Record<string, unknown>;
+
+  expect(
+    await inspectSourceValidOriginal(claude, () => ({
+      event: {
+        ...claudeEvent,
+        session: {
+          ...claudeSnapshot,
+          launch: { ...claudeLaunch, mode: "chat" },
+        },
+      },
+    })),
+  ).toBe(false);
+  expect(
+    await inspectSourceValidOriginal(codexTask, () => ({
+      event: {
+        ...codexEvent,
+        codexTask: { ...codexSnapshot, provider: "gemini" },
+      },
+    })),
+  ).toBe(false);
+  expect(
+    await inspectSourceValidOriginal(geminiTask, () => ({
+      identityHash: "e".repeat(64),
+    })),
+  ).toBe(false);
+  expect(
+    await inspectSourceValidOriginal(geminiTask, () => ({
+      event: {
+        ...geminiEvent,
+        geminiTask: {
+          ...geminiSnapshot,
+          launch: { ...geminiLaunch, policyFiles: [] },
+        },
+      },
+    })),
+  ).toBe(false);
+  expect(
+    await inspectSourceValidOriginal(geminiTask, () => ({
+      event: {
+        ...geminiEvent,
+        geminiTask: {
+          ...geminiSnapshot,
+          launch: { ...geminiLaunch, includeDirectories: [] },
+        },
+      },
+    })),
+  ).toBe(false);
+});
 
 for (const item of sixStartInputs) {
   test(`${item.name} reserves the exact request before one ordinary Start`, async () => {
