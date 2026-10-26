@@ -443,9 +443,23 @@ export function createSessionsClient(deps: {
     expectedRequestHash: string,
   ): Promise<boolean> => {
     const frame = original.frames[0];
-    const turn = original.turns.find(
+    const listedTurn = original.turns.find(
       (candidate) => candidate.requestId === expectedRequestId,
     );
+    const requestTurn = original.request;
+    if (
+      requestTurn !== null &&
+      (requestTurn.requestId !== expectedRequestId ||
+        (listedTurn !== undefined &&
+          (listedTurn.hash !== requestTurn.hash ||
+            listedTurn.phase !== requestTurn.phase ||
+            listedTurn.createdAt !== requestTurn.createdAt ||
+            listedTurn.updatedAt !== requestTurn.updatedAt ||
+            listedTurn.reason !== requestTurn.reason ||
+            listedTurn.owner !== requestTurn.owner)))
+    )
+      return false;
+    const turn = requestTurn ?? listedTurn;
     if (
       original.projectId !== record.projectId ||
       original.conversationId !== record.id ||
