@@ -365,6 +365,7 @@ test("API freezes request bytes synchronously before hashing and posting", async
     scope: "trusted-scope",
     inputHash: await smithConfigEditInputHash(original),
   };
+  const expectedReservation = structuredClone(reservation);
   const posted: unknown[] = [];
   const api = createSmithEditApi({
     post: async (_url, body) => {
@@ -381,12 +382,14 @@ test("API freezes request bytes synchronously before hashing and posting", async
   const pending = api.edit(request, reservation);
   request.smith.model = "mutated while request hash is pending";
   request.target = "user";
+  reservation.scope = "mutated-scope";
+  reservation.inputHash = "0".repeat(64);
   const outcome = await pending;
   expect(posted).toEqual([original]);
   expect(
     isVerifiedSmithEditNotSent(outcome, {
       requestId: original.requestId,
-      ...reservation,
+      ...expectedReservation,
     }),
   ).toBe(true);
 });

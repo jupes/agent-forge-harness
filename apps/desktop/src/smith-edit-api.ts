@@ -87,15 +87,18 @@ export function createSmithEditApi(deps: {
           message: "The exact Smith edit request could not be verified.",
         };
       }
-      const proofIdentity = {
-        requestId: original.requestId,
+      const savedReservation = {
         scope: reserved.scope,
         inputHash: reserved.inputHash,
       };
+      const proofIdentity = {
+        requestId: original.requestId,
+        ...savedReservation,
+      };
       if (
-        !/^[a-f0-9]{64}$/.test(reserved.inputHash) ||
-        reserved.scope.length < 1 ||
-        reserved.scope.length > 512
+        !/^[a-f0-9]{64}$/.test(savedReservation.inputHash) ||
+        savedReservation.scope.length < 1 ||
+        savedReservation.scope.length > 512
       )
         return {
           state: "unknown",
@@ -111,14 +114,14 @@ export function createSmithEditApi(deps: {
           message: "The exact Smith edit request could not be verified.",
         };
       }
-      if (canonicalHash !== reserved.inputHash)
+      if (canonicalHash !== savedReservation.inputHash)
         return {
           state: "unknown",
           message: "The Smith edit request differs from its saved identity.",
         };
       if (
         !deps.canWrite() ||
-        startingScope !== reserved.scope ||
+        startingScope !== savedReservation.scope ||
         deps.scope() !== startingScope
       )
         return verifiedNotSent(
