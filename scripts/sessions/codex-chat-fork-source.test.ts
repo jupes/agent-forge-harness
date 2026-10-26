@@ -130,7 +130,7 @@ async function completeSource(
         turnId: nativeTurnId,
         observedModel: null,
         usage: null,
-        exitCode: null,
+        exitCode: 0,
         stopped: false,
         timedOut: false,
       },
