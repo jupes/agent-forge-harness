@@ -46,7 +46,7 @@ jobs:
   windows:
     name: checks (windows)
     runs-on: windows-latest
-    # A complete Windows gate exceeded the 25-minute job limit after 21m49s of
+    # A complete Windows gate exceeded the 25-minute job limit after 23m41.49s of
     # Bun work plus setup and cleanup; leave bounded headroom for the full gate.
     timeout-minutes: 30
     steps:
