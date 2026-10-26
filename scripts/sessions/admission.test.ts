@@ -1,8 +1,14 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import type { LedgerEventInput } from "../../types/hearth";
 import { conversationFile } from "../conversations/paths";
 import { createConversationStore } from "../conversations/store";
@@ -274,15 +280,23 @@ test("a write-then-throw at store.accept remains held and never becomes not-sent
   const f = await closingFixture();
   const conversationDirectory = join(f.home, "conversations");
   const write = ownerOnlyToken.writeOwnerOnly;
+  const witness: {
+    path: string | null;
+    partial: string;
+    writes: number;
+  } = { path: null, partial: "", writes: 0 };
   const intercepted = spyOn(
     ownerOnlyToken,
     "writeOwnerOnly",
   ).mockImplementation((path, content, options) => {
     if (
-      path.startsWith(`${conversationDirectory}\\`) &&
-      path.endsWith(".json")
+      dirname(path) === conversationDirectory &&
+      /^session-[0-9a-f-]{36}\.json$/.test(basename(path))
     ) {
-      write(path, content.slice(0, 32), options);
+      witness.path = path;
+      witness.partial = content.slice(0, 32);
+      witness.writes++;
+      write(path, witness.partial, options);
       throw new Error("injected post-write failure");
     }
     write(path, content, options);
@@ -301,6 +315,23 @@ test("a write-then-throw at store.accept remains held and never becomes not-sent
   } finally {
     intercepted.mockRestore();
   }
+
+  expect(witness.writes).toBe(1);
+  if (!witness.path)
+    throw Error("The session transcript write was not reached.");
+  const injectedPath = witness.path;
+  expect(readFileSync(injectedPath, "utf8")).toBe(witness.partial);
+  const original = createSessionRegistry(f.home).lookupRequestId(
+    f.request.requestId,
+  );
+  if (!original) throw Error("The original Start was not reserved.");
+  expect(injectedPath).toBe(
+    conversationFile(f.home, f.project.id, {
+      kind: "session",
+      projectId: f.project.id,
+      sessionId: original.id,
+    }),
+  );
 
   expect(
     await createRestartIdentityJournal(f.home).lookup(
