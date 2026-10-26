@@ -26,6 +26,7 @@ import { scratchDirs } from "../test-scratch";
 import { createCodexChatForkJournal } from "./codex-chat-fork-journal";
 import {
   CODEX_CHAT_FORK_JOURNAL_DIRECTORY,
+  CODEX_CHAT_FORK_MUTEX_GUARDS,
   createCodexChatForkJournalStorage,
 } from "./codex-chat-fork-journal-storage";
 
@@ -44,7 +45,16 @@ const testSourceSeal = {
   sourceSettingsHash: "c".repeat(64),
 };
 
-const attemptReplySchema = z
+const mutexGuardSchema = z
+    .object({
+      phase: z.literal("exclusive-pre-lock-assert"),
+      guard: z.enum(CODEX_CHAT_FORK_MUTEX_GUARDS),
+      fileSize: z.number().int().min(0).nullable(),
+      identityStable: z.boolean().nullable(),
+      failure: z.enum(["privacy", "identity", "other"]),
+    })
+    .strict(),
+  attemptReplySchema = z
     .object({
       mayDispatch: z.boolean(),
       state: z.literal("attempted"),
@@ -59,14 +69,14 @@ const attemptReplySchema = z
           "0199a213-81c0-7800-8aa1-bbab2a035a58",
         ]),
         state: z.literal("reserved"),
-        storageErrors: z.array(z.string().max(160)).max(8),
+        storageGuards: z.array(mutexGuardSchema).max(8),
       })
       .strict(),
     z
       .object({
         ok: z.literal(false),
         reason: z.enum(["conflict", "held", "unexpected"]),
-        storageErrors: z.array(z.string().max(160)).max(8),
+        storageGuards: z.array(mutexGuardSchema).max(8),
       })
       .strict(),
   ]);
@@ -204,12 +214,11 @@ function journalImport(root: string, home: string): string {
   return `
     ${imports()}
     import { createCodexChatForkJournalStorage } from ${JSON.stringify(join(import.meta.dir, "codex-chat-fork-journal-storage.ts"))};
-    const storageErrors = [];
+    const storageGuards = [];
     const storage = createCodexChatForkJournalStorage(${JSON.stringify(home)}, {
       onMutexDiagnostic(diagnostic) {
-        storageErrors.push(
-          [diagnostic.phase, diagnostic.fileSize ?? "unknown", diagnostic.identityStable ?? "unknown", diagnostic.failure].join("|").slice(0, 160),
-        );
+        if (diagnostic.phase === "exclusive-pre-lock-assert" && diagnostic.guard !== null && storageGuards.length < 8)
+          storageGuards.push({phase:diagnostic.phase,guard:diagnostic.guard,fileSize:diagnostic.fileSize,identityStable:diagnostic.identityStable,failure:diagnostic.failure});
       },
     });
     const tracedStorage = {
@@ -358,9 +367,9 @@ test.skipIf(!nativeEnabled)(
       ) => `${journalImport(root, home)} ${childBarrier(barrier, slot)}
         try {
           const record = await journal.reserve(${JSON.stringify(projectId)},${JSON.stringify(parentSessionId)},${JSON.stringify(intent(ids[index]!))},${JSON.stringify(testSourceSeal)});
-          process.stdout.write(JSON.stringify({ok:true,requestId:record.requestId,state:record.state,storageErrors}));
+          process.stdout.write(JSON.stringify({ok:true,requestId:record.requestId,state:record.state,storageGuards}));
         } catch (error) {
-          process.stdout.write(JSON.stringify({ok:false,reason:error instanceof CodexChatForkJournalError ? error.reason : "unexpected",storageErrors}));
+          process.stdout.write(JSON.stringify({ok:false,reason:error instanceof CodexChatForkJournalError ? error.reason : "unexpected",storageGuards}));
         }`,
     );
     const parent = createCodexChatForkJournal({ root, home }),
@@ -375,7 +384,7 @@ test.skipIf(!nativeEnabled)(
       );
     if (loser.reason !== "conflict")
       throw new Error(
-        `The active-address race loser was ${loser.reason}, with storage diagnostics ${JSON.stringify(loser.storageErrors).slice(0, 1_000)}; outcomes=${JSON.stringify(results).slice(0, 2_000)}`,
+        `The active-address race loser was ${loser.reason}, with bounded storage guards ${JSON.stringify(loser.storageGuards).slice(0, 1_000)}; outcomes=${JSON.stringify(results).slice(0, 2_000)}`,
       );
     expect(loser.reason).toBe("conflict");
     const reopened = createCodexChatForkJournal({ root, home });
