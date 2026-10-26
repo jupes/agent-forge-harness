@@ -327,7 +327,7 @@ test("a fresh trusted desktop origin discovers and inspects an admitted Start wi
       (key) => localStorage.getItem(key),
       SESSION_START_IDENTITIES,
     );
-    expect(oldLocalHints).not.toContain(original.launch.prompt);
+    expect(oldLocalHints ?? "").not.toContain(original.launch.prompt);
 
     const newHostUrl = await restartOwnedDesktopHost();
     newOrigin = new URL(newHostUrl).origin;
