@@ -9,8 +9,16 @@ import {
 import { join } from "node:path";
 import { BUILTIN_SMITHS } from "../config/defaults";
 import type { PrivateExecInput } from "../executors/private-capture";
+import { restartManagerLockerPids } from "../hearth/windows-cleanup-diagnostic";
 import { scratchDirs } from "../test-scratch";
 import { createShiftProviderPreparer } from "./provider-prepare";
+import {
+  fixedProviderPrepareResources,
+  fixtureProcessIdentities,
+  holdFixtureProcesses,
+  type ProcessObservation,
+  windowsProbeProcessApi,
+} from "./provider-prepare-diagnostics";
 
 const scratch = scratchDirs();
 afterEach(() => scratch.cleanup());
@@ -112,7 +120,11 @@ test("Codex preparation requires explicit approval never and only invokes native
 
 test("Stop during native capability help settles its owned probe before any prompt", async () => {
   const f = fixture("codex"),
-    controller = new AbortController();
+    controller = new AbortController(),
+    executable = f.input.command[0] ?? "",
+    diagnosticEnabled =
+      process.platform === "win32" &&
+      process.env["AGENT_FORGE_TEST_PROBE_DIAGNOSTICS"] === "1";
   const prepare = createShiftProviderPreparer({
     root: f.root,
     configHome: f.root,
@@ -126,6 +138,9 @@ test("Stop during native capability help settles its owned probe before any prom
     () => "prepared",
     () => "refused",
   );
+  let held: ReturnType<typeof holdFixtureProcesses> | null = null,
+    observations: ProcessObservation[] = [],
+    failure: unknown = null;
   try {
     const deadline = Date.now() + 5000;
     while (Date.now() < deadline) {
@@ -137,14 +152,64 @@ test("Stop during native capability help settles its owned probe before any prom
       await Bun.sleep(10);
     }
     expect(readFileSync(f.record, "utf8")).toContain('"kind":"help"');
+    if (diagnosticEnabled)
+      held = holdFixtureProcesses(
+        fixtureProcessIdentities(readFileSync(f.record, "utf8"), executable),
+        windowsProbeProcessApi(),
+      );
     controller.abort();
     expect(
       await Promise.race([settled, Bun.sleep(1500).then(() => "hung")]),
     ).toBe("refused");
+  } catch (error) {
+    failure = error;
   } finally {
     controller.abort();
     await settled;
+    try {
+      observations = held?.sampleAndClose() ?? [];
+    } catch {
+      held?.close();
+    }
+    try {
+      scratch.cleanup();
+    } catch (cleanupError) {
+      if (diagnosticEnabled) {
+        let lockerPids: number[] | null = null,
+          relativeResources: readonly string[] = ["codex.exe", "provider.json"];
+        try {
+          const resources = fixedProviderPrepareResources(
+            f.root,
+            executable,
+            f.record,
+          );
+          relativeResources = resources.relativeNames;
+          lockerPids = restartManagerLockerPids(resources.paths);
+        } catch {
+          // Diagnostic failure remains unavailable; never replace the cleanup result.
+        }
+        const code =
+          cleanupError &&
+          typeof cleanupError === "object" &&
+          "code" in cleanupError &&
+          ["EPERM", "EACCES", "EBUSY"].includes(String(cleanupError.code))
+            ? String(cleanupError.code)
+            : "other";
+        process.stderr.write(
+          `${JSON.stringify({
+            event: "provider-prepare-scratch-cleanup",
+            resources: relativeResources,
+            processes: observations,
+            lockerPids,
+            lockerProbe: lockerPids === null ? "unavailable" : "ok",
+            errorCode: code,
+          })}\n`,
+        );
+      }
+      if (failure === null) failure = cleanupError;
+    }
   }
+  if (failure !== null) throw failure;
 }, 15000);
 
 test("changed smith configuration or unsupported actual flags refuse before a private turn", async () => {
