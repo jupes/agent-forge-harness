@@ -16,8 +16,15 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { AclReading, AclTarget, WindowsAcl } from "../hearth/acl-windows";
 import { FILE_ALL_ACCESS, SYSTEM_SID } from "../hearth/acl-windows";
+import { markReadOnlyCapabilityRefusal } from "../sessions/read-only-capability-refusal";
 import { scratchDirs } from "../test-scratch";
-import { provePreacceptNotSent } from "./preaccept-not-sent-proof";
+import {
+  attestEmptyInitialStart,
+  createInitialStartAttempt,
+  markKnownPreacceptPreparationRefusal,
+  noteInitialStartPreparationRefusal,
+  proofForInitialStartRefusal,
+} from "./preaccept-not-sent-proof";
 import {
   createRestartIdentityJournal,
   type RestartIdentityInput,
@@ -43,6 +50,28 @@ const request = (
   mode: "task" as const,
   ...overrides,
 });
+
+function makePreacceptProof(
+  identity: RestartIdentityInput,
+  attemptGeneration: number,
+) {
+  const attempt = createInitialStartAttempt(
+    identity,
+    attemptGeneration,
+    attestEmptyInitialStart(identity),
+  );
+  const capabilityRefusal = markReadOnlyCapabilityRefusal(
+    new Error("test read-only capability refusal"),
+  );
+  const refusal = markKnownPreacceptPreparationRefusal(
+    new Error("controlled preparation refusal"),
+    capabilityRefusal,
+  );
+  noteInitialStartPreparationRefusal(attempt, refusal);
+  const proof = proofForInitialStartRefusal(attempt);
+  if (proof === null) throw new Error("Expected the preaccept proof");
+  return proof;
+}
 
 function fakeAcl() {
   const protectedPaths = new Map<string, AclTarget>();
@@ -305,10 +334,7 @@ test("only an opaque proof for the current attempt settles durable not-sent", as
   const journal = createRestartIdentityJournal(home, options);
   await journal.reserve(identity);
   const claim = await journal.beginAttempt(identity);
-  const validProof = provePreacceptNotSent({
-    ...identity,
-    attemptGeneration: claim.attemptGeneration,
-  });
+  const validProof = makePreacceptProof(identity, claim.attemptGeneration);
 
   await expect(
     journal.settleNotSent(
@@ -350,10 +376,7 @@ test("only an opaque proof for the current attempt settles durable not-sent", as
   await expect(
     recovered.settleNotSent(
       identity,
-      provePreacceptNotSent({
-        ...identity,
-        attemptGeneration: claim.attemptGeneration,
-      }),
+      makePreacceptProof(identity, claim.attemptGeneration),
     ),
   ).rejects.toBeInstanceOf(RestartIdentityJournalError);
   expect(
@@ -370,10 +393,7 @@ test("concurrent explicit retries after not-sent grant one new generation", asyn
   const firstClaim = await firstJournal.beginAttempt(identity);
   await firstJournal.settleNotSent(
     identity,
-    provePreacceptNotSent({
-      ...identity,
-      attemptGeneration: firstClaim.attemptGeneration,
-    }),
+    makePreacceptProof(identity, firstClaim.attemptGeneration),
   );
 
   const results = await Promise.all([
@@ -397,10 +417,7 @@ test("verified source may promote not-sent without another attempt claim", async
   const claim = await journal.beginAttempt(identity);
   await journal.settleNotSent(
     identity,
-    provePreacceptNotSent({
-      ...identity,
-      attemptGeneration: claim.attemptGeneration,
-    }),
+    makePreacceptProof(identity, claim.attemptGeneration),
   );
 
   const admitted = await journal.admit(identity);
@@ -421,10 +438,7 @@ test("replay rejects missing retry/admission generations and generation on retir
   const firstClaim = await retryJournal.beginAttempt(identity);
   await retryJournal.settleNotSent(
     identity,
-    provePreacceptNotSent({
-      ...identity,
-      attemptGeneration: firstClaim.attemptGeneration,
-    }),
+    makePreacceptProof(identity, firstClaim.attemptGeneration),
   );
   await retryJournal.beginAttempt(identity);
   rewriteLastEvent(join(retryHome, "restart-identities"), (event) => {
@@ -448,10 +462,7 @@ test("replay rejects missing retry/admission generations and generation on retir
   const admitClaim = await admitJournal.beginAttempt(identity);
   await admitJournal.settleNotSent(
     identity,
-    provePreacceptNotSent({
-      ...identity,
-      attemptGeneration: admitClaim.attemptGeneration,
-    }),
+    makePreacceptProof(identity, admitClaim.attemptGeneration),
   );
   await admitJournal.admit(identity);
   rewriteLastEvent(join(admitHome, "restart-identities"), (event) => {

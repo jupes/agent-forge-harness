@@ -16,6 +16,7 @@ import { buildChildEnv } from "../executors/env";
 import { type Supervised, supervise } from "../executors/supervisor";
 import { serializeClaudeLaunch } from "./claude-launch";
 import { createClaudeSessionParser, isClaudeSessionId } from "./claude-stream";
+import { markReadOnlyCapabilityRefusal } from "./read-only-capability-refusal";
 import { sessionTurnSnapshotSchema } from "./turn-protocol";
 
 interface Options {
@@ -133,8 +134,10 @@ export function createClaudeSessionTransport(
       });
       const exit = await child.done;
       if (invalid || exit.exitCode !== 0 || exit.timedOut || exit.stopped)
-        throw unavailable(
-          "The installed Claude CLI did not pass its read-only capability check.",
+        throw markReadOnlyCapabilityRefusal(
+          unavailable(
+            "The installed Claude CLI did not pass its read-only capability check.",
+          ),
         );
       return text;
     };
@@ -144,8 +147,10 @@ export function createClaudeSessionTransport(
     )?.[1];
     const help = await probe("--help");
     if (!version)
-      throw unavailable(
-        "The installed Claude CLI did not report a usable version.",
+      throw markReadOnlyCapabilityRefusal(
+        unavailable(
+          "The installed Claude CLI did not report a usable version.",
+        ),
       );
     const flags = [
       ...new Set(

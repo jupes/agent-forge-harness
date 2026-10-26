@@ -11,6 +11,7 @@ import { ConversationError } from "../conversations/error";
 import { createConversationService } from "../conversations/service";
 import { createConversationStore } from "../conversations/store";
 import type { ConversationUpdate } from "../conversations/transport";
+import type { InitialStartAttempt } from "../identities/preaccept-not-sent-proof";
 import { resolveCheckout } from "../ledger/workspace";
 import { workspaceKey } from "../projects/scope";
 import {
@@ -136,6 +137,7 @@ export function createGeminiOwnedTaskService(options: {
     async start(
       projectId: string,
       raw: unknown,
+      attempt?: InitialStartAttempt,
     ): Promise<GeminiTaskStartReceipt> {
       const request = parseOwnedSessionStart(raw);
       if (
@@ -173,13 +175,15 @@ export function createGeminiOwnedTaskService(options: {
             requestedEffort: null,
           };
           await options.validateScope(projectId, metadata, request.about ?? []);
-          try {
-            await options.runtime.check({ smith: request.smith });
-          } catch {
-            throw new ConversationError(
-              503,
-              "The selected Gemini smith is unavailable. No Task was reserved.",
-            );
+          if (!attempt) {
+            try {
+              await options.runtime.check({ smith: request.smith });
+            } catch {
+              throw new ConversationError(
+                503,
+                "The selected Gemini smith is unavailable. No Task was reserved.",
+              );
+            }
           }
           await options.validateScope(projectId, metadata, request.about ?? []);
           return metadata;
@@ -193,13 +197,20 @@ export function createGeminiOwnedTaskService(options: {
         }),
       );
       try {
-        const receipt = await serviceFor(session).send(projectId, {
-          requestId: request.requestId,
-          expectedRevision: 0,
-          text: request.launch.prompt,
-          about: request.about ?? [],
-          attachments: request.launch.attachments?.map((item) => ({ ...item })),
-        });
+        const receipt = await serviceFor(session).send(
+          projectId,
+          {
+            requestId: request.requestId,
+            expectedRevision: 0,
+            text: request.launch.prompt,
+            about: request.about ?? [],
+            attachments: request.launch.attachments?.map((item) => ({
+              ...item,
+            })),
+          },
+          "message",
+          attempt,
+        );
         return { session, receipt };
       } finally {
         initial.delete(session.id);

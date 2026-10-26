@@ -18,6 +18,7 @@ import type {
   ConversationTransport,
   ConversationUpdate,
 } from "../conversations/transport";
+import type { InitialStartAttempt } from "../identities/preaccept-not-sent-proof";
 import { resolveCheckout } from "../ledger/workspace";
 import { workspaceKey } from "../projects/scope";
 import { requireOrdinarySession } from "./managed-origin";
@@ -153,7 +154,11 @@ export function createOwnedSessionService(options: Options) {
   const forId = (projectId: string, sessionId: string) =>
     serviceFor(registry.read(projectId, sessionId));
   return {
-    async start(projectId: string, raw: unknown): Promise<SessionStartReceipt> {
+    async start(
+      projectId: string,
+      raw: unknown,
+      attempt?: InitialStartAttempt,
+    ): Promise<SessionStartReceipt> {
       const request = parseSessionStart(raw);
       if (closed)
         throw new ConversationError(
@@ -195,13 +200,18 @@ export function createOwnedSessionService(options: Options) {
         );
       initial.set(session.id, request.launch);
       try {
-        const receipt = await serviceFor(session).send(projectId, {
-          requestId: request.requestId,
-          expectedRevision: 0,
-          text: request.launch.prompt,
-          about: request.about ?? [],
-          attachments: request.launch.attachments,
-        });
+        const receipt = await serviceFor(session).send(
+          projectId,
+          {
+            requestId: request.requestId,
+            expectedRevision: 0,
+            text: request.launch.prompt,
+            about: request.about ?? [],
+            attachments: request.launch.attachments,
+          },
+          "message",
+          attempt,
+        );
         return { session, receipt };
       } finally {
         initial.delete(session.id);

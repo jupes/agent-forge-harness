@@ -7,6 +7,7 @@ import type { LedgerEventInput } from "../../types/hearth";
 import { conversationFile } from "../conversations/paths";
 import { createConversationStore } from "../conversations/store";
 import { createOwnedSessionLedger } from "../hearth/routes/session-ledger";
+import * as ownerOnlyToken from "../hearth/token";
 import { writeOwnerOnly } from "../hearth/token";
 import { createRestartIdentityJournal } from "../identities/restart-index";
 import { resolveCheckout } from "../ledger/workspace";
@@ -17,6 +18,7 @@ import { createOwnedSessionService } from "./admission";
 import { serializeClaudeLaunch } from "./claude-launch";
 import { canonicalOwnedSessionStart } from "./codex-owned-protocol";
 import { createOwnedCodingSessionService } from "./owned-coding-service";
+import { markReadOnlyCapabilityRefusal } from "./read-only-capability-refusal";
 import { createSessionRegistry } from "./registry";
 import { readVerifiedOriginalStart } from "./restart-identity-proof";
 
@@ -166,6 +168,194 @@ test("common Start facade fences before dispatch and reopens only its verified o
   expect(duplicate.receipt.turn.requestId).toBe(first.receipt.turn.requestId);
   expect(duplicate.receipt.turn.hash).toBe(first.receipt.turn.hash);
   expect(f.counts).toEqual(countsAfterFirst);
+});
+
+test("a proven preaccept refusal settles durably and permits only the same Start after reopen", async () => {
+  const f = await closingFixture();
+  const request = {
+    ...f.request,
+    about: [],
+    launch: { ...f.request.launch, attachments: [] },
+  };
+  let prepareCalls = 0;
+  const runtime: SessionRuntime = {
+    ...f.runtime,
+    async prepare(input) {
+      prepareCalls++;
+      if (prepareCalls === 1)
+        throw markReadOnlyCapabilityRefusal(
+          new Error("read-only capability refusal"),
+        );
+      return f.runtime.prepare(input);
+    },
+  };
+  const scope = {
+    address: {
+      family: "owned-session-start" as const,
+      projectId: f.project.id,
+    },
+    workspace: workspaceKey(resolveCheckout(f.root).workspace),
+  };
+  const makeFacade = () => {
+    const service = createOwnedCodingSessionService({
+      home: f.home,
+      root: f.root,
+      runtime,
+      validateScope: f.validateScope,
+    });
+    cleanup.push(() => service.close());
+    return service;
+  };
+  const firstService = makeFacade();
+  await expect(firstService.start(f.project.id, request)).rejects.toMatchObject(
+    {
+      status: 503,
+    },
+  );
+  const journal = createRestartIdentityJournal(f.home);
+  expect(await journal.lookup(scope, request.requestId)).toMatchObject({
+    state: "not-sent",
+  });
+  const countsAfterRefusal = { ...f.counts };
+  expect(countsAfterRefusal.runs).toBe(0);
+
+  const reopened = makeFacade();
+  const retry = await reopened.start(f.project.id, request);
+  expect(retry.session.requestId).toBe(request.requestId);
+  expect(retry.receipt.turn.requestId).toBe(request.requestId);
+  expect(await journal.lookup(scope, request.requestId)).toMatchObject({
+    state: "admitted",
+  });
+  expect(prepareCalls).toBe(2);
+  expect(f.counts.runs).toBe(1);
+  const countsAfterRetry = { ...f.counts };
+
+  const duplicate = await makeFacade().start(f.project.id, request);
+  expect(duplicate.receipt.turn.hash).toBe(retry.receipt.turn.hash);
+  expect(f.counts).toEqual(countsAfterRetry);
+});
+
+test("a generic preparation error stays attempted and cannot authorize retry", async () => {
+  const f = await closingFixture();
+  const runtime: SessionRuntime = {
+    ...f.runtime,
+    async prepare() {
+      throw new Error("unclassified local failure");
+    },
+  };
+  const service = createOwnedCodingSessionService({
+    home: f.home,
+    root: f.root,
+    runtime,
+    validateScope: f.validateScope,
+  });
+  cleanup.push(() => service.close());
+
+  await expect(service.start(f.project.id, f.request)).rejects.toMatchObject({
+    status: 503,
+  });
+  const journal = createRestartIdentityJournal(f.home);
+  expect(
+    await journal.lookup(
+      {
+        address: {
+          family: "owned-session-start",
+          projectId: f.project.id,
+        },
+        workspace: workspaceKey(resolveCheckout(f.root).workspace),
+      },
+      f.request.requestId,
+    ),
+  ).toMatchObject({ state: "attempted" });
+  expect(f.counts).toEqual({ prepared: 0, runs: 0 });
+});
+
+test("a write-then-throw at store.accept remains held and never becomes not-sent", async () => {
+  const f = await closingFixture();
+  const conversationDirectory = join(f.home, "conversations");
+  const write = ownerOnlyToken.writeOwnerOnly;
+  const intercepted = spyOn(
+    ownerOnlyToken,
+    "writeOwnerOnly",
+  ).mockImplementation((path, content, options) => {
+    if (
+      path.startsWith(`${conversationDirectory}\\`) &&
+      path.endsWith(".json")
+    ) {
+      write(path, content.slice(0, 32), options);
+      throw new Error("injected post-write failure");
+    }
+    write(path, content, options);
+  });
+  const service = createOwnedCodingSessionService({
+    home: f.home,
+    root: f.root,
+    runtime: f.runtime,
+    validateScope: f.validateScope,
+  });
+  cleanup.push(() => service.close());
+  try {
+    await expect(service.start(f.project.id, f.request)).rejects.toMatchObject({
+      status: 503,
+    });
+  } finally {
+    intercepted.mockRestore();
+  }
+
+  expect(
+    await createRestartIdentityJournal(f.home).lookup(
+      {
+        address: {
+          family: "owned-session-start",
+          projectId: f.project.id,
+        },
+        workspace: workspaceKey(resolveCheckout(f.root).workspace),
+      },
+      f.request.requestId,
+    ),
+  ).toMatchObject({ state: "attempted" });
+  expect(f.counts).toEqual({ prepared: 1, runs: 0 });
+  await expect(service.start(f.project.id, f.request)).rejects.toMatchObject({
+    status: 503,
+  });
+  expect(f.counts).toEqual({ prepared: 1, runs: 0 });
+});
+
+test("an accepted Start with a lost provider answer is never settled not-sent", async () => {
+  const f = await closingFixture();
+  const runtime: SessionRuntime = {
+    ...f.runtime,
+    async run() {
+      f.counts.runs++;
+      throw new Error("provider response was lost after accepted input");
+    },
+  };
+  const service = createOwnedCodingSessionService({
+    home: f.home,
+    root: f.root,
+    runtime,
+    validateScope: f.validateScope,
+  });
+  cleanup.push(() => service.close());
+
+  const first = await service.start(f.project.id, f.request);
+  const identity = {
+    address: {
+      family: "owned-session-start" as const,
+      projectId: f.project.id,
+    },
+    workspace: workspaceKey(resolveCheckout(f.root).workspace),
+  };
+  expect(
+    await createRestartIdentityJournal(f.home).lookup(
+      identity,
+      f.request.requestId,
+    ),
+  ).toMatchObject({ state: "admitted" });
+  expect(first.receipt.turn.phase).toBe("unknown");
+  const duplicate = await service.start(f.project.id, f.request);
+  expect(duplicate.receipt.turn.hash).toBe(first.receipt.turn.hash);
+  expect(f.counts.runs).toBe(1);
 });
 
 test("an attempted Start without a durable original stays held without owner dispatch", async () => {

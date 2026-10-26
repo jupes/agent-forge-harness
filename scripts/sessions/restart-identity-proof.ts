@@ -5,6 +5,10 @@ import type {
   ConversationState,
 } from "../../types/conversation";
 import { createConversationStore } from "../conversations/store";
+import {
+  attestEmptyInitialStart,
+  type EmptyInitialStartProof,
+} from "../identities/preaccept-not-sent-proof";
 import type { RestartIdentityInput } from "../identities/restart-index";
 import { workspaceKey } from "../projects/scope";
 import { canonicalOwnedSessionStart } from "./codex-owned-protocol";
@@ -17,7 +21,8 @@ export type VerifiedOriginalStart = {
 };
 
 export type OriginalStartProofRead =
-  | { kind: "missing" }
+  | { kind: "missing"; emptySource: EmptyInitialStartProof }
+  | { kind: "empty"; emptySource: EmptyInitialStartProof }
   | { kind: "invalid" }
   | { kind: "conflict" }
   | { kind: "verified"; value: VerifiedOriginalStart };
@@ -131,7 +136,11 @@ export function readVerifiedOriginalStart(options: {
   } catch {
     return { kind: "invalid" };
   }
-  if (session === null) return { kind: "missing" };
+  if (session === null)
+    return {
+      kind: "missing",
+      emptySource: attestEmptyInitialStart(options.identity),
+    };
   if (
     session.origin !== undefined ||
     session.requestId !== options.identity.requestId
@@ -149,6 +158,33 @@ export function readVerifiedOriginalStart(options: {
   )
     return { kind: "invalid" };
 
+  let privateState: ConversationState;
+  try {
+    privateState = createConversationStore(options.home, undefined, {
+      kind: "session",
+      projectId: session.projectId,
+      sessionId: session.id,
+    }).read(session.projectId);
+  } catch {
+    return { kind: "invalid" };
+  }
+  if (
+    privateState.conversationId !== session.id ||
+    privateState.projectId !== session.projectId
+  )
+    return { kind: "invalid" };
+  if (
+    privateState.revision === 0 &&
+    privateState.binding === null &&
+    privateState.keeperRecovery === undefined &&
+    privateState.turns.length === 0 &&
+    privateState.frames.length === 0
+  )
+    return {
+      kind: "empty",
+      emptySource: attestEmptyInitialStart(options.identity),
+    };
+
   let transcript: ReturnType<
     ReturnType<typeof createSessionLibrary>["exportTranscript"]
   >;
@@ -162,16 +198,6 @@ export function readVerifiedOriginalStart(options: {
   }
   const firstFrame = transcript.conversation.frames[0];
   const firstTurn = transcript.conversation.turns[0];
-  let privateState: ConversationState;
-  try {
-    privateState = createConversationStore(options.home, undefined, {
-      kind: "session",
-      projectId: session.projectId,
-      sessionId: session.id,
-    }).read(session.projectId);
-  } catch {
-    return { kind: "invalid" };
-  }
   const privateFirstFrame = privateState.frames[0];
   const privateFirstTurn = privateState.turns[0];
   if (

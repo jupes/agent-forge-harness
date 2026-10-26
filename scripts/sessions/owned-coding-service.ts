@@ -14,6 +14,11 @@ import type { SessionMessage } from "../../types/session-turn";
 import { ConversationError } from "../conversations/error";
 import type { ConversationUpdate } from "../conversations/transport";
 import {
+  createInitialStartAttempt,
+  type InitialStartAttempt,
+  proofForInitialStartRefusal,
+} from "../identities/preaccept-not-sent-proof";
+import {
   createRestartIdentityJournal,
   type RestartIdentityInput,
   RestartIdentityJournalError,
@@ -213,16 +218,17 @@ export function createOwnedCodingSessionService(options: {
   const dispatchStart = (
     projectId: string,
     request: ReturnType<typeof parseOwnedSessionStart>,
+    attempt?: InitialStartAttempt,
   ) => {
     if ("provider" in request && request.provider === "gemini")
       return request.launch.mode === "chat"
-        ? geminiChat.start(projectId, request)
-        : gemini.start(projectId, request);
+        ? geminiChat.start(projectId, request, attempt)
+        : gemini.start(projectId, request, attempt);
     return "provider" in request
       ? request.launch.mode === "chat"
-        ? chat.start(projectId, request)
-        : codex.start(projectId, request)
-      : claude.start(projectId, request);
+        ? chat.start(projectId, request, attempt)
+        : codex.start(projectId, request, attempt)
+      : claude.start(projectId, request, attempt);
   };
   const chat = createCodexOwnedChatService({
     ...options,
@@ -440,30 +446,33 @@ export function createOwnedCodingSessionService(options: {
           409,
           "This Session Start UUID is already bound to another request.",
         );
-      if (prior === null) {
-        let original: ReturnType<typeof readVerifiedOriginalStart>;
+      let source: ReturnType<typeof readVerifiedOriginalStart>;
+      try {
+        source = readVerifiedOriginalStart({
+          home: options.home,
+          root: options.root,
+          identity,
+        });
+      } catch {
+        throw held();
+      }
+      if (source.kind === "conflict") throw registryConflict();
+      if (source.kind === "invalid") throw held();
+      if (source.kind === "verified") {
         try {
-          original = readVerifiedOriginalStart({
-            home: options.home,
-            root: options.root,
-            identity,
-          });
+          await identities.reserve(identity);
+          if (prior === null || prior.state === "reserved")
+            await identities.beginAttempt(identity);
+          return (await identities.admit(identity)).evidence;
         } catch {
           throw held();
         }
-        if (original.kind === "conflict") throw registryConflict();
-        if (original.kind === "invalid") throw held();
-        if (original.kind === "verified") {
-          try {
-            await identities.reserve(identity);
-            await identities.beginAttempt(identity);
-            return (await identities.admit(identity)).evidence;
-          } catch {
-            throw held();
-          }
-        }
       }
-      if (prior === null || prior.state === "reserved") {
+      if (
+        prior === null ||
+        prior.state === "reserved" ||
+        prior.state === "not-sent"
+      ) {
         await options.validateScope(
           projectId,
           {
@@ -485,30 +494,24 @@ export function createOwnedCodingSessionService(options: {
           throw held();
         }
       }
-
-      let source: ReturnType<typeof readVerifiedOriginalStart>;
+      if (source.kind !== "missing" && source.kind !== "empty") throw held();
+      const attempt = createInitialStartAttempt(
+        identity,
+        claim.attemptGeneration,
+        source.emptySource,
+      );
       try {
-        source = readVerifiedOriginalStart({
-          home: options.home,
-          root: options.root,
-          identity,
-        });
-      } catch {
-        throw held();
-      }
-      if (source.kind === "conflict") throw registryConflict();
-      if (source.kind === "invalid") throw held();
-      if (source.kind === "verified") {
-        try {
-          return (await identities.admit(identity)).evidence;
-        } catch {
-          throw held();
+        await dispatchStart(projectId, request, attempt);
+      } catch (error) {
+        const proof = proofForInitialStartRefusal(attempt);
+        if (proof !== null) {
+          try {
+            await identities.settleNotSent(identity, proof);
+          } catch {
+            throw held();
+          }
+          throw error;
         }
-      }
-
-      try {
-        await dispatchStart(projectId, request);
-      } catch {
         try {
           return (await identities.admit(identity)).evidence;
         } catch {

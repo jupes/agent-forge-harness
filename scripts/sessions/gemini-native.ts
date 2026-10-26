@@ -6,6 +6,7 @@ import { buildChildEnv } from "../executors/env";
 import { supervise } from "../executors/supervisor";
 import { resolveGeminiCommand } from "./gemini-command";
 import { geminiTaskCapabilitiesSchema } from "./gemini-task";
+import { markReadOnlyCapabilityRefusal } from "./read-only-capability-refusal";
 
 export interface GeminiNativeOptions {
   root: string;
@@ -120,10 +121,14 @@ export function createGeminiNativeAccess(
         await child.end();
         const exit = await child.done;
         if (invalid || exit.exitCode !== 0 || exit.stopped || exit.timedOut)
-          throw unavailable("The Gemini read-only capability check failed.");
+          throw markReadOnlyCapabilityRefusal(
+            unavailable("The Gemini read-only capability check failed."),
+          );
         return text;
       } catch {
-        throw unavailable("The Gemini read-only capability check failed.");
+        throw markReadOnlyCapabilityRefusal(
+          unavailable("The Gemini read-only capability check failed."),
+        );
       } finally {
         signal?.removeEventListener("abort", stop);
         await child.done;
@@ -134,8 +139,10 @@ export function createGeminiNativeAccess(
         versionText,
       )?.[1];
     if (version !== "0.65.0")
-      throw unavailable(
-        "Gemini CLI does not report the verified 0.65.0 protocol version.",
+      throw markReadOnlyCapabilityRefusal(
+        unavailable(
+          "Gemini CLI does not report the verified 0.65.0 protocol version.",
+        ),
       );
     const help = await probe(["--help"]);
     return geminiTaskCapabilitiesSchema.parse({
