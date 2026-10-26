@@ -87,6 +87,7 @@ import { createOwnedSessionRoutes } from "./sessions";
 import { shiftRoutes } from "./shifts";
 import { smithConfigCreateRoutes } from "./smith-config-creates";
 import { smithConfigEditRoutes } from "./smith-config-edits";
+import { smithRoutingEditRoutes } from "./smith-routing-edits";
 import { smithVerificationRoute } from "./smith-verification";
 
 type CouncilService = ReturnType<typeof createCouncilService>;
@@ -98,6 +99,8 @@ export interface OperatorDeps extends ReadDeps {
   smithCreateService: Parameters<typeof smithConfigCreateRoutes>[0];
   /** Captured once by server-runtime; never selected from a request. */
   smithEditService: Parameters<typeof smithConfigEditRoutes>[0];
+  /** Captured once by server-runtime; never selected from a request. */
+  smithRoutingEditService: Parameters<typeof smithRoutingEditRoutes>[0];
   /** Machine-private home; the project catalog is shared above workspaces. */
   projectHome: string;
   conversationTransport?: ConversationTransport | undefined;
@@ -474,6 +477,9 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
   const providerLogins = createProviderLoginRoutes(deps.providerLogin);
   const smithCreates = smithConfigCreateRoutes(deps.smithCreateService);
   const smithEdits = smithConfigEditRoutes(deps.smithEditService);
+  const smithRoutingEdits = smithRoutingEditRoutes(
+    deps.smithRoutingEditService,
+  );
   const observations = createSessionObservationRoutes(deps, projectSnapshot);
   const activity = createProjectActivityRoutes(deps, projectSnapshot);
   const reads: ReadRoute[] = [
@@ -489,6 +495,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     smithVerificationRoute(deps),
     ...smithCreates.reads,
     ...smithEdits.reads,
+    ...smithRoutingEdits.reads,
     config,
     worktrees,
     eligibility,
@@ -563,6 +570,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       ...actions(deps),
       ...smithCreates.actions,
       ...smithEdits.actions,
+      ...smithRoutingEdits.actions,
       providers.doctor,
       ...providerLogins.actions,
       preferences,

@@ -221,8 +221,10 @@ function isTable(v: unknown): v is Table {
   return typeof v === "object" && v !== null && !Array.isArray(v);
 }
 
+export class ConfigLoadError extends Error {}
+
 function fail(file: string, key: string, message: string): never {
-  throw new Error(`${file}: ${key}: ${message}`);
+  throw new ConfigLoadError(`${file}: ${key}: ${message}`);
 }
 
 /** A leading byte-order mark, which `Bun.TOML` reads as an empty document. */
@@ -243,7 +245,7 @@ export function decodeConfigText(file: string, bytes: Uint8Array): string {
     (first === 0xff && second === 0xfe) ||
     (first === 0xfe && second === 0xff)
   )
-    throw new Error(`${file}: is saved as UTF-16; save it as UTF-8`);
+    throw new ConfigLoadError(`${file}: is saved as UTF-16; save it as UTF-8`);
   return Buffer.from(bytes).toString("utf8");
 }
 
@@ -259,11 +261,15 @@ function parseTomlText(file: string, text: string): Table {
     return isTable(parsed) ? parsed : {};
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
-    throw new Error(`${file}: cannot parse TOML: ${reason}`);
+    throw new ConfigLoadError(`${file}: cannot parse TOML: ${reason}`);
   }
 }
 
-function parseBench(file: string, name: string, raw: unknown): BenchEntry[] {
+export function parseBench(
+  file: string,
+  name: string,
+  raw: unknown,
+): BenchEntry[] {
   const key = `benches.${name}`;
   if (!Array.isArray(raw) || raw.length === 0) {
     fail(file, key, 'expected a non-empty array of "smith:weight" strings');
