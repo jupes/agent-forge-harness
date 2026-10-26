@@ -52,9 +52,16 @@ const attemptReplySchema = z
           "0199a213-81c0-7800-8aa1-bbab2a035a58",
         ]),
         state: z.literal("reserved"),
+        storageErrors: z.array(z.string().max(500)).max(1),
       })
       .strict(),
-    z.object({ ok: z.literal(false), reason: z.literal("conflict") }).strict(),
+    z
+      .object({
+        ok: z.literal(false),
+        reason: z.enum(["conflict", "held", "unexpected"]),
+        storageErrors: z.array(z.string().max(500)).max(1),
+      })
+      .strict(),
   ]);
 
 afterEach(async () => {
@@ -186,7 +193,25 @@ function childBarrier(barrier: string, slot: string): string {
 }
 
 function journalImport(root: string, home: string): string {
-  return `${imports()} const journal = createCodexChatForkJournal({root:${JSON.stringify(root)},home:${JSON.stringify(home)}});`;
+  return `
+    ${imports()}
+    import { createCodexChatForkJournalStorage } from ${JSON.stringify(join(import.meta.dir, "codex-chat-fork-journal-storage.ts"))};
+    const storage = createCodexChatForkJournalStorage(${JSON.stringify(home)});
+    const storageErrors = [];
+    const tracedStorage = {
+      listEvents: () => storage.listEvents(),
+      read: (entry, maxBytes) => storage.read(entry, maxBytes),
+      writeOnce: (name, text) => storage.writeOnce(name, text),
+      async exclusive(work) {
+        try { return await storage.exclusive(work); }
+        catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          storageErrors.push(message.replaceAll(${JSON.stringify(home)}, "[profile]").replaceAll(${JSON.stringify(root)}, "[workspace]").slice(0, 500));
+          throw error;
+        }
+      },
+    };
+    const journal = createCodexChatForkJournal({root:${JSON.stringify(root)},home:${JSON.stringify(home)},storage:tracedStorage});`;
 }
 
 /** Fixture-only setup to isolate foreign-sidecar and debris refusal from mutex creation. */
@@ -324,9 +349,9 @@ test.skipIf(!nativeEnabled)(
       ) => `${journalImport(root, home)} ${childBarrier(barrier, slot)}
         try {
           const record = await journal.reserve(${JSON.stringify(projectId)},${JSON.stringify(parentSessionId)},${JSON.stringify(intent(ids[index]!))});
-          process.stdout.write(JSON.stringify({ok:true,requestId:record.requestId,state:record.state}));
+          process.stdout.write(JSON.stringify({ok:true,requestId:record.requestId,state:record.state,storageErrors}));
         } catch (error) {
-          process.stdout.write(JSON.stringify({ok:false,reason:error instanceof CodexChatForkJournalError ? error.reason : "unexpected"}));
+          process.stdout.write(JSON.stringify({ok:false,reason:error instanceof CodexChatForkJournalError ? error.reason : "unexpected",storageErrors}));
         }`,
     );
     const parent = createCodexChatForkJournal({ root, home }),
@@ -335,8 +360,15 @@ test.skipIf(!nativeEnabled)(
       ),
       winner = results.find((value) => value.ok),
       loser = results.find((value) => !value.ok);
-    expect(winner).toBeDefined();
-    expect(loser?.reason).toBe("conflict");
+    if (winner === undefined || loser === undefined)
+      throw new Error(
+        `The active-address race returned malformed outcomes: ${JSON.stringify(results).slice(0, 2_000)}`,
+      );
+    if (loser.reason !== "conflict")
+      throw new Error(
+        `The active-address race loser was ${loser.reason}, with storage diagnostics ${JSON.stringify(loser.storageErrors).slice(0, 1_000)}; outcomes=${JSON.stringify(results).slice(0, 2_000)}`,
+      );
+    expect(loser.reason).toBe("conflict");
     const reopened = createCodexChatForkJournal({ root, home });
     expect(reopened.read(projectId, winner!.requestId)?.state).toBe("reserved");
     expect(
