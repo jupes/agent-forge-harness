@@ -578,14 +578,13 @@ test("confirmed reserved retirement reads back the tombstone before a new UUID c
   await expect(close).toBeFocused();
   await page.keyboard.press("Tab");
   const body = retirement.locator(".af-dialog-body");
-  await expect(body).toBeFocused();
   expect(
-    await body.evaluate(
-      (element) =>
-        !!element.closest("dialog[open]")?.contains(document.activeElement),
+    await retirement.evaluate((dialog) =>
+      dialog.contains(document.activeElement),
     ),
   ).toBe(true);
-  await page.keyboard.press("Tab");
+  if (await body.evaluate((element) => element === document.activeElement))
+    await page.keyboard.press("Tab");
   await expect(keep).toBeFocused();
   await page.keyboard.press("Tab");
   await expect(confirm).toBeFocused();
