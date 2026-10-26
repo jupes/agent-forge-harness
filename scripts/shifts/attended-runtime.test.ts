@@ -431,7 +431,9 @@ test("an actual private protocol failure halts the engine before repair or anoth
   expect(receipt.observation.reason).toBe("halted");
   const rows = createSessionRegistry(f.home).listAll(FIXTURE_PROJECT_ID);
   expect(rows).toHaveLength(1);
-  expect(rows[0]?.origin?.attempt).toBe(1);
+  expect(
+    rows[0]?.origin?.kind === "shift" ? rows[0].origin.attempt : null,
+  ).toBe(1);
   const record = readShiftRecord(
     join(f.home, "shifts"),
     "shift-20261023-170000-1234",

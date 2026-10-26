@@ -64,6 +64,7 @@ import { useSessionObservations } from "./use-session-observations";
 import { useSessions } from "./use-sessions";
 import { useSmithCreate } from "./use-smith-create";
 import { useSmithEdit } from "./use-smith-edit";
+import { useSmithRoutingEdit } from "./use-smith-routing-edit";
 import { useSmiths } from "./use-smiths";
 import { useWorkbench } from "./use-workbench";
 
@@ -113,6 +114,10 @@ export function DesktopApp(): JSX.Element {
     providers.data?.workspace ?? null,
   );
   const smithEdits = useSmithEdit(
+    writesAllowed,
+    providers.data?.workspace ?? null,
+  );
+  const smithRoutingEdits = useSmithRoutingEdit(
     writesAllowed,
     providers.data?.workspace ?? null,
   );
@@ -790,6 +795,7 @@ export function DesktopApp(): JSX.Element {
             controller={smiths}
             creates={smithCreates}
             edits={smithEdits}
+            routingEdits={smithRoutingEdits}
             workspace={providers.data?.workspace ?? null}
           />
         ) : route.destination === "inbox" ? (

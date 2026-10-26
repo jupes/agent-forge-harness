@@ -42,7 +42,7 @@ export function sessionObservationRows(
     )
     .map((owner) => ({
       id: owner.record.id,
-      title: `${owner.origin ? "Shift" : owner.record.mode === "chat" ? "Chat" : "Task"} · ${owner.record.beadId ?? owner.record.requestedModel}`,
+      title: `${owner.origin?.kind === "shift" ? "Shift" : owner.origin?.kind === "codex-chat-fork" ? "Fork child" : owner.record.mode === "chat" ? "Chat" : "Task"} · ${owner.record.beadId ?? owner.record.requestedModel}`,
       provider: owner.record.provider,
       status: "unverified",
       depth:
@@ -53,9 +53,11 @@ export function sessionObservationRows(
         ? `Previously verified app-owned session. ${index.ownership.reason}`
         : !currentIds.has(owner.record.id)
           ? "Previously verified app-owned session; it is absent from the current registry read. Open it to check saved history."
-          : owner.origin
+          : owner.origin?.kind === "shift"
             ? "App-owned Shift attempt. Open read-only activity and its original Shift; whole-Shift controls remain in the original view."
-            : "App-owned session. Open it to check saved status and available controls.",
+            : owner.origin?.kind === "codex-chat-fork"
+              ? "App-owned native Codex Fork child. Read-only metadata is available; ordinary conversation controls are unavailable until Fork continuation is supported."
+              : "App-owned session. Open it to check saved status and available controls.",
       owner,
       observation:
         observed.find((row) => row.session.sessionId === owner.record.id)

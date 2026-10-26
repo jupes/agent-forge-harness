@@ -217,6 +217,8 @@ export type CodexChatEvent =
       kind: "configuration";
       model: string;
       modelProvider: string;
+      /** Present only when the native Start/Resume acknowledgement supplied this value. */
+      serviceTier?: string | null | undefined;
       effort: string | null;
       cwd: string;
     }

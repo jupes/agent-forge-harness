@@ -1,3 +1,4 @@
+import type { CodexChatForkOrigin } from "./codex-chat-fork";
 import type { OwnedCodingSessionRecord } from "./codex-owned-task";
 import type { SessionSummary } from "./hearth";
 import type { ProjectShiftAttemptOrigin } from "./shift-origin";
@@ -5,7 +6,7 @@ import type { ProjectShiftAttemptOrigin } from "./shift-origin";
 /** Metadata provenance only. Neither this index nor a PID grants private or process authority. */
 export interface SessionOwnershipMetadata {
   record: OwnedCodingSessionRecord;
-  origin: ProjectShiftAttemptOrigin | null;
+  origin: ProjectShiftAttemptOrigin | CodexChatForkOrigin | null;
 }
 
 export interface ProjectSessionObservations {

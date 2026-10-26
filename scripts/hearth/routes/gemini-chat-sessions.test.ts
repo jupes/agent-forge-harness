@@ -16,12 +16,17 @@ import {
 import { geminiChatApprovalPageSchema } from "../../sessions/gemini-chat-owned-protocol";
 import { geminiChatPreviewReceiptSchema } from "../../sessions/gemini-chat-preview-protocol";
 import { createGeminiChatRuntime } from "../../sessions/gemini-chat-runtime";
+import { sessionStartIdentityPageSchema } from "../../sessions/identity-protocol";
 import { sessionTranscriptExportSchema } from "../../sessions/library-protocol";
 import { sessionRegistryFile } from "../../sessions/registry";
 import { expectStartIdentityState } from "../../sessions/session-start-identity-test-witness";
 import { scratchDirs } from "../../test-scratch";
 import { startTestHearth, type TestHearth } from "../testing";
 import { writeOwnerOnly } from "../token";
+import {
+  emitGeminiChatWitnessFailureFactsAndRethrow,
+  readGeminiChatWitnessLog,
+} from "./gemini-chat-witness-diagnostic.test-utils";
 import { fixtureSessionGit } from "./session-fixture";
 
 const binaries = scratchDirs(),
@@ -63,6 +68,7 @@ async function fixture(
 ) {
   let actual: ReturnType<typeof createGeminiChatRuntime> | undefined,
     held = false,
+    runtimeRunState: "not-entered" | "pending" | "settled" = "not-entered",
     activeStartInput: unknown,
     release: () => void = () => {};
   const gate = new Promise<void>((resolve) => {
@@ -111,9 +117,14 @@ async function fixture(
           return selected().prepare(input);
         },
         async run(...args) {
-          const result = await selected().run(...args);
-          if (holdRuntimeResult) await runtimeGate;
-          return result;
+          runtimeRunState = "pending";
+          try {
+            const result = await selected().run(...args);
+            if (holdRuntimeResult) await runtimeGate;
+            return result;
+          } finally {
+            runtimeRunState = "settled";
+          }
         },
       },
       decorate: (routes) =>
@@ -204,6 +215,7 @@ async function fixture(
     release,
     releaseRuntime,
     held: () => held,
+    runtimeRunState: () => runtimeRunState,
   };
 }
 async function data(response: Response) {
@@ -234,6 +246,188 @@ async function until<T>(
       throw Error("The protected inert witness did not arrive");
     await Bun.sleep(10);
   }
+}
+
+type ProtectedDiagnosticRead =
+  | { state: "ok"; data: unknown }
+  | {
+      state:
+        | "not-found"
+        | "denied"
+        | "unavailable"
+        | "other"
+        | "oversized"
+        | "invalid";
+    };
+
+async function boundedResponseText(
+  response: Response,
+  maximumBytes: number,
+): Promise<string | null> {
+  const reader = response.body?.getReader();
+  if (!reader) return null;
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  for (;;) {
+    const next = await reader.read();
+    if (next.done) break;
+    total += next.value.byteLength;
+    if (total > maximumBytes) {
+      await reader.cancel();
+      return null;
+    }
+    chunks.push(next.value);
+  }
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  try {
+    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    return null;
+  }
+}
+
+async function boundedProtectedRead(
+  f: Awaited<ReturnType<typeof fixture>>,
+  suffix: string,
+  maximumBytes: number,
+): Promise<ProtectedDiagnosticRead> {
+  const controller = new AbortController(),
+    timer = setTimeout(() => controller.abort(), 500);
+  try {
+    const response = await fetch(`${f.h.api}${suffix}`, {
+      headers: f.h.headers(f.h.hearth.token),
+      signal: controller.signal,
+    });
+    if (response.status !== 200) {
+      try {
+        await response.body?.cancel();
+      } catch {
+        // A diagnostic body is never needed to classify a non-success status.
+      }
+      return {
+        state:
+          response.status === 404
+            ? "not-found"
+            : response.status === 401 || response.status === 403
+              ? "denied"
+              : response.status >= 500
+                ? "unavailable"
+                : "other",
+      };
+    }
+    const text = await boundedResponseText(response, maximumBytes);
+    if (text === null) return { state: "oversized" };
+    let envelope: unknown;
+    try {
+      envelope = JSON.parse(text);
+    } catch {
+      return { state: "invalid" };
+    }
+    if (
+      typeof envelope !== "object" ||
+      envelope === null ||
+      !("ok" in envelope) ||
+      envelope.ok !== true ||
+      !("error" in envelope) ||
+      envelope.error !== null ||
+      !("data" in envelope)
+    )
+      return { state: "invalid" };
+    return { state: "ok", data: envelope.data };
+  } catch {
+    return { state: "unavailable" };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function geminiChatWitnessFailureFacts(
+  f: Awaited<ReturnType<typeof fixture>>,
+  originalId: string | null,
+) {
+  const log = readGeminiChatWitnessLog(f.log);
+  const [originalRead, identityRead] = await Promise.all([
+    originalId === null
+      ? Promise.resolve<ProtectedDiagnosticRead>({ state: "not-found" })
+      : boundedProtectedRead(
+          f,
+          `/projects/${FIXTURE_PROJECT_ID}/sessions/${encodeURIComponent(originalId)}`,
+          256 * 1024,
+        ),
+    boundedProtectedRead(
+      f,
+      `/projects/${FIXTURE_PROJECT_ID}/session-start-identities`,
+      256 * 1024,
+    ),
+  ]);
+
+  let original: {
+    read: ProtectedDiagnosticRead["state"];
+    phase: string;
+    reason: "none" | "present" | "no-turn" | "invalid";
+  } = { read: originalRead.state, phase: "unavailable", reason: "no-turn" };
+  if (originalRead.state === "ok") {
+    const parsed = ownedCodingPageSchema.safeParse(originalRead.data);
+    if (!parsed.success)
+      original = { read: "invalid", phase: "unknown", reason: "invalid" };
+    else {
+      const turn =
+        parsed.data.request?.requestId === f.request.requestId
+          ? parsed.data.request
+          : (parsed.data.turns.find(
+              (item) => item.requestId === f.request.requestId,
+            ) ?? null);
+      original = {
+        read: "ok",
+        phase: turn?.phase ?? "unknown",
+        reason:
+          turn === null ? "no-turn" : turn.reason === null ? "none" : "present",
+      };
+    }
+  }
+
+  let identity: {
+    read: ProtectedDiagnosticRead["state"];
+    scope: "matching" | "mismatch" | "unavailable";
+    state: string;
+  } = {
+    read: identityRead.state,
+    scope: "unavailable",
+    state: "unavailable",
+  };
+  if (identityRead.state === "ok") {
+    const parsed = sessionStartIdentityPageSchema.safeParse(identityRead.data);
+    if (!parsed.success) {
+      identity = { read: "invalid", scope: "unavailable", state: "invalid" };
+    } else {
+      const scopeMatches =
+        parsed.data.scope.projectId === FIXTURE_PROJECT_ID &&
+        parsed.data.scope.workspace === f.h.workspace;
+      const row = parsed.data.identities.find(
+        (item) =>
+          item.requestId === f.request.requestId &&
+          item.provider === "gemini" &&
+          item.mode === "chat",
+      );
+      identity = {
+        read: "ok",
+        scope: scopeMatches ? "matching" : "mismatch",
+        state: scopeMatches ? (row?.state ?? "missing") : "scope-mismatch",
+      };
+    }
+  }
+  return {
+    log,
+    runtimeCall: f.runtimeRunState(),
+    ownedProcess: "unavailable" as const,
+    identity,
+    original,
+  };
 }
 
 test("protected audited Gemini Chat preview/Start/permission/export retains native scope and no private ledger bodies", async () => {
@@ -353,17 +547,27 @@ test("lost accepted Start answer reconciles the same original without another pr
   if (!Array.isArray(list) || !list[0])
     throw Error("No protected original receipt metadata");
   const original = ownedCodingSessionSchema.parse(list[0]);
-  const beforeRetry = await until(
-    async () => f.records(),
-    (rows) =>
-      rows.filter((row) => row.kind === "start").length === 1 &&
-      rows.filter(
-        (row) =>
-          row.kind === "wire" &&
-          JSON.stringify(row).includes('"method":"session/prompt"') &&
-          JSON.stringify(row).includes("PRIVATE-ACP-PROMPT"),
-      ).length === 1,
-  );
+  let beforeRetry: Record<string, unknown>[];
+  try {
+    beforeRetry = await until(
+      async () => f.records(),
+      (rows) =>
+        rows.filter((row) => row.kind === "start").length === 1 &&
+        rows.filter(
+          (row) =>
+            row.kind === "wire" &&
+            JSON.stringify(row).includes('"method":"session/prompt"') &&
+            JSON.stringify(row).includes("PRIVATE-ACP-PROMPT"),
+        ).length === 1,
+    );
+  } catch (error) {
+    await emitGeminiChatWitnessFailureFactsAndRethrow(
+      error,
+      async () => geminiChatWitnessFailureFacts(f, original.id),
+      (line) => process.stderr.write(line),
+    );
+    throw error;
+  }
   const records = JSON.stringify(beforeRetry);
   f.release();
   const retry = await f.post("", f.request);

@@ -4,6 +4,20 @@ export interface CodexChatForkIntent {
   throughTurnRequestId: string;
 }
 
+/** Immutable, metadata-only provenance for a child created by native Fork. */
+export interface CodexChatForkOrigin {
+  kind: "codex-chat-fork";
+  projectId: string;
+  parentSessionId: string;
+  throughTurnRequestId: string;
+  parentTurnHash: string;
+  parentNativeThreadId: string;
+  throughNativeTurnId: string;
+  childNativeThreadId: string;
+  captureHash: string;
+  protocolVersion: "0.163.0-alpha.10.2";
+}
+
 export interface CodexChatForkOriginalBase {
   projectId: string;
   workspaceKey: string;
@@ -13,8 +27,19 @@ export interface CodexChatForkOriginalBase {
   throughTurnRequestId: string;
   protocolVersion: "0.163.0-alpha.10.2";
   childAppSessionId: string;
+  /** Missing only on legacy rows; new coordinators never dispatch or adopt those rows. */
+  sourceSeal?: CodexChatForkSourceSeal | undefined;
   createdAt: string;
   updatedAt: string;
+}
+
+/** Resolver-derived immutable proof captured before a native effect is claimed. */
+export interface CodexChatForkSourceSeal {
+  parentRequestHash: string;
+  parentTurnHash: string;
+  parentNativeThreadId: string;
+  throughNativeTurnId: string;
+  sourceSettingsHash: string;
 }
 
 export type CodexChatForkOriginalRef = Pick<
@@ -27,6 +52,7 @@ export type CodexChatForkOriginalRef = Pick<
   | "throughTurnRequestId"
   | "protocolVersion"
   | "childAppSessionId"
+  | "sourceSeal"
 >;
 
 export type CodexChatForkOriginal =
