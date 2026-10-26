@@ -654,7 +654,7 @@ test("protected Fork routes publish one audited native Fork and recover its exac
   expect(
     f.records().filter((row) => row.method === "thread/fork"),
   ).toHaveLength(1);
-  expect(f.h.events(["operator.action"])).toHaveLength(beforeAudit + 3);
+  expect(f.h.events(["operator.action"])).toHaveLength(beforeAudit + 2);
   expect(
     (
       await f.post(route, {
