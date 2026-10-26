@@ -352,6 +352,45 @@ test("API rechecks live scope after the canonical hash await before dispatch", a
   ).toBe(true);
 });
 
+test("API freezes request bytes synchronously before hashing and posting", async () => {
+  const request: SmithConfigEditRequest = {
+    requestId: "e630e793-e617-4c93-bdaf-b1e30ba706e1",
+    target: "workspace",
+    name: smith.name,
+    smith: structuredClone(smith),
+    expectedRevision: revision,
+  };
+  const original = structuredClone(request);
+  const reservation = {
+    scope: "trusted-scope",
+    inputHash: await smithConfigEditInputHash(original),
+  };
+  const posted: unknown[] = [];
+  const api = createSmithEditApi({
+    post: async (_url, body) => {
+      posted.push(structuredClone(body));
+      return new Response(
+        JSON.stringify({ ok: false, data: null, error: "refused" }),
+        { status: 403, headers: { "content-type": "application/json" } },
+      );
+    },
+    read: async () => new Response(null, { status: 404 }),
+    scope: () => "trusted-scope",
+    canWrite: () => true,
+  });
+  const pending = api.edit(request, reservation);
+  request.smith.model = "mutated while request hash is pending";
+  request.target = "user";
+  const outcome = await pending;
+  expect(posted).toEqual([original]);
+  expect(
+    isVerifiedSmithEditNotSent(outcome, {
+      requestId: original.requestId,
+      ...reservation,
+    }),
+  ).toBe(true);
+});
+
 test("exact original recovery is GET-only and a terminal receipt cannot regress", async () => {
   const f = fixture();
   await f.client.preview();

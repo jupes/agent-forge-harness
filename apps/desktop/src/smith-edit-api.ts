@@ -7,6 +7,7 @@ import {
 import {
   canonicalSmithConfigEditRequest,
   smithConfigEditReceiptSchema,
+  smithConfigEditRequestSchema,
 } from "../../../scripts/config/smith-edit-protocol";
 import type {
   SmithConfigEditPreviewRequest,
@@ -77,8 +78,17 @@ export function createSmithEditApi(deps: {
       request: SmithConfigEditRequest,
       reserved: { scope: string; inputHash: string },
     ): Promise<SmithEditPostResult> {
+      let original: SmithConfigEditRequest;
+      try {
+        original = smithConfigEditRequestSchema.parse(structuredClone(request));
+      } catch {
+        return {
+          state: "unknown",
+          message: "The exact Smith edit request could not be verified.",
+        };
+      }
       const proofIdentity = {
-        requestId: request.requestId,
+        requestId: original.requestId,
         scope: reserved.scope,
         inputHash: reserved.inputHash,
       };
@@ -94,7 +104,7 @@ export function createSmithEditApi(deps: {
       const startingScope = deps.scope();
       let canonicalHash: string;
       try {
-        canonicalHash = await smithConfigEditInputHash(request);
+        canonicalHash = await smithConfigEditInputHash(original);
       } catch {
         return {
           state: "unknown",
@@ -116,7 +126,7 @@ export function createSmithEditApi(deps: {
           "Workspace access changed before the edit request was dispatched.",
         );
       try {
-        const response = await deps.post(editPath, request, responseBytes);
+        const response = await deps.post(editPath, original, responseBytes);
         const raw: unknown = await response.json().catch(() => null);
         if (response.status === 403)
           return verifiedNotSent(
@@ -130,9 +140,9 @@ export function createSmithEditApi(deps: {
         if (
           parsedReceipt?.success &&
           response.status === expectedStatus[parsedReceipt.data.result.phase] &&
-          parsedReceipt.data.requestId === request.requestId &&
+          parsedReceipt.data.requestId === original.requestId &&
           canonicalSmithConfigEditRequest(parsedReceipt.data.original) ===
-            canonicalSmithConfigEditRequest(request)
+            canonicalSmithConfigEditRequest(original)
         )
           return { state: "sent", value: raw };
         return {
