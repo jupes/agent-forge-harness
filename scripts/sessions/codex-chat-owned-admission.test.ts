@@ -15,8 +15,10 @@ import type { ConversationFrame } from "../../types/conversation";
 import { conversationFile } from "../conversations/paths";
 import { eventSchema } from "../conversations/protocol";
 import { createConversationStore } from "../conversations/store";
+import { workspaceKey } from "../projects/scope";
 import { createProjectStore } from "../projects/store";
 import { scratchDirs } from "../test-scratch";
+import { resolveCodexChatForkSource } from "./codex-chat-fork-source";
 import { createCodexOwnedChatService } from "./codex-chat-owned-admission";
 import { createCodexChatRuntime } from "./codex-chat-runtime";
 import {
@@ -26,7 +28,7 @@ import {
 } from "./codex-owned-journal";
 import { createSessionLibrary } from "./library";
 import { sessionTranscriptExportSchema } from "./library-protocol";
-import { sessionRegistryFile } from "./registry";
+import { createSessionRegistry, sessionRegistryFile } from "./registry";
 
 const scratch = scratchDirs(),
   closing: Array<() => Promise<void>> = [];
@@ -1849,7 +1851,7 @@ test("an actual interrupted Chat retains an unfinished final command snapshot wi
 });
 
 test("owned Chat persists its private snapshot and resumes the exact native thread after service recreation", async () => {
-  const f = await fixture();
+  const f = await fixture("service-tier-null");
   let service = f.open();
   const started = await service.start(f.project.id, f.request);
   await service.settled(f.project.id, started.session.id);
@@ -1892,8 +1894,9 @@ test("owned Chat persists its private snapshot and resumes the exact native thre
   await service.close();
   service = f.open();
   await service.start(f.project.id, f.request);
+  const secondRequestId = randomUUID();
   await service.send(f.project.id, started.session.id, {
-    requestId: randomUUID(),
+    requestId: secondRequestId,
     expectedRevision: page.revision,
     text: "Second explicit turn",
     about: [],
@@ -1910,6 +1913,52 @@ test("owned Chat persists its private snapshot and resumes the exact native thre
   expect(
     calls.find((row) => row.method === "thread/resume")?.params,
   ).toMatchObject({ threadId: page.binding?.sessionId, excludeTurns: true });
+  const owner = createSessionRegistry(f.home, "codex", "chat").read(
+      f.project.id,
+      started.session.id,
+    ),
+    fullState = createConversationStore(f.home, undefined, {
+      kind: "session",
+      projectId: f.project.id,
+      sessionId: started.session.id,
+    }).read(f.project.id),
+    resolveTurn = (requestId: string) =>
+      resolveCodexChatForkSource({
+        owner,
+        state: fullState,
+        projectId: f.project.id,
+        conversationId: started.session.id,
+        workspaceKey: workspaceKey(f.root),
+        selectedTurnRequestId: requestId,
+      });
+  const firstSource = resolveTurn(f.request.requestId),
+    secondSource = resolveTurn(secondRequestId);
+  expect(firstSource).toMatchObject({
+    eligible: true,
+    selectedTurnRequestId: f.request.requestId,
+    lastTurnId: "0199a213-81c0-7800-8aa1-bbab2a035a54",
+    sourceSettings: { serviceTier: null },
+  });
+  expect(secondSource).toMatchObject({
+    eligible: true,
+    selectedTurnRequestId: secondRequestId,
+    lastTurnId: "0199a213-81c0-7800-8aa1-bbab2a035a55",
+    sourceSettings: { serviceTier: null },
+  });
+  expect(firstSource.eligible && secondSource.eligible).toBe(true);
+  if (!firstSource.eligible || !secondSource.eligible)
+    throw Error("Actual owned turn evidence was not Fork-eligible.");
+  expect(firstSource.lastTurnId).not.toBe(secondSource.lastTurnId);
+  expect(fullState.turns.map((turn) => turn.requestId)).toEqual([
+    f.request.requestId,
+    secondRequestId,
+  ]);
+  expect(
+    f.records().filter((row) => row.method === "thread/fork"),
+  ).toHaveLength(0);
+  expect(f.records().filter((row) => row.method === "turn/start")).toHaveLength(
+    2,
+  );
   expect(page.frames.some((frame) => frame.event.kind === "model")).toBe(false);
   const path = conversationFile(f.home, f.project.id, {
       kind: "session",
