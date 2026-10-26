@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { assertOwnerOnly, nativeWindowsAcl } from "../hearth/acl-windows";
 import { scratchDirs } from "../test-scratch";
 import {
   createSmithConfigJournalStorage,
@@ -9,6 +10,25 @@ import {
 
 const scratch = scratchDirs();
 afterEach(() => scratch.cleanup());
+
+/** This file doubles as a child so the routing mutex is tested across processes. */
+const childRole = process.env["SMITH_ROUTING_STORAGE_CHILD_ROLE"];
+if (childRole !== undefined) {
+  const profile = process.env["SMITH_ROUTING_STORAGE_CHILD_PROFILE"] ?? "",
+    signal = process.env["SMITH_ROUTING_STORAGE_CHILD_SIGNAL"] ?? "",
+    entered = process.env["SMITH_ROUTING_STORAGE_CHILD_ENTERED"] ?? "";
+  if (childRole === "exclusive") {
+    const storage = createSmithConfigJournalStorage(profile, "routing");
+    writeFileSync(signal, "started", { flag: "wx" });
+    await storage.exclusive(async () => {
+      writeFileSync(entered, "entered", { flag: "wx" });
+    });
+    process.exit(0);
+  }
+  process.exit(2);
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 test("journal families map only to their fixed, isolated namespaces", () => {
   expect(smithJournalDirectoryName("create")).toBe("smith-create-journal");
@@ -69,4 +89,71 @@ test("same request identity remains isolated between fixed Smith journal stores"
   expect(existsSync(join(profile, "smith-create-journal"))).toBe(true);
   expect(existsSync(join(profile, "smith-edit-journal"))).toBe(true);
   expect(existsSync(join(profile, "smith-routing-edit-journal"))).toBe(true);
+});
+
+test("routing SQLite sidecars stay owner-only and its mutex serializes another process", async () => {
+  const profile = join(scratch.make("smith-routing-cross-process-"), "profile");
+  mkdirSync(profile);
+  const storage = createSmithConfigJournalStorage(profile, "routing"),
+    signal = join(scratch.make("smith-routing-signal-"), "started"),
+    entered = join(scratch.make("smith-routing-entered-"), "entered");
+  let release!: () => void;
+  let announceHeld!: () => void;
+  const held = new Promise<void>((resolve) => (announceHeld = resolve)),
+    gate = new Promise<void>((resolve) => (release = resolve));
+
+  const parent = storage.exclusive(async () => {
+    announceHeld();
+    await gate;
+  });
+  await held;
+  const child = Bun.spawn([process.execPath, import.meta.path], {
+    env: {
+      ...process.env,
+      SMITH_ROUTING_STORAGE_CHILD_ROLE: "exclusive",
+      SMITH_ROUTING_STORAGE_CHILD_PROFILE: profile,
+      SMITH_ROUTING_STORAGE_CHILD_SIGNAL: signal,
+      SMITH_ROUTING_STORAGE_CHILD_ENTERED: entered,
+    },
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  try {
+    const deadline = Date.now() + 10_000;
+    while (!existsSync(signal) && Date.now() < deadline) await sleep(20);
+    expect(existsSync(signal)).toBe(true);
+    await sleep(120);
+    expect(existsSync(entered)).toBe(false);
+
+    const lockDirectory = join(profile, "smith-routing-edit-journal", "locks"),
+      mutex = join(lockDirectory, "journal.sqlite"),
+      sidecars = readdirSync(lockDirectory).filter(
+        (name) => name !== "journal.sqlite",
+      );
+    if (process.platform === "win32") {
+      expect(sidecars.length).toBeGreaterThan(0);
+      const acl = nativeWindowsAcl();
+      expect(acl.read(mutex).owner).toBe(acl.userSid());
+      assertOwnerOnly(mutex, "file", acl);
+      for (const name of sidecars) {
+        const path = join(lockDirectory, name);
+        expect(acl.read(path).owner).toBe(acl.userSid());
+        assertOwnerOnly(path, "file", acl);
+      }
+    }
+
+    release();
+    await parent;
+    const exited = await Promise.race([
+      child.exited,
+      sleep(10_000).then(() => null),
+    ]);
+    expect(exited).toBe(0);
+    expect(existsSync(entered)).toBe(true);
+  } finally {
+    release();
+    if (child.exitCode === null) child.kill();
+    await parent.catch(() => undefined);
+    await child.exited;
+  }
 });
