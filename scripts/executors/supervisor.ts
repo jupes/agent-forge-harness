@@ -739,9 +739,14 @@ export function supervise(
     try {
       const exitCode = await Promise.race([proc.exited, windowsStopFailure]);
       exited = true;
-      // A terminal witness, not time spent draining/confirming cleanup, owns
-      // attribution once the wrapper has exited.
-      if (timer) clearTimeout(timer);
+      // Interactive lifetime and an active Windows Stop own cleanup after root
+      // exit. Ordinary noninteractive drains retain their work deadline.
+      if (
+        timer &&
+        (interactive ||
+          (process.platform === "win32" && windowsStopSettlement !== null))
+      )
+        clearTimeout(timer);
       if (process.platform !== "win32") exitedGroups.add(proc.pid);
       if (interactive) {
         // Windows retains an owned job handle; POSIX descendants keep their process group alive.
