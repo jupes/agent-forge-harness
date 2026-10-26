@@ -142,12 +142,10 @@ export interface RestartIdentityJournal {
     scope: RestartIdentityScope,
     requestId: string,
   ): Promise<RestartIdentityRow | null>;
-  beginAttempt(input: RestartIdentityInput): Promise<RestartIdentityRow>;
-  retireReserved(input: RestartIdentityInput): Promise<RestartIdentityRow>;
-  reconcileAdmitted(
+  beginAttempt(
     input: RestartIdentityInput,
-    sourceProof: RestartIdentityInput,
-  ): Promise<RestartIdentityRow>;
+  ): Promise<{ row: RestartIdentityRow; mayDispatch: boolean }>;
+  retireReserved(input: RestartIdentityInput): Promise<RestartIdentityRow>;
 }
 
 type FileIdentity = { dev: string; ino: string };
@@ -211,6 +209,11 @@ function eventText(event: JournalEvent): string {
 }
 function identityError(): never {
   throw unavailable();
+}
+
+/** @internal Deterministic event order independent of filesystem enumeration. */
+export function orderRestartIdentityNames(names: readonly string[]): string[] {
+  return [...names].sort();
 }
 
 function readBytes(path: string): number {
@@ -445,7 +448,7 @@ function entries(directory: string): string[] {
     const names: string[] = [];
     while (true) {
       const entry = handle.readSync();
-      if (entry === null) return names;
+      if (entry === null) return orderRestartIdentityNames(names);
       names.push(entry.name);
       if (names.length > MAX_RESTART_IDENTITY_NAMESPACE_ENTRIES)
         identityError();
@@ -466,12 +469,11 @@ function decodeCanonicalEvent(text: string, name: string): StoredEvent {
   } catch {
     identityError();
   }
-  const canonical = JSON.stringify(parsed);
-  if (canonical !== text) identityError();
   const match = EVENT_NAME.exec(name);
   if (match === null) identityError();
   const validated = eventSchema.safeParse(parsed);
   if (!validated.success) identityError();
+  if (JSON.stringify(validated.data) !== text) identityError();
   const digest = digestText(text);
   if (match[2] !== digest || Number(match[1]) !== validated.data.sequence)
     identityError();
@@ -484,6 +486,7 @@ function validateRowTransition(state: JournalState, stored: StoredEvent): void {
   const prior = state.rows.get(rowKey(row.requestId));
   if (event.operation === "reserve") {
     if (row.state !== "reserved" || prior !== undefined) identityError();
+    if (state.rows.size >= MAX_RESTART_IDENTITY_ROWS) identityError();
     if (
       [...state.rows.values()].some(
         (item) =>
@@ -503,6 +506,8 @@ function validateRowTransition(state: JournalState, stored: StoredEvent): void {
           (scopeMatches(item, row) && isActive(item)),
       )
     ) {
+      identityError();
+    } else if (state.rows.size >= MAX_RESTART_IDENTITY_ROWS) {
       identityError();
     }
   } else if (event.operation === "admit") {
@@ -819,7 +824,7 @@ export function createRestartIdentityJournal(
         return row !== undefined && scopeMatches(row, parsed.data) ? row : null;
       });
     },
-    beginAttempt(raw) {
+    async beginAttempt(raw) {
       const input = validateInput(raw);
       return withState((state) => {
         const existing = state.rows.get(input.requestId);
@@ -827,15 +832,21 @@ export function createRestartIdentityJournal(
           if (!exactRow(existing, input) || existing.state === "retired")
             throw conflict();
           if (existing.state === "attempted" || existing.state === "admitted")
-            return existing;
-          return commit(state, "attempt", { ...existing, state: "attempted" });
+            return { row: existing, mayDispatch: false };
+          return {
+            row: commit(state, "attempt", { ...existing, state: "attempted" }),
+            mayDispatch: true,
+          };
         }
         if (
           activeAtAddress(state, input) !== undefined ||
           state.rows.size >= MAX_RESTART_IDENTITY_ROWS
         )
           throw conflict();
-        return commit(state, "attempt", { ...input, state: "attempted" });
+        return {
+          row: commit(state, "attempt", { ...input, state: "attempted" }),
+          mayDispatch: true,
+        };
       });
     },
     retireReserved(raw) {
@@ -847,22 +858,6 @@ export function createRestartIdentityJournal(
         if (existing.state === "retired") return existing;
         if (existing.state !== "reserved") throw conflict();
         return commit(state, "retire", { ...existing, state: "retired" });
-      });
-    },
-    reconcileAdmitted(raw, rawProof) {
-      const input = validateInput(raw);
-      const proof = validateInput(rawProof);
-      return withState((state) => {
-        const existing = state.rows.get(input.requestId);
-        if (
-          existing === undefined ||
-          !exactRow(existing, input) ||
-          !exactRow(existing, proof)
-        )
-          throw conflict();
-        if (existing.state === "admitted") return existing;
-        if (existing.state !== "attempted") throw conflict();
-        return commit(state, "admit", { ...existing, state: "admitted" });
       });
     },
   };
