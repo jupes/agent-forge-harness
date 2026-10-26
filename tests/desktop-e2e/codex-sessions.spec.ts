@@ -572,52 +572,15 @@ test("confirmed reserved retirement reads back the tombstone before a new UUID c
     });
   await expect(close).toBeFocused();
   await page.keyboard.press("Tab");
-  const focusDiagnostic = await page.evaluate(() => {
-    const active = document.activeElement;
-    const owner = active?.closest("dialog[open]");
-    const ownerTitle = owner?.querySelector(".af-dialog-title")?.textContent;
-    const classes = new Set([
-      "af-dialog",
-      "af-dialog-panel",
-      "af-dialog-body",
-      "af-dialog-actions",
-      "af-dialog-close",
-      "af-btn",
-      "af-btn-primary",
-      "af-btn-secondary",
-    ]);
-    const retirement = Array.from(
-      document.querySelectorAll<HTMLDialogElement>("dialog[open]"),
-    ).find(
-      (dialog) =>
-        dialog.querySelector(".af-dialog-title")?.textContent ===
-        "Retire this reserved Start?",
-    );
-    return {
-      tag: active?.tagName.toLowerCase() ?? null,
-      role: active?.getAttribute("role") ?? null,
-      classes: active
-        ? Array.from(active.classList).filter((name) => classes.has(name))
-        : [],
-      tabIndex: active instanceof HTMLElement ? active.tabIndex : null,
-      scrollHeight: active instanceof HTMLElement ? active.scrollHeight : null,
-      clientHeight: active instanceof HTMLElement ? active.clientHeight : null,
-      insideRetirement: !!retirement && !!active && retirement.contains(active),
-      owner:
-        owner === retirement
-          ? "retirement"
-          : owner?.classList.contains("af-session-dialog")
-            ? "outer"
-            : owner
-              ? ownerTitle === "New session · Alpha"
-                ? "outer"
-                : "other"
-              : "none",
-    };
-  });
-  console.info(
-    `retirement-focus-diagnostic ${JSON.stringify(focusDiagnostic)}`,
-  );
+  const body = retirement.locator(".af-dialog-body");
+  await expect(body).toBeFocused();
+  expect(
+    await body.evaluate(
+      (element) =>
+        !!element.closest("dialog[open]")?.contains(document.activeElement),
+    ),
+  ).toBe(true);
+  await page.keyboard.press("Tab");
   await expect(keep).toBeFocused();
   await page.keyboard.press("Tab");
   await expect(confirm).toBeFocused();
