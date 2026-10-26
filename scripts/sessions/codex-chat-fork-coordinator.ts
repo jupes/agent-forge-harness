@@ -6,7 +6,11 @@ import type {
   CodexChatForkOriginal,
 } from "../../types/codex-chat-fork";
 import type { CodexChatOwnedRecord } from "../../types/codex-owned-chat";
-import type { ConversationState } from "../../types/conversation";
+import type {
+  ConversationObject,
+  ConversationState,
+} from "../../types/conversation";
+import type { ClaudeSessionLaunch } from "../../types/session-launch";
 import { conversationLeaseFile } from "../conversations/paths";
 import { createConversationStore } from "../conversations/store";
 import { resolveCheckout } from "../ledger/workspace";
@@ -33,14 +37,11 @@ export interface CodexChatForkCoordinatorOptions {
   home: string;
   runtime: Pick<ReturnType<typeof createCodexChatRuntime>, "fork">;
   /** Rechecks the current server-derived project/worktree scope. */
-  validateScope(parent: CodexChatOwnedRecord): Promise<void>;
-  /** Appends metadata only; it must reject before any Fork original is reserved. */
-  appendAudit(input: {
-    projectId: string;
-    parentSessionId: string;
-    requestId: string;
-    throughTurnRequestId: string;
-  }): Promise<void>;
+  validateScope(
+    parent: CodexChatOwnedRecord,
+    about?: ConversationObject[],
+    launch?: ClaudeSessionLaunch,
+  ): Promise<void>;
   /** A local wait only. The coordinator still acquires and revalidates under the real lease. */
   settled?(projectId: string, parentSessionId: string): Promise<void>;
   now?: () => string;
@@ -305,7 +306,11 @@ export function createCodexChatForkCoordinator(
       projectId: string;
       parentSessionId: string;
       request: unknown;
+      /** Trusted receipt from the common operator action runner, never request data. */
+      auditEventId: number;
     }): Promise<CodexChatForkCoordinatorResult> {
+      if (!Number.isSafeInteger(raw.auditEventId) || raw.auditEventId <= 0)
+        throw new Error("A confirmed operator audit receipt is required.");
       const intent = codexChatForkIntentSchema.safeParse(raw.request);
       if (!intent.success)
         throw new Error("Expected a bounded Codex Fork request.");
@@ -384,15 +389,10 @@ export function createCodexChatForkCoordinator(
             throw new Error(
               "The saved Fork source changed after its original was reserved.",
             );
-          if (!existing || existing.state === "reserved") {
-            await options.validateScope(parent);
-            await options.appendAudit({
-              projectId: raw.projectId,
-              parentSessionId: parent.id,
-              requestId: intent.data.requestId,
-              throughTurnRequestId: intent.data.throughTurnRequestId,
-            });
-          }
+          const sourceAbout = [
+            ...(source.prepared.launch.context?.about ?? []),
+          ];
+          await options.validateScope(parent, sourceAbout);
           let original: CodexChatForkOriginal =
             existing ??
             (await journal.reserve(
@@ -411,7 +411,7 @@ export function createCodexChatForkCoordinator(
               } as const;
             let captured: Awaited<ReturnType<typeof options.runtime.fork>>;
             try {
-              await options.validateScope(parent);
+              await options.validateScope(parent, sourceAbout);
               captured = await options.runtime.fork({
                 prepared: source.prepared,
                 parent: source.parent,
@@ -555,6 +555,12 @@ export function createCodexChatForkCoordinator(
           "The parent conversation is busy; no Fork was accepted.",
         );
       return result.value;
+    },
+    readOriginal(projectId: string, requestId: string) {
+      return journal.read(projectId, requestId);
+    },
+    listOriginals(projectId: string) {
+      return journal.list(projectId);
     },
   };
 }

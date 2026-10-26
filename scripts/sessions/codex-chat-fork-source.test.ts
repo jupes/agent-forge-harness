@@ -453,8 +453,7 @@ test("the filesystem coordinator captures once, adopts the exact child and resol
       throw Error("Fixture source is not Fork eligible.");
     const childNativeThreadId = "0199a213-81c0-7800-8aa1-bbab2a035a61",
       selectedRequestId = randomUUID();
-    let runtimeCalls = 0,
-      auditCalls = 0;
+    let runtimeCalls = 0;
     const coordinator = createCodexChatForkCoordinator({
       root: h.root,
       home: h.home,
@@ -491,9 +490,6 @@ test("the filesystem coordinator captures once, adopts the exact child and resol
         )
           throw Error("Fixture scope changed.");
       },
-      async appendAudit() {
-        auditCalls++;
-      },
     });
     const request = {
         requestId: selectedRequestId,
@@ -503,6 +499,7 @@ test("the filesystem coordinator captures once, adopts the exact child and resol
         projectId: FIXTURE_PROJECT_ID,
         parentSessionId: parent.id,
         request,
+        auditEventId: 1,
       },
       [first, concurrent] = await Promise.all([
         coordinator.fork(input),
@@ -511,7 +508,6 @@ test("the filesystem coordinator captures once, adopts the exact child and resol
     expect(first.state).toBe("linked");
     expect(concurrent).toEqual(first);
     expect(runtimeCalls).toBe(1);
-    expect(auditCalls).toBe(1);
     if (first.state !== "linked") throw Error("The Fork was not linked.");
     const selectedTurn = source.state.turns[0];
     if (!selectedTurn) throw Error("Missing selected source turn.");
@@ -558,6 +554,7 @@ test("the filesystem coordinator captures once, adopts the exact child and resol
       projectId: FIXTURE_PROJECT_ID,
       parentSessionId: parent.id,
       request,
+      auditEventId: 1,
     });
     expect(repeated).toEqual(first);
     expect(runtimeCalls).toBe(1);
@@ -622,6 +619,7 @@ test("the filesystem coordinator captures once, adopts the exact child and resol
         projectId: FIXTURE_PROJECT_ID,
         parentSessionId: parent.id,
         request,
+        auditEventId: 1,
       }),
     ).toEqual(first);
     expect(runtimeCalls).toBe(1);
@@ -643,6 +641,7 @@ test("the filesystem coordinator captures once, adopts the exact child and resol
         projectId: FIXTURE_PROJECT_ID,
         parentSessionId: parent.id,
         request,
+        auditEventId: 1,
       }),
     ).rejects.toThrow("linked Fork child registry proof");
     expect(runtimeCalls).toBe(1);
@@ -704,9 +703,6 @@ test("audit refusal and mismatched inert Fork results do not publish a child", a
         home: h.home,
         runtime: makeRuntime(threadId),
         async validateScope() {},
-        async appendAudit() {
-          throw Error("Fixture audit refusal.");
-        },
       });
     await expect(
       auditRefused.fork({
@@ -716,8 +712,9 @@ test("audit refusal and mismatched inert Fork results do not publish a child", a
           requestId: auditRequestId,
           throughTurnRequestId: source.requestId,
         },
+        auditEventId: 0,
       }),
-    ).rejects.toThrow("Fixture audit refusal");
+    ).rejects.toThrow("audit receipt");
     expect(auditJournal.read(FIXTURE_PROJECT_ID, auditRequestId)).toBeNull();
     expect(runtimeCalls).toBe(0);
 
@@ -731,7 +728,6 @@ test("audit refusal and mismatched inert Fork results do not publish a child", a
         home: h.home,
         runtime: makeRuntime("0199a213-81c0-7800-8aa1-bbab2a035a63"),
         async validateScope() {},
-        async appendAudit() {},
       });
     expect(
       await mismatch.fork({
@@ -741,6 +737,7 @@ test("audit refusal and mismatched inert Fork results do not publish a child", a
           requestId: mismatchRequestId,
           throughTurnRequestId: source.requestId,
         },
+        auditEventId: 1,
       }),
     ).toEqual({ state: "held", reason: "invalid-native-outcome" });
     const held = mismatchJournal.read(FIXTURE_PROJECT_ID, mismatchRequestId);
@@ -798,7 +795,7 @@ test("ordinary Codex Chat reservation cannot install Fork provenance", async () 
   }
 });
 
-test("parent Send lease contention prevents audit, reservation, and Fork dispatch", async () => {
+test("parent Send lease contention prevents reservation and Fork dispatch", async () => {
   const h = await startTestHearth();
   let releaseLease: (() => void) | undefined,
     leaseTask: Promise<unknown> | undefined;
@@ -808,8 +805,7 @@ test("parent Send lease contention prevents audit, reservation, and Fork dispatc
       requestId = randomUUID(),
       journal = createCodexChatForkJournal({ home: h.home, root: h.root });
     let leaseEntered!: () => void,
-      runtimeCalls = 0,
-      auditCalls = 0;
+      runtimeCalls = 0;
     const ready = new Promise<void>((resolve) => {
         leaseEntered = resolve;
       }),
@@ -838,9 +834,6 @@ test("parent Send lease contention prevents audit, reservation, and Fork dispatc
         },
       },
       async validateScope() {},
-      async appendAudit() {
-        auditCalls++;
-      },
     });
     await expect(
       coordinator.fork({
@@ -850,10 +843,10 @@ test("parent Send lease contention prevents audit, reservation, and Fork dispatc
           requestId,
           throughTurnRequestId: source.requestId,
         },
+        auditEventId: 1,
       }),
     ).rejects.toThrow("busy");
     expect(runtimeCalls).toBe(0);
-    expect(auditCalls).toBe(0);
     expect(journal.read(FIXTURE_PROJECT_ID, requestId)).toBeNull();
   } finally {
     releaseLease?.();
@@ -1073,13 +1066,13 @@ test("captured local-link recovery refuses changed source settings without redis
         },
       },
       async validateScope() {},
-      async appendAudit() {},
     });
     await expect(
       coordinator.fork({
         projectId: FIXTURE_PROJECT_ID,
         parentSessionId: parent.id,
         request: { requestId, throughTurnRequestId: source.requestId },
+        auditEventId: 1,
       }),
     ).rejects.toThrow("source changed");
     expect(runtimeCalls).toBe(0);
@@ -1114,7 +1107,6 @@ test("a real captured original from failed local adoption retries only its seale
       childNativeThreadId = "0199a213-81c0-7800-8aa1-bbab2a035a61",
       journal = createCodexChatForkJournal({ home: h.home, root: h.root });
     let runtimeCalls = 0,
-      auditCalls = 0,
       signalChildLock!: () => void;
     const childLockEntered = new Promise<void>((resolve) => {
         signalChildLock = resolve;
@@ -1166,14 +1158,12 @@ test("a real captured original from failed local adoption retries only its seale
         },
       },
       async validateScope() {},
-      async appendAudit() {
-        auditCalls++;
-      },
     });
     const input = {
       projectId: FIXTURE_PROJECT_ID,
       parentSessionId: parent.id,
       request: { requestId, throughTurnRequestId: source.requestId },
+      auditEventId: 1,
     };
     try {
       await expect(coordinator.fork(input)).rejects.toThrow();
@@ -1184,11 +1174,9 @@ test("a real captured original from failed local adoption retries only its seale
     const captured = journal.read(FIXTURE_PROJECT_ID, requestId);
     expect(captured?.state).toBe("captured");
     expect(runtimeCalls).toBe(1);
-    expect(auditCalls).toBe(1);
     const retried = await coordinator.fork(input);
     expect(retried.state).toBe("linked");
     expect(runtimeCalls).toBe(1);
-    expect(auditCalls).toBe(1);
 
     const changed = structuredClone(source.state),
       configFrame = changed.frames.find(
@@ -1214,7 +1202,6 @@ test("a real captured original from failed local adoption retries only its seale
     );
     await expect(coordinator.fork(input)).rejects.toThrow();
     expect(runtimeCalls).toBe(1);
-    expect(auditCalls).toBe(1);
     expect(journal.read(FIXTURE_PROJECT_ID, requestId)?.state).toBe("linked");
 
     const changedTurn = structuredClone(source.state),

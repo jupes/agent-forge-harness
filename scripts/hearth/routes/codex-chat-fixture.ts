@@ -1,10 +1,18 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type {
   CodexChatDecisionReceipt,
   CodexChatOwnedRecord,
 } from "../../../types/codex-owned-chat";
+import { conversationFile } from "../../conversations/paths";
 import { createConversationStore } from "../../conversations/store";
+import { workspaceKey } from "../../projects/scope";
 import { FIXTURE_PROJECT_ID } from "../../projects/testing";
+import {
+  ownedCodingEventSchema,
+  ownedCodingStateSchema,
+} from "../../sessions/codex-owned-journal";
+import { codexChatOwnedSessionSchema } from "../../sessions/codex-owned-metadata";
+import { canonicalOwnedSessionStart } from "../../sessions/codex-owned-protocol";
 import { privatePacketHash } from "../../sessions/private-packet";
 import {
   createSessionRegistry,
@@ -158,4 +166,142 @@ export async function seedChatDecision(h: TestHearth) {
     null,
   );
   return receipt;
+}
+
+/** A complete inert completed-source record for Fork route inventory fixtures. */
+export async function seedForkableCodexChatSource(h: TestHearth) {
+  await seedChatDecision(h);
+  const projectId = FIXTURE_PROJECT_ID,
+    sessionId = FIXTURE_CHAT_SESSION,
+    requestId = FIXTURE_CHAT_DECISION.turnRequestId,
+    version = "0.163.0-alpha.10.2",
+    threadId = "0199a213-81c0-7800-8aa1-bbab2a035a53",
+    turnId = "0199a213-81c0-7800-8aa1-bbab2a035a54",
+    store = createConversationStore(h.home, undefined, {
+      kind: "session",
+      projectId,
+      sessionId,
+    }),
+    original = store.read(projectId),
+    frames = original.frames.filter(
+      (frame) =>
+        frame.event.kind !== "coding-chat-decision" &&
+        !(
+          frame.event.kind === "coding-chat" &&
+          frame.event.event.kind === "approval-request"
+        ),
+    );
+  const at = frames.at(-1)?.at;
+  if (!at) throw Error("Missing app-owned source turn.");
+  const append = (event: unknown) => {
+    frames.push({
+      seq: frames.length + 1,
+      turnId: requestId,
+      at,
+      event: ownedCodingEventSchema.parse(event),
+    });
+  };
+  if (
+    !frames.some(
+      (frame) => frame.turnId === requestId && frame.event.kind === "identity",
+    )
+  )
+    frames.push({
+      seq: frames.length + 1,
+      turnId: requestId,
+      at,
+      event: {
+        kind: "identity",
+        provider: "codex",
+        sessionId: threadId,
+        version,
+      },
+    });
+  append({
+    kind: "coding-chat",
+    provider: "codex",
+    version,
+    event: {
+      kind: "configuration",
+      model: "exact-model",
+      modelProvider: "openai",
+      serviceTier: null,
+      effort: null,
+      cwd: h.workspace,
+    },
+  });
+  append({
+    kind: "coding-chat",
+    provider: "codex",
+    version,
+    event: {
+      kind: "outcome",
+      outcome: {
+        phase: "completed",
+        reason: null,
+        threadId,
+        turnId,
+        observedModel: null,
+        usage: null,
+        exitCode: 0,
+        stopped: false,
+        timedOut: false,
+      },
+    },
+  });
+  const state = ownedCodingStateSchema.parse({
+      ...original,
+      revision: frames.length,
+      frames,
+    }),
+    user = state.frames.find(
+      (frame) => frame.turnId === requestId && frame.event.kind === "user",
+    )?.event;
+  if (user?.kind !== "user" || !("codexChat" in user) || !user.codexChat)
+    throw Error("Missing normalized original private Chat request.");
+  const registry = createSessionRegistry(h.home, "codex", "chat"),
+    owner = registry.read(projectId, sessionId),
+    { cwd: _cwd, context: _context, ...launch } = user.codexChat.launch,
+    requestHash = createHash("sha256")
+      .update(
+        canonicalOwnedSessionStart({
+          requestId: owner.requestId,
+          provider: "codex",
+          smith: owner.smith,
+          repository: owner.repository,
+          worktree: owner.worktree,
+          ...(owner.beadId ? { beadId: owner.beadId } : {}),
+          about: user.about,
+          launch,
+        }),
+      )
+      .digest("hex"),
+    selectedOwner = codexChatOwnedSessionSchema.parse({
+      ...owner,
+      requestHash,
+    }),
+    records = registry.listAll(projectId);
+  writeOwnerOnly(
+    sessionRegistryFile(h.home),
+    JSON.stringify({
+      version: 1,
+      records: records.map((record) =>
+        record.id === sessionId ? selectedOwner : record,
+      ),
+    }),
+  );
+  writeOwnerOnly(
+    conversationFile(h.home, projectId, {
+      kind: "session",
+      projectId,
+      sessionId,
+    }),
+    `${JSON.stringify(state)}\n`,
+  );
+  return {
+    projectId,
+    parentSessionId: sessionId,
+    throughTurnRequestId: requestId,
+    workspace: workspaceKey(h.workspace),
+  };
 }

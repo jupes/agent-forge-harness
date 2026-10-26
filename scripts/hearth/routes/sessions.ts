@@ -3,6 +3,7 @@ import type { CodexChatDecisionRequest } from "../../../types/codex-owned-chat";
 import type { OwnedSessionStartRequest } from "../../../types/codex-owned-task";
 import type { GeminiChatDecisionRequest } from "../../../types/gemini-owned-chat";
 import type { LedgerEventInput } from "../../../types/hearth";
+import type { SessionOperationIdentityPage } from "../../../types/session-operation-identities";
 import type { SessionMessage } from "../../../types/session-turn";
 import { ConversationError } from "../../conversations/error";
 import { parseSessionSend } from "../../conversations/protocol";
@@ -15,6 +16,12 @@ import {
   ProjectStoreError,
 } from "../../projects/store";
 import type { SessionRuntime } from "../../sessions/admission";
+import {
+  CODEX_CHAT_FORK_PROTOCOL_VERSION,
+  codexChatForkIntentSchema,
+  codexChatForkOriginalHash,
+  codexChatForkOriginalHashInput,
+} from "../../sessions/codex-chat-fork-protocol";
 import { createCodexChatPreview } from "../../sessions/codex-chat-owned-preview";
 import { parseCodexChatDecision } from "../../sessions/codex-chat-owned-protocol";
 import type { createCodexChatRuntime } from "../../sessions/codex-chat-runtime";
@@ -40,6 +47,7 @@ import {
 import { createSessionPreview } from "../../sessions/preview";
 import { SessionRegistryError } from "../../sessions/registry";
 import type {
+  ActionContext,
   ActionRoute,
   ReadRoute,
   RouteReply,
@@ -213,6 +221,109 @@ export function createOwnedSessionRoutes(
       answer(200, () => {
         readable(projectId);
         return service.listIdentities(projectId);
+      }),
+  };
+  const identityOperations: ReadRoute<string> = {
+    kind: "read",
+    method: "GET",
+    path: "/projects/:id/session-operation-identities",
+    operatorOnly: true,
+    validate: (request) => {
+      const selected = project(request),
+        query = noParameters(request);
+      return !selected.ok ? selected : !query.ok ? query : selected;
+    },
+    read: (projectId) =>
+      answer(200, () => {
+        readable(projectId);
+        return service.listOperationIdentities(
+          projectId,
+        ) as Promise<SessionOperationIdentityPage>;
+      }),
+  };
+  const forkOriginal: ReadRoute<{ projectId: string; requestId: string }> = {
+    kind: "read",
+    method: "GET",
+    path: "/projects/:id/codex-chat-forks/:requestId",
+    operatorOnly: true,
+    validate: (request) => {
+      const selected = project(request),
+        query = noParameters(request),
+        requestId = request.params["requestId"];
+      if (!selected.ok) return selected;
+      if (!query.ok) return query;
+      return isConversationRequestId(requestId)
+        ? { ok: true, value: { projectId: selected.value, requestId } }
+        : fail("Expected a lowercase Codex Fork request UUID.");
+    },
+    read: ({ projectId, requestId }) =>
+      answer(200, () => {
+        readable(projectId);
+        return service.readForkOriginal(projectId, requestId);
+      }),
+  };
+  const fork: ActionRoute<{
+    projectId: string;
+    parentSessionId: string;
+    input: { requestId: string; throughTurnRequestId: string };
+  }> = {
+    kind: "action",
+    method: "POST",
+    path: "/projects/:id/sessions/:sessionId/forks",
+    action: "session.fork",
+    maxBodyBytes: 2_048,
+    validate: (request) => {
+      const selected = address(request),
+        query = noParameters(request),
+        body = bodyFields(request, ["requestId", "throughTurnRequestId"]);
+      if (!selected.ok) return selected;
+      if (!query.ok) return query;
+      if (!body.ok) return body;
+      const input = codexChatForkIntentSchema.safeParse(body.value);
+      return input.success
+        ? {
+            ok: true,
+            value: {
+              projectId: selected.value.projectId,
+              parentSessionId: selected.value.sessionId,
+              input: input.data,
+            },
+          }
+        : fail("Expected a strict Codex Chat Fork request.");
+    },
+    subject: ({ projectId, parentSessionId, input }) => ({
+      target: `codex-chat-fork:${projectId}:${parentSessionId}`,
+      family: "codex-chat-fork",
+      requestId: input.requestId,
+      inputHash: codexChatForkOriginalHash(
+        codexChatForkOriginalHashInput({
+          projectId,
+          workspaceKey: workspaceKey(deps.workspace),
+          parentSessionId,
+          throughTurnRequestId: input.throughTurnRequestId,
+          requestId: input.requestId,
+          protocolVersion: CODEX_CHAT_FORK_PROTOCOL_VERSION,
+        }),
+      ),
+    }),
+    effect: (input, context?: ActionContext) =>
+      answer(200, () => {
+        readable(input.projectId);
+        if (
+          !context ||
+          !Number.isSafeInteger(context.auditEventId) ||
+          context.auditEventId <= 0
+        )
+          throw new ConversationError(
+            503,
+            "A confirmed operator audit receipt is required before Fork.",
+          );
+        return service.fork(
+          input.projectId,
+          input.parentSessionId,
+          input.input,
+          context.auditEventId,
+        );
       }),
   };
   const identityReserve: ActionRoute<{
@@ -559,6 +670,9 @@ export function createOwnedSessionRoutes(
     prepare: preparePreview,
     list,
     identityList,
+    identityOperations,
+    forkOriginal,
+    fork,
     identityReserve,
     identityRetire,
     read,

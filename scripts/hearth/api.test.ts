@@ -75,6 +75,11 @@ import {
 } from "../scheduler/shift-store";
 import type { GitRun } from "../scheduler/worktrees";
 import { serializeClaudeLaunch } from "../sessions/claude-launch";
+import {
+  CODEX_CHAT_FORK_PROTOCOL_VERSION,
+  codexChatForkOriginalHash,
+  codexChatForkOriginalHashInput,
+} from "../sessions/codex-chat-fork-protocol";
 import { canonicalOwnedSessionStart } from "../sessions/codex-owned-protocol";
 import {
   sessionStartIdentityPageSchema,
@@ -97,6 +102,7 @@ import {
   FIXTURE_CHAT_DECISION,
   FIXTURE_CHAT_SESSION,
   seedChatDecision,
+  seedForkableCodexChatSource,
 } from "./routes/codex-chat-fixture";
 import { desktopControlRoutes } from "./routes/desktop-control";
 import type { BdResult } from "./routes/dev-api";
@@ -212,6 +218,7 @@ const RUN_STATE = JSON.stringify({
 });
 
 const API_SMITH_CREATE_ID = "dc9078cf-6200-4fed-aeb8-2be646ee7953";
+const API_CODEX_CHAT_FORK_ID = "80e40be9-e811-47c3-a71d-b988e67178a0";
 const API_SMITH_CREATE_SMITH = {
   name: "api-route-smith",
   provider: "custom",
@@ -1311,6 +1318,58 @@ const ACTIONS: Record<string, ActionFixture> = {
       rmSync(join(h.root, "agent-forge.toml"), { force: true });
     },
   },
+  "POST /projects/:id/sessions/:sessionId/forks": {
+    valid: {
+      path: "",
+      body: {
+        requestId: API_CODEX_CHAT_FORK_ID,
+        throughTurnRequestId: FIXTURE_CHAT_DECISION.turnRequestId,
+      },
+      status: 200,
+      target: "",
+      audit: {},
+    },
+    invalid: {
+      path: "/projects/not-a-project/sessions/not-a-session/forks",
+      body: {
+        requestId: API_CODEX_CHAT_FORK_ID,
+        throughTurnRequestId: FIXTURE_CHAT_DECISION.turnRequestId,
+      },
+    },
+    prepare: async (h) => {
+      const source = await seedForkableCodexChatSource(h);
+      const hash = codexChatForkOriginalHash(
+        codexChatForkOriginalHashInput({
+          projectId: source.projectId,
+          workspaceKey: source.workspace,
+          parentSessionId: source.parentSessionId,
+          throughTurnRequestId: source.throughTurnRequestId,
+          requestId: API_CODEX_CHAT_FORK_ID,
+          protocolVersion: CODEX_CHAT_FORK_PROTOCOL_VERSION,
+        }),
+      );
+      ACTIONS["POST /projects/:id/sessions/:sessionId/forks"]!.valid = {
+        path: `/projects/${source.projectId}/sessions/${source.parentSessionId}/forks`,
+        body: {
+          requestId: API_CODEX_CHAT_FORK_ID,
+          throughTurnRequestId: source.throughTurnRequestId,
+        },
+        status: 200,
+        target: `codex-chat-fork:${source.projectId}:${source.parentSessionId}`,
+        audit: {
+          family: "codex-chat-fork",
+          requestId: API_CODEX_CHAT_FORK_ID,
+          inputHash: hash,
+        },
+      };
+    },
+    happened: async (_h, answer) => {
+      expect(answer).toMatchObject({ state: "held" });
+      expect(answer).not.toHaveProperty("sourceSeal");
+      expect(answer).not.toHaveProperty("parentNativeThreadId");
+      expect(answer).not.toHaveProperty("prompt");
+    },
+  },
   "POST /providers/:provider/sign-in": {
     valid: {
       path: "/providers/claude/sign-in",
@@ -2322,6 +2381,8 @@ const ACTIONS: Record<string, ActionFixture> = {
 /** A concrete path per read row; a row with none fails the suite. */
 const READS: Record<string, string> = {
   "GET /projects/:id/session-start-identities": `/projects/${FIXTURE_PROJECT_ID}/session-start-identities`,
+  "GET /projects/:id/codex-chat-forks/:requestId": `/projects/${FIXTURE_PROJECT_ID}/codex-chat-forks/${API_CODEX_CHAT_FORK_ID}`,
+  "GET /projects/:id/session-operation-identities": `/projects/${FIXTURE_PROJECT_ID}/session-operation-identities`,
   "GET /projects/:id/runs": `/projects/${FIXTURE_PROJECT_ID}/runs`,
   "GET /projects/:id/runs/:slug": `/projects/${FIXTURE_PROJECT_ID}/runs/demo`,
   "GET /projects/:id/shifts": `/projects/${FIXTURE_PROJECT_ID}/shifts`,
@@ -2376,6 +2437,20 @@ const READS: Record<string, string> = {
   "GET /scoreboard": "/scoreboard",
   "GET /shifts": "/shifts",
 };
+
+async function seedForkReadOriginal(h: TestHearth): Promise<void> {
+  const source = await seedForkableCodexChatSource(h);
+  const response = await post(
+    h,
+    `/projects/${source.projectId}/sessions/${source.parentSessionId}/forks`,
+    {
+      requestId: API_CODEX_CHAT_FORK_ID,
+      throughTurnRequestId: source.throughTurnRequestId,
+    },
+  );
+  expect(response.status).toBe(200);
+  expect((await envelope(response)).ok).toBe(true);
+}
 
 function fixture(route: ApiRoute): ActionFixture {
   const found = ACTIONS[key(route)];
@@ -4072,6 +4147,7 @@ describe("every read row (iterating the table)", () => {
     await seedSmithCreateOriginal(h);
     await seedSmithEditOriginal(h);
     await seedSmithRoutingEditOriginal(h);
+    await seedForkReadOriginal(h);
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");
     for (const row of rows) {
@@ -4110,6 +4186,7 @@ describe("every read row (iterating the table)", () => {
     await seedSmithCreateOriginal(h);
     await seedSmithEditOriginal(h);
     await seedSmithRoutingEditOriginal(h);
+    await seedForkReadOriginal(h);
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");
     const refused: Array<[string, Record<string, string>]> = [

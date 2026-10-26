@@ -16,6 +16,10 @@ import { codexChatPreviewReceiptSchema } from "../../sessions/codex-chat-preview
 import { createCodexChatRuntime } from "../../sessions/codex-chat-runtime";
 import { ownedCodingPageSchema } from "../../sessions/codex-owned-journal";
 import { ownedCodingStartReceiptSchema } from "../../sessions/codex-owned-wire-protocol";
+import {
+  codexChatForkIdentityMetadataSchema,
+  sessionOperationIdentityPageSchema,
+} from "../../sessions/session-operation-identities-protocol";
 import { expectStartIdentityState } from "../../sessions/session-start-identity-test-witness";
 import { scratchDirs } from "../../test-scratch";
 import { startTestHearth, type TestHearth } from "../testing";
@@ -607,11 +611,11 @@ test("protected Fork routes publish one audited native Fork and recover its exac
   const originalResponse = await fetch(originalUrl, {
       headers: f.h.headers(f.h.hearth.token),
     }),
-    original = await originalResponse.json(),
-    originalText = JSON.stringify(original);
+    originalEnvelope = await originalResponse.json(),
+    original = codexChatForkIdentityMetadataSchema.parse(originalEnvelope.data),
+    originalText = JSON.stringify(originalEnvelope);
   expect(originalResponse.status).toBe(200);
-  expect(original.ok).toBe(true);
-  expect(original.data).toMatchObject({
+  expect(original).toMatchObject({
     family: "codex-chat-fork",
     requestId: request.requestId,
     parentSessionId,
@@ -632,11 +636,14 @@ test("protected Fork routes publish one audited native Fork and recover its exac
   const aggregateResponse = await fetch(`${f.h.api}${operationsPath}`, {
       headers: f.h.headers(f.h.hearth.token),
     }),
-    aggregate = await aggregateResponse.json(),
+    aggregateEnvelope = await aggregateResponse.json(),
+    aggregate = sessionOperationIdentityPageSchema.parse(
+      aggregateEnvelope.data,
+    ),
     aggregateText = JSON.stringify(aggregate);
   expect(aggregateResponse.status).toBe(200);
-  expect(aggregate.ok).toBe(true);
-  expect(aggregate.data.operations).toContainEqual(
+  expect(aggregateEnvelope.ok).toBe(true);
+  expect(aggregate.operations).toContainEqual(
     expect.objectContaining({
       family: "codex-chat-fork",
       requestId: request.requestId,
