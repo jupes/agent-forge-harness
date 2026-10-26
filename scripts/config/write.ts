@@ -29,6 +29,7 @@ import { validateSmith } from "../hearth/validate";
 import type { BenchEntry } from "./defaults";
 import { BUILTIN_SHIFT, BUILTIN_SMITHS } from "./defaults";
 import {
+  ConfigLoadError,
   decodeConfigText,
   type ForgeConfig,
   type LoadedConfig,
@@ -111,7 +112,14 @@ export interface SmithRoutingEditCandidate {
 
 export type SmithRoutingEditCandidateOutcome =
   | { ok: true; value: SmithRoutingEditCandidate }
-  | { ok: false; error: string };
+  | {
+      ok: false;
+      error: string;
+      refusal?:
+        | "invalid-current-config"
+        | "shadowed-target"
+        | "success-preview-too-large";
+    };
 
 /** Stage exactly one saved routing choice from explicit paired config bytes. */
 export function buildSmithRoutingEditCandidate(
@@ -221,6 +229,7 @@ export function buildSmithRoutingEditCandidate(
     if (JSON.stringify(effectiveAfter) !== JSON.stringify(wanted))
       throw new Refusal(
         `${path.join(".")}: the selected target would not make the requested value effective`,
+        "shadowed-target",
       );
 
     const provenanceKey = path.join("."),
@@ -234,13 +243,14 @@ export function buildSmithRoutingEditCandidate(
     if (provenanceAfter !== selected.source.file)
       throw new Refusal(
         `${provenanceKey}: the selected target would leave the requested value shadowed`,
+        "shadowed-target",
       );
 
     const targetAfter =
         change.kind === "default"
           ? change.smith
           : structuredClone(change.entries),
-      review = smithRoutingEditReviewSchema.parse({
+      reviewValue = {
         change,
         targetBefore,
         targetAfter,
@@ -248,7 +258,13 @@ export function buildSmithRoutingEditCandidate(
         effectiveAfter: structuredClone(effectiveAfter),
         provenanceBefore,
         provenanceAfter,
-      }),
+      };
+    if (!encodedWithin(reviewValue, SMITH_ROUTING_EDIT_LIMITS.responseBytes))
+      throw new Refusal(
+        "The routing edit review exceeds its response limit.",
+        "success-preview-too-large",
+      );
+    const review = smithRoutingEditReviewSchema.parse(reviewValue),
       bytes = Buffer.from(text, "utf8"),
       digest = createHash("sha256").update(bytes).digest("hex");
 
@@ -272,6 +288,14 @@ export function buildSmithRoutingEditCandidate(
     return {
       ok: false,
       error: error instanceof Error ? error.message : String(error),
+      ...(error instanceof Refusal || error instanceof ConfigLoadError
+        ? {
+            refusal:
+              error instanceof Refusal
+                ? error.refusal
+                : ("invalid-current-config" as const),
+          }
+        : {}),
     };
   }
 }
@@ -423,7 +447,17 @@ interface Scan {
   entries: Entry[];
 }
 
-class Refusal extends Error {}
+class Refusal extends Error {
+  constructor(
+    message: string,
+    readonly refusal:
+      | "invalid-current-config"
+      | "shadowed-target"
+      | "success-preview-too-large" = "invalid-current-config",
+  ) {
+    super(message);
+  }
+}
 
 /** The headers and `key = value` entries of a document the editor owns, or a refusal naming the line. */
 function scan(text: string): Scan {

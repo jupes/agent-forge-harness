@@ -34,6 +34,7 @@ import {
 
 export interface SmithRoutingEditJournalWriter {
   readonly original: Readonly<SmithRoutingEditRequest>;
+  holdBeforeAttempt(): void;
   prepare(preview: SmithRoutingEditPreview): boolean;
   attempted(): void;
   confirm(publication: {
@@ -410,6 +411,11 @@ export function createSmithRoutingEditJournalCore(
         };
         const writer: SmithRoutingEditJournalWriter = Object.freeze({
           original,
+          holdBeforeAttempt(): void {
+            if (!active || started || attemptedBegan) held();
+            // Record the exact original without claiming a refusal or effect.
+            writeIntent();
+          },
           prepare(preview: SmithRoutingEditPreview): boolean {
             if (!active || started || selectedPreview !== null) held();
             const checkedPreview =

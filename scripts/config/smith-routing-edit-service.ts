@@ -76,23 +76,16 @@ function canonicalDirectory(path: string, label: string) {
   return { path: real, dev: String(info.dev), ino: String(info.ino) };
 }
 
-function candidateRefusal(error: string) {
-  if (
-    error.includes("shadowed") ||
-    error.includes("would not make the requested value effective")
-  )
-    return "shadowed-target" as const;
-  if (error.includes("response limit"))
-    return "success-preview-too-large" as const;
-  return "invalid-current-config" as const;
-}
-
 function transactionRefusal(error: unknown) {
   if (error instanceof ConfigTransactionError) {
     if (error.reason === "changed") return "stale-revision" as const;
-    return "write-refused-before-attempt" as const;
+    if (
+      !error.replacementAttempted &&
+      ["invalid", "closed", "busy", "unusable"].includes(error.reason)
+    )
+      return "write-refused-before-attempt" as const;
   }
-  return "invalid-current-config" as const;
+  return null;
 }
 
 function previewFrom(
@@ -174,7 +167,7 @@ export function createSmithRoutingEditService(
   ) => {
     const outcome = makeCandidate(request, sources);
     if (!outcome.ok) {
-      if (candidateRefusal(outcome.error) === "success-preview-too-large")
+      if (outcome.refusal === "success-preview-too-large")
         throw new PreviewTooLarge();
       throw new Error(outcome.error);
     }
@@ -218,7 +211,8 @@ export function createSmithRoutingEditService(
           }
           const outcome = makeCandidate(requestPreview, transaction.sources);
           if (!outcome.ok) {
-            writer.refuse(candidateRefusal(outcome.error));
+            if (outcome.refusal) writer.refuse(outcome.refusal);
+            else writer.holdBeforeAttempt();
             return;
           }
           const candidate = outcome.value,
@@ -260,7 +254,9 @@ export function createSmithRoutingEditService(
           }
           return;
         }
-        writer.refuse(transactionRefusal(error));
+        const refusal = transactionRefusal(error);
+        if (refusal) writer.refuse(refusal);
+        else writer.holdBeforeAttempt();
       }
     });
   };
