@@ -1,6 +1,6 @@
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { expect, type Page, test } from "@playwright/test";
+import { expect, type Locator, test } from "@playwright/test";
 import { keeperProposalPageSchema } from "../../scripts/keeper/proposal-protocol";
 import {
   keeperShiftStartHashes,
@@ -20,23 +20,24 @@ const conversation = join(
 );
 
 async function captureMockedKeeperShiftProof(
-  page: Page,
+  target: Locator,
   label: string,
   fixtureIds: string[],
 ) {
   if (process.env["AGENT_FORGE_CAPTURE_KEEPER_SHIFT_PROOF"] !== "1") return;
   const screenshot = test.info().outputPath(`mocked-keeper-shift-${label}.png`);
-  await page.screenshot({
+  await target.scrollIntoViewIfNeeded();
+  await target.screenshot({
     path: screenshot,
-    fullPage: true,
+    animations: "disabled",
     mask: [
-      page.getByText(
+      target.getByText(
         /(?:proposal-)?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/i,
       ),
-      page.getByText(
+      target.getByText(
         /[A-Za-z]:\\[^<>"|?*]+|\/(?:Users|home|tmp|var)\/[^<>"|?*]+/i,
       ),
-      ...fixtureIds.map((id) => page.getByText(id, { exact: false })),
+      ...fixtureIds.map((id) => target.getByText(id, { exact: false })),
     ],
     maskColor: "#333333",
   });
@@ -341,11 +342,13 @@ test("recorded Shift cards reopen the saved original after reload from Keeper an
   );
 
   await openSettled(page, `/index.html#/desktop/project/${alpha.id}/keeper`);
-  await expect(
-    page.getByRole("article", { name: "Review a bounded Shift", exact: true }),
-  ).toContainText("Fixture original is done.");
+  const fullCard = page.getByRole("article", {
+    name: "Review a bounded Shift",
+    exact: true,
+  });
+  await expect(fullCard).toContainText("Fixture original is done.");
   expect(proposalPage.proposals[0]?.proposal).toEqual(proposal);
-  await captureMockedKeeperShiftProof(page, "full-keeper", [
+  await captureMockedKeeperShiftProof(fullCard, "full-keeper", [
     requestId,
     sourceRequestId,
     proposal.id,
@@ -385,7 +388,7 @@ test("recorded Shift cards reopen the saved original after reload from Keeper an
               : 7,
       );
     if (nextPhase === "approved")
-      await captureMockedKeeperShiftProof(page, "review-dialog", [
+      await captureMockedKeeperShiftProof(dialog, "review-dialog", [
         requestId,
         sourceRequestId,
         proposal.id,
@@ -406,7 +409,7 @@ test("recorded Shift cards reopen the saved original after reload from Keeper an
     });
     await expect(drawerCard).toContainText(`Fixture original is ${nextPhase}.`);
     if (nextPhase === "approved")
-      await captureMockedKeeperShiftProof(page, "drawer", [
+      await captureMockedKeeperShiftProof(drawerCard, "drawer", [
         requestId,
         sourceRequestId,
         proposal.id,
