@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { readdirSync, readFileSync, rmSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { expect, type Page, type Request, test } from "@playwright/test";
 import { z } from "zod";
@@ -110,13 +110,36 @@ function fixtureProvider() {
 }
 
 function registeredShiftIds(): string[] {
+  const program = `
+    import { createProjectShiftRegistry } from "./scripts/shifts/registry";
+    const [home, root, projectId] = process.argv.slice(1);
+    const records = createProjectShiftRegistry({ home, root }).list(projectId);
+    process.stdout.write(JSON.stringify(records.map(({ shiftId }) => shiftId)) + "\\n");
+  `;
+  const read = spawnSync(
+    bunPath(),
+    ["-e", program, HOME, REPOSITORY, FIXTURE_PROJECT_ID],
+    {
+      cwd: process.cwd(),
+      env: { ...process.env, AGENT_FORGE_HOME: HOME },
+      encoding: "utf8",
+      timeout: 15_000,
+      windowsHide: true,
+    },
+  );
+  if (read.status !== 0)
+    throw Error(
+      `Could not read the production Shift registry (status ${String(read.status)}, signal ${String(read.signal)}): ${read.stderr}`,
+    );
+  let raw: unknown;
   try {
-    return readdirSync(join(HOME, "shifts"))
-      .filter((name) => name.endsWith(".json"))
-      .map((name) => name.slice(0, -".json".length));
+    raw = JSON.parse(read.stdout.trim());
   } catch {
-    return [];
+    throw Error("The production Shift registry reader returned invalid JSON.");
   }
+  return z
+    .array(z.string().regex(/^shift-\d{8}-\d{6}-[0-9a-f]{4}$/))
+    .parse(raw);
 }
 
 function providerAlive(pid: number) {
@@ -288,6 +311,7 @@ test("a lost Keeper Shift Start reply recovers one exact original after reload o
             throw Error(
               "The real Keeper Start admission has no canonical Shift receipt.",
             );
+          provider = fixtureProvider();
         } catch (error) {
           responseProblem =
             error instanceof Error
@@ -476,13 +500,48 @@ test("a lost Keeper Shift Start reply recovers one exact original after reload o
         );
       });
     if (requestObserver) page.off("request", requestObserver);
+    provider ??= fixtureProvider();
     try {
-      provider ??= fixtureProvider();
-      if (shiftId === null) {
+      const startDialog = reviewDialog(page);
+      if (await startDialog.isVisible({ timeout: 1_000 }).catch(() => false)) {
+        await page.keyboard.press("Escape");
+      }
+    } catch (cleanupError) {
+      cleanupProblems.push(
+        cleanupError instanceof Error
+          ? cleanupError.message
+          : String(cleanupError),
+      );
+    }
+    try {
+      const keeperDrawer = page.getByRole("dialog", {
+        name: "Forge Keeper · Alpha",
+        exact: true,
+      });
+      if (await keeperDrawer.isVisible({ timeout: 1_000 }).catch(() => false)) {
+        await page.keyboard.press("Escape");
+      }
+    } catch (cleanupError) {
+      cleanupProblems.push(
+        cleanupError instanceof Error
+          ? cleanupError.message
+          : String(cleanupError),
+      );
+    }
+    if (shiftId === null) {
+      try {
         shiftId =
           registeredShiftIds().find((id) => !baselineShiftIds.has(id)) ?? null;
+      } catch (cleanupError) {
+        cleanupProblems.push(
+          cleanupError instanceof Error
+            ? cleanupError.message
+            : String(cleanupError),
+        );
       }
-      if (shiftId === null) {
+    }
+    if (shiftId === null) {
+      try {
         await openSettled(page, workbenchRoute);
         const newShift = await page
           .locator("[data-shift]")
@@ -497,13 +556,13 @@ test("a lost Keeper Shift Start reply recovers one exact original after reload o
             [...baselineShiftIds],
           );
         shiftId = newShift;
+      } catch (cleanupError) {
+        cleanupProblems.push(
+          cleanupError instanceof Error
+            ? cleanupError.message
+            : String(cleanupError),
+        );
       }
-    } catch (cleanupError) {
-      cleanupProblems.push(
-        cleanupError instanceof Error
-          ? cleanupError.message
-          : String(cleanupError),
-      );
     }
     if (shiftId && provider === null) {
       try {
@@ -523,16 +582,16 @@ test("a lost Keeper Shift Start reply recovers one exact original after reload o
       try {
         await openSettled(page, workbenchRoute);
         const row = page.locator(`[data-shift="${shiftId}"]`);
-        await expect(row).toBeVisible({ timeout: 20_000 });
+        await expect(row).toBeVisible({ timeout: 10_000 });
         const stop = row.getByRole("button", {
           name: "Stop shift",
           exact: true,
         });
         if ((await stop.count()) > 0) {
-          await stop.click();
+          await stop.click({ timeout: 5_000 });
         }
         await expect(row).toHaveAttribute("data-phase", "stopped", {
-          timeout: 20_000,
+          timeout: 10_000,
         });
       } catch (cleanupError) {
         cleanupProblems.push(
