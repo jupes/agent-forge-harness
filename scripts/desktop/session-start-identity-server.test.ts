@@ -260,16 +260,12 @@ test("reserve hashes and posts the frozen original even if the caller mutates it
   expect(JSON.stringify(posted)).not.toContain("MUTATED");
 });
 
-test("reserve rechecks verified scope after hashing and before its only POST", async () => {
+test("a scope change while Web Crypto hashes prevents the reserve POST", async () => {
   const original = originalRequest();
   let current: VerifiedSessionIdentityScope | null = { ...scope };
   let postCount = 0;
   const server = createSessionStartIdentityServer({
-    currentScope: () => {
-      const snapshot = current;
-      current = { ...scope, generation: scope.generation + 1 };
-      return snapshot;
-    },
+    currentScope: () => current,
     read: async () => {
       throw Error("Unexpected GET");
     },
@@ -279,9 +275,9 @@ test("reserve rechecks verified scope after hashing and before its only POST", a
     },
   });
 
-  await expect(server.reserve(scope, original)).rejects.toThrow(
-    "scope changed",
-  );
+  const pending = server.reserve(scope, original);
+  current = { ...scope, generation: scope.generation + 1 };
+  await expect(pending).rejects.toThrow("scope changed");
   expect(postCount).toBe(0);
 });
 
