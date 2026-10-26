@@ -208,6 +208,28 @@ export function createOwnedCodingSessionService(options: {
         { address: identity.address, workspace: identity.workspace },
         identity.requestId,
       );
+      if (prior === null) {
+        let original: ReturnType<typeof readVerifiedOriginalStart>;
+        try {
+          original = readVerifiedOriginalStart({
+            home: options.home,
+            root: options.root,
+            identity,
+          });
+        } catch {
+          throw held();
+        }
+        if (original.kind === "invalid") throw held();
+        if (original.kind === "verified") {
+          try {
+            await identities.reserve(identity);
+            await identities.beginAttempt(identity);
+            return (await identities.admit(identity)).evidence;
+          } catch {
+            throw held();
+          }
+        }
+      }
       if (prior === null || prior.state === "reserved") {
         await options.validateScope(
           projectId,

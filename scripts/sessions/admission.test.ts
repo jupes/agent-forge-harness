@@ -239,6 +239,61 @@ test("deterministic scope rejection happens before reserving the project address
   ).toBeNull();
 });
 
+test("a verified pre-index original is reconciled despite changed scope without owner calls", async () => {
+  const f = await closingFixture();
+  const producer = f.make();
+  const original = await producer.start(f.project.id, f.request);
+  await producer.settled(f.project.id, original.session.id);
+  const originalProof = readVerifiedOriginalStart({
+    home: f.home,
+    root: f.root,
+    identity: {
+      version: 1,
+      address: {
+        family: "owned-session-start",
+        projectId: f.project.id,
+      },
+      workspace: workspaceKey(original.session.workspace),
+      requestId: original.session.requestId,
+      requestHash: original.session.requestHash,
+      provider: original.session.provider,
+      mode: original.session.mode,
+    },
+  });
+  if (originalProof.kind !== "verified")
+    throw Error("Expected the pre-index source to prove its original Start");
+  const scopeCalls = { count: 0 };
+  const service = createOwnedCodingSessionService({
+    home: f.home,
+    root: f.root,
+    runtime: f.runtime,
+    async validateScope() {
+      scopeCalls.count++;
+      throw Error("current worktree scope changed");
+    },
+  });
+  cleanup.push(() => service.close());
+  const countsAfterOriginal = { ...f.counts };
+
+  const recovered = await service.start(f.project.id, f.request);
+  expect(recovered.session).toEqual(original.session);
+  expect(recovered.receipt).toEqual(originalProof.value.receipt);
+  expect(scopeCalls.count).toBe(0);
+  expect(f.counts).toEqual(countsAfterOriginal);
+  expect(
+    await createRestartIdentityJournal(f.home).lookup(
+      {
+        address: {
+          family: "owned-session-start",
+          projectId: f.project.id,
+        },
+        workspace: workspaceKey(resolveCheckout(f.root).workspace),
+      },
+      f.request.requestId,
+    ),
+  ).toMatchObject({ state: "admitted" });
+});
+
 test("trusted proof matches the persisted original request across empty optional inputs", async () => {
   const f = await closingFixture();
   const service = f.make();
