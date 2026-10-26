@@ -4,6 +4,8 @@ import type {
   SmithRoutingEditChange,
   SmithRoutingEditPreview,
   SmithRoutingEditPreviewRequest,
+  SmithRoutingEditReceipt,
+  SmithRoutingEditRefusal,
   SmithRoutingEditRequest,
   SmithRoutingEditReview,
   SmithRoutingEditRevision,
@@ -184,6 +186,91 @@ export const smithRoutingEditPreviewSchema: z.ZodType<SmithRoutingEditPreview> =
     })
     .strict()
     .refine((preview) => smithRoutingEditSuccessEnvelopeWithin(preview));
+
+const receiptHash = z.string().regex(/^[a-f0-9]{64}$/);
+const receiptTimestamp = z.iso.datetime();
+export const smithRoutingEditRefusalSchema = z.enum([
+  "stale-revision",
+  "invalid-current-config",
+  "shadowed-target",
+  "success-preview-too-large",
+  "write-refused-before-attempt",
+]) satisfies z.ZodType<SmithRoutingEditRefusal>;
+const receiptPublication = z
+  .object({ file: filePath, created: z.boolean(), sha256: receiptHash })
+  .strict();
+const receiptResultSchema = z.discriminatedUnion("phase", [
+  z
+    .object({
+      phase: z.literal("held"),
+      stage: z.enum(["intent", "prepared", "attempted", "unconfirmed"]),
+      preview: smithRoutingEditPreviewSchema.nullable(),
+    })
+    .strict(),
+  z
+    .object({
+      phase: z.literal("confirmed"),
+      completedAt: receiptTimestamp,
+      preview: smithRoutingEditPreviewSchema,
+      publication: receiptPublication,
+    })
+    .strict(),
+  z
+    .object({
+      phase: z.literal("refused"),
+      refusedAt: receiptTimestamp,
+      reason: smithRoutingEditRefusalSchema,
+    })
+    .strict(),
+]);
+
+/** Public receipt validation is browser-safe; journal hashes remain server-only. */
+export const smithRoutingEditReceiptSchema: z.ZodType<SmithRoutingEditReceipt> =
+  z
+    .object({
+      version: z.literal(1),
+      requestId: smithRoutingEditRequestIdSchema,
+      ownerScopeHash: receiptHash,
+      inputHash: receiptHash,
+      createdAt: receiptTimestamp,
+      original: smithRoutingEditRequestSchema,
+      result: receiptResultSchema,
+    })
+    .strict()
+    .superRefine((receipt, context) => {
+      const fail = (message: string) =>
+        context.addIssue({ code: "custom", message });
+      if (receipt.requestId !== receipt.original.requestId)
+        fail("The original belongs to another routing edit.");
+      const result = receipt.result;
+      if (
+        result.phase === "held" &&
+        ((result.stage === "intent" && result.preview !== null) ||
+          (result.stage !== "intent" && result.preview === null))
+      )
+        fail("The held routing stage has inconsistent review evidence.");
+      if (result.phase !== "refused" && result.preview !== null) {
+        const preview = result.preview;
+        if (
+          preview.target !== receipt.original.target ||
+          preview.expectedRevision.user !==
+            receipt.original.expectedRevision.user ||
+          preview.expectedRevision.workspace !==
+            receipt.original.expectedRevision.workspace ||
+          JSON.stringify(preview.review.change) !==
+            JSON.stringify(receipt.original.change)
+        )
+          fail("The routing review differs from its exact original.");
+      }
+      if (
+        result.phase === "confirmed" &&
+        (result.publication.file !== result.preview.file ||
+          result.publication.sha256 !== result.preview.candidate.sha256 ||
+          result.publication.created !== result.preview.candidate.created)
+      )
+        fail("The routing publication differs from its reviewed candidate.");
+    })
+    .refine((value) => smithRoutingEditSuccessEnvelopeWithin(value));
 
 /** Stable versioned original bytes; list order and duplicate bench rows are significant. */
 export function canonicalSmithRoutingEditRequest(raw: unknown): string {

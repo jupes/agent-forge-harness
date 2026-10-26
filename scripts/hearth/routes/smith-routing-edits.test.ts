@@ -113,6 +113,46 @@ test("routing edit rows are fixed, protected and missing original reads are iner
   expect(existsSync(join(h.home, "smith-routing-edit-journal"))).toBe(false);
 });
 
+test("an unknown Smith preview returns only a fixed generic refusal without writes", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  const configFile = seedWorkspace(h),
+    before = readFileSync(configFile),
+    unknownName = `not-configured-${randomUUID().slice(0, 8)}`,
+    response = await post(h, "/config/smiths/routing-edits/preview", {
+      target: "workspace",
+      change: { kind: "default", smith: unknownName },
+    });
+
+  expect(response.status).toBe(503);
+  const envelope = await response.json();
+  expect(envelope).toEqual({
+    ok: false,
+    data: null,
+    error: "The routing edit preview is unavailable.",
+  });
+  expect(JSON.stringify(envelope)).not.toContain(unknownName);
+  expect(JSON.stringify(envelope)).not.toContain(configFile);
+  expect(readFileSync(configFile)).toEqual(before);
+  expect(existsSync(join(h.home, "smith-routing-edit-journal"))).toBe(false);
+  expect(existsSync(machineConfigFile({ home: h.configHome }))).toBe(false);
+  expect(h.events(["operator.action"]).map((event) => event.payload)).toEqual([
+    {
+      action: "smith.config.routing-edit.preview",
+      surface: "api",
+      family: "smith-routing-edit",
+      target: "workspace",
+      changeKind: "default",
+      selector: "workflow.default_crew",
+    },
+  ]);
+  expect(
+    JSON.stringify(h.events(["operator.action"]).map((event) => event.payload)),
+  ).not.toContain(unknownName);
+  expect(JSON.stringify(envelope)).not.toContain(h.home);
+  expect(JSON.stringify(envelope)).not.toContain(h.configHome);
+});
+
 test("preview and edit audit only bounded selector metadata; exact duplicate and GET preserve original", async () => {
   const h = await startTestHearth();
   opened.push(h);
