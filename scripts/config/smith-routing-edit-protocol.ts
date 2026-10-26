@@ -46,6 +46,15 @@ const maxBenchEntriesPerRequest = Math.floor(
   SMITH_ROUTING_EDIT_LIMITS.requestBytes / 24,
 );
 const benchEntries = z.array(benchEntry).min(1).max(maxBenchEntriesPerRequest);
+// A saved legacy bench can exceed a new request's row count; its review is
+// instead bounded by the response envelope below.
+const maxBenchEntriesPerReview = Math.floor(
+  SMITH_ROUTING_EDIT_LIMITS.responseBytes / 24,
+);
+const reviewBenchEntries = z
+  .array(benchEntry)
+  .min(1)
+  .max(maxBenchEntriesPerReview);
 const benchName = z.enum(BENCH_NAMES);
 const change = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("default"), smith: smithName }).strict(),
@@ -78,14 +87,14 @@ export const smithRoutingEditRequestSchema: z.ZodType<SmithRoutingEditRequest> =
       encodedWithin(value, SMITH_ROUTING_EDIT_LIMITS.requestBytes),
     );
 
-const value = z.union([smithName, benchEntries]);
+const reviewValue = z.union([smithName, reviewBenchEntries]);
 export const smithRoutingEditReviewSchema = z
   .object({
     change,
-    targetBefore: value.nullable(),
-    targetAfter: value,
-    effectiveBefore: value,
-    effectiveAfter: value,
+    targetBefore: reviewValue.nullable(),
+    targetAfter: reviewValue,
+    effectiveBefore: reviewValue,
+    effectiveAfter: reviewValue,
     provenanceBefore: z
       .string()
       .min(1)
