@@ -41,9 +41,20 @@ function record(value: unknown): Record<string, unknown> | null {
     : null;
 }
 
+function parseFixtureJson(value: string, description: string): unknown {
+  try {
+    return JSON.parse(value);
+  } catch {
+    throw new Error(`The owned desktop ${description} was invalid.`);
+  }
+}
+
 async function restartOwnedDesktopHost(): Promise<string> {
   const manifest = record(
-    JSON.parse(readFileSync(join(HEARTH_HOME, "restart-fixture.json"), "utf8")),
+    parseFixtureJson(
+      readFileSync(join(HEARTH_HOME, "restart-fixture.json"), "utf8"),
+      "restart manifest",
+    ),
   );
   const control = record(manifest?.["fixtureControl"]);
   const controlPort = control?.["port"],
@@ -103,19 +114,11 @@ async function restartOwnedDesktopHost(): Promise<string> {
       request.end();
     },
   );
-  let envelope: unknown;
-  try {
-    envelope = JSON.parse(answer.body);
-  } catch {
-    throw new Error("The owned desktop restart control returned invalid data.");
-  }
-  const data = record(record(envelope)?.["data"]);
-  if (
-    answer.status !== 200 ||
-    record(envelope)?.["ok"] !== true ||
-    typeof data?.["url"] !== "string" ||
-    typeof data["owner"] !== "string"
-  )
+  const envelope = record(parseFixtureJson(answer.body, "restart reply"));
+  if (answer.status !== 200 || envelope?.["ok"] !== true)
+    throw new Error("The owned desktop host could not be restarted.");
+  const data = record(envelope["data"]);
+  if (typeof data?.["url"] !== "string" || typeof data["owner"] !== "string")
     throw new Error("The owned desktop host could not be restarted.");
   return data["url"];
 }
@@ -318,12 +321,15 @@ test("a fresh trusted desktop origin discovers and inspects an admitted Start wi
     await page.goto(
       `${base.origin}/index.html#/desktop/project/${alpha.id}/sessions`,
     );
-    const observation = JSON.parse(
-      (await page.evaluate(
-        (key) => sessionStorage.getItem(key),
-        INITIAL_STORAGE_OBSERVATION,
-      )) ?? "null",
-    ) as { identity?: unknown; sessionKey?: unknown } | null;
+    const observation = record(
+      parseFixtureJson(
+        (await page.evaluate(
+          (key) => sessionStorage.getItem(key),
+          INITIAL_STORAGE_OBSERVATION,
+        )) ?? "null",
+        "initial storage observation",
+      ),
+    );
     expect(observation?.identity).toBeNull();
     expect(observation?.sessionKey).toBeNull();
     const identityResponse = await identityRead;
