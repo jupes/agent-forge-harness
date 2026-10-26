@@ -12,6 +12,7 @@ import type {
   SmithConfigEditPreviewRequest,
   SmithConfigEditRequest,
 } from "../../../types/smith-config-edit";
+import { smithConfigEditInputHash } from "./smith-edit-identities";
 
 const verifiedNotSentToken = Symbol("verified Smith edit NotSent");
 interface VerifiedSmithEditNotSent {
@@ -90,7 +91,26 @@ export function createSmithEditApi(deps: {
           state: "unknown",
           message: "The Smith edit reservation could not be verified.",
         };
-      if (!deps.canWrite() || deps.scope() !== reserved.scope)
+      const startingScope = deps.scope();
+      let canonicalHash: string;
+      try {
+        canonicalHash = await smithConfigEditInputHash(request);
+      } catch {
+        return {
+          state: "unknown",
+          message: "The exact Smith edit request could not be verified.",
+        };
+      }
+      if (canonicalHash !== reserved.inputHash)
+        return {
+          state: "unknown",
+          message: "The Smith edit request differs from its saved identity.",
+        };
+      if (
+        !deps.canWrite() ||
+        startingScope !== reserved.scope ||
+        deps.scope() !== startingScope
+      )
         return verifiedNotSent(
           proofIdentity,
           "Workspace access changed before the edit request was dispatched.",

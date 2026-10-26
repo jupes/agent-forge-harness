@@ -282,6 +282,76 @@ test("verified NotSent can settle; unknown transport outcome stays held", async 
   expect(other.identities.list()[0]?.retired).toBe(false);
 });
 
+test("NotSent proof cannot reuse a same-UUID reservation hash for another request", async () => {
+  const original = {
+    requestId: "e630e793-e617-4c93-bdaf-b1e30ba706e1",
+    target: "workspace" as const,
+    name: smith.name,
+    smith,
+    expectedRevision: revision,
+  };
+  const changed = {
+    ...original,
+    target: "user" as const,
+    smith: { ...smith, model: "different-model" },
+  };
+  let postCalls = 0;
+  const outcome = await createSmithEditApi({
+    post: async () => {
+      postCalls++;
+      throw new NotSent("This path must not be reached.");
+    },
+    read: async () => new Response(null, { status: 404 }),
+    scope: () => "trusted-scope",
+    canWrite: () => true,
+  }).edit(changed, {
+    scope: "trusted-scope",
+    inputHash: await smithConfigEditInputHash(original),
+  });
+  expect(outcome.state).toBe("unknown");
+  expect(postCalls).toBe(0);
+  expect(
+    isVerifiedSmithEditNotSent(outcome, {
+      requestId: original.requestId,
+      scope: "trusted-scope",
+      inputHash: await smithConfigEditInputHash(original),
+    }),
+  ).toBe(false);
+});
+
+test("API rechecks live scope after the canonical hash await before dispatch", async () => {
+  const request = {
+    requestId: "e630e793-e617-4c93-bdaf-b1e30ba706e1",
+    target: "workspace" as const,
+    name: smith.name,
+    smith,
+    expectedRevision: revision,
+  };
+  const reservation = {
+    scope: "trusted-scope",
+    inputHash: await smithConfigEditInputHash(request),
+  };
+  let scopeReads = 0;
+  let postCalls = 0;
+  const outcome = await createSmithEditApi({
+    post: async () => {
+      postCalls++;
+      throw new NotSent("This path must not be reached.");
+    },
+    read: async () => new Response(null, { status: 404 }),
+    scope: () => (scopeReads++ === 0 ? "trusted-scope" : "new-scope"),
+    canWrite: () => true,
+  }).edit(request, reservation);
+  expect(scopeReads).toBe(2);
+  expect(postCalls).toBe(0);
+  expect(
+    isVerifiedSmithEditNotSent(outcome, {
+      requestId: request.requestId,
+      ...reservation,
+    }),
+  ).toBe(true);
+});
+
 test("exact original recovery is GET-only and a terminal receipt cannot regress", async () => {
   const f = fixture();
   await f.client.preview();
