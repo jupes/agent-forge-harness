@@ -301,8 +301,21 @@ test("creates a reviewed Smith in the temporary workspace config and recovers it
     name: "Candidate review",
   });
   const proofDirectory = process.env["AGENT_FORGE_WORKTREE_SCREENSHOT_DIR"];
-  if (proofDirectory)
-    await page.screenshot({
+  if (proofDirectory) {
+    const createButton = dialog.getByRole("button", {
+      name: "Create Smith",
+      exact: true,
+    });
+    await createButton.focus();
+    await expect(createButton).toBeFocused();
+    await candidateReview.scrollIntoViewIfNeeded();
+    expect(
+      await candidateReview.evaluate((element) => {
+        const bounds = element.getBoundingClientRect();
+        return bounds.top < innerHeight && bounds.bottom > 0;
+      }),
+    ).toBe(true);
+    await candidateReview.screenshot({
       path: join(proofDirectory, "smith-create-candidate.png"),
       mask: [
         candidateReview.locator("dd").filter({ hasText: REPOSITORY }),
@@ -310,6 +323,7 @@ test("creates a reviewed Smith in the temporary workspace config and recovers it
       ],
       maskColor: "#3f424d",
     });
+  }
   expect(posts).toEqual(["/__agent-forge/config/smiths/preview"]);
   unchangedConfig();
 
