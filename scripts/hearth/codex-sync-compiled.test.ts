@@ -23,6 +23,10 @@ import { scratchDirs } from "../test-scratch";
 import { lockPath } from "./home";
 import { readLock } from "./lock";
 import { OPERATOR_HEADER } from "./paths";
+import {
+  readProtectedResponseBody,
+  waitForProtectedReadiness,
+} from "./protected-readiness";
 
 const scratch = scratchDirs();
 const root = resolve(import.meta.dir, "../..");
@@ -414,27 +418,107 @@ test("compiled Smith create survives restart and serves its immutable original b
     }
     return result;
   };
-  const waitForServer = async (server: ReturnType<typeof startServer>) => {
-    const deadline = Date.now() + 10_000;
-    let lock = readLock(lockPath(server.privateHome, root));
-    while (
-      !lock ||
-      lock.pid !== server.child.pid ||
-      !existsSync(lock.tokenFile)
-    ) {
-      if (server.child.exitCode !== null || Date.now() > deadline) {
-        const detail = await stopChild(server, false);
-        throw new Error(
-          `Compiled Smith hearth failed to publish its lock/token (${detail.code}): ${detail.stderr.slice(-2000)}`,
-        );
-      }
-      await Bun.sleep(20);
-      lock = readLock(lockPath(server.privateHome, root));
-    }
-    expect(lock.pid).toBe(server.child.pid);
+  const waitForServer = async (
+    server: ReturnType<typeof startServer>,
+    readinessPath: string,
+  ) => {
+    const ready = await waitForProtectedReadiness<Response>({
+      expectedPid: server.child.pid,
+      readIdentity: () => {
+        const lock = readLock(lockPath(server.privateHome, root));
+        if (!lock) return null;
+        let token = "";
+        try {
+          token = readFileSync(lock.tokenFile, "utf8").trim();
+        } catch {
+          /* The new lock can be visible before its token is installed. */
+        }
+        return {
+          pid: lock.pid,
+          url: `http://127.0.0.1:${lock.port}`,
+          token,
+        };
+      },
+      probe: async ({ url, token }, deadlineSignal) => {
+        const controller = new AbortController();
+        const abortForDeadline = () => controller.abort();
+        if (deadlineSignal.aborted) controller.abort();
+        else
+          deadlineSignal.addEventListener("abort", abortForDeadline, {
+            once: true,
+          });
+        const requestTimer = setTimeout(() => controller.abort(), 5000);
+        try {
+          const response = await fetch(`${url}${readinessPath}`, {
+            headers: { Origin: url, [OPERATOR_HEADER]: token },
+            signal: controller.signal,
+          });
+          if (response.status === 200 || response.status === 404) {
+            const bytes = await readProtectedResponseBody(
+              response,
+              controller.signal,
+              65_536,
+            );
+            const bufferedBody = new ArrayBuffer(bytes.byteLength);
+            new Uint8Array(bufferedBody).set(bytes);
+            return {
+              kind: "ready",
+              status: response.status,
+              value: new Response(bufferedBody, {
+                status: response.status,
+                statusText: response.statusText,
+                headers: response.headers,
+              }),
+            };
+          }
+
+          let publicError: string | undefined;
+          try {
+            const bytes = await readProtectedResponseBody(
+              response,
+              controller.signal,
+              4096,
+            );
+            const parsed: unknown = JSON.parse(new TextDecoder().decode(bytes));
+            if (
+              parsed !== null &&
+              typeof parsed === "object" &&
+              !Array.isArray(parsed) &&
+              Object.keys(parsed).length === 3 &&
+              "ok" in parsed &&
+              parsed.ok === false &&
+              "data" in parsed &&
+              parsed.data === null &&
+              "error" in parsed &&
+              typeof parsed.error === "string"
+            )
+              publicError = parsed.error;
+          } catch {
+            /* Refusal details are best effort; the response body is bounded. */
+          }
+          return {
+            kind: "refused",
+            status: response.status,
+            ...(publicError === undefined ? {} : { publicError }),
+          };
+        } finally {
+          clearTimeout(requestTimer);
+          deadlineSignal.removeEventListener("abort", abortForDeadline);
+        }
+      },
+      now: Date.now,
+      sleep: Bun.sleep,
+      timeoutMs: 10_000,
+      intervalMs: 50,
+    });
+    if (server.child.exitCode !== null)
+      throw new Error(
+        "Compiled Smith hearth exited during protected readiness.",
+      );
     return {
-      url: `http://127.0.0.1:${lock.port}`,
-      token: readFileSync(lock.tokenFile, "utf8").trim(),
+      url: ready.identity.url,
+      token: ready.identity.token,
+      readiness: ready.value,
     };
   };
   const stopServer = async (server: ReturnType<typeof startServer>) => {
@@ -457,7 +541,13 @@ test("compiled Smith create survives restart and serves its immutable original b
 
   let first = startServer();
   try {
-    const firstAddress = await waitForServer(first);
+    const firstAddress = await waitForServer(
+      first,
+      `/__agent-forge/smiths/creates/${randomUUID()}`,
+    );
+    // An authenticated 404 is only a read-readiness witness, never evidence
+    // that an original Start was not admitted.
+    await firstAddress.readiness.body?.cancel();
     const previewResponse = await send(
       firstAddress,
       "/__agent-forge/config/smiths/preview",
@@ -498,11 +588,11 @@ test("compiled Smith create survives restart and serves its immutable original b
     const corrupt = "this is not valid TOML = [\n";
     writeFileSync(configFile, corrupt);
     first = startServer();
-    const restarted = await waitForServer(first);
-    const originalResponse = await send(
-      restarted,
+    const restarted = await waitForServer(
+      first,
       `/__agent-forge/smiths/creates/${request.requestId}`,
     );
+    const originalResponse = restarted.readiness;
     expect(originalResponse.status).toBe(200);
     const originalBody = await originalResponse.json();
     expect(smithConfigCreateReceiptSchema.parse(originalBody.data)).toEqual(
