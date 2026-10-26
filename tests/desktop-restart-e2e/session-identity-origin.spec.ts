@@ -4,12 +4,18 @@ import { request as httpRequest } from "node:http";
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
 import { SESSION_START_IDENTITIES } from "../../apps/desktop/src/session-start-identities";
-import { SESSION_KEY_STORAGE, SESSION_ROUTE } from "../../scripts/hearth/paths";
+import { conversationPageSchema } from "../../scripts/conversations/protocol";
+import {
+  OPERATOR_HEADER,
+  SESSION_KEY_STORAGE,
+  SESSION_ROUTE,
+} from "../../scripts/hearth/paths";
 import { canonicalOwnedSessionStart } from "../../scripts/sessions/codex-owned-protocol";
 import { sessionStartIdentityPageSchema } from "../../scripts/sessions/identity-protocol";
 import { sessionStartReceiptSchema } from "../../scripts/sessions/protocol";
 import { sessionStartSchema } from "../../scripts/sessions/request-protocol";
 import type { SessionStartRequest } from "../../types/session-requests";
+import { pageToken } from "../e2e/launch-link";
 import { HEARTH_HOME } from "../e2e/servers";
 import { alpha, ROOT } from "./environment";
 
@@ -168,7 +174,8 @@ test("a fresh trusted desktop origin discovers and inspects an admitted Start wi
     newOriginIdentityWrites = 0,
     newOriginStartPosts = 0,
     originalReadIds: string[] = [],
-    newOrigin: string | null = null;
+    newOrigin: string | null = null,
+    originalSessionId: string | null = null;
   page.on("request", (request) => {
     const url = new URL(request.url());
     if (url.origin === newOrigin) {
@@ -242,6 +249,7 @@ test("a fresh trusted desktop origin discovers and inspects an admitted Start wi
         throw new Error(
           "The admitted receipt did not match the original Start.",
         );
+      originalSessionId = receipt.session.id;
       effectApplied();
       await heldReply;
       await route.abort("connectionfailed").catch(() => {});
@@ -260,9 +268,53 @@ test("a fresh trusted desktop origin discovers and inspects an admitted Start wi
       .digest("hex");
     expect(identityReservePosts).toBe(1);
     expect(startPosts).toBe(1);
-    expect(lineCount("coding-fixture-starts.jsonl")).toBe(
-      providerEffectsBefore + 1,
-    );
+    const operatorToken = await pageToken(page);
+    await expect
+      .poll(
+        async () => {
+          if (
+            lineCount("coding-fixture-starts.jsonl") !==
+              providerEffectsBefore + 1 ||
+            originalSessionId === null
+          )
+            return false;
+          const response = await page.evaluate(
+            async ({ path, header, token }) => {
+              const result = await fetch(path, {
+                headers: { [header]: token },
+              });
+              return { status: result.status, body: await result.text() };
+            },
+            {
+              path: `/__agent-forge/projects/${alpha.id}/sessions/${encodeURIComponent(originalSessionId)}?requestId=${encodeURIComponent(original.requestId)}`,
+              header: OPERATOR_HEADER,
+              token: operatorToken,
+            },
+          );
+          if (response.status !== 200) return false;
+          const envelope = record(
+            parseFixtureJson(response.body, "original session read"),
+          );
+          const conversation = conversationPageSchema.safeParse(
+            envelope?.["data"],
+          );
+          return (
+            conversation.success &&
+            conversation.data.projectId === alpha.id &&
+            conversation.data.conversationId === originalSessionId &&
+            conversation.data.request?.requestId === original.requestId &&
+            conversation.data.request.phase === "completed" &&
+            conversation.data.frames.some(
+              (frame) =>
+                frame.turnId === original.requestId &&
+                frame.event.kind === "text" &&
+                frame.event.text === "Coding reply 🌱!",
+            )
+          );
+        },
+        { timeout: 45_000 },
+      )
+      .toBe(true);
     const oldLocalHints = await page.evaluate(
       (key) => localStorage.getItem(key),
       SESSION_START_IDENTITIES,
