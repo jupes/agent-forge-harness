@@ -46,7 +46,9 @@ jobs:
   windows:
     name: checks (windows)
     runs-on: windows-latest
-    timeout-minutes: 25
+    # A complete Windows gate exceeded the 25-minute job limit after 21m49s of
+    # Bun work plus setup and cleanup; leave bounded headroom for the full gate.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: oven-sh/setup-bun@v2
