@@ -14,7 +14,7 @@ import {
   realpathSync,
   rmSync,
 } from "node:fs";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { z } from "zod";
 import type { WindowsAcl } from "../hearth/acl-windows";
 import {
@@ -256,6 +256,20 @@ function assertDirectory(
   return found;
 }
 
+function stableDirectoryIdentity(path: string): FileIdentity | undefined {
+  let info: BigIntStats;
+  try {
+    info = lstatSync(path, { bigint: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    identityError();
+  }
+  if (!info.isDirectory() || info.isSymbolicLink()) identityError();
+  if (canonicalPath(realpathSync.native(path)) !== canonicalPath(path))
+    identityError();
+  return fileIdentity(info);
+}
+
 function assertPrivateFile(
   path: string,
   expected?: FileIdentity,
@@ -293,18 +307,34 @@ function ensurePrivateDirectory(
   path: string,
   options: HomeCheckOptions,
 ): FileIdentity {
-  try {
-    const existing = lstatSync(path, { bigint: true });
-    if (existing.isSymbolicLink() || !existing.isDirectory()) identityError();
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  const absolute = resolve(path);
+  const missing: string[] = [];
+  let parent = absolute;
+  let parentIdentity = stableDirectoryIdentity(parent);
+  while (parentIdentity === undefined) {
+    missing.push(parent);
+    const next = dirname(parent);
+    if (next === parent) identityError();
+    parent = next;
+    parentIdentity = stableDirectoryIdentity(parent);
   }
-  try {
-    ensurePrivateHome(path, undefined, options);
-  } catch {
-    identityError();
+
+  for (const directory of missing.reverse()) {
+    const before = stableDirectoryIdentity(parent);
+    if (before === undefined || !sameIdentity(before, parentIdentity))
+      identityError();
+    try {
+      ensurePrivateHome(directory, undefined, options);
+    } catch {
+      identityError();
+    }
+    const after = stableDirectoryIdentity(parent);
+    if (after === undefined || !sameIdentity(after, parentIdentity))
+      identityError();
+    parentIdentity = assertDirectory(directory, undefined, options);
+    parent = directory;
   }
-  return assertDirectory(path, undefined, options);
+  return assertDirectory(absolute, undefined, options);
 }
 
 function ensureLockFile(

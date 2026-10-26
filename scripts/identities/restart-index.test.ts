@@ -3,10 +3,12 @@ import { createHash } from "node:crypto";
 import {
   copyFileSync,
   lstatSync,
+  mkdirSync,
   readdirSync,
   readFileSync,
   realpathSync,
   renameSync,
+  symlinkSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -161,6 +163,25 @@ function fakeAcl() {
 function profile() {
   return join(scratch.make("restart-identities-"), "profile");
 }
+
+test("a linked ancestor is refused before creating any missing profile path", async () => {
+  const root = scratch.make("restart-identities-linked-ancestor-");
+  const target = join(root, "target");
+  const linked = join(root, "linked");
+  mkdirSync(target);
+  symlinkSync(target, linked, "junction");
+  expect(lstatSync(linked).isSymbolicLink()).toBe(true);
+  expect(realpathSync.native(linked)).toBe(realpathSync.native(target));
+  const before = readdirSync(target);
+
+  await expect(
+    createRestartIdentityJournal(join(linked, "nested", "profile")).reserve(
+      request(),
+    ),
+  ).rejects.toBeInstanceOf(RestartIdentityJournalError);
+
+  expect(readdirSync(target)).toEqual(before);
+});
 
 const storageOptions = () => ({
   platform: "win32" as const,
