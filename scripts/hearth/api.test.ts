@@ -219,6 +219,17 @@ const RUN_STATE = JSON.stringify({
 
 const API_SMITH_CREATE_ID = "dc9078cf-6200-4fed-aeb8-2be646ee7953";
 const API_CODEX_CHAT_FORK_ID = "80e40be9-e811-47c3-a71d-b988e67178a0";
+const API_IDENTITY_START = {
+  requestId: FIXTURE_IDENTITY_REQUEST,
+  smith: "claude-journeyman",
+  repository: "/api-identity-fixture",
+  worktree: "/api-identity-fixture",
+  launch: {
+    mode: "chat" as const,
+    model: "sonnet",
+    prompt: "API identity fixture",
+  },
+};
 const API_SMITH_CREATE_SMITH = {
   name: "api-route-smith",
   provider: "custom",
@@ -1348,20 +1359,23 @@ const ACTIONS: Record<string, ActionFixture> = {
           protocolVersion: CODEX_CHAT_FORK_PROTOCOL_VERSION,
         }),
       );
-      ACTIONS["POST /projects/:id/sessions/:sessionId/forks"]!.valid = {
-        path: `/projects/${source.projectId}/sessions/${source.parentSessionId}/forks`,
-        body: {
-          requestId: API_CODEX_CHAT_FORK_ID,
-          throughTurnRequestId: source.throughTurnRequestId,
+      Object.assign(
+        ACTIONS["POST /projects/:id/sessions/:sessionId/forks"]!.valid,
+        {
+          path: `/projects/${source.projectId}/sessions/${source.parentSessionId}/forks`,
+          body: {
+            requestId: API_CODEX_CHAT_FORK_ID,
+            throughTurnRequestId: source.throughTurnRequestId,
+          },
+          status: 200,
+          target: `codex-chat-fork:${source.projectId}:${source.parentSessionId}`,
+          audit: {
+            family: "codex-chat-fork",
+            requestId: API_CODEX_CHAT_FORK_ID,
+            inputHash: hash,
+          },
         },
-        status: 200,
-        target: `codex-chat-fork:${source.projectId}:${source.parentSessionId}`,
-        audit: {
-          family: "codex-chat-fork",
-          requestId: API_CODEX_CHAT_FORK_ID,
-          inputHash: hash,
-        },
-      };
+      );
     },
     happened: async (_h, answer) => {
       expect(answer).toMatchObject({ state: "held" });
@@ -1584,7 +1598,7 @@ const ACTIONS: Record<string, ActionFixture> = {
   "POST /projects/:id/session-start-identities": {
     valid: {
       path: `/projects/${FIXTURE_PROJECT_ID}/session-start-identities`,
-      body: {},
+      body: API_IDENTITY_START,
       status: 200,
       target: "",
     },
