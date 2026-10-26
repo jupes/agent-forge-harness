@@ -4,6 +4,7 @@ import { REAL_TIMERS, type Timers } from "../../../docs/js/hearth-read";
 import type { StreamTransport } from "../../../docs/js/use-stream";
 import { conversationReceiptSchema } from "../../../scripts/conversations/protocol";
 import { ownedCodingPageSchema } from "../../../scripts/sessions/codex-owned-journal";
+import { canonicalOwnedSessionStart } from "../../../scripts/sessions/codex-owned-protocol";
 import {
   ownedCodingSessionSchema,
   ownedCodingStartReceiptSchema,
@@ -22,6 +23,10 @@ import type {
 } from "../../../types/conversation";
 import type { SessionAttachment } from "../../../types/session-launch";
 import type { SessionStartRequest as ClaudeSessionStartRequest } from "../../../types/session-requests";
+import type {
+  SessionStartIdentityMetadata,
+  SessionStartIdentityPage,
+} from "../../../types/session-start-identities";
 import type { SessionMessage } from "../../../types/session-turn";
 import type { SessionWorktreeRequest } from "../../../types/session-worktrees";
 import {
@@ -49,6 +54,10 @@ import type {
   SessionStartIdentities,
   SessionStartIdentity,
 } from "./session-start-identities";
+import type {
+  SessionStartIdentityServer,
+  VerifiedSessionIdentityScope,
+} from "./session-start-identity-server";
 import { createSessionWorktreeClient } from "./session-worktree-client";
 
 const listSchema = z.array(ownedCodingSessionSchema).max(1000);
@@ -56,6 +65,15 @@ const active = (phase: string) =>
   ["accepted", "running", "cancelling"].includes(phase);
 const held = (turn: ConversationTurn) =>
   active(turn.phase) || turn.phase === "unknown";
+const freezeDeep = <T>(value: T): T => {
+  if (typeof value === "object" && value !== null && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const child of Object.values(value)) freezeDeep(child);
+  }
+  return value;
+};
+const startProvider = (input: SessionStartRequest) =>
+  "provider" in input ? input.provider : "claude";
 const sameStart = (record: OwnedSessionRecord, input: SessionStartRequest) =>
   record.provider === ("provider" in input ? input.provider : "claude") &&
   record.requestId === input.requestId &&
@@ -83,6 +101,9 @@ export interface SessionProjectView {
   pendingStart: SessionStartRequest | null;
   startIdentity: SessionStartIdentity | null;
   startIdentityError: string;
+  identityPage: SessionStartIdentityPage | null;
+  identityLoading: boolean;
+  identityGeneration: number | null;
   starting: boolean;
   notice: string;
   lastStarted: string | null;
@@ -111,7 +132,9 @@ export interface OwnedSessionView {
 export function createSessionsClient(deps: {
   canWrite(): boolean;
   requestId(): string;
-  identities: SessionStartIdentities;
+  identities?: SessionStartIdentities;
+  identityServer?: SessionStartIdentityServer;
+  identityScope?(): VerifiedSessionIdentityScope | null;
   list(projectId: string): Promise<unknown>;
   read(
     projectId: string,
@@ -136,6 +159,11 @@ export function createSessionsClient(deps: {
     sessions = new Map<string, OwnedSessionView>(),
     listeners = new Set<() => void>();
   const reads = new Map<string, { work: Promise<void>; again: boolean }>();
+  const identityReads = new Map<
+    string,
+    { work: Promise<void>; again: boolean; controller: AbortController }
+  >();
+  const identityMutations = new Set<string>();
   const timers = deps.timers ?? REAL_TIMERS;
   let selected: OwnedSessionView | null = null,
     connection: { close(): void } | null = null,
@@ -162,12 +190,15 @@ export function createSessionsClient(deps: {
         pendingStart: null,
         startIdentity: null,
         startIdentityError: "",
+        identityPage: null,
+        identityLoading: false,
+        identityGeneration: null,
         starting: false,
         notice: "",
         lastStarted: null,
       };
       projects.set(id, value);
-      hydrateStart(id, value);
+      if (!deps.identityServer) hydrateStart(id, value);
     }
     return value;
   };
@@ -202,6 +233,7 @@ export function createSessionsClient(deps: {
     if (!disposed) for (const listener of [...listeners]) listener();
   };
   function hydrateStart(projectId: string, entry: SessionProjectView) {
+    if (!deps.identities) return;
     try {
       // A failed durable release stays latched until protected admission (or a
       // proven unsent attempt) retries that release; absence alone is no proof.
@@ -217,6 +249,77 @@ export function createSessionsClient(deps: {
       entry.notice = entry.startIdentityError;
     }
   }
+  const metadataProjection = (
+    projectId: string,
+    identity: SessionStartIdentityMetadata,
+  ): SessionStartIdentity => ({
+    projectId,
+    requestId: identity.requestId,
+    requestHash: identity.requestHash,
+    provider: identity.provider,
+  });
+  const readIdentityPage = async (projectId: string): Promise<void> => {
+    if (!deps.identityServer || !deps.identityScope || disposed) return;
+    const scope = deps.identityScope();
+    if (!scope || scope.projectId !== projectId) return;
+    const existing = identityReads.get(projectId);
+    if (existing) {
+      existing.again = true;
+      return existing.work;
+    }
+    const read = {
+      work: Promise.resolve(),
+      again: false,
+      controller: new AbortController(),
+    };
+    identityReads.set(projectId, read);
+    const entry = project(projectId);
+    entry.identityLoading = true;
+    entry.startIdentityError = "";
+    tell();
+    read.work = (async () => {
+      try {
+        const page = await deps.identityServer!.list(
+          scope,
+          read.controller.signal,
+        );
+        if (
+          disposed ||
+          read.controller.signal.aborted ||
+          identityReads.get(projectId) !== read ||
+          deps.identityScope?.()?.generation !== scope.generation
+        )
+          return;
+        entry.identityPage = page;
+        entry.identityGeneration = scope.generation;
+        const unresolved = page.identities.filter((identity) =>
+          ["reserved", "attempted", "not-sent"].includes(identity.state),
+        );
+        entry.startIdentity = unresolved[0]
+          ? metadataProjection(projectId, unresolved[0])
+          : null;
+        entry.startIdentityError = "";
+        if (entry.startIdentity && !entry.pendingStart)
+          entry.notice =
+            "An original Start is still held by the server. Check its protected admission before creating another session.";
+      } catch {
+        if (!disposed && identityReads.get(projectId) === read) {
+          entry.identityPage = null;
+          entry.identityGeneration = null;
+          entry.startIdentityError =
+            "Original Start identities could not be verified. Starting another session is blocked.";
+        }
+      } finally {
+        if (identityReads.get(projectId) === read) {
+          identityReads.delete(projectId);
+          entry.identityLoading = false;
+          tell();
+          if (read.again && !disposed) void readIdentityPage(projectId);
+        }
+      }
+    })();
+    return read.work;
+  };
   const disconnect = () => {
     connection?.close();
     connection = null;
@@ -277,7 +380,7 @@ export function createSessionsClient(deps: {
         view.lastStarted = record.id;
         view.notice =
           "The original Start is recorded. The session is available.";
-        if (identity)
+        if (identity && deps.identities)
           void deps.identities
             .release(identity)
             .then(() => {
@@ -398,7 +501,7 @@ export function createSessionsClient(deps: {
     const entry = project(projectId),
       read = { work: Promise.resolve(), again: false };
     reads.set(projectId, read);
-    hydrateStart(projectId, entry);
+    if (!deps.identityServer) hydrateStart(projectId, entry);
     entry.loading = true;
     tell();
     read.work = (async () => {
@@ -510,7 +613,8 @@ export function createSessionsClient(deps: {
         outcome.state === "refused" &&
         !retry &&
         outcome.notSent &&
-        entry.startIdentity
+        entry.startIdentity &&
+        deps.identities
       ) {
         try {
           await deps.identities.release(entry.startIdentity);
@@ -595,8 +699,20 @@ export function createSessionsClient(deps: {
     project,
     session,
     refresh,
-    refreshIdentities() {
-      for (const [projectId, entry] of projects) hydrateStart(projectId, entry);
+    refreshIdentities(projectId?: string) {
+      if (deps.identityServer) {
+        const reads: Promise<void>[] = [];
+        for (const id of projectId ? [projectId] : projects.keys()) {
+          if (identityMutations.has(id)) {
+            const pending = identityReads.get(id);
+            if (pending) pending.again = true;
+            continue;
+          }
+          reads.push(readIdentityPage(id));
+        }
+        return Promise.all(reads).then(() => undefined);
+      }
+      for (const [id, entry] of projects) hydrateStart(id, entry);
       tell();
     },
     check,
@@ -719,6 +835,84 @@ export function createSessionsClient(deps: {
       const entry = project(projectId);
       if (disposed || entry.pendingStart || entry.starting || !deps.canWrite())
         return;
+      if (deps.identityServer) {
+        const scope = deps.identityScope?.();
+        if (
+          !scope ||
+          scope.projectId !== projectId ||
+          !entry.identityPage ||
+          entry.identityGeneration !== scope.generation ||
+          entry.identityPage.scope.projectId !== projectId ||
+          entry.identityLoading ||
+          entry.startIdentityError ||
+          entry.identityPage.identities.some((identity) =>
+            ["reserved", "attempted", "not-sent"].includes(identity.state),
+          )
+        ) {
+          entry.startIdentityError ||=
+            "The server identity page is not ready. Check it before starting a session.";
+          tell();
+          return;
+        }
+        const request = freezeDeep(
+          structuredClone({
+            ...input,
+            requestId: deps.requestId(),
+          }) as SessionStartRequest,
+        );
+        entry.pendingStart = request;
+        entry.starting = true;
+        entry.startIdentityError = "";
+        identityMutations.add(projectId);
+        tell();
+        try {
+          const reserved = await deps.identityServer.reserve(scope, request);
+          if (
+            disposed ||
+            deps.identityScope?.()?.generation !== scope.generation
+          )
+            return;
+          entry.identityPage = null;
+          entry.startIdentity = metadataProjection(
+            projectId,
+            reserved.identity,
+          );
+          if (
+            reserved.identity.state !== "reserved" ||
+            reserved.identity.requestId !== request.requestId ||
+            reserved.identity.requestHash !== reserved.requestHash ||
+            reserved.identity.provider !== startProvider(request) ||
+            reserved.identity.mode !== request.launch.mode ||
+            reserved.request.requestId !== request.requestId ||
+            canonicalOwnedSessionStart(reserved.request) !==
+              canonicalOwnedSessionStart(request)
+          ) {
+            entry.notice =
+              "The original Start remains held. Check its protected server state before continuing.";
+            return;
+          }
+          entry.pendingStart = reserved.request as SessionStartRequest;
+        } catch {
+          if (!disposed) {
+            entry.startIdentityError =
+              "The server could not verify this Start identity. No second request was sent.";
+            entry.notice = entry.startIdentityError;
+          }
+          return;
+        } finally {
+          entry.starting = false;
+          tell();
+        }
+        if (disposed) return;
+        try {
+          await postStart(projectId, false);
+        } finally {
+          identityMutations.delete(projectId);
+          await readIdentityPage(projectId);
+        }
+        return;
+      }
+      if (!deps.identities) return;
       entry.starting = true;
       tell();
       try {
@@ -747,7 +941,100 @@ export function createSessionsClient(deps: {
       if (disposed) return;
       await postStart(projectId, false);
     },
-    retryStart: (projectId: string) => postStart(projectId, true),
+    async retryStart(projectId: string) {
+      if (!deps.identityServer) return postStart(projectId, true);
+      const entry = project(projectId),
+        scope = deps.identityScope?.(),
+        request = entry.pendingStart;
+      if (
+        !scope ||
+        scope.projectId !== projectId ||
+        !request ||
+        entry.starting ||
+        disposed ||
+        !deps.canWrite()
+      )
+        return;
+      identityMutations.add(projectId);
+      entry.starting = true;
+      entry.startIdentityError = "";
+      tell();
+      try {
+        const page = await deps.identityServer!.list(scope);
+        if (disposed || deps.identityScope?.()?.generation !== scope.generation)
+          return;
+        const current = page.identities.find(
+          (identity) => identity.requestId === request.requestId,
+        );
+        if (
+          !current ||
+          !["reserved", "not-sent"].includes(current.state) ||
+          entry.startIdentity?.requestId !== current.requestId ||
+          entry.startIdentity.requestHash !== current.requestHash ||
+          entry.startIdentity.provider !== current.provider
+        ) {
+          entry.identityPage = page;
+          entry.identityGeneration = scope.generation;
+          entry.startIdentity = current
+            ? metadataProjection(projectId, current)
+            : null;
+          entry.notice =
+            "The original Start is still held. Check its current server state; it was not sent again.";
+          return;
+        }
+        const reserved = await deps.identityServer!.reserve(scope, request);
+        if (
+          disposed ||
+          deps.identityScope?.()?.generation !== scope.generation ||
+          reserved.identity.state !== "reserved" ||
+          reserved.requestHash !== current.requestHash ||
+          reserved.identity.requestId !== request.requestId ||
+          reserved.identity.requestHash !== reserved.requestHash ||
+          reserved.identity.provider !== startProvider(request) ||
+          reserved.identity.mode !== request.launch.mode ||
+          reserved.request.requestId !== request.requestId ||
+          canonicalOwnedSessionStart(reserved.request) !==
+            canonicalOwnedSessionStart(request)
+        ) {
+          entry.identityPage = null;
+          entry.identityGeneration = null;
+          entry.notice =
+            "The original Start identity could not be revalidated. It was not sent again.";
+          return;
+        }
+        entry.startIdentity = metadataProjection(projectId, reserved.identity);
+        entry.pendingStart = reserved.request as SessionStartRequest;
+        entry.identityPage = null;
+        entry.identityGeneration = null;
+        entry.starting = false;
+        await postStart(projectId, true);
+      } catch {
+        if (!disposed) {
+          entry.identityPage = null;
+          entry.identityGeneration = null;
+          entry.startIdentityError =
+            "The original Start state could not be verified. It was not sent again.";
+        }
+      } finally {
+        entry.starting = false;
+        identityMutations.delete(projectId);
+        tell();
+        if (!disposed) await readIdentityPage(projectId);
+      }
+    },
+    identityScopeChanged() {
+      for (const [id, read] of identityReads) {
+        read.controller.abort();
+        identityReads.delete(id);
+        const entry = projects.get(id);
+        if (entry) {
+          entry.identityPage = null;
+          entry.identityGeneration = null;
+          entry.identityLoading = false;
+        }
+      }
+      tell();
+    },
     canSend(projectId: string, id: string) {
       const entry = session(projectId, id),
         record = project(projectId).records.find((item) => item.id === id);
@@ -968,6 +1255,8 @@ export function createSessionsClient(deps: {
       cancelSavedRead = null;
       disposed = true;
       generation++;
+      for (const read of identityReads.values()) read.controller.abort();
+      identityReads.clear();
       disconnect();
       listeners.clear();
     },

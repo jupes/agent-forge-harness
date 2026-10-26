@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { createSessionsClient } from "../../apps/desktop/src/session-client";
 import { sessionStartHash } from "../../apps/desktop/src/session-start-identities";
+import type { SessionStartIdentityServer } from "../../apps/desktop/src/session-start-identity-server";
 import type { ActionOutcome } from "../../docs/js/action-outcome";
 import type { StreamHandlers } from "../../docs/js/use-stream";
 import type { OwnedSessionRecord } from "../../types/owned-session";
@@ -63,6 +64,83 @@ const input = {
   launch: { mode: "chat" as const, model: "sonnet", prompt: "Original prompt" },
 };
 record.requestHash = await sessionStartHash({ ...input, requestId });
+
+test("server-backed Start buffers identity reads across reserve and the ordinary Start effect", async () => {
+  const scope = { projectId, workspace: "/repo", generation: 1 };
+  let listCount = 0,
+    reserveCount = 0,
+    startCount = 0,
+    client: ReturnType<typeof createSessionsClient>;
+  const identityServer: SessionStartIdentityServer = {
+    async list(current) {
+      listCount++;
+      return {
+        version: 1,
+        scope: {
+          family: "owned-session-start",
+          projectId: current.projectId,
+          workspace: current.workspace,
+        },
+        identities: [],
+      };
+    },
+    async reserve(current, original) {
+      reserveCount++;
+      const requestHash = await sessionStartHash(original);
+      return {
+        scope: {
+          family: "owned-session-start",
+          projectId: current.projectId,
+          workspace: current.workspace,
+        },
+        identity: {
+          version: 1,
+          requestId: original.requestId,
+          requestHash,
+          provider: "claude",
+          mode: "chat",
+          state: "reserved",
+        },
+        request: original,
+        requestHash,
+      };
+    },
+    async retire() {
+      throw Error("Unexpected retirement");
+    },
+  };
+  client = createSessionsClient({
+    identityServer,
+    identityScope: () => scope,
+    canWrite: () => true,
+    requestId: () => requestId,
+    list: async () => [],
+    read: async () => page,
+    post: async (_project, _session, action, body) => {
+      if (action !== "start") throw Error("Unexpected action");
+      startCount++;
+      expect(listCount).toBe(1);
+      expect(reserveCount).toBe(1);
+      expect((body as SessionStartRequest).requestId).toBe(requestId);
+      await client.refreshIdentities(projectId);
+      expect(listCount).toBe(1);
+      return { state: "unknown", message: "Keep the original held" };
+    },
+    stream: () => () => ({ close() {} }),
+  });
+
+  await client.refreshIdentities(projectId);
+  await client.start(projectId, input);
+
+  expect({ listCount, reserveCount, startCount }).toEqual({
+    listCount: 2,
+    reserveCount: 1,
+    startCount: 1,
+  });
+  expect(client.project(projectId).pendingStart?.requestId).toBe(requestId);
+  expect(client.project(projectId).identityPage?.identities).toEqual([]);
+  client.dispose();
+});
 
 test("a failed private feed reads the selected saved pages without claiming live status or dispatching a provider", async () => {
   let handlers: StreamHandlers | undefined;
@@ -256,8 +334,29 @@ for (const limit of ["pages", "bytes", "malformed"] as const) {
 }
 
 test("a verified proposal admission is adopted without an ordinary Start, clearing another draft or triggering its navigation", () => {
-  let posts = 0;
+  let posts = 0,
+    identityOperations = 0;
+  const identityServer: SessionStartIdentityServer = {
+    async list() {
+      identityOperations++;
+      return {
+        version: 1,
+        scope: { family: "owned-session-start", projectId, workspace: "/repo" },
+        identities: [],
+      };
+    },
+    async reserve() {
+      identityOperations++;
+      throw Error("Keeper adoption must not reserve an ordinary identity");
+    },
+    async retire() {
+      identityOperations++;
+      throw Error("Keeper adoption must not retire an ordinary identity");
+    },
+  };
   const client = createSessionsClient({
+    identityServer,
+    identityScope: () => ({ projectId, workspace: "/repo", generation: 1 }),
     identities: sessionStartFixture().identities,
     canWrite: () => true,
     requestId: () => requestId,
@@ -300,6 +399,7 @@ test("a verified proposal admission is adopted without an ordinary Start, cleari
     }),
   ).toBe(false);
   expect(posts).toBe(0);
+  expect(identityOperations).toBe(0);
   client.dispose();
 });
 

@@ -175,7 +175,12 @@ export function DesktopApp(): JSX.Element {
     selectedSession,
     summary?.workspace ?? null,
   );
-  const sessions = useSessions(project?.id ?? null, null, writesAllowed);
+  const sessions = useSessions(
+    project?.id ?? null,
+    null,
+    writesAllowed,
+    providers.data,
+  );
   const observationRows = project
     ? observations.rows(project.id, sessions.project(project.id).records)
     : [];
