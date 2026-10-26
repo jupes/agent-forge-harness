@@ -80,13 +80,24 @@ function fakeAcl(): WindowsAcl {
   };
 }
 
-function journal(root: string, home: string, acl = fakeAcl()) {
+function journal(
+  root: string,
+  home: string,
+  acl = fakeAcl(),
+  afterMutexDirectorySnapshot?: (empty: boolean) => void,
+) {
   return createCodexChatForkJournal({
     root,
     home,
     now: () => "2026-10-25T00:00:00.000Z",
     createChildAppSessionId: () => childSessionId,
-    storageOptions: { platform: "win32", acl },
+    storageOptions: {
+      platform: "win32",
+      acl,
+      ...(afterMutexDirectorySnapshot === undefined
+        ? {}
+        : { afterMutexDirectorySnapshot }),
+    },
   });
 }
 
@@ -325,6 +336,141 @@ test("a peer waits read-only for the same empty mutex to become private", async 
   const after = lstatSync(mutex, { bigint: true });
   expect(after.ino).toBe(before.ino);
   expect(after.size).toBeGreaterThan(0n);
+});
+
+test("a non-empty inherited mutex is refused without mutation", async () => {
+  const home = join(scratch.make("codex-fork-profile-"), "profile");
+  mkdirSync(home, { recursive: true });
+  await createCodexChatForkJournalStorage(home, {
+    platform: "win32",
+    acl: fakeAcl(),
+  }).exclusive(async () => undefined);
+  const mutex = join(
+      home,
+      CODEX_CHAT_FORK_JOURNAL_DIRECTORY,
+      "locks",
+      "journal.sqlite",
+    ),
+    marker = "preserve the existing non-empty mutex bytes";
+  writeFileSync(mutex, marker, { flag: "a" });
+  const before = lstatSync(mutex, { bigint: true }),
+    beforeBytes = readFileSync(mutex),
+    acl = fakeAcl(),
+    read = acl.read.bind(acl);
+  let aclRepairs = 0,
+    enteredWork = false;
+  const apply = acl.apply.bind(acl);
+  acl.apply = (path, target) => {
+    if (path === mutex) aclRepairs++;
+    apply(path, target);
+  };
+  acl.read = (path) =>
+    path === mutex ? unprotectedReading("file") : read(path);
+
+  await expect(
+    createCodexChatForkJournalStorage(home, {
+      platform: "win32",
+      acl,
+    }).exclusive(async () => {
+      enteredWork = true;
+    }),
+  ).rejects.toThrow();
+
+  const after = lstatSync(mutex, { bigint: true });
+  expect(enteredWork).toBe(false);
+  expect(aclRepairs).toBe(0);
+  expect(readFileSync(mutex)).toEqual(beforeBytes);
+  expect(after.dev).toBe(before.dev);
+  expect(after.ino).toBe(before.ino);
+  expect(after.size).toBe(before.size);
+  expect(after.mtimeNs).toBe(before.mtimeNs);
+});
+
+test("a peer waits when a fresh mutex appears after the empty-directory preflight", async () => {
+  const root = scratch.make("codex-fork-root-"),
+    home = join(scratch.make("codex-fork-profile-"), "profile"),
+    acl = fakeAcl();
+  mkdirSync(home, { recursive: true });
+  const locks = join(home, CODEX_CHAT_FORK_JOURNAL_DIRECTORY, "locks"),
+    mutex = join(locks, "journal.sqlite"),
+    strictRead = acl.read.bind(acl);
+  let mutexAclReads = 0,
+    inserted = false,
+    privacyReady = false,
+    mutexAclApplications = 0,
+    insertedIdentity = "";
+  const apply = acl.apply.bind(acl);
+  acl.apply = (path, target) => {
+    if (path === mutex) mutexAclApplications++;
+    apply(path, target);
+  };
+  acl.read = (path) => {
+    if (path === mutex && inserted) {
+      mutexAclReads++;
+      if (mutexAclReads <= 3) return unprotectedReading("file");
+      privacyReady = true;
+    }
+    return strictRead(path);
+  };
+
+  const afterMutexDirectorySnapshot = (empty: boolean) => {
+    expect(empty).toBe(true);
+    expect(readdirSync(locks)).toEqual([]);
+    writeFileSync(mutex, "", { flag: "wx" });
+    inserted = true;
+    const info = lstatSync(mutex, { bigint: true });
+    insertedIdentity = `${info.dev}:${info.ino}`;
+  };
+  const result = await journal(
+    root,
+    home,
+    acl,
+    afterMutexDirectorySnapshot,
+  ).reserve(projectId, parentSessionId, { requestId, throughTurnRequestId });
+  const after = lstatSync(mutex, { bigint: true });
+
+  expect(inserted).toBe(true);
+  expect(privacyReady).toBe(true);
+  expect(result.state).toBe("reserved");
+  expect(mutexAclApplications).toBe(0);
+  expect(insertedIdentity).toBe(`${after.dev}:${after.ino}`);
+  expect(
+    readdirSync(join(home, CODEX_CHAT_FORK_JOURNAL_DIRECTORY, "events")),
+  ).toHaveLength(1);
+});
+
+test("unknown lock debris after an empty snapshot refuses callback and preserves bytes", async () => {
+  const home = join(scratch.make("codex-fork-profile-"), "profile");
+  mkdirSync(home, { recursive: true });
+  const locks = join(home, CODEX_CHAT_FORK_JOURNAL_DIRECTORY, "locks"),
+    events = join(home, CODEX_CHAT_FORK_JOURNAL_DIRECTORY, "events"),
+    debris = join(locks, "interrupted-peer-entry.tmp"),
+    contents = "preserve unknown lock debris";
+  let insertedIdentity = "",
+    enteredWork = false;
+  const storage = createCodexChatForkJournalStorage(home, {
+    platform: "win32",
+    acl: fakeAcl(),
+    afterMutexDirectorySnapshot(empty) {
+      expect(empty).toBe(true);
+      expect(readdirSync(locks)).toEqual([]);
+      writeFileSync(debris, contents, { flag: "wx" });
+      const info = lstatSync(debris, { bigint: true });
+      insertedIdentity = `${info.dev}:${info.ino}`;
+    },
+  });
+
+  await expect(
+    storage.exclusive(async () => {
+      enteredWork = true;
+    }),
+  ).rejects.toThrow();
+
+  const after = lstatSync(debris, { bigint: true });
+  expect(enteredWork).toBe(false);
+  expect(readFileSync(debris, "utf8")).toBe(contents);
+  expect(insertedIdentity).toBe(`${after.dev}:${after.ino}`);
+  expect(readdirSync(events)).toEqual([]);
 });
 
 test("a mutex that stays non-private times out untouched before callback", async () => {
