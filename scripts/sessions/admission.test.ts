@@ -1,15 +1,21 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LedgerEventInput } from "../../types/hearth";
 import { createOwnedSessionLedger } from "../hearth/routes/session-ledger";
+import { createRestartIdentityJournal } from "../identities/restart-index";
+import { resolveCheckout } from "../ledger/workspace";
+import { workspaceKey } from "../projects/scope";
 import { createProjectStore } from "../projects/store";
 import type { SessionRuntime } from "./admission";
 import { createOwnedSessionService } from "./admission";
 import { serializeClaudeLaunch } from "./claude-launch";
+import { canonicalOwnedSessionStart } from "./codex-owned-protocol";
+import { createOwnedCodingSessionService } from "./owned-coding-service";
 import { createSessionRegistry } from "./registry";
+import { readVerifiedOriginalStart } from "./restart-identity-proof";
 
 const cleanup: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
@@ -19,7 +25,9 @@ afterEach(async () => {
 async function closingFixture(
   validateScope: () => Promise<void> = async () => {},
 ) {
-  const base = mkdtempSync(join(tmpdir(), "forge closing session "));
+  const base = realpathSync.native(
+    mkdtempSync(join(tmpdir(), "forge closing session ")),
+  );
   cleanup.push(() => rmSync(base, { recursive: true, force: true }));
   const home = join(base, "home"),
     root = join(base, "repo");
@@ -98,8 +106,145 @@ async function closingFixture(
       prompt: "Private closing fixture",
     },
   };
-  return { project, make, request, counts };
+  return { project, make, request, counts, home, root, runtime, validateScope };
 }
+
+test("common Start facade fences before dispatch and reopens only its verified original", async () => {
+  const f = await closingFixture();
+  const request = {
+    ...f.request,
+    about: [],
+    launch: { ...f.request.launch, attachments: [] },
+  };
+  const workspace = workspaceKey(resolveCheckout(f.root).workspace);
+  const scope = {
+    address: {
+      family: "owned-session-start" as const,
+      projectId: f.project.id,
+    },
+    workspace,
+  };
+  const preparedStates: Array<string | undefined> = [];
+  const runtime: SessionRuntime = {
+    ...f.runtime,
+    async prepare(input) {
+      const row = await createRestartIdentityJournal(f.home).lookup(
+        scope,
+        request.requestId,
+      );
+      preparedStates.push(row?.state);
+      return f.runtime.prepare(input);
+    },
+  };
+  const makeFacade = () => {
+    const service = createOwnedCodingSessionService({
+      home: f.home,
+      root: f.root,
+      runtime,
+      validateScope: f.validateScope,
+    });
+    cleanup.push(() => service.close());
+    return service;
+  };
+  const firstService = makeFacade();
+  const first = await firstService.start(f.project.id, request);
+  const row = await createRestartIdentityJournal(f.home).lookup(
+    scope,
+    request.requestId,
+  );
+  expect(row?.state).toBe("admitted");
+  expect(preparedStates).toEqual(["attempted"]);
+  const countsAfterFirst = { ...f.counts };
+
+  const reopened = makeFacade();
+  const duplicate = await reopened.start(f.project.id, request);
+  expect(duplicate.session).toEqual(first.session);
+  expect(duplicate.receipt.conversationId).toBe(first.receipt.conversationId);
+  expect(duplicate.receipt.turn.requestId).toBe(first.receipt.turn.requestId);
+  expect(duplicate.receipt.turn.hash).toBe(first.receipt.turn.hash);
+  expect(f.counts).toEqual(countsAfterFirst);
+});
+
+test("an attempted Start without a durable original stays held without owner dispatch", async () => {
+  const f = await closingFixture();
+  const workspace = workspaceKey(resolveCheckout(f.root).workspace);
+  const identity = {
+    version: 1 as const,
+    address: {
+      family: "owned-session-start" as const,
+      projectId: f.project.id,
+    },
+    workspace,
+    requestId: f.request.requestId,
+    requestHash: createHash("sha256")
+      .update(canonicalOwnedSessionStart(f.request))
+      .digest("hex"),
+    provider: "claude" as const,
+    mode: f.request.launch.mode,
+  };
+  const journal = createRestartIdentityJournal(f.home);
+  await journal.reserve(identity);
+  await journal.beginAttempt(identity);
+  const service = createOwnedCodingSessionService({
+    home: f.home,
+    root: f.root,
+    runtime: f.runtime,
+    validateScope: f.validateScope,
+  });
+  cleanup.push(() => service.close());
+
+  await expect(service.start(f.project.id, f.request)).rejects.toMatchObject({
+    status: 503,
+  });
+  expect(f.counts).toEqual({ prepared: 0, runs: 0 });
+  expect(
+    await journal.lookup(
+      { address: identity.address, workspace },
+      identity.requestId,
+    ),
+  ).toMatchObject({ state: "attempted" });
+});
+
+test("trusted proof matches the persisted original request across empty optional inputs", async () => {
+  const f = await closingFixture();
+  const service = f.make();
+  const request = {
+    ...f.request,
+    about: [],
+    launch: { ...f.request.launch, attachments: [] },
+  };
+  const started = await service.start(f.project.id, request);
+  const identity = {
+    version: 1 as const,
+    address: {
+      family: "owned-session-start" as const,
+      projectId: f.project.id,
+    },
+    workspace: workspaceKey(started.session.workspace),
+    requestId: started.session.requestId,
+    requestHash: started.session.requestHash,
+    provider: started.session.provider,
+    mode: started.session.mode,
+  };
+
+  const proof = readVerifiedOriginalStart({
+    home: f.home,
+    root: f.root,
+    identity,
+  });
+  expect(proof.kind).toBe("verified");
+  if (proof.kind === "verified") {
+    expect(proof.value.session).toEqual(started.session);
+    expect(proof.value.receipt).toEqual(started.receipt);
+  }
+  expect(
+    readVerifiedOriginalStart({
+      home: f.home,
+      root: f.root,
+      identity: { ...identity, requestHash: "f".repeat(64) },
+    }).kind,
+  ).toBe("invalid");
+});
 
 test("a Start whose registry validation finishes after close cannot create a provider-owning service", async () => {
   let entered = () => {},

@@ -241,6 +241,24 @@ test("a reserved Start retains its metadata and stable session address after rec
   ).toEqual(created);
 });
 
+test("request UUID lookup sees the full registry regardless of provider filter", async () => {
+  const { home, projectId, metadata, registry } = fixture();
+  const requestId = randomUUID();
+  const record = await registry.reserve(
+    projectId,
+    requestId,
+    "d".repeat(64),
+    async () => metadata,
+  );
+
+  expect(
+    createSessionRegistry(home, "codex").lookupRequestId(requestId),
+  ).toEqual(record);
+  expect(
+    createSessionRegistry(home, "codex").lookupRequestId(randomUUID()),
+  ).toBeNull();
+});
+
 test("invalid addresses, hashes and metadata are refused without admitting private launch bodies", async () => {
   const { home, projectId, metadata, registry } = fixture();
   let calls = 0;

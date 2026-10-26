@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { CodexChatDecisionRequest } from "../../types/codex-owned-chat";
 import type { OwnedCodingSessionRecord } from "../../types/codex-owned-task";
 import type { ConversationObject } from "../../types/conversation";
@@ -7,6 +8,10 @@ import type { ClaudeSessionLaunch } from "../../types/session-launch";
 import type { SessionMessage } from "../../types/session-turn";
 import { ConversationError } from "../conversations/error";
 import type { ConversationUpdate } from "../conversations/transport";
+import {
+  createRestartIdentityJournal,
+  type RestartIdentityInput,
+} from "../identities/restart-index";
 import { resolveCheckout } from "../ledger/workspace";
 import { workspaceKey } from "../projects/scope";
 import { createOwnedSessionService, type SessionRuntime } from "./admission";
@@ -14,7 +19,10 @@ import { createCodexOwnedChatService } from "./codex-chat-owned-admission";
 import { parseCodexChatDecision } from "./codex-chat-owned-protocol";
 import type { createCodexChatRuntime } from "./codex-chat-runtime";
 import { createCodexOwnedTaskService } from "./codex-owned-admission";
-import { parseOwnedSessionStart } from "./codex-owned-protocol";
+import {
+  canonicalOwnedSessionStart,
+  parseOwnedSessionStart,
+} from "./codex-owned-protocol";
 import type { createCodexTaskRuntime } from "./codex-task-runtime";
 import { createGeminiOwnedChatService } from "./gemini-chat-owned-admission";
 import { parseGeminiChatDecision } from "./gemini-chat-owned-protocol";
@@ -23,6 +31,7 @@ import { createGeminiOwnedTaskService } from "./gemini-owned-admission";
 import type { createGeminiTaskRuntime } from "./gemini-task-runtime";
 import { requireOrdinarySession } from "./managed-origin";
 import { createSessionRegistry } from "./registry";
+import { readVerifiedOriginalStart } from "./restart-identity-proof";
 
 export const unavailableCodexTaskRuntime: ReturnType<
   typeof createCodexTaskRuntime
@@ -109,6 +118,36 @@ export function createOwnedCodingSessionService(options: {
     runtime: options.codexTaskRuntime ?? unavailableCodexTaskRuntime,
   });
   const registry = createSessionRegistry(options.home);
+  const workspace = workspaceKey(resolveCheckout(options.root).workspace);
+  const identities = createRestartIdentityJournal(options.home, {
+    verifyAdmission(input) {
+      const proof = readVerifiedOriginalStart({
+        home: options.home,
+        root: options.root,
+        identity: input,
+      });
+      return proof.kind === "verified" ? proof.value : null;
+    },
+  });
+  const held = () =>
+    new ConversationError(
+      503,
+      "The original Session Start could not be verified. Its identity remains held; retrying will not dispatch another provider request.",
+    );
+  const dispatchStart = (
+    projectId: string,
+    request: ReturnType<typeof parseOwnedSessionStart>,
+  ) => {
+    if ("provider" in request && request.provider === "gemini")
+      return request.launch.mode === "chat"
+        ? geminiChat.start(projectId, request)
+        : gemini.start(projectId, request);
+    return "provider" in request
+      ? request.launch.mode === "chat"
+        ? chat.start(projectId, request)
+        : codex.start(projectId, request)
+      : claude.start(projectId, request);
+  };
   const chat = createCodexOwnedChatService({
     ...options,
     runtime: options.codexChatRuntime ?? unavailableCodexChatRuntime,
@@ -146,17 +185,68 @@ export function createOwnedCodingSessionService(options: {
     return record.provider === "gemini" ? geminiChat : chat;
   };
   return {
-    start(projectId: string, raw: unknown) {
+    async start(projectId: string, raw: unknown) {
       const request = parseOwnedSessionStart(raw);
-      if ("provider" in request && request.provider === "gemini")
-        return request.launch.mode === "chat"
-          ? geminiChat.start(projectId, request)
-          : gemini.start(projectId, request);
-      return "provider" in request
-        ? request.launch.mode === "chat"
-          ? chat.start(projectId, request)
-          : codex.start(projectId, request)
-        : claude.start(projectId, request);
+      const provider: RestartIdentityInput["provider"] =
+        "provider" in request ? request.provider : "claude";
+      const requestHash = createHash("sha256")
+        .update(canonicalOwnedSessionStart(request))
+        .digest("hex");
+      const identity = {
+        version: 1 as const,
+        address: {
+          family: "owned-session-start" as const,
+          projectId,
+        },
+        workspace,
+        requestId: request.requestId,
+        requestHash,
+        provider,
+        mode: request.launch.mode,
+      };
+      await identities.reserve(identity);
+      const claim = await identities.beginAttempt(identity);
+      if (!claim.mayDispatch) {
+        try {
+          return (await identities.admit(identity)).evidence;
+        } catch {
+          throw held();
+        }
+      }
+
+      let source: ReturnType<typeof readVerifiedOriginalStart>;
+      try {
+        source = readVerifiedOriginalStart({
+          home: options.home,
+          root: options.root,
+          identity,
+        });
+      } catch {
+        throw held();
+      }
+      if (source.kind === "invalid") throw held();
+      if (source.kind === "verified") {
+        try {
+          return (await identities.admit(identity)).evidence;
+        } catch {
+          throw held();
+        }
+      }
+
+      try {
+        await dispatchStart(projectId, request);
+      } catch {
+        try {
+          return (await identities.admit(identity)).evidence;
+        } catch {
+          throw held();
+        }
+      }
+      try {
+        return (await identities.admit(identity)).evidence;
+      } catch {
+        throw held();
+      }
     },
     send(projectId: string, sessionId: string, input: SessionMessage) {
       return selected(projectId, sessionId).send(projectId, sessionId, input);
@@ -169,7 +259,6 @@ export function createOwnedCodingSessionService(options: {
       return selected(projectId, sessionId).read(projectId, sessionId, query);
     },
     list(projectId: string) {
-      const workspace = workspaceKey(resolveCheckout(options.root).workspace);
       return registry
         .listAll(projectId)
         .filter(

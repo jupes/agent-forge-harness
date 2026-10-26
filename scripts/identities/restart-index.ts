@@ -120,9 +120,14 @@ type JournalState = {
   bytes: number;
 };
 
-export interface RestartIdentityJournalOptions extends HomeCheckOptions {
+export interface RestartIdentityJournalOptions<TProof = never>
+  extends HomeCheckOptions {
   /** Existing ACL helper injection seam; production leaves this unset. */
   acl?: WindowsAcl;
+  /** Trusted server reader; invoked before reacquiring the journal lock for admission. */
+  verifyAdmission?: (
+    input: RestartIdentityInput,
+  ) => TProof | null | Promise<TProof | null>;
 }
 
 export class RestartIdentityJournalError extends Error {
@@ -135,7 +140,7 @@ export class RestartIdentityJournalError extends Error {
   }
 }
 
-export interface RestartIdentityJournal {
+export interface RestartIdentityJournal<TProof = never> {
   reserve(input: RestartIdentityInput): Promise<RestartIdentityRow>;
   list(scope: RestartIdentityScope): Promise<RestartIdentityRow[]>;
   lookup(
@@ -145,6 +150,10 @@ export interface RestartIdentityJournal {
   beginAttempt(
     input: RestartIdentityInput,
   ): Promise<{ row: RestartIdentityRow; mayDispatch: boolean }>;
+  admit(input: RestartIdentityInput): Promise<{
+    row: RestartIdentityRow;
+    evidence: TProof;
+  }>;
   retireReserved(input: RestartIdentityInput): Promise<RestartIdentityRow>;
 }
 
@@ -749,10 +758,10 @@ function appendRow(state: JournalState, stored: StoredEvent): void {
   state.bytes += bytesOf(stored.text);
 }
 
-export function createRestartIdentityJournal(
+export function createRestartIdentityJournal<TProof = never>(
   profileHome: string,
-  options: RestartIdentityJournalOptions = {},
-): RestartIdentityJournal {
+  options: RestartIdentityJournalOptions<TProof> = {},
+): RestartIdentityJournal<TProof> {
   const directory = join(profileHome, DIRECTORY);
   const lockPath = join(directory, LOCK_FILE);
 
@@ -885,6 +894,27 @@ export function createRestartIdentityJournal(
           mayDispatch: true,
         };
       });
+    },
+    async admit(raw) {
+      const input = validateInput(raw);
+      const verify = options.verifyAdmission;
+      if (verify === undefined) throw unavailable();
+      let evidence: TProof | null;
+      try {
+        evidence = await verify(input);
+      } catch {
+        throw unavailable();
+      }
+      if (evidence === null || evidence === undefined) throw unavailable();
+      const row = await withState((state) => {
+        const existing = state.rows.get(input.requestId);
+        if (existing === undefined || !exactRow(existing, input))
+          throw conflict();
+        if (existing.state === "admitted") return existing;
+        if (existing.state !== "attempted") throw conflict();
+        return commit(state, "admit", { ...existing, state: "admitted" });
+      });
+      return { row, evidence };
     },
     retireReserved(raw) {
       const input = validateInput(raw);
