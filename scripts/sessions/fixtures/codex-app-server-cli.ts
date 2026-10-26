@@ -470,23 +470,164 @@ while (true) {
         ? parsed.params
         : {};
     const id = "id" in parsed ? parsed.id : null;
-    record({ kind: "rpc", method, params, id });
+    record({ kind: id === null ? "notification" : "rpc", method, params, id });
     if (method === "initialize" && mode === "hang-initialize") {
       hangTree();
     } else if (method === "initialize") {
-      await send({
-        id,
-        result: {
-          userAgent: "inert",
-          codexHome: process.cwd(),
-          platformFamily: "windows",
-          platformOs: "windows",
-        },
-      });
-      await send({
-        method: "warning",
-        params: { threadId: null, message: "Inert private global warning" },
-      });
+      if (mode === "fork-initialize-failure")
+        await send({
+          id,
+          error: { code: -32000, message: "Synthetic initialize refusal" },
+        });
+      else if (mode === "fork-server-request") {
+        await Bun.stdout.write(
+          `${JSON.stringify({
+            id,
+            result: {
+              userAgent: "inert",
+              codexHome: process.cwd(),
+              platformFamily: "windows",
+              platformOs: "windows",
+            },
+          })}\n${JSON.stringify({
+            id: "unsupported-server-request",
+            method: "item/commandExecution/requestApproval",
+            params: { threadId },
+          })}\n`,
+        );
+        await new Promise(() => {});
+      } else {
+        await send({
+          id,
+          result: {
+            userAgent: "inert",
+            codexHome: process.cwd(),
+            platformFamily: "windows",
+            platformOs: "windows",
+          },
+        });
+        await send({
+          method: "warning",
+          params: { threadId: null, message: "Inert private global warning" },
+        });
+      }
+    } else if (method === "thread/fork") {
+      if (
+        !mode?.startsWith("fork") ||
+        !params ||
+        typeof params !== "object" ||
+        !("threadId" in params) ||
+        params.threadId !== threadId ||
+        !("lastTurnId" in params) ||
+        typeof params.lastTurnId !== "string"
+      )
+        process.exit(14);
+      const fork = params as Record<string, unknown>;
+      if (mode === "fork-lost-response") {
+        record({ kind: "fork-created-without-response", params });
+        hangTree();
+      }
+      const forkCwd = typeof fork.cwd === "string" ? fork.cwd : "";
+      const forkModel = typeof fork.model === "string" ? fork.model : "";
+      const forkProvider =
+        typeof fork.modelProvider === "string" ? fork.modelProvider : "";
+      const forkTier = "serviceTier" in fork ? fork.serviceTier : null;
+      const effort =
+        fork.config &&
+        typeof fork.config === "object" &&
+        "model_reasoning_effort" in fork.config
+          ? fork.config.model_reasoning_effort
+          : null;
+      const forkSandbox =
+        fork.sandbox === "read-only"
+          ? { type: "readOnly", networkAccess: false }
+          : {
+              type: "workspaceWrite",
+              writableRoots: [forkCwd],
+              networkAccess: false,
+              excludeTmpdirEnvVar: true,
+              excludeSlashTmp: true,
+            };
+      const forkThread = {
+        id: "0199a213-81c0-7800-8aa1-bbab2a035a55",
+        environments: [],
+        extra: null,
+        sessionId: threadId,
+        forkedFromId: threadId,
+        parentThreadId: null,
+        preview: "Inert synthetic fork preview",
+        ephemeral: false,
+        section: null,
+        sectionEnteredAt: null,
+        projectId: null,
+        historyMode: "paginated",
+        turns: [],
+        modelProvider: forkProvider,
+        model: forkModel,
+        reasoningEffort: effort,
+        createdAt: 1,
+        updatedAt: 1,
+        recencyAt: 1,
+        status: { type: "idle" },
+        path: null,
+        cwd: forkCwd,
+        cliVersion: "0.163.0-alpha.10.2",
+        originator: "agent_forge",
+        source: "appServer",
+        canAcceptDirectInput: true,
+        threadSource: null,
+        agentNickname: null,
+        agentRole: null,
+        gitInfo: null,
+        name: null,
+        daybreakEnabled: false,
+      };
+      const result = {
+        thread: forkThread,
+        model: forkModel,
+        modelProvider: forkProvider,
+        serviceTier: forkTier,
+        disabledPluginIds: [],
+        cwd: forkCwd,
+        runtimeWorkspaceRoots: [forkCwd],
+        instructionSources: [],
+        approvalPolicy: fork.approvalPolicy,
+        approvalsReviewer: fork.approvalsReviewer,
+        sandbox: forkSandbox,
+        activePermissionProfile: { id: ":workspace", extends: null },
+        reasoningEffort: effort,
+        multiAgentMode: "explicitRequestOnly",
+      };
+      if (mode === "fork-wrong-parent")
+        (forkThread as Record<string, unknown>).forkedFromId =
+          "0199a213-81c0-7800-8aa1-bbab2a035a56";
+      if (mode === "fork-wrong-child")
+        (forkThread as Record<string, unknown>).id = threadId;
+      if (mode === "fork-wrong-config") {
+        (forkThread as Record<string, unknown>).model = "different-model";
+        (result as Record<string, unknown>).model = "different-model";
+      }
+      if (mode === "fork-active")
+        (forkThread as Record<string, unknown>).status = {
+          type: "active",
+          activeFlags: [],
+        };
+      record({ kind: "fork-result", result });
+      if (mode === "fork-lost-response") {
+        // Deliberately retain an owned process tree after the synthetic native
+        // effect so the runtime must report uncertainty and clean it up.
+      } else if (mode === "fork-malformed")
+        await send({ id, result: { ...result, unexpected: true } });
+      else {
+        if (mode === "fork-oversized")
+          (forkThread as Record<string, unknown>).preview = "x".repeat(70_000);
+        await send({ id, result });
+        await send({
+          method: "thread/started",
+          params: { thread: forkThread },
+        });
+        if (mode === "fork-cleanup-failure") process.exit(17);
+      }
     } else if (method === "thread/start" || method === "thread/resume") {
       resuming = method === "thread/resume";
       if (
