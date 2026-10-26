@@ -9,11 +9,85 @@ import {
 import { join } from "node:path";
 import { BUILTIN_SMITHS } from "../config/defaults";
 import type { PrivateExecInput } from "../executors/private-capture";
+import { restartManagerLockerPids } from "../hearth/windows-cleanup-diagnostic";
 import { scratchDirs } from "../test-scratch";
 import { createShiftProviderPreparer } from "./provider-prepare";
+import {
+  cleanupWithOptionalDiagnostic,
+  fixedProviderPrepareResources,
+  fixtureProcessIdentities,
+  holdFixtureProcesses,
+  type ProcessObservation,
+  windowsProbeProcessApi,
+} from "./provider-prepare-diagnostics";
 
 const scratch = scratchDirs();
-afterEach(() => scratch.cleanup());
+type ProbeCleanupContext = {
+  root: string;
+  executable: string;
+  record: string;
+  observations: ProcessObservation[];
+};
+let pendingProbeCleanup: ProbeCleanupContext | null = null;
+afterEach(() => {
+  const context = pendingProbeCleanup;
+  pendingProbeCleanup = null;
+  if (context === null) {
+    scratch.cleanup();
+    return;
+  }
+  cleanupWithOptionalDiagnostic(
+    true,
+    () => scratch.cleanup(),
+    (error) => {
+      reportProbeCleanup(context, error);
+    },
+  );
+});
+
+function reportProbeCleanup(
+  context: ProbeCleanupContext,
+  cleanupError: unknown | null,
+): void {
+  const fallbackResources = ["codex.exe", "provider.json"] as const;
+  let resources: readonly string[] = fallbackResources,
+    lockerPids: number[] | null = null,
+    lockerProbe: "not-run" | "ok" | "unavailable" = "not-run";
+  try {
+    const fixtureResources = fixedProviderPrepareResources(
+      context.root,
+      context.executable,
+      context.record,
+    );
+    resources = fixtureResources.relativeNames;
+    if (cleanupError !== null) {
+      lockerPids = restartManagerLockerPids(fixtureResources.paths);
+      lockerProbe = lockerPids === null ? "unavailable" : "ok";
+    }
+  } catch {
+    lockerProbe = cleanupError === null ? "not-run" : "unavailable";
+  }
+  const code =
+    cleanupError &&
+    typeof cleanupError === "object" &&
+    "code" in cleanupError &&
+    ["EPERM", "EACCES", "EBUSY"].includes(String(cleanupError.code))
+      ? String(cleanupError.code)
+      : cleanupError === null
+        ? null
+        : "other";
+  process.stderr.write(
+    `${JSON.stringify({
+      event: "provider-prepare-scratch-cleanup",
+      resources,
+      processes: context.observations,
+      cleanup: cleanupError === null ? "removed" : "failed",
+      lockerPids,
+      lockerProbe,
+      errorCode: code,
+    })}\n`,
+  );
+}
 function fixture(provider: "claude" | "codex" = "claude") {
   const root = realpathSync.native(
     scratch.make("shift-readonly-capabilities-"),
@@ -112,7 +186,11 @@ test("Codex preparation requires explicit approval never and only invokes native
 
 test("Stop during native capability help settles its owned probe before any prompt", async () => {
   const f = fixture("codex"),
-    controller = new AbortController();
+    controller = new AbortController(),
+    executable = f.input.command[0] ?? "",
+    diagnosticEnabled =
+      process.platform === "win32" &&
+      process.env["AGENT_FORGE_TEST_PROBE_DIAGNOSTICS"] === "1";
   const prepare = createShiftProviderPreparer({
     root: f.root,
     configHome: f.root,
@@ -126,6 +204,8 @@ test("Stop during native capability help settles its owned probe before any prom
     () => "prepared",
     () => "refused",
   );
+  let held: ReturnType<typeof holdFixtureProcesses> | null = null,
+    observations: ProcessObservation[] = [];
   try {
     const deadline = Date.now() + 5000;
     while (Date.now() < deadline) {
@@ -137,6 +217,11 @@ test("Stop during native capability help settles its owned probe before any prom
       await Bun.sleep(10);
     }
     expect(readFileSync(f.record, "utf8")).toContain('"kind":"help"');
+    if (diagnosticEnabled)
+      held = holdFixtureProcesses(
+        fixtureProcessIdentities(readFileSync(f.record, "utf8"), executable),
+        windowsProbeProcessApi(),
+      );
     controller.abort();
     expect(
       await Promise.race([settled, Bun.sleep(1500).then(() => "hung")]),
@@ -144,6 +229,18 @@ test("Stop during native capability help settles its owned probe before any prom
   } finally {
     controller.abort();
     await settled;
+    try {
+      observations = held?.sampleAndClose() ?? [];
+    } catch {
+      held?.close();
+    }
+    if (diagnosticEnabled)
+      pendingProbeCleanup = {
+        root: f.root,
+        executable,
+        record: f.record,
+        observations,
+      };
   }
 }, 15000);
 
