@@ -234,7 +234,7 @@ export function createCodexChatForkJournalStorage(
     return rootIdentity;
   };
 
-  const checkLockFiles = (): void => {
+  const checkLockFiles = (requireMutex = true): void => {
     const lockIdentity = inspectDirectory(locks);
     if (lockIdentity === null)
       throw new Error("The private Codex Fork lock directory is missing.");
@@ -256,8 +256,10 @@ export function createCodexChatForkJournalStorage(
         );
       assertPrivateMetadata(path, "file", info, options);
     }
-    if (!names.includes(MUTEX_FILE))
+    if (requireMutex && !names.includes(MUTEX_FILE))
       throw new Error("The private Codex Fork SQLite lock is missing.");
+    if (!requireMutex && names.length > 0 && !names.includes(MUTEX_FILE))
+      throw new Error("The private Codex Fork SQLite lock is incomplete.");
     assertStableDirectory(locks, lockIdentity);
   };
 
@@ -526,6 +528,8 @@ export function createCodexChatForkJournalStorage(
       )
         throw new Error("The private Codex Fork root changed during setup.");
       checkRootLayout();
+      // Check the persistent lock name and every existing sidecar before SQLite opens any path.
+      checkLockFiles(false);
       const locked = await withQueueLock(
         mutex,
         async () => {

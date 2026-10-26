@@ -1,10 +1,12 @@
 import { afterEach, expect, test } from "bun:test";
 import {
   existsSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
+  rmSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -182,4 +184,23 @@ test("unknown event debris fails closed and remains untouched", async () => {
     }),
   ).rejects.toThrow();
   expect(readFileSync(debris, "utf8")).toBe("do not remove or interpret");
+});
+
+test("lock preflight refuses a linked SQLite mutex before opening it", async () => {
+  const home = join(scratch.make("codex-fork-profile-"), "profile");
+  mkdirSync(home, { recursive: true });
+  const storage = createCodexChatForkJournalStorage(home, {
+    platform: "win32",
+    acl: fakeAcl(),
+  });
+  await storage.exclusive(async () => undefined);
+  const locks = join(home, CODEX_CHAT_FORK_JOURNAL_DIRECTORY, "locks"),
+    mutex = join(locks, "journal.sqlite"),
+    outside = join(home, "outside.txt");
+  writeFileSync(outside, "preserve this file");
+  rmSync(mutex);
+  linkSync(outside, mutex);
+
+  await expect(storage.exclusive(async () => undefined)).rejects.toThrow();
+  expect(readFileSync(outside, "utf8")).toBe("preserve this file");
 });
