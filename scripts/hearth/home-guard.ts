@@ -321,6 +321,22 @@ export function readHomeFile(
   return readHomeText(home, file, options, MAX_HOME_FILE_BYTES);
 }
 
+/** Read one owner-checked file through its opened handle with a smaller byte ceiling. */
+export function readHomeFileBounded(
+  home: string,
+  file: string,
+  maxBytes: number,
+  options: HomeCheckOptions = {},
+): HomeRead {
+  if (
+    !Number.isSafeInteger(maxBytes) ||
+    maxBytes < 0 ||
+    maxBytes > MAX_HOME_FILE_BYTES
+  )
+    return refused("The requested home-file read limit is invalid.");
+  return readHomeText(home, file, options, maxBytes);
+}
+
 /** Bun hearth only: the same opened-file checks, with a fixed transcript ceiling. */
 export function readSessionTranscript(home: string, file: string): HomeRead {
   return readHomeText(home, file, {}, MAX_SESSION_TRANSCRIPT_BYTES);
