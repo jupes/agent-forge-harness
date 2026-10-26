@@ -3,7 +3,6 @@ import { readdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { expect, type Page, type Request, test } from "@playwright/test";
 import { z } from "zod";
-import { conversationFile } from "../../scripts/conversations/paths";
 import {
   keeperShiftStartReceiptSchema,
   keeperShiftStartRequestSchema,
@@ -31,8 +30,6 @@ let fixtureProposalId = "";
 
 function seedShiftProposal() {
   checkedFixtureRoot();
-  const privateKeeperFile = conversationFile(HOME, FIXTURE_PROJECT_ID);
-  rmSync(privateKeeperFile, { force: true });
   const proposal = {
     title: "Review a fixture Shift",
     detail: "Review the full bounded Shift before starting.",
@@ -46,10 +43,15 @@ function seedShiftProposal() {
   };
   const program = `
     import { randomUUID } from "node:crypto";
+    import { rmSync } from "node:fs";
     import { createConversationStore } from "./scripts/conversations/store";
+    import { conversationFile } from "./scripts/conversations/paths";
     import { eventSchema } from "./scripts/conversations/protocol";
     const [projectId, text] = process.argv.slice(1);
-    const store = createConversationStore(process.env.AGENT_FORGE_HOME);
+    const home = process.env.AGENT_FORGE_HOME;
+    if (!home) throw new Error("The isolated Keeper fixture home is missing.");
+    rmSync(conversationFile(home, projectId), { force: true });
+    const store = createConversationStore(home);
     const requestId = randomUUID(), owner = randomUUID();
     await store.accept(projectId, { requestId, expectedRevision: 0, text: "Fixture proposal", about: [] });
     await store.start(projectId, requestId, owner);
