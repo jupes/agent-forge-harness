@@ -38,6 +38,7 @@ export const projectShiftAttemptsPageSchema: z.ZodType<ProjectShiftAttemptsPage>
         page.items.every(
           ({ session }) =>
             session.projectId === page.projectId &&
+            session.origin?.kind === "shift" &&
             session.origin?.originalRequestId === page.originalRequestId &&
             session.origin.shiftId === page.shiftId,
         ),

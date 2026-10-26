@@ -6,6 +6,7 @@ import type {
   CodexChatForkHeldReason,
   CodexChatForkIntent,
   CodexChatForkLink,
+  CodexChatForkOrigin,
   CodexChatForkOriginal,
   CodexChatForkOriginalBase,
   CodexChatForkOriginalRef,
@@ -78,6 +79,21 @@ export const codexChatForkCaptureSchema: z.ZodType<CodexChatForkCapture> = z
     protocolVersion: z.literal(CODEX_CHAT_FORK_PROTOCOL_VERSION),
   })
   .strict();
+export const codexChatForkOriginSchema: z.ZodType<CodexChatForkOrigin> = z
+  .object({
+    kind: z.literal("codex-chat-fork"),
+    projectId: sessionProjectIdSchema,
+    parentSessionId: ownedSessionIdSchema,
+    throughTurnRequestId: sessionRequestIdSchema,
+    parentTurnHash: hashSchema,
+    parentNativeThreadId: nativeUuidSchema,
+    throughNativeTurnId: nativeUuidSchema,
+    childNativeThreadId: nativeUuidSchema,
+    captureHash: hashSchema,
+    protocolVersion: z.literal(CODEX_CHAT_FORK_PROTOCOL_VERSION),
+  })
+  .strict()
+  .refine((value) => value.parentNativeThreadId !== value.childNativeThreadId);
 export const codexChatForkLinkSchema: z.ZodType<CodexChatForkLink> = z
   .object({
     childAppSessionId: ownedSessionIdSchema,

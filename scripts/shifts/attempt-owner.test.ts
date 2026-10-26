@@ -283,10 +283,9 @@ test("Stop releases the shared registry lock even when scope validation never se
     release();
     await settled;
   }
-  expect(
-    createSessionRegistry(f.home).listAll(f.intent.projectId)[0]?.origin
-      ?.attempt,
-  ).toBe(2);
+  const origin = createSessionRegistry(f.home).listAll(f.intent.projectId)[0]
+    ?.origin;
+  expect(origin?.kind === "shift" ? origin.attempt : null).toBe(2);
 });
 
 test("failed scope validation creates no reservation and another admitted attempt gets independent identity", async () => {

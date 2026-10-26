@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { PreparedCodexChat } from "../../types/codex-chat";
 import type { CodexChatOwnedRecord } from "../../types/codex-owned-chat";
 import type { ConversationObject } from "../../types/conversation";
+import { conversationFile } from "../conversations/paths";
 import { createConversationStore } from "../conversations/store";
 import {
   FIXTURE_CHAT_DECISION,
@@ -11,14 +12,22 @@ import {
   seedChatDecision,
 } from "../hearth/routes/codex-chat-fixture";
 import { startTestHearth } from "../hearth/testing";
+import { writeOwnerOnly } from "../hearth/token";
+import { workspaceKey } from "../projects/scope";
 import { FIXTURE_PROJECT_ID } from "../projects/testing";
+import {
+  createCodexChatForkCoordinator,
+  resolveCodexChatForkPrefix,
+} from "./codex-chat-fork-coordinator";
+import { createCodexChatForkJournal } from "./codex-chat-fork-journal";
 import { resolveCodexChatForkSource } from "./codex-chat-fork-source";
 import {
   ownedCodingEventSchema,
   ownedCodingStateSchema,
 } from "./codex-owned-journal";
+import { codexChatOwnedSessionSchema } from "./codex-owned-metadata";
 import { canonicalOwnedSessionStart } from "./codex-owned-protocol";
-import { createSessionRegistry } from "./registry";
+import { createSessionRegistry, sessionRegistryFile } from "./registry";
 
 const version = "0.163.0-alpha.10.2";
 const threadId = "0199a213-81c0-7800-8aa1-bbab2a035a53";
@@ -210,6 +219,33 @@ async function completeSource(
   };
 }
 
+function persistCoordinatorSource(
+  h: Awaited<ReturnType<typeof startTestHearth>>,
+  source: Awaited<ReturnType<typeof completeSource>>,
+) {
+  const parent = codexChatOwnedSessionSchema.parse(source.owner),
+    registry = createSessionRegistry(h.home),
+    records = registry.listAll(FIXTURE_PROJECT_ID);
+  writeOwnerOnly(
+    sessionRegistryFile(h.home),
+    JSON.stringify({
+      version: 1,
+      records: records.map((record) =>
+        record.id === parent.id ? parent : record,
+      ),
+    }),
+  );
+  writeOwnerOnly(
+    conversationFile(h.home, FIXTURE_PROJECT_ID, {
+      kind: "session",
+      projectId: FIXTURE_PROJECT_ID,
+      sessionId: parent.id,
+    }),
+    `${JSON.stringify(source.state)}\n`,
+  );
+  return parent;
+}
+
 test("Fork source requires explicit tier evidence while preserving known null and strings", async () => {
   const h = await startTestHearth();
   try {
@@ -384,6 +420,276 @@ test("Fork source requires explicit tier evidence while preserving known null an
       eligible: true,
       lastTurnId: nativeTurnId,
     });
+  } finally {
+    await h.close();
+  }
+});
+
+test("the filesystem coordinator captures once, adopts the exact child and resolves only the saved prefix", async () => {
+  const h = await startTestHearth();
+  try {
+    const source = await completeSource(h),
+      parent = persistCoordinatorSource(h, source),
+      verifiedSource = resolveCodexChatForkSource({
+        owner: parent,
+        state: source.state,
+        projectId: FIXTURE_PROJECT_ID,
+        conversationId: parent.id,
+        workspaceKey: h.workspace,
+        selectedTurnRequestId: source.requestId,
+      });
+    if (!verifiedSource.eligible)
+      throw Error("Fixture source is not Fork eligible.");
+    const childNativeThreadId = "0199a213-81c0-7800-8aa1-bbab2a035a61",
+      selectedRequestId = randomUUID();
+    let runtimeCalls = 0,
+      auditCalls = 0;
+    const coordinator = createCodexChatForkCoordinator({
+      root: h.root,
+      home: h.home,
+      runtime: {
+        async fork() {
+          runtimeCalls++;
+          return {
+            parentThreadId: threadId,
+            lastTurnId: nativeTurnId,
+            threadId: childNativeThreadId,
+            forkedFromId: threadId,
+            cliVersion: version,
+            status: "idle" as const,
+            canAcceptDirectInput: true as const,
+            settings: {
+              model: verifiedSource.prepared.launch.model,
+              modelProvider: verifiedSource.sourceSettings.modelProvider,
+              serviceTier: verifiedSource.sourceSettings.serviceTier,
+              cwd: verifiedSource.prepared.canonicalCwd,
+              approvalPolicy: verifiedSource.prepared.launch.approvalPolicy,
+              approvalsReviewer: "user" as const,
+              sandbox: verifiedSource.prepared.launch.sandbox,
+              reasoningEffort: verifiedSource.sourceSettings.reasoningEffort,
+            },
+            runtimeWorkspaceRoots: [h.workspace],
+            writableRoots: [],
+          };
+        },
+      },
+      async validateScope(record) {
+        if (
+          record.projectId !== FIXTURE_PROJECT_ID ||
+          workspaceKey(record.workspace) !== workspaceKey(h.workspace)
+        )
+          throw Error("Fixture scope changed.");
+      },
+      async appendAudit() {
+        auditCalls++;
+      },
+    });
+    const request = {
+        requestId: selectedRequestId,
+        throughTurnRequestId: source.requestId,
+      },
+      input = {
+        projectId: FIXTURE_PROJECT_ID,
+        parentSessionId: parent.id,
+        request,
+      },
+      [first, concurrent] = await Promise.all([
+        coordinator.fork(input),
+        coordinator.fork(input),
+      ]);
+    expect(first.state).toBe("linked");
+    expect(concurrent).toEqual(first);
+    expect(runtimeCalls).toBe(1);
+    expect(auditCalls).toBe(1);
+    if (first.state !== "linked") throw Error("The Fork was not linked.");
+    const selectedTurn = source.state.turns[0];
+    if (!selectedTurn) throw Error("Missing selected source turn.");
+    expect(first.origin.parentTurnHash).toBe(selectedTurn.hash);
+    const journal = createCodexChatForkJournal({ home: h.home, root: h.root }),
+      original = journal.read(FIXTURE_PROJECT_ID, selectedRequestId);
+    expect(original?.state).toBe("linked");
+    if (original?.state !== "linked")
+      throw Error("Missing linked Fork original.");
+    const child = createSessionRegistry(h.home, "codex", "chat").read(
+      FIXTURE_PROJECT_ID,
+      first.childSessionId,
+    );
+    expect(child).toMatchObject({
+      id: original?.childAppSessionId,
+      requestId: selectedRequestId,
+      requestHash: original?.requestHash,
+      origin: first.origin,
+    });
+    const childStore = createConversationStore(h.home, undefined, {
+        kind: "session",
+        projectId: FIXTURE_PROJECT_ID,
+        sessionId: child.id,
+      }),
+      initialChild = childStore.read(FIXTURE_PROJECT_ID);
+    expect(initialChild).toMatchObject({
+      binding: { provider: "codex", sessionId: childNativeThreadId, version },
+      turns: [],
+      frames: [],
+    });
+    await childStore.accept(FIXTURE_PROJECT_ID, {
+      requestId: randomUUID(),
+      expectedRevision: 0,
+      text: "Later child-local turn",
+      about: [],
+    });
+    const repeated = await coordinator.fork({
+      projectId: FIXTURE_PROJECT_ID,
+      parentSessionId: parent.id,
+      request,
+    });
+    expect(repeated).toEqual(first);
+    expect(runtimeCalls).toBe(1);
+    expect(childStore.read(FIXTURE_PROJECT_ID).turns).toHaveLength(1);
+
+    const parentStore = createConversationStore(h.home, undefined, {
+      kind: "session",
+      projectId: FIXTURE_PROJECT_ID,
+      sessionId: parent.id,
+    });
+    await parentStore.accept(FIXTURE_PROJECT_ID, {
+      requestId: randomUUID(),
+      expectedRevision: source.state.revision,
+      text: "Later parent turn",
+      about: [],
+    });
+    const later = parentStore.read(FIXTURE_PROJECT_ID).turns.at(-1);
+    if (!later) throw Error("Missing later parent turn.");
+    await parentStore.start(
+      FIXTURE_PROJECT_ID,
+      later.requestId,
+      "fixture-owner",
+    );
+    const prefix = resolveCodexChatForkPrefix({
+      origin: first.origin,
+      parent,
+      parentState: parentStore.read(FIXTURE_PROJECT_ID),
+      original:
+        journal.read(FIXTURE_PROJECT_ID, selectedRequestId) ??
+        (() => {
+          throw Error("Missing linked Fork original.");
+        })(),
+      child,
+      childState: childStore.read(FIXTURE_PROJECT_ID),
+    });
+    expect(prefix.throughTurnRequestId).toBe(source.requestId);
+    expect(prefix.turns.map((turn) => turn.requestId)).toEqual([
+      source.requestId,
+    ]);
+    expect(prefix.frames).toEqual(source.state.frames);
+    expect(
+      await coordinator.fork({
+        projectId: FIXTURE_PROJECT_ID,
+        parentSessionId: parent.id,
+        request,
+      }),
+    ).toEqual(first);
+    expect(runtimeCalls).toBe(1);
+  } finally {
+    await h.close();
+  }
+});
+
+test("audit refusal and mismatched inert Fork results do not publish a child", async () => {
+  const h = await startTestHearth();
+  try {
+    const source = await completeSource(h),
+      parent = persistCoordinatorSource(h, source),
+      verifiedSource = resolveCodexChatForkSource({
+        owner: parent,
+        state: source.state,
+        projectId: FIXTURE_PROJECT_ID,
+        conversationId: parent.id,
+        workspaceKey: h.workspace,
+        selectedTurnRequestId: source.requestId,
+      });
+    if (!verifiedSource.eligible)
+      throw Error("Fixture source is not Fork eligible.");
+    let runtimeCalls = 0;
+    const makeRuntime = (parentThreadId: string) => ({
+      async fork() {
+        runtimeCalls++;
+        return {
+          parentThreadId,
+          lastTurnId: nativeTurnId,
+          threadId: "0199a213-81c0-7800-8aa1-bbab2a035a62",
+          forkedFromId: threadId,
+          cliVersion: version,
+          status: "idle" as const,
+          canAcceptDirectInput: true as const,
+          settings: {
+            model: verifiedSource.prepared.launch.model,
+            modelProvider: verifiedSource.sourceSettings.modelProvider,
+            serviceTier: verifiedSource.sourceSettings.serviceTier,
+            cwd: verifiedSource.prepared.canonicalCwd,
+            approvalPolicy: verifiedSource.prepared.launch.approvalPolicy,
+            approvalsReviewer: "user" as const,
+            sandbox: verifiedSource.prepared.launch.sandbox,
+            reasoningEffort: verifiedSource.sourceSettings.reasoningEffort,
+          },
+          runtimeWorkspaceRoots: [h.workspace],
+          writableRoots: [],
+        };
+      },
+    });
+    const auditRequestId = randomUUID(),
+      auditJournal = createCodexChatForkJournal({ home: h.home, root: h.root }),
+      auditRefused = createCodexChatForkCoordinator({
+        root: h.root,
+        home: h.home,
+        runtime: makeRuntime(threadId),
+        async validateScope() {},
+        async appendAudit() {
+          throw Error("Fixture audit refusal.");
+        },
+      });
+    await expect(
+      auditRefused.fork({
+        projectId: FIXTURE_PROJECT_ID,
+        parentSessionId: parent.id,
+        request: {
+          requestId: auditRequestId,
+          throughTurnRequestId: source.requestId,
+        },
+      }),
+    ).rejects.toThrow("Fixture audit refusal");
+    expect(auditJournal.read(FIXTURE_PROJECT_ID, auditRequestId)).toBeNull();
+    expect(runtimeCalls).toBe(0);
+
+    const mismatchRequestId = randomUUID(),
+      mismatchJournal = createCodexChatForkJournal({
+        home: h.home,
+        root: h.root,
+      }),
+      mismatch = createCodexChatForkCoordinator({
+        root: h.root,
+        home: h.home,
+        runtime: makeRuntime("0199a213-81c0-7800-8aa1-bbab2a035a63"),
+        async validateScope() {},
+        async appendAudit() {},
+      });
+    expect(
+      await mismatch.fork({
+        projectId: FIXTURE_PROJECT_ID,
+        parentSessionId: parent.id,
+        request: {
+          requestId: mismatchRequestId,
+          throughTurnRequestId: source.requestId,
+        },
+      }),
+    ).toEqual({ state: "held", reason: "invalid-native-outcome" });
+    const held = mismatchJournal.read(FIXTURE_PROJECT_ID, mismatchRequestId);
+    expect(held?.state).toBe("held");
+    expect(
+      createSessionRegistry(h.home)
+        .listAll(FIXTURE_PROJECT_ID)
+        .some((record) => record.id === held?.childAppSessionId),
+    ).toBe(false);
+    expect(runtimeCalls).toBe(1);
   } finally {
     await h.close();
   }

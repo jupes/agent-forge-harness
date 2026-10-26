@@ -278,9 +278,11 @@ export function ProjectSessions({
                           </small>
                         </td>
                         <td>
-                          {row.owner?.origin
+                          {row.owner?.origin?.kind === "shift"
                             ? "Shift"
-                            : (session?.kind ?? "Kind —")}
+                            : row.owner?.origin?.kind === "codex-chat-fork"
+                              ? "Fork child"
+                              : (session?.kind ?? "Kind —")}
                           <small>
                             {record?.beadId ?? session?.beadId ?? "Bead —"}
                           </small>

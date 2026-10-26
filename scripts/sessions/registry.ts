@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { lstatSync } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
 import { z } from "zod";
+import type { CodexChatForkOriginal } from "../../types/codex-chat-fork";
 import type {
   CodexChatOwnedMetadata,
   CodexChatOwnedRecord,
@@ -31,7 +32,9 @@ import {
   readSessionTranscript,
 } from "../hearth/home-guard";
 import { writeOwnerOnly } from "../hearth/token";
+import { workspaceKey } from "../projects/scope";
 import { withQueueLock } from "../scheduler/queue-lock";
+import { codexChatForkCaptureHash } from "./codex-chat-fork-protocol";
 import {
   codexChatOwnedMetadataSchema,
   codexChatOwnedSessionSchema,
@@ -158,6 +161,16 @@ interface SessionRegistry<Metadata, Record> {
     prepare: () => Metadata | Promise<Metadata>,
   ): Promise<Record>;
 }
+interface CodexChatSessionRegistry
+  extends SessionRegistry<CodexChatOwnedMetadata, CodexChatOwnedRecord> {
+  /** Atomically adopts only the exact preallocated child identity of a captured Fork. */
+  adoptForkChild(
+    child: CodexChatOwnedRecord,
+    parent: CodexChatOwnedRecord,
+    original: CodexChatForkOriginal,
+    bootstrap: () => Promise<void>,
+  ): Promise<CodexChatOwnedRecord>;
+}
 export function createSessionRegistry(
   home: string,
 ): SessionRegistry<OwnedSessionMetadata, OwnedSessionRecord>;
@@ -169,7 +182,7 @@ export function createSessionRegistry(
   home: string,
   provider: "codex",
   mode: "chat",
-): SessionRegistry<CodexChatOwnedMetadata, CodexChatOwnedRecord>;
+): CodexChatSessionRegistry;
 export function createSessionRegistry(
   home: string,
   provider: "gemini",
@@ -236,7 +249,7 @@ export function createSessionRegistry(
       );
     return record;
   };
-  return {
+  const registry = {
     lookup,
     lookupRequestId(requestId: string) {
       if (!sessionRequestIdSchema.safeParse(requestId).success)
@@ -365,4 +378,128 @@ export function createSessionRegistry(
       return reserved.value;
     },
   };
+  if (provider === "codex" && mode === "chat") {
+    return Object.assign(registry, {
+      async adoptForkChild(
+        child: CodexChatOwnedRecord,
+        parent: CodexChatOwnedRecord,
+        original: CodexChatForkOriginal,
+        bootstrap: () => Promise<void>,
+      ): Promise<CodexChatOwnedRecord> {
+        const parsed = codexChatOwnedSessionSchema.safeParse(child),
+          capture =
+            original.state === "captured" || original.state === "linked"
+              ? original.capture
+              : null;
+        if (
+          !parsed.success ||
+          !capture ||
+          parent.provider !== "codex" ||
+          parent.mode !== "chat" ||
+          parent.origin !== undefined ||
+          parent.projectId !== original.projectId ||
+          parent.id !== original.parentSessionId ||
+          workspaceKey(parent.workspace) !== original.workspaceKey ||
+          child.provider !== "codex" ||
+          child.mode !== "chat" ||
+          child.projectId !== original.projectId ||
+          child.id !== original.childAppSessionId ||
+          child.requestId !== original.requestId ||
+          child.requestHash !== original.requestHash ||
+          child.workspace !== parent.workspace ||
+          child.repository !== parent.repository ||
+          child.worktree !== parent.worktree ||
+          child.beadId !== parent.beadId ||
+          child.smith !== parent.smith ||
+          child.requestedModel !== parent.requestedModel ||
+          child.requestedEffort !== parent.requestedEffort ||
+          child.createdAt !== original.createdAt ||
+          child.origin?.kind !== "codex-chat-fork" ||
+          child.origin.projectId !== original.projectId ||
+          child.origin.parentSessionId !== original.parentSessionId ||
+          child.origin.throughTurnRequestId !== original.throughTurnRequestId ||
+          child.origin.protocolVersion !== original.protocolVersion ||
+          child.origin.parentNativeThreadId !== capture.parentNativeThreadId ||
+          child.origin.throughNativeTurnId !== capture.throughNativeTurnId ||
+          child.origin.childNativeThreadId !== capture.childNativeThreadId ||
+          child.origin.captureHash !== codexChatForkCaptureHash(capture) ||
+          (original.state === "linked" &&
+            (original.link.childAppSessionId !== child.id ||
+              original.link.childRequestId !== child.requestId ||
+              original.link.childRequestHash !== child.requestHash ||
+              original.link.captureHash !== child.origin.captureHash))
+        )
+          throw new SessionRegistryError(
+            409,
+            "The captured Fork does not match this exact parent and child identity.",
+          );
+        const { lock, file } = checkedPaths(home);
+        ensurePrivateHome(home);
+        const adopted = await withQueueLock(lock, async () => {
+          const state = readState(),
+            byId = state.records.find((record) => record.id === child.id),
+            byRequest = state.records.find(
+              (record) => record.requestId === child.requestId,
+            );
+          if (byId || byRequest) {
+            if (
+              byId &&
+              byRequest === byId &&
+              byId.provider === "codex" &&
+              byId.mode === "chat" &&
+              JSON.stringify(codexChatOwnedSessionSchema.parse(byId)) ===
+                JSON.stringify(parsed.data)
+            )
+              return byId;
+            throw new SessionRegistryError(
+              409,
+              "A different owned session already claims this Fork child identity.",
+            );
+          }
+          if (state.records.length >= MAX_OWNED_SESSIONS)
+            throw new SessionRegistryError(
+              503,
+              "The private session registry is full. Saved Fork identities have been kept.",
+            );
+          await bootstrap();
+          state.records.push(child);
+          const content = JSON.stringify(state);
+          if (Buffer.byteLength(content) > MAX_SESSION_REGISTRY_BYTES)
+            throw new SessionRegistryError(
+              503,
+              "The private session registry is full. Saved Fork identities have been kept.",
+            );
+          try {
+            writeOwnerOnly(file, content);
+          } catch {
+            throw new SessionRegistryError(
+              503,
+              "The private Fork child identity could not be confirmed. Retry the original Fork.",
+            );
+          }
+          const confirmed = readState().records.find(
+            (record) => record.id === child.id,
+          );
+          if (
+            !confirmed ||
+            confirmed.provider !== "codex" ||
+            confirmed.mode !== "chat" ||
+            JSON.stringify(confirmed) !== JSON.stringify(child)
+          )
+            throw new SessionRegistryError(
+              503,
+              "The private Fork child identity could not be verified after writing.",
+            );
+          return confirmed;
+        });
+        if (!adopted.ok)
+          throw new SessionRegistryError(
+            503,
+            "The session registry is busy or unavailable. Retry the original Fork.",
+          );
+        return adopted.value;
+      },
+    });
+  }
+  return registry;
 }

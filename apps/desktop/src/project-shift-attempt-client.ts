@@ -123,6 +123,7 @@ export function createShiftAttemptObserver(
       user?.kind !== "user" ||
       !user.shift ||
       !origin ||
+      origin.kind !== "shift" ||
       user.session ||
       user.codexTask ||
       user.brief ||
@@ -326,10 +327,12 @@ export function createShiftAttemptObserver(
         state.error = null;
         if (deps.selectedSessionId !== undefined) {
           const exact = checked.data.items.find(
-            (row) => row.session.id === deps.selectedSessionId,
-          );
+              (row) => row.session.id === deps.selectedSessionId,
+            ),
+            exactOrigin = exact?.session.origin;
           if (
             !exact ||
+            exactOrigin?.kind !== "shift" ||
             (deps.expectedOrigin &&
               (
                 [
@@ -341,10 +344,7 @@ export function createShiftAttemptObserver(
                   "beadId",
                   "attempt",
                 ] as const
-              ).some(
-                (key) =>
-                  exact.session.origin?.[key] !== deps.expectedOrigin?.[key],
-              ))
+              ).some((key) => exactOrigin[key] !== deps.expectedOrigin?.[key]))
           ) {
             epoch++;
             disconnect();

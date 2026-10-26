@@ -4,6 +4,20 @@ export interface CodexChatForkIntent {
   throughTurnRequestId: string;
 }
 
+/** Immutable, metadata-only provenance for a child created by native Fork. */
+export interface CodexChatForkOrigin {
+  kind: "codex-chat-fork";
+  projectId: string;
+  parentSessionId: string;
+  throughTurnRequestId: string;
+  parentTurnHash: string;
+  parentNativeThreadId: string;
+  throughNativeTurnId: string;
+  childNativeThreadId: string;
+  captureHash: string;
+  protocolVersion: "0.163.0-alpha.10.2";
+}
+
 export interface CodexChatForkOriginalBase {
   projectId: string;
   workspaceKey: string;

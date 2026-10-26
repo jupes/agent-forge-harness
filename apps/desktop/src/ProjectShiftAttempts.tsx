@@ -133,8 +133,14 @@ export function ProjectShiftAttempts({
             </option>
             {view?.index?.items.map(({ session }) => (
               <option key={session.id} value={session.id}>
-                {session.origin?.beadId} · attempt {session.origin?.attempt} ·{" "}
-                {session.provider} · {session.smith}
+                {session.origin?.kind === "shift"
+                  ? session.origin.beadId
+                  : "Unknown bead"}{" "}
+                · attempt{" "}
+                {session.origin?.kind === "shift"
+                  ? session.origin.attempt
+                  : "—"}{" "}
+                · {session.provider} · {session.smith}
               </option>
             ))}
           </select>

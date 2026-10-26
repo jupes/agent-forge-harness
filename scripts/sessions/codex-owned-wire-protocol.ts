@@ -61,6 +61,7 @@ export const ownedCodingStartReceiptSchema = z.union([
     .strict()
     .refine(
       (value) =>
+        value.session.origin === undefined &&
         value.session.id === value.receipt.conversationId &&
         value.session.requestId === value.receipt.turn.requestId,
     ),

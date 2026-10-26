@@ -3,6 +3,7 @@ import type {
   CodexChatDecision,
   CodexChatEvent,
 } from "./codex-chat";
+import type { CodexChatForkOrigin } from "./codex-chat-fork";
 import type {
   CodexOwnedSessionMetadata,
   CodexOwnedSessionRecord,
@@ -26,8 +27,9 @@ export interface CodexChatStartRequest
   };
 }
 export interface CodexChatOwnedMetadata
-  extends Omit<CodexOwnedSessionMetadata, "mode"> {
+  extends Omit<CodexOwnedSessionMetadata, "mode" | "origin"> {
   mode: "chat";
+  origin?: CodexChatForkOrigin | undefined;
 }
 export interface CodexChatOwnedRecord
   extends CodexChatOwnedMetadata,
