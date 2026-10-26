@@ -7,6 +7,7 @@ import { codexTaskLaunchFromStart } from "../../../scripts/sessions/codex-owned-
 import { codexTaskPreviewReceiptSchema } from "../../../scripts/sessions/codex-owned-wire-protocol";
 import { serializeCodexTask } from "../../../scripts/sessions/codex-task";
 import type { WorktreeEntry } from "../../../types/beads";
+import type { OwnedSessionStartInput } from "../../../types/codex-owned-task";
 import type { SerializedCodexTask } from "../../../types/codex-task";
 import type { PreparedCodexTask } from "../../../types/codex-task-runtime";
 import type { SmithsView } from "../../../types/hearth";
@@ -16,6 +17,7 @@ import {
 } from "./codex-session-composer";
 import { providerUsageLabel, readinessLabel } from "./providers-model";
 import type { SessionComposerProps } from "./SessionComposer";
+import { SessionStartIdentityControls } from "./SessionStartIdentityControls";
 import { chooseSessionSmith, sessionAttachments } from "./session-composer";
 
 /** Native exec Task controls. Claude option drafts and the sealed Keeper remain separate. */
@@ -168,11 +170,17 @@ export function CodexTaskComposer({
   const busy = checking || attaching || view.starting;
   const pending =
     !!view.pendingStart || !!view.startIdentity || !!view.startIdentityError;
+  const identityReady =
+    !!view.identityPage &&
+    !view.identityLoading &&
+    view.identityGeneration !== null;
   let serialized: SerializedCodexTask | null = null,
+    recoveryInput: OwnedSessionStartInput | null = null,
     validation =
       "Check supported options before starting. This check starts no model.";
   try {
     const body = codexTaskStartBody(draft, options);
+    recoveryInput = body;
     if (snapshot)
       serialized = serializeCodexTask(
         codexTaskLaunchFromStart(project.id, body),
@@ -187,6 +195,7 @@ export function CodexTaskComposer({
     !project.archived &&
     !busy &&
     !pending &&
+    identityReady &&
     !!serialized &&
     source?.enabled === true &&
     source.provider === "codex";
@@ -750,28 +759,14 @@ export function CodexTaskComposer({
           </p>
         )}
         {view.notice && <p role="status">{view.notice}</p>}
-        {pending && (
-          <div class="af-session-composer-row">
-            <Button
-              disabled={view.loading}
-              onClick={() => {
-                void client.refresh(project.id);
-              }}
-            >
-              Check original Start
-            </Button>
-            {view.pendingStart && (
-              <Button
-                disabled={!writesAllowed || view.starting}
-                onClick={() => {
-                  void client.retryStart(project.id);
-                }}
-              >
-                Retry original Start
-              </Button>
-            )}
-          </div>
-        )}
+        <SessionStartIdentityControls
+          projectId={project.id}
+          view={view}
+          client={client}
+          request={recoveryInput}
+          writesAllowed={writesAllowed}
+          archived={project.archived}
+        />
         <div class="af-session-composer-actions">
           <Button onClick={onCancel}>
             {pending ? "Close composer (Start still pending)" : "Cancel"}

@@ -947,14 +947,20 @@ export function createSessionsClient(deps: {
         identityMutations.delete(projectId);
         if (!disposed) await readIdentityPage(projectId);
       }
-      return (
+      const confirmed =
         retired &&
         entry.identityGeneration === scope.generation &&
         currentIdentityPage(projectId)?.identities.some(
           (identity) =>
             identity.requestId === requestId && identity.state === "retired",
-        ) === true
-      );
+        ) === true;
+      if (confirmed && entry.pendingStart?.requestId === requestId) {
+        entry.pendingStart = null;
+        if (entry.startIdentity?.requestId === requestId)
+          entry.startIdentity = null;
+        tell();
+      }
+      return confirmed;
     },
     async resumeStart(
       projectId: string,

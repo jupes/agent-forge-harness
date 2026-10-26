@@ -3,7 +3,9 @@ import { join } from "node:path";
 import { expect, type Page, test } from "@playwright/test";
 import { OPERATOR_HEADER } from "../../scripts/hearth/paths";
 import { ownedCodingStateSchema } from "../../scripts/sessions/codex-owned-journal";
+import { codexTaskStartSchema } from "../../scripts/sessions/codex-owned-protocol";
 import { ownedCodingSessionSchema } from "../../scripts/sessions/codex-owned-wire-protocol";
+import type { CodexTaskStartRequest } from "../../types/codex-owned-task";
 import { openSettled, reloadSettled } from "../e2e/fixtures";
 import { pageToken } from "../e2e/launch-link";
 import { HEARTH_HOME } from "../e2e/servers";
@@ -132,6 +134,33 @@ async function checkDefault(page: Page, prompt: string) {
     dialog.getByRole("button", { name: "Start", exact: true }),
   ).toBeEnabled();
   return dialog;
+}
+
+async function reenterCodexTask(
+  dialog: Awaited<ReturnType<typeof chooseCodex>>,
+  original: CodexTaskStartRequest,
+) {
+  await dialog
+    .getByRole("textbox", { name: "Session prompt", exact: true })
+    .fill(original.launch.prompt);
+  await dialog
+    .getByRole("combobox", { name: "Session repository", exact: true })
+    .selectOption(original.repository);
+  await dialog
+    .getByRole("textbox", { name: "Session bead", exact: true })
+    .fill(original.beadId ?? "");
+  await dialog
+    .getByRole("combobox", { name: "Session smith", exact: true })
+    .selectOption(original.smith);
+  await dialog
+    .getByRole("textbox", { name: "Session model", exact: true })
+    .fill(original.launch.model);
+  await dialog
+    .getByRole("combobox", { name: "Session effort", exact: true })
+    .selectOption(original.launch.effort ?? "");
+  await dialog
+    .getByRole("combobox", { name: "Session sandbox", exact: true })
+    .selectOption(original.launch.sandbox);
 }
 
 test("bead-prefilled Codex Task preserves honest effort controls and private context, reconciles a lost Start once, and reloads its actual identity", async ({
@@ -332,6 +361,138 @@ test("closing a Codex observer leaves its Task running; explicit Stop confirms t
   expect(tasks()).toHaveLength(before + 1);
 });
 
+test("a reserved Start after reload continues only after exact same-UUID body re-entry", async ({
+  page,
+}) => {
+  const before = tasks().length;
+  await openSettled(page, `/index.html#/desktop/project/${alpha.id}/sessions`);
+  const dialog = await checkDefault(page, "Exact body re-entry after reload");
+  const starts: CodexTaskStartRequest[] = [];
+  await page.route(
+    `**/__agent-forge/projects/${alpha.id}/sessions`,
+    async (route) => {
+      if (route.request().method() !== "POST") {
+        await route.continue();
+        return;
+      }
+      const parsed = codexTaskStartSchema.safeParse(
+        route.request().postDataJSON(),
+      );
+      if (!parsed.success) throw Error("Invalid Codex Task Start fixture.");
+      starts.push(parsed.data);
+      if (starts.length === 1) {
+        await route.fulfill({
+          status: 503,
+          contentType: "application/json",
+          body: JSON.stringify({
+            ok: false,
+            data: null,
+            error: "synthetic lost Start reply",
+          }),
+        });
+        return;
+      }
+      await route.continue();
+    },
+  );
+
+  await dialog.getByRole("button", { name: "Start", exact: true }).click();
+  await expect(
+    dialog.getByText("codex task · reserved", { exact: true }),
+  ).toBeVisible();
+  expect(starts).toHaveLength(1);
+  expect(tasks()).toHaveLength(before);
+
+  await reloadSettled(page);
+  await page.getByRole("button", { name: "New session", exact: true }).click();
+  const reloaded = await chooseCodex(page);
+  const original = starts[0];
+  if (!original) throw Error("Missing original frozen Start request.");
+  await reenterCodexTask(reloaded, original);
+  const continueButton = reloaded.getByRole("button", {
+    name: "Continue exact original",
+    exact: true,
+  });
+  await expect(continueButton).toBeEnabled();
+  await continueButton.click();
+
+  await expect(
+    page.getByRole("article", { name: "Session reply", exact: true }),
+  ).toContainText("Codex Task reply 🌱");
+  expect(starts).toHaveLength(2);
+  expect(starts[1]).toEqual(original);
+  expect(tasks()).toHaveLength(before + 1);
+});
+
+test("confirmed reserved retirement reads back the tombstone before a new UUID can start", async ({
+  page,
+}) => {
+  const before = tasks().length;
+  await openSettled(page, `/index.html#/desktop/project/${alpha.id}/sessions`);
+  const dialog = await checkDefault(page, "Retire only the reserved UUID");
+  const starts: CodexTaskStartRequest[] = [];
+  await page.route(
+    `**/__agent-forge/projects/${alpha.id}/sessions`,
+    async (route) => {
+      if (route.request().method() !== "POST") {
+        await route.continue();
+        return;
+      }
+      const parsed = codexTaskStartSchema.safeParse(
+        route.request().postDataJSON(),
+      );
+      if (!parsed.success) throw Error("Invalid Codex Task Start fixture.");
+      starts.push(parsed.data);
+      if (starts.length === 1) {
+        await route.fulfill({
+          status: 503,
+          contentType: "application/json",
+          body: JSON.stringify({
+            ok: false,
+            data: null,
+            error: "synthetic lost Start reply",
+          }),
+        });
+        return;
+      }
+      await route.continue();
+    },
+  );
+
+  await dialog.getByRole("button", { name: "Start", exact: true }).click();
+  await expect(
+    dialog.getByText("codex task · reserved", { exact: true }),
+  ).toBeVisible();
+  const originalId = starts[0]?.requestId;
+  if (!originalId) throw Error("Missing reserved Start UUID.");
+  await dialog
+    .getByRole("button", { name: "Review retirement", exact: true })
+    .click();
+  const retirement = page.getByRole("dialog", {
+    name: "Retire this reserved Start?",
+    exact: true,
+  });
+  await expect(retirement.getByText(originalId, { exact: true })).toBeVisible();
+  await retirement
+    .getByRole("button", { name: "Retire this UUID", exact: true })
+    .click();
+  await expect(
+    dialog.getByText("codex task · retired", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    dialog.getByRole("button", { name: "Start", exact: true }),
+  ).toBeEnabled();
+  expect(tasks()).toHaveLength(before);
+
+  await dialog.getByRole("button", { name: "Start", exact: true }).click();
+  await expect(
+    page.getByRole("article", { name: "Session reply", exact: true }),
+  ).toContainText("Codex Task reply 🌱");
+  expect(starts).toHaveLength(2);
+  expect(starts[1]?.requestId).not.toBe(originalId);
+  expect(tasks()).toHaveLength(before + 1);
+});
+
 test("reload keeps a pre-admission Start identity held until its original protected admission is found", async ({
   page,
 }) => {
@@ -389,29 +550,36 @@ test("reload keeps a pre-admission Start identity held until its original protec
       exact: true,
     });
     await expect(
-      reloaded.getByRole("button", {
-        name: "Check original Start",
-        exact: true,
-      }),
+      reloaded.getByRole("region", { name: "Original Start requests" }),
+    ).toBeVisible();
+    await expect(
+      reloaded.getByRole("button", { name: "Check server", exact: true }),
     ).toBeVisible();
     await expect(
       reloaded.getByRole("button", { name: "Start", exact: true }),
     ).toBeDisabled();
-    await reloaded
-      .getByRole("button", { name: "Check original Start", exact: true })
-      .click();
     await expect(
-      reloaded.getByRole("button", {
-        name: "Check original Start",
-        exact: true,
-      }),
+      reloaded.getByText("codex task · reserved", { exact: true }),
     ).toBeVisible();
     await expect(
       reloaded.getByRole("button", {
-        name: "Retry original Start",
+        name: "Continue exact original",
         exact: true,
       }),
-    ).toHaveCount(0);
+    ).toBeDisabled();
+    await reloaded
+      .getByRole("button", { name: "Review retirement", exact: true })
+      .click();
+    const retirement = page.getByRole("dialog", {
+      name: "Retire this reserved Start?",
+      exact: true,
+    });
+    await expect(retirement.getByText(alpha.id, { exact: true })).toBeVisible();
+    await expect(retirement.getByText(/Codex|codex/)).toBeVisible();
+    await expect(retirement.getByText(/Request hash/)).toBeVisible();
+    await retirement
+      .getByRole("button", { name: "Keep reserved", exact: true })
+      .click();
     expect(tasks()).toHaveLength(before);
   } finally {
     release();

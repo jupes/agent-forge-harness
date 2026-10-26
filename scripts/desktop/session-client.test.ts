@@ -597,6 +597,104 @@ test("reserved-only retirement passes the current verified row and requires tomb
   client.dispose();
 });
 
+test("confirmed retirement clears only the matching in-memory original request", async () => {
+  const scope = { projectId, workspace: "/repo", generation: 1 };
+  let state: "empty" | "reserved" | "retired" = "empty";
+  let starts = 0;
+  let requestHash = "";
+  const identityServer: SessionStartIdentityServer = {
+    async list(current) {
+      return {
+        version: 1,
+        scope: {
+          family: "owned-session-start",
+          projectId: current.projectId,
+          workspace: current.workspace,
+        },
+        identities:
+          state === "empty"
+            ? []
+            : [
+                {
+                  version: 1,
+                  requestId,
+                  requestHash,
+                  provider: "claude",
+                  mode: "chat",
+                  state,
+                },
+              ],
+      };
+    },
+    async reserve(current, original) {
+      requestHash = await sessionStartHash(original);
+      state = "reserved";
+      return {
+        scope: {
+          family: "owned-session-start",
+          projectId: current.projectId,
+          workspace: current.workspace,
+        },
+        identity: {
+          version: 1,
+          requestId,
+          requestHash,
+          provider: "claude",
+          mode: "chat",
+          state,
+        },
+        request: original,
+        requestHash,
+      };
+    },
+    async retire(current, reserved) {
+      expect(reserved.requestId).toBe(requestId);
+      state = "retired";
+      return {
+        version: 1,
+        scope: {
+          family: "owned-session-start",
+          projectId: current.projectId,
+          workspace: current.workspace,
+        },
+        identity: {
+          version: 1,
+          requestId,
+          requestHash,
+          provider: "claude",
+          mode: "chat",
+          state,
+        },
+      };
+    },
+  };
+  const client = createSessionsClient({
+    identityServer,
+    identityScope: () => scope,
+    canWrite: () => true,
+    requestId: () => requestId,
+    list: async () => [],
+    read: async () => page,
+    post: async (_project, _session, action) => {
+      if (action !== "start") throw Error("Unexpected action");
+      starts++;
+      return { state: "unknown", message: "The original remains held." };
+    },
+    stream: () => () => ({ close() {} }),
+  });
+
+  await client.refreshIdentities(projectId);
+  await client.start(projectId, input);
+  expect(starts).toBe(1);
+  expect(client.project(projectId).pendingStart?.requestId).toBe(requestId);
+  expect(await client.retireIdentity(projectId, requestId)).toBe(true);
+  expect(client.project(projectId).pendingStart).toBeNull();
+  expect(client.project(projectId).identityPage?.identities[0]?.state).toBe(
+    "retired",
+  );
+  client.dispose();
+});
+
 test("identity mutations do not post when writing is disabled or the client is disposed", async () => {
   const scope = { projectId, workspace: "/repo", generation: 1 };
   let canWrite = true;
