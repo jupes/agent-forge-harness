@@ -3662,12 +3662,12 @@ describe("Session Start identity actions", () => {
   });
 
   test("attempted and admitted identities cannot be retired", async () => {
-    const h = await start({ api: { git: fixtureSessionGit } });
-    const journal = createRestartIdentityJournal(h.home);
     for (const [requestId, state] of [
       ["c9edb6ad-3810-480e-8c13-d6070588bc32", "attempted"],
       ["43bef9b6-b09b-4817-b64d-44d202b83e14", "admitted"],
     ] as const) {
+      const h = await start({ api: { git: fixtureSessionGit } });
+      const journal = createRestartIdentityJournal(h.home);
       const input = sessionStartFixture(h, requestId);
       const identity = {
         version: 1 as const,
