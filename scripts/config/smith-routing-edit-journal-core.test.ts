@@ -110,6 +110,7 @@ const request: SmithRoutingEditRequest = {
 function previewFor(
   original: SmithRoutingEditRequest = request,
   before: string | { smith: string; weight: number }[] = "claude-apprentice",
+  file = "C:\\work\\agent-forge.toml",
 ): SmithRoutingEditPreview {
   const after =
     original.change.kind === "bench"
@@ -118,7 +119,7 @@ function previewFor(
   return smithRoutingEditPreviewSchema.parse({
     version: 1,
     target: original.target,
-    file: "C:\\work\\agent-forge.toml",
+    file,
     expectedRevision: original.expectedRevision,
     candidate: {
       sha256: "c".repeat(64),
@@ -245,6 +246,104 @@ test("a full success receipt overflow records only the bounded refusal before an
   ).toEqual(["intent.json", "refused.json"]);
 });
 
+test("a success receipt whose API envelope overflows is durably refused before attempt", async () => {
+  const storage = new MemoryStorage(),
+    journal = createSmithRoutingEditJournalCore(
+      storage,
+      owner,
+      () => "2026-10-26T12:00:00.000Z",
+    ),
+    benchRequest: SmithRoutingEditRequest = {
+      ...request,
+      requestId: "46b3a741-51aa-4a04-9ccd-bfbf2191b7bb",
+      change: {
+        kind: "bench",
+        bench: "low",
+        entries: Array.from({ length: 35 }, () => ({
+          smith: "r".repeat(240),
+          weight: 0.75,
+        })),
+      },
+    };
+  const limit = SMITH_ROUTING_EDIT_LIMITS.responseBytes,
+    maxPathPadding =
+      SMITH_ROUTING_EDIT_LIMITS.pathLength -
+      "C:\\work\\agent-forge.toml".length,
+    plannedFor = (preview: SmithRoutingEditPreview) => ({
+      version: 1,
+      requestId: benchRequest.requestId,
+      ownerScopeHash: "d".repeat(64),
+      inputHash: "e".repeat(64),
+      createdAt: "2026-10-26T12:00:00.000Z",
+      original: benchRequest,
+      result: {
+        phase: "confirmed",
+        completedAt: "2026-10-26T12:00:00.000Z",
+        preview,
+        publication: {
+          file: preview.file,
+          created: preview.candidate.created,
+          sha256: preview.candidate.sha256,
+        },
+      },
+    }),
+    dataBytesFor = (preview: SmithRoutingEditPreview) =>
+      new TextEncoder().encode(JSON.stringify(plannedFor(preview))).byteLength,
+    envelopeBytesFor = (preview: SmithRoutingEditPreview) =>
+      new TextEncoder().encode(
+        JSON.stringify({ ok: true, data: plannedFor(preview), error: null }),
+      ).byteLength;
+
+  let selected: SmithRoutingEditPreview | undefined;
+  for (let count = 1; count <= 900 && selected === undefined; count++) {
+    const before = Array.from({ length: count }, () => ({
+      smith: "claude-master",
+      weight: 1,
+    }));
+    const base = previewFor(benchRequest, before),
+      baseBytes = dataBytesFor(base),
+      padding = Math.min(
+        maxPathPadding,
+        Math.max(0, Math.floor((limit - 16 - baseBytes) / 2)),
+      );
+    const file = `C:\\${"p".repeat("work\\agent-forge.toml".length + padding)}`;
+    if (file.length > SMITH_ROUTING_EDIT_LIMITS.pathLength) continue;
+    const candidate = previewFor(benchRequest, before, file),
+      dataBytes = dataBytesFor(candidate),
+      envelopeBytes = envelopeBytesFor(candidate);
+    if (dataBytes <= limit && envelopeBytes > limit) selected = candidate;
+  }
+  if (selected === undefined)
+    throw new Error("fixture did not fit data but exceed its API envelope");
+
+  let publishCalls = 0;
+  const receipt = await journal.reserve(benchRequest, (writer) => {
+    if (writer.prepare(selected!)) {
+      writer.attempted();
+      publishCalls++;
+      writer.confirm({
+        file: selected!.file,
+        created: selected!.candidate.created,
+        sha256: selected!.candidate.sha256,
+      });
+    }
+  });
+
+  expect(receipt.result).toMatchObject({
+    phase: "refused",
+    reason: "success-preview-too-large",
+  });
+  expect(publishCalls).toBe(0);
+  expect(
+    [...storage.records.get(benchRequest.requestId)!.keys()].sort(),
+  ).toEqual(["intent.json", "refused.json"]);
+  expect(
+    new TextEncoder().encode(
+      JSON.stringify({ ok: true, data: receipt, error: null }),
+    ).byteLength,
+  ).toBeLessThanOrEqual(limit);
+});
+
 test("uncertain refusal persistence is held and never read as a refusal proof", async () => {
   const storage = new MemoryStorage(),
     journal = createSmithRoutingEditJournalCore(storage, owner);
@@ -253,9 +352,9 @@ test("uncertain refusal persistence is held and never read as a refusal proof", 
   await expect(
     journal.reserve(request, (writer) => writer.refuse("stale-revision")),
   ).rejects.toMatchObject({ reason: "held" });
-  await expect(journal.readOriginal(request.requestId)).rejects.toMatchObject({
-    reason: "held",
-  });
+  expect(() => journal.readOriginal(request.requestId)).toThrow(
+    /held or unavailable/,
+  );
 });
 
 test("a refusal record write failure cannot synthesize a refusal or replay permission", async () => {
