@@ -157,6 +157,7 @@ export function createKeeperSessionReviews(deps: {
 }) {
   const entries = new Map<string, KeeperSessionReview>(),
     retryableNotSent = new WeakMap<KeeperSessionReview, boolean>(),
+    retryProofSource = new WeakMap<KeeperSessionReview, "local" | "server">(),
     listeners = new Set<() => void>();
   let disposed = false;
   const tell = () => {
@@ -203,8 +204,14 @@ export function createKeeperSessionReviews(deps: {
     entry.loaded = true;
     entry.view.keeperOriginalKnown = true;
     entry.view.pendingStart = structuredClone(result.original.start);
-    if (result.session !== null || result.receipt !== null)
+    if (result.receipt !== null) {
       retryableNotSent.set(entry, false);
+      retryProofSource.delete(entry);
+    } else if (result.retryAvailable !== undefined) {
+      retryableNotSent.set(entry, result.retryAvailable);
+      if (result.retryAvailable) retryProofSource.set(entry, "server");
+      else retryProofSource.delete(entry);
+    }
     entry.view.retryStartAvailable = retryableNotSent.get(entry) === true;
     entry.view.notice = result.record.message;
     if (result.session && result.receipt) {
@@ -246,6 +253,10 @@ export function createKeeperSessionReviews(deps: {
       );
       if (disposed) return;
       if (raw === null) {
+        if (retryProofSource.get(entry) === "server") {
+          retryableNotSent.set(entry, false);
+          retryProofSource.delete(entry);
+        }
         if (!entry.original && entry.expectedRequestId) {
           entry.loaded = false;
           entry.view.notice =
@@ -267,6 +278,10 @@ export function createKeeperSessionReviews(deps: {
     } catch (error) {
       if (!entry.view.lastStarted) {
         entry.loaded = false;
+        if (retryProofSource.get(entry) === "server") {
+          retryableNotSent.set(entry, false);
+          retryProofSource.delete(entry);
+        }
         entry.view.retryStartAvailable = retryableNotSent.get(entry) === true;
         entry.view.notice =
           error instanceof Error
@@ -291,6 +306,7 @@ export function createKeeperSessionReviews(deps: {
       return;
     entry.view.starting = true;
     retryableNotSent.set(entry, false);
+    retryProofSource.delete(entry);
     entry.view.retryStartAvailable = false;
     entry.view.notice = "Starting the exact reviewed proposal…";
     lock(entry);
@@ -345,6 +361,8 @@ export function createKeeperSessionReviews(deps: {
             "notSent" in outcome &&
             outcome.notSent === true,
         );
+        if (retryableNotSent.get(entry)) retryProofSource.set(entry, "local");
+        else retryProofSource.delete(entry);
         entry.view.retryStartAvailable = retryableNotSent.get(entry) === true;
         entry.view.notice = outcome.message;
       }

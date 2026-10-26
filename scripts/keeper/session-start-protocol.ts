@@ -69,6 +69,7 @@ export const keeperSessionStartReceiptSchema: z.ZodType<KeeperSessionStartReceip
       record: keeperProposalRecordSchema,
       original: keeperSessionStartRequestSchema,
       startHash: sessionRequestHashSchema,
+      retryAvailable: z.boolean().optional(),
       session: ownedSessionSchema.nullable(),
       receipt: conversationReceiptSchema.nullable(),
     })
@@ -80,6 +81,15 @@ export const keeperSessionStartReceiptSchema: z.ZodType<KeeperSessionStartReceip
         value.record.sourceHash === value.original.sourceHash &&
         value.record.requestId === value.original.start.requestId &&
         value.record.operation === "approve" &&
+        (value.retryAvailable !== true ||
+          (!value.record.pending &&
+            value.receipt === null &&
+            (value.session === null ||
+              (value.session.projectId === value.projectId &&
+                value.session.requestId === value.original.start.requestId &&
+                value.session.requestHash === value.startHash &&
+                value.session.provider === "claude" &&
+                value.session.mode === value.original.start.launch.mode)))) &&
         (value.session === null ||
           (value.session.projectId === value.projectId &&
             value.session.requestId === value.original.start.requestId &&

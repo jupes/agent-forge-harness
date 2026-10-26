@@ -2,12 +2,15 @@ import { createHash } from "node:crypto";
 import type { KeeperProposalExecution } from "../../types/keeper-proposal";
 import type { KeeperSessionStartReceipt } from "../../types/keeper-session-start";
 import type { SessionStartRequest } from "../../types/session-requests";
+import type { SessionStartIdentityPage } from "../../types/session-start-identities";
 import { ConversationError } from "../conversations/error";
 import { createConversationStore } from "../conversations/store";
 import { resolveCheckout } from "../ledger/workspace";
 import { workspaceKey } from "../projects/scope";
 import { createProjectStore } from "../projects/store";
 import type { createOwnedSessionService } from "../sessions/admission";
+import { canonicalOwnedSessionStart } from "../sessions/codex-owned-protocol";
+import { sessionStartIdentityPageSchema } from "../sessions/identity-protocol";
 import { canonicalSessionInput } from "../sessions/preparation";
 import { sessionStartReceiptSchema } from "../sessions/protocol";
 import { createKeeperProposalStore } from "./proposal-store";
@@ -23,7 +26,9 @@ interface Options {
   sessions: Pick<
     ReturnType<typeof createOwnedSessionService>,
     "start" | "list" | "read"
-  >;
+  > & {
+    listIdentities?: (projectId: string) => Promise<SessionStartIdentityPage>;
+  };
   /** Trusted current scope/capability preparation only. It reserves nothing and starts no provider turn. */
   prepare(projectId: string, input: SessionStartRequest): Promise<unknown>;
 }
@@ -189,6 +194,59 @@ export function createKeeperSessionStartService(options: Options) {
             turn: page.request,
           }
         : null;
+    let retryAvailable = false;
+    const input = saved.intent.original.start;
+    const registryMatchesOriginal =
+      session === null ||
+      (session.projectId === projectId &&
+        session.requestId === input.requestId &&
+        session.requestHash === saved.intent.startHash &&
+        session.provider === "claude" &&
+        session.mode === input.launch.mode &&
+        workspaceKey(session.workspace) ===
+          workspaceKey(saved.intent.workspace) &&
+        session.repository === input.repository &&
+        session.worktree === input.worktree &&
+        session.smith === input.smith &&
+        session.beadId === input.beadId &&
+        session.requestedModel === input.launch.model &&
+        session.requestedEffort === (input.launch.effort ?? null));
+    if (
+      !receipt &&
+      registryMatchesOriginal &&
+      options.sessions.listIdentities
+    ) {
+      let identityPage: SessionStartIdentityPage | null = null;
+      try {
+        const raw = await options.sessions.listIdentities(projectId);
+        const parsed = sessionStartIdentityPageSchema.safeParse(raw);
+        if (parsed.success) identityPage = parsed.data;
+      } catch {
+        // A failed metadata read can never grant retry authority.
+      }
+      // The catalog/workspace may change while the second protected source is read.
+      readable(projectId);
+      assertWorkspace(saved.intent.workspace);
+      if (identityPage) {
+        const ownedStartHash = createHash("sha256")
+          .update(canonicalOwnedSessionStart(saved.intent.original.start))
+          .digest("hex");
+        const identity = identityPage.identities.find(
+          (item) => item.requestId === saved.intent.original.start.requestId,
+        );
+        retryAvailable =
+          identityPage.version === 1 &&
+          identityPage.scope.family === "owned-session-start" &&
+          identityPage.scope.projectId === projectId &&
+          workspaceKey(identityPage.scope.workspace) ===
+            workspaceKey(saved.intent.workspace) &&
+          ownedStartHash === saved.intent.startHash &&
+          identity?.requestHash === ownedStartHash &&
+          identity.provider === "claude" &&
+          identity.mode === saved.intent.original.start.launch.mode &&
+          identity.state === "not-sent";
+      }
+    }
     const record =
       receipt && session
         ? {
@@ -215,6 +273,7 @@ export function createKeeperSessionStartService(options: Options) {
       record,
       original: saved.intent.original,
       startHash: saved.intent.startHash,
+      retryAvailable,
       session,
       receipt,
     });
