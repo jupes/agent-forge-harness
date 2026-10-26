@@ -206,6 +206,107 @@
 .af-smith-create-dialog {
   width: min(760px, calc(100vw - 32px));
 }
+.af-smith-edit-dialog {
+  width: min(900px, calc(100vw - 32px));
+}
+.af-smith-edit {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+.af-smith-edit > label {
+  display: grid;
+  gap: 5px;
+  font-size: 12px;
+}
+.af-smith-edit input:not([type="checkbox"]),
+.af-smith-edit select,
+.af-smith-edit textarea {
+  min-height: 32px;
+  width: 100%;
+  background: var(--color-surface);
+  color: var(--color-text);
+  border: 1px solid var(--color-divider);
+  border-radius: 4px;
+  padding: 6px 8px;
+  font: inherit;
+}
+.af-smith-edit > label.af-smith-edit-enabled {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.af-smith-edit-actions {
+  display: flex;
+  justify-content: end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.af-smith-edit-review,
+.af-smith-edit-receipts article {
+  border: 1px solid var(--color-divider);
+  border-radius: 6px;
+  padding: 12px;
+  min-width: 0;
+}
+.af-smith-edit-review h3,
+.af-smith-edit-review h4,
+.af-smith-edit-receipts h3 {
+  margin: 0 0 10px;
+}
+.af-smiths .af-smith-edit-review dl,
+.af-smiths .af-smith-edit-receipts dl {
+  display: grid;
+  grid-template-columns: minmax(140px, 0.8fr) minmax(0, 1.8fr);
+  gap: 6px 12px;
+  margin: 0;
+}
+.af-smiths .af-smith-edit-review dt,
+.af-smiths .af-smith-edit-receipts dt {
+  color: var(--color-neutral-400);
+}
+.af-smiths .af-smith-edit-review dd,
+.af-smiths .af-smith-edit-receipts dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.af-smith-edit-review-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 16px;
+}
+.af-smith-edit-field-list,
+.af-smith-edit-provenance {
+  border-top: 1px solid var(--color-divider);
+  padding-top: 12px;
+  min-width: 0;
+}
+.af-smiths .af-smith-edit-field-list dl,
+.af-smiths .af-smith-edit-provenance dl {
+  display: grid;
+  grid-template-columns: minmax(70px, 0.45fr) minmax(0, 1.55fr);
+  gap: 6px 12px;
+}
+.af-smiths .af-smith-edit-field-list dd,
+.af-smiths .af-smith-edit-provenance dd {
+  overflow-wrap: anywhere;
+}
+.af-smiths .af-smith-edit-provenance dd {
+  display: grid;
+  gap: 4px;
+}
+.af-smith-edit-receipts {
+  display: grid;
+  gap: 10px;
+}
+.af-smith-edit-receipts article {
+  display: grid;
+  gap: 8px;
+}
+.af-smiths [aria-label^="Edit configuration for"] {
+  margin-top: 8px;
+}
 .af-smith-create {
   display: grid;
   gap: 12px;
@@ -276,13 +377,20 @@
 }
 @media (max-width: 700px) {
   .af-smiths .af-smith-create-review dl,
-  .af-smiths .af-smith-create-receipts dl {
+  .af-smiths .af-smith-create-receipts dl,
+  .af-smiths .af-smith-edit-review dl,
+  .af-smiths .af-smith-edit-receipts dl {
     grid-template-columns: 1fr;
     gap: 2px;
   }
   .af-smiths .af-smith-create-review dd,
-  .af-smiths .af-smith-create-receipts dd {
+  .af-smiths .af-smith-create-receipts dd,
+  .af-smiths .af-smith-edit-review dd,
+  .af-smiths .af-smith-edit-receipts dd {
     margin-bottom: 8px;
+  }
+  .af-smith-edit-review-columns {
+    grid-template-columns: 1fr;
   }
 }
 @media (max-width: 1200px) {
