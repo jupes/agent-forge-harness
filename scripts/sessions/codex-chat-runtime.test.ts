@@ -145,55 +145,52 @@ test("the dedicated native Fork sends one bounded fork request and returns only 
   expect(fork?.params).not.toHaveProperty("experimentalPredictionMode");
 });
 
-test("Fork refuses cancellation before probes and never retries ambiguous or invalid native effects", async () => {
+test("Fork refuses an already-cancelled request before startup or capability probes", async () => {
   const cancelled = fixture("fork"),
     cancelledInput = await forkInput(cancelled),
+    before = cancelled.records(),
     controller = new AbortController();
   controller.abort();
   await expect(
     cancelled.runtime.fork({ ...cancelledInput, signal: controller.signal }),
   ).rejects.toThrow();
-  expect(
-    cancelled.records().filter((row) => row.kind === "process"),
-  ).toHaveLength(0);
-  expect(cancelled.records().filter((row) => row.kind === "rpc")).toHaveLength(
-    0,
-  );
+  expect(cancelled.records()).toEqual(before);
+});
 
-  const failures = [
-    ["fork-initialize-failure", ["initialize"]],
-    ["fork-server-request", ["initialize"]],
-    ["fork-malformed", ["initialize", "thread/fork"]],
-    ["fork-oversized", ["initialize", "thread/fork"]],
-    ["fork-wrong-parent", ["initialize", "thread/fork"]],
-    ["fork-wrong-child", ["initialize", "thread/fork"]],
-    ["fork-wrong-config", ["initialize", "thread/fork"]],
-    ["fork-active", ["initialize", "thread/fork"]],
-    ["fork-cleanup-failure", ["initialize", "thread/fork"]],
-    ["fork-lost-response", ["initialize", "thread/fork"]],
-  ] as const;
-  for (const [mode, expectedMethods] of failures) {
-    const f = fixture(mode),
-      input = await forkInput(f);
-    await expect(f.runtime.fork(input)).rejects.toThrow();
-    const calls = f.records().filter((row) => row.kind === "rpc"),
-      expected = [...expectedMethods];
-    expect(calls.map((row) => row.method)).toEqual(expected);
-    expect(calls.filter((row) => row.method === "thread/fork")).toHaveLength(
-      expected.includes("thread/fork") ? 1 : 0,
-    );
-    expect(
-      calls.some((row) =>
-        ["thread/start", "thread/resume", "turn/start"].includes(
-          String(row.method),
-        ),
+const forkFailureCases: [string, string[]][] = [
+  ["fork-initialize-failure", ["initialize"]],
+  ["fork-server-request", ["initialize"]],
+  ["fork-malformed", ["initialize", "thread/fork"]],
+  ["fork-oversized", ["initialize", "thread/fork"]],
+  ["fork-wrong-parent", ["initialize", "thread/fork"]],
+  ["fork-wrong-child", ["initialize", "thread/fork"]],
+  ["fork-wrong-config", ["initialize", "thread/fork"]],
+  ["fork-active", ["initialize", "thread/fork"]],
+  ["fork-cleanup-failure", ["initialize", "thread/fork"]],
+  ["fork-lost-response", ["initialize", "thread/fork"]],
+];
+test.each(
+  forkFailureCases,
+)("Fork rejects %s without retry or falling back to Start", async (mode, expectedMethods) => {
+  const f = fixture(mode),
+    input = await forkInput(f);
+  await expect(f.runtime.fork(input)).rejects.toThrow();
+  const calls = f.records().filter((row) => row.kind === "rpc");
+  expect(calls.map((row) => row.method)).toEqual(expectedMethods);
+  expect(calls.filter((row) => row.method === "thread/fork")).toHaveLength(
+    expectedMethods.includes("thread/fork") ? 1 : 0,
+  );
+  expect(
+    calls.some((row) =>
+      ["thread/start", "thread/resume", "turn/start"].includes(
+        String(row.method),
       ),
-    ).toBe(false);
-    if (mode === "fork-lost-response")
-      expect(
-        f.records().some((row) => row.kind === "fork-created-without-response"),
-      ).toBe(true);
-  }
+    ),
+  ).toBe(false);
+  if (mode === "fork-lost-response")
+    expect(
+      f.records().some((row) => row.kind === "fork-created-without-response"),
+    ).toBe(true);
 });
 test("an actual native Chat retains mutable supplied turn plans without inventing an item, mode or completion from step status", async () => {
   const f = fixture("turn-plan"),
