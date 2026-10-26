@@ -5,6 +5,7 @@
  */
 
 import {
+  BENCH_NAMES,
   type LedgerEventKind,
   PROVIDER_USAGE_COUNTS,
 } from "../../types/hearth";
@@ -67,6 +68,8 @@ export const PAYLOAD_KEYS: Record<LedgerEventKind, readonly string[]> = {
     "family",
     "requestId",
     "inputHash",
+    "changeKind",
+    "selector",
   ],
 };
 
@@ -138,11 +141,22 @@ const NESTED: Readonly<Record<string, (value: unknown) => unknown>> = {
   // Only this currently implemented durable request family is authorized to
   // correlate an action with a saved original. These fields remain bounded
   // identifiers/digests; request content never enters the audit payload.
-  family: (value) => (value === "smith-config-edit" ? value : DROP),
+  family: (value) =>
+    value === "smith-config-edit" || value === "smith-routing-edit"
+      ? value
+      : DROP,
   requestId: (value) =>
     typeof value === "string" && LOWERCASE_UUID.test(value) ? value : DROP,
   inputHash: (value) =>
     typeof value === "string" && SHA256_HEX.test(value) ? value : DROP,
+  changeKind: (value) =>
+    value === "default" || value === "bench" ? value : DROP,
+  selector: (value) =>
+    value === "workflow.default_crew" ||
+    (typeof value === "string" &&
+      BENCH_NAMES.includes(value as (typeof BENCH_NAMES)[number]))
+      ? value
+      : DROP,
   usage,
   builder: (value) => pick(value, EXECUTOR_KEYS),
   evaluator: (value) => pick(value, EXECUTOR_KEYS),
