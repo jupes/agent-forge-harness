@@ -301,7 +301,7 @@ async function waitForShiftAdmissionEvidence(shiftId: string) {
               : {
                   source: event.payload.source,
                   kind: event.payload.kind,
-                  worktree: event.payload.worktree,
+                  hasWorktree: event.payload.worktree !== undefined,
                 },
         beadId: event.beadId,
         runId: event.runId,
