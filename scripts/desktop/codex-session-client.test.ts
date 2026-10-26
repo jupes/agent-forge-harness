@@ -1,6 +1,9 @@
 import { expect, test } from "bun:test";
 import { createSessionsClient } from "../../apps/desktop/src/session-client";
-import { sessionStartHash } from "../../apps/desktop/src/session-start-identities";
+import {
+  SESSION_START_IDENTITIES,
+  sessionStartHash,
+} from "../../apps/desktop/src/session-start-identities";
 import type {
   OwnedCodingSessionRecord,
   OwnedSessionStartRequest,
@@ -268,16 +271,26 @@ test("recreating the client cannot replace a Start whose original POST has not r
 test("a restored metadata hold clears only after matching protected provider/hash and actual admitted turn", async () => {
   const journal = sessionStartFixture();
   let listed: OwnedCodingSessionRecord[] = [],
-    admitted = false,
-    posts = 0;
+    readMode: "malformed" | "no-turn" | "source-valid" = "no-turn",
+    posts = 0,
+    reads = 0;
   const make = () =>
     createSessionsClient({
       identities: journal.make(),
       canWrite: () => true,
       requestId: () => requestId,
       list: async () => listed,
-      read: async () =>
-        admitted ? page : { ...page, turns: [], request: null },
+      read: async () => {
+        reads++;
+        if (readMode === "malformed")
+          return {
+            ...page,
+            frames: [{ ...page.frames[0]!, seq: 0 }],
+          };
+        if (readMode === "no-turn")
+          return { ...page, turns: [], request: null };
+        return page;
+      },
       post: async () => {
         posts++;
         return { state: "unknown", message: "Unknown" };
@@ -289,15 +302,47 @@ test("a restored metadata hold clears only after matching protected provider/has
   first.dispose();
   const second = make();
   expect(second.project(projectId).startIdentity?.requestId).toBe(requestId);
+  await second.refresh(projectId);
+  expect(reads).toBe(0);
+  expect(second.project(projectId).startIdentity?.requestId).toBe(requestId);
   listed = [{ ...record, requestHash: "f".repeat(64) }];
   await second.refresh(projectId);
+  expect(reads).toBe(0);
   expect(second.project(projectId).lastStarted).toBeNull();
   expect(journal.identities.read(projectId)).not.toBeNull();
+
+  const stored = journal.values.get(SESSION_START_IDENTITIES);
+  if (!stored) throw Error("Missing persisted metadata-only Start identity.");
+  const changedIdentity = JSON.parse(stored) as {
+    version: number;
+    records: Array<Record<string, unknown>>;
+  };
+  changedIdentity.records = changedIdentity.records.map((row) => ({
+    ...row,
+    provider: "gemini",
+  }));
+  journal.values.set(SESSION_START_IDENTITIES, JSON.stringify(changedIdentity));
   listed = [record];
   await second.refresh(projectId);
+  expect(reads).toBe(0);
   expect(journal.identities.read(projectId)).not.toBeNull();
-  admitted = true;
+
+  journal.values.set(SESSION_START_IDENTITIES, stored);
+  readMode = "malformed";
   await second.refresh(projectId);
+  expect(reads).toBe(1);
+  expect(second.project(projectId).lastStarted).toBeNull();
+  expect(journal.identities.read(projectId)).not.toBeNull();
+
+  readMode = "no-turn";
+  await second.refresh(projectId);
+  expect(reads).toBe(2);
+  expect(second.project(projectId).lastStarted).toBeNull();
+  expect(journal.identities.read(projectId)).not.toBeNull();
+
+  readMode = "source-valid";
+  await second.refresh(projectId);
+  expect(reads).toBe(3);
   await journal.withLock(() => {});
   expect(second.project(projectId).lastStarted).toBe(id);
   expect(journal.identities.read(projectId)).toBeNull();

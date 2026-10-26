@@ -878,18 +878,57 @@ export function createSessionsClient(deps: {
         entry.records = parsed.data;
         entry.loaded = true;
         entry.error = "";
-        if (entry.pendingStart) {
+        const restoredIdentity = entry.pendingStart
+          ? null
+          : !deps.identityServer
+            ? entry.startIdentity
+            : null;
+        const originalRequestId =
+          entry.pendingStart?.requestId ?? restoredIdentity?.requestId;
+        if (originalRequestId) {
           const record = entry.records.find(
-            (item) => item.requestId === entry.pendingStart?.requestId,
+            (item) => item.requestId === originalRequestId,
           );
           if (record) {
-            if (!sameStart(record, entry.pendingStart))
+            if (
+              (entry.pendingStart && !sameStart(record, entry.pendingStart)) ||
+              (restoredIdentity &&
+                (record.requestHash !== restoredIdentity.requestHash ||
+                  record.provider !== restoredIdentity.provider))
+            )
               throw new Error("Start metadata changed");
-            const page = await deps.read(projectId, record.id, {
+            const raw = await deps.read(projectId, record.id, {
               after: 0,
               requestId: record.requestId,
             });
-            apply(session(projectId, record.id), page);
+            if (disposed || reads.get(projectId) !== read) return;
+            if (restoredIdentity) {
+              const original = ownedCodingPageSchema.safeParse(raw);
+              if (
+                !original.success ||
+                original.data.projectId !== projectId ||
+                original.data.conversationId !== record.id ||
+                !(await provesOriginalStart(
+                  record,
+                  original.data,
+                  restoredIdentity.requestId,
+                  restoredIdentity.requestHash,
+                ))
+              )
+                throw new Error("Restored Start receipt could not be verified");
+              if (disposed || reads.get(projectId) !== read) return;
+              if (
+                !apply(
+                  session(projectId, record.id),
+                  original.data,
+                  false,
+                  true,
+                )
+              )
+                throw new Error("Restored Start receipt could not be applied");
+            } else {
+              apply(session(projectId, record.id), raw);
+            }
           }
         }
       } catch {
