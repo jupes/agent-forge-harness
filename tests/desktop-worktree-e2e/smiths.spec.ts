@@ -428,14 +428,27 @@ test("a source-proven NotSent retires across reload, while a lost response stays
   ).toContainText("Not sent");
   expect(originalReads).toEqual([]);
   await page.getByRole("button", { name: "New smith", exact: true }).click();
+  const afterReloadDialog = page.getByRole("dialog", {
+    name: "Create a Smith",
+  });
   const afterReload = `browser-after-not-sent-${randomUUID().replaceAll("-", "").slice(0, 12)}`;
-  await page.getByLabel("Smith name").fill(afterReload);
-  await page.getByLabel("Provider").fill("codex");
-  await page.getByLabel("Model").fill("browser-after-not-sent-model");
-  await page.getByLabel("Effort").fill("high");
-  await page.getByRole("button", { name: "Review candidate" }).click();
+  await afterReloadDialog
+    .getByRole("textbox", { name: "Smith name", exact: true })
+    .fill(afterReload);
+  await afterReloadDialog
+    .getByRole("textbox", { name: "Provider", exact: true })
+    .fill("codex");
+  await afterReloadDialog
+    .getByRole("textbox", { name: "Model", exact: true })
+    .fill("browser-after-not-sent-model");
+  await afterReloadDialog
+    .getByRole("textbox", { name: "Effort", exact: true })
+    .fill("high");
+  await afterReloadDialog
+    .getByRole("button", { name: "Review candidate", exact: true })
+    .click();
   await expect(
-    page.getByRole("region", { name: "Candidate review" }),
+    afterReloadDialog.getByRole("region", { name: "Candidate review" }),
   ).toContainText(afterReload);
   const created = page.waitForResponse(
     (response) =>
@@ -443,7 +456,9 @@ test("a source-proven NotSent retires across reload, while a lost response stays
       new URL(response.url()).pathname ===
         "/__agent-forge/config/smiths/creates",
   );
-  await page.getByRole("button", { name: "Create Smith" }).click();
+  await afterReloadDialog
+    .getByRole("button", { name: "Create Smith", exact: true })
+    .click();
   expect((await created).status()).toBe(200);
   expect(readFileSync(join(REPOSITORY, "agent-forge.toml"), "utf8")).toContain(
     `[smiths.${afterReload}]`,
