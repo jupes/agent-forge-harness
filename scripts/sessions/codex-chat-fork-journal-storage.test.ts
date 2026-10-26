@@ -80,13 +80,24 @@ function fakeAcl(): WindowsAcl {
   };
 }
 
-function journal(root: string, home: string, acl = fakeAcl()) {
+function journal(
+  root: string,
+  home: string,
+  acl = fakeAcl(),
+  afterMutexDirectorySnapshot?: (empty: boolean) => void,
+) {
   return createCodexChatForkJournal({
     root,
     home,
     now: () => "2026-10-25T00:00:00.000Z",
     createChildAppSessionId: () => childSessionId,
-    storageOptions: { platform: "win32", acl },
+    storageOptions: {
+      platform: "win32",
+      acl,
+      ...(afterMutexDirectorySnapshot === undefined
+        ? {}
+        : { afterMutexDirectorySnapshot }),
+    },
   });
 }
 
@@ -380,8 +391,7 @@ test("a peer waits when a fresh mutex appears after the empty-directory prefligh
   const locks = join(home, CODEX_CHAT_FORK_JOURNAL_DIRECTORY, "locks"),
     mutex = join(locks, "journal.sqlite"),
     strictRead = acl.read.bind(acl);
-  let lockDirectoryReads = 0,
-    mutexAclReads = 0,
+  let mutexAclReads = 0,
     inserted = false,
     privacyReady = false,
     mutexAclApplications = 0,
@@ -392,20 +402,6 @@ test("a peer waits when a fresh mutex appears after the empty-directory prefligh
     apply(path, target);
   };
   acl.read = (path) => {
-    if (path === locks) {
-      lockDirectoryReads++;
-      // Arming point: the seventh lock-directory read is inspectLockMetadata's
-      // preflight, after ensureMutex has observed an empty names snapshot.
-      // Earlier lock reads belong to checkedDirectory, checkRootLayout, and
-      // ensureMutex's stable-directory checks.
-      if (lockDirectoryReads === 7) {
-        expect(readdirSync(locks)).toEqual([]);
-        writeFileSync(mutex, "", { flag: "wx" });
-        inserted = true;
-        const info = lstatSync(mutex, { bigint: true });
-        insertedIdentity = `${info.dev}:${info.ino}`;
-      }
-    }
     if (path === mutex && inserted) {
       mutexAclReads++;
       if (mutexAclReads <= 3) return unprotectedReading("file");
@@ -414,14 +410,20 @@ test("a peer waits when a fresh mutex appears after the empty-directory prefligh
     return strictRead(path);
   };
 
-  const result = await journal(root, home, acl).reserve(
-    projectId,
-    parentSessionId,
-    {
-      requestId,
-      throughTurnRequestId,
-    },
-  );
+  const afterMutexDirectorySnapshot = (empty: boolean) => {
+    expect(empty).toBe(true);
+    expect(readdirSync(locks)).toEqual([]);
+    writeFileSync(mutex, "", { flag: "wx" });
+    inserted = true;
+    const info = lstatSync(mutex, { bigint: true });
+    insertedIdentity = `${info.dev}:${info.ino}`;
+  };
+  const result = await journal(
+    root,
+    home,
+    acl,
+    afterMutexDirectorySnapshot,
+  ).reserve(projectId, parentSessionId, { requestId, throughTurnRequestId });
   const after = lstatSync(mutex, { bigint: true });
 
   expect(inserted).toBe(true);

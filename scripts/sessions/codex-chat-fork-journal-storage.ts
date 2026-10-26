@@ -64,6 +64,8 @@ export interface CodexChatForkJournalStorageOptions {
   waitMs?: number;
   /** Bounded, path-free diagnostics used only by the opt-in native witness. */
   onMutexDiagnostic?: (diagnostic: CodexChatForkMutexDiagnostic) => void;
+  /** Deterministic test barrier immediately after the mutex directory snapshot. */
+  afterMutexDirectorySnapshot?: (empty: boolean) => void;
 }
 
 export interface CodexChatForkMutexDiagnostic {
@@ -655,6 +657,7 @@ export function createCodexChatForkJournalStorage(
     // A peer can observe an owner's empty mutex between exclusive creation and
     // ACL protection. Wait only for that exact, empty, owned file to settle.
     const existingNames = directoryNames(locks, MUTEX_ENTRIES.size + 1).sort();
+    options.afterMutexDirectorySnapshot?.(existingNames.length === 0);
     let readyMutex: FileIdentity | undefined;
     if (existingNames.length === 1 && existingNames[0] === MUTEX_FILE) {
       const info = assertPlainLockFile(mutex),
