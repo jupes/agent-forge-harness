@@ -14,6 +14,7 @@ import { ownedCodingPageSchema } from "../../sessions/codex-owned-journal";
 import { createGeminiOwnedTaskService } from "../../sessions/gemini-owned-admission";
 import { createGeminiTaskRuntime } from "../../sessions/gemini-task-runtime";
 import { sessionRegistryFile } from "../../sessions/registry";
+import { expectStartIdentityState } from "../../sessions/session-start-identity-test-witness";
 import { startTestHearth, type TestHearth } from "../testing";
 import { writeOwnerOnly } from "../token";
 import { fixtureSessionGit } from "./session-fixture";
@@ -24,6 +25,7 @@ afterEach(async () => {
 });
 async function fixture(mode = "normal") {
   let actual: ReturnType<typeof createGeminiTaskRuntime> | undefined;
+  let activeStartInput: unknown;
   const selected = () => {
     if (!actual) throw Error("No planted native Gemini Task runtime");
     return actual;
@@ -36,14 +38,41 @@ async function fixture(mode = "normal") {
     api: {
       git: fixtureSessionGit,
       geminiTaskRuntime: {
-        check: (input) => selected().check(input),
-        prepare: (input) => {
+        async check(input) {
+          const action = h.events(["operator.action"]).at(-1);
+          if (
+            activeStartInput !== undefined &&
+            action?.kind === "operator.action" &&
+            action.payload.action === "session.start"
+          )
+            await expectStartIdentityState(
+              h.home,
+              FIXTURE_PROJECT_ID,
+              h.workspace,
+              activeStartInput,
+              "attempted",
+            );
+          return selected().check(input);
+        },
+        async prepare(input) {
           const action = h.events(["operator.action"]).at(-1);
           expect(["session.preview", "session.start"]).toContain(
             action?.kind === "operator.action"
               ? action.payload.action
               : "missing audit",
           );
+          if (
+            activeStartInput !== undefined &&
+            action?.kind === "operator.action" &&
+            action.payload.action === "session.start"
+          )
+            await expectStartIdentityState(
+              h.home,
+              FIXTURE_PROJECT_ID,
+              h.workspace,
+              activeStartInput,
+              "attempted",
+            );
           return selected().prepare(input);
         },
         run: (...args) => selected().run(...args),
@@ -117,12 +146,14 @@ async function fixture(mode = "normal") {
       throw Error("Invalid inert Gemini recording");
     }
   };
-  const start = (input: unknown) =>
-    fetch(`${h.api}/projects/${FIXTURE_PROJECT_ID}/sessions`, {
+  const start = (input: unknown) => {
+    activeStartInput = input;
+    return fetch(`${h.api}/projects/${FIXTURE_PROJECT_ID}/sessions`, {
       method: "POST",
       headers: h.headers(h.hearth.token),
       body: JSON.stringify(input),
     });
+  };
   return { h, request, post, start, records };
 }
 
@@ -143,6 +174,13 @@ test("owned Gemini Task admits once, retains exact native private history, and e
       },
     },
   });
+  await expectStartIdentityState(
+    f.h.home,
+    FIXTURE_PROJECT_ID,
+    f.h.workspace,
+    f.request,
+    "admitted",
+  );
   const sessionId: string = accepted.data.session.id;
   const url = `${f.h.api}/projects/${FIXTURE_PROJECT_ID}/sessions/${sessionId}`;
   let page: ConversationPage;
@@ -190,6 +228,13 @@ test("owned Gemini Task admits once, retains exact native private history, and e
   const originalRecords = JSON.stringify(f.records());
   expect((await f.start(f.request)).status).toBe(202);
   expect(JSON.stringify(f.records())).toBe(originalRecords);
+  await expectStartIdentityState(
+    f.h.home,
+    FIXTURE_PROJECT_ID,
+    f.h.workspace,
+    f.request,
+    "admitted",
+  );
   const recreated = createGeminiOwnedTaskService({
     root: f.h.root,
     home: f.h.home,

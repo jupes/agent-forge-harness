@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type { CodexChatDecisionRequest } from "../../../types/codex-owned-chat";
 import type { OwnedSessionStartRequest } from "../../../types/codex-owned-task";
 import type { GeminiChatDecisionRequest } from "../../../types/gemini-owned-chat";
@@ -18,13 +19,17 @@ import { createCodexChatPreview } from "../../sessions/codex-chat-owned-preview"
 import { parseCodexChatDecision } from "../../sessions/codex-chat-owned-protocol";
 import type { createCodexChatRuntime } from "../../sessions/codex-chat-runtime";
 import { createCodexTaskPreview } from "../../sessions/codex-owned-preview";
-import { parseOwnedSessionStart } from "../../sessions/codex-owned-protocol";
+import {
+  canonicalOwnedSessionStart,
+  parseOwnedSessionStart,
+} from "../../sessions/codex-owned-protocol";
 import type { createCodexTaskRuntime } from "../../sessions/codex-task-runtime";
 import { createGeminiChatPreview } from "../../sessions/gemini-chat-owned-preview";
 import { parseGeminiChatDecision } from "../../sessions/gemini-chat-owned-protocol";
 import type { createGeminiChatRuntime } from "../../sessions/gemini-chat-runtime";
 import { createGeminiTaskPreview } from "../../sessions/gemini-owned-preview";
 import type { createGeminiTaskRuntime } from "../../sessions/gemini-task-runtime";
+import { sessionRequestHashSchema } from "../../sessions/identity-protocol";
 import {
   createOwnedCodingSessionService,
   unavailableCodexChatRuntime,
@@ -192,6 +197,104 @@ export function createOwnedSessionRoutes(
       answer(200, () => {
         readable(projectId);
         return service.list(projectId);
+      }),
+  };
+  const identityList: ReadRoute<string> = {
+    kind: "read",
+    method: "GET",
+    path: "/projects/:id/session-start-identities",
+    operatorOnly: true,
+    validate: (request) => {
+      const selected = project(request),
+        query = noParameters(request);
+      return !selected.ok ? selected : !query.ok ? query : selected;
+    },
+    read: (projectId) =>
+      answer(200, () => {
+        readable(projectId);
+        return service.listIdentities(projectId);
+      }),
+  };
+  const identityReserve: ActionRoute<{
+    projectId: string;
+    input: OwnedSessionStartRequest;
+  }> = {
+    kind: "action",
+    method: "POST",
+    path: "/projects/:id/session-start-identities",
+    action: "session.start.identity.reserve",
+    maxBodyBytes: 2_200_000,
+    validate: (request) => {
+      const selected = project(request),
+        query = noParameters(request);
+      if (!selected.ok) return selected;
+      if (!query.ok) return query;
+      try {
+        return {
+          ok: true,
+          value: {
+            projectId: selected.value,
+            input: parseOwnedSessionStart(request.body),
+          },
+        };
+      } catch {
+        return fail("Expected a strict supported session Start request.");
+      }
+    },
+    subject: ({ projectId, input }) => {
+      const requestHash = createHash("sha256")
+        .update(canonicalOwnedSessionStart(input))
+        .digest("hex");
+      return {
+        target: `owned-session-start:${projectId}:${input.requestId}:${requestHash}`,
+      };
+    },
+    effect: ({ projectId, input }) =>
+      answer(200, () => {
+        readable(projectId);
+        return service.reserveIdentity(projectId, input);
+      }),
+  };
+  const identityRetire: ActionRoute<{
+    projectId: string;
+    requestId: string;
+    requestHash: string;
+  }> = {
+    kind: "action",
+    method: "POST",
+    path: "/projects/:id/session-start-identities/:requestId/retire",
+    action: "session.start.identity.retire",
+    maxBodyBytes: 2_048,
+    validate: (request) => {
+      const selected = project(request),
+        query = noParameters(request),
+        body = bodyFields(request, ["requestHash"]);
+      if (!selected.ok) return selected;
+      if (!query.ok) return query;
+      if (!body.ok) return body;
+      const requestId = request.params["requestId"],
+        hash = body.value["requestHash"];
+      if (!isConversationRequestId(requestId))
+        return fail("Expected a lowercase request UUID.");
+      const parsedHash = sessionRequestHashSchema.safeParse(hash);
+      return parsedHash.success
+        ? {
+            ok: true,
+            value: {
+              projectId: selected.value,
+              requestId,
+              requestHash: parsedHash.data,
+            },
+          }
+        : fail("Expected the request hash.");
+    },
+    subject: ({ projectId, requestId, requestHash }) => ({
+      target: `owned-session-start:${projectId}:${requestId}:${requestHash}`,
+    }),
+    effect: ({ projectId, requestId, requestHash }) =>
+      answer(200, () => {
+        readable(projectId);
+        return service.retireIdentity(projectId, requestId, requestHash);
       }),
   };
   const library = createSessionLibraryRoutes({
@@ -455,6 +558,9 @@ export function createOwnedSessionRoutes(
     service,
     prepare: preparePreview,
     list,
+    identityList,
+    identityReserve,
+    identityRetire,
     read,
     events,
     start,

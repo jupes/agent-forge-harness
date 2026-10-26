@@ -1,6 +1,7 @@
 import type { CodexChatLaunch } from "../../types/codex-chat";
 import type { CodexChatStartRequest } from "../../types/codex-owned-chat";
 import { ConversationError } from "../conversations/error";
+import { markKnownPreacceptPreparationRefusal } from "../identities/preaccept-not-sent-proof";
 import { preparedCodexChatSchema } from "./codex-app-server-protocol";
 import type { createCodexChatRuntime } from "./codex-chat-runtime";
 import { canonicalSessionInput } from "./preparation";
@@ -41,10 +42,13 @@ export async function prepareReviewedCodexChat(
   let raw: unknown;
   try {
     raw = await runtime.prepare(structuredClone(reviewed));
-  } catch {
-    throw new ConversationError(
-      503,
-      "The selected Codex Chat options are unavailable or lack exact capability evidence. No conversation was started.",
+  } catch (error) {
+    throw markKnownPreacceptPreparationRefusal(
+      new ConversationError(
+        503,
+        "The selected Codex Chat options are unavailable or lack exact capability evidence. No conversation was started.",
+      ),
+      error,
     );
   }
   const parsed = preparedCodexChatSchema.safeParse(raw);
