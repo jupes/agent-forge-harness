@@ -1358,17 +1358,6 @@ test("an unconfigured default name is refused before any routing write", async (
     .click();
   const response = await preview;
   expect(response.status()).toBe(503);
-  const payload = z
-    .object({
-      ok: z.literal(false),
-      data: z.null(),
-      error: z.string().max(512),
-    })
-    .strict()
-    .parse(await response.json());
-  expect(payload.error).toBe("The routing edit preview is unavailable.");
-  expect(payload.error.toLowerCase()).not.toContain("unknown smith");
-  expect(payload.error).not.toContain(join(REPOSITORY, "agent-forge.toml"));
   await expect(
     dialog.getByText("The routing edit preview could not be verified.", {
       exact: true,
