@@ -16,6 +16,7 @@ import { codexChatPreviewReceiptSchema } from "../../sessions/codex-chat-preview
 import { createCodexChatRuntime } from "../../sessions/codex-chat-runtime";
 import { ownedCodingPageSchema } from "../../sessions/codex-owned-journal";
 import { ownedCodingStartReceiptSchema } from "../../sessions/codex-owned-wire-protocol";
+import { expectStartIdentityState } from "../../sessions/session-start-identity-test-witness";
 import { scratchDirs } from "../../test-scratch";
 import { startTestHearth, type TestHearth } from "../testing";
 import { writeOwnerOnly } from "../token";
@@ -66,6 +67,7 @@ afterEach(async () => {
 async function fixture(mode = "approval-command", holdDecision = false) {
   let h: TestHearth,
     actual: ReturnType<typeof createCodexChatRuntime> | undefined;
+  let activeStartInput: unknown;
   const selected = () => {
     if (!actual) throw Error("No planted native Chat runtime");
     return actual;
@@ -84,8 +86,23 @@ async function fixture(mode = "approval-command", holdDecision = false) {
     api: {
       git: fixtureSessionGit,
       codexChatRuntime: {
-        check: (input) => selected().check(input),
-        prepare: (input) => {
+        async check(input) {
+          const event = h.events(["operator.action"]).at(-1);
+          if (
+            activeStartInput !== undefined &&
+            event?.kind === "operator.action" &&
+            event.payload.action === "session.start"
+          )
+            await expectStartIdentityState(
+              h.home,
+              FIXTURE_PROJECT_ID,
+              h.workspace,
+              activeStartInput,
+              "attempted",
+            );
+          return selected().check(input);
+        },
+        async prepare(input) {
           const event = h.events(["operator.action"]).at(-1);
           expect(
             event?.kind === "operator.action" &&
@@ -95,6 +112,18 @@ async function fixture(mode = "approval-command", holdDecision = false) {
                 "session.preview",
               ].includes(event.payload.action),
           ).toBe(true);
+          if (
+            activeStartInput !== undefined &&
+            event?.kind === "operator.action" &&
+            event.payload.action === "session.start"
+          )
+            await expectStartIdentityState(
+              h.home,
+              FIXTURE_PROJECT_ID,
+              h.workspace,
+              activeStartInput,
+              "attempted",
+            );
           return selected().prepare(input);
         },
         run: (input, persist, signal, callbacks) =>
@@ -151,6 +180,7 @@ async function fixture(mode = "approval-command", holdDecision = false) {
       ],
     },
   };
+  activeStartInput = request;
   const path = `/projects/${FIXTURE_PROJECT_ID}/sessions`;
   const post = (
     suffix: string,
@@ -268,6 +298,28 @@ test("protected HTTP Chat with a compiled native provider preserves two turns an
   const response = await f.post("", f.request),
     started = ownedCodingStartReceiptSchema.parse((await response.json()).data);
   expect(response.status).toBe(202);
+  await expectStartIdentityState(
+    f.h.home,
+    FIXTURE_PROJECT_ID,
+    f.h.workspace,
+    f.request,
+    "admitted",
+  );
+  const beforeDuplicateStart = JSON.stringify(f.records());
+  const duplicateStart = await f.post("", f.request);
+  expect(duplicateStart.status).toBe(202);
+  expect(
+    ownedCodingStartReceiptSchema.parse((await duplicateStart.json()).data)
+      .session.id,
+  ).toBe(started.session.id);
+  expect(JSON.stringify(f.records())).toBe(beforeDuplicateStart);
+  await expectStartIdentityState(
+    f.h.home,
+    FIXTURE_PROJECT_ID,
+    f.h.workspace,
+    f.request,
+    "admitted",
+  );
   const id = started.session.id,
     pending = await f.waitApproval(id);
   expect(pending.actionable).toBe(true);

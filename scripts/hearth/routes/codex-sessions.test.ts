@@ -12,6 +12,7 @@ import { ownedCodingPageSchema } from "../../sessions/codex-owned-journal";
 import { serializeCodexTask } from "../../sessions/codex-task";
 import { createCodexTaskRuntime } from "../../sessions/codex-task-runtime";
 import { createSessionRegistry } from "../../sessions/registry";
+import { expectStartIdentityState } from "../../sessions/session-start-identity-test-witness";
 import { startTestHearth, type TestHearth } from "../testing";
 import { writeOwnerOnly } from "../token";
 import { fixtureSessionGit } from "./session-fixture";
@@ -22,7 +23,8 @@ afterEach(async () => {
 });
 async function fixture() {
   let h: TestHearth,
-    actual: ReturnType<typeof createCodexTaskRuntime> | null = null;
+    actual: ReturnType<typeof createCodexTaskRuntime> | null = null,
+    activeStartInput: unknown;
   let probes = 0;
   const selected = () =>
     (actual ??= createCodexTaskRuntime({
@@ -57,13 +59,40 @@ async function fixture() {
     api: {
       git: fixtureSessionGit,
       codexTaskRuntime: {
-        check: (input) => selected().check(input),
-        prepare: (input) => {
+        async check(input) {
+          const audit = h.events(["operator.action"]).at(-1);
+          if (
+            activeStartInput !== undefined &&
+            audit?.kind === "operator.action" &&
+            audit.payload.action === "session.start"
+          )
+            await expectStartIdentityState(
+              h.home,
+              FIXTURE_PROJECT_ID,
+              h.workspace,
+              activeStartInput,
+              "attempted",
+            );
+          return selected().check(input);
+        },
+        async prepare(input) {
           probes++;
           const audit = h.events(["operator.action"]).at(-1);
           expect(
             audit?.kind === "operator.action" ? audit.payload.action : null,
           ).toMatch(/^session\.(preview|start)$/);
+          if (
+            activeStartInput !== undefined &&
+            audit?.kind === "operator.action" &&
+            audit.payload.action === "session.start"
+          )
+            await expectStartIdentityState(
+              h.home,
+              FIXTURE_PROJECT_ID,
+              h.workspace,
+              activeStartInput,
+              "attempted",
+            );
           return selected().prepare(input);
         },
         run: (snapshot, persist, signal) =>
@@ -93,6 +122,7 @@ async function fixture() {
       ],
     },
   };
+  activeStartInput = input;
   const post = (
     suffix: string,
     body: unknown,
@@ -125,6 +155,13 @@ test("audited Codex Preview and Start use the real fake runtime, private journal
     answer = await started.json();
   expect(started.status).toBe(202);
   expect(answer.data.session.provider).toBe("codex");
+  await expectStartIdentityState(
+    h.home,
+    FIXTURE_PROJECT_ID,
+    h.workspace,
+    input,
+    "admitted",
+  );
   const id = answer.data.session.id,
     path = `${h.api}/projects/${FIXTURE_PROJECT_ID}/sessions/${id}`;
   let page: ConversationPage;
@@ -150,6 +187,13 @@ test("audited Codex Preview and Start use the real fake runtime, private journal
   const before = readFileSync(join(h.root, "codex.jsonl"), "utf8");
   expect((await f.post("", input)).status).toBe(202);
   expect(readFileSync(join(h.root, "codex.jsonl"), "utf8")).toBe(before);
+  await expectStartIdentityState(
+    h.home,
+    FIXTURE_PROJECT_ID,
+    h.workspace,
+    input,
+    "admitted",
+  );
   const listed = await (
     await fetch(`${h.api}/projects/${FIXTURE_PROJECT_ID}/sessions`, {
       headers: h.headers(h.hearth.token),
