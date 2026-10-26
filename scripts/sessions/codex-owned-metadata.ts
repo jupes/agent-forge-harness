@@ -7,6 +7,7 @@ import type {
   CodexOwnedSessionMetadata,
   CodexOwnedSessionRecord,
 } from "../../types/codex-owned-task";
+import { codexChatForkOriginSchema } from "./codex-chat-fork-origin-protocol";
 import {
   ownedSessionIdSchema,
   ownedSessionMetadataFieldsSchema,
@@ -51,15 +52,24 @@ export const codexOwnedSessionSchema = codexOwnedSessionFieldsSchema.refine(
 );
 
 const codexChatOwnedMetadataFieldsSchema = codexOwnedMetadataFieldsSchema
-  .extend({ mode: z.literal("chat") })
+  .omit({ mode: true, origin: true })
+  .extend({
+    mode: z.literal("chat"),
+    origin: codexChatForkOriginSchema.optional(),
+  })
   .strict() satisfies z.ZodType<CodexChatOwnedMetadata>;
-export const codexChatOwnedMetadataSchema =
-  codexChatOwnedMetadataFieldsSchema.refine(validOwnedSessionOrigin);
-export const codexChatOwnedSessionSchema = codexOwnedSessionFieldsSchema
-  .extend({ mode: z.literal("chat") })
-  .strict()
-  .refine(
-    (value) =>
-      validOwnedSessionOrigin(value) &&
-      (!value.origin || value.origin.projectId === value.projectId),
-  ) satisfies z.ZodType<CodexChatOwnedRecord>;
+export const codexChatOwnedMetadataSchema = codexChatOwnedMetadataFieldsSchema;
+const codexChatOwnedSessionFieldsSchema: z.ZodType<CodexChatOwnedRecord> =
+  codexChatOwnedMetadataFieldsSchema
+    .extend({
+      projectId: sessionProjectIdSchema,
+      id: ownedSessionIdSchema,
+      requestId: sessionRequestIdSchema,
+      requestHash: sessionRequestHashSchema,
+      createdAt: z.iso.datetime(),
+    })
+    .strict()
+    .refine(
+      (value) => !value.origin || value.origin.projectId === value.projectId,
+    );
+export const codexChatOwnedSessionSchema = codexChatOwnedSessionFieldsSchema;

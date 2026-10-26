@@ -84,7 +84,11 @@ export function ObservedSessionDetail({
               : "Ownership unavailable"}
         </p>
         <h1>
-          {row?.owner?.origin ? "Shift session metadata" : "Session metadata"}
+          {row?.owner?.origin?.kind === "shift"
+            ? "Shift session metadata"
+            : row?.owner?.origin?.kind === "codex-chat-fork"
+              ? "Fork child metadata"
+              : "Session metadata"}
         </h1>
         <p class="af-observed-address">{sessionId}</p>
         <p>
@@ -129,9 +133,11 @@ export function ObservedSessionDetail({
             <div>
               <dt>Kind / bead</dt>
               <dd>
-                {row?.owner?.origin
+                {row?.owner?.origin?.kind === "shift"
                   ? "Shift"
-                  : (summary?.kind ?? "Kind not reported")}{" "}
+                  : row?.owner?.origin?.kind === "codex-chat-fork"
+                    ? "Fork child"
+                    : (summary?.kind ?? "Kind not reported")}{" "}
                 ·{" "}
                 {row?.owner?.record.beadId ??
                   summary?.beadId ??

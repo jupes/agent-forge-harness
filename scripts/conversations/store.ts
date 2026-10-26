@@ -1,4 +1,5 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { linkSync, lstatSync, unlinkSync } from "node:fs";
 import type {
   ConversationEvent,
   ConversationReceipt,
@@ -253,6 +254,116 @@ export function createConversationStore(
   };
   return {
     read,
+    /** Publish only the exact empty, native-bound child journal without replacing an existing path. */
+    async bootstrapCodexForkChild(
+      projectId: string,
+      nativeSessionId: string,
+      version: string,
+    ): Promise<ConversationState> {
+      if (
+        !address ||
+        address.kind !== "session" ||
+        address.projectId !== projectId ||
+        address.sessionId !== conversationId(projectId, address)
+      )
+        throw new ConversationError(
+          400,
+          "Expected an owned Fork child address.",
+        );
+      const expected: ConversationState = {
+        version: 1,
+        projectId,
+        conversationId: address.sessionId,
+        revision: 0,
+        binding: { provider: "codex", sessionId: nativeSessionId, version },
+        turns: [],
+        frames: [],
+      };
+      const parsedExpected = ownedCodingStateSchema.safeParse(expected);
+      if (!parsedExpected.success)
+        throw new ConversationError(
+          400,
+          "The empty Fork child state is invalid.",
+        );
+      const file = fileFor(projectId),
+        lock = conversationWriteLockFile(home, projectId, address);
+      ensurePrivateHome(home);
+      const published = await withQueueLock(
+        lock,
+        async () => {
+          const readExactExisting = (): ConversationState => {
+            const before = lstatSync(file);
+            if (
+              before.isSymbolicLink() ||
+              !before.isFile() ||
+              before.nlink !== 1
+            )
+              throw new ConversationError(
+                409,
+                "A conflicting child conversation file exists and was kept.",
+              );
+            const existing = read(projectId),
+              after = lstatSync(file);
+            if (
+              after.isSymbolicLink() ||
+              !after.isFile() ||
+              after.nlink !== 1 ||
+              before.dev !== after.dev ||
+              before.ino !== after.ino
+            )
+              throw new ConversationError(
+                409,
+                "The child conversation changed during bootstrap and was kept.",
+              );
+            if (JSON.stringify(existing) !== JSON.stringify(expected))
+              throw new ConversationError(
+                409,
+                "A non-empty or conflicting child conversation exists and was kept.",
+              );
+            return existing;
+          };
+          try {
+            lstatSync(file);
+            return readExactExisting();
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+          }
+          const stage = `${file}.${randomUUID()}.fork.tmp`;
+          let ownsStage = false;
+          try {
+            writeOwnerOnly(stage, `${JSON.stringify(expected)}\n`);
+            ownsStage = true;
+            // Hard-link publication is atomic and fails if any destination already exists.
+            linkSync(stage, file);
+            unlinkSync(stage);
+            ownsStage = false;
+            const confirmed = read(projectId);
+            if (JSON.stringify(confirmed) !== JSON.stringify(expected))
+              throw new ConversationError(
+                503,
+                "The new Fork child state did not match its verified bootstrap.",
+              );
+            return confirmed;
+          } catch (error) {
+            if (ownsStage) {
+              try {
+                unlinkSync(stage);
+              } catch {
+                // Keep the original publication error; the stage path is unique and private.
+              }
+            }
+            if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+              return readExactExisting();
+            }
+            throw error;
+          }
+        },
+        { waitMs: 1000 },
+      );
+      if (!published.ok)
+        throw new ConversationError(503, "The child conversation is busy.");
+      return published.value;
+    },
     /** The service holds the dispatch lease and has freshly checked the selected smith. */
     async continueKeeper(
       projectId: string,

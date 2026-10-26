@@ -64,6 +64,13 @@ const requestId = "0199a213-81c0-7800-8aa1-bbab2a035a55",
   parentSessionId = "session-0199a213-81c0-7800-8aa1-bbab2a035a51",
   throughTurnRequestId = "0199a213-81c0-7800-8aa1-bbab2a035a54",
   projectId = "project-00000000-0000-4000-8000-000000000001";
+const testSourceSeal = {
+  parentRequestHash: "a".repeat(64),
+  parentTurnHash: "b".repeat(64),
+  parentNativeThreadId: "0199a213-81c0-7800-8aa1-bbab2a035a70",
+  throughNativeTurnId: "0199a213-81c0-7800-8aa1-bbab2a035a71",
+  sourceSettingsHash: "c".repeat(64),
+};
 
 function reference(record: CodexChatForkOriginal) {
   const {
@@ -75,6 +82,7 @@ function reference(record: CodexChatForkOriginal) {
     throughTurnRequestId,
     protocolVersion,
     childAppSessionId,
+    sourceSeal,
   } = record;
   return {
     projectId,
@@ -85,23 +93,32 @@ function reference(record: CodexChatForkOriginal) {
     throughTurnRequestId,
     protocolVersion,
     childAppSessionId,
+    sourceSeal,
   };
 }
 
 function fixture(root: string, storage: MemoryStorage) {
   const home = join(root, "profile");
   mkdirSync(home, { recursive: true });
+  const journal = createCodexChatForkJournal({
+    root,
+    home,
+    storage,
+    now: () => "2026-10-25T00:00:00.000Z",
+    createChildAppSessionId: () =>
+      "session-0199a213-81c0-7800-8aa1-bbab2a035a60",
+  });
   return {
     root,
     home,
-    journal: createCodexChatForkJournal({
-      root,
-      home,
-      storage,
-      now: () => "2026-10-25T00:00:00.000Z",
-      createChildAppSessionId: () =>
-        "session-0199a213-81c0-7800-8aa1-bbab2a035a60",
-    }),
+    journal: {
+      ...journal,
+      reserve: (
+        project: string,
+        parent: string,
+        intent: Parameters<typeof journal.reserve>[2],
+      ) => journal.reserve(project, parent, intent, testSourceSeal),
+    },
   };
 }
 
@@ -152,6 +169,50 @@ test("an active parent address cannot be claimed by a second UUID across instanc
     fixture(root, storage).journal.read(projectId, requestId) !== null ||
       fixture(root, storage).journal.read(projectId, otherRequestId) !== null,
   ).toBe(true);
+});
+
+test("a validly rehashed event cannot change the reserved source seal", async () => {
+  const root = scratch.make("codex-fork-root-"),
+    storage = new MemoryStorage(),
+    journal = fixture(root, storage).journal,
+    reserved = await journal.reserve(projectId, parentSessionId, {
+      requestId,
+      throughTurnRequestId,
+    });
+  await journal.markAttempted(reference(reserved));
+  const [name, text] = [...storage.events].at(-1) ?? [];
+  if (!name || !text) throw Error("Missing attempted event.");
+  let rawPrevious: unknown;
+  try {
+    rawPrevious = JSON.parse(text);
+  } catch {
+    throw Error("Attempted event was not valid JSON.");
+  }
+  const previous = codexChatForkJournalEventSchema.parse(rawPrevious),
+    body = codexChatForkJournalEventBodySchema.parse({
+      version: previous.version,
+      sequence: previous.sequence,
+      previousEventHash: previous.previousEventHash,
+      previousOperationHash: previous.previousOperationHash,
+      transition: previous.transition,
+      record: {
+        ...previous.record,
+        sourceSeal: {
+          ...previous.record.sourceSeal,
+          parentTurnHash: "d".repeat(64),
+        },
+      },
+    }),
+    event = codexChatForkJournalEventSchema.parse({
+      ...body,
+      eventHash: codexChatForkJournalEventHash(body),
+    });
+  storage.events.delete(name);
+  storage.events.set(
+    `${String(event.sequence).padStart(8, "0")}-${event.eventHash}.json`,
+    canonicalCodexChatForkJournalEvent(event),
+  );
+  expect(() => journal.read(projectId, requestId)).toThrow();
 });
 
 test("journal replay rejects a checksummed second UUID for an active parent", async () => {

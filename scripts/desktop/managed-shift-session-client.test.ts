@@ -174,6 +174,7 @@ test("metadata only selects an exact owned Task origin in the current workspace,
     smith: "claude-journeyman",
     requestedModel: "exact-model",
     requestedEffort: "medium",
+    origin: target.origin,
   };
   const owner = { record, origin: target.origin };
   const select = (raw: unknown, expected?: string) =>
@@ -187,6 +188,14 @@ test("metadata only selects an exact owned Task origin in the current workspace,
   expect(select(owner)).toEqual(target);
   for (const raw of [
     { record, origin: null },
+    { record: { ...record, origin: undefined }, origin: target.origin },
+    {
+      record: {
+        ...record,
+        origin: { ...target.origin, shiftId: "shift-20261023-180000-abcd" },
+      },
+      origin: target.origin,
+    },
     { record: { ...record, mode: "chat" }, origin: target.origin },
     { record: { ...record, workspace: "/foreign" }, origin: target.origin },
     { record: { ...record, repository: "/foreign" }, origin: target.origin },

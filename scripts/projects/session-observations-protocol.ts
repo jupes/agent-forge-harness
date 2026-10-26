@@ -6,6 +6,7 @@ import type {
   SessionObservedActivity,
   SessionOwnershipMetadata,
 } from "../../types/session-observations";
+import { codexChatForkOriginSchema } from "../sessions/codex-chat-fork-origin-protocol";
 import { ownedCodingSessionSchema } from "../sessions/codex-owned-wire-protocol";
 import { sessionProjectIdSchema } from "../sessions/identity-protocol";
 import { projectShiftAttemptOriginSchema } from "../sessions/shift-origin-protocol";
@@ -25,14 +26,17 @@ export const sessionOwnershipMetadataSchema: z.ZodType<SessionOwnershipMetadata>
   z
     .object({
       record: ownedCodingSessionSchema,
-      origin: projectShiftAttemptOriginSchema.nullable(),
+      origin: z
+        .union([projectShiftAttemptOriginSchema, codexChatForkOriginSchema])
+        .nullable(),
     })
     .strict()
     .refine(
       (value) =>
-        !value.origin ||
-        (value.origin.projectId === value.record.projectId &&
-          value.origin.beadId === value.record.beadId),
+        (value.origin === null && value.record.origin === undefined) ||
+        (value.origin !== null &&
+          value.origin.projectId === value.record.projectId &&
+          JSON.stringify(value.origin) === JSON.stringify(value.record.origin)),
     );
 
 export const sessionObservationSummarySchema: z.ZodType<SessionSummary> = z

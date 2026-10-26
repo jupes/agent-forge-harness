@@ -28,6 +28,7 @@ import {
 import { createCodexChatOwnedTransport } from "./codex-chat-owned-transport";
 import type { createCodexChatRuntime } from "./codex-chat-runtime";
 import { canonicalOwnedSessionStart } from "./codex-owned-protocol";
+import { requireOrdinarySession } from "./managed-origin";
 import { canonicalSessionInput } from "./preparation";
 import { createSessionRegistry } from "./registry";
 
@@ -190,6 +191,11 @@ export function createCodexOwnedChatService(options: Options) {
   };
   const forId = (projectId: string, sessionId: string) =>
     serviceFor(checked(projectId, sessionId));
+  const ordinaryForId = (projectId: string, sessionId: string) => {
+    const session = checked(projectId, sessionId);
+    requireOrdinarySession(session);
+    return serviceFor(session);
+  };
   return {
     async start(
       projectId: string,
@@ -231,6 +237,7 @@ export function createCodexOwnedChatService(options: Options) {
           return metadata;
         },
       );
+      requireOrdinarySession(session);
       const { effort, attachments, ...selection } = request.launch;
       initial.set(session.id, {
         ...selection,
@@ -259,7 +266,7 @@ export function createCodexOwnedChatService(options: Options) {
       }
     },
     send(projectId: string, sessionId: string, input: SessionMessage) {
-      return forId(projectId, sessionId).send(projectId, input);
+      return ordinaryForId(projectId, sessionId).send(projectId, input);
     },
     read(
       projectId: string,
@@ -269,8 +276,9 @@ export function createCodexOwnedChatService(options: Options) {
       return forId(projectId, sessionId).read(projectId, query);
     },
     async approvals(projectId: string, sessionId: string, requestId?: string) {
-      const session = checked(projectId, sessionId),
-        selected = { projectId, sessionId };
+      const session = checked(projectId, sessionId);
+      requireOrdinarySession(session);
+      const selected = { projectId, sessionId };
       const page = broker.read(selected, requestId);
       // Reconciliation is history, not fresh execution authority. Pending callbacks
       // are advertised only while their current project/worktree scope still passes.
@@ -299,6 +307,7 @@ export function createCodexOwnedChatService(options: Options) {
       const session = checked(projectId, sessionId),
         request = parseCodexChatDecision(raw),
         selected = { projectId, sessionId };
+      requireOrdinarySession(session);
       // An original recorded receipt is reconciled before mutable scope checks; it never reopens a callback.
       if (broker.read(selected, request.requestId).receipt)
         return broker.decide(selected, request);
@@ -316,10 +325,10 @@ export function createCodexOwnedChatService(options: Options) {
       return broker.decide(selected, request);
     },
     stop(projectId: string, sessionId: string, requestId: string) {
-      return forId(projectId, sessionId).stop(projectId, requestId);
+      return ordinaryForId(projectId, sessionId).stop(projectId, requestId);
     },
     settled(projectId: string, sessionId: string) {
-      return forId(projectId, sessionId).settled(projectId);
+      return ordinaryForId(projectId, sessionId).settled(projectId);
     },
     async close() {
       closed = true;

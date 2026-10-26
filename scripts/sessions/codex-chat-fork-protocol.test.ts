@@ -3,6 +3,7 @@ import {
   canonicalCodexChatForkOriginal,
   codexChatForkIntentSchema,
   codexChatForkOriginalHash,
+  codexChatForkSourceSettingsHash,
 } from "./codex-chat-fork-protocol";
 
 const base = {
@@ -76,4 +77,30 @@ test("workspace keys accept canonical Windows/POSIX absolute spellings independe
   expect(() =>
     canonicalCodexChatForkOriginal({ ...base, workspaceKey: "work/alpha" }),
   ).toThrow();
+});
+
+test("source settings seal preserves explicit nulls and binds every saved field", () => {
+  const knownNulls = {
+    modelProvider: "openai",
+    serviceTier: null,
+    reasoningEffort: null,
+  };
+  const initial = codexChatForkSourceSettingsHash(knownNulls);
+  expect(initial).toHaveLength(64);
+  expect(
+    codexChatForkSourceSettingsHash({
+      reasoningEffort: null,
+      serviceTier: null,
+      modelProvider: "openai",
+    }),
+  ).toBe(initial);
+  expect(
+    codexChatForkSourceSettingsHash({ ...knownNulls, serviceTier: "priority" }),
+  ).not.toBe(initial);
+  expect(
+    codexChatForkSourceSettingsHash({ ...knownNulls, reasoningEffort: "high" }),
+  ).not.toBe(initial);
+  expect(
+    codexChatForkSourceSettingsHash({ ...knownNulls, modelProvider: "other" }),
+  ).not.toBe(initial);
 });
