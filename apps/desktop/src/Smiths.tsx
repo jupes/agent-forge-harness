@@ -1,20 +1,27 @@
+import type { JSX } from "preact";
 import { useRef, useState } from "preact/hooks";
 import { Button } from "../../../docs/js/ds/Button";
 import { Dialog } from "../../../docs/js/ds/Dialog";
 import { EmptyState } from "../../../docs/js/ds/EmptyState";
 import { APPRENTICE_VERIFICATION } from "../../../scripts/smith-verification";
-import type { ScoreboardRow } from "../../../types/hearth";
+import type { BenchName, ScoreboardRow } from "../../../types/hearth";
 import { PROVIDER_USAGE_COUNTS } from "../../../types/hearth";
+import type { SmithRoutingEditChange } from "../../../types/smith-routing-edit";
 import {
   SmithCreateFormView,
   SmithCreateReceiptsView,
 } from "./SmithCreateForm";
 import { SmithEditFormView, SmithEditReceiptsView } from "./SmithEditForm";
+import {
+  SmithRoutingEditFormView,
+  SmithRoutingEditReceiptsView,
+} from "./SmithRoutingEditForm";
 import { SmithVerificationTask } from "./SmithVerificationTask";
 import { SCOREBOARD_RANGES } from "./smiths-client";
 import { metric, scoreboardKey } from "./smiths-model";
 import type { useSmithCreate } from "./use-smith-create";
 import type { useSmithEdit } from "./use-smith-edit";
+import type { useSmithRoutingEdit } from "./use-smith-routing-edit";
 import type { SmithsController } from "./use-smiths";
 import "./smiths.css";
 
@@ -129,11 +136,13 @@ export function Smiths({
   controller,
   creates,
   edits,
+  routingEdits,
   workspace,
 }: {
   controller: SmithsController;
   creates: ReturnType<typeof useSmithCreate>;
   edits: ReturnType<typeof useSmithEdit>;
+  routingEdits: ReturnType<typeof useSmithRoutingEdit>;
   workspace: string | null;
 }) {
   const [search, setSearch] = useState("");
@@ -141,8 +150,23 @@ export function Smiths({
   const [boardPage, setBoardPage] = useState(0);
   const [createOpen, setCreateOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
+  const [routingOpen, setRoutingOpen] = useState(false);
+  const [routingSeed, setRoutingSeed] = useState<SmithRoutingEditChange | null>(
+    null,
+  );
+  const [routingEditorKey, setRoutingEditorKey] = useState(0);
   const createOpener = useRef<HTMLElement>(null);
   const editOpener = useRef<HTMLElement>(null);
+  const routingOpener = useRef<HTMLElement>(null);
+  const openRoutingEdit = (
+    event: JSX.TargetedMouseEvent<HTMLButtonElement>,
+    change: SmithRoutingEditChange,
+  ) => {
+    routingOpener.current = event.currentTarget;
+    setRoutingSeed(structuredClone(change));
+    setRoutingEditorKey((key) => key + 1);
+    setRoutingOpen(true);
+  };
   const { client, view } = controller;
   const config = view?.configuration,
     board = view?.scoreboard;
@@ -228,6 +252,32 @@ export function Smiths({
         />
       </Dialog>
       <Dialog
+        open={routingOpen}
+        title="Edit saved routing"
+        onClose={() => setRoutingOpen(false)}
+        returnFocusRef={routingOpener}
+        class="af-smith-routing-dialog"
+        actions={
+          <Button onClick={() => setRoutingOpen(false)}>
+            Close routing editor
+          </Button>
+        }
+      >
+        {routingSeed && (
+          <SmithRoutingEditFormView
+            key={routingEditorKey}
+            seed={routingSeed}
+            state={routingEdits.state}
+            canWrite={routingEdits.canWrite}
+            onDraft={(target, change) =>
+              routingEdits.client?.setDraft(target, change)
+            }
+            onPreview={() => void routingEdits.client?.preview()}
+            onSave={() => void routingEdits.client?.save()}
+          />
+        )}
+      </Dialog>
+      <Dialog
         open={editOpen}
         title={`Edit ${edits.state.name || "Smith configuration"}`}
         onClose={() => setEditOpen(false)}
@@ -289,6 +339,11 @@ export function Smiths({
         entries={edits.state.entries}
         canWrite={edits.canWrite}
         onCheck={(requestId) => void edits.client?.check(requestId)}
+      />
+      <SmithRoutingEditReceiptsView
+        entries={routingEdits.state.entries}
+        canWrite={routingEdits.canWrite}
+        onCheck={(requestId) => void routingEdits.client?.check(requestId)}
       />
       <section
         aria-label="Saved smith configuration"
@@ -355,6 +410,18 @@ export function Smiths({
               <Source source={config.data.defaultSource} />. A bead, explicit
               choice or weighted bench can select a different smith; no
               selection is resolved here.
+              <button
+                type="button"
+                disabled={!routingEdits.canWrite || !config.data}
+                onClick={(event) =>
+                  openRoutingEdit(event, {
+                    kind: "default",
+                    smith: config.data!.defaultSmith,
+                  })
+                }
+              >
+                Edit saved default
+              </button>
             </p>
             {config.data.smiths.length === 0 ? (
               <EmptyState
@@ -528,6 +595,23 @@ export function Smiths({
                       {bench.source ?? "Source not separately recorded"}
                     </code>
                   </details>
+                  <button
+                    type="button"
+                    disabled={!routingEdits.canWrite}
+                    aria-label={`Edit ${bench.name} bench`}
+                    onClick={(event) =>
+                      openRoutingEdit(event, {
+                        kind: "bench",
+                        bench: bench.name as BenchName,
+                        entries: bench.entries.map(({ smith, weight }) => ({
+                          smith,
+                          weight,
+                        })),
+                      })
+                    }
+                  >
+                    Edit {bench.name} bench
+                  </button>
                 </article>
               ))}
             </div>

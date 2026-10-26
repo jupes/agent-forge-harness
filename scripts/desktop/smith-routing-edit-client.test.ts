@@ -20,11 +20,13 @@ import type {
   SmithRoutingEditChange,
   SmithRoutingEditPreview,
   SmithRoutingEditPreviewRequest,
+  SmithRoutingEditReceipt,
   SmithRoutingEditRequest,
 } from "../../types/smith-routing-edit";
 import {
   canonicalSmithRoutingEditRequest,
   smithRoutingEditPreviewSchema,
+  smithRoutingEditReceiptSchema,
 } from "../config/smith-routing-edit-protocol";
 
 const revision = {
@@ -76,6 +78,44 @@ function previewFor(
       targetAfter: reviewedValue,
       effectiveAfter: reviewedValue,
     },
+  });
+}
+async function receiptFor(
+  original: SmithRoutingEditRequest,
+  phase: "confirmed" | "refused" | "held" = "confirmed",
+  inputHash?: string,
+): Promise<SmithRoutingEditReceipt> {
+  const originalPreview = smithRoutingEditPreviewSchema.parse({
+    ...previewFor({ target: original.target, change: original.change }),
+    expectedRevision: original.expectedRevision,
+  });
+  const result =
+    phase === "confirmed"
+      ? {
+          phase,
+          completedAt: "2026-10-26T12:00:00.000Z",
+          preview: originalPreview,
+          publication: {
+            file: originalPreview.file,
+            created: originalPreview.candidate.created,
+            sha256: originalPreview.candidate.sha256,
+          },
+        }
+      : phase === "refused"
+        ? {
+            phase,
+            refusedAt: "2026-10-26T12:00:00.000Z",
+            reason: "stale-revision" as const,
+          }
+        : { phase, stage: "attempted" as const, preview: originalPreview };
+  return smithRoutingEditReceiptSchema.parse({
+    version: 1,
+    requestId: original.requestId,
+    ownerScopeHash: "d".repeat(64),
+    inputHash: inputHash ?? (await smithRoutingEditInputHash(original)),
+    createdAt: "2026-10-26T12:00:00.000Z",
+    original,
+    result,
   });
 }
 function fixture(
@@ -255,6 +295,81 @@ test("transport uses fixed routing routes and treats original 404 as unknown, ne
   expect(readPaths).toEqual([
     `/__agent-forge/smiths/routing-edits/${request.requestId}`,
   ]);
+});
+
+test("exact confirmed and refused receipts install with their terminal state", async () => {
+  const confirmed = await receiptFor(request, "confirmed");
+  const confirmedFixture = fixture({
+    state: "sent",
+    value: { ok: true, data: confirmed, error: null },
+  });
+  await confirmedFixture.client.preview();
+  await confirmedFixture.client.save();
+  expect(confirmedFixture.client.get().entries[0]).toMatchObject({
+    state: "confirmed",
+    identity: { retirement: "confirmed", retired: true },
+    receipt: confirmed,
+  });
+
+  const refused = await receiptFor(request, "refused");
+  const refusedFixture = fixture({
+    state: "sent",
+    value: { ok: true, data: refused, error: null },
+  });
+  await refusedFixture.client.preview();
+  await refusedFixture.client.save();
+  expect(refusedFixture.client.get().entries[0]).toMatchObject({
+    state: "refused",
+    identity: { retirement: "refused", retired: true },
+    receipt: refused,
+  });
+});
+
+test("malformed, hash-mismatched, and paired-revision-mismatched receipts stay held", async () => {
+  const mismatchedRevision: SmithRoutingEditRequest = {
+    ...request,
+    expectedRevision: {
+      version: 1,
+      user: "e".repeat(64),
+      workspace: "f".repeat(64),
+    },
+  };
+  const receipts: unknown[] = [
+    { version: 1, requestId: request.requestId },
+    await receiptFor(request, "confirmed", "e".repeat(64)),
+    await receiptFor(mismatchedRevision),
+  ];
+  for (const value of receipts) {
+    const f = fixture({
+      state: "sent",
+      value: { ok: true, data: value, error: null },
+    });
+    await f.client.preview();
+    await f.client.save();
+    expect(f.client.get().entries[0]?.state).toBe("held");
+    expect(f.saved.get(request.requestId)?.retired).toBe(false);
+  }
+});
+
+test("confirmed receipt with the wrong HTTP status is not accepted by transport", async () => {
+  const receipt = await receiptFor(request, "confirmed");
+  const post: typeof operatorPost = async () =>
+    new Response(JSON.stringify({ ok: true, data: receipt, error: null }), {
+      status: 202,
+    });
+  const read: typeof operatorRead = async () =>
+    new Response(null, { status: 404 });
+  const api = createSmithRoutingEditApi({
+    post,
+    read,
+    scope: () => "workspace-A",
+    canWrite: () => true,
+  });
+  const result = await api.edit(request, {
+    scope: "workspace-A",
+    inputHash: await smithRoutingEditInputHash(request),
+  });
+  expect(result.state).toBe("unknown");
 });
 
 test("preview receives a detached draft so dependency mutation cannot alter saved hash input", async () => {
