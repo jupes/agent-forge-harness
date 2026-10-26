@@ -54,11 +54,7 @@ import type { createGeminiTaskRuntime } from "./gemini-task-runtime";
 import { requireOrdinarySession } from "./managed-origin";
 import { createSessionRegistry } from "./registry";
 import { readVerifiedOriginalStart } from "./restart-identity-proof";
-import {
-  SESSION_OPERATION_IDENTITY_LIMITS,
-  sessionOperationIdentityEnvelopeBytes,
-  sessionOperationIdentityPageSchema,
-} from "./session-operation-identities-protocol";
+import { readSessionOperationIdentityPage } from "./session-operation-identities-protocol";
 
 export const unavailableCodexTaskRuntime: ReturnType<
   typeof createCodexTaskRuntime
@@ -468,39 +464,14 @@ export function createOwnedCodingSessionService(options: {
       projectId: string,
     ): Promise<SessionOperationIdentityPage> {
       try {
-        const [startRows, forkRows] = await Promise.all([
-          identities.list(scopeFor(projectId)),
-          Promise.resolve().then(() =>
-            forkCoordinator.listOriginals(projectId),
-          ),
-        ]);
-        const operations = [
-          ...startRows.map((row) => ({
-            family: "owned-session-start" as const,
-            ...metadata(row),
-          })),
-          ...forkRows.map(forkMetadata),
-        ].sort((left, right) =>
-          `${left.family}\0${left.requestId}`.localeCompare(
-            `${right.family}\0${right.requestId}`,
-          ),
-        );
-        if (operations.length > SESSION_OPERATION_IDENTITY_LIMITS.operations)
-          throw new Error("The operation identity page exceeds its row limit.");
-        const page = sessionOperationIdentityPageSchema.safeParse({
-          version: 1,
-          scope: { projectId, workspace },
-          operations,
+        return await readSessionOperationIdentityPage({
+          projectId,
+          workspace,
+          readStarts: async () =>
+            (await identities.list(scopeFor(projectId))).map(metadata),
+          readForks: async () =>
+            forkCoordinator.listOriginals(projectId).map(forkMetadata),
         });
-        if (
-          !page.success ||
-          sessionOperationIdentityEnvelopeBytes(page.data) >
-            SESSION_OPERATION_IDENTITY_LIMITS.responseBytes
-        )
-          throw new Error(
-            "The operation identity page exceeds its response bound.",
-          );
-        return page.data;
       } catch {
         throw new ConversationError(
           503,

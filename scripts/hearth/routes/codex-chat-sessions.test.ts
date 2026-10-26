@@ -633,6 +633,11 @@ test("protected Fork routes publish one audited native Fork and recover its exac
   expect(
     f.records().filter((row) => row.method === "thread/start"),
   ).toHaveLength(1);
+  const parentTurns = f
+    .records()
+    .filter((row) => row.kind === "rpc" && row.method === "turn/start");
+  expect(parentTurns).toHaveLength(1);
+  expect(parentTurns[0]?.params).toMatchObject({ threadId: parentSessionId });
   const audit = f.h.events(["operator.action"]).at(-1);
   expect(audit?.kind).toBe("operator.action");
   if (audit?.kind !== "operator.action")
@@ -799,4 +804,9 @@ test("a lost Fork reply is recovered by exact original GET without repeating the
   expect(
     f.records().filter((row) => row.method === "thread/start"),
   ).toHaveLength(1);
+  const parentTurns = f
+    .records()
+    .filter((row) => row.kind === "rpc" && row.method === "turn/start");
+  expect(parentTurns).toHaveLength(1);
+  expect(parentTurns[0]?.params).toMatchObject({ threadId: parentSessionId });
 });
