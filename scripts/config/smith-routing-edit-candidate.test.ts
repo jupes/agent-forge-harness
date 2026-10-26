@@ -260,7 +260,7 @@ test("original hash bytes bind UUID, target, paired revision, and ordered duplic
       bench: "low" as const,
       entries: [
         { smith: "claude-master", weight: 0.5 },
-        { smith: "claude-master", weight: 0.5 },
+        { smith: "claude-master", weight: 0.75 },
       ],
     },
     expectedRevision: {
@@ -295,4 +295,26 @@ test("original hash bytes bind UUID, target, paired revision, and ordered duplic
     smithRoutingEditRequestSchema.safeParse({ ...base, unexpected: true })
       .success,
   ).toBe(false);
+});
+
+test("request entry guard follows the transport minimum rather than loader semantics", () => {
+  const max = Math.floor(SMITH_ROUTING_EDIT_LIMITS.requestBytes / 24);
+  const request = {
+    requestId: "a14dcb1c-3098-4a70-80cb-08644bb0af78",
+    target: "workspace" as const,
+    change: {
+      kind: "bench" as const,
+      bench: "low" as const,
+      entries: Array.from({ length: max + 1 }, () => ({
+        smith: "a",
+        weight: 1,
+      })),
+    },
+    expectedRevision: {
+      version: 1 as const,
+      user: "a".repeat(64),
+      workspace: "b".repeat(64),
+    },
+  };
+  expect(smithRoutingEditRequestSchema.safeParse(request).success).toBe(false);
 });

@@ -40,7 +40,12 @@ const smithName = z
 const benchEntry = z
   .object({ smith: smithName, weight: z.number().finite().positive() })
   .strict();
-const benchEntries = z.array(benchEntry).min(1);
+// Every valid serialized row needs at least 24 bytes. This bound is derived
+// from the 16 KiB request transport, not from the unrestricted config loader.
+const maxBenchEntriesPerRequest = Math.floor(
+  SMITH_ROUTING_EDIT_LIMITS.requestBytes / 24,
+);
+const benchEntries = z.array(benchEntry).min(1).max(maxBenchEntriesPerRequest);
 const benchName = z.enum(BENCH_NAMES);
 const change = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("default"), smith: smithName }).strict(),
