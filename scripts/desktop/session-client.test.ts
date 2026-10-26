@@ -142,6 +142,146 @@ test("server-backed Start buffers identity reads across reserve and the ordinary
   client.dispose();
 });
 
+test("a failed identity reserve releases the mutation gate for an explicit read without retrying Start", async () => {
+  const scope = { projectId, workspace: "/repo", generation: 1 };
+  let listCount = 0,
+    startCount = 0;
+  const identityServer: SessionStartIdentityServer = {
+    async list(current) {
+      listCount++;
+      return {
+        version: 1,
+        scope: {
+          family: "owned-session-start",
+          projectId: current.projectId,
+          workspace: current.workspace,
+        },
+        identities: [],
+      };
+    },
+    async reserve() {
+      throw Error("Reserve reply was lost");
+    },
+    async retire() {
+      throw Error("Unexpected retirement");
+    },
+  };
+  const client = createSessionsClient({
+    identityServer,
+    identityScope: () => scope,
+    canWrite: () => true,
+    requestId: () => requestId,
+    list: async () => [],
+    read: async () => page,
+    post: async () => {
+      startCount++;
+      return { state: "unknown", message: "Unexpected Start" };
+    },
+    stream: () => () => ({ close() {} }),
+  });
+
+  await client.refreshIdentities(projectId);
+  await client.start(projectId, input);
+  await client.refreshIdentities(projectId);
+
+  expect(listCount).toBe(2);
+  expect(startCount).toBe(0);
+  client.dispose();
+});
+
+test("an explicit retry preserves a server not-sent generation and sends the same original once", async () => {
+  const scope = { projectId, workspace: "/repo", generation: 1 };
+  let state: "empty" | "reserved" | "not-sent" = "empty",
+    listCount = 0,
+    reserveCount = 0;
+  const posts: SessionStartRequest[] = [];
+  const identityServer: SessionStartIdentityServer = {
+    async list(current) {
+      listCount++;
+      return {
+        version: 1,
+        scope: {
+          family: "owned-session-start",
+          projectId: current.projectId,
+          workspace: current.workspace,
+        },
+        identities:
+          state === "empty"
+            ? []
+            : [
+                {
+                  version: 1,
+                  requestId,
+                  requestHash: await sessionStartHash({ ...input, requestId }),
+                  provider: "claude",
+                  mode: "chat",
+                  state,
+                },
+              ],
+      };
+    },
+    async reserve(current, original) {
+      reserveCount++;
+      const requestHash = await sessionStartHash(original);
+      if (state === "empty") state = "reserved";
+      const resultingState = state;
+      return {
+        scope: {
+          family: "owned-session-start",
+          projectId: current.projectId,
+          workspace: current.workspace,
+        },
+        identity: {
+          version: 1,
+          requestId: original.requestId,
+          requestHash,
+          provider: "claude",
+          mode: "chat",
+          state: resultingState,
+        },
+        request: original,
+        requestHash,
+      };
+    },
+    async retire() {
+      throw Error("Unexpected retirement");
+    },
+  };
+  const client = createSessionsClient({
+    identityServer,
+    identityScope: () => scope,
+    canWrite: () => true,
+    requestId: () => requestId,
+    list: async () => [],
+    read: async () => page,
+    post: async (_project, _session, action, body) => {
+      if (action !== "start") throw Error("Unexpected action");
+      posts.push(body as SessionStartRequest);
+      if (posts.length === 1) {
+        state = "not-sent";
+        return {
+          state: "refused",
+          message: "Provider was not reached",
+          notSent: true,
+        };
+      }
+      return { state: "unknown", message: "Keep the retry held" };
+    },
+    stream: () => () => ({ close() {} }),
+  });
+
+  await client.refreshIdentities(projectId);
+  await client.start(projectId, input);
+  await client.retryStart(projectId);
+
+  expect(reserveCount).toBe(2);
+  expect(posts).toHaveLength(2);
+  expect(posts[1]).toEqual(posts[0]);
+  expect(posts.at(1)?.requestId).toBe(requestId);
+  expect(listCount).toBeGreaterThanOrEqual(3);
+  client.dispose();
+});
+
 test("a failed private feed reads the selected saved pages without claiming live status or dispatching a provider", async () => {
   let handlers: StreamHandlers | undefined;
   const reads: number[] = [],
