@@ -504,6 +504,13 @@ test("a reserved Start after reload continues only after exact same-UUID body re
 test("confirmed reserved retirement reads back the tombstone before a new UUID can start", async ({
   page,
 }) => {
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.setViewportSize({ width: 375, height: 640 });
+  expect(
+    await page.evaluate(
+      () => window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+    ),
+  ).toBe(true);
   const before = tasks().length;
   await openSettled(page, `/index.html#/desktop/project/${alpha.id}/sessions`);
   const dialog = await checkDefault(page, "Retire only the reserved UUID");
@@ -542,14 +549,49 @@ test("confirmed reserved retirement reads back the tombstone before a new UUID c
   ).toBeVisible();
   const originalId = starts[0]?.requestId;
   if (!originalId) throw Error("Missing reserved Start UUID.");
-  await dialog
-    .getByRole("button", { name: "Review retirement", exact: true })
-    .click();
+  const reviewRetirement = dialog.getByRole("button", {
+    name: "Review retirement",
+    exact: true,
+  });
+  await reviewRetirement.click();
   const retirement = page.getByRole("dialog", {
     name: "Retire this reserved Start?",
     exact: true,
   });
+  const close = retirement.getByRole("button", {
+      name: "Close dialog",
+      exact: true,
+    }),
+    keep = retirement.getByRole("button", {
+      name: "Keep reserved",
+      exact: true,
+    }),
+    confirm = retirement.getByRole("button", {
+      name: "Retire this UUID",
+      exact: true,
+    });
+  await expect(close).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(keep).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(confirm).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(close).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(confirm).toBeFocused();
+  await expect(confirm).toBeInViewport();
   await expect(retirement.getByText(originalId, { exact: true })).toBeVisible();
+  await keep.click();
+  await expect(retirement).toBeHidden();
+  await expect(reviewRetirement).toBeFocused();
+  await expect(
+    dialog.getByText("codex task · reserved", { exact: true }),
+  ).toBeVisible();
+  expect(tasks()).toHaveLength(before);
+
+  await reviewRetirement.click();
+  await expect(close).toBeFocused();
+  await expect(confirm).toBeInViewport();
   await retirement
     .getByRole("button", { name: "Retire this UUID", exact: true })
     .click();
