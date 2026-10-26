@@ -19,6 +19,7 @@ import type {
   ServerResponse,
 } from "node:http";
 import {
+  type BenchName,
   type LedgerEventInput,
   OPERATOR_SURFACES,
   type OperatorEnvelope,
@@ -83,6 +84,10 @@ export interface ActionSubject {
   requestId?: string;
   /** Canonical request digest; never carries request content. */
   inputHash?: string;
+  /** Closed routing change kind; never carries the selected value. */
+  changeKind?: "default" | "bench";
+  /** Fixed routing selector, or one known bench name. */
+  selector?: "workflow.default_crew" | BenchName;
 }
 
 /** A POST that changes something. */
@@ -496,6 +501,12 @@ export function createOperatorApi(
           : {}),
         ...(subject.inputHash !== undefined
           ? { inputHash: subject.inputHash }
+          : {}),
+        ...(subject.changeKind !== undefined
+          ? { changeKind: subject.changeKind }
+          : {}),
+        ...(subject.selector !== undefined
+          ? { selector: subject.selector }
           : {}),
       },
     });

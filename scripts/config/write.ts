@@ -20,19 +20,32 @@ import type {
   SmithConfigEditReview,
   SmithConfigEditTargetBefore,
 } from "../../types/smith-config-edit";
+import type {
+  SmithRoutingEditChange,
+  SmithRoutingEditPreviewRequest,
+  SmithRoutingEditReview,
+} from "../../types/smith-routing-edit";
 import { validateSmith } from "../hearth/validate";
+import type { BenchEntry } from "./defaults";
 import { BUILTIN_SHIFT, BUILTIN_SMITHS } from "./defaults";
 import {
+  ConfigLoadError,
   decodeConfigText,
   type ForgeConfig,
   type LoadedConfig,
   type LoadOptions,
   loadConfigFromByteContents,
   loadConfigFromContents,
+  parseBench,
   SHIFT_KEYS,
   type ShiftKey,
 } from "./load";
 import { smithConfigEditPreviewRequestSchema } from "./smith-edit-protocol";
+import {
+  SMITH_ROUTING_EDIT_LIMITS,
+  smithRoutingEditPreviewRequestSchema,
+  smithRoutingEditReviewSchema,
+} from "./smith-routing-edit-protocol";
 import {
   type ConfigWriteTransaction,
   type PreparedConfigTransaction,
@@ -85,6 +98,207 @@ export interface SmithEditCandidate {
 export type SmithEditCandidateOutcome =
   | { ok: true; value: SmithEditCandidate }
   | { ok: false; error: string };
+
+export interface SmithRoutingEditCandidate {
+  target: ConfigTarget;
+  file: string;
+  created: boolean;
+  change: SmithRoutingEditChange;
+  bytes: Uint8Array;
+  sha256: string;
+  sources: Record<ConfigTarget, ConfigSourceFingerprint>;
+  review: SmithRoutingEditReview;
+}
+
+export type SmithRoutingEditCandidateOutcome =
+  | { ok: true; value: SmithRoutingEditCandidate }
+  | {
+      ok: false;
+      error: string;
+      refusal?:
+        | "invalid-current-config"
+        | "shadowed-target"
+        | "success-preview-too-large";
+    };
+
+/** Stage exactly one saved routing choice from explicit paired config bytes. */
+export function buildSmithRoutingEditCandidate(
+  raw: unknown,
+  sources: Record<ConfigTarget, ConfigByteSource>,
+): SmithRoutingEditCandidateOutcome {
+  try {
+    if (!encodedWithin(raw, SMITH_ROUTING_EDIT_LIMITS.requestBytes))
+      throw new Refusal("The routing edit request exceeds its limit.");
+    for (const target of ["user", "workspace"] as const) {
+      const bytes = sources[target]?.bytes;
+      if (
+        bytes !== null &&
+        bytes !== undefined &&
+        bytes.byteLength > SMITH_ROUTING_EDIT_LIMITS.sourceBytes
+      )
+        throw new Refusal(
+          `${sources[target].file}: config source exceeds the routing edit limit; it was not truncated`,
+        );
+    }
+    const request = smithRoutingEditPreviewRequestSchema.parse(
+        structuredClone(raw),
+      ),
+      user = capturedSource(sources.user),
+      workspace = capturedSource(sources.workspace),
+      byTarget = { user, workspace },
+      docs = { user: user.doc, workspace: workspace.doc },
+      texts = { user: user.source, workspace: workspace.source },
+      before = loadConfigFromByteContents({
+        sources,
+        env: Object.freeze({}),
+      }),
+      selected = byTarget[request.target],
+      old = docs[request.target],
+      change = structuredClone(request.change),
+      shape: KeyShape =
+        change.kind === "default"
+          ? { table: ["workflow"], field: "default_crew", kind: "string" }
+          : { table: ["benches"], field: change.bench, kind: "bench" },
+      path = [...shape.table, shape.field],
+      rawBefore = at(old, path);
+
+    if (request.target === "workspace" && selected.source.text === null) {
+      const userPass = at(docs.user, ["execution", "env", "pass"]);
+      if (Array.isArray(userPass) && userPass.length > 0)
+        throw new Refusal(
+          firstWorkspacePassRefusal(
+            texts.user.file,
+            texts.workspace.file,
+            userPass.map(String),
+          ),
+        );
+    }
+
+    let targetBefore: string | BenchEntry[] | null;
+    if (rawBefore === undefined) targetBefore = null;
+    else if (change.kind === "default") {
+      if (typeof rawBefore !== "string")
+        throw new Refusal(
+          `${selected.source.file}: workflow.default_crew is not a string; change it by hand`,
+        );
+      targetBefore = rawBefore;
+    } else {
+      targetBefore = parseBench(selected.source.file, change.bench, rawBefore);
+    }
+
+    const value =
+        change.kind === "default"
+          ? change.smith
+          : change.entries.map(
+              (entry) => `${entry.smith}:${String(entry.weight)}`,
+            ),
+      body = selected.source.text ?? "",
+      bom = body.startsWith(BOM) ? BOM : "",
+      withoutBom = body.slice(bom.length),
+      next = edited(withoutBom, shape, value, old),
+      expected = withValue(old, path, value);
+
+    if (!Bun.deepEquals(parse(next), expected, true))
+      throw new Refusal(
+        `${selected.source.file}: the candidate would change more than ${path.join(".")}`,
+      );
+
+    const text = bom + next;
+    if (Buffer.byteLength(text, "utf8") > SMITH_ROUTING_EDIT_LIMITS.sourceBytes)
+      throw new Refusal(
+        `${selected.source.file}: edited config source exceeds the routing edit limit`,
+      );
+    const afterSources = {
+        ...texts,
+        [request.target]: { file: selected.source.file, text },
+      },
+      after = loadConfigFromContents({
+        sources: afterSources,
+        env: Object.freeze({}),
+      }),
+      effectiveBefore =
+        change.kind === "default"
+          ? before.config.workflow.defaultCrew
+          : before.config.benches[change.bench],
+      effectiveAfter =
+        change.kind === "default"
+          ? after.config.workflow.defaultCrew
+          : after.config.benches[change.bench],
+      wanted = change.kind === "default" ? change.smith : change.entries;
+
+    if (JSON.stringify(effectiveAfter) !== JSON.stringify(wanted))
+      throw new Refusal(
+        `${path.join(".")}: the selected target would not make the requested value effective`,
+        "shadowed-target",
+      );
+
+    const provenanceKey = path.join("."),
+      provenanceBefore = before.provenance[provenanceKey]?.source,
+      provenanceAfter = after.provenance[provenanceKey]?.source;
+    if (
+      typeof provenanceBefore !== "string" ||
+      typeof provenanceAfter !== "string"
+    )
+      throw new Refusal(`${provenanceKey}: source provenance is unavailable`);
+    if (provenanceAfter !== selected.source.file)
+      throw new Refusal(
+        `${provenanceKey}: the selected target would leave the requested value shadowed`,
+        "shadowed-target",
+      );
+
+    const targetAfter =
+        change.kind === "default"
+          ? change.smith
+          : structuredClone(change.entries),
+      reviewValue = {
+        change,
+        targetBefore,
+        targetAfter,
+        effectiveBefore: structuredClone(effectiveBefore),
+        effectiveAfter: structuredClone(effectiveAfter),
+        provenanceBefore,
+        provenanceAfter,
+      };
+    if (!encodedWithin(reviewValue, SMITH_ROUTING_EDIT_LIMITS.responseBytes))
+      throw new Refusal(
+        "The routing edit review exceeds its response limit.",
+        "success-preview-too-large",
+      );
+    const review = smithRoutingEditReviewSchema.parse(reviewValue),
+      bytes = Buffer.from(text, "utf8"),
+      digest = createHash("sha256").update(bytes).digest("hex");
+
+    return {
+      ok: true,
+      value: {
+        target: request.target,
+        file: selected.source.file,
+        created: selected.source.text === null,
+        change,
+        bytes,
+        sha256: digest,
+        sources: {
+          user: user.fingerprint,
+          workspace: workspace.fingerprint,
+        },
+        review,
+      },
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+      ...(error instanceof Refusal || error instanceof ConfigLoadError
+        ? {
+            refusal:
+              error instanceof Refusal
+                ? error.refusal
+                : ("invalid-current-config" as const),
+          }
+        : {}),
+    };
+  }
+}
 
 export type SetOutcome =
   | {
@@ -233,7 +447,17 @@ interface Scan {
   entries: Entry[];
 }
 
-class Refusal extends Error {}
+class Refusal extends Error {
+  constructor(
+    message: string,
+    readonly refusal:
+      | "invalid-current-config"
+      | "shadowed-target"
+      | "success-preview-too-large" = "invalid-current-config",
+  ) {
+    super(message);
+  }
+}
 
 /** The headers and `key = value` entries of a document the editor owns, or a refusal naming the line. */
 function scan(text: string): Scan {
@@ -425,6 +649,15 @@ function withValue(doc: Table, path: readonly string[], value: unknown): Table {
 
 const samePath = (a: readonly string[], b: readonly string[]): boolean =>
   a.length === b.length && a.every((part, index) => part === b[index]);
+
+function encodedWithin(value: unknown, max: number): boolean {
+  try {
+    const encoded = JSON.stringify(value);
+    return encoded !== undefined && Buffer.byteLength(encoded, "utf8") <= max;
+  } catch {
+    return false;
+  }
+}
 
 // ── set ─────────────────────────────────────────────────────────────────────
 

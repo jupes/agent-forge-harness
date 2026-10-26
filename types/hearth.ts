@@ -459,6 +459,8 @@ export interface LedgerPayloads {
     family?: string;
     requestId?: string;
     inputHash?: string;
+    changeKind?: "default" | "bench";
+    selector?: "workflow.default_crew" | BenchName;
   };
 }
 

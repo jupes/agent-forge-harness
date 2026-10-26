@@ -23,6 +23,7 @@ import { join, resolve } from "node:path";
 import type { LedgerEventInput } from "../../types/hearth";
 import { createSmithCreateService } from "../config/smith-create-service";
 import { createSmithEditService } from "../config/smith-edit-service";
+import { createSmithRoutingEditService } from "../config/smith-routing-edit-service";
 import type { ConversationTransport } from "../conversations/transport";
 import type {
   CouncilAppend,
@@ -102,6 +103,7 @@ import { hearthLedger } from "./routes/operator-reads";
 import { QUEUE_LOCK_FILE } from "./routes/queue";
 import type { SmithCreateService } from "./routes/smith-config-creates";
 import type { SmithEditService } from "./routes/smith-config-edits";
+import type { SmithRoutingEditService } from "./routes/smith-routing-edits";
 import {
   createShiftStarts,
   endLiveShifts,
@@ -474,10 +476,39 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
       },
     };
   }
+  let smithRoutingEditService: SmithRoutingEditService;
+  try {
+    smithRoutingEditService = createSmithRoutingEditService(
+      {
+        options: {
+          harnessRoot: root,
+          ...(options.api?.configHome === undefined
+            ? {}
+            : { home: options.api.configHome }),
+          env: {},
+        },
+      },
+      { profileHome: home },
+    );
+  } catch {
+    // An unavailable config selector must not prevent unrelated Hearth reads.
+    smithRoutingEditService = {
+      preview() {
+        throw new Error("The trusted routing edit selectors are unavailable.");
+      },
+      async edit() {
+        throw new Error("The trusted routing edit selectors are unavailable.");
+      },
+      readOriginal() {
+        throw new Error("The trusted routing edit selectors are unavailable.");
+      },
+    };
+  }
   const table = operatorRoutes({
     projectHome: home,
     smithCreateService,
     smithEditService,
+    smithRoutingEditService,
     providerInspector,
     providerLogin:
       options.api?.providerLogin ??
