@@ -1,13 +1,27 @@
 import { expect, test } from "@playwright/test";
+import { providerReadinessFixture } from "../../scripts/providers/testing";
 import { readState, withStateLock, writeState } from "../e2e/bd-stand-in-state";
 import { BD_STAND_IN_STATE } from "../e2e/servers";
-import { alpha, beta, seedProjects, seedSessions } from "./project-fixtures";
+import {
+  alpha,
+  beta,
+  seedProjects,
+  seedSessions,
+  workspace,
+} from "./project-fixtures";
 
 test.beforeEach(seedProjects);
 
 test("Overview shows three of four scoped needs-you items and linked sections", async ({
   page,
 }) => {
+  const readiness = providerReadinessFixture(workspace, alpha.id);
+  readiness.localUsage.projects = [
+    { projectId: alpha.id, name: alpha.name, providers: [] },
+  ];
+  await page.route("**/providers/readiness", (route) =>
+    route.fulfill({ json: { ok: true, data: readiness, error: null } }),
+  );
   withStateLock(BD_STAND_IN_STATE, () => {
     const state = readState(BD_STAND_IN_STATE);
     for (const [index, queue] of [
@@ -60,6 +74,33 @@ test("Overview shows three of four scoped needs-you items and linked sections", 
   await expect(page).toHaveURL(
     /workbench\?selectionKind=bead&selectionId=alpha-child-0$/,
   );
+});
+
+test("unavailable project attribution stays distinct from a verified empty report", async ({
+  page,
+}) => {
+  const readiness = providerReadinessFixture(workspace, alpha.id);
+  readiness.localUsage.projects = null;
+  await page.route("**/providers/readiness", (route) =>
+    route.fulfill({ json: { ok: true, data: readiness, error: null } }),
+  );
+  let providerActionPosts = 0;
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (request.method() === "POST" && url.pathname.includes("/providers/"))
+      providerActionPosts++;
+  });
+
+  await page.goto(`/index.html#/desktop/project/${alpha.id}/overview`);
+  const usage = page.getByRole("region", {
+    name: "Reported project usage",
+    exact: true,
+  });
+  await expect(usage).toContainText("Project usage attribution unavailable.");
+  await expect(usage).not.toContainText(
+    "Usage — no project session totals were reported in this read.",
+  );
+  expect(providerActionPosts).toBe(0);
 });
 
 test("a delayed previous-project read cannot paint the next project, and Back restores scope", async ({
