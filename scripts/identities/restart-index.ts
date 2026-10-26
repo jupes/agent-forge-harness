@@ -239,6 +239,18 @@ function assertDirectory(
   if (expected !== undefined && !sameIdentity(found, expected)) identityError();
   if (canonicalPath(realpathSync.native(path)) !== canonicalPath(path))
     identityError();
+  if ((options.platform ?? process.platform) === "win32") {
+    try {
+      assertOwnerOnly(path, "directory", options.acl);
+    } catch {
+      identityError();
+    }
+  } else if (
+    info.uid !== BigInt(process.getuid?.() ?? 0) ||
+    (info.mode & 0o077n) !== 0n
+  ) {
+    identityError();
+  }
   const checked = readHomeFile(path, undefined, options);
   if (checked.problem !== null) identityError();
   return found;

@@ -447,6 +447,29 @@ test("nonprivate profile, index, event, lock, and sidecar ACLs all fail closed",
   await assertUnavailable(sidecarHome, sidecarOptions);
 });
 
+test("inherited journal directory ACLs fail closed even without outsider write rights", async () => {
+  const identity = request();
+  const home = profile();
+  const fixture = fakeAcl();
+  const options = { platform: "win32" as const, acl: fixture.acl };
+  await createRestartIdentityJournal(home, options).reserve(identity);
+  fixture.override(join(home, "restart-identities"), {
+    owner: USER,
+    protected: false,
+    entries: [
+      { type: 0, flags: 0, mask: FILE_ALL_ACCESS, sid: USER },
+      { type: 0, flags: 0, mask: FILE_ALL_ACCESS, sid: SYSTEM_SID },
+    ],
+  });
+
+  await expect(
+    createRestartIdentityJournal(home, options).list({
+      address: identity.address,
+      workspace: identity.workspace,
+    }),
+  ).rejects.toBeInstanceOf(RestartIdentityJournalError);
+});
+
 test("event and lock inode substitutions during checked reads fail closed", async () => {
   const identity = request();
 
