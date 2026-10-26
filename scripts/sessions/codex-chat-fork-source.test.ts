@@ -245,13 +245,19 @@ test("Fork source requires explicit tier evidence while preserving known null an
     expect(resolve(source.state, omittedAboutOwner).eligible).toBe(true);
 
     const nestedIdentity = structuredClone(source.state),
+      terminalIndex = nestedIdentity.frames.findIndex(
+        (frame) =>
+          frame.turnId === source.requestId &&
+          frame.event.kind === "coding-chat" &&
+          frame.event.event.kind === "outcome",
+      ),
       selectedFrame = nestedIdentity.frames.find(
         (frame) => frame.turnId === source.requestId,
       );
-    if (!selectedFrame)
+    if (terminalIndex < 0 || !selectedFrame)
       throw Error("Missing selected turn for identity-conflict fixture.");
-    nestedIdentity.frames.push({
-      seq: nestedIdentity.frames.length + 1,
+    nestedIdentity.frames.splice(terminalIndex, 0, {
+      seq: terminalIndex + 1,
       turnId: source.requestId,
       at: selectedFrame.at,
       event: ownedCodingEventSchema.parse({
@@ -260,6 +266,9 @@ test("Fork source requires explicit tier evidence while preserving known null an
         version,
         event: { kind: "identity", provider: "codex", threadId, version },
       }),
+    });
+    nestedIdentity.frames.forEach((frame, index) => {
+      frame.seq = index + 1;
     });
     nestedIdentity.revision = nestedIdentity.frames.length;
     const parsedNestedIdentity =
