@@ -62,6 +62,22 @@ export interface CodexChatForkJournalStorageOptions {
   /** Injected only by no-child storage tests. */
   acl?: WindowsAcl;
   waitMs?: number;
+  /** Bounded, path-free diagnostics used only by the opt-in native witness. */
+  onMutexDiagnostic?: (diagnostic: CodexChatForkMutexDiagnostic) => void;
+}
+
+export interface CodexChatForkMutexDiagnostic {
+  phase:
+    | "existing-preflight"
+    | "peer-wait-initial"
+    | "peer-wait-poll"
+    | "creator-open"
+    | "creator-protection"
+    | "creator-readback"
+    | "sidecar-layout";
+  fileSize: number | null;
+  identityStable: boolean | null;
+  failure: "privacy" | "identity" | "other";
 }
 
 interface MutexState {
@@ -162,6 +178,41 @@ export function createCodexChatForkJournalStorage(
       ...(options.acl === undefined ? {} : { acl: options.acl }),
     };
   let insideExclusive = false;
+
+  const reportMutexDiagnostic = (
+    phase: CodexChatForkMutexDiagnostic["phase"],
+    error: unknown,
+    expected?: FileIdentity,
+  ): void => {
+    if (options.onMutexDiagnostic === undefined) return;
+    let fileSize: number | null = null,
+      identityStable: boolean | null = expected === undefined ? null : false;
+    try {
+      const info = lstatSync(mutex, { bigint: true });
+      fileSize = Number(
+        info.size > BigInt(MUTEX_BYTES) ? BigInt(MUTEX_BYTES) : info.size,
+      );
+      if (expected !== undefined)
+        identityStable =
+          info.isFile() &&
+          !info.isSymbolicLink() &&
+          sameIdentity(identity(info), expected);
+    } catch {
+      // Missing or inaccessible mutex is represented by null size and false identity.
+    }
+    const message = error instanceof Error ? error.message.toLowerCase() : "";
+    const failure: CodexChatForkMutexDiagnostic["failure"] =
+      /owner.only|dacl|readable by this os user only/.test(message)
+        ? "privacy"
+        : /changed|linked|identity|stable/.test(message)
+          ? "identity"
+          : "other";
+    try {
+      options.onMutexDiagnostic({ phase, fileSize, identityStable, failure });
+    } catch {
+      // A diagnostic observer must never change storage behavior.
+    }
+  };
 
   const ensureDirectoryChain = (path: string): FileIdentity => {
     const components: string[] = [];
@@ -350,20 +401,28 @@ export function createCodexChatForkJournalStorage(
         acl.userSid(),
         acl.defaultOwnerSid?.() ?? acl.userSid(),
       )
-    )
+    ) {
+      reportMutexDiagnostic(
+        "peer-wait-initial",
+        new Error("untrusted mutex owner"),
+        mutexIdentity,
+      );
       throw new Error(
         "The existing Fork mutex is not a safe initialization candidate.",
       );
+    }
     let initiallyPrivate = false;
     try {
       assertPrivateMetadata(mutex, "file", initial, options);
       initiallyPrivate = true;
     } catch (error) {
-      if (initial.size !== 0n)
+      if (initial.size !== 0n) {
+        reportMutexDiagnostic("peer-wait-initial", error, mutexIdentity);
         throw new Error(
           "The existing Fork mutex is not a safe initialization candidate.",
           { cause: error },
         );
+      }
     }
     if (initiallyPrivate) {
       assertPlainLockFile(mutex, mutexIdentity);
@@ -409,18 +468,22 @@ export function createCodexChatForkJournalStorage(
         assertPrivateMetadata(mutex, "file", info, options);
         isPrivate = true;
       } catch (error) {
-        if (info.size !== 0n)
+        if (info.size !== 0n) {
+          reportMutexDiagnostic("peer-wait-poll", error, mutexIdentity);
           throw new Error(
             "The unprotected Fork mutex changed during initialization.",
             {
               cause: error,
             },
           );
-        if (Date.now() >= deadline)
+        }
+        if (Date.now() >= deadline) {
+          reportMutexDiagnostic("peer-wait-poll", error, mutexIdentity);
           throw new Error(
             "The existing Fork mutex did not become owner-only before the initialization deadline.",
             { cause: error },
           );
+        }
       }
       if (isPrivate) {
         assertPlainLockFile(mutex, mutexIdentity);
@@ -599,7 +662,8 @@ export function createCodexChatForkJournalStorage(
       try {
         assertPrivateMetadata(mutex, "file", info, options);
         readyMutex = existingIdentity;
-      } catch {
+      } catch (error) {
+        reportMutexDiagnostic("existing-preflight", error, existingIdentity);
         if ((options.platform ?? process.platform) !== "win32")
           throw new Error("The existing Fork mutex is not owner-only.");
         readyMutex = await waitForPrivateMutex(
@@ -609,14 +673,22 @@ export function createCodexChatForkJournalStorage(
         );
       }
     } else {
-      inspectLockMetadata(new Map(), false, false);
+      try {
+        inspectLockMetadata(new Map(), false, false);
+      } catch (error) {
+        reportMutexDiagnostic("sidecar-layout", error);
+        throw error;
+      }
     }
     let descriptor: number | undefined, expectedMutex: FileIdentity | undefined;
     if (readyMutex === undefined) {
       try {
         descriptor = openSync(mutex, "wx", 0o600);
       } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+        if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+          reportMutexDiagnostic("creator-open", error);
+          throw error;
+        }
         readyMutex = await waitForPrivateMutex(rootIdentity, lockIdentity);
       }
     }
@@ -644,7 +716,12 @@ export function createCodexChatForkJournalStorage(
         )
           throw new Error("The new private Codex Fork SQLite mutex changed.");
         if ((options.platform ?? process.platform) === "win32") {
-          makeOwnerOnly(mutex, "file", options.acl ?? nativeWindowsAcl());
+          try {
+            makeOwnerOnly(mutex, "file", options.acl ?? nativeWindowsAcl());
+          } catch (error) {
+            reportMutexDiagnostic("creator-protection", error, expectedMutex);
+            throw error;
+          }
         } else {
           const owner = fstatSync(descriptor, { bigint: true }),
             uid = BigInt(process.getuid?.() ?? 0);
@@ -667,7 +744,12 @@ export function createCodexChatForkJournalStorage(
           !sameIdentity(identity(stillOpen), expectedMutex)
         )
           throw new Error("The new private Codex Fork SQLite mutex changed.");
-        assertPrivateLockFile(mutex, expectedMutex);
+        try {
+          assertPrivateLockFile(mutex, expectedMutex);
+        } catch (error) {
+          reportMutexDiagnostic("creator-readback", error, expectedMutex);
+          throw error;
+        }
         fsyncSync(descriptor);
         assertStableDirectory(root, rootIdentity);
         assertStableDirectory(locks, lockIdentity);
@@ -677,9 +759,26 @@ export function createCodexChatForkJournalStorage(
     }
     assertStableDirectory(root, rootIdentity);
     assertStableDirectory(locks, lockIdentity);
-    const mutexInfo = assertPrivateLockFile(mutex, expectedMutex ?? readyMutex),
-      mutexIdentity = identity(mutexInfo),
-      sidecars = inspectLockMetadata(new Map([[MUTEX_FILE, mutexIdentity]]));
+    let mutexInfo: BigIntStats;
+    try {
+      mutexInfo = assertPrivateLockFile(mutex, expectedMutex ?? readyMutex);
+    } catch (error) {
+      reportMutexDiagnostic(
+        "sidecar-layout",
+        error,
+        expectedMutex ?? readyMutex,
+      );
+      throw error;
+    }
+    const mutexIdentity = identity(mutexInfo),
+      sidecars = (() => {
+        try {
+          return inspectLockMetadata(new Map([[MUTEX_FILE, mutexIdentity]]));
+        } catch (error) {
+          reportMutexDiagnostic("sidecar-layout", error, mutexIdentity);
+          throw error;
+        }
+      })();
     return { identity: mutexIdentity, sidecars };
   };
 
