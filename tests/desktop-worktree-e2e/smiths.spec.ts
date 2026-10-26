@@ -1605,6 +1605,25 @@ test("closing and navigating away from a held actual verification read fences it
     await expect(page.locator("main")).not.toContainText(seeded.task.title);
     await page.getByRole("link", { name: "Smiths", exact: true }).click();
     await expect(dialog).not.toBeVisible();
+    if ((await opener.count()) === 0) {
+      // The verification control is rendered with the saved configuration.
+      // A failed config read after navigation must recover through its real
+      // read action before this test can exercise the verification read again.
+      const config = page.getByRole("region", {
+        name: "Saved smith configuration",
+      });
+      await expect(config.getByRole("alert")).toContainText(
+        "Configuration could not be verified",
+      );
+      const retryConfiguration = config.getByRole("button", {
+        name: "Retry configuration",
+        exact: true,
+      });
+      await expect(retryConfiguration).toBeEnabled();
+      await retryConfiguration.click();
+      await expect(config.getByRole("table")).toBeVisible();
+    }
+    await expect(opener).toBeEnabled();
     await opener.click();
     await expect(dialog).toContainText(seeded.task.title);
     unchangedConfig();
