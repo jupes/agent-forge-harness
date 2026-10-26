@@ -128,6 +128,12 @@ test("the dedicated native Fork sends one bounded fork request and returns only 
   expect(result).not.toHaveProperty("preview");
   expect(result).not.toHaveProperty("path");
   expect(calls.map((row) => row.method)).toEqual(["initialize", "thread/fork"]);
+  expect(
+    f
+      .records()
+      .filter((row) => row.kind === "notification")
+      .map((row) => row.method),
+  ).toEqual(["initialized"]);
   expect(initialize?.params).toMatchObject({
     capabilities: { experimentalApi: true, requestAttestation: false },
   });

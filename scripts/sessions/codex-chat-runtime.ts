@@ -468,6 +468,7 @@ export function createCodexChatRuntime(options: CodexChatRuntimeOptions) {
             .strict()
             .parse(value);
         });
+        if (failure) throw failure;
         await bounded(
           () =>
             active.write(

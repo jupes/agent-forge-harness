@@ -470,7 +470,7 @@ while (true) {
         ? parsed.params
         : {};
     const id = "id" in parsed ? parsed.id : null;
-    record({ kind: "rpc", method, params, id });
+    record({ kind: id === null ? "notification" : "rpc", method, params, id });
     if (method === "initialize" && mode === "hang-initialize") {
       hangTree();
     } else if (method === "initialize") {
@@ -479,7 +479,24 @@ while (true) {
           id,
           error: { code: -32000, message: "Synthetic initialize refusal" },
         });
-      else {
+      else if (mode === "fork-server-request") {
+        await Bun.stdout.write(
+          `${JSON.stringify({
+            id,
+            result: {
+              userAgent: "inert",
+              codexHome: process.cwd(),
+              platformFamily: "windows",
+              platformOs: "windows",
+            },
+          })}\n${JSON.stringify({
+            id: "unsupported-server-request",
+            method: "item/commandExecution/requestApproval",
+            params: { threadId },
+          })}\n`,
+        );
+        await new Promise(() => {});
+      } else {
         await send({
           id,
           result: {
@@ -489,14 +506,6 @@ while (true) {
             platformOs: "windows",
           },
         });
-        if (mode === "fork-server-request") {
-          await send({
-            id: "unsupported-server-request",
-            method: "item/commandExecution/requestApproval",
-            params: { threadId },
-          });
-          await new Promise(() => {});
-        }
         await send({
           method: "warning",
           params: { threadId: null, message: "Inert private global warning" },
