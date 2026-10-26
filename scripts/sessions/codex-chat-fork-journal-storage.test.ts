@@ -354,6 +354,7 @@ test("a non-empty inherited mutex is refused without mutation", async () => {
     marker = "preserve the existing non-empty mutex bytes";
   writeFileSync(mutex, marker, { flag: "a" });
   const before = lstatSync(mutex, { bigint: true }),
+    beforeBytes = readFileSync(mutex),
     acl = fakeAcl(),
     read = acl.read.bind(acl);
   let aclRepairs = 0,
@@ -378,9 +379,11 @@ test("a non-empty inherited mutex is refused without mutation", async () => {
   const after = lstatSync(mutex, { bigint: true });
   expect(enteredWork).toBe(false);
   expect(aclRepairs).toBe(0);
-  expect(readFileSync(mutex, "utf8")).toBe(marker);
+  expect(readFileSync(mutex)).toEqual(beforeBytes);
   expect(after.dev).toBe(before.dev);
   expect(after.ino).toBe(before.ino);
+  expect(after.size).toBe(before.size);
+  expect(after.mtimeNs).toBe(before.mtimeNs);
 });
 
 test("a peer waits when a fresh mutex appears after the empty-directory preflight", async () => {
