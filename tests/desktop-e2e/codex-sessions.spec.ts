@@ -163,6 +163,76 @@ async function reenterCodexTask(
     .selectOption(original.launch.sandbox);
 }
 
+test("an explicit identity check recovers from an unavailable initial GET without writing", async ({
+  page,
+}) => {
+  let identityGets = 0;
+  let identityPosts = 0;
+  let startPosts = 0;
+  await page.route(
+    `**/__agent-forge/projects/${alpha.id}/session-start-identities`,
+    async (route) => {
+      if (route.request().method() === "POST") identityPosts++;
+      if (route.request().method() === "GET" && identityGets++ === 0) {
+        await route.fulfill({
+          status: 503,
+          contentType: "application/json",
+          body: JSON.stringify({
+            ok: false,
+            data: null,
+            error: "temporary identity read failure",
+          }),
+        });
+        return;
+      }
+      await route.continue();
+    },
+  );
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      new URL(request.url()).pathname ===
+        `/__agent-forge/projects/${alpha.id}/sessions`
+    )
+      startPosts++;
+  });
+
+  await openSettled(page, `/index.html#/desktop/project/${alpha.id}/sessions`);
+  await expect.poll(() => identityGets).toBe(1);
+  await page.getByRole("button", { name: "New session", exact: true }).click();
+  const dialog = await chooseCodex(page);
+  await expect(
+    dialog.getByRole("button", { name: "Start", exact: true }),
+  ).toBeDisabled();
+  const checkServer = dialog.getByRole("button", {
+    name: "Check server",
+    exact: true,
+  });
+  await expect(checkServer).toBeEnabled();
+  await checkServer.click();
+  await expect.poll(() => identityGets).toBe(2);
+  await expect(
+    dialog.getByText(
+      "No server-owned Start identity is recorded for this workspace.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await dialog
+    .getByRole("textbox", { name: "Session prompt", exact: true })
+    .fill("No Start until the identity page can be checked");
+  await dialog
+    .getByRole("combobox", { name: "Session effort", exact: true })
+    .selectOption("");
+  await dialog
+    .getByRole("button", { name: "Check supported options", exact: true })
+    .click();
+  await expect(
+    dialog.getByRole("button", { name: "Start", exact: true }),
+  ).toBeEnabled();
+  expect(identityPosts).toBe(0);
+  expect(startPosts).toBe(0);
+});
+
 test("bead-prefilled Codex Task preserves honest effort controls and private context, reconciles a lost Start once, and reloads its actual identity", async ({
   page,
 }) => {
