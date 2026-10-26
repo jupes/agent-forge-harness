@@ -119,7 +119,7 @@ test("profile resolution refuses a linked ancestor before creating an absent tai
   symlinkSync(target, alias, process.platform === "win32" ? "junction" : "dir");
 
   expect(() => createSmithCreateJournalStorage(linkedProfile)).toThrow(
-    "trusted Smith create directory is not canonical",
+    "The trusted directory is not a plain directory.",
   );
   expect(existsSync(join(target, "absent"))).toBe(false);
 });

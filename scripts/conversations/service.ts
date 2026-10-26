@@ -24,6 +24,11 @@ import type {
   SessionMessage,
   SessionTurnSnapshot,
 } from "../../types/session-turn";
+import {
+  type InitialStartAttempt,
+  markInitialStartAcceptEntered,
+  noteInitialStartPreparationRefusal,
+} from "../identities/preaccept-not-sent-proof";
 import { keeperBriefPrompt, keeperBriefs } from "../keeper/brief-model";
 import { briefSnapshotSchema } from "../keeper/brief-protocol";
 import { keeperContinuationSchema } from "../keeper/recovery-protocol";
@@ -415,6 +420,7 @@ export function createConversationService(options: ConversationOptions) {
       projectId: string,
       rawInput: SessionMessage,
       purpose: "message" | "brief" = "message",
+      initialStartAttempt?: InitialStartAttempt,
     ): Promise<ConversationReceipt> {
       const wireInput: SessionMessage =
         options.prepareSession ||
@@ -516,8 +522,10 @@ export function createConversationService(options: ConversationOptions) {
           );
         return { ...wireInput, brief: user.brief };
       };
-      if (current.turns.some((item) => item.requestId === input.requestId))
+      if (current.turns.some((item) => item.requestId === input.requestId)) {
+        markInitialStartAcceptEntered(initialStartAttempt);
         return store.accept(projectId, original());
+      }
       if (
         (options.prepareSession ||
           options.prepareCodexTask ||
@@ -575,7 +583,7 @@ export function createConversationService(options: ConversationOptions) {
           409,
           "The configured provider differs from the saved conversation. Continuity must be resolved before sending.",
         );
-      if (!options.keeperRuntime || options.address)
+      if ((!options.keeperRuntime || options.address) && !initialStartAttempt)
         await selected.transport.check?.({
           project,
           root: options.root,
@@ -595,6 +603,7 @@ export function createConversationService(options: ConversationOptions) {
             "This hearth already owns an active turn. No new turn was accepted.",
           );
         await existing.admission;
+        markInitialStartAcceptEntered(initialStartAttempt);
         return store.accept(projectId, original());
       }
       const abort = new AbortController();
@@ -674,13 +683,21 @@ export function createConversationService(options: ConversationOptions) {
               )
                 input = original();
               else {
-                const snapshot = sessionTurnSnapshotSchema.safeParse(
-                  await options.prepareSession({
+                let prepared: SessionTurnSnapshot;
+                try {
+                  prepared = await options.prepareSession({
                     project: projectFor(projectId),
                     input: wireInput,
                     resume: latest.binding,
-                  }),
-                );
+                  });
+                } catch (error) {
+                  noteInitialStartPreparationRefusal(
+                    initialStartAttempt,
+                    error,
+                  );
+                  throw error;
+                }
+                const snapshot = sessionTurnSnapshotSchema.safeParse(prepared);
                 if (
                   !snapshot.success ||
                   snapshot.data.launch.prompt !== wireInput.text ||
@@ -701,13 +718,21 @@ export function createConversationService(options: ConversationOptions) {
               )
                 input = original();
               else {
-                const snapshot = preparedCodexTaskSchema.safeParse(
-                  await options.prepareCodexTask({
+                let prepared: PreparedCodexTask;
+                try {
+                  prepared = await options.prepareCodexTask({
                     project: projectFor(projectId),
                     input: wireInput,
                     resume: latest.binding,
-                  }),
-                );
+                  });
+                } catch (error) {
+                  noteInitialStartPreparationRefusal(
+                    initialStartAttempt,
+                    error,
+                  );
+                  throw error;
+                }
+                const snapshot = preparedCodexTaskSchema.safeParse(prepared);
                 if (
                   !snapshot.success ||
                   snapshot.data.launch.prompt !== wireInput.text ||
@@ -728,13 +753,21 @@ export function createConversationService(options: ConversationOptions) {
               )
                 input = original();
               else {
-                const snapshot = preparedCodexChatSchema.safeParse(
-                  await options.prepareCodexChat({
+                let prepared: PreparedCodexChat;
+                try {
+                  prepared = await options.prepareCodexChat({
                     project: projectFor(projectId),
                     input: wireInput,
                     resume: latest.binding,
-                  }),
-                );
+                  });
+                } catch (error) {
+                  noteInitialStartPreparationRefusal(
+                    initialStartAttempt,
+                    error,
+                  );
+                  throw error;
+                }
+                const snapshot = preparedCodexChatSchema.safeParse(prepared);
                 if (
                   !snapshot.success ||
                   snapshot.data.launch.prompt !== wireInput.text ||
@@ -755,13 +788,21 @@ export function createConversationService(options: ConversationOptions) {
               )
                 input = original();
               else {
-                const snapshot = preparedGeminiTaskSchema.safeParse(
-                  await options.prepareGeminiTask({
+                let prepared: PreparedGeminiTask;
+                try {
+                  prepared = await options.prepareGeminiTask({
                     project: projectFor(projectId),
                     input: wireInput,
                     resume: latest.binding,
-                  }),
-                );
+                  });
+                } catch (error) {
+                  noteInitialStartPreparationRefusal(
+                    initialStartAttempt,
+                    error,
+                  );
+                  throw error;
+                }
+                const snapshot = preparedGeminiTaskSchema.safeParse(prepared);
                 if (
                   !snapshot.success ||
                   snapshot.data.launch.prompt !== wireInput.text ||
@@ -782,13 +823,21 @@ export function createConversationService(options: ConversationOptions) {
               )
                 input = original();
               else {
-                const snapshot = preparedGeminiChatSchema.safeParse(
-                  await options.prepareGeminiChat({
+                let prepared: PreparedGeminiChat;
+                try {
+                  prepared = await options.prepareGeminiChat({
                     project: projectFor(projectId),
                     input: wireInput,
                     resume: latest.binding,
-                  }),
-                );
+                  });
+                } catch (error) {
+                  noteInitialStartPreparationRefusal(
+                    initialStartAttempt,
+                    error,
+                  );
+                  throw error;
+                }
+                const snapshot = preparedGeminiChatSchema.safeParse(prepared);
                 if (
                   !snapshot.success ||
                   snapshot.data.launch.prompt !== wireInput.text ||
@@ -807,6 +856,7 @@ export function createConversationService(options: ConversationOptions) {
                 503,
                 "The hearth closed during source preparation. No turn was accepted.",
               );
+            markInitialStartAcceptEntered(initialStartAttempt);
             const accepted = await store.accept(projectId, input);
             if (accepted.turn.phase !== "accepted") {
               admitted = true;
@@ -873,6 +923,7 @@ export function createConversationService(options: ConversationOptions) {
               .read(projectId)
               .turns.some((turn) => turn.requestId === input.requestId)
           ) {
+            markInitialStartAcceptEntered(initialStartAttempt);
             const previous = await store.accept(projectId, original());
             admitted = true;
             accept(previous);

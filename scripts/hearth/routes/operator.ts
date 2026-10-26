@@ -86,6 +86,7 @@ import { createSessionWorktreeRoutes } from "./session-worktrees";
 import { createOwnedSessionRoutes } from "./sessions";
 import { shiftRoutes } from "./shifts";
 import { smithConfigCreateRoutes } from "./smith-config-creates";
+import { smithConfigEditRoutes } from "./smith-config-edits";
 import { smithVerificationRoute } from "./smith-verification";
 
 type CouncilService = ReturnType<typeof createCouncilService>;
@@ -95,6 +96,8 @@ export interface OperatorDeps extends ReadDeps {
   providerLogin: ProviderLoginService;
   /** Captured once by server-runtime; never selected from a request. */
   smithCreateService: Parameters<typeof smithConfigCreateRoutes>[0];
+  /** Captured once by server-runtime; never selected from a request. */
+  smithEditService: Parameters<typeof smithConfigEditRoutes>[0];
   /** Machine-private home; the project catalog is shared above workspaces. */
   projectHome: string;
   conversationTransport?: ConversationTransport | undefined;
@@ -470,6 +473,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
   );
   const providerLogins = createProviderLoginRoutes(deps.providerLogin);
   const smithCreates = smithConfigCreateRoutes(deps.smithCreateService);
+  const smithEdits = smithConfigEditRoutes(deps.smithEditService);
   const observations = createSessionObservationRoutes(deps, projectSnapshot);
   const activity = createProjectActivityRoutes(deps, projectSnapshot);
   const reads: ReadRoute[] = [
@@ -484,6 +488,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     smiths,
     smithVerificationRoute(deps),
     ...smithCreates.reads,
+    ...smithEdits.reads,
     config,
     worktrees,
     eligibility,
@@ -515,6 +520,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     proposals.read,
     keeperSessionStarts.read,
     keeperShiftStarts.read,
+    ownedSessions.identityList,
     ownedSessions.list,
     ownedSessions.read,
     ownedSessions.approvals,
@@ -556,6 +562,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       ownedSessions.events,
       ...actions(deps),
       ...smithCreates.actions,
+      ...smithEdits.actions,
       providers.doctor,
       ...providerLogins.actions,
       preferences,
@@ -568,6 +575,8 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       keeperShiftStarts.start,
       conversations.stop,
       ownedSessions.start,
+      ownedSessions.identityReserve,
+      ownedSessions.identityRetire,
       ownedSessions.preview,
       ownedSessions.send,
       ownedSessions.stop,

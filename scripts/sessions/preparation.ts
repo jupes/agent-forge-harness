@@ -1,5 +1,6 @@
 import type { ClaudeSessionLaunch } from "../../types/session-launch";
 import { ConversationError } from "../conversations/error";
+import { markKnownPreacceptPreparationRefusal } from "../identities/preaccept-not-sent-proof";
 import type { SessionRuntime } from "./admission";
 import { sessionTurnSnapshotSchema } from "./turn-protocol";
 
@@ -31,10 +32,14 @@ export async function prepareReviewedSession(
   try {
     raw = await runtime.prepare(structuredClone(reviewed));
   } catch (error) {
-    if (error instanceof ConversationError) throw error;
-    throw new ConversationError(
-      503,
-      "The selected Claude launch is unavailable or unsupported. No provider turn was started.",
+    throw markKnownPreacceptPreparationRefusal(
+      error instanceof ConversationError
+        ? error
+        : new ConversationError(
+            503,
+            "The selected Claude launch is unavailable or unsupported. No provider turn was started.",
+          ),
+      error,
     );
   }
   const snapshot = sessionTurnSnapshotSchema.safeParse(raw);

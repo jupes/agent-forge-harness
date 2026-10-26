@@ -18,6 +18,7 @@ import { geminiChatPreviewReceiptSchema } from "../../sessions/gemini-chat-previ
 import { createGeminiChatRuntime } from "../../sessions/gemini-chat-runtime";
 import { sessionTranscriptExportSchema } from "../../sessions/library-protocol";
 import { sessionRegistryFile } from "../../sessions/registry";
+import { expectStartIdentityState } from "../../sessions/session-start-identity-test-witness";
 import { scratchDirs } from "../../test-scratch";
 import { startTestHearth, type TestHearth } from "../testing";
 import { writeOwnerOnly } from "../token";
@@ -62,6 +63,7 @@ async function fixture(
 ) {
   let actual: ReturnType<typeof createGeminiChatRuntime> | undefined,
     held = false,
+    activeStartInput: unknown,
     release: () => void = () => {};
   const gate = new Promise<void>((resolve) => {
     release = resolve;
@@ -84,7 +86,7 @@ async function fixture(
     api: {
       git: fixtureSessionGit,
       geminiChatRuntime: {
-        prepare(input) {
+        async prepare(input) {
           const action = h.events(["operator.action"]).at(-1);
           expect(
             action?.kind === "operator.action" &&
@@ -94,6 +96,18 @@ async function fixture(
                 "session.turn.send",
               ].includes(action.payload.action),
           ).toBe(true);
+          if (
+            activeStartInput !== undefined &&
+            action?.kind === "operator.action" &&
+            action.payload.action === "session.start"
+          )
+            await expectStartIdentityState(
+              h.home,
+              FIXTURE_PROJECT_ID,
+              h.workspace,
+              activeStartInput,
+              "attempted",
+            );
           return selected().prepare(input);
         },
         async run(...args) {
@@ -160,13 +174,15 @@ async function fixture(
     input: unknown,
     token: string | null = h.hearth.token,
     signal?: AbortSignal,
-  ) =>
-    fetch(`${h.api}${path}${suffix}`, {
+  ) => {
+    if (suffix === "") activeStartInput = input;
+    return fetch(`${h.api}${path}${suffix}`, {
       method: "POST",
       headers: h.headers(token),
       body: JSON.stringify(input),
       ...(signal ? { signal } : {}),
     });
+  };
   const get = (suffix: string) =>
     fetch(`${h.api}${path}${suffix}`, { headers: h.headers(h.hearth.token) });
   const records = (): Record<string, unknown>[] => {
@@ -243,6 +259,13 @@ test("protected audited Gemini Chat preview/Start/permission/export retains nati
       await data(startedResponse),
     ),
     id = started.session.id;
+  await expectStartIdentityState(
+    f.h.home,
+    FIXTURE_PROJECT_ID,
+    f.h.workspace,
+    f.request,
+    "admitted",
+  );
   const page = await until(
     async () =>
       geminiChatApprovalPageSchema.parse(
@@ -318,17 +341,43 @@ test("lost accepted Start answer reconciles the same original without another pr
   await until(async () => f.held(), Boolean);
   abort.abort();
   await missing;
+  await expectStartIdentityState(
+    f.h.home,
+    FIXTURE_PROJECT_ID,
+    f.h.workspace,
+    f.request,
+    "admitted",
+  );
   const list = await data(await f.get(""));
   expect(Array.isArray(list)).toBe(true);
   if (!Array.isArray(list) || !list[0])
     throw Error("No protected original receipt metadata");
   const original = ownedCodingSessionSchema.parse(list[0]);
-  const records = JSON.stringify(f.records());
+  const beforeRetry = await until(
+    async () => f.records(),
+    (rows) =>
+      rows.filter((row) => row.kind === "start").length === 1 &&
+      rows.filter(
+        (row) =>
+          row.kind === "wire" &&
+          JSON.stringify(row).includes('"method":"session/prompt"') &&
+          JSON.stringify(row).includes("PRIVATE-ACP-PROMPT"),
+      ).length === 1,
+  );
+  const records = JSON.stringify(beforeRetry);
   f.release();
   const retry = await f.post("", f.request);
   expect(retry.status).toBe(202);
   const accepted = ownedCodingStartReceiptSchema.parse(await data(retry));
   expect(accepted.session.id).toBe(original.id);
+  expect(JSON.stringify(f.records())).toBe(records);
+  await expectStartIdentityState(
+    f.h.home,
+    FIXTURE_PROJECT_ID,
+    f.h.workspace,
+    f.request,
+    "admitted",
+  );
   await until(
     async () =>
       ownedCodingPageSchema.parse(

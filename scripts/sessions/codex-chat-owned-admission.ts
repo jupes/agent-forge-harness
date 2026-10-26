@@ -13,6 +13,10 @@ import { ConversationError } from "../conversations/error";
 import { createConversationService } from "../conversations/service";
 import { createConversationStore } from "../conversations/store";
 import type { ConversationUpdate } from "../conversations/transport";
+import {
+  type InitialStartAttempt,
+  markKnownPreacceptPreparationRefusal,
+} from "../identities/preaccept-not-sent-proof";
 import { resolveCheckout } from "../ledger/workspace";
 import { workspaceKey } from "../projects/scope";
 import { preparedCodexChatSchema } from "./codex-app-server-protocol";
@@ -152,10 +156,13 @@ export function createCodexOwnedChatService(options: Options) {
             smith: session.smith,
             launch: structuredClone(launch),
           });
-        } catch {
-          throw new ConversationError(
-            503,
-            "The selected Codex Chat options are unavailable or lack exact capability evidence. No turn was accepted.",
+        } catch (error) {
+          throw markKnownPreacceptPreparationRefusal(
+            new ConversationError(
+              503,
+              "The selected Codex Chat options are unavailable or lack exact capability evidence. No turn was accepted.",
+            ),
+            error,
           );
         }
         const parsed = preparedCodexChatSchema.safeParse(raw);
@@ -187,6 +194,7 @@ export function createCodexOwnedChatService(options: Options) {
     async start(
       projectId: string,
       raw: unknown,
+      attempt?: InitialStartAttempt,
     ): Promise<CodexChatStartReceipt> {
       const parsed = codexChatStartSchema.safeParse(raw);
       if (!parsed.success)
@@ -233,13 +241,18 @@ export function createCodexOwnedChatService(options: Options) {
       try {
         return {
           session,
-          receipt: await serviceFor(session).send(projectId, {
-            requestId: request.requestId,
-            expectedRevision: 0,
-            text: request.launch.prompt,
-            about: request.about ?? [],
-            attachments: request.launch.attachments,
-          }),
+          receipt: await serviceFor(session).send(
+            projectId,
+            {
+              requestId: request.requestId,
+              expectedRevision: 0,
+              text: request.launch.prompt,
+              about: request.about ?? [],
+              attachments: request.launch.attachments,
+            },
+            "message",
+            attempt,
+          ),
         };
       } finally {
         initial.delete(session.id);

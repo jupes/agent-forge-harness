@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import type { ConversationPage } from "../../types/conversation";
@@ -15,6 +16,7 @@ import { createClaudeSessionTransport } from "./claude-transport";
 import { ownedCodingPageSchema } from "./codex-owned-journal";
 import { ownedCodingStartReceiptSchema } from "./codex-owned-wire-protocol";
 import { createCodexTaskRuntime } from "./codex-task-runtime";
+import { expectStartIdentityState } from "./session-start-identity-test-witness";
 
 const opened: TestHearth[] = [];
 afterEach(async () => {
@@ -71,6 +73,8 @@ function compile(root: string, name: string) {
 test("real hearth and compiled fake providers retain private activity through protected reads without ledger/list disclosure or duplicate dispatch", async () => {
   let claude: ReturnType<typeof createClaudeSessionTransport> | undefined;
   let codex: ReturnType<typeof createCodexTaskRuntime> | undefined;
+  let activeStartInput: unknown;
+  let h: TestHearth;
   const getClaude = () => {
     if (!claude) throw Error("Fixture Claude runtime not initialized");
     return claude;
@@ -79,7 +83,7 @@ test("real hearth and compiled fake providers retain private activity through pr
     if (!codex) throw Error("Fixture Codex runtime not initialized");
     return codex;
   };
-  const h = await startTestHearth({
+  h = await startTestHearth({
     files: {
       "agent-forge.toml":
         '[execution.env]\npass = ["CODING_FIXTURE_MODE", "CODING_FIXTURE_RECORD", "CODEX_RUNTIME_MODE", "CODEX_RUNTIME_LOG"]\n',
@@ -103,12 +107,32 @@ test("real hearth and compiled fake providers retain private activity through pr
       git: fixtureSessionGit,
       sessionRuntime: {
         provider: "claude",
-        prepare: (input) => getClaude().prepare(input),
+        async prepare(input) {
+          if (activeStartInput !== undefined)
+            await expectStartIdentityState(
+              h.home,
+              FIXTURE_PROJECT_ID,
+              h.workspace,
+              activeStartInput,
+              "attempted",
+            );
+          return getClaude().prepare(input);
+        },
         run: (...args) => getClaude().run(...args),
       },
       codexTaskRuntime: {
         check: (input) => getCodex().check(input),
-        prepare: (input) => getCodex().prepare(input),
+        async prepare(input) {
+          if (activeStartInput !== undefined)
+            await expectStartIdentityState(
+              h.home,
+              FIXTURE_PROJECT_ID,
+              h.workspace,
+              activeStartInput,
+              "attempted",
+            );
+          return getCodex().prepare(input);
+        },
         run: (...args) => getCodex().run(...args),
       },
     },
@@ -172,6 +196,7 @@ test("real hearth and compiled fake providers retain private activity through pr
             },
           }),
     };
+    activeStartInput = request;
     const started = await fetch(path, {
       method: "POST",
       headers,
@@ -179,6 +204,13 @@ test("real hearth and compiled fake providers retain private activity through pr
     });
     expect(started.status, await started.clone().text()).toBe(202);
     const receipt = await payload(started, ownedCodingStartReceiptSchema);
+    await expectStartIdentityState(
+      h.home,
+      FIXTURE_PROJECT_ID,
+      h.workspace,
+      request,
+      "admitted",
+    );
     let page: ConversationPage | null = null;
     const deadline = Date.now() + 5000;
     do {
@@ -233,6 +265,11 @@ test("real hearth and compiled fake providers retain private activity through pr
       expect(account.authSource?.report.apiKeySource).toBe("none");
       expect(account.usage?.report.rate_limits?.limits?.[0]?.percent).toBe(75);
     } else expect(JSON.stringify(activity)).not.toContain('"additions"');
+    const effectLog = join(
+      h.root,
+      provider === "claude" ? "claude-record.json" : "codex-record.jsonl",
+    );
+    const beforeDuplicateEffect = readFileSync(effectLog, "utf8");
     const repeated = await fetch(path, {
       method: "POST",
       headers,
@@ -241,6 +278,14 @@ test("real hearth and compiled fake providers retain private activity through pr
     expect(repeated.status).toBe(202);
     const duplicate = await payload(repeated, ownedCodingStartReceiptSchema);
     expect(duplicate.session.id).toBe(receipt.session.id);
+    expect(readFileSync(effectLog, "utf8")).toBe(beforeDuplicateEffect);
+    await expectStartIdentityState(
+      h.home,
+      FIXTURE_PROJECT_ID,
+      h.workspace,
+      request,
+      "admitted",
+    );
     const unauthorized = await fetch(`${path}/${receipt.session.id}`, {
       headers: h.headers(),
     });

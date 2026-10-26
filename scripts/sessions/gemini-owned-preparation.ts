@@ -1,6 +1,7 @@
 import type { GeminiTaskStartRequest } from "../../types/gemini-owned-task";
 import type { GeminiTaskLaunch } from "../../types/gemini-task";
 import { ConversationError } from "../conversations/error";
+import { markKnownPreacceptPreparationRefusal } from "../identities/preaccept-not-sent-proof";
 import type { createGeminiTaskRuntime } from "./gemini-task-runtime";
 import { preparedGeminiTaskSchema } from "./gemini-task-runtime-protocol";
 import { canonicalSessionInput } from "./preparation";
@@ -31,10 +32,13 @@ export async function prepareReviewedGeminiTask(
   let raw: unknown;
   try {
     raw = await runtime.prepare(structuredClone(reviewed));
-  } catch {
-    throw new ConversationError(
-      503,
-      "The selected Gemini Task options are unavailable or lack exact native capability evidence. No turn was accepted.",
+  } catch (error) {
+    throw markKnownPreacceptPreparationRefusal(
+      new ConversationError(
+        503,
+        "The selected Gemini Task options are unavailable or lack exact native capability evidence. No turn was accepted.",
+      ),
+      error,
     );
   }
   const parsed = preparedGeminiTaskSchema.safeParse(raw);
