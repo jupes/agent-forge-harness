@@ -96,6 +96,7 @@ export function SmithEditFormView({
   const held = state.entries.some((entry) => entry.state === "held");
   const sameReview = Boolean(
     state.preview &&
+      !state.previewStale &&
       state.preview.target === state.target &&
       state.preview.review.name === state.name &&
       JSON.stringify(state.preview.review.effectiveAfter) ===
@@ -220,6 +221,12 @@ export function SmithEditFormView({
       {state.preview && (
         <section aria-label="Smith edit review" class="af-smith-edit-review">
           <h3>Review this Smith edit</h3>
+          {state.previewStale && (
+            <p role="status">
+              This reviewed candidate was refused and is stale. Review a fresh
+              candidate before saving another edit.
+            </p>
+          )}
           <dl>
             <dt>Immutable Smith name</dt>
             <dd>

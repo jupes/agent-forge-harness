@@ -36,6 +36,7 @@ export interface SmithEditClientState {
   name: string;
   smith: Smith;
   preview: SmithConfigEditPreview | null;
+  previewStale: boolean;
   previewing: boolean;
   saving: boolean;
   entries: SmithEditEntry[];
@@ -115,6 +116,7 @@ export function createSmithConfigEditClient(deps: {
       tags: [],
     },
     preview: null,
+    previewStale: false,
     previewing: false,
     saving: false,
     entries: [],
@@ -273,6 +275,7 @@ export function createSmithConfigEditClient(deps: {
       state.name = name;
       state.smith = structuredClone(smith);
       state.preview = null;
+      state.previewStale = false;
       previewScope = null;
       state.notice = valid
         ? "Draft changed. Review a fresh candidate before saving."
@@ -320,6 +323,7 @@ export function createSmithConfigEditClient(deps: {
             "The Smith edit candidate did not match the reviewed draft.",
           );
         state.preview = structuredClone(parsed.data);
+        state.previewStale = false;
         previewScope = scope;
         state.notice =
           "Review the complete target and effective changes before saving.";
@@ -343,6 +347,7 @@ export function createSmithConfigEditClient(deps: {
         state.previewing ||
         !deps.canWrite() ||
         !canStart() ||
+        state.previewStale ||
         previewScope !== scope ||
         !samePreviewInput(state.preview, state.target, state.name, state.smith)
       )
@@ -444,6 +449,7 @@ export function createSmithConfigEditClient(deps: {
           state.notice = held.notice;
           return;
         }
+        let retainRefusedPreview = false;
         if (outcome.state === "not-sent") {
           if (trustedNotSent) {
             const retired = await retire(held, "verified-not-sent");
@@ -470,12 +476,21 @@ export function createSmithConfigEditClient(deps: {
             held.notice =
               "The edit response could not be checked. Its UUID remains held; check the original receipt.";
           }
-          if (installed === "installed") await retireVerifiedReceipt(held);
-          else if (installed === "invalid") held.state = "held";
+          if (installed === "installed") {
+            if (held.state === "refused") {
+              state.previewStale = true;
+              previewScope = null;
+              retainRefusedPreview = true;
+            }
+            await retireVerifiedReceipt(held);
+          } else if (installed === "invalid") held.state = "held";
           state.notice = held.notice;
         }
-        state.preview = null;
-        previewScope = null;
+        if (!retainRefusedPreview) {
+          state.preview = null;
+          state.previewStale = false;
+          previewScope = null;
+        }
       } finally {
         state.saving = false;
         emit();

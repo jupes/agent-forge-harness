@@ -20,6 +20,7 @@ const emptyState: SmithEditClientState = {
     tags: [],
   },
   preview: null,
+  previewStale: false,
   previewing: false,
   saving: false,
   entries: [],
