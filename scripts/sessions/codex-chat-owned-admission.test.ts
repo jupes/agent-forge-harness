@@ -15,6 +15,7 @@ import type { ConversationFrame } from "../../types/conversation";
 import { conversationFile } from "../conversations/paths";
 import { eventSchema } from "../conversations/protocol";
 import { createConversationStore } from "../conversations/store";
+import { resolveCheckout } from "../ledger/workspace";
 import { workspaceKey } from "../projects/scope";
 import { createProjectStore } from "../projects/store";
 import { scratchDirs } from "../test-scratch";
@@ -1928,7 +1929,7 @@ test("owned Chat persists its private snapshot and resumes the exact native thre
         state: fullState,
         projectId: f.project.id,
         conversationId: started.session.id,
-        workspaceKey: workspaceKey(f.root),
+        workspaceKey: workspaceKey(resolveCheckout(f.root).workspace),
         selectedTurnRequestId: requestId,
       });
   const firstSource = resolveTurn(f.request.requestId),
