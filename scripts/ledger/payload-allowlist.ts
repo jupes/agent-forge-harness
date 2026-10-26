@@ -60,13 +60,22 @@ export const PAYLOAD_KEYS: Record<LedgerEventKind, readonly string[]> = {
     "findings",
   ],
   "friction.recorded": ["frictionBeadId", "causeEventUlid"],
-  "operator.action": ["action", "surface", "target"],
+  "operator.action": [
+    "action",
+    "surface",
+    "target",
+    "family",
+    "requestId",
+    "inputHash",
+  ],
 };
 
 const EXECUTOR_KEYS = ["provider", "model", "effort", "smith", "sessionId"];
 const FINDING_KEYS = ["blocker", "high", "medium", "low"];
 const VERDICT_ARTIFACT_KEYS = ["path", "sha256", "bytes", "schemaVersion"];
 const SHA256_HEX = /^[0-9a-f]{64}$/;
+const LOWERCASE_UUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /** Returned by a nested cut for a value that is not worth storing under its key. */
 const DROP = Symbol("drop");
@@ -126,6 +135,14 @@ function findingCounts(value: unknown): unknown {
 
 /** Payload keys whose value is an object or array, and the shape each is cut to. */
 const NESTED: Readonly<Record<string, (value: unknown) => unknown>> = {
+  // Only this currently implemented durable request family is authorized to
+  // correlate an action with a saved original. These fields remain bounded
+  // identifiers/digests; request content never enters the audit payload.
+  family: (value) => (value === "smith-config-edit" ? value : DROP),
+  requestId: (value) =>
+    typeof value === "string" && LOWERCASE_UUID.test(value) ? value : DROP,
+  inputHash: (value) =>
+    typeof value === "string" && SHA256_HEX.test(value) ? value : DROP,
   usage,
   builder: (value) => pick(value, EXECUTOR_KEYS),
   evaluator: (value) => pick(value, EXECUTOR_KEYS),

@@ -77,6 +77,12 @@ export interface StreamRoute<Input = unknown> extends RouteCommon<Input> {
 export interface ActionSubject {
   target?: string;
   beadId?: string;
+  /** Fixed write-family tag for operations whose identities share an API. */
+  family?: string;
+  /** Durable idempotency UUID; never carries request content. */
+  requestId?: string;
+  /** Canonical request digest; never carries request content. */
+  inputHash?: string;
 }
 
 /** A POST that changes something. */
@@ -484,6 +490,13 @@ export function createOperatorApi(
         action: route.action,
         surface: surface.value,
         ...(subject.target !== undefined ? { target: subject.target } : {}),
+        ...(subject.family !== undefined ? { family: subject.family } : {}),
+        ...(subject.requestId !== undefined
+          ? { requestId: subject.requestId }
+          : {}),
+        ...(subject.inputHash !== undefined
+          ? { inputHash: subject.inputHash }
+          : {}),
       },
     });
     if ("error" in audit)

@@ -229,6 +229,7 @@ async function main() {
       codexChatRuntime: {
         check: (input) => chat.check(input),
         prepare: (input) => chat.prepare(input),
+        fork: (input) => chat.fork(input),
         run: async (...args) => {
           let mode: unknown = null;
           try {

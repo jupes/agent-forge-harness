@@ -14,6 +14,12 @@
 
 import { createHash } from "node:crypto";
 import { BENCH_NAMES, type Smith } from "../../types/hearth";
+import type {
+  SmithConfigEditFields,
+  SmithConfigEditPreviewRequest,
+  SmithConfigEditReview,
+  SmithConfigEditTargetBefore,
+} from "../../types/smith-config-edit";
 import { validateSmith } from "../hearth/validate";
 import { BUILTIN_SHIFT, BUILTIN_SMITHS } from "./defaults";
 import {
@@ -26,6 +32,7 @@ import {
   SHIFT_KEYS,
   type ShiftKey,
 } from "./load";
+import { smithConfigEditPreviewRequestSchema } from "./smith-edit-protocol";
 import {
   type ConfigWriteTransaction,
   type PreparedConfigTransaction,
@@ -62,6 +69,21 @@ export interface SmithCreateCandidate {
 
 export type SmithCreateCandidateOutcome =
   | { ok: true; value: SmithCreateCandidate }
+  | { ok: false; error: string };
+
+export interface SmithEditCandidate {
+  target: ConfigTarget;
+  file: string;
+  created: boolean;
+  smith: Smith;
+  bytes: Uint8Array;
+  sha256: string;
+  sources: Record<ConfigTarget, ConfigSourceFingerprint>;
+  review: SmithConfigEditReview;
+}
+
+export type SmithEditCandidateOutcome =
+  | { ok: true; value: SmithEditCandidate }
   | { ok: false; error: string };
 
 export type SetOutcome =
@@ -579,6 +601,153 @@ export function buildSmithCreateCandidate(request: {
         sha256: createHash("sha256").update(bytes).digest("hex"),
         sources: { user: user.fingerprint, workspace: workspace.fingerprint },
         effective,
+      },
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
+}
+
+/**
+ * Build one atomic candidate for all supported fields of an existing Smith.
+ * The request is domain-shaped, the selected source is explicit, and the
+ * effective result must equal the complete requested Smith. No file is read
+ * by label or written by this pure function.
+ */
+export function buildSmithEditCandidate(
+  value: SmithConfigEditPreviewRequest | unknown,
+  sources: Record<ConfigTarget, ConfigByteSource>,
+  env: Readonly<Record<string, string | undefined>>,
+): SmithEditCandidateOutcome {
+  try {
+    const request = smithConfigEditPreviewRequestSchema.parse(value),
+      user = capturedSource(sources.user),
+      workspace = capturedSource(sources.workspace),
+      sourceByTarget = { user, workspace },
+      docs = { user: user.doc, workspace: workspace.doc },
+      texts = { user: user.source, workspace: workspace.source },
+      before = loadConfigFromByteContents({ sources, env });
+
+    if (!Object.hasOwn(before.config.smiths, request.name))
+      throw new Refusal(`unknown existing smith "${request.name}"`);
+
+    const source = sourceByTarget[request.target],
+      old = docs[request.target],
+      targetRaw = at(old, ["smiths", request.name]);
+    if (old.smiths !== undefined && !isTable(old.smiths))
+      throw new Refusal(
+        `${source.source.file}: smiths holds a value, not a table; change it by hand`,
+      );
+
+    if (targetRaw !== undefined && !isTable(targetRaw))
+      throw new Refusal(
+        `${source.source.file}: smiths.${request.name} is not a table; change it by hand`,
+      );
+
+    if (request.target === "workspace" && source.source.text === null) {
+      const userPass = at(docs.user, ["execution", "env", "pass"]);
+      if (Array.isArray(userPass) && userPass.length > 0)
+        throw new Refusal(
+          firstWorkspacePassRefusal(
+            texts.user.file,
+            texts.workspace.file,
+            userPass.map(String),
+          ),
+        );
+    }
+
+    const body = source.source.text ?? "",
+      bom = body.startsWith(BOM) ? BOM : "";
+    let next = body.slice(bom.length),
+      expected = old;
+    scan(next);
+    const table = ["smiths", request.name],
+      fields: SmithConfigEditFields = {
+        provider: request.smith.provider,
+        model: request.smith.model,
+        effort: request.smith.effort,
+        enabled: request.smith.enabled,
+        tags: [...request.smith.tags],
+      };
+    for (const field of Object.keys(
+      fields,
+    ) as (keyof SmithConfigEditFields)[]) {
+      const shape = { table, field, kind: SMITH_FIELDS[field]! };
+      next = edited(next, shape, fields[field], expected);
+      expected = withValue(expected, [...table, field], fields[field]);
+    }
+    if (!Bun.deepEquals(parse(next), expected, true))
+      throw new Refusal(
+        `${source.source.file}: the candidate would change more than smiths.${request.name}`,
+      );
+
+    const text = bom + next,
+      afterSources = {
+        ...texts,
+        [request.target]: { file: source.source.file, text },
+      },
+      effectiveAfter = loadConfigFromContents({ sources: afterSources, env }),
+      effectiveBefore = before.config.smiths[request.name],
+      effectiveResult = effectiveAfter.config.smiths[request.name];
+    if (effectiveBefore === undefined || effectiveResult === undefined)
+      throw new Refusal(
+        `smiths.${request.name}: the selected Smith is unavailable in the effective configuration`,
+      );
+    if (!Bun.deepEquals(effectiveResult, request.smith, true))
+      throw new Refusal(
+        `smiths.${request.name}: the selected target would not make the requested complete Smith effective`,
+      );
+
+    const provenanceFor = (loaded: LoadedConfig) => {
+      const result = {} as Record<keyof SmithConfigEditFields, string>;
+      for (const field of Object.keys(
+        fields,
+      ) as (keyof SmithConfigEditFields)[]) {
+        const sourceName =
+          loaded.provenance[`smiths.${request.name}.${field}`]?.source;
+        if (typeof sourceName !== "string")
+          throw new Refusal(
+            `smiths.${request.name}.${field}: source provenance is unavailable`,
+          );
+        result[field] = sourceName;
+      }
+      return result;
+    };
+    const targetBefore: SmithConfigEditTargetBefore | null =
+      targetRaw === undefined
+        ? null
+        : Object.fromEntries(
+            (Object.keys(fields) as (keyof SmithConfigEditFields)[])
+              .filter((field) => Object.hasOwn(targetRaw, field))
+              .map((field) => [field, structuredClone(targetRaw[field])]),
+          );
+    const review: SmithConfigEditReview = {
+      name: request.name,
+      targetBefore,
+      targetAfter: structuredClone(request.smith),
+      effectiveBefore: structuredClone(effectiveBefore),
+      effectiveAfter: structuredClone(effectiveResult),
+      provenanceBefore: provenanceFor(before),
+      provenanceAfter: provenanceFor(effectiveAfter),
+    };
+    const bytes = Buffer.from(text);
+    return {
+      ok: true,
+      value: {
+        target: request.target,
+        file: source.source.file,
+        created: source.source.text === null,
+        smith: structuredClone(request.smith),
+        bytes,
+        sha256: createHash("sha256").update(bytes).digest("hex"),
+        sources: {
+          user: user.fingerprint,
+          workspace: workspace.fingerprint,
+        },
+        review,
       },
     };
   } catch (error) {

@@ -28,6 +28,12 @@ import {
   preparedCodexChatSchema,
   serializeCodexChat,
 } from "./codex-app-server-protocol";
+import {
+  buildCodexChatForkParams,
+  parseCodexChatForkRuntimeInput,
+  type VerifiedNativeCodexChatFork,
+  verifyCodexChatForkResponse,
+} from "./codex-chat-fork-runtime-protocol";
 import { markReadOnlyCapabilityRefusal } from "./read-only-capability-refusal";
 
 export interface CodexChatRuntimeOptions {
@@ -273,6 +279,264 @@ export function createCodexChatRuntime(options: CodexChatRuntimeOptions) {
       validate(snapshot);
       freeze(snapshot);
       return snapshot;
+    },
+    /** One bounded native Fork transaction. The caller owns the durable attempt fence. */
+    async fork(value: unknown): Promise<VerifiedNativeCodexChatFork> {
+      const input = parseCodexChatForkRuntimeInput(value),
+        snapshot = input.prepared;
+      validate(snapshot);
+      if (input.signal?.aborted)
+        throw new Error("Native Fork was stopped before startup.");
+      if (directory(snapshot.canonicalCwd) !== snapshot.canonicalCwd)
+        throw new Error("The prepared Codex Chat workspace is not canonical.");
+      const runtime = ready(snapshot.smith),
+        forkParams = buildCodexChatForkParams(input),
+        control = new AbortController();
+      const stop = () => control.abort();
+      input.signal?.addEventListener("abort", stop, { once: true });
+      const timer = setTimeout(stop, timeoutMs);
+      let child: InteractiveSupervised | null = null,
+        exit: Awaited<InteractiveSupervised["done"]> | null = null,
+        startedThreadId: string | null = null,
+        relatedThreadIds: string[] = [],
+        verifiedThreadId: string | null = null,
+        failure: Error | null = null,
+        nextId = 1;
+      const pending = new Map<
+        string,
+        { resolve(value: unknown): void; reject(error: Error): void }
+      >();
+      const insideWorkspace = (path: string) => {
+        const rel = relative(snapshot.canonicalCwd, directory(path));
+        return !(
+          rel === ".." ||
+          rel.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`) ||
+          isAbsolute(rel)
+        );
+      };
+      const fail = (message: string) => {
+        if (failure) return;
+        failure = new Error(message);
+        for (const rpc of pending.values()) rpc.reject(failure);
+        pending.clear();
+      };
+      try {
+        if (control.signal.aborted) throw new Error("Fork was stopped.");
+        const capabilities = await inspect(runtime, control.signal);
+        if (capabilities.version !== snapshot.capabilities.version)
+          throw new Error("Codex version changed before Fork.");
+        validate(snapshot);
+        serializeCodexChat(snapshot.launch, capabilities);
+        if (control.signal.aborted) throw new Error("Fork was stopped.");
+        child = supervise({
+          command: [...runtime.command, "app-server", "--stdio"],
+          cwd: snapshot.cwd,
+          env: { ...runtime.env, AGENT_FORGE_SMITH: snapshot.smith },
+          stdinMode: "interactive",
+          maxStdinBytes: 1_048_576,
+          stdinTimeoutMs: rpcTimeoutMs,
+          timeoutMs,
+          maxLineBytes: 1_048_576,
+          onOutputError: () => fail("Native Fork output could not be read."),
+          onLine(line) {
+            if (failure) return;
+            try {
+              const frame = parseCodexAppServerFrame(line);
+              if (frame.kind === "request") {
+                fail("Native Fork made an unsupported server request.");
+                return;
+              }
+              if (frame.kind !== "response") {
+                if (frame.method === "warning") {
+                  const warning = z
+                    .object({
+                      threadId: codexNativeUuidSchema.nullable(),
+                      message: z.string().max(4096),
+                    })
+                    .strict()
+                    .safeParse(frame.params);
+                  if (!warning.success) {
+                    fail("Native Fork emitted a malformed warning.");
+                    return;
+                  }
+                  return;
+                }
+                if (
+                  frame.method === "thread/started" &&
+                  startedThreadId === null
+                ) {
+                  const notification = z
+                    .object({
+                      thread: z
+                        .object({ id: codexNativeUuidSchema })
+                        .passthrough(),
+                    })
+                    .passthrough()
+                    .safeParse(frame.params);
+                  if (!notification.success) {
+                    fail("Native Fork emitted a malformed child notification.");
+                    return;
+                  }
+                  startedThreadId = notification.data.thread.id;
+                  if (verifiedThreadId && startedThreadId !== verifiedThreadId)
+                    fail("Native Fork notification changed child identity.");
+                  return;
+                }
+                if (frame.method === "thread/goal/updated") {
+                  if (relatedThreadIds.length >= 8) {
+                    fail("Native Fork emitted too many thread notifications.");
+                    return;
+                  }
+                  const notification = z
+                    .object({ threadId: codexNativeUuidSchema })
+                    .passthrough()
+                    .safeParse(frame.params);
+                  if (!notification.success) {
+                    fail(
+                      "Native Fork emitted a malformed thread notification.",
+                    );
+                    return;
+                  }
+                  relatedThreadIds.push(notification.data.threadId);
+                  if (
+                    verifiedThreadId &&
+                    notification.data.threadId !== verifiedThreadId
+                  )
+                    fail("Native Fork notification changed child identity.");
+                  return;
+                }
+                fail("Native Fork emitted an unexpected server notification.");
+                return;
+              }
+              const key = nativeRequestKey(frame.id),
+                rpc = pending.get(key);
+              if (!rpc) throw new Error("Unmatched Fork response");
+              pending.delete(key);
+              if (frame.error) rpc.reject(new Error("Codex refused Fork."));
+              else rpc.resolve(frame.result);
+            } catch {
+              fail(
+                "The native Fork protocol was malformed or changed identity.",
+              );
+            }
+          },
+        });
+        const active = child;
+        void active.done.then(
+          (result) => {
+            exit = result;
+            if (pending.size) fail("Codex exited before acknowledging Fork.");
+          },
+          () =>
+            fail(
+              "The owned native Fork process cleanup could not be confirmed.",
+            ),
+        );
+        const rpc = async (
+          method: string,
+          params: unknown,
+        ): Promise<unknown> => {
+          if (control.signal.aborted || failure)
+            throw failure ?? new Error("Fork was stopped.");
+          const id = nextId++,
+            key = nativeRequestKey(id);
+          const response = new Promise<unknown>((resolve, reject) =>
+            pending.set(key, { resolve, reject }),
+          );
+          void response.catch(() => undefined);
+          await bounded(
+            () => active.write(`${JSON.stringify({ id, method, params })}\n`),
+            rpcTimeoutMs,
+            control.signal,
+            "Native Fork input did not settle.",
+          );
+          return bounded(
+            () => response,
+            rpcTimeoutMs,
+            control.signal,
+            "Native Fork acknowledgement did not settle.",
+          );
+        };
+        await rpc("initialize", {
+          clientInfo: {
+            name: "agent_forge",
+            title: "Agent Forge",
+            version: "0.1.0",
+          },
+          capabilities: { experimentalApi: true, requestAttestation: false },
+        }).then((value) => {
+          z.object({
+            userAgent: z.string().max(1024),
+            codexHome: z.string().max(1024),
+            platformFamily: z.string().max(100),
+            platformOs: z.string().max(100),
+          })
+            .strict()
+            .parse(value);
+        });
+        if (failure) throw failure;
+        await bounded(
+          () =>
+            active.write(
+              `${JSON.stringify({ method: "initialized", params: {} })}\n`,
+            ),
+          rpcTimeoutMs,
+          control.signal,
+          "Native Fork initialization did not settle.",
+        );
+        const response = await rpc("thread/fork", forkParams);
+        const verified = verifyCodexChatForkResponse(response, input);
+        verifiedThreadId = verified.threadId;
+        if (
+          (startedThreadId && startedThreadId !== verifiedThreadId) ||
+          relatedThreadIds.some((id) => id !== verifiedThreadId)
+        )
+          throw new Error("Native Fork notification changed child identity.");
+        if (
+          directory(verified.settings.cwd) !== snapshot.canonicalCwd ||
+          verified.runtimeWorkspaceRoots.some(
+            (path) => !insideWorkspace(path),
+          ) ||
+          verified.writableRoots.some((path) => !insideWorkspace(path))
+        )
+          throw new Error(
+            "Native Fork returned a non-canonical workspace path.",
+          );
+        validate(snapshot);
+        await bounded(
+          () => active.end(),
+          rpcTimeoutMs,
+          control.signal,
+          "Native Fork shutdown did not settle.",
+        );
+        exit = await bounded(
+          () => active.done,
+          rpcTimeoutMs,
+          undefined,
+          "Native Fork process exit did not settle.",
+        );
+        if (exit.exitCode !== 0 || exit.timedOut || exit.stopped)
+          throw new Error("Native Fork process did not close cleanly.");
+        if (failure) throw failure;
+        if (startedThreadId !== verifiedThreadId)
+          throw new Error("Native Fork child notification was not confirmed.");
+        if (relatedThreadIds.some((id) => id !== verifiedThreadId))
+          throw new Error("Native Fork notification changed child identity.");
+        return verified;
+      } catch (error) {
+        throw error instanceof Error ? error : new Error("Native Fork failed.");
+      } finally {
+        clearTimeout(timer);
+        input.signal?.removeEventListener("abort", stop);
+        if (child) {
+          if (!exit)
+            await child.stop("Native Fork finalization").catch(() => undefined);
+          exit = await child.done;
+        }
+        for (const rpc of pending.values())
+          rpc.reject(new Error("Native Fork ended."));
+        pending.clear();
+      }
     },
     async run(
       input: { prepared: PreparedCodexChat; resume: CodexChatBinding | null },
