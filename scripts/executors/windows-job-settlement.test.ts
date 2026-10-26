@@ -135,13 +135,13 @@ test("an empty owned job settles after termination", async () => {
 test("signaled members can settle while identity handles keep them listed", async () => {
   const f = fixture([21]);
   f.processes.set(21, processRow(21));
-  f.api.members = () => {
+  f.api.terminate = () => {
     expect(f.calls).toContain("open:21");
     expect(f.closed).toEqual([]);
-    return { processIds: [21], complete: true };
+    return true;
   };
   await settle(f, {});
-  expect(f.closed.sort()).toEqual([21, 900]);
+  expect(f.closed.sort((left, right) => left - right)).toEqual([21, 900]);
 });
 
 test("a changed member generation refuses settlement", async () => {
@@ -184,7 +184,7 @@ test("an empty post-termination list cannot replace a retained live-handle witne
     f.setNow(f.calls.filter((call) => call === "sleep").length * ms);
   };
   await settle(f, {});
-  expect(f.closed.sort()).toEqual([91, 92, 900]);
+  expect(f.closed.sort((left, right) => left - right)).toEqual([91, 92, 900]);
   expect(f.calls.filter((call) => call === "members")).toHaveLength(5);
 });
 
@@ -305,6 +305,23 @@ test("termination failure and deadline exhaustion refuse", async () => {
     settleWindowsJob(f.api, {}, f.rootIdentity, WINDOWS_JOB_SETTLEMENT_MS),
   ).rejects.toThrow("Windows owned process cleanup could not be confirmed.");
   expect(f.closed.sort()).toEqual([81, 900]);
+});
+
+test("a failed identity-handle close refuses after attempting every close", async () => {
+  const f = fixture([82]);
+  f.processes.set(82, processRow(82));
+  f.api.closeProcess = (process) => {
+    f.calls.push(`close:${process.pid}`);
+    if (process.pid === 82) throw new Error("native close failure");
+    f.closed.push(process.pid);
+  };
+  await expect(settle(f, {})).rejects.toThrow(
+    "Windows owned process cleanup could not be confirmed.",
+  );
+  expect(f.calls.filter((call) => call.startsWith("close:"))).toEqual([
+    "close:900",
+    "close:82",
+  ]);
 });
 
 test("invalid cleanup bounds are rejected before terminating the job", async () => {
