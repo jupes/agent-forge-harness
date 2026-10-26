@@ -7,7 +7,14 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { expect, type Locator, type Page, test } from "@playwright/test";
+import {
+  expect,
+  type Frame,
+  type Locator,
+  type Page,
+  type Request,
+  test,
+} from "@playwright/test";
 import { z } from "zod";
 import { smithRoutingEditInputHash } from "../../apps/desktop/src/smith-routing-edit-identities";
 import { canonicalSmithConfigCreateRequest } from "../../scripts/config/smith-create-protocol";
@@ -575,17 +582,52 @@ test("a correlated stale-revision refusal reads back its exact original after re
     readFileSync(join(REPOSITORY, "agent-forge.toml"), "utf8"),
   ).not.toContain(`[smiths.${name}]`);
 
-  const originalRead = page.waitForResponse(
-    (response) =>
-      response.request().method() === "GET" &&
-      new URL(response.url()).pathname.startsWith(
-        "/__agent-forge/smiths/creates/",
-      ),
-  );
+  let documentGeneration = 0,
+    reloadGeneration: number | null = null,
+    replacing = false;
+  const requestGenerations = new WeakMap<Request, number>();
+  const onRequest = (request: Request) => {
+    if (request.isNavigationRequest() && request.frame() === page.mainFrame())
+      replacing = true;
+    const path = new URL(request.url()).pathname;
+    if (
+      request.method() === "GET" &&
+      path.startsWith("/__agent-forge/smiths/creates/")
+    )
+      requestGenerations.set(request, documentGeneration);
+  };
+  const onFrameNavigated = (frame: Frame) => {
+    if (frame === page.mainFrame() && replacing) {
+      replacing = false;
+      reloadGeneration = ++documentGeneration;
+    }
+  };
+  page.on("request", onRequest);
+  page.on("framenavigated", onFrameNavigated);
+  const originalRead = page
+    .waitForResponse(
+      (response) =>
+        response.request().method() === "GET" &&
+        new URL(response.url()).pathname.startsWith(
+          "/__agent-forge/smiths/creates/",
+        ) &&
+        reloadGeneration !== null &&
+        requestGenerations.get(response.request()) === reloadGeneration,
+    )
+    .then(async (response) => ({
+      status: response.status(),
+      // Consume the body as soon as the matching new-document response
+      // arrives. The trace showed Chromium discarded the earlier body.
+      body: await response.json(),
+    }))
+    .finally(() => {
+      page.off("request", onRequest);
+      page.off("framenavigated", onFrameNavigated);
+    });
   await reloadSettled(page);
   const recovered = await originalRead;
-  expect(recovered.status()).toBe(200);
-  const receipt = (await recovered.json()) as {
+  expect(recovered.status).toBe(200);
+  const receipt = recovered.body as {
     data: {
       inputHash: string;
       original: { smith: { name: string; model: string } };
@@ -2168,7 +2210,7 @@ test("Smiths opens its actual fixed global verification task with keyboard focus
   }
 });
 
-test("closing and navigating away from a held actual verification read fences its late private body", async ({
+test("closing a held verification read fences its late body and recovers after a Smiths config read failure", async ({
   page,
 }) => {
   const seeded = seedVerification("Old held verification record");
@@ -2223,10 +2265,37 @@ test("closing and navigating away from a held actual verification read fences it
     await page.getByRole("link", { name: "Projects", exact: true }).click();
     release?.();
     await expect(page.locator("main")).not.toContainText(seeded.task.title);
+    let failReturnConfiguration = true,
+      configurationFailureInjected = false;
+    await page.route("**/__agent-forge/config", async (route) => {
+      if (failReturnConfiguration && !configurationFailureInjected) {
+        failReturnConfiguration = false;
+        configurationFailureInjected = true;
+        await route.abort("failed");
+        return;
+      }
+      await route.continue();
+    });
     await page.getByRole("link", { name: "Smiths", exact: true }).click();
     await expect(dialog).not.toBeVisible();
+    const config = page.getByRole("region", {
+      name: "Saved smith configuration",
+    });
+    await expect(config.getByRole("alert")).toContainText(
+      "Configuration could not be verified",
+    );
+    expect(configurationFailureInjected).toBe(true);
+    const retryConfiguration = config.getByRole("button", {
+      name: "Retry configuration",
+      exact: true,
+    });
+    await expect(retryConfiguration).toBeEnabled();
+    await retryConfiguration.click();
+    await expect(config.getByRole("table")).toBeVisible();
+    await expect(opener).toBeEnabled();
     await opener.click();
     await expect(dialog).toContainText(seeded.task.title);
+    await page.unroute("**/__agent-forge/config");
     unchangedConfig();
   } finally {
     release?.();

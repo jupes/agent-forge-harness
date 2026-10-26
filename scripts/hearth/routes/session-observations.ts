@@ -152,9 +152,7 @@ export function createSessionObservationRoutes(
     );
     const records = owned.map((record) => {
       const parsed = sessionOwnershipMetadataSchema.safeParse({
-        record: Object.fromEntries(
-          Object.entries(record).filter(([key]) => key !== "origin"),
-        ),
+        record,
         origin: "origin" in record ? record.origin : null,
       });
       if (!parsed.success)

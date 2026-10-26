@@ -36,7 +36,9 @@ record({
   slug: process.env.FORGE_SLUG,
 });
 const threadId = "0199a213-81c0-7800-8aa1-bbab2a035a53",
-  turnId = "0199a213-81c0-7800-8aa1-bbab2a035a54";
+  firstTurnId = "0199a213-81c0-7800-8aa1-bbab2a035a54",
+  resumedTurnId = "0199a213-81c0-7800-8aa1-bbab2a035a55";
+let turnId = firstTurnId;
 let model = "",
   cwd = "",
   resuming = false,
@@ -630,6 +632,8 @@ while (true) {
       }
     } else if (method === "thread/start" || method === "thread/resume") {
       resuming = method === "thread/resume";
+      turnId =
+        mode === "service-tier-null" && resuming ? resumedTurnId : firstTurnId;
       if (
         !("model" in params) ||
         !("cwd" in params) ||
@@ -661,6 +665,7 @@ while (true) {
           },
           model: mode === "settings-mismatch" ? "unrequested-model" : model,
           modelProvider: "openai",
+          ...(mode === "service-tier-null" ? { serviceTier: null } : {}),
           cwd,
           approvalPolicy,
           approvalsReviewer: "user",
@@ -674,7 +679,7 @@ while (true) {
                   excludeTmpdirEnvVar: true,
                   excludeSlashTmp: true,
                 },
-          reasoningEffort: "medium",
+          reasoningEffort: mode === "service-tier-null" ? null : "medium",
         },
       });
       await send({

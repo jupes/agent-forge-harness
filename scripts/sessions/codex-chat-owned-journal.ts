@@ -522,6 +522,7 @@ const nativeEvent = z.discriminatedUnion("kind", [
       kind: z.literal("configuration"),
       model: name,
       modelProvider: name,
+      serviceTier: z.string().max(128).nullable().optional(),
       effort: name.max(64).nullable(),
       cwd: text.min(1).max(1024),
     })

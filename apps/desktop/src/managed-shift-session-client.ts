@@ -43,6 +43,7 @@ export function managedShiftTarget(
   const { record, origin } = checked.data;
   if (
     !origin ||
+    origin.kind !== "shift" ||
     record.mode !== "task" ||
     record.id !== sessionId ||
     record.projectId !== projectId ||
