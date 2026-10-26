@@ -1,7 +1,14 @@
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { connect } from "node:net";
 import { join, resolve } from "node:path";
 import type { WorktreeEntry } from "../../types/beads";
@@ -31,11 +38,13 @@ import type { CommandResult, CommandRunner } from "../council/pr-source";
 import type { CouncilPreview } from "../council/service";
 import { REVIEW_NOTE_LIMIT } from "../dashboard/forge-run-model";
 import { hashText } from "../hash-text";
+import { createRestartIdentityJournal } from "../identities/restart-index";
 import { createKeeperProposalStore } from "../keeper/proposal-store";
 import { keeperSessionStartReceiptSchema } from "../keeper/session-start-protocol";
 import { keeperShiftStartRequestSchema } from "../keeper/shift-start-protocol";
 import { type AppendResult, appendEvent } from "../ledger/append";
 import { setSessionModel } from "../ledger/session-models";
+import { workspaceKey } from "../projects/scope";
 import { createProjectStore, projectCatalogPath } from "../projects/store";
 import { FIXTURE_PROJECT_ID, projectCatalogFixture } from "../projects/testing";
 import { providerLoginFile } from "../providers/login";
@@ -1727,7 +1736,7 @@ const ACTIONS: Record<string, ActionFixture> = {
       writeShiftRecord(join(h.home, SHIFTS_DIR), {
         shiftId: "shift-20261015-090000-f1a1",
         pid: 2_000_000_000,
-        workspace: h.workspace,
+        workspace: workspaceKey(h.workspace),
         startedAt: "2026-10-15T09:00:00.000Z",
         deadline: "2026-10-15T11:00:00.000Z",
         state: "running",
@@ -3581,7 +3590,7 @@ const TOOL = { tool: "Bash", argsHash: "sha256:ab12" };
 
 describe("Session Start identity actions", () => {
   test("GET is read-only and retirement blocks a delayed Start", async () => {
-    const h = await start();
+    const h = await start({ api: { git: fixtureSessionGit } });
     const requestId = FIXTURE_IDENTITY_REQUEST;
     const input = sessionStartFixture(h, requestId);
     const path = `/projects/${FIXTURE_PROJECT_ID}/session-start-identities`;
@@ -3599,23 +3608,36 @@ describe("Session Start identity actions", () => {
       .update(canonicalOwnedSessionStart(input))
       .digest("hex");
     const reserved = await post(h, path, input);
-    expect(reserved.status).toBe(200);
+    const reservedBody = await envelope(reserved);
+    expect({ status: reserved.status, error: reservedBody.error }).toEqual({
+      status: 200,
+      error: null,
+    });
     expect(
-      sessionStartIdentityReplySchema.parse((await envelope(reserved)).data)
-        .identity.state,
+      sessionStartIdentityReplySchema.parse(reservedBody.data).identity.state,
     ).toBe("reserved");
     expect(h.events().at(-1)?.payload).toMatchObject({
       action: "session.start.identity.reserve",
       target: `owned-session-start:${FIXTURE_PROJECT_ID}:${requestId}:${requestHash}`,
     });
 
+    const journalEventBytes = () =>
+      readdirSync(join(h.home, "restart-identities"))
+        .filter((name) => /^event-\d{8}-[a-f0-9]{64}\.json$/.test(name))
+        .sort()
+        .map((name) => [
+          name,
+          readFileSync(join(h.home, "restart-identities", name)),
+        ]);
     const beforeReadbackEvents = h.events();
+    const beforeReadbackJournal = journalEventBytes();
     const readback = await get(h, path, h.headers(h.hearth.token));
     expect(
       sessionStartIdentityPageSchema.parse((await envelope(readback)).data)
         .identities[0]?.state,
     ).toBe("reserved");
     expect(h.events()).toEqual(beforeReadbackEvents);
+    expect(journalEventBytes()).toEqual(beforeReadbackJournal);
 
     const retired = await post(h, `${path}/${requestId}/retire`, {
       requestHash,
@@ -3637,6 +3659,56 @@ describe("Session Start identity actions", () => {
       sessionStartIdentityPageSchema.parse((await envelope(finalPage)).data)
         .identities[0]?.state,
     ).toBe("retired");
+  });
+
+  test("attempted and admitted identities cannot be retired", async () => {
+    const h = await start({ api: { git: fixtureSessionGit } });
+    const journal = createRestartIdentityJournal(h.home);
+    for (const [requestId, state] of [
+      ["c9edb6ad-3810-480e-8c13-d6070588bc32", "attempted"],
+      ["43bef9b6-b09b-4817-b64d-44d202b83e14", "admitted"],
+    ] as const) {
+      const input = sessionStartFixture(h, requestId);
+      const identity = {
+        version: 1 as const,
+        address: {
+          family: "owned-session-start" as const,
+          projectId: FIXTURE_PROJECT_ID,
+        },
+        workspace: h.workspace,
+        requestId,
+        requestHash: createHash("sha256")
+          .update(canonicalOwnedSessionStart(input))
+          .digest("hex"),
+        provider: "claude" as const,
+        mode: "chat" as const,
+      };
+      await journal.reserve(identity);
+      await journal.beginAttempt(identity);
+      if (state === "admitted") {
+        await createRestartIdentityJournal(h.home, {
+          verifyAdmission: async () => ({ verified: true }),
+        }).admit(identity);
+      }
+      const response = await post(
+        h,
+        `/projects/${FIXTURE_PROJECT_ID}/session-start-identities/${requestId}/retire`,
+        { requestHash: identity.requestHash },
+      );
+      const body = await envelope(response);
+      expect({ status: response.status, error: body.error }).toEqual({
+        status: 409,
+        error: "Only an unattempted Session Start identity can be retired.",
+      });
+      expect(
+        (
+          await journal.lookup(
+            { address: identity.address, workspace: identity.workspace },
+            requestId,
+          )
+        )?.state,
+      ).toBe(state);
+    }
   });
 });
 
