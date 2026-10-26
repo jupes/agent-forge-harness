@@ -144,6 +144,8 @@ function checkedPaths(home: string) {
 
 /** A metadata-only index. Reservation never dispatches or replays a provider request. */
 interface SessionRegistry<Metadata, Record> {
+  /** Full-union UUID lookup; unlike list/read, never filters by this instance's provider. */
+  lookupRequestId(requestId: string): OwnedCodingSessionRecord | null;
   listWorkspace(workspace: string): OwnedCodingSessionRecord[];
   list(projectId: string): Record[];
   listAll(projectId: string): OwnedCodingSessionRecord[];
@@ -236,6 +238,14 @@ export function createSessionRegistry(
   };
   return {
     lookup,
+    lookupRequestId(requestId: string) {
+      if (!sessionRequestIdSchema.safeParse(requestId).success)
+        throw new SessionRegistryError(400, "Expected a Start request UUID.");
+      return (
+        readState().records.find((record) => record.requestId === requestId) ??
+        null
+      );
+    },
     listWorkspace(workspace: string) {
       const key = comparableCheckout(resolve(workspace));
       return readState().records.filter(

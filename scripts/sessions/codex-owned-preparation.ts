@@ -1,6 +1,7 @@
 import type { CodexTaskStartRequest } from "../../types/codex-owned-task";
 import type { CodexTaskLaunch } from "../../types/codex-task";
 import { ConversationError } from "../conversations/error";
+import { markKnownPreacceptPreparationRefusal } from "../identities/preaccept-not-sent-proof";
 import type { createCodexTaskRuntime } from "./codex-task-runtime";
 import { preparedCodexTaskSchema } from "./codex-task-runtime-protocol";
 import { canonicalSessionInput } from "./preparation";
@@ -40,10 +41,13 @@ export async function prepareReviewedCodexTask(
   let raw: unknown;
   try {
     raw = await runtime.prepare(structuredClone(reviewed));
-  } catch {
-    throw new ConversationError(
-      503,
-      "The selected Codex Task options are unavailable or lack exact capability evidence. No turn was accepted.",
+  } catch (error) {
+    throw markKnownPreacceptPreparationRefusal(
+      new ConversationError(
+        503,
+        "The selected Codex Task options are unavailable or lack exact capability evidence. No turn was accepted.",
+      ),
+      error,
     );
   }
   const parsed = preparedCodexTaskSchema.safeParse(raw);

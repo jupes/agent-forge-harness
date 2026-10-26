@@ -16,6 +16,7 @@ import {
   createSessionRegistry,
   sessionRegistryFile,
 } from "../../sessions/registry";
+import { expectStartIdentityState } from "../../sessions/session-start-identity-test-witness";
 import { startTestHearth, type TestHearth } from "../testing";
 import { writeOwnerOnly } from "../token";
 import {
@@ -125,16 +126,30 @@ afterEach(async () => {
 
 test("owned session routes require operator authority, preserve exact Start retries and keep private bodies out of list/activity", async () => {
   const fake = fakeSessionRuntime();
+  let activeStartInput: unknown;
   const h = await startTestHearth({
     api: { sessionRuntime: fake.runtime, git: fixtureSessionGit },
   });
   opened.push(h);
+  const originalPrepare = fake.runtime.prepare;
+  fake.runtime.prepare = async (input) => {
+    if (activeStartInput !== undefined)
+      await expectStartIdentityState(
+        h.home,
+        FIXTURE_PROJECT_ID,
+        h.workspace,
+        activeStartInput,
+        "attempted",
+      );
+    return originalPrepare(input);
+  };
   writeOwnerOnly(
     projectCatalogPath(h.home),
     JSON.stringify(projectCatalogFixture(h.workspace)),
   );
   const path = `/projects/${FIXTURE_PROJECT_ID}/sessions`;
   const request = sessionStartFixture(h);
+  activeStartInput = request;
   const post = (
     suffix: string,
     body: unknown,
@@ -154,6 +169,13 @@ test("owned session routes require operator authority, preserve exact Start retr
       `Start fixture refused: ${response.status} ${await response.text()}`,
     );
   const body: { data: SessionStartReceipt } = await response.json();
+  await expectStartIdentityState(
+    h.home,
+    FIXTURE_PROJECT_ID,
+    h.workspace,
+    request,
+    "admitted",
+  );
   await waitOwnedTurn(h, body.data.session, request.requestId);
   expect(fake.runs).toHaveLength(1);
   const retry = await post("", request);
@@ -161,6 +183,13 @@ test("owned session routes require operator authority, preserve exact Start retr
   const original: { data: SessionStartReceipt } = await retry.json();
   expect(original.data.session.id).toBe(body.data.session.id);
   expect(fake.runs).toHaveLength(1);
+  await expectStartIdentityState(
+    h.home,
+    FIXTURE_PROJECT_ID,
+    h.workspace,
+    request,
+    "admitted",
+  );
   expect(
     (
       await post("", {

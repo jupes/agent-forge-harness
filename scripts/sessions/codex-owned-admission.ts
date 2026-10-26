@@ -11,6 +11,10 @@ import { ConversationError } from "../conversations/error";
 import { createConversationService } from "../conversations/service";
 import { createConversationStore } from "../conversations/store";
 import type { ConversationUpdate } from "../conversations/transport";
+import {
+  type InitialStartAttempt,
+  markKnownPreacceptPreparationRefusal,
+} from "../identities/preaccept-not-sent-proof";
 import { resolveCheckout } from "../ledger/workspace";
 import { workspaceKey } from "../projects/scope";
 import {
@@ -131,10 +135,13 @@ export function createCodexOwnedTaskService(options: Options) {
         let raw: unknown;
         try {
           raw = await options.runtime.prepare(structuredClone(reviewed));
-        } catch {
-          throw new ConversationError(
-            503,
-            "The selected Codex Task options are unavailable or lack exact capability evidence. No turn was accepted.",
+        } catch (error) {
+          throw markKnownPreacceptPreparationRefusal(
+            new ConversationError(
+              503,
+              "The selected Codex Task options are unavailable or lack exact capability evidence. No turn was accepted.",
+            ),
+            error,
           );
         }
         const parsed = preparedCodexTaskSchema.safeParse(raw);
@@ -163,6 +170,7 @@ export function createCodexOwnedTaskService(options: Options) {
     async start(
       projectId: string,
       raw: unknown,
+      attempt?: InitialStartAttempt,
     ): Promise<CodexTaskStartReceipt> {
       const request = parseOwnedSessionStart(raw);
       if (
@@ -218,13 +226,18 @@ export function createCodexOwnedTaskService(options: Options) {
       };
       initial.set(session.id, launch);
       try {
-        const receipt = await serviceFor(session).send(projectId, {
-          requestId: request.requestId,
-          expectedRevision: 0,
-          text: request.launch.prompt,
-          about: request.about ?? [],
-          attachments: request.launch.attachments,
-        });
+        const receipt = await serviceFor(session).send(
+          projectId,
+          {
+            requestId: request.requestId,
+            expectedRevision: 0,
+            text: request.launch.prompt,
+            about: request.about ?? [],
+            attachments: request.launch.attachments,
+          },
+          "message",
+          attempt,
+        );
         return { session, receipt };
       } finally {
         initial.delete(session.id);

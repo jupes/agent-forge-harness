@@ -1,6 +1,7 @@
 import type { GeminiChatLaunch } from "../../types/gemini-chat-runtime";
 import type { GeminiChatStartRequest } from "../../types/gemini-owned-chat";
 import { ConversationError } from "../conversations/error";
+import { markKnownPreacceptPreparationRefusal } from "../identities/preaccept-not-sent-proof";
 import type { createGeminiChatRuntime } from "./gemini-chat-runtime";
 import { preparedGeminiChatSchema } from "./gemini-chat-runtime-protocol";
 import { canonicalSessionInput } from "./preparation";
@@ -30,10 +31,13 @@ export async function prepareReviewedGeminiChat(
   let raw: unknown;
   try {
     raw = await runtime.prepare(structuredClone(reviewed));
-  } catch {
-    throw new ConversationError(
-      503,
-      "The selected Gemini Chat options are unavailable or lack exact native capability evidence. No turn was accepted.",
+  } catch (error) {
+    throw markKnownPreacceptPreparationRefusal(
+      new ConversationError(
+        503,
+        "The selected Gemini Chat options are unavailable or lack exact native capability evidence. No turn was accepted.",
+      ),
+      error,
     );
   }
   const parsed = preparedGeminiChatSchema.safeParse(raw);

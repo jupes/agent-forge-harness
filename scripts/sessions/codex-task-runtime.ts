@@ -24,6 +24,7 @@ import {
   preparedCodexLaunchSchema,
   preparedCodexTaskSchema,
 } from "./codex-task-runtime-protocol";
+import { markReadOnlyCapabilityRefusal } from "./read-only-capability-refusal";
 
 export { preparedCodexTaskSchema } from "./codex-task-runtime-protocol";
 
@@ -168,7 +169,9 @@ export function createCodexTaskRuntime(options: CodexTaskRuntimeOptions) {
       try {
         const exit = await child.done;
         if (invalid || exit.exitCode !== 0 || exit.timedOut || exit.stopped)
-          throw unavailable("The Codex read-only capability check failed.");
+          throw markReadOnlyCapabilityRefusal(
+            unavailable("The Codex read-only capability check failed."),
+          );
         return text;
       } finally {
         signal?.removeEventListener("abort", stop);
@@ -181,7 +184,9 @@ export function createCodexTaskRuntime(options: CodexTaskRuntimeOptions) {
         versionText,
       )?.[1];
     if (!version)
-      throw unavailable("The Codex CLI did not report a usable version.");
+      throw markReadOnlyCapabilityRefusal(
+        unavailable("The Codex CLI did not report a usable version."),
+      );
     const help = await probe(["exec", "--help"]);
     const flags = [
       ...new Set(

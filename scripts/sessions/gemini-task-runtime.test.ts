@@ -18,6 +18,7 @@ import type {
 import type { GeminiTaskRuntimeEvent } from "../../types/gemini-task-runtime";
 import { liveChildCount } from "../executors/supervisor";
 import { scratchDirs } from "../test-scratch";
+import { heldGeminiTaskHelp } from "./fixtures/gemini-task-recording-witness";
 import { resolveGeminiCommand } from "./gemini-command";
 import { serializeGeminiTask } from "./gemini-task";
 import { createGeminiTaskRuntime } from "./gemini-task-runtime";
@@ -392,7 +393,8 @@ test("a directory retargeted while read-only preparation is running cannot becom
     () => "unexpectedly accepted",
     () => "refused",
   );
-  await until(() => f.records().some((record) => record.kind === "help"));
+  await heldGeminiTaskHelp(f.log, preparation);
+  expect(f.records().map((record) => record.kind)).toEqual(["version", "help"]);
   if (process.platform === "win32") rmdirSync(link);
   else unlinkSync(link);
   symlinkSync(second, link, process.platform === "win32" ? "junction" : "dir");
