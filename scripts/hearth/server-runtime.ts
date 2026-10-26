@@ -21,6 +21,7 @@ import { createServer, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
 import { join, resolve } from "node:path";
 import type { LedgerEventInput } from "../../types/hearth";
+import { createSmithCreateService } from "../config/smith-create-service";
 import type { ConversationTransport } from "../conversations/transport";
 import type {
   CouncilAppend,
@@ -98,6 +99,7 @@ import {
 import { operatorRoutes } from "./routes/operator";
 import { hearthLedger } from "./routes/operator-reads";
 import { QUEUE_LOCK_FILE } from "./routes/queue";
+import type { SmithCreateService } from "./routes/smith-config-creates";
 import {
   createShiftStarts,
   endLiveShifts,
@@ -413,8 +415,38 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
       environment: options.environment ?? process.env,
       operatorToken: expectedToken,
     });
+  let smithCreateService: SmithCreateService;
+  try {
+    smithCreateService = createSmithCreateService(
+      {
+        options: {
+          harnessRoot: root,
+          ...(options.api?.configHome === undefined
+            ? {}
+            : { home: options.api.configHome }),
+          env: {},
+        },
+      },
+      { profileHome: home },
+    );
+  } catch {
+    // An unavailable config selector must not prevent unrelated Hearth reads.
+    // These captured handlers never fall back to ambient paths or env.
+    smithCreateService = {
+      preview() {
+        throw new Error("The trusted Smith create selectors are unavailable.");
+      },
+      async create() {
+        throw new Error("The trusted Smith create selectors are unavailable.");
+      },
+      readOriginal() {
+        throw new Error("The trusted Smith create selectors are unavailable.");
+      },
+    };
+  }
   const table = operatorRoutes({
     projectHome: home,
+    smithCreateService,
     providerInspector,
     providerLogin:
       options.api?.providerLogin ??

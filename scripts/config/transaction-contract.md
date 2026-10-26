@@ -6,6 +6,17 @@ creates no directories or files. `readConfigTransactionSources` is an optimistic
 read for internal review: it returns copied raw bytes and paired revisions, and
 does not authorize a later write by itself.
 
+Trusted callers may opt into `maxSourceBytes` during preparation. The captured
+private policy applies to both layers at every optimistic/held capture,
+pre-publication recheck and post-rename readback. Descriptor size is checked
+before allocating a bounded buffer; the same already-open descriptor supplies
+at most limit+1 bytes, including growth after its first stat. Existing metadata,
+identity and parent fences remain. Omission retains the scalar writer's prior
+descriptor read behavior. This is not a public request/CLI option or an IO
+deadline, and it does not replace the create coordinator's separate candidate
+size check before attempted marking/publication. An over-limit readback after
+rename remains attempted/unconfirmed, never a no-effect refusal.
+
 `withConfigTransaction` serializes cooperating writers in the same OS user
 through the existing SQLite queue-lock primitive. Its default persistent mutex is
 `~/.agent-forge-config-transactions/write.lock.db`, using the actual OS home
