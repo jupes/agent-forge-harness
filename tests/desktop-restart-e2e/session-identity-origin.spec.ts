@@ -4,12 +4,12 @@ import { request as httpRequest } from "node:http";
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
 import { SESSION_START_IDENTITIES } from "../../apps/desktop/src/session-start-identities";
-import { conversationPageSchema } from "../../scripts/conversations/protocol";
 import {
   OPERATOR_HEADER,
   SESSION_KEY_STORAGE,
   SESSION_ROUTE,
 } from "../../scripts/hearth/paths";
+import { ownedCodingPageSchema } from "../../scripts/sessions/codex-owned-journal";
 import { canonicalOwnedSessionStart } from "../../scripts/sessions/codex-owned-protocol";
 import { sessionStartIdentityPageSchema } from "../../scripts/sessions/identity-protocol";
 import { sessionStartReceiptSchema } from "../../scripts/sessions/protocol";
@@ -295,7 +295,7 @@ test("a fresh trusted desktop origin discovers and inspects an admitted Start wi
           const envelope = record(
             parseFixtureJson(response.body, "original session read"),
           );
-          const conversation = conversationPageSchema.safeParse(
+          const conversation = ownedCodingPageSchema.safeParse(
             envelope?.["data"],
           );
           const replyText = conversation.success
