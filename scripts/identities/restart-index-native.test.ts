@@ -253,6 +253,44 @@ test.skipIf(process.platform !== "win32")(
       raceIdentity.requestId,
     );
     expect(final?.state).toBe(attemptWon ? "attempted" : "retired");
+
+    const claims = fixture("restart-native-claims-");
+    const claimsIdentity = identity(claims.workspace);
+    const claimsJournal = createRestartIdentityJournal(claims.profile);
+    await claimsJournal.reserve(claimsIdentity);
+    const readyClaimA = join(claims.root, "claim-a.ready");
+    const readyClaimB = join(claims.root, "claim-b.ready");
+    const claimsRelease = join(claims.root, "release");
+    const claimAChild = startWorker("attempt", claims.profile, claimsIdentity, {
+      ready: readyClaimA,
+      release: claimsRelease,
+    });
+    const claimBChild = startWorker("attempt", claims.profile, claimsIdentity, {
+      ready: readyClaimB,
+      release: claimsRelease,
+    });
+    await waitFor([readyClaimA, readyClaimB]);
+    writeFileSync(claimsRelease, "go", { flag: "wx" });
+    const [claimA, claimB] = await Promise.all([
+      workerReply(claimAChild),
+      workerReply(claimBChild),
+    ]);
+    expect(claimA).toMatchObject({ ok: true, operation: "attempt" });
+    expect(claimB).toMatchObject({ ok: true, operation: "attempt" });
+    const claimAWon = claimA.ok && claimA.mayDispatch === true;
+    const claimBWon = claimB.ok && claimB.mayDispatch === true;
+    expect(claimAWon !== claimBWon).toBe(true);
+    expect(claimA.ok && claimA.mayDispatch === false).toBe(!claimAWon);
+    expect(claimB.ok && claimB.mayDispatch === false).toBe(!claimBWon);
+    const claimsReopen = await workerReply(
+      startWorker("attempt", claims.profile, claimsIdentity),
+    );
+    expect(claimsReopen).toEqual({
+      ok: true,
+      operation: "attempt",
+      state: "attempted",
+      mayDispatch: false,
+    });
   },
   30_000,
 );
