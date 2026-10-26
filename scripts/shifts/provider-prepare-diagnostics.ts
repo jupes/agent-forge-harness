@@ -35,6 +35,33 @@ export interface HeldProbeProcesses {
   close(): void;
 }
 
+/** Run the existing cleanup once; diagnostics cannot mask its original failure. */
+export function cleanupWithOptionalDiagnostic(
+  enabled: boolean,
+  cleanup: () => void,
+  report: (error: unknown | null) => void,
+): void {
+  try {
+    cleanup();
+  } catch (error) {
+    if (enabled) {
+      try {
+        report(error);
+      } catch {
+        // Diagnostic failures never replace the original cleanup error.
+      }
+    }
+    throw error;
+  }
+  if (enabled) {
+    try {
+      report(null);
+    } catch {
+      // Diagnostic failures do not alter the default test outcome.
+    }
+  }
+}
+
 export function classifyWaitResult(
   result: number,
 ): ProcessObservation["state"] {

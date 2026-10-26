@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import {
   classifyWaitResult,
+  cleanupWithOptionalDiagnostic,
   fixedProviderPrepareResources,
   fixtureProcessIdentities,
   holdFixtureProcesses,
@@ -134,4 +135,52 @@ test("diagnostic resource builder permits only the fixed fixture image and recor
       `${root}\\provider.json`,
     ),
   ).toThrow("fixture pair");
+});
+
+test("default-off cleanup preserves the one existing cleanup call and emits no diagnostics", () => {
+  let cleanups = 0,
+    reports = 0;
+  cleanupWithOptionalDiagnostic(
+    false,
+    () => {
+      cleanups++;
+    },
+    () => {
+      reports++;
+    },
+  );
+  expect({ cleanups, reports }).toEqual({ cleanups: 1, reports: 0 });
+});
+
+test("opt-in cleanup emits one post-cleanup report and preserves the original failure", () => {
+  let cleanups = 0;
+  const successReports: Array<unknown | null> = [];
+  cleanupWithOptionalDiagnostic(
+    true,
+    () => {
+      cleanups++;
+    },
+    (error) => successReports.push(error),
+  );
+  expect({ cleanups, successReports }).toEqual({
+    cleanups: 1,
+    successReports: [null],
+  });
+
+  const original = Object.assign(new Error("fixture remove failed"), {
+      code: "EPERM",
+    }),
+    failureReports: Array<unknown | null> = [];
+  expect(() =>
+    cleanupWithOptionalDiagnostic(
+      true,
+      () => {
+        cleanups++;
+        throw original;
+      },
+      (error) => failureReports.push(error),
+    ),
+  ).toThrow(original);
+  expect(cleanups).toBe(2);
+  expect(failureReports).toEqual([original]);
 });

@@ -13,6 +13,7 @@ import { restartManagerLockerPids } from "../hearth/windows-cleanup-diagnostic";
 import { scratchDirs } from "../test-scratch";
 import { createShiftProviderPreparer } from "./provider-prepare";
 import {
+  cleanupWithOptionalDiagnostic,
   fixedProviderPrepareResources,
   fixtureProcessIdentities,
   holdFixtureProcesses,
@@ -21,7 +22,72 @@ import {
 } from "./provider-prepare-diagnostics";
 
 const scratch = scratchDirs();
-afterEach(() => scratch.cleanup());
+type ProbeCleanupContext = {
+  root: string;
+  executable: string;
+  record: string;
+  observations: ProcessObservation[];
+};
+let pendingProbeCleanup: ProbeCleanupContext | null = null;
+afterEach(() => {
+  const context = pendingProbeCleanup;
+  pendingProbeCleanup = null;
+  if (context === null) {
+    scratch.cleanup();
+    return;
+  }
+  cleanupWithOptionalDiagnostic(
+    true,
+    () => scratch.cleanup(),
+    (error) => {
+      reportProbeCleanup(context, error);
+    },
+  );
+});
+
+function reportProbeCleanup(
+  context: ProbeCleanupContext,
+  cleanupError: unknown | null,
+): void {
+  const fallbackResources = ["codex.exe", "provider.json"] as const;
+  let resources: readonly string[] = fallbackResources,
+    lockerPids: number[] | null = null,
+    lockerProbe: "not-run" | "ok" | "unavailable" = "not-run";
+  try {
+    const fixtureResources = fixedProviderPrepareResources(
+      context.root,
+      context.executable,
+      context.record,
+    );
+    resources = fixtureResources.relativeNames;
+    if (cleanupError !== null) {
+      lockerPids = restartManagerLockerPids(fixtureResources.paths);
+      lockerProbe = lockerPids === null ? "unavailable" : "ok";
+    }
+  } catch {
+    lockerProbe = cleanupError === null ? "not-run" : "unavailable";
+  }
+  const code =
+    cleanupError &&
+    typeof cleanupError === "object" &&
+    "code" in cleanupError &&
+    ["EPERM", "EACCES", "EBUSY"].includes(String(cleanupError.code))
+      ? String(cleanupError.code)
+      : cleanupError === null
+        ? null
+        : "other";
+  process.stderr.write(
+    `${JSON.stringify({
+      event: "provider-prepare-scratch-cleanup",
+      resources,
+      processes: context.observations,
+      cleanup: cleanupError === null ? "removed" : "failed",
+      lockerPids,
+      lockerProbe,
+      errorCode: code,
+    })}\n`,
+  );
+}
 function fixture(provider: "claude" | "codex" = "claude") {
   const root = realpathSync.native(
     scratch.make("shift-readonly-capabilities-"),
@@ -139,8 +205,7 @@ test("Stop during native capability help settles its owned probe before any prom
     () => "refused",
   );
   let held: ReturnType<typeof holdFixtureProcesses> | null = null,
-    observations: ProcessObservation[] = [],
-    failure: unknown = null;
+    observations: ProcessObservation[] = [];
   try {
     const deadline = Date.now() + 5000;
     while (Date.now() < deadline) {
@@ -161,8 +226,6 @@ test("Stop during native capability help settles its owned probe before any prom
     expect(
       await Promise.race([settled, Bun.sleep(1500).then(() => "hung")]),
     ).toBe("refused");
-  } catch (error) {
-    failure = error;
   } finally {
     controller.abort();
     await settled;
@@ -171,45 +234,14 @@ test("Stop during native capability help settles its owned probe before any prom
     } catch {
       held?.close();
     }
-    try {
-      scratch.cleanup();
-    } catch (cleanupError) {
-      if (diagnosticEnabled) {
-        let lockerPids: number[] | null = null,
-          relativeResources: readonly string[] = ["codex.exe", "provider.json"];
-        try {
-          const resources = fixedProviderPrepareResources(
-            f.root,
-            executable,
-            f.record,
-          );
-          relativeResources = resources.relativeNames;
-          lockerPids = restartManagerLockerPids(resources.paths);
-        } catch {
-          // Diagnostic failure remains unavailable; never replace the cleanup result.
-        }
-        const code =
-          cleanupError &&
-          typeof cleanupError === "object" &&
-          "code" in cleanupError &&
-          ["EPERM", "EACCES", "EBUSY"].includes(String(cleanupError.code))
-            ? String(cleanupError.code)
-            : "other";
-        process.stderr.write(
-          `${JSON.stringify({
-            event: "provider-prepare-scratch-cleanup",
-            resources: relativeResources,
-            processes: observations,
-            lockerPids,
-            lockerProbe: lockerPids === null ? "unavailable" : "ok",
-            errorCode: code,
-          })}\n`,
-        );
-      }
-      if (failure === null) failure = cleanupError;
-    }
+    if (diagnosticEnabled)
+      pendingProbeCleanup = {
+        root: f.root,
+        executable,
+        record: f.record,
+        observations,
+      };
   }
-  if (failure !== null) throw failure;
 }, 15000);
 
 test("changed smith configuration or unsupported actual flags refuse before a private turn", async () => {
