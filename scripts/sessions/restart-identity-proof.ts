@@ -68,14 +68,16 @@ function launchFromTranscript(
     );
   const launch = object(snapshot?.launch);
   if (launch === null) return null;
+  if (
+    Object.hasOwn(launch, "resumeSessionId") ||
+    (session.provider === "gemini" &&
+      (Object.hasOwn(launch, "policyFiles") ||
+        Object.hasOwn(launch, "includeDirectories")))
+  )
+    return null;
   const result = { ...launch };
   delete result.cwd;
   delete result.context;
-  delete result.resumeSessionId;
-  if (session.provider === "gemini") {
-    delete result.policyFiles;
-    delete result.includeDirectories;
-  }
   return result;
 }
 
@@ -84,43 +86,31 @@ function matchesOriginalRequestHash(
   event: Record<string, unknown>,
   launch: Record<string, unknown>,
 ): boolean {
+  if (typeof event.text !== "string" || launch.prompt !== event.text)
+    return false;
   const about = Array.isArray(event.about) ? event.about : null;
   if (about === null) return false;
   const aboutVariants: Array<unknown[] | undefined> =
     about.length === 0 ? [undefined, []] : [about];
-  const attachments = launch.attachments;
-  const attachmentVariants: Array<unknown[] | undefined> =
-    Array.isArray(attachments) && attachments.length === 0
-      ? [undefined, []]
-      : Array.isArray(attachments)
-        ? [attachments]
-        : [undefined];
 
   for (const originalAbout of aboutVariants) {
-    for (const originalAttachments of attachmentVariants) {
-      const originalLaunch = { ...launch };
-      if (originalAttachments === undefined) delete originalLaunch.attachments;
-      else originalLaunch.attachments = originalAttachments;
-      const candidate: Record<string, unknown> = {
-        requestId: session.requestId,
-        smith: session.smith,
-        repository: session.repository,
-        worktree: session.worktree,
-        ...(session.beadId === undefined ? {} : { beadId: session.beadId }),
-        ...(originalAbout === undefined ? {} : { about: originalAbout }),
-        ...(session.provider === "claude"
-          ? {}
-          : { provider: session.provider }),
-        launch: originalLaunch,
-      };
-      try {
-        const hash = createHash("sha256")
-          .update(canonicalOwnedSessionStart(candidate))
-          .digest("hex");
-        if (hash === session.requestHash) return true;
-      } catch {
-        // An invalid or incomplete private snapshot is not Start identity proof.
-      }
+    const candidate: Record<string, unknown> = {
+      requestId: session.requestId,
+      smith: session.smith,
+      repository: session.repository,
+      worktree: session.worktree,
+      ...(session.beadId === undefined ? {} : { beadId: session.beadId }),
+      ...(originalAbout === undefined ? {} : { about: originalAbout }),
+      ...(session.provider === "claude" ? {} : { provider: session.provider }),
+      launch,
+    };
+    try {
+      const hash = createHash("sha256")
+        .update(canonicalOwnedSessionStart(candidate))
+        .digest("hex");
+      if (hash === session.requestHash) return true;
+    } catch {
+      // An invalid or incomplete private snapshot is not Start identity proof.
     }
   }
   return false;

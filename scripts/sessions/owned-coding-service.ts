@@ -204,6 +204,23 @@ export function createOwnedCodingSessionService(options: {
         provider,
         mode: request.launch.mode,
       };
+      const prior = await identities.lookup(
+        { address: identity.address, workspace: identity.workspace },
+        identity.requestId,
+      );
+      if (prior === null || prior.state === "reserved") {
+        await options.validateScope(
+          projectId,
+          {
+            workspace: resolveCheckout(options.root).workspace,
+            repository: request.repository,
+            worktree: request.worktree,
+            ...(request.beadId === undefined ? {} : { beadId: request.beadId }),
+          },
+          request.about ?? [],
+          "provider" in request ? undefined : request.launch,
+        );
+      }
       await identities.reserve(identity);
       const claim = await identities.beginAttempt(identity);
       if (!claim.mayDispatch) {

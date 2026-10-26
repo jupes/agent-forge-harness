@@ -4,7 +4,10 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { LedgerEventInput } from "../../types/hearth";
+import { conversationFile } from "../conversations/paths";
+import { createConversationStore } from "../conversations/store";
 import { createOwnedSessionLedger } from "../hearth/routes/session-ledger";
+import { writeOwnerOnly } from "../hearth/token";
 import { createRestartIdentityJournal } from "../identities/restart-index";
 import { resolveCheckout } from "../ledger/workspace";
 import { workspaceKey } from "../projects/scope";
@@ -205,6 +208,37 @@ test("an attempted Start without a durable original stays held without owner dis
   ).toMatchObject({ state: "attempted" });
 });
 
+test("deterministic scope rejection happens before reserving the project address", async () => {
+  const f = await closingFixture(async () => {
+    throw new Error("invalid worktree scope");
+  });
+  const service = createOwnedCodingSessionService({
+    home: f.home,
+    root: f.root,
+    runtime: f.runtime,
+    validateScope: f.validateScope,
+  });
+  cleanup.push(() => service.close());
+  const workspace = workspaceKey(resolveCheckout(f.root).workspace);
+
+  await expect(service.start(f.project.id, f.request)).rejects.toThrow(
+    "invalid worktree scope",
+  );
+  expect(f.counts).toEqual({ prepared: 0, runs: 0 });
+  expect(
+    await createRestartIdentityJournal(f.home).lookup(
+      {
+        address: {
+          family: "owned-session-start",
+          projectId: f.project.id,
+        },
+        workspace,
+      },
+      f.request.requestId,
+    ),
+  ).toBeNull();
+});
+
 test("trusted proof matches the persisted original request across empty optional inputs", async () => {
   const f = await closingFixture();
   const service = f.make();
@@ -243,6 +277,69 @@ test("trusted proof matches the persisted original request across empty optional
       root: f.root,
       identity: { ...identity, requestHash: "f".repeat(64) },
     }).kind,
+  ).toBe("invalid");
+
+  const address = {
+    kind: "session" as const,
+    projectId: started.session.projectId,
+    sessionId: started.session.id,
+  };
+  const state = createConversationStore(f.home, undefined, address).read(
+    started.session.projectId,
+  );
+  const userFrame = state.frames[0];
+  if (userFrame?.event.kind !== "user" || !userFrame.event.session)
+    throw Error("Missing original private Start snapshot");
+  const changedText = structuredClone(state);
+  const changedTextUser = changedText.frames[0]?.event;
+  if (changedTextUser?.kind !== "user" || !changedTextUser.session)
+    throw Error("Missing mutable private Start snapshot");
+  changedTextUser.text = "different text with a valid private turn hash";
+  const rehashUser = changedText.frames[0]?.event;
+  const turn = changedText.turns[0];
+  if (rehashUser?.kind !== "user" || !turn)
+    throw Error("Missing first turn for private hash fixture");
+  turn.hash = createHash("sha256")
+    .update(
+      JSON.stringify({
+        text: rehashUser.text,
+        about: rehashUser.about,
+        ...(rehashUser.session ? { session: rehashUser.session } : {}),
+      }),
+    )
+    .digest("hex");
+  writeOwnerOnly(
+    conversationFile(f.home, started.session.projectId, address),
+    JSON.stringify(changedText),
+  );
+  expect(
+    readVerifiedOriginalStart({ home: f.home, root: f.root, identity }).kind,
+  ).toBe("invalid");
+
+  const omittedAttachments = structuredClone(state);
+  const omittedUser = omittedAttachments.frames[0]?.event;
+  const omittedTurn = omittedAttachments.turns[0];
+  if (omittedUser?.kind !== "user" || !omittedUser.session || !omittedTurn)
+    throw Error("Missing original attachment fixture");
+  omittedUser.session = {
+    ...omittedUser.session,
+    launch: { ...omittedUser.session.launch, attachments: undefined },
+  };
+  omittedTurn.hash = createHash("sha256")
+    .update(
+      JSON.stringify({
+        text: omittedUser.text,
+        about: omittedUser.about,
+        ...(omittedUser.session ? { session: omittedUser.session } : {}),
+      }),
+    )
+    .digest("hex");
+  writeOwnerOnly(
+    conversationFile(f.home, started.session.projectId, address),
+    JSON.stringify(omittedAttachments),
+  );
+  expect(
+    readVerifiedOriginalStart({ home: f.home, root: f.root, identity }).kind,
   ).toBe("invalid");
 });
 
