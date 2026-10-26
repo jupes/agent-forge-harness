@@ -151,13 +151,72 @@ function providerAlive(pid: number) {
   }
 }
 
+const admissionExecutorSchema = z
+  .object({
+    provider: z.string().min(1),
+    model: z.string().min(1),
+    effort: z.string().optional(),
+    smith: z.string().optional(),
+    sessionId: z.string().optional(),
+  })
+  .strict();
+const admissionEventBaseSchema = z.object({
+  id: z.number().int().positive(),
+  beadId: z.string().nullable(),
+  runId: z.string().nullable(),
+  sessionId: z.string().nullable(),
+  executor: admissionExecutorSchema.nullable(),
+});
+const admissionEvidenceSchema = z.array(
+  z.discriminatedUnion("kind", [
+    admissionEventBaseSchema.extend({
+      kind: z.literal("operator.action"),
+      payload: z
+        .object({
+          action: z.string().min(1),
+          surface: z.enum(["ui", "cli", "mcp", "api"]),
+          target: z.string().optional(),
+        })
+        .passthrough(),
+    }),
+    admissionEventBaseSchema.extend({
+      kind: z.literal("shift.started"),
+      payload: z
+        .object({
+          shiftId: z.string().regex(/^shift-\d{8}-\d{6}-[0-9a-f]{4}$/),
+          concurrency: z.number().int().positive(),
+          durationMs: z.number().int().nonnegative().optional(),
+          filter: z.string().optional(),
+          maxBeads: z.number().int().positive().optional(),
+          maxUsd: z.number().finite().nonnegative().optional(),
+        })
+        .passthrough(),
+    }),
+    admissionEventBaseSchema.extend({
+      kind: z.literal("session.started"),
+      runId: z.string().min(1).nullable(),
+      sessionId: z.string().min(1).nullable(),
+      payload: z
+        .object({
+          source: z.string().optional(),
+          kind: z
+            .enum(["interactive", "teammate", "subagent", "headless", "remote"])
+            .optional(),
+          worktree: z.string().min(1).optional(),
+          parentSessionId: z.string().min(1).optional(),
+        })
+        .passthrough(),
+    }),
+  ]),
+);
+
 function shiftAdmissionEvidence(shiftId: string) {
   const program = `
     import { queryEvents } from "./scripts/ledger/query";
     const [workspace, path, proposalId, shiftId] = process.argv.slice(1);
     const audit = queryEvents({ workspace, kinds: ["operator.action"] }, { path }).filter(event => event.payload.action === "keeper.proposal.shift.start" && event.payload.target === proposalId);
     const execution = queryEvents({ workspace, shiftId }, { path }).filter(event => event.kind === "shift.started" || event.kind === "session.started");
-    process.stdout.write(JSON.stringify([...audit, ...execution].map(event => ({ id: event.id, kind: event.kind, payload: event.payload, executor: event.executor ?? null }))) + "\\n");
+    process.stdout.write(JSON.stringify([...audit, ...execution].map(event => ({ id: event.id, kind: event.kind, payload: event.payload, beadId: event.beadId ?? null, runId: event.runId ?? null, sessionId: event.sessionId ?? null, executor: event.executor ?? null }))) + "\\n");
   `;
   const read = spawnSync(
     bunPath(),
@@ -187,16 +246,87 @@ function shiftAdmissionEvidence(shiftId: string) {
   } catch {
     throw Error("The isolated Shift admission evidence was not valid JSON.");
   }
-  return z
-    .array(
-      z.object({
-        id: z.number().int().positive(),
-        kind: z.enum(["operator.action", "shift.started", "session.started"]),
-        payload: z.record(z.string(), z.unknown()),
-        executor: z.record(z.string(), z.unknown()).nullable(),
-      }),
-    )
-    .parse(raw);
+  return admissionEvidenceSchema.parse(raw);
+}
+
+async function waitForShiftAdmissionEvidence(shiftId: string) {
+  let latest = shiftAdmissionEvidence(shiftId);
+  const counts = () => ({
+    canonicalStarts: latest.filter((event) => event.kind === "shift.started")
+      .length,
+    providerStarts: latest.filter((event) => event.kind === "session.started")
+      .length,
+  });
+  try {
+    await expect
+      .poll(
+        () => {
+          latest = shiftAdmissionEvidence(shiftId);
+          return {
+            canonicalStarted: counts().canonicalStarts > 0,
+            providerStarted: counts().providerStarts > 0,
+          };
+        },
+        {
+          timeout: 25_000,
+          intervals: [250, 500, 750],
+          message:
+            "Wait for this original Shift's persisted canonical and provider admission events",
+        },
+      )
+      .toEqual({ canonicalStarted: true, providerStarted: true });
+  } catch (error) {
+    const facts = {
+      shiftId,
+      counts: counts(),
+      events: latest.slice(0, 6).map((event) => ({
+        id: event.id,
+        kind: event.kind,
+        payload:
+          event.kind === "shift.started"
+            ? {
+                shiftId: event.payload.shiftId,
+                concurrency: event.payload.concurrency,
+                durationMs: event.payload.durationMs,
+                maxBeads: event.payload.maxBeads,
+                maxUsd: event.payload.maxUsd,
+                filter: event.payload.filter,
+              }
+            : event.kind === "operator.action"
+              ? {
+                  action: event.payload.action,
+                  surface: event.payload.surface,
+                  target: event.payload.target,
+                }
+              : {
+                  source: event.payload.source,
+                  kind: event.payload.kind,
+                  worktree: event.payload.worktree,
+                },
+        beadId: event.beadId,
+        runId: event.runId,
+        sessionId: event.sessionId,
+        executor:
+          event.executor === null
+            ? null
+            : {
+                provider: event.executor.provider,
+                model: event.executor.model,
+                smith: event.executor.smith,
+              },
+      })),
+    };
+    try {
+      await test.info().attach("Keeper Shift admission wait facts", {
+        body: JSON.stringify(facts, null, 2),
+        contentType: "application/json",
+      });
+    } catch {
+      // Keep the source-based wait failure primary if the report cannot attach.
+    }
+    throw error;
+  }
+  return latest;
 }
 
 test.beforeEach(() => {
@@ -368,7 +498,8 @@ test("a lost Keeper Shift Start reply recovers one exact original after reload o
     if (!admittedShiftId)
       throw Error("The actual canonical Shift ID was not retained.");
     expect(registeredShiftIds()).toContain(admittedShiftId);
-    const evidenceAfterAdmission = shiftAdmissionEvidence(admittedShiftId);
+    const evidenceAfterAdmission =
+      await waitForShiftAdmissionEvidence(admittedShiftId);
     const keeperAudit = evidenceAfterAdmission.filter(
       (event) => event.kind === "operator.action",
     );
@@ -386,6 +517,7 @@ test("a lost Keeper Shift Start reply recovers one exact original after reload o
     expect(canonicalStart[0]!.payload).toMatchObject({
       shiftId: admittedShiftId,
       concurrency: 1,
+      durationMs: 60_000,
       maxBeads: 1,
       maxUsd: 5,
       filter: "epic:alpha-epic",
@@ -394,8 +526,19 @@ test("a lost Keeper Shift Start reply recovers one exact original after reload o
       (event) => event.kind === "session.started",
     );
     expect(providerAdmissions).toHaveLength(1);
-    expect(providerAdmissions[0]?.executor).toMatchObject({
-      provider: "claude",
+    expect(providerAdmissions[0]).toMatchObject({
+      beadId: "alpha-work",
+      runId: `alpha-work-${admittedShiftId}`,
+      sessionId: expect.any(String),
+      payload: {
+        source: "headless:claude",
+        kind: "headless",
+      },
+      executor: {
+        provider: "claude",
+        model: expect.any(String),
+        smith: "claude-journeyman",
+      },
     });
     await expect.poll(() => fixtureProvider()).not.toBeNull();
     provider = fixtureProvider();
