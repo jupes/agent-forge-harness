@@ -1138,12 +1138,26 @@ test("reviews a manually entered configured default name and reloads its receipt
       () => document.documentElement.scrollWidth <= innerWidth,
     ),
   ).toBe(true);
-  const activeInside = await page.evaluate(() =>
-    Boolean(
-      document.querySelector("[role=dialog]")?.contains(document.activeElement),
-    ),
-  );
-  expect(activeInside).toBe(true);
+  const focusFacts = await dialog.evaluate((routingDialog) => {
+    const active = document.activeElement;
+    return {
+      tag: active?.tagName.slice(0, 32) ?? null,
+      role: active?.getAttribute("role")?.slice(0, 64) ?? null,
+      classes:
+        active instanceof HTMLElement
+          ? Array.from(active.classList)
+              .slice(0, 5)
+              .map((name) => name.slice(0, 64))
+          : [],
+      bodyIsActive: active === document.body,
+      routingDialogContains: Boolean(active && routingDialog.contains(active)),
+    };
+  });
+  await test.info().attach("smith-routing-focus-facts.json", {
+    body: JSON.stringify(focusFacts),
+    contentType: "application/json",
+  });
+  expect(focusFacts.routingDialogContains).toBe(true);
   const saved = page.waitForResponse(
     (response) =>
       response.request().method() === "POST" &&
