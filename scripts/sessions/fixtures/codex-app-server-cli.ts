@@ -487,6 +487,106 @@ while (true) {
         method: "warning",
         params: { threadId: null, message: "Inert private global warning" },
       });
+    } else if (method === "thread/fork") {
+      if (
+        !mode?.startsWith("fork") ||
+        !params ||
+        typeof params !== "object" ||
+        !("threadId" in params) ||
+        params.threadId !== threadId ||
+        !("lastTurnId" in params) ||
+        typeof params.lastTurnId !== "string"
+      )
+        process.exit(14);
+      const fork = params as Record<string, unknown>;
+      if (mode === "fork-lost-response") {
+        record({ kind: "fork-created-without-response", params });
+        hangTree();
+      }
+      const forkCwd = typeof fork.cwd === "string" ? fork.cwd : "";
+      const forkModel = typeof fork.model === "string" ? fork.model : "";
+      const forkProvider =
+        typeof fork.modelProvider === "string" ? fork.modelProvider : "";
+      const forkTier = "serviceTier" in fork ? fork.serviceTier : null;
+      const effort =
+        fork.config &&
+        typeof fork.config === "object" &&
+        "model_reasoning_effort" in fork.config
+          ? fork.config.model_reasoning_effort
+          : null;
+      const forkSandbox =
+        fork.sandbox === "read-only"
+          ? { type: "readOnly", networkAccess: false }
+          : {
+              type: "workspaceWrite",
+              writableRoots: [forkCwd],
+              networkAccess: false,
+              excludeTmpdirEnvVar: true,
+              excludeSlashTmp: true,
+            };
+      const forkThread = {
+        id: "0199a213-81c0-7800-8aa1-bbab2a035a55",
+        environments: [],
+        extra: null,
+        sessionId: threadId,
+        forkedFromId: threadId,
+        parentThreadId: null,
+        preview: "Inert synthetic fork preview",
+        ephemeral: false,
+        section: null,
+        sectionEnteredAt: null,
+        projectId: null,
+        historyMode: "paginated",
+        turns: [],
+        modelProvider: forkProvider,
+        model: forkModel,
+        reasoningEffort: effort,
+        createdAt: 1,
+        updatedAt: 1,
+        recencyAt: 1,
+        status: { type: "idle" },
+        path: null,
+        cwd: forkCwd,
+        cliVersion: "0.163.0-alpha.10.2",
+        originator: "agent_forge",
+        source: "appServer",
+        canAcceptDirectInput: true,
+        threadSource: null,
+        agentNickname: null,
+        agentRole: null,
+        gitInfo: null,
+        name: null,
+        daybreakEnabled: false,
+      };
+      const result = {
+        thread: forkThread,
+        model: forkModel,
+        modelProvider: forkProvider,
+        serviceTier: forkTier,
+        disabledPluginIds: [],
+        cwd: forkCwd,
+        runtimeWorkspaceRoots: [forkCwd],
+        instructionSources: [],
+        approvalPolicy: fork.approvalPolicy,
+        approvalsReviewer: fork.approvalsReviewer,
+        sandbox: forkSandbox,
+        activePermissionProfile: { id: ":workspace", extends: null },
+        reasoningEffort: effort,
+        multiAgentMode: "explicitRequestOnly",
+      };
+      record({ kind: "fork-result", result });
+      if (mode === "fork-lost-response") {
+        // Deliberately retain an owned process tree after the synthetic native
+        // effect so the runtime must report uncertainty and clean it up.
+      } else if (mode === "fork-malformed")
+        await send({ id, result: { ...result, unexpected: true } });
+      else {
+        await send({ id, result });
+        await send({
+          method: "thread/started",
+          params: { thread: forkThread },
+        });
+      }
     } else if (method === "thread/start" || method === "thread/resume") {
       resuming = method === "thread/resume";
       if (

@@ -275,6 +275,26 @@ test("Fork response projects the actual child UUID and preserves native session-
   expect(verified).not.toHaveProperty("sessionId");
 });
 
+test("Fork accepts bounded active built-in profile metadata without granting it authority", () => {
+  const parsed = parseCodexChatForkRuntimeInput(input()),
+    verified = verifyCodexChatForkResponse(
+      forkResponse({
+        activePermissionProfile: { id: ":workspace", extends: null },
+      }),
+      parsed,
+    );
+  expect(verified.settings.sandbox).toBe("workspace-write");
+  expect(verified).not.toHaveProperty("activePermissionProfile");
+  expect(() =>
+    verifyCodexChatForkResponse(
+      forkResponse({
+        activePermissionProfile: { id: ":workspace", unexpected: true },
+      }),
+      parsed,
+    ),
+  ).toThrow();
+});
+
 test("Fork response rejects wrong ancestry, identity, config, activity, turns, scope, and unknown fields", () => {
   const parsed = parseCodexChatForkRuntimeInput(input());
   const altered = [
@@ -305,7 +325,9 @@ test("Fork response rejects wrong ancestry, identity, config, activity, turns, s
     forkResponse({ serviceTier: "priority" }),
     forkResponse({ cwd: join(workspace, "outside", "..", "..") }),
     forkResponse({ approvalsReviewer: "auto_review" }),
-    forkResponse({ activePermissionProfile: { id: "unexpected" } }),
+    forkResponse({
+      activePermissionProfile: { id: "unexpected", extra: true },
+    }),
     forkResponse({ multiAgentMode: "auto" }),
     forkResponse({ runtimeWorkspaceRoots: [join(workspace, "..", "outside")] }),
     forkResponse({

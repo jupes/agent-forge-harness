@@ -11,6 +11,7 @@ import {
 import { join } from "node:path";
 import type { CodexChatEvent, CodexChatLaunch } from "../../types/codex-chat";
 import { scratchDirs } from "../test-scratch";
+import { parseCodexChatForkRuntimeInput } from "./codex-chat-fork-runtime-protocol";
 import {
   type CodexChatCallbacks,
   createCodexChatRuntime,
@@ -97,6 +98,48 @@ function fixture(mode = "normal") {
   };
   return { root, runtime, launch, records, options };
 }
+
+test("the dedicated native Fork sends one bounded fork request and returns only verified child metadata", async () => {
+  const f = fixture("fork"),
+    prepared = await f.runtime.prepare({
+      smith: "codex-journeyman",
+      launch: f.launch,
+    }),
+    input = parseCodexChatForkRuntimeInput({
+      prepared,
+      parent: { provider: "codex", threadId, version },
+      lastTurnId: "0199a213-81c0-7800-8aa1-bbab2a035a54",
+      sourceSettings: {
+        modelProvider: "openai",
+        serviceTier: null,
+        reasoningEffort: "high",
+      },
+    });
+  const result = await f.runtime.fork(input),
+    calls = f.records().filter((row) => row.kind === "rpc"),
+    initialize = calls.find((row) => row.method === "initialize"),
+    fork = calls.find((row) => row.method === "thread/fork");
+  expect(result.threadId).toBe("0199a213-81c0-7800-8aa1-bbab2a035a55");
+  expect(result.forkedFromId).toBe(threadId);
+  expect(result).not.toHaveProperty("preview");
+  expect(result).not.toHaveProperty("path");
+  expect(calls.map((row) => row.method)).toEqual(["initialize", "thread/fork"]);
+  expect(initialize?.params).toMatchObject({
+    capabilities: { experimentalApi: true, requestAttestation: false },
+  });
+  expect(fork?.params).toMatchObject({
+    threadId,
+    lastTurnId: input.lastTurnId,
+    modelProvider: "openai",
+    serviceTier: null,
+    ephemeral: false,
+    excludeTurns: true,
+    deferGoalContinuation: true,
+  });
+  expect(fork?.params).not.toHaveProperty("path");
+  expect(fork?.params).not.toHaveProperty("beforeTurnId");
+  expect(fork?.params).not.toHaveProperty("experimentalPredictionMode");
+});
 test("an actual native Chat retains mutable supplied turn plans without inventing an item, mode or completion from step status", async () => {
   const f = fixture("turn-plan"),
     events: CodexChatEvent[] = [];

@@ -211,6 +211,12 @@ const sandboxResponseSchema = z.discriminatedUnion("type", [
     })
     .strict(),
 ]);
+const activePermissionProfileSchema = z
+  .object({
+    id: z.string().min(1).max(256),
+    extends: z.string().min(1).max(256).nullable().optional(),
+  })
+  .strict();
 const forkResponseSchema = z
   .object({
     thread: threadSchema,
@@ -224,7 +230,10 @@ const forkResponseSchema = z
     approvalPolicy: z.enum(["on-request", "never"]),
     approvalsReviewer: z.literal("user"),
     sandbox: sandboxResponseSchema,
-    activePermissionProfile: z.null(),
+    // Pinned Codex may report null or bounded identity metadata such as the
+    // implicit `:workspace` profile. This is informational; permissions are
+    // derived from the independently checked sandbox and roots above.
+    activePermissionProfile: activePermissionProfileSchema.nullable(),
     reasoningEffort: z.string().max(64).nullable(),
     multiAgentMode: z.literal("explicitRequestOnly"),
   })
