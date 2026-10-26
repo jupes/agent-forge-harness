@@ -318,3 +318,29 @@ test("request entry guard follows the transport minimum rather than loader seman
   };
   expect(smithRoutingEditRequestSchema.safeParse(request).success).toBe(false);
 });
+
+test("one-row replacement reviews a fitting legacy bench larger than the request row bound", () => {
+  const rows = Array.from({ length: 700 }, () => '"claude-master:1"').join(
+    ", ",
+  );
+  const result = buildSmithRoutingEditCandidate(
+    {
+      target: "workspace",
+      change: {
+        kind: "bench",
+        bench: "low",
+        entries: [{ smith: "claude-apprentice", weight: 1 }],
+      },
+    },
+    sources(null, `[benches]\nlow = [${rows}]\n`),
+  );
+
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    expect(result.value.review.targetBefore).toHaveLength(700);
+    expect(result.value.review.effectiveBefore).toHaveLength(700);
+    expect(result.value.review.targetAfter).toEqual([
+      { smith: "claude-apprentice", weight: 1 },
+    ]);
+  }
+});
