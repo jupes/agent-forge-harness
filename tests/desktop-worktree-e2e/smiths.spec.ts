@@ -937,7 +937,7 @@ test("edits an existing Smith after a complete review and recovers the exact ori
   const table = config.getByRole("table", { name: "Configured smiths" });
   const savedRow = table
     .getByRole("row")
-    .filter({ has: table.getByText(fixtureSmith, { exact: true }) });
+    .filter({ has: page.getByText(fixtureSmith, { exact: true }) });
   await config
     .getByRole("button", { name: "Refresh configuration", exact: true })
     .click();
