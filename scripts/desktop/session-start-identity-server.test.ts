@@ -260,3 +260,52 @@ test("retire accepts only a verified reserved metadata object and validates the 
   expect(result.identity.state).toBe("retired");
   expect(postCount).toBe(1);
 });
+
+test("a newer same-scope page invalidates an earlier reserved retirement handle", async () => {
+  const request = originalRequest();
+  let pageVersion = 0;
+  let postCount = 0;
+  const reserved: SessionStartIdentityMetadata = {
+    version: 1,
+    requestId: request.requestId,
+    requestHash: await hashRequest(request),
+    provider: "codex",
+    mode: "chat",
+    state: "reserved",
+  };
+  const server = createSessionStartIdentityServer({
+    currentScope: () => scope,
+    read: async () => {
+      pageVersion++;
+      const next = {
+        ...page,
+        identities: [
+          { ...reserved, state: pageVersion === 1 ? "reserved" : "attempted" },
+        ],
+      } satisfies SessionStartIdentityPage;
+      return new Response(
+        JSON.stringify({ ok: true, data: next, error: null }),
+        { status: 200 },
+      );
+    },
+    post: async () => {
+      postCount++;
+      return new Response(
+        JSON.stringify({
+          ok: true,
+          data: reply({ ...reserved, state: "retired" }),
+          error: null,
+        }),
+        { status: 200 },
+      );
+    },
+  });
+
+  const first = await server.list(scope);
+  const earlierReserved = first.identities[0]!;
+  const newer = await server.list(scope);
+  expect(newer.identities[0]!.state).toBe("attempted");
+
+  await expect(server.retire(scope, earlierReserved)).rejects.toThrow();
+  expect(postCount).toBe(0);
+});
