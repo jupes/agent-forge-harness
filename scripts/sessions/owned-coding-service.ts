@@ -16,6 +16,7 @@ import type { ConversationUpdate } from "../conversations/transport";
 import {
   createRestartIdentityJournal,
   type RestartIdentityInput,
+  RestartIdentityJournalError,
   type RestartIdentityRow,
 } from "../identities/restart-index";
 import { resolveCheckout } from "../ledger/workspace";
@@ -358,6 +359,11 @@ export function createOwnedCodingSessionService(options: {
           scope: publicScope(projectId),
           identity: metadata(row),
         };
+      if (row.state !== "reserved")
+        throw new ConversationError(
+          409,
+          "Only an unattempted Session Start identity can be retired.",
+        );
       const identity: RestartIdentityInput = {
         version: row.version,
         address: row.address,
@@ -369,19 +375,11 @@ export function createOwnedCodingSessionService(options: {
       };
       const source = verifyOriginal(identity);
       if (source.kind === "invalid") throw held();
-      if (source.kind === "verified") {
-        try {
-          if (row.state === "reserved") await identities.beginAttempt(identity);
-          const admitted = await identities.admit(identity);
-          return {
-            version: 1,
-            scope: publicScope(projectId),
-            identity: metadata(admitted.row),
-          };
-        } catch {
-          throw held();
-        }
-      }
+      if (source.kind === "verified")
+        throw new ConversationError(
+          409,
+          "A verified original Session Start cannot be retired.",
+        );
       try {
         const retired = await identities.retireReserved(identity);
         return {
@@ -389,10 +387,16 @@ export function createOwnedCodingSessionService(options: {
           scope: publicScope(projectId),
           identity: metadata(retired),
         };
-      } catch {
+      } catch (error) {
         throw new ConversationError(
-          409,
-          "Only an unattempted Session Start identity can be retired.",
+          error instanceof RestartIdentityJournalError &&
+            error.kind === "conflict"
+            ? 409
+            : 503,
+          error instanceof RestartIdentityJournalError &&
+            error.kind === "conflict"
+            ? "Only an unattempted Session Start identity can be retired."
+            : "Session Start identities are unavailable.",
         );
       }
     },

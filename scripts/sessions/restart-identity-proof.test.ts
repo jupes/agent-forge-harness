@@ -1,6 +1,13 @@
 import { afterEach, expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PreparedCodexChat } from "../../types/codex-chat";
@@ -12,9 +19,11 @@ import type {
 import type { PreparedGeminiChat } from "../../types/gemini-chat-runtime";
 import type { PreparedGeminiTask } from "../../types/gemini-task-runtime";
 import type { SessionTurnSnapshot } from "../../types/session-turn";
+import type { ConversationError } from "../conversations/error";
 import { conversationFile } from "../conversations/paths";
 import { createConversationStore } from "../conversations/store";
 import { writeOwnerOnly } from "../hearth/token";
+import { createRestartIdentityJournal } from "../identities/restart-index";
 import { resolveCheckout } from "../ledger/workspace";
 import { workspaceKey } from "../projects/scope";
 import { createProjectStore } from "../projects/store";
@@ -28,6 +37,7 @@ import { preparedGeminiChatSchema } from "./gemini-chat-runtime-protocol";
 import { geminiTaskLaunchFromStart } from "./gemini-owned-preparation";
 import { preparedGeminiTaskSchema } from "./gemini-task-runtime-protocol";
 import { createSessionLibrary } from "./library";
+import { createOwnedCodingSessionService } from "./owned-coding-service";
 import { sessionRegistryFile } from "./registry";
 import { readVerifiedOriginalStart } from "./restart-identity-proof";
 
@@ -625,4 +635,53 @@ test("restart proof keeps exact launch presence and binds all five provider mode
       writeSource(source);
     }
   }
+
+  const legacy = cases.find(
+    (source) => source.provider === "claude" && source.mode === "chat",
+  );
+  if (!legacy) throw Error("Missing Claude Chat proof fixture");
+  const identity = writeSource(legacy);
+  const journal = createRestartIdentityJournal(legacy.home);
+  await journal.reserve(identity);
+  const eventBytes = () =>
+    readdirSync(join(legacy.home, "restart-identities"))
+      .filter((name) => /^event-\d{8}-[a-f0-9]{64}\.json$/.test(name))
+      .sort()
+      .map((name) => [
+        name,
+        readFileSync(join(legacy.home, "restart-identities", name)),
+      ]);
+  const beforeRetire = eventBytes();
+  const service = createOwnedCodingSessionService({
+    home: legacy.home,
+    root: legacy.root,
+    runtime: {
+      provider: "claude",
+      async prepare() {
+        throw Error("retirement must not prepare a provider");
+      },
+      async run() {
+        throw Error("retirement must not dispatch a provider");
+      },
+    },
+    async validateScope() {},
+  });
+  await expect(
+    service.retireIdentity(
+      legacy.projectId,
+      identity.requestId,
+      identity.requestHash,
+    ),
+  ).rejects.toMatchObject({
+    status: 409,
+    message: "A verified original Session Start cannot be retired.",
+  } satisfies Partial<ConversationError>);
+  expect(eventBytes()).toEqual(beforeRetire);
+  expect(
+    await journal.lookup(
+      { address: identity.address, workspace: identity.workspace },
+      identity.requestId,
+    ),
+  ).toMatchObject({ state: "reserved" });
+  await service.close();
 });
