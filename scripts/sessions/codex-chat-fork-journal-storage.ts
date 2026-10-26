@@ -14,7 +14,7 @@ import {
   openSync,
   rmSync,
 } from "node:fs";
-import { isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { agentForgeHome } from "../agent-forge-home";
 import {
   assertOwnerOnly,
@@ -148,7 +148,79 @@ export function createCodexChatForkJournalStorage(
     };
   let insideExclusive = false;
 
+  const ensureDirectoryChain = (path: string): FileIdentity => {
+    const components: string[] = [];
+    let current = resolve(path);
+    for (;;) {
+      components.unshift(current);
+      const parent = dirname(current);
+      if (parent === current) break;
+      current = parent;
+    }
+    let parentIdentity: FileIdentity | null = null,
+      result: FileIdentity | null = null;
+    for (const component of components) {
+      let info: BigIntStats | null;
+      try {
+        info = lstatSync(component, { bigint: true });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        info = null;
+      }
+      if (info === null) {
+        if (parentIdentity === null)
+          throw new Error("The private Codex Fork path has no stable parent.");
+        const parent = dirname(component),
+          before = lstatSync(parent, { bigint: true });
+        if (
+          !before.isDirectory() ||
+          before.isSymbolicLink() ||
+          !sameIdentity(identity(before), parentIdentity) ||
+          !safePath(parent)
+        )
+          throw new Error(
+            "The private Codex Fork parent changed before creation.",
+          );
+        // ensurePrivateHome now receives exactly one missing leaf; its parent already exists and was checked.
+        ensurePrivateHome(component, undefined, homeOptions);
+        info = lstatSync(component, { bigint: true });
+        const after = lstatSync(parent, { bigint: true });
+        if (
+          !info.isDirectory() ||
+          info.isSymbolicLink() ||
+          !sameIdentity(identity(after), parentIdentity) ||
+          !safePath(component)
+        )
+          throw new Error(
+            "The private Codex Fork path changed during creation.",
+          );
+      }
+      if (!info.isDirectory() || info.isSymbolicLink() || !safePath(component))
+        throw new Error(
+          "The private Codex Fork path contains a linked component.",
+        );
+      const found = identity(info);
+      if (parentIdentity !== null) {
+        const parent = lstatSync(dirname(component), { bigint: true });
+        if (
+          !parent.isDirectory() ||
+          parent.isSymbolicLink() ||
+          !sameIdentity(identity(parent), parentIdentity)
+        )
+          throw new Error(
+            "The private Codex Fork parent changed during inspection.",
+          );
+      }
+      parentIdentity = found;
+      result = found;
+    }
+    if (result === null)
+      throw new Error("The private Codex Fork path is invalid.");
+    return result;
+  };
+
   const checkedDirectory = (path: string): FileIdentity => {
+    ensureDirectoryChain(path);
     ensurePrivateHome(path, undefined, homeOptions);
     const checked = readHomeFile(path, undefined, homeOptions);
     if (checked.problem !== null) throw new Error(checked.problem);
@@ -450,7 +522,8 @@ export function createCodexChatForkJournalStorage(
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       }
       const stage = join(events, `${name}.${process.pid}-${randomUUID()}.tmp`);
-      ensurePrivateHome(profile, undefined, homeOptions);
+      if (!safePath(events))
+        throw new Error("The private Codex Fork namespace is linked.");
       writeOwnerOnly(stage, text, ownerOptions);
       const stageInfo = assertPrivateFile(
           events,
@@ -519,6 +592,7 @@ export function createCodexChatForkJournalStorage(
         throw new Error(
           "The private Codex Fork journal lock cannot be nested.",
         );
+      ensureDirectoryChain(profile);
       ensurePrivateHome(profile, undefined, homeOptions);
       const rootIdentity = checkedDirectory(root),
         eventsIdentity = checkedDirectory(events),

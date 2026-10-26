@@ -7,6 +7,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -257,4 +258,42 @@ test("existing inherited read access is refused before mutation or SQLite", asyn
   expect(enteredWork).toBe(false);
   expect(after.ino).toBe(before.ino);
   expect(after.mtimeNs).toBe(before.mtimeNs);
+});
+
+test("a junction ancestor is refused before creating any nested profile component", async () => {
+  const base = scratch.make("codex-fork-linked-profile-"),
+    target = join(base, "target"),
+    alias = join(base, "alias"),
+    home = join(alias, "missing", "nested", "profile");
+  mkdirSync(target);
+  symlinkSync(target, alias, process.platform === "win32" ? "junction" : "dir");
+  const storage = createCodexChatForkJournalStorage(home, {
+    platform: "win32",
+    acl: fakeAcl(),
+  });
+
+  await expect(storage.exclusive(async () => undefined)).rejects.toThrow();
+  expect(readdirSync(target)).toEqual([]);
+  expect(existsSync(join(target, "missing"))).toBe(false);
+});
+
+test("a missing nested profile is created one verified directory at a time", async () => {
+  const home = join(
+      scratch.make("codex-fork-nested-profile-"),
+      "one",
+      "two",
+      "profile",
+    ),
+    storage = createCodexChatForkJournalStorage(home, {
+      platform: "win32",
+      acl: fakeAcl(),
+    });
+
+  await storage.exclusive(async () => undefined);
+  expect(
+    existsSync(join(home, CODEX_CHAT_FORK_JOURNAL_DIRECTORY, "events")),
+  ).toBe(true);
+  expect(
+    existsSync(join(home, CODEX_CHAT_FORK_JOURNAL_DIRECTORY, "locks")),
+  ).toBe(true);
 });
