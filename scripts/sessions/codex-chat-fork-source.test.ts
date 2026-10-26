@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { join } from "node:path";
+import type { PreparedCodexChat } from "../../types/codex-chat";
+import type { CodexChatOwnedRecord } from "../../types/codex-owned-chat";
+import type { ConversationObject } from "../../types/conversation";
 import { eventSchema } from "../conversations/protocol";
 import { createConversationStore } from "../conversations/store";
 import {
@@ -11,10 +15,51 @@ import { startTestHearth } from "../hearth/testing";
 import { FIXTURE_PROJECT_ID } from "../projects/testing";
 import { resolveCodexChatForkSource } from "./codex-chat-fork-source";
 import { ownedCodingStateSchema } from "./codex-owned-journal";
+import { canonicalOwnedSessionStart } from "./codex-owned-protocol";
+import { createSessionRegistry } from "./registry";
 
 const version = "0.163.0-alpha.10.2";
 const threadId = "0199a213-81c0-7800-8aa1-bbab2a035a53";
 const nativeTurnId = "0199a213-81c0-7800-8aa1-bbab2a035a54";
+
+function originalRequestHash(
+  owner: CodexChatOwnedRecord,
+  prepared: PreparedCodexChat,
+  about: ConversationObject[],
+  includeAbout = true,
+) {
+  const { cwd: _cwd, context: _context, ...launch } = prepared.launch;
+  return createHash("sha256")
+    .update(
+      canonicalOwnedSessionStart({
+        requestId: owner.requestId,
+        provider: "codex",
+        smith: owner.smith,
+        repository: owner.repository,
+        worktree: owner.worktree,
+        ...(owner.beadId ? { beadId: owner.beadId } : {}),
+        ...(includeAbout ? { about } : {}),
+        launch,
+      }),
+    )
+    .digest("hex");
+}
+
+function conversationTurnHash(input: {
+  text: string;
+  about: ConversationObject[];
+  codexChat: PreparedCodexChat;
+}) {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        text: input.text,
+        about: input.about,
+        codexChat: input.codexChat,
+      }),
+    )
+    .digest("hex");
+}
 
 async function completeSource(h: Awaited<ReturnType<typeof startTestHearth>>) {
   await seedChatDecision(h);
@@ -86,14 +131,36 @@ async function completeSource(h: Awaited<ReturnType<typeof startTestHearth>>) {
       },
     },
   });
-  return {
-    state: ownedCodingStateSchema.parse({
+  const state = ownedCodingStateSchema.parse({
       ...original,
       revision: frames.length,
       frames,
     }),
+    registeredOwner = createSessionRegistry(h.home, "codex", "chat").read(
+      FIXTURE_PROJECT_ID,
+      FIXTURE_CHAT_SESSION,
+    ),
+    originalUser = state.frames.find(
+      (frame) => frame.turnId === requestId && frame.event.kind === "user",
+    )?.event;
+  if (
+    originalUser?.kind !== "user" ||
+    !("codexChat" in originalUser) ||
+    !originalUser.codexChat
+  )
+    throw Error("Missing original private Chat request.");
+  return {
+    state,
     workspace: h.workspace,
     requestId,
+    owner: {
+      ...registeredOwner,
+      requestHash: originalRequestHash(
+        registeredOwner,
+        originalUser.codexChat,
+        originalUser.about,
+      ),
+    },
   };
 }
 
@@ -101,12 +168,13 @@ test("Fork source requires explicit tier evidence while preserving known null an
   const h = await startTestHearth();
   try {
     const source = await completeSource(h),
-      resolve = (state: unknown) =>
+      resolve = (state: unknown, owner = source.owner) =>
         resolveCodexChatForkSource({
+          owner,
           state,
           projectId: FIXTURE_PROJECT_ID,
           conversationId: FIXTURE_CHAT_SESSION,
-          workspace: source.workspace,
+          workspaceKey: source.workspace,
           selectedTurnRequestId: source.requestId,
         });
     const eligible = resolve(source.state);
@@ -116,6 +184,25 @@ test("Fork source requires explicit tier evidence while preserving known null an
       selectedTurnRequestId: source.requestId,
       lastTurnId: nativeTurnId,
       sourceSettings: { modelProvider: "openai", serviceTier: null },
+    });
+    if (!eligible.eligible) throw Error("Missing prepared source evidence.");
+    const omittedAboutOwner = {
+      ...source.owner,
+      requestHash: originalRequestHash(
+        source.owner,
+        eligible.prepared,
+        [],
+        false,
+      ),
+    };
+    expect(resolve(source.state, omittedAboutOwner).eligible).toBe(true);
+
+    const changedTurnHash = structuredClone(source.state);
+    if (!changedTurnHash.turns[0]) throw Error("Missing selected app turn.");
+    changedTurnHash.turns[0].hash = "c".repeat(64);
+    expect(resolve(changedTurnHash)).toEqual({
+      eligible: false,
+      reason: "turn-hash-mismatch",
     });
 
     const config = source.state.frames.find(
@@ -179,6 +266,26 @@ test("Fork source requires explicit tier evidence while preserving known null an
       eligible: false,
       reason: "invalid-state",
     });
+
+    const unsupportedEffort = structuredClone(source.state),
+      unsupportedConfig = unsupportedEffort.frames.find(
+        (frame) =>
+          frame.event.kind === "coding-chat" &&
+          frame.event.event.kind === "configuration",
+      );
+    if (
+      unsupportedConfig?.event.kind !== "coding-chat" ||
+      unsupportedConfig.event.event.kind !== "configuration"
+    )
+      throw Error("Missing selected configuration evidence.");
+    unsupportedConfig.event.event.effort = "medium";
+    expect(ownedCodingStateSchema.safeParse(unsupportedEffort).success).toBe(
+      true,
+    );
+    expect(resolve(unsupportedEffort)).toEqual({
+      eligible: false,
+      reason: "unsupported-source",
+    });
   } finally {
     await h.close();
   }
@@ -188,12 +295,17 @@ test("Fork source resolves only the exact selected completed turn and refuses sc
   const h = await startTestHearth();
   try {
     const source = await completeSource(h),
-      resolve = (state: unknown, selectedTurnRequestId = source.requestId) =>
+      resolve = (
+        state: unknown,
+        selectedTurnRequestId = source.requestId,
+        owner = source.owner,
+      ) =>
         resolveCodexChatForkSource({
+          owner,
           state,
           projectId: FIXTURE_PROJECT_ID,
           conversationId: FIXTURE_CHAT_SESSION,
-          workspace: source.workspace,
+          workspaceKey: source.workspace,
           selectedTurnRequestId,
         }),
       selected = resolve(source.state);
@@ -204,19 +316,117 @@ test("Fork source resolves only the exact selected completed turn and refuses sc
     });
     expect(
       resolveCodexChatForkSource({
+        owner: source.owner,
         state: source.state,
         projectId: randomUUID(),
         conversationId: FIXTURE_CHAT_SESSION,
-        workspace: source.workspace,
+        workspaceKey: source.workspace,
         selectedTurnRequestId: source.requestId,
       }),
     ).toEqual({ eligible: false, reason: "scope-mismatch" });
     expect(
+      resolve(source.state, source.requestId, {
+        ...source.owner,
+        requestHash: "a".repeat(64),
+      }),
+    ).toEqual({ eligible: false, reason: "owner-mismatch" });
+    expect(
+      resolve(source.state, source.requestId, {
+        ...source.owner,
+        requestId: randomUUID(),
+      }),
+    ).toEqual({ eligible: false, reason: "owner-mismatch" });
+
+    const separateWorktree = join(source.workspace, "fork-checkout"),
+      worktreeState = structuredClone(source.state);
+    for (const frame of worktreeState.frames) {
+      if (
+        frame.event.kind === "user" &&
+        "codexChat" in frame.event &&
+        frame.event.codexChat
+      ) {
+        const prepared = frame.event.codexChat,
+          context = prepared.launch.context;
+        if (!context) throw Error("Missing prepared Chat context.");
+        frame.event.codexChat = {
+          ...prepared,
+          cwd: separateWorktree,
+          canonicalCwd: separateWorktree,
+          launch: {
+            ...prepared.launch,
+            cwd: separateWorktree,
+            context: { ...context, worktree: separateWorktree },
+          },
+        };
+      } else if (
+        frame.event.kind === "coding-chat" &&
+        frame.event.event.kind === "configuration"
+      ) {
+        frame.event.event.cwd = separateWorktree;
+      }
+    }
+    const separateUser = worktreeState.frames.find(
+      (frame) =>
+        frame.turnId === source.requestId &&
+        frame.event.kind === "user" &&
+        "codexChat" in frame.event &&
+        frame.event.codexChat,
+    );
+    if (
+      separateUser?.event.kind !== "user" ||
+      !("codexChat" in separateUser.event) ||
+      !separateUser.event.codexChat
+    )
+      throw Error("Missing re-scoped source Chat.");
+    const separateOwner = {
+      ...source.owner,
+      worktree: separateWorktree,
+      requestHash: originalRequestHash(
+        { ...source.owner, worktree: separateWorktree },
+        separateUser.event.codexChat,
+        separateUser.event.about,
+      ),
+    };
+    const separateTurn = worktreeState.turns.find(
+        (turn) => turn.requestId === source.requestId,
+      ),
+      separateUserFrame = worktreeState.frames.find(
+        (frame) =>
+          frame.turnId === source.requestId &&
+          frame.event.kind === "user" &&
+          "codexChat" in frame.event &&
+          frame.event.codexChat,
+      );
+    if (
+      !separateTurn ||
+      separateUserFrame?.event.kind !== "user" ||
+      !("codexChat" in separateUserFrame.event) ||
+      !separateUserFrame.event.codexChat
+    )
+      throw Error("Missing re-scoped selected turn.");
+    separateTurn.hash = conversationTurnHash({
+      text: separateUserFrame.event.text,
+      about: separateUserFrame.event.about,
+      codexChat: separateUserFrame.event.codexChat,
+    });
+    expect(ownedCodingStateSchema.safeParse(worktreeState).success).toBe(true);
+    expect(
       resolveCodexChatForkSource({
+        owner: separateOwner,
+        state: worktreeState,
+        projectId: FIXTURE_PROJECT_ID,
+        conversationId: FIXTURE_CHAT_SESSION,
+        workspaceKey: source.workspace,
+        selectedTurnRequestId: source.requestId,
+      }),
+    ).toMatchObject({ eligible: true, lastTurnId: nativeTurnId });
+    expect(
+      resolveCodexChatForkSource({
+        owner: source.owner,
         state: source.state,
         projectId: FIXTURE_PROJECT_ID,
         conversationId: FIXTURE_CHAT_SESSION,
-        workspace: `${source.workspace}-other`,
+        workspaceKey: `${source.workspace}-other`,
         selectedTurnRequestId: source.requestId,
       }),
     ).toEqual({ eligible: false, reason: "scope-mismatch" });
@@ -262,6 +472,18 @@ test("Fork source resolves only the exact selected completed turn and refuses sc
       lastTurnId: nativeTurnId,
       sourceSettings: { modelProvider: "openai", serviceTier: null },
     });
+
+    for (const phase of ["running", "unknown"] as const) {
+      const otherTurn = structuredClone(withLater),
+        laterTurn = otherTurn.turns[1];
+      if (!laterTurn) throw Error("Missing later fixture turn.");
+      laterTurn.phase = phase;
+      expect(ownedCodingStateSchema.safeParse(otherTurn).success).toBe(true);
+      expect(resolve(otherTurn)).toEqual({
+        eligible: false,
+        reason: "conversation-active",
+      });
+    }
 
     const active = structuredClone(source.state);
     if (!active.turns[0]) throw Error("Missing original app turn.");
@@ -314,6 +536,57 @@ test("Fork source resolves only the exact selected completed turn and refuses sc
     });
     pendingApproval.revision = pendingApproval.frames.length;
     expect(resolve(pendingApproval)).toEqual({
+      eligible: false,
+      reason: "approval-pending",
+    });
+
+    const pendingOtherTurn = structuredClone(withLater),
+      laterOutcomeIndex = pendingOtherTurn.frames.findIndex(
+        (frame) =>
+          frame.turnId === laterRequestId &&
+          frame.event.kind === "coding-chat" &&
+          frame.event.event.kind === "outcome",
+      ),
+      laterLastFrame = pendingOtherTurn.frames.at(-1);
+    if (laterOutcomeIndex < 0 || !laterLastFrame)
+      throw Error("Missing later fixture outcome or timestamp.");
+    const otherApproval = {
+      seq: laterOutcomeIndex + 1,
+      turnId: laterRequestId,
+      at: laterLastFrame.at,
+      event: eventSchema.parse({
+        kind: "coding-chat",
+        provider: "codex",
+        version,
+        event: {
+          kind: "approval-request",
+          approval: {
+            id: randomUUID(),
+            provider: "codex",
+            processId: 2_000_000_000,
+            nativeRequestId: 2,
+            nativeApprovalId: null,
+            threadId,
+            turnId: laterNativeTurnId,
+            itemId: "later-pending-command",
+            kind: "command",
+            command: "inert later fixture command",
+            cwd: source.workspace,
+            reason: null,
+            availableDecisions: ["decline"],
+          },
+        },
+      }),
+    };
+    pendingOtherTurn.frames.splice(laterOutcomeIndex, 0, otherApproval);
+    pendingOtherTurn.frames.forEach((frame, index) => {
+      frame.seq = index + 1;
+    });
+    pendingOtherTurn.revision = pendingOtherTurn.frames.length;
+    expect(ownedCodingStateSchema.safeParse(pendingOtherTurn).success).toBe(
+      true,
+    );
+    expect(resolve(pendingOtherTurn)).toEqual({
       eligible: false,
       reason: "approval-pending",
     });
