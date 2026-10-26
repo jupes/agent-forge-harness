@@ -10,11 +10,14 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
+import { z } from "zod";
 import type { CodexChatForkOriginal } from "../../types/codex-chat-fork";
 import {
+  type AclReading,
   assertOwnerOnly,
   makeOwnerOnly,
   nativeWindowsAcl,
+  ownerOnlyProblem,
 } from "../hearth/acl-windows";
 import { ensurePrivateHome } from "../hearth/home-guard";
 import { writeOwnerOnly } from "../hearth/token";
@@ -33,6 +36,26 @@ const scratch = scratchDirs(),
   children = new Set<Bun.Subprocess>(),
   outputLimit = 16 * 1024,
   childTimeoutMs = 12_000;
+
+const attemptReplySchema = z
+    .object({
+      mayDispatch: z.boolean(),
+      state: z.literal("attempted"),
+    })
+    .strict(),
+  reservationReplySchema = z.discriminatedUnion("ok", [
+    z
+      .object({
+        ok: z.literal(true),
+        requestId: z.enum([
+          "0199a213-81c0-7800-8aa1-bbab2a035a57",
+          "0199a213-81c0-7800-8aa1-bbab2a035a58",
+        ]),
+        state: z.literal("reserved"),
+      })
+      .strict(),
+    z.object({ ok: z.literal(false), reason: z.literal("conflict") }).strict(),
+  ]);
 
 afterEach(async () => {
   for (const child of children) child.kill();
@@ -144,7 +167,7 @@ async function runChild(script: string): Promise<unknown> {
 }
 
 function imports(): string {
-  return `import { createCodexChatForkJournal } from ${JSON.stringify(join(import.meta.dir, "codex-chat-fork-journal.ts"))};`;
+  return `import { CodexChatForkJournalError, createCodexChatForkJournal } from ${JSON.stringify(join(import.meta.dir, "codex-chat-fork-journal.ts"))};`;
 }
 
 function childBarrier(barrier: string, slot: string): string {
@@ -186,13 +209,24 @@ async function bootstrapOwnerOnlyMutex(home: string): Promise<void> {
   assertOwnerOnly(mutex, "file", acl);
 }
 
-function inheritedFile(base: string, destination: string): string {
+function inheritedFile(
+  base: string,
+  destination: string,
+): { path: string; text: string; acl: AclReading } {
   const source = join(base, `foreign-${randomUUID()}.bin`),
+    text = "preserve inherited fixture",
     acl = nativeWindowsAcl();
-  writeFileSync(source, "preserve inherited fixture");
-  assertOwnerOnly(source, "file", acl);
+  writeFileSync(source, text);
+  const before = acl.read(source);
+  if (ownerOnlyProblem(before, "file", acl.userSid()) === null)
+    throw new Error(
+      "The foreign ACL fixture unexpectedly has an owner-only DACL.",
+    );
   renameSync(source, destination);
-  return destination;
+  const moved = acl.read(destination);
+  if (JSON.stringify(moved) !== JSON.stringify(before))
+    throw new Error("Moving the foreign ACL fixture changed its ACL.");
+  return { path: destination, text, acl: before };
 }
 
 function detail(error: unknown, mutex: string): string {
@@ -263,17 +297,11 @@ test.skipIf(!nativeEnabled)(
         const result = await journal.markAttempted(${JSON.stringify(reference(reserved))});
         process.stdout.write(JSON.stringify({mayDispatch:result.mayDispatch,state:result.record.state}));`,
     );
-    const results = await Promise.all(scripts.map(runChild));
-    expect(
-      results.filter(
-        (value) => (value as { mayDispatch: boolean }).mayDispatch,
-      ),
-    ).toHaveLength(1);
-    expect(
-      results.every(
-        (value) => (value as { state: string }).state === "attempted",
-      ),
-    ).toBe(true);
+    const results = (await Promise.all(scripts.map(runChild))).map((value) =>
+      attemptReplySchema.parse(value),
+    );
+    expect(results.filter((value) => value.mayDispatch)).toHaveLength(1);
+    expect(results.every((value) => value.state === "attempted")).toBe(true);
     expect(parent.read(projectId, requestId)?.state).toBe("attempted");
   },
   30_000,
@@ -299,16 +327,25 @@ test.skipIf(!nativeEnabled)(
           const record = await journal.reserve(${JSON.stringify(projectId)},${JSON.stringify(parentSessionId)},${JSON.stringify(intent(ids[index]!))});
           process.stdout.write(JSON.stringify({ok:true,requestId:record.requestId,state:record.state}));
         } catch (error) {
-          process.stdout.write(JSON.stringify({ok:false,message:error instanceof Error ? error.message : String(error)}));
+          process.stdout.write(JSON.stringify({ok:false,reason:error instanceof CodexChatForkJournalError ? error.reason : "unexpected"}));
         }`,
     );
-    const results = await Promise.all(scripts.map(runChild));
+    const parent = createCodexChatForkJournal({ root, home }),
+      results = (await Promise.all(scripts.map(runChild))).map((value) =>
+        reservationReplySchema.parse(value),
+      ),
+      winner = results.find((value) => value.ok),
+      loser = results.find((value) => !value.ok);
+    expect(winner).toBeDefined();
+    expect(loser?.reason).toBe("conflict");
+    const reopened = createCodexChatForkJournal({ root, home });
+    expect(reopened.read(projectId, winner!.requestId)?.state).toBe("reserved");
     expect(
-      results.filter((value) => (value as { ok: boolean }).ok),
-    ).toHaveLength(1);
-    expect(
-      results.filter((value) => !(value as { ok: boolean }).ok),
-    ).toHaveLength(1);
+      reopened.read(
+        projectId,
+        ids.find((requestId) => requestId !== winner!.requestId)!,
+      ),
+    ).toBeNull();
   },
   30_000,
 );
@@ -318,7 +355,7 @@ test.skipIf(!nativeEnabled)(
   async () => {
     const acl = nativeWindowsAcl();
     for (const kind of ["mutex", "sidecar"] as const) {
-      const { base, root, home } = fixture(`foreign-${kind}`),
+      const { base, home } = fixture(`foreign-${kind}`),
         journalRoot = join(home, CODEX_CHAT_FORK_JOURNAL_DIRECTORY),
         locks = join(journalRoot, "locks"),
         mutex = join(locks, "journal.sqlite");
@@ -328,18 +365,19 @@ test.skipIf(!nativeEnabled)(
       ensurePrivateHome(locks);
       if (kind === "sidecar") await bootstrapOwnerOnlyMutex(home);
       const target = kind === "mutex" ? mutex : `${mutex}-wal`;
-      inheritedFile(base, target);
-      const beforeText = readFileSync(target, "utf8"),
-        beforeAcl = acl.read(target);
+      const inherited = inheritedFile(base, target),
+        beforeText = readFileSync(inherited.path, "utf8"),
+        beforeAcl = acl.read(inherited.path);
+      expect(beforeText).toBe(inherited.text);
+      expect(beforeAcl).toEqual(inherited.acl);
       expect(() => assertOwnerOnly(target, "file", acl)).toThrow();
       await expect(
         createCodexChatForkJournalStorage(home).exclusive(
           async () => undefined,
         ),
       ).rejects.toThrow();
-      expect(readFileSync(target, "utf8")).toBe(beforeText);
-      expect(acl.read(target)).toEqual(beforeAcl);
-      void root;
+      expect(readFileSync(inherited.path, "utf8")).toBe(beforeText);
+      expect(acl.read(inherited.path)).toEqual(beforeAcl);
     }
   },
   30_000,
