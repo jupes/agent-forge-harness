@@ -6,7 +6,7 @@ import type {
   SessionObservedActivity,
   SessionOwnershipMetadata,
 } from "../../types/session-observations";
-import { codexChatForkOriginSchema } from "../sessions/codex-chat-fork-protocol";
+import { codexChatForkOriginSchema } from "../sessions/codex-chat-fork-origin-protocol";
 import { ownedCodingSessionSchema } from "../sessions/codex-owned-wire-protocol";
 import { sessionProjectIdSchema } from "../sessions/identity-protocol";
 import { projectShiftAttemptOriginSchema } from "../sessions/shift-origin-protocol";

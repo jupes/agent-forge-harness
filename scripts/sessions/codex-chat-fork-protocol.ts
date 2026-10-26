@@ -6,7 +6,6 @@ import type {
   CodexChatForkHeldReason,
   CodexChatForkIntent,
   CodexChatForkLink,
-  CodexChatForkOrigin,
   CodexChatForkOriginal,
   CodexChatForkOriginalBase,
   CodexChatForkOriginalRef,
@@ -14,13 +13,17 @@ import type {
 } from "../../types/codex-chat-fork";
 import { workspaceKey } from "../projects/scope";
 import {
+  CODEX_CHAT_FORK_PROTOCOL_VERSION,
+  codexChatForkOriginSchema,
+} from "./codex-chat-fork-origin-protocol";
+import {
   ownedSessionIdSchema,
   sessionProjectIdSchema,
   sessionRequestHashSchema,
   sessionRequestIdSchema,
 } from "./protocol";
 
-export const CODEX_CHAT_FORK_PROTOCOL_VERSION = "0.163.0-alpha.10.2" as const;
+export { CODEX_CHAT_FORK_PROTOCOL_VERSION, codexChatForkOriginSchema };
 export const CODEX_CHAT_FORK_HASH_VERSION = 1 as const;
 export const CODEX_CHAT_FORK_DOMAIN = "agent-forge.codex-chat-fork.original.v1";
 export const CODEX_CHAT_FORK_ZERO_HASH = "0".repeat(64);
@@ -90,21 +93,6 @@ export const codexChatForkSourceSealSchema: z.ZodType<CodexChatForkSourceSeal> =
       sourceSettingsHash: hashSchema,
     })
     .strict();
-export const codexChatForkOriginSchema: z.ZodType<CodexChatForkOrigin> = z
-  .object({
-    kind: z.literal("codex-chat-fork"),
-    projectId: sessionProjectIdSchema,
-    parentSessionId: ownedSessionIdSchema,
-    throughTurnRequestId: sessionRequestIdSchema,
-    parentTurnHash: hashSchema,
-    parentNativeThreadId: nativeUuidSchema,
-    throughNativeTurnId: nativeUuidSchema,
-    childNativeThreadId: nativeUuidSchema,
-    captureHash: hashSchema,
-    protocolVersion: z.literal(CODEX_CHAT_FORK_PROTOCOL_VERSION),
-  })
-  .strict()
-  .refine((value) => value.parentNativeThreadId !== value.childNativeThreadId);
 export const codexChatForkLinkSchema: z.ZodType<CodexChatForkLink> = z
   .object({
     childAppSessionId: ownedSessionIdSchema,

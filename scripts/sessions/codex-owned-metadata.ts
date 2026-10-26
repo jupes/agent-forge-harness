@@ -7,7 +7,7 @@ import type {
   CodexOwnedSessionMetadata,
   CodexOwnedSessionRecord,
 } from "../../types/codex-owned-task";
-import { codexChatForkOriginSchema } from "./codex-chat-fork-protocol";
+import { codexChatForkOriginSchema } from "./codex-chat-fork-origin-protocol";
 import {
   ownedSessionIdSchema,
   ownedSessionMetadataFieldsSchema,
