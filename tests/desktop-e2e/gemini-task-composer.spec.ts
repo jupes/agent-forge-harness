@@ -692,6 +692,28 @@ test("a Gemini Start held before admission retains its original metadata through
   await check(dialog);
   const before = taskCount(),
     posts: string[] = [];
+  let identityWrites = 0,
+    startPosts = 0,
+    protectedOriginalReads = 0;
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (
+      request.method() === "POST" &&
+      url.pathname.endsWith("/session-start-identities")
+    )
+      identityWrites++;
+    if (
+      request.method() === "POST" &&
+      url.pathname === `/__agent-forge/projects/${alpha.id}/sessions`
+    )
+      startPosts++;
+    if (
+      request.method() === "GET" &&
+      url.searchParams.has("requestId") &&
+      url.pathname.includes(`/projects/${alpha.id}/sessions/`)
+    )
+      protectedOriginalReads++;
+  });
   let entered!: () => void, release!: () => void, finished!: () => void;
   const held = new Promise<void>((resolve) => {
     entered = resolve;
@@ -739,45 +761,99 @@ test("a Gemini Start held before admission retains its original metadata through
       exact: true,
     });
     await reopened.getByRole("button", { name: /Gm · Gemini/ }).click();
-    await expect(
-      reopened.getByRole("button", {
-        name: "Check original Start",
-        exact: true,
-      }),
-    ).toBeVisible();
     await reopened
-      .getByRole("button", { name: "Check original Start", exact: true })
-      .click();
-    await expect(
-      reopened.getByRole("button", {
-        name: "Check original Start",
-        exact: true,
-      }),
-    ).toBeEnabled();
+      .getByRole("combobox", { name: "Where the session runs", exact: true })
+      .selectOption("main");
+    const identityRegion = reopened.getByRole("region", {
+      name: "Original Start requests",
+      exact: true,
+    });
+    await expect(identityRegion).toBeVisible();
+    const checkServer = identityRegion.getByRole("button", {
+      name: "Check server",
+      exact: true,
+    });
+    await checkServer.click();
+    const heldOriginal = JSON.parse(posts[0] ?? "null") as {
+      requestId?: string;
+    } | null;
+    if (!heldOriginal?.requestId)
+      throw Error("Missing held original Gemini Task request identity.");
+    const identityRow = identityRegion
+      .locator(".af-start-identities-list li")
+      .filter({ hasText: heldOriginal.requestId });
+    await expect(identityRow).toContainText("gemini task · reserved");
+    const listedRequestId = await identityRow
+      .locator("code")
+      .nth(0)
+      .textContent();
+    const listedRequestHash = await identityRow
+      .locator("code")
+      .nth(1)
+      .textContent();
+    expect(listedRequestId).toBe(heldOriginal.requestId);
+    expect(listedRequestHash).toMatch(/^[0-9a-f]{64}$/);
+    const continueOriginal = identityRow.getByRole("button", {
+      name: "Continue exact original",
+      exact: true,
+    });
+    await expect(continueOriginal).toBeDisabled();
+    await reopened
+      .getByRole("textbox", { name: "Session prompt", exact: true })
+      .fill("PRIVATE GEMINI COMPOSER QUESTION");
+    await expect(continueOriginal).toBeEnabled();
     await expect(
       reopened.getByRole("button", { name: "Start", exact: true }),
     ).toBeDisabled();
-    await expect(
-      reopened.getByRole("button", {
-        name: "Retry original Start",
-        exact: true,
-      }),
-    ).toHaveCount(0);
     await reopened.getByRole("button", { name: /Cl · Claude/ }).click();
     await expect(
       reopened.getByRole("button", { name: "Start", exact: true }),
     ).toBeDisabled();
+    await reopened.getByRole("button", { name: /Gm · Gemini/ }).click();
+    await expect(identityRegion).toContainText(heldOriginal.requestId);
+    await expect(continueOriginal).toBeEnabled();
+    await expect(
+      reopened.getByRole("button", { name: "Start", exact: true }),
+    ).toBeDisabled();
     expect(
-      await page.evaluate(() => JSON.stringify(localStorage)),
+      await page.evaluate(() =>
+        JSON.stringify({
+          local: Object.entries(localStorage),
+          session: Object.entries(sessionStorage),
+        }),
+      ),
     ).not.toContain("PRIVATE GEMINI COMPOSER QUESTION");
+    expect(identityWrites).toBe(1);
+    expect(startPosts).toBe(1);
     expect(posts).toHaveLength(1);
     release();
     await delivered;
     await expect.poll(taskCount).toBe(before + 1);
-    await expect(reopened).not.toBeVisible();
+    await expect(reopened).toBeVisible();
+    await checkServer.click();
+    await expect(identityRow).toContainText("gemini task · admitted");
+    expect(await identityRow.locator("code").nth(0).textContent()).toBe(
+      listedRequestId,
+    );
+    expect(await identityRow.locator("code").nth(1).textContent()).toBe(
+      listedRequestHash,
+    );
+    await identityRow
+      .getByRole("button", { name: "Inspect original", exact: true })
+      .click();
+    await expect(
+      identityRow.getByRole("link", { name: "Open original session" }),
+    ).toBeVisible();
+    await expect.poll(() => protectedOriginalReads).toBeGreaterThan(0);
+    await identityRow
+      .getByRole("link", { name: "Open original session" })
+      .click();
+    await expect(reopened).toBeHidden();
     await expect(
       page.getByText("Native Task outcome: completed", { exact: true }),
     ).toBeVisible();
+    expect(identityWrites).toBe(1);
+    expect(startPosts).toBe(1);
     expect(posts).toHaveLength(1);
   } finally {
     release();
