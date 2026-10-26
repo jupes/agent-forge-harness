@@ -43,7 +43,8 @@ test("Smith create route inventory is fixed and unauthorized or malformed reques
   opened.push(h);
   const smithRows = h.hearth.routes.filter(
     (route) =>
-      route.path.startsWith("/config/smiths/") ||
+      route.path === "/config/smiths/preview" ||
+      route.path === "/config/smiths/creates" ||
       route.path.startsWith("/smiths/creates/"),
   );
   expect(

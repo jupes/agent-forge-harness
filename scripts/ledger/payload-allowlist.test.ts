@@ -131,3 +131,40 @@ describe("stripPayload: the findings on council.run.finished", () => {
     });
   });
 });
+
+describe("stripPayload: Smith edit action identity", () => {
+  test("keeps only the fixed family and bounded UUID/digest metadata", () => {
+    expect(
+      stripPayload("operator.action", {
+        action: "smith.config.edit",
+        surface: "api",
+        target: "workspace",
+        family: "smith-config-edit",
+        requestId: "122d0b56-96f3-4818-8789-6ab562c092e8",
+        inputHash: "a".repeat(64),
+        smith: { name: "private smith request" },
+        body: "private request body",
+        expectedRevision: { user: "revision" },
+      }),
+    ).toEqual({
+      action: "smith.config.edit",
+      surface: "api",
+      target: "workspace",
+      family: "smith-config-edit",
+      requestId: "122d0b56-96f3-4818-8789-6ab562c092e8",
+      inputHash: "a".repeat(64),
+    });
+  });
+
+  test("drops unrecognized families and malformed correlation values", () => {
+    expect(
+      stripPayload("operator.action", {
+        action: "smith.config.edit",
+        surface: "api",
+        family: "private request data",
+        requestId: "not-a-uuid",
+        inputHash: "not-a-digest",
+      }),
+    ).toEqual({ action: "smith.config.edit", surface: "api" });
+  });
+});

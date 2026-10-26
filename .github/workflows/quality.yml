@@ -60,6 +60,8 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - run: bun test scripts --timeout 15000
+        env:
+          AGENT_FORGE_TEST_PROBE_DIAGNOSTICS: "1"
 
   # The browser suite (tests/e2e). Its config starts the hearth and the
   # dashboard itself; see tests/e2e/AGENTS.md for what a green run does and

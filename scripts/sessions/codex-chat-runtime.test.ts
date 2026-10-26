@@ -11,6 +11,7 @@ import {
 import { join } from "node:path";
 import type { CodexChatEvent, CodexChatLaunch } from "../../types/codex-chat";
 import { scratchDirs } from "../test-scratch";
+import { parseCodexChatForkRuntimeInput } from "./codex-chat-fork-runtime-protocol";
 import {
   type CodexChatCallbacks,
   createCodexChatRuntime,
@@ -97,6 +98,106 @@ function fixture(mode = "normal") {
   };
   return { root, runtime, launch, records, options };
 }
+
+async function forkInput(f: ReturnType<typeof fixture>) {
+  const prepared = await f.runtime.prepare({
+    smith: "codex-journeyman",
+    launch: f.launch,
+  });
+  return parseCodexChatForkRuntimeInput({
+    prepared,
+    parent: { provider: "codex", threadId, version },
+    lastTurnId: "0199a213-81c0-7800-8aa1-bbab2a035a54",
+    sourceSettings: {
+      modelProvider: "openai",
+      serviceTier: null,
+      reasoningEffort: "high",
+    },
+  });
+}
+
+test("the dedicated native Fork sends one bounded fork request and returns only verified child metadata", async () => {
+  const f = fixture("fork"),
+    input = await forkInput(f);
+  const result = await f.runtime.fork(input),
+    calls = f.records().filter((row) => row.kind === "rpc"),
+    initialize = calls.find((row) => row.method === "initialize"),
+    fork = calls.find((row) => row.method === "thread/fork");
+  expect(result.threadId).toBe("0199a213-81c0-7800-8aa1-bbab2a035a55");
+  expect(result.forkedFromId).toBe(threadId);
+  expect(result).not.toHaveProperty("preview");
+  expect(result).not.toHaveProperty("path");
+  expect(calls.map((row) => row.method)).toEqual(["initialize", "thread/fork"]);
+  expect(
+    f
+      .records()
+      .filter((row) => row.kind === "notification")
+      .map((row) => row.method),
+  ).toEqual(["initialized"]);
+  expect(initialize?.params).toMatchObject({
+    capabilities: { experimentalApi: true, requestAttestation: false },
+  });
+  expect(fork?.params).toMatchObject({
+    threadId,
+    lastTurnId: input.lastTurnId,
+    modelProvider: "openai",
+    serviceTier: null,
+    ephemeral: false,
+    excludeTurns: true,
+    deferGoalContinuation: true,
+  });
+  expect(fork?.params).not.toHaveProperty("path");
+  expect(fork?.params).not.toHaveProperty("beforeTurnId");
+  expect(fork?.params).not.toHaveProperty("experimentalPredictionMode");
+});
+
+test("Fork refuses an already-cancelled request before startup or capability probes", async () => {
+  const cancelled = fixture("fork"),
+    cancelledInput = await forkInput(cancelled),
+    before = cancelled.records(),
+    controller = new AbortController();
+  controller.abort();
+  await expect(
+    cancelled.runtime.fork({ ...cancelledInput, signal: controller.signal }),
+  ).rejects.toThrow();
+  expect(cancelled.records()).toEqual(before);
+});
+
+const forkFailureCases: [string, string[]][] = [
+  ["fork-initialize-failure", ["initialize"]],
+  ["fork-server-request", ["initialize"]],
+  ["fork-malformed", ["initialize", "thread/fork"]],
+  ["fork-oversized", ["initialize", "thread/fork"]],
+  ["fork-wrong-parent", ["initialize", "thread/fork"]],
+  ["fork-wrong-child", ["initialize", "thread/fork"]],
+  ["fork-wrong-config", ["initialize", "thread/fork"]],
+  ["fork-active", ["initialize", "thread/fork"]],
+  ["fork-cleanup-failure", ["initialize", "thread/fork"]],
+  ["fork-lost-response", ["initialize", "thread/fork"]],
+];
+test.each(
+  forkFailureCases,
+)("Fork rejects %s without retry or falling back to Start", async (mode, expectedMethods) => {
+  const f = fixture(mode),
+    input = await forkInput(f);
+  await expect(f.runtime.fork(input)).rejects.toThrow();
+  const calls = f.records().filter((row) => row.kind === "rpc");
+  expect(calls.map((row) => row.method)).toEqual(expectedMethods);
+  expect(calls.filter((row) => row.method === "thread/fork")).toHaveLength(
+    expectedMethods.includes("thread/fork") ? 1 : 0,
+  );
+  expect(
+    calls.some((row) =>
+      ["thread/start", "thread/resume", "turn/start"].includes(
+        String(row.method),
+      ),
+    ),
+  ).toBe(false);
+  if (mode === "fork-lost-response")
+    expect(
+      f.records().some((row) => row.kind === "fork-created-without-response"),
+    ).toBe(true);
+});
 test("an actual native Chat retains mutable supplied turn plans without inventing an item, mode or completion from step status", async () => {
   const f = fixture("turn-plan"),
     events: CodexChatEvent[] = [];
