@@ -8,6 +8,7 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { expect, type Locator, type Page, test } from "@playwright/test";
+import { z } from "zod";
 import { smithRoutingEditInputHash } from "../../apps/desktop/src/smith-routing-edit-identities";
 import { canonicalSmithConfigCreateRequest } from "../../scripts/config/smith-create-protocol";
 import { smithEditInputHash } from "../../scripts/config/smith-edit-journal-protocol";
@@ -19,6 +20,7 @@ import {
 } from "../../scripts/config/smith-routing-edit-protocol";
 import { APPRENTICE_VERIFICATION } from "../../scripts/smith-verification";
 import type { LedgerEventInput } from "../../types/hearth";
+import type { SmithRoutingEditRequest } from "../../types/smith-routing-edit";
 import { seedObservationEvents } from "../desktop-e2e/observed-session-fixtures";
 import {
   readState,
@@ -1314,8 +1316,22 @@ test("an unconfigured default name is refused before any routing write", async (
     .click();
   const response = await preview;
   expect(response.status()).toBe(503);
-  const payload = (await response.json()) as { error: string };
-  expect(payload.error.toLowerCase()).toContain("unknown smith");
+  const payload = z
+    .object({
+      ok: z.literal(false),
+      data: z.null(),
+      error: z.string().max(512),
+    })
+    .strict()
+    .parse(await response.json());
+  expect(payload.error).toBe("The routing edit preview is unavailable.");
+  expect(payload.error.toLowerCase()).not.toContain("unknown smith");
+  expect(payload.error).not.toContain(join(REPOSITORY, "agent-forge.toml"));
+  await expect(
+    dialog.getByText("The routing edit preview could not be verified.", {
+      exact: true,
+    }),
+  ).toBeVisible();
   await expect(
     dialog.getByRole("button", {
       name: "Save reviewed routing edit",
@@ -1427,14 +1443,28 @@ test("a stale paired revision is refused and permission refusal retires only as 
 }) => {
   const starts = providerStarts();
   const posts: string[] = [];
+  const editAttempts: SmithRoutingEditRequest[] = [];
+  const editStatuses: number[] = [];
   let refusedOriginal: Record<string, unknown> | null = null;
   page.on("request", (request) => {
     const path = new URL(request.url()).pathname;
     if (request.method() === "POST" && path.startsWith("/__agent-forge/")) {
       posts.push(path);
-      if (path === "/__agent-forge/config/smiths/routing-edits")
+      if (path === "/__agent-forge/config/smiths/routing-edits") {
         refusedOriginal = request.postDataJSON() as Record<string, unknown>;
+        editAttempts.push(
+          smithRoutingEditRequestSchema.parse(request.postDataJSON()),
+        );
+      }
     }
+  });
+  page.on("response", (response) => {
+    if (
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname ===
+        "/__agent-forge/config/smiths/routing-edits"
+    )
+      editStatuses.push(response.status());
   });
   await page.setViewportSize({ width: 1100, height: 760 });
   await page.emulateMedia({ reducedMotion: "reduce" });
@@ -1569,7 +1599,15 @@ test("a stale paired revision is refused and permission refusal retires only as 
     "/__agent-forge/config/smiths/routing-edits",
     "/__agent-forge/config/smiths/routing-edits/preview",
     "/__agent-forge/config/smiths/routing-edits",
+    "/__agent-forge/config/smiths/routing-edits",
   ]);
+  expect(editAttempts).toHaveLength(3);
+  expect(editAttempts[0]?.requestId).not.toBe(editAttempts[1]?.requestId);
+  expect(editAttempts[1]).toEqual(editAttempts[2]);
+  expect(editStatuses).toEqual([409, 403, 403]);
+  expect(await smithRoutingEditInputHash(editAttempts[1]!)).toBe(
+    await smithRoutingEditInputHash(editAttempts[2]!),
+  );
   expect(providerStarts()).toEqual(starts);
 });
 
