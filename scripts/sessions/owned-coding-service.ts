@@ -268,6 +268,7 @@ export function createOwnedCodingSessionService(options: {
       const request = parseOwnedSessionStart(raw);
       const identity = identityFor(projectId, request);
       const source = verifyOriginal(identity);
+      if (source.kind === "conflict") throw registryConflict();
       if (source.kind === "invalid") throw held();
       let prior: RestartIdentityRow | null;
       try {
@@ -379,6 +380,7 @@ export function createOwnedCodingSessionService(options: {
         mode: row.mode,
       };
       const source = verifyOriginal(identity);
+      if (source.kind === "conflict") throw registryConflict();
       if (source.kind === "invalid") throw held();
       if (source.kind === "verified")
         throw new ConversationError(

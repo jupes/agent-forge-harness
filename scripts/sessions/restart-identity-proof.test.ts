@@ -691,5 +691,35 @@ test("restart proof keeps exact launch presence and binds all five provider mode
   ).rejects.toMatchObject({ status: 409 } satisfies Partial<ConversationError>);
   expect(providerCalls).toBe(0);
   expect(eventBytes()).toEqual(beforeRetire);
+  const foreignProjectId = randomUUID();
+  await expect(
+    service.reserveIdentity(foreignProjectId, legacy.request),
+  ).rejects.toMatchObject({ status: 409 } satisfies Partial<ConversationError>);
+  expect(eventBytes()).toEqual(beforeRetire);
+
+  const foreignIdentity = {
+    ...identity,
+    address: {
+      family: "owned-session-start" as const,
+      projectId: foreignProjectId,
+    },
+  };
+  await journal.reserve(foreignIdentity);
+  const beforeForeignRetire = eventBytes();
+  await expect(
+    service.retireIdentity(
+      foreignProjectId,
+      identity.requestId,
+      identity.requestHash,
+    ),
+  ).rejects.toMatchObject({ status: 409 } satisfies Partial<ConversationError>);
+  expect(eventBytes()).toEqual(beforeForeignRetire);
+  expect(
+    await journal.lookup(
+      { address: foreignIdentity.address, workspace: identity.workspace },
+      identity.requestId,
+    ),
+  ).toMatchObject({ state: "reserved" });
+  expect(providerCalls).toBe(0);
   await service.close();
 });
