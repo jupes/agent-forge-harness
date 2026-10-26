@@ -96,7 +96,10 @@ export function createSmithConfigEditClient(deps: {
   canWrite(): boolean;
   requestId(): string;
   preview(input: SmithConfigEditPreviewRequest): Promise<unknown>;
-  post(request: SmithConfigEditRequest): Promise<SmithEditPostResult>;
+  post(
+    request: SmithConfigEditRequest,
+    reservation: { scope: string; inputHash: string },
+  ): Promise<SmithEditPostResult>;
   readOriginal(requestId: string): Promise<unknown>;
   changed?(): void;
 }) {
@@ -416,17 +419,24 @@ export function createSmithConfigEditClient(deps: {
         }
         let outcome: SmithEditPostResult;
         try {
-          outcome = await deps.post(structuredClone(request));
+          outcome = await deps.post(structuredClone(request), {
+            scope: held.identity.scope,
+            inputHash: held.identity.inputHash,
+          });
         } catch {
           outcome = {
             state: "unknown",
             message: "The request may have reached the server.",
           };
         }
-        if (
-          !current(ticket, scope) &&
-          !isVerifiedSmithEditNotSent(outcome, request.requestId)
-        ) {
+        const trustedNotSent =
+          outcome.state === "not-sent" &&
+          isVerifiedSmithEditNotSent(outcome, {
+            requestId: request.requestId,
+            scope: held.identity.scope,
+            inputHash: held.identity.inputHash,
+          });
+        if (!current(ticket, scope) && !trustedNotSent) {
           held.state = "held";
           held.notice =
             "The workspace changed while the request was in progress. Its original UUID remains held for later receipt recovery.";
@@ -434,11 +444,17 @@ export function createSmithConfigEditClient(deps: {
           state.notice = held.notice;
           return;
         }
-        if (isVerifiedSmithEditNotSent(outcome, request.requestId)) {
-          const retired = await retire(held, "verified-not-sent");
-          if (retired) {
-            held.state = "not-sent";
-            held.notice = `${outcome.message} No edit request was sent.`;
+        if (outcome.state === "not-sent") {
+          if (trustedNotSent) {
+            const retired = await retire(held, "verified-not-sent");
+            if (retired) {
+              held.state = "not-sent";
+              held.notice = `${outcome.message} No edit request was sent.`;
+            }
+          } else {
+            held.state = "held";
+            held.notice =
+              "The transport refusal did not match this exact original. Its UUID remains held; check the protected receipt.";
           }
           state.notice = held.notice;
         } else if (outcome.state === "unknown") {

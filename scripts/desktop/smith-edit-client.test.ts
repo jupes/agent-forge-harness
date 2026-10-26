@@ -1,17 +1,20 @@
 import { expect, test } from "bun:test";
 import {
   createSmithEditApi,
+  isVerifiedSmithEditNotSent,
   type SmithEditPostResult,
 } from "../../apps/desktop/src/smith-edit-api";
 import { createSmithConfigEditClient } from "../../apps/desktop/src/smith-edit-client";
 import {
   createSmithEditIdentities,
   SMITH_EDIT_IDENTITIES,
+  type SmithEditIdentities,
   smithConfigEditInputHash,
 } from "../../apps/desktop/src/smith-edit-identities";
 import { NotSent } from "../../docs/js/operator";
 import type {
   SmithConfigEditPreview,
+  SmithConfigEditReceipt,
   SmithConfigEditRequest,
 } from "../../types/smith-config-edit";
 
@@ -33,6 +36,8 @@ function fixture(
   withLock: <T>(work: () => T | Promise<T>) => Promise<T> = async <T>(
     work: () => T | Promise<T>,
   ) => await work(),
+  sharedIdentities?: SmithEditIdentities,
+  fixedRequestId?: string,
 ) {
   const values = new Map<string, string>();
   const storage = {
@@ -43,11 +48,13 @@ function fixture(
       values.set(key, value);
     },
   };
-  const identities = createSmithEditIdentities({
-    scope: "trusted-scope",
-    storage,
-    withLock,
-  });
+  const identities =
+    sharedIdentities ??
+    createSmithEditIdentities({
+      scope: "trusted-scope",
+      storage,
+      withLock,
+    });
   const preview: SmithConfigEditPreview = {
     version: 1,
     target: "workspace",
@@ -82,6 +89,8 @@ function fixture(
   let posted: SmithConfigEditRequest | null = null;
   let postCalls = 0;
   let original: unknown = null;
+  let postGate: Promise<void> | null = null;
+  let postStarted: (() => void) | null = null;
   let postResult: SmithEditPostResult = {
     state: "unknown",
     message: "uncertain",
@@ -91,15 +100,19 @@ function fixture(
     identities: () => identities,
     scope: () => scope,
     canWrite: () => writable,
-    requestId: () => `e630e793-e617-4c93-bdaf-b1e30ba706e${++nextId}`,
+    requestId: () =>
+      fixedRequestId ?? `e630e793-e617-4c93-bdaf-b1e30ba706e${++nextId}`,
     preview: async () => previewGate ?? preview,
     post: async (request) => {
       expect(identities.read(request.requestId)).not.toBeNull();
       postCalls++;
       posted = structuredClone(request);
+      postStarted?.();
+      if (postGate) await postGate;
       return postResult;
     },
-    readOriginal: async () => original,
+    readOriginal: async () =>
+      typeof original === "function" ? await original() : original,
   });
   client.setDraft("workspace", smith.name, smith);
   return {
@@ -116,6 +129,12 @@ function fixture(
     set original(value: unknown) {
       original = value;
     },
+    set postGate(value: Promise<void> | null) {
+      postGate = value;
+    },
+    onPostStarted(callback: () => void) {
+      postStarted = callback;
+    },
     set postResult(value: SmithEditPostResult) {
       postResult = value;
     },
@@ -129,6 +148,46 @@ function fixture(
       writable = value;
     },
   };
+}
+
+function serialLock() {
+  let tail = Promise.resolve();
+  return async <T>(work: () => T | Promise<T>): Promise<T> => {
+    const previous = tail;
+    let release!: () => void;
+    tail = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await previous;
+    try {
+      return await work();
+    } finally {
+      release();
+    }
+  };
+}
+
+async function verifiedNotSent(request: SmithConfigEditRequest) {
+  return createSmithEditApi({
+    post: async () => {
+      throw new NotSent("The request was not dispatched.");
+    },
+    read: async () => new Response(null, { status: 404 }),
+    scope: () => "trusted-scope",
+    canWrite: () => true,
+  }).edit(request, {
+    scope: "trusted-scope",
+    inputHash: await smithConfigEditInputHash(request),
+  });
+}
+
+function uncertain503(request: SmithConfigEditRequest) {
+  return createSmithEditApi({
+    post: async () => new Response("service unavailable", { status: 503 }),
+    read: async () => new Response(null, { status: 404 }),
+    scope: () => "trusted-scope",
+    canWrite: () => true,
+  }).edit(request, { scope: "trusted-scope", inputHash: "f".repeat(64) });
 }
 
 test("save requires the exact reviewed candidate and reserves metadata before POST", async () => {
@@ -148,34 +207,69 @@ test("save requires the exact reviewed candidate and reserves metadata before PO
   expect(f.client.get().entries[0]?.state).toBe("held");
 });
 
-test("immutable name and any candidate, target, or selection change invalidate preview", async () => {
+test("immutable selected name cannot change; a new selected Smith invalidates preview", async () => {
   const f = fixture();
   await f.client.preview();
   expect(f.client.get().preview).not.toBeNull();
-  f.client.setDraft("workspace", "renamed", { ...smith, name: "renamed" });
+  f.client.setDraft("workspace", smith.name, { ...smith, name: "renamed" });
   expect(f.client.get().preview).toBeNull();
   await f.client.preview();
   expect(f.client.get().preview).toBeNull();
   expect(f.client.get().notice).toContain("immutable");
-  f.client.setDraft("user", smith.name, smith);
+  f.client.setDraft("user", "other-existing-smith", {
+    ...smith,
+    name: "other-existing-smith",
+  });
   expect(f.client.get().preview).toBeNull();
 });
 
 test("verified NotSent can settle; unknown transport outcome stays held", async () => {
   const f = fixture();
   await f.client.preview();
-  const proof = await createSmithEditApi({
-    post: async () => {
-      throw new NotSent("The request was not dispatched.");
-    },
-    read: async () => new Response(null, { status: 404 }),
-  }).edit({
+  const notSentRequest = {
     requestId: "e630e793-e617-4c93-bdaf-b1e30ba706e1",
-    target: "workspace",
+    target: "workspace" as const,
     name: smith.name,
     smith,
     expectedRevision: revision,
-  });
+  };
+  const proof = await verifiedNotSent(notSentRequest);
+  const expectedProof = {
+    requestId: notSentRequest.requestId,
+    scope: "trusted-scope",
+    inputHash: await smithConfigEditInputHash(notSentRequest),
+  };
+  expect(isVerifiedSmithEditNotSent(proof, expectedProof)).toBe(true);
+  expect(
+    isVerifiedSmithEditNotSent(proof, {
+      ...expectedProof,
+      scope: "other-scope",
+    }),
+  ).toBe(false);
+  expect(
+    isVerifiedSmithEditNotSent(proof, {
+      ...expectedProof,
+      inputHash: await smithConfigEditInputHash({
+        ...notSentRequest,
+        smith: { ...notSentRequest.smith, model: "different-body" },
+      }),
+    }),
+  ).toBe(false);
+  expect(
+    isVerifiedSmithEditNotSent(proof, {
+      ...expectedProof,
+      inputHash: await smithConfigEditInputHash({
+        ...notSentRequest,
+        target: "user",
+      }),
+    }),
+  ).toBe(false);
+  expect(
+    isVerifiedSmithEditNotSent(proof, {
+      ...expectedProof,
+      requestId: "e630e793-e617-4c93-bdaf-b1e30ba706e2",
+    }),
+  ).toBe(false);
   f.postResult = proof;
   await f.client.save();
   expect(f.client.get().entries[0]?.state).toBe("not-sent");
@@ -237,6 +331,136 @@ test("exact original recovery is GET-only and a terminal receipt cannot regress"
   expect(f.postCalls).toBe(1);
 });
 
+test("original GET rejects a wrong UUID, hash, immutable name, or target independently", async () => {
+  const mutations: Array<{
+    label: string;
+    apply(receipt: SmithConfigEditReceipt): Promise<SmithConfigEditReceipt>;
+  }> = [
+    {
+      label: "UUID",
+      apply: async (receipt) => ({
+        ...receipt,
+        requestId: "e630e793-e617-4c93-bdaf-b1e30ba706e2",
+      }),
+    },
+    {
+      label: "hash",
+      apply: async (receipt) => ({ ...receipt, inputHash: "0".repeat(64) }),
+    },
+    {
+      label: "name",
+      apply: async (receipt) => {
+        if (receipt.result.phase !== "confirmed")
+          throw Error("Expected confirmed receipt fixture.");
+        const name = "different-name";
+        const smithValue = { ...receipt.original.smith, name };
+        const original = { ...receipt.original, name, smith: smithValue };
+        const preview = {
+          ...receipt.result.preview!,
+          review: {
+            ...receipt.result.preview!.review,
+            name,
+            targetAfter: smithValue,
+            effectiveBefore: {
+              ...receipt.result.preview!.review.effectiveBefore,
+              name,
+            },
+            effectiveAfter: smithValue,
+          },
+        };
+        const inputHash = await smithConfigEditInputHash(original);
+        return {
+          ...receipt,
+          inputHash,
+          original,
+          result: { ...receipt.result, preview },
+        };
+      },
+    },
+    {
+      label: "target",
+      apply: async (receipt) => {
+        if (receipt.result.phase !== "confirmed")
+          throw Error("Expected confirmed receipt fixture.");
+        const original = { ...receipt.original, target: "user" as const };
+        const preview = {
+          ...receipt.result.preview!,
+          target: "user" as const,
+          file: "C:/user/agent-forge.toml",
+        };
+        const inputHash = await smithConfigEditInputHash(original);
+        return {
+          ...receipt,
+          inputHash,
+          original,
+          result: {
+            ...receipt.result,
+            preview,
+            publication: { ...receipt.result.publication, file: preview.file },
+          },
+        };
+      },
+    },
+  ];
+
+  for (const mutation of mutations) {
+    const f = fixture();
+    await f.client.preview();
+    await f.client.save();
+    const original = f.posted!;
+    const preview = f.preview;
+    const valid: SmithConfigEditReceipt = {
+      version: 1,
+      requestId: original.requestId,
+      ownerScopeHash: "e".repeat(64),
+      inputHash: await smithConfigEditInputHash(original),
+      createdAt: "2026-10-25T12:00:00.000Z",
+      original,
+      result: {
+        phase: "confirmed",
+        completedAt: "2026-10-25T12:00:01.000Z",
+        preview,
+        publication: {
+          file: preview.file,
+          created: preview.candidate.created,
+          sha256: preview.candidate.sha256,
+        },
+      },
+    };
+    f.original = { ok: true, data: await mutation.apply(valid), error: null };
+    await f.client.check(original.requestId);
+    expect(f.client.get().entries[0]?.state, mutation.label).toBe("held");
+    expect(f.postCalls).toBe(1);
+  }
+});
+
+test("generic 503 followed by original 404 stays held and never posts again", async () => {
+  const f = fixture();
+  await f.client.preview();
+  const unknown = await uncertain503({
+    requestId: "e630e793-e617-4c93-bdaf-b1e30ba706e1",
+    target: "workspace",
+    name: smith.name,
+    smith,
+    expectedRevision: revision,
+  });
+  f.postResult = unknown;
+  await f.client.save();
+  expect(f.client.get().entries[0]?.state).toBe("held");
+  const postCount = f.postCalls;
+  f.original = async () =>
+    await createSmithEditApi({
+      post: async () => new Response(null, { status: 503 }),
+      read: async () => new Response(null, { status: 404 }),
+      scope: () => "trusted-scope",
+      canWrite: () => true,
+    }).original("e630e793-e617-4c93-bdaf-b1e30ba706e1");
+  await f.client.check("e630e793-e617-4c93-bdaf-b1e30ba706e1");
+  expect(f.client.get().entries[0]?.state).toBe("held");
+  expect(f.postCalls).toBe(postCount);
+  expect(f.identities.list()[0]?.retired).toBe(false);
+});
+
 test("live scope change while reservation is pending settles without a stale POST", async () => {
   let entered!: () => void;
   let release!: () => void;
@@ -262,4 +486,117 @@ test("live scope change while reservation is pending settles without a stale POS
     retired: true,
     retirement: "verified-not-sent",
   });
+});
+
+test("a matching NotSent arriving after scope loss still settles only its original metadata", async () => {
+  const f = fixture();
+  await f.client.preview();
+  const request = {
+    requestId: "e630e793-e617-4c93-bdaf-b1e30ba706e1",
+    target: "workspace" as const,
+    name: smith.name,
+    smith,
+    expectedRevision: revision,
+  };
+  f.postResult = await verifiedNotSent(request);
+  let started!: () => void;
+  const postStarted = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  f.onPostStarted(started);
+  f.postGate = pending;
+  const saving = f.client.save();
+  await postStarted;
+  f.scope = "new-scope";
+  f.writable = false;
+  release();
+  await saving;
+  expect(f.postCalls).toBe(1);
+  expect(f.identities.read(request.requestId)).toMatchObject({
+    scope: "trusted-scope",
+    retired: true,
+    retirement: "verified-not-sent",
+  });
+  expect(f.client.get().entries).toEqual([]);
+});
+
+test("a NotSent after disposal is durable and a recovered client may review a new UUID", async () => {
+  const f = fixture();
+  await f.client.preview();
+  f.postResult = await verifiedNotSent({
+    requestId: "e630e793-e617-4c93-bdaf-b1e30ba706e1",
+    target: "workspace",
+    name: smith.name,
+    smith,
+    expectedRevision: revision,
+  });
+  let started!: () => void;
+  const postStarted = new Promise<void>((resolve) => {
+    started = resolve;
+  });
+  let release!: () => void;
+  const pending = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  f.onPostStarted(started);
+  f.postGate = pending;
+  const saving = f.client.save();
+  await postStarted;
+  f.client.dispose();
+  release();
+  await saving;
+  expect(
+    f.identities.read("e630e793-e617-4c93-bdaf-b1e30ba706e1"),
+  ).toMatchObject({
+    retired: true,
+    retirement: "verified-not-sent",
+  });
+
+  const nextPosted: SmithConfigEditRequest[] = [];
+  const recovered = createSmithConfigEditClient({
+    identities: () => f.identities,
+    scope: () => "trusted-scope",
+    canWrite: () => true,
+    requestId: () => "e630e793-e617-4c93-bdaf-b1e30ba706e2",
+    preview: async () => f.preview,
+    post: async (request) => {
+      nextPosted.push(structuredClone(request));
+      return { state: "unknown", message: "second request held" };
+    },
+    readOriginal: async () => null,
+  });
+  recovered.setDraft("workspace", smith.name, smith);
+  await recovered.recover();
+  await recovered.preview();
+  await recovered.save();
+  expect(nextPosted[0]?.requestId).toBe("e630e793-e617-4c93-bdaf-b1e30ba706e2");
+  expect(
+    f.identities.list().filter((identity) => !identity.retired),
+  ).toHaveLength(1);
+});
+
+test("two clients sharing the identity lock can admit only one unresolved edit", async () => {
+  const withLock = serialLock();
+  const first = fixture(withLock);
+  const second = fixture(
+    withLock,
+    first.identities,
+    "e630e793-e617-4c93-bdaf-b1e30ba706e2",
+  );
+  await Promise.all([first.client.preview(), second.client.preview()]);
+  await Promise.all([first.client.save(), second.client.save()]);
+  expect(first.postCalls + second.postCalls).toBe(1);
+  expect(
+    first.identities.list().filter((identity) => !identity.retired),
+  ).toHaveLength(1);
+  expect(
+    [first.client.get().notice, second.client.get().notice].some(
+      (notice) =>
+        notice.includes("already held") || notice.includes("unresolved"),
+    ),
+  ).toBe(true);
 });

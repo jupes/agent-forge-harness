@@ -17,6 +17,8 @@ const verifiedNotSentToken = Symbol("verified Smith edit NotSent");
 interface VerifiedSmithEditNotSent {
   readonly state: "not-sent";
   readonly requestId: string;
+  readonly scope: string;
+  readonly inputHash: string;
   readonly message: string;
   readonly [verifiedNotSentToken]: true;
 }
@@ -27,21 +29,23 @@ export type SmithEditPostResult =
 
 export function isVerifiedSmithEditNotSent(
   value: SmithEditPostResult,
-  requestId: string,
+  expected: { requestId: string; scope: string; inputHash: string },
 ): value is VerifiedSmithEditNotSent {
   return (
     value.state === "not-sent" &&
-    value.requestId === requestId &&
+    value.requestId === expected.requestId &&
+    value.scope === expected.scope &&
+    value.inputHash === expected.inputHash &&
     value[verifiedNotSentToken] === true
   );
 }
 
 const verifiedNotSent = (
-  requestId: string,
+  identity: { requestId: string; scope: string; inputHash: string },
   message: string,
 ): VerifiedSmithEditNotSent => ({
   state: "not-sent",
-  requestId,
+  ...identity,
   message,
   [verifiedNotSentToken]: true,
 });
@@ -58,6 +62,8 @@ const expectedStatus = { confirmed: 200, held: 202, refused: 409 } as const;
 export function createSmithEditApi(deps: {
   post: typeof operatorPost;
   read: typeof operatorRead;
+  scope(): string;
+  canWrite(): boolean;
 }) {
   return {
     async preview(input: SmithConfigEditPreviewRequest): Promise<unknown> {
@@ -66,13 +72,35 @@ export function createSmithEditApi(deps: {
         throw Error("The Smith edit preview could not be verified.");
       return response.json() as Promise<unknown>;
     },
-    async edit(request: SmithConfigEditRequest): Promise<SmithEditPostResult> {
+    async edit(
+      request: SmithConfigEditRequest,
+      reserved: { scope: string; inputHash: string },
+    ): Promise<SmithEditPostResult> {
+      const proofIdentity = {
+        requestId: request.requestId,
+        scope: reserved.scope,
+        inputHash: reserved.inputHash,
+      };
+      if (
+        !/^[a-f0-9]{64}$/.test(reserved.inputHash) ||
+        reserved.scope.length < 1 ||
+        reserved.scope.length > 512
+      )
+        return {
+          state: "unknown",
+          message: "The Smith edit reservation could not be verified.",
+        };
+      if (!deps.canWrite() || deps.scope() !== reserved.scope)
+        return verifiedNotSent(
+          proofIdentity,
+          "Workspace access changed before the edit request was dispatched.",
+        );
       try {
         const response = await deps.post(editPath, request, responseBytes);
         const raw: unknown = await response.json().catch(() => null);
         if (response.status === 403)
           return verifiedNotSent(
-            request.requestId,
+            proofIdentity,
             "Operator access refused this edit before its effect.",
           );
         const parsedEnvelope = envelope.safeParse(raw);
@@ -93,7 +121,7 @@ export function createSmithEditApi(deps: {
         };
       } catch (error) {
         return error instanceof NotSent
-          ? verifiedNotSent(request.requestId, error.message)
+          ? verifiedNotSent(proofIdentity, error.message)
           : {
               state: "unknown",
               message: "The Smith edit request may have reached the server.",

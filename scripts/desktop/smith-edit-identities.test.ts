@@ -120,7 +120,7 @@ test("unavailable, malformed, oversized, or unverifiable metadata never admits a
     withLock: locked,
   });
   await expect(unverifiable.reserve(request)).rejects.toThrow(
-    "could not be verified",
+    "could not be saved and verified",
   );
 });
 
