@@ -339,6 +339,10 @@ test("an accepted Start with a lost provider answer is never settled not-sent", 
   cleanup.push(() => service.close());
 
   const first = await service.start(f.project.id, f.request);
+  // Start returns the immutable admission receipt while the owned provider
+  // job is still running. Wait for that concrete job to settle before
+  // asserting the durable answer is unknown after the simulated lost reply.
+  await service.settled(f.project.id, first.session.id);
   const identity = {
     address: {
       family: "owned-session-start" as const,
@@ -352,9 +356,28 @@ test("an accepted Start with a lost provider answer is never settled not-sent", 
       f.request.requestId,
     ),
   ).toMatchObject({ state: "admitted" });
-  expect(first.receipt.turn.phase).toBe("unknown");
+  const original = readVerifiedOriginalStart({
+    home: f.home,
+    root: f.root,
+    identity: {
+      version: 1,
+      address: identity.address,
+      workspace: identity.workspace,
+      requestId: f.request.requestId,
+      requestHash: first.session.requestHash,
+      provider: first.session.provider,
+      mode: first.session.mode,
+    },
+  });
+  expect(original.kind).toBe("verified");
+  if (original.kind !== "verified")
+    throw Error("Expected the accepted Start's durable original receipt");
+  expect(original.value.session.id).toBe(first.session.id);
+  expect(original.value.session.requestHash).toBe(first.session.requestHash);
+  expect(original.value.receipt.turn.phase).toBe("unknown");
   const duplicate = await service.start(f.project.id, f.request);
-  expect(duplicate.receipt.turn.hash).toBe(first.receipt.turn.hash);
+  expect(duplicate.session.id).toBe(first.session.id);
+  expect(duplicate.receipt.turn.hash).toBe(original.value.receipt.turn.hash);
   expect(f.counts.runs).toBe(1);
 });
 
