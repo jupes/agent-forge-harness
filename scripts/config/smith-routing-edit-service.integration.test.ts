@@ -1,6 +1,12 @@
 import { afterEach, expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { dirname, join } from "node:path";
 import type {
   SmithRoutingEditChange,
@@ -145,6 +151,90 @@ test("a stale paired revision has a durable refusal and a separately reviewed UU
     confirmed = await service.edit(fresh);
   expect(fresh.requestId).not.toBe(request.requestId);
   expect(confirmed.result.phase).toBe("confirmed");
+});
+
+test("an unexpected transaction setup failure leaves a durable held original and does not replay", async () => {
+  const f = fixture(),
+    request = await reviewedRequest(f.service());
+  let transactionCalls = 0;
+  const service = f.service({
+    withTransaction: async <T>(
+      _context: PreparedConfigTransaction,
+      _work: (transaction: ConfigWriteTransaction) => T | Promise<T>,
+    ): Promise<T> => {
+      transactionCalls++;
+      throw new Error("unexpected transaction setup failure");
+    },
+  });
+
+  const before = readFileSync(f.workspaceFile),
+    receipt = await service.edit(request);
+  expect(receipt.result).toMatchObject({
+    phase: "held",
+    stage: "intent",
+    preview: null,
+  });
+  expect(service.readOriginal(request.requestId)).toEqual(receipt);
+  expect(
+    readdirSync(
+      join(
+        f.profile,
+        "smith-routing-edit-journal",
+        "records",
+        request.requestId,
+      ),
+    ),
+  ).toEqual(["intent.json"]);
+  expect(readFileSync(f.workspaceFile)).toEqual(before);
+
+  expect(await service.edit(request)).toEqual(receipt);
+  expect(transactionCalls).toBe(1);
+  expect(readFileSync(f.workspaceFile)).toEqual(before);
+});
+
+test("an unexpected candidate failure is durably held without publication or duplicate retry", async () => {
+  const f = fixture(),
+    request = await reviewedRequest(f.service());
+  let transactionCalls = 0,
+    candidateCalls = 0;
+  const service = f.service({
+    withTransaction: async <T>(
+      context: PreparedConfigTransaction,
+      work: (transaction: ConfigWriteTransaction) => T | Promise<T>,
+    ): Promise<T> => {
+      transactionCalls++;
+      return withConfigTransaction(context, work);
+    },
+    buildCandidate: () => {
+      candidateCalls++;
+      return { ok: false, error: "unexpected internal candidate failure" };
+    },
+  });
+  const before = readFileSync(f.workspaceFile),
+    receipt = await service.edit(request);
+
+  expect(receipt.result).toMatchObject({
+    phase: "held",
+    stage: "intent",
+    preview: null,
+  });
+  expect(service.readOriginal(request.requestId)).toEqual(receipt);
+  expect(
+    readdirSync(
+      join(
+        f.profile,
+        "smith-routing-edit-journal",
+        "records",
+        request.requestId,
+      ),
+    ),
+  ).toEqual(["intent.json"]);
+  expect(readFileSync(f.workspaceFile)).toEqual(before);
+
+  expect(await service.edit(request)).toEqual(receipt);
+  expect(transactionCalls).toBe(1);
+  expect(candidateCalls).toBe(1);
+  expect(readFileSync(f.workspaceFile)).toEqual(before);
 });
 
 test("uncertain real publication stays held and exact duplicate never reapplies it", async () => {
