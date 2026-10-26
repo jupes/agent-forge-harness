@@ -353,7 +353,18 @@ test("lost accepted Start answer reconciles the same original without another pr
   if (!Array.isArray(list) || !list[0])
     throw Error("No protected original receipt metadata");
   const original = ownedCodingSessionSchema.parse(list[0]);
-  const records = JSON.stringify(f.records());
+  const beforeRetry = await until(
+    async () => f.records(),
+    (rows) =>
+      rows.filter((row) => row.kind === "start").length === 1 &&
+      rows.filter(
+        (row) =>
+          row.kind === "wire" &&
+          JSON.stringify(row).includes('"method":"session/prompt"') &&
+          JSON.stringify(row).includes("PRIVATE-ACP-PROMPT"),
+      ).length === 1,
+  );
+  const records = JSON.stringify(beforeRetry);
   f.release();
   const retry = await f.post("", f.request);
   expect(retry.status).toBe(202);
