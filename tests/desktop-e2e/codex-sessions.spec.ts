@@ -1,6 +1,6 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { expect, type Page, test } from "@playwright/test";
+import { expect, type Locator, type Page, test } from "@playwright/test";
 import { OPERATOR_HEADER } from "../../scripts/hearth/paths";
 import { ownedCodingStateSchema } from "../../scripts/sessions/codex-owned-journal";
 import { codexTaskStartSchema } from "../../scripts/sessions/codex-owned-protocol";
@@ -9,7 +9,7 @@ import type { CodexTaskStartRequest } from "../../types/codex-owned-task";
 import { openSettled, reloadSettled } from "../e2e/fixtures";
 import { pageToken } from "../e2e/launch-link";
 import { HEARTH_HOME } from "../e2e/servers";
-import { alpha, beta, seedProjects } from "./project-fixtures";
+import { alpha, beta, seedProjects, workspace } from "./project-fixtures";
 
 interface Call {
   kind: string;
@@ -134,6 +134,16 @@ async function checkDefault(page: Page, prompt: string) {
     dialog.getByRole("button", { name: "Start", exact: true }),
   ).toBeEnabled();
   return dialog;
+}
+async function captureShot(
+  target: Page | Locator,
+  filename: string,
+  options: Omit<NonNullable<Parameters<Page["screenshot"]>[0]>, "path"> = {},
+) {
+  const dir = process.env["SHOT_DIR"];
+  if (!dir) return;
+  mkdirSync(dir, { recursive: true });
+  await target.screenshot({ ...options, path: join(dir, filename) });
 }
 
 async function reenterCodexTask(
@@ -309,16 +319,14 @@ test("bead-prefilled Codex Task preserves honest effort controls and private con
   await expect(equivalent).not.toContainText("PRIVATE CODEX");
   expect(tasks()).toHaveLength(before);
   await page.setViewportSize({ width: 1280, height: 900 });
-  await page.screenshot({
-    path: "apps/desktop/docs/screenshots/codex-task-composer.png",
+  await captureShot(page, "codex-task-composer.png", {
     style:
       '[aria-label="Session repository"], [aria-label="Registered session worktree"], [aria-label="Equivalent session command"] { visibility: hidden !important; }',
   });
   await dialog.locator(".af-dialog-body").evaluate((node) => {
     node.scrollTop = 0;
   });
-  await page.screenshot({
-    path: "apps/desktop/docs/screenshots/codex-task-composer-prompt.png",
+  await captureShot(page, "codex-task-composer-prompt.png", {
     style:
       '[aria-label="Session repository"], [aria-label="Registered session worktree"], [aria-label="Equivalent session command"] { visibility: hidden !important; }',
   });
@@ -376,8 +384,7 @@ test("bead-prefilled Codex Task preserves honest effort controls and private con
     page.getByRole("textbox", { name: "Session reply prompt", exact: true }),
   ).toBeDisabled();
   await page.getByText(actual.id, { exact: true }).scrollIntoViewIfNeeded();
-  await page.screenshot({
-    path: "apps/desktop/docs/screenshots/codex-task-session.png",
+  await captureShot(page, "codex-task-session.png", {
     mask: [page.getByText(record.worktree, { exact: true })],
     style: ".af-owned-session-header pre { visibility: hidden !important; }",
     maskColor: "#3f424d",
@@ -575,6 +582,9 @@ test("reload keeps a pre-admission Start identity held until its original protec
   let release = () => {},
     received = () => {},
     completed = () => {};
+  const originalStart: { current: CodexTaskStartRequest | null } = {
+    current: null,
+  };
   const held = new Promise<void>((resolve) => {
       received = resolve;
     }),
@@ -591,6 +601,11 @@ test("reload keeps a pre-admission Start identity held until its original protec
         await route.continue();
         return;
       }
+      const parsed = codexTaskStartSchema.safeParse(
+        route.request().postDataJSON(),
+      );
+      if (!parsed.success) throw Error("Invalid original Codex Task Start.");
+      originalStart.current = parsed.data;
       received();
       await delivery;
       try {
@@ -631,6 +646,21 @@ test("reload keeps a pre-admission Start identity held until its original protec
     await expect(
       reloaded.getByText("codex task · reserved", { exact: true }),
     ).toBeVisible();
+    const heldOriginal = originalStart.current;
+    if (!heldOriginal) throw Error("Missing held original Start request.");
+    const identityRow = reloaded
+      .locator(".af-start-identities-list li")
+      .filter({ hasText: heldOriginal.requestId });
+    const listedRequestId = await identityRow
+      .locator("code")
+      .nth(0)
+      .textContent();
+    const listedRequestHash = await identityRow
+      .locator("code")
+      .nth(1)
+      .textContent();
+    expect(listedRequestId).toBe(heldOriginal.requestId);
+    expect(listedRequestHash).toMatch(/^[0-9a-f]{64}$/);
     await expect(
       reloaded.getByRole("button", {
         name: "Continue exact original",
@@ -644,9 +674,19 @@ test("reload keeps a pre-admission Start identity held until its original protec
       name: "Retire this reserved Start?",
       exact: true,
     });
-    await expect(retirement.getByText(alpha.id, { exact: true })).toBeVisible();
-    await expect(retirement.getByText(/Codex|codex/)).toBeVisible();
-    await expect(retirement.getByText(/Request hash/)).toBeVisible();
+    await expect(retirement.locator("dd").nth(0)).toHaveText(
+      `${alpha.id} · ${workspace}`,
+    );
+    await expect(retirement.locator("dd").nth(1)).toHaveText("codex · task");
+    await expect(retirement.locator("dd").nth(2)).toHaveText(
+      heldOriginal.requestId,
+    );
+    await expect(retirement.locator("dd").nth(3)).toHaveText(
+      listedRequestHash ?? "",
+    );
+    await captureShot(retirement, "session-start-retirement-dialog.png", {
+      mask: [retirement.locator("dd").nth(0)],
+    });
     await retirement
       .getByRole("button", { name: "Keep reserved", exact: true })
       .click();
