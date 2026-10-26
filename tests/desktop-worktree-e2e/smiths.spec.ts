@@ -1548,7 +1548,7 @@ test("Smiths opens its actual fixed global verification task with keyboard focus
   }
 });
 
-test("closing and navigating away from a held actual verification read fences its late private body", async ({
+test("closing a held verification read fences its late body and recovers after a Smiths config read failure", async ({
   page,
 }) => {
   const seeded = seedVerification("Old held verification record");
@@ -1603,29 +1603,37 @@ test("closing and navigating away from a held actual verification read fences it
     await page.getByRole("link", { name: "Projects", exact: true }).click();
     release?.();
     await expect(page.locator("main")).not.toContainText(seeded.task.title);
+    let failReturnConfiguration = true,
+      configurationFailureInjected = false;
+    await page.route("**/__agent-forge/config", async (route) => {
+      if (failReturnConfiguration && !configurationFailureInjected) {
+        failReturnConfiguration = false;
+        configurationFailureInjected = true;
+        await route.abort("failed");
+        return;
+      }
+      await route.continue();
+    });
     await page.getByRole("link", { name: "Smiths", exact: true }).click();
     await expect(dialog).not.toBeVisible();
-    if ((await opener.count()) === 0) {
-      // The verification control is rendered with the saved configuration.
-      // A failed config read after navigation must recover through its real
-      // read action before this test can exercise the verification read again.
-      const config = page.getByRole("region", {
-        name: "Saved smith configuration",
-      });
-      await expect(config.getByRole("alert")).toContainText(
-        "Configuration could not be verified",
-      );
-      const retryConfiguration = config.getByRole("button", {
-        name: "Retry configuration",
-        exact: true,
-      });
-      await expect(retryConfiguration).toBeEnabled();
-      await retryConfiguration.click();
-      await expect(config.getByRole("table")).toBeVisible();
-    }
+    expect(configurationFailureInjected).toBe(true);
+    const config = page.getByRole("region", {
+      name: "Saved smith configuration",
+    });
+    await expect(config.getByRole("alert")).toContainText(
+      "Configuration could not be verified",
+    );
+    const retryConfiguration = config.getByRole("button", {
+      name: "Retry configuration",
+      exact: true,
+    });
+    await expect(retryConfiguration).toBeEnabled();
+    await retryConfiguration.click();
+    await expect(config.getByRole("table")).toBeVisible();
     await expect(opener).toBeEnabled();
     await opener.click();
     await expect(dialog).toContainText(seeded.task.title);
+    await page.unroute("**/__agent-forge/config");
     unchangedConfig();
   } finally {
     release?.();
