@@ -1356,13 +1356,13 @@ export function createSessionsClient(deps: {
       for (const [id, read] of identityReads) {
         read.controller.abort();
         identityReads.delete(id);
-        const entry = projects.get(id);
-        if (entry) {
-          entry.identityPage = null;
-          entry.identityGeneration = null;
-          entry.identityLoading = false;
-          entry.identityInspection = null;
-        }
+      }
+      for (const [id, entry] of projects) {
+        entry.identityPage = null;
+        entry.identityGeneration = null;
+        entry.identityLoading = false;
+        entry.identityInspection = null;
+        inspectionEpochs.set(id, (inspectionEpochs.get(id) ?? 0) + 1);
       }
       tell();
     },
