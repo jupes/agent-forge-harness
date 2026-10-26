@@ -75,6 +75,7 @@ import {
 } from "../scheduler/shift-store";
 import type { GitRun } from "../scheduler/worktrees";
 import { serializeClaudeLaunch } from "../sessions/claude-launch";
+import { createCodexChatForkJournal } from "../sessions/codex-chat-fork-journal";
 import {
   CODEX_CHAT_FORK_PROTOCOL_VERSION,
   codexChatForkOriginalHash,
@@ -219,6 +220,14 @@ const RUN_STATE = JSON.stringify({
 
 const API_SMITH_CREATE_ID = "dc9078cf-6200-4fed-aeb8-2be646ee7953";
 const API_CODEX_CHAT_FORK_ID = "80e40be9-e811-47c3-a71d-b988e67178a0";
+const API_CODEX_CHAT_FORK_SOURCE = {
+  sessionId: "session-4b092165-2bc0-49e2-ae10-bf0b2f77c0ce",
+  requestId: "22b8c0af-0446-4c9a-9c0a-3b7d6f23f5e1",
+  turnRequestId: "4ca96cdd-aab5-48e1-bde2-6f158f0b53bb",
+  approvalId: "11cc8647-32c5-4278-85c6-a43fe9019842",
+  threadId: "0199a213-81c0-7800-8aa1-bbab2a035a61",
+  turnId: "0199a213-81c0-7800-8aa1-bbab2a035a62",
+};
 const API_IDENTITY_START = {
   requestId: FIXTURE_IDENTITY_REQUEST,
   smith: "claude-journeyman",
@@ -1331,24 +1340,27 @@ const ACTIONS: Record<string, ActionFixture> = {
   },
   "POST /projects/:id/sessions/:sessionId/forks": {
     valid: {
-      path: `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_CHAT_SESSION}/forks`,
+      path: `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_CODEX_CHAT_FORK_SOURCE.sessionId}/forks`,
       body: {
         requestId: API_CODEX_CHAT_FORK_ID,
-        throughTurnRequestId: FIXTURE_CHAT_DECISION.turnRequestId,
+        throughTurnRequestId: API_CODEX_CHAT_FORK_SOURCE.turnRequestId,
       },
       status: 200,
-      target: `codex-chat-fork:${FIXTURE_PROJECT_ID}:${FIXTURE_CHAT_SESSION}`,
+      target: `codex-chat-fork:${FIXTURE_PROJECT_ID}:${API_CODEX_CHAT_FORK_SOURCE.sessionId}`,
       audit: {},
     },
     invalid: {
       path: "/projects/not-a-project/sessions/not-a-session/forks",
       body: {
         requestId: API_CODEX_CHAT_FORK_ID,
-        throughTurnRequestId: FIXTURE_CHAT_DECISION.turnRequestId,
+        throughTurnRequestId: API_CODEX_CHAT_FORK_SOURCE.turnRequestId,
       },
     },
     prepare: async (h) => {
-      const source = await seedForkableCodexChatSource(h);
+      const source = await seedForkableCodexChatSource(
+        h,
+        API_CODEX_CHAT_FORK_SOURCE,
+      );
       const hash = codexChatForkOriginalHash(
         codexChatForkOriginalHashInput({
           projectId: source.projectId,
@@ -2453,17 +2465,26 @@ const READS: Record<string, string> = {
 };
 
 async function seedForkReadOriginal(h: TestHearth): Promise<void> {
-  const source = await seedForkableCodexChatSource(h);
-  const response = await post(
-    h,
-    `/projects/${source.projectId}/sessions/${source.parentSessionId}/forks`,
+  const journal = createCodexChatForkJournal({ root: h.root, home: h.home });
+  const original = await journal.reserve(
+    FIXTURE_PROJECT_ID,
+    FIXTURE_CHAT_SESSION,
     {
       requestId: API_CODEX_CHAT_FORK_ID,
-      throughTurnRequestId: source.throughTurnRequestId,
+      throughTurnRequestId: FIXTURE_CHAT_DECISION.turnRequestId,
+    },
+    {
+      parentRequestHash: "a".repeat(64),
+      parentTurnHash: "b".repeat(64),
+      parentNativeThreadId: "0199a213-81c0-7800-8aa1-bbab2a035a53",
+      throughNativeTurnId: "0199a213-81c0-7800-8aa1-bbab2a035a54",
+      sourceSettingsHash: "c".repeat(64),
     },
   );
-  expect(response.status).toBe(200);
-  expect((await envelope(response)).ok).toBe(true);
+  expect({ state: original.state, requestId: original.requestId }).toEqual({
+    state: "reserved",
+    requestId: API_CODEX_CHAT_FORK_ID,
+  });
 }
 
 function fixture(route: ApiRoute): ActionFixture {
@@ -3066,6 +3087,9 @@ describe("a read row or the stream while another connection holds the write lock
     await seedSmithCreateOriginal(h);
     await seedSmithEditOriginal(h);
     await seedSmithRoutingEditOriginal(h);
+    // Seed the private Fork journal without an audited HTTP action, which
+    // would open the otherwise-cold ledger before this lock assertion.
+    await seedForkReadOriginal(h);
     const rows = h.hearth.routes.filter(
       (route) => route.kind === "read" || route.kind === "stream",
     );
