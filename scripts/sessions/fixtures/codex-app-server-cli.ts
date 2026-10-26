@@ -489,17 +489,19 @@ while (true) {
             platformOs: "windows",
           },
         });
+        if (mode === "fork-server-request") {
+          await send({
+            id: "unsupported-server-request",
+            method: "item/commandExecution/requestApproval",
+            params: { threadId },
+          });
+          await new Promise(() => {});
+        }
         await send({
           method: "warning",
           params: { threadId: null, message: "Inert private global warning" },
         });
       }
-    } else if (method === "initialized" && mode === "fork-server-request") {
-      await send({
-        id: "unsupported-server-request",
-        method: "item/commandExecution/requestApproval",
-        params: { threadId },
-      });
     } else if (method === "thread/fork") {
       if (
         !mode?.startsWith("fork") ||
