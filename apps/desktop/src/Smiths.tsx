@@ -9,10 +9,12 @@ import {
   SmithCreateFormView,
   SmithCreateReceiptsView,
 } from "./SmithCreateForm";
+import { SmithEditFormView, SmithEditReceiptsView } from "./SmithEditForm";
 import { SmithVerificationTask } from "./SmithVerificationTask";
 import { SCOREBOARD_RANGES } from "./smiths-client";
 import { metric, scoreboardKey } from "./smiths-model";
 import type { useSmithCreate } from "./use-smith-create";
+import type { useSmithEdit } from "./use-smith-edit";
 import type { SmithsController } from "./use-smiths";
 import "./smiths.css";
 
@@ -126,17 +128,21 @@ function RecordedMetrics({ row }: { row: ScoreboardRow }) {
 export function Smiths({
   controller,
   creates,
+  edits,
   workspace,
 }: {
   controller: SmithsController;
   creates: ReturnType<typeof useSmithCreate>;
+  edits: ReturnType<typeof useSmithEdit>;
   workspace: string | null;
 }) {
   const [search, setSearch] = useState("");
   const [enabled, setEnabled] = useState("all");
   const [boardPage, setBoardPage] = useState(0);
   const [createOpen, setCreateOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
   const createOpener = useRef<HTMLElement>(null);
+  const editOpener = useRef<HTMLElement>(null);
   const { client, view } = controller;
   const config = view?.configuration,
     board = view?.scoreboard;
@@ -196,18 +202,11 @@ export function Smiths({
           >
             New smith
           </Button>
-          <Button
-            disabled
-            title="Configuration editing is unavailable in this inspection view."
-          >
-            Edit configuration
-          </Button>
         </div>
       </div>
       <p class="af-smith-note">
-        Creating a Smith uses a complete candidate review and explicit save.
-        Editing existing configuration remains unavailable here; inspection and
-        review never start a provider.
+        Creating or editing a Smith requires a complete candidate review and
+        explicit save. Inspection and review never start a provider.
       </p>
       <Dialog
         open={createOpen}
@@ -226,6 +225,24 @@ export function Smiths({
           onDraft={(target, smith) => creates.client?.setDraft(target, smith)}
           onPreview={() => void creates.client?.preview()}
           onCreate={() => void creates.client?.create()}
+        />
+      </Dialog>
+      <Dialog
+        open={editOpen}
+        title={`Edit ${edits.state.name || "Smith configuration"}`}
+        onClose={() => setEditOpen(false)}
+        returnFocusRef={editOpener}
+        class="af-smith-edit-dialog"
+      >
+        <SmithEditFormView
+          state={edits.state}
+          canWrite={edits.canWrite}
+          canStart={edits.client?.canStart() ?? false}
+          onDraft={(target, name, smith) =>
+            edits.client?.setDraft(target, name, smith)
+          }
+          onPreview={() => void edits.client?.preview()}
+          onSave={() => void edits.client?.save()}
         />
       </Dialog>
       <div class="af-smith-filters">
@@ -267,6 +284,11 @@ export function Smiths({
         entries={creates.state.entries}
         canWrite={creates.canWrite}
         onCheck={(requestId) => void creates.client?.check(requestId)}
+      />
+      <SmithEditReceiptsView
+        entries={edits.state.entries}
+        canWrite={edits.canWrite}
+        onCheck={(requestId) => void edits.client?.check(requestId)}
       />
       <section
         aria-label="Saved smith configuration"
@@ -382,6 +404,25 @@ export function Smiths({
                               ))}
                             </dl>
                           </details>
+                          <button
+                            type="button"
+                            disabled={!edits.canWrite || !config.data}
+                            aria-label={`Edit configuration for ${row.name}`}
+                            onClick={(event) => {
+                              editOpener.current = event.currentTarget;
+                              edits.client?.setDraft("workspace", row.name, {
+                                name: row.name,
+                                provider: row.provider,
+                                model: row.model,
+                                effort: row.effort,
+                                enabled: row.enabled,
+                                tags: [...row.tags],
+                              });
+                              setEditOpen(true);
+                            }}
+                          >
+                            Edit configuration
+                          </button>
                         </th>
                         <td>
                           {row.provider}
