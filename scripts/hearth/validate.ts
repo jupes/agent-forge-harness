@@ -239,6 +239,11 @@ const sha256Hex: Check = (v, path) =>
   typeof v === "string" && /^[0-9a-f]{64}$/.test(v)
     ? null
     : `${path}: expected a SHA-256 in lower-case hex`;
+const lowercaseUuid: Check = (v, path) =>
+  typeof v === "string" &&
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(v)
+    ? null
+    : `${path}: expected a lower-case UUID`;
 
 /** A key that one form of a payload must not carry at all. */
 function absent(form: string): Check {
@@ -378,6 +383,9 @@ const PAYLOAD_CHECKS: Record<LedgerEventKind, Check> = {
     action: nonEmptyStr,
     surface: oneOf(OPERATOR_SURFACES),
     target: optional(nonEmptyStr),
+    family: optional(nonEmptyStr),
+    requestId: optional(lowercaseUuid),
+    inputHash: optional(sha256Hex),
   }),
 };
 
