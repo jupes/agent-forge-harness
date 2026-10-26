@@ -27,8 +27,19 @@ export interface CodexChatForkOriginalBase {
   throughTurnRequestId: string;
   protocolVersion: "0.163.0-alpha.10.2";
   childAppSessionId: string;
+  /** Missing only on legacy rows; new coordinators never dispatch or adopt those rows. */
+  sourceSeal?: CodexChatForkSourceSeal | undefined;
   createdAt: string;
   updatedAt: string;
+}
+
+/** Resolver-derived immutable proof captured before a native effect is claimed. */
+export interface CodexChatForkSourceSeal {
+  parentRequestHash: string;
+  parentTurnHash: string;
+  parentNativeThreadId: string;
+  throughNativeTurnId: string;
+  sourceSettingsHash: string;
 }
 
 export type CodexChatForkOriginalRef = Pick<
@@ -41,6 +52,7 @@ export type CodexChatForkOriginalRef = Pick<
   | "throughTurnRequestId"
   | "protocolVersion"
   | "childAppSessionId"
+  | "sourceSeal"
 >;
 
 export type CodexChatForkOriginal =

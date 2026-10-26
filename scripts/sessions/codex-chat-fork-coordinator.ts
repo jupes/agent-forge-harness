@@ -18,6 +18,7 @@ import {
   codexChatForkCaptureHash,
   codexChatForkIntentSchema,
   codexChatForkOriginSchema,
+  codexChatForkSourceSettingsHash,
 } from "./codex-chat-fork-protocol";
 import {
   type CodexChatForkSourceResult,
@@ -121,6 +122,23 @@ function originalRef(original: CodexChatForkOriginal) {
     throughTurnRequestId: original.throughTurnRequestId,
     protocolVersion: original.protocolVersion,
     childAppSessionId: original.childAppSessionId,
+    ...(original.sourceSeal === undefined
+      ? {}
+      : { sourceSeal: original.sourceSeal }),
+  };
+}
+
+function sourceSealFor(
+  parent: CodexChatOwnedRecord,
+  selectedTurnHash: string,
+  source: Extract<CodexChatForkSourceResult, { eligible: true }>,
+) {
+  return {
+    parentRequestHash: parent.requestHash,
+    parentTurnHash: selectedTurnHash,
+    parentNativeThreadId: source.parent.threadId,
+    throughNativeTurnId: source.lastTurnId,
+    sourceSettingsHash: codexChatForkSourceSettingsHash(source.sourceSettings),
   };
 }
 
@@ -236,7 +254,12 @@ export function createCodexChatForkCoordinator(
     if (
       !source.eligible ||
       source.parent.threadId !== origin.parentNativeThreadId ||
-      source.lastTurnId !== origin.throughNativeTurnId
+      source.lastTurnId !== origin.throughNativeTurnId ||
+      !original.sourceSeal ||
+      !same(
+        original.sourceSeal,
+        sourceSealFor(parent, selected[0].hash, source),
+      )
     )
       throw new Error(
         "The linked Fork no longer matches its exact saved parent source.",
@@ -318,9 +341,18 @@ export function createCodexChatForkCoordinator(
           if (existing?.state === "held")
             return { state: "held", reason: existing.heldReason } as const;
           if (existing?.state === "attempted") {
+            if (!existing.sourceSeal)
+              return {
+                state: "held",
+                reason: "unknown-native-outcome",
+              } as const;
             await journal.hold(originalRef(existing), "unknown-native-outcome");
             return { state: "held", reason: "unknown-native-outcome" } as const;
           }
+          if (existing && !existing.sourceSeal)
+            throw new Error(
+              "This legacy Fork original has no source seal and cannot be dispatched or adopted.",
+            );
           const admission = existing?.state !== "captured",
             source = sourceFor({
               parent,
@@ -339,6 +371,11 @@ export function createCodexChatForkCoordinator(
           );
           if (!selected)
             throw new Error("The selected source turn disappeared.");
+          const sourceSeal = sourceSealFor(parent, selected.hash, source);
+          if (existing?.sourceSeal && !same(existing.sourceSeal, sourceSeal))
+            throw new Error(
+              "The saved Fork source changed after its original was reserved.",
+            );
           if (!existing || existing.state === "reserved") {
             await options.validateScope(parent);
             await options.appendAudit({
@@ -350,7 +387,12 @@ export function createCodexChatForkCoordinator(
           }
           let original: CodexChatForkOriginal =
             existing ??
-            (await journal.reserve(raw.projectId, parent.id, intent.data));
+            (await journal.reserve(
+              raw.projectId,
+              parent.id,
+              intent.data,
+              sourceSeal,
+            ));
           if (original.state === "reserved") {
             const attempt = await journal.markAttempted(originalRef(original));
             original = attempt.record;
@@ -538,6 +580,7 @@ export function resolveCodexChatForkPrefix(input: {
     original.projectId !== origin.projectId ||
     original.parentSessionId !== origin.parentSessionId ||
     original.protocolVersion !== origin.protocolVersion ||
+    original.sourceSeal === undefined ||
     original.workspaceKey !== workspaceKey(input.parent.workspace) ||
     original.throughTurnRequestId !== origin.throughTurnRequestId ||
     original.state !== "linked" ||
@@ -582,6 +625,13 @@ export function resolveCodexChatForkPrefix(input: {
     throw new Error(
       "The saved Fork parent turn hash does not match its origin.",
     );
+  if (
+    !same(
+      original.sourceSeal,
+      sourceSealFor(input.parent, selected.hash, source),
+    )
+  )
+    throw new Error("The saved Fork source seal no longer matches its origin.");
   const boundary =
     input.parentState.frames
       .filter((frame) => frame.turnId === origin.throughTurnRequestId)

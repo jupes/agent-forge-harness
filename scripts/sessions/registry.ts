@@ -34,7 +34,10 @@ import {
 import { writeOwnerOnly } from "../hearth/token";
 import { workspaceKey } from "../projects/scope";
 import { withQueueLock } from "../scheduler/queue-lock";
-import { codexChatForkCaptureHash } from "./codex-chat-fork-protocol";
+import {
+  codexChatForkCaptureHash,
+  codexChatForkOriginalSchema,
+} from "./codex-chat-fork-protocol";
 import {
   codexChatOwnedMetadataSchema,
   codexChatOwnedSessionSchema,
@@ -339,6 +342,9 @@ export function createSessionRegistry(
           !parsed.success ||
           parsed.data.provider !== provider ||
           (provider !== "claude" && parsed.data.mode !== mode) ||
+          (provider === "codex" &&
+            mode === "chat" &&
+            parsed.data.origin?.kind === "codex-chat-fork") ||
           (parsed.data.origin && parsed.data.origin.projectId !== projectId)
         )
           throw new SessionRegistryError(
@@ -387,47 +393,79 @@ export function createSessionRegistry(
         bootstrap: () => Promise<void>,
       ): Promise<CodexChatOwnedRecord> {
         const parsed = codexChatOwnedSessionSchema.safeParse(child),
+          parsedParent = codexChatOwnedSessionSchema.safeParse(parent),
+          parsedOriginal = codexChatForkOriginalSchema.safeParse(original),
           capture =
-            original.state === "captured" || original.state === "linked"
-              ? original.capture
+            parsedOriginal.success &&
+            (parsedOriginal.data.state === "captured" ||
+              parsedOriginal.data.state === "linked")
+              ? parsedOriginal.data.capture
               : null;
         if (
           !parsed.success ||
+          !parsedParent.success ||
+          !parsedOriginal.success ||
           !capture ||
-          parent.provider !== "codex" ||
-          parent.mode !== "chat" ||
-          parent.origin !== undefined ||
-          parent.projectId !== original.projectId ||
-          parent.id !== original.parentSessionId ||
-          workspaceKey(parent.workspace) !== original.workspaceKey ||
-          child.provider !== "codex" ||
-          child.mode !== "chat" ||
-          child.projectId !== original.projectId ||
-          child.id !== original.childAppSessionId ||
-          child.requestId !== original.requestId ||
-          child.requestHash !== original.requestHash ||
-          child.workspace !== parent.workspace ||
-          child.repository !== parent.repository ||
-          child.worktree !== parent.worktree ||
-          child.beadId !== parent.beadId ||
-          child.smith !== parent.smith ||
-          child.requestedModel !== parent.requestedModel ||
-          child.requestedEffort !== parent.requestedEffort ||
-          child.createdAt !== original.createdAt ||
-          child.origin?.kind !== "codex-chat-fork" ||
-          child.origin.projectId !== original.projectId ||
-          child.origin.parentSessionId !== original.parentSessionId ||
-          child.origin.throughTurnRequestId !== original.throughTurnRequestId ||
-          child.origin.protocolVersion !== original.protocolVersion ||
-          child.origin.parentNativeThreadId !== capture.parentNativeThreadId ||
-          child.origin.throughNativeTurnId !== capture.throughNativeTurnId ||
-          child.origin.childNativeThreadId !== capture.childNativeThreadId ||
-          child.origin.captureHash !== codexChatForkCaptureHash(capture) ||
-          (original.state === "linked" &&
-            (original.link.childAppSessionId !== child.id ||
-              original.link.childRequestId !== child.requestId ||
-              original.link.childRequestHash !== child.requestHash ||
-              original.link.captureHash !== child.origin.captureHash))
+          parsedParent.data.provider !== "codex" ||
+          parsedParent.data.mode !== "chat" ||
+          parsedParent.data.origin !== undefined ||
+          parsedParent.data.projectId !== parsedOriginal.data.projectId ||
+          parsedParent.data.id !== parsedOriginal.data.parentSessionId ||
+          workspaceKey(parsedParent.data.workspace) !==
+            parsedOriginal.data.workspaceKey ||
+          parsedOriginal.data.sourceSeal === undefined ||
+          parsedOriginal.data.sourceSeal.parentRequestHash !==
+            parsedParent.data.requestHash ||
+          parsedOriginal.data.state === "held" ||
+          parsedOriginal.data.state === "attempted" ||
+          parsedOriginal.data.state === "reserved" ||
+          (parsed.success &&
+            (parsed.data.provider !== "codex" ||
+              parsed.data.mode !== "chat" ||
+              parsed.data.projectId !== parsedOriginal.data.projectId ||
+              parsed.data.id !== parsedOriginal.data.childAppSessionId ||
+              parsed.data.requestId !== parsedOriginal.data.requestId ||
+              parsed.data.requestHash !== parsedOriginal.data.requestHash ||
+              parsed.data.workspace !== parsedParent.data.workspace ||
+              parsed.data.repository !== parsedParent.data.repository ||
+              parsed.data.worktree !== parsedParent.data.worktree ||
+              parsed.data.beadId !== parsedParent.data.beadId ||
+              parsed.data.smith !== parsedParent.data.smith ||
+              parsed.data.requestedModel !== parsedParent.data.requestedModel ||
+              parsed.data.requestedEffort !==
+                parsedParent.data.requestedEffort ||
+              parsed.data.createdAt !== parsedOriginal.data.createdAt ||
+              parsed.data.origin?.kind !== "codex-chat-fork" ||
+              parsed.data.origin.projectId !== parsedOriginal.data.projectId ||
+              parsed.data.origin.parentSessionId !==
+                parsedOriginal.data.parentSessionId ||
+              parsed.data.origin.throughTurnRequestId !==
+                parsedOriginal.data.throughTurnRequestId ||
+              parsed.data.origin.protocolVersion !==
+                parsedOriginal.data.protocolVersion ||
+              parsed.data.origin.parentNativeThreadId !==
+                capture.parentNativeThreadId ||
+              parsed.data.origin.throughNativeTurnId !==
+                capture.throughNativeTurnId ||
+              parsed.data.origin.childNativeThreadId !==
+                capture.childNativeThreadId ||
+              parsedOriginal.data.sourceSeal.parentNativeThreadId !==
+                parsed.data.origin.parentNativeThreadId ||
+              parsedOriginal.data.sourceSeal.throughNativeTurnId !==
+                parsed.data.origin.throughNativeTurnId ||
+              parsed.data.origin.parentTurnHash !==
+                parsedOriginal.data.sourceSeal.parentTurnHash ||
+              parsed.data.origin.captureHash !==
+                codexChatForkCaptureHash(capture) ||
+              (parsedOriginal.data.state === "linked" &&
+                (parsedOriginal.data.link.childAppSessionId !==
+                  parsed.data.id ||
+                  parsedOriginal.data.link.childRequestId !==
+                    parsed.data.requestId ||
+                  parsedOriginal.data.link.childRequestHash !==
+                    parsed.data.requestHash ||
+                  parsedOriginal.data.link.captureHash !==
+                    parsed.data.origin.captureHash))))
         )
           throw new SessionRegistryError(
             409,
@@ -435,11 +473,14 @@ export function createSessionRegistry(
           );
         const { lock, file } = checkedPaths(home);
         ensurePrivateHome(home);
+        const childSnapshot = parsed.data;
         const adopted = await withQueueLock(lock, async () => {
           const state = readState(),
-            byId = state.records.find((record) => record.id === child.id),
+            byId = state.records.find(
+              (record) => record.id === childSnapshot.id,
+            ),
             byRequest = state.records.find(
-              (record) => record.requestId === child.requestId,
+              (record) => record.requestId === childSnapshot.requestId,
             );
           if (byId || byRequest) {
             if (
@@ -448,7 +489,7 @@ export function createSessionRegistry(
               byId.provider === "codex" &&
               byId.mode === "chat" &&
               JSON.stringify(codexChatOwnedSessionSchema.parse(byId)) ===
-                JSON.stringify(parsed.data)
+                JSON.stringify(childSnapshot)
             )
               return byId;
             throw new SessionRegistryError(
@@ -462,7 +503,7 @@ export function createSessionRegistry(
               "The private session registry is full. Saved Fork identities have been kept.",
             );
           await bootstrap();
-          state.records.push(child);
+          state.records.push(childSnapshot);
           const content = JSON.stringify(state);
           if (Buffer.byteLength(content) > MAX_SESSION_REGISTRY_BYTES)
             throw new SessionRegistryError(
@@ -478,13 +519,14 @@ export function createSessionRegistry(
             );
           }
           const confirmed = readState().records.find(
-            (record) => record.id === child.id,
+            (record) => record.id === childSnapshot.id,
           );
           if (
             !confirmed ||
             confirmed.provider !== "codex" ||
             confirmed.mode !== "chat" ||
-            JSON.stringify(confirmed) !== JSON.stringify(child)
+            JSON.stringify(codexChatOwnedSessionSchema.parse(confirmed)) !==
+              JSON.stringify(childSnapshot)
           )
             throw new SessionRegistryError(
               503,

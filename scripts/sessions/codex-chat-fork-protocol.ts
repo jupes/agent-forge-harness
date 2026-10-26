@@ -10,6 +10,7 @@ import type {
   CodexChatForkOriginal,
   CodexChatForkOriginalBase,
   CodexChatForkOriginalRef,
+  CodexChatForkSourceSeal,
 } from "../../types/codex-chat-fork";
 import { workspaceKey } from "../projects/scope";
 import {
@@ -79,6 +80,16 @@ export const codexChatForkCaptureSchema: z.ZodType<CodexChatForkCapture> = z
     protocolVersion: z.literal(CODEX_CHAT_FORK_PROTOCOL_VERSION),
   })
   .strict();
+export const codexChatForkSourceSealSchema: z.ZodType<CodexChatForkSourceSeal> =
+  z
+    .object({
+      parentRequestHash: hashSchema,
+      parentTurnHash: hashSchema,
+      parentNativeThreadId: nativeUuidSchema,
+      throughNativeTurnId: nativeUuidSchema,
+      sourceSettingsHash: hashSchema,
+    })
+    .strict();
 export const codexChatForkOriginSchema: z.ZodType<CodexChatForkOrigin> = z
   .object({
     kind: z.literal("codex-chat-fork"),
@@ -113,6 +124,7 @@ const baseRecordSchema = z
     throughTurnRequestId: sessionRequestIdSchema,
     protocolVersion: z.literal(CODEX_CHAT_FORK_PROTOCOL_VERSION),
     childAppSessionId: ownedSessionIdSchema,
+    sourceSeal: codexChatForkSourceSealSchema.optional(),
     createdAt: timestampSchema,
     updatedAt: timestampSchema,
   })
@@ -156,6 +168,7 @@ export const codexChatForkOriginalRefSchema: z.ZodType<CodexChatForkOriginalRef>
       throughTurnRequestId: sessionRequestIdSchema,
       protocolVersion: z.literal(CODEX_CHAT_FORK_PROTOCOL_VERSION),
       childAppSessionId: ownedSessionIdSchema,
+      sourceSeal: codexChatForkSourceSealSchema.optional(),
     })
     .strict();
 export const codexChatForkHeldReasonSchema: z.ZodType<CodexChatForkHeldReason> =
@@ -200,6 +213,31 @@ export function codexChatForkCaptureHash(raw: unknown): string {
     .digest("hex");
 }
 
+export function codexChatForkSourceSettingsHash(raw: {
+  modelProvider: string;
+  serviceTier: string | null;
+  reasoningEffort: string | null;
+}): string {
+  const settings = z
+    .object({
+      modelProvider: boundedText(256),
+      serviceTier: boundedText(256).nullable(),
+      reasoningEffort: boundedText(256).nullable(),
+    })
+    .strict()
+    .parse(raw);
+  return createHash("sha256")
+    .update(
+      `agent-forge.codex-chat-fork.source-settings.v1\0${JSON.stringify({
+        modelProvider: settings.modelProvider,
+        serviceTier: settings.serviceTier,
+        reasoningEffort: settings.reasoningEffort,
+      })}`,
+      "utf8",
+    )
+    .digest("hex");
+}
+
 function orderedCapture(value: CodexChatForkCapture): CodexChatForkCapture {
   return {
     parentNativeThreadId: value.parentNativeThreadId,
@@ -228,6 +266,7 @@ function orderedRecord(value: CodexChatForkOriginal): CodexChatForkOriginal {
     throughTurnRequestId: value.throughTurnRequestId,
     protocolVersion: value.protocolVersion,
     childAppSessionId: value.childAppSessionId,
+    ...(value.sourceSeal === undefined ? {} : { sourceSeal: value.sourceSeal }),
     createdAt: value.createdAt,
     updatedAt: value.updatedAt,
   };

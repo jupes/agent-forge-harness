@@ -36,6 +36,13 @@ const scratch = scratchDirs(),
   children = new Set<Bun.Subprocess>(),
   outputLimit = 16 * 1024,
   childTimeoutMs = 12_000;
+const testSourceSeal = {
+  parentRequestHash: "a".repeat(64),
+  parentTurnHash: "b".repeat(64),
+  parentNativeThreadId: "0199a213-81c0-7800-8aa1-bbab2a035a70",
+  throughNativeTurnId: "0199a213-81c0-7800-8aa1-bbab2a035a71",
+  sourceSettingsHash: "c".repeat(64),
+};
 
 const attemptReplySchema = z
     .object({
@@ -103,6 +110,7 @@ function reference(record: CodexChatForkOriginal) {
     throughTurnRequestId: record.throughTurnRequestId,
     protocolVersion: record.protocolVersion,
     childAppSessionId: record.childAppSessionId,
+    sourceSeal: record.sourceSeal,
   };
 }
 
@@ -292,6 +300,7 @@ test.skipIf(!nativeEnabled)(
         projectId,
         parentSessionId,
         intent(requestId),
+        testSourceSeal,
       );
     } catch (error) {
       throw new Error(detail(error, mutex));
@@ -314,6 +323,7 @@ test.skipIf(!nativeEnabled)(
         projectId,
         parentSessionId,
         intent(requestId),
+        testSourceSeal,
       ),
       barrier = join(base, "barrier");
     mkdirSync(barrier);
@@ -348,7 +358,7 @@ test.skipIf(!nativeEnabled)(
         index,
       ) => `${journalImport(root, home)} ${childBarrier(barrier, slot)}
         try {
-          const record = await journal.reserve(${JSON.stringify(projectId)},${JSON.stringify(parentSessionId)},${JSON.stringify(intent(ids[index]!))});
+          const record = await journal.reserve(${JSON.stringify(projectId)},${JSON.stringify(parentSessionId)},${JSON.stringify(intent(ids[index]!))},${JSON.stringify(testSourceSeal)});
           process.stdout.write(JSON.stringify({ok:true,requestId:record.requestId,state:record.state,storageErrors}));
         } catch (error) {
           process.stdout.write(JSON.stringify({ok:false,reason:error instanceof CodexChatForkJournalError ? error.reason : "unexpected",storageErrors}));

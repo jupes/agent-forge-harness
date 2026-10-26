@@ -35,6 +35,13 @@ const requestId = "0199a213-81c0-7800-8aa1-bbab2a035a55",
   childSessionId = "session-0199a213-81c0-7800-8aa1-bbab2a035a60",
   projectId = "project-00000000-0000-4000-8000-000000000001",
   userSid = "S-1-5-21-1000";
+const testSourceSeal = {
+  parentRequestHash: "a".repeat(64),
+  parentTurnHash: "b".repeat(64),
+  parentNativeThreadId: "0199a213-81c0-7800-8aa1-bbab2a035a70",
+  throughNativeTurnId: "0199a213-81c0-7800-8aa1-bbab2a035a71",
+  sourceSettingsHash: "c".repeat(64),
+};
 
 function privateReading(target: "directory" | "file"): AclReading {
   const flags = target === "directory" ? 3 : 0;
@@ -81,13 +88,21 @@ function fakeAcl(): WindowsAcl {
 }
 
 function journal(root: string, home: string, acl = fakeAcl()) {
-  return createCodexChatForkJournal({
+  const actual = createCodexChatForkJournal({
     root,
     home,
     now: () => "2026-10-25T00:00:00.000Z",
     createChildAppSessionId: () => childSessionId,
     storageOptions: { platform: "win32", acl },
   });
+  return {
+    ...actual,
+    reserve: (
+      project: string,
+      parent: string,
+      intent: Parameters<typeof actual.reserve>[2],
+    ) => actual.reserve(project, parent, intent, testSourceSeal),
+  };
 }
 
 function unprotectedReading(target: "directory" | "file"): AclReading {
@@ -111,6 +126,7 @@ function ref(record: CodexChatForkOriginal) {
     throughTurnRequestId: record.throughTurnRequestId,
     protocolVersion: record.protocolVersion,
     childAppSessionId: record.childAppSessionId,
+    sourceSeal: record.sourceSeal,
   };
 }
 
