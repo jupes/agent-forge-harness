@@ -601,6 +601,9 @@ test("confirmed reserved retirement reads back the tombstone before a new UUID c
   await reviewRetirement.click();
   await expect(close).toBeFocused();
   await expect(confirm).toBeInViewport();
+  await captureShot(retirement, "session-start-retirement-confirmation.png", {
+    mask: [retirement.locator("dd").nth(0)],
+  });
   await retirement
     .getByRole("button", { name: "Retire this UUID", exact: true })
     .click();
