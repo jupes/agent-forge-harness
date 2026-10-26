@@ -8,6 +8,14 @@ import type {
   CodexChatForkJournalStorage,
 } from "./codex-chat-fork-journal";
 import { createCodexChatForkJournal } from "./codex-chat-fork-journal";
+import {
+  CODEX_CHAT_FORK_LIMITS,
+  canonicalCodexChatForkJournalEvent,
+  codexChatForkCaptureHash,
+  codexChatForkJournalEventBodySchema,
+  codexChatForkJournalEventHash,
+  codexChatForkJournalEventSchema,
+} from "./codex-chat-fork-protocol";
 
 const scratch = scratchDirs();
 afterEach(() => scratch.cleanup());
@@ -50,6 +58,7 @@ class MemoryStorage implements CodexChatForkJournalStorage {
 }
 
 const requestId = "0199a213-81c0-7800-8aa1-bbab2a035a55",
+  otherRequestId = "0199a213-81c0-7800-8aa1-bbab2a035a56",
   parentSessionId = "session-0199a213-81c0-7800-8aa1-bbab2a035a51",
   throughTurnRequestId = "0199a213-81c0-7800-8aa1-bbab2a035a54",
   projectId = "project-00000000-0000-4000-8000-000000000001";
@@ -141,4 +150,195 @@ test("only one independent instance gets the one-shot mayDispatch claim", async 
   expect(fixture(root, storage).journal.read(projectId, requestId)?.state).toBe(
     "attempted",
   );
+});
+
+test("a linked event cannot replace the exact capture saved by its prior event", async () => {
+  const root = scratch.make("codex-fork-root-"),
+    storage = new MemoryStorage(),
+    journal = fixture(root, storage).journal,
+    reserved = await journal.reserve(projectId, parentSessionId, {
+      requestId,
+      throughTurnRequestId,
+    }),
+    ref = reference(reserved),
+    capture = {
+      parentNativeThreadId: "0199a213-81c0-7800-8aa1-bbab2a035a70",
+      childNativeThreadId: "0199a213-81c0-7800-8aa1-bbab2a035a71",
+      throughNativeTurnId: "0199a213-81c0-7800-8aa1-bbab2a035a54",
+      protocolVersion: "0.163.0-alpha.10.2" as const,
+    };
+  await journal.markAttempted(ref);
+  await journal.capture(ref, capture);
+  const linked = await journal.markLinked(ref, {
+    childAppSessionId: reserved.childAppSessionId,
+    childRequestId: "0199a213-81c0-7800-8aa1-bbab2a035a72",
+    childRequestHash: "a".repeat(64),
+    captureHash: codexChatForkCaptureHash(capture),
+  });
+  expect(linked.state).toBe("linked");
+
+  const [oldName, oldText] = [...storage.events].at(-1) ?? [];
+  if (!oldName || !oldText) throw Error("Missing final linked event.");
+  const event = codexChatForkJournalEventSchema.parse(JSON.parse(oldText));
+  if (event.record.state !== "linked") throw Error("Expected linked event.");
+  const changedCapture = {
+    ...event.record.capture,
+    childNativeThreadId: "0199a213-81c0-7800-8aa1-bbab2a035a73",
+  };
+  const body = codexChatForkJournalEventBodySchema.parse({
+    version: event.version,
+    sequence: event.sequence,
+    previousEventHash: event.previousEventHash,
+    previousOperationHash: event.previousOperationHash,
+    transition: event.transition,
+    record: {
+      ...event.record,
+      capture: changedCapture,
+      link: {
+        ...event.record.link,
+        captureHash: codexChatForkCaptureHash(changedCapture),
+      },
+    },
+  });
+  const eventHash = codexChatForkJournalEventHash(body),
+    tamperedText = canonicalCodexChatForkJournalEvent(
+      codexChatForkJournalEventSchema.parse({ ...body, eventHash }),
+    );
+  storage.events.delete(oldName);
+  storage.events.set(
+    `${String(event.sequence).padStart(8, "0")}-${eventHash}.json`,
+    tamperedText,
+  );
+
+  expect(() => journal.read(projectId, requestId)).toThrow();
+});
+
+test("event listing stops at the configured bound before reading an unbounded namespace", () => {
+  const root = scratch.make("codex-fork-root-"),
+    storage = new MemoryStorage(),
+    journal = fixture(root, storage).journal;
+  let pulls = 0;
+  storage.listEvents = function* () {
+    for (;;) {
+      pulls++;
+      if (pulls > CODEX_CHAT_FORK_LIMITS.events + 1)
+        throw Error("Iterator advanced past the bounded lookahead.");
+      yield { name: "oversized-invalid-event", bytes: 1, plain: true };
+    }
+  };
+
+  expect(() => journal.read(projectId, requestId)).toThrow();
+  expect(pulls).toBe(CODEX_CHAT_FORK_LIMITS.events + 1);
+});
+
+test("held outcome survives reopen and cannot be captured or linked", async () => {
+  const root = scratch.make("codex-fork-root-"),
+    storage = new MemoryStorage(),
+    journal = fixture(root, storage).journal,
+    reserved = await journal.reserve(projectId, parentSessionId, {
+      requestId,
+      throughTurnRequestId,
+    }),
+    ref = reference(reserved),
+    capture = {
+      parentNativeThreadId: "0199a213-81c0-7800-8aa1-bbab2a035a70",
+      childNativeThreadId: "0199a213-81c0-7800-8aa1-bbab2a035a71",
+      throughNativeTurnId: throughTurnRequestId,
+      protocolVersion: "0.163.0-alpha.10.2" as const,
+    };
+  await journal.markAttempted(ref);
+  const held = await journal.hold(ref, "unknown-native-outcome");
+  expect(held.state).toBe("held");
+
+  const reopened = fixture(root, storage).journal;
+  expect(reopened.read(projectId, requestId)).toEqual(held);
+  expect((await reopened.markAttempted(ref)).mayDispatch).toBe(false);
+  await expect(reopened.capture(ref, capture)).rejects.toThrow();
+  expect(reopened.read(projectId, requestId)).toEqual(held);
+});
+
+test("captured local-link crash reuses the stable child app ID and exact link", async () => {
+  const root = scratch.make("codex-fork-root-"),
+    storage = new MemoryStorage(),
+    journal = fixture(root, storage).journal,
+    reserved = await journal.reserve(projectId, parentSessionId, {
+      requestId,
+      throughTurnRequestId,
+    }),
+    ref = reference(reserved),
+    capture = {
+      parentNativeThreadId: "0199a213-81c0-7800-8aa1-bbab2a035a70",
+      childNativeThreadId: "0199a213-81c0-7800-8aa1-bbab2a035a71",
+      throughNativeTurnId: throughTurnRequestId,
+      protocolVersion: "0.163.0-alpha.10.2" as const,
+    },
+    syntheticLocalLinks = new Map<string, string>();
+  await journal.markAttempted(ref);
+  const captured = await journal.capture(ref, capture),
+    link = {
+      childAppSessionId: captured.childAppSessionId,
+      childRequestId: "0199a213-81c0-7800-8aa1-bbab2a035a72",
+      childRequestHash: "b".repeat(64),
+      captureHash: codexChatForkCaptureHash(capture),
+    };
+
+  // Simulate a local registration write, then interruption before linked-event persistence.
+  syntheticLocalLinks.set(link.childAppSessionId, JSON.stringify(link));
+  const reopened = fixture(root, storage).journal,
+    recovered = reopened.read(projectId, requestId);
+  expect(recovered?.state).toBe("captured");
+  expect(recovered?.childAppSessionId).toBe(reserved.childAppSessionId);
+  expect(syntheticLocalLinks.size).toBe(1);
+
+  const linked = await reopened.markLinked(ref, link);
+  expect(linked.state).toBe("linked");
+  expect(await fixture(root, storage).journal.markLinked(ref, link)).toEqual(
+    linked,
+  );
+  expect(syntheticLocalLinks.size).toBe(1);
+});
+
+test("a conflicting child ID in a synthetic link claim preserves captured proof", async () => {
+  const root = scratch.make("codex-fork-root-"),
+    storage = new MemoryStorage(),
+    journal = fixture(root, storage).journal,
+    reserved = await journal.reserve(projectId, parentSessionId, {
+      requestId,
+      throughTurnRequestId,
+    }),
+    ref = reference(reserved),
+    capture = {
+      parentNativeThreadId: "0199a213-81c0-7800-8aa1-bbab2a035a70",
+      childNativeThreadId: "0199a213-81c0-7800-8aa1-bbab2a035a71",
+      throughNativeTurnId: throughTurnRequestId,
+      protocolVersion: "0.163.0-alpha.10.2" as const,
+    };
+  await journal.markAttempted(ref);
+  const captured = await journal.capture(ref, capture),
+    wrongLink = {
+      childAppSessionId: "session-0199a213-81c0-7800-8aa1-bbab2a035a74",
+      childRequestId: "0199a213-81c0-7800-8aa1-bbab2a035a75",
+      childRequestHash: "c".repeat(64),
+      captureHash: codexChatForkCaptureHash(capture),
+    };
+  await expect(journal.markLinked(ref, wrongLink)).rejects.toThrow();
+  expect(journal.read(projectId, requestId)).toEqual(captured);
+});
+
+test("duplicate generated child app ID refuses a second Fork original", async () => {
+  const root = scratch.make("codex-fork-root-"),
+    storage = new MemoryStorage(),
+    first = fixture(root, storage).journal,
+    reserved = await first.reserve(projectId, parentSessionId, {
+      requestId,
+      throughTurnRequestId,
+    });
+  await expect(
+    first.reserve(projectId, parentSessionId, {
+      requestId: otherRequestId,
+      throughTurnRequestId,
+    }),
+  ).rejects.toThrow();
+  expect(first.read(projectId, requestId)).toEqual(reserved);
+  expect(first.read(projectId, otherRequestId)).toBeNull();
 });

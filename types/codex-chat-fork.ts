@@ -53,7 +53,7 @@ export interface CodexChatForkCapture {
   protocolVersion: "0.163.0-alpha.10.2";
 }
 
-/** Local child-link evidence. The journal does not perform the registry write. */
+/** Internal link claim; only a future trusted coordinator may supply verified registry proof. */
 export interface CodexChatForkLink {
   childAppSessionId: string;
   childRequestId: string;

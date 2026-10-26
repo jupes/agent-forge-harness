@@ -23,6 +23,11 @@ test("Fork original canonical bytes and hash match the reviewed known vector", (
   expect(codexChatForkOriginalHash(base)).toBe(
     "e50ec5b90eeb243f0bdb64ab0c5e2d21a7f7bb2a124be2c29ade50b1613bfdbd",
   );
+  expect(
+    codexChatForkOriginalHash(
+      Object.fromEntries(Object.entries(base).reverse()),
+    ),
+  ).toBe(codexChatForkOriginalHash(base));
 });
 
 test("Fork intent allows only its request UUID and committed parent-turn UUID", () => {
@@ -57,5 +62,18 @@ test("each canonical authority and identity field changes the original hash", ()
     );
   expect(() =>
     canonicalCodexChatForkOriginal({ ...base, prompt: "x" }),
+  ).toThrow();
+});
+
+test("workspace keys accept canonical Windows/POSIX absolute spellings independent of host", () => {
+  expect(codexChatForkOriginalHash(base)).toHaveLength(64);
+  expect(
+    codexChatForkOriginalHash({ ...base, workspaceKey: "/repo/alpha" }),
+  ).toHaveLength(64);
+  expect(() =>
+    canonicalCodexChatForkOriginal({ ...base, workspaceKey: "C:/Work/Alpha" }),
+  ).toThrow();
+  expect(() =>
+    canonicalCodexChatForkOriginal({ ...base, workspaceKey: "work/alpha" }),
   ).toThrow();
 });

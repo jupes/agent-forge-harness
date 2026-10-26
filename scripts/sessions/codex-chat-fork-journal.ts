@@ -228,14 +228,22 @@ function latestRecordIsLegal(
       previousOperationHash !== null
     );
   if (previous.state === "captured")
-    return current.state === "linked" && previousOperationHash !== null;
+    return (
+      current.state === "linked" &&
+      sameCapture(previous.capture, current.capture) &&
+      previousOperationHash !== null
+    );
   return false;
 }
 
 function loadChain(storage: CodexChatForkJournalStorage): LoadedChain {
   let entries: CodexChatForkEventEntry[];
   try {
-    entries = [...storage.listEvents()];
+    entries = [];
+    for (const entry of storage.listEvents()) {
+      if (entries.length >= CODEX_CHAT_FORK_LIMITS.events) return held();
+      entries.push(entry);
+    }
   } catch {
     return held();
   }
@@ -558,6 +566,7 @@ export function createCodexChatForkJournal(
       rawRef: CodexChatForkOriginalRef,
       rawLink: CodexChatForkLink,
     ) {
+      // This validates durable shape/identity only; a future service must derive the claim from an exact registry proof.
       const expected = checkedRef(rawRef, workspace),
         checkedLink = codexChatForkLinkSchema.safeParse(rawLink);
       if (!checkedLink.success) return conflict();

@@ -1,6 +1,5 @@
 /** Strict app-owned Fork intent and durable-record protocol; no provider effect. */
 import { createHash } from "node:crypto";
-import { isAbsolute } from "node:path";
 import { z } from "zod";
 import type {
   CodexChatForkCapture,
@@ -11,6 +10,7 @@ import type {
   CodexChatForkOriginalBase,
   CodexChatForkOriginalRef,
 } from "../../types/codex-chat-fork";
+import { workspaceKey } from "../projects/scope";
 import {
   ownedSessionIdSchema,
   sessionProjectIdSchema,
@@ -35,7 +35,11 @@ const boundedText = (maximum: number) =>
     .min(1)
     .max(maximum)
     .refine((value) => !/[\p{Cc}\p{Cs}]/u.test(value));
-const workspaceKeySchema = boundedText(1_024).refine(isAbsolute);
+const workspaceKeySchema = boundedText(1_024).refine(
+  (value) =>
+    (value.startsWith("/") || /^[a-zA-Z]:[\\/]/.test(value)) &&
+    workspaceKey(value) === value,
+);
 const nativeUuidSchema = z
   .string()
   .uuid()
