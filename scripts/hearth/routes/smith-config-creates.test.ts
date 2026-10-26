@@ -4,9 +4,13 @@ import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { SmithConfigCreateRequest } from "../../../types/smith-config-create";
 import { agentForgeHome } from "../../agent-forge-home";
-import { SMITH_CREATE_JOURNAL_FILES } from "../../config/smith-create-journal-protocol";
+import {
+  SMITH_CREATE_JOURNAL_FILES,
+  smithCreateInputHash,
+} from "../../config/smith-create-journal-protocol";
 import {
   smithConfigCreateReceiptSchema,
+  smithConfigCreateRequestSchema,
   smithConfigPreviewSchema,
 } from "../../config/smith-create-protocol";
 import { startTestHearth, type TestHearth } from "../testing";
@@ -279,4 +283,77 @@ test("an unusable current config source blocks preview but not original lookup o
     error: "No saved Smith create original exists.",
   });
   expect(existsSync(join(h.home, "smith-create-journal"))).toBe(false);
+});
+
+test("a reserved Smith create is discoverable and read by exact UUID without publishing", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  const previewResponse = await post(h, "/config/smiths/preview", {
+    target: "workspace",
+    smith,
+  });
+  expect(previewResponse.status).toBe(200);
+  const previewEnvelope = await previewResponse.json(),
+    preview = smithConfigPreviewSchema.parse(previewEnvelope.data),
+    request = smithConfigCreateRequestSchema.parse({
+      requestId: randomUUID().toLowerCase(),
+      target: "workspace",
+      smith,
+      expectedRevision: preview.expectedRevision,
+    }),
+    workspaceFile = join(h.root, "agent-forge.toml");
+  expect(existsSync(workspaceFile)).toBe(false);
+
+  const auditsBeforeReserve = h.events(["operator.action"]).length,
+    reserveResponse = await post(h, "/config/smiths/creates/reserve", request);
+  expect(reserveResponse.status).toBe(200);
+  const reserveEnvelope = await reserveResponse.json();
+  expect(reserveEnvelope.ok).toBe(true);
+  expect(reserveEnvelope.data.original).toEqual(request);
+  expect(reserveEnvelope.data.requestId).toBe(request.requestId);
+  expect(reserveEnvelope.data.inputHash).toBe(smithCreateInputHash(request));
+  expect(reserveEnvelope.data.result).toMatchObject({
+    phase: "held",
+    stage: "reserved",
+    preview: null,
+  });
+  expect(existsSync(workspaceFile)).toBe(false);
+
+  const listResponse = await fetch(`${h.api}/smiths/creates`, {
+    headers: h.headers(h.hearth.token),
+  });
+  expect(listResponse.status).toBe(200);
+  const listEnvelope = await listResponse.json(),
+    index = listEnvelope.data;
+  expect(listEnvelope.ok).toBe(true);
+  expect(index).toMatchObject({ version: 1, complete: true });
+  expect(index.entries).toHaveLength(1);
+  expect(index.entries[0]).toMatchObject({
+    requestId: request.requestId,
+    inputHash: smithCreateInputHash(request),
+    target: "workspace",
+    state: "reserved",
+  });
+  expect(JSON.stringify(index)).not.toContain(smith.name);
+  expect(JSON.stringify(index)).not.toContain(smith.model);
+
+  const auditsAfterReserve = h.events(["operator.action"]),
+    originalResponse = await fetch(
+      `${h.api}/smiths/creates/${request.requestId}`,
+      { headers: h.headers(h.hearth.token) },
+    );
+  expect(originalResponse.status).toBe(200);
+  expect((await originalResponse.json()).data).toEqual(reserveEnvelope.data);
+  expect(h.events(["operator.action"])).toEqual(auditsAfterReserve);
+  expect(auditsAfterReserve).toHaveLength(auditsBeforeReserve + 1);
+  expect(auditsAfterReserve.at(-1)?.payload).toMatchObject({
+    action: "smith.config.create.reserve",
+    family: "smith-config-create",
+    requestId: request.requestId,
+    inputHash: smithCreateInputHash(request),
+  });
+  expect(JSON.stringify(auditsAfterReserve.at(-1)?.payload)).not.toContain(
+    smith.model,
+  );
+  expect(existsSync(workspaceFile)).toBe(false);
 });
