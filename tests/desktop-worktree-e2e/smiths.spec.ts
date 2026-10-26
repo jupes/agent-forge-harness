@@ -915,16 +915,60 @@ test("edits an existing Smith after a complete review and recovers the exact ori
   const writtenBytes = readFileSync(join(REPOSITORY, "agent-forge.toml"));
   const written = writtenBytes.toString("utf8");
   expect(written).toContain("\uFEFF# Preserved inspection fixture\r\n");
-  expect(written).toContain('model = "browser-edit-reviewed-model"');
-  expect(written).toContain('effort = "high"');
+  expect(written).toContain('effort="high"');
+  expect(written).toContain(`default_crew="${fixtureSmith}"\r\n`);
+  expect(written).toContain(
+    `[benches]\r\nlow=["${fixtureSmith}:2", "codex-journeyman:1"]\r\n`,
+  );
   expect(written.replaceAll("\r\n", "").includes("\n")).toBe(false);
   expect(writtenBytes[0]).toBe(0xef);
+  expect(readFileSync(join(HEARTH_HOME, "config.toml"))).toEqual(
+    savedFiles[0]!.fixture,
+  );
   const close = dialog.getByRole("button", {
     name: "Close dialog",
     exact: true,
   });
   await close.click();
   await expect(opener).toBeFocused();
+  const config = page.getByRole("region", {
+    name: "Saved smith configuration",
+  });
+  const table = config.getByRole("table", { name: "Configured smiths" });
+  const savedRow = table
+    .getByRole("row")
+    .filter({ has: table.getByText(fixtureSmith, { exact: true }) });
+  await config
+    .getByRole("button", { name: "Refresh configuration", exact: true })
+    .click();
+  await expect(savedRow).toContainText("browser-edit-reviewed-model");
+  const parsedSmith = await savedRow.evaluate((row) => {
+    const cells = Array.from(row.querySelectorAll("td"));
+    const plainText = (cell: Element | undefined) =>
+      Array.from(cell?.childNodes ?? [])
+        .filter((node) => node.nodeType === Node.TEXT_NODE)
+        .map((node) => node.textContent ?? "")
+        .join("")
+        .trim();
+    return {
+      name: row.querySelector("th > code")?.textContent ?? "",
+      provider: plainText(cells[0]),
+      model: cells[1]?.querySelector("code")?.textContent ?? "",
+      effort: plainText(cells[2]),
+      rank: plainText(cells[3]),
+      tags: cells[3]?.querySelector("small")?.textContent?.split(", ") ?? [],
+      enabled: plainText(cells[4]) === "Enabled",
+    };
+  });
+  expect(parsedSmith).toEqual({
+    name: fixtureSmith,
+    provider: "claude",
+    model: "browser-edit-reviewed-model",
+    effort: "high",
+    rank: "apprentice",
+    tags: ["rank:apprentice", "browser-edit"],
+    enabled: true,
+  });
   expect(posts).toEqual([
     "/__agent-forge/config/smiths/edits/preview",
     "/__agent-forge/config/smiths/edits",
