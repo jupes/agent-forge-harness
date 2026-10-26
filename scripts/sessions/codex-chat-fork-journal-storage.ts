@@ -2,9 +2,9 @@
 import { randomUUID } from "node:crypto";
 import {
   type BigIntStats,
-  chmodSync,
   closeSync,
   constants,
+  fchmodSync,
   fstatSync,
   fsyncSync,
   linkSync,
@@ -18,6 +18,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { agentForgeHome } from "../agent-forge-home";
 import {
   assertOwnerOnly,
+  makeOwnerOnly,
   nativeWindowsAcl,
   type WindowsAcl,
 } from "../hearth/acl-windows";
@@ -61,6 +62,20 @@ export interface CodexChatForkJournalStorageOptions {
   /** Injected only by no-child storage tests. */
   acl?: WindowsAcl;
   waitMs?: number;
+}
+
+interface MutexState {
+  identity: FileIdentity;
+  sidecars: ReadonlyMap<string, FileIdentity>;
+}
+
+/** A new SQLite sidecar may only be normalized from this process token's owner. */
+function trustedNewSidecarOwner(
+  owner: string | null,
+  userSid: string,
+  defaultOwnerSid: string,
+): boolean {
+  return owner === userSid || owner === defaultOwnerSid;
 }
 
 function identity(info: BigIntStats): FileIdentity {
@@ -288,6 +303,93 @@ export function createCodexChatForkJournalStorage(
     return info;
   };
 
+  const assertPlainLockFile = (
+    path: string,
+    expected?: FileIdentity,
+  ): BigIntStats => {
+    const info = lstatSync(path, { bigint: true });
+    if (
+      !info.isFile() ||
+      info.isSymbolicLink() ||
+      info.nlink !== 1n ||
+      !safePath(path) ||
+      info.size > BigInt(MUTEX_BYTES) ||
+      (expected !== undefined && !sameIdentity(identity(info), expected))
+    )
+      throw new Error(
+        "The private Codex Fork mutex entry is linked or changed.",
+      );
+    return info;
+  };
+
+  const assertPrivateLockFile = (
+    path: string,
+    expected?: FileIdentity,
+  ): BigIntStats => {
+    const info = assertPlainLockFile(path, expected);
+    assertPrivateMetadata(path, "file", info, options);
+    return info;
+  };
+
+  const secureNewSidecar = (
+    path: string,
+    expected: FileIdentity,
+    expectedSize: bigint,
+    lockIdentity: FileIdentity,
+  ): void => {
+    const before = assertPlainLockFile(path, expected);
+    if (before.size !== expectedSize)
+      throw new Error(
+        "The new private Codex Fork SQLite sidecar changed size.",
+      );
+    if ((options.platform ?? process.platform) === "win32") {
+      const acl = options.acl ?? nativeWindowsAcl(),
+        owner = acl.read(path).owner;
+      if (
+        !trustedNewSidecarOwner(
+          owner,
+          acl.userSid(),
+          acl.defaultOwnerSid?.() ?? acl.userSid(),
+        )
+      )
+        throw new Error(
+          "The new private Codex Fork SQLite sidecar has a foreign owner.",
+        );
+      assertStableDirectory(locks, lockIdentity);
+      assertPlainLockFile(path, expected);
+      makeOwnerOnly(path, "file", acl);
+    } else {
+      const uid = BigInt(process.getuid?.() ?? 0);
+      if (before.uid !== uid)
+        throw new Error(
+          "The new private Codex Fork SQLite sidecar has a foreign owner.",
+        );
+      const descriptor = openSync(
+        path,
+        constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+      );
+      try {
+        const opened = fstatSync(descriptor, { bigint: true });
+        if (
+          !opened.isFile() ||
+          opened.nlink !== 1n ||
+          opened.uid !== uid ||
+          !sameIdentity(identity(opened), expected) ||
+          opened.size !== expectedSize
+        )
+          throw new Error("The new private Codex Fork SQLite sidecar changed.");
+        fchmodSync(descriptor, 0o600);
+      } finally {
+        closeSync(descriptor);
+      }
+    }
+    const secured = assertPrivateLockFile(path, expected);
+    if (secured.size !== expectedSize)
+      throw new Error(
+        "The new private Codex Fork SQLite sidecar changed size.",
+      );
+  };
+
   const checkRootLayout = (): FileIdentity | null => {
     const rootIdentity = inspectDirectory(root);
     if (rootIdentity === null) return null;
@@ -306,45 +408,159 @@ export function createCodexChatForkJournalStorage(
     return rootIdentity;
   };
 
-  const checkLockFiles = (requireMutex = true): void => {
+  const inspectLockMetadata = (
+    known: ReadonlyMap<string, FileIdentity> = new Map(),
+    protectNewSidecars = false,
+    requireMutex = true,
+  ): ReadonlyMap<string, FileIdentity> => {
     const lockIdentity = inspectDirectory(locks);
     if (lockIdentity === null)
       throw new Error("The private Codex Fork lock directory is missing.");
     const names = directoryNames(locks, MUTEX_ENTRIES.size + 1).sort();
-    for (const name of names) {
+    const found = names.map((name) => {
       if (!MUTEX_ENTRIES.has(name))
         throw new Error("The private Codex Fork lock has an unknown sidecar.");
       const path = join(locks, name),
-        info = lstatSync(path, { bigint: true });
-      if (
-        !info.isFile() ||
-        info.isSymbolicLink() ||
-        info.nlink !== 1n ||
-        !safePath(path) ||
-        info.size > BigInt(MUTEX_BYTES)
-      )
-        throw new Error(
-          "The private Codex Fork lock sidecar is linked or invalid.",
-        );
-      assertPrivateMetadata(path, "file", info, options);
-    }
+        info = assertPlainLockFile(path),
+        fileIdentity = identity(info),
+        previous = known.get(name);
+      if (previous !== undefined && !sameIdentity(fileIdentity, previous))
+        throw new Error("The private Codex Fork mutex sidecar changed.");
+      if (name === MUTEX_FILE || previous !== undefined || !protectNewSidecars)
+        assertPrivateMetadata(path, "file", info, options);
+      return { name, path, info, identity: fileIdentity };
+    });
     if (requireMutex && !names.includes(MUTEX_FILE))
-      throw new Error("The private Codex Fork SQLite lock is missing.");
+      throw new Error("The private Codex Fork SQLite mutex is missing.");
     if (!requireMutex && names.length > 0 && !names.includes(MUTEX_FILE))
-      throw new Error("The private Codex Fork SQLite lock is incomplete.");
+      throw new Error("The private Codex Fork SQLite mutex is incomplete.");
+    let totalBytes = 0n;
+    const sidecars = new Map<string, FileIdentity>();
+    for (const entry of found) {
+      totalBytes += entry.info.size;
+      if (totalBytes > BigInt(MUTEX_BYTES))
+        throw new Error(
+          "The private Codex Fork mutex metadata exceeds its limit.",
+        );
+      if (
+        entry.name !== MUTEX_FILE &&
+        !known.has(entry.name) &&
+        protectNewSidecars
+      ) {
+        secureNewSidecar(
+          entry.path,
+          entry.identity,
+          entry.info.size,
+          lockIdentity,
+        );
+      }
+      const verified = assertPrivateLockFile(entry.path, entry.identity);
+      if (verified.size !== entry.info.size)
+        throw new Error("The private Codex Fork mutex metadata changed.");
+      if (entry.name !== MUTEX_FILE) sidecars.set(entry.name, entry.identity);
+    }
+    const afterNames = directoryNames(locks, MUTEX_ENTRIES.size + 1).sort();
+    if (afterNames.join("\0") !== names.join("\0"))
+      throw new Error("The private Codex Fork mutex entries changed.");
     assertStableDirectory(locks, lockIdentity);
+    return sidecars;
   };
 
-  const tightenLockFiles = (): void => {
-    if ((options.platform ?? process.platform) !== "win32") {
-      for (const name of directoryNames(locks, MUTEX_ENTRIES.size + 1)) {
-        if (!MUTEX_ENTRIES.has(name))
+  const checkLockFiles = (): void => {
+    inspectLockMetadata();
+  };
+
+  const ensureMutex = (
+    rootIdentity: FileIdentity,
+    lockIdentity: FileIdentity,
+  ): MutexState => {
+    assertStableDirectory(root, rootIdentity);
+    assertStableDirectory(locks, lockIdentity);
+    // Existing files are verified as-is before attempting exclusive creation.
+    inspectLockMetadata(new Map(), false, false);
+    let descriptor: number | undefined, expectedMutex: FileIdentity | undefined;
+    try {
+      descriptor = openSync(mutex, "wx", 0o600);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+    }
+    if (descriptor !== undefined) {
+      try {
+        const opened = fstatSync(descriptor, { bigint: true });
+        if (!opened.isFile() || opened.nlink !== 1n)
           throw new Error(
-            "The private Codex Fork lock has an unknown sidecar.",
+            "The new private Codex Fork SQLite mutex is not a plain file.",
           );
-        chmodSync(join(locks, name), 0o600);
+        expectedMutex = identity(opened);
+        fsyncSync(descriptor);
+        assertStableDirectory(root, rootIdentity);
+        assertStableDirectory(locks, lockIdentity);
+        const beforeAcl = lstatSync(mutex, { bigint: true });
+        if (
+          !beforeAcl.isFile() ||
+          beforeAcl.isSymbolicLink() ||
+          beforeAcl.nlink !== 1n ||
+          !sameIdentity(identity(beforeAcl), expectedMutex) ||
+          !sameIdentity(
+            identity(fstatSync(descriptor, { bigint: true })),
+            expectedMutex,
+          )
+        )
+          throw new Error("The new private Codex Fork SQLite mutex changed.");
+        if ((options.platform ?? process.platform) === "win32") {
+          makeOwnerOnly(mutex, "file", options.acl ?? nativeWindowsAcl());
+        } else {
+          const owner = fstatSync(descriptor, { bigint: true }),
+            uid = BigInt(process.getuid?.() ?? 0);
+          if (
+            !sameIdentity(identity(owner), expectedMutex) ||
+            owner.uid !== uid
+          )
+            throw new Error(
+              "The new private Codex Fork SQLite mutex has a foreign owner.",
+            );
+          fchmodSync(descriptor, 0o600);
+        }
+        const afterAcl = lstatSync(mutex, { bigint: true }),
+          stillOpen = fstatSync(descriptor, { bigint: true });
+        if (
+          !afterAcl.isFile() ||
+          afterAcl.isSymbolicLink() ||
+          afterAcl.nlink !== 1n ||
+          !sameIdentity(identity(afterAcl), expectedMutex) ||
+          !sameIdentity(identity(stillOpen), expectedMutex)
+        )
+          throw new Error("The new private Codex Fork SQLite mutex changed.");
+        assertPrivateLockFile(mutex, expectedMutex);
+        fsyncSync(descriptor);
+        assertStableDirectory(root, rootIdentity);
+        assertStableDirectory(locks, lockIdentity);
+      } finally {
+        closeSync(descriptor);
       }
     }
+    assertStableDirectory(root, rootIdentity);
+    assertStableDirectory(locks, lockIdentity);
+    const mutexInfo = assertPrivateLockFile(mutex, expectedMutex),
+      mutexIdentity = identity(mutexInfo),
+      sidecars = inspectLockMetadata(new Map([[MUTEX_FILE, mutexIdentity]]));
+    return { identity: mutexIdentity, sidecars };
+  };
+
+  const assertMutex = (
+    expected: FileIdentity,
+    expectedRoot: FileIdentity,
+    expectedLocks: FileIdentity,
+    knownSidecars: ReadonlyMap<string, FileIdentity>,
+    protectNewSidecars = false,
+  ): ReadonlyMap<string, FileIdentity> => {
+    assertStableDirectory(root, expectedRoot);
+    assertStableDirectory(locks, expectedLocks);
+    assertPrivateLockFile(mutex, expected);
+    return inspectLockMetadata(
+      new Map([[MUTEX_FILE, expected], ...knownSidecars]),
+      protectNewSidecars,
+    );
   };
 
   const entry = (name: string): CodexChatForkEventEntry => {
@@ -602,35 +818,54 @@ export function createCodexChatForkJournalStorage(
       )
         throw new Error("The private Codex Fork root changed during setup.");
       checkRootLayout();
-      // Check the persistent lock name and every existing sidecar before SQLite opens any path.
-      checkLockFiles(false);
+      const mutexState = ensureMutex(rootIdentity, locksIdentity);
+      let knownSidecars = assertMutex(
+        mutexState.identity,
+        rootIdentity,
+        locksIdentity,
+        mutexState.sidecars,
+      );
       const locked = await withQueueLock(
         mutex,
         async () => {
+          knownSidecars = assertMutex(
+            mutexState.identity,
+            rootIdentity,
+            locksIdentity,
+            knownSidecars,
+            true,
+          );
+          if (insideExclusive)
+            throw new Error(
+              "The private Codex Fork mutex cannot be re-entered.",
+            );
           insideExclusive = true;
           try {
+            assertStableDirectory(events, eventsIdentity);
+            return await work();
+          } finally {
+            insideExclusive = false;
+            knownSidecars = assertMutex(
+              mutexState.identity,
+              rootIdentity,
+              locksIdentity,
+              knownSidecars,
+            );
             assertStableDirectory(root, rootIdentity);
             assertStableDirectory(events, eventsIdentity);
             assertStableDirectory(locks, locksIdentity);
-            checkRootLayout();
-            tightenLockFiles();
-            checkLockFiles();
-            return await work();
-          } finally {
-            try {
-              checkLockFiles();
-              assertStableDirectory(root, rootIdentity);
-              assertStableDirectory(events, eventsIdentity);
-              assertStableDirectory(locks, locksIdentity);
-            } finally {
-              insideExclusive = false;
-            }
           }
         },
         options.waitMs === undefined ? {} : { waitMs: options.waitMs },
       );
       if (!locked.ok)
         throw new Error("The private Codex Fork profile mutex is unavailable.");
+      assertMutex(
+        mutexState.identity,
+        rootIdentity,
+        locksIdentity,
+        knownSidecars,
+      );
       return locked.value;
     },
   };

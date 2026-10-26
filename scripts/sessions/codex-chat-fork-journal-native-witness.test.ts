@@ -189,7 +189,8 @@ function journalImport(root: string, home: string): string {
   return `${imports()} const journal = createCodexChatForkJournal({root:${JSON.stringify(root)},home:${JSON.stringify(home)}});`;
 }
 
-async function bootstrapOwnerOnlyMutex(home: string): Promise<void> {
+/** Fixture-only setup to isolate foreign-sidecar and debris refusal from mutex creation. */
+async function prepareExistingOwnerOnlyMutex(home: string): Promise<void> {
   const journalRoot = join(home, CODEX_CHAT_FORK_JOURNAL_DIRECTORY),
     events = join(journalRoot, "events"),
     locks = join(journalRoot, "locks"),
@@ -284,7 +285,6 @@ test.skipIf(!nativeEnabled)(
     const { base, root, home } = fixture("attempt-race"),
       requestId = "0199a213-81c0-7800-8aa1-bbab2a035a56",
       parent = createCodexChatForkJournal({ root, home });
-    await bootstrapOwnerOnlyMutex(home);
     const reserved = await parent.reserve(
         projectId,
         parentSessionId,
@@ -311,7 +311,6 @@ test.skipIf(!nativeEnabled)(
   "Windows separate processes cannot reserve two UUIDs for one active parent address",
   async () => {
     const { base, root, home } = fixture("address-race");
-    await bootstrapOwnerOnlyMutex(home);
     const barrier = join(base, "barrier");
     mkdirSync(barrier);
     const ids = [
@@ -363,7 +362,7 @@ test.skipIf(!nativeEnabled)(
       ensurePrivateHome(journalRoot);
       ensurePrivateHome(join(journalRoot, "events"));
       ensurePrivateHome(locks);
-      if (kind === "sidecar") await bootstrapOwnerOnlyMutex(home);
+      if (kind === "sidecar") await prepareExistingOwnerOnlyMutex(home);
       const target = kind === "mutex" ? mutex : `${mutex}-wal`;
       const inherited = inheritedFile(base, target),
         beforeText = readFileSync(inherited.path, "utf8"),
@@ -401,7 +400,7 @@ test.skipIf(!nativeEnabled)(
 
     const { root, home } = fixture("debris"),
       requestId = "0199a213-81c0-7800-8aa1-bbab2a035a59";
-    await bootstrapOwnerOnlyMutex(home);
+    await prepareExistingOwnerOnlyMutex(home);
     const events = join(home, CODEX_CHAT_FORK_JOURNAL_DIRECTORY, "events"),
       debris = join(events, "interrupted-publication.tmp");
     writeOwnerOnly(debris, "preserve", {
