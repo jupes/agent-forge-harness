@@ -456,6 +456,9 @@ export interface LedgerPayloads {
     action: string;
     surface: OperatorSurface;
     target?: string;
+    family?: string;
+    requestId?: string;
+    inputHash?: string;
   };
 }
 
