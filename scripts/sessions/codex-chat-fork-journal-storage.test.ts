@@ -672,9 +672,7 @@ test("pre-lock diagnostics identify linked mutexes and unknown lock entries", as
     linkedCapture.storage.exclusive(async () => undefined),
   ).rejects.toThrow("linked or changed");
   expect(
-    linkedCapture.diagnostics.find(
-      (entry) => entry.guard === "mutex-sidecar-kind",
-    ),
+    linkedCapture.diagnostics.find((entry) => entry.guard === "mutex-kind"),
   ).toMatchObject({ phase: "exclusive-pre-lock-assert" });
   expect(readFileSync(linked.mutex)).toEqual(mutexBytes);
   expect(readFileSync(linkedAlias)).toEqual(mutexBytes);
