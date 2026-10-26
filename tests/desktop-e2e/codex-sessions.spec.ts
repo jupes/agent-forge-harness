@@ -585,6 +585,28 @@ test("reload keeps a pre-admission Start identity held until its original protec
   const originalStart: { current: CodexTaskStartRequest | null } = {
     current: null,
   };
+  let identityWrites = 0;
+  let startPosts = 0;
+  let protectedOriginalReads = 0;
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (
+      request.method() === "POST" &&
+      url.pathname.includes("/session-start-identities")
+    )
+      identityWrites++;
+    if (
+      request.method() === "POST" &&
+      url.pathname === `/__agent-forge/projects/${alpha.id}/sessions`
+    )
+      startPosts++;
+    if (
+      request.method() === "GET" &&
+      url.searchParams.has("requestId") &&
+      url.pathname.includes(`/projects/${alpha.id}/sessions/`)
+    )
+      protectedOriginalReads++;
+  });
   const held = new Promise<void>((resolve) => {
       received = resolve;
     }),
@@ -696,10 +718,42 @@ test("reload keeps a pre-admission Start identity held until its original protec
     await delivered;
     await expect.poll(() => tasks().length).toBe(before + 1);
   }
-  // The admission's metadata stream can confirm the original before another
-  // manual Check is possible. It only reads the saved request, never resends.
+  const sessionDialog = page.getByRole("dialog", {
+    name: "New session · Alpha",
+    exact: true,
+  });
+  await sessionDialog
+    .getByRole("button", { name: "Check server", exact: true })
+    .click();
+  const heldOriginal = originalStart.current;
+  if (!heldOriginal) throw Error("Missing original Start request.");
+  const admittedRow = sessionDialog
+    .locator(".af-start-identities-list li")
+    .filter({ hasText: heldOriginal.requestId });
+  await expect(admittedRow).toContainText("admitted");
+  await expect(
+    sessionDialog.getByRole("button", {
+      name: "Continue exact original",
+      exact: true,
+    }),
+  ).toHaveCount(0);
+  expect(identityWrites).toBe(1);
+  expect(startPosts).toBe(1);
+  expect(protectedOriginalReads).toBe(0);
+  await admittedRow
+    .getByRole("button", { name: "Inspect original", exact: true })
+    .click();
+  await expect(
+    admittedRow.getByRole("link", { name: "Open original session" }),
+  ).toBeVisible();
+  await expect.poll(() => protectedOriginalReads).toBeGreaterThan(0);
+  await admittedRow
+    .getByRole("link", { name: "Open original session" })
+    .click();
   await expect(
     page.getByRole("article", { name: "Session reply", exact: true }),
   ).toContainText("Codex Task reply 🌱");
   expect(tasks()).toHaveLength(before + 1);
+  expect(identityWrites).toBe(1);
+  expect(startPosts).toBe(1);
 });
