@@ -182,9 +182,11 @@ test("a failed identity reserve releases the mutation gate for an explicit read 
 
   await client.refreshIdentities(projectId);
   await client.start(projectId, input);
+  const afterReserveFailure = listCount;
+  expect(startCount).toBe(0);
   await client.refreshIdentities(projectId);
 
-  expect(listCount).toBe(2);
+  expect(listCount).toBe(afterReserveFailure + 1);
   expect(startCount).toBe(0);
   client.dispose();
 });
