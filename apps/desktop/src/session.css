@@ -501,3 +501,14 @@
 .af-start-identity-actions {
   justify-content: flex-start;
 }
+.af-start-identity-retirement-details {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  margin: 0;
+}
+.af-start-identity-retirement-details dd {
+  min-width: 0;
+  margin-inline-start: 0;
+  overflow-wrap: anywhere;
+}

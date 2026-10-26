@@ -262,7 +262,7 @@ export function SessionStartIdentityControls(props: {
         }
       >
         {retiring && page && (
-          <dl>
+          <dl class="af-start-identity-retirement-details">
             <dt>Project and workspace</dt>
             <dd>
               {page.scope.projectId} · {page.scope.workspace}

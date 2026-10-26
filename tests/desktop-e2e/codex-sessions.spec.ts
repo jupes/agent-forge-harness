@@ -549,6 +549,11 @@ test("confirmed reserved retirement reads back the tombstone before a new UUID c
   ).toBeVisible();
   const originalId = starts[0]?.requestId;
   if (!originalId) throw Error("Missing reserved Start UUID.");
+  const identityRow = dialog
+    .locator(".af-start-identities-list li")
+    .filter({ hasText: originalId });
+  const originalHash = await identityRow.locator("code").nth(1).textContent();
+  expect(originalHash).toMatch(/^[0-9a-f]{64}$/);
   const reviewRetirement = dialog.getByRole("button", {
     name: "Review retirement",
     exact: true,
@@ -590,6 +595,13 @@ test("confirmed reserved retirement reads back the tombstone before a new UUID c
   await expect(confirm).toBeFocused();
   await expect(confirm).toBeInViewport();
   await expect(retirement.getByText(originalId, { exact: true })).toBeVisible();
+  const displayedHash = retirement.locator("dd").nth(3);
+  await expect(displayedHash).toHaveText(originalHash ?? "");
+  expect(
+    await displayedHash.evaluate(
+      (element) => element.scrollWidth <= element.clientWidth + 1,
+    ),
+  ).toBe(true);
   await keep.click();
   await expect(retirement).toBeHidden();
   await expect(reviewRetirement).toBeFocused();
