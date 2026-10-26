@@ -18,12 +18,24 @@ import type {
   SmithsView,
 } from "../../types/hearth";
 import type { OwnedSessionRecord } from "../../types/owned-session";
+import type { SmithConfigEditRequest } from "../../types/smith-config-edit";
 import { type LoadedConfig, loadConfig } from "../config/load";
 import {
   smithConfigCreateReceiptSchema,
   smithConfigPreviewSchema,
 } from "../config/smith-create-protocol";
 import { createSmithCreateService } from "../config/smith-create-service";
+import { smithEditInputHash } from "../config/smith-edit-journal-protocol";
+import {
+  smithConfigEditPreviewSchema,
+  smithConfigEditReceiptSchema,
+} from "../config/smith-edit-protocol";
+import { createSmithEditService } from "../config/smith-edit-service";
+import {
+  type ConfigWriteTransaction,
+  type PreparedConfigTransaction,
+  readConfigTransactionSources,
+} from "../config/transaction";
 import { createConversationStore } from "../conversations/store";
 import { runCouncilCli } from "../council/cli";
 import type { CommandResult, CommandRunner } from "../council/pr-source";
@@ -185,6 +197,15 @@ const API_SMITH_CREATE_SMITH = {
   enabled: true,
   tags: ["fixture"],
 };
+const API_SMITH_EDIT_ID = "122d0b56-96f3-4818-8789-6ab562c092e8";
+const API_SMITH_EDIT_SMITH = {
+  name: "claude-master",
+  provider: "claude",
+  model: "api-edit-model",
+  effort: "high",
+  enabled: false,
+  tags: ["rank:master", "api-edit"],
+};
 
 async function seedSmithCreateOriginal(h: TestHearth): Promise<void> {
   const service = createSmithCreateService(
@@ -206,6 +227,54 @@ async function seedSmithCreateOriginal(h: TestHearth): Promise<void> {
     target: "workspace",
     smith: API_SMITH_CREATE_SMITH,
     expectedRevision: preview.expectedRevision,
+  });
+}
+
+async function seedSmithEditOriginal(h: TestHearth): Promise<void> {
+  const noPublish: NonNullable<
+    Parameters<typeof createSmithEditService>[1]
+  >["withTransaction"] = async <T>(
+    context: PreparedConfigTransaction,
+    work: (transaction: ConfigWriteTransaction) => T | Promise<T>,
+  ): Promise<T> => {
+    const found = readConfigTransactionSources(context),
+      transaction: ConfigWriteTransaction = {
+        sources: found.sources,
+        revision: found.revision,
+        publish() {
+          throw new Error("the read fixture must refuse before publication");
+        },
+      };
+    return work(transaction) as T;
+  };
+  const service = createSmithEditService(
+    {
+      options: {
+        harnessRoot: h.root,
+        home: h.configHome,
+        env: {},
+      },
+    },
+    {
+      profileHome: h.home,
+      coordinationRoot: h.home,
+      withTransaction: noPublish,
+    },
+  );
+  const preview = service.preview({
+    target: "workspace",
+    name: API_SMITH_EDIT_SMITH.name,
+    smith: API_SMITH_EDIT_SMITH,
+  });
+  await service.edit({
+    requestId: API_SMITH_EDIT_ID,
+    target: "workspace",
+    name: API_SMITH_EDIT_SMITH.name,
+    smith: API_SMITH_EDIT_SMITH,
+    expectedRevision: {
+      ...preview.expectedRevision,
+      workspace: "0".repeat(64),
+    },
   });
 }
 
@@ -366,7 +435,13 @@ async function councilRunFinished(h: TestHearth, runId: string): Promise<void> {
 
 interface ActionFixture {
   /** A request the row accepts, and the status its effect answers. */
-  valid: { path: string; body: unknown; status: number; target: string };
+  valid: {
+    path: string;
+    body: unknown;
+    status: number;
+    target: string;
+    audit?: Record<string, string>;
+  };
   /** A request the row's validator refuses. */
   invalid: { path: string; body: unknown };
   /**
@@ -958,6 +1033,96 @@ const ACTIONS: Record<string, ActionFixture> = {
     },
     happened: async (_h, answer) => {
       expect(smithConfigCreateReceiptSchema.parse(answer).result.phase).toBe(
+        "confirmed",
+      );
+    },
+  },
+  "POST /config/smiths/edits/preview": {
+    valid: {
+      path: "/config/smiths/edits/preview",
+      body: {
+        target: "workspace",
+        name: API_SMITH_EDIT_SMITH.name,
+        smith: API_SMITH_EDIT_SMITH,
+      },
+      status: 200,
+      target: "workspace",
+      audit: { family: "smith-config-edit" },
+    },
+    invalid: {
+      path: "/config/smiths/edits/preview",
+      body: {
+        target: "workspace",
+        name: API_SMITH_EDIT_SMITH.name,
+        smith: API_SMITH_EDIT_SMITH,
+        path: "arbitrary",
+      },
+    },
+    happened: async (_h, answer) => {
+      expect(smithConfigEditPreviewSchema.safeParse(answer).success).toBe(true);
+    },
+  },
+  "POST /config/smiths/edits": {
+    valid: {
+      path: "/config/smiths/edits",
+      body: {
+        requestId: API_SMITH_EDIT_ID,
+        target: "workspace",
+        name: API_SMITH_EDIT_SMITH.name,
+        smith: API_SMITH_EDIT_SMITH,
+        expectedRevision: {
+          version: 1,
+          user: "a".repeat(64),
+          workspace: "b".repeat(64),
+        },
+      },
+      status: 200,
+      target: "workspace",
+      audit: {
+        family: "smith-config-edit",
+        requestId: API_SMITH_EDIT_ID,
+        inputHash: smithEditInputHash({
+          requestId: API_SMITH_EDIT_ID,
+          target: "workspace",
+          name: API_SMITH_EDIT_SMITH.name,
+          smith: API_SMITH_EDIT_SMITH,
+          expectedRevision: {
+            version: 1,
+            user: "a".repeat(64),
+            workspace: "b".repeat(64),
+          },
+        }),
+      },
+    },
+    invalid: {
+      path: "/config/smiths/edits",
+      body: { requestId: "invalid" },
+    },
+    prepare: async (h) => {
+      const response = await post(h, "/config/smiths/edits/preview", {
+        target: "workspace",
+        name: API_SMITH_EDIT_SMITH.name,
+        smith: API_SMITH_EDIT_SMITH,
+      });
+      const checked = smithConfigEditPreviewSchema.parse(
+        (await envelope(response)).data,
+      );
+      const request: SmithConfigEditRequest = {
+        requestId: API_SMITH_EDIT_ID,
+        target: "workspace",
+        name: API_SMITH_EDIT_SMITH.name,
+        smith: API_SMITH_EDIT_SMITH,
+        expectedRevision: checked.expectedRevision,
+      };
+      ACTIONS["POST /config/smiths/edits"]!.valid.body = request;
+      ACTIONS["POST /config/smiths/edits"]!.valid.audit = {
+        family: "smith-config-edit",
+        requestId: request.requestId,
+        inputHash: smithEditInputHash(request),
+      };
+    },
+    happened: async (_h, answer) => {
+      expect(smithConfigEditReceiptSchema.parse(answer).result.phase).toBe(
         "confirmed",
       );
     },
@@ -1955,6 +2120,7 @@ const READS: Record<string, string> = {
   "GET /smiths": "/smiths",
   "GET /smiths/verification": "/smiths/verification",
   "GET /smiths/creates/:requestId": `/smiths/creates/${API_SMITH_CREATE_ID}`,
+  "GET /smiths/edits/:requestId": `/smiths/edits/${API_SMITH_EDIT_ID}`,
   "GET /config": "/config",
   "GET /beads/options": "/beads/options",
   "GET /beads/counts": "/beads/counts",
@@ -2184,7 +2350,12 @@ describe("every action row (iterating the table)", () => {
         {
           row: key(row),
           kind: "operator.action",
-          payload: { action: row.action, surface: "api", target: valid.target },
+          payload: {
+            action: row.action,
+            surface: "api",
+            target: valid.target,
+            ...valid.audit,
+          },
         },
         ...(typeof outcome === "function" ? outcome(h) : outcome).map(
           (event) => ({ row: key(row), ...event }),
@@ -2555,6 +2726,7 @@ describe("a read row or the stream while another connection holds the write lock
     seedSmithVerificationRead(h);
     activityReadMembership(h);
     await seedSmithCreateOriginal(h);
+    await seedSmithEditOriginal(h);
     const rows = h.hearth.routes.filter(
       (route) => route.kind === "read" || route.kind === "stream",
     );
@@ -3524,6 +3696,7 @@ describe("every read row (iterating the table)", () => {
     seedSmithVerificationRead(h);
     activityReadMembership(h);
     await seedSmithCreateOriginal(h);
+    await seedSmithEditOriginal(h);
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");
     for (const row of rows) {
@@ -3560,6 +3733,7 @@ describe("every read row (iterating the table)", () => {
     seedSmithVerificationRead(h);
     activityReadMembership(h);
     await seedSmithCreateOriginal(h);
+    await seedSmithEditOriginal(h);
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");
     const refused: Array<[string, Record<string, string>]> = [
