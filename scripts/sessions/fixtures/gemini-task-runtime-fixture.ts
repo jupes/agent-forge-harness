@@ -26,7 +26,7 @@ export async function runGeminiTaskRuntimeFixture() {
   }
   if (argv.includes("--help")) {
     record({ kind: "help" });
-    if (log) publishGeminiTaskHelp(log, process.pid);
+    if (log) publishGeminiTaskHelp(log, process.pid, mode);
     if (mode === "hold-help") await Bun.sleep(400);
     console.log(
       control.help ??

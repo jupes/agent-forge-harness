@@ -10,7 +10,12 @@ function readyPath(log: string): string {
 }
 
 /** Publish only after the complete help JSONL append has returned. */
-export function publishGeminiTaskHelp(log: string, pid: number): void {
+export function publishGeminiTaskHelp(
+  log: string,
+  pid: number,
+  mode: string,
+): void {
+  if (mode !== "hold-help") return;
   if (!Number.isSafeInteger(pid) || pid <= 0)
     throw Error("Invalid Gemini task help witness process identity");
   const path = readyPath(log);
