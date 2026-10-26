@@ -16,7 +16,6 @@ import {
 import { geminiChatApprovalPageSchema } from "../../sessions/gemini-chat-owned-protocol";
 import { geminiChatPreviewReceiptSchema } from "../../sessions/gemini-chat-preview-protocol";
 import { createGeminiChatRuntime } from "../../sessions/gemini-chat-runtime";
-import { readGeminiChatWitnessLog } from "../../sessions/gemini-chat-witness-diagnostic";
 import { sessionStartIdentityPageSchema } from "../../sessions/identity-protocol";
 import { sessionTranscriptExportSchema } from "../../sessions/library-protocol";
 import { sessionRegistryFile } from "../../sessions/registry";
@@ -24,6 +23,10 @@ import { expectStartIdentityState } from "../../sessions/session-start-identity-
 import { scratchDirs } from "../../test-scratch";
 import { startTestHearth, type TestHearth } from "../testing";
 import { writeOwnerOnly } from "../token";
+import {
+  emitGeminiChatWitnessFailureFactsAndRethrow,
+  readGeminiChatWitnessLog,
+} from "./gemini-chat-witness-diagnostic.test-utils";
 import { fixtureSessionGit } from "./session-fixture";
 
 const binaries = scratchDirs(),
@@ -558,14 +561,11 @@ test("lost accepted Start answer reconciles the same original without another pr
         ).length === 1,
     );
   } catch (error) {
-    try {
-      const facts = await geminiChatWitnessFailureFacts(f, original.id);
-      process.stderr.write(
-        `[gemini-chat-witness-diagnostic] ${JSON.stringify(facts)}\n`,
-      );
-    } catch {
-      // Diagnostics are best-effort and must preserve the original witness failure.
-    }
+    await emitGeminiChatWitnessFailureFactsAndRethrow(
+      error,
+      async () => geminiChatWitnessFailureFacts(f, original.id),
+      (line) => process.stderr.write(line),
+    );
     throw error;
   }
   const records = JSON.stringify(beforeRetry);

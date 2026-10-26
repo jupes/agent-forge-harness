@@ -2,6 +2,7 @@ import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 
 const MAX_LOG_BYTES = 256 * 1024;
 const MAX_ROWS = 256;
+const MAX_DIAGNOSTIC_BYTES = 8 * 1024;
 const PROMPT_MARKER = "PRIVATE-ACP-PROMPT";
 const METHODS = [
   "initialize",
@@ -150,6 +151,11 @@ export function summarizeGeminiChatWitnessText(
           break;
         case "session/prompt":
           methods.sessionPrompt++;
+          try {
+            promptMarkerMatched ||= JSON.stringify(row).includes(PROMPT_MARKER);
+          } catch {
+            // JSON.parse creates acyclic data, but diagnostics must not affect the test.
+          }
           break;
         case "session/cancel":
           methods.sessionCancel++;
@@ -157,11 +163,6 @@ export function summarizeGeminiChatWitnessText(
         default:
           methods.other++;
       }
-    }
-    try {
-      promptMarkerMatched ||= JSON.stringify(row).includes(PROMPT_MARKER);
-    } catch {
-      // JSON.parse creates acyclic data, but diagnostics must never affect the test.
     }
   }
 
@@ -174,6 +175,27 @@ export function summarizeGeminiChatWitnessText(
     methods,
     promptMarkerMatched,
   };
+}
+
+/** Emit failure facts best-effort, then preserve the original failure object. */
+export async function emitGeminiChatWitnessFailureFactsAndRethrow(
+  error: unknown,
+  collect: () => Promise<unknown>,
+  write: (line: string) => unknown,
+): Promise<never> {
+  try {
+    const serialized = JSON.stringify(await collect());
+    if (serialized !== undefined) {
+      const bounded =
+        Buffer.byteLength(serialized) <= MAX_DIAGNOSTIC_BYTES
+          ? serialized
+          : JSON.stringify({ observer: "facts-over-limit" });
+      write(`[gemini-chat-witness-diagnostic] ${bounded}\n`);
+    }
+  } catch {
+    // An observer or stderr failure must not replace the original test failure.
+  }
+  throw error;
 }
 
 /** Read at most MAX_LOG_BYTES plus one byte; never return file contents or paths. */
