@@ -546,3 +546,124 @@ test("file Allow stays unavailable without actual diffs, current/foreign scope r
   ).toEqual([{ decision: "cancel" }]);
   expect((await f.get(`/${id}/approvals`)).pending).toEqual([]);
 });
+
+test("protected Fork routes publish one audited native Fork and recover its exact metadata-only original", async () => {
+  const f = await fixture("fork"),
+    start = await f.post("", f.request);
+  expect(start.status).toBe(202);
+  const started = ownedCodingStartReceiptSchema.parse(
+      (await start.json()).data,
+    ),
+    parentSessionId = started.session.id;
+  const completed = await f.settle(parentSessionId),
+    selectedTurn = completed.turns.find(
+      (turn) => turn.requestId === f.request.requestId,
+    );
+  if (!selectedTurn) throw Error("The completed parent turn was not saved");
+
+  const request = {
+      requestId: randomUUID(),
+      throughTurnRequestId: selectedTurn.requestId,
+    },
+    route = `/${parentSessionId}/forks`,
+    originalPath = `/projects/${FIXTURE_PROJECT_ID}/codex-chat-forks/${request.requestId}`,
+    operationsPath = `/projects/${FIXTURE_PROJECT_ID}/session-operation-identities`,
+    beforeAudit = f.h.events(["operator.action"]).length;
+  expect((await f.post(route, request, f.h.headers(null))).status).toBe(403);
+  expect(
+    (await f.post(route, { ...request, prompt: "must not be accepted" }))
+      .status,
+  ).toBe(400);
+  expect(f.h.events(["operator.action"])).toHaveLength(beforeAudit);
+  expect(f.records().filter((row) => row.method === "thread/fork")).toEqual([]);
+
+  const first = await f.post(route, request);
+  expect(first.status).toBe(200);
+  const firstBody = await first.json();
+  expect(firstBody.ok).toBe(true);
+  expect(firstBody.data.state).toBe("linked");
+  expect(typeof firstBody.data.childSessionId).toBe("string");
+  expect(
+    f.records().filter((row) => row.method === "thread/fork"),
+  ).toHaveLength(1);
+  expect(
+    f.records().filter((row) => row.method === "thread/start"),
+  ).toHaveLength(1);
+  const audit = f.h.events(["operator.action"]).at(-1);
+  expect(audit?.kind).toBe("operator.action");
+  if (audit?.kind !== "operator.action")
+    throw Error("The Fork action did not have an operator audit row");
+  expect(audit.payload).toMatchObject({
+    action: "session.fork",
+    family: "codex-chat-fork",
+    requestId: request.requestId,
+  });
+  expect(audit.payload.target).toContain(parentSessionId);
+  expect(audit.payload.inputHash).toMatch(/^[a-f0-9]{64}$/);
+  expect(JSON.stringify(audit.payload)).not.toContain("PRIVATE-CHAT");
+
+  const originalUrl = `${f.h.api}${originalPath}`;
+  expect((await fetch(originalUrl)).status).toBe(403);
+  const originalResponse = await fetch(originalUrl, {
+      headers: f.h.headers(f.h.hearth.token),
+    }),
+    original = await originalResponse.json(),
+    originalText = JSON.stringify(original);
+  expect(originalResponse.status).toBe(200);
+  expect(original.ok).toBe(true);
+  expect(original.data).toMatchObject({
+    family: "codex-chat-fork",
+    requestId: request.requestId,
+    parentSessionId,
+    throughTurnRequestId: selectedTurn.requestId,
+    state: "linked",
+    childSessionId: firstBody.data.childSessionId,
+  });
+  for (const privateValue of [
+    "PRIVATE-CHAT-PROMPT",
+    "PRIVATE-CHAT-CONTEXT",
+    "sourceSeal",
+    "parentNativeThreadId",
+    "childNativeThreadId",
+    "prepared",
+  ])
+    expect(originalText).not.toContain(privateValue);
+
+  const aggregateResponse = await fetch(`${f.h.api}${operationsPath}`, {
+      headers: f.h.headers(f.h.hearth.token),
+    }),
+    aggregate = await aggregateResponse.json(),
+    aggregateText = JSON.stringify(aggregate);
+  expect(aggregateResponse.status).toBe(200);
+  expect(aggregate.ok).toBe(true);
+  expect(aggregate.data.operations).toContainEqual(
+    expect.objectContaining({
+      family: "codex-chat-fork",
+      requestId: request.requestId,
+      state: "linked",
+      parentSessionId,
+      throughTurnRequestId: selectedTurn.requestId,
+      childSessionId: firstBody.data.childSessionId,
+    }),
+  );
+  expect(aggregateText).not.toContain("PRIVATE-CHAT-PROMPT");
+
+  const duplicate = await f.post(route, request);
+  expect(duplicate.status).toBe(200);
+  expect((await duplicate.json()).data).toEqual(firstBody.data);
+  expect(
+    f.records().filter((row) => row.method === "thread/fork"),
+  ).toHaveLength(1);
+  expect(f.h.events(["operator.action"])).toHaveLength(beforeAudit + 3);
+  expect(
+    (
+      await f.post(route, {
+        ...request,
+        throughTurnRequestId: randomUUID(),
+      })
+    ).status,
+  ).toBe(409);
+  expect(
+    f.records().filter((row) => row.method === "thread/fork"),
+  ).toHaveLength(1);
+});
