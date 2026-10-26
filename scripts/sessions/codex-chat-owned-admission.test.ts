@@ -1937,13 +1937,13 @@ test("owned Chat persists its private snapshot and resumes the exact native thre
     eligible: true,
     selectedTurnRequestId: f.request.requestId,
     lastTurnId: "0199a213-81c0-7800-8aa1-bbab2a035a54",
-    sourceSettings: { serviceTier: null },
+    sourceSettings: { serviceTier: null, reasoningEffort: null },
   });
   expect(secondSource).toMatchObject({
     eligible: true,
     selectedTurnRequestId: secondRequestId,
     lastTurnId: "0199a213-81c0-7800-8aa1-bbab2a035a55",
-    sourceSettings: { serviceTier: null },
+    sourceSettings: { serviceTier: null, reasoningEffort: null },
   });
   expect(firstSource.eligible && secondSource.eligible).toBe(true);
   if (!firstSource.eligible || !secondSource.eligible)

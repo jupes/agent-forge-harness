@@ -679,7 +679,7 @@ while (true) {
                   excludeTmpdirEnvVar: true,
                   excludeSlashTmp: true,
                 },
-          reasoningEffort: "medium",
+          reasoningEffort: mode === "service-tier-null" ? null : "medium",
         },
       });
       await send({
