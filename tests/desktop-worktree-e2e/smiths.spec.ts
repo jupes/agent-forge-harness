@@ -657,8 +657,14 @@ test("a reply lost after actual temporary publication recovers the exact origina
   ).toContainText(join(REPOSITORY, "agent-forge.toml"));
 
   await page.route("**/config/smiths/creates", async (route) => {
-    const response = await route.fetch();
+    const response = await route.fetch({
+      headers: {
+        ...route.request().headers(),
+        Origin: new URL(route.request().url()).origin,
+      },
+    });
     savedServerStatus = response.status();
+    expect(savedServerStatus).toBe(200);
     await route.abort();
   });
   const failedReply = page.waitForEvent("requestfailed", (request) =>

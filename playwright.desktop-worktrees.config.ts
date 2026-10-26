@@ -27,6 +27,7 @@ export default defineConfig({
       env: {
         ...server.env,
         AGENT_FORGE_WORKTREE_FIXTURE_ROOT: FIXTURE_ROOT,
+        AGENT_FORGE_WORKTREE_OS_HOME: EMPTY_HOME,
         HOME: EMPTY_HOME,
         USERPROFILE: EMPTY_HOME,
       },
