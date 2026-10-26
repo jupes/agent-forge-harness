@@ -53,6 +53,18 @@ const smithSchema = z
   .strict()
   .refine((value) => validateSmith(value).ok) satisfies z.ZodType<Smith>;
 
+function sameSmith(left: Smith, right: Smith): boolean {
+  return (
+    left.name === right.name &&
+    left.provider === right.provider &&
+    left.model === right.model &&
+    left.effort === right.effort &&
+    left.enabled === right.enabled &&
+    left.tags.length === right.tags.length &&
+    left.tags.every((tag, index) => tag === right.tags[index])
+  );
+}
+
 const previewFields = {
   target: z.enum(["user", "workspace"]),
   name,
@@ -146,9 +158,15 @@ export const smithConfigEditPreviewSchema = z
   .superRefine((value, context) => {
     if (
       value.review.name !== value.review.targetAfter.name ||
+      value.review.name !== value.review.effectiveBefore.name ||
       value.review.name !== value.review.effectiveAfter.name
     )
       context.addIssue({ code: "custom", message: "The Smith name changed." });
+    if (!sameSmith(value.review.targetAfter, value.review.effectiveAfter))
+      context.addIssue({
+        code: "custom",
+        message: "The effective result differs from the target edit.",
+      });
   })
   .refine((value) =>
     encodedWithin(value, SMITH_CONFIG_EDIT_LIMITS.responseBytes),

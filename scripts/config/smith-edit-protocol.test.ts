@@ -121,6 +121,24 @@ test("review codec keeps target materialization distinct from effective layered 
     }).success,
   ).toBe(false);
   expect(
+    smithConfigEditPreviewSchema.safeParse({
+      ...preview,
+      review: {
+        ...preview.review,
+        effectiveBefore: { ...preview.review.effectiveBefore, name: "other" },
+      },
+    }).success,
+  ).toBe(false);
+  expect(
+    smithConfigEditPreviewSchema.safeParse({
+      ...preview,
+      review: {
+        ...preview.review,
+        effectiveAfter: { ...smith, model: "shadowed-model" },
+      },
+    }).success,
+  ).toBe(false);
+  expect(
     smithConfigEditPreviewSchema.safeParse({ ...preview, file: "builtin" })
       .success,
   ).toBe(false);
