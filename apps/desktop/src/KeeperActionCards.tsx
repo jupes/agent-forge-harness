@@ -313,6 +313,7 @@ function ActionCard({
   writesAllowed,
   onNavigate,
   onReviewSession,
+  onReviewShift,
 }: {
   projectId: string;
   card: KeeperProposalView;
@@ -321,6 +322,14 @@ function ActionCard({
   onNavigate?: (() => void) | undefined;
   onReviewSession?:
     | ((source: KeeperProposal, revision: number, requestId?: string) => void)
+    | undefined;
+  onReviewShift?:
+    | ((
+        source: KeeperProposal,
+        revision: number,
+        originalOnly?: boolean,
+        requestId?: string,
+      ) => void)
     | undefined;
 }): JSX.Element {
   const state = client.get(projectId),
@@ -336,9 +345,12 @@ function ActionCard({
   const edited = JSON.stringify(draft) !== JSON.stringify(card.proposal.draft);
   const available =
     draft.action.kind !== "start-session" &&
+    draft.action.kind !== "start-shift" &&
     (card.available || (card.destinationAvailable && edited));
   const sessionReview =
     card.proposal.draft.action.kind === "start-session" && !!onReviewSession;
+  const shiftReview =
+    card.proposal.draft.action.kind === "start-shift" && !!onReviewShift;
   const status = record
     ? {
         approved: "Approved · awaiting outcome",
@@ -363,7 +375,7 @@ function ActionCard({
         <Fields
           draft={draft}
           original={card.proposal.draft}
-          editable={editing && !held && !sessionReview}
+          editable={editing && !held && !sessionReview && !shiftReview}
           update={(value) => client.draft(projectId, card.proposal.id, value)}
         />
       </details>
@@ -420,21 +432,34 @@ function ActionCard({
           ) : (
             <p>Activity details are unavailable in this read.</p>
           )}
-        </>
-      ) : (
-        <div class="af-proposal-actions">
-          {sessionReview ? (
+          {shiftReview && record.phase !== "dismissed" && (
             <Button
-              variant="primary"
-              disabled={state.loading || !!state.error}
               onClick={() =>
-                onReviewSession?.(
+                onReviewShift?.(
                   card.proposal,
                   state.page?.revision ?? state.fence,
+                  true,
+                  record.requestId,
                 )
               }
             >
-              Review &amp; start
+              Review original Start
+            </Button>
+          )}
+        </>
+      ) : (
+        <div class="af-proposal-actions">
+          {sessionReview || shiftReview ? (
+            <Button
+              variant="primary"
+              disabled={state.loading || !!state.error}
+              onClick={() => {
+                const revision = state.page?.revision ?? state.fence;
+                if (sessionReview) onReviewSession?.(card.proposal, revision);
+                else onReviewShift?.(card.proposal, revision);
+              }}
+            >
+              {sessionReview ? "Review & start" : "Review Shift"}
             </Button>
           ) : (
             <Button
@@ -448,11 +473,13 @@ function ActionCard({
               Approve
             </Button>
           )}
-          {!sessionReview && (
-            <Button disabled={held} onClick={() => setEditing(!editing)}>
-              {editing ? "Finish editing" : "Edit"}
-            </Button>
-          )}
+          {!sessionReview &&
+            !shiftReview &&
+            draft.action.kind !== "start-shift" && (
+              <Button disabled={held} onClick={() => setEditing(!editing)}>
+                {editing ? "Finish editing" : "Edit"}
+              </Button>
+            )}
           <Button
             disabled={blocked}
             onClick={() => {
@@ -468,6 +495,12 @@ function ActionCard({
         <p>
           Review &amp; start opens the shared composer. Only its explicit Start
           authorizes the reviewed session.
+        </p>
+      )}
+      {shiftReview && (
+        <p>
+          Shift proposals open the complete current project form. Only its
+          explicit Start sends the reviewed original.
         </p>
       )}
       {record && sessionReview && record.phase !== "dismissed" && (
@@ -519,6 +552,7 @@ export function KeeperActionCards({
   writesAllowed,
   onNavigate,
   onReviewSession,
+  onReviewShift,
 }: {
   projectId: string;
   client: KeeperProposalsClient;
@@ -526,6 +560,14 @@ export function KeeperActionCards({
   onNavigate?: (() => void) | undefined;
   onReviewSession?:
     | ((source: KeeperProposal, revision: number, requestId?: string) => void)
+    | undefined;
+  onReviewShift?:
+    | ((
+        source: KeeperProposal,
+        revision: number,
+        originalOnly?: boolean,
+        requestId?: string,
+      ) => void)
     | undefined;
 }): JSX.Element {
   const state = client.get(projectId);
@@ -537,8 +579,8 @@ export function KeeperActionCards({
     >
       <h2>Proposed actions</h2>
       <p>
-        Review each card. Approve carries out its reviewed change; session
-        proposals open a composer for an explicit Start.
+        Review each card. Approve carries out its reviewed change; session and
+        Shift proposals open their complete form for an explicit Start.
       </p>
       {state.loading && !state.page && (
         <p role="status">Loading action cards…</p>
@@ -586,6 +628,7 @@ export function KeeperActionCards({
           writesAllowed={writesAllowed}
           onNavigate={onNavigate}
           onReviewSession={onReviewSession}
+          onReviewShift={onReviewShift}
         />
       ))}
       {[...state.receipts.values()]

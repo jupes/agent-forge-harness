@@ -101,8 +101,21 @@ test("all seven cards are inert until review, edits survive drawer navigation, a
   await expect(
     session.getByRole("button", { name: "Approve", exact: true }),
   ).toHaveCount(0);
+  const shift = cards(page).getByRole("article", {
+    name: "Review a shift",
+    exact: true,
+  });
+  await expect(shift).toContainText("attended project shift review");
+  await expect(
+    shift.getByRole("button", { name: "Review Shift", exact: true }),
+  ).toBeEnabled();
+  await expect(
+    shift.getByRole("button", { name: "Approve", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    shift.getByRole("button", { name: "Edit", exact: true }),
+  ).toHaveCount(0);
   for (const [title, reason] of [
-    ["Review a shift", "attended project shift review"],
     ["Review council input", "project council review composer"],
   ] as const) {
     const card = cards(page).getByRole("article", { name: title, exact: true });
