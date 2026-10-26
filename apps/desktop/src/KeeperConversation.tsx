@@ -180,6 +180,7 @@ export function KeeperConversation({
   onNavigate,
   onScope,
   onReviewSession,
+  onReviewShift,
   active = true,
 }: {
   project: ProjectRecord;
@@ -191,6 +192,14 @@ export function KeeperConversation({
   onScope?: () => void;
   onReviewSession?:
     | ((source: KeeperProposal, revision: number, requestId?: string) => void)
+    | undefined;
+  onReviewShift?:
+    | ((
+        source: KeeperProposal,
+        revision: number,
+        originalOnly?: boolean,
+        requestId?: string,
+      ) => void)
     | undefined;
   active?: boolean;
 }): JSX.Element {
@@ -531,6 +540,7 @@ export function KeeperConversation({
             writesAllowed={writesAllowed}
             onNavigate={onNavigate}
             onReviewSession={onReviewSession}
+            onReviewShift={onReviewShift}
           />
         )}
       </div>

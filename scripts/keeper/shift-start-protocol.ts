@@ -1,70 +1,26 @@
-import { z } from "zod";
+import type { z } from "zod";
 import type {
   KeeperShiftStartIntent,
   KeeperShiftStartProposal,
-  KeeperShiftStartReceipt,
   KeeperShiftStartRequest,
 } from "../../types/keeper-shift-start";
 import { parseDuration } from "../config/duration";
 import { hashText } from "../hash-text";
 import { workspaceKey } from "../projects/scope";
 import {
-  ownedSessionMetadataSchema,
-  sessionProjectIdSchema,
-  sessionRequestHashSchema,
-} from "../sessions/protocol";
-import {
-  projectShiftReceiptSchema,
-  projectShiftStartSchema,
-} from "../shifts/protocol";
-import { canonicalProjectShiftStart } from "../shifts/start-input";
-import { keeperProposalRecordSchema } from "./proposal-protocol";
+  keeperShiftStartHashInputs,
+  keeperShiftStartIntentWireSchema,
+  keeperShiftStartReceiptWireSchema,
+} from "./shift-start-wire";
 
-if (typeof window !== "undefined") z.config({ jitless: true });
+export {
+  keeperShiftProposalIdSchema,
+  keeperShiftStartProposalSchema,
+  keeperShiftStartRequestSchema,
+} from "./shift-start-wire";
 
-export const keeperShiftProposalIdSchema = z
-  .string()
-  .max(100)
-  .regex(
-    /^proposal-[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[89ab][a-f0-9]{3}-[a-f0-9]{12}-[0-6]$/,
-  );
-const count = z
-  .number()
-  .int()
-  .nonnegative()
-  .max(Number.MAX_SAFE_INTEGER - 1);
-export const keeperShiftStartProposalSchema: z.ZodType<KeeperShiftStartProposal> =
-  z
-    .object({
-      durationMinutes: z.number().int().min(1).max(1440),
-      concurrency: z.number().int().min(1).max(8),
-      beadLimit: z.number().int().min(1).max(100),
-      spendLimitUsd: z.number().finite().positive().max(1000),
-    })
-    .strict();
-
-export const keeperShiftStartRequestSchema: z.ZodType<KeeperShiftStartRequest> =
-  z
-    .object({
-      sourceHash: sessionRequestHashSchema,
-      expectedRevision: count,
-      start: projectShiftStartSchema,
-    })
-    .strict();
-
-export const keeperShiftStartIntentSchema: z.ZodType<KeeperShiftStartIntent> = z
-  .object({
-    projectId: sessionProjectIdSchema,
-    proposalId: keeperShiftProposalIdSchema,
-    workspace: ownedSessionMetadataSchema.shape.workspace,
-    proposal: keeperShiftStartProposalSchema,
-    original: keeperShiftStartRequestSchema,
-    startHash: sessionRequestHashSchema,
-    reviewHash: sessionRequestHashSchema,
-    createdAt: z.iso.datetime(),
-  })
-  .strict()
-  .refine((intent) => {
+export const keeperShiftStartIntentSchema: z.ZodType<KeeperShiftStartIntent> =
+  keeperShiftStartIntentWireSchema.refine((intent) => {
     const hashes = keeperShiftStartHashes(
       intent.projectId,
       intent.proposalId,
@@ -78,66 +34,28 @@ export const keeperShiftStartIntentSchema: z.ZodType<KeeperShiftStartIntent> = z
     );
   });
 
-export const keeperShiftStartReceiptSchema: z.ZodType<KeeperShiftStartReceipt> =
-  z
-    .object({
-      projectId: sessionProjectIdSchema,
-      proposalId: keeperShiftProposalIdSchema,
-      revision: count,
-      record: keeperProposalRecordSchema,
-      workspace: ownedSessionMetadataSchema.shape.workspace,
-      original: keeperShiftStartRequestSchema,
-      startHash: sessionRequestHashSchema,
-      shift: projectShiftReceiptSchema.nullable(),
-    })
-    .strict()
-    .refine((value) => {
-      const action = value.record.draft.action;
-      if (
-        value.record.id !== value.proposalId ||
-        value.record.projectId !== value.projectId ||
-        value.record.sourceHash !== value.original.sourceHash ||
-        value.record.requestId !== value.original.start.requestId ||
-        value.record.operation !== "approve" ||
-        action.kind !== "start-shift"
-      )
-        return false;
-      const proposal = {
-        durationMinutes: action.durationMinutes,
-        concurrency: action.concurrency,
-        beadLimit: action.beadLimit,
-        spendLimitUsd: action.spendLimitUsd,
-      };
-      const hashes = keeperShiftStartHashes(
-        value.projectId,
-        value.proposalId,
-        value.workspace,
-        proposal,
-        value.original,
-      );
-      if (
-        value.startHash !== hashes.startHash ||
-        value.record.requestHash !== hashes.reviewHash
-      )
-        return false;
-      return (
-        value.shift === null ||
-        (value.shift.intent.projectId === value.projectId &&
-          workspaceKey(value.shift.intent.workspace) ===
-            workspaceKey(value.workspace) &&
-          value.shift.intent.requestHash === value.startHash &&
-          canonicalProjectShiftStart(
-            value.projectId,
-            value.workspace,
-            value.shift.intent.request,
-          ) ===
-            canonicalProjectShiftStart(
-              value.projectId,
-              value.workspace,
-              value.original.start,
-            ))
-      );
-    });
+export const keeperShiftStartReceiptSchema =
+  keeperShiftStartReceiptWireSchema.refine((value) => {
+    const action = value.record.draft.action;
+    if (action.kind !== "start-shift") return false;
+    const proposal = {
+      durationMinutes: action.durationMinutes,
+      concurrency: action.concurrency,
+      beadLimit: action.beadLimit,
+      spendLimitUsd: action.spendLimitUsd,
+    };
+    const hashes = keeperShiftStartHashes(
+      value.projectId,
+      value.proposalId,
+      value.workspace,
+      proposal,
+      value.original,
+    );
+    return (
+      value.startHash === hashes.startHash &&
+      value.record.requestHash === hashes.reviewHash
+    );
+  });
 
 /** Stable review and start hashes; the full canonical request includes every optional bound. */
 export function keeperShiftStartHashes(
@@ -147,28 +65,24 @@ export function keeperShiftStartHashes(
   proposal: KeeperShiftStartProposal,
   request: KeeperShiftStartRequest,
 ) {
-  const startHash = hashText(
-    canonicalProjectShiftStart(projectId, workspace, request.start),
+  const inputs = keeperShiftStartHashInputs(
+    projectId,
+    proposalId,
+    workspace,
+    proposal,
+    request,
+    "",
   );
-  const reviewHash = hashText(
-    JSON.stringify({
-      kind: "keeper.project-shift.start.v1",
-      projectId,
-      proposalId,
-      workspace: workspaceKey(workspace),
-      proposal: {
-        durationMinutes: proposal.durationMinutes,
-        concurrency: proposal.concurrency,
-        beadLimit: proposal.beadLimit,
-        spendLimitUsd: proposal.spendLimitUsd,
-      },
-      sourceHash: request.sourceHash,
-      expectedRevision: request.expectedRevision,
-      startHash,
-      originalRequestId: request.start.requestId,
-    }),
-  );
-  return { startHash, reviewHash };
+  const startHash = hashText(inputs.startInput);
+  const reviewInput = keeperShiftStartHashInputs(
+    projectId,
+    proposalId,
+    workspace,
+    proposal,
+    request,
+    startHash,
+  ).reviewInput;
+  return { startHash, reviewHash: hashText(reviewInput) };
 }
 
 /** Optional prefill comparison; edited full bounds are authorized by the reviewed request hash. */
