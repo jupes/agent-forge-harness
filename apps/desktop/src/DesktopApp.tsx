@@ -850,6 +850,14 @@ export function DesktopApp(): JSX.Element {
             keeper={keeper}
             writesAllowed={writesAllowed}
             onCancel={() => setComposerOpen(false)}
+            onOpenOriginal={(id) => {
+              setComposerOpen(false);
+              window.location.hash = desktopHref({
+                projectId: project.id,
+                destination: "sessions",
+                selection: { kind: "session", id },
+              }).slice(1);
+            }}
             onStarted={(id) => {
               setComposerOpen(false);
               window.location.hash = desktopHref({

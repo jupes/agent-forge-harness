@@ -178,6 +178,18 @@ export function createSessionsClient(deps: {
   >();
   const identityMutations = new Set<string>();
   const inspectionEpochs = new Map<string, number>();
+  const inspectionIdentity = new Map<
+    string,
+    {
+      projectId: string;
+      workspace: string;
+      generation: number;
+      requestId: string;
+      requestHash: string;
+      provider: SessionStartIdentityMetadata["provider"];
+      mode: SessionStartIdentityMetadata["mode"];
+    }
+  >();
   const timers = deps.timers ?? REAL_TIMERS;
   let selected: OwnedSessionView | null = null,
     connection: { close(): void } | null = null,
@@ -315,7 +327,6 @@ export function createSessionsClient(deps: {
     identityReads.set(projectId, read);
     const entry = project(projectId);
     entry.identityLoading = true;
-    entry.identityInspection = null;
     entry.startIdentityError = "";
     tell();
     read.work = (async () => {
@@ -331,6 +342,31 @@ export function createSessionsClient(deps: {
           !isCurrentIdentityScope(scope)
         )
           return;
+        const inspected = inspectionIdentity.get(projectId);
+        if (inspected) {
+          const current = page.identities.find(
+            (identity) => identity.requestId === inspected.requestId,
+          );
+          const sameInspectedIdentity =
+            inspected.projectId === scope.projectId &&
+            inspected.workspace === scope.workspace &&
+            inspected.generation === scope.generation &&
+            page.scope.projectId === scope.projectId &&
+            page.scope.workspace === scope.workspace &&
+            current?.requestId === inspected.requestId &&
+            current.requestHash === inspected.requestHash &&
+            current.provider === inspected.provider &&
+            current.mode === inspected.mode &&
+            ["attempted", "admitted"].includes(current.state);
+          if (!sameInspectedIdentity) {
+            inspectionIdentity.delete(projectId);
+            entry.identityInspection = null;
+            inspectionEpochs.set(
+              projectId,
+              (inspectionEpochs.get(projectId) ?? 0) + 1,
+            );
+          }
+        }
         entry.identityPage = page;
         entry.identityGeneration = scope.generation;
         const hint = entry.legacyIdentityHint;
@@ -359,8 +395,24 @@ export function createSessionsClient(deps: {
             "An original Start is still held by the server. Check its protected admission before creating another session.";
       } catch {
         if (!disposed && identityReads.get(projectId) === read) {
-          entry.identityPage = null;
+          if (!isCurrentIdentityScope(scope)) {
+            entry.identityPage = null;
+            entry.identityInspection = null;
+            inspectionIdentity.delete(projectId);
+            inspectionEpochs.set(
+              projectId,
+              (inspectionEpochs.get(projectId) ?? 0) + 1,
+            );
+          }
           entry.identityGeneration = null;
+          if (entry.identityInspection?.state === "loading") {
+            entry.identityInspection = null;
+            inspectionIdentity.delete(projectId);
+            inspectionEpochs.set(
+              projectId,
+              (inspectionEpochs.get(projectId) ?? 0) + 1,
+            );
+          }
           entry.startIdentityError =
             "Original Start identities could not be verified. Starting another session is blocked.";
         }
@@ -481,15 +533,37 @@ export function createSessionsClient(deps: {
       return false;
     const inspectionEpoch = (inspectionEpochs.get(projectId) ?? 0) + 1;
     inspectionEpochs.set(projectId, inspectionEpoch);
-    const isCurrentInspection = () =>
-      inspectionEpochs.get(projectId) === inspectionEpoch &&
-      isCurrentIdentityScope(scope) &&
-      entry.identityPage === page;
+    const isCurrentInspection = () => {
+      const currentPage = currentIdentityPage(projectId);
+      const currentIdentity = currentPage?.identities.find(
+        (row) => row.requestId === requestId,
+      );
+      return (
+        inspectionEpochs.get(projectId) === inspectionEpoch &&
+        isCurrentIdentityScope(scope) &&
+        entry.identityGeneration === scope.generation &&
+        currentPage?.scope.projectId === scope.projectId &&
+        currentPage.scope.workspace === scope.workspace &&
+        currentIdentity?.requestHash === identity.requestHash &&
+        currentIdentity.provider === identity.provider &&
+        currentIdentity.mode === identity.mode &&
+        ["attempted", "admitted"].includes(currentIdentity.state)
+      );
+    };
     entry.identityInspection = {
       requestId,
       state: "loading",
       sessionId: null,
     };
+    inspectionIdentity.set(projectId, {
+      projectId: scope.projectId,
+      workspace: scope.workspace,
+      generation: scope.generation,
+      requestId: identity.requestId,
+      requestHash: identity.requestHash,
+      provider: identity.provider,
+      mode: identity.mode,
+    });
     tell();
     try {
       await refresh(projectId);
@@ -521,6 +595,15 @@ export function createSessionsClient(deps: {
           state: "verified",
           sessionId: record.id,
         };
+        inspectionIdentity.set(projectId, {
+          projectId: scope.projectId,
+          workspace: scope.workspace,
+          generation: scope.generation,
+          requestId: identity.requestId,
+          requestHash: identity.requestHash,
+          provider: identity.provider,
+          mode: identity.mode,
+        });
         tell();
         return true;
       }
@@ -556,6 +639,15 @@ export function createSessionsClient(deps: {
         state: "verified",
         sessionId: record.id,
       };
+      inspectionIdentity.set(projectId, {
+        projectId: scope.projectId,
+        workspace: scope.workspace,
+        generation: scope.generation,
+        requestId: identity.requestId,
+        requestHash: identity.requestHash,
+        provider: identity.provider,
+        mode: identity.mode,
+      });
       tell();
       return true;
     } catch {
@@ -565,6 +657,7 @@ export function createSessionsClient(deps: {
           state: "unavailable",
           sessionId: null,
         };
+        inspectionIdentity.delete(projectId);
         entry.notice =
           "The original session could not be verified. Its Start identity remains held.";
         tell();
@@ -1437,6 +1530,7 @@ export function createSessionsClient(deps: {
         entry.identityGeneration = null;
         entry.identityLoading = false;
         entry.identityInspection = null;
+        inspectionIdentity.delete(id);
         inspectionEpochs.set(id, (inspectionEpochs.get(id) ?? 0) + 1);
       }
       tell();

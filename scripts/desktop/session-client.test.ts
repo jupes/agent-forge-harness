@@ -865,6 +865,150 @@ test("admitted identity inspection reads only the exact matching original and ne
   client.dispose();
 });
 
+test("same-identity refresh preserves verified inspection, but changed identity clears it", async () => {
+  const scope = { projectId, workspace: "/repo", generation: 1 };
+  let listCalls = 0,
+    writes = 0,
+    finishOriginalRead: ((value: unknown) => void) | undefined,
+    readStarted!: () => void;
+  const readStartedSignal = new Promise<void>((resolve) => {
+    readStarted = resolve;
+  });
+  const inspectionPage = (
+    state: "attempted" | "admitted" = "admitted",
+    requestHash = record.requestHash,
+  ) => ({
+    version: 1 as const,
+    scope: {
+      family: "owned-session-start" as const,
+      projectId,
+      workspace: "/repo",
+    },
+    identities: [
+      {
+        version: 1 as const,
+        requestId,
+        requestHash,
+        provider: "claude" as const,
+        mode: "chat" as const,
+        state,
+      },
+    ],
+  });
+  let finishSecondList:
+    | ((value: ReturnType<typeof inspectionPage>) => void)
+    | undefined;
+  const identityServer: SessionStartIdentityServer = {
+    async list() {
+      listCalls++;
+      if (listCalls === 2)
+        return new Promise((resolve) => {
+          finishSecondList = resolve;
+        });
+      if (listCalls === 4) throw Error("Temporary identity read failure");
+      return inspectionPage(
+        listCalls === 1 ? "attempted" : "admitted",
+        listCalls > 5 ? "f".repeat(64) : record.requestHash,
+      );
+    },
+    async reserve() {
+      writes++;
+      throw Error("Inspection must not reserve");
+    },
+    async retire() {
+      writes++;
+      throw Error("Inspection must not retire");
+    },
+  };
+  const client = createSessionsClient({
+    identityServer,
+    identityScope: () => scope,
+    canWrite: () => true,
+    requestId: () => requestId,
+    list: async () => [record],
+    read: async () =>
+      new Promise((resolve) => {
+        finishOriginalRead = resolve;
+        readStarted();
+      }),
+    post: async () => {
+      writes++;
+      return { state: "unknown", message: "Inspection is read-only" };
+    },
+    stream: () => () => ({ close() {} }),
+  });
+
+  await client.refreshIdentities(projectId);
+  const inspecting = client.inspectIdentity(projectId, requestId);
+  await readStartedSignal;
+  expect(client.project(projectId).identityInspection?.state).toBe("loading");
+  const refreshDuringInspection = client.refreshIdentities(projectId);
+  finishSecondList?.(inspectionPage());
+  await refreshDuringInspection;
+  finishOriginalRead?.({
+    ...page,
+    frames: [
+      {
+        ...page.frames[0]!,
+        event: {
+          kind: "user" as const,
+          text: "Original prompt",
+          about: [],
+          session: {
+            version: 1 as const,
+            provider: "claude" as const,
+            smith: record.smith,
+            cwd: "/repo",
+            launch: {
+              mode: "chat" as const,
+              model: "sonnet",
+              prompt: "Original prompt",
+              context: {
+                projectId,
+                repository: "/repo",
+                worktree: "/repo",
+                about: [],
+              },
+            },
+            capabilities: {
+              version: "2.1.0",
+              flags: [
+                "--print",
+                "--input-format",
+                "--output-format",
+                "--verbose",
+                "--include-partial-messages",
+                "--model",
+                "--permission-mode",
+                "--permission-prompts",
+                "--allowedTools",
+              ],
+            },
+          },
+        },
+      },
+    ],
+  });
+  expect(await inspecting).toBe(true);
+  expect(client.project(projectId).identityInspection?.state).toBe("verified");
+
+  await client.refreshIdentities(projectId);
+  expect(client.project(projectId).identityInspection?.state).toBe("verified");
+
+  await client.refreshIdentities(projectId);
+  expect(client.project(projectId).identityInspection?.state).toBe("verified");
+  expect(client.project(projectId).identityGeneration).toBeNull();
+  await client.start(projectId, input);
+  expect(writes).toBe(0);
+
+  await client.refreshIdentities(projectId);
+  expect(client.project(projectId).identityInspection?.state).toBe("verified");
+
+  await client.refreshIdentities(projectId);
+  expect(client.project(projectId).identityInspection).toBeNull();
+  client.dispose();
+});
+
 for (const mismatch of [
   "saved-launch-canonical-hash",
   "registry-request-hash",

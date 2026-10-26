@@ -36,6 +36,7 @@ export function SessionStartIdentityControls(props: {
   request: OwnedSessionStartInput | null;
   writesAllowed: boolean;
   archived: boolean;
+  onOpenOriginal?: ((sessionId: string) => void) | undefined;
 }) {
   const [retiring, setRetiring] = useState<SessionStartIdentityMetadata | null>(
     null,
@@ -190,6 +191,7 @@ export function SessionStartIdentityControls(props: {
                       <Button
                         disabled={
                           !!props.view.identityLoading ||
+                          props.view.identityGeneration == null ||
                           !props.client.inspectIdentity
                         }
                         onClick={() =>
@@ -215,6 +217,12 @@ export function SessionStartIdentityControls(props: {
                             Verified session {inspection.sessionId} ·{" "}
                             <a
                               href={`#/desktop/project/${encodeURIComponent(props.projectId)}/sessions?selectionKind=session&selectionId=${encodeURIComponent(inspection.sessionId)}`}
+                              onClick={(event) => {
+                                if (props.onOpenOriginal) {
+                                  event.preventDefault();
+                                  props.onOpenOriginal(inspection.sessionId!);
+                                }
+                              }}
                             >
                               Open original session
                             </a>

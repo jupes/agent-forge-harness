@@ -28,6 +28,7 @@ export function GeminiChatComposer({
   writesAllowed,
   onCancel,
   onStarted,
+  onOpenOriginal,
   providers,
 }: SessionComposerProps) {
   const geminiReadiness = providers?.providers.find(
@@ -789,6 +790,7 @@ export function GeminiChatComposer({
           request={recoveryInput}
           writesAllowed={writesAllowed}
           archived={project.archived}
+          onOpenOriginal={onOpenOriginal}
         />
         <div class="af-session-composer-actions">
           <Button onClick={onCancel}>

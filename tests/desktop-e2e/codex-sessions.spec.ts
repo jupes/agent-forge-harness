@@ -750,9 +750,13 @@ test("reload keeps a pre-admission Start identity held until its original protec
   await admittedRow
     .getByRole("link", { name: "Open original session" })
     .click();
-  await expect(
-    page.getByRole("article", { name: "Session reply", exact: true }),
-  ).toContainText("Codex Task reply 🌱");
+  await expect(sessionDialog).toBeHidden();
+  const originalReply = page.getByRole("article", {
+    name: "Session reply",
+    exact: true,
+  });
+  await expect(originalReply).toBeVisible();
+  await expect(originalReply).toContainText("Codex Task reply 🌱");
   expect(tasks()).toHaveLength(before + 1);
   expect(identityWrites).toBe(1);
   expect(startPosts).toBe(1);

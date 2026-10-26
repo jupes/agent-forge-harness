@@ -39,6 +39,7 @@ export interface SessionComposerProps {
   writesAllowed: boolean;
   onCancel(): void;
   onStarted(id: string): void;
+  onOpenOriginal?(id: string): void;
 }
 export function SessionComposer(props: SessionComposerProps) {
   const view = props.client.project(props.project.id);
@@ -89,6 +90,7 @@ export function ClaudeSessionComposer({
   writesAllowed,
   onCancel,
   onStarted,
+  onOpenOriginal,
   providers,
 }: {
   project: ProjectRecord;
@@ -97,6 +99,7 @@ export function ClaudeSessionComposer({
   writesAllowed: boolean;
   onCancel(): void;
   onStarted(id: string): void;
+  onOpenOriginal?(id: string): void;
   providers?: ProviderReadinessPage | null;
 }) {
   const view = client.project(project.id),
@@ -1081,6 +1084,7 @@ export function ClaudeSessionComposer({
           request={recoveryInput}
           writesAllowed={writesAllowed}
           archived={project.archived}
+          onOpenOriginal={onOpenOriginal}
         />
         <div class="af-session-composer-actions">
           <Button onClick={onCancel}>
