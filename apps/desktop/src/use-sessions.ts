@@ -125,6 +125,13 @@ export function useSessions(
   useEffect(() => {
     client.activate(projectId, sessionId);
   }, [client, projectId, sessionId]);
-  useEffect(() => () => client.dispose(), [client]);
+  useEffect(
+    () => () => {
+      scope.current = null;
+      scopeVersion.current++;
+      client.dispose();
+    },
+    [client],
+  );
   return client;
 }

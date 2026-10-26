@@ -866,49 +866,50 @@ export function createSessionsClient(deps: {
         identityMutations.add(projectId);
         tell();
         try {
-          const reserved = await deps.identityServer.reserve(scope, request);
-          if (
-            disposed ||
-            deps.identityScope?.()?.generation !== scope.generation
-          )
+          try {
+            const reserved = await deps.identityServer.reserve(scope, request);
+            if (
+              disposed ||
+              deps.identityScope?.()?.generation !== scope.generation
+            )
+              return;
+            entry.identityPage = null;
+            entry.identityGeneration = null;
+            entry.startIdentity = metadataProjection(
+              projectId,
+              reserved.identity,
+            );
+            if (
+              reserved.identity.state !== "reserved" ||
+              reserved.identity.requestId !== request.requestId ||
+              reserved.identity.requestHash !== reserved.requestHash ||
+              reserved.identity.provider !== startProvider(request) ||
+              reserved.identity.mode !== request.launch.mode ||
+              reserved.request.requestId !== request.requestId ||
+              canonicalOwnedSessionStart(reserved.request) !==
+                canonicalOwnedSessionStart(request)
+            ) {
+              entry.notice =
+                "The original Start remains held. Check its protected server state before continuing.";
+              return;
+            }
+            entry.pendingStart = reserved.request as SessionStartRequest;
+          } catch {
+            if (!disposed) {
+              entry.startIdentityError =
+                "The server could not verify this Start identity. No second request was sent.";
+              entry.notice = entry.startIdentityError;
+            }
             return;
-          entry.identityPage = null;
-          entry.startIdentity = metadataProjection(
-            projectId,
-            reserved.identity,
-          );
-          if (
-            reserved.identity.state !== "reserved" ||
-            reserved.identity.requestId !== request.requestId ||
-            reserved.identity.requestHash !== reserved.requestHash ||
-            reserved.identity.provider !== startProvider(request) ||
-            reserved.identity.mode !== request.launch.mode ||
-            reserved.request.requestId !== request.requestId ||
-            canonicalOwnedSessionStart(reserved.request) !==
-              canonicalOwnedSessionStart(request)
-          ) {
-            entry.notice =
-              "The original Start remains held. Check its protected server state before continuing.";
-            return;
+          } finally {
+            entry.starting = false;
+            tell();
           }
-          entry.pendingStart = reserved.request as SessionStartRequest;
-        } catch {
-          if (!disposed) {
-            entry.startIdentityError =
-              "The server could not verify this Start identity. No second request was sent.";
-            entry.notice = entry.startIdentityError;
-          }
-          return;
-        } finally {
-          entry.starting = false;
-          tell();
-        }
-        if (disposed) return;
-        try {
+          if (disposed) return;
           await postStart(projectId, false);
         } finally {
           identityMutations.delete(projectId);
-          await readIdentityPage(projectId);
+          if (!disposed) await readIdentityPage(projectId);
         }
         return;
       }
@@ -986,7 +987,7 @@ export function createSessionsClient(deps: {
         if (
           disposed ||
           deps.identityScope?.()?.generation !== scope.generation ||
-          reserved.identity.state !== "reserved" ||
+          reserved.identity.state !== current.state ||
           reserved.requestHash !== current.requestHash ||
           reserved.identity.requestId !== request.requestId ||
           reserved.identity.requestHash !== reserved.requestHash ||
