@@ -66,6 +66,7 @@ type ScopeSnapshot = Readonly<{
 }>;
 type CachedIdentity = Readonly<{
   scope: ScopeSnapshot;
+  epoch: number;
   tuple: ReservedIdentityTuple;
 }>;
 
@@ -112,6 +113,15 @@ function apiPath(projectId: string): string {
   return `/__agent-forge/projects/${encodeURIComponent(projectId)}/session-start-identities`;
 }
 
+function scopeKey(scope: ScopeSnapshot): string {
+  return JSON.stringify([scope.projectId, scope.workspace, scope.generation]);
+}
+
+function assertNotAborted(signal?: AbortSignal): void {
+  if (signal?.aborted)
+    throw Error("The Session Start identity read was cancelled.");
+}
+
 function assertCurrentScope(
   deps: SessionStartIdentityServerDependencies,
   expected: ScopeSnapshot,
@@ -131,11 +141,13 @@ function assertCurrentScope(
 function freezeIdentity(
   identity: SessionStartIdentityMetadata,
   scope: ScopeSnapshot,
+  epoch: number,
   cache: WeakMap<object, CachedIdentity>,
 ): SessionStartIdentityMetadata {
   const copy = freezeDeep(structuredClone(identity));
   cache.set(copy, {
     scope,
+    epoch,
     tuple: Object.freeze({
       requestId: copy.requestId,
       requestHash: copy.requestHash,
@@ -203,18 +215,40 @@ export function createSessionStartIdentityServer(
   dependencies: SessionStartIdentityServerDependencies,
 ): SessionStartIdentityServer {
   const verifiedRows = new WeakMap<object, CachedIdentity>();
+  let activeScopeKey: string | null = null;
+  let operationEpoch = 0;
+  const nextEpoch = (key: string): number => {
+    activeScopeKey = key;
+    return ++operationEpoch;
+  };
+  const assertCurrentOperation = (
+    expected: ScopeSnapshot,
+    key: string,
+    epoch: number,
+    signal?: AbortSignal,
+  ): void => {
+    assertCurrentScope(dependencies, expected);
+    assertNotAborted(signal);
+    if (activeScopeKey !== key || operationEpoch !== epoch)
+      throw Error(
+        "A newer Session Start identity operation superseded this result.",
+      );
+  };
   return {
     async list(scope, signal) {
       const expected = snapshotScope(structuredClone(scope));
       assertCurrentScope(dependencies, expected);
+      assertNotAborted(signal);
+      const key = scopeKey(expected),
+        epoch = nextEpoch(key);
       const response = await dependencies.read(
         apiPath(expected.projectId),
         { method: "GET", ...(signal ? { signal } : {}) },
         { maxBodyBytes: MAX_LIST_BYTES },
       );
-      assertCurrentScope(dependencies, expected);
+      assertCurrentOperation(expected, key, epoch, signal);
       const raw = await parseSuccessResponse(response, MAX_LIST_BYTES);
-      assertCurrentScope(dependencies, expected);
+      assertCurrentOperation(expected, key, epoch, signal);
       const parsed = sessionStartIdentityPageSchema.safeParse(raw);
       if (
         !parsed.success ||
@@ -228,7 +262,7 @@ export function createSessionStartIdentityServer(
         throw Error("The Session Start identity page could not be verified.");
       const copy = structuredClone(parsed.data);
       copy.identities = copy.identities.map((row) =>
-        freezeIdentity(row, expected, verifiedRows),
+        freezeIdentity(row, expected, epoch, verifiedRows),
       );
       return freezeDeep(copy);
     },
@@ -251,6 +285,9 @@ export function createSessionStartIdentityServer(
         throw Error(
           "The original Session Start request could not be verified.",
         );
+      const key = scopeKey(expected),
+        epoch = nextEpoch(key);
+      assertCurrentScope(dependencies, expected);
       const hash = [
         ...new Uint8Array(
           await crypto.subtle.digest(
@@ -261,15 +298,15 @@ export function createSessionStartIdentityServer(
       ]
         .map((value) => value.toString(16).padStart(2, "0"))
         .join("");
-      assertCurrentScope(dependencies, expected);
+      assertCurrentOperation(expected, key, epoch);
       const response = await dependencies.post(
         apiPath(expected.projectId),
         request,
         { maxBodyBytes: MAX_REPLY_BYTES },
       );
-      assertCurrentScope(dependencies, expected);
+      assertCurrentOperation(expected, key, epoch);
       const raw = await parseSuccessResponse(response, MAX_REPLY_BYTES);
-      assertCurrentScope(dependencies, expected);
+      assertCurrentOperation(expected, key, epoch);
       const parsed = sessionStartIdentityReplySchema.safeParse(raw);
       const wanted = requestIdentity(request);
       if (
@@ -283,9 +320,11 @@ export function createSessionStartIdentityServer(
         parsed.data.identity.mode !== wanted.mode
       )
         throw Error("The Session Start identity reply could not be verified.");
+      const resultEpoch = nextEpoch(key);
       const identity = freezeIdentity(
         parsed.data.identity,
         expected,
+        resultEpoch,
         verifiedRows,
       );
       return freezeDeep({
@@ -303,20 +342,24 @@ export function createSessionStartIdentityServer(
       if (
         !trusted ||
         !sameScope(trusted.scope, expected) ||
+        trusted.epoch !==
+          (activeScopeKey === scopeKey(expected) ? operationEpoch : null) ||
         trusted.tuple.state !== "reserved" ||
         snapshot.state !== "reserved" ||
         !identityTupleEqual(snapshot, trusted.tuple)
       )
         throw Error("Only a verified reserved identity can be retired.");
+      const key = scopeKey(expected),
+        epoch = nextEpoch(key);
       assertCurrentScope(dependencies, expected);
       const response = await dependencies.post(
         `${apiPath(expected.projectId)}/${encodeURIComponent(snapshot.requestId)}/retire`,
         { requestHash: snapshot.requestHash },
         { maxBodyBytes: MAX_REPLY_BYTES },
       );
-      assertCurrentScope(dependencies, expected);
+      assertCurrentOperation(expected, key, epoch);
       const raw = await parseSuccessResponse(response, MAX_REPLY_BYTES);
-      assertCurrentScope(dependencies, expected);
+      assertCurrentOperation(expected, key, epoch);
       const parsed = sessionStartIdentityReplySchema.safeParse(raw);
       if (
         !parsed.success ||
@@ -333,15 +376,11 @@ export function createSessionStartIdentityServer(
           "The Session Start retirement reply could not be verified.",
         );
       verifiedRows.delete(reserved);
-      const identity = freezeIdentity(
-        parsed.data.identity,
-        expected,
-        verifiedRows,
-      );
+      nextEpoch(key);
       return freezeDeep({
         version: parsed.data.version,
         scope: structuredClone(parsed.data.scope),
-        identity,
+        identity: structuredClone(parsed.data.identity),
       });
     },
   };
