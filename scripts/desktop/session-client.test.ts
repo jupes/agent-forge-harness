@@ -209,7 +209,20 @@ async function sourceValidOriginal(item: (typeof sixStartInputs)[number]) {
       smith: original.smith,
       cwd: original.worktree,
       launch: { ...original.launch, context },
-      capabilities: { version: "2.1.0", flags: ["--print", "--model"] },
+      capabilities: {
+        version: "2.1.0",
+        flags: [
+          "--print",
+          "--input-format",
+          "--output-format",
+          "--verbose",
+          "--include-partial-messages",
+          "--model",
+          "--permission-mode",
+          "--permission-prompts",
+          "--allowedTools",
+        ],
+      },
     });
   } else {
     if (original.provider === "codex" && original.launch.mode === "task") {
