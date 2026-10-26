@@ -116,26 +116,27 @@ function collectGeminiChatFailureFacts(
     callsFile.state === "ok"
       ? z.array(rowSchema).safeParse(callsFile.value)
       : null;
-  const turns =
-    state?.success && callRows?.success
-      ? state.data.frames.filter((frame) => frame.turnId === record.requestId)
-      : [];
-  const nativeOutcomes = turns.flatMap((frame) =>
+  const turns = state?.success
+    ? state.data.frames.filter((frame) => frame.turnId === record.requestId)
+    : null;
+  const nativeOutcomes = turns?.flatMap((frame) =>
     frame.event.kind === "coding-gemini-chat" &&
     frame.event.event.kind === "outcome"
       ? [frame.event.event]
       : [],
   );
-  const offers = turns.filter(
-      (frame) =>
-        frame.event.kind === "coding-gemini-chat" &&
-        frame.event.event.kind === "approval-offer",
-    ).length,
-    intents = turns.filter(
-      (frame) =>
-        frame.event.kind === "coding-gemini-chat" &&
-        frame.event.event.kind === "permission-intent",
-    ).length;
+  const offers =
+      turns?.filter(
+        (frame) =>
+          frame.event.kind === "coding-gemini-chat" &&
+          frame.event.event.kind === "approval-offer",
+      ).length ?? null,
+    intents =
+      turns?.filter(
+        (frame) =>
+          frame.event.kind === "coding-gemini-chat" &&
+          frame.event.event.kind === "permission-intent",
+      ).length ?? null;
   const methods = new Map<string, number>();
   for (const row of callRows?.success ? callRows.data : []) {
     const method = row.value?.method;
@@ -162,7 +163,7 @@ function collectGeminiChatFailureFacts(
   } catch {
     // A best-effort liveness observation is unavailable; never expose process identifiers.
   }
-  const native = nativeOutcomes.at(-1);
+  const native = nativeOutcomes?.at(-1);
   return {
     stateRead:
       stateFile.state === "ok" && !state?.success ? "invalid" : stateFile.state,
@@ -189,7 +190,7 @@ function collectGeminiChatFailureFacts(
         }
       : null,
     hasBinding: state?.success ? state.data.binding !== null : null,
-    nativeOutcomeCount: nativeOutcomes.length,
+    nativeOutcomeCount: nativeOutcomes?.length ?? null,
     approvalOffers: offers,
     permissionIntents: intents,
     methodCounts: Object.fromEntries(methods),
