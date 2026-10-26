@@ -331,11 +331,11 @@ function changeText(change: SmithRoutingEditChange | null): string {
 
 export function SmithRoutingEditReceiptsView({
   entries,
-  canWrite,
+  canRead,
   onCheck,
 }: {
   entries: readonly SmithRoutingEditEntry[];
-  canWrite: boolean;
+  canRead: boolean;
   onCheck(requestId: string): void;
 }): JSX.Element | null {
   if (!entries.length) return null;
@@ -346,8 +346,8 @@ export function SmithRoutingEditReceiptsView({
     >
       <h2>Original Smith routing edit receipts</h2>
       <p>
-        Saved routing edits are never sent again automatically. An uncertain
-        outcome can only be checked against its same protected original.
+        Saved routing edits are never sent again automatically. These controls
+        only open the same protected original receipt; they do not write.
       </p>
       {entries.map((entry) => {
         const review =
@@ -438,15 +438,19 @@ export function SmithRoutingEditReceiptsView({
             <p role={entry.state === "held" ? "alert" : "status"}>
               {entry.notice}
             </p>
-            {entry.state === "held" && (
+            {(entry.state === "held" ||
+              entry.state === "confirmed" ||
+              entry.state === "refused") && (
               <button
                 type="button"
-                disabled={!canWrite || entry.checking}
+                disabled={!canRead || entry.checking}
                 onClick={() => onCheck(entry.identity.requestId)}
               >
                 {entry.checking
-                  ? "Checking original…"
-                  : "Check original receipt"}
+                  ? "Opening original…"
+                  : entry.state === "held"
+                    ? "Check original receipt"
+                    : "Reopen saved original receipt"}
               </button>
             )}
             {entry.state === "not-sent" && (

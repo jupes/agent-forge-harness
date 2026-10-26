@@ -142,6 +142,7 @@ function fixture(
     created = 0,
     previewer: (value: SmithRoutingEditPreviewRequest) => Promise<unknown> =
       async (value) => previewFor(value),
+    reader: () => Promise<unknown> = read,
     posted: SmithRoutingEditRequest | null = null;
   const identities: SmithRoutingEditIdentities = {
     read: (id) => saved.get(id) ?? null,
@@ -195,7 +196,7 @@ function fixture(
       },
       readOriginal: async () => {
         reads++;
-        return await read();
+        return await reader();
       },
     });
     client.setDraft("workspace", change);
@@ -230,6 +231,9 @@ function fixture(
       value: (input: SmithRoutingEditPreviewRequest) => Promise<unknown>,
     ) {
       previewer = value;
+    },
+    setReader(value: () => Promise<unknown>) {
+      reader = value;
     },
   };
 }
@@ -340,6 +344,7 @@ test("recreated clients recover confirmed and refused originals without changing
     });
     f.client.dispose();
 
+    f.setWritable(false);
     const reopened = f.createClient();
     await reopened.recover();
     const recovered = reopened.get().entries[0];
@@ -358,6 +363,44 @@ test("recreated clients recover confirmed and refused originals without changing
     expect(reopened.get().entries[0]?.state).toBe(phase);
     expect(f.counts().posts).toBe(1);
     reopened.dispose();
+  }
+});
+
+test("terminal receipt recovery rejects 404, hash mismatch, and phase downgrade without effects", async () => {
+  for (const phase of ["confirmed", "refused"] as const) {
+    const terminalReceipt = await receiptFor(request, phase);
+    const terminal = fixture({
+      state: "sent",
+      value: { ok: true, data: terminalReceipt, error: null },
+    });
+    await terminal.client.preview();
+    await terminal.client.save();
+    terminal.client.dispose();
+
+    const oppositePhase = phase === "confirmed" ? "refused" : "confirmed";
+    const invalidReads: (() => Promise<unknown>)[] = [
+      async () => {
+        throw Error("404");
+      },
+      async () => receiptFor(request, phase, "e".repeat(64)),
+      async () => receiptFor(request, oppositePhase),
+    ];
+    for (const read of invalidReads) {
+      terminal.setReader(read);
+      const recovered = terminal.createClient();
+      await recovered.recover();
+      const entry = recovered.get().entries[0];
+      expect(entry?.state).toBe(phase);
+      expect(entry?.identity).toMatchObject({
+        requestId: request.requestId,
+        retired: true,
+        retirement: phase,
+      });
+      expect(entry?.receipt).toBeNull();
+      expect(terminal.counts().posts).toBe(1);
+      recovered.dispose();
+    }
+    expect(terminal.counts().reads).toBe(3);
   }
 });
 

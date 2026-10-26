@@ -1342,10 +1342,14 @@ test("a stale paired revision is refused and permission refusal retires only as 
 }) => {
   const starts = providerStarts();
   const posts: string[] = [];
+  let refusedOriginal: Record<string, unknown> | null = null;
   page.on("request", (request) => {
     const path = new URL(request.url()).pathname;
-    if (request.method() === "POST" && path.startsWith("/__agent-forge/"))
+    if (request.method() === "POST" && path.startsWith("/__agent-forge/")) {
       posts.push(path);
+      if (path === "/__agent-forge/config/smiths/routing-edits")
+        refusedOriginal = request.postDataJSON() as Record<string, unknown>;
+    }
   });
   await page.setViewportSize({ width: 1100, height: 760 });
   await page.emulateMedia({ reducedMotion: "reduce" });
@@ -1366,7 +1370,7 @@ test("a stale paired revision is refused and permission refusal retires only as 
   await dialog.getByLabel("Workspace configuration", { exact: true }).check();
   await dialog
     .getByLabel("Default Smith name", { exact: true })
-    .fill("stale-route-candidate");
+    .fill(fixtureAlternativeSmith);
   let previewResponse = page.waitForResponse(
     (response) =>
       response.request().method() === "POST" &&
@@ -1405,6 +1409,31 @@ test("a stale paired revision is refused and permission refusal retires only as 
     .getByRole("button", { name: "Close routing editor", exact: true })
     .click();
   writeFileSync(machineFile, machineBefore);
+  expect(refusedOriginal).not.toBeNull();
+  const refusedRequest = smithRoutingEditRequestSchema.parse(refusedOriginal);
+  const refusedRead = page.waitForResponse(
+    (response) =>
+      response.request().method() === "GET" &&
+      new URL(response.url()).pathname ===
+        `/__agent-forge/smiths/routing-edits/${refusedRequest.requestId}`,
+  );
+  await reloadSettled(page);
+  const refusedReceiptResponse = await refusedRead;
+  expect(refusedReceiptResponse.status()).toBe(200);
+  const refusedEnvelope = (await refusedReceiptResponse.json()) as {
+    data: unknown;
+  };
+  const refusedReceipt = smithRoutingEditReceiptSchema.parse(
+    refusedEnvelope.data,
+  );
+  expect(refusedReceipt.original).toEqual(refusedRequest);
+  expect(refusedReceipt.inputHash).toBe(
+    await smithRoutingEditInputHash(refusedRequest),
+  );
+  expect(refusedReceipt.result.phase).toBe("refused");
+  await expect(
+    page.getByRole("region", { name: "Original Smith routing edit receipts" }),
+  ).toContainText("Refused");
 
   await opener.click();
   dialog = page.getByRole("dialog", {
@@ -1414,7 +1443,7 @@ test("a stale paired revision is refused and permission refusal retires only as 
   await dialog.getByLabel("Workspace configuration", { exact: true }).check();
   await dialog
     .getByLabel("Default Smith name", { exact: true })
-    .fill("permission-refused-route");
+    .fill(fixtureAlternativeSmith);
   previewResponse = page.waitForResponse(
     (response) =>
       response.request().method() === "POST" &&

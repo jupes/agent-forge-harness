@@ -342,7 +342,7 @@ export function Smiths({
       />
       <SmithRoutingEditReceiptsView
         entries={routingEdits.state.entries}
-        canWrite={routingEdits.canWrite}
+        canRead={routingEdits.canRead}
         onCheck={(requestId) => void routingEdits.client?.check(requestId)}
       />
       <section

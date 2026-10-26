@@ -110,5 +110,10 @@ export function useSmithRoutingEdit(
   useEffect(() => {
     if (writesAllowed) void client?.recover();
   }, [client, writesAllowed]);
-  return { client, state, canWrite: writesAllowed && client !== null };
+  return {
+    client,
+    state,
+    canWrite: writesAllowed && client !== null,
+    canRead: client !== null,
+  };
 }

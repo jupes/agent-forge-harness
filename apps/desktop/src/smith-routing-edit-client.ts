@@ -105,16 +105,14 @@ export function createSmithRoutingEditClient(deps: {
     }
   };
   const store = (scope = deps.scope()) => deps.identities(scope);
-  const current = (ticket: number, scope: string, draftTicket?: number) => {
+  const currentRead = (ticket: number, scope: string) => {
     const currentScope = observeScope();
-    return (
-      !disposed &&
-      ticket === generation &&
-      deps.canWrite() &&
-      currentScope === scope &&
-      (draftTicket === undefined || draftTicket === draftGeneration)
-    );
+    return !disposed && ticket === generation && currentScope === scope;
   };
+  const current = (ticket: number, scope: string, draftTicket?: number) =>
+    currentRead(ticket, scope) &&
+    deps.canWrite() &&
+    (draftTicket === undefined || draftTicket === draftGeneration);
   const observeScope = () => {
     let scope: string;
     try {
@@ -194,6 +192,7 @@ export function createSmithRoutingEditClient(deps: {
     ticket: number,
     scope: string,
     draftTicket?: number,
+    readOnlyCheck = false,
   ): Promise<boolean> {
     const parsed = smithRoutingEditReceiptSchema.safeParse(unwrapEnvelope(raw));
     if (!parsed.success) return false;
@@ -204,7 +203,12 @@ export function createSmithRoutingEditClient(deps: {
     } catch {
       return false;
     }
-    if (!current(ticket, scope, draftTicket)) return false;
+    if (
+      !(readOnlyCheck
+        ? currentRead(ticket, scope)
+        : current(ticket, scope, draftTicket))
+    )
+      return false;
     if (
       receipt.requestId !== identity.requestId ||
       receipt.original.requestId !== identity.requestId ||
@@ -224,6 +228,13 @@ export function createSmithRoutingEditClient(deps: {
       entry.state === "not-sent"
     )
       return false;
+    if (
+      identity.retired &&
+      (identity.retirement === "confirmed" ||
+        identity.retirement === "refused") &&
+      receipt.result.phase !== identity.retirement
+    )
+      return false;
     entry.receipt = receipt;
     if (receipt.result.phase === "held") {
       entry.state = "held";
@@ -234,9 +245,29 @@ export function createSmithRoutingEditClient(deps: {
       return true;
     }
     const settlement = receipt.result.phase;
+    if (
+      identity.retired &&
+      (identity.retirement === "confirmed" || identity.retirement === "refused")
+    ) {
+      if (settlement !== identity.retirement) return false;
+      entry.state = settlement;
+      entry.preview =
+        receipt.result.phase === "confirmed" ? receipt.result.preview : null;
+      entry.notice =
+        settlement === "confirmed"
+          ? "The saved original confirms this routing edit."
+          : "The saved original confirms this routing edit was refused.";
+      emit();
+      return true;
+    }
     try {
       const retired = await store(scope).retire(identity, settlement);
-      if (!current(ticket, scope, draftTicket)) return false;
+      if (
+        !(readOnlyCheck
+          ? currentRead(ticket, scope)
+          : current(ticket, scope, draftTicket))
+      )
+        return false;
       entry.identity = retired;
       entry.state = settlement;
       entry.preview =
@@ -519,7 +550,7 @@ export function createSmithRoutingEditClient(deps: {
     },
     async check(requestId: string) {
       const scope = observeScope();
-      if (disposed || !deps.canWrite()) return;
+      if (disposed || !scope) return;
       let identity: SmithRoutingEditIdentity | null;
       try {
         identity = store(scope).read(requestId);
@@ -531,33 +562,50 @@ export function createSmithRoutingEditClient(deps: {
       }
       if (!identity) return;
       const entry = ensureEntry(identity);
-      if (
-        entry.state === "not-sent" ||
-        entry.state === "confirmed" ||
-        entry.state === "refused" ||
-        entry.checking
-      )
-        return;
+      if (entry.state === "not-sent" || entry.checking) return;
       const ticket = generation;
       entry.checking = true;
       entry.notice =
-        "Checking the original receipt only; no edit will be sent.";
+        entry.state === "confirmed" || entry.state === "refused"
+          ? "Reopening the saved original receipt only; no edit will be sent."
+          : "Checking the original receipt only; no edit will be sent.";
       emit();
       try {
         const raw = await deps.readOriginal(identity.requestId);
-        if (!current(ticket, scope)) return;
+        if (!currentRead(ticket, scope)) return;
         if (
-          !(await installReceipt(identity, raw, entry.request, ticket, scope))
-        )
-          hold(
+          !(await installReceipt(
             identity,
+            raw,
             entry.request,
-            "The protected original did not match this saved routing identity. Its UUID remains held.",
-          );
+            ticket,
+            scope,
+            undefined,
+            true,
+          ))
+        ) {
+          if (entry.state === "confirmed" || entry.state === "refused") {
+            entry.notice =
+              "The protected original did not match this saved terminal identity. Its recorded status remains unchanged.";
+            emit();
+          } else {
+            hold(
+              identity,
+              entry.request,
+              "The protected original did not match this saved routing identity. Its UUID remains held.",
+            );
+          }
+        }
       } catch {
-        if (current(ticket, scope) && entry.state === "held")
-          entry.notice =
-            "The protected original could not be read. Its UUID remains held; no request was resent.";
+        if (currentRead(ticket, scope)) {
+          if (entry.state === "held")
+            entry.notice =
+              "The protected original could not be read. Its UUID remains held; no request was resent.";
+          else if (entry.state === "confirmed" || entry.state === "refused")
+            entry.notice =
+              "The saved original could not be reopened. Its recorded terminal status remains unchanged.";
+          emit();
+        }
       } finally {
         entry.checking = false;
         emit();
@@ -579,12 +627,7 @@ export function createSmithRoutingEditClient(deps: {
       emit();
       for (const identity of identities) {
         const terminal = retirementState(identity);
-        if (
-          terminal === "not-sent" ||
-          terminal === "confirmed" ||
-          terminal === "refused"
-        )
-          continue;
+        if (terminal === "not-sent") continue;
         await client.check(identity.requestId);
       }
     },
