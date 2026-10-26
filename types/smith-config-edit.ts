@@ -57,3 +57,41 @@ export interface SmithConfigEditPreview {
   candidate: { sha256: string; byteLength: number; created: boolean };
   review: SmithConfigEditReview;
 }
+
+export type SmithConfigEditRefusal =
+  | "stale-revision"
+  | "invalid-candidate"
+  | "source-unavailable"
+  | "cancelled-before-attempt"
+  | "write-refused-before-attempt";
+
+export type SmithConfigEditResult =
+  | {
+      phase: "held";
+      /** Saved historical stage; never permission to retry a config write. */
+      stage: "intent" | "prepared" | "attempted" | "unconfirmed";
+      preview: SmithConfigEditPreview | null;
+    }
+  | {
+      phase: "confirmed";
+      completedAt: string;
+      preview: SmithConfigEditPreview;
+      publication: { file: string; created: boolean; sha256: string };
+    }
+  | {
+      phase: "refused";
+      refusedAt: string;
+      reason: SmithConfigEditRefusal;
+      preview: SmithConfigEditPreview | null;
+    };
+
+/** Protected original and outcome; never permission to publish or replay. */
+export interface SmithConfigEditReceipt {
+  version: 1;
+  requestId: string;
+  ownerScopeHash: string;
+  inputHash: string;
+  createdAt: string;
+  original: SmithConfigEditRequest;
+  result: SmithConfigEditResult;
+}

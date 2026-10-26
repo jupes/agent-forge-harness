@@ -4,6 +4,8 @@ import type {
   SmithConfigEditFields,
   SmithConfigEditPreview,
   SmithConfigEditPreviewRequest,
+  SmithConfigEditReceipt,
+  SmithConfigEditRefusal,
   SmithConfigEditRequest,
   SmithConfigEditRevision,
   SmithConfigEditTargetBefore,
@@ -17,6 +19,9 @@ export const SMITH_CONFIG_EDIT_LIMITS = Object.freeze({
   responseBytes: 65_536,
   sourceBytes: 1_048_576,
   pathLength: 1024,
+  /** Match the already pinned private Smith journal adapter bounds. */
+  privateRecordBytes: 65_536,
+  records: 1_000,
 });
 
 const encodedWithin = (value: unknown, max: number) => {
@@ -197,3 +202,88 @@ export function canonicalSmithConfigEditRequest(value: unknown): string {
     },
   });
 }
+
+export const smithConfigEditRefusalSchema = z.enum([
+  "stale-revision",
+  "invalid-candidate",
+  "source-unavailable",
+  "cancelled-before-attempt",
+  "write-refused-before-attempt",
+]) satisfies z.ZodType<SmithConfigEditRefusal>;
+
+const nullableEditPreview = smithConfigEditPreviewSchema.nullable();
+const editResultSchema = z.discriminatedUnion("phase", [
+  z
+    .object({
+      phase: z.literal("held"),
+      stage: z.enum(["intent", "prepared", "attempted", "unconfirmed"]),
+      preview: nullableEditPreview,
+    })
+    .strict(),
+  z
+    .object({
+      phase: z.literal("confirmed"),
+      completedAt: z.iso.datetime(),
+      preview: smithConfigEditPreviewSchema,
+      publication: z
+        .object({ file: filePath, created: z.boolean(), sha256: hash })
+        .strict(),
+    })
+    .strict(),
+  z
+    .object({
+      phase: z.literal("refused"),
+      refusedAt: z.iso.datetime(),
+      reason: smithConfigEditRefusalSchema,
+      preview: nullableEditPreview,
+    })
+    .strict(),
+]);
+
+export const smithConfigEditReceiptSchema = z
+  .object({
+    version: z.literal(1),
+    requestId: smithConfigEditRequestIdSchema,
+    ownerScopeHash: hash,
+    inputHash: hash,
+    createdAt: z.iso.datetime(),
+    original: smithConfigEditRequestSchema,
+    result: editResultSchema,
+  })
+  .strict()
+  .superRefine((receipt, context) => {
+    const fail = (message: string) =>
+      context.addIssue({ code: "custom", message });
+    if (receipt.requestId !== receipt.original.requestId)
+      fail("The original belongs to another edit request.");
+    const { original, result } = receipt;
+    if (
+      result.phase === "held" &&
+      ((result.stage === "intent" && result.preview !== null) ||
+        ((result.stage === "prepared" || result.stage === "attempted") &&
+          result.preview === null))
+    )
+      fail("The saved edit stage has inconsistent review evidence.");
+    const preview = result.preview;
+    if (
+      preview !== null &&
+      (preview.target !== original.target ||
+        preview.review.name !== original.name ||
+        preview.expectedRevision.user !== original.expectedRevision.user ||
+        preview.expectedRevision.workspace !==
+          original.expectedRevision.workspace ||
+        !sameSmith(preview.review.effectiveAfter, original.smith) ||
+        !sameSmith(preview.review.targetAfter, original.smith))
+    )
+      fail("The edit review differs from the exact original.");
+    if (
+      result.phase === "confirmed" &&
+      (result.publication.file !== result.preview.file ||
+        result.publication.sha256 !== result.preview.candidate.sha256 ||
+        result.publication.created !== result.preview.candidate.created)
+    )
+      fail("The edit publication differs from its reviewed candidate.");
+  })
+  .refine((value) =>
+    encodedWithin(value, SMITH_CONFIG_EDIT_LIMITS.responseBytes),
+  ) satisfies z.ZodType<SmithConfigEditReceipt>;

@@ -4,6 +4,7 @@ import {
   canonicalSmithConfigEditRequest,
   smithConfigEditPreviewRequestSchema,
   smithConfigEditPreviewSchema,
+  smithConfigEditReceiptSchema,
   smithConfigEditRequestSchema,
 } from "./smith-edit-protocol";
 
@@ -141,5 +142,89 @@ test("review codec keeps target materialization distinct from effective layered 
   expect(
     smithConfigEditPreviewSchema.safeParse({ ...preview, file: "builtin" })
       .success,
+  ).toBe(false);
+});
+
+test("receipt binds the exact original, reviewed complete Smith, and publication", () => {
+  const preview = {
+      version: 1 as const,
+      target: request.target,
+      file: "C:/workspace/agent-forge.toml",
+      expectedRevision: request.expectedRevision,
+      candidate: { sha256: "d".repeat(64), byteLength: 200, created: false },
+      review: {
+        name: request.name,
+        targetBefore: { model: "before" },
+        targetAfter: smith,
+        effectiveBefore: { ...smith, model: "before" },
+        effectiveAfter: smith,
+        provenanceBefore: {
+          provider: "builtin",
+          model: "C:/user/config.toml",
+          effort: "builtin",
+          enabled: "C:/workspace/agent-forge.toml",
+          tags: "builtin",
+        },
+        provenanceAfter: {
+          provider: "C:/workspace/agent-forge.toml",
+          model: "C:/workspace/agent-forge.toml",
+          effort: "C:/workspace/agent-forge.toml",
+          enabled: "C:/workspace/agent-forge.toml",
+          tags: "C:/workspace/agent-forge.toml",
+        },
+      },
+    },
+    receipt = {
+      version: 1 as const,
+      requestId: request.requestId,
+      ownerScopeHash: "e".repeat(64),
+      inputHash: "f".repeat(64),
+      createdAt: "2026-10-25T12:00:00.000Z",
+      original: request,
+      result: {
+        phase: "confirmed" as const,
+        completedAt: "2026-10-25T12:00:01.000Z",
+        preview,
+        publication: {
+          file: preview.file,
+          created: preview.candidate.created,
+          sha256: preview.candidate.sha256,
+        },
+      },
+    };
+  expect(smithConfigEditReceiptSchema.parse(receipt)).toEqual(receipt);
+  expect(
+    smithConfigEditReceiptSchema.safeParse({
+      ...receipt,
+      result: {
+        ...receipt.result,
+        publication: { ...receipt.result.publication, sha256: "0".repeat(64) },
+      },
+    }).success,
+  ).toBe(false);
+  expect(
+    smithConfigEditReceiptSchema.safeParse({
+      ...receipt,
+      result: {
+        ...receipt.result,
+        preview: {
+          ...preview,
+          review: {
+            ...preview.review,
+            effectiveAfter: { ...smith, model: "different" },
+          },
+        },
+      },
+    }).success,
+  ).toBe(false);
+  expect(
+    smithConfigEditReceiptSchema.safeParse({
+      ...receipt,
+      original: {
+        ...request,
+        name: "other",
+        smith: { ...smith, name: "other" },
+      },
+    }).success,
   ).toBe(false);
 });
