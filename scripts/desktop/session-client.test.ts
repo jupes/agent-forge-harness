@@ -641,7 +641,12 @@ test("admitted identity inspection reads only the exact matching original and ne
       expect(sessionId).toBe(id);
       expect(query.requestId).toBe(requestId);
       originalReads++;
-      return page;
+      const originalTurn = { ...turn, hash: record.requestHash };
+      return {
+        ...page,
+        request: originalTurn,
+        turns: [originalTurn],
+      };
     },
     post: async () => {
       writes++;
