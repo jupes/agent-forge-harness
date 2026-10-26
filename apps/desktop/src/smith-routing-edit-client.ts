@@ -93,6 +93,10 @@ export function createSmithRoutingEditClient(deps: {
     generation = 0,
     draftGeneration = 0,
     observedScope = deps.scope();
+  let previewSequence = 0,
+    activePreviewOperation: number | null = null,
+    saveSequence = 0,
+    activeSaveOperation: number | null = null;
   let previewScope: string | null = null;
   const emit = () => {
     if (!disposed) {
@@ -101,12 +105,16 @@ export function createSmithRoutingEditClient(deps: {
     }
   };
   const store = (scope = deps.scope()) => deps.identities(scope);
-  const current = (ticket: number, scope: string, draftTicket?: number) =>
-    !disposed &&
-    ticket === generation &&
-    deps.canWrite() &&
-    deps.scope() === scope &&
-    (draftTicket === undefined || draftTicket === draftGeneration);
+  const current = (ticket: number, scope: string, draftTicket?: number) => {
+    const currentScope = observeScope();
+    return (
+      !disposed &&
+      ticket === generation &&
+      deps.canWrite() &&
+      currentScope === scope &&
+      (draftTicket === undefined || draftTicket === draftGeneration)
+    );
+  };
   const observeScope = () => {
     let scope: string;
     try {
@@ -117,6 +125,8 @@ export function createSmithRoutingEditClient(deps: {
     if (scope !== observedScope) {
       observedScope = scope;
       generation++;
+      activePreviewOperation = null;
+      activeSaveOperation = null;
       previewScope = null;
       state.preview = null;
       state.previewStale = false;
@@ -266,9 +276,11 @@ export function createSmithRoutingEditClient(deps: {
         structuredClone({ target, change }),
       );
       draftGeneration++;
+      activePreviewOperation = null;
       state.preview = null;
       previewScope = null;
       state.previewStale = false;
+      state.previewing = false;
       if (!checked.success) {
         state.change = null;
         state.notice = "The routing edit draft is invalid.";
@@ -282,8 +294,10 @@ export function createSmithRoutingEditClient(deps: {
     async preview() {
       const scope = observeScope(),
         ticket = generation,
-        draftTicket = draftGeneration;
+        draftTicket = draftGeneration,
+        operation = ++previewSequence;
       if (!deps.canWrite() || !state.change) return;
+      activePreviewOperation = operation;
       const input = structuredClone({
         target: state.target,
         change: state.change,
@@ -293,9 +307,12 @@ export function createSmithRoutingEditClient(deps: {
       previewScope = null;
       state.previewStale = false;
       emit();
+      const ownsPreview = () =>
+        activePreviewOperation === operation &&
+        current(ticket, scope, draftTicket);
       try {
         const raw = await deps.preview(structuredClone(input));
-        if (!current(ticket, scope, draftTicket)) return;
+        if (!ownsPreview()) return;
         const parsed = smithRoutingEditPreviewSchema.safeParse(
           unwrapEnvelope(raw),
         );
@@ -313,10 +330,11 @@ export function createSmithRoutingEditClient(deps: {
         previewScope = scope;
         state.notice = "Review the complete routing change before saving.";
       } catch {
-        if (current(ticket, scope, draftTicket))
+        if (ownsPreview())
           state.notice = "The routing edit preview could not be verified.";
       } finally {
-        if (current(ticket, scope, draftTicket)) {
+        if (activePreviewOperation === operation) {
+          activePreviewOperation = null;
           state.previewing = false;
           emit();
         }
@@ -356,6 +374,8 @@ export function createSmithRoutingEditClient(deps: {
         return;
       }
       state.saving = true;
+      const operation = ++saveSequence;
+      activeSaveOperation = operation;
       state.notice = "Saving the exact reviewed routing edit.";
       emit();
       let identity: SmithRoutingEditIdentity | null = null;
@@ -368,12 +388,16 @@ export function createSmithRoutingEditClient(deps: {
           inputHash,
         );
         identity = reservation.identity;
-        const entry = ensureEntry(identity, request);
+        const entry = current(ticket, scope, draftTicket)
+          ? ensureEntry(identity, request)
+          : null;
         if (!reservation.created) {
-          entry.notice =
-            "This UUID already has a saved original. Check its receipt; no request was resent.";
-          state.notice = entry.notice;
-          emit();
+          if (entry) {
+            entry.notice =
+              "This UUID already has a saved original. Check its receipt; no request was resent.";
+            state.notice = entry.notice;
+            emit();
+          }
           return;
         }
         if (!current(ticket, scope, draftTicket)) {
@@ -383,11 +407,12 @@ export function createSmithRoutingEditClient(deps: {
               "verified-not-sent",
             );
             if (current(ticket, scope, draftTicket)) {
-              entry.identity = retired;
-              entry.state = "not-sent";
-              entry.notice =
+              const currentEntry = entry ?? ensureEntry(identity, request);
+              currentEntry.identity = retired;
+              currentEntry.state = "not-sent";
+              currentEntry.notice =
                 "The draft or workspace changed before dispatch. The saved request was not sent; review again with a new UUID.";
-              state.notice = entry.notice;
+              state.notice = currentEntry.notice;
               emit();
             }
           } catch {
@@ -426,10 +451,11 @@ export function createSmithRoutingEditClient(deps: {
               "verified-not-sent",
             );
             if (current(ticket, scope, draftTicket)) {
-              entry.identity = retired;
-              entry.state = "not-sent";
-              entry.notice = `${result.message} Review again before using a new UUID.`;
-              state.notice = entry.notice;
+              const currentEntry = entry ?? ensureEntry(identity, request);
+              currentEntry.identity = retired;
+              currentEntry.state = "not-sent";
+              currentEntry.notice = `${result.message} Review again before using a new UUID.`;
+              state.notice = currentEntry.notice;
               emit();
             }
           } catch {
@@ -480,12 +506,15 @@ export function createSmithRoutingEditClient(deps: {
             request,
             "The routing edit outcome is unknown. Its UUID remains held; check the original receipt.",
           );
-        else
+        else if (current(ticket, scope, draftTicket))
           state.notice =
             "The routing identity could not be saved and verified. No edit request was sent.";
       } finally {
-        state.saving = false;
-        emit();
+        if (activeSaveOperation === operation) {
+          activeSaveOperation = null;
+          state.saving = false;
+          emit();
+        }
       }
     },
     async check(requestId: string) {
@@ -562,6 +591,8 @@ export function createSmithRoutingEditClient(deps: {
     dispose() {
       disposed = true;
       generation++;
+      activePreviewOperation = null;
+      activeSaveOperation = null;
       listeners.clear();
     },
   };
