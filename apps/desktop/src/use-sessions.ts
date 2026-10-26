@@ -9,6 +9,7 @@ import {
 } from "../../../docs/js/use-stream";
 import type { ProviderReadinessPage } from "../../../types/provider-readiness";
 import { createSessionsClient } from "./session-client";
+import { createSessionStartIdentities } from "./session-start-identities";
 import { createSessionStartIdentityServer } from "./session-start-identity-server";
 
 const base = (id: string) => `/projects/${encodeURIComponent(id)}/sessions`;
@@ -48,9 +49,21 @@ export function useSessions(
   const [, paint] = useState(0),
     held = useRef<ReturnType<typeof createSessionsClient> | null>(null);
   if (!held.current) {
+    let storage: Storage | null = null;
+    try {
+      storage = window.localStorage;
+    } catch {
+      /* The metadata hint cannot be read; ordinary Start remains held. */
+    }
+    const legacyHints = createSessionStartIdentities({
+      storage,
+      // The server-backed client exposes only legacyHints.read, never reserve/release.
+      withLock: async (work) => work(),
+    });
     held.current = createSessionsClient({
       canWrite: () => writes.current,
       requestId: () => crypto.randomUUID(),
+      legacyHint: (id) => legacyHints.read(id),
       identityServer: createSessionStartIdentityServer({
         currentScope: () => scope.current,
         read: operatorRead,

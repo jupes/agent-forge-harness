@@ -4,7 +4,10 @@ import { REAL_TIMERS, type Timers } from "../../../docs/js/hearth-read";
 import type { StreamTransport } from "../../../docs/js/use-stream";
 import { conversationReceiptSchema } from "../../../scripts/conversations/protocol";
 import { ownedCodingPageSchema } from "../../../scripts/sessions/codex-owned-journal";
-import { canonicalOwnedSessionStart } from "../../../scripts/sessions/codex-owned-protocol";
+import {
+  canonicalOwnedSessionStart,
+  parseOwnedSessionStart,
+} from "../../../scripts/sessions/codex-owned-protocol";
 import {
   ownedCodingSessionSchema,
   ownedCodingStartReceiptSchema,
@@ -54,6 +57,7 @@ import type {
   SessionStartIdentities,
   SessionStartIdentity,
 } from "./session-start-identities";
+import { sessionStartHash } from "./session-start-identities";
 import type {
   SessionStartIdentityServer,
   VerifiedSessionIdentityScope,
@@ -104,6 +108,14 @@ export interface SessionProjectView {
   identityPage: SessionStartIdentityPage | null;
   identityLoading: boolean;
   identityGeneration: number | null;
+  legacyIdentityHint: SessionStartIdentity | null;
+  legacyIdentityError: string;
+  legacyIdentityUnavailable: boolean;
+  identityInspection: {
+    requestId: string;
+    state: "loading" | "unavailable" | "verified";
+    sessionId: string | null;
+  } | null;
   starting: boolean;
   notice: string;
   lastStarted: string | null;
@@ -135,6 +147,7 @@ export function createSessionsClient(deps: {
   identities?: SessionStartIdentities;
   identityServer?: SessionStartIdentityServer;
   identityScope?(): VerifiedSessionIdentityScope | null;
+  legacyHint?(projectId: string): SessionStartIdentity | null;
   list(projectId: string): Promise<unknown>;
   read(
     projectId: string,
@@ -193,12 +206,25 @@ export function createSessionsClient(deps: {
         identityPage: null,
         identityLoading: false,
         identityGeneration: null,
+        legacyIdentityHint: null,
+        legacyIdentityError: "",
+        legacyIdentityUnavailable: false,
+        identityInspection: null,
         starting: false,
         notice: "",
         lastStarted: null,
       };
       projects.set(id, value);
       if (!deps.identityServer) hydrateStart(id, value);
+      else if (deps.legacyHint) {
+        try {
+          value.legacyIdentityHint = deps.legacyHint(id);
+        } catch {
+          value.legacyIdentityUnavailable = true;
+          value.legacyIdentityError =
+            "A previous Start identity hint could not be verified. Starting another session is blocked.";
+        }
+      }
     }
     return value;
   };
@@ -258,6 +284,8 @@ export function createSessionsClient(deps: {
     requestHash: identity.requestHash,
     provider: identity.provider,
   });
+  const currentIdentityPage = (projectId: string) =>
+    projects.get(projectId)?.identityPage ?? null;
   const readIdentityPage = async (projectId: string): Promise<void> => {
     if (!deps.identityServer || !deps.identityScope || disposed) return;
     const scope = deps.identityScope();
@@ -275,6 +303,7 @@ export function createSessionsClient(deps: {
     identityReads.set(projectId, read);
     const entry = project(projectId);
     entry.identityLoading = true;
+    entry.identityInspection = null;
     entry.startIdentityError = "";
     tell();
     read.work = (async () => {
@@ -292,13 +321,27 @@ export function createSessionsClient(deps: {
           return;
         entry.identityPage = page;
         entry.identityGeneration = scope.generation;
+        const hint = entry.legacyIdentityHint;
+        const hintMatchesServer = hint
+          ? page.identities.some(
+              (identity) =>
+                identity.requestId === hint.requestId &&
+                identity.requestHash === hint.requestHash &&
+                identity.provider === hint.provider,
+            )
+          : true;
+        entry.legacyIdentityError = entry.legacyIdentityUnavailable
+          ? "A previous Start identity hint could not be verified. Starting another session is blocked."
+          : hintMatchesServer
+            ? ""
+            : "A previous local Start hint has no matching server identity. Review it before creating another session.";
         const unresolved = page.identities.filter((identity) =>
           ["reserved", "attempted", "not-sent"].includes(identity.state),
         );
         entry.startIdentity = unresolved[0]
           ? metadataProjection(projectId, unresolved[0])
           : null;
-        entry.startIdentityError = "";
+        entry.startIdentityError = entry.legacyIdentityError;
         if (entry.startIdentity && !entry.pendingStart)
           entry.notice =
             "An original Start is still held by the server. Check its protected admission before creating another session.";
@@ -319,6 +362,122 @@ export function createSessionsClient(deps: {
       }
     })();
     return read.work;
+  };
+  const makeStartRequest = (
+    input: OwnedSessionStartInput,
+    requestId: string,
+  ): SessionStartRequest =>
+    freezeDeep(
+      parseOwnedSessionStart(
+        structuredClone({ ...input, requestId }),
+      ) as SessionStartRequest,
+    );
+  const inspectIdentity = async (
+    projectId: string,
+    requestId: string,
+  ): Promise<boolean> => {
+    const entry = project(projectId),
+      scope = deps.identityScope?.(),
+      page = entry.identityPage,
+      identity = page?.identities.find((row) => row.requestId === requestId);
+    if (
+      !deps.identityServer ||
+      !scope ||
+      scope.projectId !== projectId ||
+      !page ||
+      entry.identityGeneration !== scope.generation ||
+      !identity ||
+      !["attempted", "admitted"].includes(identity.state)
+    )
+      return false;
+    entry.identityInspection = {
+      requestId,
+      state: "loading",
+      sessionId: null,
+    };
+    tell();
+    try {
+      await refresh(projectId);
+      if (
+        disposed ||
+        deps.identityScope?.()?.generation !== scope.generation ||
+        entry.identityPage !== page
+      )
+        return false;
+      const record = entry.records.find(
+        (candidate) =>
+          candidate.projectId === projectId &&
+          candidate.requestId === identity.requestId &&
+          candidate.requestHash === identity.requestHash &&
+          candidate.provider === identity.provider &&
+          candidate.mode === identity.mode &&
+          candidate.origin === undefined,
+      );
+      if (!record || entry.error) throw Error("Original session unavailable");
+      const observed = session(projectId, record.id);
+      if (
+        observed.loaded &&
+        observed.page?.conversationId === record.id &&
+        [
+          ...observed.page.turns,
+          ...(observed.page.request ? [observed.page.request] : []),
+        ].some(
+          (turn) =>
+            turn.requestId === requestId && turn.hash === identity.requestHash,
+        )
+      ) {
+        entry.identityInspection = {
+          requestId,
+          state: "verified",
+          sessionId: record.id,
+        };
+        tell();
+        return true;
+      }
+      const raw = await deps.read(projectId, record.id, {
+        after: 0,
+        requestId: identity.requestId,
+      });
+      if (
+        disposed ||
+        deps.identityScope?.()?.generation !== scope.generation ||
+        entry.identityPage !== page
+      )
+        return false;
+      if (!apply(session(projectId, record.id), raw))
+        throw Error("Original session could not be verified");
+      const verifiedPage = session(projectId, record.id).page;
+      if (
+        !verifiedPage ||
+        ![
+          ...verifiedPage.turns,
+          ...(verifiedPage.request ? [verifiedPage.request] : []),
+        ].some(
+          (turn) =>
+            turn.requestId === requestId && turn.hash === identity.requestHash,
+        )
+      )
+        throw Error("Original request identity did not match");
+      entry.identityInspection = {
+        requestId,
+        state: "verified",
+        sessionId: record.id,
+      };
+      tell();
+      return true;
+    } catch {
+      if (!disposed && entry.identityPage === page) {
+        entry.identityInspection = {
+          requestId,
+          state: "unavailable",
+          sessionId: null,
+        };
+        entry.notice =
+          "The original session could not be verified. Its Start identity remains held.";
+        tell();
+      }
+      return false;
+    }
   };
   const disconnect = () => {
     connection?.close();
@@ -518,20 +677,12 @@ export function createSessionsClient(deps: {
         entry.records = parsed.data;
         entry.loaded = true;
         entry.error = "";
-        const original = entry.startIdentity;
-        if (entry.pendingStart || original) {
+        if (entry.pendingStart) {
           const record = entry.records.find(
-            (item) =>
-              item.requestId ===
-              (entry.pendingStart?.requestId ?? original?.requestId),
+            (item) => item.requestId === entry.pendingStart?.requestId,
           );
           if (record) {
-            if (
-              (entry.pendingStart && !sameStart(record, entry.pendingStart)) ||
-              (original &&
-                (record.requestHash !== original.requestHash ||
-                  record.provider !== original.provider))
-            )
+            if (!sameStart(record, entry.pendingStart))
               throw new Error("Start metadata changed");
             const page = await deps.read(projectId, record.id, {
               after: 0,
@@ -715,6 +866,154 @@ export function createSessionsClient(deps: {
       for (const [id, entry] of projects) hydrateStart(id, entry);
       tell();
     },
+    inspectIdentity,
+    async retireIdentity(
+      projectId: string,
+      requestId: string,
+    ): Promise<boolean> {
+      if (!deps.identityServer) return false;
+      const entry = project(projectId),
+        scope = deps.identityScope?.(),
+        page = entry.identityPage,
+        reserved = page?.identities.find(
+          (identity) =>
+            identity.requestId === requestId && identity.state === "reserved",
+        );
+      if (
+        !scope ||
+        scope.projectId !== projectId ||
+        !page ||
+        entry.identityGeneration !== scope.generation ||
+        entry.identityLoading ||
+        !reserved ||
+        identityMutations.has(projectId)
+      )
+        return false;
+      identityMutations.add(projectId);
+      entry.identityPage = null;
+      entry.identityGeneration = null;
+      entry.starting = true;
+      entry.startIdentityError = "";
+      tell();
+      let retired = false;
+      try {
+        const result = await deps.identityServer.retire(scope, reserved);
+        if (
+          disposed ||
+          deps.identityScope?.()?.generation !== scope.generation ||
+          result.identity.requestId !== requestId ||
+          result.identity.requestHash !== reserved.requestHash ||
+          result.identity.state !== "retired"
+        )
+          return false;
+        retired = true;
+      } catch {
+        if (!disposed)
+          entry.startIdentityError =
+            "The server could not confirm retirement. The original identity remains held.";
+      } finally {
+        entry.starting = false;
+        identityMutations.delete(projectId);
+        if (!disposed) await readIdentityPage(projectId);
+      }
+      return (
+        retired &&
+        entry.identityGeneration === scope.generation &&
+        currentIdentityPage(projectId)?.identities.some(
+          (identity) =>
+            identity.requestId === requestId && identity.state === "retired",
+        ) === true
+      );
+    },
+    async resumeStart(
+      projectId: string,
+      input: OwnedSessionStartInput,
+    ): Promise<void> {
+      if (!deps.identityServer) return;
+      const entry = project(projectId),
+        scope = deps.identityScope?.(),
+        page = entry.identityPage,
+        candidates =
+          page?.identities.filter((identity) =>
+            ["reserved", "not-sent"].includes(identity.state),
+          ) ?? [];
+      if (
+        !scope ||
+        scope.projectId !== projectId ||
+        !page ||
+        entry.identityGeneration !== scope.generation ||
+        entry.identityLoading ||
+        candidates.length !== 1 ||
+        entry.legacyIdentityError ||
+        entry.starting ||
+        entry.pendingStart ||
+        identityMutations.has(projectId) ||
+        !deps.canWrite()
+      )
+        return;
+      const original = candidates[0];
+      if (!original) return;
+      const request = makeStartRequest(input, original.requestId);
+      identityMutations.add(projectId);
+      entry.starting = true;
+      entry.startIdentityError = "";
+      entry.notice = "Verifying the re-entered original Start request…";
+      tell();
+      try {
+        const requestHash = await sessionStartHash(request);
+        const currentScope = deps.identityScope?.();
+        if (
+          disposed ||
+          !currentScope ||
+          currentScope.generation !== scope.generation ||
+          entry.identityPage !== page ||
+          requestHash !== original.requestHash ||
+          entry.identityLoading
+        ) {
+          entry.notice =
+            "The re-entered request does not match the held original, or its scope changed. Nothing was sent.";
+          return;
+        }
+        entry.pendingStart = request;
+        const reserved = await deps.identityServer!.reserve(scope, request);
+        if (
+          disposed ||
+          deps.identityScope?.()?.generation !== scope.generation ||
+          reserved.identity.state !== original.state ||
+          reserved.identity.requestId !== original.requestId ||
+          reserved.identity.requestHash !== original.requestHash ||
+          reserved.requestHash !== original.requestHash ||
+          reserved.identity.provider !== original.provider ||
+          reserved.identity.mode !== original.mode ||
+          canonicalOwnedSessionStart(reserved.request) !==
+            canonicalOwnedSessionStart(request)
+        ) {
+          entry.identityPage = null;
+          entry.identityGeneration = null;
+          entry.notice =
+            "The server could not confirm the exact original Start. Nothing was sent again.";
+          return;
+        }
+        entry.startIdentity = metadataProjection(projectId, reserved.identity);
+        entry.pendingStart = reserved.request as SessionStartRequest;
+        entry.identityPage = null;
+        entry.identityGeneration = null;
+        entry.starting = false;
+        await postStart(projectId, true);
+      } catch {
+        if (!disposed) {
+          entry.identityPage = null;
+          entry.identityGeneration = null;
+          entry.startIdentityError =
+            "The original Start could not be verified. No request was sent again.";
+        }
+      } finally {
+        entry.starting = false;
+        identityMutations.delete(projectId);
+        tell();
+        if (!disposed) await readIdentityPage(projectId);
+      }
+    },
     check,
     /** The proposal bridge already verified the full original body/hash; never dispatch here. */
     adoptStartReceipt(
@@ -845,6 +1144,7 @@ export function createSessionsClient(deps: {
           entry.identityPage.scope.projectId !== projectId ||
           entry.identityLoading ||
           entry.startIdentityError ||
+          entry.legacyIdentityError ||
           entry.identityPage.identities.some((identity) =>
             ["reserved", "attempted", "not-sent"].includes(identity.state),
           )
@@ -854,12 +1154,15 @@ export function createSessionsClient(deps: {
           tell();
           return;
         }
-        const request = freezeDeep(
-          structuredClone({
-            ...input,
-            requestId: deps.requestId(),
-          }) as SessionStartRequest,
-        );
+        let request: SessionStartRequest;
+        try {
+          request = makeStartRequest(input, deps.requestId());
+        } catch {
+          entry.startIdentityError =
+            "The original Start request could not be verified. Nothing was sent.";
+          tell();
+          return;
+        }
         entry.pendingStart = request;
         entry.starting = true;
         entry.startIdentityError = "";
@@ -967,12 +1270,18 @@ export function createSessionsClient(deps: {
         const current = page.identities.find(
           (identity) => identity.requestId === request.requestId,
         );
+        const currentHash = await sessionStartHash(request);
+        if (disposed || deps.identityScope?.()?.generation !== scope.generation)
+          return;
         if (
           !current ||
           !["reserved", "not-sent"].includes(current.state) ||
           entry.startIdentity?.requestId !== current.requestId ||
           entry.startIdentity.requestHash !== current.requestHash ||
-          entry.startIdentity.provider !== current.provider
+          entry.startIdentity.provider !== current.provider ||
+          current.provider !== startProvider(request) ||
+          current.mode !== request.launch.mode ||
+          currentHash !== current.requestHash
         ) {
           entry.identityPage = page;
           entry.identityGeneration = scope.generation;
@@ -1032,6 +1341,7 @@ export function createSessionsClient(deps: {
           entry.identityPage = null;
           entry.identityGeneration = null;
           entry.identityLoading = false;
+          entry.identityInspection = null;
         }
       }
       tell();

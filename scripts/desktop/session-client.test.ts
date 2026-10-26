@@ -1,9 +1,30 @@
 import { expect, test } from "bun:test";
+import {
+  codexChatStartBody,
+  newCodexChatDraft,
+} from "../../apps/desktop/src/codex-chat-composer";
+import {
+  codexTaskStartBody,
+  newCodexTaskDraft,
+} from "../../apps/desktop/src/codex-session-composer";
+import {
+  geminiChatStartBody,
+  newGeminiChatDraft,
+} from "../../apps/desktop/src/gemini-chat-composer";
+import {
+  geminiTaskStartBody,
+  newGeminiTaskDraft,
+} from "../../apps/desktop/src/gemini-task-composer";
 import { createSessionsClient } from "../../apps/desktop/src/session-client";
+import {
+  newSessionDraft,
+  sessionStartBody,
+} from "../../apps/desktop/src/session-composer";
 import { sessionStartHash } from "../../apps/desktop/src/session-start-identities";
 import type { SessionStartIdentityServer } from "../../apps/desktop/src/session-start-identity-server";
 import type { ActionOutcome } from "../../docs/js/action-outcome";
 import type { StreamHandlers } from "../../docs/js/use-stream";
+import { canonicalOwnedSessionStart } from "../../scripts/sessions/codex-owned-protocol";
 import type { OwnedSessionRecord } from "../../types/owned-session";
 import type { SessionStartRequest } from "../../types/session-requests";
 import { sessionStartFixture } from "./session-start-fixture";
@@ -64,6 +85,147 @@ const input = {
   launch: { mode: "chat" as const, model: "sonnet", prompt: "Original prompt" },
 };
 record.requestHash = await sessionStartHash({ ...input, requestId });
+
+const sharedDraft = {
+  ...newSessionDraft(),
+  repository: "/repo",
+  worktree: "/repo",
+  prompt: "Exact original prompt",
+};
+const sixStartInputs = [
+  {
+    name: "Claude Task",
+    input: sessionStartBody({
+      ...sharedDraft,
+      mode: "task",
+      smith: "claude-task",
+      model: "sonnet",
+    }),
+  },
+  {
+    name: "Claude Chat",
+    input: sessionStartBody({
+      ...sharedDraft,
+      mode: "chat",
+      smith: "claude-chat",
+      model: "sonnet",
+    }),
+  },
+  {
+    name: "Codex Task",
+    input: codexTaskStartBody(sharedDraft, {
+      ...newCodexTaskDraft(),
+      initialized: true,
+      smith: "codex-task",
+      model: "gpt-5-codex",
+      sandbox: "read-only",
+    }),
+  },
+  {
+    name: "Codex Chat",
+    input: codexChatStartBody(sharedDraft, {
+      ...newCodexChatDraft(),
+      initialized: true,
+      smith: "codex-chat",
+      model: "gpt-5-codex",
+      approvalPolicy: "on-request",
+    }),
+  },
+  {
+    name: "Gemini Task",
+    input: geminiTaskStartBody(sharedDraft, {
+      ...newGeminiTaskDraft(),
+      initialized: true,
+      smith: "gemini-task",
+      model: "gemini-model",
+    }),
+  },
+  {
+    name: "Gemini Chat",
+    input: geminiChatStartBody(sharedDraft, {
+      ...newGeminiChatDraft(),
+      initialized: true,
+      smith: "gemini-chat",
+      model: "gemini-model",
+    }),
+  },
+] as const;
+
+for (const item of sixStartInputs) {
+  test(`${item.name} reserves the exact request before one ordinary Start`, async () => {
+    const scope = { projectId, workspace: "/repo", generation: 1 };
+    const order: string[] = [],
+      posted: SessionStartRequest[] = [];
+    const identityServer: SessionStartIdentityServer = {
+      async list(current) {
+        order.push("identity-get");
+        return {
+          version: 1,
+          scope: {
+            family: "owned-session-start",
+            projectId: current.projectId,
+            workspace: current.workspace,
+          },
+          identities: [],
+        };
+      },
+      async reserve(current, original) {
+        order.push("identity-reserve");
+        const requestHash = await sessionStartHash(original);
+        return {
+          scope: {
+            family: "owned-session-start",
+            projectId: current.projectId,
+            workspace: current.workspace,
+          },
+          identity: {
+            version: 1,
+            requestId: original.requestId,
+            requestHash,
+            provider: "provider" in original ? original.provider : "claude",
+            mode: original.launch.mode,
+            state: "reserved",
+          },
+          request: original,
+          requestHash,
+        };
+      },
+      async retire() {
+        throw Error("Unexpected retirement");
+      },
+    };
+    const client = createSessionsClient({
+      identityServer,
+      identityScope: () => scope,
+      canWrite: () => true,
+      requestId: () => requestId,
+      list: async () => [],
+      read: async () => page,
+      post: async (_project, _session, action, body) => {
+        if (action !== "start") throw Error("Unexpected action");
+        order.push("ordinary-start");
+        posted.push(body as SessionStartRequest);
+        return { state: "unknown", message: "Keep exact original held" };
+      },
+      stream: () => () => ({ close() {} }),
+    });
+
+    await client.refreshIdentities(projectId);
+    await client.start(projectId, item.input);
+
+    expect(order.slice(0, 3)).toEqual([
+      "identity-get",
+      "identity-reserve",
+      "ordinary-start",
+    ]);
+    expect(posted).toHaveLength(1);
+    expect(posted[0]?.requestId).toBe(requestId);
+    expect(canonicalOwnedSessionStart(posted[0])).toBe(
+      canonicalOwnedSessionStart({ ...item.input, requestId }),
+    );
+    client.dispose();
+  });
+}
 
 test("server-backed Start buffers identity reads across reserve and the ordinary Start effect", async () => {
   const scope = { projectId, workspace: "/repo", generation: 1 };
@@ -282,6 +444,475 @@ test("an explicit retry preserves a server not-sent generation and sends the sam
   expect(posts.at(1)?.requestId).toBe(requestId);
   expect(listCount).toBeGreaterThanOrEqual(3);
   client.dispose();
+});
+
+for (const heldState of ["reserved", "not-sent"] as const) {
+  test(`body re-entry compares the canonical original before reserve and resumes only that UUID from ${heldState}`, async () => {
+    const scope = { projectId, workspace: "/repo", generation: 1 },
+      originalRequest = { ...input, requestId },
+      requestHash = await sessionStartHash(originalRequest);
+    let reserveCount = 0,
+      startCount = 0;
+    const identityServer: SessionStartIdentityServer = {
+      async list(current) {
+        return {
+          version: 1,
+          scope: {
+            family: "owned-session-start",
+            projectId: current.projectId,
+            workspace: current.workspace,
+          },
+          identities: [
+            {
+              version: 1,
+              requestId,
+              requestHash,
+              provider: "claude",
+              mode: "chat",
+              state: heldState,
+            },
+          ],
+        };
+      },
+      async reserve(current, original) {
+        reserveCount++;
+        return {
+          scope: {
+            family: "owned-session-start",
+            projectId: current.projectId,
+            workspace: current.workspace,
+          },
+          identity: {
+            version: 1,
+            requestId,
+            requestHash,
+            provider: "claude",
+            mode: "chat",
+            state: heldState,
+          },
+          request: original,
+          requestHash,
+        };
+      },
+      async retire() {
+        throw Error("Unexpected retirement");
+      },
+    };
+    const client = createSessionsClient({
+      identityServer,
+      identityScope: () => scope,
+      canWrite: () => true,
+      requestId: () => "b8ca8cbb-85d4-42a8-a464-a04aec0474d8",
+      list: async () => [],
+      read: async () => page,
+      post: async (_project, _session, action, body) => {
+        if (action !== "start") throw Error("Unexpected action");
+        startCount++;
+        expect(body).toMatchObject({ requestId });
+        return { state: "unknown", message: "Keep exact original held" };
+      },
+      stream: () => () => ({ close() {} }),
+    });
+
+    await client.refreshIdentities(projectId);
+    await client.resumeStart(projectId, {
+      ...input,
+      launch: { ...input.launch, prompt: "Changed original" },
+    });
+    expect(reserveCount).toBe(0);
+    expect(startCount).toBe(0);
+    await client.resumeStart(projectId, input);
+
+    expect(reserveCount).toBe(1);
+    expect(startCount).toBe(1);
+    expect(client.project(projectId).pendingStart?.requestId).toBe(requestId);
+    client.dispose();
+  });
+}
+
+test("reserved-only retirement passes the current verified row and requires tombstone readback", async () => {
+  const scope = { projectId, workspace: "/repo", generation: 1 },
+    reserved = {
+      version: 1 as const,
+      requestId,
+      requestHash: "c".repeat(64),
+      provider: "claude" as const,
+      mode: "chat" as const,
+      state: "reserved" as const,
+    };
+  let state: "reserved" | "retired" | "attempted" = "reserved",
+    retireCalls = 0;
+  const identityServer: SessionStartIdentityServer = {
+    async list(current) {
+      return {
+        version: 1,
+        scope: {
+          family: "owned-session-start",
+          projectId: current.projectId,
+          workspace: current.workspace,
+        },
+        identities: [{ ...reserved, state }],
+      };
+    },
+    async reserve() {
+      throw Error("Unexpected reserve");
+    },
+    async retire(current, row) {
+      retireCalls++;
+      expect(row).toMatchObject(reserved);
+      state = "retired";
+      return {
+        version: 1,
+        scope: {
+          family: "owned-session-start",
+          projectId: current.projectId,
+          workspace: current.workspace,
+        },
+        identity: { ...reserved, state: "retired" },
+      };
+    },
+  };
+  const client = createSessionsClient({
+    identityServer,
+    identityScope: () => scope,
+    canWrite: () => true,
+    requestId: () => requestId,
+    list: async () => [],
+    read: async () => page,
+    post: async () => ({ state: "unknown", message: "Unexpected write" }),
+    stream: () => () => ({ close() {} }),
+  });
+
+  await client.refreshIdentities(projectId);
+  expect(await client.retireIdentity(projectId, requestId)).toBe(true);
+  expect(client.project(projectId).identityPage?.identities[0]?.state).toBe(
+    "retired",
+  );
+  expect(await client.retireIdentity(projectId, requestId)).toBe(false);
+  expect(retireCalls).toBe(1);
+  state = "attempted";
+  await client.refreshIdentities(projectId);
+  expect(await client.retireIdentity(projectId, requestId)).toBe(false);
+  expect(retireCalls).toBe(1);
+  client.dispose();
+});
+
+test("admitted identity inspection reads only the exact matching original and never posts", async () => {
+  const scope = { projectId, workspace: "/repo", generation: 1 };
+  let originalReads = 0,
+    writes = 0;
+  const identityServer: SessionStartIdentityServer = {
+    async list(current) {
+      return {
+        version: 1,
+        scope: {
+          family: "owned-session-start",
+          projectId: current.projectId,
+          workspace: current.workspace,
+        },
+        identities: [
+          {
+            version: 1,
+            requestId,
+            requestHash: record.requestHash,
+            provider: "claude",
+            mode: "chat",
+            state: "admitted",
+          },
+        ],
+      };
+    },
+    async reserve() {
+      writes++;
+      throw Error("Inspection must not reserve");
+    },
+    async retire() {
+      writes++;
+      throw Error("Inspection must not retire");
+    },
+  };
+  const client = createSessionsClient({
+    identityServer,
+    identityScope: () => scope,
+    canWrite: () => true,
+    requestId: () => requestId,
+    list: async () => [record],
+    read: async (_project, sessionId, query) => {
+      expect(sessionId).toBe(id);
+      expect(query.requestId).toBe(requestId);
+      originalReads++;
+      return page;
+    },
+    post: async () => {
+      writes++;
+      return { state: "unknown", message: "Inspection must not post" };
+    },
+    stream: () => () => ({ close() {} }),
+  });
+
+  await client.refreshIdentities(projectId);
+  await client.refresh(projectId);
+  expect(originalReads).toBe(0);
+  expect(await client.inspectIdentity(projectId, requestId)).toBe(true);
+  expect(originalReads).toBe(1);
+  expect(writes).toBe(0);
+  expect(client.project(projectId).identityInspection).toEqual({
+    requestId,
+    state: "verified",
+    sessionId: id,
+  });
+  client.dispose();
+});
+
+test("an unmatched read-only legacy hint keeps fresh Start held without clearing browser storage", async () => {
+  let reserveCalls = 0,
+    startCalls = 0;
+  const identityServer: SessionStartIdentityServer = {
+    async list(current) {
+      return {
+        version: 1,
+        scope: {
+          family: "owned-session-start",
+          projectId: current.projectId,
+          workspace: current.workspace,
+        },
+        identities: [],
+      };
+    },
+    async reserve() {
+      reserveCalls++;
+      throw Error("Mismatched local hint must hold Start");
+    },
+    async retire() {
+      throw Error("Unexpected retirement");
+    },
+  };
+  const client = createSessionsClient({
+    identityServer,
+    identityScope: () => ({ projectId, workspace: "/repo", generation: 1 }),
+    legacyHint: () => ({
+      projectId,
+      requestId,
+      requestHash: "d".repeat(64),
+      provider: "claude",
+    }),
+    canWrite: () => true,
+    requestId: () => "b8ca8cbb-85d4-42a8-a464-a04aec0474d8",
+    list: async () => [],
+    read: async () => page,
+    post: async () => {
+      startCalls++;
+      return { state: "unknown", message: "Unexpected Start" };
+    },
+    stream: () => () => ({ close() {} }),
+  });
+
+  await client.refreshIdentities(projectId);
+  await client.start(projectId, input);
+
+  expect(client.project(projectId).legacyIdentityHint?.requestId).toBe(
+    requestId,
+  );
+  expect(client.project(projectId).legacyIdentityError).not.toBe("");
+  expect(reserveCalls).toBe(0);
+  expect(startCalls).toBe(0);
+  client.dispose();
+});
+
+test("identity hydration is GET-only and app construction does not reserve or post", async () => {
+  let lists = 0,
+    reserves = 0,
+    retires = 0,
+    posts = 0;
+  const identityServer: SessionStartIdentityServer = {
+    async list(current) {
+      lists++;
+      return {
+        version: 1,
+        scope: {
+          family: "owned-session-start",
+          projectId: current.projectId,
+          workspace: current.workspace,
+        },
+        identities: [],
+      };
+    },
+    async reserve() {
+      reserves++;
+      throw Error("Hydration cannot reserve");
+    },
+    async retire() {
+      retires++;
+      throw Error("Hydration cannot retire");
+    },
+  };
+  const client = createSessionsClient({
+    identityServer,
+    identityScope: () => ({ projectId, workspace: "/repo", generation: 1 }),
+    canWrite: () => true,
+    requestId: () => requestId,
+    list: async () => [],
+    read: async () => page,
+    post: async () => {
+      posts++;
+      return { state: "unknown", message: "Hydration cannot Start" };
+    },
+    stream: () => () => ({ close() {} }),
+  });
+
+  client.project(projectId);
+  expect(lists + reserves + retires + posts).toBe(0);
+  await client.refreshIdentities(projectId);
+
+  expect(lists).toBe(1);
+  expect(reserves + retires + posts).toBe(0);
+  client.dispose();
+});
+
+test("a readiness scope change while reserve is pending prevents the ordinary Start effect", async () => {
+  let scope = { projectId, workspace: "/repo", generation: 1 },
+    finishReserve:
+      | ((
+          value: Awaited<ReturnType<SessionStartIdentityServer["reserve"]>>,
+        ) => void)
+      | undefined,
+    startPosts = 0,
+    listCount = 0;
+  const identityServer: SessionStartIdentityServer = {
+    async list(current) {
+      listCount++;
+      return {
+        version: 1,
+        scope: {
+          family: "owned-session-start",
+          projectId: current.projectId,
+          workspace: current.workspace,
+        },
+        identities: [],
+      };
+    },
+    reserve(_current, _original) {
+      return new Promise((resolve) => {
+        finishReserve = resolve;
+      });
+    },
+    async retire() {
+      throw Error("Unexpected retirement");
+    },
+  };
+  const client = createSessionsClient({
+    identityServer,
+    identityScope: () => scope,
+    canWrite: () => true,
+    requestId: () => requestId,
+    list: async () => [],
+    read: async () => page,
+    post: async () => {
+      startPosts++;
+      return { state: "unknown", message: "No Start after scope change" };
+    },
+    stream: () => () => ({ close() {} }),
+  });
+
+  await client.refreshIdentities(projectId);
+  const starting = client.start(projectId, input);
+  await Promise.resolve();
+  scope = { ...scope, workspace: "/other-repo", generation: 2 };
+  finishReserve?.({
+    scope: {
+      family: "owned-session-start",
+      projectId,
+      workspace: "/repo",
+    },
+    identity: {
+      version: 1,
+      requestId,
+      requestHash: await sessionStartHash({ ...input, requestId }),
+      provider: "claude",
+      mode: "chat",
+      state: "reserved",
+    },
+    request: { ...input, requestId },
+    requestHash: await sessionStartHash({ ...input, requestId }),
+  });
+  await starting;
+
+  expect(startPosts).toBe(0);
+  expect(listCount).toBe(2);
+  client.dispose();
+});
+
+test("disposal while reserve is pending prevents Start and performs no post-disposal identity read", async () => {
+  const scope = { projectId, workspace: "/repo", generation: 1 };
+  let finishReserve:
+      | ((
+          value: Awaited<ReturnType<SessionStartIdentityServer["reserve"]>>,
+        ) => void)
+      | undefined,
+    lists = 0,
+    starts = 0;
+  const identityServer: SessionStartIdentityServer = {
+    async list(current) {
+      lists++;
+      return {
+        version: 1,
+        scope: {
+          family: "owned-session-start",
+          projectId: current.projectId,
+          workspace: current.workspace,
+        },
+        identities: [],
+      };
+    },
+    reserve() {
+      return new Promise((resolve) => {
+        finishReserve = resolve;
+      });
+    },
+    async retire() {
+      throw Error("Unexpected retirement");
+    },
+  };
+  const client = createSessionsClient({
+    identityServer,
+    identityScope: () => scope,
+    canWrite: () => true,
+    requestId: () => requestId,
+    list: async () => [],
+    read: async () => page,
+    post: async () => {
+      starts++;
+      return { state: "unknown", message: "Disposed Start cannot post" };
+    },
+    stream: () => () => ({ close() {} }),
+  });
+
+  await client.refreshIdentities(projectId);
+  const starting = client.start(projectId, input);
+  await Promise.resolve();
+  client.dispose();
+  const requestHash = await sessionStartHash({ ...input, requestId });
+  finishReserve?.({
+    scope: {
+      family: "owned-session-start",
+      projectId,
+      workspace: "/repo",
+    },
+    identity: {
+      version: 1,
+      requestId,
+      requestHash,
+      provider: "claude",
+      mode: "chat",
+      state: "reserved",
+    },
+    request: { ...input, requestId },
+    requestHash,
+  });
+  await starting;
+
+  expect(starts).toBe(0);
+  expect(lists).toBe(1);
 });
 
 test("a failed private feed reads the selected saved pages without claiming live status or dispatching a provider", async () => {
