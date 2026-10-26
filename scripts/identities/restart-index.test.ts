@@ -198,6 +198,27 @@ function replaceFileIdentity(path: string): void {
   unlinkSync(displaced);
 }
 
+function rewriteLastEvent(
+  directory: string,
+  rewrite: (event: Record<string, unknown>) => Record<string, unknown>,
+): void {
+  const name = readdirSync(directory)
+    .filter((entry) => entry.startsWith("event-"))
+    .sort()
+    .at(-1);
+  if (name === undefined) throw new Error("missing journal event");
+  const path = join(directory, name);
+  const event = JSON.parse(readFileSync(path, "utf8")) as Record<
+    string,
+    unknown
+  >;
+  const text = JSON.stringify(rewrite(event));
+  writeFileSync(path, text);
+  const digest = createHash("sha256").update(text).digest("hex");
+  const sequence = String(event.sequence).padStart(8, "0");
+  renameSync(path, join(directory, `event-${sequence}-${digest}.json`));
+}
+
 test("a reserved identity persists as one strict metadata event and exact reserve is idempotent", async () => {
   const home = profile();
   const options = storageOptions();
@@ -362,6 +383,110 @@ test("concurrent explicit retries after not-sent grant one new generation", asyn
   expect(results.filter((result) => result.mayDispatch)).toHaveLength(1);
   expect(results.filter((result) => !result.mayDispatch)).toHaveLength(1);
   expect(results.every((result) => result.attemptGeneration === 2)).toBe(true);
+});
+
+test("verified source may promote not-sent without another attempt claim", async () => {
+  const home = profile();
+  const options = {
+    ...storageOptions(),
+    verifyAdmission: () => ({ source: "verified-original" }),
+  };
+  const identity = request();
+  const journal = createRestartIdentityJournal(home, options);
+  await journal.reserve(identity);
+  const claim = await journal.beginAttempt(identity);
+  await journal.settleNotSent(
+    identity,
+    provePreacceptNotSent({
+      ...identity,
+      attemptGeneration: claim.attemptGeneration,
+    }),
+  );
+
+  const admitted = await journal.admit(identity);
+  expect(admitted.row.state).toBe("admitted");
+  expect(admitted.evidence).toEqual({ source: "verified-original" });
+  expect(
+    (await createRestartIdentityJournal(home, options).beginAttempt(identity))
+      .mayDispatch,
+  ).toBe(false);
+});
+
+test("replay rejects missing retry/admission generations and generation on retirement", async () => {
+  const retryHome = profile();
+  const retryOptions = storageOptions();
+  const identity = request();
+  const retryJournal = createRestartIdentityJournal(retryHome, retryOptions);
+  await retryJournal.reserve(identity);
+  const firstClaim = await retryJournal.beginAttempt(identity);
+  await retryJournal.settleNotSent(
+    identity,
+    provePreacceptNotSent({
+      ...identity,
+      attemptGeneration: firstClaim.attemptGeneration,
+    }),
+  );
+  await retryJournal.beginAttempt(identity);
+  rewriteLastEvent(join(retryHome, "restart-identities"), (event) => {
+    const { attemptGeneration: _removed, ...legacyShape } = event;
+    return legacyShape;
+  });
+  await expect(
+    createRestartIdentityJournal(retryHome, retryOptions).list({
+      address: identity.address,
+      workspace: identity.workspace,
+    }),
+  ).rejects.toBeInstanceOf(RestartIdentityJournalError);
+
+  const admitHome = profile();
+  const admitOptions = {
+    ...storageOptions(),
+    verifyAdmission: () => ({ source: "verified-original" }),
+  };
+  const admitJournal = createRestartIdentityJournal(admitHome, admitOptions);
+  await admitJournal.reserve(identity);
+  const admitClaim = await admitJournal.beginAttempt(identity);
+  await admitJournal.settleNotSent(
+    identity,
+    provePreacceptNotSent({
+      ...identity,
+      attemptGeneration: admitClaim.attemptGeneration,
+    }),
+  );
+  await admitJournal.admit(identity);
+  rewriteLastEvent(join(admitHome, "restart-identities"), (event) => {
+    const { attemptGeneration: _removed, ...legacyShape } = event;
+    return legacyShape;
+  });
+  await expect(
+    createRestartIdentityJournal(admitHome, admitOptions).list({
+      address: identity.address,
+      workspace: identity.workspace,
+    }),
+  ).rejects.toBeInstanceOf(RestartIdentityJournalError);
+
+  const retiredHome = profile();
+  const retiredOptions = storageOptions();
+  const retiredJournal = createRestartIdentityJournal(
+    retiredHome,
+    retiredOptions,
+  );
+  await retiredJournal.reserve(identity);
+  await retiredJournal.retireReserved(identity);
+  rewriteLastEvent(join(retiredHome, "restart-identities"), (event) => ({
+    version: event.version,
+    sequence: event.sequence,
+    parentDigest: event.parentDigest,
+    operation: event.operation,
+    attemptGeneration: 1,
+    row: event.row,
+  }));
+  await expect(
+    createRestartIdentityJournal(retiredHome, retiredOptions).list({
+      address: identity.address,
+      workspace: identity.workspace,
+    }),
+  ).rejects.toBeInstanceOf(RestartIdentityJournalError);
 });
 
 test("simultaneous independent first claims grant dispatch to exactly one caller", async () => {

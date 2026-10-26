@@ -626,6 +626,8 @@ function validateRowTransition(state: JournalState, stored: StoredEvent): void {
       row.state !== "admitted" ||
       (prior?.state !== "attempted" && prior?.state !== "not-sent") ||
       !sameBase(prior, row) ||
+      ((prior.state === "not-sent" || (generation ?? 0) > 1) &&
+        event.attemptGeneration === undefined) ||
       (event.attemptGeneration !== undefined &&
         event.attemptGeneration !== generation)
     )
@@ -634,7 +636,8 @@ function validateRowTransition(state: JournalState, stored: StoredEvent): void {
     if (
       row.state !== "retired" ||
       prior?.state !== "reserved" ||
-      !sameBase(prior, row)
+      !sameBase(prior, row) ||
+      event.attemptGeneration !== undefined
     )
       identityError();
   }
@@ -1062,7 +1065,8 @@ export function createRestartIdentityJournal<TProof = never>(
         if (existing === undefined || !exactRow(existing, input))
           throw conflict();
         if (existing.state === "admitted") return existing;
-        if (existing.state !== "attempted") throw conflict();
+        if (existing.state !== "attempted" && existing.state !== "not-sent")
+          throw conflict();
         return commit(
           state,
           "admit",
