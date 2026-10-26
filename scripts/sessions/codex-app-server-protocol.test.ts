@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import type {
   CodexChatCapabilities,
+  CodexChatEvent,
   CodexChatLaunch,
   CodexChatTurnPlan,
 } from "../../types/codex-chat";
@@ -80,13 +81,17 @@ test("unsupported effort, wire versions and broad launch options refuse without 
 
 const threadId = "0199a213-81c0-7800-8aa1-bbab2a035a53";
 const turnId = "0199a213-81c0-7800-8aa1-bbab2a035a54";
-function stream(selected: CodexChatLaunch = launch) {
+function stream(
+  selected: CodexChatLaunch = launch,
+  serviceTier?: unknown,
+  onThreadEvents?: (events: CodexChatEvent[]) => void,
+) {
   const decoder = createCodexChatStream({
     launch: selected,
     version: capabilities.version,
     resumeThreadId: threadId,
   });
-  decoder.thread({
+  const threadResult = decoder.thread({
     thread: {
       id: threadId,
       sessionId: threadId,
@@ -96,6 +101,7 @@ function stream(selected: CodexChatLaunch = launch) {
     },
     model: selected.model,
     modelProvider: "openai",
+    ...(serviceTier === undefined ? {} : { serviceTier }),
     cwd: selected.cwd,
     approvalPolicy: selected.approvalPolicy,
     approvalsReviewer: "user",
@@ -108,10 +114,34 @@ function stream(selected: CodexChatLaunch = launch) {
     },
     reasoningEffort: "medium",
   });
+  onThreadEvents?.(threadResult.events);
   decoder.armTurn();
   decoder.turn({ turn: { id: turnId, status: "inProgress" } });
   return decoder;
 }
+
+test("native Start/Resume tier evidence distinguishes omission, null, string and malformed values", () => {
+  const capture = (tier?: unknown) => {
+    let events: CodexChatEvent[] = [];
+    stream(launch, tier, (received) => (events = received));
+    return events.find((event) => event.kind === "configuration");
+  };
+  const absent = capture();
+  expect(absent).toBeDefined();
+  if (absent?.kind !== "configuration") throw Error("Missing config event");
+  expect(Object.hasOwn(absent, "serviceTier")).toBe(false);
+
+  const knownNull = capture(null);
+  expect(knownNull).toMatchObject({ kind: "configuration", serviceTier: null });
+  const knownValue = capture("priority");
+  expect(knownValue).toMatchObject({
+    kind: "configuration",
+    serviceTier: "priority",
+  });
+
+  for (const invalid of [false, "x".repeat(129)])
+    expect(() => capture(invalid)).toThrow();
+});
 const notify = (method: string, params: unknown) =>
   parseCodexAppServerFrame(JSON.stringify({ method, params }));
 const commandItem = (overrides: Record<string, unknown> = {}) => ({

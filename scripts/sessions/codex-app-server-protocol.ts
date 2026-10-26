@@ -1173,6 +1173,7 @@ export function createCodexChatStream(options: {
           }),
           model: id,
           modelProvider: id,
+          serviceTier: z.string().max(128).nullable().optional(),
           cwd: z.string().min(1).max(1024),
           approvalPolicy: z.enum(["never", "on-request"]),
           approvalsReviewer: z.literal("user"),
@@ -1219,6 +1220,9 @@ export function createCodexChatStream(options: {
             kind: "configuration",
             model: ack.model,
             modelProvider: ack.modelProvider,
+            ...(ack.serviceTier === undefined
+              ? {}
+              : { serviceTier: ack.serviceTier }),
             effort: ack.reasoningEffort,
             cwd: ack.cwd,
           },
