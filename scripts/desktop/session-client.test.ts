@@ -597,6 +597,61 @@ test("reserved-only retirement passes the current verified row and requires tomb
   client.dispose();
 });
 
+test("identity mutations do not post when writing is disabled or the client is disposed", async () => {
+  const scope = { projectId, workspace: "/repo", generation: 1 };
+  let canWrite = true;
+  let retireCalls = 0;
+  const identityServer: SessionStartIdentityServer = {
+    async list(current) {
+      return {
+        version: 1,
+        scope: {
+          family: "owned-session-start",
+          projectId: current.projectId,
+          workspace: current.workspace,
+        },
+        identities: [
+          {
+            version: 1,
+            requestId,
+            requestHash: record.requestHash,
+            provider: "claude",
+            mode: "chat",
+            state: "reserved",
+          },
+        ],
+      };
+    },
+    async reserve() {
+      throw Error("Unexpected reserve");
+    },
+    async retire() {
+      retireCalls++;
+      throw Error("Retire must not be sent");
+    },
+  };
+  const client = createSessionsClient({
+    identityServer,
+    identityScope: () => scope,
+    canWrite: () => canWrite,
+    requestId: () => requestId,
+    list: async () => [],
+    read: async () => page,
+    post: async () => ({ state: "unknown", message: "Unexpected write" }),
+    stream: () => () => ({ close() {} }),
+  });
+
+  await client.refreshIdentities(projectId);
+  canWrite = false;
+  expect(await client.retireIdentity(projectId, requestId)).toBe(false);
+  expect(retireCalls).toBe(0);
+
+  canWrite = true;
+  client.dispose();
+  expect(await client.retireIdentity(projectId, requestId)).toBe(false);
+  expect(retireCalls).toBe(0);
+});
+
 test("admitted identity inspection reads only the exact matching original and never posts", async () => {
   const scope = { projectId, workspace: "/repo", generation: 1 };
   let originalReads = 0,

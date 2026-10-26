@@ -393,6 +393,7 @@ export function createSessionsClient(deps: {
       page = entry.identityPage,
       identity = page?.identities.find((row) => row.requestId === requestId);
     if (
+      disposed ||
       !deps.identityServer ||
       !scope ||
       scope.projectId !== projectId ||
@@ -908,12 +909,14 @@ export function createSessionsClient(deps: {
             identity.requestId === requestId && identity.state === "reserved",
         );
       if (
+        disposed ||
         !scope ||
         scope.projectId !== projectId ||
         !page ||
         entry.identityGeneration !== scope.generation ||
         entry.identityLoading ||
         !reserved ||
+        !deps.canWrite() ||
         identityMutations.has(projectId)
       )
         return false;
@@ -966,6 +969,7 @@ export function createSessionsClient(deps: {
             ["reserved", "not-sent"].includes(identity.state),
           ) ?? [];
       if (
+        disposed ||
         !scope ||
         scope.projectId !== projectId ||
         !page ||
