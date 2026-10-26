@@ -263,7 +263,11 @@ function parseTomlText(file: string, text: string): Table {
   }
 }
 
-function parseBench(file: string, name: string, raw: unknown): BenchEntry[] {
+export function parseBench(
+  file: string,
+  name: string,
+  raw: unknown,
+): BenchEntry[] {
   const key = `benches.${name}`;
   if (!Array.isArray(raw) || raw.length === 0) {
     fail(file, key, 'expected a non-empty array of "smith:weight" strings');
