@@ -279,6 +279,8 @@ export function createCodexChatRuntime(options: CodexChatRuntimeOptions) {
       const input = parseCodexChatForkRuntimeInput(value),
         snapshot = input.prepared;
       validate(snapshot);
+      if (input.signal?.aborted)
+        throw new Error("Native Fork was stopped before startup.");
       if (directory(snapshot.canonicalCwd) !== snapshot.canonicalCwd)
         throw new Error("The prepared Codex Chat workspace is not canonical.");
       const runtime = ready(snapshot.smith),
@@ -334,6 +336,10 @@ export function createCodexChatRuntime(options: CodexChatRuntimeOptions) {
             if (failure) return;
             try {
               const frame = parseCodexAppServerFrame(line);
+              if (frame.kind === "request") {
+                fail("Native Fork made an unsupported server request.");
+                return;
+              }
               if (frame.kind !== "response") {
                 if (frame.method === "warning") {
                   const warning = z

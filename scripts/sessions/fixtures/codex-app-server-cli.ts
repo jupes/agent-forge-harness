@@ -474,18 +474,31 @@ while (true) {
     if (method === "initialize" && mode === "hang-initialize") {
       hangTree();
     } else if (method === "initialize") {
+      if (mode === "fork-initialize-failure")
+        await send({
+          id,
+          error: { code: -32000, message: "Synthetic initialize refusal" },
+        });
+      else {
+        await send({
+          id,
+          result: {
+            userAgent: "inert",
+            codexHome: process.cwd(),
+            platformFamily: "windows",
+            platformOs: "windows",
+          },
+        });
+        await send({
+          method: "warning",
+          params: { threadId: null, message: "Inert private global warning" },
+        });
+      }
+    } else if (method === "initialized" && mode === "fork-server-request") {
       await send({
-        id,
-        result: {
-          userAgent: "inert",
-          codexHome: process.cwd(),
-          platformFamily: "windows",
-          platformOs: "windows",
-        },
-      });
-      await send({
-        method: "warning",
-        params: { threadId: null, message: "Inert private global warning" },
+        id: "unsupported-server-request",
+        method: "item/commandExecution/requestApproval",
+        params: { threadId },
       });
     } else if (method === "thread/fork") {
       if (
@@ -574,6 +587,20 @@ while (true) {
         reasoningEffort: effort,
         multiAgentMode: "explicitRequestOnly",
       };
+      if (mode === "fork-wrong-parent")
+        (forkThread as Record<string, unknown>).forkedFromId =
+          "0199a213-81c0-7800-8aa1-bbab2a035a56";
+      if (mode === "fork-wrong-child")
+        (forkThread as Record<string, unknown>).id = threadId;
+      if (mode === "fork-wrong-config") {
+        (forkThread as Record<string, unknown>).model = "different-model";
+        (result as Record<string, unknown>).model = "different-model";
+      }
+      if (mode === "fork-active")
+        (forkThread as Record<string, unknown>).status = {
+          type: "active",
+          activeFlags: [],
+        };
       record({ kind: "fork-result", result });
       if (mode === "fork-lost-response") {
         // Deliberately retain an owned process tree after the synthetic native
@@ -581,11 +608,14 @@ while (true) {
       } else if (mode === "fork-malformed")
         await send({ id, result: { ...result, unexpected: true } });
       else {
+        if (mode === "fork-oversized")
+          (forkThread as Record<string, unknown>).preview = "x".repeat(70_000);
         await send({ id, result });
         await send({
           method: "thread/started",
           params: { thread: forkThread },
         });
+        if (mode === "fork-cleanup-failure") process.exit(17);
       }
     } else if (method === "thread/start" || method === "thread/resume") {
       resuming = method === "thread/resume";
