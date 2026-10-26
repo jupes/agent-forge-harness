@@ -1,12 +1,18 @@
-import { useState } from "preact/hooks";
+import { useRef, useState } from "preact/hooks";
 import { Button } from "../../../docs/js/ds/Button";
+import { Dialog } from "../../../docs/js/ds/Dialog";
 import { EmptyState } from "../../../docs/js/ds/EmptyState";
 import { APPRENTICE_VERIFICATION } from "../../../scripts/smith-verification";
 import type { ScoreboardRow } from "../../../types/hearth";
 import { PROVIDER_USAGE_COUNTS } from "../../../types/hearth";
+import {
+  SmithCreateFormView,
+  SmithCreateReceiptsView,
+} from "./SmithCreateForm";
 import { SmithVerificationTask } from "./SmithVerificationTask";
 import { SCOREBOARD_RANGES } from "./smiths-client";
 import { metric, scoreboardKey } from "./smiths-model";
+import type { useSmithCreate } from "./use-smith-create";
 import type { SmithsController } from "./use-smiths";
 import "./smiths.css";
 
@@ -119,14 +125,18 @@ function RecordedMetrics({ row }: { row: ScoreboardRow }) {
 
 export function Smiths({
   controller,
+  creates,
   workspace,
 }: {
   controller: SmithsController;
+  creates: ReturnType<typeof useSmithCreate>;
   workspace: string | null;
 }) {
   const [search, setSearch] = useState("");
   const [enabled, setEnabled] = useState("all");
   const [boardPage, setBoardPage] = useState(0);
+  const [createOpen, setCreateOpen] = useState(false);
+  const createOpener = useRef<HTMLElement>(null);
   const { client, view } = controller;
   const config = view?.configuration,
     board = view?.scoreboard;
@@ -176,8 +186,13 @@ export function Smiths({
         </div>
         <div class="af-smith-actions">
           <Button
-            disabled
-            title="Smith creation needs the validated configuration editor."
+            onClick={() => {
+              createOpener.current =
+                document.activeElement instanceof HTMLElement
+                  ? document.activeElement
+                  : null;
+              setCreateOpen(true);
+            }}
           >
             New smith
           </Button>
@@ -190,9 +205,29 @@ export function Smiths({
         </div>
       </div>
       <p class="af-smith-note">
-        Creation and editing are unavailable here. Inspecting these values does
-        not start a provider or change configuration.
+        Creating a Smith uses a complete candidate review and explicit save.
+        Editing existing configuration remains unavailable here; inspection and
+        review never start a provider.
       </p>
+      <Dialog
+        open={createOpen}
+        title="Create a Smith"
+        onClose={() => setCreateOpen(false)}
+        returnFocusRef={createOpener}
+        class="af-smith-create-dialog"
+        actions={
+          <Button onClick={() => setCreateOpen(false)}>Close review</Button>
+        }
+      >
+        <SmithCreateFormView
+          state={creates.state}
+          canWrite={creates.canWrite}
+          canStart={creates.client?.canStart() ?? false}
+          onDraft={(target, smith) => creates.client?.setDraft(target, smith)}
+          onPreview={() => void creates.client?.preview()}
+          onCreate={() => void creates.client?.create()}
+        />
+      </Dialog>
       <div class="af-smith-filters">
         <label>
           Filter smiths and scoreboard
@@ -228,6 +263,11 @@ export function Smiths({
           </Button>
         )}
       </div>
+      <SmithCreateReceiptsView
+        entries={creates.state.entries}
+        canWrite={creates.canWrite}
+        onCheck={(requestId) => void creates.client?.check(requestId)}
+      />
       <section
         aria-label="Saved smith configuration"
         class="af-smith-panel"

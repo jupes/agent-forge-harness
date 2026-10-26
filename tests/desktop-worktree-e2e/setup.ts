@@ -17,12 +17,7 @@ import {
   HEARTH_PORT,
   STORAGE_STATE,
 } from "../e2e/servers";
-import {
-  EMPTY_HOME,
-  FIXTURE_ROOT,
-  fixturePlan,
-  REPOSITORY,
-} from "./environment";
+import { FIXTURE_ROOT, fixturePlan, OS_HOME, REPOSITORY } from "./environment";
 
 export default async function setup() {
   mkdirSync(BD_STAND_IN_BIN, { recursive: true });
@@ -136,7 +131,9 @@ export default async function setup() {
   } finally {
     await browser.close();
   }
-  // A separate, empty OS home prevents the fixture from reading operator config.
-  if (EMPTY_HOME === process.env["USERPROFILE"])
-    throw new Error("The runner unexpectedly uses the fixture's empty home.");
+  // The browser servers use a separate scratch OS home; the runner keeps its normal profile.
+  if (OS_HOME === process.env["USERPROFILE"])
+    throw new Error(
+      "The runner unexpectedly uses the server's scratch OS home.",
+    );
 }

@@ -2,11 +2,11 @@
 
 This is the interface and state-machine checkpoint for
 agent-forge-harness-cla5.7.6.5 (Create complete Smith configurations through the
-protected backend). Browser-safe types/codecs and the trusted bounded-FD
-transaction extension are implemented with their focused no-child tests. The
-coordinator, private persistence and protected routes described below remain
-subsequent work in the same child.
-There is no new complete-Smith writer, API, provider execution or UI yet.
+protected backend). Browser-safe types/codecs, the trusted bounded-FD
+transaction extension, journal, coordinator, and protected routes are
+implemented with focused no-child tests. The desktop consumer now exposes a
+create-only candidate review and original-receipt recovery flow; its browser
+to real scratch-config end-to-end proof remains a separate gate.
 
 ## Public domain input
 
@@ -24,12 +24,32 @@ normalization. Prototype-owned Smith names refuse. The canonical request string
 has a fixed versioned field order and retains tag order and exact values. Only
 this new domain hash is defined; existing provider launch hashes do not change.
 
-The planned operator-only endpoints are POST `/config/smiths/preview`, action
+The operator-only endpoints are POST `/config/smiths/preview`, action
 `smith.config.preview`; POST `/config/smiths/creates`, action
-`smith.config.create`; and GET `/config/smiths/creates/:requestId`. Existing
+`smith.config.create`; and GET `/smiths/creates/:requestId`. Existing
 origin/token/body/validation/audit-before-effect order remains authoritative.
 Audit metadata contains only the operation identity and selected layer, never
-raw TOML, Smith bodies or environment values. These routes do not exist yet.
+raw TOML, Smith bodies or environment values.
+
+## Desktop create-only review
+
+The Smiths route offers a complete Smith form for the user or workspace layer.
+Review shows the server-selected target path, candidate digest and byte length,
+both opaque paired revisions, all five field provenance sources and the exact
+new Smith. Editing any field discards the prior preview. Create is an explicit
+second action and sends the exact reviewed request once under its saved UUID.
+This surface does not edit existing Smiths, choose defaults, or change weighted
+benches.
+
+The desktop app root owns the create client so route changes do not discard
+saved request identities. It retains only UUID, target, input digest and local
+scope metadata in browser storage, then checks the same protected original on
+startup. Confirmed and refused receipts remain inspectable. A missing,
+malformed, generic 404/503, or held server response remains held and offers
+only an explicit check of that original UUID; it never triggers a resend or
+replacement identity. Browser metadata is scoped to the trusted current
+workspace, and browser storage remains subject to the browser's origin
+partitioning.
 
 ## Review and historical response
 
@@ -143,18 +163,15 @@ after the first stat. Retain all metadata/identity/parent fences. No public fiel
 or CLI flag can change the bound. Preview creates no config/mutex/intent file or
 directory; the existing metadata-only operator audit is the sole write exception.
 
-## Remaining verification
+## Verification status
 
-The current pure tests cover strict domain inputs, encoded bounds, literal
-canonical bytes, original/preview/publication correlation, held-stage truth,
-browser bundling and parsing without Node Buffer. They do not prove persistence
-or a working New Smith product flow. Next causal tests must cover NOWRITE
-preview/original; exact duplicate before corrupt current config; changed
-UUID/body/owner refusal; every intent/prepared/attempted/rename/receipt failure;
-late-owner fencing; lost response/recreation without replay; growing/oversized
-sources; paired absence/parent/leaf changes; temporary CLI/desktop cooperation;
-operator authority/audit inventory and the compiled server import graph.
+Pure tests cover strict domain inputs, encoded bounds, literal canonical bytes,
+original/preview/publication correlation, held-stage truth, browser bundling
+without Node-only journal code, exact operator paths/status handling, complete
+candidate presentation and held-identity controls. The backend's service and
+compiled-entry tests cover durable receipt behavior and no replay across
+recreation. This consumer checkpoint has not run its browser end-to-end flow;
+the click-to-real-scratch-config proof and current hosted PR checks remain
+required before the feature is ready.
 
-Actual process tests and broad gates require root scheduling. Current hosted
-Linux/Windows/displaced-isolation proof is required before readiness. Edit,
-bench/default changes, UI and UI E2E remain outside this child.
+Edit, weighted bench and default changes remain outside this create-only UI.
