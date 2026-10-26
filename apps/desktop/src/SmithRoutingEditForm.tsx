@@ -151,8 +151,10 @@ export function SmithRoutingEditFormView({
     setWeightText(texts);
     update({ ...change, entries });
   };
-  const blocked =
-    !canWrite || !valid || held || state.saving || state.previewing;
+  const reviewBlocked = !canWrite || !valid || held;
+  const reviewBusy = state.previewing || state.saving;
+  const saveBlocked = !canWrite || !valid || held || !sameReview;
+  const saveBusy = state.previewing || state.saving;
   return (
     <div class="af-smith-routing-edit">
       <p>
@@ -295,9 +297,11 @@ export function SmithRoutingEditFormView({
       <div class="af-smith-routing-actions">
         <button
           type="button"
-          disabled={blocked}
+          disabled={reviewBlocked}
+          aria-disabled={reviewBusy}
+          aria-busy={state.previewing}
           onClick={() => {
-            if (target && valid) {
+            if (!reviewBlocked && !reviewBusy && target && valid) {
               onDraft(target, change);
               onPreview();
             }
@@ -307,8 +311,12 @@ export function SmithRoutingEditFormView({
         </button>
         <button
           type="button"
-          disabled={blocked || !sameReview}
-          onClick={onSave}
+          disabled={saveBlocked}
+          aria-disabled={saveBusy}
+          aria-busy={state.saving}
+          onClick={() => {
+            if (!saveBlocked && !saveBusy) onSave();
+          }}
         >
           {state.saving ? "Saving original…" : "Save reviewed routing edit"}
         </button>

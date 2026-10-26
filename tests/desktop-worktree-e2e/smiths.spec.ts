@@ -1108,16 +1108,47 @@ test("reviews a manually entered configured default name and reloads its receipt
   await dialog.getByLabel("Workspace configuration", { exact: true }).check();
   const value = fixtureAlternativeSmith;
   await dialog.getByLabel("Default Smith name", { exact: true }).fill(value);
-  const previewed = page.waitForResponse(
-    (response) =>
-      response.request().method() === "POST" &&
-      new URL(response.url()).pathname ===
-        "/__agent-forge/config/smiths/routing-edits/preview",
-  );
-  await dialog
-    .getByRole("button", { name: "Review routing edit", exact: true })
-    .click();
-  expect((await previewed).status()).toBe(200);
+  let releasePreview!: () => void;
+  const previewGate = new Promise<void>((resolve) => {
+    releasePreview = resolve;
+  });
+  let previewRequests = 0;
+  await page.route("**/config/smiths/routing-edits/preview", async (route) => {
+    previewRequests++;
+    await previewGate;
+    await route.continue();
+  });
+  const reviewAction = dialog
+    .locator(".af-smith-routing-actions button")
+    .nth(0);
+  try {
+    const previewed = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        new URL(response.url()).pathname ===
+          "/__agent-forge/config/smiths/routing-edits/preview",
+    );
+    const previewRequest = page.waitForRequest(
+      (request) =>
+        request.method() === "POST" &&
+        new URL(request.url()).pathname ===
+          "/__agent-forge/config/smiths/routing-edits/preview",
+    );
+    await reviewAction.click();
+    await previewRequest;
+    await expect(reviewAction).toBeFocused();
+    await expect(reviewAction).toHaveAttribute("aria-disabled", "true");
+    await expect(reviewAction).toHaveAttribute("aria-busy", "true");
+    await page.keyboard.press("Enter");
+    expect(previewRequests).toBe(1);
+    releasePreview();
+    expect((await previewed).status()).toBe(200);
+    await expect(reviewAction).toHaveAttribute("aria-disabled", "false");
+    await expect(reviewAction).toBeFocused();
+  } finally {
+    releasePreview();
+    await page.unroute("**/config/smiths/routing-edits/preview");
+  }
   const review = dialog.getByRole("region", {
     name: "Routing edit review",
     exact: true,
@@ -1128,6 +1159,17 @@ test("reviews a manually entered configured default name and reloads its receipt
   await expect(review).toContainText(value);
   await expect(review).toContainText("Paired user revision");
   await expect(review).toContainText("Paired workspace revision");
+  const proofDirectory = process.env["AGENT_FORGE_WORKTREE_SCREENSHOT_DIR"];
+  if (proofDirectory)
+    await review.screenshot({
+      path: screenshotPath("smith-routing-review.png"),
+      animations: "disabled",
+      mask: [
+        review.locator("dd").nth(2),
+        review.locator("dd").nth(7),
+        review.locator("dd").nth(8),
+      ],
+    });
   expect(
     await page.evaluate(
       () => matchMedia("(prefers-reduced-motion: reduce)").matches,
@@ -1158,16 +1200,45 @@ test("reviews a manually entered configured default name and reloads its receipt
     contentType: "application/json",
   });
   expect(focusFacts.routingDialogContains).toBe(true);
-  const saved = page.waitForResponse(
-    (response) =>
-      response.request().method() === "POST" &&
-      new URL(response.url()).pathname ===
-        "/__agent-forge/config/smiths/routing-edits",
-  );
-  await dialog
-    .getByRole("button", { name: "Save reviewed routing edit", exact: true })
-    .click();
-  expect((await saved).status()).toBe(200);
+  let releaseSave!: () => void;
+  const saveGate = new Promise<void>((resolve) => {
+    releaseSave = resolve;
+  });
+  let editRequests = 0;
+  await page.route("**/config/smiths/routing-edits", async (route) => {
+    editRequests++;
+    await saveGate;
+    await route.continue();
+  });
+  const saveAction = dialog.locator(".af-smith-routing-actions button").nth(1);
+  try {
+    const saved = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        new URL(response.url()).pathname ===
+          "/__agent-forge/config/smiths/routing-edits",
+    );
+    const saveRequest = page.waitForRequest(
+      (request) =>
+        request.method() === "POST" &&
+        new URL(request.url()).pathname ===
+          "/__agent-forge/config/smiths/routing-edits",
+    );
+    await saveAction.click();
+    await saveRequest;
+    await expect(saveAction).toBeFocused();
+    await expect(saveAction).toHaveAttribute("aria-disabled", "true");
+    await expect(saveAction).toHaveAttribute("aria-busy", "true");
+    await page.keyboard.press("Enter");
+    expect(editRequests).toBe(1);
+    releaseSave();
+    expect((await saved).status()).toBe(200);
+    await expect(saveAction).toHaveAttribute("aria-disabled", "false");
+    await expect(saveAction).toBeFocused();
+  } finally {
+    releaseSave();
+    await page.unroute("**/config/smiths/routing-edits");
+  }
   await expect(
     page.getByRole("region", { name: "Original Smith routing edit receipts" }),
   ).toContainText("Confirmed");
