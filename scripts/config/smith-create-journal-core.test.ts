@@ -10,6 +10,8 @@ import {
   SMITH_CREATE_JOURNAL_LIMITS,
   type SmithCreateJournalFile,
   type SmithCreateOwner,
+  smithCreateInputHash,
+  smithCreateOwnerHash,
 } from "./smith-create-journal-protocol";
 
 const owner: SmithCreateOwner = {
@@ -137,6 +139,7 @@ test("a foreign prepared review refuses before any immutable phase is written", 
   ).rejects.toThrow();
   expect([...(m.records.get(original.requestId)?.keys() ?? [])]).toEqual([
     "intent.json",
+    "claimed.json",
   ]);
 });
 
@@ -201,23 +204,144 @@ test("changed body, revision and owner reuse refuse the original UUID before pro
   expect([...(m.records.get(original.requestId) ?? [])]).toEqual(bytes);
 });
 
-test("missing original GET is inert and an independent UUID has independent immutable files", async () => {
+test("missing original GET is inert and the owner-wide slot releases only after exact retirement", async () => {
   const m = memory(),
     journal = createSmithCreateJournalCore(m.storage, owner);
   expect(journal.readOriginal(original.requestId)).toBeNull();
   expect(m.counts()).toEqual({ locks: 0, writes: 0, reads: 0 });
-  await journal.reserve(original, () => {});
+  const held = await journal.reserveOriginal(original);
+  expect(held.result).toMatchObject({ phase: "held", stage: "reserved" });
   const other = {
     ...original,
     requestId: "2ef36706-c698-4d1c-93ef-7ee2112eb0ca",
   };
-  await journal.reserve(other, (writer) => writer.refuse("invalid-candidate"));
-  expect(journal.readOriginal(original.requestId)?.result).toMatchObject({
-    phase: "held",
-    stage: "intent",
+  await expect(journal.reserveOriginal(other)).rejects.toMatchObject({
+    reason: "conflict",
   });
-  expect(journal.readOriginal(other.requestId)?.result.phase).toBe("refused");
+  const retired = await journal.retireReserved(
+    original.requestId,
+    smithCreateInputHash(original),
+  );
+  expect(retired.result).toMatchObject({
+    phase: "refused",
+    reason: "cancelled-before-attempt",
+  });
+  const next = await journal.reserveOriginal(other);
+  expect(next.original.requestId).toBe(other.requestId);
+  expect(journal.listOriginals()).toMatchObject({
+    complete: true,
+    entries: [
+      { requestId: original.requestId, state: "refused", stage: "terminal" },
+      { requestId: other.requestId, state: "reserved", stage: "reserved" },
+    ],
+  });
   expect([...m.records.keys()]).toEqual([original.requestId, other.requestId]);
+});
+
+test("the shared profile index excludes valid other owners without hiding corrupt rows", async () => {
+  const m = memory(),
+    ownerB: SmithCreateOwner = {
+      ...owner,
+      checkout: { path: "/served/other", dev: "3", ino: "4" },
+      workspaceSelector: "/served/other/agent-forge.toml",
+    },
+    a = createSmithCreateJournalCore(m.storage, owner),
+    b = createSmithCreateJournalCore(m.storage, ownerB),
+    otherA = {
+      ...original,
+      requestId: "3ef36706-c698-4d1c-93ef-7ee2112eb0cb",
+    },
+    otherB = {
+      ...original,
+      requestId: "4ef36706-c698-4d1c-93ef-7ee2112eb0cc",
+    };
+
+  await a.reserveOriginal(original);
+  expect(b.listOriginals().entries).toEqual([]);
+  expect(() => b.readOriginal(original.requestId)).toThrow(
+    "another original or owner",
+  );
+  await b.reserveOriginal(otherB);
+  expect(b.listOriginals().entries.map((row) => row.requestId)).toEqual([
+    otherB.requestId,
+  ]);
+  expect(a.listOriginals().entries.map((row) => row.requestId)).toEqual([
+    original.requestId,
+  ]);
+  await expect(a.reserveOriginal(otherA)).rejects.toMatchObject({
+    reason: "conflict",
+  });
+
+  m.records.get(original.requestId)?.set("unknown.json", "{}");
+  expect(() => b.listOriginals()).toThrow();
+});
+
+test("a durable v2 claim runs its callback once and survives a lost claim response as held", async () => {
+  const m = memory(),
+    first = createSmithCreateJournalCore(m.storage, owner),
+    second = createSmithCreateJournalCore(m.storage, owner);
+  await first.reserveOriginal(original);
+  let callbacks = 0;
+  const claimed = await first.claim(original, (writer) => {
+    callbacks++;
+    writer.refuse("source-unavailable");
+  });
+  expect(callbacks).toBe(1);
+  expect(claimed.result).toMatchObject({
+    phase: "refused",
+    reason: "source-unavailable",
+  });
+  await second.reserveOriginal(original);
+  expect(callbacks).toBe(1);
+
+  const other = {
+    ...original,
+    requestId: "2ef36706-c698-4d1c-93ef-7ee2112eb0ca",
+  };
+  await expect(second.reserveOriginal(other)).resolves.toMatchObject({
+    result: { phase: "held", stage: "reserved" },
+  });
+});
+
+test("a v1 legacy original stays readable and blocks a new owner UUID without claiming", async () => {
+  const m = memory(),
+    inputHash = smithCreateInputHash(original),
+    record = {
+      version: 1,
+      kind: "intent",
+      requestId: original.requestId,
+      ownerScopeHash: smithCreateOwnerHash(owner),
+      inputHash,
+      owner,
+      original,
+      at: "2026-10-26T00:00:00.000Z",
+    };
+  m.records.set(
+    original.requestId,
+    new Map([["intent.json", JSON.stringify(record)]]),
+  );
+  const journal = createSmithCreateJournalCore(m.storage, owner),
+    read = journal.readOriginal(original.requestId);
+  expect(read?.result).toMatchObject({ phase: "held", stage: "intent" });
+  expect(journal.listOriginals()).toMatchObject({
+    entries: [
+      { requestId: original.requestId, state: "held", stage: "legacy" },
+    ],
+  });
+  let callbacks = 0;
+  if (!read) throw Error("The legacy receipt was not readable");
+  expect(
+    await journal.claim(original, () => {
+      callbacks++;
+    }),
+  ).toEqual(read);
+  expect(callbacks).toBe(0);
+  await expect(
+    journal.reserveOriginal({
+      ...original,
+      requestId: "2ef36706-c698-4d1c-93ef-7ee2112eb0ca",
+    }),
+  ).rejects.toMatchObject({ reason: "conflict" });
 });
 
 test("one concurrent original admits once and an orphaned prepared operation never re-enters work", async () => {

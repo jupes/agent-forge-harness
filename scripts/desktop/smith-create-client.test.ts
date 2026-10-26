@@ -15,6 +15,7 @@ import type {
   SmithConfigPreview,
   SmithConfigPreviewRequest,
 } from "../../types/smith-config-create";
+import { smithConfigCreateReceiptSchema } from "../config/smith-create-protocol";
 
 const scope = "http://127.0.0.1:8888",
   ids = [
@@ -80,6 +81,9 @@ function setup(
     post?: (
       request: SmithConfigCreateRequest,
     ) => Promise<SmithCreatePostResult>;
+    reserve?: (
+      request: SmithConfigCreateRequest,
+    ) => Promise<SmithCreatePostResult | null>;
     preview?: (input: SmithConfigPreviewRequest) => Promise<unknown>;
     readOriginal?: (requestId: string) => Promise<unknown>;
   } = {},
@@ -109,7 +113,59 @@ function setup(
     },
   });
   const posted: SmithConfigCreateRequest[] = [],
-    readIds: string[] = [];
+    readIds: string[] = [],
+    originals = new Map<string, SmithConfigCreateReceipt>();
+  const reserve = async (
+    request: SmithConfigCreateRequest,
+  ): Promise<SmithCreatePostResult> => {
+    const overridden = await options.reserve?.(request);
+    if (overridden) return overridden;
+    const existing = originals.get(request.requestId);
+    if (existing) return { state: "sent", value: structuredClone(existing) };
+    const value = await receipt(request, {
+      phase: "held",
+      stage: "reserved",
+      preview: null,
+    });
+    originals.set(request.requestId, value);
+    return { state: "sent", value: structuredClone(value) };
+  };
+  const list = async () => ({
+    version: 1,
+    complete: true,
+    ownerScopeHash: "d".repeat(64),
+    entries: [...originals.values()].map((item) => ({
+      requestId: item.requestId,
+      ownerScopeHash: item.ownerScopeHash,
+      inputHash: item.inputHash,
+      target: item.original.target,
+      state:
+        item.result.phase === "confirmed" || item.result.phase === "refused"
+          ? item.result.phase
+          : item.result.stage === "reserved"
+            ? "reserved"
+            : "held",
+      stage:
+        item.result.phase !== "held"
+          ? "terminal"
+          : item.result.stage === "intent"
+            ? "legacy"
+            : item.result.stage,
+      createdAt: item.createdAt,
+    })),
+  });
+  const retireReserved = async (requestId: string, inputHash: string) => {
+    const saved = originals.get(requestId);
+    if (!saved || saved.inputHash !== inputHash) throw Error("missing");
+    const retired = await receipt(saved.original, {
+      phase: "refused",
+      refusedAt: "2026-10-25T20:00:00.000Z",
+      reason: "cancelled-before-attempt",
+      preview: null,
+    });
+    originals.set(requestId, retired);
+    return retired;
+  };
   const client = createSmithConfigCreateClient({
     identities,
     canWrite: options.canWrite ?? (() => true),
@@ -117,17 +173,36 @@ function setup(
     preview: options.preview ?? (async (input) => preview(input)),
     post: async (request) => {
       posted.push(structuredClone(request));
-      return (
-        options.post?.(request) ??
-        Promise.resolve({ state: "sent", value: await receipt(request) })
-      );
+      const outcome = await (options.post?.(request) ??
+        Promise.resolve({ state: "sent", value: await receipt(request) }));
+      if (outcome.state === "sent") {
+        const parsed = smithConfigCreateReceiptSchema.safeParse(outcome.value);
+        if (parsed.success)
+          originals.set(request.requestId, structuredClone(parsed.data));
+      }
+      return outcome;
     },
+    reserve,
+    list,
+    retireReserved,
     readOriginal: async (requestId) => {
       readIds.push(requestId);
-      return options.readOriginal?.(requestId) ?? null;
+      return options.readOriginal
+        ? options.readOriginal(requestId)
+        : structuredClone(originals.get(requestId) ?? null);
     },
   });
-  return { client, identities, storage, posted, readIds };
+  return {
+    client,
+    identities,
+    storage,
+    posted,
+    readIds,
+    reserve,
+    list,
+    retireReserved,
+    originals,
+  };
 }
 
 test("create requires a current reviewed preview and an identity that read-backs before the one POST", async () => {
@@ -238,11 +313,17 @@ test("editing invalidates preview and a lost response stays held after a missing
   const heldId = first.posted[0]?.requestId;
   if (!heldId) throw Error("Missing held request id");
   expect(first.client.get().entries[0]?.state).toBe("held");
+  expect(first.client.get().entries[0]?.continueAllowed).toBe(false);
+  await first.client.continueReserved(heldId);
+  expect(first.posted).toHaveLength(1);
   first.client.dispose();
 
   let recoveryPreviewCalls = 0;
   const restarted = createSmithConfigCreateClient({
     identities: first.identities,
+    reserve: first.reserve,
+    list: first.list,
+    retireReserved: first.retireReserved,
     canWrite: () => true,
     requestId: () => ids[1]!,
     preview: async () => {
@@ -308,7 +389,7 @@ test("only an exact correlated preattempt refusal permits a new explicit UUID", 
   value.client.dispose();
 });
 
-test("NotSent is distinct and never turns a later generic response into a refusal", async () => {
+test("a create POST proven not sent keeps its server reservation until explicit retirement", async () => {
   const value = setup({
     post: async () => ({
       state: "not-sent",
@@ -318,30 +399,49 @@ test("NotSent is distinct and never turns a later generic response into a refusa
   value.client.setDraft("workspace", smith);
   await value.client.preview();
   await value.client.create();
-  expect(value.client.get().entries[0]).toMatchObject({ state: "not-sent" });
+  expect(value.client.get().entries[0]).toMatchObject({
+    state: "held",
+    serverIdentity: { state: "reserved", stage: "reserved" },
+    continueAllowed: true,
+  });
   expect(value.client.get().entries[0]?.notice).toContain(
-    "No request was sent",
+    "reservation remains held",
   );
-  expect(value.identities.read(ids[0]!)?.retired).toBe(true);
+  expect(value.identities.read(ids[0]!)?.retired).toBe(false);
   expect(value.posted).toHaveLength(1);
+  expect(value.client.canStart()).toBe(false);
+  await value.client.retireReservation(ids[0]!);
+  expect(value.client.get().entries[0]).toMatchObject({
+    state: "refused",
+    serverIdentity: { state: "refused", stage: "terminal" },
+  });
+  expect(value.client.canStart()).toBe(true);
   value.client.dispose();
 });
 
-test("a proven NotSent settlement survives reload and permits a later explicit create", async () => {
+test("a source-proven reservation NotSent survives reload and permits a later explicit create", async () => {
+  let reservationAttempts = 0;
   const first = setup({
-    post: async () => ({
-      state: "not-sent",
-      message: "Operator token unavailable.",
-    }),
+    reserve: async () =>
+      reservationAttempts++ === 0
+        ? {
+            state: "not-sent",
+            message: "The server proved no reservation request was sent.",
+          }
+        : null,
   });
   first.client.setDraft("workspace", smith);
   await first.client.preview();
   await first.client.create();
-  expect(first.identities.read(ids[0]!)?.retired).toBe(true);
+  expect(first.identities.read(ids[0]!)).toBeNull();
+  expect(first.originals.size).toBe(0);
   first.client.dispose();
 
   const restarted = createSmithConfigCreateClient({
     identities: first.identities,
+    reserve: first.reserve,
+    list: first.list,
+    retireReserved: first.retireReserved,
     canWrite: () => true,
     requestId: () => ids[1]!,
     preview: async (input) => preview(input),
@@ -356,12 +456,7 @@ test("a proven NotSent settlement survives reload and permits a later explicit c
   });
   await restarted.recover();
   expect(restarted.canStart()).toBe(true);
-  expect(restarted.get().entries).toMatchObject([
-    {
-      identity: { requestId: ids[0], retired: true },
-      state: "not-sent",
-    },
-  ]);
+  expect(restarted.get().entries).toEqual([]);
   expect(first.readIds).toEqual([]);
 
   const nextSmith = { ...smith, name: "codex-next-after-not-sent" };
@@ -373,6 +468,108 @@ test("a proven NotSent settlement survives reload and permits a later explicit c
     "not-sent",
     "confirmed",
   ]);
+  restarted.dispose();
+});
+
+test("a local NotSent marker cannot hide a server reservation after reload", async () => {
+  const first = setup({
+    post: async () => ({
+      state: "not-sent",
+      message: "The local transport proved no dispatch.",
+    }),
+  });
+  first.client.setDraft("workspace", smith);
+  await first.client.preview();
+  await first.client.create();
+  const saved = first.identities.read(ids[0]!);
+  if (!saved) throw Error("The local identity was not reserved");
+  await first.identities.retire(saved, "operator-not-sent");
+  first.client.dispose();
+
+  const restarted = createSmithConfigCreateClient({
+    identities: first.identities,
+    reserve: first.reserve,
+    list: first.list,
+    retireReserved: first.retireReserved,
+    canWrite: () => true,
+    requestId: () => ids[1]!,
+    preview: async (input) => preview(input),
+    post: async () => ({ state: "not-sent", message: "No dispatch." }),
+    readOriginal: async (requestId) => {
+      first.readIds.push(requestId);
+      return structuredClone(first.originals.get(requestId) ?? null);
+    },
+  });
+  await restarted.recover();
+  expect(first.readIds).toEqual([ids[0]!]);
+  expect(restarted.get().entries).toMatchObject([
+    {
+      identity: { requestId: ids[0]!, retired: true },
+      state: "held",
+      serverIdentity: { state: "reserved", stage: "reserved" },
+      receipt: {
+        original: { requestId: ids[0]! },
+        result: { stage: "reserved" },
+      },
+    },
+  ]);
+  expect(restarted.canStart()).toBe(false);
+  restarted.dispose();
+});
+
+test("continuing a recovered reservation re-reads the exact original before its explicit POST", async () => {
+  let posts = 0;
+  const first = setup({
+    post: async (request) => {
+      posts++;
+      return posts === 1
+        ? {
+            state: "not-sent",
+            message: "The first dispatch was proven absent.",
+          }
+        : { state: "sent", value: await receipt(request) };
+    },
+  });
+  first.client.setDraft("workspace", smith);
+  await first.client.preview();
+  await first.client.create();
+  first.client.dispose();
+
+  const restarted = createSmithConfigCreateClient({
+    identities: first.identities,
+    reserve: first.reserve,
+    list: first.list,
+    retireReserved: first.retireReserved,
+    canWrite: () => true,
+    requestId: () => ids[1]!,
+    preview: async (input) => preview(input),
+    post: async (request) => {
+      posts++;
+      first.posted.push(structuredClone(request));
+      const outcome = { state: "sent" as const, value: await receipt(request) };
+      first.originals.set(request.requestId, structuredClone(outcome.value));
+      return outcome;
+    },
+    readOriginal: async (requestId) => {
+      first.readIds.push(requestId);
+      return structuredClone(first.originals.get(requestId) ?? null);
+    },
+  });
+  await restarted.recover();
+  expect(first.readIds).toEqual([ids[0]!]);
+  await restarted.continueReserved(ids[0]!);
+  expect(first.readIds).toEqual([ids[0]!, ids[0]!]);
+  expect(first.posted.map((request) => request.requestId)).toEqual([
+    ids[0]!,
+    ids[0]!,
+  ]);
+  expect(restarted.get().entries[0]).toMatchObject({
+    state: "confirmed",
+    receipt: {
+      original: { requestId: ids[0]! },
+      result: { phase: "confirmed" },
+    },
+  });
   restarted.dispose();
 });
 
@@ -401,6 +598,9 @@ test("a refusal receipt is retired durably and does not strand the next create a
 
   const restarted = createSmithConfigCreateClient({
     identities: first.identities,
+    reserve: first.reserve,
+    list: first.list,
+    retireReserved: first.retireReserved,
     canWrite: () => true,
     requestId: () => ids[1]!,
     preview: async (input) => preview(input),
@@ -480,6 +680,9 @@ test("a retired refusal preserves its terminal state when protected readback con
     const conflicting = await receipt(original, conflictingResult);
     const restarted = createSmithConfigCreateClient({
       identities: first.identities,
+      reserve: first.reserve,
+      list: first.list,
+      retireReserved: first.retireReserved,
       canWrite: () => true,
       requestId: () => ids[1]!,
       preview: async (input) => preview(input),
@@ -525,6 +728,9 @@ test("a retired confirmation preserves its terminal state when protected readbac
   });
   const restarted = createSmithConfigCreateClient({
     identities: first.identities,
+    reserve: first.reserve,
+    list: first.list,
+    retireReserved: first.retireReserved,
     canWrite: () => true,
     requestId: () => ids[1]!,
     preview: async (input) => preview(input),
@@ -639,6 +845,16 @@ test("unreadable identity metadata fails closed before review or create", async 
     requestId: () => ids[0]!,
     preview: async () => preview({ target: "workspace", smith }),
     post: async () => ({ state: "unknown", message: "must not post" }),
+    reserve: async () => ({ state: "unknown", message: "must not reserve" }),
+    list: async () => ({
+      version: 1,
+      complete: true,
+      ownerScopeHash: "d".repeat(64),
+      entries: [],
+    }),
+    retireReserved: async () => {
+      throw Error("No reservation to retire");
+    },
     readOriginal: async () => null,
   });
 

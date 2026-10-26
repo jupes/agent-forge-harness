@@ -52,6 +52,7 @@ function state(
     creating: false,
     entries: [],
     activeRequestId: null,
+    serverDiscoveryReady: true,
     notice: "",
   };
 }
@@ -114,23 +115,32 @@ test("held original UI offers only an explicit same-UUID check, never a resend",
     state: "held",
     checking: false,
     notice: "The original receipt is not available yet.",
+    serverIdentity: null,
+    remoteOnly: false,
+    continueAllowed: false,
   };
   const noWrite = SmithCreateReceiptsView({
     entries: [held],
     canWrite: false,
+    creating: false,
     onCheck() {},
+    onContinue() {},
+    onRetire() {},
   });
   expect(textOf(noWrite)).toContain("Outcome held");
   expect(textOf(noWrite)).toContain(held.identity.requestId);
   expect(textOf(noWrite)).toContain("never sent again automatically");
   expect(findAll(noWrite, "button")).toHaveLength(1);
-  expect(attrs(findAll(noWrite, "button")[0])["disabled"]).toBe(true);
+  expect(attrs(findAll(noWrite, "button")[0])["disabled"]).toBe(false);
 
   const checked: string[] = [];
   const writable = SmithCreateReceiptsView({
     entries: [held],
     canWrite: true,
+    creating: false,
     onCheck: (id) => checked.push(id),
+    onContinue() {},
+    onRetire() {},
   });
   const checkButton = findAll(writable, "button")[0];
   const onClick = attrs(checkButton)["onClick"];
@@ -154,11 +164,17 @@ test("terminal original entries remain inspectable without check controls", () =
     state: "refused",
     checking: false,
     notice: "Refused before publication.",
+    serverIdentity: null,
+    remoteOnly: false,
+    continueAllowed: false,
   };
   const view = SmithCreateReceiptsView({
     entries: [terminal],
     canWrite: true,
+    creating: false,
     onCheck() {},
+    onContinue() {},
+    onRetire() {},
   });
   expect(textOf(view)).toContain("Refused before publication");
   expect(findAll(view, "button")).toHaveLength(0);

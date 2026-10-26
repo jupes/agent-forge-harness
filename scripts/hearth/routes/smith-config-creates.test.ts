@@ -49,18 +49,29 @@ test("Smith create route inventory is fixed and unauthorized or malformed reques
     (route) =>
       route.path === "/config/smiths/preview" ||
       route.path === "/config/smiths/creates" ||
+      route.path === "/config/smiths/creates/reserve" ||
+      route.path === "/config/smiths/creates/:requestId/retire" ||
+      route.path === "/smiths/creates" ||
       route.path.startsWith("/smiths/creates/"),
   );
   expect(
     smithRows.map(({ kind, method, path }) => ({ kind, method, path })),
   ).toEqual([
     { kind: "read", method: "GET", path: "/smiths/creates/:requestId" },
+    { kind: "read", method: "GET", path: "/smiths/creates" },
     { kind: "action", method: "POST", path: "/config/smiths/preview" },
+    { kind: "action", method: "POST", path: "/config/smiths/creates/reserve" },
     { kind: "action", method: "POST", path: "/config/smiths/creates" },
+    {
+      kind: "action",
+      method: "POST",
+      path: "/config/smiths/creates/:requestId/retire",
+    },
   ]);
   expect(
-    smithRows.find((route) => route.path.startsWith("/smiths/creates/"))
-      ?.operatorOnly,
+    smithRows
+      .filter((route) => route.kind === "read")
+      .every((route) => route.operatorOnly),
   ).toBe(true);
 
   const preview = { target: "workspace", smith };
@@ -73,7 +84,11 @@ test("Smith create route inventory is fixed and unauthorized or malformed reques
       workspace: "b".repeat(64),
     },
   };
-  for (const path of ["/config/smiths/preview", "/config/smiths/creates"]) {
+  for (const path of [
+    "/config/smiths/preview",
+    "/config/smiths/creates",
+    "/config/smiths/creates/reserve",
+  ]) {
     expect(
       (
         await post(
@@ -98,9 +113,108 @@ test("Smith create route inventory is fixed and unauthorized or malformed reques
     headers: h.headers(null),
   });
   expect(missing.status).toBe(403);
+  expect(
+    (await fetch(`${h.api}/smiths/creates`, { headers: h.headers(null) }))
+      .status,
+  ).toBe(403);
+  expect(
+    (
+      await post(h, "/config/smiths/creates/reserve", {
+        ...create,
+        unreviewed: true,
+      })
+    ).status,
+  ).toBe(400);
   expect(h.events()).toEqual([]);
   expect(existsSync(join(h.home, "smith-create-journal"))).toBe(false);
   expect(existsSync(join(h.root, "agent-forge.toml"))).toBe(false);
+});
+
+test("an audited server reservation is discoverable, exact-readable, and explicitly retireable", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  const previewResponse = await post(h, "/config/smiths/preview", {
+    target: "workspace",
+    smith,
+  });
+  expect(previewResponse.status).toBe(200);
+  const preview = (await previewResponse.json()).data;
+  const request: SmithConfigCreateRequest = {
+    requestId: randomUUID(),
+    target: "workspace",
+    smith,
+    expectedRevision: preview.expectedRevision,
+  };
+  const reservedResponse = await post(
+    h,
+    "/config/smiths/creates/reserve",
+    request,
+  );
+  expect(reservedResponse.status).toBe(200);
+  const reserved = (await reservedResponse.json()).data;
+  expect(smithConfigCreateReceiptSchema.parse(reserved).result).toEqual({
+    phase: "held",
+    stage: "reserved",
+    preview: null,
+  });
+
+  const indexResponse = await fetch(`${h.api}/smiths/creates`, {
+    headers: h.headers(h.hearth.token),
+  });
+  expect(indexResponse.status).toBe(200);
+  const index = (await indexResponse.json()).data;
+  expect(index).toMatchObject({
+    version: 1,
+    complete: true,
+    ownerScopeHash: reserved.ownerScopeHash,
+    entries: [
+      {
+        requestId: request.requestId,
+        ownerScopeHash: reserved.ownerScopeHash,
+        inputHash: reserved.inputHash,
+        target: request.target,
+        state: "reserved",
+        stage: "reserved",
+      },
+    ],
+  });
+  const originalResponse = await fetch(
+    `${h.api}/smiths/creates/${request.requestId}`,
+    { headers: h.headers(h.hearth.token) },
+  );
+  expect(originalResponse.status).toBe(200);
+  expect((await originalResponse.json()).data).toEqual(reserved);
+
+  const retireResponse = await post(
+    h,
+    `/config/smiths/creates/${request.requestId}/retire`,
+    { inputHash: reserved.inputHash },
+  );
+  expect(retireResponse.status).toBe(200);
+  const retired = (await retireResponse.json()).data;
+  expect(retired.result).toMatchObject({
+    phase: "refused",
+    reason: "cancelled-before-attempt",
+    preview: null,
+  });
+  expect(existsSync(join(h.root, "agent-forge.toml"))).toBe(false);
+  expect(JSON.stringify(h.events())).not.toContain("route-smith");
+  const audit = h.events(["operator.action"]).map((event) => event.payload);
+  expect(audit).toContainEqual({
+    action: "smith.config.create.reserve",
+    surface: "api",
+    target: "workspace",
+    family: "smith-config-create",
+    requestId: request.requestId,
+    inputHash: reserved.inputHash,
+  });
+  expect(audit).toContainEqual({
+    action: "smith.config.create.retire",
+    surface: "api",
+    family: "smith-config-create",
+    requestId: request.requestId,
+    inputHash: reserved.inputHash,
+  });
 });
 
 test("a post-confirmation lost response, changed-body collision and exact retry preserve the original", async () => {
@@ -153,7 +267,14 @@ test("a post-confirmation lost response, changed-body collision and exact retry 
   expect((await firstResponse.json()).error).toContain("response loss");
   expect(h.events(["operator.action"]).map((event) => event.payload)).toEqual([
     { action: "smith.config.preview", surface: "api", target: "workspace" },
-    { action: "smith.config.create", surface: "api", target: "workspace" },
+    {
+      action: "smith.config.create",
+      surface: "api",
+      target: "workspace",
+      family: "smith-config-create",
+      requestId: input.requestId,
+      inputHash: smithCreateInputHash(input),
+    },
   ]);
 
   const originalResponse = await fetch(
