@@ -179,6 +179,7 @@ test("a fresh trusted desktop origin discovers and inspects an admitted Start wi
   page.on("request", (request) => {
     const url = new URL(request.url());
     if (url.origin === newOrigin) {
+      const identityPath = `/__agent-forge/projects/${alpha.id}/session-start-identities`;
       if (
         request.method() === "GET" &&
         url.pathname ===
@@ -187,7 +188,8 @@ test("a fresh trusted desktop origin discovers and inspects an admitted Start wi
         newOriginIdentityGets++;
       if (
         request.method() === "POST" &&
-        url.pathname.endsWith(`/projects/${alpha.id}/session-start-identities`)
+        (url.pathname === identityPath ||
+          url.pathname.startsWith(`${identityPath}/`))
       )
         newOriginIdentityWrites++;
       if (
