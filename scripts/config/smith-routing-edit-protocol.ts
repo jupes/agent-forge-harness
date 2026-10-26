@@ -31,7 +31,10 @@ function encodedWithin(value: unknown, max: number): boolean {
 }
 
 const hash = z.string().regex(/^[a-f0-9]{64}$/);
-const requestId = z.uuid().refine((value) => value === value.toLowerCase());
+export const smithRoutingEditRequestIdSchema = z
+  .uuid()
+  .refine((value) => value === value.toLowerCase());
+const requestId = smithRoutingEditRequestIdSchema;
 const smithName = z
   .string()
   .min(1)

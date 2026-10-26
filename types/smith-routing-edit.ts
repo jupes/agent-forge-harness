@@ -42,3 +42,34 @@ export interface SmithRoutingEditPreview {
   candidate: { sha256: string; byteLength: number; created: boolean };
   review: SmithRoutingEditReview;
 }
+
+export type SmithRoutingEditRefusal =
+  | "stale-revision"
+  | "invalid-current-config"
+  | "shadowed-target"
+  | "success-preview-too-large"
+  | "write-refused-before-attempt";
+
+export type SmithRoutingEditReceiptResult =
+  | {
+      phase: "held";
+      stage: "intent" | "prepared" | "attempted" | "unconfirmed";
+      preview: SmithRoutingEditPreview | null;
+    }
+  | {
+      phase: "confirmed";
+      completedAt: string;
+      preview: SmithRoutingEditPreview;
+      publication: { file: string; created: boolean; sha256: string };
+    }
+  | { phase: "refused"; refusedAt: string; reason: SmithRoutingEditRefusal };
+
+export interface SmithRoutingEditReceipt {
+  version: 1;
+  requestId: string;
+  ownerScopeHash: string;
+  inputHash: string;
+  createdAt: string;
+  original: SmithRoutingEditRequest;
+  result: SmithRoutingEditReceiptResult;
+}
