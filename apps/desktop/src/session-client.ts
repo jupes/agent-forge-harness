@@ -177,6 +177,7 @@ export function createSessionsClient(deps: {
     { work: Promise<void>; again: boolean; controller: AbortController }
   >();
   const identityMutations = new Set<string>();
+  const inspectionEpochs = new Map<string, number>();
   const timers = deps.timers ?? REAL_TIMERS;
   let selected: OwnedSessionView | null = null,
     connection: { close(): void } | null = null,
@@ -184,6 +185,17 @@ export function createSessionsClient(deps: {
     cancelSavedRead: (() => void) | null = null,
     generation = 0,
     disposed = false;
+  const isCurrentIdentityScope = (
+    expected: VerifiedSessionIdentityScope,
+  ): boolean => {
+    const current = deps.identityScope?.();
+    return (
+      !!current &&
+      current.projectId === expected.projectId &&
+      current.workspace === expected.workspace &&
+      current.generation === expected.generation
+    );
+  };
   const project = (id: string): SessionProjectView => {
     let value = projects.get(id);
     if (!value) {
@@ -316,7 +328,7 @@ export function createSessionsClient(deps: {
           disposed ||
           read.controller.signal.aborted ||
           identityReads.get(projectId) !== read ||
-          deps.identityScope?.()?.generation !== scope.generation
+          !isCurrentIdentityScope(scope)
         )
           return;
         entry.identityPage = page;
@@ -390,6 +402,12 @@ export function createSessionsClient(deps: {
       !["attempted", "admitted"].includes(identity.state)
     )
       return false;
+    const inspectionEpoch = (inspectionEpochs.get(projectId) ?? 0) + 1;
+    inspectionEpochs.set(projectId, inspectionEpoch);
+    const isCurrentInspection = () =>
+      inspectionEpochs.get(projectId) === inspectionEpoch &&
+      isCurrentIdentityScope(scope) &&
+      entry.identityPage === page;
     entry.identityInspection = {
       requestId,
       state: "loading",
@@ -398,12 +416,7 @@ export function createSessionsClient(deps: {
     tell();
     try {
       await refresh(projectId);
-      if (
-        disposed ||
-        deps.identityScope?.()?.generation !== scope.generation ||
-        entry.identityPage !== page
-      )
-        return false;
+      if (disposed || !isCurrentInspection()) return false;
       const record = entry.records.find(
         (candidate) =>
           candidate.projectId === projectId &&
@@ -438,13 +451,26 @@ export function createSessionsClient(deps: {
         after: 0,
         requestId: identity.requestId,
       });
+      if (disposed || !isCurrentInspection()) return false;
+      const checkedOriginal = ownedCodingPageSchema.safeParse(raw);
       if (
-        disposed ||
-        deps.identityScope?.()?.generation !== scope.generation ||
-        entry.identityPage !== page
+        !checkedOriginal.success ||
+        checkedOriginal.data.projectId !== projectId ||
+        checkedOriginal.data.conversationId !== record.id ||
+        ![
+          ...checkedOriginal.data.turns,
+          ...(checkedOriginal.data.request
+            ? [checkedOriginal.data.request]
+            : []),
+        ].some(
+          (turn) =>
+            turn.requestId === requestId && turn.hash === identity.requestHash,
+        )
       )
-        return false;
-      if (!apply(session(projectId, record.id), raw))
+        throw Error("Original request identity did not match");
+      if (
+        !apply(session(projectId, record.id), checkedOriginal.data, false, true)
+      )
         throw Error("Original session could not be verified");
       const verifiedPage = session(projectId, record.id).page;
       if (
@@ -458,6 +484,7 @@ export function createSessionsClient(deps: {
         )
       )
         throw Error("Original request identity did not match");
+      if (!isCurrentInspection()) return false;
       entry.identityInspection = {
         requestId,
         state: "verified",
@@ -466,7 +493,7 @@ export function createSessionsClient(deps: {
       tell();
       return true;
     } catch {
-      if (!disposed && entry.identityPage === page) {
+      if (!disposed && isCurrentInspection()) {
         entry.identityInspection = {
           requestId,
           state: "unavailable",
@@ -562,6 +589,7 @@ export function createSessionsClient(deps: {
     entry: OwnedSessionView,
     raw: unknown,
     live = false,
+    cacheUnselected = false,
   ): boolean => {
     const parsed = ownedCodingPageSchema.safeParse(raw);
     if (
@@ -585,7 +613,7 @@ export function createSessionsClient(deps: {
     }
     const page = parsed.data;
     if (entry.page && page.revision < entry.page.revision) return true;
-    if (!live && selected !== entry) {
+    if (!live && selected !== entry && !cacheUnselected) {
       for (const turn of [
         ...page.turns,
         ...(page.request ? [page.request] : []),
@@ -900,7 +928,7 @@ export function createSessionsClient(deps: {
         const result = await deps.identityServer.retire(scope, reserved);
         if (
           disposed ||
-          deps.identityScope?.()?.generation !== scope.generation ||
+          !isCurrentIdentityScope(scope) ||
           result.identity.requestId !== requestId ||
           result.identity.requestHash !== reserved.requestHash ||
           result.identity.state !== "retired"
@@ -961,11 +989,9 @@ export function createSessionsClient(deps: {
       tell();
       try {
         const requestHash = await sessionStartHash(request);
-        const currentScope = deps.identityScope?.();
         if (
           disposed ||
-          !currentScope ||
-          currentScope.generation !== scope.generation ||
+          !isCurrentIdentityScope(scope) ||
           entry.identityPage !== page ||
           requestHash !== original.requestHash ||
           entry.identityLoading
@@ -978,7 +1004,7 @@ export function createSessionsClient(deps: {
         const reserved = await deps.identityServer!.reserve(scope, request);
         if (
           disposed ||
-          deps.identityScope?.()?.generation !== scope.generation ||
+          !isCurrentIdentityScope(scope) ||
           reserved.identity.state !== original.state ||
           reserved.identity.requestId !== original.requestId ||
           reserved.identity.requestHash !== original.requestHash ||
@@ -1171,11 +1197,7 @@ export function createSessionsClient(deps: {
         try {
           try {
             const reserved = await deps.identityServer.reserve(scope, request);
-            if (
-              disposed ||
-              deps.identityScope?.()?.generation !== scope.generation
-            )
-              return;
+            if (disposed || !isCurrentIdentityScope(scope)) return;
             entry.identityPage = null;
             entry.identityGeneration = null;
             entry.startIdentity = metadataProjection(
@@ -1265,14 +1287,12 @@ export function createSessionsClient(deps: {
       tell();
       try {
         const page = await deps.identityServer!.list(scope);
-        if (disposed || deps.identityScope?.()?.generation !== scope.generation)
-          return;
+        if (disposed || !isCurrentIdentityScope(scope)) return;
         const current = page.identities.find(
           (identity) => identity.requestId === request.requestId,
         );
         const currentHash = await sessionStartHash(request);
-        if (disposed || deps.identityScope?.()?.generation !== scope.generation)
-          return;
+        if (disposed || !isCurrentIdentityScope(scope)) return;
         if (
           !current ||
           !["reserved", "not-sent"].includes(current.state) ||
@@ -1295,7 +1315,7 @@ export function createSessionsClient(deps: {
         const reserved = await deps.identityServer!.reserve(scope, request);
         if (
           disposed ||
-          deps.identityScope?.()?.generation !== scope.generation ||
+          !isCurrentIdentityScope(scope) ||
           reserved.identity.state !== current.state ||
           reserved.requestHash !== current.requestHash ||
           reserved.identity.requestId !== request.requestId ||

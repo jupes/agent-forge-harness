@@ -669,6 +669,146 @@ test("admitted identity inspection reads only the exact matching original and ne
   client.dispose();
 });
 
+for (const mismatch of ["turn-hash", "conversation-id"] as const) {
+  test(`admitted inspection rejects a ${mismatch} mismatch without caching private session data`, async () => {
+    const scope = { projectId, workspace: "/repo", generation: 1 };
+    const identityServer: SessionStartIdentityServer = {
+      async list(current) {
+        return {
+          version: 1,
+          scope: {
+            family: "owned-session-start",
+            projectId: current.projectId,
+            workspace: current.workspace,
+          },
+          identities: [
+            {
+              version: 1,
+              requestId,
+              requestHash: record.requestHash,
+              provider: "claude",
+              mode: "chat",
+              state: "admitted",
+            },
+          ],
+        };
+      },
+      async reserve() {
+        throw Error("Inspection must not reserve");
+      },
+      async retire() {
+        throw Error("Inspection must not retire");
+      },
+    };
+    const client = createSessionsClient({
+      identityServer,
+      identityScope: () => scope,
+      canWrite: () => true,
+      requestId: () => requestId,
+      list: async () => [record],
+      read: async () => {
+        const originalTurn = {
+          ...turn,
+          hash: mismatch === "turn-hash" ? "e".repeat(64) : record.requestHash,
+        };
+        return {
+          ...page,
+          ...(mismatch === "conversation-id"
+            ? { conversationId: "session-other" }
+            : {}),
+          request: originalTurn,
+          turns: [originalTurn],
+        };
+      },
+      post: async () => ({
+        state: "unknown",
+        message: "Inspection is read-only",
+      }),
+      stream: () => () => ({ close() {} }),
+    });
+
+    await client.refreshIdentities(projectId);
+    expect(await client.inspectIdentity(projectId, requestId)).toBe(false);
+    expect(client.session(projectId, id).page).toBeNull();
+    expect(client.project(projectId).identityInspection).toMatchObject({
+      requestId,
+      state: "unavailable",
+      sessionId: null,
+    });
+    client.dispose();
+  });
+}
+
+test("scope invalidation during an original read cannot publish stale inspection data", async () => {
+  let scope = { projectId, workspace: "/repo", generation: 1 },
+    finishRead: ((value: unknown) => void) | undefined,
+    readStarted!: () => void;
+  const readStartedSignal = new Promise<void>((resolve) => {
+    readStarted = resolve;
+  });
+  const identityServer: SessionStartIdentityServer = {
+    async list(current) {
+      return {
+        version: 1,
+        scope: {
+          family: "owned-session-start",
+          projectId: current.projectId,
+          workspace: current.workspace,
+        },
+        identities: [
+          {
+            version: 1,
+            requestId,
+            requestHash: record.requestHash,
+            provider: "claude",
+            mode: "chat",
+            state: "admitted",
+          },
+        ],
+      };
+    },
+    async reserve() {
+      throw Error("Inspection must not reserve");
+    },
+    async retire() {
+      throw Error("Inspection must not retire");
+    },
+  };
+  const client = createSessionsClient({
+    identityServer,
+    identityScope: () => scope,
+    canWrite: () => true,
+    requestId: () => requestId,
+    list: async () => [record],
+    read: async () =>
+      new Promise((resolve) => {
+        finishRead = resolve;
+        readStarted();
+      }),
+    post: async () => ({
+      state: "unknown",
+      message: "Inspection is read-only",
+    }),
+    stream: () => () => ({ close() {} }),
+  });
+
+  await client.refreshIdentities(projectId);
+  const inspecting = client.inspectIdentity(projectId, requestId);
+  await readStartedSignal;
+  scope = { ...scope, workspace: "/other-repo" };
+  client.identityScopeChanged();
+  finishRead?.({
+    ...page,
+    request: { ...turn, hash: record.requestHash },
+    turns: [{ ...turn, hash: record.requestHash }],
+  });
+
+  expect(await inspecting).toBe(false);
+  expect(client.project(projectId).identityInspection).toBeNull();
+  expect(client.session(projectId, id).page).toBeNull();
+  client.dispose();
+});
+
 test("an unmatched read-only legacy hint keeps fresh Start held without clearing browser storage", async () => {
   let reserveCalls = 0,
     startCalls = 0;
