@@ -205,7 +205,8 @@ test("Stop during native capability help settles its owned probe before any prom
     () => "refused",
   );
   let held: ReturnType<typeof holdFixtureProcesses> | null = null,
-    observations: ProcessObservation[] = [];
+    observations: ProcessObservation[] = [],
+    identities: ReturnType<typeof fixtureProcessIdentities> = [];
   try {
     const deadline = Date.now() + 5000;
     while (Date.now() < deadline) {
@@ -217,11 +218,13 @@ test("Stop during native capability help settles its owned probe before any prom
       await Bun.sleep(10);
     }
     expect(readFileSync(f.record, "utf8")).toContain('"kind":"help"');
-    if (diagnosticEnabled)
-      held = holdFixtureProcesses(
-        fixtureProcessIdentities(readFileSync(f.record, "utf8"), executable),
-        windowsProbeProcessApi(),
+    if (diagnosticEnabled) {
+      identities = fixtureProcessIdentities(
+        readFileSync(f.record, "utf8"),
+        executable,
       );
+      held = holdFixtureProcesses(identities, windowsProbeProcessApi());
+    }
     controller.abort();
     expect(
       await Promise.race([settled, Bun.sleep(1500).then(() => "hung")]),
@@ -241,6 +244,38 @@ test("Stop during native capability help settles its owned probe before any prom
         record: f.record,
         observations,
       };
+  }
+  if (diagnosticEnabled) {
+    let calls: unknown[];
+    try {
+      calls = readFileSync(f.record, "utf8")
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+    } catch {
+      throw new Error("Native capability probe record is malformed.");
+    }
+    expect(calls).toMatchObject([
+      { kind: "version", argv: ["--version"], stdin: "" },
+      { kind: "help", argv: ["exec", "--help"], stdin: "" },
+    ]);
+    expect(calls).toHaveLength(2);
+    expect(
+      observations.map(({ relation, pid, parentPid, state }) => ({
+        relation,
+        pid,
+        parentPid,
+        state,
+      })),
+    ).toEqual(
+      identities.map(({ relation, pid, parentPid }) => ({
+        relation,
+        pid,
+        parentPid,
+        state: "exited",
+      })),
+    );
+    expect(observations.every((row) => row.creationTime !== null)).toBe(true);
   }
 }, 15000);
 

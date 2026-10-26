@@ -37,19 +37,25 @@ import {
   smithConfigRequestIdSchema,
 } from "./smith-create-protocol";
 import { canonicalSmithCreateDirectory } from "./smith-create-trusted-directory";
+import {
+  SMITH_ROUTING_EDIT_JOURNAL_BOUNDS,
+  SMITH_ROUTING_EDIT_JOURNAL_FILES,
+} from "./smith-routing-edit-journal-protocol";
+import { smithRoutingEditRequestIdSchema } from "./smith-routing-edit-protocol";
 import { windowsConfigLeafKind } from "./transaction-windows";
 
-export type SmithJournalStorageFamily = "create" | "edit";
+export type SmithJournalStorageFamily = "create" | "edit" | "routing";
 
 const JOURNAL_DIRECTORIES: Readonly<Record<SmithJournalStorageFamily, string>> =
   Object.freeze({
     create: "smith-create-journal",
     edit: "smith-edit-journal",
+    routing: "smith-routing-edit-journal",
   });
 
 /** Runtime-checked closed mapping used before any private profile path access. */
 export function smithJournalDirectoryName(family: unknown): string {
-  if (family !== "create" && family !== "edit")
+  if (family !== "create" && family !== "edit" && family !== "routing")
     throw new Error("The private Smith journal family is invalid.");
   return JOURNAL_DIRECTORIES[family];
 }
@@ -302,6 +308,18 @@ export function createSmithConfigJournalStorage(
   family: SmithJournalStorageFamily,
 ): SmithCreateJournalStorage {
   const journalDirectory = smithJournalDirectoryName(family);
+  const recordLimits =
+      family === "routing"
+        ? SMITH_ROUTING_EDIT_JOURNAL_BOUNDS
+        : SMITH_CREATE_JOURNAL_LIMITS,
+    fileNames =
+      family === "routing"
+        ? SMITH_ROUTING_EDIT_JOURNAL_FILES
+        : SMITH_CREATE_JOURNAL_FILES,
+    validRequestId = (value: string) =>
+      family === "routing"
+        ? smithRoutingEditRequestIdSchema.safeParse(value).success
+        : smithConfigRequestIdSchema.safeParse(value).success;
   const profile = canonicalSmithCreateDirectory(profileHome);
   const root = join(profile, journalDirectory),
     records = join(root, RECORDS_DIRECTORY),
@@ -414,7 +432,7 @@ export function createSmithConfigJournalStorage(
   };
 
   const recordDirectory = (requestId: string): string | null => {
-    if (!smithConfigRequestIdSchema.safeParse(requestId).success)
+    if (!validRequestId(requestId))
       throw new Error("The private Smith create request identity is invalid.");
     const recordsIdentity = inspectPrivateDirectory(records);
     if (recordsIdentity === null) return null;
@@ -427,9 +445,8 @@ export function createSmithConfigJournalStorage(
   };
 
   const listOperationEntries = (path: string): SmithCreateJournalEntry[] =>
-    Array.from(
-      directoryNames(path, SMITH_CREATE_JOURNAL_FILES.length + 1),
-      (name) => entryMetadata(path, name),
+    Array.from(directoryNames(path, fileNames.length + 1), (name) =>
+      entryMetadata(path, name),
     );
 
   const ensureMutex = (): MutexState => {
@@ -521,7 +538,7 @@ export function createSmithConfigJournalStorage(
 
   return {
     inspect(requestId) {
-      if (!smithConfigRequestIdSchema.safeParse(requestId).success)
+      if (!validRequestId(requestId))
         throw new Error(
           "The private Smith create request identity is invalid.",
         );
@@ -538,10 +555,10 @@ export function createSmithConfigJournalStorage(
       try {
         for (const name of directoryNames(
           records,
-          SMITH_CREATE_JOURNAL_LIMITS.operations + 1,
+          recordLimits.operations + 1,
         )) {
           const path = join(records, name);
-          if (!smithConfigRequestIdSchema.safeParse(name).success) {
+          if (!validRequestId(name)) {
             yield { requestId: name, entries: [entryMetadata(records, name)] };
             continue;
           }
@@ -560,10 +577,10 @@ export function createSmithConfigJournalStorage(
     },
     read(requestId, entry, maxBytes) {
       if (
-        !smithConfigRequestIdSchema.safeParse(requestId).success ||
-        !SMITH_CREATE_JOURNAL_FILES.some((name) => name === entry.name) ||
+        !validRequestId(requestId) ||
+        !fileNames.some((name) => name === entry.name) ||
         !Number.isSafeInteger(maxBytes) ||
-        maxBytes !== SMITH_CREATE_JOURNAL_LIMITS.fileBytes
+        maxBytes !== recordLimits.fileBytes
       )
         throw new Error("The private Smith create record request is invalid.");
       checkRootLayout();
@@ -606,14 +623,14 @@ export function createSmithConfigJournalStorage(
           "Private Smith create records require the journal mutex.",
         );
       if (
-        !smithConfigRequestIdSchema.safeParse(requestId).success ||
-        !SMITH_CREATE_JOURNAL_FILES.some((name) => name === file)
+        !validRequestId(requestId) ||
+        !fileNames.some((name) => name === file)
       )
         throw new Error(
           "The private Smith create request identity is invalid.",
         );
       const encodedBytes = new TextEncoder().encode(text).byteLength;
-      if (encodedBytes > SMITH_CREATE_JOURNAL_LIMITS.fileBytes)
+      if (encodedBytes > recordLimits.fileBytes)
         throw new Error(
           "The private Smith create record exceeds its byte limit.",
         );
@@ -639,7 +656,7 @@ export function createSmithConfigJournalStorage(
         stageIdentity = identity(stageInfo);
         if (
           bytes(stageInfo) !== encodedBytes ||
-          bytes(stageInfo) > SMITH_CREATE_JOURNAL_LIMITS.fileBytes
+          bytes(stageInfo) > recordLimits.fileBytes
         )
           throw new Error(
             "The private Smith create staging record changed size.",

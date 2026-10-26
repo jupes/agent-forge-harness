@@ -167,4 +167,46 @@ describe("stripPayload: Smith edit action identity", () => {
       }),
     ).toEqual({ action: "smith.config.edit", surface: "api" });
   });
+
+  test("routing edit audits retain only fixed family, correlation and selector metadata", () => {
+    expect(
+      stripPayload("operator.action", {
+        action: "smith.config.routing-edit",
+        surface: "api",
+        target: "workspace",
+        family: "smith-routing-edit",
+        requestId: "4ba29c22-8414-4bd6-9d4d-2d0591d5d0a0",
+        inputHash: "a".repeat(64),
+        changeKind: "bench",
+        selector: "low",
+        entries: [{ smith: "private", weight: 99 }],
+        configText: "private config",
+      }),
+    ).toEqual({
+      action: "smith.config.routing-edit",
+      surface: "api",
+      target: "workspace",
+      family: "smith-routing-edit",
+      requestId: "4ba29c22-8414-4bd6-9d4d-2d0591d5d0a0",
+      inputHash: "a".repeat(64),
+      changeKind: "bench",
+      selector: "low",
+    });
+  });
+
+  test("routing audit selector fields reject arbitrary values", () => {
+    expect(
+      stripPayload("operator.action", {
+        action: "smith.config.routing-edit",
+        surface: "api",
+        family: "smith-routing-edit",
+        changeKind: "private config",
+        selector: "arbitrary.path",
+      }),
+    ).toEqual({
+      action: "smith.config.routing-edit",
+      surface: "api",
+      family: "smith-routing-edit",
+    });
+  });
 });

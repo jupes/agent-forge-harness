@@ -27,6 +27,7 @@ import type {
 } from "../../types/hearth";
 import type { OwnedSessionRecord } from "../../types/owned-session";
 import type { SmithConfigEditRequest } from "../../types/smith-config-edit";
+import type { SmithRoutingEditRequest } from "../../types/smith-routing-edit";
 import { type LoadedConfig, loadConfig } from "../config/load";
 import {
   smithConfigCreateReceiptSchema,
@@ -39,6 +40,12 @@ import {
   smithConfigEditReceiptSchema,
 } from "../config/smith-edit-protocol";
 import { createSmithEditService } from "../config/smith-edit-service";
+import {
+  smithRoutingEditInputHash,
+  smithRoutingEditReceiptSchema,
+} from "../config/smith-routing-edit-journal-protocol";
+import { smithRoutingEditPreviewSchema } from "../config/smith-routing-edit-protocol";
+import { createSmithRoutingEditService } from "../config/smith-routing-edit-service";
 import {
   type ConfigWriteTransaction,
   type PreparedConfigTransaction,
@@ -230,6 +237,13 @@ const API_SMITH_EDIT_ACTION_SMITH = {
   enabled: false,
   tags: ["api-edit-fixture"],
 };
+const API_SMITH_ROUTING_EDIT_ID = "4ba29c22-8414-4bd6-9d4d-2d0591d5d0a0";
+const API_SMITH_ROUTING_EDIT_ORIGINAL_ID =
+  "4ba29c22-8414-4bd6-9d4d-2d0591d5d0a1";
+const API_SMITH_ROUTING_EDIT_CHANGE = {
+  kind: "default" as const,
+  smith: "claude-apprentice",
+};
 
 function seedSmithEditActionTarget(h: TestHearth): void {
   const directory = join(h.configHome, ".agent-forge");
@@ -238,6 +252,39 @@ function seedSmithEditActionTarget(h: TestHearth): void {
     join(directory, "config.toml"),
     `[smiths.${API_SMITH_EDIT_ACTION_SMITH.name}]\nprovider = "claude"\nmodel = "api-edit-original-model"\neffort = "high"\nenabled = true\ntags = ["api-edit-fixture"]\n`,
   );
+}
+
+function seedSmithRoutingEditActionTarget(h: TestHearth): void {
+  writeFileSync(
+    join(h.root, "agent-forge.toml"),
+    '[workflow]\ndefault_crew = "claude-master"\n[benches]\nlow = ["claude-master:1"]\nmedium = ["claude-apprentice:1"]\n',
+  );
+}
+
+async function seedSmithRoutingEditOriginal(h: TestHearth): Promise<void> {
+  const service = createSmithRoutingEditService(
+    {
+      options: {
+        harnessRoot: h.root,
+        home: h.configHome,
+        env: {},
+      },
+    },
+    { profileHome: h.home, coordinationRoot: h.home },
+  );
+  const preview = service.preview({
+    target: "workspace",
+    change: API_SMITH_ROUTING_EDIT_CHANGE,
+  });
+  await service.edit({
+    requestId: API_SMITH_ROUTING_EDIT_ORIGINAL_ID,
+    target: "workspace",
+    change: API_SMITH_ROUTING_EDIT_CHANGE,
+    expectedRevision: {
+      ...preview.expectedRevision,
+      workspace: "0".repeat(64),
+    },
+  });
 }
 
 async function seedSmithCreateOriginal(h: TestHearth): Promise<void> {
@@ -1166,6 +1213,102 @@ const ACTIONS: Record<string, ActionFixture> = {
       expect(smithConfigEditReceiptSchema.parse(answer).result.phase).toBe(
         "confirmed",
       );
+    },
+  },
+  "POST /config/smiths/routing-edits/preview": {
+    valid: {
+      path: "/config/smiths/routing-edits/preview",
+      body: {
+        target: "workspace",
+        change: API_SMITH_ROUTING_EDIT_CHANGE,
+      },
+      status: 200,
+      target: "workspace",
+      audit: {
+        family: "smith-routing-edit",
+        changeKind: "default",
+        selector: "workflow.default_crew",
+      },
+    },
+    invalid: {
+      path: "/config/smiths/routing-edits/preview",
+      body: {
+        target: "workspace",
+        change: API_SMITH_ROUTING_EDIT_CHANGE,
+        path: "arbitrary",
+      },
+    },
+    prepare: async (h) => seedSmithRoutingEditActionTarget(h),
+    happened: async (h, answer) => {
+      expect(smithRoutingEditPreviewSchema.safeParse(answer).success).toBe(
+        true,
+      );
+      rmSync(join(h.root, "agent-forge.toml"), { force: true });
+    },
+  },
+  "POST /config/smiths/routing-edits": {
+    valid: {
+      path: "/config/smiths/routing-edits",
+      body: {
+        requestId: API_SMITH_ROUTING_EDIT_ID,
+        target: "workspace",
+        change: API_SMITH_ROUTING_EDIT_CHANGE,
+        expectedRevision: {
+          version: 1,
+          user: "a".repeat(64),
+          workspace: "b".repeat(64),
+        },
+      },
+      status: 200,
+      target: "workspace",
+      audit: {
+        family: "smith-routing-edit",
+        requestId: API_SMITH_ROUTING_EDIT_ID,
+        inputHash: "0".repeat(64),
+        changeKind: "default",
+        selector: "workflow.default_crew",
+      },
+    },
+    invalid: {
+      path: "/config/smiths/routing-edits",
+      body: { requestId: "invalid" },
+    },
+    prepare: async (h) => {
+      seedSmithRoutingEditActionTarget(h);
+      const service = createSmithRoutingEditService(
+        {
+          options: {
+            harnessRoot: h.root,
+            home: h.configHome,
+            env: {},
+          },
+        },
+        { profileHome: h.home, coordinationRoot: h.home },
+      );
+      const preview = service.preview({
+        target: "workspace",
+        change: API_SMITH_ROUTING_EDIT_CHANGE,
+      });
+      const request: SmithRoutingEditRequest = {
+        requestId: API_SMITH_ROUTING_EDIT_ID,
+        target: "workspace",
+        change: API_SMITH_ROUTING_EDIT_CHANGE,
+        expectedRevision: preview.expectedRevision,
+      };
+      ACTIONS["POST /config/smiths/routing-edits"]!.valid.body = request;
+      ACTIONS["POST /config/smiths/routing-edits"]!.valid.audit = {
+        family: "smith-routing-edit",
+        requestId: request.requestId,
+        inputHash: smithRoutingEditInputHash(request),
+        changeKind: "default",
+        selector: "workflow.default_crew",
+      };
+    },
+    happened: async (h, answer) => {
+      expect(smithRoutingEditReceiptSchema.parse(answer).result.phase).toBe(
+        "confirmed",
+      );
+      rmSync(join(h.root, "agent-forge.toml"), { force: true });
     },
   },
   "POST /providers/:provider/sign-in": {
@@ -2226,6 +2369,7 @@ const READS: Record<string, string> = {
   "GET /smiths/verification": "/smiths/verification",
   "GET /smiths/creates/:requestId": `/smiths/creates/${API_SMITH_CREATE_ID}`,
   "GET /smiths/edits/:requestId": `/smiths/edits/${API_SMITH_EDIT_ID}`,
+  "GET /smiths/routing-edits/:requestId": `/smiths/routing-edits/${API_SMITH_ROUTING_EDIT_ORIGINAL_ID}`,
   "GET /config": "/config",
   "GET /beads/options": "/beads/options",
   "GET /beads/counts": "/beads/counts",
@@ -2832,6 +2976,7 @@ describe("a read row or the stream while another connection holds the write lock
     activityReadMembership(h);
     await seedSmithCreateOriginal(h);
     await seedSmithEditOriginal(h);
+    await seedSmithRoutingEditOriginal(h);
     const rows = h.hearth.routes.filter(
       (route) => route.kind === "read" || route.kind === "stream",
     );
@@ -3926,6 +4071,7 @@ describe("every read row (iterating the table)", () => {
     activityReadMembership(h);
     await seedSmithCreateOriginal(h);
     await seedSmithEditOriginal(h);
+    await seedSmithRoutingEditOriginal(h);
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");
     for (const row of rows) {
@@ -3963,6 +4109,7 @@ describe("every read row (iterating the table)", () => {
     activityReadMembership(h);
     await seedSmithCreateOriginal(h);
     await seedSmithEditOriginal(h);
+    await seedSmithRoutingEditOriginal(h);
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");
     const refused: Array<[string, Record<string, string>]> = [
