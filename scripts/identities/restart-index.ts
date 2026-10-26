@@ -36,6 +36,7 @@ import {
   sessionRequestHashSchema,
   sessionRequestIdSchema,
 } from "../sessions/identity-protocol";
+import { canonicalTrustedDirectory } from "../trusted-directory";
 
 export const MAX_RESTART_IDENTITY_ROWS = 1_000;
 export const MAX_RESTART_IDENTITY_EVENTS = 3_000;
@@ -759,17 +760,34 @@ function appendRow(state: JournalState, stored: StoredEvent): void {
 }
 
 export function createRestartIdentityJournal<TProof = never>(
-  profileHome: string,
+  profileHomeInput: string,
   options: RestartIdentityJournalOptions<TProof> = {},
 ): RestartIdentityJournal<TProof> {
-  const directory = join(profileHome, DIRECTORY);
-  const lockPath = join(directory, LOCK_FILE);
+  let resolvedPaths:
+    | { profileHome: string; directory: string; lockPath: string }
+    | undefined;
+  const ensurePaths = () => {
+    if (resolvedPaths !== undefined) return resolvedPaths;
+    try {
+      const profileHome = canonicalTrustedDirectory(profileHomeInput),
+        directory = join(profileHome, DIRECTORY),
+        lockPath = join(directory, LOCK_FILE);
+      resolvedPaths = { profileHome, directory, lockPath };
+      return resolvedPaths;
+    } catch {
+      throw unavailable();
+    }
+  };
 
   const withState = async <T>(
     work: (state: JournalState) => T | Promise<T>,
   ): Promise<T> => {
     let profileIdentity: FileIdentity;
     try {
+      const paths = ensurePaths();
+      if (!paths.profileHome || !paths.directory || !paths.lockPath)
+        identityError();
+      const { profileHome, directory, lockPath } = paths;
       profileIdentity = ensurePrivateDirectory(profileHome, options);
       assertDirectory(profileHome, profileIdentity, options);
       const directoryIdentity = ensurePrivateDirectory(directory, options);
@@ -812,7 +830,13 @@ export function createRestartIdentityJournal<TProof = never>(
     operation: RestartIdentityOperation,
     row: RestartIdentityRow,
   ): RestartIdentityRow => {
-    const stored = append(directory, state, operation, row, options);
+    const stored = append(
+      ensurePaths().directory,
+      state,
+      operation,
+      row,
+      options,
+    );
     appendRow(state, stored);
     return row;
   };

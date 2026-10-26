@@ -11,6 +11,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import {
+  bunFfi,
   makeOwnerOnly,
   nativeWindowsAcl,
   ownerOnlyProblem,
@@ -82,6 +83,53 @@ function identity(workspace: string): RestartIdentityInput {
     mode: "task",
   };
 }
+
+function shortWindowsPath(path: string): string {
+  const { dlopen, FFIType } = bunFfi(),
+    { GetShortPathNameW } = dlopen("kernel32.dll", {
+      GetShortPathNameW: {
+        args: [FFIType.ptr, FFIType.ptr, FFIType.u32],
+        returns: FFIType.u32,
+      },
+    }).symbols,
+    output = Buffer.alloc(32_768 * 2),
+    length = GetShortPathNameW(
+      Buffer.from(`${path}\0`, "utf16le"),
+      output,
+      32_768,
+    );
+  if (length === 0 || length >= 32_768)
+    throw new Error("Windows did not provide a bounded short path.");
+  return output.toString("utf16le", 0, length * 2);
+}
+
+test.skipIf(process.platform !== "win32")(
+  "8.3 profile aliases reopen the same restart identity journal",
+  async () => {
+    const fixtureValue = fixture("restart-native-alias-"),
+      profile = join(fixtureValue.root, "profile with spaces");
+    ensurePrivateHome(profile);
+    const alias = shortWindowsPath(profile);
+    expect(alias.toLowerCase()).not.toBe(profile.toLowerCase());
+    const value = identity(fixtureValue.workspace),
+      first = createRestartIdentityJournal(alias),
+      reserved = await first.reserve(value),
+      reopened = createRestartIdentityJournal(profile);
+    expect(
+      await reopened.lookup(
+        { address: value.address, workspace: value.workspace },
+        value.requestId,
+      ),
+    ).toEqual(reserved);
+    expect(
+      await reopened.list({
+        address: value.address,
+        workspace: value.workspace,
+      }),
+    ).toEqual([reserved]);
+  },
+  20_000,
+);
 
 async function readLimited(
   stream: ReadableStream<Uint8Array>,
