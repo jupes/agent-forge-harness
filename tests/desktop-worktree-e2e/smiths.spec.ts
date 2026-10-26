@@ -888,14 +888,10 @@ test("edits an existing Smith after a complete review and recovers the exact ori
   ).toBe(true);
   const proofDirectory = process.env["AGENT_FORGE_WORKTREE_SCREENSHOT_DIR"];
   if (proofDirectory) {
-    await review.scrollIntoViewIfNeeded();
-    await review.screenshot({
-      path: join(proofDirectory, "smith-edit-candidate.png"),
-      mask: [
-        review.locator("dd").filter({ hasText: REPOSITORY }),
-        review.locator("dd").filter({ hasText: HEARTH_HOME }),
-      ],
-      maskColor: "#3f424d",
+    const comparison = review.locator(".af-smith-edit-review-columns");
+    await comparison.scrollIntoViewIfNeeded();
+    await comparison.screenshot({
+      path: join(proofDirectory, "smith-edit-before-after.png"),
     });
   }
 
