@@ -642,14 +642,28 @@ test("restart proof keeps exact launch presence and binds all five provider mode
   if (!legacy) throw Error("Missing Claude Chat proof fixture");
   const identity = writeSource(legacy);
   const journal = createRestartIdentityJournal(legacy.home);
-  const eventBytes = () =>
-    readdirSync(join(legacy.home, "restart-identities"))
+  const eventBytes = () => {
+    let names: string[];
+    try {
+      names = readdirSync(join(legacy.home, "restart-identities"));
+    } catch (error) {
+      if (
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        error.code === "ENOENT"
+      )
+        return [];
+      throw error;
+    }
+    return names
       .filter((name) => /^event-\d{8}-[a-f0-9]{64}\.json$/.test(name))
       .sort()
       .map((name) => [
         name,
         readFileSync(join(legacy.home, "restart-identities", name)),
       ]);
+  };
   const beforeCrossScope = eventBytes();
   let providerCalls = 0;
   const service = createOwnedCodingSessionService({
