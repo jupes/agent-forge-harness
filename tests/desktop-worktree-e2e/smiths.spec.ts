@@ -7,8 +7,10 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { expect, test } from "@playwright/test";
+import { expect, type Locator, type Page, test } from "@playwright/test";
 import { canonicalSmithConfigCreateRequest } from "../../scripts/config/smith-create-protocol";
+import { smithEditInputHash } from "../../scripts/config/smith-edit-journal-protocol";
+import { canonicalSmithConfigEditRequest } from "../../scripts/config/smith-edit-protocol";
 import { APPRENTICE_VERIFICATION } from "../../scripts/smith-verification";
 import type { LedgerEventInput } from "../../types/hearth";
 import { seedObservationEvents } from "../desktop-e2e/observed-session-fixtures";
@@ -77,6 +79,31 @@ test.afterEach(() => {
 function unchangedConfig() {
   for (const saved of savedFiles)
     expect(readFileSync(saved.file)).toEqual(saved.fixture);
+}
+async function openSmithEdit(page: Page, name = fixtureSmith) {
+  const opener = page.getByRole("button", {
+    name: `Edit configuration for ${name}`,
+    exact: true,
+  });
+  await expect(opener).toBeEnabled();
+  await opener.click();
+  const dialog = page.getByRole("dialog", {
+    name: `Edit ${name}`,
+    exact: true,
+  });
+  await expect(dialog).toBeVisible();
+  return { opener, dialog };
+}
+async function reviewSmithEdit(dialog: Locator) {
+  await dialog
+    .getByRole("button", { name: "Review candidate", exact: true })
+    .click();
+  const review = dialog.getByRole("region", {
+    name: "Smith edit review",
+    exact: true,
+  });
+  await expect(review).toBeVisible();
+  return review;
 }
 function seedVerification(title = "Owner verification remains pending") {
   const task: StandInIssue & { notes: string } = {
@@ -772,6 +799,609 @@ test("a reply lost after actual temporary publication recovers the exact origina
     "/__agent-forge/config/smiths/preview",
     "/__agent-forge/config/smiths/creates",
   ]);
+  expect(providerStarts()).toEqual(starts);
+});
+
+test("edits an existing Smith after a complete review and recovers the exact original after reload", async ({
+  page,
+}) => {
+  const starts = providerStarts();
+  const posts: string[] = [];
+  let postedEdit: Record<string, unknown> | null = null;
+  page.on("request", (request) => {
+    const path = new URL(request.url()).pathname;
+    if (request.method() === "POST" && path.startsWith("/__agent-forge/")) {
+      posts.push(path);
+      if (path === "/__agent-forge/config/smiths/edits")
+        postedEdit = request.postDataJSON() as Record<string, unknown>;
+    }
+  });
+  checkedOsHome();
+  if (!isRunHome(HEARTH_HOME) || !checkedFixtureRoot())
+    throw Error("Smith edit requires the owned temporary homes.");
+
+  await page.setViewportSize({ width: 1100, height: 700 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await openSettled(page, "/index.html#/desktop/smiths");
+  const opener = page.getByRole("button", {
+    name: `Edit configuration for ${fixtureSmith}`,
+    exact: true,
+  });
+  await opener.focus();
+  expect(
+    await opener.evaluate((element) => getComputedStyle(element).outlineWidth),
+  ).toBe("2px");
+  await page.keyboard.press("Enter");
+  const dialog = page.getByRole("dialog", {
+    name: `Edit ${fixtureSmith}`,
+    exact: true,
+  });
+  await expect(
+    dialog.getByRole("button", { name: "Close dialog" }),
+  ).toBeFocused();
+  const selectedName = dialog.getByLabel("Selected Smith name");
+  await page.keyboard.press("Tab");
+  await expect(selectedName).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(dialog.getByLabel("Save to")).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(selectedName).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(
+    dialog.getByRole("button", { name: "Close dialog" }),
+  ).toBeFocused();
+
+  await expect(selectedName).toHaveAttribute("readonly", "");
+  await expect(selectedName).toHaveValue(fixtureSmith);
+  await dialog.getByLabel("Model").fill("browser-edit-reviewed-model");
+  await dialog.getByLabel("Effort").fill("high");
+  await dialog.getByLabel("Enabled").check();
+  await dialog.getByLabel("Tags").fill("rank:apprentice\nbrowser-edit");
+  const review = await reviewSmithEdit(dialog);
+  await expect(review).toContainText(join(REPOSITORY, "agent-forge.toml"));
+  await expect(
+    review.getByRole("heading", { name: "Target-layer before" }),
+  ).toBeVisible();
+  await expect(
+    review.getByRole("heading", { name: "Target-layer after" }),
+  ).toBeVisible();
+  await expect(
+    review.getByRole("heading", { name: "Effective configuration before" }),
+  ).toBeVisible();
+  await expect(
+    review.getByRole("heading", { name: "Effective configuration after" }),
+  ).toBeVisible();
+  await expect(review).toContainText("saved-machine-model");
+  await expect(review).toContainText("browser-edit-reviewed-model");
+  await expect(review).toContainText("Field provenance before and after");
+  expect(posts).toEqual(["/__agent-forge/config/smiths/edits/preview"]);
+  unchangedConfig();
+  expect(
+    await page.evaluate(
+      () => matchMedia("(prefers-reduced-motion: reduce)").matches,
+    ),
+  ).toBe(true);
+  expect(
+    await page.evaluate(
+      () => document.documentElement.scrollWidth <= innerWidth,
+    ),
+  ).toBe(true);
+  const proofDirectory = process.env["AGENT_FORGE_WORKTREE_SCREENSHOT_DIR"];
+  if (proofDirectory) {
+    const comparison = review.locator(".af-smith-edit-review-columns");
+    await comparison.scrollIntoViewIfNeeded();
+    await comparison.screenshot({
+      path: join(proofDirectory, "smith-edit-before-after.png"),
+    });
+  }
+
+  const saved = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname === "/__agent-forge/config/smiths/edits",
+  );
+  await dialog
+    .getByRole("button", { name: "Save reviewed edit", exact: true })
+    .click();
+  expect((await saved).status()).toBe(200);
+  await expect(
+    page.getByRole("region", { name: "Original Smith edit receipts" }),
+  ).toContainText("Confirmed");
+  expect(postedEdit).not.toBeNull();
+  const writtenBytes = readFileSync(join(REPOSITORY, "agent-forge.toml"));
+  const written = writtenBytes.toString("utf8");
+  expect(written).toContain("\uFEFF# Preserved inspection fixture\r\n");
+  expect(written).toContain('effort="high"');
+  expect(written).toContain(`default_crew="${fixtureSmith}"\r\n`);
+  expect(written).toContain(
+    `[benches]\r\nlow=["${fixtureSmith}:2", "codex-journeyman:1"]\r\n`,
+  );
+  expect(written.replaceAll("\r\n", "").includes("\n")).toBe(false);
+  expect(writtenBytes[0]).toBe(0xef);
+  expect(readFileSync(join(HEARTH_HOME, "config.toml"))).toEqual(
+    savedFiles[0]!.fixture,
+  );
+  const close = dialog.getByRole("button", {
+    name: "Close dialog",
+    exact: true,
+  });
+  await close.click();
+  await expect(opener).toBeFocused();
+  const config = page.getByRole("region", {
+    name: "Saved smith configuration",
+  });
+  const table = config.getByRole("table", { name: "Configured smiths" });
+  const savedRow = table
+    .getByRole("row")
+    .filter({ has: page.getByText(fixtureSmith, { exact: true }) });
+  await config
+    .getByRole("button", { name: "Refresh configuration", exact: true })
+    .click();
+  await expect(savedRow).toContainText("browser-edit-reviewed-model");
+  const parsedSmith = await savedRow.evaluate((row) => {
+    const cells = Array.from(row.querySelectorAll("td"));
+    const plainText = (cell: Element | undefined) =>
+      Array.from(cell?.childNodes ?? [])
+        .filter((node) => node.nodeType === Node.TEXT_NODE)
+        .map((node) => node.textContent ?? "")
+        .join("")
+        .trim();
+    return {
+      name: row.querySelector("th > code")?.textContent ?? "",
+      provider: plainText(cells[0]),
+      model: cells[1]?.querySelector("code")?.textContent ?? "",
+      effort: plainText(cells[2]),
+      rank: plainText(cells[3]),
+      tags: cells[3]?.querySelector("small")?.textContent?.split(", ") ?? [],
+      enabled: plainText(cells[4]) === "Enabled",
+    };
+  });
+  expect(parsedSmith).toEqual({
+    name: fixtureSmith,
+    provider: "claude",
+    model: "browser-edit-reviewed-model",
+    effort: "high",
+    rank: "apprentice",
+    tags: ["rank:apprentice", "browser-edit"],
+    enabled: true,
+  });
+  expect(posts).toEqual([
+    "/__agent-forge/config/smiths/edits/preview",
+    "/__agent-forge/config/smiths/edits",
+  ]);
+
+  const posted = postedEdit!;
+  const recovered = page.waitForResponse(
+    (response) =>
+      response.request().method() === "GET" &&
+      new URL(response.url()).pathname ===
+        `/__agent-forge/smiths/edits/${String(posted["requestId"])}`,
+  );
+  await reloadSettled(page);
+  const recoveredResponse = await recovered;
+  expect(recoveredResponse.status()).toBe(200);
+  const receipt = (await recoveredResponse.json()) as {
+    data: { inputHash: string; original: Record<string, unknown> };
+  };
+  expect(receipt.data.original).toEqual(posted);
+  expect(receipt.data.inputHash).toBe(smithEditInputHash(posted));
+  expect(canonicalSmithConfigEditRequest(receipt.data.original)).toBe(
+    canonicalSmithConfigEditRequest(posted),
+  );
+  expect(readFileSync(join(REPOSITORY, "agent-forge.toml"))).toEqual(
+    writtenBytes,
+  );
+  expect(posts).toEqual([
+    "/__agent-forge/config/smiths/edits/preview",
+    "/__agent-forge/config/smiths/edits",
+  ]);
+  expect(providerStarts()).toEqual(starts);
+});
+
+test("a stale paired layer refuses an edit without changing the selected target bytes", async ({
+  page,
+}) => {
+  const starts = providerStarts();
+  const posts: string[] = [];
+  page.on("request", (request) => {
+    const path = new URL(request.url()).pathname;
+    if (request.method() === "POST" && path.startsWith("/__agent-forge/"))
+      posts.push(path);
+  });
+  await page.setViewportSize({ width: 1100, height: 700 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await openSettled(page, "/index.html#/desktop/smiths");
+  const { dialog } = await openSmithEdit(page);
+  await dialog.getByLabel("Model").fill("stale-review-model");
+  const review = await reviewSmithEdit(dialog);
+  const targetFile = join(REPOSITORY, "agent-forge.toml");
+  const targetBefore = readFileSync(targetFile);
+  const machineFile = join(HEARTH_HOME, "config.toml");
+  const machineBefore = readFileSync(machineFile, "utf8");
+  writeFileSync(
+    machineFile,
+    `${machineBefore}# changed after paired review\r\n`,
+  );
+  const refused = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname === "/__agent-forge/config/smiths/edits",
+  );
+  await dialog
+    .getByRole("button", { name: "Save reviewed edit", exact: true })
+    .click();
+  expect((await refused).status()).toBe(409);
+  await expect(
+    page.getByRole("region", { name: "Original Smith edit receipts" }),
+  ).toContainText("Refused before publication");
+  await expect(review).toBeVisible();
+  await expect(review).toContainText(
+    "This reviewed candidate was refused and is stale.",
+  );
+  await expect(
+    dialog.getByRole("button", { name: "Save reviewed edit", exact: true }),
+  ).toBeDisabled();
+  expect(readFileSync(targetFile)).toEqual(targetBefore);
+  expect(posts).toEqual([
+    "/__agent-forge/config/smiths/edits/preview",
+    "/__agent-forge/config/smiths/edits",
+  ]);
+  expect(providerStarts()).toEqual(starts);
+});
+
+test("generic edit failure and original 404 stay held without a replacement POST", async ({
+  page,
+}) => {
+  const starts = providerStarts();
+  const posts: string[] = [];
+  const reads: number[] = [];
+  page.on("request", (request) => {
+    const path = new URL(request.url()).pathname;
+    if (request.method() === "POST" && path.startsWith("/__agent-forge/"))
+      posts.push(path);
+  });
+  page.on("response", (response) => {
+    if (
+      response.request().method() === "GET" &&
+      new URL(response.url()).pathname.startsWith(
+        "/__agent-forge/smiths/edits/",
+      )
+    )
+      reads.push(response.status());
+  });
+  await page.setViewportSize({ width: 1100, height: 700 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await openSettled(page, "/index.html#/desktop/smiths");
+  const { dialog } = await openSmithEdit(page);
+  await dialog.getByLabel("Model").fill("uncertain-edit-model");
+  await reviewSmithEdit(dialog);
+  await page.route("**/config/smiths/edits", (route) =>
+    route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: false, data: null, error: "unavailable" }),
+    }),
+  );
+  const unavailable = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname === "/__agent-forge/config/smiths/edits",
+  );
+  await dialog
+    .getByRole("button", { name: "Save reviewed edit", exact: true })
+    .click();
+  expect((await unavailable).status()).toBe(503);
+  await expect(
+    page.getByRole("region", { name: "Original Smith edit receipts" }),
+  ).toContainText("Outcome held");
+  await page.unroute("**/config/smiths/edits");
+  const missing = page.waitForResponse(
+    (response) =>
+      response.request().method() === "GET" &&
+      new URL(response.url()).pathname.startsWith(
+        "/__agent-forge/smiths/edits/",
+      ),
+  );
+  await reloadSettled(page);
+  expect((await missing).status()).toBe(404);
+  await expect(
+    page.getByRole("region", { name: "Original Smith edit receipts" }),
+  ).toContainText("Outcome held");
+  await page
+    .getByRole("button", {
+      name: `Edit configuration for ${fixtureSmith}`,
+      exact: true,
+    })
+    .click();
+  const reopened = page.getByRole("dialog", {
+    name: `Edit ${fixtureSmith}`,
+    exact: true,
+  });
+  await expect(
+    reopened.getByRole("button", { name: "Save reviewed edit", exact: true }),
+  ).toBeDisabled();
+  expect(reads).toEqual([404]);
+  expect(posts).toEqual([
+    "/__agent-forge/config/smiths/edits/preview",
+    "/__agent-forge/config/smiths/edits",
+  ]);
+  unchangedConfig();
+  expect(providerStarts()).toEqual(starts);
+});
+
+test("a reply lost after actual Smith edit publication recovers only the exact original", async ({
+  page,
+}) => {
+  const starts = providerStarts();
+  const posts: string[] = [];
+  let postedEdit: Record<string, unknown> | null = null;
+  let serverStatus: number | null = null;
+  page.on("request", (request) => {
+    const path = new URL(request.url()).pathname;
+    if (request.method() === "POST" && path.startsWith("/__agent-forge/")) {
+      posts.push(path);
+      if (path === "/__agent-forge/config/smiths/edits")
+        postedEdit = request.postDataJSON() as Record<string, unknown>;
+    }
+  });
+  await page.setViewportSize({ width: 1100, height: 700 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await openSettled(page, "/index.html#/desktop/smiths");
+  const { dialog } = await openSmithEdit(page);
+  await dialog.getByLabel("Model").fill("lost-reply-edit-model");
+  await dialog.getByLabel("Tags").fill("rank:apprentice\nlost-reply-edit");
+  await reviewSmithEdit(dialog);
+  await page.route("**/config/smiths/edits", async (route) => {
+    const response = await route.fetch({
+      headers: {
+        ...route.request().headers(),
+        Origin: new URL(route.request().url()).origin,
+      },
+    });
+    serverStatus = response.status();
+    expect(serverStatus).toBe(200);
+    await route.abort();
+  });
+  const failedReply = page.waitForEvent("requestfailed", (request) =>
+    new URL(request.url()).pathname.endsWith("/config/smiths/edits"),
+  );
+  await dialog
+    .getByRole("button", { name: "Save reviewed edit", exact: true })
+    .click();
+  await failedReply;
+  expect(serverStatus).toBe(200);
+  await expect(
+    page.getByRole("region", { name: "Original Smith edit receipts" }),
+  ).toContainText("Outcome held");
+  expect(postedEdit).not.toBeNull();
+  const posted = postedEdit!;
+  const writtenBytes = readFileSync(join(REPOSITORY, "agent-forge.toml"));
+  const written = writtenBytes.toString("utf8");
+  expect(written).toContain('model = "lost-reply-edit-model"');
+  expect(written).toContain("\uFEFF# Preserved inspection fixture\r\n");
+  expect(posts).toEqual([
+    "/__agent-forge/config/smiths/edits/preview",
+    "/__agent-forge/config/smiths/edits",
+  ]);
+  await page.unroute("**/config/smiths/edits");
+  const originalRead = page.waitForResponse(
+    (response) =>
+      response.request().method() === "GET" &&
+      new URL(response.url()).pathname ===
+        `/__agent-forge/smiths/edits/${String(posted["requestId"])}`,
+  );
+  await reloadSettled(page);
+  const recovered = await originalRead;
+  expect(recovered.status()).toBe(200);
+  const receipt = (await recovered.json()) as {
+    data: { inputHash: string; original: Record<string, unknown> };
+  };
+  expect(receipt.data.original).toEqual(posted);
+  expect(receipt.data.inputHash).toBe(smithEditInputHash(posted));
+  expect(canonicalSmithConfigEditRequest(receipt.data.original)).toBe(
+    canonicalSmithConfigEditRequest(posted),
+  );
+  expect(readFileSync(join(REPOSITORY, "agent-forge.toml"))).toEqual(
+    writtenBytes,
+  );
+  await expect(
+    page.getByRole("region", { name: "Original Smith edit receipts" }),
+  ).toContainText("Confirmed");
+  expect(posts).toEqual([
+    "/__agent-forge/config/smiths/edits/preview",
+    "/__agent-forge/config/smiths/edits",
+  ]);
+  expect(providerStarts()).toEqual(starts);
+});
+
+test("verified NotSent survives reload and permits a separately reviewed new edit", async ({
+  page,
+}) => {
+  const starts = providerStarts();
+  const posts: string[] = [];
+  const editBodies: Record<string, unknown>[] = [];
+  const reads: number[] = [];
+  page.on("request", (request) => {
+    const path = new URL(request.url()).pathname;
+    if (request.method() === "POST" && path.startsWith("/__agent-forge/")) {
+      posts.push(path);
+      if (path === "/__agent-forge/config/smiths/edits")
+        editBodies.push(request.postDataJSON() as Record<string, unknown>);
+    }
+  });
+  page.on("response", (response) => {
+    if (
+      response.request().method() === "GET" &&
+      new URL(response.url()).pathname.startsWith(
+        "/__agent-forge/smiths/edits/",
+      )
+    )
+      reads.push(response.status());
+  });
+  await page.setViewportSize({ width: 1100, height: 700 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await openSettled(page, "/index.html#/desktop/smiths");
+  const { dialog } = await openSmithEdit(page);
+  await dialog.getByLabel("Model").fill("not-sent-edit-model");
+  await reviewSmithEdit(dialog);
+  await page.route("**/config/smiths/edits", (route) =>
+    route.fulfill({
+      status: 403,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: false,
+        data: null,
+        error: "refused before effect",
+      }),
+    }),
+  );
+  const refused = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname === "/__agent-forge/config/smiths/edits",
+  );
+  await dialog
+    .getByRole("button", { name: "Save reviewed edit", exact: true })
+    .click();
+  expect((await refused).status()).toBe(403);
+  await expect(
+    page.getByRole("region", { name: "Original Smith edit receipts" }),
+  ).toContainText("Not sent");
+  expect(editBodies).toHaveLength(2);
+  expect(editBodies[1]).toEqual(editBodies[0]);
+  expect(editBodies[0]?.["requestId"]).toEqual(expect.any(String));
+  expect(editBodies[0]?.["target"]).toBe("workspace");
+  expect(editBodies[0]?.["name"]).toBe(fixtureSmith);
+  expect(smithEditInputHash(editBodies[1])).toBe(
+    smithEditInputHash(editBodies[0]),
+  );
+  expect(readFileSync(join(REPOSITORY, "agent-forge.toml"))).toEqual(
+    savedFiles[1]!.fixture,
+  );
+  await page.unroute("**/config/smiths/edits");
+  await reloadSettled(page);
+  await expect(
+    page.getByRole("region", { name: "Original Smith edit receipts" }),
+  ).toContainText("Not sent");
+  expect(reads).toEqual([]);
+  expect(posts).toEqual([
+    "/__agent-forge/config/smiths/edits/preview",
+    "/__agent-forge/config/smiths/edits",
+    "/__agent-forge/config/smiths/edits",
+  ]);
+
+  const reopened = await openSmithEdit(page);
+  await reopened.dialog
+    .getByLabel("Model")
+    .fill("after-not-sent-reviewed-model");
+  await reviewSmithEdit(reopened.dialog);
+  const saved = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname === "/__agent-forge/config/smiths/edits",
+  );
+  await reopened.dialog
+    .getByRole("button", { name: "Save reviewed edit", exact: true })
+    .click();
+  expect((await saved).status()).toBe(200);
+  expect(editBodies).toHaveLength(3);
+  expect(editBodies[2]?.["requestId"]).not.toBe(editBodies[0]?.["requestId"]);
+  expect(smithEditInputHash(editBodies[2])).not.toBe(
+    smithEditInputHash(editBodies[0]),
+  );
+  expect(readFileSync(join(REPOSITORY, "agent-forge.toml"), "utf8")).toContain(
+    'model = "after-not-sent-reviewed-model"',
+  );
+  expect(posts).toEqual([
+    "/__agent-forge/config/smiths/edits/preview",
+    "/__agent-forge/config/smiths/edits",
+    "/__agent-forge/config/smiths/edits",
+    "/__agent-forge/config/smiths/edits/preview",
+    "/__agent-forge/config/smiths/edits",
+  ]);
+  expect(providerStarts()).toEqual(starts);
+});
+
+test("workspace change while an edit reservation waits on the shared lock prevents stale POST", async ({
+  page,
+}) => {
+  const starts = providerStarts();
+  const posts: string[] = [];
+  let changedWorkspace = false;
+  const replacementWorkspace = join(checkedFixtureRoot(), "other-workspace");
+  page.on("request", (request) => {
+    const path = new URL(request.url()).pathname;
+    if (request.method() === "POST" && path.startsWith("/__agent-forge/"))
+      posts.push(path);
+  });
+  await page.route("**/providers/readiness", async (route) => {
+    const response = await route.fetch({
+      headers: {
+        ...route.request().headers(),
+        Origin: new URL(route.request().url()).origin,
+      },
+    });
+    if (!changedWorkspace) return route.fulfill({ response });
+    const envelope = await response.json();
+    envelope.data.workspace = replacementWorkspace;
+    await route.fulfill({ response, json: envelope });
+  });
+  await page.setViewportSize({ width: 1100, height: 700 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await openSettled(page, "/index.html#/desktop/smiths");
+  const { dialog } = await openSmithEdit(page);
+  await dialog.getByLabel("Model").fill("must-not-send-old-scope");
+  await reviewSmithEdit(dialog);
+
+  await page.evaluate(async () => {
+    const testWindow = window as Window & {
+      __releaseSmithEditLock?: () => void;
+    };
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let acquired!: () => void;
+    const ready = new Promise<void>((resolve) => {
+      acquired = resolve;
+    });
+    testWindow.__releaseSmithEditLock = release;
+    void navigator.locks.request(
+      "agent-forge.smith-config-edit-identities.v1",
+      async () => {
+        acquired();
+        await held;
+      },
+    );
+    await ready;
+  });
+  const targetFile = join(REPOSITORY, "agent-forge.toml");
+  const before = readFileSync(targetFile);
+  await dialog
+    .getByRole("button", { name: "Save reviewed edit", exact: true })
+    .click();
+  await expect(
+    dialog.getByText("Saving the original edit identity before sending…"),
+  ).toBeVisible();
+
+  changedWorkspace = true;
+  await page.evaluate(() =>
+    document.dispatchEvent(new Event("visibilitychange")),
+  );
+  await expect(page.locator(".af-smith-path")).toContainText(
+    replacementWorkspace,
+  );
+  await page.evaluate(() => {
+    const testWindow = window as Window & {
+      __releaseSmithEditLock?: () => void;
+    };
+    testWindow.__releaseSmithEditLock?.();
+    delete testWindow.__releaseSmithEditLock;
+  });
+
+  expect(posts).toEqual(["/__agent-forge/config/smiths/edits/preview"]);
+  expect(readFileSync(targetFile)).toEqual(before);
+  expect(readFileSync(targetFile)).toEqual(savedFiles[1]!.fixture);
   expect(providerStarts()).toEqual(starts);
 });
 
