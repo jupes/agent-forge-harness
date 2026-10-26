@@ -600,10 +600,14 @@ test("protected Fork routes publish one audited native Fork and recover its exac
     ),
     parentSessionId = started.session.id;
   const completed = await f.settle(parentSessionId),
+    parentNativeThreadId = completed.binding?.sessionId,
     selectedTurn = completed.turns.find(
       (turn) => turn.requestId === f.request.requestId,
     );
-  if (!selectedTurn) throw Error("The completed parent turn was not saved");
+  if (!selectedTurn || !parentNativeThreadId)
+    throw Error(
+      "The completed parent turn was not saved with its native thread",
+    );
 
   const request = {
       requestId: randomUUID(),
@@ -637,7 +641,9 @@ test("protected Fork routes publish one audited native Fork and recover its exac
     .records()
     .filter((row) => row.kind === "rpc" && row.method === "turn/start");
   expect(parentTurns).toHaveLength(1);
-  expect(parentTurns[0]?.params).toMatchObject({ threadId: parentSessionId });
+  expect(parentTurns[0]?.params).toMatchObject({
+    threadId: parentNativeThreadId,
+  });
   const audit = f.h.events(["operator.action"]).at(-1);
   expect(audit?.kind).toBe("operator.action");
   if (audit?.kind !== "operator.action")
@@ -729,10 +735,14 @@ test("a lost Fork reply is recovered by exact original GET without repeating the
     ),
     parentSessionId = started.session.id,
     completed = await f.settle(parentSessionId),
+    parentNativeThreadId = completed.binding?.sessionId,
     selectedTurn = completed.turns.find(
       (turn) => turn.requestId === f.request.requestId,
     );
-  if (!selectedTurn) throw Error("The completed parent turn was not saved");
+  if (!selectedTurn || !parentNativeThreadId)
+    throw Error(
+      "The completed parent turn was not saved with its native thread",
+    );
 
   const request = {
       requestId: randomUUID(),
@@ -808,5 +818,7 @@ test("a lost Fork reply is recovered by exact original GET without repeating the
     .records()
     .filter((row) => row.kind === "rpc" && row.method === "turn/start");
   expect(parentTurns).toHaveLength(1);
-  expect(parentTurns[0]?.params).toMatchObject({ threadId: parentSessionId });
+  expect(parentTurns[0]?.params).toMatchObject({
+    threadId: parentNativeThreadId,
+  });
 });

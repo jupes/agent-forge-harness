@@ -1320,13 +1320,13 @@ const ACTIONS: Record<string, ActionFixture> = {
   },
   "POST /projects/:id/sessions/:sessionId/forks": {
     valid: {
-      path: "",
+      path: `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_CHAT_SESSION}/forks`,
       body: {
         requestId: API_CODEX_CHAT_FORK_ID,
         throughTurnRequestId: FIXTURE_CHAT_DECISION.turnRequestId,
       },
       status: 200,
-      target: "",
+      target: `codex-chat-fork:${FIXTURE_PROJECT_ID}:${FIXTURE_CHAT_SESSION}`,
       audit: {},
     },
     invalid: {
