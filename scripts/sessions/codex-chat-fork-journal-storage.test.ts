@@ -6,6 +6,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  renameSync,
   rmSync,
   symlinkSync,
   truncateSync,
@@ -23,6 +24,7 @@ import { scratchDirs } from "../test-scratch";
 import { createCodexChatForkJournal } from "./codex-chat-fork-journal";
 import {
   CODEX_CHAT_FORK_JOURNAL_DIRECTORY,
+  type CodexChatForkMutexDiagnostic,
   createCodexChatForkJournalStorage,
 } from "./codex-chat-fork-journal-storage";
 
@@ -110,6 +112,30 @@ function unprotectedReading(target: "directory" | "file"): AclReading {
       { type: 0, flags: 0x10, mask: 1, sid: "S-1-1-0" },
     ],
   };
+}
+
+async function prepareDiagnosticProfile(home: string, acl: WindowsAcl) {
+  await createCodexChatForkJournalStorage(home, {
+    platform: "win32",
+    acl,
+  }).exclusive(async () => undefined);
+  const locks = join(home, CODEX_CHAT_FORK_JOURNAL_DIRECTORY, "locks");
+  return { locks, mutex: join(locks, "journal.sqlite") };
+}
+
+function guardCapture(
+  home: string,
+  acl: WindowsAcl,
+  beforeExclusivePreLockAssert: () => void,
+) {
+  const diagnostics: CodexChatForkMutexDiagnostic[] = [];
+  const storage = createCodexChatForkJournalStorage(home, {
+    platform: "win32",
+    acl,
+    beforeExclusivePreLockAssert,
+    onMutexDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+  });
+  return { storage, diagnostics };
 }
 
 function ref(record: CodexChatForkOriginal) {
@@ -554,4 +580,120 @@ test("a missing nested profile is created one verified directory at a time", asy
   expect(
     existsSync(join(home, CODEX_CHAT_FORK_JOURNAL_DIRECTORY, "locks")),
   ).toBe(true);
+});
+
+test("pre-lock diagnostics distinguish stable mutex size from replaced identity", async () => {
+  const oversizedHome = join(scratch.make("codex-fork-size-"), "profile"),
+    oversizedAcl = fakeAcl(),
+    oversized = await prepareDiagnosticProfile(oversizedHome, oversizedAcl),
+    beforeSize = lstatSync(oversized.mutex, { bigint: true }),
+    sizeCapture = guardCapture(oversizedHome, oversizedAcl, () =>
+      writeFileSync(oversized.mutex, "x".repeat(65_537)),
+    );
+  await expect(
+    sizeCapture.storage.exclusive(async () => undefined),
+  ).rejects.toThrow("linked or changed");
+  const sizeFailure = sizeCapture.diagnostics.find(
+    (entry) => entry.guard === "mutex-size",
+  );
+  expect(sizeFailure).toMatchObject({
+    phase: "exclusive-pre-lock-assert",
+    identityStable: true,
+  });
+  expect(lstatSync(oversized.mutex, { bigint: true }).ino).toBe(beforeSize.ino);
+
+  const replacedHome = join(scratch.make("codex-fork-identity-"), "profile"),
+    replacedAcl = fakeAcl(),
+    replaced = await prepareDiagnosticProfile(replacedHome, replacedAcl),
+    saved = `${replaced.mutex}.saved`,
+    replacement = `${replaced.mutex}.replacement`,
+    originalBytes = readFileSync(replaced.mutex),
+    originalIdentity = lstatSync(replaced.mutex, { bigint: true }),
+    identityCapture = guardCapture(replacedHome, replacedAcl, () => {
+      writeFileSync(replacement, "replacement mutex");
+      renameSync(replaced.mutex, saved);
+      renameSync(replacement, replaced.mutex);
+    });
+  await expect(
+    identityCapture.storage.exclusive(async () => undefined),
+  ).rejects.toThrow("linked or changed");
+  expect(
+    identityCapture.diagnostics.find(
+      (entry) => entry.guard === "mutex-identity",
+    ),
+  ).toMatchObject({
+    phase: "exclusive-pre-lock-assert",
+    identityStable: false,
+  });
+  expect(readFileSync(saved)).toEqual(originalBytes);
+  expect(lstatSync(replaced.mutex, { bigint: true }).ino).not.toBe(
+    originalIdentity.ino,
+  );
+});
+
+test("pre-lock private-metadata diagnostics keep privacy and foreign-owner refusals", async () => {
+  for (const variant of ["privacy", "foreign"] as const) {
+    const home = join(scratch.make(`codex-fork-${variant}-`), "profile"),
+      acl = fakeAcl(),
+      prepared = await prepareDiagnosticProfile(home, acl),
+      beforeBytes = readFileSync(prepared.mutex),
+      strictRead = acl.read.bind(acl);
+    let change = false;
+    acl.read = (path) => {
+      if (path === prepared.mutex && change)
+        return variant === "privacy"
+          ? unprotectedReading("file")
+          : { ...privateReading("file"), owner: "S-1-5-21-9999" };
+      return strictRead(path);
+    };
+    const capture = guardCapture(home, acl, () => {
+      change = true;
+    });
+    await expect(
+      capture.storage.exclusive(async () => undefined),
+    ).rejects.toThrow();
+    expect(
+      capture.diagnostics.find((entry) => entry.guard === "mutex-private"),
+    ).toMatchObject({ phase: "exclusive-pre-lock-assert" });
+    expect(readFileSync(prepared.mutex)).toEqual(beforeBytes);
+  }
+});
+
+test("pre-lock diagnostics identify linked mutexes and unknown lock entries", async () => {
+  const linkedHome = join(scratch.make("codex-fork-linked-mutex-"), "profile"),
+    linkedAcl = fakeAcl(),
+    linked = await prepareDiagnosticProfile(linkedHome, linkedAcl),
+    linkedAlias = join(linked.locks, "journal.sqlite-wal"),
+    mutexBytes = readFileSync(linked.mutex),
+    linkedCapture = guardCapture(linkedHome, linkedAcl, () =>
+      linkSync(linked.mutex, linkedAlias),
+    );
+  await expect(
+    linkedCapture.storage.exclusive(async () => undefined),
+  ).rejects.toThrow("linked or changed");
+  expect(
+    linkedCapture.diagnostics.find(
+      (entry) => entry.guard === "mutex-sidecar-kind",
+    ),
+  ).toMatchObject({ phase: "exclusive-pre-lock-assert" });
+  expect(readFileSync(linked.mutex)).toEqual(mutexBytes);
+  expect(readFileSync(linkedAlias)).toEqual(mutexBytes);
+
+  const debrisHome = join(scratch.make("codex-fork-debris-"), "profile"),
+    debrisAcl = fakeAcl(),
+    debris = await prepareDiagnosticProfile(debrisHome, debrisAcl),
+    unexpected = join(debris.locks, "unknown-entry.tmp"),
+    debrisBytes = "preserve unknown lock entry",
+    debrisCapture = guardCapture(debrisHome, debrisAcl, () =>
+      writeFileSync(unexpected, debrisBytes, { flag: "wx" }),
+    );
+  await expect(
+    debrisCapture.storage.exclusive(async () => undefined),
+  ).rejects.toThrow("unknown sidecar");
+  expect(
+    debrisCapture.diagnostics.find(
+      (entry) => entry.guard === "lock-namespace-name",
+    ),
+  ).toMatchObject({ phase: "exclusive-pre-lock-assert" });
+  expect(readFileSync(unexpected, "utf8")).toBe(debrisBytes);
 });

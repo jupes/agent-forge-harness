@@ -66,7 +66,47 @@ export interface CodexChatForkJournalStorageOptions {
   onMutexDiagnostic?: (diagnostic: CodexChatForkMutexDiagnostic) => void;
   /** Deterministic test barrier immediately after the mutex directory snapshot. */
   afterMutexDirectorySnapshot?: (empty: boolean) => void;
+  /** Injected only by storage tests, after mutex initialization and before its first use. */
+  beforeExclusivePreLockAssert?: () => void;
 }
+
+export const CODEX_CHAT_FORK_MUTEX_GUARDS = [
+  "root-directory-read",
+  "root-directory-kind",
+  "root-directory-path",
+  "root-directory-private",
+  "root-directory-identity",
+  "locks-directory-read",
+  "locks-directory-kind",
+  "locks-directory-path",
+  "locks-directory-private",
+  "locks-directory-identity",
+  "locks-directory-stability",
+  "mutex-read",
+  "mutex-kind",
+  "mutex-path",
+  "mutex-size",
+  "mutex-identity",
+  "mutex-private",
+  "lock-namespace-read",
+  "lock-namespace-name",
+  "lock-namespace-size",
+  "lock-namespace-stability",
+  "mutex-sidecar-kind",
+  "mutex-sidecar-read",
+  "mutex-sidecar-path",
+  "mutex-sidecar-size",
+  "mutex-sidecar-identity",
+  "mutex-sidecar-private",
+  "sqlite-sidecar-kind",
+  "sqlite-sidecar-read",
+  "sqlite-sidecar-path",
+  "sqlite-sidecar-size",
+  "sqlite-sidecar-identity",
+  "sqlite-sidecar-private",
+] as const;
+export type CodexChatForkMutexGuard =
+  (typeof CODEX_CHAT_FORK_MUTEX_GUARDS)[number];
 
 export interface CodexChatForkMutexDiagnostic {
   phase:
@@ -88,11 +128,29 @@ export interface CodexChatForkMutexDiagnostic {
   fileSize: number | null;
   identityStable: boolean | null;
   failure: "privacy" | "identity" | "other";
+  /** Exact finite assertion site; null means the failure occurred outside instrumented guards. */
+  guard: CodexChatForkMutexGuard | null;
 }
 
 interface MutexState {
   identity: FileIdentity;
   sidecars: ReadonlyMap<string, FileIdentity>;
+}
+interface MutexGuardContext {
+  phase: CodexChatForkMutexDiagnostic["phase"];
+  rootIdentity: FileIdentity;
+  locksIdentity: FileIdentity;
+  mutexIdentity: FileIdentity;
+}
+interface MutexGuardTarget {
+  phase: CodexChatForkMutexDiagnostic["phase"];
+  expected: FileIdentity;
+  prefix:
+    | "root-directory"
+    | "locks-directory"
+    | "mutex"
+    | "mutex-sidecar"
+    | "sqlite-sidecar";
 }
 
 /** A new SQLite sidecar may only be normalized from this process token's owner. */
@@ -188,13 +246,22 @@ export function createCodexChatForkJournalStorage(
       ...(options.acl === undefined ? {} : { acl: options.acl }),
     };
   let insideExclusive = false;
+  const guardedFailures = new WeakSet<object>();
 
   const reportMutexDiagnostic = (
     phase: CodexChatForkMutexDiagnostic["phase"],
     error: unknown,
     expected?: FileIdentity,
+    guard: CodexChatForkMutexGuard | null = null,
   ): void => {
     if (options.onMutexDiagnostic === undefined) return;
+    if (
+      guard === null &&
+      typeof error === "object" &&
+      error !== null &&
+      guardedFailures.has(error)
+    )
+      return;
     let fileSize: number | null = null,
       identityStable: boolean | null = expected === undefined ? null : false;
     try {
@@ -218,9 +285,31 @@ export function createCodexChatForkJournalStorage(
           ? "identity"
           : "other";
     try {
-      options.onMutexDiagnostic({ phase, fileSize, identityStable, failure });
+      options.onMutexDiagnostic({
+        phase,
+        fileSize,
+        identityStable,
+        failure,
+        guard,
+      });
     } catch {
       // A diagnostic observer must never change storage behavior.
+    }
+  };
+
+  const guarded = <T>(
+    phase: CodexChatForkMutexDiagnostic["phase"],
+    guard: CodexChatForkMutexGuard,
+    expected: FileIdentity,
+    check: () => T,
+  ): T => {
+    try {
+      return check();
+    } catch (error) {
+      if (typeof error === "object" && error !== null)
+        guardedFailures.add(error);
+      reportMutexDiagnostic(phase, error, expected, guard);
+      throw error;
     }
   };
 
@@ -307,29 +396,96 @@ export function createCodexChatForkJournalStorage(
     return identity(info);
   };
 
-  const inspectDirectory = (path: string): FileIdentity | null => {
-    const checked = readHomeFile(path, undefined, homeOptions);
-    if (checked.problem !== null) throw new Error(checked.problem);
+  const inspectDirectory = (
+    path: string,
+    diagnostic?: MutexGuardTarget,
+  ): FileIdentity | null => {
+    const read = () => {
+      const checked = readHomeFile(path, undefined, homeOptions);
+      if (checked.problem !== null) throw new Error(checked.problem);
+    };
+    if (diagnostic)
+      guarded(
+        diagnostic.phase,
+        `${diagnostic.prefix}-read` as CodexChatForkMutexGuard,
+        diagnostic.expected,
+        read,
+      );
+    else read();
     let info: BigIntStats;
     try {
       info = lstatSync(path, { bigint: true });
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+      if (diagnostic) {
+        if (typeof error === "object" && error !== null)
+          guardedFailures.add(error);
+        reportMutexDiagnostic(
+          diagnostic.phase,
+          error,
+          diagnostic.expected,
+          `${diagnostic.prefix}-kind` as CodexChatForkMutexGuard,
+        );
+      }
       throw error;
     }
-    if (!info.isDirectory() || info.isSymbolicLink() || !safePath(path))
-      throw new Error("The private Codex Fork directory is linked or invalid.");
-    assertPrivateMetadata(path, "directory", info, options);
+    const kind = () => {
+      if (!info.isDirectory() || info.isSymbolicLink())
+        throw new Error(
+          "The private Codex Fork directory is linked or invalid.",
+        );
+    };
+    if (diagnostic)
+      guarded(
+        diagnostic.phase,
+        `${diagnostic.prefix}-kind` as CodexChatForkMutexGuard,
+        diagnostic.expected,
+        kind,
+      );
+    else kind();
+    const pathCheck = () => {
+      if (!safePath(path))
+        throw new Error(
+          "The private Codex Fork directory is linked or invalid.",
+        );
+    };
+    if (diagnostic)
+      guarded(
+        diagnostic.phase,
+        `${diagnostic.prefix}-path` as CodexChatForkMutexGuard,
+        diagnostic.expected,
+        pathCheck,
+      );
+    else pathCheck();
+    if (diagnostic)
+      guarded(
+        diagnostic.phase,
+        `${diagnostic.prefix}-private` as CodexChatForkMutexGuard,
+        diagnostic.expected,
+        () => assertPrivateMetadata(path, "directory", info, options),
+      );
+    else assertPrivateMetadata(path, "directory", info, options);
     return identity(info);
   };
 
   const assertStableDirectory = (
     path: string,
     expected: FileIdentity,
+    diagnostic?: MutexGuardTarget,
   ): void => {
-    const found = inspectDirectory(path);
-    if (found === null || !sameIdentity(found, expected))
-      throw new Error("The private Codex Fork directory changed.");
+    const found = inspectDirectory(path, diagnostic);
+    const identityCheck = () => {
+      if (found === null || !sameIdentity(found, expected))
+        throw new Error("The private Codex Fork directory changed.");
+    };
+    if (diagnostic)
+      guarded(
+        diagnostic.phase,
+        `${diagnostic.prefix}-identity` as CodexChatForkMutexGuard,
+        diagnostic.expected,
+        identityCheck,
+      );
+    else identityCheck();
   };
 
   const assertPrivateFile = (
@@ -367,28 +523,73 @@ export function createCodexChatForkJournalStorage(
   const assertPlainLockFile = (
     path: string,
     expected?: FileIdentity,
+    diagnostic?: MutexGuardTarget,
   ): BigIntStats => {
-    const info = lstatSync(path, { bigint: true });
-    if (
-      !info.isFile() ||
-      info.isSymbolicLink() ||
-      info.nlink !== 1n ||
-      !safePath(path) ||
-      info.size > BigInt(MUTEX_BYTES) ||
-      (expected !== undefined && !sameIdentity(identity(info), expected))
-    )
-      throw new Error(
-        "The private Codex Fork mutex entry is linked or changed.",
-      );
+    const check = (
+      suffix: "kind" | "path" | "size" | "identity",
+      action: () => void,
+    ) => {
+      if (diagnostic)
+        guarded(
+          diagnostic.phase,
+          `${diagnostic.prefix}-${suffix}` as CodexChatForkMutexGuard,
+          diagnostic.expected,
+          action,
+        );
+      else action();
+    };
+    const read = () => lstatSync(path, { bigint: true });
+    const info = diagnostic
+      ? guarded(
+          diagnostic.phase,
+          `${diagnostic.prefix}-read` as CodexChatForkMutexGuard,
+          diagnostic.expected,
+          read,
+        )
+      : read();
+    check("kind", () => {
+      if (!info.isFile() || info.isSymbolicLink() || info.nlink !== 1n)
+        throw new Error(
+          "The private Codex Fork mutex entry is linked or changed.",
+        );
+    });
+    check("path", () => {
+      if (!safePath(path))
+        throw new Error(
+          "The private Codex Fork mutex entry is linked or changed.",
+        );
+    });
+    check("size", () => {
+      if (info.size > BigInt(MUTEX_BYTES))
+        throw new Error(
+          "The private Codex Fork mutex entry is linked or changed.",
+        );
+    });
+    check("identity", () => {
+      if (expected !== undefined && !sameIdentity(identity(info), expected))
+        throw new Error(
+          "The private Codex Fork mutex entry is linked or changed.",
+        );
+    });
     return info;
   };
 
   const assertPrivateLockFile = (
     path: string,
     expected?: FileIdentity,
+    diagnostic?: MutexGuardTarget,
   ): BigIntStats => {
-    const info = assertPlainLockFile(path, expected);
-    assertPrivateMetadata(path, "file", info, options);
+    const info = assertPlainLockFile(path, expected, diagnostic);
+    const privateCheck = () =>
+      assertPrivateMetadata(path, "file", info, options);
+    if (diagnostic)
+      guarded(
+        diagnostic.phase,
+        `${diagnostic.prefix}-private` as CodexChatForkMutexGuard,
+        diagnostic.expected,
+        privateCheck,
+      );
+    else privateCheck();
     return info;
   };
 
@@ -598,36 +799,134 @@ export function createCodexChatForkJournalStorage(
     known: ReadonlyMap<string, FileIdentity> = new Map(),
     protectNewSidecars = false,
     requireMutex = true,
+    diagnostic?: MutexGuardContext,
   ): ReadonlyMap<string, FileIdentity> => {
-    const lockIdentity = inspectDirectory(locks);
+    const lockIdentity = diagnostic
+      ? inspectDirectory(locks, {
+          phase: diagnostic.phase,
+          expected: diagnostic.mutexIdentity,
+          prefix: "locks-directory",
+        })
+      : inspectDirectory(locks);
+    if (lockIdentity === null) {
+      const fail = () => {
+        throw new Error("The private Codex Fork lock directory is missing.");
+      };
+      if (diagnostic)
+        guarded(
+          diagnostic.phase,
+          "locks-directory-identity",
+          diagnostic.mutexIdentity,
+          fail,
+        );
+      else fail();
+    }
     if (lockIdentity === null)
       throw new Error("The private Codex Fork lock directory is missing.");
-    const names = directoryNames(locks, MUTEX_ENTRIES.size + 1).sort();
+    const names = diagnostic
+      ? guarded(
+          diagnostic.phase,
+          "lock-namespace-read",
+          diagnostic.mutexIdentity,
+          () => directoryNames(locks, MUTEX_ENTRIES.size + 1).sort(),
+        )
+      : directoryNames(locks, MUTEX_ENTRIES.size + 1).sort();
     const found = names.map((name) => {
-      if (!MUTEX_ENTRIES.has(name))
-        throw new Error("The private Codex Fork lock has an unknown sidecar.");
+      if (!MUTEX_ENTRIES.has(name)) {
+        const fail = () => {
+          throw new Error(
+            "The private Codex Fork lock has an unknown sidecar.",
+          );
+        };
+        if (diagnostic)
+          guarded(
+            diagnostic.phase,
+            "lock-namespace-name",
+            diagnostic.mutexIdentity,
+            fail,
+          );
+        else fail();
+      }
       const path = join(locks, name),
-        info = assertPlainLockFile(path),
-        fileIdentity = identity(info),
         previous = known.get(name);
+      const entryKind: "mutex-sidecar" | "sqlite-sidecar" =
+        name === MUTEX_FILE ? "mutex-sidecar" : "sqlite-sidecar";
+      const guardTarget = diagnostic
+          ? {
+              phase: diagnostic.phase,
+              expected: diagnostic.mutexIdentity,
+              prefix: entryKind,
+            }
+          : undefined,
+        info = assertPlainLockFile(path, undefined, guardTarget),
+        fileIdentity = identity(info);
       if (previous !== undefined && !sameIdentity(fileIdentity, previous))
-        throw new Error("The private Codex Fork mutex sidecar changed.");
-      if (name === MUTEX_FILE || previous !== undefined || !protectNewSidecars)
-        assertPrivateMetadata(path, "file", info, options);
+        if (diagnostic)
+          guarded(
+            diagnostic.phase,
+            entryKind === "mutex-sidecar"
+              ? "mutex-sidecar-identity"
+              : "sqlite-sidecar-identity",
+            diagnostic.mutexIdentity,
+            () => {
+              throw new Error("The private Codex Fork mutex sidecar changed.");
+            },
+          );
+        else throw new Error("The private Codex Fork mutex sidecar changed.");
+      if (
+        name === MUTEX_FILE ||
+        previous !== undefined ||
+        !protectNewSidecars
+      ) {
+        if (diagnostic) {
+          guarded(
+            diagnostic.phase,
+            entryKind === "mutex-sidecar"
+              ? "mutex-sidecar-private"
+              : "sqlite-sidecar-private",
+            diagnostic.mutexIdentity,
+            () => assertPrivateMetadata(path, "file", info, options),
+          );
+        } else assertPrivateMetadata(path, "file", info, options);
+      }
       return { name, path, info, identity: fileIdentity };
     });
+    const namespaceFailure = (message: string) => {
+      const fail = () => {
+        throw new Error(message);
+      };
+      if (diagnostic)
+        guarded(
+          diagnostic.phase,
+          "lock-namespace-name",
+          diagnostic.mutexIdentity,
+          fail,
+        );
+      else fail();
+    };
     if (requireMutex && !names.includes(MUTEX_FILE))
-      throw new Error("The private Codex Fork SQLite mutex is missing.");
+      namespaceFailure("The private Codex Fork SQLite mutex is missing.");
     if (!requireMutex && names.length > 0 && !names.includes(MUTEX_FILE))
-      throw new Error("The private Codex Fork SQLite mutex is incomplete.");
+      namespaceFailure("The private Codex Fork SQLite mutex is incomplete.");
     let totalBytes = 0n;
     const sidecars = new Map<string, FileIdentity>();
     for (const entry of found) {
       totalBytes += entry.info.size;
-      if (totalBytes > BigInt(MUTEX_BYTES))
-        throw new Error(
-          "The private Codex Fork mutex metadata exceeds its limit.",
-        );
+      if (totalBytes > BigInt(MUTEX_BYTES)) {
+        const fail = () => {
+          throw new Error(
+            "The private Codex Fork mutex metadata exceeds its limit.",
+          );
+        };
+        if (diagnostic)
+          guarded(
+            diagnostic.phase,
+            "lock-namespace-size",
+            diagnostic.mutexIdentity,
+            fail,
+          );
+        else fail();
+      }
       if (
         entry.name !== MUTEX_FILE &&
         !known.has(entry.name) &&
@@ -640,15 +939,69 @@ export function createCodexChatForkJournalStorage(
           lockIdentity,
         );
       }
-      const verified = assertPrivateLockFile(entry.path, entry.identity);
-      if (verified.size !== entry.info.size)
-        throw new Error("The private Codex Fork mutex metadata changed.");
+      const verified = assertPrivateLockFile(
+        entry.path,
+        entry.identity,
+        diagnostic
+          ? {
+              phase: diagnostic.phase,
+              expected: diagnostic.mutexIdentity,
+              prefix:
+                entry.name === MUTEX_FILE ? "mutex-sidecar" : "sqlite-sidecar",
+            }
+          : undefined,
+      );
+      if (verified.size !== entry.info.size) {
+        const fail = () => {
+          throw new Error("The private Codex Fork mutex metadata changed.");
+        };
+        if (diagnostic)
+          guarded(
+            diagnostic.phase,
+            entry.name === MUTEX_FILE
+              ? "mutex-sidecar-size"
+              : "sqlite-sidecar-size",
+            diagnostic.mutexIdentity,
+            fail,
+          );
+        else fail();
+      }
       if (entry.name !== MUTEX_FILE) sidecars.set(entry.name, entry.identity);
     }
-    const afterNames = directoryNames(locks, MUTEX_ENTRIES.size + 1).sort();
-    if (afterNames.join("\0") !== names.join("\0"))
-      throw new Error("The private Codex Fork mutex entries changed.");
-    assertStableDirectory(locks, lockIdentity);
+    const afterNames = diagnostic
+      ? guarded(
+          diagnostic.phase,
+          "lock-namespace-read",
+          diagnostic.mutexIdentity,
+          () => directoryNames(locks, MUTEX_ENTRIES.size + 1).sort(),
+        )
+      : directoryNames(locks, MUTEX_ENTRIES.size + 1).sort();
+    if (afterNames.join("\0") !== names.join("\0")) {
+      const fail = () => {
+        throw new Error("The private Codex Fork mutex entries changed.");
+      };
+      if (diagnostic)
+        guarded(
+          diagnostic.phase,
+          "lock-namespace-stability",
+          diagnostic.mutexIdentity,
+          fail,
+        );
+      else fail();
+    }
+    if (diagnostic) {
+      guarded(
+        diagnostic.phase,
+        "locks-directory-stability",
+        diagnostic.mutexIdentity,
+        () => assertStableDirectory(locks, lockIdentity),
+      );
+      assertStableDirectory(locks, diagnostic.locksIdentity, {
+        phase: diagnostic.phase,
+        expected: diagnostic.mutexIdentity,
+        prefix: "locks-directory",
+      });
+    } else assertStableDirectory(locks, lockIdentity);
     return sidecars;
   };
 
@@ -799,13 +1152,33 @@ export function createCodexChatForkJournalStorage(
     expectedLocks: FileIdentity,
     knownSidecars: ReadonlyMap<string, FileIdentity>,
     protectNewSidecars = false,
+    phase: CodexChatForkMutexDiagnostic["phase"] = "exclusive-pre-lock-assert",
   ): ReadonlyMap<string, FileIdentity> => {
-    assertStableDirectory(root, expectedRoot);
-    assertStableDirectory(locks, expectedLocks);
-    assertPrivateLockFile(mutex, expected);
+    assertStableDirectory(root, expectedRoot, {
+      phase,
+      expected,
+      prefix: "root-directory",
+    });
+    assertStableDirectory(locks, expectedLocks, {
+      phase,
+      expected,
+      prefix: "locks-directory",
+    });
+    assertPrivateLockFile(mutex, expected, {
+      phase,
+      expected,
+      prefix: "mutex",
+    });
     return inspectLockMetadata(
       new Map([[MUTEX_FILE, expected], ...knownSidecars]),
       protectNewSidecars,
+      true,
+      {
+        phase,
+        rootIdentity: expectedRoot,
+        locksIdentity: expectedLocks,
+        mutexIdentity: expected,
+      },
     );
   };
 
@@ -1074,11 +1447,14 @@ export function createCodexChatForkJournalStorage(
         const mutexState = await ensureMutex(rootIdentity, locksIdentity);
         expectedMutex = mutexState.identity;
         phase = "exclusive-pre-lock-assert";
+        options.beforeExclusivePreLockAssert?.();
         let knownSidecars = assertMutex(
           mutexState.identity,
           rootIdentity,
           locksIdentity,
           mutexState.sidecars,
+          false,
+          phase,
         );
         phase = "exclusive-queue";
         const locked = await withQueueLock(
@@ -1091,6 +1467,7 @@ export function createCodexChatForkJournalStorage(
               locksIdentity,
               knownSidecars,
               true,
+              phase,
             );
             if (insideExclusive)
               throw new Error(
@@ -1109,6 +1486,8 @@ export function createCodexChatForkJournalStorage(
                 rootIdentity,
                 locksIdentity,
                 knownSidecars,
+                false,
+                phase,
               );
               assertStableDirectory(root, rootIdentity);
               assertStableDirectory(events, eventsIdentity);
@@ -1127,10 +1506,17 @@ export function createCodexChatForkJournalStorage(
           rootIdentity,
           locksIdentity,
           knownSidecars,
+          false,
+          phase,
         );
         return locked.value;
       } catch (error) {
-        reportMutexDiagnostic(phase, error, expectedMutex);
+        if (
+          typeof error !== "object" ||
+          error === null ||
+          !guardedFailures.has(error)
+        )
+          reportMutexDiagnostic(phase, error, expectedMutex);
         throw error;
       }
     },
