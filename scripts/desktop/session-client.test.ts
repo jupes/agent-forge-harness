@@ -752,6 +752,37 @@ test("identity mutations do not post when writing is disabled or the client is d
 
 test("admitted identity inspection reads only the exact matching original and never posts", async () => {
   const scope = { projectId, workspace: "/repo", generation: 1 };
+  const originalSnapshot = {
+    version: 1 as const,
+    provider: "claude" as const,
+    smith: record.smith,
+    cwd: "/repo",
+    launch: {
+      mode: "chat" as const,
+      model: "sonnet",
+      prompt: "Original prompt",
+      context: {
+        projectId,
+        repository: "/repo",
+        worktree: "/repo",
+        about: [],
+      },
+    },
+    capabilities: {
+      version: "2.1.0",
+      flags: [
+        "--print",
+        "--input-format",
+        "--output-format",
+        "--verbose",
+        "--include-partial-messages",
+        "--model",
+        "--permission-mode",
+        "--permission-prompts",
+        "--allowedTools",
+      ],
+    },
+  };
   let originalReads = 0,
     writes = 0;
   const identityServer: SessionStartIdentityServer = {
@@ -794,11 +825,22 @@ test("admitted identity inspection reads only the exact matching original and ne
       expect(sessionId).toBe(id);
       expect(query.requestId).toBe(requestId);
       originalReads++;
-      const originalTurn = { ...turn, hash: record.requestHash };
+      const originalTurn = { ...turn, hash: "b".repeat(64) };
       return {
         ...page,
         request: originalTurn,
         turns: [originalTurn],
+        frames: [
+          {
+            ...page.frames[0]!,
+            event: {
+              kind: "user" as const,
+              text: "Original prompt",
+              about: [],
+              session: originalSnapshot,
+            },
+          },
+        ],
       };
     },
     post: async () => {
@@ -812,6 +854,7 @@ test("admitted identity inspection reads only the exact matching original and ne
   await client.refresh(projectId);
   expect(originalReads).toBe(0);
   expect(await client.inspectIdentity(projectId, requestId)).toBe(true);
+  expect("b".repeat(64)).not.toBe(record.requestHash);
   expect(originalReads).toBe(1);
   expect(writes).toBe(0);
   expect(client.project(projectId).identityInspection).toEqual({
@@ -822,9 +865,45 @@ test("admitted identity inspection reads only the exact matching original and ne
   client.dispose();
 });
 
-for (const mismatch of ["turn-hash", "conversation-id"] as const) {
+for (const mismatch of [
+  "saved-launch-canonical-hash",
+  "registry-request-hash",
+  "original-request-uuid",
+  "conversation-id",
+] as const) {
   test(`admitted inspection rejects a ${mismatch} mismatch without caching private session data`, async () => {
     const scope = { projectId, workspace: "/repo", generation: 1 };
+    const originalSnapshot = {
+      version: 1 as const,
+      provider: "claude" as const,
+      smith: record.smith,
+      cwd: "/repo",
+      launch: {
+        mode: "chat" as const,
+        model: mismatch === "saved-launch-canonical-hash" ? "haiku" : "sonnet",
+        prompt: "Original prompt",
+        context: {
+          projectId,
+          repository: "/repo",
+          worktree: "/repo",
+          about: [],
+        },
+      },
+      capabilities: {
+        version: "2.1.0",
+        flags: [
+          "--print",
+          "--input-format",
+          "--output-format",
+          "--verbose",
+          "--include-partial-messages",
+          "--model",
+          "--permission-mode",
+          "--permission-prompts",
+          "--allowedTools",
+        ],
+      },
+    };
     const identityServer: SessionStartIdentityServer = {
       async list(current) {
         return {
@@ -838,7 +917,10 @@ for (const mismatch of ["turn-hash", "conversation-id"] as const) {
             {
               version: 1,
               requestId,
-              requestHash: record.requestHash,
+              requestHash:
+                mismatch === "registry-request-hash"
+                  ? "d".repeat(64)
+                  : record.requestHash,
               provider: "claude",
               mode: "chat",
               state: "admitted",
@@ -860,10 +942,7 @@ for (const mismatch of ["turn-hash", "conversation-id"] as const) {
       requestId: () => requestId,
       list: async () => [record],
       read: async () => {
-        const originalTurn = {
-          ...turn,
-          hash: mismatch === "turn-hash" ? "e".repeat(64) : record.requestHash,
-        };
+        const originalTurn = { ...turn, hash: "c".repeat(64) };
         return {
           ...page,
           ...(mismatch === "conversation-id"
@@ -871,6 +950,20 @@ for (const mismatch of ["turn-hash", "conversation-id"] as const) {
             : {}),
           request: originalTurn,
           turns: [originalTurn],
+          frames: [
+            {
+              ...page.frames[0]!,
+              ...(mismatch === "original-request-uuid"
+                ? { turnId: "4c7fc780-03fd-4f9e-9d90-8eac62b8d25e" }
+                : {}),
+              event: {
+                kind: "user" as const,
+                text: "Original prompt",
+                about: [],
+                session: originalSnapshot,
+              },
+            },
+          ],
         };
       },
       post: async () => ({

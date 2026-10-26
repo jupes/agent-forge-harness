@@ -384,6 +384,82 @@ export function createSessionsClient(deps: {
         structuredClone({ ...input, requestId }),
       ) as SessionStartRequest,
     );
+  const provesOriginalStart = async (
+    record: OwnedSessionRecord,
+    original: ConversationPage,
+    expectedRequestId: string,
+    expectedRequestHash: string,
+  ): Promise<boolean> => {
+    const frame = original.frames[0];
+    const turn = original.turns.find(
+      (candidate) => candidate.requestId === expectedRequestId,
+    );
+    if (
+      original.projectId !== record.projectId ||
+      original.conversationId !== record.id ||
+      record.requestId !== expectedRequestId ||
+      !frame ||
+      frame.seq !== 1 ||
+      frame.turnId !== expectedRequestId ||
+      frame.event.kind !== "user" ||
+      !turn ||
+      turn.requestId !== frame.turnId ||
+      frame.event.text.length === 0 ||
+      !Array.isArray(frame.event.about)
+    )
+      return false;
+
+    const event = frame.event;
+    const snapshot =
+      record.provider === "claude"
+        ? event.session
+        : record.provider === "codex"
+          ? record.mode === "chat"
+            ? event.codexChat
+            : event.codexTask
+          : record.mode === "chat"
+            ? event.geminiChat
+            : event.geminiTask;
+    if (!snapshot || snapshot.smith !== record.smith) return false;
+
+    const launch = structuredClone(snapshot.launch) as unknown as Record<
+      string,
+      unknown
+    >;
+    if (
+      Object.hasOwn(launch, "resumeSessionId") ||
+      (record.provider === "gemini" &&
+        (Object.hasOwn(launch, "policyFiles") ||
+          Object.hasOwn(launch, "includeDirectories")))
+    )
+      return false;
+    delete launch.cwd;
+    delete launch.context;
+    if (launch.prompt !== event.text) return false;
+
+    const aboutVariants: Array<unknown[] | undefined> =
+      event.about.length === 0 ? [undefined, []] : [event.about];
+    for (const about of aboutVariants) {
+      const candidate: Record<string, unknown> = {
+        requestId: record.requestId,
+        smith: record.smith,
+        repository: record.repository,
+        worktree: record.worktree,
+        ...(record.beadId === undefined ? {} : { beadId: record.beadId }),
+        ...(about === undefined ? {} : { about }),
+        ...(record.provider === "claude" ? {} : { provider: record.provider }),
+        launch,
+      };
+      try {
+        const request = parseOwnedSessionStart(candidate);
+        if ((await sessionStartHash(request)) === expectedRequestHash)
+          return true;
+      } catch {
+        // Unsupported or incomplete saved launch evidence is not proof.
+      }
+    }
+    return false;
+  };
   const inspectIdentity = async (
     projectId: string,
     requestId: string,
@@ -431,15 +507,15 @@ export function createSessionsClient(deps: {
       const observed = session(projectId, record.id);
       if (
         observed.loaded &&
-        observed.page?.conversationId === record.id &&
-        [
-          ...observed.page.turns,
-          ...(observed.page.request ? [observed.page.request] : []),
-        ].some(
-          (turn) =>
-            turn.requestId === requestId && turn.hash === identity.requestHash,
-        )
+        observed.page &&
+        (await provesOriginalStart(
+          record,
+          observed.page,
+          requestId,
+          identity.requestHash,
+        ))
       ) {
+        if (!isCurrentInspection()) return false;
         entry.identityInspection = {
           requestId,
           state: "verified",
@@ -458,32 +534,21 @@ export function createSessionsClient(deps: {
         !checkedOriginal.success ||
         checkedOriginal.data.projectId !== projectId ||
         checkedOriginal.data.conversationId !== record.id ||
-        ![
-          ...checkedOriginal.data.turns,
-          ...(checkedOriginal.data.request
-            ? [checkedOriginal.data.request]
-            : []),
-        ].some(
-          (turn) =>
-            turn.requestId === requestId && turn.hash === identity.requestHash,
-        )
+        !(await provesOriginalStart(
+          record,
+          checkedOriginal.data,
+          requestId,
+          identity.requestHash,
+        ))
       )
         throw Error("Original request identity did not match");
+      if (!isCurrentInspection()) return false;
       if (
         !apply(session(projectId, record.id), checkedOriginal.data, false, true)
       )
         throw Error("Original session could not be verified");
       const verifiedPage = session(projectId, record.id).page;
-      if (
-        !verifiedPage ||
-        ![
-          ...verifiedPage.turns,
-          ...(verifiedPage.request ? [verifiedPage.request] : []),
-        ].some(
-          (turn) =>
-            turn.requestId === requestId && turn.hash === identity.requestHash,
-        )
-      )
+      if (!verifiedPage || verifiedPage.conversationId !== record.id)
         throw Error("Original request identity did not match");
       if (!isCurrentInspection()) return false;
       entry.identityInspection = {
