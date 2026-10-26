@@ -359,18 +359,23 @@ test("a fresh trusted desktop origin discovers and inspects an admitted Start wi
         new URL(response.url()).origin === newOrigin &&
         new URL(response.url()).pathname === SESSION_ROUTE,
     );
-    const identityRead = page
-      .waitForResponse(
-        (response) =>
-          response.request().method() === "GET" &&
+    const identityPath = `/__agent-forge/projects/${alpha.id}/session-start-identities`;
+    const browserIdentityRead = page.waitForResponse((response) => {
+      try {
+        const request = response.request(),
+          frame = request.frame();
+        return (
+          request.method() === "GET" &&
+          !request.isNavigationRequest() &&
+          frame === page.mainFrame() &&
           new URL(response.url()).origin === newOrigin &&
-          new URL(response.url()).pathname ===
-            `/__agent-forge/projects/${alpha.id}/session-start-identities`,
-      )
-      .then(async (response) => ({
-        ok: response.ok(),
-        data: (await response.json()).data,
-      }));
+          new URL(frame.url()).origin === newOrigin &&
+          new URL(response.url()).pathname === identityPath
+        );
+      } catch {
+        return false;
+      }
+    });
     await page.goto(newHostUrl);
     expect((await exchanged).status()).toBe(200);
     const sessionKey = await page.evaluate(
@@ -379,16 +384,29 @@ test("a fresh trusted desktop origin discovers and inspects an admitted Start wi
     );
     expect(sessionKey).toMatch(/^[a-f0-9]{64}$/);
     // The fresh host URL performs the trusted-origin key exchange. Navigate
-    // the already loaded app to the selected project with a hash change so
-    // its identity read can finish before any document navigation discards
-    // the response body.
+    // the already loaded app to the selected project with a hash change, then
+    // correlate the browser's real identity GET to that new main-frame origin.
     await page.evaluate((hash) => {
       window.location.hash = hash;
     }, `#/desktop/project/${alpha.id}/sessions`);
-    const identityResponse = await identityRead;
-    expect(identityResponse.ok).toBe(true);
+    const browserIdentityResponse = await browserIdentityRead;
+    expect(browserIdentityResponse.status()).toBe(200);
+    const identityToken = await pageToken(page);
+    const identityResponse = await page.request.get(
+      new URL(identityPath, newOrigin).toString(),
+      {
+        headers: {
+          [OPERATOR_HEADER]: identityToken,
+          Origin: newOrigin,
+          "Sec-Fetch-Site": "same-origin",
+        },
+      },
+    );
+    expect(identityResponse.status()).toBe(200);
     const identityPage = sessionStartIdentityPageSchema.parse(
-      identityResponse.data,
+      record(
+        parseFixtureJson(await identityResponse.text(), "identity page read"),
+      )?.["data"],
     );
     const observation = record(
       parseFixtureJson(
