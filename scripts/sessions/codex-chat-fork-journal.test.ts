@@ -10,11 +10,13 @@ import type {
 import { createCodexChatForkJournal } from "./codex-chat-fork-journal";
 import {
   CODEX_CHAT_FORK_LIMITS,
+  CODEX_CHAT_FORK_PROTOCOL_VERSION,
   canonicalCodexChatForkJournalEvent,
   codexChatForkCaptureHash,
   codexChatForkJournalEventBodySchema,
   codexChatForkJournalEventHash,
   codexChatForkJournalEventSchema,
+  codexChatForkOriginalHash,
 } from "./codex-chat-fork-protocol";
 
 const scratch = scratchDirs();
@@ -124,6 +126,78 @@ test("reserve persists a stable child ID and exact original across reopen", asyn
   expect(read?.childAppSessionId).toBe(
     "session-0199a213-81c0-7800-8aa1-bbab2a035a60",
   );
+});
+
+test("an active parent address cannot be claimed by a second UUID across instances", async () => {
+  const root = scratch.make("codex-fork-root-"),
+    storage = new MemoryStorage(),
+    first = fixture(root, storage).journal,
+    second = fixture(root, storage).journal;
+  const claims = await Promise.allSettled([
+    first.reserve(projectId, parentSessionId, {
+      requestId,
+      throughTurnRequestId,
+    }),
+    second.reserve(projectId, parentSessionId, {
+      requestId: otherRequestId,
+      throughTurnRequestId,
+    }),
+  ]);
+
+  expect(claims.filter((claim) => claim.status === "fulfilled")).toHaveLength(
+    1,
+  );
+  expect(claims.filter((claim) => claim.status === "rejected")).toHaveLength(1);
+  expect(
+    fixture(root, storage).journal.read(projectId, requestId) !== null ||
+      fixture(root, storage).journal.read(projectId, otherRequestId) !== null,
+  ).toBe(true);
+});
+
+test("journal replay rejects a checksummed second UUID for an active parent", async () => {
+  const root = scratch.make("codex-fork-root-"),
+    storage = new MemoryStorage(),
+    journal = fixture(root, storage).journal,
+    first = await journal.reserve(projectId, parentSessionId, {
+      requestId,
+      throughTurnRequestId,
+    }),
+    firstText = [...storage.events.values()][0];
+  if (!firstText) throw Error("Missing first reservation event.");
+  const firstEvent = codexChatForkJournalEventSchema.parse(
+      JSON.parse(firstText),
+    ),
+    secondId = otherRequestId,
+    secondRecord: CodexChatForkOriginal = {
+      ...first,
+      requestId: secondId,
+      requestHash: codexChatForkOriginalHash({
+        kind: "codex-chat-fork",
+        hashVersion: 1,
+        projectId,
+        workspaceKey: first.workspaceKey,
+        parentSessionId,
+        throughTurnRequestId,
+        requestId: secondId,
+        protocolVersion: CODEX_CHAT_FORK_PROTOCOL_VERSION,
+      }),
+      childAppSessionId: "session-0199a213-81c0-7800-8aa1-bbab2a035a61",
+    },
+    body = codexChatForkJournalEventBodySchema.parse({
+      version: 1,
+      sequence: 2,
+      previousEventHash: firstEvent.eventHash,
+      previousOperationHash: null,
+      transition: "reserved",
+      record: secondRecord,
+    }),
+    eventHash = codexChatForkJournalEventHash(body),
+    secondText = canonicalCodexChatForkJournalEvent(
+      codexChatForkJournalEventSchema.parse({ ...body, eventHash }),
+    );
+  storage.events.set(`00000002-${eventHash}.json`, secondText);
+
+  expect(() => journal.read(projectId, requestId)).toThrow();
 });
 
 test("only one independent instance gets the one-shot mayDispatch claim", async () => {

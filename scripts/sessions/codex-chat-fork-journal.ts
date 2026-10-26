@@ -11,6 +11,10 @@ import type {
 import { resolveCheckout } from "../ledger/workspace";
 import { workspaceKey } from "../projects/scope";
 import {
+  type CodexChatForkJournalStorageOptions,
+  createCodexChatForkJournalStorage,
+} from "./codex-chat-fork-journal-storage";
+import {
   CODEX_CHAT_FORK_LIMITS,
   CODEX_CHAT_FORK_PROTOCOL_VERSION,
   CODEX_CHAT_FORK_ZERO_HASH,
@@ -53,7 +57,8 @@ export interface CodexChatForkJournalStorage {
 export interface CodexChatForkJournalOptions {
   root: string;
   home: string;
-  storage: CodexChatForkJournalStorage;
+  storage?: CodexChatForkJournalStorage;
+  storageOptions?: CodexChatForkJournalStorageOptions;
   now?: () => string;
   createChildAppSessionId?: () => string;
 }
@@ -290,9 +295,17 @@ function loadChain(storage: CodexChatForkJournalStorage): LoadedChain {
     const prior = chain.originals.get(event.record.requestId),
       priorOperationHash =
         chain.lastOperationHashes.get(event.record.requestId) ?? null;
+    const activeAddress = [...chain.originals.values()].some(
+      (record) =>
+        record.projectId === event.record.projectId &&
+        record.workspaceKey === event.record.workspaceKey &&
+        record.parentSessionId === event.record.parentSessionId &&
+        record.state !== "linked",
+    );
     if (
       !latestRecordIsLegal(prior, event.record, event.previousOperationHash) ||
-      event.previousOperationHash !== priorOperationHash
+      event.previousOperationHash !== priorOperationHash ||
+      (prior === undefined && activeAddress)
     )
       return held();
     if (
@@ -338,7 +351,9 @@ export function createCodexChatForkJournal(
     now = options.now ?? (() => new Date().toISOString()),
     childId =
       options.createChildAppSessionId ?? (() => `session-${randomUUID()}`),
-    storage = options.storage;
+    storage =
+      options.storage ??
+      createCodexChatForkJournalStorage(options.home, options.storageOptions);
 
   const runExclusive = async <T>(work: () => Promise<T>): Promise<T> => {
     try {
@@ -443,6 +458,16 @@ export function createCodexChatForkJournal(
             return conflict();
           return existing;
         }
+        if (
+          [...chain.originals.values()].some(
+            (record) =>
+              record.projectId === projectId &&
+              record.workspaceKey === workspace &&
+              record.parentSessionId === parentSessionId &&
+              record.state !== "linked",
+          )
+        )
+          return conflict();
         if (chain.originals.size >= CODEX_CHAT_FORK_LIMITS.originals)
           return held();
         const childAppSessionId = childId();
