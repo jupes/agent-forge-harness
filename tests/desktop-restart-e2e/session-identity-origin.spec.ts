@@ -378,9 +378,17 @@ test("a fresh trusted desktop origin discovers and inspects an admitted Start wi
       SESSION_KEY_STORAGE,
     );
     expect(sessionKey).toMatch(/^[a-f0-9]{64}$/);
-    const base = new URL(newHostUrl);
-    await page.goto(
-      `${base.origin}/index.html#/desktop/project/${alpha.id}/sessions`,
+    // The fresh host URL performs the trusted-origin key exchange. Navigate
+    // the already loaded app to the selected project with a hash change so
+    // its identity read can finish before any document navigation discards
+    // the response body.
+    await page.evaluate((hash) => {
+      window.location.hash = hash;
+    }, `#/desktop/project/${alpha.id}/sessions`);
+    const identityResponse = await identityRead;
+    expect(identityResponse.ok).toBe(true);
+    const identityPage = sessionStartIdentityPageSchema.parse(
+      identityResponse.data,
     );
     const observation = record(
       parseFixtureJson(
@@ -393,11 +401,6 @@ test("a fresh trusted desktop origin discovers and inspects an admitted Start wi
     );
     expect(observation?.identity).toBeNull();
     expect(observation?.sessionKey).toBeNull();
-    const identityResponse = await identityRead;
-    expect(identityResponse.ok).toBe(true);
-    const identityPage = sessionStartIdentityPageSchema.parse(
-      identityResponse.data,
-    );
     expect(identityPage.identities).toContainEqual({
       version: 1,
       requestId: original.requestId,
