@@ -1,7 +1,11 @@
 import {
+  closeSync,
   existsSync,
+  fstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
+  readSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -20,6 +24,10 @@ import { sessionTranscriptExportSchema } from "../../scripts/sessions/library-pr
 import { openSettled, reloadSettled } from "../e2e/fixtures";
 import { pageToken } from "../e2e/launch-link";
 import { HEARTH_HOME } from "../e2e/servers";
+import {
+  parseBoundedGeminiDiagnosticJson,
+  withGeminiChatFailureFacts,
+} from "./gemini-chat-failure-facts";
 import { alpha, seedProjects, workspace } from "./project-fixtures";
 
 // Two actual native process lifetimes, protected reads and complete export share one bounded journey.
@@ -45,6 +53,155 @@ const rowSchema = z
       .optional(),
   })
   .passthrough();
+const failureStateMaxBytes = 8 * 1024 * 1024,
+  failureCallsMaxBytes = 256 * 1024;
+function boundedDiagnosticFile(
+  path: string,
+  maxBytes: number,
+): {
+  state: "ok" | "missing" | "oversize" | "invalid" | "unavailable";
+  value?: unknown;
+} {
+  let fd: number;
+  try {
+    fd = openSync(path, "r");
+  } catch (error) {
+    return {
+      state:
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        error.code === "ENOENT"
+          ? "missing"
+          : "unavailable",
+    };
+  }
+  try {
+    if (!fstatSync(fd).isFile()) return { state: "invalid" };
+    if (fstatSync(fd).size > maxBytes) return { state: "oversize" };
+    const bytes = Buffer.alloc(maxBytes + 1);
+    const count = readSync(fd, bytes, 0, maxBytes + 1, 0);
+    if (count > maxBytes) return { state: "oversize" };
+    let text: string;
+    try {
+      text = new TextDecoder("utf-8", { fatal: true }).decode(
+        bytes.subarray(0, count),
+      );
+    } catch {
+      return { state: "invalid" };
+    }
+    const parsed = parseBoundedGeminiDiagnosticJson(text, maxBytes);
+    return parsed.ok
+      ? { state: "ok", value: parsed.value }
+      : { state: parsed.reason };
+  } catch {
+    return { state: "unavailable" };
+  } finally {
+    closeSync(fd);
+  }
+}
+function collectGeminiChatFailureFacts(
+  record: ReturnType<typeof records>[number],
+) {
+  const stateFile = boundedDiagnosticFile(
+      join(HEARTH_HOME, "conversations", `${record.id}.json`),
+      failureStateMaxBytes,
+    ),
+    callsFile = boundedDiagnosticFile(log, failureCallsMaxBytes);
+  const state =
+    stateFile.state === "ok"
+      ? ownedCodingStateSchema.safeParse(stateFile.value)
+      : null;
+  const callRows =
+    callsFile.state === "ok"
+      ? z.array(rowSchema).safeParse(callsFile.value)
+      : null;
+  const turns =
+    state?.success && callRows?.success
+      ? state.data.frames.filter((frame) => frame.turnId === record.requestId)
+      : [];
+  const nativeOutcomes = turns.flatMap((frame) =>
+    frame.event.kind === "coding-gemini-chat" &&
+    frame.event.event.kind === "outcome"
+      ? [frame.event.event]
+      : [],
+  );
+  const offers = turns.filter(
+      (frame) =>
+        frame.event.kind === "coding-gemini-chat" &&
+        frame.event.event.kind === "approval-offer",
+    ).length,
+    intents = turns.filter(
+      (frame) =>
+        frame.event.kind === "coding-gemini-chat" &&
+        frame.event.event.kind === "permission-intent",
+    ).length;
+  const methods = new Map<string, number>();
+  for (const row of callRows?.success ? callRows.data : []) {
+    const method = row.value?.method;
+    if (
+      method === "initialize" ||
+      method === "session/new" ||
+      method === "session/load" ||
+      method === "session/prompt" ||
+      method === "session/cancel"
+    )
+      methods.set(method, (methods.get(method) ?? 0) + 1);
+  }
+  const providerPid = callRows?.success
+      ? callRows.data.filter((row) => row.kind === "start").at(-1)?.pid
+      : undefined,
+    helperPid = callRows?.success
+      ? callRows.data.filter((row) => row.kind === "helper").at(-1)?.pid
+      : undefined;
+  let providerAlive: boolean | null = null,
+    helperAlive: boolean | null = null;
+  try {
+    if (typeof providerPid === "number") providerAlive = running(providerPid);
+    if (typeof helperPid === "number") helperAlive = running(helperPid);
+  } catch {
+    // A best-effort liveness observation is unavailable; never expose process identifiers.
+  }
+  const native = nativeOutcomes.at(-1);
+  return {
+    stateRead:
+      stateFile.state === "ok" && !state?.success ? "invalid" : stateFile.state,
+    callsRead:
+      callsFile.state === "ok" && !callRows?.success
+        ? "invalid"
+        : callsFile.state,
+    turnPhase: state?.success
+      ? state.data.turns.find((turn) => turn.requestId === record.requestId)
+          ?.phase
+      : undefined,
+    turnReason: state?.success
+      ? state.data.turns.find((turn) => turn.requestId === record.requestId)
+          ?.reason
+      : undefined,
+    outcome: native
+      ? {
+          phase: native.outcome.phase,
+          reason: native.outcome.reason,
+          stopReason: native.outcome.stopReason,
+          exitCode: native.exitCode,
+          stopped: native.stopped,
+          timedOut: native.timedOut,
+        }
+      : null,
+    hasBinding: state?.success ? state.data.binding !== null : null,
+    nativeOutcomeCount: nativeOutcomes.length,
+    approvalOffers: offers,
+    permissionIntents: intents,
+    methodCounts: Object.fromEntries(methods),
+    permissionResponses: callRows?.success
+      ? callRows.data.filter(
+          (row) => row.value?.id === 41 && row.value.result !== undefined,
+        ).length
+      : null,
+    providerAlive,
+    helperAlive,
+  };
+}
 function calls() {
   if (!existsSync(log)) return [];
   let value: unknown;
@@ -510,7 +667,17 @@ test("Gemini ACP composer keyboard-starts two explicit native turns with once ch
   );
   await keyboardFocus(page, allow);
   await page.keyboard.press("Enter");
-  await expect.poll(() => saved(record.id).turns[0]?.phase).toBe("completed");
+  await withGeminiChatFailureFacts({
+    operation: () =>
+      expect.poll(() => saved(record.id).turns[0]?.phase).toBe("completed"),
+    collect: () => collectGeminiChatFailureFacts(record),
+    attach: async (body) => {
+      await test.info().attach("gemini-chat-outcome-failure-facts.json", {
+        contentType: "application/json",
+        body: Buffer.from(body),
+      });
+    },
+  });
   expectLatestTreeDead();
   if (decisionFailure) throw decisionFailure;
   expect(startBodies).toHaveLength(1);
