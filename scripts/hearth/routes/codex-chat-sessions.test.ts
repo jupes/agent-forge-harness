@@ -97,6 +97,7 @@ async function fixture(mode = "approval-command", holdDecision = false) {
           ).toBe(true);
           return selected().prepare(input);
         },
+        fork: (input) => selected().fork(input),
         run: (input, persist, signal, callbacks) =>
           selected().run(input, persist, signal, callbacks),
       },
