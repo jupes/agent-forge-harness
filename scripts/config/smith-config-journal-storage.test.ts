@@ -11,23 +11,6 @@ import {
 const scratch = scratchDirs();
 afterEach(() => scratch.cleanup());
 
-/** This file doubles as a child so the routing mutex is tested across processes. */
-const childRole = process.env["SMITH_ROUTING_STORAGE_CHILD_ROLE"];
-if (childRole !== undefined) {
-  const profile = process.env["SMITH_ROUTING_STORAGE_CHILD_PROFILE"] ?? "",
-    signal = process.env["SMITH_ROUTING_STORAGE_CHILD_SIGNAL"] ?? "",
-    entered = process.env["SMITH_ROUTING_STORAGE_CHILD_ENTERED"] ?? "";
-  if (childRole === "exclusive") {
-    const storage = createSmithConfigJournalStorage(profile, "routing");
-    writeFileSync(signal, "started", { flag: "wx" });
-    await storage.exclusive(async () => {
-      writeFileSync(entered, "entered", { flag: "wx" });
-    });
-    process.exit(0);
-  }
-  process.exit(2);
-}
-
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 test("journal families map only to their fixed, isolated namespaces", () => {
@@ -107,22 +90,30 @@ test("routing SQLite sidecars stay owner-only and its mutex serializes another p
     await gate;
   });
   await held;
-  const child = Bun.spawn([process.execPath, import.meta.path], {
-    env: {
-      ...process.env,
-      SMITH_ROUTING_STORAGE_CHILD_ROLE: "exclusive",
-      SMITH_ROUTING_STORAGE_CHILD_PROFILE: profile,
-      SMITH_ROUTING_STORAGE_CHILD_SIGNAL: signal,
-      SMITH_ROUTING_STORAGE_CHILD_ENTERED: entered,
+  const child = Bun.spawn(
+    [process.execPath, join(import.meta.dir, "smith-routing-storage-child.ts")],
+    {
+      env: {
+        ...process.env,
+        SMITH_ROUTING_STORAGE_CHILD_ROLE: "exclusive",
+        SMITH_ROUTING_STORAGE_CHILD_PROFILE: profile,
+        SMITH_ROUTING_STORAGE_CHILD_SIGNAL: signal,
+        SMITH_ROUTING_STORAGE_CHILD_ENTERED: entered,
+      },
+      stdout: "ignore",
+      stderr: "ignore",
     },
-    stdout: "pipe",
-    stderr: "pipe",
-  });
+  );
   try {
-    const deadline = Date.now() + 10_000;
-    while (!existsSync(signal) && Date.now() < deadline) await sleep(20);
+    const deadline = Date.now() + 2_000;
+    while (
+      !existsSync(signal) &&
+      child.exitCode === null &&
+      Date.now() < deadline
+    )
+      await sleep(10);
     expect(existsSync(signal)).toBe(true);
-    await sleep(120);
+    await sleep(100);
     expect(existsSync(entered)).toBe(false);
 
     const lockDirectory = join(profile, "smith-routing-edit-journal", "locks"),
@@ -146,14 +137,17 @@ test("routing SQLite sidecars stay owner-only and its mutex serializes another p
     await parent;
     const exited = await Promise.race([
       child.exited,
-      sleep(10_000).then(() => null),
+      sleep(2_000).then(() => null),
     ]);
     expect(exited).toBe(0);
     expect(existsSync(entered)).toBe(true);
   } finally {
     release();
-    if (child.exitCode === null) child.kill();
     await parent.catch(() => undefined);
+    if (child.exitCode === null) {
+      await Promise.race([child.exited, sleep(1_000)]);
+      if (child.exitCode === null) child.kill();
+    }
     await child.exited;
   }
 });
