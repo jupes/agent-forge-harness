@@ -23,7 +23,10 @@ import { scratchDirs } from "../test-scratch";
 import { lockPath } from "./home";
 import { readLock } from "./lock";
 import { OPERATOR_HEADER } from "./paths";
-import { waitForProtectedReadiness } from "./protected-readiness";
+import {
+  readProtectedResponseBody,
+  waitForProtectedReadiness,
+} from "./protected-readiness";
 
 const scratch = scratchDirs();
 const root = resolve(import.meta.dir, "../..");
@@ -419,7 +422,7 @@ test("compiled Smith create survives restart and serves its immutable original b
     server: ReturnType<typeof startServer>,
     readinessPath: string,
   ) => {
-    const ready = await waitForProtectedReadiness({
+    const ready = await waitForProtectedReadiness<Response>({
       expectedPid: server.child.pid,
       readIdentity: () => {
         const lock = readLock(lockPath(server.privateHome, root));
@@ -436,18 +439,72 @@ test("compiled Smith create survives restart and serves its immutable original b
           token,
         };
       },
-      probe: async ({ url, token }) => {
-        const response = await fetch(`${url}${readinessPath}`, {
-          headers: { Origin: url, [OPERATOR_HEADER]: token },
-          signal: AbortSignal.timeout(2000),
-        });
-        if (response.status === 200 || response.status === 404)
+      probe: async ({ url, token }, deadlineSignal) => {
+        const controller = new AbortController();
+        const abortForDeadline = () => controller.abort();
+        if (deadlineSignal.aborted) controller.abort();
+        else
+          deadlineSignal.addEventListener("abort", abortForDeadline, {
+            once: true,
+          });
+        const requestTimer = setTimeout(() => controller.abort(), 5000);
+        try {
+          const response = await fetch(`${url}${readinessPath}`, {
+            headers: { Origin: url, [OPERATOR_HEADER]: token },
+            signal: controller.signal,
+          });
+          if (response.status === 200 || response.status === 404) {
+            const bytes = await readProtectedResponseBody(
+              response,
+              controller.signal,
+              65_536,
+            );
+            const bufferedBody = new ArrayBuffer(bytes.byteLength);
+            new Uint8Array(bufferedBody).set(bytes);
+            return {
+              kind: "ready",
+              status: response.status,
+              value: new Response(bufferedBody, {
+                status: response.status,
+                statusText: response.statusText,
+                headers: response.headers,
+              }),
+            };
+          }
+
+          let publicError: string | undefined;
+          try {
+            const bytes = await readProtectedResponseBody(
+              response,
+              controller.signal,
+              4096,
+            );
+            const parsed: unknown = JSON.parse(new TextDecoder().decode(bytes));
+            if (
+              parsed !== null &&
+              typeof parsed === "object" &&
+              !Array.isArray(parsed) &&
+              Object.keys(parsed).length === 3 &&
+              "ok" in parsed &&
+              parsed.ok === false &&
+              "data" in parsed &&
+              parsed.data === null &&
+              "error" in parsed &&
+              typeof parsed.error === "string"
+            )
+              publicError = parsed.error;
+          } catch {
+            /* Refusal details are best effort; the response body is bounded. */
+          }
           return {
-            kind: "ready",
+            kind: "refused",
             status: response.status,
-            value: response,
+            ...(publicError === undefined ? {} : { publicError }),
           };
-        return { kind: "refused", status: response.status };
+        } finally {
+          clearTimeout(requestTimer);
+          deadlineSignal.removeEventListener("abort", abortForDeadline);
+        }
       },
       now: Date.now,
       sleep: Bun.sleep,

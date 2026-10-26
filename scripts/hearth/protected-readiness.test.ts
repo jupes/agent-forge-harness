@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
-import { waitForProtectedReadiness } from "./protected-readiness";
+import {
+  readProtectedResponseBody,
+  sanitizeProtectedReadinessError,
+  waitForProtectedReadiness,
+} from "./protected-readiness";
 
 const identity = (pid: number, token: string) => ({
   pid,
@@ -113,7 +117,7 @@ test("non-auth refusals surface bounded public status without leaking controls",
       probe: async () => ({
         kind: "refused",
         status: 503,
-        publicError: `offline\n${"x".repeat(500)} secret-token`,
+        publicError: `secret-token offline\n${"x".repeat(500)}`,
       }),
       now: () => 0,
       sleep: async () => {},
@@ -122,7 +126,127 @@ test("non-auth refusals surface bounded public status without leaking controls",
   } catch (error) {
     message = String(error);
   }
-  expect(message).toContain("HTTP 503: offline");
+  expect(message).toContain("HTTP 503: [redacted] offline");
   expect(message).not.toContain("secret-token");
   expect(message.length).toBeLessThan(300);
+});
+
+test("a pending readiness probe is aborted at the original deadline", async () => {
+  let aborted = false;
+  const started = Date.now();
+  await expect(
+    waitForProtectedReadiness({
+      expectedPid: 42,
+      readIdentity: () => identity(42, "token"),
+      probe: (_seen, signal) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener(
+            "abort",
+            () => {
+              aborted = true;
+              reject(new Error("aborted"));
+            },
+            { once: true },
+          );
+        }),
+      now: () => started,
+      sleep: async () => {},
+      timeoutMs: 10,
+    }),
+  ).rejects.toThrow("timed out");
+  expect(aborted).toBe(true);
+  expect(Date.now() - started).toBeLessThan(500);
+});
+
+test("a pending next-generation probe preserves the preceding 403 diagnosis", async () => {
+  let probes = 0;
+  await expect(
+    waitForProtectedReadiness({
+      expectedPid: 42,
+      readIdentity: () => identity(42, "token"),
+      probe: (_seen, signal) => {
+        probes += 1;
+        if (probes === 1)
+          return Promise.resolve({
+            kind: "refused" as const,
+            status: 403,
+            publicError: "credential not installed",
+          });
+        return new Promise((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(new Error("aborted")), {
+            once: true,
+          });
+        });
+      },
+      now: () => 0,
+      sleep: async () => {},
+      timeoutMs: 10,
+    }),
+  ).rejects.toThrow("last HTTP 403: credential not installed");
+  expect(probes).toBe(2);
+});
+
+test("a ready response body remains under the deadline after its headers arrive", async () => {
+  let cancelled = false;
+  const response = new Response(
+    new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("{"));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    }),
+    { status: 200 },
+  );
+  await expect(
+    waitForProtectedReadiness({
+      expectedPid: 42,
+      readIdentity: () => identity(42, "token"),
+      probe: async (_seen, signal) => {
+        const body = await readProtectedResponseBody(response, signal, 65_536);
+        const bufferedBody = new ArrayBuffer(body.byteLength);
+        new Uint8Array(bufferedBody).set(body);
+        return {
+          kind: "ready",
+          status: 200,
+          value: new Response(bufferedBody, { status: 200 }),
+        };
+      },
+      now: () => 0,
+      sleep: async () => {},
+      timeoutMs: 10,
+    }),
+  ).rejects.toThrow("timed out");
+  expect(cancelled).toBe(true);
+});
+
+test("body cancellation cannot turn a valid prefix into a complete response", async () => {
+  const controller = new AbortController();
+  const response = new Response(
+    new ReadableStream<Uint8Array>({
+      start(stream) {
+        stream.enqueue(new TextEncoder().encode("{}"));
+      },
+    }),
+    { status: 200 },
+  );
+  const timeout = setTimeout(() => controller.abort(), 5);
+  try {
+    await expect(
+      readProtectedResponseBody(response, controller.signal, 65_536),
+    ).rejects.toThrow("aborted");
+  } finally {
+    clearTimeout(timeout);
+  }
+});
+
+test("public readiness errors redact early secrets before applying the text bound", () => {
+  const message = sanitizeProtectedReadinessError(
+    `secret-token\u0001 denied ${"x".repeat(400)}`,
+    "secret-token",
+  );
+  expect(message).toStartWith("[redacted] denied");
+  expect(message).not.toContain("secret-token");
+  expect(message?.length).toBe(240);
 });
