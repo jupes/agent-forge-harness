@@ -35,15 +35,26 @@ test("same request identity remains isolated between create and edit stores", as
   mkdirSync(profile);
   const create = createSmithConfigJournalStorage(profile, "create"),
     edit = createSmithConfigJournalStorage(profile, "edit"),
-    requestId = "eb56db61-e8ac-46c8-8e05-a787754d1019";
+    requestId = "eb56db61-e8ac-46c8-8e05-a787754d1019",
+    createText = '{"family":"create"}',
+    editText = '{"family":"edit"}';
 
   await create.exclusive(async () => {
-    create.writeOnce(requestId, "intent.json", '{"family":"create"}');
+    create.writeOnce(requestId, "intent.json", createText);
   });
-  expect([...create.inspect(requestId)!].map(({ name }) => name)).toEqual([
-    "intent.json",
-  ]);
-  expect(edit.inspect(requestId)).toBeNull();
-  expect([...edit.operations()]).toEqual([]);
-  expect(existsSync(join(profile, "smith-edit-journal"))).toBe(false);
+  await edit.exclusive(async () => {
+    edit.writeOnce(requestId, "intent.json", editText);
+  });
+
+  for (const [storage, expected] of [
+    [create, createText],
+    [edit, editText],
+  ] as const) {
+    const entries = [...storage.inspect(requestId)!];
+    expect(entries.map(({ name }) => name)).toEqual(["intent.json"]);
+    expect(storage.read(requestId, entries[0]!, 65_536)).toBe(expected);
+    expect(
+      [...storage.operations()].map(({ requestId: listed }) => listed),
+    ).toEqual([requestId]);
+  }
 });
