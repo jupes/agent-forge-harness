@@ -250,6 +250,7 @@ test("an explicit identity check recovers from an unavailable initial GET withou
   await expect(checkServer).toBeEnabled();
   await checkServer.click();
   await expect.poll(() => identityGets).toBe(2);
+  await expect.poll(() => recoveredPageRef.current).not.toBeNull();
   const recoveredPage = recoveredPageRef.current;
   if (!recoveredPage)
     throw Error("The recovered protected identity page was not captured.");
