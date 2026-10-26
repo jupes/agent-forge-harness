@@ -675,7 +675,7 @@ export function createCodexChatForkJournalStorage(
           existingIdentity,
         );
       }
-    } else {
+    } else if (existingNames.length > 0) {
       try {
         inspectLockMetadata(new Map(), false, false);
       } catch (error) {
