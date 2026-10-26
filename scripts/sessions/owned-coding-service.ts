@@ -5,12 +5,18 @@ import type { ConversationObject } from "../../types/conversation";
 import type { GeminiChatDecisionRequest } from "../../types/gemini-owned-chat";
 import type { OwnedSessionMetadata } from "../../types/owned-session";
 import type { ClaudeSessionLaunch } from "../../types/session-launch";
+import type {
+  SessionStartIdentityMetadata,
+  SessionStartIdentityPage,
+  SessionStartIdentityReply,
+} from "../../types/session-start-identities";
 import type { SessionMessage } from "../../types/session-turn";
 import { ConversationError } from "../conversations/error";
 import type { ConversationUpdate } from "../conversations/transport";
 import {
   createRestartIdentityJournal,
   type RestartIdentityInput,
+  type RestartIdentityRow,
 } from "../identities/restart-index";
 import { resolveCheckout } from "../ledger/workspace";
 import { workspaceKey } from "../projects/scope";
@@ -134,6 +140,70 @@ export function createOwnedCodingSessionService(options: {
       503,
       "The original Session Start could not be verified. Its identity remains held; retrying will not dispatch another provider request.",
     );
+  const scopeFor = (projectId: string) => ({
+    address: { family: "owned-session-start" as const, projectId },
+    workspace,
+  });
+  const publicScope = (projectId: string) => ({
+    family: "owned-session-start" as const,
+    projectId,
+    workspace,
+  });
+  const metadata = (row: RestartIdentityRow) => {
+    return {
+      version: 1 as const,
+      requestId: row.requestId,
+      requestHash: row.requestHash,
+      provider: row.provider,
+      mode: row.mode,
+      state: row.state,
+    } satisfies SessionStartIdentityMetadata;
+  };
+  const identityFor = (
+    projectId: string,
+    raw: unknown,
+  ): RestartIdentityInput => {
+    const request = parseOwnedSessionStart(raw);
+    const provider: RestartIdentityInput["provider"] =
+      "provider" in request ? request.provider : "claude";
+    return {
+      version: 1,
+      address: { family: "owned-session-start", projectId },
+      workspace,
+      requestId: request.requestId,
+      requestHash: createHash("sha256")
+        .update(canonicalOwnedSessionStart(request))
+        .digest("hex"),
+      provider,
+      mode: request.launch.mode,
+    };
+  };
+  const verifyOriginal = (identity: RestartIdentityInput) => {
+    try {
+      return readVerifiedOriginalStart({
+        home: options.home,
+        root: options.root,
+        identity,
+      });
+    } catch {
+      return { kind: "invalid" as const };
+    }
+  };
+  const validateNewScope = async (
+    projectId: string,
+    request: ReturnType<typeof parseOwnedSessionStart>,
+  ) =>
+    options.validateScope(
+      projectId,
+      {
+        workspace: resolveCheckout(options.root).workspace,
+        repository: request.repository,
+        worktree: request.worktree,
+        ...(request.beadId === undefined ? {} : { beadId: request.beadId }),
+      },
+      request.about ?? [],
+      "provider" in request ? undefined : request.launch,
+    );
   const dispatchStart = (
     projectId: string,
     request: ReturnType<typeof parseOwnedSessionStart>,
@@ -185,6 +255,147 @@ export function createOwnedCodingSessionService(options: {
     return record.provider === "gemini" ? geminiChat : chat;
   };
   return {
+    async reserveIdentity(
+      projectId: string,
+      raw: unknown,
+    ): Promise<SessionStartIdentityReply> {
+      const request = parseOwnedSessionStart(raw);
+      const identity = identityFor(projectId, request);
+      const source = verifyOriginal(identity);
+      if (source.kind === "invalid") throw held();
+      let prior: RestartIdentityRow | null;
+      try {
+        prior = await identities.lookup(
+          scopeFor(projectId),
+          identity.requestId,
+        );
+      } catch {
+        throw new ConversationError(
+          503,
+          "Session Start identities are unavailable.",
+        );
+      }
+      if (prior !== null && prior.requestHash !== identity.requestHash)
+        throw new ConversationError(
+          409,
+          "This Session Start identity is already reserved.",
+        );
+      if (prior === null && source.kind === "missing")
+        await validateNewScope(projectId, request);
+      try {
+        prior = await identities.reserve(identity);
+        if (source.kind === "verified") {
+          if (prior.state === "reserved")
+            await identities.beginAttempt(identity);
+          const admitted = await identities.admit(identity);
+          return {
+            version: 1,
+            scope: publicScope(projectId),
+            identity: metadata(admitted.row),
+          };
+        }
+        if (prior.state === "attempted" || prior.state === "admitted") {
+          const admitted = await identities.admit(identity);
+          return {
+            version: 1,
+            scope: publicScope(projectId),
+            identity: metadata(admitted.row),
+          };
+        }
+        return {
+          version: 1,
+          scope: publicScope(projectId),
+          identity: metadata(prior),
+        };
+      } catch (error) {
+        if (error instanceof ConversationError) throw error;
+        throw new ConversationError(
+          error instanceof Error && "kind" in error && error.kind === "conflict"
+            ? 409
+            : 503,
+          "The Session Start identity could not be safely reserved.",
+        );
+      }
+    },
+    async listIdentities(projectId: string): Promise<SessionStartIdentityPage> {
+      try {
+        const rows = await identities.list(scopeFor(projectId));
+        return {
+          version: 1,
+          scope: publicScope(projectId),
+          identities: rows.map(metadata),
+        };
+      } catch {
+        throw new ConversationError(
+          503,
+          "Session Start identities are unavailable.",
+        );
+      }
+    },
+    async retireIdentity(
+      projectId: string,
+      requestId: string,
+      requestHash: string,
+    ): Promise<SessionStartIdentityReply> {
+      const scope = scopeFor(projectId);
+      let row: RestartIdentityRow | null;
+      try {
+        row = await identities.lookup(scope, requestId);
+      } catch {
+        throw new ConversationError(
+          503,
+          "Session Start identities are unavailable.",
+        );
+      }
+      if (row === null || row.requestHash !== requestHash)
+        throw new ConversationError(
+          409,
+          "The Session Start identity does not match.",
+        );
+      if (row.state === "retired")
+        return {
+          version: 1,
+          scope: publicScope(projectId),
+          identity: metadata(row),
+        };
+      const identity: RestartIdentityInput = {
+        version: row.version,
+        address: row.address,
+        workspace: row.workspace,
+        requestId: row.requestId,
+        requestHash: row.requestHash,
+        provider: row.provider,
+        mode: row.mode,
+      };
+      const source = verifyOriginal(identity);
+      if (source.kind === "invalid") throw held();
+      if (source.kind === "verified") {
+        try {
+          if (row.state === "reserved") await identities.beginAttempt(identity);
+          const admitted = await identities.admit(identity);
+          return {
+            version: 1,
+            scope: publicScope(projectId),
+            identity: metadata(admitted.row),
+          };
+        } catch {
+          throw held();
+        }
+      }
+      try {
+        const retired = await identities.retireReserved(identity);
+        return {
+          version: 1,
+          scope: publicScope(projectId),
+          identity: metadata(retired),
+        };
+      } catch {
+        throw new ConversationError(
+          409,
+          "Only an unattempted Session Start identity can be retired.",
+        );
+      }
+    },
     async start(projectId: string, raw: unknown) {
       const request = parseOwnedSessionStart(raw);
       const provider: RestartIdentityInput["provider"] =
@@ -208,6 +419,16 @@ export function createOwnedCodingSessionService(options: {
         { address: identity.address, workspace: identity.workspace },
         identity.requestId,
       );
+      if (prior?.state === "retired")
+        throw new ConversationError(
+          409,
+          "This Session Start identity has been retired and cannot be dispatched.",
+        );
+      if (prior !== null && prior.requestHash !== identity.requestHash)
+        throw new ConversationError(
+          409,
+          "This Session Start UUID is already bound to another request.",
+        );
       if (prior === null) {
         let original: ReturnType<typeof readVerifiedOriginalStart>;
         try {

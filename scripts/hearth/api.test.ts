@@ -1,5 +1,6 @@
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { connect } from "node:net";
 import { join, resolve } from "node:path";
@@ -46,6 +47,11 @@ import {
 } from "../scheduler/shift-store";
 import type { GitRun } from "../scheduler/worktrees";
 import { serializeClaudeLaunch } from "../sessions/claude-launch";
+import { canonicalOwnedSessionStart } from "../sessions/codex-owned-protocol";
+import {
+  sessionStartIdentityPageSchema,
+  sessionStartIdentityReplySchema,
+} from "../sessions/identity-protocol";
 import { sessionLibraryReadSchema } from "../sessions/library-protocol";
 import { sessionPreviewReceiptSchema } from "../sessions/protocol";
 import { createSessionRegistry } from "../sessions/registry";
@@ -121,6 +127,7 @@ import { readToken, writeOwnerOnly } from "./token";
 import { validateOperatorEnvelope } from "./validate";
 
 const open: TestHearth[] = [];
+const FIXTURE_IDENTITY_REQUEST = "42f1676b-7a85-43a2-a694-e0908bb32dab";
 afterEach(async () => {
   for (const hearth of open.splice(0)) await hearth.close();
 });
@@ -1173,6 +1180,69 @@ const ACTIONS: Record<string, ActionFixture> = {
     },
   },
   "POST /projects/:id/sessions": ownedSessionFixture("start"),
+  "POST /projects/:id/session-start-identities": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/session-start-identities`,
+      body: {},
+      status: 200,
+      target: "",
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/session-start-identities`,
+      body: { requestId: "invalid" },
+    },
+    prepare: async (h) => {
+      const input = sessionStartFixture(h, FIXTURE_IDENTITY_REQUEST);
+      ACTIONS["POST /projects/:id/session-start-identities"]!.valid.body =
+        input;
+      ACTIONS["POST /projects/:id/session-start-identities"]!.valid.target =
+        `owned-session-start:${FIXTURE_PROJECT_ID}:${input.requestId}:${createHash("sha256").update(canonicalOwnedSessionStart(input)).digest("hex")}`;
+    },
+    happened: async (_h, data) => {
+      expect(data).toMatchObject({
+        version: 1,
+        identity: { state: "reserved" },
+      });
+      expect(JSON.stringify(data)).not.toContain(FIXTURE_SESSION_PROMPT);
+    },
+  },
+  "POST /projects/:id/session-start-identities/:requestId/retire": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/session-start-identities/18da5c95-3218-439c-a33d-e5662465f505/retire`,
+      body: { requestHash: "0".repeat(64) },
+      status: 200,
+      target: `owned-session-start:${FIXTURE_PROJECT_ID}:18da5c95-3218-439c-a33d-e5662465f505:${"0".repeat(64)}`,
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/session-start-identities/not-a-uuid/retire`,
+      body: { requestHash: "invalid" },
+    },
+    prepare: async (h) => {
+      const input = sessionStartFixture(h, FIXTURE_IDENTITY_REQUEST);
+      const requestHash = createHash("sha256")
+        .update(canonicalOwnedSessionStart(input))
+        .digest("hex");
+      const reserve = await post(
+        h,
+        `/projects/${FIXTURE_PROJECT_ID}/session-start-identities`,
+        input,
+      );
+      expect(reserve.status).toBe(200);
+      const fixture =
+        ACTIONS[
+          "POST /projects/:id/session-start-identities/:requestId/retire"
+        ]!;
+      fixture.valid.path = `/projects/${FIXTURE_PROJECT_ID}/session-start-identities/${input.requestId}/retire`;
+      fixture.valid.body = { requestHash };
+      fixture.valid.target = `owned-session-start:${FIXTURE_PROJECT_ID}:${input.requestId}:${requestHash}`;
+    },
+    happened: async (_h, data) => {
+      expect(data).toMatchObject({
+        version: 1,
+        identity: { state: "retired" },
+      });
+    },
+  },
   "POST /projects/:id/sessions/:sessionId/turns": ownedSessionFixture("send"),
   "POST /projects/:id/sessions/:sessionId/stop": ownedSessionFixture("stop"),
   "POST /projects/:id/sessions/:sessionId/approval-decisions": {
@@ -1909,6 +1979,7 @@ const ACTIONS: Record<string, ActionFixture> = {
 
 /** A concrete path per read row; a row with none fails the suite. */
 const READS: Record<string, string> = {
+  "GET /projects/:id/session-start-identities": `/projects/${FIXTURE_PROJECT_ID}/session-start-identities`,
   "GET /projects/:id/runs": `/projects/${FIXTURE_PROJECT_ID}/runs`,
   "GET /projects/:id/runs/:slug": `/projects/${FIXTURE_PROJECT_ID}/runs/demo`,
   "GET /projects/:id/shifts": `/projects/${FIXTURE_PROJECT_ID}/shifts`,
@@ -3507,6 +3578,67 @@ function appendElsewhere(
 }
 
 const TOOL = { tool: "Bash", argsHash: "sha256:ab12" };
+
+describe("Session Start identity actions", () => {
+  test("GET is read-only and retirement blocks a delayed Start", async () => {
+    const h = await start();
+    const requestId = FIXTURE_IDENTITY_REQUEST;
+    const input = sessionStartFixture(h, requestId);
+    const path = `/projects/${FIXTURE_PROJECT_ID}/session-start-identities`;
+
+    const beforeEmptyRead = h.events();
+    const empty = await get(h, path, h.headers(h.hearth.token));
+    expect(empty.status).toBe(200);
+    expect(
+      sessionStartIdentityPageSchema.parse((await envelope(empty)).data)
+        .identities,
+    ).toEqual([]);
+    expect(h.events()).toEqual(beforeEmptyRead);
+
+    const requestHash = createHash("sha256")
+      .update(canonicalOwnedSessionStart(input))
+      .digest("hex");
+    const reserved = await post(h, path, input);
+    expect(reserved.status).toBe(200);
+    expect(
+      sessionStartIdentityReplySchema.parse((await envelope(reserved)).data)
+        .identity.state,
+    ).toBe("reserved");
+    expect(h.events().at(-1)?.payload).toMatchObject({
+      action: "session.start.identity.reserve",
+      target: `owned-session-start:${FIXTURE_PROJECT_ID}:${requestId}:${requestHash}`,
+    });
+
+    const beforeReadbackEvents = h.events();
+    const readback = await get(h, path, h.headers(h.hearth.token));
+    expect(
+      sessionStartIdentityPageSchema.parse((await envelope(readback)).data)
+        .identities[0]?.state,
+    ).toBe("reserved");
+    expect(h.events()).toEqual(beforeReadbackEvents);
+
+    const retired = await post(h, `${path}/${requestId}/retire`, {
+      requestHash,
+    });
+    expect(retired.status).toBe(200);
+    expect(
+      sessionStartIdentityReplySchema.parse((await envelope(retired)).data)
+        .identity.state,
+    ).toBe("retired");
+    const delayedStart = await post(
+      h,
+      `/projects/${FIXTURE_PROJECT_ID}/sessions`,
+      input,
+    );
+    expect(delayedStart.status).toBe(409);
+    expect(createSessionRegistry(h.home).list(FIXTURE_PROJECT_ID)).toEqual([]);
+    const finalPage = await get(h, path, h.headers(h.hearth.token));
+    expect(
+      sessionStartIdentityPageSchema.parse((await envelope(finalPage)).data)
+        .identities[0]?.state,
+    ).toBe("retired");
+  });
+});
 
 describe("every read row (iterating the table)", () => {
   test("answers a valid envelope for its fixture path", async () => {
