@@ -375,7 +375,7 @@ test("opening, editing and cancelling preserves a separate proposal draft withou
   client.dispose();
 });
 
-test("an uncertain reviewed Start keeps every original byte and UUID across edits, absent checks and explicit retries", async () => {
+test("an unknown reviewed Start keeps every original byte and UUID but cannot be retried from its body alone", async () => {
   const sent: KeeperSessionStartRequest[] = [];
   const client = createKeeperSessionReviews({
     identities: identityFixture().identities,
@@ -421,13 +421,53 @@ test("an uncertain reviewed Start keeps every original byte and UUID across edit
   });
   expect(sent).toHaveLength(1);
   await review.owner.retryStart(projectId);
-  expect(sent).toHaveLength(2);
-  expect(sent[1]).toEqual(sent[0]);
+  expect(review.view.retryStartAvailable).toBe(false);
+  expect(sent).toHaveLength(1);
   expect(sent[0]).toEqual({
     sourceHash: source.sourceHash,
     expectedRevision: 4,
     start: { ...expected, requestId: "b14cc7eb-3231-4930-a288-d411c5ee0426" },
   });
+  client.dispose();
+});
+
+test("a proven NotSent refusal enables an exact Keeper retry and the original remains checkable", async () => {
+  const sent: KeeperSessionStartRequest[] = [];
+  let reads = 0;
+  const client = createKeeperSessionReviews({
+    identities: identityFixture().identities,
+    canWrite: () => true,
+    requestId: () => "b14cc7eb-3231-4930-a288-d411c5ee0426",
+    read: async () => {
+      reads++;
+      return null;
+    },
+    post: async (_project, _proposal, input) => {
+      sent.push(input);
+      return sent.length === 1
+        ? { state: "refused", message: "No operator token", notSent: true }
+        : { state: "unknown", message: "Check the exact original again" };
+    },
+    createWorktree: async () => ({ state: "refused", message: "No Git" }),
+    readWorktree: async () => null,
+    adopt: () => true,
+  });
+  const review = client.get(source, 4);
+  await client.open(review);
+  review.owner.initializeComposer?.({ id: projectId }, smiths, [main]);
+  const expected = sessionStartBody(review.view.composer);
+
+  await review.owner.start(projectId, expected);
+  expect(sent).toHaveLength(1);
+  expect(review.view.retryStartAvailable).toBe(true);
+
+  await review.owner.refresh(projectId);
+  expect(reads).toBe(2);
+  expect(review.view.retryStartAvailable).toBe(true);
+  await review.owner.retryStart(projectId);
+  expect(sent).toHaveLength(2);
+  expect(sent[1]).toEqual(sent[0]);
+  expect(review.view.retryStartAvailable).toBe(false);
   client.dispose();
 });
 

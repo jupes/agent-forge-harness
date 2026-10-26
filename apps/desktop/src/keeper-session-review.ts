@@ -143,7 +143,7 @@ export function createKeeperSessionReviews(deps: {
     projectId: string,
     proposalId: string,
     input: KeeperSessionStartRequest,
-  ): Promise<ActionOutcome>;
+  ): Promise<ActionOutcome & { notSent?: true }>;
   createWorktree(
     projectId: string,
     input: SessionWorktreeRequest,
@@ -156,6 +156,7 @@ export function createKeeperSessionReviews(deps: {
   ): boolean;
 }) {
   const entries = new Map<string, KeeperSessionReview>(),
+    retryableNotSent = new WeakMap<KeeperSessionReview, boolean>(),
     listeners = new Set<() => void>();
   let disposed = false;
   const tell = () => {
@@ -200,7 +201,11 @@ export function createKeeperSessionReviews(deps: {
     entry.expectedRequestId = result.original.start.requestId;
     entry.result = result;
     entry.loaded = true;
+    entry.view.keeperOriginalKnown = true;
     entry.view.pendingStart = structuredClone(result.original.start);
+    if (result.session !== null || result.receipt !== null)
+      retryableNotSent.set(entry, false);
+    entry.view.retryStartAvailable = retryableNotSent.get(entry) === true;
     entry.view.notice = result.record.message;
     if (result.session && result.receipt) {
       if (
@@ -213,14 +218,16 @@ export function createKeeperSessionReviews(deps: {
       entry.view.pendingStart = null;
       entry.view.lastStarted = result.session.id;
     } else
-      entry.view.notice +=
-        " No matching original session turn is confirmed. Check or explicitly retry the same Start.";
+      entry.view.notice += entry.view.retryStartAvailable
+        ? " The original Start was verified as not sent. An explicit retry is available."
+        : " No matching original session turn is confirmed. Check before any retry.";
     lock(entry);
     tell();
   };
   const check = async (entry: KeeperSessionReview) => {
     if (entry.view.loading || disposed) return;
     entry.view.loading = true;
+    entry.view.retryStartAvailable = false;
     lock(entry);
     tell();
     try {
@@ -230,6 +237,8 @@ export function createKeeperSessionReviews(deps: {
           "The recorded Start identities conflict. A replacement is locked.",
         );
       entry.expectedRequestId ??= held;
+      entry.view.keeperOriginalKnown =
+        entry.expectedRequestId !== null || entry.original !== null;
       const raw = await deps.read(
         entry.source.projectId,
         entry.source.id,
@@ -244,14 +253,21 @@ export function createKeeperSessionReviews(deps: {
           return;
         }
         entry.loaded = true;
+        entry.view.retryStartAvailable =
+          !entry.view.lastStarted &&
+          entry.original !== null &&
+          retryableNotSent.get(entry) === true;
         if (!entry.view.lastStarted)
           entry.view.notice = entry.original
-            ? "The original Start is not recorded in this read. Its exact input and identity are kept; an earlier request may still arrive. Retry only the original Start."
+            ? entry.view.retryStartAvailable
+              ? "The protected check found no original Start record, and the prior request was proven not sent. You may explicitly retry the exact original."
+              : "The original Start is not recorded in this read, but the earlier request may still arrive. Its exact input and identity remain held; no retry is available."
             : "Review these options. Only explicit Start authorizes a session.";
       } else await accept(entry, raw);
     } catch (error) {
       if (!entry.view.lastStarted) {
         entry.loaded = false;
+        entry.view.retryStartAvailable = retryableNotSent.get(entry) === true;
         entry.view.notice =
           error instanceof Error
             ? `${error.message} Check the original proposal Start again before proceeding.`
@@ -274,6 +290,8 @@ export function createKeeperSessionReviews(deps: {
     )
       return;
     entry.view.starting = true;
+    retryableNotSent.set(entry, false);
+    entry.view.retryStartAvailable = false;
     entry.view.notice = "Starting the exact reviewed proposal…";
     lock(entry);
     tell();
@@ -320,7 +338,16 @@ export function createKeeperSessionReviews(deps: {
                 ? error.message
                 : "The Start reply could not be verified.";
         }
-      } else entry.view.notice = outcome.message;
+      } else {
+        retryableNotSent.set(
+          entry,
+          outcome.state === "refused" &&
+            "notSent" in outcome &&
+            outcome.notSent === true,
+        );
+        entry.view.retryStartAvailable = retryableNotSent.get(entry) === true;
+        entry.view.notice = outcome.message;
+      }
     }
     lock(entry);
     tell();
@@ -336,6 +363,8 @@ export function createKeeperSessionReviews(deps: {
       pendingStart: null,
       lastStarted: null,
       inputLocked: true,
+      keeperOriginalKnown: false,
+      retryStartAvailable: false,
       ...(source.draft.action.provider !== "claude"
         ? { providerUnavailable: source.draft.action.provider }
         : {}),
@@ -415,6 +444,7 @@ export function createKeeperSessionReviews(deps: {
               deps.requestId,
             );
             entry.expectedRequestId = held.requestId;
+            view.keeperOriginalKnown = true;
             if (!held.created) {
               entry.loaded = false;
               view.notice =
@@ -443,7 +473,14 @@ export function createKeeperSessionReviews(deps: {
         refresh: (id) =>
           id === entry.source.projectId ? check(entry) : Promise.resolve(),
         retryStart: (id) =>
-          id === entry.source.projectId ? post(entry) : Promise.resolve(),
+          id === entry.source.projectId &&
+          retryableNotSent.get(entry) === true &&
+          entry.view.retryStartAvailable &&
+          entry.original &&
+          !entry.view.loading &&
+          !entry.view.starting
+            ? post(entry)
+            : Promise.resolve(),
         worktrees: createSessionWorktreeClient({
           canWrite: () => deps.canWrite() && !view.inputLocked,
           requestId: deps.requestId,

@@ -34,6 +34,8 @@ export interface SessionComposerOwner {
     > & {
       inputLocked?: boolean;
       providerUnavailable?: string;
+      keeperOriginalKnown?: boolean;
+      retryStartAvailable?: boolean;
     };
   chooseComposerProvider?(
     id: string,

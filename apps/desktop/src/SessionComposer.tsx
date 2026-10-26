@@ -1078,6 +1078,28 @@ export function ClaudeSessionComposer({
           </p>
         )}
         {view.notice && <p role="status">{view.notice}</p>}
+        {client.purpose === "keeper-proposal" &&
+          (view.keeperOriginalKnown === true || view.pendingStart) &&
+          !view.lastStarted && (
+            <section aria-label="Keeper original Start recovery">
+              <Button
+                disabled={!!view.loading || !!view.starting}
+                onClick={() => void client.refresh(project.id)}
+              >
+                Check original Start
+              </Button>
+              {view.retryStartAvailable === true && (
+                <Button
+                  disabled={
+                    !writesAllowed || project.archived || busy || !!view.loading
+                  }
+                  onClick={() => void client.retryStart(project.id)}
+                >
+                  Retry original Start
+                </Button>
+              )}
+            </section>
+          )}
         {client.purpose === "ordinary-session" && (
           <SessionStartIdentityControls
             projectId={project.id}
