@@ -282,6 +282,56 @@ test("verified NotSent can settle; unknown transport outcome stays held", async 
   expect(other.identities.list()[0]?.retired).toBe(false);
 });
 
+test("a correlated refusal retains a stale preview until a fresh preview admits a new UUID", async () => {
+  const requestId = "e630e793-e617-4c93-bdaf-b1e30ba706e1";
+  const f = fixture();
+  await f.client.preview();
+  const original: SmithConfigEditRequest = {
+    requestId,
+    target: "workspace",
+    name: smith.name,
+    smith,
+    expectedRevision: revision,
+  };
+  const preview = f.preview;
+  f.postResult = {
+    state: "sent",
+    value: {
+      ok: true,
+      data: {
+        version: 1,
+        requestId,
+        ownerScopeHash: "e".repeat(64),
+        inputHash: await smithConfigEditInputHash(original),
+        createdAt: "2026-10-25T12:00:00.000Z",
+        original,
+        result: {
+          phase: "refused",
+          refusedAt: "2026-10-25T12:00:01.000Z",
+          reason: "stale-revision",
+          preview,
+        },
+      } satisfies SmithConfigEditReceipt,
+      error: null,
+    },
+  };
+
+  await f.client.save();
+  expect(f.client.get().preview).toEqual(preview);
+  expect(f.client.get().previewStale).toBe(true);
+  expect(f.client.get().entries[0]?.state).toBe("refused");
+  await f.client.save();
+  expect(f.postCalls).toBe(1);
+
+  f.postResult = { state: "unknown", message: "The new outcome is held." };
+  await f.client.preview();
+  expect(f.client.get().preview).toEqual(preview);
+  expect(f.client.get().previewStale).toBe(false);
+  await f.client.save();
+  expect(f.postCalls).toBe(2);
+  expect(f.posted?.requestId).not.toBe(requestId);
+});
+
 test("NotSent proof cannot reuse a same-UUID reservation hash for another request", async () => {
   const original = {
     requestId: "e630e793-e617-4c93-bdaf-b1e30ba706e1",
