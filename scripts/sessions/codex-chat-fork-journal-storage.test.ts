@@ -204,3 +204,57 @@ test("lock preflight refuses a linked SQLite mutex before opening it", async () 
   await expect(storage.exclusive(async () => undefined)).rejects.toThrow();
   expect(readFileSync(outside, "utf8")).toBe("preserve this file");
 });
+
+test("existing inherited read access is refused before mutation or SQLite", async () => {
+  const home = join(scratch.make("codex-fork-profile-"), "profile");
+  mkdirSync(home, { recursive: true });
+  const initial = createCodexChatForkJournalStorage(home, {
+    platform: "win32",
+    acl: fakeAcl(),
+  });
+  await initial.exclusive(async () => undefined);
+
+  const root = join(home, CODEX_CHAT_FORK_JOURNAL_DIRECTORY),
+    mutex = join(root, "locks", "journal.sqlite"),
+    before = lstatSync(mutex, { bigint: true }),
+    acl = fakeAcl(),
+    read = acl.read.bind(acl);
+  let aclRepairs = 0,
+    enteredWork = false;
+  acl.apply = () => {
+    aclRepairs++;
+    // The namespace already exists; any attempt to repair it is a failure.
+    throw new Error("unexpected ACL repair");
+  };
+  acl.read = (path) =>
+    path === root
+      ? {
+          owner: userSid,
+          protected: false,
+          entries: [
+            ...(privateReading("directory").entries ?? []),
+            {
+              type: 0,
+              flags: 0x10,
+              mask: 1,
+              sid: "S-1-1-0",
+            },
+          ],
+        }
+      : read(path);
+
+  const reopened = createCodexChatForkJournalStorage(home, {
+    platform: "win32",
+    acl,
+  });
+  await expect(
+    reopened.exclusive(async () => {
+      enteredWork = true;
+    }),
+  ).rejects.toThrow();
+  const after = lstatSync(mutex, { bigint: true });
+  expect(aclRepairs).toBe(0);
+  expect(enteredWork).toBe(false);
+  expect(after.ino).toBe(before.ino);
+  expect(after.mtimeNs).toBe(before.mtimeNs);
+});
