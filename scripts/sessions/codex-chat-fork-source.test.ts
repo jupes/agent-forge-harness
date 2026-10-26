@@ -136,26 +136,24 @@ async function completeSource(
       },
     },
   });
-  const state = ownedCodingStateSchema.parse({
-      ...original,
-      revision: frames.length,
-      frames,
-    }),
-    originalUser = state.frames.find(
+  let state = ownedCodingStateSchema.parse({
+    ...original,
+    revision: frames.length,
+    frames,
+  });
+  if (beadId) {
+    const originalUser = state.frames.find(
       (frame) => frame.turnId === requestId && frame.event.kind === "user",
     )?.event;
-  if (
-    originalUser?.kind !== "user" ||
-    !("codexChat" in originalUser) ||
-    !originalUser.codexChat
-  )
-    throw Error("Missing original private Chat request.");
-  if (beadId) {
+    if (
+      originalUser?.kind !== "user" ||
+      !("codexChat" in originalUser) ||
+      !originalUser.codexChat
+    )
+      throw Error("Missing original private Chat request.");
     const prepared = originalUser.codexChat,
-      context = prepared.launch.context,
-      selectedTurn = state.turns.find((turn) => turn.requestId === requestId);
-    if (!context || !selectedTurn)
-      throw Error("Missing source context or turn for bead fixture.");
+      context = prepared.launch.context;
+    if (!context) throw Error("Missing source context for bead fixture.");
     originalUser.codexChat = {
       ...prepared,
       launch: {
@@ -163,12 +161,29 @@ async function completeSource(
         context: { ...context, beadId },
       },
     };
+    state = ownedCodingStateSchema.parse(state);
+  }
+  const originalUser = state.frames.find(
+    (frame) => frame.turnId === requestId && frame.event.kind === "user",
+  )?.event;
+  if (
+    originalUser?.kind !== "user" ||
+    !("codexChat" in originalUser) ||
+    !originalUser.codexChat
+  )
+    throw Error("Missing normalized original private Chat request.");
+  if (beadId) {
+    const selectedTurn = state.turns.find(
+      (turn) => turn.requestId === requestId,
+    );
+    if (!selectedTurn) throw Error("Missing source turn for bead fixture.");
     selectedTurn.hash = conversationTurnHash({
       text: originalUser.text,
       about: originalUser.about,
       codexChat: originalUser.codexChat,
     });
   }
+  state = ownedCodingStateSchema.parse(state);
   const owner = createSessionRegistry(h.home, "codex", "chat").read(
     FIXTURE_PROJECT_ID,
     FIXTURE_CHAT_SESSION,
@@ -645,9 +660,10 @@ test("Fork source resolves only the exact selected completed turn and refuses sc
       seq: duplicated.frames.length + 1,
     });
     duplicated.revision = duplicated.frames.length;
+    expect(ownedCodingStateSchema.safeParse(duplicated).success).toBe(false);
     expect(resolve(duplicated)).toEqual({
       eligible: false,
-      reason: "source-incomplete",
+      reason: "invalid-state",
     });
   } finally {
     await h.close();
