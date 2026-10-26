@@ -164,7 +164,7 @@ export function resolveCodexChatForkSource(input: {
       workspaceKey(owner.repository) ||
     workspaceKey(originalPrepared.launch.context?.worktree ?? "") !==
       workspaceKey(owner.worktree) ||
-    originalPrepared.launch.context?.beadId !== owner.beadId
+    (originalPrepared.launch.context?.beadId ?? null) !== (owner.beadId ?? null)
   )
     return { eligible: false, reason: "owner-mismatch" };
 
@@ -183,7 +183,7 @@ export function resolveCodexChatForkSource(input: {
       context.projectId !== owner.projectId ||
       workspaceKey(context.repository) !== workspaceKey(owner.repository) ||
       workspaceKey(context.worktree) !== workspaceKey(owner.worktree) ||
-      context.beadId !== owner.beadId
+      (context.beadId ?? null) !== (owner.beadId ?? null)
     )
       return { eligible: false, reason: "settings-mismatch" };
   } catch {

@@ -4,7 +4,6 @@ import { join } from "node:path";
 import type { PreparedCodexChat } from "../../types/codex-chat";
 import type { CodexChatOwnedRecord } from "../../types/codex-owned-chat";
 import type { ConversationObject } from "../../types/conversation";
-import { eventSchema } from "../conversations/protocol";
 import { createConversationStore } from "../conversations/store";
 import {
   FIXTURE_CHAT_DECISION,
@@ -14,7 +13,10 @@ import {
 import { startTestHearth } from "../hearth/testing";
 import { FIXTURE_PROJECT_ID } from "../projects/testing";
 import { resolveCodexChatForkSource } from "./codex-chat-fork-source";
-import { ownedCodingStateSchema } from "./codex-owned-journal";
+import {
+  ownedCodingEventSchema,
+  ownedCodingStateSchema,
+} from "./codex-owned-journal";
 import { canonicalOwnedSessionStart } from "./codex-owned-protocol";
 import { createSessionRegistry } from "./registry";
 
@@ -61,7 +63,10 @@ function conversationTurnHash(input: {
     .digest("hex");
 }
 
-async function completeSource(h: Awaited<ReturnType<typeof startTestHearth>>) {
+async function completeSource(
+  h: Awaited<ReturnType<typeof startTestHearth>>,
+  beadId?: string,
+) {
   await seedChatDecision(h);
   const store = createConversationStore(h.home, undefined, {
       kind: "session",
@@ -85,7 +90,7 @@ async function completeSource(h: Awaited<ReturnType<typeof startTestHearth>>) {
       seq: frames.length + 1,
       turnId: requestId,
       at,
-      event: eventSchema.parse(event),
+      event: ownedCodingEventSchema.parse(event),
     });
   };
   append({
@@ -136,10 +141,6 @@ async function completeSource(h: Awaited<ReturnType<typeof startTestHearth>>) {
       revision: frames.length,
       frames,
     }),
-    registeredOwner = createSessionRegistry(h.home, "codex", "chat").read(
-      FIXTURE_PROJECT_ID,
-      FIXTURE_CHAT_SESSION,
-    ),
     originalUser = state.frames.find(
       (frame) => frame.turnId === requestId && frame.event.kind === "user",
     )?.event;
@@ -149,18 +150,43 @@ async function completeSource(h: Awaited<ReturnType<typeof startTestHearth>>) {
     !originalUser.codexChat
   )
     throw Error("Missing original private Chat request.");
+  if (beadId) {
+    const prepared = originalUser.codexChat,
+      context = prepared.launch.context,
+      selectedTurn = state.turns.find((turn) => turn.requestId === requestId);
+    if (!context || !selectedTurn)
+      throw Error("Missing source context or turn for bead fixture.");
+    originalUser.codexChat = {
+      ...prepared,
+      launch: {
+        ...prepared.launch,
+        context: { ...context, beadId },
+      },
+    };
+    selectedTurn.hash = conversationTurnHash({
+      text: originalUser.text,
+      about: originalUser.about,
+      codexChat: originalUser.codexChat,
+    });
+  }
+  const owner = createSessionRegistry(h.home, "codex", "chat").read(
+    FIXTURE_PROJECT_ID,
+    FIXTURE_CHAT_SESSION,
+  );
+  const finalOwner = {
+    ...owner,
+    ...(beadId ? { beadId } : {}),
+    requestHash: originalRequestHash(
+      { ...owner, ...(beadId ? { beadId } : {}) },
+      originalUser.codexChat,
+      originalUser.about,
+    ),
+  };
   return {
-    state,
+    state: ownedCodingStateSchema.parse(state),
     workspace: h.workspace,
     requestId,
-    owner: {
-      ...registeredOwner,
-      requestHash: originalRequestHash(
-        registeredOwner,
-        originalUser.codexChat,
-        originalUser.about,
-      ),
-    },
+    owner: finalOwner,
   };
 }
 
@@ -178,6 +204,7 @@ test("Fork source requires explicit tier evidence while preserving known null an
           selectedTurnRequestId: source.requestId,
         });
     const eligible = resolve(source.state);
+    expect(source.owner.beadId).toBeUndefined();
     expect(eligible).toMatchObject({
       eligible: true,
       parent: { provider: "codex", threadId, version },
@@ -285,6 +312,21 @@ test("Fork source requires explicit tier evidence while preserving known null an
     expect(resolve(unsupportedEffort)).toEqual({
       eligible: false,
       reason: "unsupported-source",
+    });
+
+    const beadSource = await completeSource(h, "alpha-1"),
+      beadResult = resolveCodexChatForkSource({
+        owner: beadSource.owner,
+        state: beadSource.state,
+        projectId: FIXTURE_PROJECT_ID,
+        conversationId: FIXTURE_CHAT_SESSION,
+        workspaceKey: beadSource.workspace,
+        selectedTurnRequestId: beadSource.requestId,
+      });
+    expect(beadSource.owner.beadId).toBe("alpha-1");
+    expect(beadResult).toMatchObject({
+      eligible: true,
+      lastTurnId: nativeTurnId,
     });
   } finally {
     await h.close();
@@ -506,7 +548,7 @@ test("Fork source resolves only the exact selected completed turn and refuses sc
       seq: outcomeIndex + 1,
       turnId: source.requestId,
       at: previousFrame.at,
-      event: eventSchema.parse({
+      event: ownedCodingEventSchema.parse({
         kind: "coding-chat",
         provider: "codex",
         version,
@@ -554,7 +596,7 @@ test("Fork source resolves only the exact selected completed turn and refuses sc
       seq: laterOutcomeIndex + 1,
       turnId: laterRequestId,
       at: laterLastFrame.at,
-      event: eventSchema.parse({
+      event: ownedCodingEventSchema.parse({
         kind: "coding-chat",
         provider: "codex",
         version,
