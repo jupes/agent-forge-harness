@@ -289,7 +289,11 @@ export function ProjectShifts({
         {formError && <p role="alert">{formError}</p>}
         {options && draft && (
           <>
-            <ShiftFields options={options} draft={draft} setDraft={setDraft} />
+            <ProjectShiftFields
+              options={options}
+              draft={draft}
+              setDraft={setDraft}
+            />
             {!optionsFresh && (
               <p>Current choices need to be read again before Start.</p>
             )}
@@ -324,14 +328,16 @@ export function ProjectShifts({
   );
 }
 
-function ShiftFields({
+export function ProjectShiftFields({
   options,
   draft,
   setDraft,
+  disabled = false,
 }: {
   options: ProjectShiftOptions;
   draft: ProjectShiftDraft;
   setDraft(value: ProjectShiftDraft): void;
+  disabled?: boolean;
 }) {
   const field = (
     key: keyof Omit<ProjectShiftDraft, "expectedCatalogRevision">,
@@ -343,6 +349,7 @@ function ShiftFields({
         Duration
         <input
           aria-label="Duration"
+          disabled={disabled}
           value={draft.for}
           onInput={(e) => field("for", e.currentTarget.value)}
         />
@@ -357,6 +364,7 @@ function ShiftFields({
         <input
           aria-label="Concurrency"
           type="number"
+          disabled={disabled}
           min={options.limits.concurrency[0]}
           max={options.limits.concurrency[1]}
           step="1"
@@ -373,6 +381,7 @@ function ShiftFields({
         <input
           aria-label="Maximum beads"
           type="number"
+          disabled={disabled}
           min={options.limits.maxBeads[0]}
           max={options.limits.maxBeads[1]}
           step="1"
@@ -389,6 +398,7 @@ function ShiftFields({
         <input
           aria-label="Spend cap (USD)"
           type="number"
+          disabled={disabled}
           min="0"
           max={options.limits.maxUsd}
           step="any"
@@ -405,6 +415,7 @@ function ShiftFields({
         <input
           aria-label="Repair attempts"
           type="number"
+          disabled={disabled}
           min={options.limits.repairs[0]}
           max={options.limits.repairs[1]}
           step="1"
@@ -419,6 +430,7 @@ function ShiftFields({
         Base branch
         <input
           aria-label="Base branch"
+          disabled={disabled}
           value={draft.base}
           onInput={(e) => field("base", e.currentTarget.value)}
         />
@@ -428,6 +440,7 @@ function ShiftFields({
         Epic filter
         <select
           aria-label="Epic filter"
+          disabled={disabled}
           value={draft.epic}
           onChange={(e) => field("epic", e.currentTarget.value)}
         >
@@ -443,6 +456,7 @@ function ShiftFields({
         Smith override
         <select
           aria-label="Smith override"
+          disabled={disabled}
           value={draft.smith}
           onChange={(e) => field("smith", e.currentTarget.value)}
         >
@@ -462,6 +476,7 @@ function ShiftFields({
         Per-run timeout (optional)
         <input
           aria-label="Per-run timeout (optional)"
+          disabled={disabled}
           placeholder="Use remaining shift time"
           value={draft.runTimeout}
           onInput={(e) => field("runTimeout", e.currentTarget.value)}

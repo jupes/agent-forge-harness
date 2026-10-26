@@ -9,7 +9,9 @@ import { ConnectionBanner, useDesktopRecovery } from "./ConnectionBanner";
 import type { FrameSession } from "./DesktopFrame";
 import { DesktopFrame } from "./DesktopFrame";
 import { KeeperConversation, KeeperScope } from "./KeeperConversation";
+import { KeeperShiftReviewDialog } from "./KeeperShiftReviewDialog";
 import type { KeeperSessionReview } from "./keeper-session-review";
+import type { KeeperShiftReviewEntry } from "./keeper-shift-review-owner";
 import { ManagedShiftSession } from "./ManagedShiftSession";
 import {
   managedShiftHref,
@@ -51,6 +53,7 @@ import { useBeads } from "./use-beads";
 import { useKeeper } from "./use-keeper";
 import { useKeeperProposals } from "./use-keeper-proposals";
 import { useKeeperSessionReviews } from "./use-keeper-session-reviews";
+import { useKeeperShiftReviews } from "./use-keeper-shift-reviews";
 import { useProjectActivity } from "./use-project-activity";
 import { useProjectRuns } from "./use-project-runs";
 import { useProjectShifts } from "./use-project-shifts";
@@ -203,9 +206,16 @@ export function DesktopApp(): JSX.Element {
   );
   const [composerOpen, setComposerOpen] = useState(false);
   const reviews = useKeeperSessionReviews(writesAllowed, sessions);
+  const shiftReviews = useKeeperShiftReviews(writesAllowed);
   const [sessionReview, setSessionReview] =
     useState<KeeperSessionReview | null>(null);
   const reviewOpener = useRef<HTMLElement>(null);
+  const [shiftReview, setShiftReview] = useState<KeeperShiftReviewEntry | null>(
+    null,
+  );
+  const shiftReviewRef = useRef<KeeperShiftReviewEntry | null>(null);
+  shiftReviewRef.current = shiftReview;
+  const shiftReviewOpener = useRef<HTMLElement>(null);
   const openSessionReview = (
     source: KeeperProposal,
     revision: number,
@@ -219,6 +229,26 @@ export function DesktopApp(): JSX.Element {
     const review = reviews.get(source, revision, requestId);
     setSessionReview(review);
     void reviews.open(review);
+  };
+  const openShiftReview = (
+    source: KeeperProposal,
+    revision: number,
+    originalOnly = false,
+    requestId?: string,
+  ) => {
+    if (!project || source.projectId !== project.id) return;
+    shiftReviewOpener.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    const entry = shiftReviews.get(source, revision, originalOnly, requestId);
+    setShiftReview(entry);
+    void shiftReviews.owner.open(entry);
+  };
+  const closeShiftReview = () => {
+    const entry = shiftReviewRef.current;
+    if (entry) shiftReviews.owner.close(entry);
+    setShiftReview(null);
   };
   const composerOpener = useRef<HTMLElement>(null);
   const openSession = (beadId?: string) => {
@@ -266,6 +296,11 @@ export function DesktopApp(): JSX.Element {
     if (previousProject.current !== route.projectId) setComposerOpen(false);
     if (previousProject.current !== route.projectId) setNewBeadOpen(false);
     if (previousProject.current !== route.projectId) setSessionReview(null);
+    if (previousProject.current !== route.projectId) {
+      const entry = shiftReviewRef.current;
+      if (entry) shiftReviews.owner.close(entry);
+      setShiftReview(null);
+    }
     previousProject.current = route.projectId;
   }, [route.projectId]);
   useEffect(() => {
@@ -523,6 +558,7 @@ export function DesktopApp(): JSX.Element {
             onScope={() => setInspectorOpen(true)}
             active={!keeperOpen}
             onReviewSession={openSessionReview}
+            onReviewShift={openShiftReview}
           />
         ) : route.destination === "beads" && project ? (
           fullBead && route.selection?.kind === "bead" ? (
@@ -847,6 +883,7 @@ export function DesktopApp(): JSX.Element {
               active={keeperOpen}
               onNavigate={() => setKeeperOpen(false)}
               onReviewSession={openSessionReview}
+              onReviewShift={openShiftReview}
             />
           </>
         )}
@@ -932,6 +969,17 @@ export function DesktopApp(): JSX.Element {
             </>
           )}
       </Dialog>
+      <KeeperShiftReviewDialog
+        entry={
+          shiftReview?.state.source.projectId === project?.id
+            ? shiftReview
+            : null
+        }
+        owner={shiftReviews.owner}
+        writesAllowed={writesAllowed}
+        opener={shiftReviewOpener}
+        onClose={closeShiftReview}
+      />
     </>
   );
 }
