@@ -4,6 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeOwnerOnly } from "../hearth/token";
+import { projectCreateOriginalSchema } from "./create-protocol";
 import {
   createProjectStore,
   hashProjectCreateRequest,
@@ -333,6 +334,122 @@ test("a legacy project create original remains byte-shape absent of Keeper selec
   const reopened = createProjectStore(home).readCreate(requestId);
   expect(reopened).toEqual(legacy.operation);
   expect(Object.hasOwn(reopened?.original ?? {}, "keeperSmith")).toBe(false);
+});
+
+test("legacy project originals keep their absent color and create hash unchanged", async () => {
+  const { home, store, input } = fixture();
+  const requestId = "4b3aa122-2cf2-4edb-ae94-fcc29ff19a30";
+  const original = { ...input };
+  const hash = hashProjectCreateRequest({
+    requestId,
+    expectedCatalogRevision: 0,
+    original,
+  });
+  const reserved = await store.reserveCreate({
+    requestId,
+    original,
+    expectedCatalogRevision: 0,
+    preflightScope: { hash: "d".repeat(64), count: 1 },
+    validateScope: async () => ({ hash: "d".repeat(64), count: 1 }),
+  });
+  const bytes = readFileSync(projectCatalogPath(home), "utf8");
+  const reopened = createProjectStore(home).readCreate(requestId);
+  expect(reserved.operation.requestHash).toBe(hash);
+  expect(reopened).toEqual(reserved.operation);
+  expect(reopened?.requestHash).toBe(hash);
+  expect(Object.hasOwn(reopened?.original ?? {}, "color")).toBe(false);
+  expect(bytes).toContain(JSON.stringify(original));
+  expect(bytes).toBe(readFileSync(projectCatalogPath(home), "utf8"));
+});
+
+test("bounded project color IDs are hash-bound and survive exact create readback", async () => {
+  const { home, store, input } = fixture();
+  const checkout = join(home, "checkout");
+  mkdirSync(join(checkout, ".git"), { recursive: true });
+  const base = {
+    ...input,
+    workspaces: [
+      { root: checkout, repositories: [checkout], epicIds: ["demo-epic"] },
+    ],
+  };
+  const colors = ["default", "green", "blue"] as const;
+
+  for (const [index, color] of colors.entries()) {
+    const requestId = [
+      "94111a92-01d0-42fc-a390-408e6f5515e6",
+      "a8112b0e-2334-47e2-86da-5c3603c3c428",
+      "25e8d00a-8493-4e66-9f62-2fc2ff68715e",
+    ][index]!;
+    const original = Object.assign({}, base, {
+      slug: `alpha-${color}`,
+      name: `Alpha ${color}`,
+      color,
+    });
+    const parsed = projectCreateOriginalSchema.safeParse(original);
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) continue;
+
+    const expectedCatalogRevision = store.read().revision;
+    const expectedHash = hashProjectCreateRequest({
+      requestId,
+      expectedCatalogRevision,
+      original: parsed.data,
+    });
+    const reserved = await store.reserveCreate({
+      requestId,
+      original: parsed.data,
+      expectedCatalogRevision,
+      preflightScope: { hash: "e".repeat(64), count: 1 },
+      validateScope: async () => ({ hash: "e".repeat(64), count: 1 }),
+    });
+    expect(reserved.operation.original).toMatchObject({ color });
+    expect(reserved.operation.requestHash).toBe(expectedHash);
+
+    const committed = await store.commitCreate({
+      requestId,
+      requestHash: expectedHash,
+      reviewedScopeHash: reserved.operation.scopeHash,
+      preflightScope: { hash: reserved.operation.scopeHash, count: 1 },
+      validateScope: async () => ({
+        hash: reserved.operation.scopeHash,
+        count: 1,
+      }),
+    });
+    expect(committed.catalog.projects.at(-1)).toMatchObject({ color });
+    expect(createProjectStore(home).readCreate(requestId)).toMatchObject({
+      original: { color },
+      requestHash: expectedHash,
+      state: "created",
+    });
+    expect(createProjectStore(home).read().projects.at(-1)).toMatchObject({
+      color,
+    });
+    await expect(
+      store.reserveCreate({
+        requestId,
+        original: Object.assign({}, base, {
+          slug: `alpha-${color}`,
+          name: `Alpha ${color}`,
+          color: color === "green" ? "blue" : "green",
+        }),
+        expectedCatalogRevision,
+        preflightScope: { hash: "e".repeat(64), count: 1 },
+        validateScope: async () => ({ hash: "e".repeat(64), count: 1 }),
+      }),
+    ).rejects.toMatchObject({ status: 409 });
+  }
+});
+
+test("project color protocol rejects arbitrary CSS and unknown token names", () => {
+  const { input } = fixture();
+  expect(
+    projectCreateOriginalSchema.safeParse({ ...input, color: "#dcf1e6" })
+      .success,
+  ).toBe(false);
+  expect(
+    projectCreateOriginalSchema.safeParse({ ...input, color: "purple" })
+      .success,
+  ).toBe(false);
 });
 
 test("project catalog preferences preserve pending create originals without advancing their metadata revision", async () => {
