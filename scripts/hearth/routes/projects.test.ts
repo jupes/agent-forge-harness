@@ -553,11 +553,23 @@ test("trusted registry override is shared by options, preview, reserve, and comm
     error: null,
   });
   expect(createProjectStore(h.home).read().projects).toHaveLength(1);
-  expect(
-    h.events(["operator.action"]).map((event) => event.payload),
-  ).toMatchObject([
-    { action: "project.create.reserve", requestId },
-    { action: "project.create", requestId },
+  expect(h.events(["operator.action"]).map((event) => event.payload)).toEqual([
+    {
+      action: "project.create.reserve",
+      surface: "api",
+      target: slug,
+      family: "project-create",
+      requestId,
+      inputHash: reserveEnvelope.data.requestHash,
+    },
+    {
+      action: "project.create.commit",
+      surface: "api",
+      target: requestId,
+      family: "project-create",
+      requestId,
+      inputHash: reserveEnvelope.data.requestHash,
+    },
   ]);
 });
 
