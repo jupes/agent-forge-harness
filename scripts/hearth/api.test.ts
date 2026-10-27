@@ -7,6 +7,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { connect } from "node:net";
@@ -89,6 +90,7 @@ import {
   codexChatForkOriginalHash,
   codexChatForkOriginalHashInput,
 } from "../sessions/codex-chat-fork-protocol";
+import { ownedCodingPageSchema } from "../sessions/codex-owned-journal";
 import { canonicalOwnedSessionStart } from "../sessions/codex-owned-protocol";
 import {
   sessionStartIdentityPageSchema,
@@ -240,6 +242,9 @@ const API_CODEX_CHAT_FORK_CONTROL_CHILD_ID =
   "session-80e40be9-e811-47c3-a71d-b988e6717801";
 const API_CODEX_CHAT_FORK_CONTROL_CHILD_REQUEST_ID =
   "80e40be9-e811-47c3-a71d-b988e6717802";
+const API_CODEX_CHAT_FORK_CHILD_ID = API_CODEX_CHAT_FORK_CONTROL_CHILD_ID;
+const API_CODEX_CHAT_FORK_CHILD_REQUEST_ID =
+  API_CODEX_CHAT_FORK_CONTROL_CHILD_REQUEST_ID;
 const API_CODEX_CHAT_FORK_CONTROL_DECISION_ID =
   "80e40be9-e811-47c3-a71d-b988e6717803";
 const API_CODEX_CHAT_FORK_CONTROL_STOP_ID =
@@ -3197,68 +3202,89 @@ describe("the route table", () => {
 describe("every action row (iterating the table)", () => {
   test("with the token, from the hearth's own origin: one operator.action is appended, then the effect runs", async () => {
     const { h, probes } = await probed();
-    for (const row of actionRows(h)) {
-      const {
-        valid,
-        prepare,
-        happened,
-        outcome = [],
-        effects = [],
-        settled,
-      } = fixture(row);
-      await prepare?.(h);
-      const before = snapshot(h);
-      const seen = probes.length;
+    const rows = actionRows(h);
+    let progress: { row: number; action: string; stage: string } = {
+      row: 0,
+      action: "setup",
+      stage: "start",
+    };
+    const diagnostic = setTimeout(() => {
+      console.error(
+        `[api-action-inventory] ${JSON.stringify({ event: "slow", ...progress })}`,
+      );
+    }, 10_000);
+    try {
+      for (const [index, row] of rows.entries()) {
+        progress = { row: index + 1, action: row.action, stage: "prepare" };
+        const {
+          valid,
+          prepare,
+          happened,
+          outcome = [],
+          effects = [],
+          settled,
+        } = fixture(row);
+        await prepare?.(h);
+        const before = snapshot(h);
+        const seen = probes.length;
 
-      const response = await post(h, valid.path, valid.body);
-      const body = await envelope(response);
-      expect({
-        row: key(row),
-        status: response.status,
-        ok: body.ok,
-        error: body.error,
-      }).toEqual({
-        row: key(row),
-        status: valid.status,
-        ok: valid.ok ?? true,
-        error: valid.error ?? null,
-      });
-      await settled?.(h);
+        progress.stage = "post";
+        const response = await post(h, valid.path, valid.body);
+        progress.stage = "read-response";
+        const body = await envelope(response);
+        expect({
+          row: key(row),
+          status: response.status,
+          ok: body.ok,
+          error: body.error,
+        }).toEqual({
+          row: key(row),
+          status: valid.status,
+          ok: valid.ok ?? true,
+          error: valid.error ?? null,
+        });
+        progress.stage = "settled";
+        await settled?.(h);
 
-      // This row's audit row first, then exactly the events its fixture says
-      // a successful effect leaves: for most rows, none.
-      const added = h.events().filter((event) => !before.includes(event.id));
-      expect(
-        added.map((event) => ({
-          row: key(row),
-          kind: event.kind,
-          payload: event.payload,
-        })),
-      ).toEqual([
-        {
-          row: key(row),
-          kind: "operator.action",
-          payload: {
-            action: row.action,
-            surface: "api",
-            ...(valid.target === undefined ? {} : { target: valid.target }),
-            ...valid.audit,
+        // This row's audit row first, then exactly the events its fixture says
+        // a successful effect leaves: for most rows, none.
+        const added = h.events().filter((event) => !before.includes(event.id));
+        expect(
+          added.map((event) => ({
+            row: key(row),
+            kind: event.kind,
+            payload: event.payload,
+          })),
+        ).toEqual([
+          {
+            row: key(row),
+            kind: "operator.action",
+            payload: {
+              action: row.action,
+              surface: "api",
+              ...(valid.target === undefined ? {} : { target: valid.target }),
+              ...valid.audit,
+            },
           },
-        },
-        ...(typeof outcome === "function" ? outcome(h) : outcome).map(
-          (event) => ({ row: key(row), ...event }),
-        ),
-      ]);
+          ...(typeof outcome === "function" ? outcome(h) : outcome).map(
+            (event) => ({ row: key(row), ...event }),
+          ),
+        ]);
 
-      // The effect ran once, and that row was already stored when it started.
-      const calls = probes.slice(seen);
-      expect(calls.map((call) => call.row)).toEqual([key(row), ...effects]);
-      expect(calls[0]?.audit.at(-1)?.id).toBe(added[0]?.id);
+        // The effect ran once, and that row was already stored when it started.
+        const calls = probes.slice(seen);
+        expect(calls.map((call) => call.row)).toEqual([key(row), ...effects]);
+        expect(calls[0]?.audit.at(-1)?.id).toBe(added[0]?.id);
 
-      await happened(h, body.data);
-      if (row.action === "council.run.start")
-        if (valid.target !== undefined)
+        progress.stage = "happened";
+        await happened(h, body.data);
+        if (row.action === "council.run.start" && valid.target !== undefined) {
+          progress.stage = "council-run-finished";
           await councilRunFinished(h, valid.target);
+        }
+      }
+    } finally {
+      clearTimeout(diagnostic);
     }
   }, 30_000);
 
@@ -3428,11 +3454,29 @@ describe("every action row (iterating the table)", () => {
       const { h, probes } = await probed({ api: { appendEvent } });
       for (const row of actionRows(h)) {
         const { valid, prepare } = fixture(row);
-        // Keeper proposal validation reads the durable source and revision
-        // before reaching the audit boundary; seed that inert source fixture.
-        // Other prepare hooks may themselves call audited preview routes,
-        // which this test deliberately makes unavailable.
-        if (row.path.includes("/keeper/proposals/")) await prepare?.(h);
+        if (row.action === "session.preview") {
+          // This builder uses only the current hearth's fixed workspace value;
+          // it needs neither an audited preview nor any provider/filesystem work.
+          valid.body = sessionStartFixture(h);
+        } else if (row.action === "smith.config.create") {
+          // This action only needs a schema-valid revision to reach the audit
+          // boundary. Do not depend on the aggregate success loop's preview,
+          // which is intentionally unavailable when the audit appender refuses.
+          valid.body = {
+            requestId: API_SMITH_CREATE_ID,
+            target: "workspace",
+            smith: API_SMITH_CREATE_SMITH,
+            expectedRevision: {
+              version: 1,
+              user: "a".repeat(64),
+              workspace: "b".repeat(64),
+            },
+          };
+        } else if (row.path.includes("/keeper/proposals/")) {
+          // Keeper proposal validation reads the durable source and revision
+          // before reaching the audit boundary, so seed that inert fixture.
+          await prepare?.(h);
+        }
         const response = await post(h, valid.path, valid.body);
         const body = await envelope(response);
         expect({ row: key(row), status: response.status, ok: body.ok }).toEqual(
@@ -3597,9 +3641,115 @@ describe("a read row or the stream while another connection holds the write lock
   test("every read row and the stream answer while locked, ledger readers refuse with an error envelope, and health answers; released, every row answers 200", async () => {
     // The worktree row's git is a stand-in listing the root alone: this test
     // is about the ledger, and a real git on a loaded machine can fail it.
-    let root = "";
+    const forkReadGit =
+      (worktreePath: () => string): GitRun =>
+      (args) => {
+        const top = worktreePath().replaceAll("\\", "/");
+        if (args[0] === "rev-parse")
+          return { status: 0, stdout: `${top}\n`, stderr: "" };
+        if (args[0] === "worktree")
+          return {
+            status: 0,
+            stdout: [`worktree ${top}`, "HEAD aaa", "branch refs/heads/master"]
+              .concat("", "")
+              .join("\0"),
+            stderr: "",
+          };
+        return { status: 1, stdout: "", stderr: "" };
+      };
+    // Scope validation for this read consults projectSnapshotReader, which
+    // opens the Hearth ledger. Validate the child GET on a separate unlocked
+    // Hearth so the locked matrix below still starts with a cold ledger.
+    let baselineWorkspace = "";
+    const baselineHearth = await start({
+      api: { git: forkReadGit(() => baselineWorkspace) },
+    });
+    baselineWorkspace = baselineHearth.workspace;
+    await seedForkReadChild(baselineHearth);
+    const forkChildPath =
+      READS["GET /projects/:id/sessions/:sessionId/fork-turns"];
+    if (forkChildPath === undefined)
+      throw new Error("the Fork-child read row has no fixture path");
+    const baselineResponse = await get(
+      baselineHearth,
+      forkChildPath,
+      baselineHearth.headers(baselineHearth.hearth.token),
+    );
+    const baselineBody = await envelope<unknown>(baselineResponse);
+    const baselinePage = baselineBody.ok
+      ? ownedCodingPageSchema.safeParse(baselineBody.data)
+      : null;
+    expect({
+      status: baselineResponse.status,
+      ok: baselineBody.ok,
+      page: baselinePage?.success
+        ? {
+            projectId: baselinePage.data.projectId,
+            conversationId: baselinePage.data.conversationId,
+          }
+        : null,
+    }).toEqual({
+      status: 200,
+      ok: true,
+      page: {
+        projectId: FIXTURE_PROJECT_ID,
+        conversationId: API_CODEX_CHAT_FORK_CONTROL_CHILD_ID,
+      },
+    });
+    expect(existsSync(baselineHearth.ledger)).toBe(true);
+    // The validator intentionally compares canonical workspace spellings.
+    // A Git inventory recorded through a directory alias must not be confused
+    // with the canonical path persisted in the owned child metadata.
+    const worktreeAlias = join(baselineHearth.configHome, "root-alias");
+    symlinkSync(
+      baselineHearth.root,
+      worktreeAlias,
+      process.platform === "win32" ? "junction" : "dir",
+    );
+    try {
+      const aliasFacade = { ...baselineHearth, root: worktreeAlias };
+      expect(aliasFacade.workspace).toBe(baselineHearth.workspace);
+      // The facade's root is an alias, while its workspace and the saved child
+      // metadata remain canonical. The adapter reports the canonical workspace.
+      baselineWorkspace = aliasFacade.workspace;
+      const aliasedFacadeResponse = await get(
+        baselineHearth,
+        forkChildPath,
+        baselineHearth.headers(baselineHearth.hearth.token),
+      );
+      expect(aliasedFacadeResponse.status).toBe(200);
+      // An inventory that actually reports the alias remains out of registry.
+      baselineWorkspace = worktreeAlias;
+      const aliasResponse = await get(
+        baselineHearth,
+        forkChildPath,
+        baselineHearth.headers(baselineHearth.hearth.token),
+      );
+      const aliasBody = await envelope<unknown>(aliasResponse);
+      expect({
+        status: aliasResponse.status,
+        ok: aliasBody.ok,
+        error: aliasBody.error,
+      }).toEqual({
+        status: 409,
+        ok: false,
+        error:
+          "The selected worktree is not in this repository's current Git registry. No new turn was accepted.",
+      });
+    } finally {
+      baselineWorkspace = baselineHearth.workspace;
+      rmSync(worktreeAlias);
+    }
+    const canonicalResponse = await get(
+      baselineHearth,
+      forkChildPath,
+      baselineHearth.headers(baselineHearth.hearth.token),
+    );
+    expect(canonicalResponse.status).toBe(200);
+
+    let workspace = "";
     const git: GitRun = (args) => {
-      const top = root.replaceAll("\\", "/");
+      const top = workspace.replaceAll("\\", "/");
       if (args[0] === "rev-parse")
         return { status: 0, stdout: `${top}\n`, stderr: "" };
       if (args[0] === "worktree")
@@ -3616,7 +3766,7 @@ describe("a read row or the stream while another connection holds the write lock
       files: { ".tmp/work/forge-runs/demo.json": RUN_STATE },
       api: { git },
     });
-    root = h.root;
+    workspace = h.workspace;
     await seedOwnedSession(h);
     await seedChatDecision(h);
     await seedProjectShift(h);
