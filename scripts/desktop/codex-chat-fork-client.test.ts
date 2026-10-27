@@ -9,6 +9,7 @@ import type {
   CodexChatForkContextPage,
   CodexChatForkSourcePage,
 } from "../../scripts/sessions/codex-chat-fork-review-protocol";
+import { codexChatForkContextPageSchema } from "../../scripts/sessions/codex-chat-fork-review-protocol";
 import type { CodexChatForkIdentityMetadata } from "../../types/session-operation-identities";
 
 const projectId = "project-a5832fa0-7a21-403b-8184-44892f0d8d86",
@@ -85,6 +86,9 @@ function envelope(data: unknown, status = 200): Response {
     status,
     headers: { "content-type": "application/json" },
   });
+}
+function requestPath(path: string): string {
+  return new URL(path, "http://localhost").pathname;
 }
 function sourcePage(input: {
   frames: CodexChatForkSourcePage["frames"];
@@ -246,7 +250,8 @@ test("lost Fork reply reloads the same reserved UUID and hash, keeps a missing o
                 nextCursor: null,
               }),
             );
-          if (path.endsWith("/session-operation-identities"))
+          const pathname = requestPath(path);
+          if (pathname.endsWith("/session-operation-identities"))
             return envelope({
               version: 1,
               scope: { projectId, workspace },
@@ -509,15 +514,16 @@ test("an undispatched reservation remains safely retireable after reload", async
         canWrite: () => true,
         requestId: () => requestId,
         read: (async (path) => {
-          if (path.endsWith("/session-operation-identities"))
+          const pathname = requestPath(path);
+          if (pathname.endsWith("/session-operation-identities"))
             return envelope({
               version: 1,
               scope: { projectId, workspace },
               operations: [reserved],
             });
-          if (path.endsWith(`/codex-chat-forks/${requestId}`))
+          if (pathname.endsWith(`/codex-chat-forks/${requestId}`))
             return envelope(reserved);
-          if (path.endsWith(`/codex-chat-forks/${requestId}/context`))
+          if (pathname.endsWith(`/codex-chat-forks/${requestId}/context`))
             return envelope({
               version: 1,
               available: true,
@@ -527,20 +533,23 @@ test("an undispatched reservation remains safely retireable after reload", async
               throughTurnRequestId,
               state: "reserved",
               reason: null,
-              source: sourcePage({
-                frames: [
-                  {
-                    kind: "user",
-                    seq: 1,
-                    turnId: throughTurnRequestId,
-                    at: "2026-10-23T03:00:00.000Z",
-                    text: "PRIVATE original prompt",
-                    about: [],
-                  },
-                ],
-                complete: true,
-                nextCursor: null,
-              }),
+              source: {
+                ...sourcePage({
+                  frames: [
+                    {
+                      kind: "user",
+                      seq: 1,
+                      turnId: throughTurnRequestId,
+                      at: "2026-10-23T03:00:00.000Z",
+                      text: "PRIVATE original prompt",
+                      about: [],
+                    },
+                  ],
+                  complete: true,
+                  nextCursor: null,
+                }),
+                requestId,
+              },
             });
           throw new Error(`Unexpected GET ${path}`);
         }) satisfies OperatorRead,
@@ -661,39 +670,48 @@ test("a valid-shaped context for a different source stays held and cannot dispat
       canWrite: () => true,
       requestId: () => requestId,
       read: (async (path) => {
-        if (path.endsWith("/session-operation-identities"))
+        const pathname = requestPath(path);
+        if (pathname.endsWith("/session-operation-identities"))
           return envelope({
             version: 1,
             scope: { projectId, workspace },
             operations: [reserved],
           });
-        if (path.endsWith(`/codex-chat-forks/${requestId}`))
+        if (pathname.endsWith(`/codex-chat-forks/${requestId}`))
           return envelope(reserved);
-        if (path.endsWith(`/codex-chat-forks/${requestId}/context`))
-          return envelope({
+        if (pathname.endsWith(`/codex-chat-forks/${requestId}/context`)) {
+          const matchingContext: CodexChatForkContextPage = {
             version: 1,
             available: true,
             requestId,
-            requestHash: "b".repeat(64),
+            requestHash,
             parentSessionId,
             throughTurnRequestId,
             state: "reserved",
             reason: null,
-            source: sourcePage({
-              frames: [
-                {
-                  kind: "user",
-                  seq: 1,
-                  turnId: throughTurnRequestId,
-                  at: "2026-10-23T03:00:00.000Z",
-                  text: "PRIVATE original prompt",
-                  about: [],
-                },
-              ],
-              complete: true,
-              nextCursor: null,
-            }),
-          });
+            source: {
+              ...sourcePage({
+                frames: [
+                  {
+                    kind: "user",
+                    seq: 1,
+                    turnId: throughTurnRequestId,
+                    at: "2026-10-23T03:00:00.000Z",
+                    text: "PRIVATE original prompt",
+                    about: [],
+                  },
+                ],
+                complete: true,
+                nextCursor: null,
+              }),
+              requestId,
+            },
+          };
+          expect(
+            codexChatForkContextPageSchema.safeParse(matchingContext).success,
+          ).toBe(true);
+          return envelope({ ...matchingContext, requestHash: "b".repeat(64) });
+        }
         throw new Error(`Unexpected GET ${path}`);
       }) satisfies OperatorRead,
       post: (async () => {
