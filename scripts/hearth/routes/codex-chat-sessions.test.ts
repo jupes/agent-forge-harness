@@ -591,6 +591,64 @@ test("file Allow stays unavailable without actual diffs, current/foreign scope r
   expect((await f.get(`/${id}/approvals`)).pending).toEqual([]);
 });
 
+test("preflight Fork reservation is durably discoverable without creating a native child", async () => {
+  const f = await fixture("fork-service-tier-null"),
+    start = await f.post("", f.request);
+  expect(start.status).toBe(202);
+  const started = ownedCodingStartReceiptSchema.parse(
+      (await start.json()).data,
+    ),
+    parentSessionId = started.session.id,
+    completed = await f.settle(parentSessionId),
+    selectedTurn = completed.turns.find(
+      (turn) => turn.requestId === f.request.requestId,
+    );
+  if (!selectedTurn) throw Error("The source-valid parent turn did not settle");
+
+  const request = {
+      requestId: randomUUID(),
+      throughTurnRequestId: selectedTurn.requestId,
+    },
+    response = await f.post(`/${parentSessionId}/fork-reservations`, request),
+    envelope = await response.json();
+  expect(response.status).toBe(200);
+  expect(envelope).toMatchObject({
+    ok: true,
+    data: {
+      family: "codex-chat-fork",
+      requestId: request.requestId,
+      parentSessionId,
+      throughTurnRequestId: selectedTurn.requestId,
+      state: "reserved",
+    },
+  });
+  expect(f.records().filter((row) => row.method === "thread/fork")).toEqual([]);
+  expect(
+    f.records().filter((row) => row.method === "thread/start"),
+  ).toHaveLength(1);
+  expect(f.records().filter((row) => row.method === "turn/start")).toHaveLength(
+    1,
+  );
+  const operationsResponse = await fetch(
+      `${f.h.api}/projects/${FIXTURE_PROJECT_ID}/session-operation-identities`,
+      { headers: f.h.headers(f.h.hearth.token) },
+    ),
+    operationsEnvelope = await operationsResponse.json(),
+    operations = sessionOperationIdentityPageSchema.parse(
+      operationsEnvelope.data,
+    );
+  expect(operationsResponse.status).toBe(200);
+  expect(operations.operations).toContainEqual(
+    expect.objectContaining({
+      family: "codex-chat-fork",
+      requestId: request.requestId,
+      parentSessionId,
+      throughTurnRequestId: selectedTurn.requestId,
+      state: "reserved",
+    }),
+  );
+});
+
 test("protected Fork routes publish one audited native Fork and recover its exact metadata-only original", async () => {
   const f = await fixture("fork-service-tier-null"),
     start = await f.post("", f.request);
