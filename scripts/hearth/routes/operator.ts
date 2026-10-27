@@ -400,8 +400,24 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
   const { queue, smiths, config, worktrees, eligibility, readEligible } =
     workspaceReads(deps);
   const { counts } = beadsReads(deps);
-  const { projects, preferences } = projectRoutes(deps.projectHome);
   const projectSnapshot = projectSnapshotReader(deps.projectHome, deps);
+  const createProjectSnapshot = projectSnapshotReader(deps.projectHome, deps, {
+    membershipOnly: true,
+    includeEmpty: true,
+  });
+  const {
+    projects,
+    preferences,
+    createList,
+    createOriginal,
+    reserve,
+    commit,
+    retire,
+  } = projectRoutes(deps.projectHome, {
+    root: deps.root,
+    workspace: deps.workspace,
+    loadScope: createProjectSnapshot,
+  });
   const projectRuns = createProjectRunRoutes(
     deps,
     projectSnapshotReader(deps.projectHome, deps, { membershipOnly: true }),
@@ -502,6 +518,8 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     counts,
     scoreboard,
     projects,
+    createList,
+    createOriginal,
     projectSummaryRoute(deps.projectHome, deps, projectSnapshot),
     projectOverviewRoute(deps, projectSnapshot),
     observations.list,
@@ -580,6 +598,9 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       providers.doctor,
       ...providerLogins.actions,
       preferences,
+      reserve,
+      commit,
+      retire,
       conversations.send,
       conversations.refresh,
       conversations.continuation,

@@ -3719,7 +3719,22 @@ test("Codex Chat explicitly reviews, forks, reloads and controls only the linked
   await expect(
     dialog.getByText("Child conversation", { exact: true }),
   ).toBeVisible();
-  await expect(dialog.getByText("PRIVATE_FORK_SOURCE_PROMPT")).toBeVisible();
+  await expect(
+    dialog
+      .getByRole("region", {
+        name: "Bounded saved Fork history",
+        exact: true,
+      })
+      .getByText("PRIVATE_FORK_SOURCE_PROMPT", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    dialog
+      .getByRole("region", {
+        name: "Read-only inherited parent history",
+        exact: true,
+      })
+      .getByText("PRIVATE_FORK_SOURCE_PROMPT", { exact: true }),
+  ).toBeVisible();
   await expect(dialog).toContainText("Native child session");
   expect(savedIdentity.requestId).toBeTruthy();
 

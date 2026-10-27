@@ -13,7 +13,7 @@ export function workspaceKey(path: string): string {
  * No id-prefix inference, arbitrary directory reads, or cross-workspace data.
  */
 export function selectProjectBeads(
-  project: ProjectRecord,
+  project: Pick<ProjectRecord, "slug" | "workspaces">,
   workspace: string,
   issues: readonly BeadsIssue[],
 ): BeadsIssue[] {

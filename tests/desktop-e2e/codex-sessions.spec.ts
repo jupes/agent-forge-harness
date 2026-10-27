@@ -4,6 +4,7 @@ import {
   expect,
   type Locator,
   type Page,
+  type Request,
   type Response,
   test,
 } from "@playwright/test";
@@ -750,34 +751,47 @@ test("a durable pre-dispatch NotSent Start retries only by explicit same-UUID re
     row.getByRole("button", { name: "Retry exact original", exact: true }),
   ).toBeEnabled();
   const admittedReads: Array<
-      Promise<{
-        status: number;
-        page: z.infer<typeof sessionStartIdentityPageSchema>;
-      } | null>
-    > = [],
-    onIdentityResponse = (response: Response) => {
-      const url = new URL(response.url());
-      if (
-        response.request().method() !== "GET" ||
-        url.pathname !==
-          `/__agent-forge/projects/${alpha.id}/session-start-identities`
-      )
-        return;
-      admittedReads.push(
-        (async () => {
-          try {
-            const parsed = sessionStartIdentitySuccessEnvelopeSchema.safeParse(
-              await response.json(),
-            );
-            return parsed.success
-              ? { status: response.status(), page: parsed.data.data }
-              : null;
-          } catch {
-            return null;
-          }
-        })(),
-      );
-    };
+    Promise<{
+      status: number;
+      page: z.infer<typeof sessionStartIdentityPageSchema>;
+    } | null>
+  > = [];
+  const explicitCheckRequests = new WeakSet<Request>();
+  const identityPath =
+    `/__agent-forge/projects/${alpha.id}/session-start-identities`;
+  let captureCheckRead = false;
+  const onIdentityResponse = (response: Response) => {
+    const url = new URL(response.url());
+    if (
+      response.request().method() !== "GET" ||
+      !explicitCheckRequests.has(response.request()) ||
+      url.pathname !== identityPath
+    )
+      return;
+    admittedReads.push(
+      (async () => {
+        try {
+          const parsed = sessionStartIdentitySuccessEnvelopeSchema.safeParse(
+            await response.json(),
+          );
+          return parsed.success
+            ? { status: response.status(), page: parsed.data.data }
+            : null;
+        } catch {
+          return null;
+        }
+      })(),
+    );
+  };
+  const onIdentityRequest = (request: Request) => {
+    const url = new URL(request.url());
+    if (
+      captureCheckRead &&
+      request.method() === "GET" &&
+      url.pathname === identityPath
+    )
+      explicitCheckRequests.add(request);
+  };
   const matchesAdmittedRead = (
     snapshot: Awaited<(typeof admittedReads)[number]>,
   ) =>
@@ -792,17 +806,29 @@ test("a durable pre-dispatch NotSent Start retries only by explicit same-UUID re
         identity.mode === "task" &&
         identity.state === "admitted",
     );
+  page.on("request", onIdentityRequest);
   page.on("response", onIdentityResponse);
   try {
     await row
       .getByRole("button", { name: "Retry exact original", exact: true })
       .click();
+    await expect(
+      page.getByRole("article", { name: "Session reply", exact: true }),
+    ).toContainText("Codex Task reply 🌱");
+    await page.getByRole("button", { name: "New session", exact: true }).click();
+    const checkServer = page
+      .getByRole("dialog", { name: "New session · Alpha", exact: true })
+      .getByRole("button", { name: "Check server", exact: true });
+    await expect(checkServer).toBeEnabled();
+    captureCheckRead = true;
+    await checkServer.click();
     await expect
       .poll(async () => {
         return (await Promise.all(admittedReads)).some(matchesAdmittedRead);
       })
       .toBe(true);
   } finally {
+    page.off("request", onIdentityRequest);
     page.off("response", onIdentityResponse);
   }
   const admittedSnapshot = (await Promise.all(admittedReads)).find(
@@ -821,10 +847,6 @@ test("a durable pre-dispatch NotSent Start retries only by explicit same-UUID re
     mode: "task",
     state: "admitted",
   });
-  await expect(
-    page.getByRole("article", { name: "Session reply", exact: true }),
-  ).toContainText("Codex Task reply 🌱");
-
   expect(starts).toHaveLength(2);
   expect(startStatuses).toEqual([503, 202]);
   expect(starts[1]).toEqual(original);
@@ -832,9 +854,7 @@ test("a durable pre-dispatch NotSent Start retries only by explicit same-UUID re
   expect(identityWrites).toBe(2);
   await expect.poll(() => tasks().length).toBe(before + 1);
 
-  // A successful Start's protected readback above proves admission. Reopening
-  // shows that already-verified projection without requiring a redundant GET.
-  await page.getByRole("button", { name: "New session", exact: true }).click();
+  // Reopening shows the protected readback as the admitted original.
   const reopened = page.getByRole("dialog", {
     name: "New session · Alpha",
     exact: true,
