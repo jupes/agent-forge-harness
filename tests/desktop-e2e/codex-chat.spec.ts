@@ -4168,7 +4168,7 @@ test("an undispatched Fork original can be explicitly retired after reload", asy
   });
   await reopened
     .getByRole("button", {
-      name: `Inspect Fork original ${identity.requestId.slice(0, 8)}`,
+      name: `Inspect Fork original ${identity.requestId.slice(0, 8)} · retired`,
       exact: true,
     })
     .click();
@@ -4201,7 +4201,7 @@ test("an undispatched Fork original can be explicitly retired after reload", asy
 
   await reopened
     .getByRole("button", {
-      name: `Inspect Fork original ${replacementRequestId.slice(0, 8)}`,
+      name: `Inspect Fork original ${replacementRequestId.slice(0, 8)} · reserved`,
       exact: true,
     })
     .click();
