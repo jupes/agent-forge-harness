@@ -178,7 +178,12 @@ function installBrowserFetchObserver(options: {
       if (next.done) break;
       length += next.value.byteLength;
       if (length > options.maxBytes) {
-        await reader.cancel().catch(() => undefined);
+        void reader.cancel().catch(() => undefined);
+        try {
+          reader.releaseLock();
+        } catch {
+          // The clone may still be settling while the original response proceeds.
+        }
         throw new Error("response-size-limit");
       }
       chunks.push(next.value);
@@ -235,6 +240,13 @@ function installBrowserFetchObserver(options: {
 
     let payload: Record<string, unknown>;
     try {
+      const responseUrl = new URL(response.url);
+      if (
+        responseUrl.origin !== armed.origin ||
+        responseUrl.pathname !== armed.path ||
+        responseUrl.search !== ""
+      )
+        throw new Error("response-url-mismatch");
       payload = {
         captureId: armed.id,
         ok: true,
@@ -309,6 +321,10 @@ async function captureTextResponseThroughBrowserFetch(
   response: Promise<{ status: number; text: string }>;
   dispose(): Promise<void>;
 }> {
+  if (activeForkCaptures.has(page))
+    throw new Error("A Fork response capture is already active.");
+  await installForkResponseCapture(page);
+
   let resolveResponse!: (value: { status: number; text: string }) => void;
   let rejectResponse!: (error: Error) => void;
   const response = new Promise<{ status: number; text: string }>(
@@ -328,9 +344,6 @@ async function captureTextResponseThroughBrowserFetch(
     () => clearTimeout(captureTimer),
   );
   const captureId = `fork-response-${++nextForkCaptureId}`;
-  if (activeForkCaptures.has(page))
-    throw new Error("A Fork response capture is already active.");
-  await installForkResponseCapture(page);
   activeForkCaptures.set(page, {
     id: captureId,
     resolve: resolveResponse,
@@ -352,12 +365,20 @@ async function captureTextResponseThroughBrowserFetch(
       },
     );
   } catch (error) {
+    rejectResponse(
+      error instanceof Error
+        ? error
+        : new Error("The browser response capture could not be armed."),
+    );
     activeForkCaptures.delete(page);
     throw error;
   }
   return {
     response,
     async dispose() {
+      const active = activeForkCaptures.get(page);
+      if (active?.id === captureId)
+        active.reject(new Error("The browser response capture was disposed."));
       activeForkCaptures.delete(page);
       try {
         await page.evaluate((stateName) => {
