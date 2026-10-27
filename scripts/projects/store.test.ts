@@ -456,6 +456,19 @@ test("bounded project color IDs are hash-bound and survive exact create readback
       expectedCatalogRevision,
       original: parsed.data,
     });
+    if (color === "default") {
+      expect(
+        hashProjectCreateRequest({
+          requestId,
+          expectedCatalogRevision,
+          original: {
+            ...base,
+            slug: `alpha-${color}`,
+            name: `Alpha ${color}`,
+          },
+        }),
+      ).not.toBe(expectedHash);
+    }
     const reserved = await store.reserveCreate({
       requestId,
       original: parsed.data,
