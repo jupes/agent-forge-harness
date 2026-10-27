@@ -500,6 +500,8 @@ test("a lost commit reply reloads the same created original without replay", asy
               bodyText: null,
               origin: requestUrl.origin,
               pathname: requestUrl.pathname,
+              responseOrigin: null,
+              responsePathname: null,
               method,
               sameOrigin: requestUrl.origin === window.location.origin,
               captureError: "fetch_failed",
@@ -508,10 +510,21 @@ test("a lost commit reply reloads the same created original without replay", asy
           }
 
           const sameOrigin = requestUrl.origin === window.location.origin;
+          let responseUrl: URL | null = null;
+          try {
+            responseUrl = new URL(response.url);
+          } catch {
+            // A missing or malformed final URL is recorded as a fixed mismatch.
+          }
+          const responseMatches =
+            responseUrl?.origin === window.location.origin &&
+            responseUrl.pathname === exactPath;
           let bodyText: string | null = null;
-          let captureError: string | null = sameOrigin
-            ? null
-            : "foreign_origin";
+          let captureError: string | null = !sameOrigin
+            ? "foreign_origin"
+            : !responseMatches
+              ? "response_url_mismatch"
+              : null;
           if (sameOrigin) {
             try {
               const reader = response.clone().body?.getReader();
@@ -526,7 +539,8 @@ test("a lost commit reply reloads the same created original without replay", asy
                   byteLength += part.value.byteLength;
                   if (byteLength > maxBytes) {
                     captureError = "body_too_large";
-                    await reader.cancel();
+                    void reader.cancel().catch(() => undefined);
+                    reader.releaseLock();
                     break;
                   }
                   chunks.push(part.value);
@@ -553,6 +567,8 @@ test("a lost commit reply reloads the same created original without replay", asy
             bodyText,
             origin: requestUrl.origin,
             pathname: requestUrl.pathname,
+            responseOrigin: responseUrl?.origin ?? null,
+            responsePathname: responseUrl?.pathname ?? null,
             method,
             sameOrigin,
             captureError,
@@ -590,6 +606,8 @@ test("a lost commit reply reloads the same created original without replay", asy
       bodyText: string | null;
       origin: string;
       pathname: string;
+      responseOrigin: string | null;
+      responsePathname: string | null;
       method: string;
       sameOrigin: boolean;
       captureError: string | null;
@@ -601,6 +619,8 @@ test("a lost commit reply reloads the same created original without replay", asy
     expect(recoveredRead.pathname).toBe(recoveryPath);
     expect(recoveredRead.method).toBe("GET");
     expect(recoveredRead.origin).toBe(new URL(page.url()).origin);
+    expect(recoveredRead.responseOrigin).toBe(new URL(page.url()).origin);
+    expect(recoveredRead.responsePathname).toBe(recoveryPath);
     expect(recoveredRead.sameOrigin).toBe(true);
     expect(recoveredRead.status).toBe(200);
     if (recoveredRead.bodyText === null)
