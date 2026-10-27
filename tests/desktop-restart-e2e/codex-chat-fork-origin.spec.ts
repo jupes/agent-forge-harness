@@ -5,7 +5,6 @@ import {
   expect,
   type Page,
   type Request,
-  type Response,
   type Route,
   test,
 } from "@playwright/test";
@@ -35,6 +34,9 @@ import { alpha, ROOT } from "./environment";
 const FORK_RESTART_PATH = "/__desktop-restart-fixture/restart-host-fork";
 const CONTROL_HEADER = "x-agent-forge-fixture-secret";
 const INITIAL_STORAGE_KEY = "__fork_restart_initial_storage__";
+const FORK_RESPONSE_BINDING = "__agentForgeCaptureForkResponse";
+const FORK_RESPONSE_STATE = "__agentForgeForkResponseState";
+const FORK_RESPONSE_LIMIT = 1024 * 1024;
 
 type SessionRow = ReturnType<typeof ownedCodingSessionSchema.parse>;
 type FixtureCall = {
@@ -57,6 +59,16 @@ const FIXTURE_CALL_KINDS = [
 let forkOriginFailureFacts: (() => Record<string, unknown>) | null = null;
 let forkBaseRestoreNeeded = false;
 let forkBaseRestoreStatus: "not-needed" | "verified" | "failed" = "not-needed";
+const forkCaptureInstallations = new WeakMap<Page, Promise<void>>();
+const activeForkCaptures = new WeakMap<
+  Page,
+  {
+    id: string;
+    resolve(value: { status: number; text: string }): void;
+    reject(error: Error): void;
+  }
+>();
+let nextForkCaptureId = 0;
 
 test.afterEach(async ({ page }, testInfo) => {
   let restorationError: unknown = null;
@@ -131,23 +143,188 @@ function parseJson(value: string, label: string): unknown {
   }
 }
 
-function waitForTextResponse(
-  page: Page,
-  predicate: (response: Response) => boolean,
-): Promise<{ status: number; text: string }> {
-  return page.waitForResponse(predicate).then(async (response) => ({
-    status: response.status(),
-    text: await response.text(),
-  }));
+function installBrowserFetchObserver(options: {
+  bindingName: string;
+  stateName: string;
+  maxBytes: number;
+}) {
+  type ArmedCapture = {
+    id: string;
+    method: string;
+    origin: string;
+    path: string;
+  };
+  type CaptureState = {
+    originalFetch: typeof window.fetch;
+    wrapper: typeof window.fetch;
+    armed: ArmedCapture | null;
+  };
+  const globals = window as unknown as Record<string, unknown>;
+  if (globals[options.stateName]) return;
+
+  const originalFetch = window.fetch;
+  const state: CaptureState = {
+    originalFetch,
+    wrapper: originalFetch,
+    armed: null,
+  };
+  const readClone = async (response: Response): Promise<string> => {
+    const reader = response.body?.getReader();
+    if (!reader) return "";
+    const chunks: Uint8Array[] = [];
+    let length = 0;
+    while (true) {
+      const next = await reader.read();
+      if (next.done) break;
+      length += next.value.byteLength;
+      if (length > options.maxBytes) {
+        void reader.cancel().catch(() => undefined);
+        try {
+          reader.releaseLock();
+        } catch {
+          // The clone may still be settling while the original response proceeds.
+        }
+        throw new Error("response-size-limit");
+      }
+      chunks.push(next.value);
+    }
+    const bytes = new Uint8Array(length);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return new TextDecoder().decode(bytes);
+  };
+  const wrapper = async function (
+    this: Window,
+    ...args: Parameters<typeof fetch>
+  ) {
+    const armed = state.armed;
+    if (!armed) return originalFetch.apply(this, args);
+
+    const [input, init] = args;
+    let url: URL;
+    let method: string;
+    try {
+      url = new URL(
+        input instanceof Request ? input.url : String(input),
+        location.href,
+      );
+      method =
+        init?.method ?? (input instanceof Request ? input.method : "GET");
+    } catch {
+      return originalFetch.apply(this, args);
+    }
+    if (
+      method.toUpperCase() !== armed.method ||
+      url.origin !== armed.origin ||
+      url.pathname !== armed.path ||
+      url.search !== ""
+    )
+      return originalFetch.apply(this, args);
+
+    state.armed = null;
+    let response: Response;
+    try {
+      response = await originalFetch.apply(this, args);
+    } catch (error) {
+      const binding = globals[options.bindingName];
+      if (typeof binding === "function")
+        await (binding as (payload: unknown) => Promise<void>)({
+          captureId: armed.id,
+          ok: false,
+        }).catch(() => undefined);
+      throw error;
+    }
+
+    let payload: Record<string, unknown>;
+    try {
+      const responseUrl = new URL(response.url);
+      if (
+        responseUrl.origin !== armed.origin ||
+        responseUrl.pathname !== armed.path ||
+        responseUrl.search !== ""
+      )
+        throw new Error("response-url-mismatch");
+      payload = {
+        captureId: armed.id,
+        ok: true,
+        status: response.status,
+        text: await readClone(response.clone()),
+      };
+    } catch {
+      payload = { captureId: armed.id, ok: false };
+    }
+    const binding = globals[options.bindingName];
+    if (typeof binding === "function")
+      await (binding as (value: unknown) => Promise<void>)(payload).catch(
+        () => undefined,
+      );
+    return response;
+  } as typeof window.fetch;
+  state.wrapper = wrapper;
+  globals[options.stateName] = state;
+  window.fetch = wrapper;
 }
 
-async function captureTextResponseThroughRoute(
+async function installForkResponseCapture(page: Page): Promise<void> {
+  let installation = forkCaptureInstallations.get(page);
+  if (!installation) {
+    installation = (async () => {
+      await page.exposeBinding(
+        FORK_RESPONSE_BINDING,
+        (_source, value: unknown) => {
+          const active = activeForkCaptures.get(page);
+          const payload = record(value);
+          if (
+            !active ||
+            payload?.["captureId"] !== active.id ||
+            payload["ok"] !== true ||
+            typeof payload["status"] !== "number" ||
+            !Number.isInteger(payload["status"]) ||
+            typeof payload["text"] !== "string" ||
+            Buffer.byteLength(payload["text"], "utf8") > FORK_RESPONSE_LIMIT
+          ) {
+            if (active && payload?.["captureId"] === active.id)
+              active.reject(
+                new Error("The browser response capture was invalid."),
+              );
+            return;
+          }
+          active.resolve({
+            status: payload["status"],
+            text: payload["text"],
+          });
+        },
+      );
+      await page.addInitScript(installBrowserFetchObserver, {
+        bindingName: FORK_RESPONSE_BINDING,
+        stateName: FORK_RESPONSE_STATE,
+        maxBytes: FORK_RESPONSE_LIMIT,
+      });
+    })();
+    forkCaptureInstallations.set(page, installation);
+  }
+  await installation;
+  await page.evaluate(installBrowserFetchObserver, {
+    bindingName: FORK_RESPONSE_BINDING,
+    stateName: FORK_RESPONSE_STATE,
+    maxBytes: FORK_RESPONSE_LIMIT,
+  });
+}
+
+async function captureTextResponseThroughBrowserFetch(
   page: Page,
-  matcher: (url: URL) => boolean,
+  expected: { method: "GET" | "POST"; origin: string; path: string },
 ): Promise<{
   response: Promise<{ status: number; text: string }>;
   dispose(): Promise<void>;
 }> {
+  if (activeForkCaptures.has(page))
+    throw new Error("A Fork response capture is already active.");
+  await installForkResponseCapture(page);
+
   let resolveResponse!: (value: { status: number; text: string }) => void;
   let rejectResponse!: (error: Error) => void;
   const response = new Promise<{ status: number; text: string }>(
@@ -157,30 +334,69 @@ async function captureTextResponseThroughRoute(
     },
   );
   void response.catch(() => undefined);
-  const handler = async (route: Route) => {
-    if (route.request().method() !== "POST") {
-      await route.continue();
-      return;
-    }
-    try {
-      const actual = await route.fetch();
-      const body = await actual.body();
-      await route.fulfill({ response: actual, body });
-      resolveResponse({ status: actual.status(), text: body.toString("utf8") });
-    } catch (error) {
-      await route.abort("failed").catch(() => undefined);
-      rejectResponse(
-        error instanceof Error
-          ? error
-          : new Error("The routed response could not be captured."),
-      );
-    }
-  };
-  await page.route(matcher, handler);
+  const captureTimer = setTimeout(
+    () => rejectResponse(new Error("The browser response capture timed out.")),
+    30_000,
+  );
+  captureTimer.unref?.();
+  void response.then(
+    () => clearTimeout(captureTimer),
+    () => clearTimeout(captureTimer),
+  );
+  const captureId = `fork-response-${++nextForkCaptureId}`;
+  activeForkCaptures.set(page, {
+    id: captureId,
+    resolve: resolveResponse,
+    reject: rejectResponse,
+  });
+  try {
+    await page.evaluate(
+      ({ stateName, capture }) => {
+        const state = (window as unknown as Record<string, unknown>)[
+          stateName
+        ] as { armed: unknown } | undefined;
+        if (!state)
+          throw new Error("The browser response capture is unavailable.");
+        state.armed = capture;
+      },
+      {
+        stateName: FORK_RESPONSE_STATE,
+        capture: { id: captureId, ...expected },
+      },
+    );
+  } catch (error) {
+    rejectResponse(
+      error instanceof Error
+        ? error
+        : new Error("The browser response capture could not be armed."),
+    );
+    activeForkCaptures.delete(page);
+    throw error;
+  }
   return {
     response,
     async dispose() {
-      await page.unroute(matcher, handler);
+      const active = activeForkCaptures.get(page);
+      if (active?.id === captureId)
+        active.reject(new Error("The browser response capture was disposed."));
+      activeForkCaptures.delete(page);
+      try {
+        await page.evaluate((stateName) => {
+          const globals = window as unknown as Record<string, unknown>;
+          const state = globals[stateName] as
+            | {
+                originalFetch: typeof window.fetch;
+                wrapper: typeof window.fetch;
+              }
+            | undefined;
+          if (!state) return;
+          if (window.fetch === state.wrapper)
+            window.fetch = state.originalFetch;
+          delete globals[stateName];
+        }, FORK_RESPONSE_STATE);
+      } catch {
+        // Navigation may have closed the old document before cleanup.
+      }
     },
   };
 }
@@ -1264,22 +1480,23 @@ test("two actual host replacements recover the exact Fork original before and af
 
   const firstRequestId = firstReservation.metadata()!.requestId;
   const firstRequestHash = firstReservation.metadata()!.requestHash;
-  const retirementResponse = waitForTextResponse(page, (response) => {
-    const url = new URL(response.url());
-    return (
-      response.request().method() === "POST" &&
-      url.origin === currentOrigin &&
-      url.pathname ===
-        `/__agent-forge/projects/${alpha.id}/sessions/${first.parent.id}/fork-reservations/${firstRequestId}/retire`
-    );
+  const retirementCapture = await captureTextResponseThroughBrowserFetch(page, {
+    method: "POST",
+    origin: currentOrigin,
+    path: `/__agent-forge/projects/${alpha.id}/sessions/${first.parent.id}/fork-reservations/${firstRequestId}/retire`,
   });
-  await reviewA
-    .getByRole("button", {
-      name: "Retire verified not-sent original",
-      exact: true,
-    })
-    .click();
-  const retirementHttp = await retirementResponse;
+  let retirementHttp: { status: number; text: string };
+  try {
+    await reviewA
+      .getByRole("button", {
+        name: "Retire verified not-sent original",
+        exact: true,
+      })
+      .click();
+    retirementHttp = await retirementCapture.response;
+  } finally {
+    await retirementCapture.dispose();
+  }
   expect(retirementHttp.status).toBe(200);
   const retirementEnvelope = record(
     parseJson(retirementHttp.text, "retired Fork original"),
@@ -1313,13 +1530,12 @@ test("two actual host replacements recover the exact Fork original before and af
   });
   expect(rpcCount("thread/fork")).toBe(forksBefore);
 
-  const replacementReserveCapture = await captureTextResponseThroughRoute(
-    page,
-    (url) =>
-      url.origin === currentOrigin &&
-      url.pathname ===
-        `/__agent-forge/projects/${alpha.id}/sessions/${first.parent.id}/fork-reservations`,
-  );
+  const replacementReserveCapture =
+    await captureTextResponseThroughBrowserFetch(page, {
+      method: "POST",
+      origin: currentOrigin,
+      path: `/__agent-forge/projects/${alpha.id}/sessions/${first.parent.id}/fork-reservations`,
+    });
   let replacementReserveHttp: { status: number; text: string };
   try {
     await reviewA
@@ -1350,22 +1566,23 @@ test("two actual host replacements recover the exact Fork original before and af
   stage = "replacement-reserved";
   expect(firstReplacement.requestId).not.toBe(firstRequestId);
   expect(firstReplacement.requestHash).not.toBe(firstRequestHash);
-  const historyARead = waitForTextResponse(page, (response) => {
-    const url = new URL(response.url());
-    return (
-      response.request().method() === "GET" &&
-      url.origin === currentOrigin &&
-      url.pathname ===
-        `/__agent-forge/projects/${alpha.id}/codex-chat-forks/${firstRequestId}`
-    );
+  const historyACapture = await captureTextResponseThroughBrowserFetch(page, {
+    method: "GET",
+    origin: currentOrigin,
+    path: `/__agent-forge/projects/${alpha.id}/codex-chat-forks/${firstRequestId}`,
   });
-  await reviewA
-    .getByRole("button", {
-      name: `Inspect Fork original ${firstRequestId.slice(0, 8)} · retired`,
-      exact: true,
-    })
-    .click();
-  const historyAHttp = await historyARead;
+  let historyAHttp: { status: number; text: string };
+  try {
+    await reviewA
+      .getByRole("button", {
+        name: `Inspect Fork original ${firstRequestId.slice(0, 8)} · retired`,
+        exact: true,
+      })
+      .click();
+    historyAHttp = await historyACapture.response;
+  } finally {
+    await historyACapture.dispose();
+  }
   expect(historyAHttp.status).toBe(200);
   const historyAEnvelope = record(
     parseJson(historyAHttp.text, "retired Fork history"),
@@ -1391,22 +1608,26 @@ test("two actual host replacements recover the exact Fork original before and af
     })
     .click();
 
-  const firstLinkedResponse = waitForTextResponse(page, (response) => {
-    const url = new URL(response.url());
-    return (
-      response.request().method() === "POST" &&
-      url.origin === currentOrigin &&
-      url.pathname ===
-        `/__agent-forge/projects/${alpha.id}/sessions/${first.parent.id}/forks`
-    );
-  });
-  await reviewA
-    .getByRole("button", {
-      name: "Create the native child thread once",
-      exact: true,
-    })
-    .click();
-  const firstLinkedHttp = await firstLinkedResponse;
+  const firstLinkedCapture = await captureTextResponseThroughBrowserFetch(
+    page,
+    {
+      method: "POST",
+      origin: currentOrigin,
+      path: `/__agent-forge/projects/${alpha.id}/sessions/${first.parent.id}/forks`,
+    },
+  );
+  let firstLinkedHttp: { status: number; text: string };
+  try {
+    await reviewA
+      .getByRole("button", {
+        name: "Create the native child thread once",
+        exact: true,
+      })
+      .click();
+    firstLinkedHttp = await firstLinkedCapture.response;
+  } finally {
+    await firstLinkedCapture.dispose();
+  }
   expect(firstLinkedHttp.status).toBe(200);
   const firstLinkedEnvelope = record(
     parseJson(firstLinkedHttp.text, "linked Fork response"),
