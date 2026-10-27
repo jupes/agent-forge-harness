@@ -283,7 +283,10 @@ export function createConversationService(options: ConversationOptions) {
           "Keeper smith recovery is unavailable in this build.",
         );
       const catalog = runtime.catalog(),
-        selectedSmith = savedKeeperSmith(state) ?? catalog.defaultSmith;
+        selectedSmith =
+          savedKeeperSmith(state) ??
+          project.keeperSmith ??
+          catalog.defaultSmith;
       if (catalog.smiths.length > 100)
         throw new ConversationError(
           503,
@@ -604,7 +607,7 @@ export function createConversationService(options: ConversationOptions) {
               project,
               options.root,
               current.binding,
-              savedKeeperSmith(current),
+              savedKeeperSmith(current) ?? project.keeperSmith,
             )
           : { transport: options.transport, smith: null };
       if (
@@ -670,7 +673,8 @@ export function createConversationService(options: ConversationOptions) {
                 project,
                 options.root,
                 atAdmission.binding,
-                savedKeeperSmith(atAdmission),
+                savedKeeperSmith(atAdmission) ??
+                  projectFor(projectId).keeperSmith,
               );
             if (
               atAdmission.binding &&
