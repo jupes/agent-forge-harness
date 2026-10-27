@@ -20,6 +20,7 @@ import {
   geminiChatStartSchema,
 } from "../../scripts/sessions/gemini-chat-owned-protocol";
 import { geminiChatPreviewReceiptSchema } from "../../scripts/sessions/gemini-chat-preview-protocol";
+import { sessionStartIdentityPageSchema } from "../../scripts/sessions/identity-protocol";
 import { sessionTranscriptExportSchema } from "../../scripts/sessions/library-protocol";
 import { openSettled, reloadSettled } from "../e2e/fixtures";
 import { pageToken } from "../e2e/launch-link";
@@ -450,6 +451,68 @@ async function check(dialog: Locator) {
     dialog.getByRole("button", { name: "Start", exact: true }),
   ).toBeEnabled();
 }
+async function verifiedIdentityReadBarrier(page: Page) {
+  let armed = false,
+    held = false,
+    releaseRead: () => void = () => {},
+    released = Promise.resolve();
+  await page.route(
+    `**/__agent-forge/projects/${alpha.id}/session-start-identities`,
+    async (route) => {
+      if (route.request().method() !== "GET") {
+        await route.continue();
+        return;
+      }
+      const response = await route.fetch({
+        headers: {
+          ...(await route.request().allHeaders()),
+          Origin: new URL(route.request().url()).origin,
+          "Sec-Fetch-Site": "same-origin",
+        },
+      });
+      let payload: unknown;
+      try {
+        payload = await response.json();
+      } catch {
+        throw Error("The Session Start identity read was not valid JSON.");
+      }
+      const envelope = z
+        .object({
+          ok: z.literal(true),
+          data: sessionStartIdentityPageSchema,
+          error: z.null(),
+        })
+        .strict()
+        .safeParse(payload);
+      if (
+        response.status() !== 200 ||
+        !envelope.success ||
+        envelope.data.data.scope.projectId !== alpha.id ||
+        envelope.data.data.scope.workspace !== workspace
+      )
+        throw Error(
+          "The real Session Start identity page could not be verified.",
+        );
+      if (armed) {
+        armed = false;
+        held = true;
+        await released;
+      }
+      await route.fulfill({ response });
+    },
+  );
+  return {
+    arm() {
+      held = false;
+      armed = true;
+      released = new Promise<void>((resolve) => {
+        releaseRead = resolve;
+      });
+    },
+    held: () => held,
+    release: () => releaseRead(),
+  };
+}
 async function accepted() {
   await expect
     .poll(() => records().filter((item) => !previous.has(item.id)).length)
@@ -538,7 +601,6 @@ test("Gemini ACP composer keyboard-starts two explicit native turns with once ch
     ).length,
     startBodies: unknown[] = [],
     decisionBodies: unknown[] = [];
-  let preview: unknown;
   page.on("request", (request) => {
     if (request.method() !== "POST") return;
     const path = new URL(request.url()).pathname;
@@ -570,22 +632,67 @@ test("Gemini ACP composer keyboard-starts two explicit native turns with once ch
     mimeType: "text/plain",
     buffer: Buffer.from("PRIVATE ACP INLINE CONTEXT"),
   });
-  const previewResponse = page.waitForResponse(
-    (response) =>
-      response.request().method() === "POST" &&
-      response.url().endsWith(`/projects/${alpha.id}/sessions/preview`),
-  );
-  await check(dialog);
-  const response = await previewResponse,
-    body = await response.json();
-  if (!body.ok) throw Error("Actual protected ACP preview refused");
-  preview = body.data;
-  const checked = geminiChatPreviewReceiptSchema.parse(preview);
-  expect(checked.serialized.argv).toEqual(["--acp"]);
-  expect(checked.serialized.stdin).toContain("PRIVATE ACP INLINE CONTEXT");
-  expect(promptCount()).toBe(before);
-  await capture(page, "gemini-acp-composer.png", dialog);
+  const identityRegion = dialog.getByRole("region", {
+    name: "Original Start requests",
+    exact: true,
+  });
+  await expect(
+    identityRegion.getByRole("button", { name: "Check server", exact: true }),
+  ).toBeEnabled();
+  const identityRead = await verifiedIdentityReadBarrier(page),
+    checkingIdentity = identityRegion.getByRole("status");
+  identityRead.arm();
+  let checked: z.infer<typeof geminiChatPreviewReceiptSchema>;
+  try {
+    const previewResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        response.url().endsWith(`/projects/${alpha.id}/sessions/preview`),
+    );
+    await dialog
+      .getByRole("button", { name: "Check supported options", exact: true })
+      .click();
+    await expect(
+      dialog.getByRole("region", {
+        name: "Equivalent session command",
+        exact: true,
+      }),
+    ).toContainText("--acp");
+    const response = await previewResponse;
+    let rawPreview: unknown;
+    try {
+      rawPreview = await response.json();
+    } catch {
+      throw Error("Actual protected ACP preview was not valid JSON");
+    }
+    const envelope = z
+      .object({
+        ok: z.literal(true),
+        data: geminiChatPreviewReceiptSchema,
+        error: z.null(),
+      })
+      .strict()
+      .safeParse(rawPreview);
+    if (!envelope.success)
+      throw Error("Actual protected ACP preview was refused");
+    checked = envelope.data.data;
+    expect(checked.serialized.argv).toEqual(["--acp"]);
+    expect(checked.serialized.stdin).toContain("PRIVATE ACP INLINE CONTEXT");
+    expect(promptCount()).toBe(before);
+    await expect.poll(identityRead.held).toBe(true);
+    await expect(checkingIdentity).toContainText(
+      "Checking the server-owned identity page",
+    );
+    await expect(
+      dialog.getByRole("button", { name: "Start", exact: true }),
+    ).toBeDisabled();
+  } finally {
+    identityRead.release();
+  }
+  await expect(checkingIdentity).toBeHidden();
   const start = dialog.getByRole("button", { name: "Start", exact: true });
+  await expect(start).toBeEnabled();
+  await capture(page, "gemini-acp-composer.png", dialog);
   await keyboardFocus(page, start);
   await page.keyboard.press("Enter");
   const record = await accepted(),

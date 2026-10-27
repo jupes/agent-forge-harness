@@ -32,7 +32,7 @@ export interface ProjectSnapshot {
 export function projectSnapshotReader(
   home: string,
   deps: ReadDeps,
-  options: { membershipOnly?: true } = {},
+  options: { membershipOnly?: true; includeEmpty?: true } = {},
 ): () => Promise<ProjectSnapshot> {
   const readTracker = coalesced(async () => {
     const timeoutMs = deps.bdTimeoutMs ?? 15_000;
@@ -54,7 +54,7 @@ export function projectSnapshotReader(
       problems: [],
       checkout: deps.root,
     };
-    if (catalog.projects.length) {
+    if (catalog.projects.length || options.includeEmpty) {
       // listRuns is the existing checkout-bound producer. Its empty result
       // is not a claim that all workspace worktrees were searched.
       if (!options.membershipOnly) source.runs = listRuns(deps.root);
@@ -174,7 +174,11 @@ export function projectSummaryRoute(
       }
       const { catalog, source } = snapshot;
       const data: ProjectsHome = {
-        catalog,
+        catalog: {
+          version: catalog.version,
+          revision: catalog.revision,
+          projects: catalog.projects,
+        },
         asOf: source.asOf,
         summaries: catalog.projects.map((project) =>
           summarizeProject(project, source),

@@ -28,6 +28,28 @@ export interface ProjectCatalog {
   /** Compare before a write; every successful write advances it once. */
   revision: number;
   projects: ProjectRecord[];
+  /** Private durable create identities; projected out of every catalog API response. */
+  createOperations?: ProjectCreateOperation[];
+}
+
+export type ProjectCreateState =
+  | "reserved"
+  | "created"
+  | "retired-before-create";
+
+/** Private, strict same-catalog original; never returned by project-list routes. */
+export interface ProjectCreateOperation {
+  requestId: string;
+  requestHash: string;
+  original: NewProject;
+  baseRevision: number;
+  scopeHash: string;
+  scopeCount: number;
+  state: ProjectCreateState;
+  projectId: string | null;
+  createdRevision: number | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export type NewProject = Pick<
