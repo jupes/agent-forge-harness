@@ -1,6 +1,12 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { expect, type Locator, type Page, test } from "@playwright/test";
+import {
+  expect,
+  type Locator,
+  type Page,
+  type Response,
+  test,
+} from "@playwright/test";
 import { z } from "zod";
 import { OPERATOR_HEADER } from "../../scripts/hearth/paths";
 import { ownedCodingStateSchema } from "../../scripts/sessions/codex-owned-journal";
@@ -743,30 +749,71 @@ test("a durable pre-dispatch NotSent Start retries only by explicit same-UUID re
   await expect(
     row.getByRole("button", { name: "Retry exact original", exact: true }),
   ).toBeEnabled();
-  const admittedRead = page.waitForResponse((response) => {
-    const url = new URL(response.url());
-    return (
-      response.request().method() === "GET" &&
-      url.pathname ===
-        `/__agent-forge/projects/${alpha.id}/session-start-identities` &&
-      startStatuses.includes(202)
+  const admittedReads: Array<
+      Promise<{
+        status: number;
+        page: z.infer<typeof sessionStartIdentityPageSchema>;
+      } | null>
+    > = [],
+    onIdentityResponse = (response: Response) => {
+      const url = new URL(response.url());
+      if (
+        response.request().method() !== "GET" ||
+        url.pathname !==
+          `/__agent-forge/projects/${alpha.id}/session-start-identities`
+      )
+        return;
+      admittedReads.push(
+        (async () => {
+          try {
+            const parsed = sessionStartIdentitySuccessEnvelopeSchema.safeParse(
+              await response.json(),
+            );
+            return parsed.success
+              ? { status: response.status(), page: parsed.data.data }
+              : null;
+          } catch {
+            return null;
+          }
+        })(),
+      );
+    };
+  const matchesAdmittedRead = (
+    snapshot: Awaited<(typeof admittedReads)[number]>,
+  ) =>
+    snapshot?.status === 200 &&
+    snapshot.page.scope.projectId === alpha.id &&
+    snapshot.page.scope.workspace === workspace &&
+    snapshot.page.identities.some(
+      (identity) =>
+        identity.requestId === original.requestId &&
+        identity.requestHash === originalHash &&
+        identity.provider === "codex" &&
+        identity.mode === "task" &&
+        identity.state === "admitted",
     );
-  });
-  await row
-    .getByRole("button", { name: "Retry exact original", exact: true })
-    .click();
-  const admittedResponse = await admittedRead;
-  expect(admittedResponse.status()).toBe(200);
-  const admittedEnvelope = sessionStartIdentitySuccessEnvelopeSchema.parse(
-      await admittedResponse.json(),
-    ),
-    admittedIdentity = admittedEnvelope.data.identities.find(
-      (identity) => identity.requestId === original.requestId,
-    );
-  expect(admittedEnvelope.data.scope).toEqual({
-    projectId: alpha.id,
-    workspace,
-  });
+  page.on("response", onIdentityResponse);
+  try {
+    await row
+      .getByRole("button", { name: "Retry exact original", exact: true })
+      .click();
+    await expect
+      .poll(async () => {
+        return (await Promise.all(admittedReads)).some(matchesAdmittedRead);
+      })
+      .toBe(true);
+  } finally {
+    page.off("response", onIdentityResponse);
+  }
+  const admittedSnapshot = (await Promise.all(admittedReads)).find(
+    matchesAdmittedRead,
+  );
+  if (!admittedSnapshot)
+    throw Error("The retried Start admission was not read back.");
+  const admittedPage = admittedSnapshot.page;
+  const admittedIdentity = admittedPage.identities.find(
+    (identity) => identity.requestId === original.requestId,
+  );
   expect(admittedIdentity).toMatchObject({
     requestId: original.requestId,
     requestHash: originalHash,
