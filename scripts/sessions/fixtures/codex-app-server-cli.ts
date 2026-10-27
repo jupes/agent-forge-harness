@@ -538,6 +538,10 @@ while (true) {
       )
         process.exit(14);
       const fork = params as Record<string, unknown>;
+      if (mode === "fork-lost-response-eof") {
+        record({ kind: "fork-created-without-response", params });
+        process.exit(0);
+      }
       if (mode === "fork-lost-response") {
         record({ kind: "fork-created-without-response", params });
         hangTree();
