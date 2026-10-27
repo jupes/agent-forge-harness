@@ -321,9 +321,10 @@ test("Fork source requires explicit tier evidence while preserving known null an
       else if (field === "model")
         changedConfig.event.event.model = "different-model";
       else changedConfig.event.event.effort = "medium";
+      expect(ownedCodingStateSchema.safeParse(changed).success).toBe(false);
       expect(resolve(changed)).toEqual({
         eligible: false,
-        reason: "settings-mismatch",
+        reason: "invalid-state",
       });
     }
     const omittedAboutOwner = {
