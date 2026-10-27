@@ -1323,6 +1323,97 @@ test("protected Fork routes publish one audited native Fork and recover its exac
   ).toHaveLength(1);
 });
 
+test("Fork review GET projects the explicitly selected completed parent turn without effects", async () => {
+  const f = await fixture("fork-service-tier-null", false, false, "never"),
+    start = await f.post("", f.request);
+  expect(start.status).toBe(202);
+  const started = ownedCodingStartReceiptSchema.parse(
+      (await start.json()).data,
+    ),
+    parentSessionId = started.session.id,
+    completed = await f.settle(parentSessionId),
+    selectedTurn = completed.turns.find(
+      (turn) => turn.requestId === f.request.requestId,
+    );
+  if (!selectedTurn)
+    throw Error(
+      "The selected source turn did not complete in the inert fixture",
+    );
+
+  const requestPath = `/projects/${FIXTURE_PROJECT_ID}/sessions/${parentSessionId}/fork-review?throughTurnRequestId=${encodeURIComponent(selectedTurn.requestId)}`,
+    beforeRecords = f.records(),
+    beforeAudit = f.h.events(["operator.action"]),
+    response = await fetch(`${f.h.api}${requestPath}`, {
+      headers: f.h.headers(f.h.hearth.token),
+    });
+  expect(response.status).toBe(200);
+  const envelope = await response.json();
+  expect(envelope.ok).toBe(true);
+  expect(JSON.stringify(envelope.data)).toContain(selectedTurn.requestId);
+  expect(f.records()).toEqual(beforeRecords);
+  expect(f.h.events(["operator.action"])).toEqual(beforeAudit);
+  expect(f.records().filter((row) => row.method === "thread/fork")).toEqual([]);
+});
+
+test("Fork original context GET correlates a durable reservation without changing its identity", async () => {
+  const f = await fixture("fork-service-tier-null", false, false, "never"),
+    start = await f.post("", f.request);
+  expect(start.status).toBe(202);
+  const started = ownedCodingStartReceiptSchema.parse(
+      (await start.json()).data,
+    ),
+    parentSessionId = started.session.id,
+    completed = await f.settle(parentSessionId),
+    selectedTurn = completed.turns.find(
+      (turn) => turn.requestId === f.request.requestId,
+    );
+  if (!selectedTurn)
+    throw Error("The source-valid parent turn did not complete");
+
+  const request = {
+      requestId: randomUUID(),
+      throughTurnRequestId: selectedTurn.requestId,
+    },
+    reserve = await f.post(`/${parentSessionId}/fork-reservations`, request),
+    reservation = await reserve.json();
+  expect(reserve.status).toBe(200);
+  expect(reservation.data.state).toBe("reserved");
+  expect(reservation.data.requestId).toBe(request.requestId);
+  const requestHash = reservation.data.requestHash;
+  if (typeof requestHash !== "string")
+    throw Error("The durable reservation did not return its canonical hash");
+
+  const originalResponse = await fetch(
+      `${f.h.api}/projects/${FIXTURE_PROJECT_ID}/codex-chat-forks/${request.requestId}`,
+      { headers: f.h.headers(f.h.hearth.token) },
+    ),
+    original = await originalResponse.json();
+  expect(originalResponse.status).toBe(200);
+  expect(original.data).toMatchObject({
+    requestId: request.requestId,
+    requestHash,
+    parentSessionId,
+    throughTurnRequestId: selectedTurn.requestId,
+    state: "reserved",
+  });
+
+  const beforeRecords = f.records(),
+    beforeAudit = f.h.events(["operator.action"]),
+    contextResponse = await fetch(
+      `${f.h.api}/projects/${FIXTURE_PROJECT_ID}/codex-chat-forks/${request.requestId}/context`,
+      { headers: f.h.headers(f.h.hearth.token) },
+    );
+  expect(contextResponse.status).toBe(200);
+  const context = await contextResponse.json();
+  expect(context.ok).toBe(true);
+  expect(JSON.stringify(context.data)).toContain(selectedTurn.requestId);
+  expect(JSON.stringify(context.data)).not.toContain("sourceSeal");
+  expect(JSON.stringify(context.data)).not.toContain("PRIVATE-CHAT-PROMPT");
+  expect(f.records()).toEqual(beforeRecords);
+  expect(f.h.events(["operator.action"])).toEqual(beforeAudit);
+  expect(f.records().filter((row) => row.method === "thread/fork")).toEqual([]);
+});
+
 test("a lost Fork reply is recovered by exact original GET without repeating the native effect", async () => {
   const f = await fixture("fork-service-tier-null", false, true),
     start = await f.post("", f.request);
