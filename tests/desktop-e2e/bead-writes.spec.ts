@@ -1,6 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { expect, type Route, test } from "@playwright/test";
+import { z } from "zod";
+import { projectBeadsPageSchema } from "../../scripts/projects/beads-protocol";
 import { readState } from "../e2e/bd-stand-in-state";
 import { openSettled, reloadSettled } from "../e2e/fixtures";
 import { BD_STAND_IN_STATE, bunPath, HEARTH_HOME } from "../e2e/servers";
@@ -27,6 +29,7 @@ if (!result.ok) throw new Error("The inert Beads refresh event was not recorded.
       env: { ...process.env, AGENT_FORGE_HOME: HEARTH_HOME },
       encoding: "utf8",
       timeout: 10_000,
+      windowsHide: true,
     },
   );
   if (result.status !== 0)
@@ -47,17 +50,59 @@ test("New bead title and description stay separate across a background refresh",
     .selectOption("alpha-epic");
 
   let releaseRead: (() => void) | undefined;
+  let markReadFinished: (() => void) | undefined;
   let readEntered = false;
+  let refreshHandlerStarted = false;
+  const readFinished = new Promise<void>((resolve) => {
+    markReadFinished = resolve;
+  });
   const heldRead = new Promise<void>((resolve) => {
     releaseRead = resolve;
   });
   const listPath = `/__agent-forge/projects/${alpha.id}/beads`;
   const refreshHandler = async (route: Route) => {
     if (route.request().method() !== "GET") return route.continue();
-    const response = await route.fetch();
-    readEntered = true;
-    await heldRead;
-    await route.fulfill({ response });
+    refreshHandlerStarted = true;
+    try {
+      const request = route.request();
+      const requestOrigin = new URL(request.url()).origin;
+      const headers = await request.allHeaders();
+      if (
+        headers.origin !== requestOrigin ||
+        headers["sec-fetch-site"] !== "same-origin"
+      )
+        throw Error(
+          "The observed Beads refresh was not an actual same-origin read.",
+        );
+      const response = await route.fetch({ headers });
+      let raw: unknown;
+      try {
+        raw = await response.json();
+      } catch {
+        throw Error("The protected Beads refresh did not return valid JSON.");
+      }
+      const envelope = z
+        .object({
+          ok: z.literal(true),
+          data: projectBeadsPageSchema,
+          error: z.null(),
+        })
+        .strict()
+        .safeParse(raw);
+      if (
+        response.status() !== 200 ||
+        !envelope.success ||
+        envelope.data.data.projectId !== alpha.id ||
+        envelope.data.data.workspace !== workspace ||
+        !envelope.data.data.complete
+      )
+        throw Error("The protected Beads refresh could not be verified.");
+      readEntered = true;
+      await heldRead;
+      await route.fulfill({ response });
+    } finally {
+      markReadFinished?.();
+    }
   };
   const refreshed = page.waitForResponse(
     (response) =>
@@ -115,6 +160,7 @@ test("New bead title and description stay separate across a background refresh",
     });
   } finally {
     releaseRead?.();
+    if (refreshHandlerStarted) await readFinished;
     await page.unroute(`**${listPath}`, refreshHandler);
   }
 });
