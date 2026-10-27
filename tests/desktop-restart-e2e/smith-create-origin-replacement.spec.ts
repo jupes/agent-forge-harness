@@ -17,6 +17,7 @@ import { OPERATOR_HEADER, SESSION_ROUTE } from "../../scripts/hearth/paths";
 import { readToken } from "../../scripts/hearth/token";
 import { resolveCheckout } from "../../scripts/ledger/workspace";
 import { workspaceKey } from "../../scripts/projects/scope";
+import { providerReadinessPageSchema } from "../../scripts/providers/protocol";
 import type { SmithConfigCreateReceipt } from "../../types/smith-config-create";
 import { bunPath, HEARTH_HOME } from "../e2e/servers";
 import { ASSETS, fixtureEnvironment, ROOT } from "./environment";
@@ -222,9 +223,44 @@ async function launched(page: Page, url: string): Promise<void> {
       response.request().method() === "POST" &&
       new URL(response.url()).pathname === SESSION_ROUTE,
   );
+  const readiness = page.waitForResponse(
+    (response) =>
+      response.request().method() === "GET" &&
+      new URL(response.url()).pathname === "/__agent-forge/providers/readiness",
+  );
   const document = await page.goto(url);
   expect(document?.status()).toBe(200);
   expect((await exchanged).status()).toBe(200);
+  const ready = await readiness;
+  expect(ready.status()).toBe(200);
+  const envelope: unknown = await ready.json();
+  if (
+    !envelope ||
+    typeof envelope !== "object" ||
+    !("ok" in envelope) ||
+    envelope.ok !== true ||
+    !("data" in envelope)
+  )
+    throw new Error(
+      "The provider readiness response was not a valid envelope.",
+    );
+  const parsed = providerReadinessPageSchema.parse(envelope.data);
+  if (
+    workspaceKey(parsed.workspace) !==
+    workspaceKey(resolveCheckout(ROOT).workspace)
+  )
+    throw new Error("Provider readiness did not identify the served checkout.");
+}
+
+async function openSmiths(page: Page, origin: string): Promise<void> {
+  await page.evaluate(() => {
+    window.location.hash = "#/desktop/smiths";
+  });
+  await expect(
+    page.getByRole("button", { name: "New smith", exact: true }),
+  ).toBeVisible();
+  expect(new URL(page.url()).origin).toBe(origin);
+  expect(new URL(page.url()).hash).toBe("#/desktop/smiths");
 }
 
 async function protectedData(
@@ -346,10 +382,7 @@ test("pre-effect reservation and post-effect confirmation recover across two fre
       dashboardPort: Number(new URL(oldReply.data.url).port),
       hearthPid: await trustedHostPid(page),
     });
-    const originalPage = await page.goto(
-      `${oldOrigin}/index.html#/desktop/smiths`,
-    );
-    expect(originalPage?.status()).toBe(200);
+    await openSmiths(page, oldOrigin);
     await expect(
       page.getByRole("button", {
         name: `Edit configuration for ${basisName}`,
@@ -366,6 +399,12 @@ test("pre-effect reservation and post-effect confirmation recover across two fre
     await dialog.getByLabel("Provider").fill("codex");
     await dialog.getByLabel("Model").fill("origin-restart-model");
     await dialog.getByLabel("Effort").fill("high");
+    await expect(dialog.getByLabel("Smith name")).toHaveValue(name);
+    await expect(dialog.getByLabel("Provider")).toHaveValue("codex");
+    await expect(dialog.getByLabel("Model")).toHaveValue(
+      "origin-restart-model",
+    );
+    await expect(dialog.getByLabel("Effort")).toHaveValue("high");
     await dialog.getByRole("button", { name: "Review candidate" }).click();
     await expect(
       dialog.getByRole("region", { name: "Candidate review" }),
@@ -497,10 +536,7 @@ test("pre-effect reservation and post-effect confirmation recover across two fre
     });
     expect(original.original).toEqual(exactRequest);
     expect(original.inputHash).toBe(firstRequest.inputHash);
-    const smithsPage = await page.goto(
-      `${newOrigin}/index.html#/desktop/smiths`,
-    );
-    expect(smithsPage?.status()).toBe(200);
+    await openSmiths(page, newOrigin);
     await expect(
       page.getByRole("region", { name: "Original Smith create receipts" }),
     ).toContainText(name);
@@ -642,10 +678,7 @@ test("pre-effect reservation and post-effect confirmation recover across two fre
     expect(finalOriginal.original).toEqual(exactRequest);
     expect(finalOriginal.inputHash).toBe(firstRequest.inputHash);
     expect(finalOriginal.result.phase).toBe("confirmed");
-    const finalPage = await page.goto(
-      `${finalOrigin}/index.html#/desktop/smiths`,
-    );
-    expect(finalPage?.status()).toBe(200);
+    await openSmiths(page, finalOrigin);
     await expect(
       page.getByRole("region", { name: "Original Smith create receipts" }),
     ).toContainText("Confirmed");
