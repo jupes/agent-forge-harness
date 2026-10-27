@@ -9,7 +9,7 @@ import {
   projectCreateOptionsSchema,
   projectScopePreviewSchema,
 } from "../../scripts/projects/create-options-protocol";
-import { hashProjectCreateRequest } from "../../scripts/projects/store";
+import { projectCreateIdentitySchema } from "../../scripts/projects/create-protocol";
 import { projectFixture } from "../../scripts/projects/testing";
 import type { ProjectCatalog } from "../../types/projects";
 import { readState, withStateLock, writeState } from "../e2e/bd-stand-in-state";
@@ -160,10 +160,10 @@ test("reload recovers a reserved original with protected reads only", async ({
     { headers, reservation },
   );
   expect(reserved.status).toBe(201);
-  const requestHash = hashProjectCreateRequest(reservation);
-  expect(reserved.body.data).toMatchObject({
+  const identity = projectCreateIdentitySchema.parse(reserved.body.data);
+  expect(identity).toMatchObject({
     requestId,
-    requestHash,
+    baseRevision: catalog.revision,
     original,
     scopeHash: preview.scopeHash,
     state: "reserved",
@@ -181,6 +181,20 @@ test("reload recovers a reserved original with protected reads only", async ({
   await expect(
     page.getByRole("button", { name: "Review reserved project", exact: true }),
   ).toBeEnabled();
+  const recovered = await page.evaluate(
+    async ({ headers, requestId }) => {
+      const response = await fetch(
+        `/__agent-forge/projects/create-reservations/${requestId}`,
+        { headers },
+      );
+      return { status: response.status, body: await response.json() };
+    },
+    { headers, requestId },
+  );
+  expect(recovered.status).toBe(200);
+  expect(projectCreateIdentitySchema.parse(recovered.body.data)).toEqual(
+    identity,
+  );
   expect(createWrites).toEqual([]);
 });
 
