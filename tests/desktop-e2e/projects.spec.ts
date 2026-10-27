@@ -139,9 +139,17 @@ async function reserveFromProjectFlow(
   await expect(
     dialog.getByText("This exact original is reviewed", { exact: false }),
   ).toBeVisible();
+  const reviewed = dialog.locator("dl.af-project-create-original");
   await expect(
-    dialog.getByText(trusted.workspace.path, { exact: true }),
-  ).toBeVisible();
+    reviewed
+      .getByText("Workspace", { exact: true })
+      .locator("xpath=following-sibling::dd[1]"),
+  ).toHaveText(trusted.workspace.path);
+  await expect(
+    reviewed
+      .getByText("Repositories", { exact: true })
+      .locator("xpath=following-sibling::dd[1]"),
+  ).toHaveText(trusted.repositories[repositoryIndex]!.path);
   const original = {
     slug: input.slug,
     name: input.name,
