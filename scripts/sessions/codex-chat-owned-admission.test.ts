@@ -740,6 +740,195 @@ test("pure owner release fold accepts the exact reopened completed ordinary Chat
   ).toMatchObject({ eligible: true, turnRequestId: secondRequestId });
 });
 
+test("owner release fold accepts an authoritative native approval resolution without an app intent", async () => {
+  const f = await fixture("approval-resolved"),
+    service = f.open(),
+    started = await service.start(f.project.id, f.request);
+  await service.settled(f.project.id, started.session.id);
+
+  const state = createConversationStore(f.home, undefined, {
+      kind: "session",
+      projectId: f.project.id,
+      sessionId: started.session.id,
+    }).read(f.project.id),
+    frames = state.frames.flatMap((frame) =>
+      frame.event.kind === "coding-chat" && frame.event.provider === "codex"
+        ? [{ seq: frame.seq, event: frame.event.event }]
+        : [],
+    ),
+    requests = frames.filter(({ event }) => event.kind === "approval-request"),
+    decisions = frames.filter(
+      ({ event }) => event.kind === "approval-decision",
+    ),
+    resolutions = frames.filter(
+      ({ event }) => event.kind === "approval-resolved",
+    ),
+    folded = foldCodexChatOwnerRelease({
+      owner: createSessionRegistry(f.home, "codex", "chat").read(
+        f.project.id,
+        started.session.id,
+      ),
+      state,
+      projectId: f.project.id,
+      conversationId: started.session.id,
+      workspaceKey: workspaceKey(resolveCheckout(f.root).workspace),
+    });
+
+  expect(ownedCodingStateSchema.safeParse(state).success).toBe(true);
+  expect(state.turns.at(-1)?.phase).toBe("completed");
+  expect(requests).toHaveLength(1);
+  expect(decisions).toHaveLength(0);
+  expect(
+    state.frames.filter((frame) => frame.event.kind === "coding-chat-decision"),
+  ).toHaveLength(0);
+  expect(resolutions).toHaveLength(1);
+  const requested = requests[0]?.event,
+    resolved = resolutions[0]?.event;
+  if (
+    requested?.kind !== "approval-request" ||
+    resolved?.kind !== "approval-resolved"
+  )
+    throw Error("The inert native approval lifecycle was incomplete.");
+  expect(resolved.approvalId).toBe(requested.approval.id);
+  expect(resolved.source).toBe("serverRequest/resolved");
+  expect(folded.eligible).toBe(true);
+});
+
+test("owner release remains eligible when a persisted decision intent loses a race to authoritative native resolution", async () => {
+  const f = await fixture("approval-resolution-held"),
+    runtimeRun = f.runtime.run.bind(f.runtime);
+  let releaseCallback = () => {},
+    callbackReady = () => {};
+  const callbackReadyPromise = new Promise<void>((resolve) => {
+    callbackReady = resolve;
+  });
+  f.runtime.run = (input, persist, signal, callbacks) =>
+    runtimeRun(input, persist, signal, {
+      ...callbacks,
+      async requestApproval(approval, approvalSignal) {
+        const decision = await callbacks.requestApproval(
+          approval,
+          approvalSignal,
+        );
+        callbackReady();
+        await new Promise<void>((resolve) => {
+          releaseCallback = resolve;
+        });
+        return decision;
+      },
+    });
+  const service = f.open(),
+    started = await service.start(f.project.id, f.request),
+    sessionId = started.session.id,
+    deadline = Date.now() + 4000;
+  let pending = (await service.approvals(f.project.id, sessionId)).pending;
+  while (!pending.length) {
+    if (Date.now() > deadline)
+      throw Error("The native approval never became actionable.");
+    await Bun.sleep(20);
+    pending = (await service.approvals(f.project.id, sessionId)).pending;
+  }
+  const offered = pending[0];
+  if (!offered) throw Error("Missing live native approval.");
+  const receipt = await service.decide(f.project.id, sessionId, {
+    requestId: randomUUID(),
+    turnRequestId: offered.turnRequestId,
+    approvalId: offered.approval.id,
+    decision: "accept",
+  });
+  expect(receipt.state).toBe("recorded");
+  await callbackReadyPromise;
+
+  const address = {
+      kind: "session" as const,
+      projectId: f.project.id,
+      sessionId,
+    },
+    beforeResolution = createConversationStore(f.home, undefined, address).read(
+      f.project.id,
+    );
+  expect(
+    beforeResolution.frames.some(
+      (frame) => frame.event.kind === "coding-chat-decision",
+    ),
+  ).toBe(true);
+  expect(
+    beforeResolution.frames.find(
+      (frame) => frame.event.kind === "coding-chat-decision",
+    )?.event,
+  ).toMatchObject({ receipt });
+  expect(
+    beforeResolution.frames.some(
+      (frame) =>
+        frame.event.kind === "coding-chat" &&
+        frame.event.event.kind === "approval-decision",
+    ),
+  ).toBe(false);
+  writeFileSync(`${join(f.root, "record.jsonl")}.resolve-approval`, "release");
+  const resolutionDeadline = Date.now() + 4000;
+  let resolvedState = createConversationStore(f.home, undefined, address).read(
+    f.project.id,
+  );
+  while (
+    f.records().every((row) => row.kind !== "approval-resolution-sent") ||
+    !resolvedState.frames.some(
+      (frame) =>
+        frame.event.kind === "coding-chat" &&
+        frame.event.event.kind === "approval-resolved",
+    )
+  ) {
+    if (Date.now() > resolutionDeadline)
+      throw Error("The native approval resolution did not settle.");
+    await Bun.sleep(10);
+    resolvedState = createConversationStore(f.home, undefined, address).read(
+      f.project.id,
+    );
+  }
+  releaseCallback();
+  await service.settled(f.project.id, sessionId);
+
+  const state = createConversationStore(f.home, undefined, address).read(
+      f.project.id,
+    ),
+    folded = foldCodexChatOwnerRelease({
+      owner: createSessionRegistry(f.home, "codex", "chat").read(
+        f.project.id,
+        sessionId,
+      ),
+      state,
+      projectId: f.project.id,
+      conversationId: sessionId,
+      workspaceKey: workspaceKey(resolveCheckout(f.root).workspace),
+    });
+  expect(ownedCodingStateSchema.safeParse(state).success).toBe(true);
+  expect(state.turns.at(-1)?.phase).toBe("completed");
+  expect(
+    state.frames.filter((frame) => frame.event.kind === "coding-chat-decision"),
+  ).toHaveLength(1);
+  expect(
+    state.frames.filter(
+      (frame) =>
+        frame.event.kind === "coding-chat" &&
+        frame.event.event.kind === "approval-request",
+    ),
+  ).toHaveLength(1);
+  expect(
+    state.frames.filter(
+      (frame) =>
+        frame.event.kind === "coding-chat" &&
+        frame.event.event.kind === "approval-resolved",
+    ),
+  ).toHaveLength(1);
+  expect(
+    state.frames.filter(
+      (frame) =>
+        frame.event.kind === "coding-chat" &&
+        frame.event.event.kind === "approval-decision",
+    ),
+  ).toHaveLength(0);
+  expect(folded.eligible).toBe(true);
+});
+
 test("owned Chat transport refuses native dispatch when the generation-start receipt cannot be written", async () => {
   const f = await fixture(),
     { effort, attachments, ...launchWithoutOptionalValues } = f.request.launch,
@@ -2979,6 +3168,23 @@ test.each([
   const answers = f.records().filter((row) => row.kind === "answer");
   expect(answers).toHaveLength(1);
   expect(answers[0]?.result).toEqual({ decision });
+  const completedState = createConversationStore(
+    f.home,
+    undefined,
+    pendingAddress,
+  ).read(f.project.id);
+  expect(
+    foldCodexChatOwnerRelease({
+      owner: createSessionRegistry(f.home, "codex", "chat").read(
+        f.project.id,
+        sessionId,
+      ),
+      state: completedState,
+      projectId: f.project.id,
+      conversationId: sessionId,
+      workspaceKey: workspaceKey(resolveCheckout(f.root).workspace),
+    }).eligible,
+  ).toBe(decision !== "cancel");
   await service.close();
   service = f.open();
   expect(await service.decide(f.project.id, sessionId, request)).toEqual(
