@@ -454,12 +454,22 @@ test("the filesystem coordinator captures once, adopts the exact child and resol
     const childNativeThreadId = "0199a213-81c0-7800-8aa1-bbab2a035a61",
       selectedRequestId = randomUUID();
     let runtimeCalls = 0;
+    let releaseRuntime: (() => void) | undefined,
+      markRuntimeEntered: (() => void) | undefined;
+    const runtimeEntered = new Promise<void>((resolveEntered) => {
+        markRuntimeEntered = resolveEntered;
+      }),
+      heldRuntime = new Promise<void>((resolveRuntime) => {
+        releaseRuntime = resolveRuntime;
+      });
     const coordinator = createCodexChatForkCoordinator({
       root: h.root,
       home: h.home,
       runtime: {
         async fork() {
           runtimeCalls++;
+          markRuntimeEntered?.();
+          await heldRuntime;
           return {
             parentThreadId: threadId,
             lastTurnId: nativeTurnId,
@@ -500,11 +510,23 @@ test("the filesystem coordinator captures once, adopts the exact child and resol
         parentSessionId: parent.id,
         request,
         auditEventId: 1,
-      },
+      };
+    const firstCall = coordinator.fork(input);
+    let first: Awaited<typeof firstCall>,
+      concurrent: Awaited<ReturnType<typeof coordinator.fork>>;
+    try {
+      // Hold the first call after it owns the parent lease and has crossed the
+      // durable attempt fence. The second identical call now exercises the
+      // bounded contention path deterministically instead of racing startup.
+      await runtimeEntered;
       [first, concurrent] = await Promise.all([
-        coordinator.fork(input),
+        firstCall,
         coordinator.fork(input),
       ]);
+    } finally {
+      releaseRuntime?.();
+      await firstCall.catch(() => {});
+    }
     expect(first.state).toBe("linked");
     expect(concurrent).toEqual(first);
     expect(runtimeCalls).toBe(1);
