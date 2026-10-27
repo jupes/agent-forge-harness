@@ -19,6 +19,7 @@ import {
 } from "@playwright/test";
 import { z } from "zod";
 import { OPERATOR_HEADER } from "../../scripts/hearth/paths";
+import { workspaceKey } from "../../scripts/projects/scope";
 import { ownedCodingStateSchema } from "../../scripts/sessions/codex-owned-journal";
 import { ownedCodingSessionSchema } from "../../scripts/sessions/codex-owned-wire-protocol";
 import {
@@ -1339,7 +1340,9 @@ test("saved native deadline hides a genuinely actionable old offer before generi
       throw Error("The exact Gemini preview could not be verified.");
     expect(envelope.data.data.provider).toBe("gemini");
     expect(envelope.data.data.projectId).toBe(alpha.id);
-    expect(envelope.data.data.snapshot.launch.cwd).toBe(workspace);
+    expect(workspaceKey(envelope.data.data.snapshot.launch.cwd)).toBe(
+      workspaceKey(workspace),
+    );
     expect(envelope.data.data.serialized.argv).toEqual(["--acp"]);
     expect(promptCount()).toBe(before);
     await expect.poll(identityRead.held).toBe(true);
