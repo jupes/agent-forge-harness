@@ -3597,9 +3597,9 @@ describe("a read row or the stream while another connection holds the write lock
     // The worktree row's git is a stand-in listing the root alone: this test
     // is about the ledger, and a real git on a loaded machine can fail it.
     const forkReadGit =
-      (rootPath: () => string): GitRun =>
+      (worktreePath: () => string): GitRun =>
       (args) => {
-        const top = rootPath().replaceAll("\\", "/");
+        const top = worktreePath().replaceAll("\\", "/");
         if (args[0] === "rev-parse")
           return { status: 0, stdout: `${top}\n`, stderr: "" };
         if (args[0] === "worktree")
@@ -3612,16 +3612,16 @@ describe("a read row or the stream while another connection holds the write lock
           };
         return { status: 1, stdout: "", stderr: "" };
       };
-    let root = "";
-    const git = forkReadGit(() => root);
+    let workspace = "";
+    const git = forkReadGit(() => workspace);
     // Scope validation for this read consults projectSnapshotReader, which
     // opens the Hearth ledger. Validate the child GET on a separate unlocked
     // Hearth so the locked matrix below still starts with a cold ledger.
-    let baselineRoot = "";
+    let baselineWorkspace = "";
     const baselineHearth = await start({
-      api: { git: forkReadGit(() => baselineRoot) },
+      api: { git: forkReadGit(() => baselineWorkspace) },
     });
-    baselineRoot = baselineHearth.root;
+    baselineWorkspace = baselineHearth.workspace;
     await seedForkReadChild(baselineHearth);
     const forkChildPath =
       READS["GET /projects/:id/sessions/:sessionId/fork-turns"];
@@ -3659,7 +3659,7 @@ describe("a read row or the stream while another connection holds the write lock
       files: { ".tmp/work/forge-runs/demo.json": RUN_STATE },
       api: { git },
     });
-    root = h.root;
+    workspace = h.workspace;
     await seedOwnedSession(h);
     await seedChatDecision(h);
     await seedProjectShift(h);
