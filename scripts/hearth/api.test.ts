@@ -89,6 +89,7 @@ import {
   codexChatForkOriginalHash,
   codexChatForkOriginalHashInput,
 } from "../sessions/codex-chat-fork-protocol";
+import { ownedCodingPageSchema } from "../sessions/codex-owned-journal";
 import { canonicalOwnedSessionStart } from "../sessions/codex-owned-protocol";
 import {
   sessionStartIdentityPageSchema,
@@ -3652,6 +3653,38 @@ describe("a read row or the stream while another connection holds the write lock
     };
     if (!rows.some((row) => row.kind === "stream"))
       throw new Error("the table has no stream row");
+    // Prove the seeded protected child is readable before the ledger lock is
+    // acquired. This route should not open the cold event ledger itself.
+    const forkChildPath =
+      READS["GET /projects/:id/sessions/:sessionId/fork-turns"];
+    if (forkChildPath === undefined)
+      throw new Error("the Fork-child read row has no fixture path");
+    const baselineResponse = await get(
+      h,
+      forkChildPath,
+      h.headers(h.hearth.token),
+    );
+    const baselineBody = await envelope<unknown>(baselineResponse);
+    const baselinePage = baselineBody.ok
+      ? ownedCodingPageSchema.safeParse(baselineBody.data)
+      : null;
+    expect({
+      status: baselineResponse.status,
+      ok: baselineBody.ok,
+      page: baselinePage?.success
+        ? {
+            projectId: baselinePage.data.projectId,
+            conversationId: baselinePage.data.conversationId,
+          }
+        : null,
+    }).toEqual({
+      status: 200,
+      ok: true,
+      page: {
+        projectId: FIXTURE_PROJECT_ID,
+        conversationId: API_CODEX_CHAT_FORK_CONTROL_CHILD_ID,
+      },
+    });
     // Nothing has opened the hearth's ledger: the file does not exist yet.
     expect(existsSync(h.ledger)).toBe(false);
 
