@@ -8,8 +8,21 @@ import {
 } from "../../scripts/hearth/server-runtime";
 import { readToken, writeOwnerOnly } from "../../scripts/hearth/token";
 import { resolveCheckout } from "../../scripts/ledger/workspace";
-import { createCodexChatRuntime } from "../../scripts/sessions/codex-chat-runtime";
+import {
+  createCodexChatRuntime,
+  type CodexChatCallbacks,
+} from "../../scripts/sessions/codex-chat-runtime";
 import { observeCodexChatPersist } from "../../scripts/sessions/fixtures/codex-chat-persist-diagnostic";
+import {
+  claimCodexChatStartupDiagnosticHost,
+  createCodexChatStartupDiagnostic,
+  writeFirstCodexChatStartupFailure,
+} from "../../scripts/sessions/fixtures/codex-chat-startup-diagnostic";
+import {
+  createCodexChatPrepareDiagnostics,
+  createFilePrepareDiagnosticIo,
+  initializePrepareDiagnosticFiles,
+} from "../../scripts/sessions/fixtures/codex-chat-prepare-diagnostics";
 import { isRunHome } from "../e2e/servers";
 import { ROOT } from "./environment";
 
@@ -75,6 +88,15 @@ async function run(): Promise<void> {
   const tokenFile = tokenPath(home, root);
   const token = { current: null as string | null };
   const port = requestedPort(process.env["HEARTH_PORT"]);
+  const initialPrepareOrdinal = initializePrepareDiagnosticFiles(
+    home,
+    writeOwnerOnly,
+  );
+  const prepareDiagnostics = createCodexChatPrepareDiagnostics(
+    createFilePrepareDiagnosticIo(home, writeOwnerOnly, initialPrepareOrdinal),
+  );
+  let initialHostClaimed = false,
+    runtimeRunOrdinal = 0;
   const defaultRuntime = createCodexChatRuntime({
     root,
     home,
@@ -88,19 +110,56 @@ async function run(): Promise<void> {
   });
   const codexChatRuntime: ReturnType<typeof createCodexChatRuntime> = {
     ...defaultRuntime,
-    run(input, persist, signal, callbacks) {
-      return defaultRuntime.run(
-        input,
-        observeCodexChatPersist({
-          persist,
-          recordFailure(fact) {
-            const path = join(home, FACT_FILE);
-            if (!existsSync(path)) writeOwnerOnly(path, JSON.stringify(fact));
-          },
-        }),
-        signal,
-        callbacks,
+    check(input) {
+      return prepareDiagnostics.observe("check", () =>
+        defaultRuntime.check(input),
       );
+    },
+    prepare(input) {
+      return prepareDiagnostics.observe("prepare", () =>
+        defaultRuntime.prepare(input),
+      );
+    },
+    run(input, persist, signal, callbacks) {
+      runtimeRunOrdinal++;
+      const historicalPersist = observeCodexChatPersist({
+        persist,
+        recordFailure(fact) {
+          const path = join(home, FACT_FILE);
+          if (!existsSync(path)) writeOwnerOnly(path, JSON.stringify(fact));
+        },
+      });
+      if (!initialHostClaimed || runtimeRunOrdinal !== 1)
+        return defaultRuntime.run(input, historicalPersist, signal, callbacks);
+
+      const diagnostic = createCodexChatStartupDiagnostic({
+        recordFailure(fact) {
+          writeFirstCodexChatStartupFailure({ home, fact, writeOwnerOnly });
+        },
+      });
+      const observedCallbacks: CodexChatCallbacks = {
+        ...callbacks,
+        onStartupPhase(phase, signalAborted) {
+          diagnostic.observeRuntimePhase(phase, signalAborted);
+          callbacks.onStartupPhase?.(phase, signalAborted);
+        },
+      };
+      const observedPersist = diagnostic.wrapPersist(historicalPersist);
+      return (async () => {
+        try {
+          const outcome = await defaultRuntime.run(
+            input,
+            observedPersist,
+            signal,
+            observedCallbacks,
+          );
+          diagnostic.finish(outcome.phase);
+          return outcome;
+        } catch (error) {
+          diagnostic.finish("threw");
+          throw error;
+        }
+      })();
     },
   };
 
@@ -112,10 +171,12 @@ async function run(): Promise<void> {
     councilLedger: operatorCouncilLedger(),
     api: { codexChatRuntime },
   });
-  process.stdout.write(
-    `hearth ${hearth.kind === "started" ? "listening" : "already running"} on ${hearth.url}\n`,
-  );
-  if (hearth.kind === "reused") return;
+  if (hearth.kind === "reused") {
+    process.stdout.write(`hearth already running on ${hearth.url}\n`);
+    return;
+  }
+  initialHostClaimed = claimCodexChatStartupDiagnosticHost(home);
+  process.stdout.write(`hearth listening on ${hearth.url}\n`);
   token.current = hearth.token;
   closeOnSignal(hearth);
 }

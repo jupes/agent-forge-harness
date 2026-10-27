@@ -14,7 +14,13 @@ import { ensurePrivateHome } from "../../scripts/hearth/home-guard";
 import { writeOwnerOnly } from "../../scripts/hearth/token";
 import { resolveCheckout } from "../../scripts/ledger/workspace";
 import { DASHBOARD_PORT, HEARTH_HOME } from "../e2e/servers";
-import { ASSETS, fixtureEnvironment, MANIFEST, ROOT } from "./environment";
+import {
+  ASSETS,
+  fixtureEnvironment,
+  keeperProject,
+  MANIFEST,
+  ROOT,
+} from "./environment";
 
 ensurePrivateHome(HEARTH_HOME);
 mkdirSync(resolve(ROOT, ".git"), { recursive: true });
@@ -77,6 +83,7 @@ const publishManifest = () =>
     MANIFEST,
     JSON.stringify({
       root: canonicalRoot,
+      keeperProjectId: keeperProject.id,
       owner: host.owner,
       url: host.url,
       fixtureControl: { port: controlPort, secret: controlSecret },

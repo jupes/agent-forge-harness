@@ -64,6 +64,26 @@ export interface CodexChatCallbacks {
     version: string;
     turnId: string;
   }): Promise<void>;
+  /** Fixture-only fixed startup observations; never expose native details. */
+  onStartupPhase?(phase: CodexChatStartupPhase, signalAborted: boolean): void;
+}
+export type CodexChatStartupPhase =
+  | "supervisor-starting"
+  | "supervisor-returned"
+  | "provider-pid-waiting"
+  | "provider-pid-settled"
+  | "provider-pid-wait-rejected";
+
+function observeStartupPhase(
+  callbacks: CodexChatCallbacks,
+  phase: CodexChatStartupPhase,
+  signal: AbortSignal,
+): void {
+  try {
+    callbacks.onStartupPhase?.(phase, signal.aborted);
+  } catch {
+    // Fixture diagnostics cannot alter owned startup or its original errors.
+  }
 }
 const directory = (path: string) => {
   try {
@@ -818,6 +838,7 @@ export function createCodexChatRuntime(options: CodexChatRuntimeOptions) {
         }
         validate(snapshot);
         if (control.signal.aborted) throw new Error();
+        observeStartupPhase(callbacks, "supervisor-starting", control.signal);
         child = supervise({
           command: [...runtime.command, ...serialized.argv],
           cwd: snapshot.cwd,
@@ -875,6 +896,7 @@ export function createCodexChatRuntime(options: CodexChatRuntimeOptions) {
             }
           },
         });
+        observeStartupPhase(callbacks, "supervisor-returned", control.signal);
         const active = child;
         void child.done.then(
           (value) => {
@@ -891,12 +913,24 @@ export function createCodexChatRuntime(options: CodexChatRuntimeOptions) {
               "The owned native process cleanup could not be confirmed.",
             ),
         );
-        const providerPid = await bounded(
-          () => active.providerPid,
-          rpcTimeoutMs,
-          control.signal,
-          "The owned provider startup did not settle.",
-        );
+        observeStartupPhase(callbacks, "provider-pid-waiting", control.signal);
+        let providerPid: number;
+        try {
+          providerPid = await bounded(
+            () => active.providerPid,
+            rpcTimeoutMs,
+            control.signal,
+            "The owned provider startup did not settle.",
+          );
+        } catch (error) {
+          observeStartupPhase(
+            callbacks,
+            "provider-pid-wait-rejected",
+            control.signal,
+          );
+          throw error;
+        }
+        observeStartupPhase(callbacks, "provider-pid-settled", control.signal);
         providerProcessId = providerPid;
         await enqueue({
           kind: "process",

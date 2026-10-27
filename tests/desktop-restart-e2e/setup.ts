@@ -16,7 +16,15 @@ import {
   HEARTH_HOME,
   STORAGE_STATE,
 } from "../e2e/servers";
-import { alpha, fixtureEnvironment, MANIFEST, ROOT } from "./environment";
+import {
+  alpha,
+  fixtureEnvironment,
+  forkProject,
+  identityProject,
+  keeperProject,
+  MANIFEST,
+  ROOT,
+} from "./environment";
 import teardown from "./teardown";
 
 export default async function setup() {
@@ -71,7 +79,10 @@ async function initialize() {
   );
   writeFileSync(
     join(HEARTH_HOME, "projects", "catalog.json"),
-    JSON.stringify(projectCatalogFixture(ROOT)),
+    JSON.stringify({
+      ...projectCatalogFixture(ROOT),
+      projects: [alpha, forkProject, keeperProject, identityProject],
+    }),
     { mode: 0o600 },
   );
   writeState(BD_STAND_IN_STATE, {
@@ -85,28 +96,58 @@ async function initialize() {
       created_at: alpha.createdAt,
       updated_at: alpha.updatedAt,
     },
+    "fork-epic": {
+      id: "fork-epic",
+      title: "Fork restart fixture epic",
+      issue_type: "epic",
+      status: "open",
+      priority: 2,
+      labels: ["project:fork-alpha"],
+      created_at: alpha.createdAt,
+      updated_at: alpha.updatedAt,
+    },
+    "keeper-epic": {
+      id: "keeper-epic",
+      title: "Keeper restart fixture epic",
+      issue_type: "epic",
+      status: "open",
+      priority: 2,
+      labels: ["project:keeper-alpha"],
+      created_at: alpha.createdAt,
+      updated_at: alpha.updatedAt,
+    },
+    "identity-epic": {
+      id: "identity-epic",
+      title: "Identity restart fixture epic",
+      issue_type: "epic",
+      status: "open",
+      priority: 2,
+      labels: ["project:identity-alpha"],
+      created_at: alpha.createdAt,
+      updated_at: alpha.updatedAt,
+    },
   });
-  const seeded = spawnSync(
-    bunPath(),
-    [
-      "-e",
-      `
+  const seedSource = `
     import { randomUUID } from "node:crypto";
     import { createConversationStore } from "./scripts/conversations/store";
-    const store=createConversationStore(process.env.AGENT_FORGE_HOME), projectId=process.argv[1], repository=process.argv[2], requestId=randomUUID(), owner=randomUUID();
+    const store=createConversationStore(process.env.AGENT_FORGE_HOME), projectId=process.argv[1], repository=process.argv[2], beadId=process.argv[3], requestId=randomUUID(), owner=randomUUID();
     await store.accept(projectId,{requestId,expectedRevision:0,text:"Recorded restart fixture question",about:[]});
     await store.start(projectId,requestId,owner);
     await store.append(projectId,requestId,owner,{kind:"identity",provider:"claude",sessionId:randomUUID(),version:"recorded-fixture"});
-    await store.append(projectId,requestId,owner,{kind:"text",text:JSON.stringify({kind:"keeper.proposals.v1",message:"Review before Start",proposals:[{title:"Review restart recovery",detail:"Actual private intent and explicit retry",action:{kind:"start-session",provider:"claude",smith:"claude-journeyman",beadId:"alpha-epic",repository,worktree:"current",prompt:"Investigate the proposed bead"}}]})});
+    await store.append(projectId,requestId,owner,{kind:"text",text:JSON.stringify({kind:"keeper.proposals.v1",message:"Review before Start",proposals:[{title:"Review restart recovery",detail:"Actual private intent and explicit retry",action:{kind:"start-session",provider:"claude",smith:"claude-journeyman",beadId,repository,worktree:"current",prompt:"Investigate the proposed bead"}}]})});
     await store.finish(projectId,requestId,owner,"completed",null);
-  `,
-      alpha.id,
-      ROOT,
-    ],
-    { encoding: "utf8", env: environment, timeout: 15000 },
-  );
-  if (seeded.status !== 0)
-    throw new Error(`Restart fixture seed failed: ${seeded.stderr}`);
+  `;
+  for (const project of [alpha, keeperProject]) {
+    const beadId = project.workspaces[0]?.epicIds[0];
+    if (!beadId) throw new Error("Restart fixture epic was unavailable.");
+    const seeded = spawnSync(
+      bunPath(),
+      ["-e", seedSource, project.id, ROOT, beadId],
+      { encoding: "utf8", env: environment, timeout: 15000 },
+    );
+    if (seeded.status !== 0)
+      throw new Error(`Restart fixture seed failed: ${seeded.stderr}`);
+  }
   const manifest: unknown = JSON.parse(readFileSync(MANIFEST, "utf8"));
   if (
     !manifest ||
