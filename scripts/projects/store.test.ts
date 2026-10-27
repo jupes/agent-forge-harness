@@ -1,9 +1,26 @@
 import { afterEach, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeOwnerOnly } from "../hearth/token";
 import { createProjectStore } from "./store";
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (typeof value === "object" && value !== null) {
+    const object = value as Record<string, unknown>;
+    return `{${Object.keys(object)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(object[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+function createRequestHash(value: unknown): string {
+  return createHash("sha256").update(canonicalJson(value)).digest("hex");
+}
 
 const homes: string[] = [];
 afterEach(() => {
@@ -115,4 +132,50 @@ test("a project survives reopening with stable identity and revision-checked pre
     updatedAt: expect.any(String),
   });
   expect(createProjectStore(home).read()).toEqual(updated);
+});
+
+test("create identity hashes bind the UUID and expected semantic revision", async () => {
+  const { store, input } = fixture();
+  const firstId = "cf2ca2e2-a2d1-42bb-b9b4-1517c3db434e";
+  const first = await store.reserveCreate({
+    requestId: firstId,
+    original: input,
+    expectedCatalogRevision: 0,
+    scopeHash: "a".repeat(64),
+    scopeCount: 0,
+  });
+  expect(first.operation.requestHash).toBe(
+    createRequestHash({
+      requestId: firstId,
+      expectedCatalogRevision: 0,
+      original: input,
+    }),
+  );
+  await expect(
+    store.reserveCreate({
+      requestId: firstId,
+      original: input,
+      expectedCatalogRevision: 1,
+      scopeHash: "a".repeat(64),
+      scopeCount: 0,
+    }),
+  ).rejects.toMatchObject({ status: 409 });
+
+  await store.retireCreate(firstId, first.operation.requestHash);
+  const secondId = "975d7e7a-4694-4b06-995c-b087d7fda3a0";
+  const second = await store.reserveCreate({
+    requestId: secondId,
+    original: input,
+    expectedCatalogRevision: 0,
+    scopeHash: "a".repeat(64),
+    scopeCount: 0,
+  });
+  expect(second.operation.requestHash).toBe(
+    createRequestHash({
+      requestId: secondId,
+      expectedCatalogRevision: 0,
+      original: input,
+    }),
+  );
+  expect(second.operation.requestHash).not.toBe(first.operation.requestHash);
 });

@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { join } from "node:path";
 import type { ProjectCatalog } from "../../../types/projects";
 import { createProjectStore } from "../../projects/store";
+import { withQueueLock } from "../../scheduler/queue-lock";
 import { startTestHearth, type TestHearth } from "../testing";
 import { writeOwnerOnly } from "../token";
 
@@ -9,6 +10,14 @@ const opened: TestHearth[] = [];
 afterEach(async () => {
   for (const h of opened.splice(0)) await h.close();
 });
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
 
 test("projects load through the hearth and audited preferences survive a fresh read", async () => {
   const h = await startTestHearth();
@@ -280,6 +289,96 @@ test("a reserved project is committed once or explicitly retired without droppin
     data: { requestId: otherId, state: "retired-before-create" },
   });
   expect(createProjectStore(h.home).read().projects).toHaveLength(1);
+});
+
+test("a reservation rechecks live project scope after waiting for the catalog writer", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  const initialIssue = {
+    id: "alpha-epic",
+    title: "Initial selected epic",
+    issue_type: "epic",
+    priority: 2,
+    status: "open",
+    labels: ["project:scope-race"],
+    created_at: "2026-10-26T00:00:00.000Z",
+    updated_at: "2026-10-26T00:00:00.000Z",
+  };
+  h.bd.issues.set(initialIssue.id, initialIssue);
+  const initialRead = deferred<void>();
+  h.bd.answer = (args) => {
+    if (args[0] !== "export") return undefined;
+    initialRead.resolve();
+    return {
+      status: 0,
+      stdout: JSON.stringify(initialIssue),
+      stderr: "",
+    };
+  };
+
+  const locked = deferred<void>();
+  const unlock = deferred<void>();
+  const writer = withQueueLock(
+    join(h.home, "projects", "write.lock.db"),
+    async () => {
+      locked.resolve();
+      await unlock.promise;
+    },
+    { waitMs: 10_000 },
+  );
+  await locked.promise;
+  const requestId = "a27d0100-ec69-4ca4-99a8-8f5ae66e4112";
+  const responsePromise = fetch(`${h.api}/projects/create-reservations`, {
+    method: "POST",
+    headers: h.headers(h.hearth.token),
+    body: JSON.stringify({
+      requestId,
+      expectedCatalogRevision: 0,
+      original: {
+        slug: "scope-race",
+        name: "Scope Race",
+        description: "",
+        icon: "R",
+        workspaces: [
+          {
+            root: h.root,
+            repositories: [h.root],
+            epicIds: ["alpha-epic"],
+          },
+        ],
+      },
+    }),
+  });
+
+  try {
+    await initialRead.promise;
+    h.bd.issues.set(initialIssue.id, {
+      ...initialIssue,
+      labels: ["project:renamed"],
+      updated_at: "2026-10-27T00:00:00.000Z",
+    });
+    h.bd.answer = (args) =>
+      args[0] === "export"
+        ? {
+            status: 0,
+            stdout: [...h.bd.issues.values()]
+              .map((issue) => JSON.stringify(issue))
+              .join("\n"),
+            stderr: "",
+          }
+        : undefined;
+  } finally {
+    unlock.resolve();
+  }
+  await writer;
+  const response = await responsePromise;
+  expect(response.status).toBe(409);
+  expect(createProjectStore(h.home).read().projects).toEqual([]);
+  expect(createProjectStore(h.home).listCreates()).toEqual([]);
+  expect(h.events(["operator.action"]).at(-1)?.payload).toMatchObject({
+    action: "project.create.reserve",
+    requestId,
+  });
 });
 
 test("project create reservations preserve legacy catalogs, collide by exact UUID, and serialize slug races", async () => {
