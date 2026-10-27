@@ -90,6 +90,7 @@ export interface InteractiveSuperviseOptions
   interactiveGuard?: (pid: number) => {
     release(): void;
     terminate(): void;
+    settleStopped?: () => Promise<void>;
   } | null;
 }
 
@@ -473,12 +474,7 @@ export function supervise(
     inputWaiters.clear();
   };
   const startWindowsStopSettlement = () => {
-    if (
-      interactive ||
-      process.platform !== "win32" ||
-      windowsStopSettlement !== null
-    )
-      return;
+    if (process.platform !== "win32" || windowsStopSettlement !== null) return;
     const settleStopped = guard.settleStopped;
     if (!settleStopped) {
       preserveWindowsStopGuard = true;
@@ -527,15 +523,14 @@ export function supervise(
     void windowsStopSettlement.catch(() => undefined);
   };
   const awaitWindowsStopSettlement = async () => {
-    if (!interactive && process.platform === "win32" && windowsStopSettlement)
+    if (process.platform === "win32" && windowsStopSettlement)
       await windowsStopSettlement;
   };
   const kill = () => {
     if (settled) return;
     interrupted = true;
     failInput(new Error("Interactive stdin is closed."));
-    if (interactive && process.platform === "win32") guard.terminate?.();
-    else if (!interactive && process.platform === "win32") {
+    if (process.platform === "win32") {
       startWindowsStopSettlement();
       if (!windowsStopSettlement || preserveWindowsStopGuard)
         killTree(proc.pid);
@@ -738,6 +733,7 @@ export function supervise(
   const done = (async (): Promise<ChildExit> => {
     try {
       const exitCode = await Promise.race([proc.exited, windowsStopFailure]);
+      let ownedTreeReleased = false;
       exited = true;
       // Interactive lifetime and an active Windows Stop own cleanup after root
       // exit. Ordinary noninteractive drains retain their work deadline.
@@ -750,11 +746,17 @@ export function supervise(
       if (process.platform !== "win32") exitedGroups.add(proc.pid);
       if (interactive) {
         // Windows retains an owned job handle; POSIX descendants keep their process group alive.
-        if (process.platform === "win32") guard.terminate?.();
+        if (process.platform === "win32") startWindowsStopSettlement();
         else killExitedProcessGroup(proc.pid);
         failInput(new Error("Interactive stdin is closed."));
       }
       await awaitWindowsStopSettlement();
+      if (
+        interactive &&
+        process.platform === "win32" &&
+        windowsStopSettlement !== null
+      )
+        ownedTreeReleased = true;
       if (
         process.platform !== "win32" &&
         (interactive || stopped || timedOut)
@@ -765,6 +767,7 @@ export function supervise(
         await waitForOwnedProcessGroup((signal) =>
           observeOwnedProcessGroup(proc.pid, signal),
         );
+        if (interactive) ownedTreeReleased = true;
       }
       await pumped.catch(() => undefined);
       await awaitWindowsStopSettlement();
@@ -792,7 +795,13 @@ export function supervise(
         }
       }
       if (controlFailure) throw controlFailure;
-      return { exitCode, timedOut, stopped, stderr };
+      return {
+        exitCode,
+        timedOut,
+        stopped,
+        stderr,
+        ...(ownedTreeReleased ? { ownedTreeReleased: true as const } : {}),
+      };
     } catch (error) {
       // An unverified live helper can retain inherited pipes. A failed bounded
       // cleanup must release this owner's readers as well as reject its result.

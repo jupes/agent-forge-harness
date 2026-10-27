@@ -446,11 +446,20 @@ export function guardRequiredTree(pid: number): TreeGuard | null {
 }
 
 /** New native processes remain suspended until this mandatory ownership succeeds. */
-export function guardSuspendedWindowsProcess(
-  pid: number,
-): { release(): void; terminate(): void } | null {
+export function guardSuspendedWindowsProcess(pid: number): {
+  release(): void;
+  terminate(): void;
+  settleStopped(): Promise<void>;
+} | null {
   if (process.platform !== "win32" || process.arch !== "x64") return null;
   const guard = jobGuard(pid),
-    terminate = guard.terminate;
-  return terminate ? { release: () => guard.release(), terminate } : null;
+    terminate = guard.terminate,
+    settleStopped = guard.settleStopped;
+  return terminate && settleStopped
+    ? {
+        release: () => guard.release(),
+        terminate,
+        settleStopped: () => settleStopped.call(guard),
+      }
+    : null;
 }

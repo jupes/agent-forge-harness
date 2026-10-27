@@ -78,6 +78,7 @@ function heldWindowsSettlementGuard() {
 test("a trusted shift lifetime reaches the ownership grant exactly rather than shortening the reviewed timeout", async () => {
   const lines: string[] = [];
   const handle = supervise({
+    windowsHide: true,
     command: [process.execPath, fake],
     bootstrapCommand: [
       process.execPath,
@@ -105,6 +106,7 @@ test("interactive supervision exchanges multiple private stdin frames before exp
   const lines: string[] = [];
   const before = liveChildCount();
   const handle = supervise({
+    windowsHide: true,
     command: [process.execPath, fake],
     cwd: import.meta.dir,
     env: buildChildEnv(process.env, []),
@@ -120,6 +122,7 @@ test("interactive supervision exchanges multiple private stdin frames before exp
       exitCode: 0,
       timedOut: false,
       stopped: false,
+      ownedTreeReleased: true,
       stderr: "",
     });
     expect(lines).toEqual([
@@ -146,6 +149,7 @@ function tree(
     announce = resolve;
   });
   const handle = supervise({
+    windowsHide: true,
     command: [process.execPath, fake, mode],
     cwd: import.meta.dir,
     env: buildChildEnv(process.env, []),
@@ -155,7 +159,6 @@ function tree(
     timeoutMs,
     ...(ownership
       ? {
-          windowsHide: true,
           interactiveGuard: (pid: number) => ownership.attach(pid),
         }
       : {}),
@@ -430,6 +433,7 @@ test("Windows interactive refused tree settlement cannot report a released owner
 test("interactive queue bounds reject before buffering oversized input and preserve legacy stdin", async () => {
   const before = liveChildCount();
   const handle = supervise({
+    windowsHide: true,
     command: [process.execPath, fake],
     cwd: import.meta.dir,
     env: buildChildEnv(process.env, []),
@@ -448,6 +452,7 @@ test("interactive queue bounds reject before buffering oversized input and prese
   }
   const lines: string[] = [];
   const legacy = supervise({
+    windowsHide: true,
     command: [process.execPath, fake],
     cwd: import.meta.dir,
     env: buildChildEnv(process.env, []),
@@ -464,6 +469,7 @@ test("a failed mandatory ownership guard refuses before any protocol stdin", asy
   const before = liveChildCount();
   expect(() =>
     supervise({
+      windowsHide: true,
       command: [process.execPath, fake],
       cwd: import.meta.dir,
       env: buildChildEnv(process.env, []),
@@ -489,6 +495,7 @@ test("private PID controls reject malformed or duplicate messages independently 
   for (const mode of ["malformed", "duplicate"]) {
     let errors = 0;
     const handle = supervise({
+      windowsHide: true,
       command: [process.execPath, fake],
       bootstrapCommand: [
         process.execPath,
@@ -522,6 +529,7 @@ test("private PID controls reject malformed or duplicate messages independently 
 test("the actual provider inherits neither bootstrap IPC API nor channel environment", async () => {
   const lines: string[] = [];
   const handle = supervise({
+    windowsHide: true,
     command: [process.execPath, fake, "ipc-probe"],
     cwd: import.meta.dir,
     env: buildChildEnv(process.env, []),
@@ -543,6 +551,7 @@ test("interactive inherited stdout and stderr retain cumulative byte bounds in t
   for (const mode of ["stdout-flood", "stderr-flood"]) {
     let errors = 0;
     const handle = supervise({
+      windowsHide: true,
       command: [process.execPath, fake, mode],
       cwd: import.meta.dir,
       env: buildChildEnv(process.env, []),

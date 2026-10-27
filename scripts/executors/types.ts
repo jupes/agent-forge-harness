@@ -64,6 +64,8 @@ export interface ChildExit {
   exitCode: number | null;
   timedOut: boolean;
   stopped: boolean;
+  /** Present only when the supervisor positively confirmed this owner's full process tree exited. */
+  ownedTreeReleased?: true | undefined;
   /**
    * The end of what the child wrote to stderr (`STDERR_TAIL_CHARS` at most).
    * Shown in a command's own output, never stored in the ledger.
