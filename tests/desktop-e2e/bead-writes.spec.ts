@@ -1,68 +1,32 @@
-import { spawnSync } from "node:child_process";
-import { randomUUID } from "node:crypto";
 import { expect, type Route, test } from "@playwright/test";
 import { z } from "zod";
-import { projectBeadsPageSchema } from "../../scripts/projects/beads-protocol";
 import { readState } from "../e2e/bd-stand-in-state";
 import { openSettled, reloadSettled } from "../e2e/fixtures";
-import { BD_STAND_IN_STATE, bunPath, HEARTH_HOME } from "../e2e/servers";
+import { BD_STAND_IN_STATE } from "../e2e/servers";
 import { standInCalls } from "../e2e/stand-in";
-import { alpha, beta, seedProjects, workspace } from "./project-fixtures";
+import { alpha, beta, seedProjects } from "./project-fixtures";
 
 test.beforeEach(() => seedProjects());
 const createCalls = () => standInCalls().filter((args) => args[0] === "create");
 
-/** A real ledger notification makes the open Beads view perform a background read. */
-function appendBeadsRefreshEvent(): void {
-  const sessionId = randomUUID();
-  const result = spawnSync(
-    bunPath(),
-    [
-      "-e",
-      `import { appendEvent } from "./scripts/ledger/append";
-const result = appendEvent({kind:"session.started",workspace:process.argv[2],beadId:"alpha-epic",sessionId:process.argv[1],executor:{provider:"codex",model:"fixture-model",smith:"fixture-smith"},payload:{kind:"interactive"}});
-if (!result.ok) throw new Error("The inert Beads refresh event was not recorded.");`,
-      sessionId,
-      workspace,
-    ],
-    {
-      env: { ...process.env, AGENT_FORGE_HOME: HEARTH_HOME },
-      encoding: "utf8",
-      timeout: 10_000,
-      windowsHide: true,
-    },
-  );
-  if (result.status !== 0)
-    throw new Error("The inert Beads refresh event failed.");
-}
-
-test("New bead title and description stay separate across a background refresh", async ({
+test("New bead title and description stay separate across delayed options focus", async ({
   page,
 }) => {
-  await openSettled(page, `/index.html#/desktop/project/${alpha.id}/beads`);
-  await page.getByRole("button", { name: "New bead", exact: true }).click();
-  const dialog = page.getByRole("dialog", { name: "New bead · Alpha" });
-  const title = dialog.getByLabel("Title", { exact: true });
-  const description = dialog.getByLabel("Description", { exact: true });
-  await title.fill("Keep fields distinct");
-  await dialog
-    .getByRole("combobox", { name: "Parent epic", exact: true })
-    .selectOption("alpha-epic");
-
-  let releaseRead: (() => void) | undefined;
-  let markReadFinished: (() => void) | undefined;
-  let readEntered = false;
-  let refreshHandlerStarted = false;
-  const readFinished = new Promise<void>((resolve) => {
-    markReadFinished = resolve;
+  let releaseOptions: (() => void) | undefined;
+  let markOptionsFinished: (() => void) | undefined;
+  let optionsHandlerStarted = false;
+  let optionsReadEntered = false;
+  const optionsFinished = new Promise<void>((resolve) => {
+    markOptionsFinished = resolve;
   });
-  const heldRead = new Promise<void>((resolve) => {
-    releaseRead = resolve;
+  const heldOptions = new Promise<void>((resolve) => {
+    releaseOptions = resolve;
   });
-  const listPath = `/__agent-forge/projects/${alpha.id}/beads`;
-  const refreshHandler = async (route: Route) => {
+  const optionsPath = "/__agent-forge/beads/options";
+  const createPath = `/__agent-forge/projects/${alpha.id}/beads`;
+  const optionsRoute = async (route: Route) => {
     if (route.request().method() !== "GET") return route.continue();
-    refreshHandlerStarted = true;
+    optionsHandlerStarted = true;
     try {
       const request = route.request();
       const requestOrigin = new URL(request.url()).origin;
@@ -75,7 +39,7 @@ test("New bead title and description stay separate across a background refresh",
           headers["sec-fetch-site"] !== "same-origin")
       )
         throw Error(
-          "The observed Beads refresh was not an actual same-origin read.",
+          "The observed options read was not an actual same-origin read.",
         );
       const response = await route.fetch({
         headers: {
@@ -88,46 +52,164 @@ test("New bead title and description stay separate across a background refresh",
       try {
         raw = await response.json();
       } catch {
-        throw Error("The protected Beads refresh did not return valid JSON.");
+        throw Error("The protected options read did not return valid JSON.");
       }
       const envelope = z
         .object({
           ok: z.literal(true),
-          data: projectBeadsPageSchema,
+          data: z
+            .object({
+              types: z
+                .array(z.enum(["task", "feature", "bug", "chore", "epic"]))
+                .min(1)
+                .max(5),
+              priorities: z
+                .array(
+                  z
+                    .object({
+                      value: z.enum(["P0", "P1", "P2", "P3", "P4"]),
+                      tier: z.string().max(100),
+                      meaning: z.string().max(1000),
+                    })
+                    .strict(),
+                )
+                .min(1)
+                .max(5),
+              defaultPriority: z.enum(["P0", "P1", "P2", "P3", "P4"]),
+              complexities: z
+                .array(z.enum(["low", "medium", "high"]))
+                .length(3),
+              limits: z
+                .object({
+                  title: z.number().int().positive().max(200),
+                  description: z.number().int().positive().max(4000),
+                  acceptance: z.number().int().positive().max(2000),
+                  comment: z.number().int().positive().max(4000),
+                  reason: z.number().int().positive().max(1000),
+                  labels: z.number().int().positive().max(30),
+                  label: z.number().int().positive().max(100),
+                  fileMap: z.number().int().positive().max(100),
+                })
+                .strict(),
+            })
+            .strict(),
           error: z.null(),
         })
         .strict()
         .safeParse(raw);
-      if (
-        response.status() !== 200 ||
-        !envelope.success ||
-        envelope.data.data.projectId !== alpha.id ||
-        envelope.data.data.workspace !== workspace ||
-        !envelope.data.data.complete
-      )
-        throw Error("The protected Beads refresh could not be verified.");
-      readEntered = true;
-      await heldRead;
+      if (response.status() !== 200 || !envelope.success)
+        throw Error("The protected options read could not be verified.");
+      optionsReadEntered = true;
+      await heldOptions;
       await route.fulfill({ response });
     } finally {
-      markReadFinished?.();
+      markOptionsFinished?.();
     }
   };
-  const refreshed = page.waitForResponse(
+  const optionsResponse = page.waitForResponse(
     (response) =>
       response.request().method() === "GET" &&
-      new URL(response.url()).pathname === listPath &&
+      new URL(response.url()).pathname === optionsPath &&
       response.status() === 200,
     { timeout: 10_000 },
   );
-  await page.route(`**${listPath}`, refreshHandler);
+  await page.route(`**${optionsPath}`, optionsRoute);
   try {
-    appendBeadsRefreshEvent();
-    await expect.poll(() => readEntered, { timeout: 10_000 }).toBe(true);
-    await description.fill("Preserve this separate description.");
-    await description.click();
-    releaseRead?.();
-    await refreshed;
+    await page.goto(`/index.html#/desktop/project/${alpha.id}/beads`, {
+      waitUntil: "load",
+    });
+    await expect(
+      page.getByRole("button", { name: "New bead", exact: true }),
+    ).toBeVisible();
+    await expect.poll(() => optionsReadEntered, { timeout: 10_000 }).toBe(true);
+    await page.getByRole("button", { name: "New bead", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "New bead · Alpha" });
+    await expect(dialog.getByRole("status")).toContainText(
+      "Loading bead options",
+    );
+
+    await page.evaluate(() => {
+      const nativeRequest = window.requestAnimationFrame.bind(window);
+      const nativeCancel = window.cancelAnimationFrame.bind(window);
+      const callbacks = new Map<number, FrameRequestCallback>();
+      let nextId = 0;
+      window.requestAnimationFrame = ((callback: FrameRequestCallback) => {
+        const id = ++nextId;
+        callbacks.set(id, callback);
+        return id;
+      }) as typeof window.requestAnimationFrame;
+      window.cancelAnimationFrame = ((id: number) => {
+        callbacks.delete(id);
+      }) as typeof window.cancelAnimationFrame;
+      const target = window as typeof window & {
+        __beadFocusFrameGate?: {
+          pending(): number;
+          release(): Promise<number>;
+          restore(): void;
+        };
+      };
+      target.__beadFocusFrameGate = {
+        pending: () => callbacks.size,
+        async release() {
+          const queued = [...callbacks.values()];
+          callbacks.clear();
+          window.requestAnimationFrame = nativeRequest;
+          window.cancelAnimationFrame = nativeCancel;
+          await Promise.all(
+            queued.map(
+              (callback) =>
+                new Promise<void>((resolve) => {
+                  nativeRequest((time) => {
+                    callback(time);
+                    resolve();
+                  });
+                }),
+            ),
+          );
+          return queued.length;
+        },
+        restore() {
+          window.requestAnimationFrame = nativeRequest;
+          window.cancelAnimationFrame = nativeCancel;
+          callbacks.clear();
+        },
+      };
+    });
+    releaseOptions?.();
+    await optionsResponse;
+    const title = dialog.getByLabel("Title", { exact: true });
+    const description = dialog.getByLabel("Description", { exact: true });
+    await expect(title).toBeVisible();
+    await expect
+      .poll(
+        () =>
+          page.evaluate(
+            () =>
+              (
+                window as typeof window & {
+                  __beadFocusFrameGate?: { pending(): number };
+                }
+              ).__beadFocusFrameGate?.pending() ?? 0,
+          ),
+        { timeout: 10_000 },
+      )
+      .toBeGreaterThan(0);
+
+    await title.fill("Keep fields distinct");
+    await dialog
+      .getByRole("combobox", { name: "Parent epic", exact: true })
+      .selectOption("alpha-epic");
+    await description.fill("Preserve this");
+    const releasedFrames = await page.evaluate(
+      () =>
+        (
+          window as typeof window & {
+            __beadFocusFrameGate?: { release(): Promise<number> };
+          }
+        ).__beadFocusFrameGate?.release() ?? Promise.resolve(0),
+    );
+    expect(releasedFrames).toBeGreaterThan(0);
+    await page.keyboard.type(" separate description.");
 
     const stateAfterRead = await dialog.evaluate((root) => {
       const control = (labelText: string) => {
@@ -159,7 +241,7 @@ test("New bead title and description stay separate across a background refresh",
     const createRequest = page.waitForRequest(
       (request) =>
         request.method() === "POST" &&
-        new URL(request.url()).pathname === listPath,
+        new URL(request.url()).pathname === createPath,
     );
     await dialog.getByRole("button", { name: "Create bead" }).click();
     const request = await createRequest;
@@ -168,9 +250,18 @@ test("New bead title and description stay separate across a background refresh",
       description: "Preserve this separate description.",
     });
   } finally {
-    releaseRead?.();
-    if (refreshHandlerStarted) await readFinished;
-    await page.unroute(`**${listPath}`, refreshHandler);
+    releaseOptions?.();
+    await page
+      .evaluate(() =>
+        (
+          window as typeof window & {
+            __beadFocusFrameGate?: { restore(): void };
+          }
+        ).__beadFocusFrameGate?.restore(),
+      )
+      .catch(() => {});
+    if (optionsHandlerStarted) await optionsFinished;
+    await page.unroute(`**${optionsPath}`, optionsRoute);
   }
 });
 
