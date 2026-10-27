@@ -9,6 +9,7 @@ import { openSettled, reloadSettled } from "../e2e/fixtures";
 import { pageToken } from "../e2e/launch-link";
 import { HEARTH_HOME } from "../e2e/servers";
 import { alpha, seedProjects, workspace } from "./project-fixtures";
+import { observePreviewIdentityRefresh } from "./session-start-refresh-barrier";
 
 const log = join(HEARTH_HOME, "gemini-fixture-calls.jsonl");
 function calls(): Array<{
@@ -360,16 +361,67 @@ test("an edit after Gemini review and before paint cannot dispatch an unreviewed
   page,
 }) => {
   const dialog = await openComposer(page);
-  await check(dialog);
   const before = taskCount();
-  let posts = 0;
+  let posts = 0,
+    identityPosts = 0;
   page.on("request", (request) => {
-    if (
-      request.method() === "POST" &&
-      request.url().endsWith(`/projects/${alpha.id}/sessions`)
-    )
-      posts++;
+    if (request.method() !== "POST") return;
+    const path = new URL(request.url()).pathname;
+    if (path === `/__agent-forge/projects/${alpha.id}/session-start-identities`)
+      identityPosts++;
+    if (path === `/__agent-forge/projects/${alpha.id}/sessions`) posts++;
   });
+  const identityRefresh = await observePreviewIdentityRefresh(
+    page,
+    alpha.id,
+    workspace,
+    { holdResponse: true },
+  );
+  try {
+    await dialog
+      .getByRole("button", { name: "Check supported options", exact: true })
+      .click();
+    await expect(
+      dialog.getByRole("region", {
+        name: "Equivalent session command",
+        exact: true,
+      }),
+    ).toBeVisible();
+    await expect.poll(() => identityRefresh.isHeld).toBe(true);
+    const identityRegion = dialog.getByRole("region", {
+      name: "Original Start requests",
+      exact: true,
+    });
+    await expect(
+      identityRegion
+        .getByRole("status")
+        .filter({ hasText: "Checking the server-owned identity page" }),
+    ).toBeVisible();
+    const startButton = dialog.getByRole("button", {
+      name: "Start",
+      exact: true,
+    });
+    await expect(startButton).toBeDisabled();
+    expect(identityPosts).toBe(0);
+    expect(posts).toBe(0);
+    expect(taskCount()).toBe(before);
+  } finally {
+    identityRefresh.release();
+  }
+  await identityRefresh.settledRead;
+  const identityRegion = dialog.getByRole("region", {
+    name: "Original Start requests",
+    exact: true,
+  });
+  await expect(
+    identityRegion
+      .getByRole("status")
+      .filter({ hasText: "Checking the server-owned identity page" }),
+  ).not.toBeVisible();
+  await expect(
+    dialog.getByRole("button", { name: "Start", exact: true }),
+  ).toBeEnabled();
+  expect(identityPosts).toBe(0);
   await dialog.evaluate((element) => {
     const input = element.querySelector<HTMLTextAreaElement>(
       '[aria-label="Session prompt"]',
@@ -388,6 +440,7 @@ test("an edit after Gemini review and before paint cannot dispatch an unreviewed
       { exact: true },
     ),
   ).toBeVisible();
+  expect(identityPosts).toBe(0);
   expect(posts).toBe(0);
   expect(taskCount()).toBe(before);
   await expect(
@@ -398,6 +451,7 @@ test("an edit after Gemini review and before paint cannot dispatch an unreviewed
   await expect(
     page.getByText("Native Task outcome: completed", { exact: true }),
   ).toBeVisible();
+  expect(identityPosts).toBe(1);
   expect(posts).toBe(1);
   expect(
     calls()
