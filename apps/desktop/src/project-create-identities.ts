@@ -83,13 +83,17 @@ function sameRequest(
 
 /** Private, bounded original metadata retained before every create POST. */
 export function createProjectCreateIdentities(deps: {
-  workspace: string;
+  workspace: string | null;
   storage: Pick<Storage, "getItem" | "setItem"> | null;
   withLock<T>(work: () => T | Promise<T>): Promise<T>;
 }) {
-  const scope = workspaceKey(deps.workspace);
-  if (!scope) throw Error("The trusted project workspace is unavailable.");
+  const scope = deps.workspace ? workspaceKey(deps.workspace) : null;
+  const requireScope = () => {
+    if (!scope) throw Error("The trusted project workspace is unavailable.");
+    return scope;
+  };
   const readAll = () => {
+    requireScope();
     if (!deps.storage)
       throw Error("Saved project create identities are unavailable.");
     const text = deps.storage.getItem(PROJECT_CREATE_IDENTITIES);
@@ -133,8 +137,9 @@ export function createProjectCreateIdentities(deps: {
 
   return {
     list(): ProjectCreateLocalIdentity[] {
+      const currentScope = requireScope();
       return structuredClone(
-        readAll().records.filter((item) => item.workspaceKey === scope),
+        readAll().records.filter((item) => item.workspaceKey === currentScope),
       );
     },
     async reserve(
@@ -142,12 +147,13 @@ export function createProjectCreateIdentities(deps: {
       expectedCatalogRevision: number,
       mint: () => string,
     ): Promise<{ identity: ProjectCreateLocalIdentity; created: boolean }> {
+      const currentScope = requireScope();
       const frozenOriginal = structuredClone(originalInput);
       const revision = expectedCatalogRevision;
       return deps.withLock(async () => {
         const value = readAll();
         const current = value.records.find(
-          (item) => item.workspaceKey === scope && active(item),
+          (item) => item.workspaceKey === currentScope && active(item),
         );
         if (current)
           return { identity: structuredClone(current), created: false };
@@ -168,7 +174,7 @@ export function createProjectCreateIdentities(deps: {
         )
           throw Error("The project request ID is already in use.");
         const identity = recordSchema.parse({
-          workspaceKey: scope,
+          workspaceKey: currentScope,
           request,
           requestHash,
           state: "pending-reserve",
@@ -178,11 +184,12 @@ export function createProjectCreateIdentities(deps: {
       });
     },
     async find(requestId: string): Promise<ProjectCreateLocalIdentity | null> {
+      const currentScope = requireScope();
       const id = requestIdSchema.parse(requestId);
       return structuredClone(
         readAll().records.find(
           (item) =>
-            item.workspaceKey === scope && item.request.requestId === id,
+            item.workspaceKey === currentScope && item.request.requestId === id,
         ) ?? null,
       );
     },
@@ -191,11 +198,13 @@ export function createProjectCreateIdentities(deps: {
       requestHash: string,
       nextState: ProjectCreateLocalIdentity["state"],
     ): Promise<ProjectCreateLocalIdentity> {
+      const currentScope = requireScope();
       return deps.withLock(() => {
         const value = readAll();
         const index = value.records.findIndex(
           (item) =>
-            item.workspaceKey === scope && item.request.requestId === requestId,
+            item.workspaceKey === currentScope &&
+            item.request.requestId === requestId,
         );
         const previous = value.records[index];
         if (!previous || previous.requestHash !== requestHash)
@@ -212,6 +221,7 @@ export function createProjectCreateIdentities(deps: {
     async observe(
       identity: ProjectCreateIdentity,
     ): Promise<ProjectCreateLocalIdentity> {
+      const currentScope = requireScope();
       const frozen = projectCreateIdentitySchema.parse(
         structuredClone(identity),
       );
@@ -232,7 +242,7 @@ export function createProjectCreateIdentities(deps: {
         const value = readAll();
         const index = value.records.findIndex(
           (item) =>
-            item.workspaceKey === scope &&
+            item.workspaceKey === currentScope &&
             item.request.requestId === frozen.requestId,
         );
         const existing = value.records[index];
@@ -255,7 +265,7 @@ export function createProjectCreateIdentities(deps: {
         if (value.records.length >= MAX_RECORDS)
           throw Error("Saved project create identities are full.");
         const created = recordSchema.parse({
-          workspaceKey: scope,
+          workspaceKey: currentScope,
           request,
           requestHash: frozen.requestHash,
           state: nextState,

@@ -22,17 +22,19 @@ export function useProjectCreate(
   writes.current = writesAllowed;
   const client = useMemo(() => {
     let storage: Storage | null = null;
-    try {
-      storage = window.localStorage;
-    } catch {
-      // Metadata storage failure blocks reservation before any POST.
+    if (workspace) {
+      try {
+        storage = window.localStorage;
+      } catch {
+        // Metadata storage failure blocks reservation before any POST.
+      }
     }
     return createProjectCreateOwner({
       workspace,
       currentWorkspace: () => workspaceRef.current,
       canWrite: () => writes.current,
       identities: createProjectCreateIdentities({
-        workspace: workspace ?? "/",
+        workspace,
         storage,
         withLock: async (work) => {
           if (!navigator.locks)

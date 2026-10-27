@@ -230,16 +230,98 @@ function fixture(
     mint: () => requestId,
     changed() {},
   });
+  const reopen = () =>
+    createProjectCreateOwner({
+      workspace,
+      currentWorkspace: () => currentWorkspace,
+      canWrite: () => true,
+      identities,
+      api,
+      mint: () => requestId,
+      changed() {},
+    });
   return {
     owner,
     identities,
     writes,
     storage,
+    reopen,
     setCurrentWorkspace(value: string | null) {
       currentWorkspace = value;
     },
   };
 }
+
+test("missing workspace scope fails closed without identity or API reads", async () => {
+  let apiReads = 0;
+  let storageReads = 0;
+  const identities = createProjectCreateIdentities({
+    workspace: null,
+    storage: {
+      getItem() {
+        storageReads += 1;
+        return null;
+      },
+      setItem() {
+        throw Error("saved metadata must not be written");
+      },
+    },
+    withLock: async (work) => work(),
+  });
+  const owner = createProjectCreateOwner({
+    workspace: null,
+    currentWorkspace: () => null,
+    canWrite: () => true,
+    identities,
+    api: {
+      async options() {
+        apiReads += 1;
+        throw Error("unexpected API read");
+      },
+      async smiths() {
+        apiReads += 1;
+        throw Error("unexpected API read");
+      },
+      async discovery() {
+        apiReads += 1;
+        throw Error("unexpected API read");
+      },
+      async original() {
+        apiReads += 1;
+        throw Error("unexpected API read");
+      },
+      async catalog() {
+        apiReads += 1;
+        throw Error("unexpected API read");
+      },
+      async preview() {
+        apiReads += 1;
+        throw Error("unexpected API read");
+      },
+      async reserve() {
+        apiReads += 1;
+        throw Error("unexpected API write");
+      },
+      async commit() {
+        apiReads += 1;
+        throw Error("unexpected API write");
+      },
+      async retire() {
+        apiReads += 1;
+        throw Error("unexpected API write");
+      },
+    },
+    mint: () => requestId,
+    changed() {},
+  });
+
+  await owner.recover();
+
+  expect(owner.get()).toMatchObject({ phase: "unavailable", entries: [] });
+  expect(apiReads).toBe(0);
+  expect(storageReads).toBe(0);
+  owner.dispose();
+});
 
 test("project creation reserves, commits, and opens only the verified exact original", async () => {
   const { owner, writes, identities } = fixture();
@@ -299,6 +381,54 @@ test("only a typed pre-send refusal permits explicit same-UUID reservation retry
   });
   expect(identities.list()[0]?.requestHash).toMatch(/^[a-f0-9]{64}$/);
   owner.dispose();
+});
+
+test("recovery never retries a saved body whose original hash no longer matches", async () => {
+  const { owner, writes, storage, reopen } = fixture([
+    { state: "not-sent", message: "Operator access is unavailable." },
+  ]);
+  await owner.recover();
+  const reviewed = await owner.preview(original);
+  expect(await owner.reserve(original, reviewed!)).toBe(false);
+  await owner.recover();
+  expect(owner.get().entries[0]).toMatchObject({ phase: "not-sent" });
+  expect(writes).toHaveLength(1);
+  owner.dispose();
+
+  const key = "agent-forge.project-create-identities.v1";
+  const encoded = storage.get(key);
+  expect(encoded).toBeDefined();
+  let saved: unknown;
+  try {
+    saved = JSON.parse(encoded!);
+  } catch {
+    throw Error("The fixture's saved metadata was not valid JSON.");
+  }
+  if (
+    typeof saved !== "object" ||
+    saved === null ||
+    !Array.isArray((saved as { records?: unknown }).records)
+  )
+    throw Error("The fixture's saved metadata shape was unexpected.");
+  const record = (saved as { records: Array<Record<string, unknown>> })
+    .records[0];
+  if (!record || typeof record.request !== "object" || record.request === null)
+    throw Error("The fixture's saved request was unavailable.");
+  const request = record.request as {
+    original: ProjectCreateOriginal;
+  };
+  record.request = {
+    ...(record.request as Record<string, unknown>),
+    original: { ...request.original, name: "Changed after durable refusal" },
+  };
+  storage.set(key, JSON.stringify(saved));
+
+  const recovered = reopen();
+  await recovered.recover();
+  expect(recovered.get().entries[0]).toMatchObject({ phase: "not-sent" });
+  expect(await recovered.retryReservation(requestId)).toBe(false);
+  expect(writes).toHaveLength(1);
+  recovered.dispose();
 });
 
 test("unknown reservation and missing server record never enable another POST", async () => {

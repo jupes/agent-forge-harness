@@ -394,6 +394,33 @@ test("Projects offers the explicit New project flow", async ({ page }) => {
   await expect(page.getByRole("dialog")).toBeVisible();
 });
 
+test("Projects remains rendered while trusted workspace scope hydrates", async ({
+  page,
+}) => {
+  const pageErrors: string[] = [];
+  const writes: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("request", (request) => {
+    if (
+      request.method() !== "GET" &&
+      /\/__agent-forge\/projects\/create-(?:reservations|commit|retire)/.test(
+        request.url(),
+      )
+    )
+      writes.push(request.method());
+  });
+
+  await openSettled(page, "/index.html#/desktop/projects");
+  const create = page.getByRole("button", {
+    name: "New project",
+    exact: true,
+  });
+  await expect(create).toBeEnabled();
+
+  expect(pageErrors).toEqual([]);
+  expect(writes).toEqual([]);
+});
+
 test("reload recovers a reserved original with protected reads only", async ({
   page,
 }) => {
