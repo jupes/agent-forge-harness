@@ -1075,6 +1075,11 @@ const unavailableCreateHeldTest = async ({ page }: { page: Page }) => {
   await expect(uncertainCard).toContainText("Reserved original — not started");
   await expect(uncertainCard).toContainText("UUID remains held");
   await page.unroute("**/config/smiths/creates");
+  const exactOriginalReadStatuses = () =>
+    originalReads
+      .filter((read) => read.requestId === requestId.value)
+      .map((read) => read.status);
+  expect(exactOriginalReadStatuses()).toEqual([404]);
 
   const missingOriginal = page.waitForResponse(
     (response) =>
@@ -1084,6 +1089,13 @@ const unavailableCreateHeldTest = async ({ page }: { page: Page }) => {
   );
   await reloadSettled(page);
   expect((await missingOriginal).status()).toBe(404);
+  // Both fresh-document recovery effects perform an exact protected read.
+  // Wait for those responses instead of assuming the first GET is all of
+  // recovery, then verify opening the editor adds no more reads.
+  await expect
+    .poll(() => exactOriginalReadStatuses().length)
+    .toBe(3);
+  expect(exactOriginalReadStatuses()).toEqual([404, 404, 404]);
   await expect(uncertainCard).toContainText("UUID remains held");
   await page.getByRole("button", { name: "New smith", exact: true }).click();
   const recovered = page.getByRole("dialog", { name: "Create a Smith" });
@@ -1093,11 +1105,7 @@ const unavailableCreateHeldTest = async ({ page }: { page: Page }) => {
   await expect(
     recovered.getByRole("button", { name: "Create Smith" }),
   ).toBeDisabled();
-  expect(
-    originalReads
-      .filter((read) => read.requestId === requestId.value)
-      .map((read) => read.status),
-  ).toEqual([404, 404]);
+  expect(exactOriginalReadStatuses()).toEqual([404, 404, 404]);
   expect(posts).toEqual([
     "/__agent-forge/config/smiths/preview",
     "/__agent-forge/config/smiths/creates/reserve",
