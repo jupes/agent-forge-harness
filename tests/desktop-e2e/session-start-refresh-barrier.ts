@@ -10,17 +10,23 @@ const successEnvelope = z
   })
   .strict();
 
-/** Hold one real identity read emitted after the preview audit event. */
-export async function holdPreviewIdentityRefresh(
+/** Observe, and optionally hold, one real identity read emitted after preview. */
+export async function observePreviewIdentityRefresh(
   page: Page,
   projectId: string,
   workspace: string,
+  options: { holdResponse?: boolean } = {},
 ) {
   let previewRequested = false;
   let held = false;
+  let observed = false;
   let release: () => void = () => {};
+  let markSettled: () => void = () => {};
   const released = new Promise<void>((resolve) => {
     release = resolve;
+  });
+  const settledRead = new Promise<void>((resolve) => {
+    markSettled = resolve;
   });
   page.on("request", (request) => {
     if (
@@ -61,16 +67,26 @@ export async function holdPreviewIdentityRefresh(
           "The actual Start identity response could not be verified.",
         );
 
-      if (previewRequested && !held) {
-        held = true;
-        await released;
+      let isObservedRefresh = false;
+      if (previewRequested && !observed) {
+        observed = true;
+        isObservedRefresh = true;
+        if (options.holdResponse) {
+          held = true;
+          await released;
+        }
       }
       await route.fulfill({ response });
+      if (isObservedRefresh) markSettled();
     },
   );
   return {
+    settledRead,
     get isHeld() {
       return held;
+    },
+    get isObserved() {
+      return observed;
     },
     release() {
       release();

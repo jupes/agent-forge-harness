@@ -8,7 +8,7 @@ import { openSettled, reloadSettled } from "../e2e/fixtures";
 import { pageToken } from "../e2e/launch-link";
 import { HEARTH_HOME } from "../e2e/servers";
 import { alpha, seedProjects, workspace } from "./project-fixtures";
-import { holdPreviewIdentityRefresh } from "./session-start-refresh-barrier";
+import { observePreviewIdentityRefresh } from "./session-start-refresh-barrier";
 
 function records() {
   try {
@@ -108,9 +108,29 @@ async function start(page: Page, provider: "claude" | "codex" = "claude") {
   await dialog
     .getByRole("combobox", { name: "Session effort", exact: true })
     .selectOption("");
+  const identityRefresh = await observePreviewIdentityRefresh(
+    page,
+    alpha.id,
+    workspace,
+    { holdResponse: false },
+  );
   await dialog
     .getByRole("button", { name: "Check supported options", exact: true })
     .click();
+  await expect.poll(() => identityRefresh.isObserved).toBe(true);
+  await identityRefresh.settledRead;
+  const identityRegion = dialog.getByRole("region", {
+    name: "Original Start requests",
+    exact: true,
+  });
+  await expect(
+    identityRegion
+      .getByRole("status")
+      .filter({ hasText: "Checking the server-owned identity page" }),
+  ).not.toBeVisible();
+  await expect(
+    identityRegion.getByRole("button", { name: "Check server", exact: true }),
+  ).toBeEnabled();
   await expect(
     dialog.getByRole("button", { name: "Start", exact: true }),
   ).toBeEnabled();
@@ -136,10 +156,12 @@ test("Start waits for the protected identity refresh emitted by preview", async 
       identityPosts++;
     if (path === `/__agent-forge/projects/${alpha.id}/sessions`) startPosts++;
   });
-  const identityRefresh = await holdPreviewIdentityRefresh(
+  mode("codex", "rich");
+  const identityRefresh = await observePreviewIdentityRefresh(
     page,
     alpha.id,
     workspace,
+    { holdResponse: true },
   );
   try {
     await openSettled(
