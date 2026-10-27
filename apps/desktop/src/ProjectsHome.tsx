@@ -11,9 +11,12 @@ import "./projects.css";
 import type { ProviderReadinessPage } from "../../../types/provider-readiness";
 import { ProjectKeeperLine } from "./KeeperBrief";
 import type { KeeperClient } from "./keeper-client";
-import { ProjectCreateControls } from "./ProjectCreateControls";
+import { ProjectCreateFlow } from "./ProjectCreateFlow";
 import { ProviderUsageStrip } from "./Providers";
-import type { ProjectCreateState } from "./project-create-client";
+import type {
+  createProjectCreateOwner,
+  ProjectCreateState,
+} from "./project-create-owner";
 
 export interface ProjectsHomeProps {
   providers?: ProviderReadinessPage | null;
@@ -26,8 +29,8 @@ export interface ProjectsHomeProps {
   writesAllowed: boolean;
   keeper?: KeeperClient;
   projectCreate: ProjectCreateState;
+  projectCreateOwner: ReturnType<typeof createProjectCreateOwner>;
   canCreateProject: boolean;
-  refreshProjectCreate(): Promise<void>;
   reload(): void;
   change(id: string, patch: ProjectPreferences): Promise<void>;
 }
@@ -55,8 +58,8 @@ export function ProjectsHomeView({
   writesAllowed,
   keeper,
   projectCreate,
+  projectCreateOwner,
   canCreateProject,
-  refreshProjectCreate,
   reload,
   change,
   filter,
@@ -157,7 +160,7 @@ export function ProjectsHomeView({
       {!home.catalog.projects.length ? (
         <EmptyState
           title="Welcome to Agent Forge"
-          hint="Your projects will appear here. Project creation is not available in this build."
+          hint="Create a reviewed project to open its Overview. Creating a project does not start a Keeper conversation."
         />
       ) : cards.length === 0 ? (
         <EmptyState
@@ -337,9 +340,9 @@ export function ProjectsHomeView({
             </footer>
           </article>
         ))}
-        <ProjectCreateControls
+        <ProjectCreateFlow
           state={projectCreate}
-          refresh={refreshProjectCreate}
+          owner={projectCreateOwner}
           canWrite={canCreateProject}
         />
       </section>

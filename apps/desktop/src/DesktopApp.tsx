@@ -79,7 +79,10 @@ export function DesktopApp(): JSX.Element {
   const recovery = useDesktopRecovery();
   const projects = useProjects();
   const providers = useProviders();
-  const projectCreate = useProjectCreate(providers.data?.workspace ?? null);
+  const projectCreate = useProjectCreate(
+    providers.data?.workspace ?? null,
+    recovery?.connection.writesAllowed ?? false,
+  );
   const smiths = useSmiths(
     route.destination === "smiths",
     providers.data?.workspace ?? null,
@@ -545,7 +548,7 @@ export function DesktopApp(): JSX.Element {
             providerStale={providers.stale}
             keeper={keeper}
             projectCreate={projectCreate.state}
-            refreshProjectCreate={projectCreate.refresh}
+            projectCreateOwner={projectCreate.client}
             canCreateProject={recovery?.connection.writesAllowed ?? false}
             home={projects.data}
             error={projects.error}

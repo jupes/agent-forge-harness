@@ -9,7 +9,10 @@ import {
   projectCreateOptionsSchema,
   projectScopePreviewSchema,
 } from "../../scripts/projects/create-options-protocol";
-import { projectCreateIdentitySchema } from "../../scripts/projects/create-protocol";
+import {
+  projectCreateDiscoverySchema,
+  projectCreateIdentitySchema,
+} from "../../scripts/projects/create-protocol";
 import { projectFixture } from "../../scripts/projects/testing";
 import type { ProjectCatalog } from "../../types/projects";
 import { readState, withStateLock, writeState } from "../e2e/bd-stand-in-state";
@@ -60,6 +63,324 @@ test.beforeEach(() => {
       ),
     ),
   );
+});
+
+async function reserveFromProjectFlow(
+  page: import("@playwright/test").Page,
+  input: { slug: string; name: string },
+) {
+  await expect(
+    page.getByRole("button", { name: "New project", exact: true }),
+  ).toBeEnabled();
+  await page.getByRole("button", { name: "New project", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toBeVisible();
+  const token = await pageToken(page);
+  const headers = {
+    "Content-Type": "application/json",
+    [OPERATOR_HEADER]: token,
+    [SURFACE_HEADER]: "ui",
+  };
+  const source = await page.evaluate(
+    async ({ headers }) => {
+      const [optionsResponse, smithsResponse, catalogResponse] =
+        await Promise.all([
+          fetch("/__agent-forge/projects/create-options", { headers }),
+          fetch("/__agent-forge/smiths", { headers }),
+          fetch("/__agent-forge/projects", { headers }),
+        ]);
+      return {
+        optionsStatus: optionsResponse.status,
+        options: await optionsResponse.json(),
+        smithsStatus: smithsResponse.status,
+        smiths: await smithsResponse.json(),
+        catalogStatus: catalogResponse.status,
+        catalog: await catalogResponse.json(),
+      };
+    },
+    { headers },
+  );
+  expect(source.optionsStatus).toBe(200);
+  expect(source.smithsStatus).toBe(200);
+  expect(source.catalogStatus).toBe(200);
+  const trusted = projectCreateOptionsSchema.parse(source.options.data);
+  const configured = smithsViewSchema.parse(source.smiths.data);
+  const catalogValue = source.catalog.data as ProjectCatalog;
+  const repositoryIndex = trusted.repositories.findIndex((row) => row.served);
+  const epic = trusted.epics[0];
+  const keeper = configured.smiths.find((row) => row.enabled);
+  expect(repositoryIndex).toBeGreaterThanOrEqual(0);
+  expect(epic).toBeDefined();
+  expect(keeper).toBeDefined();
+
+  await dialog.getByRole("textbox", { name: "Project name" }).fill(input.name);
+  await dialog.getByRole("textbox", { name: "Project slug" }).fill(input.slug);
+  await dialog
+    .getByRole("textbox", { name: "Project description" })
+    .fill(`Reviewed original for ${input.slug}.`);
+  await dialog.getByRole("textbox", { name: "Project icon" }).fill("P");
+  const keeperSelect = dialog.getByRole("combobox", { name: "Project Keeper" });
+  await expect(keeperSelect).toHaveValue("");
+  await keeperSelect.selectOption(keeper!.name);
+  await dialog
+    .getByRole("combobox", { name: "Project color" })
+    .selectOption("green");
+  await dialog
+    .locator("fieldset")
+    .nth(0)
+    .getByRole("checkbox")
+    .nth(repositoryIndex)
+    .check();
+  await dialog.locator("fieldset").nth(1).getByRole("checkbox").first().check();
+
+  await dialog
+    .getByRole("button", { name: "Review trusted project scope" })
+    .click();
+  await expect(
+    dialog.getByText("This exact original is reviewed", { exact: false }),
+  ).toBeVisible();
+  await expect(
+    dialog.getByText(trusted.workspace.path, { exact: true }),
+  ).toBeVisible();
+  const original = {
+    slug: input.slug,
+    name: input.name,
+    description: `Reviewed original for ${input.slug}.`,
+    icon: "P",
+    keeperSmith: keeper!.name,
+    color: "green" as const,
+    workspaces: [
+      {
+        root: trusted.workspace.path,
+        repositories: [trusted.repositories[repositoryIndex]!.path],
+        epicIds: [epic!.id],
+      },
+    ],
+  };
+  const beforeWrites = await page.evaluate(
+    async ({ headers }) => {
+      const response = await fetch(
+        "/__agent-forge/projects/create-reservations",
+        { headers },
+      );
+      return { status: response.status, body: await response.json() };
+    },
+    { headers },
+  );
+  expect(beforeWrites.status).toBe(200);
+  expect(beforeWrites.body.data.operations).toEqual([]);
+
+  await dialog
+    .getByRole("button", { name: "Reserve reviewed original" })
+    .click();
+  const reviewButton = page.getByRole("button", {
+    name: "Review reserved project",
+    exact: true,
+  });
+  await expect(reviewButton).toBeVisible();
+  const discovery = await page.evaluate(
+    async ({ headers }) => {
+      const response = await fetch(
+        "/__agent-forge/projects/create-reservations",
+        { headers },
+      );
+      return { status: response.status, body: await response.json() };
+    },
+    { headers },
+  );
+  expect(discovery.status).toBe(200);
+  const discoveryPage = projectCreateDiscoverySchema.parse(discovery.body.data);
+  expect(discoveryPage.operations).toHaveLength(1);
+  const reservedRow = discoveryPage.operations[0]!;
+  expect(reservedRow.state).toBe("reserved");
+  const identityRead = await page.evaluate(
+    async ({ headers, requestId }) => {
+      const response = await fetch(
+        `/__agent-forge/projects/create-reservations/${requestId}`,
+        { headers },
+      );
+      return { status: response.status, body: await response.json() };
+    },
+    { headers, requestId: reservedRow!.requestId },
+  );
+  expect(identityRead.status).toBe(200);
+  const identity = projectCreateIdentitySchema.parse(identityRead.body.data);
+  expect(identity).toMatchObject({ state: "reserved", original });
+  expect(identity.baseRevision).toBe(catalogValue.revision);
+  return {
+    requestId: identity.requestId,
+    requestHash: identity.requestHash,
+    original,
+  };
+}
+
+test("a reviewed project is created from its saved original and opens Overview", async ({
+  page,
+}) => {
+  const mutations: Array<{ path: string; body: unknown }> = [];
+  let sessionStartPosts = 0;
+  page.on("request", (request) => {
+    if (request.method() !== "POST") return;
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith("/session-start-identities")) sessionStartPosts++;
+    if (path.startsWith("/__agent-forge/projects/create-reservations"))
+      mutations.push({ path, body: request.postDataJSON() });
+  });
+  await openSettled(page, "/index.html#/desktop/projects");
+  const saved = await reserveFromProjectFlow(page, {
+    slug: "reviewed-project-flow",
+    name: "Reviewed project flow",
+  });
+  expect(mutations).toHaveLength(1);
+  expect(mutations[0]).toMatchObject({
+    path: "/__agent-forge/projects/create-reservations",
+    body: {
+      requestId: saved.requestId,
+      original: saved.original,
+    },
+  });
+  expect(sessionStartPosts).toBe(0);
+
+  await page
+    .getByRole("button", { name: "Review reserved project", exact: true })
+    .click();
+  const review = page.getByRole("dialog");
+  await expect(
+    review.getByText(saved.requestId, { exact: true }),
+  ).toBeVisible();
+  await expect(
+    review.getByText(saved.requestHash, { exact: true }),
+  ).toBeVisible();
+  const commitReply = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname ===
+      `/__agent-forge/projects/create-reservations/${saved.requestId}/commit`,
+  );
+  await review
+    .getByRole("button", { name: "Create project from this original" })
+    .click();
+  const commitResponse = await commitReply;
+  expect(commitResponse.status()).toBe(200);
+  const committed = projectCreateIdentitySchema.parse(
+    (await commitResponse.json()).data.operation,
+  );
+  expect(committed.projectId).not.toBeNull();
+  const createdProjectId = committed.projectId!;
+  await expect(page).toHaveURL(
+    new RegExp(`/project/${createdProjectId}/overview$`),
+  );
+  await expect(page.locator(".af-desktop-project-name")).toHaveText(
+    saved.original.name,
+  );
+  expect(mutations.map((item) => item.path)).toEqual([
+    "/__agent-forge/projects/create-reservations",
+    `/__agent-forge/projects/create-reservations/${saved.requestId}/commit`,
+  ]);
+  expect(mutations[1]?.body).toMatchObject({
+    requestHash: saved.requestHash,
+    reviewedScopeHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+  });
+  expect(sessionStartPosts).toBe(0);
+
+  const token = await pageToken(page);
+  const headers = {
+    [OPERATOR_HEADER]: token,
+    [SURFACE_HEADER]: "ui",
+  };
+  const readback = await page.evaluate(
+    async ({ headers, requestId }) => {
+      const [identityResponse, catalogResponse] = await Promise.all([
+        fetch(`/__agent-forge/projects/create-reservations/${requestId}`, {
+          headers,
+        }),
+        fetch("/__agent-forge/projects", { headers }),
+      ]);
+      return {
+        identityStatus: identityResponse.status,
+        identity: await identityResponse.json(),
+        catalogStatus: catalogResponse.status,
+        catalog: await catalogResponse.json(),
+      };
+    },
+    { headers, requestId: saved.requestId },
+  );
+  expect(readback.identityStatus).toBe(200);
+  expect(readback.catalogStatus).toBe(200);
+  expect(
+    projectCreateIdentitySchema.parse(readback.identity.data),
+  ).toMatchObject({
+    requestId: saved.requestId,
+    requestHash: saved.requestHash,
+    original: saved.original,
+    state: "created",
+    projectId: createdProjectId,
+  });
+  expect(readback.catalog.data.projects).toContainEqual(
+    expect.objectContaining({
+      id: createdProjectId,
+      slug: saved.original.slug,
+    }),
+  );
+});
+
+test("retirement is explicit and a tombstone readback unlocks a fresh review", async ({
+  page,
+}) => {
+  const mutations: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "POST")
+      mutations.push(new URL(request.url()).pathname);
+  });
+  await openSettled(page, "/index.html#/desktop/projects");
+  const saved = await reserveFromProjectFlow(page, {
+    slug: "retired-project-flow",
+    name: "Retired project flow",
+  });
+  await page
+    .getByRole("button", { name: "Review reserved project", exact: true })
+    .click();
+  const review = page.getByRole("dialog");
+  await review
+    .getByRole("button", { name: "Retire reserved original" })
+    .click();
+  const confirmation = review.getByRole("alertdialog", {
+    name: "Confirm project retirement",
+  });
+  await expect(confirmation).toContainText(saved.requestId);
+  await confirmation
+    .getByRole("button", { name: "Confirm retirement" })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "New project", exact: true }),
+  ).toBeEnabled();
+  const token = await pageToken(page);
+  const retired = await page.evaluate(
+    async ({ token, requestId }) => {
+      const response = await fetch(
+        `/__agent-forge/projects/create-reservations/${requestId}`,
+        {
+          headers: {
+            ["X-Agent-Forge-Operator"]: token,
+            ["X-Agent-Forge-Surface"]: "ui",
+          },
+        },
+      );
+      return { status: response.status, body: await response.json() };
+    },
+    { token, requestId: saved.requestId },
+  );
+  expect(retired.status).toBe(200);
+  expect(projectCreateIdentitySchema.parse(retired.body.data)).toMatchObject({
+    requestId: saved.requestId,
+    requestHash: saved.requestHash,
+    original: saved.original,
+    state: "retired-before-create",
+    projectId: null,
+  });
+  expect(mutations).toEqual([
+    "/__agent-forge/projects/create-reservations",
+    `/__agent-forge/projects/create-reservations/${saved.requestId}/retire`,
+  ]);
 });
 
 test("Projects offers the explicit New project flow", async ({ page }) => {

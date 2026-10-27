@@ -1,25 +1,54 @@
-import { useEffect, useMemo, useState } from "preact/hooks";
-import { operatorRead } from "../../../docs/js/operator";
+import { useEffect, useMemo, useRef, useState } from "preact/hooks";
+import { operatorPost, operatorRead } from "../../../docs/js/operator";
 import { createProjectCreateApi } from "./project-create-api";
 import {
-  createProjectCreateClient,
+  createProjectCreateIdentities,
+  PROJECT_CREATE_IDENTITIES,
+} from "./project-create-identities";
+import {
+  createProjectCreateOwner,
   type ProjectCreateState,
-} from "./project-create-client";
+} from "./project-create-owner";
 
-const api = createProjectCreateApi(operatorRead);
+const api = createProjectCreateApi({ read: operatorRead, post: operatorPost });
 
-export function useProjectCreate(workspace: string | null) {
-  const client = useMemo(
-    () =>
-      createProjectCreateClient({
-        workspace,
-        options: api.options,
-        discovery: api.discovery,
-        original: api.original,
-        changed: () => undefined,
+export function useProjectCreate(
+  workspace: string | null,
+  writesAllowed: boolean,
+) {
+  const workspaceRef = useRef(workspace);
+  workspaceRef.current = workspace;
+  const writes = useMemo(() => ({ current: writesAllowed }), []);
+  writes.current = writesAllowed;
+  const client = useMemo(() => {
+    let storage: Storage | null = null;
+    try {
+      storage = window.localStorage;
+    } catch {
+      // Metadata storage failure blocks reservation before any POST.
+    }
+    return createProjectCreateOwner({
+      workspace,
+      currentWorkspace: () => workspaceRef.current,
+      canWrite: () => writes.current,
+      identities: createProjectCreateIdentities({
+        workspace: workspace ?? "/",
+        storage,
+        withLock: async (work) => {
+          if (!navigator.locks)
+            throw Error("The shared project-create lock is unavailable.");
+          return navigator.locks.request(
+            PROJECT_CREATE_IDENTITIES,
+            { signal: AbortSignal.timeout(30_000) },
+            work,
+          );
+        },
       }),
-    [workspace],
-  );
+      api,
+      mint: () => crypto.randomUUID(),
+      changed: () => undefined,
+    });
+  }, [workspace]);
   const [snapshot, setSnapshot] = useState<{
     client: typeof client;
     state: ProjectCreateState;
