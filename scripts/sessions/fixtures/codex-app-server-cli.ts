@@ -42,6 +42,9 @@ if (argv.includes("--sync")) {
 }
 record({
   kind: "process",
+  ...(mode === "fork-service-tier-null-child-approval"
+    ? { fixtureMode: mode }
+    : {}),
   argv,
   cwd: process.cwd(),
   pid: process.pid,
@@ -1052,6 +1055,8 @@ while (true) {
             ],
           },
         };
+        if (mode === "fork-service-tier-null-child-approval")
+          record({ kind: "approval-offer", threadId, turnId });
         await send(request);
         if (mode === "approval-command-duplicate") await send(request);
         if (mode === "approval-conflict")

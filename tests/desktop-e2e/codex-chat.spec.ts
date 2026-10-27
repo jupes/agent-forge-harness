@@ -60,6 +60,9 @@ function calls(): Array<{
   result?: unknown;
   pid?: number;
   childPid?: number;
+  fixtureMode?: unknown;
+  threadId?: unknown;
+  turnId?: unknown;
 }> {
   const path = join(HEARTH_HOME, "codex-chat-fixture-calls.jsonl");
   if (!existsSync(path)) return [];
@@ -125,6 +128,11 @@ async function completeForkSourceTurn(
   return selectedRequestId;
 }
 let previous = new Set<string>();
+let forkJourneyHttpFacts: Array<{
+  method: string;
+  path: string;
+  status: number | null;
+}> = [];
 test.beforeEach(() => {
   seedProjects();
   for (const name of [
@@ -135,10 +143,109 @@ test.beforeEach(() => {
     if (existsSync(file)) unlinkSync(file);
   }
   previous = new Set(records().map((record) => record.id));
+  forkJourneyHttpFacts = [];
   mode("approval-command");
 });
 test.afterEach(async ({ page }) => {
   const info = test.info();
+  if (
+    info.title ===
+    "Codex Chat explicitly reviews, forks, reloads and controls only the linked child"
+  ) {
+    try {
+      let fixtureRows: ReturnType<typeof calls> = [];
+      try {
+        fixtureRows = calls();
+      } catch {
+        // Diagnostics are best effort and never replace the primary result.
+      }
+      const allowedId = (value: unknown) =>
+        typeof value === "string" &&
+        /^[0-9a-f-]{1,64}$/i.test(value)
+          ? value
+          : null;
+      const nativeFacts = fixtureRows.slice(-96).map((row) => {
+        const params = row.params;
+        const result = row.result;
+        const thread =
+          typeof result === "object" && result !== null && "thread" in result
+            ? (result as { thread?: unknown }).thread
+            : null;
+        const threadObject =
+          typeof thread === "object" && thread !== null
+            ? (thread as Record<string, unknown>)
+            : null;
+        const eventThread =
+          params && typeof params.thread === "object" && params.thread !== null
+            ? (params.thread as Record<string, unknown>)
+            : null;
+        const threadStatus =
+          threadObject &&
+          typeof threadObject.status === "object" &&
+          threadObject.status !== null
+            ? (threadObject.status as Record<string, unknown>).type
+            : null;
+        return {
+          kind: /^[a-zA-Z0-9/._-]{1,80}$/.test(row.kind)
+            ? row.kind
+            : "other",
+          ...(typeof row.method === "string" &&
+          /^[a-zA-Z0-9/._-]{1,80}$/.test(row.method)
+            ? { method: row.method }
+            : {}),
+          ...(row.kind === "process" &&
+          row.fixtureMode === "fork-service-tier-null-child-approval"
+            ? { fixtureMode: row.fixtureMode }
+            : {}),
+          ...(params
+            ? {
+                threadId: allowedId(params.threadId),
+                turnId: allowedId(params.turnId),
+                requestId: allowedId(params.requestId),
+                lastTurnId: allowedId(params.lastTurnId),
+              }
+            : {}),
+          ...(row.kind === "approval-offer"
+            ? {
+                threadId: allowedId(row.threadId),
+                turnId: allowedId(row.turnId),
+              }
+            : {}),
+          ...(eventThread
+            ? { eventThreadId: allowedId(eventThread.id) }
+            : {}),
+          ...(threadObject
+            ? {
+                resultThreadId: allowedId(threadObject.id),
+                resultParentId: allowedId(threadObject.forkedFromId),
+                resultState:
+                  typeof threadStatus === "string" &&
+                  /^[a-zA-Z0-9_-]{1,32}$/.test(threadStatus)
+                    ? threadStatus
+                    : null,
+              }
+            : {}),
+        };
+      });
+      const payload = {
+        truncated: fixtureRows.length > 96 || forkJourneyHttpFacts.length > 96,
+        nativeFacts,
+        httpFacts: forkJourneyHttpFacts.slice(-96),
+      };
+      const body = Buffer.from(JSON.stringify(payload));
+      await info.attach("fork-child-approval-diagnostic.json", {
+        contentType: "application/json",
+        body:
+          body.length <= 256 * 1024
+            ? body
+            : Buffer.from(
+                JSON.stringify({ truncated: true, recordCount: nativeFacts.length }),
+              ),
+      });
+    } catch {
+      // Diagnostics must never alter the test result.
+    }
+  }
   if (
     info.title ===
       "native Chat web-search reports retain literal snapshots through export and reload without retrying the turn" &&
@@ -2967,6 +3074,29 @@ test("Codex Chat explicitly reviews, forks, reloads and controls only the linked
 }) => {
   await page.setViewportSize({ width: 1100, height: 760 });
   await page.emulateMedia({ reducedMotion: "reduce" });
+  forkJourneyHttpFacts = [];
+  const tracked = new Map<Request, (typeof forkJourneyHttpFacts)[number]>();
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (
+      !/\/(?:fork-review|fork-reservations|forks|fork-turns|fork-approvals)(?:\/|$)/.test(
+        url.pathname,
+      )
+    )
+      return;
+    if (forkJourneyHttpFacts.length >= 96) return;
+    const fact = {
+      method: request.method(),
+      path: url.pathname,
+      status: null,
+    };
+    forkJourneyHttpFacts.push(fact);
+    tracked.set(request, fact);
+  });
+  page.on("response", (response) => {
+    const fact = tracked.get(response.request());
+    if (fact) fact.status = response.status();
+  });
   mode("fork-service-tier-null-child-approval");
   const { pane, record } = await startedChat(page);
   const selectedTurnRequestId = await completeForkSourceTurn(
