@@ -176,12 +176,21 @@ test("Start waits for the protected identity refresh emitted by preview", async 
       exact: true,
     });
     await dialog.getByRole("button", { name: /Cx · Codex/ }).click();
+    await expect(
+      dialog.getByRole("combobox", { name: "Session smith", exact: true }),
+    ).toHaveValue("codex-journeyman");
+    await expect(
+      dialog.getByRole("textbox", { name: "Session model", exact: true }),
+    ).toHaveValue("gpt-5-codex");
     await dialog
       .getByRole("textbox", { name: "Session prompt", exact: true })
       .fill("Inspect private session activity");
     await dialog
       .getByRole("combobox", { name: "Session effort", exact: true })
       .selectOption("");
+    await expect(
+      dialog.getByRole("combobox", { name: "Session effort", exact: true }),
+    ).toHaveValue("");
 
     await dialog
       .getByRole("button", { name: "Check supported options", exact: true })
