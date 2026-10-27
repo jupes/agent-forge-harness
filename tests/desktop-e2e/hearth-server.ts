@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { operatorCouncilLedger } from "../../scripts/council/ledger-wiring";
 import { supervise } from "../../scripts/executors/supervisor";
+import { ensurePrivateHome } from "../../scripts/hearth/home-guard";
 import { closeOnSignal, createHearth } from "../../scripts/hearth/server";
 import { isMain } from "../../scripts/is-main";
 import { createProviderLoginService } from "../../scripts/providers/login";
@@ -17,6 +18,7 @@ async function main() {
   const home = process.env["AGENT_FORGE_HOME"];
   if (!home)
     throw Error("The desktop fixture requires an isolated hearth home.");
+  ensurePrivateHome(home);
   const args = process.argv.slice(2),
     index = args.indexOf("--root");
   const root = index >= 0 ? args[index + 1] : process.cwd();
