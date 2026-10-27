@@ -15,7 +15,8 @@ import { sessionTranscriptExportSchema } from "../../scripts/sessions/library-pr
 import { openSettled, reloadSettled } from "../e2e/fixtures";
 import { pageToken } from "../e2e/launch-link";
 import { HEARTH_HOME } from "../e2e/servers";
-import { alpha, beta, seedProjects } from "./project-fixtures";
+import { alpha, beta, seedProjects, workspace } from "./project-fixtures";
+import { observePreviewIdentityRefresh } from "./session-start-refresh-barrier";
 
 const registryFile = () => join(HEARTH_HOME, "sessions", "registry.json");
 function records() {
@@ -143,9 +144,29 @@ async function start(
       dialog.getByText("text · private-notes.txt", { exact: false }),
     ).toBeVisible();
   }
+  const identityRefresh = await observePreviewIdentityRefresh(
+    page,
+    alpha.id,
+    workspace,
+    { holdResponse: false },
+  );
   await dialog
     .getByRole("button", { name: "Check supported options", exact: true })
     .click();
+  await expect.poll(() => identityRefresh.isObserved).toBe(true);
+  await identityRefresh.settledRead;
+  const identityRegion = dialog.getByRole("region", {
+    name: "Original Start requests",
+    exact: true,
+  });
+  await expect(
+    identityRegion
+      .getByRole("status")
+      .filter({ hasText: "Checking the server-owned identity page" }),
+  ).not.toBeVisible();
+  await expect(
+    identityRegion.getByRole("button", { name: "Check server", exact: true }),
+  ).toBeEnabled();
   await expect(
     dialog.getByRole("button", { name: "Start", exact: true }),
   ).toBeEnabled();
@@ -157,6 +178,107 @@ async function start(
   if (!record) throw Error("Missing isolated registered session");
   return record;
 }
+
+test("Start waits for the protected identity refresh emitted by preview", async ({
+  page,
+}) => {
+  const before = records().length;
+  let identityPosts = 0;
+  let startPosts = 0;
+  page.on("request", (request) => {
+    if (request.method() !== "POST") return;
+    const path = new URL(request.url()).pathname;
+    if (path === `/__agent-forge/projects/${alpha.id}/session-start-identities`)
+      identityPosts++;
+    if (path === `/__agent-forge/projects/${alpha.id}/sessions`) startPosts++;
+  });
+  const identityRefresh = await observePreviewIdentityRefresh(
+    page,
+    alpha.id,
+    workspace,
+    { holdResponse: true },
+  );
+  try {
+    await openSettled(
+      page,
+      `/index.html#/desktop/project/${alpha.id}/sessions`,
+    );
+    await page
+      .getByRole("button", { name: "New session", exact: true })
+      .click();
+    const dialog = page.getByRole("dialog", {
+      name: "New session · Alpha",
+      exact: true,
+    });
+    await dialog
+      .getByRole("textbox", { name: "Session prompt", exact: true })
+      .fill("Private library fixture request");
+    await dialog
+      .getByRole("combobox", { name: "Session mode", exact: true })
+      .selectOption("task");
+    await dialog
+      .getByRole("combobox", { name: "Session effort", exact: true })
+      .selectOption("");
+
+    await dialog
+      .getByRole("button", { name: "Check supported options", exact: true })
+      .click();
+    await expect(
+      dialog.getByRole("region", {
+        name: "Equivalent session command",
+        exact: true,
+      }),
+    ).toBeVisible();
+    await expect.poll(() => identityRefresh.isHeld).toBe(true);
+
+    const identityRegion = dialog.getByRole("region", {
+      name: "Original Start requests",
+      exact: true,
+    });
+    await expect(
+      identityRegion
+        .getByRole("status")
+        .filter({ hasText: "Checking the server-owned identity page" }),
+    ).toBeVisible();
+    const startButton = dialog.getByRole("button", {
+      name: "Start",
+      exact: true,
+    });
+    await expect(startButton).toBeDisabled();
+    await dialog
+      .getByRole("textbox", { name: "Session prompt", exact: true })
+      .focus();
+    await page.keyboard.press("Control+Enter");
+    expect(identityRefresh.isHeld).toBe(true);
+    expect(identityPosts).toBe(0);
+    expect(startPosts).toBe(0);
+    expect(records()).toHaveLength(before);
+  } finally {
+    identityRefresh.release();
+  }
+
+  const dialog = page.getByRole("dialog", {
+    name: "New session · Alpha",
+    exact: true,
+  });
+  await expect(
+    dialog
+      .getByRole("region", {
+        name: "Original Start requests",
+        exact: true,
+      })
+      .getByRole("status")
+      .filter({ hasText: "Checking the server-owned identity page" }),
+  ).not.toBeVisible();
+  await dialog.getByRole("button", { name: "Start", exact: true }).click();
+  await expect(
+    page.getByRole("region", { name: "Session conversation", exact: true }),
+  ).toBeVisible();
+  expect(identityPosts).toBe(1);
+  expect(startPosts).toBe(1);
+  expect(records()).toHaveLength(before + 1);
+});
+
 async function actions(page: Page) {
   await page
     .getByRole("button", { name: "Session actions", exact: true })

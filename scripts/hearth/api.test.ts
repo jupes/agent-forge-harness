@@ -3652,8 +3652,6 @@ describe("a read row or the stream while another connection holds the write lock
           };
         return { status: 1, stdout: "", stderr: "" };
       };
-    let workspace = "";
-    const git = forkReadGit(() => workspace);
     // Scope validation for this read consults projectSnapshotReader, which
     // opens the Hearth ledger. Validate the child GET on a separate unlocked
     // Hearth so the locked matrix below still starts with a cold ledger.
@@ -3744,6 +3742,21 @@ describe("a read row or the stream while another connection holds the write lock
     );
     expect(canonicalResponse.status).toBe(200);
 
+    let workspace = "";
+    const git: GitRun = (args) => {
+      const top = workspace.replaceAll("\\", "/");
+      if (args[0] === "rev-parse")
+        return { status: 0, stdout: `${top}\n`, stderr: "" };
+      if (args[0] === "worktree")
+        return {
+          status: 0,
+          stdout: [`worktree ${top}`, "HEAD aaa", "branch refs/heads/master"]
+            .concat("", "")
+            .join("\0"),
+          stderr: "",
+        };
+      return { status: 1, stdout: "", stderr: "" };
+    };
     const h = await start({
       files: { ".tmp/work/forge-runs/demo.json": RUN_STATE },
       api: { git },
