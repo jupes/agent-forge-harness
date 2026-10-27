@@ -5,6 +5,7 @@ import {
   expect,
   type Page,
   type Request,
+  type Response,
   type Route,
   test,
 } from "@playwright/test";
@@ -28,7 +29,7 @@ import {
   sessionOperationIdentityPageSchema,
 } from "../../scripts/sessions/session-operation-identities-protocol";
 import { pageToken } from "../e2e/launch-link";
-import { HEARTH_HOME } from "../e2e/servers";
+import { DASHBOARD_PORT, HEARTH_HOME } from "../e2e/servers";
 import { alpha, ROOT } from "./environment";
 
 const FORK_RESTART_PATH = "/__desktop-restart-fixture/restart-host-fork";
@@ -54,8 +55,23 @@ const FIXTURE_CALL_KINDS = [
 ] as const;
 
 let forkOriginFailureFacts: (() => Record<string, unknown>) | null = null;
+let forkBaseRestoreNeeded = false;
+let forkBaseRestoreStatus: "not-needed" | "verified" | "failed" = "not-needed";
 
 test.afterEach(async ({ page }, testInfo) => {
+  let restorationError: unknown = null;
+  if (forkBaseRestoreNeeded) {
+    try {
+      await restoreBaseOrigin();
+      forkBaseRestoreNeeded = false;
+      forkBaseRestoreStatus = "verified";
+    } catch (error) {
+      restorationError = error;
+      forkBaseRestoreStatus = "failed";
+    }
+  }
+  if (testInfo.errors.length === 0 && restorationError)
+    throw new Error("The restart fixture did not restore its base origin.");
   if (testInfo.errors.length === 0 || !forkOriginFailureFacts) return;
   try {
     let currentOrigin: string | null = null;
@@ -70,6 +86,7 @@ test.afterEach(async ({ page }, testInfo) => {
     try {
       facts = forkOriginFailureFacts();
       if (currentOrigin) facts.origin = currentOrigin;
+      facts.baseOriginRestore = forkBaseRestoreStatus;
     } catch {
       facts = { availability: "unavailable" };
     }
@@ -112,6 +129,16 @@ function parseJson(value: string, label: string): unknown {
   } catch {
     throw new Error(`The owned ${label} was invalid.`);
   }
+}
+
+function waitForTextResponse(
+  page: Page,
+  predicate: (response: Response) => boolean,
+): Promise<{ status: number; text: string }> {
+  return page.waitForResponse(predicate).then(async (response) => ({
+    status: response.status(),
+    text: await response.text(),
+  }));
 }
 
 function rows(): SessionRow[] {
@@ -732,6 +759,76 @@ async function issueRestart(): Promise<{ url: string; status: number }> {
   return { url: data["url"], status: response.status };
 }
 
+async function restoreBaseOrigin(): Promise<void> {
+  const manifest = record(
+    parseJson(
+      readFileSync(join(HEARTH_HOME, "restart-fixture.json"), "utf8"),
+      "restart manifest",
+    ),
+  );
+  const control = record(manifest?.["fixtureControl"]);
+  const port = control?.["port"],
+    secret = control?.["secret"];
+  if (
+    typeof port !== "number" ||
+    typeof secret !== "string" ||
+    !/^[a-f0-9]{64}$/.test(secret)
+  )
+    throw new Error("The owned fixture restore control was not verified.");
+  const result = await new Promise<{ status: number; body: string }>(
+    (resolve, reject) => {
+      const request = httpRequest(
+        {
+          host: "127.0.0.1",
+          port,
+          path: "/__desktop-restart-fixture/restore-base-origin",
+          method: "POST",
+          headers: { [CONTROL_HEADER]: secret, "Content-Length": "0" },
+        },
+        (incoming) => {
+          let body = "";
+          incoming.setEncoding("utf8");
+          incoming.on("data", (chunk: string) => {
+            body += chunk;
+            if (body.length > 8192) incoming.destroy();
+          });
+          incoming.on("end", () => {
+            clearTimeout(deadline);
+            resolve({ status: incoming.statusCode ?? 0, body });
+          });
+          incoming.on("error", (error) => {
+            clearTimeout(deadline);
+            reject(error);
+          });
+        },
+      );
+      const deadline = setTimeout(
+        () =>
+          request.destroy(
+            new Error("The bounded fixture base-origin restore timed out."),
+          ),
+        60_000,
+      );
+      request.on("error", (error) => {
+        clearTimeout(deadline);
+        reject(error);
+      });
+      request.end();
+    },
+  );
+  const envelope = record(parseJson(result.body, "fixture restore response"));
+  const data = record(envelope?.["data"]);
+  if (
+    result.status !== 200 ||
+    envelope?.["ok"] !== true ||
+    typeof data?.["url"] !== "string" ||
+    typeof data["pid"] !== "number" ||
+    !Number.isSafeInteger(data["pid"]) ||
+    new URL(data["url"]).origin !== `http://127.0.0.1:${DASHBOARD_PORT}`
+  )
+    throw new Error("The owned fixture base origin could not be verified.");
+}
+
 async function observeEmptyFirstDocument(page: Page, generation: number) {
   const key = `${INITIAL_STORAGE_KEY}_${generation}`;
   await page.addInitScript(
@@ -936,6 +1033,8 @@ test("two actual host replacements recover the exact Fork original before and af
   page,
 }) => {
   test.setTimeout(180_000);
+  forkBaseRestoreNeeded = false;
+  forkBaseRestoreStatus = "not-needed";
   const startWrites: string[] = [];
   const identityWrites: string[] = [];
   const forkBodies: Array<{ path: string; body: unknown }> = [];
@@ -1072,6 +1171,7 @@ test("two actual host replacements recover the exact Fork original before and af
       writes: identityWrites.length,
       forks: rpcCount("thread/fork"),
     };
+    forkBaseRestoreNeeded = true;
     const firstRestart = await issueRestart();
     currentUrl = firstRestart.url;
     currentOrigin = await authenticateNewHost(page, currentUrl, 1);
@@ -1120,11 +1220,13 @@ test("two actual host replacements recover the exact Fork original before and af
 
   const firstRequestId = firstReservation.metadata()!.requestId;
   const firstRequestHash = firstReservation.metadata()!.requestHash;
-  const retirementResponse = page.waitForResponse((response) => {
+  const retirementResponse = waitForTextResponse(page, (response) => {
     const url = new URL(response.url());
     return (
       response.request().method() === "POST" &&
-      url.pathname.endsWith(`/fork-reservations/${firstRequestId}/retire`)
+      url.origin === currentOrigin &&
+      url.pathname ===
+        `/__agent-forge/projects/${alpha.id}/sessions/${first.parent.id}/fork-reservations/${firstRequestId}/retire`
     );
   });
   await reviewA
@@ -1134,9 +1236,9 @@ test("two actual host replacements recover the exact Fork original before and af
     })
     .click();
   const retirementHttp = await retirementResponse;
-  expect(retirementHttp.status()).toBe(200);
+  expect(retirementHttp.status).toBe(200);
   const retirementEnvelope = record(
-    parseJson(await retirementHttp.text(), "retired Fork original"),
+    parseJson(retirementHttp.text, "retired Fork original"),
   );
   if (retirementEnvelope?.["ok"] !== true)
     throw new Error("The Fork reservation retirement was not confirmed.");
@@ -1167,10 +1269,11 @@ test("two actual host replacements recover the exact Fork original before and af
   });
   expect(rpcCount("thread/fork")).toBe(forksBefore);
 
-  const replacementReserveResponse = page.waitForResponse((response) => {
+  const replacementReserveResponse = waitForTextResponse(page, (response) => {
     const url = new URL(response.url());
     return (
       response.request().method() === "POST" &&
+      url.origin === currentOrigin &&
       url.pathname ===
         `/__agent-forge/projects/${alpha.id}/sessions/${first.parent.id}/fork-reservations`
     );
@@ -1182,12 +1285,9 @@ test("two actual host replacements recover the exact Fork original before and af
     })
     .click();
   const replacementReserveHttp = await replacementReserveResponse;
-  expect(replacementReserveHttp.status()).toBe(200);
+  expect(replacementReserveHttp.status).toBe(200);
   const replacementReserveEnvelope = record(
-    parseJson(
-      await replacementReserveHttp.text(),
-      "replacement Fork reservation",
-    ),
+    parseJson(replacementReserveHttp.text, "replacement Fork reservation"),
   );
   if (replacementReserveEnvelope?.["ok"] !== true)
     throw new Error("The replacement Fork reservation was not confirmed.");
@@ -1203,10 +1303,11 @@ test("two actual host replacements recover the exact Fork original before and af
   stage = "replacement-reserved";
   expect(firstReplacement.requestId).not.toBe(firstRequestId);
   expect(firstReplacement.requestHash).not.toBe(firstRequestHash);
-  const historyARead = page.waitForResponse((response) => {
+  const historyARead = waitForTextResponse(page, (response) => {
     const url = new URL(response.url());
     return (
       response.request().method() === "GET" &&
+      url.origin === currentOrigin &&
       url.pathname ===
         `/__agent-forge/projects/${alpha.id}/codex-chat-forks/${firstRequestId}`
     );
@@ -1218,9 +1319,9 @@ test("two actual host replacements recover the exact Fork original before and af
     })
     .click();
   const historyAHttp = await historyARead;
-  expect(historyAHttp.status()).toBe(200);
+  expect(historyAHttp.status).toBe(200);
   const historyAEnvelope = record(
-    parseJson(await historyAHttp.text(), "retired Fork history"),
+    parseJson(historyAHttp.text, "retired Fork history"),
   );
   expect(
     codexChatForkIdentityMetadataSchema.parse(historyAEnvelope?.["data"]),
@@ -1243,11 +1344,13 @@ test("two actual host replacements recover the exact Fork original before and af
     })
     .click();
 
-  const firstLinkedResponse = page.waitForResponse((response) => {
+  const firstLinkedResponse = waitForTextResponse(page, (response) => {
     const url = new URL(response.url());
     return (
       response.request().method() === "POST" &&
-      url.pathname.endsWith(`/sessions/${first.parent.id}/forks`)
+      url.origin === currentOrigin &&
+      url.pathname ===
+        `/__agent-forge/projects/${alpha.id}/sessions/${first.parent.id}/forks`
     );
   });
   await reviewA
@@ -1257,9 +1360,9 @@ test("two actual host replacements recover the exact Fork original before and af
     })
     .click();
   const firstLinkedHttp = await firstLinkedResponse;
-  expect(firstLinkedHttp.status()).toBe(200);
+  expect(firstLinkedHttp.status).toBe(200);
   const firstLinkedEnvelope = record(
-    parseJson(await firstLinkedHttp.text(), "linked Fork response"),
+    parseJson(firstLinkedHttp.text, "linked Fork response"),
   );
   if (firstLinkedEnvelope?.["ok"] !== true)
     throw new Error("The first native Fork response was invalid.");
@@ -1347,6 +1450,7 @@ test("two actual host replacements recover the exact Fork original before and af
       starts: startWrites.length,
       writes: identityWrites.length,
     };
+    forkBaseRestoreNeeded = true;
     const secondRestart = await issueRestart();
     currentUrl = secondRestart.url;
     currentOrigin = await authenticateNewHost(page, currentUrl, 2);
