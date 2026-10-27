@@ -314,6 +314,122 @@ test("a canonical native Chat configuration persists without rewriting the alias
   ).toEqual(configuration);
 });
 
+test("owned Chat durably binds one private generation before dispatch and release before outcome", async () => {
+  const f = await fixture("normal");
+  let generationWasDurableBeforeRuntime = false;
+  const runtimeRun = f.runtime.run.bind(f.runtime);
+  f.runtime.run = async (input, persist, signal, callbacks) => {
+    const owner = createSessionRegistry(f.home, "codex", "chat")
+      .listAll(f.project.id)
+      .find((record) => record.requestId === f.request.requestId);
+    if (owner) {
+      const journal: unknown = JSON.parse(
+          readFileSync(
+            conversationFile(f.home, f.project.id, {
+              kind: "session",
+              projectId: f.project.id,
+              sessionId: owner.id,
+            }),
+            "utf8",
+          ),
+        ),
+        isRecord = (value: unknown): value is Record<string, unknown> =>
+          typeof value === "object" && value !== null && !Array.isArray(value);
+      if (isRecord(journal) && Array.isArray(journal.frames))
+        generationWasDurableBeforeRuntime = journal.frames.some(
+          (frame) =>
+            isRecord(frame) &&
+            isRecord(frame.event) &&
+            frame.event.kind === "owner-generation-started",
+        );
+    }
+    return runtimeRun(input, persist, signal, callbacks);
+  };
+  const service = f.open();
+  const started = await service.start(f.project.id, f.request);
+  await service.settled(f.project.id, started.session.id);
+  const path = conversationFile(f.home, f.project.id, {
+      kind: "session",
+      projectId: f.project.id,
+      sessionId: started.session.id,
+    }),
+    stored: unknown = JSON.parse(readFileSync(path, "utf8"));
+  const isRecord = (value: unknown): value is Record<string, unknown> =>
+      typeof value === "object" && value !== null && !Array.isArray(value),
+    frames =
+      isRecord(stored) && Array.isArray(stored.frames)
+        ? stored.frames.flatMap((frame) =>
+            isRecord(frame) &&
+            typeof frame.seq === "number" &&
+            isRecord(frame.event)
+              ? [{ seq: frame.seq, event: frame.event }]
+              : [],
+          )
+        : [],
+    lifecycle = frames.filter(
+      ({ event }) =>
+        event.kind === "owner-generation-started" ||
+        event.kind === "owner-generation-released",
+    );
+
+  expect(generationWasDurableBeforeRuntime).toBe(true);
+  expect(lifecycle.map(({ event }) => event.kind)).toEqual([
+    "owner-generation-started",
+    "owner-generation-released",
+  ]);
+  const generationStarted = lifecycle[0],
+    generationReleased = lifecycle[1],
+    nativeIdentity = frames.find(({ event }) => event.kind === "identity"),
+    nativeTurn = frames.find(
+      ({ event }) =>
+        event.kind === "coding-chat" &&
+        isRecord(event.event) &&
+        event.event.kind === "turn",
+    ),
+    finalOutcome = frames.find(
+      ({ event }) =>
+        event.kind === "coding-chat" &&
+        isRecord(event.event) &&
+        event.event.kind === "outcome",
+    );
+  expect(generationStarted).toBeDefined();
+  expect(generationReleased).toBeDefined();
+  expect(nativeIdentity).toBeDefined();
+  expect(nativeTurn).toBeDefined();
+  expect(finalOutcome).toBeDefined();
+  if (
+    !generationStarted ||
+    !generationReleased ||
+    !nativeIdentity ||
+    !nativeTurn ||
+    !finalOutcome ||
+    !isRecord(nativeTurn.event.event) ||
+    !isRecord(finalOutcome.event.event)
+  )
+    throw Error("The inert owned Chat did not persist its lifecycle chain.");
+  expect(generationStarted.seq).toBeLessThan(nativeIdentity.seq);
+  expect(generationReleased.seq).toBeLessThan(finalOutcome.seq);
+  expect(generationReleased.event).toMatchObject({
+    kind: "owner-generation-released",
+    generationId: generationStarted.event.generationId,
+    threadId: nativeIdentity.event.sessionId,
+    turnId: nativeTurn.event.event.turnId,
+    release: "physical-tree-settled",
+  });
+  expect(finalOutcome.event.event).toMatchObject({
+    kind: "outcome",
+    outcome: { phase: "completed" },
+  });
+  const publicPage = await service.read(f.project.id, started.session.id);
+  const lastFrame = frames.at(-1);
+  expect(lastFrame).toBeDefined();
+  if (!lastFrame) throw Error("The inert owned Chat journal was empty.");
+  expect(publicPage.lastSequence).toBe(lastFrame.seq);
+  expect(JSON.stringify(publicPage)).not.toContain(
+    String(generationStarted.event.generationId),
+  );
+});
+
 const heldSummaryUpdates: CodexChatReasoningSummary["update"][] = [
   {
     kind: "snapshot",
