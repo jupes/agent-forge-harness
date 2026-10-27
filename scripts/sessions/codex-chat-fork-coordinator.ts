@@ -229,14 +229,23 @@ function sourceFor(input: {
     if (index < 0) return { eligible: false, reason: "turn-not-completed" };
     const last = state.turns[index];
     if (!last) return { eligible: false, reason: "turn-not-completed" };
+    const turns = state.turns.slice(0, index + 1),
+      includedTurnIds = new Set(turns.map((turn) => turn.requestId));
     const selectedFrames = state.frames.filter(
         (frame) => frame.turnId === last.requestId,
       ),
       boundary = selectedFrames.at(-1)?.seq ?? 0;
     state = {
       ...state,
-      turns: state.turns.slice(0, index + 1),
+      turns,
       frames: state.frames.filter((frame) => frame.seq <= boundary),
+      ...(state.codexChatOwnerLifecycle
+        ? {
+            codexChatOwnerLifecycle: state.codexChatOwnerLifecycle.filter(
+              (fact) => includedTurnIds.has(fact.requestId),
+            ),
+          }
+        : {}),
     };
   }
   return resolveCodexChatForkSource({
