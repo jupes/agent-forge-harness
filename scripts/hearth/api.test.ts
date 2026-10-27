@@ -236,9 +236,9 @@ const API_SMITH_CREATE_REVISION = {
   workspace: "0".repeat(64),
 };
 const API_CODEX_CHAT_FORK_ID = "80e40be9-e811-47c3-a71d-b988e67178a0";
-const API_CODEX_CHAT_FORK_CHILD_ID =
+const API_CODEX_CHAT_FORK_CONTROL_CHILD_ID =
   "session-80e40be9-e811-47c3-a71d-b988e6717801";
-const API_CODEX_CHAT_FORK_CHILD_REQUEST_ID =
+const API_CODEX_CHAT_FORK_CONTROL_CHILD_REQUEST_ID =
   "80e40be9-e811-47c3-a71d-b988e6717802";
 const API_CODEX_CHAT_FORK_CONTROL_DECISION_ID =
   "80e40be9-e811-47c3-a71d-b988e6717803";
@@ -253,6 +253,16 @@ const API_CODEX_CHAT_FORK_SOURCE = {
   approvalId: "11cc8647-32c5-4278-85c6-a43fe9019842",
   threadId: "0199a213-81c0-7800-8aa1-bbab2a035a61",
   turnId: "0199a213-81c0-7800-8aa1-bbab2a035a62",
+};
+// Central control-route rows use their own source transcript. Earlier Fork
+// actions in the shared API inventory leave state for their own parent/turn.
+const API_CODEX_CHAT_FORK_CONTROL_SOURCE = {
+  sessionId: "session-71e40be9-e811-47c3-a71d-b988e6717810",
+  requestId: "71e40be9-e811-47c3-a71d-b988e6717811",
+  turnRequestId: "71e40be9-e811-47c3-a71d-b988e6717812",
+  approvalId: "71e40be9-e811-47c3-a71d-b988e6717813",
+  threadId: "0199a213-81c0-7800-8aa1-bbab2a035a80",
+  turnId: "0199a213-81c0-7800-8aa1-bbab2a035a81",
 };
 const API_CODEX_CHAT_FORK_RESERVE_SOURCE = {
   sessionId: "session-4b092165-2bc0-49e2-ae10-bf0b2f77c0cf",
@@ -2013,17 +2023,17 @@ const ACTIONS: Record<string, ActionFixture> = {
   },
   "POST /projects/:id/sessions/:sessionId/fork-approval-decisions": {
     valid: {
-      path: `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_CODEX_CHAT_FORK_CHILD_ID}/fork-approval-decisions`,
+      path: `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_CODEX_CHAT_FORK_CONTROL_CHILD_ID}/fork-approval-decisions`,
       body: {
         requestId: API_CODEX_CHAT_FORK_CONTROL_DECISION_ID,
-        turnRequestId: API_CODEX_CHAT_FORK_CHILD_REQUEST_ID,
+        turnRequestId: API_CODEX_CHAT_FORK_CONTROL_CHILD_REQUEST_ID,
         approvalId: "80e40be9-e811-47c3-a71d-b988e6717805",
         decision: "accept",
       },
       status: 409,
       ok: false,
       error: "The live approval has no matching private Fork-child turn.",
-      target: `codex-chat-fork-child:${FIXTURE_PROJECT_ID}:${API_CODEX_CHAT_FORK_CHILD_ID}`,
+      target: `codex-chat-fork-child:${FIXTURE_PROJECT_ID}:${API_CODEX_CHAT_FORK_CONTROL_CHILD_ID}`,
       audit: {
         family: "codex-chat-fork-approval",
         requestId: API_CODEX_CHAT_FORK_CONTROL_DECISION_ID,
@@ -2031,7 +2041,7 @@ const ACTIONS: Record<string, ActionFixture> = {
           .update(
             JSON.stringify({
               requestId: API_CODEX_CHAT_FORK_CONTROL_DECISION_ID,
-              turnRequestId: API_CODEX_CHAT_FORK_CHILD_REQUEST_ID,
+              turnRequestId: API_CODEX_CHAT_FORK_CONTROL_CHILD_REQUEST_ID,
               approvalId: "80e40be9-e811-47c3-a71d-b988e6717805",
               decision: "accept",
             }),
@@ -2040,7 +2050,7 @@ const ACTIONS: Record<string, ActionFixture> = {
       },
     },
     invalid: {
-      path: `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_CODEX_CHAT_FORK_CHILD_ID}/fork-approval-decisions`,
+      path: `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_CODEX_CHAT_FORK_CONTROL_CHILD_ID}/fork-approval-decisions`,
       body: { requestId: "invalid" },
     },
     prepare: seedForkReadChild,
@@ -2048,26 +2058,26 @@ const ACTIONS: Record<string, ActionFixture> = {
   },
   "POST /projects/:id/sessions/:sessionId/fork-stop": {
     valid: {
-      path: `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_CODEX_CHAT_FORK_CHILD_ID}/fork-stop`,
-      body: { requestId: API_CODEX_CHAT_FORK_CHILD_REQUEST_ID },
+      path: `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_CODEX_CHAT_FORK_CONTROL_CHILD_ID}/fork-stop`,
+      body: { requestId: API_CODEX_CHAT_FORK_CONTROL_CHILD_REQUEST_ID },
       status: 409,
       ok: false,
       error: "The requested Stop has no matching private Fork-child turn.",
-      target: `codex-chat-fork-child:${FIXTURE_PROJECT_ID}:${API_CODEX_CHAT_FORK_CHILD_ID}`,
+      target: `codex-chat-fork-child:${FIXTURE_PROJECT_ID}:${API_CODEX_CHAT_FORK_CONTROL_CHILD_ID}`,
       audit: {
         family: "codex-chat-fork-stop",
-        requestId: API_CODEX_CHAT_FORK_CHILD_REQUEST_ID,
+        requestId: API_CODEX_CHAT_FORK_CONTROL_CHILD_REQUEST_ID,
         inputHash: createHash("sha256")
           .update(
             JSON.stringify({
-              requestId: API_CODEX_CHAT_FORK_CHILD_REQUEST_ID,
+              requestId: API_CODEX_CHAT_FORK_CONTROL_CHILD_REQUEST_ID,
             }),
           )
           .digest("hex"),
       },
     },
     invalid: {
-      path: `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_CODEX_CHAT_FORK_CHILD_ID}/fork-stop`,
+      path: `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_CODEX_CHAT_FORK_CONTROL_CHILD_ID}/fork-stop`,
       body: { requestId: "invalid" },
     },
     prepare: seedForkReadChild,
@@ -2833,8 +2843,8 @@ const READS: Record<string, string> = {
   "GET /projects/:id/activity": `/projects/${FIXTURE_PROJECT_ID}/activity`,
   "GET /projects/:id/activity/:eventId": `/projects/${FIXTURE_PROJECT_ID}/activity/1`,
   "GET /projects/:id/sessions/:sessionId": `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_OWNED_SESSION_ID}`,
-  "GET /projects/:id/sessions/:sessionId/fork-turns": `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_CODEX_CHAT_FORK_CHILD_ID}/fork-turns`,
-  "GET /projects/:id/sessions/:sessionId/fork-approvals": `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_CODEX_CHAT_FORK_CHILD_ID}/fork-approvals`,
+  "GET /projects/:id/sessions/:sessionId/fork-turns": `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_CODEX_CHAT_FORK_CONTROL_CHILD_ID}/fork-turns`,
+  "GET /projects/:id/sessions/:sessionId/fork-approvals": `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_CODEX_CHAT_FORK_CONTROL_CHILD_ID}/fork-approvals`,
   "GET /projects/:id/sessions/:sessionId/approvals": `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_CHAT_SESSION}/approvals`,
   "GET /projects/:id/session-library": `/projects/${FIXTURE_PROJECT_ID}/session-library`,
   "GET /projects/:id/sessions/:sessionId/archive": `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_OWNED_SESSION_ID}/archive`,
@@ -2899,7 +2909,7 @@ async function seedForkReadChild(h: TestHearth): Promise<void> {
   if (seededForkReadChildren.has(h)) return;
   const source = await seedForkableCodexChatSource(
       h,
-      API_CODEX_CHAT_FORK_SOURCE,
+      API_CODEX_CHAT_FORK_CONTROL_SOURCE,
     ),
     registry = createSessionRegistry(h.home, "codex", "chat"),
     parent = registry.read(source.projectId, source.parentSessionId),
@@ -2919,19 +2929,19 @@ async function seedForkReadChild(h: TestHearth): Promise<void> {
       parentRequestHash: parent.requestHash,
       parentTurnHash: selected.hash,
       parentNativeThreadId: parentState.binding.sessionId,
-      throughNativeTurnId: API_CODEX_CHAT_FORK_SOURCE.turnId,
+      throughNativeTurnId: API_CODEX_CHAT_FORK_CONTROL_SOURCE.turnId,
       sourceSettingsHash: "c".repeat(64),
     },
     journal = createCodexChatForkJournal({
       root: h.root,
       home: h.home,
-      createChildAppSessionId: () => API_CODEX_CHAT_FORK_CHILD_ID,
+      createChildAppSessionId: () => API_CODEX_CHAT_FORK_CONTROL_CHILD_ID,
     }),
     reserved = await journal.reserve(
       source.projectId,
       source.parentSessionId,
       {
-        requestId: API_CODEX_CHAT_FORK_CHILD_REQUEST_ID,
+        requestId: API_CODEX_CHAT_FORK_CONTROL_CHILD_REQUEST_ID,
         throughTurnRequestId: source.throughTurnRequestId,
       },
       sourceSeal,
