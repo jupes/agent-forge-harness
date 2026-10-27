@@ -79,19 +79,23 @@ function publishHostProof(
   hearthPort: number,
   fixtureHelperPid: number,
   hosts: HostFact[],
+  outputPath: string,
 ): void {
   if (hosts.length !== 3)
     throw new Error(
       "The origin replacement proof requires exactly three hosts.",
     );
-  const path = join(HEARTH_HOME, "smith-origin-replacement-proof.json");
-  if (existsSync(path))
-    throw new Error("A prior Smith origin replacement proof is still present.");
-  writeFileSync(
-    path,
-    `${JSON.stringify({ version: 1, hearthPort, fixtureHelperPid, hosts })}\n`,
-    { mode: 0o600, flag: "wx" },
-  );
+  const content = `${JSON.stringify({ version: 1, hearthPort, fixtureHelperPid, hosts })}\n`;
+  for (const path of [
+    join(HEARTH_HOME, "smith-origin-replacement-proof.json"),
+    outputPath,
+  ]) {
+    if (existsSync(path))
+      throw new Error(
+        "A prior Smith origin replacement proof is still present.",
+      );
+    writeFileSync(path, content, { mode: 0o600, flag: "wx" });
+  }
 }
 
 function replyShape(value: unknown): FixtureReply {
@@ -256,6 +260,7 @@ async function waitForReadiness(page: Page): Promise<void> {
   const ready = await page.waitForResponse(
     (response) =>
       response.request().method() === "GET" &&
+      response.status() === 200 &&
       new URL(response.url()).pathname === "/__agent-forge/providers/readiness",
   );
   await validateReadiness(ready);
@@ -287,8 +292,17 @@ async function holdReadiness(page: Page): Promise<{
       await route.continue();
       return;
     }
+    const response = await route.fetch({
+      headers: {
+        ...route.request().headers(),
+        Origin: new URL(route.request().url()).origin,
+      },
+    });
+    if (response.status() !== 200) {
+      await route.fulfill({ response });
+      return;
+    }
     intercepted = true;
-    const response = await route.fetch();
     await validateReadiness({
       status: () => response.status(),
       json: () => response.json(),
@@ -436,7 +450,7 @@ test("Smith create controls wait for trusted workspace readiness before acceptin
 
 test("pre-effect reservation and post-effect confirmation recover across two fresh desktop origins", async ({
   page,
-}) => {
+}, testInfo) => {
   test.setTimeout(120_000);
   const home = join(HEARTH_HOME, `smith-create-origin-${randomUUID()}`),
     configFile = join(home, "config.toml"),
@@ -837,7 +851,12 @@ test("pre-effect reservation and post-effect confirmation recover across two fre
     expect(continuedCall).toEqual([]);
     if (fixtureHelperPid === null)
       throw new Error("The owned fixture helper identity was unavailable.");
-    publishHostProof(hearthPort, fixtureHelperPid, hostFacts);
+    publishHostProof(
+      hearthPort,
+      fixtureHelperPid,
+      hostFacts,
+      testInfo.outputPath("smith-origin-replacement-proof.json"),
+    );
   } finally {
     release?.();
     releasePublication?.();
