@@ -52,9 +52,18 @@ const readFixtureRecords = (): Record<string, unknown>[] | null => {
     return null;
   }
 };
-const recordedForkParent = (parentThreadId: string, lastTurnId: string) => {
+const inspectRecordedForkParent = (
+  parentThreadId: string,
+  lastTurnId: string,
+) => {
   const records = readFixtureRecords();
-  if (!records) return null;
+  if (!records)
+    return {
+      stage: "fixture-log-unavailable" as const,
+      parent: null,
+      parentFound: false,
+      turnFound: false,
+    };
   const parent = records
     .filter(
       (row) =>
@@ -64,18 +73,26 @@ const recordedForkParent = (parentThreadId: string, lastTurnId: string) => {
         row.processId !== process.pid,
     )
     .at(-1);
-  if (
-    !parent ||
-    !records.some(
-      (row) =>
-        row.kind === "fixture-completed-turn" &&
-        row.threadId === parentThreadId &&
-        row.turnId === lastTurnId &&
-        row.status === "completed",
-    )
-  )
-    return null;
-  return parent;
+  if (!parent)
+    return {
+      stage: "parent-not-found" as const,
+      parent: null,
+      parentFound: false,
+      turnFound: false,
+    };
+  const turnFound = records.some(
+    (row) =>
+      row.kind === "fixture-completed-turn" &&
+      row.threadId === parentThreadId &&
+      row.turnId === lastTurnId &&
+      row.status === "completed",
+  );
+  return {
+    stage: turnFound ? ("source-found" as const) : ("turn-not-found" as const),
+    parent,
+    parentFound: true,
+    turnFound,
+  };
 };
 if (argv.includes("--version")) {
   record({ kind: "version" });
@@ -603,12 +620,16 @@ while (true) {
         params && typeof params === "object" && !Array.isArray(params)
           ? (params as Record<string, unknown>)
           : null;
-      const forkParent =
+      const forkSourceCheck =
         mode === "fork-restart" &&
         typeof forkParams?.["threadId"] === "string" &&
         typeof forkParams["lastTurnId"] === "string"
-          ? recordedForkParent(forkParams["threadId"], forkParams["lastTurnId"])
+          ? inspectRecordedForkParent(
+              forkParams["threadId"],
+              forkParams["lastTurnId"],
+            )
           : null;
+      const forkParent = forkSourceCheck?.parent ?? null;
       if (
         !mode?.startsWith("fork") ||
         !forkParams ||
@@ -627,19 +648,37 @@ while (true) {
         "model_reasoning_effort" in fork.config
           ? fork.config.model_reasoning_effort
           : null;
-      if (
-        forkParent &&
-        (forkParent.model !== fork.model ||
-          forkParent.modelProvider !== fork.modelProvider ||
-          forkParent.serviceTierPresent !== true ||
-          !Object.hasOwn(fork, "serviceTier") ||
-          forkParent.serviceTier !== fork.serviceTier ||
-          forkParent.reasoningEffort !== configuredEffort ||
-          forkParent.cwd !== fork.cwd ||
-          forkParent.approvalPolicy !== fork.approvalPolicy ||
-          forkParent.sandbox !== fork.sandbox)
-      )
-        process.exit(14);
+      const settingsMatches = forkParent
+        ? {
+            model: forkParent.model === fork.model,
+            modelProvider: forkParent.modelProvider === fork.modelProvider,
+            serviceTierPresent:
+              forkParent.serviceTierPresent === true &&
+              Object.hasOwn(fork, "serviceTier"),
+            serviceTier: forkParent.serviceTier === fork.serviceTier,
+            reasoningEffort: forkParent.reasoningEffort === configuredEffort,
+            workspace: forkParent.cwd === fork.cwd,
+            approvalPolicy: forkParent.approvalPolicy === fork.approvalPolicy,
+            sandbox: forkParent.sandbox === fork.sandbox,
+          }
+        : null;
+      const settingsMatch =
+        settingsMatches !== null &&
+        Object.values(settingsMatches).every(Boolean);
+      if (mode === "fork-restart" && forkSourceCheck)
+        record({
+          kind: "fork-restart-diagnostic",
+          stage:
+            forkSourceCheck.stage !== "source-found"
+              ? forkSourceCheck.stage
+              : settingsMatch
+                ? "source-accepted"
+                : "settings-mismatch",
+          parentFound: forkSourceCheck.parentFound,
+          turnFound: forkSourceCheck.turnFound,
+          settingsMatches,
+        });
+      if (forkParent && !settingsMatch) process.exit(14);
       if (forkParent) threadId = fork["threadId"] as string;
       if (mode === "fork-lost-response-eof") {
         record({ kind: "fork-created-without-response", params });

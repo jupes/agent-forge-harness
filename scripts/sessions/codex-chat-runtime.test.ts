@@ -68,6 +68,7 @@ function summarizeCompiledFixtureLog(path: string, status: string) {
     status,
     kindCounts: null,
     argvCategories: null,
+    forkRestartDiagnostic: null,
   };
   try {
     const size = statSync(path).size;
@@ -92,6 +93,28 @@ function summarizeCompiledFixtureLog(path: string, status: string) {
         appServerStdio: 0,
         other: 0,
       };
+    let forkRestartDiagnostic: {
+      stage:
+        | "fixture-log-unavailable"
+        | "parent-not-found"
+        | "turn-not-found"
+        | "source-found"
+        | "settings-mismatch"
+        | "source-accepted";
+      parentFound: boolean;
+      turnFound: boolean;
+      settingsMatches: Record<
+        | "model"
+        | "modelProvider"
+        | "serviceTierPresent"
+        | "serviceTier"
+        | "reasoningEffort"
+        | "workspace"
+        | "approvalPolicy"
+        | "sandbox",
+        boolean
+      > | null;
+    } | null = null;
     for (const line of lines) {
       let raw: unknown;
       try {
@@ -102,6 +125,62 @@ function summarizeCompiledFixtureLog(path: string, status: string) {
       if (typeof raw !== "object" || raw === null || Array.isArray(raw))
         return { ...unavailable, state: "invalid" as const };
       const row = raw as Record<string, unknown>;
+      if (row.kind === "fork-restart-diagnostic" && !forkRestartDiagnostic) {
+        const stages = [
+          "fixture-log-unavailable",
+          "parent-not-found",
+          "turn-not-found",
+          "source-found",
+          "settings-mismatch",
+          "source-accepted",
+        ] as const;
+        const matches = row.settingsMatches;
+        const matchRecord =
+          typeof matches === "object" &&
+          matches !== null &&
+          !Array.isArray(matches)
+            ? (matches as Record<string, unknown>)
+            : null;
+        const matchKeys = [
+          "model",
+          "modelProvider",
+          "serviceTierPresent",
+          "serviceTier",
+          "reasoningEffort",
+          "workspace",
+          "approvalPolicy",
+          "sandbox",
+        ] as const;
+        if (
+          typeof row.stage === "string" &&
+          stages.includes(row.stage as (typeof stages)[number]) &&
+          typeof row.parentFound === "boolean" &&
+          typeof row.turnFound === "boolean" &&
+          (matches === null ||
+            (matchRecord !== null &&
+              matchKeys.every((key) => typeof matchRecord[key] === "boolean")))
+        ) {
+          forkRestartDiagnostic = {
+            stage: row.stage as (typeof stages)[number],
+            parentFound: row.parentFound,
+            turnFound: row.turnFound,
+            settingsMatches:
+              matches === null
+                ? null
+                : {
+                    model: matchRecord?.model === true,
+                    modelProvider: matchRecord?.modelProvider === true,
+                    serviceTierPresent:
+                      matchRecord?.serviceTierPresent === true,
+                    serviceTier: matchRecord?.serviceTier === true,
+                    reasoningEffort: matchRecord?.reasoningEffort === true,
+                    workspace: matchRecord?.workspace === true,
+                    approvalPolicy: matchRecord?.approvalPolicy === true,
+                    sandbox: matchRecord?.sandbox === true,
+                  },
+          };
+        }
+      }
       if (COMPILED_FIXTURE_KINDS.includes(row.kind as CompiledFixtureKind))
         kindCounts[row.kind as CompiledFixtureKind]++;
       if (row.kind === "version") argvCategories.versionProbe++;
@@ -118,7 +197,13 @@ function summarizeCompiledFixtureLog(path: string, status: string) {
         else argvCategories.other++;
       }
     }
-    return { state: "available" as const, status, kindCounts, argvCategories };
+    return {
+      state: "available" as const,
+      status,
+      kindCounts,
+      argvCategories,
+      forkRestartDiagnostic,
+    };
   } catch {
     return unavailable;
   }
@@ -491,6 +576,21 @@ test("the compiled desktop Codex stand-in completes prepare and dispatch in fork
     const facts = summarize();
     expect(facts).toMatchObject({
       state: "available",
+      forkRestartDiagnostic: {
+        stage: "source-accepted",
+        parentFound: true,
+        turnFound: true,
+        settingsMatches: {
+          model: true,
+          modelProvider: true,
+          serviceTierPresent: true,
+          serviceTier: true,
+          reasoningEffort: true,
+          workspace: true,
+          approvalPolicy: true,
+          sandbox: true,
+        },
+      },
       kindCounts: {
         version: 7,
         help: 7,
