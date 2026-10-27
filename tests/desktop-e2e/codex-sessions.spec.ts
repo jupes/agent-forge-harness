@@ -750,7 +750,7 @@ test("a durable pre-dispatch NotSent Start retries only by explicit same-UUID re
   ).toContainText("Codex Task reply 🌱");
 
   expect(starts).toHaveLength(2);
-  expect(startStatuses).toEqual([503, 200]);
+  expect(startStatuses).toEqual([503, 202]);
   expect(starts[1]).toEqual(original);
   expect(starts[1]?.requestId).toBe(original.requestId);
   expect(identityWrites).toBe(2);
