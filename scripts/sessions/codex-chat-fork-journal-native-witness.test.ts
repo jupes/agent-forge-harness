@@ -456,15 +456,44 @@ test.skipIf(!nativeEnabled)(
       const mutex = join(home, CODEX_CHAT_FORK_JOURNAL_DIRECTORY, "locks", "journal.sqlite");
       const native = nativeWindowsAcl();
       const stages = [];
+      const metadataReads = [];
       let peerWriteOpen = "not-probed";
       let creatorReadOpen = "not-probed";
+      const fileKind = (path) => {
+        const leaf = path.slice(path.lastIndexOf(String.fromCharCode(92)) + 1).toLowerCase();
+        return leaf === "journal.sqlite" ? "mutex" :
+          leaf === "journal.sqlite-journal" ? "sqlite-journal" :
+          leaf === "journal.sqlite-wal" ? "sqlite-wal" :
+          leaf === "journal.sqlite-shm" ? "sqlite-shm" : "other";
+      };
+      const recordRead = (fact) => { if (metadataReads.length < 16) metadataReads.push(fact); };
       const identity = () => { const info = lstatSync(mutex, { bigint: true }); return { dev: String(info.dev), ino: String(info.ino), size: Number(info.size) }; };
       const reading = () => { const acl = native.read(mutex); return { ownerOnly: ownerOnlyProblem(acl, "file", native.userSid()) === null, protected: acl.protected }; };
       const acl = {
         userSid: () => native.userSid(),
         defaultOwnerSid: () => native.defaultOwnerSid?.(),
-        read: (path) => native.read(path),
-        readInFolder: native.readInFolder ? (folder, name, maxBytes) => native.readInFolder(folder, name, maxBytes) : undefined,
+        read(path) {
+          const kind = fileKind(path);
+          try {
+            const result = native.read(path);
+            recordRead({ operation: "acl", kind, ok: true });
+            return result;
+          } catch (error) {
+            recordRead({ operation: "acl", kind, ok: false });
+            throw error;
+          }
+        },
+        readInFolder: native.readInFolder ? (folder, name, maxBytes) => {
+          const kind = name === null ? "folder" : fileKind(join(folder, name));
+          try {
+            const result = native.readInFolder(folder, name, maxBytes);
+            recordRead({ operation: "file", kind, present: result?.file !== null && result?.file !== undefined, bytes: result?.file?.bytes.byteLength ?? 0 });
+            return result;
+          } catch (error) {
+            recordRead({ operation: "file", kind, present: false, bytes: 0 });
+            throw error;
+          }
+        } : undefined,
         createOwnerOnlyExclusive(path) {
           const created = native.createOwnerOnlyExclusive!(path);
           if (path === mutex) stages.push(created.kind === "created" ? "exclusive-created" : "exclusive-exists");
@@ -537,11 +566,11 @@ test.skipIf(!nativeEnabled)(
           "direct-v1",
         );
         stages.push("reserved");
-        writeFileSync(${JSON.stringify(creator ? creatorResult : peerResult)}, JSON.stringify({ ok: true, requestId: record.requestId, state: record.state, diagnostics, stages: stages.slice(0, 8), peerWriteOpen, creatorReadOpen }));
+        writeFileSync(${JSON.stringify(creator ? creatorResult : peerResult)}, JSON.stringify({ ok: true, requestId: record.requestId, state: record.state, diagnostics, metadataReads: metadataReads.slice(0, 16), stages: stages.slice(0, 8), peerWriteOpen, creatorReadOpen }));
       } catch (error) {
         const reason = error instanceof CodexChatForkJournalError ? error.reason : "unexpected";
         stages.push("refused-" + reason);
-        writeFileSync(${JSON.stringify(creator ? creatorResult : peerResult)}, JSON.stringify({ ok: false, reason, diagnostics, stages: stages.slice(0, 8), peerWriteOpen, creatorReadOpen }));
+        writeFileSync(${JSON.stringify(creator ? creatorResult : peerResult)}, JSON.stringify({ ok: false, reason, diagnostics, metadataReads: metadataReads.slice(0, 16), stages: stages.slice(0, 8), peerWriteOpen, creatorReadOpen }));
       }
     `;
 
@@ -610,6 +639,7 @@ test.skipIf(!nativeEnabled)(
             state: z.literal("reserved"),
             diagnostics: z.array(z.unknown()).max(8),
             stages: z.array(z.string().max(40)).max(8),
+            metadataReads: z.array(z.unknown()).max(16),
             peerWriteOpen: z.enum([
               "not-probed",
               "opened",
@@ -630,6 +660,7 @@ test.skipIf(!nativeEnabled)(
             reason: z.enum(["conflict", "held", "missing", "unexpected"]),
             diagnostics: z.array(z.unknown()).max(8),
             stages: z.array(z.string().max(40)).max(8),
+            metadataReads: z.array(z.unknown()).max(16),
             peerWriteOpen: z.enum([
               "not-probed",
               "opened",
@@ -664,6 +695,7 @@ test.skipIf(!nativeEnabled)(
           ok: result.ok,
           reason: result.ok ? null : result.reason,
           stages: result.stages,
+          metadataReads: result.metadataReads,
           diagnostics: result.diagnostics,
         })),
       }).slice(0, 5_000)}\n`,
