@@ -8,8 +8,14 @@ import {
 } from "../../scripts/hearth/server-runtime";
 import { readToken, writeOwnerOnly } from "../../scripts/hearth/token";
 import { resolveCheckout } from "../../scripts/ledger/workspace";
-import { createCodexChatRuntime } from "../../scripts/sessions/codex-chat-runtime";
-import { observeCodexChatPersist } from "../../scripts/sessions/fixtures/codex-chat-persist-diagnostic";
+import {
+  createCodexChatRuntime,
+  type CodexChatCallbacks,
+} from "../../scripts/sessions/codex-chat-runtime";
+import {
+  createCodexChatStartupDiagnostic,
+  writeFirstCodexChatStartupFailure,
+} from "../../scripts/sessions/fixtures/codex-chat-startup-diagnostic";
 import {
   createCodexChatPrepareDiagnostics,
   createFilePrepareDiagnosticIo,
@@ -18,7 +24,6 @@ import {
 import { isRunHome } from "../e2e/servers";
 import { ROOT } from "./environment";
 
-const FACT_FILE = "codex-chat-private-persist-failure.json";
 
 function rootArgument(argv: readonly string[]): string {
   if (
@@ -87,6 +92,8 @@ async function run(): Promise<void> {
   const prepareDiagnostics = createCodexChatPrepareDiagnostics(
     createFilePrepareDiagnosticIo(home, writeOwnerOnly, initialPrepareOrdinal),
   );
+  const targetInitialHostFirstRun = initialPrepareOrdinal === 0;
+  let runtimeRunOrdinal = 0;
   const defaultRuntime = createCodexChatRuntime({
     root,
     home,
@@ -111,18 +118,38 @@ async function run(): Promise<void> {
       );
     },
     run(input, persist, signal, callbacks) {
-      return defaultRuntime.run(
-        input,
-        observeCodexChatPersist({
-          persist,
-          recordFailure(fact) {
-            const path = join(home, FACT_FILE);
-            if (!existsSync(path)) writeOwnerOnly(path, JSON.stringify(fact));
-          },
-        }),
-        signal,
-        callbacks,
-      );
+      runtimeRunOrdinal++;
+      if (!targetInitialHostFirstRun || runtimeRunOrdinal !== 1)
+        return defaultRuntime.run(input, persist, signal, callbacks);
+
+      const diagnostic = createCodexChatStartupDiagnostic({
+        recordFailure(fact) {
+          writeFirstCodexChatStartupFailure({ home, fact, writeOwnerOnly });
+        },
+      });
+      const observedCallbacks: CodexChatCallbacks = {
+        ...callbacks,
+        onStartupPhase(phase, signalAborted) {
+          diagnostic.observeRuntimePhase(phase, signalAborted);
+          callbacks.onStartupPhase?.(phase, signalAborted);
+        },
+      };
+      const observedPersist = diagnostic.wrapPersist(persist);
+      return (async () => {
+        try {
+          const outcome = await defaultRuntime.run(
+            input,
+            observedPersist,
+            signal,
+            observedCallbacks,
+          );
+          diagnostic.finish(outcome.phase);
+          return outcome;
+        } catch (error) {
+          diagnostic.finish("threw");
+          throw error;
+        }
+      })();
     },
   };
 

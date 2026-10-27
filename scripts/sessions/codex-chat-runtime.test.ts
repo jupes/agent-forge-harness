@@ -1095,13 +1095,20 @@ test("native Chat starts and resumes exactly one owned thread across two supervi
   });
   expect(f.records().map((row) => row.kind)).toEqual(["version", "help"]);
   const first: CodexChatEvent[] = [];
+  const startupPhases: string[] = [];
   const result = await f.runtime.run(
     { prepared: snapshot, resume: null },
     async (event) => {
       first.push(event);
     },
     new AbortController().signal,
-    { requestApproval: async () => "decline" },
+    {
+      requestApproval: async () => "decline",
+      onStartupPhase(phase) {
+        startupPhases.push(phase);
+        throw new Error("fixture diagnostic callback failure");
+      },
+    },
   );
   expect(result).toMatchObject({
     phase: "completed",
@@ -1114,6 +1121,12 @@ test("native Chat starts and resumes exactly one owned thread across two supervi
   expect(first.filter((event) => event.kind === "text")).toEqual([
     { kind: "text", itemId: "message-a", text: "Hello" },
     { kind: "text", itemId: "message-a", text: " world" },
+  ]);
+  expect(startupPhases).toEqual([
+    "supervisor-starting",
+    "supervisor-returned",
+    "provider-pid-waiting",
+    "provider-pid-settled",
   ]);
   const second = await f.runtime.prepare({
     smith: "codex-journeyman",
@@ -1129,6 +1142,7 @@ test("native Chat starts and resumes exactly one owned thread across two supervi
   const calls = f.records().filter((row) => row.kind === "rpc");
   expect(calls.filter((row) => row.method === "thread/start")).toHaveLength(1);
   expect(calls.filter((row) => row.method === "thread/resume")).toHaveLength(1);
+  expect(calls.filter((row) => row.method === "initialize")).toHaveLength(2);
   expect(
     calls.find((row) => row.method === "thread/resume")?.params,
   ).toMatchObject({ threadId, excludeTurns: true });
