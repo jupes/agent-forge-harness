@@ -10,9 +10,16 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { expect, type Locator, type Page, test } from "@playwright/test";
+import {
+  expect,
+  type Locator,
+  type Page,
+  type Request,
+  test,
+} from "@playwright/test";
 import { z } from "zod";
 import { OPERATOR_HEADER } from "../../scripts/hearth/paths";
+import { workspaceKey } from "../../scripts/projects/scope";
 import { ownedCodingStateSchema } from "../../scripts/sessions/codex-owned-journal";
 import { ownedCodingSessionSchema } from "../../scripts/sessions/codex-owned-wire-protocol";
 import {
@@ -20,7 +27,6 @@ import {
   geminiChatStartSchema,
 } from "../../scripts/sessions/gemini-chat-owned-protocol";
 import { geminiChatPreviewReceiptSchema } from "../../scripts/sessions/gemini-chat-preview-protocol";
-import { sessionStartIdentityPageSchema } from "../../scripts/sessions/identity-protocol";
 import { sessionTranscriptExportSchema } from "../../scripts/sessions/library-protocol";
 import { openSettled, reloadSettled } from "../e2e/fixtures";
 import { pageToken } from "../e2e/launch-link";
@@ -30,6 +36,7 @@ import {
   withGeminiChatFailureFacts,
 } from "./gemini-chat-failure-facts";
 import { alpha, seedProjects, workspace } from "./project-fixtures";
+import { verifiedIdentityReadBarrier } from "./session-start-read-barrier";
 
 // Two actual native process lifetimes, protected reads and complete export share one bounded journey.
 test.setTimeout(60_000);
@@ -451,68 +458,6 @@ async function check(dialog: Locator) {
     dialog.getByRole("button", { name: "Start", exact: true }),
   ).toBeEnabled();
 }
-async function verifiedIdentityReadBarrier(page: Page) {
-  let armed = false,
-    held = false,
-    releaseRead: () => void = () => {},
-    released = Promise.resolve();
-  await page.route(
-    `**/__agent-forge/projects/${alpha.id}/session-start-identities`,
-    async (route) => {
-      if (route.request().method() !== "GET") {
-        await route.continue();
-        return;
-      }
-      const response = await route.fetch({
-        headers: {
-          ...(await route.request().allHeaders()),
-          Origin: new URL(route.request().url()).origin,
-          "Sec-Fetch-Site": "same-origin",
-        },
-      });
-      let payload: unknown;
-      try {
-        payload = await response.json();
-      } catch {
-        throw Error("The Session Start identity read was not valid JSON.");
-      }
-      const envelope = z
-        .object({
-          ok: z.literal(true),
-          data: sessionStartIdentityPageSchema,
-          error: z.null(),
-        })
-        .strict()
-        .safeParse(payload);
-      if (
-        response.status() !== 200 ||
-        !envelope.success ||
-        envelope.data.data.scope.projectId !== alpha.id ||
-        envelope.data.data.scope.workspace !== workspace
-      )
-        throw Error(
-          "The real Session Start identity page could not be verified.",
-        );
-      if (armed) {
-        armed = false;
-        held = true;
-        await released;
-      }
-      await route.fulfill({ response });
-    },
-  );
-  return {
-    arm() {
-      held = false;
-      armed = true;
-      released = new Promise<void>((resolve) => {
-        releaseRead = resolve;
-      });
-    },
-    held: () => held,
-    release: () => releaseRead(),
-  };
-}
 async function accepted() {
   await expect
     .poll(() => records().filter((item) => !previous.has(item.id)).length)
@@ -639,8 +584,11 @@ test("Gemini ACP composer keyboard-starts two explicit native turns with once ch
   await expect(
     identityRegion.getByRole("button", { name: "Check server", exact: true }),
   ).toBeEnabled();
-  const identityRead = await verifiedIdentityReadBarrier(page),
-    checkingIdentity = identityRegion.getByRole("status");
+  const identityRead = await verifiedIdentityReadBarrier(page, {
+    projectId: alpha.id,
+    workspace,
+  });
+  const checkingIdentity = identityRegion.getByRole("status");
   identityRead.arm();
   let checked: z.infer<typeof geminiChatPreviewReceiptSchema>;
   try {
@@ -687,7 +635,8 @@ test("Gemini ACP composer keyboard-starts two explicit native turns with once ch
       dialog.getByRole("button", { name: "Start", exact: true }),
     ).toBeDisabled();
   } finally {
-    identityRead.release();
+    await identityRead.release();
+    await identityRead.dispose();
   }
   await expect(checkingIdentity).toBeHidden();
   const start = dialog.getByRole("button", { name: "Start", exact: true });
@@ -943,11 +892,14 @@ test("a fresh synchronous edit after Chat preview cannot reserve or dispatch an 
       }
     }
   });
-  const identityRead = await verifiedIdentityReadBarrier(page),
-    checkingIdentity = dialog
-      .getByRole("region", { name: "Original Start requests", exact: true })
-      .getByRole("status"),
-    start = dialog.getByRole("button", { name: "Start", exact: true });
+  const identityRead = await verifiedIdentityReadBarrier(page, {
+    projectId: alpha.id,
+    workspace,
+  });
+  const checkingIdentity = dialog
+    .getByRole("region", { name: "Original Start requests", exact: true })
+    .getByRole("status");
+  const start = dialog.getByRole("button", { name: "Start", exact: true });
   identityRead.arm();
   try {
     const previewResponse = page.waitForResponse(
@@ -975,7 +927,8 @@ test("a fresh synchronous edit after Chat preview cannot reserve or dispatch an 
     expect(identityPosts).toBe(0);
     expect(promptCount()).toBe(before);
   } finally {
-    identityRead.release();
+    await identityRead.release();
+    await identityRead.dispose();
   }
   await expect(checkingIdentity).toBeHidden();
   await expect(start).toBeEnabled();
@@ -1323,8 +1276,90 @@ test("saved native deadline hides a genuinely actionable old offer before generi
   const before = promptCount(),
     answers = answerCount(),
     dialog = await openComposer(page);
-  await check(dialog);
-  await dialog.getByRole("button", { name: "Start", exact: true }).click();
+  const identityRegion = dialog.getByRole("region", {
+    name: "Original Start requests",
+    exact: true,
+  });
+  await expect(
+    identityRegion.getByRole("button", { name: "Check server", exact: true }),
+  ).toBeEnabled();
+  let previewPostObserved = false;
+  const previewPath = `/__agent-forge/projects/${alpha.id}/sessions/preview`;
+  const previewOrigin = new URL(page.url()).origin;
+  const observePreviewPost = (request: Request) => {
+    const url = new URL(request.url());
+    if (
+      request.method() === "POST" &&
+      url.origin === previewOrigin &&
+      url.pathname === previewPath &&
+      url.search === ""
+    )
+      previewPostObserved = true;
+  };
+  page.on("request", observePreviewPost);
+  const identityRead = await verifiedIdentityReadBarrier(page, {
+    projectId: alpha.id,
+    workspace,
+    shouldHold: () => previewPostObserved,
+  });
+  const start = dialog.getByRole("button", { name: "Start", exact: true });
+  const identityLoading = identityRegion.getByText(
+    "Checking the server-owned identity page…",
+    { exact: true },
+  );
+  identityRead.arm();
+  let previewClick: Promise<void> | null = null;
+  try {
+    const previewResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        new URL(response.url()).origin === previewOrigin &&
+        new URL(response.url()).pathname === previewPath &&
+        new URL(response.url()).search === "",
+    );
+    previewClick = dialog
+      .getByRole("button", { name: "Check supported options", exact: true })
+      .click();
+    const response = await previewResponse;
+    expect(response.status()).toBe(200);
+    let rawPreview: unknown;
+    try {
+      rawPreview = await response.json();
+    } catch {
+      throw Error("The actual Gemini preview was not valid JSON.");
+    }
+    const envelope = z
+      .object({
+        ok: z.literal(true),
+        data: geminiChatPreviewReceiptSchema,
+        error: z.null(),
+      })
+      .strict()
+      .safeParse(rawPreview);
+    if (!envelope.success)
+      throw Error("The exact Gemini preview could not be verified.");
+    expect(envelope.data.data.provider).toBe("gemini");
+    expect(envelope.data.data.projectId).toBe(alpha.id);
+    expect(workspaceKey(envelope.data.data.snapshot.launch.cwd)).toBe(
+      workspaceKey(workspace),
+    );
+    expect(envelope.data.data.serialized.argv).toEqual(["--acp"]);
+    expect(promptCount()).toBe(before);
+    await expect.poll(identityRead.held).toBe(true);
+    await expect(
+      identityRegion.getByRole("button", { name: "Checking…", exact: true }),
+    ).toBeDisabled();
+    await expect(identityLoading).toBeVisible();
+    await expect(start).toBeDisabled();
+  } finally {
+    await identityRead.release();
+    await identityRead.dispose();
+    if (previewClick) await previewClick.catch(() => undefined);
+    page.off("request", observePreviewPost);
+  }
+  await expect(identityLoading).toBeHidden();
+  await expect(start).toBeEnabled();
+  await start.click();
   const record = await accepted();
   const allow = approvals(page).getByRole("button", {
     name: "Allow once",

@@ -32,6 +32,7 @@ export function useProjects() {
   const lock = useRef(false);
   const [needsCheck, setNeedsCheck] = useState(false);
   const phase = useRef<"idle" | "posting" | "checking" | "unknown">("idle");
+  const refreshGeneration = useRef(0);
   const home =
     checked &&
     (!read.data ||
@@ -40,20 +41,27 @@ export function useProjects() {
         checked.asOf > read.data.asOf))
       ? checked
       : read.data;
+  const refreshProjectHome = async (): Promise<ProjectsHome> => {
+    const current = ++refreshGeneration.current;
+    const fresh = await readOperatorRoute<ProjectsHome>(
+      "/projects/summary",
+      pageReads(),
+    );
+    if (current !== refreshGeneration.current)
+      throw Error("The project summary refresh was superseded.");
+    setChecked(fresh);
+    read.reload();
+    return fresh;
+  };
   const verify = async () => {
     phase.current = "checking";
     setNeedsCheck(false);
     try {
-      const fresh = await readOperatorRoute<ProjectsHome>(
-        "/projects/summary",
-        pageReads(),
-      );
-      setChecked(fresh);
+      await refreshProjectHome();
       setHeld(false);
       lock.current = false;
       phase.current = "idle";
       setNotice("Project preferences checked against the hearth.");
-      read.reload();
     } catch {
       phase.current = "unknown";
       setNeedsCheck(true);
@@ -97,5 +105,14 @@ export function useProjects() {
     // A confirmed read supplies the displayed state; never optimistically toggle.
     await verify();
   };
-  return { ...read, data: home, notice, held, needsCheck, change, check };
+  return {
+    ...read,
+    data: home,
+    notice,
+    held,
+    needsCheck,
+    change,
+    check,
+    refreshProjectHome,
+  };
 }
