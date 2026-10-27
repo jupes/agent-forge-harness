@@ -687,15 +687,17 @@ test("a durable pre-dispatch NotSent Start retries only by explicit same-UUID re
   );
   const starts: CodexTaskStartRequest[] = [];
   const startStatuses: number[] = [];
-  let identityWrites = 0;
+  let identityReads = 0,
+    identityWrites = 0;
   page.on("request", (request) => {
-    if (request.method() !== "POST") return;
     const url = new URL(request.url());
-    if (
-      url.pathname ===
-      `/__agent-forge/projects/${alpha.id}/session-start-identities`
-    )
+    const identityPath =
+      `/__agent-forge/projects/${alpha.id}/session-start-identities`;
+    if (url.pathname === identityPath && request.method() === "GET")
+      identityReads++;
+    if (url.pathname === identityPath && request.method() === "POST")
       identityWrites++;
+    if (request.method() !== "POST") return;
     if (url.pathname === `/__agent-forge/projects/${alpha.id}/sessions`) {
       const parsed = codexTaskStartSchema.safeParse(request.postDataJSON());
       if (!parsed.success) throw Error("Invalid Codex Task Start fixture.");
@@ -754,8 +756,29 @@ test("a durable pre-dispatch NotSent Start retries only by explicit same-UUID re
   expect(starts[1]).toEqual(original);
   expect(starts[1]?.requestId).toBe(original.requestId);
   expect(identityWrites).toBe(2);
-  await expect(row).toContainText("codex task · admitted");
-  await expect(row.locator("code").nth(1)).toHaveText(originalHash ?? "");
+  await expect.poll(() => tasks().length).toBe(before + 1);
+
+  // A successful Start closes the composer. Reopen it and verify the admitted
+  // row through the server's GET projection, without another write or Start.
+  const readsBeforeReopen = identityReads;
+  await page.getByRole("button", { name: "New session", exact: true }).click();
+  const reopened = page.getByRole("dialog", {
+    name: "New session · Alpha",
+    exact: true,
+  });
+  await expect.poll(() => identityReads).toBeGreaterThan(readsBeforeReopen);
+  const admittedRow = reopened
+    .locator(".af-start-identities-list li")
+    .filter({ hasText: original.requestId });
+  await expect(admittedRow).toContainText("codex task · admitted");
+  await expect(admittedRow.locator("code").nth(1)).toHaveText(
+    originalHash ?? "",
+  );
+  expect(identityWrites).toBe(2);
+  expect(starts).toHaveLength(2);
+  await reopened.getByRole("button", { name: "Cancel", exact: true }).click();
+  expect(identityWrites).toBe(2);
+  expect(starts).toHaveLength(2);
   expect(tasks()).toHaveLength(before + 1);
 });
 
