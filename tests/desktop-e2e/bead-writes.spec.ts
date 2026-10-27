@@ -1,12 +1,123 @@
-import { expect, test } from "@playwright/test";
+import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { expect, type Route, test } from "@playwright/test";
 import { readState } from "../e2e/bd-stand-in-state";
 import { openSettled, reloadSettled } from "../e2e/fixtures";
-import { BD_STAND_IN_STATE } from "../e2e/servers";
+import { BD_STAND_IN_STATE, bunPath, HEARTH_HOME } from "../e2e/servers";
 import { standInCalls } from "../e2e/stand-in";
-import { alpha, beta, seedProjects } from "./project-fixtures";
+import { alpha, beta, seedProjects, workspace } from "./project-fixtures";
 
 test.beforeEach(() => seedProjects());
 const createCalls = () => standInCalls().filter((args) => args[0] === "create");
+
+/** A real ledger notification makes the open Beads view perform a background read. */
+function appendBeadsRefreshEvent(): void {
+  const sessionId = randomUUID();
+  const result = spawnSync(
+    bunPath(),
+    [
+      "-e",
+      `import { appendEvent } from "./scripts/ledger/append";
+const result = appendEvent({kind:"session.started",workspace:process.argv[2],beadId:"alpha-epic",sessionId:process.argv[1],executor:{provider:"codex",model:"fixture-model",smith:"fixture-smith"},payload:{kind:"interactive"}});
+if (!result.ok) throw new Error("The inert Beads refresh event was not recorded.");`,
+      sessionId,
+      workspace,
+    ],
+    {
+      env: { ...process.env, AGENT_FORGE_HOME: HEARTH_HOME },
+      encoding: "utf8",
+      timeout: 10_000,
+    },
+  );
+  if (result.status !== 0)
+    throw new Error("The inert Beads refresh event failed.");
+}
+
+test("New bead title and description stay separate across a background refresh", async ({
+  page,
+}) => {
+  await openSettled(page, `/index.html#/desktop/project/${alpha.id}/beads`);
+  await page.getByRole("button", { name: "New bead", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "New bead · Alpha" });
+  const title = dialog.getByLabel("Title", { exact: true });
+  const description = dialog.getByLabel("Description", { exact: true });
+  await title.fill("Keep fields distinct");
+  await dialog
+    .getByRole("combobox", { name: "Parent epic", exact: true })
+    .selectOption("alpha-epic");
+
+  let releaseRead: (() => void) | undefined;
+  let readEntered = false;
+  const heldRead = new Promise<void>((resolve) => {
+    releaseRead = resolve;
+  });
+  const listPath = `/__agent-forge/projects/${alpha.id}/beads`;
+  const refreshHandler = async (route: Route) => {
+    if (route.request().method() !== "GET") return route.continue();
+    const response = await route.fetch();
+    readEntered = true;
+    await heldRead;
+    await route.fulfill({ response });
+  };
+  const refreshed = page.waitForResponse(
+    (response) =>
+      response.request().method() === "GET" &&
+      new URL(response.url()).pathname === listPath &&
+      response.status() === 200,
+    { timeout: 10_000 },
+  );
+  await page.route(`**${listPath}`, refreshHandler);
+  try {
+    appendBeadsRefreshEvent();
+    await expect.poll(() => readEntered, { timeout: 10_000 }).toBe(true);
+    await description.fill("Preserve this separate description.");
+    await description.click();
+    releaseRead?.();
+    await refreshed;
+
+    const stateAfterRead = await dialog.evaluate((root) => {
+      const control = (labelText: string) => {
+        const label = Array.from(root.querySelectorAll("label")).find((item) =>
+          item.textContent?.trim().startsWith(labelText),
+        );
+        return (
+          label?.querySelector<HTMLInputElement | HTMLTextAreaElement>(
+            "input, textarea",
+          ) ?? null
+        );
+      };
+      const titleControl = control("Title");
+      const descriptionControl = control("Description");
+      return {
+        title: titleControl?.value ?? null,
+        description: descriptionControl?.value ?? null,
+        titleFocused: document.activeElement === titleControl,
+        descriptionFocused: document.activeElement === descriptionControl,
+      };
+    });
+    expect(stateAfterRead).toEqual({
+      title: "Keep fields distinct",
+      description: "Preserve this separate description.",
+      titleFocused: false,
+      descriptionFocused: true,
+    });
+
+    const createRequest = page.waitForRequest(
+      (request) =>
+        request.method() === "POST" &&
+        new URL(request.url()).pathname === listPath,
+    );
+    await dialog.getByRole("button", { name: "Create bead" }).click();
+    const request = await createRequest;
+    expect(request.postDataJSON()).toMatchObject({
+      title: "Keep fields distinct",
+      description: "Preserve this separate description.",
+    });
+  } finally {
+    releaseRead?.();
+    await page.unroute(`**${listPath}`, refreshHandler);
+  }
+});
 
 test("rich New bead, Proposed, claim, live comment and evidence close use confirmed scoped writes", async ({
   page,
