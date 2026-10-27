@@ -215,11 +215,37 @@ export function CodexChatForkPanel(props: {
       ]);
       if (!isCurrent(owner)) return;
       setReview(source);
-      const previous = originals.find(
-        (row) =>
-          row.parentSessionId === props.parentSessionId &&
-          row.throughTurnRequestId === requestId,
+      const parentOriginals = originals.filter(
+        (row) => row.parentSessionId === props.parentSessionId,
       );
+      const unresolved = parentOriginals.filter(
+        (row) => row.state !== "linked" && row.state !== "retired",
+      );
+      if (unresolved.length > 1) {
+        setIdentityDiscovery("failed");
+        setMessage(
+          "More than one unresolved Fork original exists for this parent. No new Fork can be reserved.",
+        );
+        return;
+      }
+      const active = unresolved[0];
+      if (active && active.throughTurnRequestId !== requestId) {
+        setIdentityDiscovery("failed");
+        setMessage(
+          "Another Fork original is unresolved for this parent. Review that exact original before creating another.",
+        );
+        return;
+      }
+      const matchingTurn = parentOriginals.filter(
+        (row) => row.throughTurnRequestId === requestId,
+      );
+      // Active originals take precedence over historical linked/retired rows.
+      // A terminal tombstone can be inspected while still permitting a new,
+      // explicit reservation for this same verified source turn.
+      const previous =
+        active ??
+        matchingTurn.find((row) => row.state === "linked") ??
+        matchingTurn.find((row) => row.state === "retired");
       if (previous) {
         const recovered = await props.client.recoverOriginal(
           props.projectId,
@@ -337,15 +363,20 @@ export function CodexChatForkPanel(props: {
 
   const reserve = async () => {
     const owner = selection.current;
+    const retiredInspection =
+      identity?.state === "retired" &&
+      owner?.requestId === identity.requestId &&
+      identity.parentSessionId === props.parentSessionId &&
+      identity.throughTurnRequestId === turnId;
     if (
       !owner ||
       !isCurrent(owner) ||
       !review ||
       identityDiscovery !== "ready" ||
-      identity ||
+      (identity !== null && !retiredInspection) ||
       !turnId ||
       owner.throughTurnRequestId !== turnId ||
-      owner.requestId !== null ||
+      (owner.requestId !== null && !retiredInspection) ||
       !props.writesAllowed
     )
       return;
@@ -765,15 +796,17 @@ export function CodexChatForkPanel(props: {
                     reopen this review before reserving.
                   </p>
                 )}
-              {!identity &&
-                props.writesAllowed &&
-                identityDiscovery === "ready" && (
+              {props.writesAllowed &&
+                identityDiscovery === "ready" &&
+                (!identity || identity.state === "retired") && (
                   <button
                     type="button"
                     disabled={busy || !selected || !complete(selected.phase)}
                     onClick={() => void reserve()}
                   >
-                    Reserve this exact Fork
+                    {identity?.state === "retired"
+                      ? "Reserve a new Fork from this turn"
+                      : "Reserve this exact Fork"}
                   </button>
                 )}
               {identity?.state === "reserved" &&
