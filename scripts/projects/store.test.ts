@@ -148,6 +148,7 @@ test("create identity hashes bind the UUID and expected semantic revision", asyn
     preflightScope: { hash: "a".repeat(64), count: 0 },
     validateScope: async () => ({ hash: "a".repeat(64), count: 0 }),
   });
+  expect(first.created).toBe(true);
   expect(first.operation.requestHash).toBe(
     createRequestHash({
       requestId: firstId,
@@ -171,6 +172,15 @@ test("create identity hashes bind the UUID and expected semantic revision", asyn
       validateScope: async () => ({ hash: "a".repeat(64), count: 0 }),
     }),
   ).rejects.toMatchObject({ status: 409 });
+  const replay = await store.reserveCreate({
+    requestId: firstId,
+    original: input,
+    expectedCatalogRevision: 0,
+    preflightScope: { hash: "a".repeat(64), count: 0 },
+    validateScope: async () => ({ hash: "a".repeat(64), count: 0 }),
+  });
+  expect(replay.created).toBe(false);
+  expect(replay.operation).toEqual(first.operation);
 
   await store.retireCreate(firstId, first.operation.requestHash);
   const secondId = "975d7e7a-4694-4b06-995c-b087d7fda3a0";

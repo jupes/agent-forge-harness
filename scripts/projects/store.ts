@@ -541,6 +541,7 @@ export function createProjectStore(
     }): Promise<{
       catalog: ProjectCatalog;
       operation: ProjectCreateOperation;
+      created: boolean;
     }> {
       if (
         !requestId(input.requestId) ||
@@ -571,10 +572,11 @@ export function createProjectStore(
             409,
             "This project create UUID is already bound to a different original.",
           );
-        return { catalog: read(), operation: existing };
+        return { catalog: read(), operation: existing, created: false };
       }
       const stamp = now().toISOString();
       let operation: ProjectCreateOperation | null = null;
+      let created = false;
       const catalog = await metadataChange(async (current) => {
         const raced = exactOperation(current, input.requestId);
         if (raced) {
@@ -584,6 +586,7 @@ export function createProjectStore(
               "This project create UUID is already bound to a different original.",
             );
           operation = raced;
+          created = false;
           return current;
         }
         if (current.revision !== input.expectedCatalogRevision)
@@ -645,6 +648,7 @@ export function createProjectStore(
           createdAt: stamp,
           updatedAt: stamp,
         };
+        created = true;
         const reservedOperations = [...operations, operation];
         const reserved = projectedCatalog(current, reservedOperations);
         const project = createRecord(
@@ -680,7 +684,7 @@ export function createProjectStore(
           503,
           "The project reservation could not be read back.",
         );
-      return { catalog, operation };
+      return { catalog, operation, created };
     },
     async commitCreate(input: {
       requestId: string;

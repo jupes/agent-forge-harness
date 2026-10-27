@@ -181,10 +181,14 @@ function preferenceChange(
 
 async function reply(
   work: () => unknown | Promise<unknown>,
-  status = 200,
+  status: number | (() => number) = 200,
 ): Promise<RouteReply> {
   try {
-    return { status, data: await work() };
+    const data = await work();
+    return {
+      status: typeof status === "function" ? status() : status,
+      data,
+    };
   } catch (error) {
     if (error instanceof ProjectStoreError)
       return { status: error.status, error: error.message };
@@ -343,42 +347,49 @@ export function projectRoutes(
         original,
       }),
     }),
-    effect: async (input, context) =>
-      reply(async () => {
-        if (!context?.auditEventId)
-          throw new ProjectStoreError(
-            503,
-            "The project reservation was not audited.",
-          );
-        const existing = store.readCreate(input.requestId);
-        const requestHash = hashProjectCreateRequest(input);
-        if (existing) {
-          if (existing.requestHash !== requestHash)
+    effect: async (input, context) => {
+      let responseStatus = 201;
+      return reply(
+        async () => {
+          if (!context?.auditEventId)
             throw new ProjectStoreError(
-              409,
-              "This project create UUID is already bound to another original.",
+              503,
+              "The project reservation was not audited.",
             );
-          return existing;
-        }
-        const preflightScope = checkedScope(
-          input.original,
-          await createOptions.loadScope(),
-          createOptions,
-        );
-        const result = await store.reserveCreate({
-          requestId: input.requestId,
-          original: input.original,
-          expectedCatalogRevision: input.expectedCatalogRevision,
-          preflightScope,
-          validateScope: async () =>
-            checkedScope(
-              input.original,
-              await createOptions.loadScope(),
-              createOptions,
-            ),
-        });
-        return result.operation;
-      }, 201),
+          const existing = store.readCreate(input.requestId);
+          const requestHash = hashProjectCreateRequest(input);
+          if (existing) {
+            if (existing.requestHash !== requestHash)
+              throw new ProjectStoreError(
+                409,
+                "This project create UUID is already bound to another original.",
+              );
+            responseStatus = 200;
+            return existing;
+          }
+          const preflightScope = checkedScope(
+            input.original,
+            await createOptions.loadScope(),
+            createOptions,
+          );
+          const result = await store.reserveCreate({
+            requestId: input.requestId,
+            original: input.original,
+            expectedCatalogRevision: input.expectedCatalogRevision,
+            preflightScope,
+            validateScope: async () =>
+              checkedScope(
+                input.original,
+                await createOptions.loadScope(),
+                createOptions,
+              ),
+          });
+          if (!result.created) responseStatus = 200;
+          return result.operation;
+        },
+        () => responseStatus,
+      );
+    },
   };
   const commit: ActionRoute<{
     requestId: string;
