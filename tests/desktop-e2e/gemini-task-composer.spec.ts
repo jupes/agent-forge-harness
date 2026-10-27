@@ -421,7 +421,7 @@ test("an edit after Gemini review and before paint cannot dispatch an unreviewed
   await expect(
     dialog.getByRole("button", { name: "Start", exact: true }),
   ).toBeEnabled();
-  expect(identityPosts).toBe(1);
+  expect(identityPosts).toBe(0);
   await dialog.evaluate((element) => {
     const input = element.querySelector<HTMLTextAreaElement>(
       '[aria-label="Session prompt"]',
@@ -440,6 +440,7 @@ test("an edit after Gemini review and before paint cannot dispatch an unreviewed
       { exact: true },
     ),
   ).toBeVisible();
+  expect(identityPosts).toBe(0);
   expect(posts).toBe(0);
   expect(taskCount()).toBe(before);
   await expect(
@@ -450,6 +451,7 @@ test("an edit after Gemini review and before paint cannot dispatch an unreviewed
   await expect(
     page.getByText("Native Task outcome: completed", { exact: true }),
   ).toBeVisible();
+  expect(identityPosts).toBe(1);
   expect(posts).toBe(1);
   expect(
     calls()
