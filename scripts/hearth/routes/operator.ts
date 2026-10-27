@@ -103,6 +103,8 @@ export interface OperatorDeps extends ReadDeps {
   smithRoutingEditService: Parameters<typeof smithRoutingEditRoutes>[0];
   /** Machine-private home; the project catalog is shared above workspaces. */
   projectHome: string;
+  /** Trusted internal repository registry source; absent uses localStateRoot(root). */
+  projectRepositoryRegistryRoot?: string | undefined;
   conversationTransport?: ConversationTransport | undefined;
   sessionRuntime: SessionRuntime;
   codexTaskRuntime?: ReturnType<typeof createCodexTaskRuntime> | undefined;
@@ -407,6 +409,8 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
   });
   const {
     projects,
+    createOptionsRead,
+    scopePreview,
     preferences,
     createList,
     createOriginal,
@@ -416,6 +420,9 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
   } = projectRoutes(deps.projectHome, {
     root: deps.root,
     workspace: deps.workspace,
+    ...(deps.projectRepositoryRegistryRoot === undefined
+      ? {}
+      : { projectRepositoryRegistryRoot: deps.projectRepositoryRegistryRoot }),
     loadScope: createProjectSnapshot,
   });
   const projectRuns = createProjectRunRoutes(
@@ -518,6 +525,8 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     counts,
     scoreboard,
     projects,
+    createOptionsRead,
+    scopePreview,
     createList,
     createOriginal,
     projectSummaryRoute(deps.projectHome, deps, projectSnapshot),
