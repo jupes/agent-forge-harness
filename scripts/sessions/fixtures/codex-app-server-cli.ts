@@ -1138,7 +1138,11 @@ while (true) {
       )
         process.exit(14);
       model = params.model;
-      cwd = params.cwd;
+      if (forkRestartMode) {
+        const canonicalCwd = canonicalFixtureDirectory(params.cwd);
+        if (!canonicalCwd) process.exit(14);
+        cwd = canonicalCwd;
+      } else cwd = params.cwd;
       if ("sandbox" in params && typeof params.sandbox === "string")
         sandbox = params.sandbox;
       if (
