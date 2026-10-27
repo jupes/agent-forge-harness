@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { join } from "node:path";
@@ -15,16 +16,21 @@ import {
   SESSION_ROUTE,
 } from "../../scripts/hearth/paths";
 import { ownedCodingStateSchema } from "../../scripts/sessions/codex-owned-journal";
+import { canonicalOwnedSessionStart } from "../../scripts/sessions/codex-owned-protocol";
 import {
   ownedCodingSessionSchema,
   ownedCodingStartReceiptSchema,
 } from "../../scripts/sessions/codex-owned-wire-protocol";
 import { sessionStartIdentityReplySchema } from "../../scripts/sessions/identity-protocol";
+import { sessionStartSchema } from "../../scripts/sessions/request-protocol";
 import {
   codexChatForkIdentityMetadataSchema,
   sessionOperationIdentityPageSchema,
 } from "../../scripts/sessions/session-operation-identities-protocol";
-import { captureTextResponseThroughBrowserFetch } from "../desktop-e2e/browser-response-capture";
+import {
+  captureTextResponsesThroughBrowserFetch,
+  captureTextResponseThroughBrowserFetch,
+} from "../desktop-e2e/browser-response-capture";
 import { verifiedIdentityReadBarrier } from "../desktop-e2e/session-start-read-barrier";
 import { pageToken } from "../e2e/launch-link";
 import { DASHBOARD_PORT, HEARTH_HOME } from "../e2e/servers";
@@ -495,31 +501,16 @@ async function openNewSession(
     }
   };
   page.on("request", countStartRequests);
-  const reserveResponse = page.waitForResponse(async (response) => {
-    const responseUrl = new URL(response.url());
-    if (
-      response.request().method() !== "POST" ||
-      responseUrl.origin !== expectedOrigin ||
-      responseUrl.pathname !== reservePath
-    )
-      return false;
-    const envelope = record(await response.json().catch(() => null));
-    if (envelope?.["ok"] !== true) return false;
-    const reply = sessionStartIdentityReplySchema.parse(envelope["data"]);
-    expect(reply.scope).toEqual({
-      family: "owned-session-start",
-      projectId: forkProject.id,
-      workspace: forkProject.workspaces[0]?.root,
-    });
-    expect(reply.identity).toMatchObject({
-      provider: "codex",
-      mode: "chat",
-      state: "reserved",
-    });
-    reserveRequestId = reply.identity.requestId;
-    reserveRequestHash = reply.identity.requestHash;
-    return true;
-  });
+  const receiptCaptures = await captureTextResponsesThroughBrowserFetch(page, [
+    { method: "POST", origin: expectedOrigin, path: reservePath },
+    { method: "POST", origin: expectedOrigin, path: startPath },
+  ]);
+  const reserveCapture = receiptCaptures.captures[0];
+  const startCapture = receiptCaptures.captures[1];
+  if (!reserveCapture || !startCapture) {
+    await receiptCaptures.dispose();
+    throw new Error("The parent Start receipt captures were unavailable.");
+  }
   const startRequest = page.waitForRequest((request) => {
     const requestUrl = new URL(request.url());
     return (
@@ -528,28 +519,47 @@ async function openNewSession(
       requestUrl.pathname === startPath
     );
   });
-  const startResponse = page.waitForResponse((response) => {
-    const responseUrl = new URL(response.url());
-    return (
-      response.request().method() === "POST" &&
-      responseUrl.origin === expectedOrigin &&
-      responseUrl.pathname === startPath
-    );
-  });
   facts.stage = "start-dispatched";
   facts.timingMs.startClick = Math.round(performance.now() - startedAt);
-  await dialog.getByRole("button", { name: "Start", exact: true }).click();
   let receiptSession: SessionRow | null = null;
   try {
+    await dialog.getByRole("button", { name: "Start", exact: true }).click();
     const [reserved, startReq, started] = await Promise.all([
-      reserveResponse,
+      reserveCapture.response,
       startRequest,
-      startResponse,
+      startCapture.response,
     ]);
-    expect(reserved.status()).toBe(200);
-    expect(started.status()).toBe(202);
-    const startBody = record(startReq.postDataJSON());
-    const startEnvelope = record(await started.json());
+    expect(reserved.status).toBe(200);
+    const reserveEnvelope = record(
+      parseJson(reserved.text, "identity reserve receipt"),
+    );
+    expect(reserveEnvelope?.["ok"]).toBe(true);
+    const reserveReply = sessionStartIdentityReplySchema.parse(
+      reserveEnvelope?.["data"],
+    );
+    expect(reserveReply.scope).toEqual({
+      family: "owned-session-start",
+      projectId: forkProject.id,
+      workspace: forkProject.workspaces[0]?.root,
+    });
+    expect(reserveReply.identity).toMatchObject({
+      provider: "codex",
+      mode: "chat",
+      state: "reserved",
+    });
+    reserveRequestId = reserveReply.identity.requestId;
+    reserveRequestHash = reserveReply.identity.requestHash;
+
+    expect(started.status).toBe(202);
+    const startBody = sessionStartSchema.parse(startReq.postDataJSON());
+    const startBodyHash = createHash("sha256")
+      .update(canonicalOwnedSessionStart(startBody))
+      .digest("hex");
+    expect(startBody.requestId).toBe(reserveRequestId);
+    expect(startBodyHash).toBe(reserveRequestHash);
+    const startEnvelope = record(
+      parseJson(started.text, "parent Start receipt"),
+    );
     if (startEnvelope?.["ok"] !== true)
       throw new Error("The actual parent Start receipt was invalid.");
     const receipt = ownedCodingStartReceiptSchema.parse(startEnvelope["data"]);
@@ -558,7 +568,6 @@ async function openNewSession(
     expect(receipt.session.requestHash).toBe(reserveRequestHash);
     expect(receipt.session.provider).toBe("codex");
     expect(receipt.session.mode).toBe("chat");
-    expect(startBody?.["requestId"]).toBe(reserveRequestId);
     expect(facts.reservePosts).toBe(1);
     expect(facts.startPosts).toBe(1);
     facts.timingMs.startReceipt = Math.round(performance.now() - startedAt);
@@ -566,6 +575,7 @@ async function openNewSession(
     reportFacts(facts);
   } finally {
     page.off("request", countStartRequests);
+    await receiptCaptures.dispose();
   }
   const pane = page.getByRole("region", {
     name: "Session conversation",
