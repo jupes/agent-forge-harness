@@ -612,12 +612,16 @@ test("a trusted new SQLite sidecar is made private before strict in-lock verific
     read = acl.read.bind(acl),
     apply = acl.apply.bind(acl);
   let armed = false,
-    inLockDirectoryReads = 0,
+    inLockMutexReads = 0,
     inserted = false,
     aclRepairs = 0,
     enteredWork = false;
   acl.read = (path) => {
-    if (path === locks && armed && ++inLockDirectoryReads === 2) {
+    if (
+      path === join(locks, "journal.sqlite") &&
+      armed &&
+      ++inLockMutexReads === 5
+    ) {
       writeFileSync(sidecar, contents, { flag: "wx" });
       inserted = true;
     }
@@ -629,18 +633,34 @@ test("a trusted new SQLite sidecar is made private before strict in-lock verific
     if (path === sidecar) aclRepairs++;
     apply(path, target);
   };
+  const diagnostics: CodexChatForkMutexDiagnostic[] = [];
 
-  await createCodexChatForkJournalStorage(home, {
+  const storage = createCodexChatForkJournalStorage(home, {
     platform: "win32",
     acl,
+    onMutexDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
     beforeExclusivePreLockAssert: () => {
       armed = true;
     },
-  }).exclusive(async () => {
-    enteredWork = true;
   });
+  let operationError: unknown;
+  try {
+    await storage.exclusive(async () => {
+      enteredWork = true;
+    });
+  } catch (error) {
+    operationError = error;
+  }
 
   expect(inserted).toBe(true);
+  if (operationError !== undefined)
+    expect(diagnostics).toContainEqual(
+      expect.objectContaining({
+        phase: "exclusive-in-lock-assert",
+        guard: "sqlite-sidecar-private",
+      }),
+    );
+  expect(operationError).toBeUndefined();
   expect(aclRepairs).toBe(1);
   expect(enteredWork).toBe(true);
   expect(readFileSync(sidecar, "utf8")).toBe(contents);
