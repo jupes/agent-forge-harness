@@ -314,7 +314,7 @@ test("oversized candidates are refused before the prepared or attempted markers"
 
 test("failed prepared, attempted, publication and completion writes stay held", async () => {
   for (const failure of [
-    { file: "prepared.json", afterWrite: false, expectedStage: "intent" },
+    { file: "prepared.json", afterWrite: false, expectedStage: "claimed" },
     { file: "attempted.json", afterWrite: false, expectedStage: "prepared" },
     { file: "confirmed.json", afterWrite: false, expectedStage: "attempted" },
   ] as const) {

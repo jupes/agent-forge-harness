@@ -243,6 +243,7 @@ test("editing during a pending preview clears its stale busy state", async () =>
     },
   });
   value.client.setDraft("workspace", smith);
+  await value.client.recover();
   const pending = value.client.preview();
   expect(value.client.get().previewing).toBe(true);
   const changed = { ...smith, model: "edited-while-reviewing" };
@@ -463,7 +464,7 @@ test("a source-proven reservation NotSent survives reload and permits a later ex
   restarted.setDraft("workspace", nextSmith);
   await restarted.preview();
   await restarted.create();
-  expect(first.posted.map((request) => request.requestId)).toEqual(ids);
+  expect(first.posted.map((request) => request.requestId)).toEqual([ids[1]!]);
   expect(restarted.get().entries.map((entry) => entry.state)).toEqual([
     "not-sent",
     "confirmed",
@@ -759,7 +760,7 @@ test("a retired confirmation preserves its terminal state when protected readbac
   restarted.dispose();
 });
 
-test("disposing during an identity reservation durably retires the proven-undispatched UUID", async () => {
+test("disposing after server reservation preserves it without a local identity or POST", async () => {
   const value = setup();
   let release: (() => void) | undefined;
   const pendingReservation = new Promise<void>((resolve) => {
@@ -778,13 +779,14 @@ test("disposing during an identity reservation durably retires the proven-undisp
   release();
   await pending;
   expect(value.posted).toHaveLength(0);
-  expect(value.identities.read(ids[0]!)).toMatchObject({
-    retired: true,
-    retirement: "operator-not-sent",
+  expect(value.identities.read(ids[0]!)).toBeNull();
+  expect(value.originals.get(ids[0]!)?.result).toMatchObject({
+    phase: "held",
+    stage: "reserved",
   });
 });
 
-test("a verified NotSent response still retires after disposal while storage readback failure stays held", async () => {
+test("NotSent after disposal keeps the server reservation held while local readback failure stays held", async () => {
   let releasePost: ((value: SmithCreatePostResult) => void) | undefined,
     started: (() => void) | undefined;
   const postStarted = new Promise<void>((resolve) => {
@@ -805,7 +807,11 @@ test("a verified NotSent response still retires after disposal while storage rea
   pending.client.dispose();
   releasePost?.({ state: "not-sent", message: "Operator access was refused." });
   await create;
-  expect(pending.identities.read(ids[0]!)?.retired).toBe(true);
+  expect(pending.identities.read(ids[0]!)).toMatchObject({ retired: false });
+  expect(pending.originals.get(ids[0]!)?.result).toMatchObject({
+    phase: "held",
+    stage: "reserved",
+  });
 
   const failure = setup({
     post: async () => ({

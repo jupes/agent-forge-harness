@@ -237,5 +237,10 @@ test("Smith create actions retain only their fixed identity metadata", () => {
       requestId: "122d0b56-96f3-4818-8789-6ab562c092e8",
       inputHash: "a".repeat(64),
     }),
-  ).toEqual({ action: "smith.config.create.reserve", surface: "api" });
+  ).toEqual({
+    action: "smith.config.create.reserve",
+    surface: "api",
+    requestId: "122d0b56-96f3-4818-8789-6ab562c092e8",
+    inputHash: "a".repeat(64),
+  });
 });

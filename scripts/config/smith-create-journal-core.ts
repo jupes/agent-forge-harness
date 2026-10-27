@@ -413,8 +413,8 @@ export function createSmithCreateJournalCore(
       .exclusive(async () => {
         const previous = existing();
         if (previous) return previous.receipt;
-        assertOwnerSlotAvailable(requestId);
         assertRoom();
+        assertOwnerSlotAvailable(requestId);
         const initial = encode(makeIntent(original));
         storage.writeOnce(requestId, "intent.json", initial);
         const confirmed = existing();
@@ -507,8 +507,8 @@ export function createSmithCreateJournalCore(
         )
           return previous.receipt;
         if (!previous) {
-          assertOwnerSlotAvailable(requestId);
           assertRoom();
+          assertOwnerSlotAvailable(requestId);
           const initial = encode(makeIntent(original));
           storage.writeOnce(requestId, "intent.json", initial);
           previous = existing();

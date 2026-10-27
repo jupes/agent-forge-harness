@@ -541,7 +541,11 @@ export function createSmithConfigCreateClient(deps: {
           }
           if (installed === "installed") {
             if (!(await retireVerifiedReceipt(held))) held.state = "held";
-          } else if (installed === "invalid") held.state = "held";
+          } else if (installed === "invalid") {
+            held.state = "held";
+            held.continueAllowed = false;
+            await client.check(request.requestId);
+          }
           state.notice = held.notice;
         }
         state.preview = null;
@@ -921,13 +925,30 @@ export function createSmithConfigCreateClient(deps: {
           existing.remoteOnly = false;
           if (!identity.retired) continue;
           if (existing.serverIdentity) {
-            // Local settlement is never authority to release or replace a server row.
-            existing.state = "held";
-            existing.continueAllowed =
-              existing.serverIdentity.stage === "reserved" &&
-              existing.serverIdentity.state === "reserved";
-            existing.notice =
-              "A server-owned create reservation exists for this UUID. Checking its protected original; local settlement cannot release it.";
+            // A matching server terminal summary corroborates local settlement;
+            // otherwise local state cannot release or replace the server row.
+            const localTerminal =
+              identity.retirement === "correlated-refusal"
+                ? "refused"
+                : identity.retirement === "correlated-confirmation"
+                  ? "confirmed"
+                  : null;
+            if (
+              existing.serverIdentity.stage === "terminal" &&
+              existing.serverIdentity.state === localTerminal
+            ) {
+              existing.state = localTerminal;
+              existing.continueAllowed = false;
+              existing.notice =
+                "The server confirms the saved terminal outcome. Checking its protected original for review details.";
+            } else {
+              existing.state = "held";
+              existing.continueAllowed =
+                existing.serverIdentity.stage === "reserved" &&
+                existing.serverIdentity.state === "reserved";
+              existing.notice =
+                "A server-owned create reservation exists for this UUID. Checking its protected original; local settlement cannot release it.";
+            }
           } else {
             existing.state =
               identity.retirement === "correlated-refusal"

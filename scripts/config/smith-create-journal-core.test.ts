@@ -231,8 +231,8 @@ test("missing original GET is inert and the owner-wide slot releases only after 
   expect(journal.listOriginals()).toMatchObject({
     complete: true,
     entries: [
-      { requestId: original.requestId, state: "refused", stage: "terminal" },
       { requestId: other.requestId, state: "reserved", stage: "reserved" },
+      { requestId: original.requestId, state: "refused", stage: "terminal" },
     ],
   });
   expect([...m.records.keys()]).toEqual([original.requestId, other.requestId]);
