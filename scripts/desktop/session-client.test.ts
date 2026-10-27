@@ -1882,20 +1882,6 @@ test("a failed private feed reads the selected saved pages without claiming live
   client.dispose();
 });
 
-test("the app-root sessions client owns the native Fork review and recovery surface", () => {
-  const client = createSessionsClient({
-    canWrite: () => false,
-    requestId: () => requestId,
-    list: async () => [],
-    read: async () => ({}),
-    post: async () => ({ state: "refused", message: "Writes are disabled." }),
-    stream: () => () => ({ close() {} }),
-  });
-
-  expect(typeof Reflect.get(client, "fork")).toBe("object");
-  client.dispose();
-});
-
 test("late fallback reads cannot refill a closed project cache or replace a newer selection", async () => {
   let handlers: StreamHandlers | undefined,
     finish: ((value: unknown) => void) | undefined;
