@@ -264,6 +264,42 @@ test("an explicit project Keeper Smith is bound to the saved original and commit
       validateScope: async () => ({ hash: "a".repeat(64), count: 0 }),
     }),
   ).rejects.toMatchObject({ status: 409 });
+
+  const file = projectCatalogPath(home);
+  const saved = JSON.parse(readFileSync(file, "utf8")) as {
+    projects: Array<Record<string, unknown>>;
+  };
+  saved.projects[0]!.keeperSmith = "codex-journeyman";
+  const corrupted = JSON.stringify(saved);
+  writeOwnerOnly(file, corrupted);
+  expect(() => store.read()).toThrow();
+  expect(readFileSync(file, "utf8")).toBe(corrupted);
+});
+
+test("a legacy original commits on the direct store path without a Keeper field", async () => {
+  const { store, input } = fixture();
+  const requestId = "5e091eab-8a4f-45dc-8fbb-19e9425d5c4e";
+  const reservation = await store.reserveCreate({
+    requestId,
+    original: input,
+    expectedCatalogRevision: 0,
+    preflightScope: { hash: "c".repeat(64), count: 0 },
+    validateScope: async () => ({ hash: "c".repeat(64), count: 0 }),
+  });
+  const committed = await store.commitCreate({
+    requestId,
+    requestHash: reservation.operation.requestHash,
+    reviewedScopeHash: reservation.operation.scopeHash,
+    preflightScope: { hash: reservation.operation.scopeHash, count: 0 },
+    validateScope: async () => ({
+      hash: reservation.operation.scopeHash,
+      count: 0,
+    }),
+  });
+  expect(committed.catalog.projects[0]?.slug).toBe(input.slug);
+  expect(
+    Object.hasOwn(committed.catalog.projects[0] ?? {}, "keeperSmith"),
+  ).toBe(false);
 });
 
 test("a legacy project create original remains byte-shape absent of Keeper selection", async () => {
