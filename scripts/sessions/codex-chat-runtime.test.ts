@@ -567,6 +567,11 @@ test.each([
             threadId: crossProcessFork.threadId,
             version,
           },
+          resumeSettings: {
+            modelProvider: crossProcessFork.settings.modelProvider,
+            serviceTier: crossProcessFork.settings.serviceTier,
+            reasoningEffort: crossProcessFork.settings.reasoningEffort,
+          },
         },
         async (event) => {
           childEvents.push(event);
@@ -659,23 +664,46 @@ test.each([
     const resumeRows = overfilledContinuityLog
       ? readRecentCompiledFixtureRecords(log).rows
       : readCompiledFixtureRecords(log);
-    const resumeParams = resumeRows
+    const resumeRpcRows = resumeRows
       .filter((row) => row.kind === "rpc" && row.method === "thread/resume")
       .map((row) => row.params);
-    expect(resumeParams).toHaveLength(
+    status = "verify-resume-call-counts";
+    expect(resumeRpcRows).toHaveLength(
       fixtureMode === "fork-restart-child-approval" ? 3 : 2,
     );
-    expect(resumeParams[0]).not.toHaveProperty("modelProvider");
-    expect(resumeParams[0]).not.toHaveProperty("serviceTier");
-    expect(resumeParams[1]).toMatchObject({
+    const resumeThreadId = (params: unknown) =>
+      typeof params === "object" &&
+      params !== null &&
+      !Array.isArray(params) &&
+      "threadId" in params &&
+      typeof params.threadId === "string"
+        ? params.threadId
+        : null;
+    const parentResumeParams = resumeRpcRows.filter(
+        (params) => resumeThreadId(params) === outcome.threadId,
+      ),
+      childResumeParams = resumeRpcRows.filter(
+        (params) => resumeThreadId(params) === crossProcessFork.threadId,
+      );
+    status = "verify-parent-resume-parameters";
+    expect(parentResumeParams).toHaveLength(2);
+    expect(parentResumeParams[0]).not.toHaveProperty("modelProvider");
+    expect(parentResumeParams[0]).not.toHaveProperty("serviceTier");
+    expect(parentResumeParams[1]).toMatchObject({
       threadId: outcome.threadId,
       modelProvider: "openai",
       serviceTier: null,
     });
-    if (fixtureMode === "fork-restart-child-approval")
-      expect(resumeParams[2]).toMatchObject({
+    status = "verify-child-resume-parameters";
+    if (fixtureMode === "fork-restart-child-approval") {
+      expect(childResumeParams).toHaveLength(1);
+      expect(childResumeParams[0]).toMatchObject({
         threadId: crossProcessFork.threadId,
+        modelProvider: crossProcessFork.settings.modelProvider,
+        serviceTier: crossProcessFork.settings.serviceTier,
       });
+    } else expect(childResumeParams).toHaveLength(0);
+    status = "verify-final-continuity-facts";
     const facts = summarize();
     if (overfilledContinuityLog) {
       expect(facts).toMatchObject({
