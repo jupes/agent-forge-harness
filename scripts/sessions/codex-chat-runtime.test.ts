@@ -11,6 +11,11 @@ import {
 import { join } from "node:path";
 import type { CodexChatEvent, CodexChatLaunch } from "../../types/codex-chat";
 import { scratchDirs } from "../test-scratch";
+import {
+  emitCodexChatApprovalFailureFactsAndRethrow,
+  readCodexChatFixtureLog,
+  summarizeCodexChatApprovalFailureFacts,
+} from "./codex-chat-approval-failure-facts.test-utils";
 import { parseCodexChatForkRuntimeInput } from "./codex-chat-fork-runtime-protocol";
 import {
   type CodexChatCallbacks,
@@ -96,7 +101,14 @@ function fixture(mode = "normal") {
       throw new Error("Malformed inert app-server recording.");
     }
   };
-  return { root, runtime, launch, records, options };
+  return {
+    root,
+    runtime,
+    launch,
+    records,
+    options,
+    readFailureFacts: () => readCodexChatFixtureLog(log),
+  };
 }
 
 async function forkInput(f: ReturnType<typeof fixture>) {
@@ -519,30 +531,54 @@ test("native approval is private and durable before one narrow reply reaches the
 
 for (const decision of ["accept", "decline", "cancel"] as const) {
   test(`native file approval supports exactly one ${decision} reply with a string RPC id`, async () => {
-    const f = fixture("approval-file");
+    const f = fixture("approval-file"),
+      events: CodexChatEvent[] = [];
     const snapshot = await f.runtime.prepare({
       smith: "codex-journeyman",
       launch: f.launch,
     });
-    let calls = 0;
-    const result = await f.runtime.run(
-      { prepared: snapshot, resume: null },
-      async () => {},
-      new AbortController().signal,
-      {
-        requestApproval: async (approval) => {
-          calls++;
-          expect(approval.kind).toBe("file-change");
-          expect(approval.nativeRequestId).toBe("1");
-          return decision;
+    let calls = 0,
+      outcome: Awaited<ReturnType<typeof f.runtime.run>> | null = null;
+    try {
+      outcome = await f.runtime.run(
+        { prepared: snapshot, resume: null },
+        async (event) => {
+          events.push(event);
         },
-      },
-    );
-    expect(calls).toBe(1);
-    expect(result.phase).toBe(decision === "cancel" ? "failed" : "completed");
-    expect(f.records().filter((row) => row.kind === "answer")).toMatchObject([
-      { id: "1", result: { decision } },
-    ]);
+        new AbortController().signal,
+        {
+          requestApproval: async (approval) => {
+            calls++;
+            expect(approval.kind).toBe("file-change");
+            expect(approval.nativeRequestId).toBe("1");
+            return decision;
+          },
+        },
+      );
+      expect(calls).toBe(1);
+      expect(outcome.phase).toBe(
+        decision === "cancel" ? "failed" : "completed",
+      );
+      expect(f.records().filter((row) => row.kind === "answer")).toMatchObject([
+        { id: "1", result: { decision } },
+      ]);
+    } catch (error) {
+      const processEvent = events.find((event) => event.kind === "process");
+      await emitCodexChatApprovalFailureFactsAndRethrow(
+        error,
+        async () =>
+          summarizeCodexChatApprovalFailureFacts({
+            events,
+            outcome,
+            fixture: f.readFailureFacts(),
+            ownedProcessAlive:
+              processEvent && processEvent.kind === "process"
+                ? alive(processEvent.pid)
+                : null,
+          }),
+        (line) => process.stderr.write(line),
+      );
+    }
   });
 }
 

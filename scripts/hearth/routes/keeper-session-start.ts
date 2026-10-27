@@ -48,6 +48,7 @@ export function createKeeperSessionStartRoutes(
           ),
       read: (projectId, sessionId, query) =>
         owned.service.read(projectId, sessionId, query),
+      listIdentities: (projectId) => owned.service.listIdentities(projectId),
     },
     prepare: owned.prepare,
   });
