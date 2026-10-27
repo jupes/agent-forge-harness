@@ -32,6 +32,7 @@ import type {
   SmithsView,
 } from "../../types/hearth";
 import type { OwnedSessionRecord } from "../../types/owned-session";
+import type { ProjectCatalog } from "../../types/projects";
 import type { SmithConfigEditRequest } from "../../types/smith-config-edit";
 import type { SmithRoutingEditRequest } from "../../types/smith-routing-edit";
 import { type LoadedConfig, loadConfig } from "../config/load";
@@ -628,8 +629,14 @@ interface ActionFixture {
   effects?: string[];
   /** What the valid request needs to exist first. */
   prepare?(h: TestHearth): Promise<void>;
+  /** Snapshot a relevant domain collection immediately after fixture setup. */
+  captureBefore?(h: TestHearth): ProjectCatalog["projects"];
   /** The effect itself, not its status: what the valid request must have changed. */
-  happened(h: TestHearth, answer: unknown): Promise<void>;
+  happened(
+    h: TestHearth,
+    answer: unknown,
+    before?: ProjectCatalog["projects"],
+  ): Promise<void>;
 }
 
 const API_PROJECT_CREATE_RESERVE_ID = "3eed32cc-a41d-49b7-b895-9236743781fd";
@@ -2406,14 +2413,16 @@ const ACTIONS: Record<string, ActionFixture> = {
         }),
       };
     },
-    happened: async (h) => {
+    captureBefore: (h) => createProjectStore(h.home).read().projects,
+    happened: async (h, _answer, before) => {
+      if (!before) throw new Error("project catalog baseline was not captured");
       expect(
         createProjectStore(h.home).readCreate(API_PROJECT_CREATE_RESERVE_ID),
       ).toMatchObject({
         state: "reserved",
         original: apiProjectCreateOriginal("api-project-create", h.root),
       });
-      expect(createProjectStore(h.home).read().projects).toEqual([]);
+      expect(createProjectStore(h.home).read().projects).toEqual(before);
     },
   },
   "POST /projects/create-reservations/:requestId/commit": {
@@ -3437,12 +3446,14 @@ describe("every action row (iterating the table)", () => {
         const {
           valid,
           prepare,
+          captureBefore,
           happened,
           outcome = [],
           effects = [],
           settled,
         } = fixture(row);
         await prepare?.(h);
+        const beforeDomain = captureBefore?.(h);
         const before = snapshot(h);
         const seen = probes.length;
 
@@ -3495,7 +3506,7 @@ describe("every action row (iterating the table)", () => {
         expect(calls[0]?.audit.at(-1)?.id).toBe(added[0]?.id);
 
         progress.stage = "happened";
-        await happened(h, body.data);
+        await happened(h, body.data, beforeDomain);
         if (row.action === "council.run.start" && valid.target !== undefined) {
           progress.stage = "council-run-finished";
           await councilRunFinished(h, valid.target);
@@ -3994,6 +4005,11 @@ describe("a read row or the stream while another connection holds the write lock
     await seedKeeperShiftStartHistory(h);
     seedSmithVerificationRead(h);
     activityReadMembership(h);
+    await seedProjectCreateReservation(
+      h,
+      API_PROJECT_CREATE_READ_ID,
+      "cold-ledger-project-read",
+    );
     await seedSmithCreateOriginal(h);
     await seedSmithEditOriginal(h);
     await seedSmithRoutingEditOriginal(h);

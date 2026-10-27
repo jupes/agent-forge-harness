@@ -244,6 +244,42 @@ test("Smith create actions retain only their fixed identity metadata", () => {
   });
 });
 
+test("project create actions keep only bounded original correlation metadata", () => {
+  expect(
+    stripPayload("operator.action", {
+      action: "project.create.reserve",
+      surface: "api",
+      target: "private project slug",
+      family: "project-create",
+      requestId: "122d0b56-96f3-4818-8789-6ab562c092e8",
+      inputHash: "a".repeat(64),
+      original: { name: "private original" },
+      body: "private request body",
+      workspace: "C:\\private\\workspace",
+    }),
+  ).toEqual({
+    action: "project.create.reserve",
+    surface: "api",
+    target: "private project slug",
+    family: "project-create",
+    requestId: "122d0b56-96f3-4818-8789-6ab562c092e8",
+    inputHash: "a".repeat(64),
+  });
+  expect(
+    stripPayload("operator.action", {
+      action: "project.create.reserve",
+      family: "project-create-private-data",
+      requestId: "122d0b56-96f3-4818-8789-6ab562c092e8",
+      inputHash: "a".repeat(64),
+      original: { name: "private original" },
+    }),
+  ).toEqual({
+    action: "project.create.reserve",
+    requestId: "122d0b56-96f3-4818-8789-6ab562c092e8",
+    inputHash: "a".repeat(64),
+  });
+});
+
 describe("stripPayload: Codex Chat Fork action identity", () => {
   test("keeps only the approved Fork family and bounded original correlation", () => {
     expect(
