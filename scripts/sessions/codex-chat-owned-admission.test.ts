@@ -1,6 +1,13 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { ownedSessionLifecycle } from "../../apps/desktop/src/session-activity";
 import type {
@@ -27,6 +34,7 @@ import {
   ownedCodingPageSchema,
   ownedCodingStateSchema,
 } from "./codex-owned-journal";
+import { canonicalOwnedSessionStart } from "./codex-owned-protocol";
 import { createSessionLibrary } from "./library";
 import { sessionTranscriptExportSchema } from "./library-protocol";
 import { createSessionRegistry, sessionRegistryFile } from "./registry";
@@ -40,9 +48,16 @@ afterEach(async () => {
 async function fixture(mode = "normal", rpcTimeoutMs = 5000) {
   const root = scratch.make("codex-chat-owned-"),
     home = join(root, "home"),
-    configHome = join(root, "config");
+    configHome = join(root, "config"),
+    workspaceAlias = join(root, "workspace-alias");
   mkdirSync(join(root, ".git"));
   mkdirSync(configHome);
+  if (mode === "canonical-cwd-ack")
+    symlinkSync(
+      root,
+      workspaceAlias,
+      process.platform === "win32" ? "junction" : "dir",
+    );
   writeFileSync(
     join(root, "agent-forge.toml"),
     '[execution.env]\npass = ["CODEX_CHAT_MODE", "CODEX_CHAT_LOG"]\n',
@@ -79,10 +94,14 @@ async function fixture(mode = "normal", rpcTimeoutMs = 5000) {
       home,
       runtime,
       async validateScope(id, metadata) {
+        const selectedPath = (value: string) =>
+          mode === "canonical-cwd-ack"
+            ? realpathSync.native(value) === realpathSync.native(root)
+            : value === root;
         if (
           id !== project.id ||
-          metadata.repository !== root ||
-          metadata.worktree !== root
+          !selectedPath(metadata.repository) ||
+          !selectedPath(metadata.worktree)
         )
           throw Error("Foreign planted scope");
       },
@@ -116,8 +135,95 @@ async function fixture(mode = "normal", rpcTimeoutMs = 5000) {
       throw Error("Invalid completed fake log");
     }
   };
-  return { root, home, project, request, open, records, runtime };
+  return {
+    root,
+    home,
+    project,
+    request,
+    workspaceAlias,
+    open,
+    records,
+    runtime,
+  };
 }
+
+test("a canonical native Chat configuration persists without rewriting the aliased original launch", async () => {
+  const f = await fixture("canonical-cwd-ack"),
+    request = {
+      ...f.request,
+      repository: f.workspaceAlias,
+      worktree: f.workspaceAlias,
+    },
+    expectedHash = createHash("sha256")
+      .update(canonicalOwnedSessionStart(request))
+      .digest("hex"),
+    service = f.open();
+  expect(realpathSync.native(f.workspaceAlias)).toBe(
+    realpathSync.native(f.root),
+  );
+  expect(f.workspaceAlias).not.toBe(realpathSync.native(f.workspaceAlias));
+
+  const started = await service.start(f.project.id, request);
+  await service.settled(f.project.id, started.session.id);
+  expect(f.records()).toContainEqual({
+    kind: "canonical-cwd-ack",
+    requestedCwdWasAlias: true,
+    acknowledgedCwdIsCanonical: true,
+  });
+
+  const registry = createSessionRegistry(f.home, "codex", "chat"),
+    record = registry.read(f.project.id, started.session.id),
+    address = {
+      kind: "session" as const,
+      projectId: f.project.id,
+      sessionId: started.session.id,
+    },
+    state = createConversationStore(f.home, undefined, address).read(
+      f.project.id,
+    ),
+    user = state.frames.find(
+      (frame) =>
+        frame.event.kind === "user" && frame.event.codexChat !== undefined,
+    )?.event,
+    configuration = state.frames.find(
+      (frame) =>
+        frame.event.kind === "coding-chat" &&
+        frame.event.event.kind === "configuration",
+    )?.event;
+
+  expect(record.requestId).toBe(request.requestId);
+  expect(record.requestHash).toBe(expectedHash);
+  expect(user).toMatchObject({
+    kind: "user",
+    codexChat: {
+      launch: {
+        cwd: f.workspaceAlias,
+        prompt: request.launch.prompt,
+        attachments: request.launch.attachments,
+      },
+    },
+  });
+  expect(configuration).toMatchObject({
+    kind: "coding-chat",
+    provider: "codex",
+    event: {
+      kind: "configuration",
+      cwd: realpathSync.native(f.workspaceAlias),
+    },
+  });
+  expect(ownedCodingStateSchema.safeParse(state).success).toBe(true);
+  const reopened = createConversationStore(f.home, undefined, address).read(
+    f.project.id,
+  );
+  expect(ownedCodingStateSchema.safeParse(reopened).success).toBe(true);
+  expect(
+    reopened.frames.find(
+      (frame) =>
+        frame.event.kind === "coding-chat" &&
+        frame.event.event.kind === "configuration",
+    )?.event,
+  ).toEqual(configuration);
+});
 
 const heldSummaryUpdates: CodexChatReasoningSummary["update"][] = [
   {

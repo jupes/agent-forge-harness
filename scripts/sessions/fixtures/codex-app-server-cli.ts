@@ -17,6 +17,7 @@ const argv = process.argv.slice(2),
 const mode = process.env.CODEX_CHAT_MODE;
 const forkRestartMode =
     mode === "fork-restart" || mode === "fork-restart-child-approval",
+  canonicalCwdAckMode = mode === "canonical-cwd-ack",
   forkRestartChildApprovalMode = mode === "fork-restart-child-approval";
 const serviceTierAwareMode =
     mode === "service-tier-null" ||
@@ -1142,6 +1143,15 @@ while (true) {
         const canonicalCwd = canonicalFixtureDirectory(params.cwd);
         if (!canonicalCwd) process.exit(14);
         cwd = canonicalCwd;
+      } else if (canonicalCwdAckMode) {
+        const canonicalCwd = canonicalFixtureDirectory(params.cwd);
+        if (!canonicalCwd) process.exit(14);
+        cwd = canonicalCwd;
+        record({
+          kind: "canonical-cwd-ack",
+          requestedCwdWasAlias: params.cwd !== canonicalCwd,
+          acknowledgedCwdIsCanonical: canonicalFixtureDirectory(cwd) === cwd,
+        });
       } else cwd = params.cwd;
       if ("sandbox" in params && typeof params.sandbox === "string")
         sandbox = params.sandbox;
