@@ -4,6 +4,10 @@ import { codexReportedActivity } from "./reported-activity";
 
 export async function runCodexTaskRuntimeFixture() {
   const argv = process.argv.slice(2);
+  if (argv[0] === "--agent-forge-fixture-descendant") {
+    await new Promise(() => setInterval(() => {}, 1000));
+    return;
+  }
   const kind = argv.includes("--version")
     ? "version"
     : argv.includes("--help")
@@ -17,7 +21,7 @@ export async function runCodexTaskRuntimeFixture() {
     (kind === "task" && mode === "hang-tree") ||
     (kind === "sync" && mode === "hang-sync") ||
     (kind === "help" && mode === "hang-help")
-      ? Bun.spawn([process.execPath, "-e", "setInterval(() => {}, 1000)"], {
+      ? Bun.spawn([process.execPath, "--agent-forge-fixture-descendant"], {
           stdin: "ignore",
           stdout: "ignore",
           stderr: "ignore",
