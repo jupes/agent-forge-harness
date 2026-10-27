@@ -297,32 +297,47 @@ async function handleControl(
               replacedAtMs: Date.now(),
             },
           ];
-          const ports = all.flatMap((item) => {
-            const value = record(item);
-            return [
-              value?.["oldDesktopHostPort"],
-              value?.["newDesktopHostPort"],
-            ];
-          });
-          const pids = all.flatMap((item) => {
-            const value = record(item);
-            return [value?.["oldOwnedHearthPid"], value?.["newOwnedHearthPid"]];
-          });
-          const owners = all.flatMap((item) => {
-            const value = record(item);
-            return [value?.["oldHostOwner"], value?.["newHostOwner"]];
+          const firstGeneration = record(all[0]);
+          const hostPorts = [
+            firstGeneration?.["oldDesktopHostPort"],
+            ...all.map((item) => record(item)?.["newDesktopHostPort"]),
+          ];
+          const hostPids = [
+            firstGeneration?.["oldOwnedHearthPid"],
+            ...all.map((item) => record(item)?.["newOwnedHearthPid"]),
+          ];
+          const hostOwners = [
+            firstGeneration?.["oldHostOwner"],
+            ...all.map((item) => record(item)?.["newHostOwner"]),
+          ];
+          const continuous = all.every((item, index) => {
+            if (index === 0) return true;
+            const previousGeneration = record(all[index - 1]);
+            const currentGeneration = record(item);
+            return (
+              previousGeneration?.["newDesktopHostPort"] ===
+                currentGeneration?.["oldDesktopHostPort"] &&
+              previousGeneration?.["newOwnedHearthPid"] ===
+                currentGeneration?.["oldOwnedHearthPid"] &&
+              previousGeneration?.["newHostOwner"] ===
+                currentGeneration?.["oldHostOwner"] &&
+              previousGeneration?.["newHostCreatedAtMs"] ===
+                currentGeneration?.["oldHostCreatedAtMs"]
+            );
           });
           if (
             all.length > 2 ||
             !all.every(isForkReplacementGeneration) ||
-            new Set(ports).size !== ports.length ||
-            new Set(pids).size !== pids.length ||
-            new Set(owners).size !== owners.length ||
+            new Set(hostPorts).size !== hostPorts.length ||
+            new Set(hostPids).size !== hostPids.length ||
+            new Set(hostOwners).size !== hostOwners.length ||
+            !continuous ||
+            all.some((item) => record(item)?.["controlPort"] !== controlPort) ||
             (all.length > 1 &&
-              (record(all[0])?.["newDesktopHostPort"] !== oldPort ||
-                record(all[0])?.["newOwnedHearthPid"] !== oldPid ||
-                record(all[0])?.["newHostOwner"] !== previous.owner ||
-                record(all[0])?.["newHostCreatedAtMs"] !== hostCreatedAtMs))
+              (firstGeneration?.["newDesktopHostPort"] !== oldPort ||
+                firstGeneration?.["newOwnedHearthPid"] !== oldPid ||
+                firstGeneration?.["newHostOwner"] !== previous.owner ||
+                firstGeneration?.["newHostCreatedAtMs"] !== hostCreatedAtMs))
           )
             throw new Error("The Fork replacement proof exceeded its bound.");
           writeOwnerOnly(
