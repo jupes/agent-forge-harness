@@ -26,6 +26,7 @@ export type CodexChatPersistFailureFact = {
   phase: "event-persist";
   eventKind: CodexChatEvent["kind"] | "unavailable";
   completedPersistCallbacks: number;
+  countCapped: boolean;
   failureClass: "conversation-400" | "conversation-409" | "other";
 };
 
@@ -52,11 +53,13 @@ export function observeCodexChatPersist<T>(options: {
   recordFailure(fact: CodexChatPersistFailureFact): void;
 }): (event: CodexChatEvent) => Promise<T> {
   let completedPersistCallbacks = 0,
+    countCapped = false,
     failureRecorded = false;
   return async (event) => {
     try {
       const result = await options.persist(event);
-      completedPersistCallbacks = Math.min(completedPersistCallbacks + 1, 256);
+      if (completedPersistCallbacks < 256) completedPersistCallbacks++;
+      else countCapped = true;
       return result;
     } catch (error) {
       if (!failureRecorded) {
@@ -66,6 +69,7 @@ export function observeCodexChatPersist<T>(options: {
           phase: "event-persist",
           eventKind: eventKind(event),
           completedPersistCallbacks,
+          countCapped,
           failureClass: classifyFailure(error),
         };
         if (

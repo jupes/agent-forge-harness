@@ -66,9 +66,12 @@ describe("Codex Chat fixture persistence diagnostics", () => {
         phase: "event-persist",
         eventKind: "text",
         completedPersistCallbacks: 1,
+        countCapped: false,
         failureClass: "conversation-409",
       },
     ]);
+    await expect(wrapped(textEvent)).rejects.toBe(rejection);
+    expect(facts).toHaveLength(1);
     const serialized = JSON.stringify(facts[0]);
     expect(Buffer.byteLength(serialized)).toBeLessThanOrEqual(
       CODEX_CHAT_PERSIST_FACT_MAX_BYTES,
@@ -101,5 +104,32 @@ describe("Codex Chat fixture persistence diagnostics", () => {
     expect(caught).toBe(rejection);
     expect(calls).toBe(1);
     expect(reports).toBe(1);
+  });
+
+  test("saturates the callback counter explicitly without claiming an exact larger count", async () => {
+    const facts: CodexChatPersistFailureFact[] = [];
+    let calls = 0;
+    const wrapped = observeCodexChatPersist({
+      async persist() {
+        calls++;
+        if (calls > 257) throw new Error("fixture callback rejected");
+      },
+      recordFailure: (fact) => facts.push(fact),
+    });
+
+    for (let index = 0; index < 257; index++) await wrapped(identity);
+    await expect(wrapped(identity)).rejects.toThrow();
+
+    expect(calls).toBe(258);
+    expect(facts).toEqual([
+      {
+        version: 1,
+        phase: "event-persist",
+        eventKind: "identity",
+        completedPersistCallbacks: 256,
+        countCapped: true,
+        failureClass: "other",
+      },
+    ]);
   });
 });
