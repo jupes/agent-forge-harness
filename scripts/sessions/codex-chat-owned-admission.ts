@@ -231,6 +231,17 @@ export function createCodexOwnedChatService(options: Options) {
   const sameFork = (left: CodexChatOwnedRecord, right: CodexChatOwnedRecord) =>
     left.id === right.id &&
     left.projectId === right.projectId &&
+    left.requestId === right.requestId &&
+    left.requestHash === right.requestHash &&
+    left.provider === right.provider &&
+    left.mode === right.mode &&
+    left.workspace === right.workspace &&
+    left.repository === right.repository &&
+    left.worktree === right.worktree &&
+    left.beadId === right.beadId &&
+    left.smith === right.smith &&
+    left.requestedModel === right.requestedModel &&
+    left.requestedEffort === right.requestedEffort &&
     left.origin?.kind === "codex-chat-fork" &&
     right.origin?.kind === "codex-chat-fork" &&
     JSON.stringify(left.origin) === JSON.stringify(right.origin);
