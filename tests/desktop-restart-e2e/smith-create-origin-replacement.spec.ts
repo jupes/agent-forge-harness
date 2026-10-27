@@ -217,23 +217,23 @@ function spawnOwnedHost(home: string, hearthPort: number, basisName: string) {
   return { child, command, nextReply };
 }
 
-async function launched(page: Page, url: string): Promise<void> {
+async function launchDocument(page: Page, url: string): Promise<void> {
   const exchanged = page.waitForResponse(
     (response) =>
       response.request().method() === "POST" &&
       new URL(response.url()).pathname === SESSION_ROUTE,
   );
-  const readiness = page.waitForResponse(
-    (response) =>
-      response.request().method() === "GET" &&
-      new URL(response.url()).pathname === "/__agent-forge/providers/readiness",
-  );
   const document = await page.goto(url);
   expect(document?.status()).toBe(200);
   expect((await exchanged).status()).toBe(200);
-  const ready = await readiness;
-  expect(ready.status()).toBe(200);
-  const envelope: unknown = await ready.json();
+}
+
+async function validateReadiness(response: {
+  status(): number;
+  json(): Promise<unknown>;
+}): Promise<void> {
+  expect(response.status()).toBe(200);
+  const envelope: unknown = await response.json();
   if (
     !envelope ||
     typeof envelope !== "object" ||
@@ -252,13 +252,61 @@ async function launched(page: Page, url: string): Promise<void> {
     throw new Error("Provider readiness did not identify the served checkout.");
 }
 
+async function waitForReadiness(page: Page): Promise<void> {
+  const ready = await page.waitForResponse(
+    (response) =>
+      response.request().method() === "GET" &&
+      new URL(response.url()).pathname === "/__agent-forge/providers/readiness",
+  );
+  await validateReadiness(ready);
+}
+
+async function launched(page: Page, url: string): Promise<void> {
+  const readiness = waitForReadiness(page);
+  await launchDocument(page, url);
+  await readiness;
+}
+
+async function holdReadiness(page: Page): Promise<{
+  captured: Promise<void>;
+  ready: Promise<void>;
+  release(): void;
+}> {
+  let capturedResolve: (() => void) | undefined,
+    releaseResolve: (() => void) | undefined,
+    intercepted = false;
+  const captured = new Promise<void>((resolveCaptured) => {
+      capturedResolve = resolveCaptured;
+    }),
+    held = new Promise<void>((resolveHeld) => {
+      releaseResolve = resolveHeld;
+    }),
+    ready = waitForReadiness(page);
+  await page.route("**/__agent-forge/providers/readiness", async (route) => {
+    if (intercepted) {
+      await route.continue();
+      return;
+    }
+    intercepted = true;
+    const response = await route.fetch();
+    await validateReadiness({
+      status: () => response.status(),
+      json: () => response.json(),
+    });
+    capturedResolve?.();
+    await held;
+    await route.fulfill({ response });
+  });
+  return { captured, ready, release: () => releaseResolve?.() };
+}
+
 async function openSmiths(page: Page, origin: string): Promise<void> {
   await page.evaluate(() => {
     window.location.hash = "#/desktop/smiths";
   });
   await expect(
     page.getByRole("button", { name: "New smith", exact: true }),
-  ).toBeVisible();
+  ).toBeEnabled();
   expect(new URL(page.url()).origin).toBe(origin);
   expect(new URL(page.url()).hash).toBe("#/desktop/smiths");
 }
@@ -309,6 +357,82 @@ async function releasePort(server: ReturnType<typeof createServer>) {
     server.close((error) => (error ? reject(error) : resolveClose())),
   );
 }
+
+test("Smith create controls wait for trusted workspace readiness before accepting a draft", async ({
+  page,
+}) => {
+  test.setTimeout(45_000);
+  const home = join(HEARTH_HOME, `smith-create-readiness-${randomUUID()}`),
+    basisName = `readiness-basis-${randomUUID().replaceAll("-", "").slice(0, 10)}`,
+    candidateName = `readiness-candidate-${randomUUID().replaceAll("-", "").slice(0, 10)}`,
+    hearthPort = await unusedPort();
+  let owner: ReturnType<typeof spawnOwnedHost> | null = null,
+    held: Awaited<ReturnType<typeof holdReadiness>> | null = null;
+  const workspaceFile = join(ROOT, "agent-forge.toml"),
+    previousWorkspace = existsSync(workspaceFile)
+      ? readFileSync(workspaceFile)
+      : null;
+  try {
+    writeFileSync(workspaceFile, "# Smith readiness fixture\n");
+    owner = spawnOwnedHost(home, hearthPort, basisName);
+    const host = await owner.nextReply();
+    if (!("url" in host.data))
+      throw new Error("The readiness fixture host did not start.");
+    const origin = new URL(host.data.url).origin;
+    held = await holdReadiness(page);
+    await launchDocument(page, host.data.url);
+    await held.captured;
+    await openSmiths(page, origin);
+    await page.getByRole("button", { name: "New smith", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "Create a Smith" }),
+      name = dialog.getByLabel("Smith name");
+    await expect(
+      dialog.getByRole("combobox", { name: "Save to" }),
+    ).toBeDisabled();
+    await expect(name).toBeDisabled();
+    await expect(dialog.getByLabel("Provider")).toBeDisabled();
+    await expect(dialog.getByLabel("Model")).toBeDisabled();
+    await expect(dialog.getByLabel("Effort")).toBeDisabled();
+    await expect(dialog.getByLabel("Enabled")).toBeDisabled();
+    await expect(dialog.getByLabel("Tags")).toBeDisabled();
+    await expect(
+      dialog.getByText("Waiting for a verified workspace"),
+    ).toBeVisible();
+
+    held.release();
+    await held.ready;
+    await page.unroute("**/__agent-forge/providers/readiness");
+    await expect(name).toBeEnabled();
+    await name.fill(candidateName);
+    await dialog.getByLabel("Provider").fill("codex");
+    await dialog.getByLabel("Model").fill("readiness-fixture-model");
+    await dialog.getByLabel("Effort").fill("high");
+    await expect(name).toHaveValue(candidateName);
+    await expect(dialog.getByLabel("Provider")).toHaveValue("codex");
+    await expect(dialog.getByLabel("Model")).toHaveValue(
+      "readiness-fixture-model",
+    );
+    await expect(dialog.getByLabel("Effort")).toHaveValue("high");
+    await dialog.getByRole("button", { name: "Review candidate" }).click();
+    await expect(
+      dialog.getByRole("region", { name: "Candidate review" }),
+    ).toBeVisible();
+  } finally {
+    held?.release();
+    await page.unrouteAll({ behavior: "wait" }).catch(() => {});
+    if (owner) {
+      await owner.command("quit").catch(() => {});
+      owner.child.stdin.end();
+      await new Promise<void>((resolveExit) => {
+        if (owner!.child.exitCode !== null) resolveExit();
+        else owner!.child.once("exit", () => resolveExit());
+      });
+    }
+    if (previousWorkspace === null) {
+      if (existsSync(workspaceFile)) unlinkSync(workspaceFile);
+    } else writeFileSync(workspaceFile, previousWorkspace);
+  }
+});
 
 test("pre-effect reservation and post-effect confirmation recover across two fresh desktop origins", async ({
   page,
@@ -474,7 +598,10 @@ test("pre-effect reservation and post-effect confirmation recover across two fre
     ).toBeNull();
 
     const oldDashboardPort = Number(new URL(oldReply.data.url).port);
-    expect((await owner.command("close")).data).toEqual({ closed: true });
+    expect((await owner.command("close")).data).toEqual({
+      closed: true,
+      helperPid: fixtureHelperPid,
+    });
     portGuard = await holdPort(oldDashboardPort);
     const newReply = await owner.command("start");
     if (!("url" in newReply.data))
@@ -617,7 +744,10 @@ test("pre-effect reservation and post-effect confirmation recover across two fre
     expect(readFileSync(configFile)).toEqual(savedUserConfig);
 
     const replacementPort = Number(new URL(newReply.data.url).port);
-    expect((await owner.command("close")).data).toEqual({ closed: true });
+    expect((await owner.command("close")).data).toEqual({
+      closed: true,
+      helperPid: fixtureHelperPid,
+    });
     portGuard = await holdPort(replacementPort);
     const finalReply = await owner.command("start");
     if (!("url" in finalReply.data))
