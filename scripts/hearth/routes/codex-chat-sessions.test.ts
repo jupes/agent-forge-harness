@@ -2036,6 +2036,31 @@ test("Fork review bounds the selected historical prefix instead of later parent 
       .map((frame) => ({ ...frame, seq: frame.seq + 2_001 })),
   ];
   state.revision++;
+  // Prove the source rejects proof offsets that were not shifted with the frames.
+  writeOwnerOnly(
+    conversationFile(f.h.home, FIXTURE_PROJECT_ID, {
+      kind: "session",
+      projectId: FIXTURE_PROJECT_ID,
+      sessionId: parentSessionId,
+    }),
+    `${JSON.stringify(state)}\n`,
+  );
+  const contradictoryPrefix = await fetch(
+      `${f.h.api}/projects/${FIXTURE_PROJECT_ID}/sessions/${parentSessionId}/fork-review?throughTurnRequestId=${selectedTurn.requestId}&limit=1`,
+      { headers: f.h.headers(f.h.hearth.token) },
+    ),
+    contradictoryEnvelope = await contradictoryPrefix.json();
+  expect(contradictoryPrefix.status).toBe(503);
+  expect(contradictoryEnvelope.ok).toBe(false);
+  expect(f.records()).toEqual(beforeRecords);
+  expect(f.h.events(["operator.action"])).toEqual(beforeAudit);
+
+  state.codexChatOwnerLifecycle = state.codexChatOwnerLifecycle?.map(
+    (fact) => ({
+      ...fact,
+      afterSequence: fact.afterSequence + 2_001,
+    }),
+  );
   writeOwnerOnly(
     conversationFile(f.h.home, FIXTURE_PROJECT_ID, {
       kind: "session",
