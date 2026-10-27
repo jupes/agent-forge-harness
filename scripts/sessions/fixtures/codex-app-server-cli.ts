@@ -4,6 +4,8 @@ import { appendFileSync } from "node:fs";
 const argv = process.argv.slice(2),
   log = process.env.CODEX_CHAT_LOG;
 const mode = process.env.CODEX_CHAT_MODE;
+const serviceTierNullMode =
+  mode === "service-tier-null" || mode === "fork-service-tier-null";
 if (argv.includes("--child"))
   await new Promise(() => setInterval(() => {}, 1000));
 const record = (value: unknown) => {
@@ -632,8 +634,7 @@ while (true) {
       }
     } else if (method === "thread/start" || method === "thread/resume") {
       resuming = method === "thread/resume";
-      turnId =
-        mode === "service-tier-null" && resuming ? resumedTurnId : firstTurnId;
+      turnId = serviceTierNullMode && resuming ? resumedTurnId : firstTurnId;
       if (
         !("model" in params) ||
         !("cwd" in params) ||
@@ -665,7 +666,7 @@ while (true) {
           },
           model: mode === "settings-mismatch" ? "unrequested-model" : model,
           modelProvider: "openai",
-          ...(mode === "service-tier-null" ? { serviceTier: null } : {}),
+          ...(serviceTierNullMode ? { serviceTier: null } : {}),
           cwd,
           approvalPolicy,
           approvalsReviewer: "user",
@@ -679,7 +680,7 @@ while (true) {
                   excludeTmpdirEnvVar: true,
                   excludeSlashTmp: true,
                 },
-          reasoningEffort: mode === "service-tier-null" ? null : "medium",
+          reasoningEffort: serviceTierNullMode ? null : "medium",
         },
       });
       await send({

@@ -97,7 +97,11 @@ function reference(record: CodexChatForkOriginal) {
   };
 }
 
-function fixture(root: string, storage: MemoryStorage) {
+function fixture(
+  root: string,
+  storage: MemoryStorage,
+  childAppSessionId = "session-0199a213-81c0-7800-8aa1-bbab2a035a60",
+) {
   const home = join(root, "profile");
   mkdirSync(home, { recursive: true });
   const journal = createCodexChatForkJournal({
@@ -105,8 +109,7 @@ function fixture(root: string, storage: MemoryStorage) {
     home,
     storage,
     now: () => "2026-10-25T00:00:00.000Z",
-    createChildAppSessionId: () =>
-      "session-0199a213-81c0-7800-8aa1-bbab2a035a60",
+    createChildAppSessionId: () => childAppSessionId,
   });
   return {
     root,
@@ -143,6 +146,39 @@ test("reserve persists a stable child ID and exact original across reopen", asyn
   expect(read?.childAppSessionId).toBe(
     "session-0199a213-81c0-7800-8aa1-bbab2a035a60",
   );
+});
+
+test("list validates the complete journal before returning every scoped original in stable order", async () => {
+  const root = scratch.make("codex-fork-root-"),
+    storage = new MemoryStorage(),
+    firstWriter = fixture(root, storage).journal,
+    secondWriter = fixture(
+      root,
+      storage,
+      "session-0199a213-81c0-7800-8aa1-bbab2a035a62",
+    ).journal,
+    later = await firstWriter.reserve(projectId, parentSessionId, {
+      requestId: otherRequestId,
+      throughTurnRequestId,
+    });
+  expect(later.state).toBe("reserved");
+  const earlier = await secondWriter.reserve(
+    projectId,
+    "session-0199a213-81c0-7800-8aa1-bbab2a035a52",
+    {
+      requestId,
+      throughTurnRequestId,
+    },
+  );
+  expect(earlier.state).toBe("reserved");
+  expect(firstWriter.list(projectId)).toEqual([earlier, later]);
+  expect(
+    firstWriter.list("project-00000000-0000-4000-8000-000000000002"),
+  ).toEqual([]);
+  const [entry] = [...storage.listEvents()];
+  if (!entry) throw Error("Missing Fork journal event fixture");
+  storage.events.set(entry.name, "not a valid event");
+  expect(() => firstWriter.list(projectId)).toThrow();
 });
 
 test("an active parent address cannot be claimed by a second UUID across instances", async () => {
