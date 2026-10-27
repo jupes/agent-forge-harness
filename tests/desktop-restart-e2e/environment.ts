@@ -81,7 +81,6 @@ export function fixtureEnvironment(): Record<string, string> {
     no_proxy: "127.0.0.1,localhost",
     DESKTOP_RESTART_NODE_DIR:
       process.env["DESKTOP_RESTART_NODE_DIR"] ?? NODE_DIR,
-    DESKTOP_RESTART_KEEPER_PROJECT_ID: keeperProject.id,
   });
   return env;
 }
