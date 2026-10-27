@@ -1,7 +1,14 @@
-import { appendFileSync, existsSync, readFileSync, statSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+} from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
-import { isReadOnlyCapabilityRefusal } from "../../scripts/sessions/read-only-capability-refusal";
+import { isReadOnlyCapabilityRefusal } from "../read-only-capability-refusal";
 
 export const CODEX_CHAT_PREPARE_FACTS_FILE = "codex-chat-prepare-facts.jsonl";
 export const CODEX_CHAT_PREPARE_MARKER_FILE = "codex-chat-prepare-active.json";
@@ -170,6 +177,10 @@ export type ProbeFactRead =
   | { state: "unavailable" };
 
 export interface PrepareDiagnosticIo {
+  /** Last persisted ordinal from an earlier fixture-host generation. */
+  initialOrdinal?: number;
+  /** Existing evidence was unreadable, so no new attribution is safe. */
+  unavailable?: boolean;
   now(): number;
   writeMarker(marker: ActiveMarker): void;
   appendFact(fact: PrepareFact): void;
@@ -184,12 +195,16 @@ function safeElapsed(start: number, end: number): number {
 function errorClass(
   error: unknown,
 ): "capability-refusal" | "validation-error" | "other" {
-  if (isReadOnlyCapabilityRefusal(error)) return "capability-refusal";
-  if (
-    error instanceof Error &&
-    (error.name === "ZodError" || error.name === "ZodValidationError")
-  )
-    return "validation-error";
+  try {
+    if (isReadOnlyCapabilityRefusal(error)) return "capability-refusal";
+    if (
+      error instanceof Error &&
+      (error.name === "ZodError" || error.name === "ZodValidationError")
+    )
+      return "validation-error";
+  } catch {
+    // Inspecting an arbitrary thrown proxy must never replace the original.
+  }
   return "other";
 }
 
@@ -222,9 +237,14 @@ export function classifyProbePhase(
 /** Test-fixture wrapper. It records safe facts and preserves the exact result/error. */
 export function createCodexChatPrepareDiagnostics(io: PrepareDiagnosticIo) {
   let nextOrdinal = 0;
+  let observed = 0;
   const active = new Map<number, PrepareOperation>();
-  let saturated = false,
+  const ambiguous = new Set<number>();
+  let saturated = Boolean(io.unavailable),
     cohortAmbiguous = false;
+  if (Number.isSafeInteger(io.initialOrdinal) && (io.initialOrdinal ?? -1) >= 0)
+    nextOrdinal = io.initialOrdinal!;
+  else if (io.initialOrdinal !== undefined) saturated = true;
 
   const publishMarker = () => {
     const entries = [...active.entries()];
@@ -288,7 +308,8 @@ export function createCodexChatPrepareDiagnostics(io: PrepareDiagnosticIo) {
       operation: PrepareOperation,
       run: () => Promise<T>,
     ): Promise<T> {
-      if (nextOrdinal >= CODEX_CHAT_PREPARE_OPERATIONS_MAX) {
+      if (saturated) return run();
+      if (observed >= CODEX_CHAT_PREPARE_OPERATIONS_MAX) {
         if (!saturated) {
           saturated = true;
           try {
@@ -304,10 +325,14 @@ export function createCodexChatPrepareDiagnostics(io: PrepareDiagnosticIo) {
         }
         return run();
       }
+      observed++;
       const ordinal = ++nextOrdinal,
         startedAt = safeNow();
       active.set(ordinal, operation);
-      if (active.size > 1) cohortAmbiguous = true;
+      if (active.size > 1) {
+        cohortAmbiguous = true;
+        for (const activeOrdinal of active.keys()) ambiguous.add(activeOrdinal);
+      }
       publishMarker();
       try {
         io.appendFact({
@@ -329,7 +354,7 @@ export function createCodexChatPrepareDiagnostics(io: PrepareDiagnosticIo) {
           ordinal,
           operation,
           outcome: "success",
-          phase: safePhase(ordinal),
+          phase: ambiguous.has(ordinal) ? "unknown" : safePhase(ordinal),
           elapsedMs: safeElapsed(startedAt, safeNow()),
         };
         try {
@@ -346,7 +371,7 @@ export function createCodexChatPrepareDiagnostics(io: PrepareDiagnosticIo) {
           ordinal,
           operation,
           outcome: "failure",
-          phase: safePhase(ordinal),
+          phase: ambiguous.has(ordinal) ? "unknown" : safePhase(ordinal),
           elapsedMs: safeElapsed(startedAt, safeNow()),
           errorClass: errorClass(error),
         };
@@ -367,16 +392,24 @@ export function createCodexChatPrepareDiagnostics(io: PrepareDiagnosticIo) {
 
 function appendFact(home: string, fact: PrepareFact): void {
   const path = join(home, CODEX_CHAT_PREPARE_FACTS_FILE),
+    lock = `${path}.lock`,
     line = `${JSON.stringify(fact)}\n`,
     lineBytes = Buffer.byteLength(line, "utf8");
   if (lineBytes > 384) return;
+  let locked = false;
   try {
+    // Exclusive directory creation serializes all fixture-host writers. A
+    // stale lock after a crash makes diagnostics unavailable rather than
+    // allowing concurrent size checks to exceed the aggregate file cap.
+    mkdirSync(lock);
+    locked = true;
     if (!existsSync(path)) return;
     const size = statSync(path).size;
     if (size + lineBytes > CODEX_CHAT_PREPARE_FACTS_MAX_BYTES) return;
     const existing = readFileSync(path, "utf8");
     if (
       existing.length > CODEX_CHAT_PREPARE_FACTS_MAX_BYTES ||
+      (existing.length > 0 && !existing.endsWith("\n")) ||
       existing.split("\n").filter(Boolean).length >=
         CODEX_CHAT_PREPARE_FACTS_MAX_ROWS
     )
@@ -384,6 +417,14 @@ function appendFact(home: string, fact: PrepareFact): void {
     appendFileSync(path, line, { encoding: "utf8" });
   } catch {
     // Diagnostic persistence is deliberately best effort.
+  } finally {
+    if (locked) {
+      try {
+        rmSync(lock, { recursive: true });
+      } catch {
+        // A leftover lock disables future writes safely.
+      }
+    }
   }
 }
 
@@ -414,9 +455,34 @@ export type WriteFixtureOwnerOnly = (file: string, content: string) => void;
 export function createFilePrepareDiagnosticIo(
   home: string,
   writeOwnerOnly: WriteFixtureOwnerOnly,
+  initialOrdinal?: number | null,
 ): PrepareDiagnosticIo {
+  const persisted = readFacts(home),
+    marker = readCurrentMarker(home),
+    persistedOrdinals =
+      persisted.state === "available"
+        ? persisted.facts.flatMap((fact) =>
+            "ordinal" in fact && typeof fact.ordinal === "number"
+              ? [fact.ordinal]
+              : [],
+          )
+        : [],
+    markerOrdinal = marker?.state === "single" ? marker.ordinal : 0,
+    ordinalsAvailable = persisted.state === "available" || marker !== null,
+    savedOrdinal =
+      initialOrdinal === null
+        ? undefined
+        : (initialOrdinal ??
+          (ordinalsAvailable
+            ? Math.max(markerOrdinal, ...persistedOrdinals, 0)
+            : undefined));
   const markerPath = join(home, CODEX_CHAT_PREPARE_MARKER_FILE);
   return {
+    ...(savedOrdinal !== undefined ? { initialOrdinal: savedOrdinal } : {}),
+    unavailable:
+      initialOrdinal === null ||
+      persisted.state !== "available" ||
+      (initialOrdinal === undefined && !ordinalsAvailable),
     now: () => performance.now(),
     writeMarker(marker) {
       const text = JSON.stringify(marker);
@@ -432,16 +498,38 @@ export function createFilePrepareDiagnosticIo(
 export function initializePrepareDiagnosticFiles(
   home: string,
   writeOwnerOnly: WriteFixtureOwnerOnly,
-): void {
+): number | null {
+  const oldMarker = readCurrentMarker(home),
+    oldFacts = existsSync(join(home, CODEX_CHAT_PREPARE_FACTS_FILE))
+      ? readFacts(home)
+      : ({ state: "available", facts: [] } as const),
+    ordinals =
+      oldFacts.state === "available"
+        ? oldFacts.facts.flatMap((fact) =>
+            "ordinal" in fact && typeof fact.ordinal === "number"
+              ? [fact.ordinal]
+              : [],
+          )
+        : [],
+    ordinal =
+      oldFacts.state === "available" || oldMarker !== null
+        ? Math.max(
+            oldMarker?.state === "single" ? oldMarker.ordinal : 0,
+            ...ordinals,
+            0,
+          )
+        : undefined;
+  if (oldFacts.state !== "available") return null;
   try {
-    writeOwnerOnly(
-      join(home, CODEX_CHAT_PREPARE_MARKER_FILE),
-      JSON.stringify({ version: 1, state: "idle" }),
-    );
-    writeOwnerOnly(join(home, CODEX_CHAT_PREPARE_FACTS_FILE), "");
+    const markerPath = join(home, CODEX_CHAT_PREPARE_MARKER_FILE),
+      factsPath = join(home, CODEX_CHAT_PREPARE_FACTS_FILE);
+    writeOwnerOnly(markerPath, JSON.stringify({ version: 1, state: "idle" }));
+    if (!existsSync(factsPath)) writeOwnerOnly(factsPath, "");
   } catch {
     // The restart fixture must remain usable when diagnostics cannot be saved.
+    return null;
   }
+  return ordinal ?? 0;
 }
 
 function readCurrentMarker(home: string): ActiveMarker | null {

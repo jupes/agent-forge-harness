@@ -10,7 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { isAbsolute, join } from "node:path";
-import { recordProbeFact } from "../../../tests/desktop-restart-e2e/codex-chat-prepare-diagnostics";
+import { recordProbeFact } from "./codex-chat-prepare-diagnostics";
 
 /** Inert native-process app-server fixture. No provider, account, shell or network access. */
 const argv = process.argv.slice(2),

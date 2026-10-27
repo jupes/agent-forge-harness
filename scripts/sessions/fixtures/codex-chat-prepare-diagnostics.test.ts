@@ -1,8 +1,14 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { markReadOnlyCapabilityRefusal } from "../../scripts/sessions/read-only-capability-refusal";
+import { markReadOnlyCapabilityRefusal } from "../read-only-capability-refusal";
 import {
   CODEX_CHAT_PREPARE_FACTS_FILE,
   CODEX_CHAT_PREPARE_FACTS_MAX_BYTES,
@@ -11,6 +17,7 @@ import {
   classifyProbePhase,
   createCodexChatPrepareDiagnostics,
   createFilePrepareDiagnosticIo,
+  initializePrepareDiagnosticFiles,
   type PrepareDiagnosticIo,
   type PrepareFact,
   recordProbeFact,
@@ -209,6 +216,78 @@ test("overlapping operations stay unattributed until the full cohort ends", asyn
   expect(diagnostics.activeMarker()).toMatchObject({ state: "idle" });
 });
 
+test("an operation that overlaps later settles unknown for the whole cohort", async () => {
+  const facts: PrepareFact[] = [];
+  let releaseFirst!: () => void, releaseSecond!: () => void;
+  const firstGate = new Promise<void>((resolve) => (releaseFirst = resolve)),
+    secondGate = new Promise<void>((resolve) => (releaseSecond = resolve)),
+    diagnostics = createCodexChatPrepareDiagnostics({
+      now: () => 1,
+      writeMarker() {},
+      appendFact: (fact) => facts.push(fact),
+      readFacts: () => ({ state: "available", facts }),
+    }),
+    first = diagnostics.observe("prepare", () => firstGate);
+  facts.push({
+    version: 1,
+    source: "probe",
+    event: "completed",
+    probe: "version",
+    correlation: "single",
+    ordinal: 1,
+    elapsedMs: 1,
+  });
+  const second = diagnostics.observe("check", () => secondGate);
+
+  releaseFirst();
+  await first;
+  const firstSettled = facts.find(
+    (fact) =>
+      fact.source === "runtime" &&
+      fact.event === "settled" &&
+      fact.ordinal === 1,
+  );
+  expect(firstSettled).toMatchObject({ phase: "unknown" });
+
+  releaseSecond();
+  await second;
+  const secondSettled = facts.find(
+    (fact) =>
+      fact.source === "runtime" &&
+      fact.event === "settled" &&
+      fact.ordinal === 2,
+  );
+  expect(secondSettled).toMatchObject({ phase: "unknown" });
+});
+
+test("a new fixture host preserves facts and advances the ordinal", async () => {
+  const home = newHome(),
+    writer = (path: string, content: string) => writeFileSync(path, content),
+    firstHost = createCodexChatPrepareDiagnostics(
+      createFilePrepareDiagnosticIo(home, writer),
+    );
+  await firstHost.observe("check", async () => undefined);
+  const factsPath = join(home, CODEX_CHAT_PREPARE_FACTS_FILE),
+    original = readFileSync(factsPath, "utf8"),
+    nextOrdinal = initializePrepareDiagnosticFiles(home, writer);
+  expect(readFileSync(factsPath, "utf8")).toBe(original);
+  expect(nextOrdinal).toBe(1);
+
+  const secondHost = createCodexChatPrepareDiagnostics(
+    createFilePrepareDiagnosticIo(home, writer, nextOrdinal),
+  );
+  await secondHost.observe("prepare", async () => undefined);
+  const rows = readFileSync(factsPath, "utf8")
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+  expect(
+    rows
+      .filter((row) => row.source === "runtime" && row.event === "started")
+      .map((row) => row.ordinal),
+  ).toEqual([1, 2]);
+});
+
 test("probe facts retain only an exact active operation ordinal", async () => {
   const home = newHome(),
     io = createFilePrepareDiagnosticIo(home, (path, content) =>
@@ -324,4 +403,51 @@ test("diagnostic writer failures preserve the exact result and thrown value", as
       throw original;
     }),
   ).rejects.toBe(original);
+});
+
+test("hostile thrown values and diagnostic append contention stay best effort", async () => {
+  const facts: PrepareFact[] = [],
+    marker = new Error("hostile inspection"),
+    hostile = new Proxy(
+      {},
+      {
+        getPrototypeOf() {
+          throw marker;
+        },
+      },
+    ),
+    diagnostics = createCodexChatPrepareDiagnostics({
+      now: () => 1,
+      writeMarker() {},
+      appendFact: (fact) => facts.push(fact),
+      readFacts: () => ({ state: "available", facts }),
+    });
+  let caught: unknown;
+  try {
+    await diagnostics.observe("prepare", async () => {
+      throw hostile;
+    });
+  } catch (error) {
+    caught = error;
+  }
+  expect(caught).toBe(hostile);
+  expect(
+    facts.find((fact) => fact.source === "runtime" && fact.event === "settled"),
+  ).toMatchObject({ errorClass: "other" });
+
+  const home = newHome(),
+    io = createFilePrepareDiagnosticIo(home, (path, content) =>
+      writeFileSync(path, content),
+    ),
+    factsPath = join(home, CODEX_CHAT_PREPARE_FACTS_FILE),
+    before = readFileSync(factsPath, "utf8"),
+    lockPath = `${factsPath}.lock`;
+  mkdirSync(lockPath);
+  io.appendFact({
+    version: 1,
+    source: "runtime",
+    event: "saturated",
+  });
+  expect(readFileSync(factsPath, "utf8")).toBe(before);
+  rmSync(lockPath, { recursive: true, force: true });
 });
