@@ -10,6 +10,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { isAbsolute, join } from "node:path";
+import { recordProbeFact } from "../../../tests/desktop-restart-e2e/codex-chat-prepare-diagnostics";
 
 /** Inert native-process app-server fixture. No provider, account, shell or network access. */
 const argv = process.argv.slice(2),
@@ -380,15 +381,35 @@ const isRecordedForkChild = (candidateThreadId: string) => {
   );
 };
 if (argv.includes("--version")) {
+  const startedAt = performance.now(),
+    diagnosticHome = process.env["AGENT_FORGE_HOME"];
+  if (diagnosticHome) recordProbeFact(diagnosticHome, "version", "started");
   record({ kind: "version" });
   await Bun.stdout.write("codex-cli 0.163.0-alpha.10.2\n");
+  if (diagnosticHome)
+    recordProbeFact(
+      diagnosticHome,
+      "version",
+      "completed",
+      performance.now() - startedAt,
+    );
   process.exit(0);
 }
 if (argv.includes("--help")) {
+  const startedAt = performance.now(),
+    diagnosticHome = process.env["AGENT_FORGE_HOME"];
+  if (diagnosticHome) recordProbeFact(diagnosticHome, "help", "started");
   record({ kind: "help" });
   await Bun.stdout.write(
     "Usage: codex app-server\n  --stdio\n  --listen <URL>\n",
   );
+  if (diagnosticHome)
+    recordProbeFact(
+      diagnosticHome,
+      "help",
+      "completed",
+      performance.now() - startedAt,
+    );
   process.exit(0);
 }
 if (argv.includes("--sync")) {

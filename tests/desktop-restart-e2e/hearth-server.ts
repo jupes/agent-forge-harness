@@ -11,6 +11,11 @@ import { resolveCheckout } from "../../scripts/ledger/workspace";
 import { createCodexChatRuntime } from "../../scripts/sessions/codex-chat-runtime";
 import { observeCodexChatPersist } from "../../scripts/sessions/fixtures/codex-chat-persist-diagnostic";
 import { isRunHome } from "../e2e/servers";
+import {
+  createCodexChatPrepareDiagnostics,
+  createFilePrepareDiagnosticIo,
+  initializePrepareDiagnosticFiles,
+} from "./codex-chat-prepare-diagnostics";
 import { ROOT } from "./environment";
 
 const FACT_FILE = "codex-chat-private-persist-failure.json";
@@ -75,6 +80,10 @@ async function run(): Promise<void> {
   const tokenFile = tokenPath(home, root);
   const token = { current: null as string | null };
   const port = requestedPort(process.env["HEARTH_PORT"]);
+  initializePrepareDiagnosticFiles(home, writeOwnerOnly);
+  const prepareDiagnostics = createCodexChatPrepareDiagnostics(
+    createFilePrepareDiagnosticIo(home, writeOwnerOnly),
+  );
   const defaultRuntime = createCodexChatRuntime({
     root,
     home,
@@ -88,6 +97,16 @@ async function run(): Promise<void> {
   });
   const codexChatRuntime: ReturnType<typeof createCodexChatRuntime> = {
     ...defaultRuntime,
+    check(input) {
+      return prepareDiagnostics.observe("check", () =>
+        defaultRuntime.check(input),
+      );
+    },
+    prepare(input) {
+      return prepareDiagnostics.observe("prepare", () =>
+        defaultRuntime.prepare(input),
+      );
+    },
     run(input, persist, signal, callbacks) {
       return defaultRuntime.run(
         input,
