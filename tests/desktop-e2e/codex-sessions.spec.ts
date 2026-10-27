@@ -758,8 +758,7 @@ test("a durable pre-dispatch NotSent Start retries only by explicit same-UUID re
     } | null>
   > = [];
   const explicitCheckRequests = new WeakSet<Request>();
-  const identityPath =
-    `/__agent-forge/projects/${alpha.id}/session-start-identities`;
+  const identityPath = `/__agent-forge/projects/${alpha.id}/session-start-identities`;
   let captureCheckRead = false;
   const onIdentityResponse = (response: Response) => {
     const url = new URL(response.url());
@@ -816,7 +815,9 @@ test("a durable pre-dispatch NotSent Start retries only by explicit same-UUID re
     await expect(
       page.getByRole("article", { name: "Session reply", exact: true }),
     ).toContainText("Codex Task reply 🌱");
-    await page.getByRole("button", { name: "New session", exact: true }).click();
+    await page
+      .getByRole("button", { name: "New session", exact: true })
+      .click();
     const checkServer = page
       .getByRole("dialog", { name: "New session · Alpha", exact: true })
       .getByRole("button", { name: "Check server", exact: true });
