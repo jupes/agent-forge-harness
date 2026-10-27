@@ -316,6 +316,13 @@ test("a canonical native Chat configuration persists without rewriting the alias
 
 test("owned Chat durably binds one private generation before dispatch and release before outcome", async () => {
   const f = await fixture("normal");
+  const readJournal = (path: string): unknown => {
+    try {
+      return JSON.parse(readFileSync(path, "utf8")) as unknown;
+    } catch {
+      throw Error("The inert owned Chat journal could not be read.");
+    }
+  };
   let generationWasDurableBeforeRuntime = false;
   const runtimeRun = f.runtime.run.bind(f.runtime);
   f.runtime.run = async (input, persist, signal, callbacks) => {
@@ -323,15 +330,12 @@ test("owned Chat durably binds one private generation before dispatch and releas
       .listAll(f.project.id)
       .find((record) => record.requestId === f.request.requestId);
     if (owner) {
-      const journal: unknown = JSON.parse(
-          readFileSync(
-            conversationFile(f.home, f.project.id, {
-              kind: "session",
-              projectId: f.project.id,
-              sessionId: owner.id,
-            }),
-            "utf8",
-          ),
+      const journal = readJournal(
+          conversationFile(f.home, f.project.id, {
+            kind: "session",
+            projectId: f.project.id,
+            sessionId: owner.id,
+          }),
         ),
         isRecord = (value: unknown): value is Record<string, unknown> =>
           typeof value === "object" && value !== null && !Array.isArray(value);
@@ -353,7 +357,7 @@ test("owned Chat durably binds one private generation before dispatch and releas
       projectId: f.project.id,
       sessionId: started.session.id,
     }),
-    stored: unknown = JSON.parse(readFileSync(path, "utf8"));
+    stored = readJournal(path);
   const isRecord = (value: unknown): value is Record<string, unknown> =>
       typeof value === "object" && value !== null && !Array.isArray(value),
     frames =
@@ -407,11 +411,21 @@ test("owned Chat durably binds one private generation before dispatch and releas
     !isRecord(finalOutcome.event.event)
   )
     throw Error("The inert owned Chat did not persist its lifecycle chain.");
+  const generationId = generationStarted.event.generationId;
+  expect(typeof generationId).toBe("string");
+  if (typeof generationId !== "string")
+    throw Error("The private owner generation identifier was missing.");
+  expect(generationId).toMatch(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+  );
+  expect(generationId).not.toBe(f.request.requestId);
+  expect(generationId).not.toBe(nativeIdentity.event.sessionId);
+  expect(generationId).not.toBe(nativeTurn.event.event.turnId);
   expect(generationStarted.seq).toBeLessThan(nativeIdentity.seq);
   expect(generationReleased.seq).toBeLessThan(finalOutcome.seq);
   expect(generationReleased.event).toMatchObject({
     kind: "owner-generation-released",
-    generationId: generationStarted.event.generationId,
+    generationId,
     threadId: nativeIdentity.event.sessionId,
     turnId: nativeTurn.event.event.turnId,
     release: "physical-tree-settled",
@@ -425,9 +439,7 @@ test("owned Chat durably binds one private generation before dispatch and releas
   expect(lastFrame).toBeDefined();
   if (!lastFrame) throw Error("The inert owned Chat journal was empty.");
   expect(publicPage.lastSequence).toBe(lastFrame.seq);
-  expect(JSON.stringify(publicPage)).not.toContain(
-    String(generationStarted.event.generationId),
-  );
+  expect(JSON.stringify(publicPage)).not.toContain(generationId);
 });
 
 const heldSummaryUpdates: CodexChatReasoningSummary["update"][] = [
