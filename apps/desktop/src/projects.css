@@ -116,6 +116,97 @@
   border: 1px dashed #626881;
   border-radius: 10px;
 }
+.af-project-create {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  min-width: 0;
+}
+.af-project-create-reserved {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid #626881;
+  border-radius: 8px;
+  background: #232637;
+  overflow-wrap: anywhere;
+}
+.af-project-create-reserved p {
+  margin: 0;
+}
+.af-project-create-dialog {
+  width: min(620px, calc(100% - 2 * var(--space-6)));
+}
+.af-project-create-dialog .af-dialog-body {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+.af-project-create-dialog label {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+}
+.af-project-create-dialog :where(input, select, textarea) {
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  padding: 7px 9px;
+  border: 1px solid #626881;
+  border-radius: 6px;
+  background: #232637;
+  color: inherit;
+  font: inherit;
+}
+.af-project-create-dialog textarea {
+  min-height: 82px;
+  resize: vertical;
+}
+.af-project-create-dialog fieldset {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  margin: 0;
+  padding: 12px;
+  border: 1px solid #626881;
+  border-radius: 6px;
+}
+.af-project-create-dialog fieldset label {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  overflow-wrap: anywhere;
+}
+.af-project-create-dialog fieldset input[type="checkbox"] {
+  width: 16px;
+  min-height: 16px;
+  flex: none;
+  margin-top: 2px;
+}
+.af-project-create-original {
+  display: grid;
+  grid-template-columns: minmax(100px, 0.4fr) minmax(0, 1fr);
+  gap: 8px 12px;
+  min-width: 0;
+  margin: 0;
+}
+.af-project-create-original dt {
+  color: #b3b6cb;
+}
+.af-project-create-original dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.af-project-create-dialog [role="alertdialog"] {
+  display: grid;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid #a55555;
+  border-radius: 8px;
+}
 .af-projects-subscriptions {
   display: block;
   border-top: 1px solid #42475f;

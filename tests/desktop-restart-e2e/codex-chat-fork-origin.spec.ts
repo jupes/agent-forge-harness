@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { join } from "node:path";
@@ -16,6 +17,10 @@ import {
 } from "../../scripts/hearth/paths";
 import { ownedCodingStateSchema } from "../../scripts/sessions/codex-owned-journal";
 import {
+  canonicalOwnedSessionStart,
+  parseOwnedSessionStart,
+} from "../../scripts/sessions/codex-owned-protocol";
+import {
   ownedCodingSessionSchema,
   ownedCodingStartReceiptSchema,
 } from "../../scripts/sessions/codex-owned-wire-protocol";
@@ -24,11 +29,14 @@ import {
   codexChatForkIdentityMetadataSchema,
   sessionOperationIdentityPageSchema,
 } from "../../scripts/sessions/session-operation-identities-protocol";
-import { captureTextResponseThroughBrowserFetch } from "../desktop-e2e/browser-response-capture";
+import {
+  captureTextResponsesThroughBrowserFetch,
+  captureTextResponseThroughBrowserFetch,
+} from "../desktop-e2e/browser-response-capture";
 import { verifiedIdentityReadBarrier } from "../desktop-e2e/session-start-read-barrier";
 import { pageToken } from "../e2e/launch-link";
 import { DASHBOARD_PORT, HEARTH_HOME } from "../e2e/servers";
-import { alpha, ROOT } from "./environment";
+import { forkProject, ROOT } from "./environment";
 
 const FORK_RESTART_PATH = "/__desktop-restart-fixture/restart-host-fork";
 const CONTROL_HEADER = "x-agent-forge-fixture-secret";
@@ -267,7 +275,7 @@ async function openNewSession(
   )
     await page.goto(url);
   const sessionsUrl = new URL(
-    `/index.html#/desktop/project/${encodeURIComponent(alpha.id)}/sessions`,
+    `/index.html#/desktop/project/${encodeURIComponent(forkProject.id)}/sessions`,
     url,
   );
   if (
@@ -332,7 +340,7 @@ async function openNewSession(
   const startedAt = performance.now();
   reportFacts(facts);
   const expectedOrigin = new URL(page.url()).origin;
-  const sessionsPath = `/__agent-forge/projects/${alpha.id}/sessions`;
+  const sessionsPath = `/__agent-forge/projects/${forkProject.id}/sessions`;
   let gateReads = false;
   let previewCompleted = false;
   let previewRequested = false;
@@ -342,14 +350,14 @@ async function openNewSession(
       request.method() === "POST" &&
       requestUrl.origin === expectedOrigin &&
       requestUrl.pathname ===
-        `/__agent-forge/projects/${alpha.id}/sessions/preview`
+        `/__agent-forge/projects/${forkProject.id}/sessions/preview`
     )
       previewRequested = true;
   };
-  const workspace = alpha.workspaces[0]?.root;
+  const workspace = forkProject.workspaces[0]?.root;
   if (!workspace) throw new Error("The Fork parent workspace is unavailable.");
   const identityRead = await verifiedIdentityReadBarrier(page, {
-    projectId: alpha.id,
+    projectId: forkProject.id,
     workspace,
     shouldHold: () => previewRequested,
   });
@@ -408,7 +416,7 @@ async function openNewSession(
       response.request().method() === "POST" &&
       responseUrl.origin === expectedOrigin &&
       responseUrl.pathname ===
-        `/__agent-forge/projects/${alpha.id}/sessions/preview`
+        `/__agent-forge/projects/${forkProject.id}/sessions/preview`
     );
   });
   await expect(
@@ -477,8 +485,8 @@ async function openNewSession(
   ).toBeEnabled();
   facts.timingMs.readyAfterReads = Math.round(performance.now() - startedAt);
   const before = new Set(rows().map((item) => item.id));
-  const reservePath = `/__agent-forge/projects/${alpha.id}/session-start-identities`;
-  const startPath = `/__agent-forge/projects/${alpha.id}/sessions`;
+  const reservePath = `/__agent-forge/projects/${forkProject.id}/session-start-identities`;
+  const startPath = `/__agent-forge/projects/${forkProject.id}/sessions`;
   let reserveRequestId: string | null = null;
   let reserveRequestHash: string | null = null;
   const countStartRequests = (request: Request) => {
@@ -495,31 +503,16 @@ async function openNewSession(
     }
   };
   page.on("request", countStartRequests);
-  const reserveResponse = page.waitForResponse(async (response) => {
-    const responseUrl = new URL(response.url());
-    if (
-      response.request().method() !== "POST" ||
-      responseUrl.origin !== expectedOrigin ||
-      responseUrl.pathname !== reservePath
-    )
-      return false;
-    const envelope = record(await response.json().catch(() => null));
-    if (envelope?.["ok"] !== true) return false;
-    const reply = sessionStartIdentityReplySchema.parse(envelope["data"]);
-    expect(reply.scope).toEqual({
-      family: "owned-session-start",
-      projectId: alpha.id,
-      workspace: alpha.workspaces[0]?.root,
-    });
-    expect(reply.identity).toMatchObject({
-      provider: "codex",
-      mode: "chat",
-      state: "reserved",
-    });
-    reserveRequestId = reply.identity.requestId;
-    reserveRequestHash = reply.identity.requestHash;
-    return true;
-  });
+  const receiptCaptures = await captureTextResponsesThroughBrowserFetch(page, [
+    { method: "POST", origin: expectedOrigin, path: reservePath },
+    { method: "POST", origin: expectedOrigin, path: startPath },
+  ]);
+  const reserveCapture = receiptCaptures.captures[0];
+  const startCapture = receiptCaptures.captures[1];
+  if (!reserveCapture || !startCapture) {
+    await receiptCaptures.dispose();
+    throw new Error("The parent Start receipt captures were unavailable.");
+  }
   const startRequest = page.waitForRequest((request) => {
     const requestUrl = new URL(request.url());
     return (
@@ -528,28 +521,51 @@ async function openNewSession(
       requestUrl.pathname === startPath
     );
   });
-  const startResponse = page.waitForResponse((response) => {
-    const responseUrl = new URL(response.url());
-    return (
-      response.request().method() === "POST" &&
-      responseUrl.origin === expectedOrigin &&
-      responseUrl.pathname === startPath
-    );
-  });
   facts.stage = "start-dispatched";
   facts.timingMs.startClick = Math.round(performance.now() - startedAt);
-  await dialog.getByRole("button", { name: "Start", exact: true }).click();
   let receiptSession: SessionRow | null = null;
   try {
+    await dialog.getByRole("button", { name: "Start", exact: true }).click();
     const [reserved, startReq, started] = await Promise.all([
-      reserveResponse,
+      reserveCapture.response,
       startRequest,
-      startResponse,
+      startCapture.response,
     ]);
-    expect(reserved.status()).toBe(200);
-    expect(started.status()).toBe(202);
-    const startBody = record(startReq.postDataJSON());
-    const startEnvelope = record(await started.json());
+    expect(reserved.status).toBe(200);
+    const reserveEnvelope = record(
+      parseJson(reserved.text, "identity reserve receipt"),
+    );
+    expect(reserveEnvelope?.["ok"]).toBe(true);
+    const reserveReply = sessionStartIdentityReplySchema.parse(
+      reserveEnvelope?.["data"],
+    );
+    expect(reserveReply.scope).toEqual({
+      family: "owned-session-start",
+      projectId: forkProject.id,
+      workspace: forkProject.workspaces[0]?.root,
+    });
+    expect(reserveReply.identity).toMatchObject({
+      provider: "codex",
+      mode: "chat",
+      state: "reserved",
+    });
+    reserveRequestId = reserveReply.identity.requestId;
+    reserveRequestHash = reserveReply.identity.requestHash;
+
+    expect(started.status).toBe(202);
+    const startBody = parseOwnedSessionStart(startReq.postDataJSON());
+    if (!("provider" in startBody))
+      throw new Error("The parent Start body omitted its provider.");
+    expect(startBody.provider).toBe("codex");
+    expect(startBody.launch.mode).toBe("chat");
+    const startBodyHash = createHash("sha256")
+      .update(canonicalOwnedSessionStart(startBody))
+      .digest("hex");
+    expect(startBody.requestId).toBe(reserveRequestId);
+    expect(startBodyHash).toBe(reserveRequestHash);
+    const startEnvelope = record(
+      parseJson(started.text, "parent Start receipt"),
+    );
     if (startEnvelope?.["ok"] !== true)
       throw new Error("The actual parent Start receipt was invalid.");
     const receipt = ownedCodingStartReceiptSchema.parse(startEnvelope["data"]);
@@ -558,7 +574,6 @@ async function openNewSession(
     expect(receipt.session.requestHash).toBe(reserveRequestHash);
     expect(receipt.session.provider).toBe("codex");
     expect(receipt.session.mode).toBe("chat");
-    expect(startBody?.["requestId"]).toBe(reserveRequestId);
     expect(facts.reservePosts).toBe(1);
     expect(facts.startPosts).toBe(1);
     facts.timingMs.startReceipt = Math.round(performance.now() - startedAt);
@@ -566,6 +581,7 @@ async function openNewSession(
     reportFacts(facts);
   } finally {
     page.off("request", countStartRequests);
+    await receiptCaptures.dispose();
   }
   const pane = page.getByRole("region", {
     name: "Session conversation",
@@ -841,7 +857,7 @@ async function selectSession(page: Page, origin: string, sessionId: string) {
     (hash) => {
       window.location.hash = hash;
     },
-    `#/desktop/project/${alpha.id}/sessions?selectionKind=session&selectionId=${encodeURIComponent(sessionId)}`,
+    `#/desktop/project/${forkProject.id}/sessions?selectionKind=session&selectionId=${encodeURIComponent(sessionId)}`,
   );
   await expect(
     page.getByRole("region", { name: "Session conversation", exact: true }),
@@ -857,7 +873,7 @@ async function readIdentityPage(page: Page, origin: string) {
       return { status: result.status, text: await result.text() };
     },
     {
-      path: `/__agent-forge/projects/${alpha.id}/session-operation-identities`,
+      path: `/__agent-forge/projects/${forkProject.id}/session-operation-identities`,
       header: OPERATOR_HEADER,
       value: token,
     },
@@ -877,7 +893,7 @@ async function readForkOriginal(page: Page, origin: string, requestId: string) {
       return { status: result.status, text: await result.text() };
     },
     {
-      path: `/__agent-forge/projects/${alpha.id}/codex-chat-forks/${encodeURIComponent(requestId)}`,
+      path: `/__agent-forge/projects/${forkProject.id}/codex-chat-forks/${encodeURIComponent(requestId)}`,
       header: OPERATOR_HEADER,
       value: token,
     },
@@ -971,6 +987,12 @@ async function operationRows(page: Page, origin: string) {
   );
 }
 
+test.beforeEach(async ({ page }) => {
+  await page.goto(
+    `/index.html#/desktop/project/${encodeURIComponent(forkProject.id)}/sessions`,
+  );
+});
+
 test("two actual host replacements recover the exact Fork original before and after native effect", async ({
   page,
 }) => {
@@ -989,11 +1011,11 @@ test("two actual host replacements recover the exact Fork original before and af
   page.on("request", (request) => {
     if (request.method() !== "POST") return;
     const url = new URL(request.url());
-    if (url.pathname === `/__agent-forge/projects/${alpha.id}/sessions`)
+    if (url.pathname === `/__agent-forge/projects/${forkProject.id}/sessions`)
       startWrites.push(url.pathname);
     if (
       url.pathname.startsWith(
-        `/__agent-forge/projects/${alpha.id}/sessions/`,
+        `/__agent-forge/projects/${forkProject.id}/sessions/`,
       ) &&
       (url.pathname.endsWith("/fork-reservations") ||
         url.pathname.endsWith("/forks") ||
@@ -1042,7 +1064,7 @@ test("two actual host replacements recover the exact Fork original before and af
       version: 1,
       stage,
       origin: observedOrigin,
-      projectId: alpha.id,
+      projectId: forkProject.id,
       identities: knownIdentities.slice(0, 8),
       posts: forkBodies.slice(0, 32).map((entry) => ({
         path: entry.path,
@@ -1128,8 +1150,8 @@ test("two actual host replacements recover the exact Fork original before and af
   expect(rpcCount("thread/fork")).toBe(beforeFirstReplacement.forks);
   const firstPage = await readIdentityPage(page, currentOrigin);
   expect(firstPage.scope).toEqual({
-    projectId: alpha.id,
-    workspace: alpha.workspaces[0]?.root,
+    projectId: forkProject.id,
+    workspace: forkProject.workspaces[0]?.root,
   });
   const firstIdentityBefore = firstPage.operations.filter(
     (item) => item.family === "codex-chat-fork",
@@ -1165,7 +1187,7 @@ test("two actual host replacements recover the exact Fork original before and af
   const retirementCapture = await captureTextResponseThroughBrowserFetch(page, {
     method: "POST",
     origin: currentOrigin,
-    path: `/__agent-forge/projects/${alpha.id}/sessions/${first.parent.id}/fork-reservations/${firstRequestId}/retire`,
+    path: `/__agent-forge/projects/${forkProject.id}/sessions/${first.parent.id}/fork-reservations/${firstRequestId}/retire`,
   });
   let retirementHttp: { status: number; text: string };
   try {
@@ -1216,7 +1238,7 @@ test("two actual host replacements recover the exact Fork original before and af
     await captureTextResponseThroughBrowserFetch(page, {
       method: "POST",
       origin: currentOrigin,
-      path: `/__agent-forge/projects/${alpha.id}/sessions/${first.parent.id}/fork-reservations`,
+      path: `/__agent-forge/projects/${forkProject.id}/sessions/${first.parent.id}/fork-reservations`,
     });
   let replacementReserveHttp: { status: number; text: string };
   try {
@@ -1251,7 +1273,7 @@ test("two actual host replacements recover the exact Fork original before and af
   const historyACapture = await captureTextResponseThroughBrowserFetch(page, {
     method: "GET",
     origin: currentOrigin,
-    path: `/__agent-forge/projects/${alpha.id}/codex-chat-forks/${firstRequestId}`,
+    path: `/__agent-forge/projects/${forkProject.id}/codex-chat-forks/${firstRequestId}`,
   });
   let historyAHttp: { status: number; text: string };
   try {
@@ -1295,7 +1317,7 @@ test("two actual host replacements recover the exact Fork original before and af
     {
       method: "POST",
       origin: currentOrigin,
-      path: `/__agent-forge/projects/${alpha.id}/sessions/${first.parent.id}/forks`,
+      path: `/__agent-forge/projects/${forkProject.id}/sessions/${first.parent.id}/forks`,
     },
   );
   let firstLinkedHttp: { status: number; text: string };
@@ -1456,8 +1478,8 @@ test("two actual host replacements recover the exact Fork original before and af
     secondReservation.metadata()!.requestId,
   );
   expect((await readIdentityPage(page, currentOrigin)).scope).toEqual({
-    projectId: alpha.id,
-    workspace: alpha.workspaces[0]?.root,
+    projectId: forkProject.id,
+    workspace: forkProject.workspaces[0]?.root,
   });
   expect(recoveredSecond).toMatchObject({
     requestId: secondReservation.metadata()!.requestId,

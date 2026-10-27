@@ -7,7 +7,7 @@ import { keeperSessionStartRequestSchema } from "../../scripts/keeper/session-st
 import type { KeeperSessionStartRequest } from "../../types/keeper-session-start";
 import { pageToken } from "../e2e/launch-link";
 import { HEARTH_HOME } from "../e2e/servers";
-import { alpha, ROOT } from "./environment";
+import { keeperProject, ROOT } from "./environment";
 
 const lines = (file: string) =>
   existsSync(join(HEARTH_HOME, file))
@@ -35,12 +35,15 @@ async function pid(page: Page) {
   });
 }
 
+test.beforeEach(async ({ page }) => {
+  await page.goto(`/index.html#/desktop/project/${keeperProject.id}/keeper`);
+});
+
 test("a held pre-admission Start survives reload404, then recovers its late original after an actual owned hearth restart and explicitly retries one fake provider", async ({
   page,
 }) => {
   test.setTimeout(90000);
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.goto(`/index.html#/desktop/project/${alpha.id}/keeper`);
   const card = page.getByRole("article", {
     name: "Review restart recovery",
     exact: true,
@@ -163,7 +166,7 @@ test("a held pre-admission Start survives reload404, then recovers its late orig
     const proposalFile = join(
       HEARTH_HOME,
       "conversations",
-      `keeper-${alpha.id}-proposals.json`,
+      `keeper-${keeperProject.id}-proposals.json`,
     );
     const before: { sessionStarts?: unknown[] } = existsSync(proposalFile)
       ? JSON.parse(readFileSync(proposalFile, "utf8"))
@@ -247,7 +250,7 @@ test("a held pre-admission Start survives reload404, then recovers its late orig
     );
     await page.goto(restart);
     expect((await exchanged).status()).toBe(200);
-    await page.goto(`/index.html#/desktop/project/${alpha.id}/keeper`);
+    await page.goto(`/index.html#/desktop/project/${keeperProject.id}/keeper`);
     await card
       .getByRole("button", { name: "Review original Start", exact: true })
       .click();

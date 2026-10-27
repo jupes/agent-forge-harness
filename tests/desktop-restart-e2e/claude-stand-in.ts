@@ -4,6 +4,8 @@ import { join, resolve } from "node:path";
 
 const home = process.env["AGENT_FORGE_HOME"];
 if (!home) throw new Error("Explicit restart fixture home required.");
+if (process.env["DESKTOP_RESTART_KEEPER_PROJECT_ID"] !== undefined)
+  throw new Error("Keeper fixture identity must come from private metadata.");
 if (
   Object.keys(process.env).some((name) =>
     /^(ANTHROPIC_API_KEY|OPENAI_API_KEY|GOOGLE_API_KEY|GEMINI_API_KEY|XAI_API_KEY|OPENROUTER_API_KEY|CLAUDE_CONFIG_DIR|CODEX_HOME)$/i.test(
@@ -15,12 +17,33 @@ if (
     "Ambient provider credentials or config reached the isolated fake CLI.",
   );
 let recordedIntent = false;
+let restartFixture: unknown;
 try {
-  const marker = JSON.parse(
+  restartFixture = JSON.parse(
     readFileSync(join(home, "restart-fixture.json"), "utf8"),
   );
+} catch {
+  throw new Error("The dedicated Keeper fixture metadata was unavailable.");
+}
+const fixtureRecord =
+  typeof restartFixture === "object" &&
+  restartFixture !== null &&
+  !Array.isArray(restartFixture)
+    ? (restartFixture as Record<string, unknown>)
+    : null;
+const keeperProjectId = fixtureRecord?.["keeperProjectId"];
+const fixtureRoot = fixtureRecord?.["root"];
+if (
+  typeof keeperProjectId !== "string" ||
+  !/^project-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+    keeperProjectId,
+  )
+)
+  throw new Error("The dedicated Keeper fixture project was unavailable.");
+try {
   if (
-    realpathSync.native(resolve(marker.root)) !==
+    typeof fixtureRoot !== "string" ||
+    realpathSync.native(resolve(fixtureRoot)) !==
     realpathSync.native(resolve(home, "repository"))
   )
     throw new Error("Foreign restart fixture.");
@@ -29,11 +52,7 @@ try {
   );
   const journal = JSON.parse(
     readFileSync(
-      join(
-        home,
-        "conversations",
-        "keeper-project-a5832fa0-7a21-403b-8184-44892f0d8d86-proposals.json",
-      ),
+      join(home, "conversations", `keeper-${keeperProjectId}-proposals.json`),
       "utf8",
     ),
   );
