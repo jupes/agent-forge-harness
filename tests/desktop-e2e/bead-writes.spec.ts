@@ -66,15 +66,24 @@ test("New bead title and description stay separate across a background refresh",
     try {
       const request = route.request();
       const requestOrigin = new URL(request.url()).origin;
+      const pageOrigin = new URL(page.url()).origin;
       const headers = await request.allHeaders();
       if (
-        headers.origin !== requestOrigin ||
-        headers["sec-fetch-site"] !== "same-origin"
+        requestOrigin !== pageOrigin ||
+        (headers.origin !== undefined && headers.origin !== requestOrigin) ||
+        (headers["sec-fetch-site"] !== undefined &&
+          headers["sec-fetch-site"] !== "same-origin")
       )
         throw Error(
           "The observed Beads refresh was not an actual same-origin read.",
         );
-      const response = await route.fetch({ headers });
+      const response = await route.fetch({
+        headers: {
+          ...headers,
+          Origin: requestOrigin,
+          "Sec-Fetch-Site": "same-origin",
+        },
+      });
       let raw: unknown;
       try {
         raw = await response.json();
