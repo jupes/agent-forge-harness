@@ -2,6 +2,7 @@ import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, type Route, test } from "@playwright/test";
 import type { ConversationState } from "../../types/conversation";
+import type { OperatorEnvelope, SmithsView } from "../../types/hearth";
 import type { KeeperRecoveryPage } from "../../types/keeper-recovery";
 import type { ProjectCatalog } from "../../types/projects";
 import { openSettled, reloadSettled } from "../e2e/fixtures";
@@ -95,12 +96,21 @@ test("project Keeper Smith overrides the global default until an explicit saved 
 }) => {
   writeFileSync(
     join(HEARTH_HOME, "config.toml"),
-    '[smiths.claude-project-choice]\nprovider = "claude"\nmodel = "fixture-project-choice-model"\neffort = "medium"\nenabled = true\n',
+    '[workflow]\ndefault_crew = "claude-journeyman"\n[smiths.claude-project-choice]\nprovider = "claude"\nmodel = "fixture-project-choice-model"\neffort = "medium"\nenabled = true\n',
   );
   selectProjectSmith("claude-master");
   const before = state(),
     beforeStarts = starts();
   await openSettled(page, `/index.html#/desktop/project/${alpha.id}/keeper`);
+  const defaultRead = await page.evaluate(async () => {
+    const response = await fetch("/__agent-forge/smiths");
+    return { status: response.status, body: await response.json() };
+  });
+  expect(defaultRead.status).toBe(200);
+  expect(defaultRead.body as OperatorEnvelope<SmithsView>).toMatchObject({
+    ok: true,
+    data: { defaultSmith: "claude-journeyman" },
+  });
   await expect(
     page.getByRole("button", { name: "claude-master", exact: true }),
   ).toBeVisible();
