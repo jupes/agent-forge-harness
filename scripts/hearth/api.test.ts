@@ -3043,6 +3043,9 @@ const ACTIONS: Record<string, ActionFixture> = {
 
 /** A concrete path per read row; a row with none fails the suite. */
 const READS: Record<string, string> = {
+  "GET /projects/create-options": "/projects/create-options",
+  "GET /projects/create-scope-preview":
+    "/projects/create-scope-preview?slug=alpha&epicId=alpha-epic",
   "GET /projects/create-reservations": "/projects/create-reservations",
   "GET /projects/create-reservations/:requestId": `/projects/create-reservations/${API_PROJECT_CREATE_READ_ID}`,
   "GET /projects/:id/session-start-identities": `/projects/${FIXTURE_PROJECT_ID}/session-start-identities`,

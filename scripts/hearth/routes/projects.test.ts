@@ -59,6 +59,224 @@ test("projects load through the hearth and audited preferences survive a fresh r
   expect(store.read().projects[0]?.archived).toBe(false);
 });
 
+test("protected project-create options expose complete trusted choices without writes", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  h.bd.issues.set("onboarding-epic", {
+    id: "onboarding-epic",
+    title: "Onboarding epic",
+    issue_type: "epic",
+    priority: 2,
+    status: "open",
+    labels: ["project:onboarding-alpha"],
+    created_at: "2026-10-26T00:00:00.000Z",
+    updated_at: "2026-10-26T00:00:00.000Z",
+  });
+  h.bd.answer = (args) =>
+    args[0] === "export"
+      ? {
+          status: 0,
+          stdout: [...h.bd.issues.values()]
+            .map((issue) => JSON.stringify(issue))
+            .join("\n"),
+          stderr: "",
+        }
+      : undefined;
+  const catalogBefore = createProjectStore(h.home).read();
+  const privateRequest = {
+    requestId: "a45b3815-cf25-4b2e-bab7-90b21e7732fd",
+    expectedCatalogRevision: catalogBefore.revision,
+    original: {
+      slug: "onboarding-alpha",
+      name: "Private onboarding draft",
+      description: "",
+      icon: "A",
+      workspaces: [
+        {
+          root: h.workspace,
+          repositories: [h.workspace],
+          epicIds: ["onboarding-epic"],
+        },
+      ],
+    },
+  };
+  const reservation = await fetch(`${h.api}/projects/create-reservations`, {
+    method: "POST",
+    headers: h.headers(h.hearth.token),
+    body: JSON.stringify(privateRequest),
+  });
+  expect(reservation.status).toBe(201);
+  const eventsBeforeRead = h.events(["operator.action"]);
+
+  const options = await fetch(`${h.api}/projects/create-options`, {
+    headers: h.headers(h.hearth.token),
+  });
+  expect(options.status).toBe(200);
+  const optionsBody = await options.text();
+  let parsedOptions: unknown;
+  try {
+    parsedOptions = JSON.parse(optionsBody);
+  } catch {
+    throw new Error("The project-create options response was not JSON.");
+  }
+  expect(parsedOptions).toMatchObject({
+    ok: true,
+    data: {
+      complete: true,
+      workspace: { path: h.workspace },
+      repositories: [{ path: h.workspace, served: true }],
+      epics: [{ id: "onboarding-epic", title: "Onboarding epic" }],
+    },
+    error: null,
+  });
+  expect(optionsBody).not.toContain(privateRequest.requestId);
+  expect(optionsBody).not.toContain(privateRequest.original.name);
+  expect(optionsBody).not.toContain("requestHash");
+  const protectedRead = await fetch(`${h.api}/projects/create-options`, {
+    headers: h.headers(),
+  });
+  expect(protectedRead.status).toBe(403);
+  expect(h.events(["operator.action"])).toEqual(eventsBeforeRead);
+  expect(createProjectStore(h.home).read()).toEqual(catalogBefore);
+  expect(h.bd.calls.every((args) => args[0] === "export")).toBe(true);
+});
+
+test("project scope preview uses the reservation count/hash and remains read-only", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  h.bd.issues.set("onboarding-epic", {
+    id: "onboarding-epic",
+    title: "Onboarding epic",
+    issue_type: "epic",
+    priority: 2,
+    status: "open",
+    labels: ["project:onboarding-alpha"],
+    created_at: "2026-10-26T00:00:00.000Z",
+    updated_at: "2026-10-26T00:00:00.000Z",
+  });
+  h.bd.issues.set("onboarding-task", {
+    id: "onboarding-task",
+    title: "First task",
+    issue_type: "task",
+    priority: 2,
+    status: "open",
+    labels: ["project:onboarding-alpha"],
+    dependencies: [
+      {
+        issue_id: "onboarding-task",
+        depends_on_id: "onboarding-epic",
+        type: "parent-child",
+      },
+    ],
+    created_at: "2026-10-26T00:00:00.000Z",
+    updated_at: "2026-10-26T00:00:00.000Z",
+  });
+  h.bd.answer = (args) =>
+    args[0] === "export"
+      ? {
+          status: 0,
+          stdout: [...h.bd.issues.values()]
+            .map((issue) => JSON.stringify(issue))
+            .join("\n"),
+          stderr: "",
+        }
+      : undefined;
+  const before = createProjectStore(h.home).read();
+  const query = new URLSearchParams([
+    ["slug", "onboarding-alpha"],
+    ["epicId", "onboarding-epic"],
+  ]);
+  const previewResponse = await fetch(
+    `${h.api}/projects/create-scope-preview?${query}`,
+    { headers: h.headers(h.hearth.token) },
+  );
+  expect(previewResponse.status).toBe(200);
+  const preview = (await previewResponse.json()) as {
+    ok: boolean;
+    data: { complete: boolean; scopeCount: number; scopeHash: string } | null;
+    error: string | null;
+  };
+  expect(preview).toMatchObject({
+    ok: true,
+    data: { complete: true, scopeCount: 2 },
+    error: null,
+  });
+  expect(preview.data).not.toBeNull();
+  expect(h.events(["operator.action"])).toEqual([]);
+  expect(createProjectStore(h.home).read()).toEqual(before);
+
+  const request = {
+    requestId: "4a965437-e738-43c5-9025-e28ab4ebedcc",
+    expectedCatalogRevision: before.revision,
+    original: {
+      slug: "onboarding-alpha",
+      name: "Onboarding Alpha",
+      description: "",
+      icon: "A",
+      workspaces: [
+        {
+          root: h.workspace,
+          repositories: [h.workspace],
+          epicIds: ["onboarding-epic"],
+        },
+      ],
+    },
+  };
+  const reserveResponse = await fetch(`${h.api}/projects/create-reservations`, {
+    method: "POST",
+    headers: h.headers(h.hearth.token),
+    body: JSON.stringify(request),
+  });
+  expect(reserveResponse.status).toBe(201);
+  const reserve = (await reserveResponse.json()) as {
+    ok: boolean;
+    data: { scopeCount: number; scopeHash: string } | null;
+    error: string | null;
+  };
+  expect(reserve.data).not.toBeNull();
+  expect(preview.data?.scopeCount).toBe(reserve.data?.scopeCount);
+  expect(preview.data?.scopeHash).toBe(reserve.data?.scopeHash);
+});
+
+test("project-create reads reject malformed queries and fail closed on incomplete tracker exports", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  const headers = h.headers(h.hearth.token);
+  const invalidQueries = [
+    "?epicId=alpha-epic",
+    "?slug=Not-Lowercase&epicId=alpha-epic",
+    "?slug=alpha&epicId=alpha-epic&epicId=alpha-epic",
+    "?slug=alpha&epicId=alpha-epic&unknown=value",
+  ];
+  for (const query of invalidQueries) {
+    const response = await fetch(
+      `${h.api}/projects/create-scope-preview${query}`,
+      { headers },
+    );
+    expect(response.status).toBe(400);
+  }
+  const optionsWithQuery = await fetch(
+    `${h.api}/projects/create-options?unknown=value`,
+    { headers },
+  );
+  expect(optionsWithQuery.status).toBe(400);
+  expect(h.bd.calls).toHaveLength(0);
+
+  h.bd.answer = (args) =>
+    args[0] === "export"
+      ? { status: 0, stdout: '{"id":', stderr: "" }
+      : undefined;
+  const unavailable = await fetch(`${h.api}/projects/create-options`, {
+    headers,
+  });
+  expect(unavailable.status).toBe(503);
+  expect(await unavailable.json()).toMatchObject({
+    ok: false,
+    data: null,
+  });
+  expect(h.events(["operator.action"])).toEqual([]);
+});
+
 test("a damaged project catalog is a failed read, never empty or overwritten", async () => {
   const h = await startTestHearth();
   opened.push(h);
