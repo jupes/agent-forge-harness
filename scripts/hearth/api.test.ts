@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -95,6 +95,7 @@ import {
   codexChatForkOriginalHash,
   codexChatForkOriginalHashInput,
 } from "../sessions/codex-chat-fork-protocol";
+import { createCodexChatRuntime } from "../sessions/codex-chat-runtime";
 import { ownedCodingPageSchema } from "../sessions/codex-owned-journal";
 import { canonicalOwnedSessionStart } from "../sessions/codex-owned-protocol";
 import {
@@ -6634,4 +6635,129 @@ describe("a bead as the source of a council run started through the hearth", () 
       ],
     ]);
   });
+});
+
+test("the protected owner-release read reconstructs a completed ordinary Chat receipt without effects", async () => {
+  let liveRuntime: ReturnType<typeof createCodexChatRuntime> | undefined,
+    prepareCalls = 0,
+    runCalls = 0;
+  const runtime = new Proxy({} as ReturnType<typeof createCodexChatRuntime>, {
+    get(_target, key) {
+      if (!liveRuntime) return undefined;
+      const member: unknown = Reflect.get(liveRuntime, key);
+      if (typeof member !== "function") return member;
+      return (...args: unknown[]) => {
+        if (key === "prepare") prepareCalls++;
+        if (key === "run") runCalls++;
+        return Reflect.apply(member, liveRuntime, args);
+      };
+    },
+  });
+  const h = await start({
+    api: { codexChatRuntime: runtime, git: fixtureSessionGit },
+  });
+  liveRuntime = createCodexChatRuntime({
+    root: h.root,
+    home: h.home,
+    configHome: h.configHome,
+    command: [
+      process.execPath,
+      join(import.meta.dir, "../sessions/fixtures/codex-app-server-cli.ts"),
+    ],
+    syncCommand: [
+      process.execPath,
+      join(import.meta.dir, "../sessions/fixtures/codex-app-server-cli.ts"),
+      "--sync",
+    ],
+    environment: {
+      ...process.env,
+      CODEX_CHAT_MODE: "normal",
+      CODEX_CHAT_LOG: join(h.root, "owner-release-api.jsonl"),
+    },
+    timeoutMs: 5000,
+    rpcTimeoutMs: 5000,
+    approvalTimeoutMs: 3000,
+  });
+
+  const requestId = randomUUID(),
+    startRequest = {
+      provider: "codex",
+      requestId,
+      smith: "codex-journeyman",
+      repository: h.workspace,
+      worktree: h.workspace,
+      launch: {
+        mode: "chat",
+        model: "exact-model",
+        sandbox: "read-only",
+        approvalPolicy: "never",
+        prompt: "Private inert owner-release projection request",
+      },
+    };
+  const accepted = await post(
+    h,
+    `/projects/${FIXTURE_PROJECT_ID}/sessions`,
+    startRequest,
+  );
+  expect(accepted.status).toBe(202);
+
+  const registry = createSessionRegistry(h.home, "codex", "chat"),
+    deadline = Date.now() + 5000;
+  let owner = registry
+    .list(FIXTURE_PROJECT_ID)
+    .find((record) => record.requestId === requestId);
+  while (!owner) {
+    if (Date.now() >= deadline)
+      throw Error("The inert Codex Chat owner was not registered.");
+    await Bun.sleep(10);
+    owner = registry
+      .list(FIXTURE_PROJECT_ID)
+      .find((record) => record.requestId === requestId);
+  }
+  const address = {
+      kind: "session" as const,
+      projectId: FIXTURE_PROJECT_ID,
+      sessionId: owner.id,
+    },
+    store = createConversationStore(h.home, undefined, address);
+  let state = store.read(FIXTURE_PROJECT_ID);
+  while (state.turns.at(-1)?.phase !== "completed") {
+    if (Date.now() >= deadline)
+      throw Error("The inert owner-release Chat turn did not complete.");
+    await Bun.sleep(10);
+    state = store.read(FIXTURE_PROJECT_ID);
+  }
+  const generationId = state.codexChatOwnerLifecycle?.find(
+    (fact) => fact.kind === "generation-started",
+  )?.generationId;
+  if (!generationId)
+    throw Error("The inert owner-release receipt was not persisted.");
+  const beforeRevision = state.revision,
+    beforeFrameCount = state.frames.length,
+    beforeEvents = h.events().length,
+    beforeRuntimeCalls = { prepareCalls, runCalls };
+
+  const response = await get(
+    h,
+    `/projects/${FIXTURE_PROJECT_ID}/sessions/${owner.id}/owner-release`,
+    h.headers(h.hearth.token),
+  );
+  expect(response.status).toBe(200);
+  const result = await envelope<Record<string, unknown>>(response);
+  const projection = result.data;
+  if (!projection) throw Error("The owner-release projection was empty.");
+  expect(projection).toMatchObject({ state: "eligible", reason: null });
+  expect(Object.keys(projection).sort()).toEqual(["reason", "state"]);
+  expect(JSON.stringify(projection)).not.toContain(generationId);
+  expect(JSON.stringify(projection)).not.toContain(startRequest.launch.prompt);
+  const afterState = store.read(FIXTURE_PROJECT_ID);
+  expect({
+    revision: afterState.revision,
+    frameCount: afterState.frames.length,
+  }).toEqual({
+    revision: beforeRevision,
+    frameCount: beforeFrameCount,
+  });
+  expect(h.events()).toHaveLength(beforeEvents);
+  expect({ prepareCalls, runCalls }).toEqual(beforeRuntimeCalls);
 });
