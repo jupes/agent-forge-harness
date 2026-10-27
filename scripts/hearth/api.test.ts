@@ -256,6 +256,14 @@ const API_SMITH_CREATE_SMITH = {
   enabled: true,
   tags: ["fixture"],
 };
+const API_SMITH_CREATE_RESERVE_SMITH = {
+  ...API_SMITH_CREATE_SMITH,
+  name: "api-route-reserve-smith",
+};
+const API_SMITH_CREATE_RETIRE_SMITH = {
+  ...API_SMITH_CREATE_SMITH,
+  name: "api-route-retire-smith",
+};
 const API_SMITH_EDIT_ID = "122d0b56-96f3-4818-8789-6ab562c092e8";
 const API_SMITH_EDIT_SMITH = {
   name: "claude-master",
@@ -1127,7 +1135,7 @@ const ACTIONS: Record<string, ActionFixture> = {
       body: {
         requestId: API_SMITH_CREATE_RESERVE_ID,
         target: "workspace",
-        smith: API_SMITH_CREATE_SMITH,
+        smith: API_SMITH_CREATE_RESERVE_SMITH,
         expectedRevision: API_SMITH_CREATE_REVISION,
       },
       status: 200,
@@ -1138,7 +1146,7 @@ const ACTIONS: Record<string, ActionFixture> = {
         inputHash: smithCreateInputHash({
           requestId: API_SMITH_CREATE_RESERVE_ID,
           target: "workspace",
-          smith: API_SMITH_CREATE_SMITH,
+          smith: API_SMITH_CREATE_RESERVE_SMITH,
           expectedRevision: API_SMITH_CREATE_REVISION,
         }),
       },
@@ -1150,7 +1158,7 @@ const ACTIONS: Record<string, ActionFixture> = {
     prepare: async (h) => {
       const preview = await post(h, "/config/smiths/preview", {
         target: "workspace",
-        smith: API_SMITH_CREATE_SMITH,
+        smith: API_SMITH_CREATE_RESERVE_SMITH,
       });
       const checked = smithConfigPreviewSchema.parse(
         (await envelope(preview)).data,
@@ -1158,7 +1166,7 @@ const ACTIONS: Record<string, ActionFixture> = {
       const request = {
         requestId: API_SMITH_CREATE_RESERVE_ID,
         target: "workspace" as const,
-        smith: API_SMITH_CREATE_SMITH,
+        smith: API_SMITH_CREATE_RESERVE_SMITH,
         expectedRevision: checked.expectedRevision,
       };
       const fixture = ACTIONS["POST /config/smiths/creates/reserve"]!;
@@ -1209,7 +1217,7 @@ const ACTIONS: Record<string, ActionFixture> = {
     prepare: async (h) => {
       const preview = await post(h, "/config/smiths/preview", {
         target: "workspace",
-        smith: API_SMITH_CREATE_SMITH,
+        smith: API_SMITH_CREATE_RETIRE_SMITH,
       });
       const checked = smithConfigPreviewSchema.parse(
         (await envelope(preview)).data,
@@ -1217,7 +1225,7 @@ const ACTIONS: Record<string, ActionFixture> = {
       const request = {
         requestId: API_SMITH_CREATE_RETIRE_ID,
         target: "workspace" as const,
-        smith: API_SMITH_CREATE_SMITH,
+        smith: API_SMITH_CREATE_RETIRE_SMITH,
         expectedRevision: checked.expectedRevision,
       };
       const service = createSmithCreateService(
@@ -3037,7 +3045,12 @@ describe("every action row (iterating the table)", () => {
     test(`when the audit append ${label}: 503 and the effect is not called`, async () => {
       const { h, probes } = await probed({ api: { appendEvent } });
       for (const row of actionRows(h)) {
-        const { valid } = fixture(row);
+        const { valid, prepare } = fixture(row);
+        // Keeper proposal validation reads the durable source and revision
+        // before reaching the audit boundary; seed that inert source fixture.
+        // Other prepare hooks may themselves call audited preview routes,
+        // which this test deliberately makes unavailable.
+        if (row.path.includes("/keeper/proposals/")) await prepare?.(h);
         const response = await post(h, valid.path, valid.body);
         const body = await envelope(response);
         expect({ row: key(row), status: response.status, ok: body.ok }).toEqual(

@@ -339,8 +339,11 @@ test("editing invalidates preview and a lost response stays held after a missing
       throw Error("404 No saved original");
     },
   });
-  await restarted.recover();
+  // The invalid POST was followed by one protected original check. Recovery
+  // after reload performs its own read; neither read may resend the request.
   expect(first.readIds).toEqual([heldId]);
+  await restarted.recover();
+  expect(first.readIds).toEqual([heldId, heldId]);
   expect(first.posted).toHaveLength(1);
   expect(restarted.get().activeRequestId).toBeNull();
   expect(restarted.get().entries).toMatchObject([
@@ -391,6 +394,7 @@ test("only an exact correlated preattempt refusal permits a new explicit UUID", 
 });
 
 test("a create POST proven not sent keeps its server reservation until explicit retirement", async () => {
+  const firstId = ids[0]!;
   const value = setup({
     post: async () => ({
       state: "not-sent",
@@ -408,19 +412,68 @@ test("a create POST proven not sent keeps its server reservation until explicit 
   expect(value.client.get().entries[0]?.notice).toContain(
     "reservation remains held",
   );
-  expect(value.identities.read(ids[0]!)?.retired).toBe(false);
+  expect(value.identities.read(firstId)?.retired).toBe(false);
   expect(value.posted).toHaveLength(1);
   expect(value.client.canStart()).toBe(false);
-  await value.client.retireReservation(ids[0]!);
-  expect(value.client.get().entries[0]).toMatchObject({
+  value.client.dispose();
+
+  const restarted = createSmithConfigCreateClient({
+    identities: value.identities,
+    list: value.list,
+    reserve: value.reserve,
+    retireReserved: value.retireReserved,
+    canWrite: () => true,
+    requestId: () => ids[1]!,
+    preview: async (input) => preview(input),
+    post: async (request) => {
+      value.posted.push(structuredClone(request));
+      return { state: "sent", value: await receipt(request) };
+    },
+    readOriginal: async (requestId) => {
+      value.readIds.push(requestId);
+      return structuredClone(value.originals.get(requestId) ?? null);
+    },
+  });
+  await restarted.recover();
+  expect(value.readIds).toEqual([firstId]);
+  expect(restarted.get().entries[0]).toMatchObject({
+    state: "held",
+    serverIdentity: { requestId: firstId, inputHash: expect.any(String) },
+    continueAllowed: true,
+  });
+  // Re-read the exact original immediately before the explicit retirement.
+  await restarted.check(firstId);
+  expect(value.readIds).toEqual([firstId, firstId]);
+  await restarted.retireReservation(firstId);
+  expect(restarted.get().entries[0]).toMatchObject({
     state: "refused",
     serverIdentity: { state: "refused", stage: "terminal" },
   });
-  expect(value.client.canStart()).toBe(true);
-  value.client.dispose();
+  expect(value.identities.read(firstId)).toMatchObject({
+    requestId: firstId,
+    retired: true,
+    retirement: "correlated-refusal",
+  });
+  await restarted.check(firstId);
+  expect(restarted.get().entries[0]).toMatchObject({
+    state: "refused",
+    serverIdentity: { state: "refused", stage: "terminal" },
+  });
+  expect(restarted.canStart()).toBe(true);
+
+  const nextSmith = { ...smith, name: "codex-next-after-retired-reservation" };
+  restarted.setDraft("workspace", nextSmith);
+  await restarted.preview();
+  await restarted.create();
+  expect(value.posted.map((request) => request.requestId)).toEqual(ids);
+  expect(restarted.get().entries.map((entry) => entry.state)).toEqual([
+    "refused",
+    "confirmed",
+  ]);
+  restarted.dispose();
 });
 
-test("a source-proven reservation NotSent survives reload and permits a later explicit create", async () => {
+test("a reservation request proven not sent leaves no original and permits a later explicit create", async () => {
   let reservationAttempts = 0;
   const first = setup({
     reserve: async () =>
@@ -466,7 +519,6 @@ test("a source-proven reservation NotSent survives reload and permits a later ex
   await restarted.create();
   expect(first.posted.map((request) => request.requestId)).toEqual([ids[1]!]);
   expect(restarted.get().entries.map((entry) => entry.state)).toEqual([
-    "not-sent",
     "confirmed",
   ]);
   restarted.dispose();
