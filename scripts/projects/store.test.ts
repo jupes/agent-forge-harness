@@ -201,6 +201,86 @@ test("create identity hashes bind the UUID and expected semantic revision", asyn
   expect(second.operation.requestHash).not.toBe(first.operation.requestHash);
 });
 
+test("an explicit project Keeper Smith is bound to the saved original and committed record while legacy originals stay absent", async () => {
+  const { home, store, input } = fixture();
+  const requestId = "bba4e479-101f-48c4-bbb8-04f242e3d325";
+  const legacyHash = hashProjectCreateRequest({
+    requestId,
+    expectedCatalogRevision: 0,
+    original: input,
+  });
+  const explicitOriginal = Object.assign({}, input, {
+    keeperSmith: "claude-master",
+  });
+  const explicitHash = hashProjectCreateRequest({
+    requestId,
+    expectedCatalogRevision: 0,
+    original: explicitOriginal,
+  });
+  expect(explicitHash).not.toBe(legacyHash);
+
+  const reservation = await store.reserveCreate({
+    requestId,
+    original: explicitOriginal,
+    expectedCatalogRevision: 0,
+    preflightScope: { hash: "a".repeat(64), count: 0 },
+    validateScope: async () => ({ hash: "a".repeat(64), count: 0 }),
+  });
+  expect(reservation.operation.original).toEqual(explicitOriginal);
+  expect(reservation.operation.requestHash).toBe(explicitHash);
+  expect(createProjectStore(home).readCreate(requestId)).toEqual(
+    reservation.operation,
+  );
+
+  const committed = await store.commitCreate({
+    requestId,
+    requestHash: explicitHash,
+    reviewedScopeHash: reservation.operation.scopeHash,
+    preflightScope: { hash: reservation.operation.scopeHash, count: 0 },
+    validateScope: async () => ({
+      hash: reservation.operation.scopeHash,
+      count: 0,
+    }),
+  });
+  const committedProject = committed.catalog.projects[0];
+  expect(committedProject?.slug).toBe(input.slug);
+  expect(
+    committedProject && "keeperSmith" in committedProject
+      ? committedProject.keeperSmith
+      : undefined,
+  ).toBe("claude-master");
+  const reopenedProject = createProjectStore(home).read().projects[0];
+  expect(
+    reopenedProject && "keeperSmith" in reopenedProject
+      ? reopenedProject.keeperSmith
+      : undefined,
+  ).toBe("claude-master");
+  await expect(
+    store.reserveCreate({
+      requestId,
+      original: Object.assign({}, input, { keeperSmith: "codex-journeyman" }),
+      expectedCatalogRevision: 0,
+      preflightScope: { hash: "a".repeat(64), count: 0 },
+      validateScope: async () => ({ hash: "a".repeat(64), count: 0 }),
+    }),
+  ).rejects.toMatchObject({ status: 409 });
+});
+
+test("a legacy project create original remains byte-shape absent of Keeper selection", async () => {
+  const { home, store, input } = fixture();
+  const requestId = "b780a320-2335-4b04-b5ce-14455ac29335";
+  const legacy = await store.reserveCreate({
+    requestId,
+    original: input,
+    expectedCatalogRevision: 0,
+    preflightScope: { hash: "b".repeat(64), count: 0 },
+    validateScope: async () => ({ hash: "b".repeat(64), count: 0 }),
+  });
+  const reopened = createProjectStore(home).readCreate(requestId);
+  expect(reopened).toEqual(legacy.operation);
+  expect(Object.hasOwn(reopened?.original ?? {}, "keeperSmith")).toBe(false);
+});
+
 test("project catalog preferences preserve pending create originals without advancing their metadata revision", async () => {
   const { home, store, input } = fixture();
   const existing = await store.create(input, 0);

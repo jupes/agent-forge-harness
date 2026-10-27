@@ -185,6 +185,109 @@ test("a protected project reservation preserves its exact original before projec
   expect(summaryText).not.toContain(request.original.name);
 });
 
+test("an explicit project Keeper Smith round-trips through the protected create original and public record", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  h.bd.issues.set("alpha-epic", {
+    id: "alpha-epic",
+    title: "Onboarding epic",
+    issue_type: "epic",
+    priority: 2,
+    status: "open",
+    labels: ["project:keeper-choice"],
+    created_at: "2026-10-26T00:00:00.000Z",
+    updated_at: "2026-10-26T00:00:00.000Z",
+  });
+  h.bd.answer = (args) =>
+    args[0] === "export"
+      ? {
+          status: 0,
+          stdout: [...h.bd.issues.values()]
+            .map((issue) => JSON.stringify(issue))
+            .join("\n"),
+          stderr: "",
+        }
+      : undefined;
+  const requestId = "07d87f5a-10ca-4d83-87f5-70b222b0fe2e";
+  const original = {
+    slug: "keeper-choice",
+    name: "Keeper Choice",
+    description: "",
+    icon: "K",
+    workspaces: [
+      {
+        root: h.workspace,
+        repositories: [h.workspace],
+        epicIds: ["alpha-epic"],
+      },
+    ],
+    keeperSmith: "claude-master",
+  };
+  const headers = h.headers(h.hearth.token);
+  const reserve = await fetch(`${h.api}/projects/create-reservations`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      requestId,
+      expectedCatalogRevision: 0,
+      original,
+    }),
+  });
+  expect(reserve.status).toBe(201);
+  const reserved: unknown = await reserve.json();
+  expect(reserved).toMatchObject({
+    ok: true,
+    data: {
+      requestId,
+      original,
+      state: "reserved",
+    },
+    error: null,
+  });
+  const reservation = createProjectStore(h.home).readCreate(requestId);
+  expect(reservation?.original).toEqual(original);
+  if (!reservation) throw new Error("Keeper project reservation missing");
+
+  const exact = await fetch(
+    `${h.api}/projects/create-reservations/${requestId}`,
+    { headers },
+  );
+  expect(exact.status).toBe(200);
+  expect(await exact.json()).toMatchObject({
+    ok: true,
+    data: { requestId, requestHash: reservation.requestHash, original },
+    error: null,
+  });
+  const commit = await fetch(
+    `${h.api}/projects/create-reservations/${requestId}/commit`,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        requestHash: reservation.requestHash,
+        reviewedScopeHash: reservation.scopeHash,
+      }),
+    },
+  );
+  expect(commit.status).toBe(200);
+  expect(createProjectStore(h.home).read().projects[0]).toMatchObject({
+    slug: original.slug,
+    keeperSmith: original.keeperSmith,
+  });
+  const listed = await fetch(`${h.api}/projects`, { headers });
+  expect(await listed.json()).toMatchObject({
+    ok: true,
+    data: {
+      projects: [{ slug: original.slug, keeperSmith: original.keeperSmith }],
+    },
+    error: null,
+  });
+  expect(h.events(["operator.action"])).toHaveLength(2);
+  const auditText = JSON.stringify(h.events(["operator.action"]));
+  expect(auditText).not.toContain(original.keeperSmith);
+  expect(auditText).not.toContain(original.name);
+});
+
 test("a project reservation refuses two allowed spellings of the same checkout before writing", async () => {
   const h = await startTestHearth();
   opened.push(h);
