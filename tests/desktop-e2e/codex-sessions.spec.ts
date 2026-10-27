@@ -19,6 +19,7 @@ import { openSettled, reloadSettled } from "../e2e/fixtures";
 import { pageToken } from "../e2e/launch-link";
 import { HEARTH_HOME } from "../e2e/servers";
 import { alpha, beta, seedProjects, workspace } from "./project-fixtures";
+import { observePreviewIdentityRefresh } from "./session-start-refresh-barrier";
 
 const sessionStartIdentitySuccessEnvelopeSchema = z
   .object({
@@ -886,7 +887,57 @@ test("confirmed reserved retirement reads back the tombstone before a new UUID c
   ).toBe(true);
   const before = tasks().length;
   await openSettled(page, `/index.html#/desktop/project/${alpha.id}/sessions`);
-  const dialog = await checkDefault(page, "Retire only the reserved UUID");
+  await page.getByRole("button", { name: "New session", exact: true }).click();
+  const dialog = await chooseCodex(page);
+  await dialog
+    .getByRole("textbox", { name: "Session prompt", exact: true })
+    .fill("Retire only the reserved UUID");
+  await dialog
+    .getByRole("combobox", { name: "Session effort", exact: true })
+    .selectOption("");
+  const identityRefresh = await observePreviewIdentityRefresh(
+    page,
+    alpha.id,
+    workspace,
+    { holdResponse: true },
+  );
+  await dialog
+    .getByRole("button", { name: "Check supported options", exact: true })
+    .click();
+  try {
+    await expect.poll(() => identityRefresh.isObserved).toBe(true);
+    const identityRegion = dialog.getByRole("region", {
+      name: "Original Start requests",
+      exact: true,
+    });
+    await expect(identityRegion.getByRole("status")).toContainText(
+      "Checking the server-owned identity page",
+    );
+    await expect(
+      dialog.getByRole("button", { name: "Start", exact: true }),
+    ).toBeDisabled();
+  } finally {
+    identityRefresh.release();
+  }
+  await identityRefresh.settledRead;
+  await expect(
+    dialog.getByRole("region", {
+      name: "Equivalent session command",
+      exact: true,
+    }),
+  ).toContainText("--sandbox");
+  const identityRegion = dialog.getByRole("region", {
+    name: "Original Start requests",
+    exact: true,
+  });
+  await expect(
+    identityRegion
+      .getByRole("status")
+      .filter({ hasText: "Checking the server-owned identity page" }),
+  ).not.toBeVisible();
+  await expect(
+    dialog.getByRole("button", { name: "Start", exact: true }),
+  ).toBeEnabled();
   const starts: CodexTaskStartRequest[] = [];
   await page.route(
     `**/__agent-forge/projects/${alpha.id}/sessions`,
