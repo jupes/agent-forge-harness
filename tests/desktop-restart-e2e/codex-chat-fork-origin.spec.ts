@@ -17,7 +17,7 @@ import {
 } from "../../scripts/sessions/session-operation-identities-protocol";
 import { pageToken } from "../e2e/launch-link";
 import { HEARTH_HOME } from "../e2e/servers";
-import { alpha } from "./environment";
+import { alpha, ROOT } from "./environment";
 
 const FORK_RESTART_PATH = "/__desktop-restart-fixture/restart-host-fork";
 const CONTROL_HEADER = "x-agent-forge-fixture-secret";
@@ -282,6 +282,9 @@ async function openNewSession(page: Page, url: string): Promise<SessionRow> {
   if (!parent)
     throw new Error("The actual Codex Chat parent was not recorded.");
   await expect(pane).toContainText("Hello world");
+  expect(
+    readFileSync(join(ROOT, "codex-sync-fixture-marker.txt"), "utf8"),
+  ).toBe("inert sync ran\n");
   return parent;
 }
 

@@ -23,6 +23,7 @@ import {
   type CodexChatCallbacks,
   createCodexChatRuntime,
 } from "./codex-chat-runtime";
+import { plantInertCodexSyncFixture } from "./codex-chat-sync-fixture.test-utils";
 
 const scratch = scratchDirs();
 afterEach(() => scratch.cleanup());
@@ -202,6 +203,7 @@ test("the compiled desktop Codex stand-in completes prepare and dispatch in fork
     mkdirSync(workspace, { recursive: true });
     mkdirSync(join(workspace, ".git"));
     mkdirSync(binDirectory, { recursive: true });
+    plantInertCodexSyncFixture(workspace);
     writeFileSync(
       join(configDirectory, "config.toml"),
       '[smiths.codex-journeyman]\nprovider = "codex"\nmodel = "gpt-5-codex"\neffort = "medium"\nenabled = true\n',
@@ -323,6 +325,9 @@ test("the compiled desktop Codex stand-in completes prepare and dispatch in fork
       itemId: "message-a",
       text: " world",
     });
+    expect(
+      readFileSync(join(workspace, "codex-sync-fixture-marker.txt"), "utf8"),
+    ).toBe("inert sync ran\n");
     const facts = summarize();
     expect(facts).toMatchObject({
       state: "available",

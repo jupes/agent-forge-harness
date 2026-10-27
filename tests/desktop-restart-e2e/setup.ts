@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import { chromium } from "@playwright/test";
 import { SESSION_KEY_STORAGE, SESSION_ROUTE } from "../../scripts/hearth/paths";
 import { projectCatalogFixture } from "../../scripts/projects/testing";
+import { plantInertCodexSyncFixture } from "../../scripts/sessions/codex-chat-sync-fixture.test-utils";
 import { writeState } from "../e2e/bd-stand-in-state";
 import {
   BD_STAND_IN_BIN,
@@ -53,6 +54,7 @@ async function initialize() {
       );
   }
   mkdirSync(join(ROOT, "docs"), { recursive: true });
+  plantInertCodexSyncFixture(ROOT);
   mkdirSync(join(HEARTH_HOME, "projects"), { recursive: true });
   mkdirSync(join(HEARTH_HOME, "user", ".agent-forge"), {
     recursive: true,
