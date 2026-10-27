@@ -43,6 +43,7 @@ export async function observePreviewIdentityRefresh(
         await route.continue();
         return;
       }
+      const startedAfterPreview = previewRequested;
       const response = await route.fetch({
         headers: {
           ...(await route.request().allHeaders()),
@@ -68,7 +69,7 @@ export async function observePreviewIdentityRefresh(
         );
 
       let isObservedRefresh = false;
-      if (previewRequested && !observed) {
+      if (startedAfterPreview && !observed) {
         observed = true;
         isObservedRefresh = true;
         if (options.holdResponse) {
