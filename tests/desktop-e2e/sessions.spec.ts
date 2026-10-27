@@ -139,27 +139,6 @@ test("Cancel, templates and checked options start nothing; a lost Start reply cr
 }) => {
   const beforeStarts = starts(),
     beforeRecords = records().length;
-  let identityGetCount = 0;
-  const identityStatuses: number[] = [];
-  let releaseIdentityReads!: () => void;
-  const identityReadGate = new Promise<void>((resolve) => {
-    releaseIdentityReads = resolve;
-  });
-  page.once("close", releaseIdentityReads);
-  await page.route(
-    `**/__agent-forge/projects/${alpha.id}/session-start-identities`,
-    async (route) => {
-      if (route.request().method() !== "GET") {
-        await route.continue();
-        return;
-      }
-      identityGetCount++;
-      await identityReadGate;
-      const response = await forward(route);
-      identityStatuses.push(response.status());
-      await route.fulfill({ response });
-    },
-  );
   await page.emulateMedia({ reducedMotion: "reduce" });
   await page.setViewportSize({ width: 1100, height: 700 });
   await openSettled(page, `/index.html#/desktop/project/${alpha.id}/sessions`);
@@ -233,6 +212,29 @@ test("Cancel, templates and checked options start nothing; a lost Start reply cr
   await expect(
     dialog.getByText("text · notes.txt", { exact: false }),
   ).toBeVisible();
+  let identityGetCount = 0;
+  let identityReadHeld = false;
+  const identityStatuses: number[] = [];
+  let releaseIdentityReads!: () => void;
+  const identityReadGate = new Promise<void>((resolve) => {
+    releaseIdentityReads = resolve;
+  });
+  page.once("close", releaseIdentityReads);
+  await page.route(
+    `**/__agent-forge/projects/${alpha.id}/session-start-identities`,
+    async (route) => {
+      if (route.request().method() !== "GET" || identityReadHeld) {
+        await route.continue();
+        return;
+      }
+      identityReadHeld = true;
+      identityGetCount++;
+      await identityReadGate;
+      const response = await forward(route);
+      identityStatuses.push(response.status());
+      await route.fulfill({ response });
+    },
+  );
   await dialog
     .getByRole("button", { name: "Check supported options", exact: true })
     .click();
