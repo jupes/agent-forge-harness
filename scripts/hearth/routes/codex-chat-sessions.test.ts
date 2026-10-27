@@ -7,6 +7,7 @@ import type {
   CodexChatStartRequest,
 } from "../../../types/codex-owned-chat";
 import { conversationFile } from "../../conversations/paths";
+import { createConversationStore } from "../../conversations/store";
 import { projectCatalogPath } from "../../projects/store";
 import {
   FIXTURE_PROJECT_ID,
@@ -1413,19 +1414,108 @@ test("Fork review GET projects the explicitly selected completed parent turn wit
   );
   expect(envelope.data.frames).toHaveLength(1);
   expect(typeof envelope.data.nextCursor).toBe("number");
-  const next = await fetch(
-      `${f.h.api}${requestPath}?throughTurnRequestId=${selectedTurn.requestId}&after=${envelope.data.nextCursor}&limit=1`,
-      { headers: f.h.headers(f.h.hearth.token) },
-    ),
-    nextEnvelope = await next.json();
-  expect(next.status).toBe(200);
-  expect(nextEnvelope.data.complete).toBe(true);
-  expect(nextEnvelope.data.frames[0]?.seq).toBeGreaterThan(
-    envelope.data.frames[0]?.seq,
+  const reviewedFrames = [...envelope.data.frames];
+  let reviewPage = envelope.data,
+    pageCount = 1;
+  while (!reviewPage.complete && pageCount < 40) {
+    const next = await fetch(
+        `${f.h.api}${requestPath}?throughTurnRequestId=${selectedTurn.requestId}&after=${reviewPage.nextCursor}&limit=1`,
+        { headers: f.h.headers(f.h.hearth.token) },
+      ),
+      nextEnvelope = await next.json();
+    expect(next.status).toBe(200);
+    expect(nextEnvelope.data.frames[0]?.seq).toBeGreaterThan(
+      reviewedFrames.at(-1)?.seq,
+    );
+    reviewedFrames.push(...nextEnvelope.data.frames);
+    reviewPage = nextEnvelope.data;
+    pageCount++;
+  }
+  expect(reviewPage.complete).toBe(true);
+  expect(new Set(reviewedFrames.map((frame) => frame.seq)).size).toBe(
+    reviewedFrames.length,
+  );
+  expect(reviewedFrames.map((frame) => frame.text).join(" ")).toContain(
+    "Hello world",
   );
   expect(f.records()).toEqual(beforeRecords);
   expect(f.h.events(["operator.action"])).toEqual(beforeAudit);
   expect(f.records().filter((row) => row.method === "thread/fork")).toEqual([]);
+});
+
+test("Fork review bounds the selected historical prefix instead of later parent activity", async () => {
+  const f = await fixture("fork-service-tier-null", false, false, "never"),
+    start = await f.post("", f.request);
+  expect(start.status).toBe(202);
+  const started = ownedCodingStartReceiptSchema.parse(
+      (await start.json()).data,
+    ),
+    parentSessionId = started.session.id,
+    completed = await f.settle(parentSessionId),
+    selectedTurn = completed.turns.find(
+      (turn) => turn.requestId === f.request.requestId,
+    );
+  if (!selectedTurn)
+    throw Error("The selected source turn did not complete in the fixture");
+
+  const store = createConversationStore(f.h.home, undefined, {
+      kind: "session",
+      projectId: FIXTURE_PROJECT_ID,
+      sessionId: parentSessionId,
+    }),
+    state = store.read(FIXTURE_PROJECT_ID),
+    laterTurnId = randomUUID(),
+    at = new Date().toISOString();
+  state.turns.push({
+    requestId: laterTurnId,
+    hash: "d".repeat(64),
+    phase: "completed",
+    createdAt: at,
+    updatedAt: at,
+    reason: null,
+    owner: null,
+  });
+  const firstSequence = state.frames.length + 1;
+  state.frames.push(
+    ...Array.from({ length: 2_001 }, (_, index) => ({
+      seq: firstSequence + index,
+      turnId: laterTurnId,
+      at,
+      event: {
+        kind: "text" as const,
+        text: "Later parent activity is outside the selected boundary.",
+        messageId: `later-${index}`,
+      },
+    })),
+  );
+  state.revision++;
+  writeOwnerOnly(
+    conversationFile(f.h.home, FIXTURE_PROJECT_ID, {
+      kind: "session",
+      projectId: FIXTURE_PROJECT_ID,
+      sessionId: parentSessionId,
+    }),
+    `${JSON.stringify(state)}\n`,
+  );
+
+  const beforeRecords = f.records(),
+    beforeAudit = f.h.events(["operator.action"]),
+    response = await fetch(
+      `${f.h.api}/projects/${FIXTURE_PROJECT_ID}/sessions/${parentSessionId}/fork-review?throughTurnRequestId=${selectedTurn.requestId}&limit=1`,
+      { headers: f.h.headers(f.h.hearth.token) },
+    ),
+    envelope = await response.json();
+  expect(response.status).toBe(200);
+  expect(envelope.data).toMatchObject({
+    throughTurnRequestId: selectedTurn.requestId,
+    complete: false,
+    frames: [{ turnId: f.request.requestId }],
+  });
+  expect(JSON.stringify(envelope.data)).not.toContain(
+    "Later parent activity is outside the selected boundary.",
+  );
+  expect(f.records()).toEqual(beforeRecords);
+  expect(f.h.events(["operator.action"])).toEqual(beforeAudit);
 });
 
 test("Fork original context GET correlates a durable reservation without changing its identity", async () => {
@@ -1497,13 +1587,27 @@ test("Fork original context GET correlates a durable reservation without changin
     complete: false,
   });
   expect(context.data.source.frames).toHaveLength(1);
-  const contextNextResponse = await fetch(
-      `${f.h.api}/projects/${FIXTURE_PROJECT_ID}/codex-chat-forks/${request.requestId}/context?after=${context.data.source.nextCursor}&limit=1`,
-      { headers: f.h.headers(f.h.hearth.token) },
-    ),
-    contextNext = await contextNextResponse.json();
-  expect(contextNextResponse.status).toBe(200);
-  expect(contextNext.data.source.complete).toBe(true);
+  const contextFrames = [...context.data.source.frames];
+  let contextPage = context.data.source,
+    contextPageCount = 1;
+  while (!contextPage.complete && contextPageCount < 40) {
+    const contextNextResponse = await fetch(
+        `${f.h.api}/projects/${FIXTURE_PROJECT_ID}/codex-chat-forks/${request.requestId}/context?after=${contextPage.nextCursor}&limit=1`,
+        { headers: f.h.headers(f.h.hearth.token) },
+      ),
+      contextNext = await contextNextResponse.json();
+    expect(contextNextResponse.status).toBe(200);
+    expect(contextNext.data.source.frames[0]?.seq).toBeGreaterThan(
+      contextFrames.at(-1)?.seq,
+    );
+    contextFrames.push(...contextNext.data.source.frames);
+    contextPage = contextNext.data.source;
+    contextPageCount++;
+  }
+  expect(contextPage.complete).toBe(true);
+  expect(new Set(contextFrames.map((frame) => frame.seq)).size).toBe(
+    contextFrames.length,
+  );
   expect(JSON.stringify(context.data)).not.toContain("parentNativeThreadId");
   expect(JSON.stringify(context.data)).not.toContain("prepared");
   expect(f.records()).toEqual(beforeRecords);

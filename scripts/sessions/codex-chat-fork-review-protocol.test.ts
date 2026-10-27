@@ -86,6 +86,20 @@ test("Fork review DTO preserves nullable tier presence and rejects private or mi
 });
 
 test("Fork review refuses a response envelope beyond the byte budget", () => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, "Buffer");
+  if (!descriptor?.configurable)
+    throw Error("The test runtime cannot isolate Node Buffer availability");
+  try {
+    Object.defineProperty(globalThis, "Buffer", {
+      configurable: true,
+      value: undefined,
+    });
+    expect(() =>
+      assertForkReviewEnvelopeBound({ ok: true, data: {}, error: null }),
+    ).not.toThrow();
+  } finally {
+    Object.defineProperty(globalThis, "Buffer", descriptor);
+  }
   expect(() =>
     assertForkReviewEnvelopeBound({
       ok: true,
