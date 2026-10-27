@@ -735,7 +735,7 @@ test("a new project's legacy Keeper capability stays unavailable without fallbac
       '.af-brief-availability[data-readiness="unavailable"]',
     );
     await expect(unavailable).toContainText(
-      "Keeper readiness has not been verified. Check it before requesting a brief.",
+      "Brief refresh is unavailable.",
     );
     await expect(unavailable).toContainText(
       "The Keeper adapter capability check could not be verified. Recheck before sending.",
