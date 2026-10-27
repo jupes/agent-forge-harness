@@ -602,6 +602,51 @@ test("unknown lock debris after an empty snapshot refuses callback and preserves
   expect(readdirSync(events)).toEqual([]);
 });
 
+test("a trusted new SQLite sidecar is made private before strict in-lock verification", async () => {
+  const home = join(scratch.make("codex-fork-new-sidecar-"), "profile"),
+    locks = join(home, CODEX_CHAT_FORK_JOURNAL_DIRECTORY, "locks"),
+    sidecar = join(locks, "journal.sqlite-wal"),
+    contents = "new SQLite sidecar";
+  mkdirSync(home, { recursive: true });
+  const acl = fakeAcl(),
+    read = acl.read.bind(acl),
+    apply = acl.apply.bind(acl);
+  let armed = false,
+    inLockDirectoryReads = 0,
+    inserted = false,
+    aclRepairs = 0,
+    enteredWork = false;
+  acl.read = (path) => {
+    if (path === locks && armed && ++inLockDirectoryReads === 2) {
+      writeFileSync(sidecar, contents, { flag: "wx" });
+      inserted = true;
+    }
+    if (path === sidecar && inserted && aclRepairs === 0)
+      return unprotectedReading("file");
+    return read(path);
+  };
+  acl.apply = (path, target) => {
+    if (path === sidecar) aclRepairs++;
+    apply(path, target);
+  };
+
+  await createCodexChatForkJournalStorage(home, {
+    platform: "win32",
+    acl,
+    beforeExclusivePreLockAssert: () => {
+      armed = true;
+    },
+  }).exclusive(async () => {
+    enteredWork = true;
+  });
+
+  expect(inserted).toBe(true);
+  expect(aclRepairs).toBe(1);
+  expect(enteredWork).toBe(true);
+  expect(readFileSync(sidecar, "utf8")).toBe(contents);
+  expect(read(sidecar)).toEqual(privateReading("file"));
+});
+
 test("a mutex that stays non-private times out untouched before callback", async () => {
   const home = join(scratch.make("codex-fork-profile-"), "profile"),
     acl = fakeAcl();
