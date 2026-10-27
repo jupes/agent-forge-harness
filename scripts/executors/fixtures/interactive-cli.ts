@@ -1,5 +1,5 @@
 /** Inert bidirectional process fixture; never invokes a provider or shell. */
-import { appendFileSync } from "node:fs";
+import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 import { basename } from "node:path";
 
 const mode = process.argv[2];
@@ -40,7 +40,8 @@ if (
   mode === "deadline-tree" ||
   mode === "exit-tree" ||
   mode === "exit-inherited-tree" ||
-  mode === "startup-tree"
+  mode === "startup-tree" ||
+  mode === "partial-tree"
 ) {
   const self = /^bun(?:\.exe)?$/i.test(basename(process.execPath))
     ? [process.execPath, import.meta.filename]
@@ -50,11 +51,29 @@ if (
     stdout: mode === "exit-inherited-tree" ? "inherit" : "ignore",
     stderr: mode === "exit-inherited-tree" ? "inherit" : "ignore",
   });
-  if (process.env.INTERACTIVE_TREE_LOG)
-    appendFileSync(
-      process.env.INTERACTIVE_TREE_LOG,
-      `${JSON.stringify({ pid: process.pid, childPid: child.pid })}\n`,
-    );
+  const announcement = `${JSON.stringify({ pid: process.pid, childPid: child.pid })}\n`;
+  if (process.env.INTERACTIVE_TREE_LOG) {
+    if (mode === "partial-tree") {
+      const split = Math.max(1, Math.floor((announcement.length - 1) / 2)),
+        ready = process.env.INTERACTIVE_TREE_PUBLICATION_READY,
+        release = process.env.INTERACTIVE_TREE_PUBLICATION_RELEASE;
+      if (!ready || !release)
+        throw Error("The bounded tree publication gate is unavailable.");
+      appendFileSync(
+        process.env.INTERACTIVE_TREE_LOG,
+        announcement.slice(0, split),
+      );
+      writeFileSync(ready, "ready");
+      const deadline = Date.now() + 5000;
+      while (!existsSync(release) && Date.now() < deadline) await Bun.sleep(10);
+      if (!existsSync(release))
+        throw Error("The bounded tree publication gate was not released.");
+      appendFileSync(
+        process.env.INTERACTIVE_TREE_LOG,
+        announcement.slice(split),
+      );
+    } else appendFileSync(process.env.INTERACTIVE_TREE_LOG, announcement);
+  }
   await Bun.stdout.write(`${JSON.stringify({ childPid: child.pid })}\n`);
   if (mode === "deadline-tree") await Bun.stdout.write("partial native text\n");
   if (mode === "exit-inherited-tree") {

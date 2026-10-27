@@ -96,6 +96,21 @@ interface ConversationOptions {
         resume: ConversationBinding | null;
       }) => Promise<PreparedCodexChat>)
     | undefined;
+  /** Dedicated linked-Fork child continuation; never used by ordinary sends. */
+  prepareForkCodexChat?:
+    | ((request: {
+        project: ProjectRecord;
+        input: SessionMessage;
+        resume: ConversationBinding | null;
+      }) => Promise<{
+        prepared: PreparedCodexChat;
+        resumeSettings: {
+          modelProvider: string;
+          serviceTier: string | null;
+          reasoningEffort: string | null;
+        };
+      }>)
+    | undefined;
   prepareGeminiTask?:
     | ((request: {
         project: ProjectRecord;
@@ -114,6 +129,7 @@ interface ConversationOptions {
 
 const activePhase = (phase: string) =>
   ["accepted", "running", "cancelling"].includes(phase);
+const forkChildTurnCapability = Symbol("trusted Fork-child turn");
 const savedKeeperSmith = (state: ConversationState) => {
   const process = [...state.frames]
     .reverse()
@@ -130,6 +146,7 @@ export function createConversationService(options: ConversationOptions) {
     (options.prepareSession ||
       options.prepareCodexTask ||
       options.prepareCodexChat ||
+      options.prepareForkCodexChat ||
       options.prepareGeminiChat ||
       options.prepareGeminiTask) &&
     !options.address
@@ -421,11 +438,19 @@ export function createConversationService(options: ConversationOptions) {
       rawInput: SessionMessage,
       purpose: "message" | "brief" = "message",
       initialStartAttempt?: InitialStartAttempt,
+      capability?: typeof forkChildTurnCapability,
     ): Promise<ConversationReceipt> {
+      const forkChildTurn = capability === forkChildTurnCapability;
+      if (forkChildTurn && !options.prepareForkCodexChat)
+        throw new ConversationError(
+          409,
+          "This session has no verified Fork-child continuation capability.",
+        );
       const wireInput: SessionMessage =
         options.prepareSession ||
         options.prepareCodexTask ||
         options.prepareCodexChat ||
+        options.prepareForkCodexChat ||
         options.prepareGeminiChat ||
         options.prepareGeminiTask
           ? parseSessionSend(rawInput)
@@ -437,6 +462,13 @@ export function createConversationService(options: ConversationOptions) {
         about: wireInput.about,
       };
       let input: PreparedConversationSend = privateInput;
+      let codexResumeSettings:
+        | {
+            modelProvider: string;
+            serviceTier: string | null;
+            reasoningEffort: string | null;
+          }
+        | undefined;
       const project = projectFor(projectId);
       const current = store.read(projectId);
       const original = () => {
@@ -746,7 +778,40 @@ export function createConversationService(options: ConversationOptions) {
                 input = { ...privateInput, codexTask: snapshot.data };
               }
             }
-            if (options.prepareCodexChat) {
+            if (options.prepareForkCodexChat && forkChildTurn) {
+              const latest = store.read(projectId);
+              if (
+                latest.turns.some((turn) => turn.requestId === input.requestId)
+              )
+                input = original();
+              else {
+                const prepared = await options.prepareForkCodexChat({
+                  project: projectFor(projectId),
+                  input: wireInput,
+                  resume: latest.binding,
+                });
+                const snapshot = preparedCodexChatSchema.safeParse(
+                  prepared.prepared,
+                );
+                if (
+                  !snapshot.success ||
+                  snapshot.data.launch.prompt !== wireInput.text ||
+                  JSON.stringify(snapshot.data.launch.attachments ?? []) !==
+                    JSON.stringify(wireInput.attachments ?? []) ||
+                  !prepared.resumeSettings.modelProvider ||
+                  (prepared.resumeSettings.serviceTier !== null &&
+                    typeof prepared.resumeSettings.serviceTier !== "string") ||
+                  (prepared.resumeSettings.reasoningEffort !== null &&
+                    typeof prepared.resumeSettings.reasoningEffort !== "string")
+                )
+                  throw new ConversationError(
+                    503,
+                    "The source-sealed Fork child continuation could not be verified. No turn was accepted.",
+                  );
+                input = { ...privateInput, codexChat: snapshot.data };
+                codexResumeSettings = prepared.resumeSettings;
+              }
+            } else if (options.prepareCodexChat) {
               const latest = store.read(projectId);
               if (
                 latest.turns.some((turn) => turn.requestId === input.requestId)
@@ -886,6 +951,7 @@ export function createConversationService(options: ConversationOptions) {
                     ? { ...turnInput, text: retained + turnInput.text }
                     : turnInput,
                   resume: state.binding,
+                  ...(codexResumeSettings ? { codexResumeSettings } : {}),
                   ...(selected.smith ? { smith: selected.smith.name } : {}),
                 },
                 async (event) => {
@@ -950,6 +1016,15 @@ export function createConversationService(options: ConversationOptions) {
         admission: answer,
       });
       return answer;
+    },
+    sendForkChildTurn(projectId: string, input: SessionMessage) {
+      return this.send(
+        projectId,
+        input,
+        "message",
+        undefined,
+        forkChildTurnCapability,
+      );
     },
     async stop(
       projectId: string,

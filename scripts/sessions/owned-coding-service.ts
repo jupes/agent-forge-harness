@@ -294,6 +294,14 @@ export function createOwnedCodingSessionService(options: {
   const chat = createCodexOwnedChatService({
     ...options,
     runtime: options.codexChatRuntime ?? unavailableCodexChatRuntime,
+    prepareForkChildTurn: (child, input) =>
+      forkCoordinator.prepareLinkedChildTurn({
+        projectId: child.projectId,
+        childSessionId: child.id,
+        message: input,
+        validateScope: (selected, about) =>
+          options.validateScope(selected.projectId, selected, about),
+      }),
   });
   const gemini = createGeminiOwnedTaskService({
     ...options,
@@ -744,12 +752,68 @@ export function createOwnedCodingSessionService(options: {
     send(projectId: string, sessionId: string, input: SessionMessage) {
       return selected(projectId, sessionId).send(projectId, sessionId, input);
     },
+    forkTurn(
+      projectId: string,
+      sessionId: string,
+      input: SessionMessage,
+      auditEventId: number,
+    ) {
+      if (!Number.isSafeInteger(auditEventId) || auditEventId <= 0)
+        throw new ConversationError(
+          503,
+          "A confirmed operator audit receipt is required before a Fork child turn.",
+        );
+      const record = registry.lookup(projectId, sessionId);
+      if (
+        record.provider !== "codex" ||
+        record.mode !== "chat" ||
+        record.origin?.kind !== "codex-chat-fork"
+      )
+        throw new ConversationError(
+          409,
+          "Only a verified Codex Fork child accepts this continuation action.",
+        );
+      return chat.forkTurn(projectId, sessionId, input);
+    },
     read(
       projectId: string,
       sessionId: string,
       query: { after?: number; limit?: number; requestId?: string } = {},
     ) {
       return selected(projectId, sessionId).read(projectId, sessionId, query);
+    },
+    async readForkChild(
+      projectId: string,
+      sessionId: string,
+      query: { after?: number; limit?: number; requestId?: string } = {},
+    ) {
+      let child: ReturnType<typeof forkCoordinator.readLinkedChild>;
+      try {
+        child = forkCoordinator.readLinkedChild(projectId, sessionId);
+      } catch (error) {
+        if (error instanceof ConversationError) throw error;
+        if (error instanceof CodexChatForkJournalError)
+          throw forkJournalFailure(error);
+        throw new ConversationError(
+          503,
+          "The saved Fork child link could not be verified.",
+        );
+      }
+      await options.validateScope(projectId, child, []);
+      const page = await chat.read(projectId, sessionId, query);
+      if (
+        page.binding?.provider !== "codex" ||
+        page.binding.sessionId !== child.origin?.childNativeThreadId ||
+        page.binding.version !== child.origin?.protocolVersion
+      )
+        throw new ConversationError(
+          409,
+          "The Fork child transcript changed during readback.",
+        );
+      for (const frame of page.frames)
+        if (frame.event.kind === "user")
+          await options.validateScope(projectId, child, frame.event.about);
+      return page;
     },
     list(projectId: string) {
       return registry

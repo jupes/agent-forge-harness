@@ -24,6 +24,14 @@ export interface ConversationTransport {
       root: string;
       input: PreparedConversationSend;
       resume: ConversationBinding | null;
+      /** Private per-call settings for a source-sealed Fork child resume. */
+      codexResumeSettings?:
+        | {
+            modelProvider: string;
+            serviceTier: string | null;
+            reasoningEffort: string | null;
+          }
+        | undefined;
       smith?: string | undefined;
     },
     persist: (

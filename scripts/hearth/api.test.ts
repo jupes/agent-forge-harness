@@ -13,6 +13,11 @@ import { connect } from "node:net";
 import { join, resolve } from "node:path";
 import type { WorktreeEntry } from "../../types/beads";
 import type {
+  CodexChatForkCapture,
+  CodexChatForkSourceSeal,
+} from "../../types/codex-chat-fork";
+import type { CodexChatOwnedRecord } from "../../types/codex-owned-chat";
+import type {
   EventsPage,
   LedgerEvent,
   LedgerEventInput,
@@ -80,6 +85,7 @@ import { serializeClaudeLaunch } from "../sessions/claude-launch";
 import { createCodexChatForkJournal } from "../sessions/codex-chat-fork-journal";
 import {
   CODEX_CHAT_FORK_PROTOCOL_VERSION,
+  codexChatForkCaptureHash,
   codexChatForkOriginalHash,
   codexChatForkOriginalHashInput,
 } from "../sessions/codex-chat-fork-protocol";
@@ -89,6 +95,7 @@ import {
   sessionStartIdentityReplySchema,
 } from "../sessions/identity-protocol";
 import { sessionLibraryReadSchema } from "../sessions/library-protocol";
+import { canonicalSessionInput } from "../sessions/preparation";
 import { sessionPreviewReceiptSchema } from "../sessions/protocol";
 import { createSessionRegistry } from "../sessions/registry";
 import { APPRENTICE_VERIFICATION } from "../smith-verification";
@@ -229,6 +236,10 @@ const API_SMITH_CREATE_REVISION = {
   workspace: "0".repeat(64),
 };
 const API_CODEX_CHAT_FORK_ID = "80e40be9-e811-47c3-a71d-b988e67178a0";
+const API_CODEX_CHAT_FORK_CHILD_ID =
+  "session-80e40be9-e811-47c3-a71d-b988e6717801";
+const API_CODEX_CHAT_FORK_CHILD_REQUEST_ID =
+  "80e40be9-e811-47c3-a71d-b988e6717802";
 const API_CODEX_CHAT_FORK_RESERVE_ID = "808b8f84-1f86-44bf-9cf4-518c58b59a11";
 const API_CODEX_CHAT_FORK_RETIRE_ID = "808b8f84-1f86-44bf-9cf4-518c58b59a12";
 const API_CODEX_CHAT_FORK_SOURCE = {
@@ -575,6 +586,8 @@ interface ActionFixture {
     status: number;
     target?: string;
     audit?: Record<string, string>;
+    ok?: boolean;
+    error?: string | null;
   };
   /** A request the row's validator refuses. */
   invalid: { path: string; body: unknown };
@@ -1950,6 +1963,50 @@ const ACTIONS: Record<string, ActionFixture> = {
     },
   },
   "POST /projects/:id/sessions/:sessionId/turns": ownedSessionFixture("send"),
+  "POST /projects/:id/sessions/:sessionId/fork-turns": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_CHAT_SESSION}/fork-turns`,
+      body: {
+        requestId: "d9b25b82-188c-49b9-92b0-46b02647a9ab",
+        expectedRevision: 0,
+        text: "Central route fixture child request",
+        about: [],
+      },
+      status: 409,
+      ok: false,
+      error:
+        "Only a verified Codex Fork child accepts this continuation action.",
+      target: `codex-chat-fork-child:${FIXTURE_PROJECT_ID}:${FIXTURE_CHAT_SESSION}`,
+      audit: {
+        family: "codex-chat-fork",
+        requestId: "d9b25b82-188c-49b9-92b0-46b02647a9ab",
+        inputHash: createHash("sha256")
+          .update(
+            canonicalSessionInput({
+              requestId: "d9b25b82-188c-49b9-92b0-46b02647a9ab",
+              expectedRevision: 0,
+              text: "Central route fixture child request",
+              about: [],
+            }),
+          )
+          .digest("hex"),
+      },
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_CHAT_SESSION}/fork-turns`,
+      body: {
+        requestId: "d9b25b82-188c-49b9-92b0-46b02647a9ab",
+        expectedRevision: 0,
+        text: "Central route fixture child request",
+        about: [],
+        sourceSettings: { serviceTier: "caller-controlled" },
+      },
+    },
+    prepare: async (h) => {
+      await seedChatDecision(h);
+    },
+    happened: async (_h, data) => expect(data).toBeNull(),
+  },
   "POST /projects/:id/sessions/:sessionId/stop": ownedSessionFixture("stop"),
   "POST /projects/:id/sessions/:sessionId/approval-decisions": {
     valid: {
@@ -2710,6 +2767,7 @@ const READS: Record<string, string> = {
   "GET /projects/:id/activity": `/projects/${FIXTURE_PROJECT_ID}/activity`,
   "GET /projects/:id/activity/:eventId": `/projects/${FIXTURE_PROJECT_ID}/activity/1`,
   "GET /projects/:id/sessions/:sessionId": `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_OWNED_SESSION_ID}`,
+  "GET /projects/:id/sessions/:sessionId/fork-turns": `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_CODEX_CHAT_FORK_CHILD_ID}/fork-turns`,
   "GET /projects/:id/sessions/:sessionId/approvals": `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_CHAT_SESSION}/approvals`,
   "GET /projects/:id/session-library": `/projects/${FIXTURE_PROJECT_ID}/session-library`,
   "GET /projects/:id/sessions/:sessionId/archive": `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_OWNED_SESSION_ID}/archive`,
@@ -2765,6 +2823,114 @@ async function seedForkReadOriginal(h: TestHearth): Promise<void> {
     state: "reserved",
     requestId: API_CODEX_CHAT_FORK_ID,
   });
+}
+
+/** A bounded linked child transcript fixture for the protected child-only read row. */
+async function seedForkReadChild(h: TestHearth): Promise<void> {
+  const source = await seedForkableCodexChatSource(
+      h,
+      API_CODEX_CHAT_FORK_SOURCE,
+    ),
+    registry = createSessionRegistry(h.home, "codex", "chat"),
+    parent = registry.read(source.projectId, source.parentSessionId),
+    parentState = createConversationStore(h.home, undefined, {
+      kind: "session",
+      projectId: source.projectId,
+      sessionId: source.parentSessionId,
+    }).read(source.projectId),
+    selected = parentState.turns.find(
+      (turn) => turn.requestId === source.throughTurnRequestId,
+    );
+  if (!selected || parentState.binding?.provider !== "codex")
+    throw new Error(
+      "Missing source-valid parent for the Fork-child read fixture",
+    );
+  const sourceSeal: CodexChatForkSourceSeal = {
+      parentRequestHash: parent.requestHash,
+      parentTurnHash: selected.hash,
+      parentNativeThreadId: parentState.binding.sessionId,
+      throughNativeTurnId: API_CODEX_CHAT_FORK_SOURCE.turnId,
+      sourceSettingsHash: "c".repeat(64),
+    },
+    journal = createCodexChatForkJournal({
+      root: h.root,
+      home: h.home,
+      createChildAppSessionId: () => API_CODEX_CHAT_FORK_CHILD_ID,
+    }),
+    reserved = await journal.reserve(
+      source.projectId,
+      source.parentSessionId,
+      {
+        requestId: API_CODEX_CHAT_FORK_CHILD_REQUEST_ID,
+        throughTurnRequestId: source.throughTurnRequestId,
+      },
+      sourceSeal,
+      "direct-v1",
+    ),
+    reservedRef = {
+      projectId: reserved.projectId,
+      workspaceKey: reserved.workspaceKey,
+      requestId: reserved.requestId,
+      requestHash: reserved.requestHash,
+      parentSessionId: reserved.parentSessionId,
+      throughTurnRequestId: reserved.throughTurnRequestId,
+      protocolVersion: reserved.protocolVersion,
+      childAppSessionId: reserved.childAppSessionId,
+      reservationKind: reserved.reservationKind,
+      sourceSeal: reserved.sourceSeal,
+    },
+    attempt = await journal.markAttempted(reservedRef);
+  if (attempt.record.state !== "attempted" || !attempt.mayDispatch)
+    throw new Error("Could not seed a new Fork-child read original");
+  const capture: CodexChatForkCapture = {
+      parentNativeThreadId: sourceSeal.parentNativeThreadId,
+      childNativeThreadId: "0199a213-81c0-7800-8aa1-bbab2a035a75",
+      throughNativeTurnId: sourceSeal.throughNativeTurnId,
+      protocolVersion: CODEX_CHAT_FORK_PROTOCOL_VERSION,
+    },
+    captured = await journal.capture(reservedRef, capture);
+  if (captured.state !== "captured")
+    throw new Error("Could not seed a captured Fork-child read original");
+  const origin = {
+      kind: "codex-chat-fork" as const,
+      projectId: source.projectId,
+      parentSessionId: source.parentSessionId,
+      throughTurnRequestId: source.throughTurnRequestId,
+      parentTurnHash: selected.hash,
+      parentNativeThreadId: capture.parentNativeThreadId,
+      throughNativeTurnId: capture.throughNativeTurnId,
+      childNativeThreadId: capture.childNativeThreadId,
+      captureHash: codexChatForkCaptureHash(capture),
+      protocolVersion: CODEX_CHAT_FORK_PROTOCOL_VERSION,
+    },
+    child: CodexChatOwnedRecord = {
+      ...parent,
+      id: captured.childAppSessionId,
+      requestId: captured.requestId,
+      requestHash: captured.requestHash,
+      createdAt: captured.createdAt,
+      origin,
+    },
+    childStore = createConversationStore(h.home, undefined, {
+      kind: "session",
+      projectId: source.projectId,
+      sessionId: child.id,
+    });
+  await registry.adoptForkChild(child, parent, captured, async () => {
+    await childStore.bootstrapCodexForkChild(
+      source.projectId,
+      capture.childNativeThreadId,
+      capture.protocolVersion,
+    );
+  });
+  const linked = await journal.markLinked(reservedRef, {
+    childAppSessionId: child.id,
+    childRequestId: child.requestId,
+    childRequestHash: child.requestHash,
+    captureHash: origin.captureHash,
+  });
+  if (linked.state !== "linked")
+    throw new Error("Could not seed the linked Fork-child read original");
 }
 
 function fixture(route: ApiRoute): ActionFixture {
@@ -2986,8 +3152,8 @@ describe("every action row (iterating the table)", () => {
         }).toEqual({
           row: key(row),
           status: valid.status,
-          ok: true,
-          error: null,
+          ok: valid.ok ?? true,
+          error: valid.error ?? null,
         });
         progress.stage = "settled";
         await settled?.(h);
@@ -3380,9 +3546,9 @@ describe("a read row or the stream while another connection holds the write lock
   test("every read row and the stream answer while locked, ledger readers refuse with an error envelope, and health answers; released, every row answers 200", async () => {
     // The worktree row's git is a stand-in listing the root alone: this test
     // is about the ledger, and a real git on a loaded machine can fail it.
-    let root = "";
+    let workspace = "";
     const git: GitRun = (args) => {
-      const top = root.replaceAll("\\", "/");
+      const top = workspace.replaceAll("\\", "/");
       if (args[0] === "rev-parse")
         return { status: 0, stdout: `${top}\n`, stderr: "" };
       if (args[0] === "worktree")
@@ -3399,7 +3565,7 @@ describe("a read row or the stream while another connection holds the write lock
       files: { ".tmp/work/forge-runs/demo.json": RUN_STATE },
       api: { git },
     });
-    root = h.root;
+    workspace = h.workspace;
     await seedOwnedSession(h);
     await seedChatDecision(h);
     await seedProjectShift(h);
@@ -3414,6 +3580,7 @@ describe("a read row or the stream while another connection holds the write lock
     await seedSmithRoutingEditOriginal(h);
     // Seed the private Fork journal without an audited HTTP action, which
     // would open the otherwise-cold ledger before this lock assertion.
+    await seedForkReadChild(h);
     await seedForkReadOriginal(h);
     const rows = h.hearth.routes.filter(
       (route) => route.kind === "read" || route.kind === "stream",
@@ -4496,6 +4663,7 @@ describe("every read row (iterating the table)", () => {
   test("answers a valid envelope for its fixture path", async () => {
     const h = await start({
       files: { ".tmp/work/forge-runs/demo.json": RUN_STATE },
+      api: { git: fixtureSessionGit },
     });
     await seedOwnedSession(h);
     await seedChatDecision(h);
@@ -4510,6 +4678,7 @@ describe("every read row (iterating the table)", () => {
     await seedSmithCreateOriginal(h);
     await seedSmithEditOriginal(h);
     await seedSmithRoutingEditOriginal(h);
+    await seedForkReadChild(h);
     await seedForkReadOriginal(h);
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");
@@ -4523,10 +4692,16 @@ describe("every read row (iterating the table)", () => {
         h.headers(row.operatorOnly ? h.hearth.token : undefined),
       );
       const body = await envelope(response);
-      expect({ row: key(row), status: response.status, ok: body.ok }).toEqual({
+      expect({
+        row: key(row),
+        status: response.status,
+        ok: body.ok,
+        error: body.error,
+      }).toEqual({
         row: key(row),
         status: 200,
         ok: true,
+        error: null,
       });
       expect(response.headers.get("cache-control")).toBe("no-store");
     }
@@ -4535,6 +4710,7 @@ describe("every read row (iterating the table)", () => {
   test("refuses a request that does not declare the hearth's own origin, and appends nothing", async () => {
     const h = await start({
       files: { ".tmp/work/forge-runs/demo.json": RUN_STATE },
+      api: { git: fixtureSessionGit },
     });
     await seedOwnedSession(h);
     await seedChatDecision(h);
@@ -4549,6 +4725,7 @@ describe("every read row (iterating the table)", () => {
     await seedSmithCreateOriginal(h);
     await seedSmithEditOriginal(h);
     await seedSmithRoutingEditOriginal(h);
+    await seedForkReadChild(h);
     await seedForkReadOriginal(h);
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");

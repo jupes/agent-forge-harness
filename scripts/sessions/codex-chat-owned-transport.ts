@@ -30,6 +30,9 @@ export function createCodexChatOwnedTransport(
       const result = await runtime.run(
         {
           prepared,
+          ...(request.codexResumeSettings
+            ? { resumeSettings: request.codexResumeSettings }
+            : {}),
           resume: request.resume
             ? {
                 provider: "codex",
