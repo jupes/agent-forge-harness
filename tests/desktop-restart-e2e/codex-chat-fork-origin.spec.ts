@@ -579,7 +579,7 @@ async function holdEffectfulRoute(
       replyAborted();
     }
   };
-  await page.route((url) => matcher(url), handler);
+  await page.route(matcher, handler);
   return {
     arrived,
     aborted,
@@ -591,7 +591,7 @@ async function holdEffectfulRoute(
           aborted,
           new Promise<void>((resolve) => setTimeout(resolve, 2_000)),
         ]);
-      await page.unroute((url) => matcher(url), handler);
+      await page.unroute(matcher, handler);
     },
   };
 }
