@@ -4,8 +4,12 @@ import { appendFileSync } from "node:fs";
 const argv = process.argv.slice(2),
   log = process.env.CODEX_CHAT_LOG;
 const mode = process.env.CODEX_CHAT_MODE;
-const serviceTierNullMode =
-  mode === "service-tier-null" || mode === "fork-service-tier-null";
+const serviceTierAwareMode =
+    mode === "service-tier-null" ||
+    mode === "fork-service-tier-null" ||
+    mode === "fork-service-tier-priority",
+  configuredServiceTier =
+    mode === "fork-service-tier-priority" ? "priority" : null;
 if (argv.includes("--child"))
   await new Promise(() => setInterval(() => {}, 1000));
 const record = (value: unknown) => {
@@ -37,8 +41,8 @@ record({
   forged: process.env.AGENT_FORGE_FORGED,
   slug: process.env.FORGE_SLUG,
 });
-const threadId = "0199a213-81c0-7800-8aa1-bbab2a035a53",
-  firstTurnId = "0199a213-81c0-7800-8aa1-bbab2a035a54",
+let threadId = "0199a213-81c0-7800-8aa1-bbab2a035a53";
+const firstTurnId = "0199a213-81c0-7800-8aa1-bbab2a035a54",
   resumedTurnId = "0199a213-81c0-7800-8aa1-bbab2a035a55";
 let turnId = firstTurnId;
 let model = "",
@@ -467,11 +471,11 @@ while (true) {
       continue;
     }
     const method = parsed.method;
-    const params =
+    const params: Record<string, unknown> =
       "params" in parsed &&
       typeof parsed.params === "object" &&
       parsed.params !== null
-        ? parsed.params
+        ? (parsed.params as Record<string, unknown>)
         : {};
     const id = "id" in parsed ? parsed.id : null;
     record({ kind: id === null ? "notification" : "rpc", method, params, id });
@@ -634,7 +638,9 @@ while (true) {
       }
     } else if (method === "thread/start" || method === "thread/resume") {
       resuming = method === "thread/resume";
-      turnId = serviceTierNullMode && resuming ? resumedTurnId : firstTurnId;
+      if (resuming && typeof params.threadId === "string")
+        threadId = params.threadId;
+      turnId = serviceTierAwareMode && resuming ? resumedTurnId : firstTurnId;
       if (
         !("model" in params) ||
         !("cwd" in params) ||
@@ -642,6 +648,15 @@ while (true) {
         typeof params.cwd !== "string"
       )
         process.exit(13);
+      if (
+        (mode === "fork-service-tier-null" ||
+          mode === "fork-service-tier-priority") &&
+        (!resuming ||
+          params.modelProvider !== "openai" ||
+          !Object.hasOwn(params, "serviceTier") ||
+          params.serviceTier !== configuredServiceTier)
+      )
+        process.exit(14);
       model = params.model;
       cwd = params.cwd;
       if ("sandbox" in params && typeof params.sandbox === "string")
@@ -666,7 +681,9 @@ while (true) {
           },
           model: mode === "settings-mismatch" ? "unrequested-model" : model,
           modelProvider: "openai",
-          ...(serviceTierNullMode ? { serviceTier: null } : {}),
+          ...(serviceTierAwareMode
+            ? { serviceTier: configuredServiceTier }
+            : {}),
           cwd,
           approvalPolicy,
           approvalsReviewer: "user",
@@ -680,7 +697,12 @@ while (true) {
                   excludeTmpdirEnvVar: true,
                   excludeSlashTmp: true,
                 },
-          reasoningEffort: serviceTierNullMode ? null : "medium",
+          reasoningEffort:
+            mode === "fork-service-tier-priority"
+              ? "medium"
+              : serviceTierAwareMode
+                ? null
+                : "medium",
         },
       });
       await send({

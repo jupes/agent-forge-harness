@@ -44,6 +44,7 @@ import {
   unavailableGeminiChatRuntime,
   unavailableGeminiTaskRuntime,
 } from "../../sessions/owned-coding-service";
+import { canonicalSessionInput } from "../../sessions/preparation";
 import { createSessionPreview } from "../../sessions/preview";
 import { SessionRegistryError } from "../../sessions/registry";
 import type {
@@ -555,6 +556,56 @@ export function createOwnedSessionRoutes(
     effect: ({ projectId, sessionId, input }) =>
       answer(202, () => service.send(projectId, sessionId, input)),
   };
+  const forkTurn: ActionRoute<Address & { input: SessionMessage }> = {
+    kind: "action",
+    method: "POST",
+    path: "/projects/:id/sessions/:sessionId/fork-turns",
+    action: "session.fork.turn",
+    maxBodyBytes: 2_200_000,
+    validate: (request) => {
+      const selected = address(request),
+        query = noParameters(request);
+      if (!selected.ok) return selected;
+      if (!query.ok) return query;
+      try {
+        return {
+          ok: true,
+          value: { ...selected.value, input: parseSessionSend(request.body) },
+        };
+      } catch {
+        return fail(
+          "Expected a fresh request id, exact revision and bounded child message.",
+        );
+      }
+    },
+    subject: ({ projectId, sessionId, input }) => ({
+      target: `codex-chat-fork-child:${projectId}:${sessionId}`,
+      family: "codex-chat-fork",
+      requestId: input.requestId,
+      inputHash: createHash("sha256")
+        .update(canonicalSessionInput(input))
+        .digest("hex"),
+    }),
+    effect: (input, context?: ActionContext) =>
+      answer(202, () => {
+        readable(input.projectId);
+        if (
+          !context ||
+          !Number.isSafeInteger(context.auditEventId) ||
+          context.auditEventId <= 0
+        )
+          throw new ConversationError(
+            503,
+            "A confirmed operator audit receipt is required before a Fork child turn.",
+          );
+        return service.forkTurn(
+          input.projectId,
+          input.sessionId,
+          input.input,
+          context.auditEventId,
+        );
+      }),
+  };
   const preview: ActionRoute<{
     projectId: string;
     input: OwnedSessionStartRequest;
@@ -680,6 +731,7 @@ export function createOwnedSessionRoutes(
     start,
     preview,
     send,
+    forkTurn,
     stop,
     approvals,
     decide,

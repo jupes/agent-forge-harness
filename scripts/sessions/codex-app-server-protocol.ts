@@ -424,6 +424,11 @@ export function createCodexChatStream(options: {
   launch: CodexChatLaunch;
   version: string;
   resumeThreadId: string | null;
+  resumeSettings?: {
+    modelProvider: string;
+    serviceTier: string | null;
+    reasoningEffort: string | null;
+  };
 }) {
   let threadId: string | null = null,
     turnId: string | null = null;
@@ -1198,6 +1203,10 @@ export function createCodexChatStream(options: {
         (options.resumeThreadId !== null &&
           ack.thread.id !== options.resumeThreadId) ||
         ack.model !== options.launch.model ||
+        (options.resumeSettings !== undefined &&
+          (ack.modelProvider !== options.resumeSettings.modelProvider ||
+            ack.serviceTier !== options.resumeSettings.serviceTier ||
+            ack.reasoningEffort !== options.resumeSettings.reasoningEffort)) ||
         ack.approvalPolicy !== options.launch.approvalPolicy ||
         ack.sandbox.type !==
           (options.launch.sandbox === "read-only"

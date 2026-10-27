@@ -539,7 +539,15 @@ export function createCodexChatRuntime(options: CodexChatRuntimeOptions) {
       }
     },
     async run(
-      input: { prepared: PreparedCodexChat; resume: CodexChatBinding | null },
+      input: {
+        prepared: PreparedCodexChat;
+        resume: CodexChatBinding | null;
+        resumeSettings?: {
+          modelProvider: string;
+          serviceTier: string | null;
+          reasoningEffort: string | null;
+        };
+      },
       persist: (event: CodexChatEvent) => Promise<void>,
       signal: AbortSignal,
       callbacks: CodexChatCallbacks,
@@ -563,6 +571,9 @@ export function createCodexChatRuntime(options: CodexChatRuntimeOptions) {
         launch: snapshot.launch,
         version: snapshot.capabilities.version,
         resumeThreadId: resume?.threadId ?? null,
+        ...(input.resumeSettings
+          ? { resumeSettings: input.resumeSettings }
+          : {}),
       });
       let child: InteractiveSupervised | null = null,
         failure: { phase: "failed" | "unknown"; reason: string } | null = null;
@@ -946,10 +957,27 @@ export function createCodexChatRuntime(options: CodexChatRuntimeOptions) {
           control.signal,
           "Native Chat initialization did not settle.",
         );
+        const resumeSettings =
+          resume && input.resumeSettings
+            ? z
+                .object({
+                  modelProvider: z.string().min(1).max(256),
+                  serviceTier: z.string().max(256).nullable(),
+                  reasoningEffort: z.string().max(64).nullable(),
+                })
+                .strict()
+                .parse(input.resumeSettings)
+            : null;
         const threadParams = resume
           ? {
               threadId: resume.threadId,
               excludeTurns: true,
+              ...(resumeSettings
+                ? {
+                    modelProvider: resumeSettings.modelProvider,
+                    serviceTier: resumeSettings.serviceTier,
+                  }
+                : {}),
               model: serialized.thread.model,
               cwd: serialized.thread.cwd,
               sandbox: serialized.thread.sandbox,

@@ -46,6 +46,17 @@ interface Options {
   ): Promise<void>;
   onChange?(session: CodexChatOwnedRecord, update: ConversationUpdate): void;
   onApprovalChange?(sessionId: string): void;
+  prepareForkChildTurn?(
+    child: CodexChatOwnedRecord,
+    input: SessionMessage,
+  ): Promise<{
+    prepared: import("../../types/codex-chat").PreparedCodexChat;
+    resumeSettings: {
+      modelProvider: string;
+      serviceTier: string | null;
+      reasoningEffort: string | null;
+    };
+  }>;
 }
 /** Additive app-server Chat over the existing owned registry, dispatch lease and private journal. */
 export function createCodexOwnedChatService(options: Options) {
@@ -184,6 +195,14 @@ export function createCodexOwnedChatService(options: Options) {
         await options.validateScope(session.projectId, session, input.about);
         return parsed.data;
       },
+      async prepareForkCodexChat({ input }) {
+        if (!options.prepareForkChildTurn)
+          throw new ConversationError(
+            503,
+            "The source-sealed Fork child continuation is unavailable.",
+          );
+        return options.prepareForkChildTurn(session, input);
+      },
       onChange: (update) => options.onChange?.(session, update),
     });
     services.set(session.id, service);
@@ -267,6 +286,19 @@ export function createCodexOwnedChatService(options: Options) {
     },
     send(projectId: string, sessionId: string, input: SessionMessage) {
       return ordinaryForId(projectId, sessionId).send(projectId, input);
+    },
+    forkTurn(projectId: string, sessionId: string, input: SessionMessage) {
+      const session = checked(projectId, sessionId);
+      if (
+        session.provider !== "codex" ||
+        session.mode !== "chat" ||
+        session.origin?.kind !== "codex-chat-fork"
+      )
+        throw new ConversationError(
+          409,
+          "Only a verified Codex Fork child accepts this continuation action.",
+        );
+      return serviceFor(session).sendForkChildTurn(projectId, input);
     },
     read(
       projectId: string,

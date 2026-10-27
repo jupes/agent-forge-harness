@@ -85,11 +85,18 @@ function stream(
   selected: CodexChatLaunch = launch,
   serviceTier?: unknown,
   onThreadEvents?: (events: CodexChatEvent[]) => void,
+  resumeSettings?: {
+    modelProvider: string;
+    serviceTier: string | null;
+    reasoningEffort: string | null;
+  },
+  ackModelProvider = "openai",
 ) {
   const decoder = createCodexChatStream({
     launch: selected,
     version: capabilities.version,
     resumeThreadId: threadId,
+    ...(resumeSettings ? { resumeSettings } : {}),
   });
   const threadResult = decoder.thread({
     thread: {
@@ -100,7 +107,7 @@ function stream(
       status: { type: "idle" },
     },
     model: selected.model,
-    modelProvider: "openai",
+    modelProvider: ackModelProvider,
     ...(serviceTier === undefined ? {} : { serviceTier }),
     cwd: selected.cwd,
     approvalPolicy: selected.approvalPolicy,
@@ -141,6 +148,57 @@ test("native Start/Resume tier evidence distinguishes omission, null, string and
 
   for (const invalid of [false, "x".repeat(129)])
     expect(() => capture(invalid)).toThrow();
+});
+
+test("source-sealed Fork resumes require exact provider and presence-sensitive tier acknowledgement", () => {
+  expect(() =>
+    stream(launch, null, undefined, {
+      modelProvider: "openai",
+      serviceTier: null,
+      reasoningEffort: "medium",
+    }),
+  ).not.toThrow();
+  expect(() =>
+    stream(launch, "priority", undefined, {
+      modelProvider: "openai",
+      serviceTier: "priority",
+      reasoningEffort: "medium",
+    }),
+  ).not.toThrow();
+  expect(() =>
+    stream(launch, undefined, undefined, {
+      modelProvider: "openai",
+      serviceTier: null,
+      reasoningEffort: "medium",
+    }),
+  ).toThrow("different owned identity or launch settings");
+  expect(() =>
+    stream(launch, "priority", undefined, {
+      modelProvider: "openai",
+      serviceTier: null,
+      reasoningEffort: "medium",
+    }),
+  ).toThrow("different owned identity or launch settings");
+  expect(() =>
+    stream(launch, null, undefined, {
+      modelProvider: "openai",
+      serviceTier: null,
+      reasoningEffort: "low",
+    }),
+  ).toThrow("different owned identity or launch settings");
+  expect(() =>
+    stream(
+      launch,
+      null,
+      undefined,
+      {
+        modelProvider: "another-provider",
+        serviceTier: null,
+        reasoningEffort: "medium",
+      },
+      "openai",
+    ),
+  ).toThrow();
 });
 const notify = (method: string, params: unknown) =>
   parseCodexAppServerFrame(JSON.stringify({ method, params }));

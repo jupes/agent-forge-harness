@@ -87,6 +87,7 @@ import {
   sessionStartIdentityReplySchema,
 } from "../sessions/identity-protocol";
 import { sessionLibraryReadSchema } from "../sessions/library-protocol";
+import { canonicalSessionInput } from "../sessions/preparation";
 import { sessionPreviewReceiptSchema } from "../sessions/protocol";
 import { createSessionRegistry } from "../sessions/registry";
 import { APPRENTICE_VERIFICATION } from "../smith-verification";
@@ -548,6 +549,8 @@ interface ActionFixture {
     status: number;
     target: string;
     audit?: Record<string, string>;
+    ok?: boolean;
+    error?: string | null;
   };
   /** A request the row's validator refuses. */
   invalid: { path: string; body: unknown };
@@ -1671,6 +1674,50 @@ const ACTIONS: Record<string, ActionFixture> = {
     },
   },
   "POST /projects/:id/sessions/:sessionId/turns": ownedSessionFixture("send"),
+  "POST /projects/:id/sessions/:sessionId/fork-turns": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_CHAT_SESSION}/fork-turns`,
+      body: {
+        requestId: "d9b25b82-188c-49b9-92b0-46b02647a9ab",
+        expectedRevision: 0,
+        text: "Central route fixture child request",
+        about: [],
+      },
+      status: 409,
+      ok: false,
+      error:
+        "Only a verified Codex Fork child accepts this continuation action.",
+      target: `codex-chat-fork-child:${FIXTURE_PROJECT_ID}:${FIXTURE_CHAT_SESSION}`,
+      audit: {
+        family: "codex-chat-fork",
+        requestId: "d9b25b82-188c-49b9-92b0-46b02647a9ab",
+        inputHash: createHash("sha256")
+          .update(
+            canonicalSessionInput({
+              requestId: "d9b25b82-188c-49b9-92b0-46b02647a9ab",
+              expectedRevision: 0,
+              text: "Central route fixture child request",
+              about: [],
+            }),
+          )
+          .digest("hex"),
+      },
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_CHAT_SESSION}/fork-turns`,
+      body: {
+        requestId: "d9b25b82-188c-49b9-92b0-46b02647a9ab",
+        expectedRevision: 0,
+        text: "Central route fixture child request",
+        about: [],
+        sourceSettings: { serviceTier: "caller-controlled" },
+      },
+    },
+    prepare: async (h) => {
+      await seedChatDecision(h);
+    },
+    happened: async (_h, data) => expect(data).toBeNull(),
+  },
   "POST /projects/:id/sessions/:sessionId/stop": ownedSessionFixture("stop"),
   "POST /projects/:id/sessions/:sessionId/approval-decisions": {
     valid: {
@@ -2691,8 +2738,8 @@ describe("every action row (iterating the table)", () => {
       }).toEqual({
         row: key(row),
         status: valid.status,
-        ok: true,
-        error: null,
+        ok: valid.ok ?? true,
+        error: valid.error ?? null,
       });
       await settled?.(h);
 
