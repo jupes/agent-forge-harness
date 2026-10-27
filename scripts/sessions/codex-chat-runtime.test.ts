@@ -363,6 +363,40 @@ test("the compiled desktop Codex stand-in completes prepare and dispatch in fork
 
     if (!outcome.threadId)
       throw new Error("The inert Codex fixture did not return a thread.");
+    const initialTurn = events.find(
+      (event): event is Extract<CodexChatEvent, { kind: "turn" }> =>
+        event.kind === "turn",
+    );
+    if (!initialTurn || !initialConfiguration)
+      throw new Error("The inert Codex fixture did not retain its source.");
+    const serviceTier = initialConfiguration.serviceTier;
+    if (serviceTier === undefined)
+      throw new Error("The inert Codex fixture omitted nullable service tier.");
+    status = "cross-process-native-fork";
+    const crossProcessFork = await runtime.fork({
+      prepared,
+      parent: { provider: "codex", threadId: outcome.threadId, version },
+      lastTurnId: initialTurn.turnId,
+      sourceSettings: {
+        modelProvider: initialConfiguration.modelProvider,
+        serviceTier,
+        reasoningEffort: initialConfiguration.effort,
+      },
+    });
+    expect(crossProcessFork).toMatchObject({
+      parentThreadId: outcome.threadId,
+      lastTurnId: initialTurn.turnId,
+      forkedFromId: outcome.threadId,
+      status: "idle",
+      canAcceptDirectInput: true,
+      settings: {
+        modelProvider: initialConfiguration.modelProvider,
+        serviceTier,
+        reasoningEffort: initialConfiguration.effort,
+      },
+    });
+    expect(crossProcessFork.threadId).not.toBe(outcome.threadId);
+
     status = "ordinary-native-resume";
     const ordinaryResumeEvents: CodexChatEvent[] = [];
     const ordinaryResumed = await runtime.run(
@@ -433,17 +467,17 @@ test("the compiled desktop Codex stand-in completes prepare and dispatch in fork
     expect(facts).toMatchObject({
       state: "available",
       kindCounts: {
-        version: 4,
-        help: 4,
-        process: 3,
-        rpc: 9,
-        notification: 3,
+        version: 5,
+        help: 5,
+        process: 4,
+        rpc: 11,
+        notification: 4,
         answer: 0,
       },
       argvCategories: {
-        versionProbe: 4,
-        helpProbe: 4,
-        appServerStdio: 3,
+        versionProbe: 5,
+        helpProbe: 5,
+        appServerStdio: 4,
       },
     });
   } catch {
