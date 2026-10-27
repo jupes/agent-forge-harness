@@ -4365,6 +4365,92 @@ test("switching linked Fork originals clears the prior child state before readin
   await expect
     .poll(() => saved(childA.id).turns.some((row) => row.phase === "completed"))
     .toBe(true);
+
+  await expect(reopenedChildA).toContainText(
+    "PRIVATE_LINKED_CHILD_A_TRANSCRIPT",
+  );
+  await reopenedChildA
+    .getByRole("textbox", { name: "Continue this child", exact: true })
+    .fill("PRIVATE_LINKED_CHILD_A_TERMINAL_DRAFT");
+  await expect(
+    reopenedChildA.getByRole("button", {
+      name: "Send child turn",
+      exact: true,
+    }),
+  ).toBeEnabled();
+
+  const secondTurnGate = makeReadGate(),
+    secondApprovalGate = makeReadGate(),
+    secondContextGate = makeReadGate();
+  let secondContextReads = 0;
+  const secondContextHandler = async (route: Route) => {
+    secondContextReads++;
+    if (secondContextReads === 1) {
+      await route.continue();
+      return;
+    }
+    await secondContextGate.handler(route);
+  };
+  await page.route(turnMatcher, secondTurnGate.handler);
+  await page.route(approvalMatcher, secondApprovalGate.handler);
+  await page.route(contextMatcher, secondContextHandler);
+  const terminalPostsBeforeSelection = forkPosts.length,
+    terminalForksBeforeSelection = calls().filter(
+      (row) => row.kind === "rpc" && row.method === "thread/fork",
+    ).length;
+  try {
+    await historyB.click();
+    await expect(reopened).toContainText(secondRequestId);
+    await expect
+      .soft(reopened)
+      .not.toContainText("PRIVATE_LINKED_CHILD_A_TRANSCRIPT");
+    await expect
+      .soft(
+        reopenedChildA.getByRole("textbox", {
+          name: "Continue this child",
+          exact: true,
+        }),
+      )
+      .toHaveValue("");
+    await expect
+      .soft(
+        reopenedChildA.getByRole("button", {
+          name: "Send child turn",
+          exact: true,
+        }),
+      )
+      .toBeDisabled();
+    await expect
+      .poll(
+        () =>
+          secondTurnGate.started &&
+          secondApprovalGate.started &&
+          secondContextGate.started,
+      )
+      .toBe(true);
+    await expect(reopenedChildA).toContainText(
+      "Verifying child transcript and permissions…",
+    );
+    await expect(reopenedChildA).toContainText(nativeChildB);
+    expect(forkPosts).toHaveLength(terminalPostsBeforeSelection);
+    expect(
+      calls().filter(
+        (row) => row.kind === "rpc" && row.method === "thread/fork",
+      ),
+    ).toHaveLength(terminalForksBeforeSelection);
+  } finally {
+    secondTurnGate.release();
+    secondApprovalGate.release();
+    secondContextGate.release();
+    await Promise.all([
+      ...secondTurnGate.handlers,
+      ...secondApprovalGate.handlers,
+      ...secondContextGate.handlers,
+    ]);
+    await page.unroute(turnMatcher, secondTurnGate.handler);
+    await page.unroute(approvalMatcher, secondApprovalGate.handler);
+    await page.unroute(contextMatcher, secondContextHandler);
+  }
   page.off("request", captureForkPost);
 });
 

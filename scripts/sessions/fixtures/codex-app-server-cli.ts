@@ -113,6 +113,28 @@ const inspectRecordedForkParent = (
     turnFound,
   };
 };
+const isRecordedForkChild = (candidateThreadId: string) => {
+  const records = readFixtureRecords();
+  return (
+    records?.some((row) => {
+      if (row.kind !== "fork-result") return false;
+      const result = row.result;
+      if (
+        typeof result !== "object" ||
+        result === null ||
+        Array.isArray(result)
+      )
+        return false;
+      const thread = (result as Record<string, unknown>).thread;
+      return (
+        typeof thread === "object" &&
+        thread !== null &&
+        !Array.isArray(thread) &&
+        (thread as Record<string, unknown>).id === candidateThreadId
+      );
+    }) ?? false
+  );
+};
 if (argv.includes("--version")) {
   record({ kind: "version" });
   await Bun.stdout.write("codex-cli 0.163.0-alpha.10.2\n");
@@ -1207,7 +1229,9 @@ while (true) {
         (mode === "fork-service-tier-null-child-approval" &&
           resuming &&
           threadId === resumedTurnId) ||
-        (forkRestartChildApprovalMode && resuming) ||
+        (forkRestartChildApprovalMode &&
+          resuming &&
+          isRecordedForkChild(threadId)) ||
         mode === "approval-conflict" ||
         mode === "approval-resolved" ||
         mode === "approval-stale" ||
