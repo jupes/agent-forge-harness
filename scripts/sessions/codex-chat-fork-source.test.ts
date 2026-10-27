@@ -304,7 +304,7 @@ test("Fork source requires explicit tier evidence while preserving known null an
       throw Error("Missing canonical configuration fixture.");
     canonicalFrame.event.event.cwd = eligible.prepared.canonicalCwd;
     expect(resolve(canonicalConfig)).toMatchObject({ eligible: true });
-    for (const field of ["cwd", "model", "effort"] as const) {
+    for (const field of ["cwd", "model"] as const) {
       const changed = structuredClone(source.state),
         changedConfig = changed.frames.find(
           (frame) =>
@@ -318,14 +318,32 @@ test("Fork source requires explicit tier evidence while preserving known null an
         throw Error("Missing changed configuration fixture.");
       if (field === "cwd")
         changedConfig.event.event.cwd = `${eligible.prepared.canonicalCwd}/outside`;
-      else if (field === "model")
-        changedConfig.event.event.model = "different-model";
-      else changedConfig.event.event.effort = "medium";
+      else changedConfig.event.event.model = "different-model";
+      expect(ownedCodingStateSchema.safeParse(changed).success).toBe(false);
       expect(resolve(changed)).toEqual({
         eligible: false,
-        reason: "settings-mismatch",
+        reason: "invalid-state",
       });
     }
+    const observedEffort = structuredClone(source.state),
+      observedEffortConfig = observedEffort.frames.find(
+        (frame) =>
+          frame.event.kind === "coding-chat" &&
+          frame.event.event.kind === "configuration",
+      );
+    if (
+      observedEffortConfig?.event.kind !== "coding-chat" ||
+      observedEffortConfig.event.event.kind !== "configuration"
+    )
+      throw Error("Missing observed-effort configuration fixture.");
+    observedEffortConfig.event.event.effort = "medium";
+    expect(ownedCodingStateSchema.safeParse(observedEffort).success).toBe(true);
+    // The journal accepts this observed value, but this fixture lacks the
+    // model/version capability evidence required to Fork with non-null effort.
+    expect(resolve(observedEffort)).toEqual({
+      eligible: false,
+      reason: "unsupported-source",
+    });
     const omittedAboutOwner = {
       ...source.owner,
       requestHash: originalRequestHash(
