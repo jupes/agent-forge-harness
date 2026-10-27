@@ -3665,6 +3665,18 @@ describe("a read row or the stream while another connection holds the write lock
       process.platform === "win32" ? "junction" : "dir",
     );
     try {
+      const aliasFacade = { ...baselineHearth, root: worktreeAlias };
+      expect(aliasFacade.workspace).toBe(baselineHearth.workspace);
+      // The facade's root is an alias, while its workspace and the saved child
+      // metadata remain canonical. A Git adapter must report workspace, not root.
+      baselineWorkspace = aliasFacade.root;
+      const aliasedFacadeResponse = await get(
+        baselineHearth,
+        forkChildPath,
+        baselineHearth.headers(baselineHearth.hearth.token),
+      );
+      expect(aliasedFacadeResponse.status).toBe(200);
+      // An inventory that actually reports the alias remains out of registry.
       baselineWorkspace = worktreeAlias;
       const aliasResponse = await get(
         baselineHearth,
