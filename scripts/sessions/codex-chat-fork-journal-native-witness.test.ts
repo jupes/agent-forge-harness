@@ -447,7 +447,7 @@ test.skipIf(!nativeEnabled)(
     mkdirSync(barrier);
 
     const publicationScript = (requestId: string, creator: boolean) => `
-      import { existsSync, lstatSync, writeFileSync } from "node:fs";
+      import { closeSync, existsSync, lstatSync, openSync, writeFileSync } from "node:fs";
       import { join } from "node:path";
       import { CodexChatForkJournalError, createCodexChatForkJournal } from ${JSON.stringify(join(import.meta.dir, "codex-chat-fork-journal.ts"))};
       import { CODEX_CHAT_FORK_JOURNAL_DIRECTORY, createCodexChatForkJournalStorage } from ${JSON.stringify(join(import.meta.dir, "codex-chat-fork-journal-storage.ts"))};
@@ -455,6 +455,8 @@ test.skipIf(!nativeEnabled)(
       const root = ${JSON.stringify(root)}, home = ${JSON.stringify(home)}, barrier = ${JSON.stringify(barrier)};
       const mutex = join(home, CODEX_CHAT_FORK_JOURNAL_DIRECTORY, "locks", "journal.sqlite");
       const native = nativeWindowsAcl();
+      const stages = [];
+      let peerWriteOpen = "not-probed";
       const identity = () => { const info = lstatSync(mutex, { bigint: true }); return { dev: String(info.dev), ino: String(info.ino), size: Number(info.size) }; };
       const reading = () => { const acl = native.read(mutex); return { ownerOnly: ownerOnlyProblem(acl, "file", native.userSid()) === null, protected: acl.protected }; };
       const acl = {
@@ -464,9 +466,10 @@ test.skipIf(!nativeEnabled)(
         readInFolder: native.readInFolder ? (folder, name, maxBytes) => native.readInFolder(folder, name, maxBytes) : undefined,
         createOwnerOnlyExclusive(path) {
           const created = native.createOwnerOnlyExclusive!(path);
+          if (path === mutex) stages.push(created.kind === "created" ? "exclusive-created" : "exclusive-exists");
           if (${creator} && path === mutex && created.kind === "created") {
-            // The operation has created and verified the final inode with its
-            // private DACL. Hold its no-delete handle while the peer inspects it.
+            // The descriptor supplies a private DACL at creation; the held
+            // no-delete handle protects identity during readback and the peer probe.
             try {
               writeFileSync(${JSON.stringify(creatorVisible)}, JSON.stringify({ ...identity(), ...reading() }), { flag: "wx" });
               const wait = new Int32Array(new SharedArrayBuffer(4));
@@ -496,8 +499,18 @@ test.skipIf(!nativeEnabled)(
         platform: "win32",
         acl,
         afterMutexDirectorySnapshot: ${creator} ? undefined : (empty) => {
-          writeFileSync(${JSON.stringify(peerSnapshot)}, JSON.stringify({ empty, ...identity(), ...reading() }), { flag: "wx" });
+          stages.push(empty ? "mutex-snapshot-empty" : "mutex-snapshot-present");
+          try {
+            const descriptor = openSync(mutex, "r+");
+            closeSync(descriptor);
+            peerWriteOpen = "opened";
+          } catch (error) {
+            const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+            peerWriteOpen = code === "EACCES" || code === "EPERM" || code === "EBUSY" ? "denied" : "other-error";
+          }
+          writeFileSync(${JSON.stringify(peerSnapshot)}, JSON.stringify({ empty, ...identity(), ...reading(), peerWriteOpen }), { flag: "wx" });
         },
+        beforeExclusivePreLockAssert: () => { if (stages.length < 8) stages.push("before-pre-lock-assert"); },
         onMutexDiagnostic: (item) => {
           if (item.guard !== null && diagnostics.length < 8) diagnostics.push({ phase: item.phase, guard: item.guard, fileSize: item.fileSize, identityStable: item.identityStable, failure: item.failure });
         },
@@ -511,9 +524,12 @@ test.skipIf(!nativeEnabled)(
           ${JSON.stringify(testSourceSeal)},
           "direct-v1",
         );
-        writeFileSync(${JSON.stringify(creator ? creatorResult : peerResult)}, JSON.stringify({ ok: true, requestId: record.requestId, state: record.state, diagnostics }));
+        stages.push("reserved");
+        writeFileSync(${JSON.stringify(creator ? creatorResult : peerResult)}, JSON.stringify({ ok: true, requestId: record.requestId, state: record.state, diagnostics, stages: stages.slice(0, 8), peerWriteOpen }));
       } catch (error) {
-        writeFileSync(${JSON.stringify(creator ? creatorResult : peerResult)}, JSON.stringify({ ok: false, reason: error instanceof CodexChatForkJournalError ? error.reason : "unexpected", diagnostics }));
+        const reason = error instanceof CodexChatForkJournalError ? error.reason : "unexpected";
+        stages.push("refused-" + reason);
+        writeFileSync(${JSON.stringify(creator ? creatorResult : peerResult)}, JSON.stringify({ ok: false, reason, diagnostics, stages: stages.slice(0, 8), peerWriteOpen }));
       }
     `;
 
@@ -564,6 +580,7 @@ test.skipIf(!nativeEnabled)(
           size: z.number().int().min(0),
           ownerOnly: z.boolean(),
           protected: z.boolean(),
+          peerWriteOpen: z.enum(["opened", "denied", "other-error"]),
         })
         .strict()
         .parse(JSON.parse(readFileSync(peerSnapshot, "utf8"))),
@@ -574,6 +591,13 @@ test.skipIf(!nativeEnabled)(
             requestId: z.string(),
             state: z.literal("reserved"),
             diagnostics: z.array(z.unknown()).max(8),
+            stages: z.array(z.string().max(40)).max(8),
+            peerWriteOpen: z.enum([
+              "not-probed",
+              "opened",
+              "denied",
+              "other-error",
+            ]),
           })
           .strict(),
         z
@@ -581,6 +605,13 @@ test.skipIf(!nativeEnabled)(
             ok: z.literal(false),
             reason: z.enum(["conflict", "held", "missing", "unexpected"]),
             diagnostics: z.array(z.unknown()).max(8),
+            stages: z.array(z.string().max(40)).max(8),
+            peerWriteOpen: z.enum([
+              "not-probed",
+              "opened",
+              "denied",
+              "other-error",
+            ]),
           })
           .strict(),
       ]);
@@ -593,14 +624,19 @@ test.skipIf(!nativeEnabled)(
     expect(peer.size).toBe(0);
     expect(peer.dev).toBe(publication.dev);
     expect(peer.ino).toBe(publication.ino);
+    expect(peer.peerWriteOpen).toBe("denied");
 
     const winner = results.find((result) => result.ok),
       loser = results.find((result) => !result.ok);
     if (winner === undefined || loser === undefined)
       throw new Error(
-        "Fork mutex publication did not produce one winner and one refusal.",
+        `Fork mutex publication lacked one winner/refusal; bounded results=${JSON.stringify(results).slice(0, 2_000)}`,
       );
     expect(winner.state).toBe("reserved");
+    if (loser.reason !== "conflict")
+      throw new Error(
+        `Fork mutex publication loser was ${loser.reason}; first-visible=${JSON.stringify({ ownerOnly: publication.ownerOnly, protected: publication.protected, sameIdentity: peer.dev === publication.dev && peer.ino === publication.ino, peerWriteOpen: peer.peerWriteOpen })}; bounded child stages/guards=${JSON.stringify(results.map((result) => ({ stages: result.stages, guards: result.diagnostics }))).slice(0, 2_000)}`,
+      );
     expect(loser.reason).toBe("conflict");
     const records = createCodexChatForkJournal({ root, home }).list(projectId);
     expect(records.map((record) => record.requestId)).toEqual([
