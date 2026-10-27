@@ -708,7 +708,7 @@ test.each([
     if (overfilledContinuityLog) {
       expect(facts).toMatchObject({
         state: "over-limit",
-        status: "resume-outcome-completed",
+        status: "verify-final-continuity-facts",
       });
     } else {
       expect(facts).toMatchObject({
