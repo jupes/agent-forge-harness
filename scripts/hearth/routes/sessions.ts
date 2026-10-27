@@ -970,6 +970,38 @@ export function createOwnedSessionRoutes(
         return service.approvals(projectId, sessionId, requestId);
       }),
   };
+  const forkApprovals: ReadRoute<Address & { requestId?: string }> = {
+    kind: "read",
+    method: "GET",
+    path: "/projects/:id/sessions/:sessionId/fork-approvals",
+    operatorOnly: true,
+    validate: (request) => {
+      const selected = address(request);
+      if (!selected.ok) return selected;
+      if (
+        [...request.query.keys()].some(
+          (key) =>
+            key !== "requestId" || request.query.getAll(key).length !== 1,
+        )
+      )
+        return fail("Unsupported Fork approval query.");
+      const requestId = request.query.get("requestId");
+      if (requestId !== null && !isConversationRequestId(requestId))
+        return fail("Expected the original Fork decision UUID.");
+      return {
+        ok: true,
+        value: {
+          ...selected.value,
+          ...(requestId === null ? {} : { requestId }),
+        },
+      };
+    },
+    read: ({ projectId, sessionId, requestId }) =>
+      answer(200, () => {
+        readable(projectId);
+        return service.forkApprovals(projectId, sessionId, requestId);
+      }),
+  };
   const decide: ActionRoute<
     Address & { input: CodexChatDecisionRequest | GeminiChatDecisionRequest }
   > = {
@@ -1006,6 +1038,103 @@ export function createOwnedSessionRoutes(
     effect: ({ projectId, sessionId, input }) =>
       answer(200, () => service.decide(projectId, sessionId, input)),
   };
+  const forkDecide: ActionRoute<Address & { input: CodexChatDecisionRequest }> =
+    {
+      kind: "action",
+      method: "POST",
+      path: "/projects/:id/sessions/:sessionId/fork-approval-decisions",
+      action: "session.fork.approval.decide",
+      maxBodyBytes: 2048,
+      validate: (request) => {
+        const selected = address(request),
+          query = noParameters(request);
+        if (!selected.ok) return selected;
+        if (!query.ok) return query;
+        try {
+          return {
+            ok: true,
+            value: {
+              ...selected.value,
+              input: parseCodexChatDecision(request.body),
+            },
+          };
+        } catch {
+          return fail(
+            "Expected an original decision UUID, accepted child turn, opaque approval and offered decision.",
+          );
+        }
+      },
+      subject: ({ projectId, sessionId, input }) => ({
+        target: `codex-chat-fork-child:${projectId}:${sessionId}`,
+        family: "codex-chat-fork-approval",
+        requestId: input.requestId,
+        inputHash: createHash("sha256")
+          .update(
+            JSON.stringify({
+              requestId: input.requestId,
+              turnRequestId: input.turnRequestId,
+              approvalId: input.approvalId,
+              decision: input.decision,
+            }),
+          )
+          .digest("hex"),
+      }),
+      effect: ({ projectId, sessionId, input }, context?: ActionContext) =>
+        answer(200, () => {
+          readable(projectId);
+          if (
+            !context ||
+            !Number.isSafeInteger(context.auditEventId) ||
+            context.auditEventId <= 0
+          )
+            throw new ConversationError(
+              503,
+              "A confirmed operator audit receipt is required before a Fork-child decision.",
+            );
+          return service.decideFork(projectId, sessionId, input);
+        }),
+    };
+  const forkStop: ActionRoute<Address & { requestId: string }> = {
+    kind: "action",
+    method: "POST",
+    path: "/projects/:id/sessions/:sessionId/fork-stop",
+    action: "session.fork.stop",
+    maxBodyBytes: 256,
+    validate: (request) => {
+      const selected = address(request),
+        query = noParameters(request),
+        body = bodyFields(request, ["requestId"]);
+      if (!selected.ok) return selected;
+      if (!query.ok) return query;
+      if (!body.ok) return body;
+      const requestId = body.value["requestId"];
+      return isConversationRequestId(requestId)
+        ? { ok: true, value: { ...selected.value, requestId } }
+        : fail("Expected the Fork child's original turn request id.");
+    },
+    subject: ({ projectId, sessionId, requestId }) => ({
+      target: `codex-chat-fork-child:${projectId}:${sessionId}`,
+      family: "codex-chat-fork-stop",
+      requestId,
+      inputHash: createHash("sha256")
+        .update(JSON.stringify({ requestId }))
+        .digest("hex"),
+    }),
+    effect: ({ projectId, sessionId, requestId }, context?: ActionContext) =>
+      answer(200, () => {
+        readable(projectId);
+        if (
+          !context ||
+          !Number.isSafeInteger(context.auditEventId) ||
+          context.auditEventId <= 0
+        )
+          throw new ConversationError(
+            503,
+            "A confirmed operator audit receipt is required before Fork-child Stop.",
+          );
+        return service.stopFork(projectId, sessionId, requestId);
+      }),
+  };
   return {
     /** Trusted server coordination only; these are not additional HTTP routes. */
     service,
@@ -1023,6 +1152,7 @@ export function createOwnedSessionRoutes(
     identityRetire,
     read,
     forkTurnRead,
+    forkApprovals,
     events,
     start,
     preview,
@@ -1030,6 +1160,8 @@ export function createOwnedSessionRoutes(
     forkTurn,
     stop,
     approvals,
+    forkDecide,
+    forkStop,
     decide,
     library,
     close: async () => {

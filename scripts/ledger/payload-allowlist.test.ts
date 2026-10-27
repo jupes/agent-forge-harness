@@ -283,3 +283,66 @@ describe("stripPayload: Codex Chat Fork action identity", () => {
     ).toEqual({ action: "session.fork", surface: "api" });
   });
 });
+
+describe("stripPayload: dedicated Fork child control identity", () => {
+  test("keeps only each fixed control family and bounded audit correlation", () => {
+    for (const [action, family, requestId] of [
+      [
+        "session.fork.approval.decide",
+        "codex-chat-fork-approval",
+        "80e40be9-e811-47c3-a71d-b988e6717803",
+      ],
+      [
+        "session.fork.stop",
+        "codex-chat-fork-stop",
+        "80e40be9-e811-47c3-a71d-b988e6717804",
+      ],
+    ] as const) {
+      expect(
+        stripPayload("operator.action", {
+          action,
+          surface: "api",
+          target:
+            "codex-chat-fork-child:project-a5832fa0-7a21-403b-8184-44892f0d8d86:session-80e40be9-e811-47c3-a71d-b988e6717801",
+          family,
+          requestId,
+          inputHash: "c".repeat(64),
+          approvalId: "private approval",
+          turnRequestId: "private turn",
+          transcript: "private child transcript",
+        }),
+      ).toEqual({
+        action,
+        surface: "api",
+        target:
+          "codex-chat-fork-child:project-a5832fa0-7a21-403b-8184-44892f0d8d86:session-80e40be9-e811-47c3-a71d-b988e6717801",
+        family,
+        requestId,
+        inputHash: "c".repeat(64),
+      });
+    }
+  });
+
+  test("drops unknown or malformed family values instead of accepting a prefix", () => {
+    for (const family of [
+      "codex-chat-fork-approval-private",
+      "codex-chat-fork-stop:extra",
+      "private request data",
+    ]) {
+      expect(
+        stripPayload("operator.action", {
+          action: "session.fork.approval.decide",
+          surface: "api",
+          family,
+          requestId: "80e40be9-e811-47c3-a71d-b988e6717803",
+          inputHash: "c".repeat(64),
+        }),
+      ).toEqual({
+        action: "session.fork.approval.decide",
+        surface: "api",
+        requestId: "80e40be9-e811-47c3-a71d-b988e6717803",
+        inputHash: "c".repeat(64),
+      });
+    }
+  });
+});

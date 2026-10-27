@@ -215,6 +215,43 @@ export function createCodexOwnedChatService(options: Options) {
     requireOrdinarySession(session);
     return serviceFor(session);
   };
+  const forkForId = (projectId: string, sessionId: string) => {
+    const session = checked(projectId, sessionId);
+    if (
+      session.provider !== "codex" ||
+      session.mode !== "chat" ||
+      session.origin?.kind !== "codex-chat-fork"
+    )
+      throw new ConversationError(
+        409,
+        "This control requires a registered Codex Fork child.",
+      );
+    return session;
+  };
+  const sameFork = (left: CodexChatOwnedRecord, right: CodexChatOwnedRecord) =>
+    left.id === right.id &&
+    left.projectId === right.projectId &&
+    left.requestId === right.requestId &&
+    left.requestHash === right.requestHash &&
+    left.provider === right.provider &&
+    left.mode === right.mode &&
+    left.workspace === right.workspace &&
+    left.repository === right.repository &&
+    left.worktree === right.worktree &&
+    left.beadId === right.beadId &&
+    left.smith === right.smith &&
+    left.requestedModel === right.requestedModel &&
+    left.requestedEffort === right.requestedEffort &&
+    left.origin?.kind === "codex-chat-fork" &&
+    right.origin?.kind === "codex-chat-fork" &&
+    JSON.stringify(left.origin) === JSON.stringify(right.origin);
+  const userTurn = (session: CodexChatOwnedRecord, turnRequestId: string) =>
+    storeFor(session)
+      .read(session.projectId)
+      .frames.find(
+        (frame) =>
+          frame.turnId === turnRequestId && frame.event.kind === "user",
+      )?.event;
   return {
     async start(
       projectId: string,
@@ -331,6 +368,34 @@ export function createCodexOwnedChatService(options: Options) {
       // Native resolution/Stop may have arrived while the read-only scope check waited.
       return broker.read(selected, requestId);
     },
+    async forkApprovals(
+      projectId: string,
+      sessionId: string,
+      requestId?: string,
+    ) {
+      const session = forkForId(projectId, sessionId),
+        selected = { projectId, sessionId },
+        page = broker.read(selected, requestId);
+      if (requestId !== undefined || page.pending.length === 0) return page;
+      for (const pending of page.pending) {
+        const user = userTurn(session, pending.turnRequestId);
+        if (user?.kind !== "user")
+          throw new ConversationError(
+            409,
+            "The live Fork approval has no matching private child turn.",
+          );
+        await options.validateScope(projectId, session, user.about);
+        const current = forkForId(projectId, sessionId);
+        if (!sameFork(session, current))
+          throw new ConversationError(
+            409,
+            "The Fork child changed while its approval was being checked.",
+          );
+      }
+      // A concurrent native resolution or Stop can revoke an offer while scope
+      // validation waits. Only the broker's current live callbacks are returned.
+      return broker.read(selected, requestId);
+    },
     async decide(
       projectId: string,
       sessionId: string,
@@ -356,8 +421,53 @@ export function createCodexOwnedChatService(options: Options) {
       );
       return broker.decide(selected, request);
     },
+    async decideFork(
+      projectId: string,
+      sessionId: string,
+      raw: CodexChatDecisionRequest,
+    ) {
+      const session = forkForId(projectId, sessionId),
+        request = parseCodexChatDecision(raw),
+        selected = { projectId, sessionId };
+      // Recorded receipts are immutable readback and cannot reopen a callback.
+      if (broker.read(selected, request.requestId).receipt)
+        return broker.decide(selected, request);
+      const user = userTurn(session, request.turnRequestId);
+      if (user?.kind !== "user")
+        throw new ConversationError(
+          409,
+          "The live approval has no matching private Fork-child turn.",
+        );
+      await options.validateScope(projectId, session, user.about);
+      const current = forkForId(projectId, sessionId);
+      if (!sameFork(session, current))
+        throw new ConversationError(
+          409,
+          "The Fork child changed while its decision was being checked.",
+        );
+      return broker.decide(selected, request);
+    },
     stop(projectId: string, sessionId: string, requestId: string) {
       return ordinaryForId(projectId, sessionId).stop(projectId, requestId);
+    },
+    async stopFork(projectId: string, sessionId: string, requestId: string) {
+      const session = forkForId(projectId, sessionId),
+        user = userTurn(session, requestId);
+      if (user?.kind !== "user")
+        throw new ConversationError(
+          409,
+          "The requested Stop has no matching private Fork-child turn.",
+        );
+      await options.validateScope(projectId, session, user.about);
+      const current = forkForId(projectId, sessionId);
+      if (!sameFork(session, current))
+        throw new ConversationError(
+          409,
+          "The Fork child changed while Stop was being checked.",
+        );
+      // ConversationService owns the exact local turn job and rejects stale,
+      // unrelated, or non-local process requests.
+      return serviceFor(current).stop(projectId, requestId);
     },
     settled(projectId: string, sessionId: string) {
       return ordinaryForId(projectId, sessionId).settled(projectId);

@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type { CodexChatForkSourceSeal } from "../../../types/codex-chat-fork";
 import type {
@@ -20,13 +20,14 @@ import { codexChatPreviewReceiptSchema } from "../../sessions/codex-chat-preview
 import { createCodexChatRuntime } from "../../sessions/codex-chat-runtime";
 import { ownedCodingPageSchema } from "../../sessions/codex-owned-journal";
 import { ownedCodingStartReceiptSchema } from "../../sessions/codex-owned-wire-protocol";
+import { sessionRegistryFile } from "../../sessions/registry";
 import {
   codexChatForkIdentityMetadataSchema,
   sessionOperationIdentityPageSchema,
 } from "../../sessions/session-operation-identities-protocol";
 import { expectStartIdentityState } from "../../sessions/session-start-identity-test-witness";
 import { scratchDirs } from "../../test-scratch";
-import { startTestHearth, type TestHearth } from "../testing";
+import { fakeBd, startTestHearth, type TestHearth } from "../testing";
 import { writeOwnerOnly } from "../token";
 import { fixtureSessionGit } from "./session-fixture";
 
@@ -77,6 +78,7 @@ async function fixture(
   holdDecision = false,
   holdForkReply = false,
   approvalPolicy: "never" | "on-request" = "on-request",
+  holdForkDecision = false,
 ) {
   let h: TestHearth,
     actual: ReturnType<typeof createCodexChatRuntime> | undefined;
@@ -91,6 +93,13 @@ async function fixture(
     markForkEffectReached: () => void = () => {},
     markForkReplyReleased: () => void = () => {},
     forkReplyHeld = false;
+  let releaseForkDecision: () => void = () => {},
+    forkDecisionGateHeld = false;
+  let nextScopeBarrier: {
+    enter(): void;
+    released: Promise<void>;
+  } | null = null;
+  const tracker = fakeBd();
   const answerGate = new Promise<void>((resolve) => {
     release = resolve;
   });
@@ -103,8 +112,12 @@ async function fixture(
   const forkReplyReleased = new Promise<void>((resolve) => {
     markForkReplyReleased = resolve;
   });
+  const forkDecisionGate = new Promise<void>((resolve) => {
+    releaseForkDecision = resolve;
+  });
   releaseHeld.push(release);
   releaseHeld.push(releaseForkReply);
+  releaseHeld.push(releaseForkDecision);
   h = await startTestHearth({
     files: {
       "agent-forge.toml":
@@ -112,6 +125,15 @@ async function fixture(
     },
     api: {
       git: fixtureSessionGit,
+      runBd: async (args, options) => {
+        const barrier = nextScopeBarrier;
+        if (barrier) {
+          nextScopeBarrier = null;
+          barrier.enter();
+          await barrier.released;
+        }
+        return tracker.run(args, options);
+      },
       codexChatRuntime: {
         async check(input) {
           const event = h.events(["operator.action"]).at(-1);
@@ -191,7 +213,24 @@ async function fixture(
                     return result;
                   },
                 }
-              : route,
+              : route.kind === "action" &&
+                  route.action === "session.fork.approval.decide"
+                ? {
+                    ...route,
+                    effect: async (input, context) => {
+                      const result = await route.effect(input, context);
+                      if (
+                        holdForkDecision &&
+                        !forkDecisionGateHeld &&
+                        result.status === 200
+                      ) {
+                        forkDecisionGateHeld = true;
+                        await forkDecisionGate;
+                      }
+                      return result;
+                    },
+                  }
+                : route,
         ),
     },
   });
@@ -324,6 +363,20 @@ async function fixture(
       throw Error("Invalid completed native fixture recording");
     }
   };
+  const pauseNextScopeValidation = () => {
+    let enter: () => void = () => {},
+      release: () => void = () => {};
+    const entered = new Promise<void>((resolve) => {
+        enter = resolve;
+      }),
+      released = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+    if (nextScopeBarrier)
+      throw Error("A scope-validation barrier is already armed");
+    nextScopeBarrier = { enter, released };
+    return { entered, release };
+  };
   return {
     h,
     request,
@@ -335,14 +388,204 @@ async function fixture(
     settle,
     settleFork,
     records,
+    pauseNextScopeValidation,
     release,
     held: () => held,
     forkEffectReached,
     releaseForkReply,
     forkReplyReleased,
+    releaseForkDecision,
+    forkDecisionGateHeld: () => forkDecisionGateHeld,
   };
 }
 
+async function waitForAnswerCount(
+  f: Awaited<ReturnType<typeof fixture>>,
+  expected: number,
+) {
+  const deadline = Date.now() + 5000;
+  while (f.records().filter((row) => row.kind === "answer").length < expected) {
+    if (Date.now() >= deadline)
+      throw Error("The inert native approval answer was not recorded");
+    await Bun.sleep(20);
+  }
+}
+
+async function closeFixture(f: Awaited<ReturnType<typeof fixture>>) {
+  await f.h.close();
+  const index = opened.indexOf(f.h);
+  if (index >= 0) opened.splice(index, 1);
+}
+
+function changeForkChildWorktree(
+  f: Awaited<ReturnType<typeof fixture>>,
+  childSessionId: string,
+) {
+  const path = sessionRegistryFile(f.h.home),
+    original = readFileSync(path, "utf8");
+  let raw: unknown;
+  try {
+    raw = JSON.parse(original);
+  } catch {
+    throw Error("The private session registry could not be inspected");
+  }
+  if (
+    typeof raw !== "object" ||
+    raw === null ||
+    !("records" in raw) ||
+    !Array.isArray(raw.records)
+  )
+    throw Error("The private session registry fixture was invalid");
+  const child = raw.records.find(
+    (record) =>
+      typeof record === "object" &&
+      record !== null &&
+      "id" in record &&
+      record.id === childSessionId,
+  );
+  if (typeof child !== "object" || child === null || !("worktree" in child))
+    throw Error("The Fork child registry fixture was missing");
+  const changedWorktree = join(f.h.root, "unregistered-fork-child-worktree");
+  mkdirSync(changedWorktree, { recursive: true });
+  (child as Record<string, unknown>).worktree = changedWorktree;
+  writeOwnerOnly(path, JSON.stringify(raw));
+  return () => writeOwnerOnly(path, original);
+}
+
+async function expectForkTurnAccepted(
+  f: Awaited<ReturnType<typeof fixture>>,
+  response: Response,
+) {
+  if (response.status === 202) return;
+  let error = "unavailable";
+  try {
+    const envelope: unknown = await response.json();
+    if (
+      typeof envelope === "object" &&
+      envelope !== null &&
+      "error" in envelope &&
+      typeof envelope.error === "string"
+    )
+      error = envelope.error
+        .replaceAll(f.h.root, "<fixture-root>")
+        .replaceAll(f.h.home, "<fixture-home>")
+        .slice(0, 160);
+  } catch {
+    error = "invalid-public-envelope";
+  }
+  throw Error(`Fork child admission returned ${response.status}: ${error}`);
+}
+
+async function rejectsForkControlAfterScopeChange(
+  control: "read" | "decision" | "stop",
+) {
+  const f = await fixture("fork-approval-command");
+  try {
+    const { childSessionId } = await createApprovedFork(f),
+      childTurn = {
+        requestId: randomUUID(),
+        expectedRevision: 0,
+        text: "A child turn remains bound to its validated worktree.",
+        about: [],
+      },
+      accepted = await f.post(`/${childSessionId}/fork-turns`, childTurn);
+    await expectForkTurnAccepted(f, accepted);
+    const pending = await waitForkApproval(f, childSessionId),
+      barrier = f.pauseNextScopeValidation();
+    const operation =
+      control === "read"
+        ? fetch(
+            `${f.h.api}/projects/${FIXTURE_PROJECT_ID}/sessions/${childSessionId}/fork-approvals`,
+            { headers: f.h.headers(f.h.hearth.token) },
+          )
+        : control === "decision"
+          ? f.post(`/${childSessionId}/fork-approval-decisions`, {
+              requestId: randomUUID(),
+              approvalId: pending.approval.id,
+              turnRequestId: pending.turnRequestId,
+              decision: "accept",
+            })
+          : f.post(`/${childSessionId}/fork-stop`, {
+              requestId: childTurn.requestId,
+            });
+    await barrier.entered;
+    const restore = changeForkChildWorktree(f, childSessionId);
+    barrier.release();
+    let response: Response;
+    try {
+      response = await operation;
+    } finally {
+      restore();
+    }
+    expect(response.status).toBe(409);
+    await response.text();
+    expect(f.records().filter((row) => row.kind === "answer")).toHaveLength(1);
+    if (control === "stop")
+      expect((await f.forkPage(childSessionId)).turns[0]?.phase).toBe(
+        "running",
+      );
+    else
+      expect((await waitForkApproval(f, childSessionId)).approval.id).toBe(
+        pending.approval.id,
+      );
+  } finally {
+    await closeFixture(f);
+  }
+}
+
+async function createApprovedFork(f: Awaited<ReturnType<typeof fixture>>) {
+  const start = await f.post("", f.request),
+    started = ownedCodingStartReceiptSchema.parse((await start.json()).data),
+    parentSessionId = started.session.id,
+    parentApproval = await f.waitApproval(parentSessionId),
+    parentDecision = await f.post(`/${parentSessionId}/approval-decisions`, {
+      requestId: randomUUID(),
+      approvalId: parentApproval.approval.id,
+      turnRequestId: parentApproval.turnRequestId,
+      decision: "accept",
+    });
+  expect(start.status).toBe(202);
+  expect(parentDecision.status).toBe(200);
+  const parent = await f.settle(parentSessionId),
+    selectedTurn = parent.turns.find(
+      (turn) => turn.requestId === f.request.requestId,
+    );
+  if (!selectedTurn) throw Error("The approved parent source did not settle");
+  const fork = await f.post(`/${parentSessionId}/forks`, {
+      requestId: randomUUID(),
+      throughTurnRequestId: selectedTurn.requestId,
+    }),
+    envelope = await fork.json();
+  expect(fork.status).toBe(200);
+  const childSessionId = envelope.data.childSessionId;
+  if (typeof childSessionId !== "string")
+    throw Error("The native Fork child was not linked");
+  return { parentSessionId, childSessionId };
+}
+
+async function waitForkApproval(
+  f: Awaited<ReturnType<typeof fixture>>,
+  childSessionId: string,
+) {
+  const deadline = Date.now() + 5000,
+    url = `${f.h.api}/projects/${FIXTURE_PROJECT_ID}/sessions/${childSessionId}/fork-approvals`;
+  for (;;) {
+    const response = await fetch(url, {
+        headers: f.h.headers(f.h.hearth.token),
+      }),
+      envelope = await response.json();
+    if (response.status !== 200)
+      throw Error("The protected Fork approval read was unavailable");
+    const parsed = codexChatApprovalPageSchema.safeParse(envelope.data);
+    if (!parsed.success)
+      throw Error("The protected Fork approval page was invalid");
+    const pending = parsed.data.pending[0];
+    if (pending) return pending;
+    if (Date.now() > deadline)
+      throw Error("The native Fork-child approval never became actionable");
+    await Bun.sleep(20);
+  }
+}
 test("an explicit Chat preview checks native capabilities without starting a conversation, sync or session reservation", async () => {
   const f = await fixture();
   const response = await f.post("/preview", f.request);
@@ -774,40 +1017,278 @@ test("a linked Codex Fork child accepts a turn through its dedicated action", as
   }
 });
 
-test("Fork children with on-request policy refuse before accepting a turn", async () => {
-  const f = await fixture("fork-service-tier-null"),
-    start = await f.post("", f.request);
-  expect(start.status).toBe(202);
-  const started = ownedCodingStartReceiptSchema.parse(
-      (await start.json()).data,
+test("Fork child approvals use dedicated controls after the parent prefix is unavailable", async () => {
+  const f = await fixture("fork-approval-command"),
+    { parentSessionId, childSessionId } = await createApprovedFork(f);
+  const genericRead = await fetch(
+      `${f.h.api}/projects/${FIXTURE_PROJECT_ID}/sessions/${childSessionId}/approvals`,
+      { headers: f.h.headers(f.h.hearth.token) },
     ),
-    completed = await f.settle(started.session.id),
-    selectedTurn = completed.turns.find(
-      (turn) => turn.requestId === f.request.requestId,
-    );
-  if (!selectedTurn) throw Error("The parent source turn did not settle");
-  const fork = await f.post(`/${started.session.id}/forks`, {
+    genericDecision = await f.post(`/${childSessionId}/approval-decisions`, {
       requestId: randomUUID(),
-      throughTurnRequestId: selectedTurn.requestId,
+      approvalId: randomUUID(),
+      turnRequestId: randomUUID(),
+      decision: "accept",
     }),
-    forkData = (await fork.json()).data;
-  expect(fork.status).toBe(200);
-  const childId = forkData.childSessionId;
-  if (typeof childId !== "string") throw Error("The child was not linked");
-  const refusal = await f.post(`/${childId}/fork-turns`, {
+    genericStop = await f.post(`/${childSessionId}/stop`, {
+      requestId: randomUUID(),
+    });
+  expect(genericRead.status).toBe(409);
+  expect(genericDecision.status).toBe(409);
+  expect(genericStop.status).toBe(409);
+  expect(f.records().filter((row) => row.kind === "answer")).toHaveLength(1);
+
+  const childTurn = {
     requestId: randomUUID(),
     expectedRevision: 0,
-    text: "This must not be accepted without Fork approval controls.",
+    text: "A child-owned on-request turn.",
     about: [],
-  });
-  expect(refusal.status).toBe(409);
-  expect(f.records().filter((row) => row.method === "thread/resume")).toEqual(
-    [],
+  };
+  const accepted = await f.post(`/${childSessionId}/fork-turns`, childTurn);
+  await expectForkTurnAccepted(f, accepted);
+  const pending = await waitForkApproval(f, childSessionId),
+    readActionsBefore = f.h.events(["operator.action"]).length;
+  const unauthenticatedRead = await fetch(
+    `${f.h.api}/projects/${FIXTURE_PROJECT_ID}/sessions/${childSessionId}/fork-approvals`,
   );
+  expect(unauthenticatedRead.status).toBe(403);
+  const foreignRead = await fetch(
+    `${f.h.api}/projects/project-${randomUUID()}/sessions/${childSessionId}/fork-approvals`,
+    { headers: f.h.headers(f.h.hearth.token) },
+  );
+  expect(foreignRead.status).toBeGreaterThanOrEqual(400);
+
+  rmSync(
+    conversationFile(f.h.home, FIXTURE_PROJECT_ID, {
+      kind: "session",
+      projectId: FIXTURE_PROJECT_ID,
+      sessionId: parentSessionId,
+    }),
+    { force: true },
+  );
+  const protectedRead = await fetch(
+    `${f.h.api}/projects/${FIXTURE_PROJECT_ID}/sessions/${childSessionId}/fork-approvals`,
+    { headers: f.h.headers(f.h.hearth.token) },
+  );
+  expect(protectedRead.status).toBe(200);
+  const page = codexChatApprovalPageSchema.parse(
+    (await protectedRead.json()).data,
+  );
+  expect(page.pending).toHaveLength(1);
+  expect(page.pending[0]).toMatchObject({
+    turnRequestId: childTurn.requestId,
+    approval: { availableDecisions: ["accept", "decline", "cancel"] },
+  });
+  expect(f.h.events(["operator.action"])).toHaveLength(readActionsBefore);
+
+  const decision = {
+      requestId: randomUUID(),
+      approvalId: pending.approval.id,
+      turnRequestId: pending.turnRequestId,
+      decision: "accept",
+    },
+    beforeDecisionActions = f.h.events(["operator.action"]).length,
+    beforeAnswers = f.records().filter((row) => row.kind === "answer").length;
+  const invalid = await f.post(`/${childSessionId}/fork-approval-decisions`, {
+    ...decision,
+    requestId: randomUUID(),
+    turnRequestId: randomUUID(),
+  });
+  expect(invalid.status).toBe(409);
+  expect(f.records().filter((row) => row.kind === "answer")).toHaveLength(
+    beforeAnswers,
+  );
+  const decided = await f.post(
+    `/${childSessionId}/fork-approval-decisions`,
+    decision,
+  );
+  expect(decided.status).toBe(200);
+  const receipt = (await decided.json()).data;
+  expect(f.h.events(["operator.action"])).toHaveLength(
+    beforeDecisionActions + 2,
+  );
+  await waitForAnswerCount(f, beforeAnswers + 1);
+  expect(f.records().filter((row) => row.kind === "answer")).toHaveLength(
+    beforeAnswers + 1,
+  );
+  const replay = await f.post(
+    `/${childSessionId}/fork-approval-decisions`,
+    decision,
+  );
+  expect(replay.status).toBe(200);
+  expect((await replay.json()).data).toEqual(receipt);
+  await waitForAnswerCount(f, beforeAnswers + 1);
+  expect(f.records().filter((row) => row.kind === "answer")).toHaveLength(
+    beforeAnswers + 1,
+  );
+  const child = await f.settleFork(childSessionId);
+  expect(child.turns).toMatchObject([
+    { requestId: childTurn.requestId, phase: "completed" },
+  ]);
+  expect(
+    f.records().filter((row) => row.method === "thread/resume"),
+  ).toHaveLength(1);
   expect(f.records().filter((row) => row.method === "turn/start")).toHaveLength(
-    1,
+    2,
+  );
+  expect(JSON.stringify(await f.forkPage(childSessionId))).not.toContain(
+    "PRIVATE-CHAT-PROMPT",
   );
 });
+
+test("a lost Fork decision response is recovered by its exact protected receipt without a second native answer", async () => {
+  const f = await fixture(
+      "fork-approval-command",
+      false,
+      false,
+      "on-request",
+      true,
+    ),
+    { childSessionId } = await createApprovedFork(f),
+    childTurn = {
+      requestId: randomUUID(),
+      expectedRevision: 0,
+      text: "Recover the original Fork decision receipt.",
+      about: [],
+    };
+  await expectForkTurnAccepted(
+    f,
+    await f.post(`/${childSessionId}/fork-turns`, childTurn),
+  );
+  const pending = await waitForkApproval(f, childSessionId),
+    beforeAnswers = f.records().filter((row) => row.kind === "answer").length,
+    request: CodexChatDecisionRequest = {
+      requestId: randomUUID(),
+      approvalId: pending.approval.id,
+      turnRequestId: pending.turnRequestId,
+      decision: "accept",
+    },
+    abort = new AbortController(),
+    lost = f
+      .post(
+        `/${childSessionId}/fork-approval-decisions`,
+        request,
+        f.h.headers(f.h.hearth.token),
+        abort.signal,
+      )
+      .catch(() => null),
+    deadline = Date.now() + 4000;
+  while (!f.forkDecisionGateHeld()) {
+    if (Date.now() > deadline)
+      throw Error("The Fork decision response was not held after resolution");
+    await Bun.sleep(20);
+  }
+
+  const protectedRead = await fetch(
+    `${f.h.api}/projects/${FIXTURE_PROJECT_ID}/sessions/${childSessionId}/fork-approvals?requestId=${request.requestId}`,
+    { headers: f.h.headers(f.h.hearth.token) },
+  );
+  expect(protectedRead.status).toBe(200);
+  const page = codexChatApprovalPageSchema.parse(
+    (await protectedRead.json()).data,
+  );
+  expect(page.pending).toEqual([]);
+  expect(page.receipt).toMatchObject({ ...request, state: "recorded" });
+
+  abort.abort();
+  f.releaseForkDecision();
+  await lost;
+  const replay = await f.post(
+    `/${childSessionId}/fork-approval-decisions`,
+    request,
+  );
+  expect(replay.status).toBe(200);
+  expect((await replay.json()).data).toEqual(page.receipt);
+  await waitForAnswerCount(f, beforeAnswers + 1);
+  expect(f.records().filter((row) => row.kind === "answer")).toHaveLength(
+    beforeAnswers + 1,
+  );
+  const child = await f.settleFork(childSessionId);
+  expect(child.turns).toMatchObject([
+    { requestId: childTurn.requestId, phase: "completed" },
+  ]);
+  expect(
+    f.records().filter((row) => row.method === "thread/resume"),
+  ).toHaveLength(1);
+  expect(f.records().filter((row) => row.method === "turn/start")).toHaveLength(
+    2,
+  );
+});
+
+test("Fork-specific Stop aborts only the owned child turn without parent history", async () => {
+  const f = await fixture("fork-approval-command"),
+    { parentSessionId, childSessionId } = await createApprovedFork(f),
+    childTurn = {
+      requestId: randomUUID(),
+      expectedRevision: 0,
+      text: "This child turn will be stopped.",
+      about: [],
+    };
+  const accepted = await f.post(`/${childSessionId}/fork-turns`, childTurn);
+  await expectForkTurnAccepted(f, accepted);
+  const pending = await waitForkApproval(f, childSessionId);
+  rmSync(
+    conversationFile(f.h.home, FIXTURE_PROJECT_ID, {
+      kind: "session",
+      projectId: FIXTURE_PROJECT_ID,
+      sessionId: parentSessionId,
+    }),
+    { force: true },
+  );
+  expect(
+    (await f.post(`/${childSessionId}/fork-stop`, { requestId: randomUUID() }))
+      .status,
+  ).toBe(409);
+  expect(
+    (
+      await f.post(`/${parentSessionId}/fork-stop`, {
+        requestId: childTurn.requestId,
+      })
+    ).status,
+  ).toBe(409);
+  expect(
+    (
+      await f.post(`/${childSessionId}/stop`, {
+        requestId: childTurn.requestId,
+      })
+    ).status,
+  ).toBe(409);
+  const protectedRead = await fetch(
+    `${f.h.api}/projects/${FIXTURE_PROJECT_ID}/sessions/${childSessionId}/fork-approvals`,
+    { headers: f.h.headers(f.h.hearth.token) },
+  );
+  expect(protectedRead.status).toBe(200);
+  expect(
+    codexChatApprovalPageSchema.parse((await protectedRead.json()).data)
+      .pending[0]?.approval.id,
+  ).toBe(pending.approval.id);
+  const beforeStopActions = f.h.events(["operator.action"]).length,
+    stopped = await f.post(`/${childSessionId}/fork-stop`, {
+      requestId: childTurn.requestId,
+    });
+  expect(stopped.status).toBe(200);
+  expect(f.h.events(["operator.action"])).toHaveLength(beforeStopActions + 1);
+  const child = await f.settleFork(childSessionId);
+  expect(child.turns).toMatchObject([
+    { requestId: childTurn.requestId, phase: "cancelled" },
+  ]);
+  expect(f.records().filter((row) => row.kind === "answer")).toHaveLength(1);
+  expect(
+    f.records().filter((row) => row.method === "thread/resume"),
+  ).toHaveLength(1);
+  expect(f.records().filter((row) => row.method === "turn/start")).toHaveLength(
+    2,
+  );
+});
+
+test("Fork approval reads refuse a changed child worktree after scope validation", async () =>
+  rejectsForkControlAfterScopeChange("read"));
+
+test("Fork approval decisions refuse a changed child worktree after scope validation", async () =>
+  rejectsForkControlAfterScopeChange("decision"));
+
+test("Fork Stop refuses a changed child worktree after scope validation", async () =>
+  rejectsForkControlAfterScopeChange("stop"));
 
 test("a lost Fork-child turn reply stays unknown after parent activity and never replays", async () => {
   const f = await fixture("fork-child-lost-turn-reply", false, false, "never"),

@@ -1210,11 +1210,6 @@ export function createCodexChatForkCoordinator(
           childState.binding.version !== child.origin.protocolVersion
         )
           throw new Error("The linked Fork source seal could not be verified.");
-        if (source.prepared.launch.approvalPolicy !== "never")
-          throw new ConversationError(
-            409,
-            "This Fork child requires dedicated approval controls before it can accept a turn.",
-          );
         if (
           input.message.requestId === original.requestId ||
           input.message.requestId === original.throughTurnRequestId
