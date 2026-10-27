@@ -13,6 +13,7 @@ import { serializeCodexChat } from "../../scripts/sessions/codex-app-server-prot
 import { codexChatApprovalPageSchema } from "../../scripts/sessions/codex-chat-owned-protocol";
 import { ownedCodingStateSchema } from "../../scripts/sessions/codex-owned-journal";
 import { ownedCodingSessionSchema } from "../../scripts/sessions/codex-owned-wire-protocol";
+import { sessionStartIdentityPageSchema } from "../../scripts/sessions/identity-protocol";
 import { sessionTranscriptExportSchema } from "../../scripts/sessions/library-protocol";
 import { openSettled, reloadSettled } from "../e2e/fixtures";
 import { pageToken } from "../e2e/launch-link";
@@ -2342,6 +2343,77 @@ test("a synchronous draft edit before the next paint cannot dispatch an unreview
 }) => {
   await openSettled(page, `/index.html#/desktop/project/${alpha.id}/sessions`);
   const dialog = await composer(page);
+  let identityReadHeld = false,
+    releaseIdentityRead: () => void = () => {};
+  const identityReadReleased = new Promise<void>((resolve) => {
+    releaseIdentityRead = resolve;
+  });
+  await page.route(
+    `**/__agent-forge/projects/${alpha.id}/session-start-identities`,
+    async (route) => {
+      if (route.request().method() !== "GET") {
+        await route.continue();
+        return;
+      }
+      const response = await route.fetch({
+        headers: {
+          ...(await route.request().allHeaders()),
+          Origin: new URL(route.request().url()).origin,
+          "Sec-Fetch-Site": "same-origin",
+        },
+      });
+      let payload: unknown;
+      try {
+        payload = await response.json();
+      } catch {
+        throw Error("The Session Start identity read was not valid JSON.");
+      }
+      const envelope = z
+        .object({
+          ok: z.literal(true),
+          data: sessionStartIdentityPageSchema,
+          error: z.null(),
+        })
+        .strict()
+        .safeParse(payload);
+      if (
+        response.status() !== 200 ||
+        !envelope.success ||
+        envelope.data.data.scope.projectId !== alpha.id ||
+        envelope.data.data.scope.workspace !== workspace
+      )
+        throw Error(
+          "The real Session Start identity page could not be verified.",
+        );
+      identityReadHeld = true;
+      await identityReadReleased;
+      await route.fulfill({ response });
+    },
+  );
+  try {
+    await dialog
+      .getByRole("button", { name: "Check supported options", exact: true })
+      .click();
+    await expect.poll(() => identityReadHeld).toBe(true);
+    await expect(
+      dialog
+        .getByRole("region", { name: "Original Start requests", exact: true })
+        .getByRole("status"),
+    ).toContainText("Checking the server-owned identity page");
+    await expect(
+      dialog.getByRole("button", { name: "Start", exact: true }),
+    ).toBeDisabled();
+  } finally {
+    releaseIdentityRead();
+  }
+  await expect(
+    dialog
+      .getByRole("region", { name: "Original Start requests", exact: true })
+      .getByRole("status"),
+  ).not.toContainText("Checking the server-owned identity page");
+  await expect(
+    dialog.getByRole("button", { name: "Start", exact: true }),
+  ).toBeEnabled();
   const before = records().length;
   let starts = 0;
   page.on("request", (request) => {
