@@ -2867,7 +2867,19 @@ async function seedForkReadChild(h: TestHearth): Promise<void> {
       sourceSeal,
       "direct-v1",
     ),
-    attempt = await journal.markAttempted(reserved);
+    reservedRef = {
+      projectId: reserved.projectId,
+      workspaceKey: reserved.workspaceKey,
+      requestId: reserved.requestId,
+      requestHash: reserved.requestHash,
+      parentSessionId: reserved.parentSessionId,
+      throughTurnRequestId: reserved.throughTurnRequestId,
+      protocolVersion: reserved.protocolVersion,
+      childAppSessionId: reserved.childAppSessionId,
+      reservationKind: reserved.reservationKind,
+      sourceSeal: reserved.sourceSeal,
+    },
+    attempt = await journal.markAttempted(reservedRef);
   if (attempt.record.state !== "attempted" || !attempt.mayDispatch)
     throw new Error("Could not seed a new Fork-child read original");
   const capture: CodexChatForkCapture = {
@@ -2876,7 +2888,7 @@ async function seedForkReadChild(h: TestHearth): Promise<void> {
       throughNativeTurnId: sourceSeal.throughNativeTurnId,
       protocolVersion: CODEX_CHAT_FORK_PROTOCOL_VERSION,
     },
-    captured = await journal.capture(attempt.record, capture);
+    captured = await journal.capture(reservedRef, capture);
   if (captured.state !== "captured")
     throw new Error("Could not seed a captured Fork-child read original");
   const origin = {
@@ -2911,7 +2923,7 @@ async function seedForkReadChild(h: TestHearth): Promise<void> {
       capture.protocolVersion,
     );
   });
-  const linked = await journal.markLinked(attempt.record, {
+  const linked = await journal.markLinked(reservedRef, {
     childAppSessionId: child.id,
     childRequestId: child.requestId,
     childRequestHash: child.requestHash,
