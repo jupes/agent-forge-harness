@@ -3596,21 +3596,65 @@ describe("a read row or the stream while another connection holds the write lock
   test("every read row and the stream answer while locked, ledger readers refuse with an error envelope, and health answers; released, every row answers 200", async () => {
     // The worktree row's git is a stand-in listing the root alone: this test
     // is about the ledger, and a real git on a loaded machine can fail it.
+    const forkReadGit =
+      (rootPath: () => string): GitRun =>
+      (args) => {
+        const top = rootPath().replaceAll("\\", "/");
+        if (args[0] === "rev-parse")
+          return { status: 0, stdout: `${top}\n`, stderr: "" };
+        if (args[0] === "worktree")
+          return {
+            status: 0,
+            stdout: [`worktree ${top}`, "HEAD aaa", "branch refs/heads/master"]
+              .concat("", "")
+              .join("\0"),
+            stderr: "",
+          };
+        return { status: 1, stdout: "", stderr: "" };
+      };
     let root = "";
-    const git: GitRun = (args) => {
-      const top = root.replaceAll("\\", "/");
-      if (args[0] === "rev-parse")
-        return { status: 0, stdout: `${top}\n`, stderr: "" };
-      if (args[0] === "worktree")
-        return {
-          status: 0,
-          stdout: [`worktree ${top}`, "HEAD aaa", "branch refs/heads/master"]
-            .concat("", "")
-            .join("\0"),
-          stderr: "",
-        };
-      return { status: 1, stdout: "", stderr: "" };
-    };
+    const git = forkReadGit(() => root);
+    // Scope validation for this read consults projectSnapshotReader, which
+    // opens the Hearth ledger. Validate the child GET on a separate unlocked
+    // Hearth so the locked matrix below still starts with a cold ledger.
+    let baselineRoot = "";
+    const baselineHearth = await start({
+      api: { git: forkReadGit(() => baselineRoot) },
+    });
+    baselineRoot = baselineHearth.root;
+    await seedForkReadChild(baselineHearth);
+    const forkChildPath =
+      READS["GET /projects/:id/sessions/:sessionId/fork-turns"];
+    if (forkChildPath === undefined)
+      throw new Error("the Fork-child read row has no fixture path");
+    const baselineResponse = await get(
+      baselineHearth,
+      forkChildPath,
+      baselineHearth.headers(baselineHearth.hearth.token),
+    );
+    const baselineBody = await envelope<unknown>(baselineResponse);
+    const baselinePage = baselineBody.ok
+      ? ownedCodingPageSchema.safeParse(baselineBody.data)
+      : null;
+    expect({
+      status: baselineResponse.status,
+      ok: baselineBody.ok,
+      page: baselinePage?.success
+        ? {
+            projectId: baselinePage.data.projectId,
+            conversationId: baselinePage.data.conversationId,
+          }
+        : null,
+    }).toEqual({
+      status: 200,
+      ok: true,
+      page: {
+        projectId: FIXTURE_PROJECT_ID,
+        conversationId: API_CODEX_CHAT_FORK_CONTROL_CHILD_ID,
+      },
+    });
+    expect(existsSync(baselineHearth.ledger)).toBe(true);
+
     const h = await start({
       files: { ".tmp/work/forge-runs/demo.json": RUN_STATE },
       api: { git },
@@ -3653,38 +3697,6 @@ describe("a read row or the stream while another connection holds the write lock
     };
     if (!rows.some((row) => row.kind === "stream"))
       throw new Error("the table has no stream row");
-    // Prove the seeded protected child is readable before the ledger lock is
-    // acquired. This route should not open the cold event ledger itself.
-    const forkChildPath =
-      READS["GET /projects/:id/sessions/:sessionId/fork-turns"];
-    if (forkChildPath === undefined)
-      throw new Error("the Fork-child read row has no fixture path");
-    const baselineResponse = await get(
-      h,
-      forkChildPath,
-      h.headers(h.hearth.token),
-    );
-    const baselineBody = await envelope<unknown>(baselineResponse);
-    const baselinePage = baselineBody.ok
-      ? ownedCodingPageSchema.safeParse(baselineBody.data)
-      : null;
-    expect({
-      status: baselineResponse.status,
-      ok: baselineBody.ok,
-      page: baselinePage?.success
-        ? {
-            projectId: baselinePage.data.projectId,
-            conversationId: baselinePage.data.conversationId,
-          }
-        : null,
-    }).toEqual({
-      status: 200,
-      ok: true,
-      page: {
-        projectId: FIXTURE_PROJECT_ID,
-        conversationId: API_CODEX_CHAT_FORK_CONTROL_CHILD_ID,
-      },
-    });
     // Nothing has opened the hearth's ledger: the file does not exist yet.
     expect(existsSync(h.ledger)).toBe(false);
 
