@@ -1,16 +1,18 @@
 import {
+  mkdirSync,
   existsSync,
   readFileSync,
   realpathSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   expect,
   type Locator,
   type Page,
   type Request,
+  type TestInfo,
   test,
 } from "@playwright/test";
 import { z } from "zod";
@@ -82,6 +84,139 @@ function mode(value: string) {
     JSON.stringify(value),
   );
 }
+async function attachForkChildApprovalDiagnostic(info: TestInfo) {
+  const allowedId = (value: unknown) =>
+    typeof value === "string" && /^[0-9a-f-]{1,64}$/i.test(value)
+      ? value
+      : null;
+  let fixtureRows: ReturnType<typeof calls> = [];
+  let logReadError: string | null = null;
+  try {
+    fixtureRows = calls();
+  } catch (error) {
+    logReadError = error instanceof Error ? error.name.slice(0, 80) : "unknown";
+  }
+  const nativeFacts = fixtureRows.slice(-96).map((row) => {
+    if (typeof row !== "object" || row === null)
+      return { kind: "malformed-row" };
+    const params = row.params;
+    const result = row.result;
+    const thread =
+      typeof result === "object" && result !== null && "thread" in result
+        ? (result as { thread?: unknown }).thread
+        : null;
+    const threadObject =
+      typeof thread === "object" && thread !== null
+        ? (thread as Record<string, unknown>)
+        : null;
+    const eventThread =
+      params && typeof params === "object" && "thread" in params
+        ? (params as Record<string, unknown>).thread
+        : null;
+    const eventThreadObject =
+      typeof eventThread === "object" && eventThread !== null
+        ? (eventThread as Record<string, unknown>)
+        : null;
+    const status = threadObject?.status;
+    const threadStatus =
+      typeof status === "object" && status !== null
+        ? (status as Record<string, unknown>).type
+        : null;
+    const safeKind =
+      typeof row.kind === "string" && /^[a-zA-Z0-9/._-]{1,80}$/.test(row.kind)
+        ? row.kind
+        : "other";
+    const safeMethod =
+      typeof row.method === "string" &&
+      /^[a-zA-Z0-9/._-]{1,80}$/.test(row.method)
+        ? row.method
+        : null;
+    const safeParams =
+      typeof params === "object" && params !== null
+        ? (params as Record<string, unknown>)
+        : null;
+    return {
+      kind: safeKind,
+      ...(safeMethod ? { method: safeMethod } : {}),
+      ...(safeKind === "process" &&
+      row.fixtureMode === "fork-service-tier-null-child-approval"
+        ? { fixtureMode: row.fixtureMode }
+        : {}),
+      ...(safeParams
+        ? {
+            threadId: allowedId(safeParams.threadId),
+            turnId: allowedId(safeParams.turnId),
+            requestId: allowedId(safeParams.requestId),
+            lastTurnId: allowedId(safeParams.lastTurnId),
+          }
+        : {}),
+      ...(safeKind === "approval-offer"
+        ? {
+            threadId: allowedId(row.threadId),
+            turnId: allowedId(row.turnId),
+          }
+        : {}),
+      ...(eventThreadObject
+        ? { eventThreadId: allowedId(eventThreadObject.id) }
+        : {}),
+      ...(threadObject
+        ? {
+            resultThreadId: allowedId(threadObject.id),
+            resultParentId: allowedId(threadObject.forkedFromId),
+            resultState:
+              typeof threadStatus === "string" &&
+              /^[a-zA-Z0-9_-]{1,32}$/.test(threadStatus)
+                ? threadStatus
+                : null,
+          }
+        : {}),
+    };
+  });
+  const payload = {
+    capturePhase: "approval-assertion-finally",
+    ...(logReadError ? { logReadError } : {}),
+    truncated: fixtureRows.length > 96 || forkJourneyHttpFacts.length > 96,
+    nativeFacts,
+    httpFacts: forkJourneyHttpFacts.slice(-96),
+  };
+  const body = Buffer.from(JSON.stringify(payload));
+  const boundedBody =
+    body.length <= 256 * 1024
+      ? body
+      : Buffer.from(
+          JSON.stringify({
+            capturePhase: payload.capturePhase,
+            truncated: true,
+            fixtureRows: fixtureRows.length,
+            httpFactCount: forkJourneyHttpFacts.length,
+          }),
+        );
+  try {
+    await info.attach("fork-child-approval-diagnostic.json", {
+      contentType: "application/json",
+      body: boundedBody,
+    });
+  } catch (error) {
+    const errorName =
+      error instanceof Error ? error.name.slice(0, 80) : "unknown";
+    const fallback = Buffer.from(
+      JSON.stringify({ ...payload, attachment: "failed", attachmentError: errorName }),
+    );
+    if (fallback.length <= 256 * 1024) {
+      try {
+        const output = info.outputPath("fork-child-approval-diagnostic.json");
+        mkdirSync(dirname(output), { recursive: true });
+        writeFileSync(output, fallback);
+        await info.attach("fork-child-approval-diagnostic.json", {
+          contentType: "application/json",
+          path: output,
+        });
+      } catch {
+        // The existing assertion remains the primary outcome.
+      }
+    }
+  }
+}
 async function startedChat(page: Page) {
   await openSettled(page, `/index.html#/desktop/project/${alpha.id}/sessions`);
   const dialog = await composer(page);
@@ -148,104 +283,6 @@ test.beforeEach(() => {
 });
 test.afterEach(async ({ page }) => {
   const info = test.info();
-  if (
-    info.title ===
-    "Codex Chat explicitly reviews, forks, reloads and controls only the linked child"
-  ) {
-    try {
-      let fixtureRows: ReturnType<typeof calls> = [];
-      try {
-        fixtureRows = calls();
-      } catch {
-        // Diagnostics are best effort and never replace the primary result.
-      }
-      const allowedId = (value: unknown) =>
-        typeof value === "string" &&
-        /^[0-9a-f-]{1,64}$/i.test(value)
-          ? value
-          : null;
-      const nativeFacts = fixtureRows.slice(-96).map((row) => {
-        const params = row.params;
-        const result = row.result;
-        const thread =
-          typeof result === "object" && result !== null && "thread" in result
-            ? (result as { thread?: unknown }).thread
-            : null;
-        const threadObject =
-          typeof thread === "object" && thread !== null
-            ? (thread as Record<string, unknown>)
-            : null;
-        const eventThread =
-          params && typeof params.thread === "object" && params.thread !== null
-            ? (params.thread as Record<string, unknown>)
-            : null;
-        const threadStatus =
-          threadObject &&
-          typeof threadObject.status === "object" &&
-          threadObject.status !== null
-            ? (threadObject.status as Record<string, unknown>).type
-            : null;
-        return {
-          kind: /^[a-zA-Z0-9/._-]{1,80}$/.test(row.kind)
-            ? row.kind
-            : "other",
-          ...(typeof row.method === "string" &&
-          /^[a-zA-Z0-9/._-]{1,80}$/.test(row.method)
-            ? { method: row.method }
-            : {}),
-          ...(row.kind === "process" &&
-          row.fixtureMode === "fork-service-tier-null-child-approval"
-            ? { fixtureMode: row.fixtureMode }
-            : {}),
-          ...(params
-            ? {
-                threadId: allowedId(params.threadId),
-                turnId: allowedId(params.turnId),
-                requestId: allowedId(params.requestId),
-                lastTurnId: allowedId(params.lastTurnId),
-              }
-            : {}),
-          ...(row.kind === "approval-offer"
-            ? {
-                threadId: allowedId(row.threadId),
-                turnId: allowedId(row.turnId),
-              }
-            : {}),
-          ...(eventThread
-            ? { eventThreadId: allowedId(eventThread.id) }
-            : {}),
-          ...(threadObject
-            ? {
-                resultThreadId: allowedId(threadObject.id),
-                resultParentId: allowedId(threadObject.forkedFromId),
-                resultState:
-                  typeof threadStatus === "string" &&
-                  /^[a-zA-Z0-9_-]{1,32}$/.test(threadStatus)
-                    ? threadStatus
-                    : null,
-              }
-            : {}),
-        };
-      });
-      const payload = {
-        truncated: fixtureRows.length > 96 || forkJourneyHttpFacts.length > 96,
-        nativeFacts,
-        httpFacts: forkJourneyHttpFacts.slice(-96),
-      };
-      const body = Buffer.from(JSON.stringify(payload));
-      await info.attach("fork-child-approval-diagnostic.json", {
-        contentType: "application/json",
-        body:
-          body.length <= 256 * 1024
-            ? body
-            : Buffer.from(
-                JSON.stringify({ truncated: true, recordCount: nativeFacts.length }),
-              ),
-      });
-    } catch {
-      // Diagnostics must never alter the test result.
-    }
-  }
   if (
     info.title ===
       "native Chat web-search reports retain literal snapshots through export and reload without retrying the turn" &&
@@ -3285,7 +3322,11 @@ test("Codex Chat explicitly reviews, forks, reloads and controls only the linked
     "Permission request · command",
     { exact: true },
   );
-  await expect(commandApproval).toBeVisible();
+  try {
+    await expect(commandApproval).toBeVisible();
+  } finally {
+    await attachForkChildApprovalDiagnostic(test.info());
+  }
   await recoveredDialog
     .getByRole("button", { name: "accept", exact: true })
     .click();
