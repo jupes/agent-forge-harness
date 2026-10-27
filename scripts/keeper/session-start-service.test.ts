@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ConversationState } from "../../types/conversation";
+import type { OwnedSessionRecord } from "../../types/owned-session";
 import { ConversationError } from "../conversations/error";
 import { conversationFile } from "../conversations/paths";
 import { createConversationStore } from "../conversations/store";
@@ -23,6 +24,7 @@ import { createSessionRegistry } from "../sessions/registry";
 import {
   createKeeperProposalStore,
   keeperProposalFile,
+  keeperSessionStartHashes,
 } from "./proposal-store";
 import { createKeeperSessionStartService } from "./session-start-service";
 
@@ -465,6 +467,156 @@ test("interruption before reservation, after reservation or after acceptance res
       await sessions.close();
       await h.close();
     }
+  }
+});
+
+test("protected Keeper read exposes retry only for the exact durable ordinary NotSent identity", async () => {
+  const h = await startTestHearth();
+  const journal = createKeeperProposalStore(h.home);
+  let identity: {
+    version: 1;
+    requestId: string;
+    requestHash: string;
+    provider: "claude";
+    mode: "task" | "chat";
+    state: "reserved" | "attempted" | "not-sent" | "admitted" | "retired";
+  } | null = null;
+  let registrySession: OwnedSessionRecord | null = null;
+  let scope = {
+    family: "owned-session-start" as const,
+    projectId: FIXTURE_PROJECT_ID,
+    workspace: h.workspace,
+  };
+  const sessions = {
+    async start() {
+      throw Error("A protected read never dispatches");
+    },
+    list() {
+      return registrySession ? [registrySession] : [];
+    },
+    async read() {
+      return {
+        version: 1 as const,
+        projectId: FIXTURE_PROJECT_ID,
+        conversationId:
+          registrySession?.id ?? "session-b14cc7eb-3231-4930-a288-d411c5ee0426",
+        revision: 0,
+        binding: null,
+        turns: [],
+        frames: [],
+        more: false,
+        nextCursor: 0,
+        lastSequence: 0,
+        request: null,
+        controllable: false,
+      };
+    },
+    async listIdentities() {
+      return {
+        version: 1 as const,
+        scope,
+        identities: identity ? [identity] : [],
+      };
+    },
+  };
+  const service = createKeeperSessionStartService({
+    home: h.home,
+    root: h.root,
+    sessions,
+    prepare: async () => {
+      throw Error("A protected read never prepares");
+    },
+  });
+  try {
+    const proposal = await seedKeeperSessionStartSource(h);
+    const original = {
+      sourceHash: proposal.sourceHash,
+      expectedRevision: 0,
+      start: sessionStartFixture(h),
+    };
+    const startHash = keeperSessionStartHashes(
+      FIXTURE_PROJECT_ID,
+      proposal.id,
+      original,
+    ).startHash;
+    registrySession = {
+      projectId: FIXTURE_PROJECT_ID,
+      id: "session-b14cc7eb-3231-4930-a288-d411c5ee0426",
+      requestId: original.start.requestId,
+      requestHash: startHash,
+      createdAt: proposal.createdAt,
+      provider: "claude",
+      mode: original.start.launch.mode,
+      workspace: h.workspace,
+      repository: original.start.repository,
+      worktree: original.start.worktree,
+      smith: original.start.smith,
+      requestedModel: original.start.launch.model,
+      requestedEffort: null,
+    };
+    await journal.startSession(
+      {
+        projectId: FIXTURE_PROJECT_ID,
+        proposalId: proposal.id,
+        request: original,
+        auditEventId: 1,
+      },
+      {
+        prepare: async () => ({ proposal, workspace: h.workspace }),
+        async execute() {
+          return {
+            phase: "unknown",
+            message: "The original session outcome is unconfirmed.",
+            objects: [],
+          };
+        },
+      },
+    );
+    const makeIdentity = (
+      state: NonNullable<typeof identity>["state"],
+      requestHash = startHash,
+    ): NonNullable<typeof identity> => ({
+      version: 1,
+      requestId: original.start.requestId,
+      requestHash,
+      provider: "claude",
+      mode: original.start.launch.mode,
+      state,
+    });
+    identity = makeIdentity("not-sent");
+    const before = readFileSync(
+      keeperProposalFile(h.home, FIXTURE_PROJECT_ID),
+      "utf8",
+    );
+    expect(
+      (await service.read(FIXTURE_PROJECT_ID, proposal.id)).retryAvailable,
+    ).toBe(true);
+    for (const state of [
+      "reserved",
+      "attempted",
+      "admitted",
+      "retired",
+    ] as const) {
+      identity = makeIdentity(state);
+      expect(
+        (await service.read(FIXTURE_PROJECT_ID, proposal.id)).retryAvailable,
+      ).toBe(false);
+    }
+    identity = makeIdentity("not-sent", "f".repeat(64));
+    expect(
+      (await service.read(FIXTURE_PROJECT_ID, proposal.id)).retryAvailable,
+    ).toBe(false);
+    identity = makeIdentity("not-sent");
+    scope = { ...scope, workspace: `${h.workspace}/foreign` };
+    expect(
+      (await service.read(FIXTURE_PROJECT_ID, proposal.id)).retryAvailable,
+    ).toBe(false);
+    expect(
+      readFileSync(keeperProposalFile(h.home, FIXTURE_PROJECT_ID), "utf8"),
+    ).toBe(before);
+  } finally {
+    await service.close();
+    await h.close();
   }
 });
 

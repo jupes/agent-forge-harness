@@ -8,6 +8,7 @@ import { codexChatLaunchFromStart } from "../../../scripts/sessions/codex-chat-o
 import { codexChatPreviewReceiptSchema } from "../../../scripts/sessions/codex-chat-preview-protocol";
 import type { WorktreeEntry } from "../../../types/beads";
 import type { CodexChatPreviewReceipt } from "../../../types/codex-chat-ui";
+import type { OwnedSessionStartInput } from "../../../types/codex-owned-task";
 import type { SmithsView } from "../../../types/hearth";
 import {
   chooseCodexChatSmith,
@@ -16,6 +17,7 @@ import {
 } from "./codex-chat-composer";
 import { providerUsageLabel, readinessLabel } from "./providers-model";
 import type { SessionComposerProps } from "./SessionComposer";
+import { SessionStartIdentityControls } from "./SessionStartIdentityControls";
 import { chooseSessionSmith, sessionAttachments } from "./session-composer";
 
 /** Native app-server Chat controls with a separately reviewed private initialization plan. */
@@ -25,6 +27,7 @@ export function CodexChatComposer({
   writesAllowed,
   onCancel,
   onStarted,
+  onOpenOriginal,
   providers,
 }: SessionComposerProps) {
   const geminiReadiness = providers?.providers.find(
@@ -169,10 +172,15 @@ export function CodexChatComposer({
   const busy = checking || attaching || view.starting;
   const pending =
     !!view.pendingStart || !!view.startIdentity || !!view.startIdentityError;
+  const identityReady =
+    !!view.identityPage &&
+    !view.identityLoading &&
+    view.identityGeneration !== null;
+  let recoveryInput: OwnedSessionStartInput | null = null;
   let validation =
     "Check supported options before starting. This check starts no model.";
   try {
-    codexChatStartBody(draft, options);
+    recoveryInput = codexChatStartBody(draft, options);
   } catch (error) {
     validation =
       error instanceof Error ? error.message : "Review the Chat options.";
@@ -190,6 +198,7 @@ export function CodexChatComposer({
     !project.archived &&
     !busy &&
     !pending &&
+    identityReady &&
     !!serialized &&
     source?.enabled === true &&
     source.provider === "codex";
@@ -790,28 +799,15 @@ export function CodexChatComposer({
           </p>
         )}
         {view.notice && <p role="status">{view.notice}</p>}
-        {pending && (
-          <div class="af-session-composer-row">
-            <Button
-              disabled={view.loading}
-              onClick={() => {
-                void client.refresh(project.id);
-              }}
-            >
-              Check original Start
-            </Button>
-            {view.pendingStart && (
-              <Button
-                disabled={!writesAllowed || view.starting}
-                onClick={() => {
-                  void client.retryStart(project.id);
-                }}
-              >
-                Retry original Start
-              </Button>
-            )}
-          </div>
-        )}
+        <SessionStartIdentityControls
+          projectId={project.id}
+          view={view}
+          client={client}
+          request={recoveryInput}
+          writesAllowed={writesAllowed}
+          archived={project.archived}
+          onOpenOriginal={onOpenOriginal}
+        />
         <div class="af-session-composer-actions">
           <Button onClick={onCancel}>
             {pending ? "Close composer (Start still pending)" : "Cancel"}

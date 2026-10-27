@@ -1,7 +1,11 @@
 import {
+  closeSync,
   existsSync,
+  fstatSync,
   mkdirSync,
+  openSync,
   readFileSync,
+  readSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -20,6 +24,10 @@ import { sessionTranscriptExportSchema } from "../../scripts/sessions/library-pr
 import { openSettled, reloadSettled } from "../e2e/fixtures";
 import { pageToken } from "../e2e/launch-link";
 import { HEARTH_HOME } from "../e2e/servers";
+import {
+  parseBoundedGeminiDiagnosticJson,
+  withGeminiChatFailureFacts,
+} from "./gemini-chat-failure-facts";
 import { alpha, seedProjects, workspace } from "./project-fixtures";
 
 // Two actual native process lifetimes, protected reads and complete export share one bounded journey.
@@ -45,6 +53,156 @@ const rowSchema = z
       .optional(),
   })
   .passthrough();
+const failureStateMaxBytes = 8 * 1024 * 1024,
+  failureCallsMaxBytes = 256 * 1024;
+function boundedDiagnosticFile(
+  path: string,
+  maxBytes: number,
+): {
+  state: "ok" | "missing" | "oversize" | "invalid" | "unavailable";
+  value?: unknown;
+} {
+  let fd: number;
+  try {
+    fd = openSync(path, "r");
+  } catch (error) {
+    return {
+      state:
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        error.code === "ENOENT"
+          ? "missing"
+          : "unavailable",
+    };
+  }
+  try {
+    if (!fstatSync(fd).isFile()) return { state: "invalid" };
+    if (fstatSync(fd).size > maxBytes) return { state: "oversize" };
+    const bytes = Buffer.alloc(maxBytes + 1);
+    const count = readSync(fd, bytes, 0, maxBytes + 1, 0);
+    if (count > maxBytes) return { state: "oversize" };
+    let text: string;
+    try {
+      text = new TextDecoder("utf-8", { fatal: true }).decode(
+        bytes.subarray(0, count),
+      );
+    } catch {
+      return { state: "invalid" };
+    }
+    const parsed = parseBoundedGeminiDiagnosticJson(text, maxBytes);
+    return parsed.ok
+      ? { state: "ok", value: parsed.value }
+      : { state: parsed.reason };
+  } catch {
+    return { state: "unavailable" };
+  } finally {
+    closeSync(fd);
+  }
+}
+function collectGeminiChatFailureFacts(
+  record: ReturnType<typeof records>[number],
+) {
+  const stateFile = boundedDiagnosticFile(
+      join(HEARTH_HOME, "conversations", `${record.id}.json`),
+      failureStateMaxBytes,
+    ),
+    callsFile = boundedDiagnosticFile(log, failureCallsMaxBytes);
+  const state =
+    stateFile.state === "ok"
+      ? ownedCodingStateSchema.safeParse(stateFile.value)
+      : null;
+  const callRows =
+    callsFile.state === "ok"
+      ? z.array(rowSchema).safeParse(callsFile.value)
+      : null;
+  const turns = state?.success
+    ? state.data.frames.filter((frame) => frame.turnId === record.requestId)
+    : null;
+  const nativeOutcomes = turns?.flatMap((frame) =>
+    frame.event.kind === "coding-gemini-chat" &&
+    frame.event.event.kind === "outcome"
+      ? [frame.event.event]
+      : [],
+  );
+  const offers =
+      turns?.filter(
+        (frame) =>
+          frame.event.kind === "coding-gemini-chat" &&
+          frame.event.event.kind === "approval-offer",
+      ).length ?? null,
+    intents =
+      turns?.filter(
+        (frame) =>
+          frame.event.kind === "coding-gemini-chat" &&
+          frame.event.event.kind === "permission-intent",
+      ).length ?? null;
+  const methods = new Map<string, number>();
+  for (const row of callRows?.success ? callRows.data : []) {
+    const method = row.value?.method;
+    if (
+      method === "initialize" ||
+      method === "session/new" ||
+      method === "session/load" ||
+      method === "session/prompt" ||
+      method === "session/cancel"
+    )
+      methods.set(method, (methods.get(method) ?? 0) + 1);
+  }
+  const providerPid = callRows?.success
+      ? callRows.data.filter((row) => row.kind === "start").at(-1)?.pid
+      : undefined,
+    helperPid = callRows?.success
+      ? callRows.data.filter((row) => row.kind === "helper").at(-1)?.pid
+      : undefined;
+  let providerAlive: boolean | null = null,
+    helperAlive: boolean | null = null;
+  try {
+    if (typeof providerPid === "number") providerAlive = running(providerPid);
+    if (typeof helperPid === "number") helperAlive = running(helperPid);
+  } catch {
+    // A best-effort liveness observation is unavailable; never expose process identifiers.
+  }
+  const native = nativeOutcomes?.at(-1);
+  return {
+    stateRead:
+      stateFile.state === "ok" && !state?.success ? "invalid" : stateFile.state,
+    callsRead:
+      callsFile.state === "ok" && !callRows?.success
+        ? "invalid"
+        : callsFile.state,
+    turnPhase: state?.success
+      ? state.data.turns.find((turn) => turn.requestId === record.requestId)
+          ?.phase
+      : undefined,
+    turnReason: state?.success
+      ? state.data.turns.find((turn) => turn.requestId === record.requestId)
+          ?.reason
+      : undefined,
+    outcome: native
+      ? {
+          phase: native.outcome.phase,
+          reason: native.outcome.reason,
+          stopReason: native.outcome.stopReason,
+          exitCode: native.exitCode,
+          stopped: native.stopped,
+          timedOut: native.timedOut,
+        }
+      : null,
+    hasBinding: state?.success ? state.data.binding !== null : null,
+    nativeOutcomeCount: nativeOutcomes?.length ?? null,
+    approvalOffers: offers,
+    permissionIntents: intents,
+    methodCounts: Object.fromEntries(methods),
+    permissionResponses: callRows?.success
+      ? callRows.data.filter(
+          (row) => row.value?.id === 41 && row.value.result !== undefined,
+        ).length
+      : null,
+    providerAlive,
+    helperAlive,
+  };
+}
 function calls() {
   if (!existsSync(log)) return [];
   let value: unknown;
@@ -510,7 +668,17 @@ test("Gemini ACP composer keyboard-starts two explicit native turns with once ch
   );
   await keyboardFocus(page, allow);
   await page.keyboard.press("Enter");
-  await expect.poll(() => saved(record.id).turns[0]?.phase).toBe("completed");
+  await withGeminiChatFailureFacts({
+    operation: () =>
+      expect.poll(() => saved(record.id).turns[0]?.phase).toBe("completed"),
+    collect: () => collectGeminiChatFailureFacts(record),
+    attach: async (body) => {
+      await test.info().attach("gemini-chat-outcome-failure-facts.json", {
+        contentType: "application/json",
+        body: Buffer.from(body),
+      });
+    },
+  });
   expectLatestTreeDead();
   if (decisionFailure) throw decisionFailure;
   expect(startBodies).toHaveLength(1);
@@ -700,7 +868,30 @@ test("an ACP Start held before admission survives reload as one original without
     gate = deferred(),
     finished = deferred();
   let posts = 0,
+    startBody: Record<string, unknown> | null = null,
+    identityWrites = 0,
+    startPosts = 0,
+    protectedOriginalReads = 0,
     fixtureError: unknown;
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (
+      request.method() === "POST" &&
+      url.pathname.endsWith("/session-start-identities")
+    )
+      identityWrites++;
+    if (
+      request.method() === "POST" &&
+      url.pathname === `/__agent-forge/projects/${alpha.id}/sessions`
+    )
+      startPosts++;
+    if (
+      request.method() === "GET" &&
+      url.searchParams.has("requestId") &&
+      url.pathname.includes(`/projects/${alpha.id}/sessions/`)
+    )
+      protectedOriginalReads++;
+  });
   await page.route(
     `**/__agent-forge/projects/${alpha.id}/sessions`,
     async (route) => {
@@ -709,6 +900,7 @@ test("an ACP Start held before admission survives reload as one original without
         return;
       }
       posts++;
+      startBody = route.request().postDataJSON() as Record<string, unknown>;
       entered.release();
       await gate.promise;
       try {
@@ -733,31 +925,66 @@ test("an ACP Start held before admission survives reload as one original without
     expect(promptCount()).toBe(before);
     await reloadSettled(page);
     const reopened = await openComposer(page, false);
-    await reopened
-      .getByRole("button", { name: "Check original Start", exact: true })
+    const identityRegion = reopened.getByRole("region", {
+      name: "Original Start requests",
+      exact: true,
+    });
+    await expect(identityRegion).toBeVisible();
+    await identityRegion
+      .getByRole("button", { name: "Check server", exact: true })
       .click();
-    await expect(
-      reopened.getByRole("button", {
-        name: "Check original Start",
-        exact: true,
-      }),
-    ).toBeEnabled();
+    const original = geminiChatStartSchema.parse(startBody);
+    const identityRow = identityRegion
+      .locator(".af-start-identities-list li")
+      .filter({ hasText: original.requestId });
+    await expect(identityRow).toContainText("gemini chat · reserved");
+    const listedRequestId = await identityRow
+      .locator("code")
+      .nth(0)
+      .textContent();
+    const listedRequestHash = await identityRow
+      .locator("code")
+      .nth(1)
+      .textContent();
+    expect(listedRequestId).toBe(original.requestId);
+    expect(listedRequestHash).toMatch(/^[0-9a-f]{64}$/);
+    const continueOriginal = identityRow.getByRole("button", {
+      name: "Continue exact original",
+      exact: true,
+    });
+    await expect(continueOriginal).toBeDisabled();
     await expect(
       reopened.getByRole("button", { name: "Start", exact: true }),
     ).toBeDisabled();
-    await expect(
-      reopened.getByRole("button", {
-        name: "Retry original Start",
-        exact: true,
-      }),
-    ).toHaveCount(0);
     expect(
-      await page.evaluate(() => JSON.stringify(localStorage)),
+      await page.evaluate(() =>
+        JSON.stringify({
+          local: Object.entries(localStorage),
+          session: Object.entries(sessionStorage),
+        }),
+      ),
     ).not.toContain("PRIVATE ACP FIRST QUESTION");
+    await reopened
+      .getByRole("combobox", { name: "Where the session runs", exact: true })
+      .selectOption("main");
+    await reopened
+      .getByRole("textbox", { name: "Session bead", exact: true })
+      .fill("alpha-epic");
+    await reopened
+      .getByRole("textbox", { name: "Session prompt", exact: true })
+      .fill("PRIVATE ACP FIRST QUESTION");
+    await expect(continueOriginal).toBeEnabled();
     await reopened.getByRole("button", { name: /Cl · Claude/ }).click();
     await expect(
       reopened.getByRole("button", { name: "Start", exact: true }),
     ).toBeDisabled();
+    await reopened.getByRole("button", { name: /Gm · Gemini/ }).click();
+    await expect(continueOriginal).toBeEnabled();
+    await expect(
+      reopened.getByRole("button", { name: "Start", exact: true }),
+    ).toBeDisabled();
+    expect(identityWrites).toBe(1);
+    expect(startPosts).toBe(1);
     expect(posts).toBe(1);
     gate.release();
     await finished.promise;
@@ -765,7 +992,35 @@ test("an ACP Start held before admission survives reload as one original without
     await expect.poll(promptCount).toBe(before + 1);
     const record = await accepted();
     await expect.poll(() => saved(record.id).turns[0]?.phase).toBe("completed");
-    await expect(reopened).not.toBeVisible();
+    await expect(reopened).toBeVisible();
+    await identityRegion
+      .getByRole("button", { name: "Check server", exact: true })
+      .click();
+    await expect(identityRow).toContainText("gemini chat · admitted");
+    expect(await identityRow.locator("code").nth(0).textContent()).toBe(
+      listedRequestId,
+    );
+    expect(await identityRow.locator("code").nth(1).textContent()).toBe(
+      listedRequestHash,
+    );
+    await identityRow
+      .getByRole("button", { name: "Inspect original", exact: true })
+      .click();
+    await expect(
+      identityRow.getByRole("link", { name: "Open original session" }),
+    ).toBeVisible();
+    await expect.poll(() => protectedOriginalReads).toBeGreaterThan(0);
+    await identityRow
+      .getByRole("link", { name: "Open original session" })
+      .click();
+    await expect(reopened).toBeHidden();
+    const originalPane = pane(page);
+    await expect(originalPane).toBeVisible();
+    await expect(originalPane.locator(".af-owned-reply strong")).toHaveText(
+      "ACP answer 🌱",
+    );
+    expect(identityWrites).toBe(1);
+    expect(startPosts).toBe(1);
     expect(posts).toBe(1);
   } finally {
     gate.release();

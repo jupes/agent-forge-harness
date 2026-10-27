@@ -230,6 +230,7 @@ test("reload restores the full saved envelope without dispatch, and a registry-o
     },
   });
   const review = client.get(source, 4);
+  expect(review.owner.purpose).toBe("keeper-proposal");
   await client.open(review);
   const original = review.original;
   expect(original?.start.launch.attachments).toHaveLength(2);
@@ -374,7 +375,7 @@ test("opening, editing and cancelling preserves a separate proposal draft withou
   client.dispose();
 });
 
-test("an uncertain reviewed Start keeps every original byte and UUID across edits, absent checks and explicit retries", async () => {
+test("an unknown reviewed Start keeps every original byte and UUID but cannot be retried from its body alone", async () => {
   const sent: KeeperSessionStartRequest[] = [];
   const client = createKeeperSessionReviews({
     identities: identityFixture().identities,
@@ -420,13 +421,134 @@ test("an uncertain reviewed Start keeps every original byte and UUID across edit
   });
   expect(sent).toHaveLength(1);
   await review.owner.retryStart(projectId);
-  expect(sent).toHaveLength(2);
-  expect(sent[1]).toEqual(sent[0]);
+  expect(review.view.retryStartAvailable).toBe(false);
+  expect(sent).toHaveLength(1);
   expect(sent[0]).toEqual({
     sourceHash: source.sourceHash,
     expectedRevision: 4,
     start: { ...expected, requestId: "b14cc7eb-3231-4930-a288-d411c5ee0426" },
   });
+  client.dispose();
+});
+
+test("a proven NotSent refusal enables an exact Keeper retry and the original remains checkable", async () => {
+  const sent: KeeperSessionStartRequest[] = [];
+  let reads = 0;
+  const client = createKeeperSessionReviews({
+    identities: identityFixture().identities,
+    canWrite: () => true,
+    requestId: () => "b14cc7eb-3231-4930-a288-d411c5ee0426",
+    read: async () => {
+      reads++;
+      return null;
+    },
+    post: async (_project, _proposal, input) => {
+      sent.push(input);
+      return sent.length === 1
+        ? { state: "refused", message: "No operator token", notSent: true }
+        : { state: "unknown", message: "Check the exact original again" };
+    },
+    createWorktree: async () => ({ state: "refused", message: "No Git" }),
+    readWorktree: async () => null,
+    adopt: () => true,
+  });
+  const review = client.get(source, 4);
+  await client.open(review);
+  review.owner.initializeComposer?.({ id: projectId }, smiths, [main]);
+  review.owner.editComposer(projectId, { effort: "" });
+  const expected = sessionStartBody(review.view.composer);
+
+  await review.owner.start(projectId, expected);
+  expect(sent).toHaveLength(1);
+  expect(review.view.retryStartAvailable).toBe(true);
+
+  await review.owner.refresh(projectId);
+  expect(reads).toBe(2);
+  expect(review.view.retryStartAvailable).toBe(true);
+  await review.owner.retryStart(projectId);
+  expect(sent).toHaveLength(2);
+  expect(sent[1]).toEqual(sent[0]);
+  expect(review.view.retryStartAvailable).toBe(false);
+  client.dispose();
+});
+
+test("a protected original read can restore retryability from its durable NotSent identity after reload", async () => {
+  const sent: KeeperSessionStartRequest[] = [];
+  const durableNotSent = Object.assign(await savedStart(false), {
+    session: null,
+    retryAvailable: true,
+  });
+  const client = createKeeperSessionReviews({
+    identities: identityFixture().identities,
+    canWrite: () => true,
+    requestId: () => {
+      throw new Error("Recovery must retain the original UUID");
+    },
+    read: async () => durableNotSent,
+    post: async (_project, _proposal, input) => {
+      sent.push(structuredClone(input));
+      return { state: "unknown", message: "Check the original again" };
+    },
+    createWorktree: async () => ({ state: "refused", message: "No Git" }),
+    readWorktree: async () => null,
+    adopt: () => true,
+  });
+  const review = client.get(source, 4);
+  await client.open(review);
+  expect(review.view.retryStartAvailable).toBe(true);
+  expect(sent).toEqual([]);
+  await review.owner.retryStart(projectId);
+  expect(sent).toHaveLength(1);
+  expect(sent[0]).toEqual(durableNotSent.original);
+  expect(review.view.retryStartAvailable).toBe(false);
+  client.dispose();
+});
+
+test.each([
+  "legacy",
+  "attempted",
+  "not-found",
+  "unavailable",
+] as const)("a later %s Keeper read clears stale durable retry eligibility", async (laterRead) => {
+  const sent: KeeperSessionStartRequest[] = [];
+  const durableNotSent = Object.assign(await savedStart(false), {
+    session: null,
+    retryAvailable: true,
+  });
+  let raw: unknown = durableNotSent;
+  const client = createKeeperSessionReviews({
+    identities: identityFixture().identities,
+    canWrite: () => true,
+    requestId: () => {
+      throw new Error("Recovery must retain the original UUID");
+    },
+    read: async () => {
+      if (laterRead === "unavailable" && raw !== durableNotSent)
+        throw new Error("Identity metadata is unavailable");
+      return raw;
+    },
+    post: async (_project, _proposal, input) => {
+      sent.push(structuredClone(input));
+      return { state: "unknown", message: "Check the original again" };
+    },
+    createWorktree: async () => ({ state: "refused", message: "No Git" }),
+    readWorktree: async () => null,
+    adopt: () => true,
+  });
+  const review = client.get(source, 4);
+  await client.open(review);
+  expect(review.view.retryStartAvailable).toBe(true);
+  if (laterRead === "legacy") {
+    const legacy = { ...durableNotSent } as Record<string, unknown>;
+    delete legacy["retryAvailable"];
+    raw = legacy;
+  } else if (laterRead === "attempted")
+    raw = { ...durableNotSent, retryAvailable: false };
+  else raw = null;
+  await review.owner.refresh(projectId);
+  expect(review.view.retryStartAvailable).toBe(false);
+  await review.owner.retryStart(projectId);
+  expect(sent).toEqual([]);
   client.dispose();
 });
 

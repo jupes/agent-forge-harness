@@ -180,7 +180,12 @@ export function DesktopApp(): JSX.Element {
     selectedSession,
     summary?.workspace ?? null,
   );
-  const sessions = useSessions(project?.id ?? null, null, writesAllowed);
+  const sessions = useSessions(
+    project?.id ?? null,
+    null,
+    writesAllowed,
+    providers.data,
+  );
   const observationRows = project
     ? observations.rows(project.id, sessions.project(project.id).records)
     : [];
@@ -851,6 +856,14 @@ export function DesktopApp(): JSX.Element {
             keeper={keeper}
             writesAllowed={writesAllowed}
             onCancel={() => setComposerOpen(false)}
+            onOpenOriginal={(id) => {
+              setComposerOpen(false);
+              window.location.hash = desktopHref({
+                projectId: project.id,
+                destination: "sessions",
+                selection: { kind: "session", id },
+              }).slice(1);
+            }}
             onStarted={(id) => {
               setComposerOpen(false);
               window.location.hash = desktopHref({

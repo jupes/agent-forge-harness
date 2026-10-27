@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { actionOutcome } from "../../../docs/js/action-outcome";
 import { readHearth } from "../../../docs/js/hearth-read";
-import { operatorPost, operatorRead } from "../../../docs/js/operator";
+import { NotSent, operatorPost, operatorRead } from "../../../docs/js/operator";
 import { pageReads, readOperatorRoute } from "../../../docs/js/use-stream";
 import {
   createKeeperSessionIdentities,
@@ -71,12 +71,23 @@ export function useKeeperSessionReviews(
           },
           { ...pageReads(), fetch: operatorRead },
         ),
-      post: (projectId, proposalId, body) =>
-        actionOutcome(
-          () =>
-            operatorPost(`/__agent-forge${base(projectId, proposalId)}`, body),
-          "Check the original proposal Start before retrying. The exact reviewed input is kept.",
-        ),
+      post: async (projectId, proposalId, body) => {
+        let notSent = false;
+        const outcome = await actionOutcome(async () => {
+          try {
+            return await operatorPost(
+              `/__agent-forge${base(projectId, proposalId)}`,
+              body,
+            );
+          } catch (error) {
+            if (error instanceof NotSent) notSent = true;
+            throw error;
+          }
+        }, "Check the original proposal Start before retrying. The exact reviewed input is kept.");
+        return outcome.state === "refused" && notSent
+          ? { ...outcome, notSent: true }
+          : outcome;
+      },
       createWorktree: (projectId, body) =>
         actionOutcome(
           () =>
