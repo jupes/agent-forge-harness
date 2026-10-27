@@ -75,6 +75,7 @@ async function fixture(
   holdDecision = false,
   holdForkReply = false,
   approvalPolicy: "never" | "on-request" = "on-request",
+  holdForkDecision = false,
 ) {
   let h: TestHearth,
     actual: ReturnType<typeof createCodexChatRuntime> | undefined;
@@ -89,6 +90,8 @@ async function fixture(
     markForkEffectReached: () => void = () => {},
     markForkReplyReleased: () => void = () => {},
     forkReplyHeld = false;
+  let releaseForkDecision: () => void = () => {},
+    forkDecisionGateHeld = false;
   let nextScopeBarrier: {
     enter(): void;
     released: Promise<void>;
@@ -106,8 +109,12 @@ async function fixture(
   const forkReplyReleased = new Promise<void>((resolve) => {
     markForkReplyReleased = resolve;
   });
+  const forkDecisionGate = new Promise<void>((resolve) => {
+    releaseForkDecision = resolve;
+  });
   releaseHeld.push(release);
   releaseHeld.push(releaseForkReply);
+  releaseHeld.push(releaseForkDecision);
   h = await startTestHearth({
     files: {
       "agent-forge.toml":
@@ -203,7 +210,24 @@ async function fixture(
                     return result;
                   },
                 }
-              : route,
+              : route.kind === "action" &&
+                  route.action === "session.fork.approval.decide"
+                ? {
+                    ...route,
+                    effect: async (input, context) => {
+                      const result = await route.effect(input, context);
+                      if (
+                        holdForkDecision &&
+                        !forkDecisionGateHeld &&
+                        result.status === 200
+                      ) {
+                        forkDecisionGateHeld = true;
+                        await forkDecisionGate;
+                      }
+                      return result;
+                    },
+                  }
+                : route,
         ),
     },
   });
@@ -367,6 +391,8 @@ async function fixture(
     forkEffectReached,
     releaseForkReply,
     forkReplyReleased,
+    releaseForkDecision,
+    forkDecisionGateHeld: () => forkDecisionGateHeld,
   };
 }
 
@@ -1104,6 +1130,85 @@ test("Fork child approvals use dedicated controls after the parent prefix is una
   );
   expect(JSON.stringify(await f.forkPage(childSessionId))).not.toContain(
     "PRIVATE-CHAT-PROMPT",
+  );
+});
+
+test("a lost Fork decision response is recovered by its exact protected receipt without a second native answer", async () => {
+  const f = await fixture(
+      "fork-approval-command",
+      false,
+      false,
+      "on-request",
+      true,
+    ),
+    { childSessionId } = await createApprovedFork(f),
+    childTurn = {
+      requestId: randomUUID(),
+      expectedRevision: 0,
+      text: "Recover the original Fork decision receipt.",
+      about: [],
+    };
+  await expectForkTurnAccepted(
+    f,
+    await f.post(`/${childSessionId}/fork-turns`, childTurn),
+  );
+  const pending = await waitForkApproval(f, childSessionId),
+    beforeAnswers = f.records().filter((row) => row.kind === "answer").length,
+    request: CodexChatDecisionRequest = {
+      requestId: randomUUID(),
+      approvalId: pending.approval.id,
+      turnRequestId: pending.turnRequestId,
+      decision: "accept",
+    },
+    abort = new AbortController(),
+    lost = f
+      .post(
+        `/${childSessionId}/fork-approval-decisions`,
+        request,
+        f.h.headers(f.h.hearth.token),
+        abort.signal,
+      )
+      .catch(() => null),
+    deadline = Date.now() + 4000;
+  while (!f.forkDecisionGateHeld()) {
+    if (Date.now() > deadline)
+      throw Error("The Fork decision response was not held after resolution");
+    await Bun.sleep(20);
+  }
+
+  const protectedRead = await fetch(
+    `${f.h.api}/projects/${FIXTURE_PROJECT_ID}/sessions/${childSessionId}/fork-approvals?requestId=${request.requestId}`,
+    { headers: f.h.headers(f.h.hearth.token) },
+  );
+  expect(protectedRead.status).toBe(200);
+  const page = codexChatApprovalPageSchema.parse(
+    (await protectedRead.json()).data,
+  );
+  expect(page.pending).toEqual([]);
+  expect(page.receipt).toMatchObject({ ...request, state: "recorded" });
+
+  abort.abort();
+  f.releaseForkDecision();
+  await lost;
+  const replay = await f.post(
+    `/${childSessionId}/fork-approval-decisions`,
+    request,
+  );
+  expect(replay.status).toBe(200);
+  expect((await replay.json()).data).toEqual(page.receipt);
+  await waitForAnswerCount(f, beforeAnswers + 1);
+  expect(f.records().filter((row) => row.kind === "answer")).toHaveLength(
+    beforeAnswers + 1,
+  );
+  const child = await f.settleFork(childSessionId);
+  expect(child.turns).toMatchObject([
+    { requestId: childTurn.requestId, phase: "completed" },
+  ]);
+  expect(
+    f.records().filter((row) => row.method === "thread/resume"),
+  ).toHaveLength(1);
+  expect(f.records().filter((row) => row.method === "turn/start")).toHaveLength(
+    2,
   );
 });
 

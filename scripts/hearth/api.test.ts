@@ -240,6 +240,10 @@ const API_CODEX_CHAT_FORK_CHILD_ID =
   "session-80e40be9-e811-47c3-a71d-b988e6717801";
 const API_CODEX_CHAT_FORK_CHILD_REQUEST_ID =
   "80e40be9-e811-47c3-a71d-b988e6717802";
+const API_CODEX_CHAT_FORK_CONTROL_DECISION_ID =
+  "80e40be9-e811-47c3-a71d-b988e6717803";
+const API_CODEX_CHAT_FORK_CONTROL_STOP_ID =
+  "80e40be9-e811-47c3-a71d-b988e6717804";
 const API_CODEX_CHAT_FORK_RESERVE_ID = "808b8f84-1f86-44bf-9cf4-518c58b59a11";
 const API_CODEX_CHAT_FORK_RETIRE_ID = "808b8f84-1f86-44bf-9cf4-518c58b59a12";
 const API_CODEX_CHAT_FORK_SOURCE = {
@@ -2007,6 +2011,68 @@ const ACTIONS: Record<string, ActionFixture> = {
     },
     happened: async (_h, data) => expect(data).toBeNull(),
   },
+  "POST /projects/:id/sessions/:sessionId/fork-approval-decisions": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_CODEX_CHAT_FORK_CHILD_ID}/fork-approval-decisions`,
+      body: {
+        requestId: API_CODEX_CHAT_FORK_CONTROL_DECISION_ID,
+        turnRequestId: API_CODEX_CHAT_FORK_CHILD_REQUEST_ID,
+        approvalId: "80e40be9-e811-47c3-a71d-b988e6717805",
+        decision: "accept",
+      },
+      status: 409,
+      ok: false,
+      error: "The live approval has no matching private Fork-child turn.",
+      target: `codex-chat-fork-child:${FIXTURE_PROJECT_ID}:${API_CODEX_CHAT_FORK_CHILD_ID}`,
+      audit: {
+        family: "codex-chat-fork-approval",
+        requestId: API_CODEX_CHAT_FORK_CONTROL_DECISION_ID,
+        inputHash: createHash("sha256")
+          .update(
+            JSON.stringify({
+              requestId: API_CODEX_CHAT_FORK_CONTROL_DECISION_ID,
+              turnRequestId: API_CODEX_CHAT_FORK_CHILD_REQUEST_ID,
+              approvalId: "80e40be9-e811-47c3-a71d-b988e6717805",
+              decision: "accept",
+            }),
+          )
+          .digest("hex"),
+      },
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_CODEX_CHAT_FORK_CHILD_ID}/fork-approval-decisions`,
+      body: { requestId: "invalid" },
+    },
+    prepare: seedForkReadChild,
+    happened: async (_h, answer) => expect(answer).toBeNull(),
+  },
+  "POST /projects/:id/sessions/:sessionId/fork-stop": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_CODEX_CHAT_FORK_CHILD_ID}/fork-stop`,
+      body: { requestId: API_CODEX_CHAT_FORK_CHILD_REQUEST_ID },
+      status: 409,
+      ok: false,
+      error: "The requested Stop has no matching private Fork-child turn.",
+      target: `codex-chat-fork-child:${FIXTURE_PROJECT_ID}:${API_CODEX_CHAT_FORK_CHILD_ID}`,
+      audit: {
+        family: "codex-chat-fork-stop",
+        requestId: API_CODEX_CHAT_FORK_CHILD_REQUEST_ID,
+        inputHash: createHash("sha256")
+          .update(
+            JSON.stringify({
+              requestId: API_CODEX_CHAT_FORK_CHILD_REQUEST_ID,
+            }),
+          )
+          .digest("hex"),
+      },
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_CODEX_CHAT_FORK_CHILD_ID}/fork-stop`,
+      body: { requestId: "invalid" },
+    },
+    prepare: seedForkReadChild,
+    happened: async (_h, answer) => expect(answer).toBeNull(),
+  },
   "POST /projects/:id/sessions/:sessionId/stop": ownedSessionFixture("stop"),
   "POST /projects/:id/sessions/:sessionId/approval-decisions": {
     valid: {
@@ -2768,6 +2834,7 @@ const READS: Record<string, string> = {
   "GET /projects/:id/activity/:eventId": `/projects/${FIXTURE_PROJECT_ID}/activity/1`,
   "GET /projects/:id/sessions/:sessionId": `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_OWNED_SESSION_ID}`,
   "GET /projects/:id/sessions/:sessionId/fork-turns": `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_CODEX_CHAT_FORK_CHILD_ID}/fork-turns`,
+  "GET /projects/:id/sessions/:sessionId/fork-approvals": `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_CODEX_CHAT_FORK_CHILD_ID}/fork-approvals`,
   "GET /projects/:id/sessions/:sessionId/approvals": `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_CHAT_SESSION}/approvals`,
   "GET /projects/:id/session-library": `/projects/${FIXTURE_PROJECT_ID}/session-library`,
   "GET /projects/:id/sessions/:sessionId/archive": `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_OWNED_SESSION_ID}/archive`,
@@ -2826,7 +2893,10 @@ async function seedForkReadOriginal(h: TestHearth): Promise<void> {
 }
 
 /** A bounded linked child transcript fixture for the protected child-only read row. */
+const seededForkReadChildren = new WeakSet<TestHearth>();
+
 async function seedForkReadChild(h: TestHearth): Promise<void> {
+  if (seededForkReadChildren.has(h)) return;
   const source = await seedForkableCodexChatSource(
       h,
       API_CODEX_CHAT_FORK_SOURCE,
@@ -2931,6 +3001,7 @@ async function seedForkReadChild(h: TestHearth): Promise<void> {
   });
   if (linked.state !== "linked")
     throw new Error("Could not seed the linked Fork-child read original");
+  seededForkReadChildren.add(h);
 }
 
 function fixture(route: ApiRoute): ActionFixture {
