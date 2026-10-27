@@ -3576,13 +3576,20 @@ describe("a read row or the stream while another connection holds the write lock
   /** The status and whether the answer was an `ok` envelope (including an open stream). */
   async function answered(
     response: Response,
-  ): Promise<{ status: number; ok: boolean }> {
+  ): Promise<{ status: number; ok: boolean; error: string | null }> {
     if (response.headers.get("content-type")?.startsWith("text/event-stream")) {
       await response.body?.cancel();
-      return { status: response.status, ok: true };
+      return { status: response.status, ok: true, error: null };
     }
     const body = await envelope(response);
-    return { status: response.status, ok: body.ok };
+    return {
+      status: response.status,
+      ok: body.ok,
+      error:
+        typeof body.error === "string"
+          ? body.error.replace(/[^\x20-\x7e]/g, "?").slice(0, 160)
+          : null,
+    };
   }
 
   test("every read row and the stream answer while locked, ledger readers refuse with an error envelope, and health answers; released, every row answers 200", async () => {
@@ -3653,6 +3660,7 @@ describe("a read row or the stream while another connection holds the write lock
       row: string;
       status: number;
       ok: boolean;
+      error: string | null;
     }> = [];
     try {
       const sent = performance.now();
@@ -3680,7 +3688,14 @@ describe("a read row or the stream while another connection holds the write lock
       expect(
         measured
           .filter((m) => m.status !== 200 || !m.ok)
-          .map((m) => ({ row: m.row, status: m.status, ok: m.ok }))
+          .map((m) => ({
+            row: m.row,
+            status: m.status,
+            ok: m.ok,
+            ...(m.row === "GET /projects/:id/sessions/:sessionId/fork-turns"
+              ? { error: m.error }
+              : {}),
+          }))
           .sort((a, b) => a.row.localeCompare(b.row)),
       ).toEqual(
         LEDGER_ROWS.map(([row, status]) => ({ row, status, ok: false })),
