@@ -33,6 +33,10 @@ const forkReplacementProof = join(
   HEARTH_HOME,
   "desktop-host-fork-replacement-proof-v2.json",
 );
+const restartHearthCommand = [
+  process.execPath,
+  resolve("tests/desktop-restart-e2e/hearth-server.ts"),
+] as const;
 for (const name of Object.keys(process.env)) delete process.env[name];
 Object.assign(process.env, environment);
 const build = Bun.spawn(
@@ -65,7 +69,7 @@ let host = await startDesktopHost({
   home: HEARTH_HOME,
   assetsRoot: ASSETS,
   port: DASHBOARD_PORT,
-  hearthCommand: [process.execPath, resolve("scripts/hearth/server.ts")],
+  hearthCommand: restartHearthCommand,
 });
 let hostCreatedAtMs = Date.now();
 const publishManifest = () =>
@@ -267,7 +271,7 @@ async function handleControl(
         home: HEARTH_HOME,
         assetsRoot: ASSETS,
         port: restoreFlow ? DASHBOARD_PORT : 0,
-        hearthCommand: [process.execPath, resolve("scripts/hearth/server.ts")],
+        hearthCommand: restartHearthCommand,
       });
       try {
         if (closing) {
