@@ -2948,68 +2948,89 @@ describe("the route table", () => {
 describe("every action row (iterating the table)", () => {
   test("with the token, from the hearth's own origin: one operator.action is appended, then the effect runs", async () => {
     const { h, probes } = await probed();
-    for (const row of actionRows(h)) {
-      const {
-        valid,
-        prepare,
-        happened,
-        outcome = [],
-        effects = [],
-        settled,
-      } = fixture(row);
-      await prepare?.(h);
-      const before = snapshot(h);
-      const seen = probes.length;
+    const rows = actionRows(h);
+    let progress: { row: number; action: string; stage: string } = {
+      row: 0,
+      action: "setup",
+      stage: "start",
+    };
+    const diagnostic = setTimeout(() => {
+      console.error(
+        `[api-action-inventory] ${JSON.stringify({ event: "slow", ...progress })}`,
+      );
+    }, 10_000);
+    try {
+      for (const [index, row] of rows.entries()) {
+        progress = { row: index + 1, action: row.action, stage: "prepare" };
+        const {
+          valid,
+          prepare,
+          happened,
+          outcome = [],
+          effects = [],
+          settled,
+        } = fixture(row);
+        await prepare?.(h);
+        const before = snapshot(h);
+        const seen = probes.length;
 
-      const response = await post(h, valid.path, valid.body);
-      const body = await envelope(response);
-      expect({
-        row: key(row),
-        status: response.status,
-        ok: body.ok,
-        error: body.error,
-      }).toEqual({
-        row: key(row),
-        status: valid.status,
-        ok: true,
-        error: null,
-      });
-      await settled?.(h);
+        progress.stage = "post";
+        const response = await post(h, valid.path, valid.body);
+        progress.stage = "read-response";
+        const body = await envelope(response);
+        expect({
+          row: key(row),
+          status: response.status,
+          ok: body.ok,
+          error: body.error,
+        }).toEqual({
+          row: key(row),
+          status: valid.status,
+          ok: true,
+          error: null,
+        });
+        progress.stage = "settled";
+        await settled?.(h);
 
-      // This row's audit row first, then exactly the events its fixture says
-      // a successful effect leaves: for most rows, none.
-      const added = h.events().filter((event) => !before.includes(event.id));
-      expect(
-        added.map((event) => ({
-          row: key(row),
-          kind: event.kind,
-          payload: event.payload,
-        })),
-      ).toEqual([
-        {
-          row: key(row),
-          kind: "operator.action",
-          payload: {
-            action: row.action,
-            surface: "api",
-            ...(valid.target === undefined ? {} : { target: valid.target }),
-            ...valid.audit,
+        // This row's audit row first, then exactly the events its fixture says
+        // a successful effect leaves: for most rows, none.
+        const added = h.events().filter((event) => !before.includes(event.id));
+        expect(
+          added.map((event) => ({
+            row: key(row),
+            kind: event.kind,
+            payload: event.payload,
+          })),
+        ).toEqual([
+          {
+            row: key(row),
+            kind: "operator.action",
+            payload: {
+              action: row.action,
+              surface: "api",
+              ...(valid.target === undefined ? {} : { target: valid.target }),
+              ...valid.audit,
+            },
           },
-        },
-        ...(typeof outcome === "function" ? outcome(h) : outcome).map(
-          (event) => ({ row: key(row), ...event }),
-        ),
-      ]);
+          ...(typeof outcome === "function" ? outcome(h) : outcome).map(
+            (event) => ({ row: key(row), ...event }),
+          ),
+        ]);
 
-      // The effect ran once, and that row was already stored when it started.
-      const calls = probes.slice(seen);
-      expect(calls.map((call) => call.row)).toEqual([key(row), ...effects]);
-      expect(calls[0]?.audit.at(-1)?.id).toBe(added[0]?.id);
+        // The effect ran once, and that row was already stored when it started.
+        const calls = probes.slice(seen);
+        expect(calls.map((call) => call.row)).toEqual([key(row), ...effects]);
+        expect(calls[0]?.audit.at(-1)?.id).toBe(added[0]?.id);
 
-      await happened(h, body.data);
-      if (row.action === "council.run.start")
-        if (valid.target !== undefined)
+        progress.stage = "happened";
+        await happened(h, body.data);
+        if (row.action === "council.run.start" && valid.target !== undefined) {
+          progress.stage = "council-run-finished";
           await councilRunFinished(h, valid.target);
+        }
+      }
+    } finally {
+      clearTimeout(diagnostic);
     }
   }, 30_000);
 
@@ -3179,11 +3200,15 @@ describe("every action row (iterating the table)", () => {
       const { h, probes } = await probed({ api: { appendEvent } });
       for (const row of actionRows(h)) {
         const { valid, prepare } = fixture(row);
-        // Keeper proposal validation reads the durable source and revision
-        // before reaching the audit boundary; seed that inert source fixture.
-        // Other prepare hooks may themselves call audited preview routes,
-        // which this test deliberately makes unavailable.
-        if (row.path.includes("/keeper/proposals/")) await prepare?.(h);
+        if (row.action === "session.preview") {
+          // This builder uses only the current hearth's fixed workspace value;
+          // it needs neither an audited preview nor any provider/filesystem work.
+          valid.body = sessionStartFixture(h);
+        } else if (row.path.includes("/keeper/proposals/")) {
+          // Keeper proposal validation reads the durable source and revision
+          // before reaching the audit boundary, so seed that inert fixture.
+          await prepare?.(h);
+        }
         const response = await post(h, valid.path, valid.body);
         const body = await envelope(response);
         expect({ row: key(row), status: response.status, ok: body.ok }).toEqual(
