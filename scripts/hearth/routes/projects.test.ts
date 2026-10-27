@@ -30,7 +30,11 @@ test("projects load through the hearth and audited preferences survive a fresh r
       description: "",
       icon: "A",
       workspaces: [
-        { root: h.root, repositories: [h.root], epicIds: ["alpha-epic"] },
+        {
+          root: h.workspace,
+          repositories: [h.workspace],
+          epicIds: ["alpha-epic"],
+        },
       ],
     },
     0,
@@ -103,7 +107,11 @@ test("a protected project reservation preserves its exact original before projec
       description: "",
       icon: "A",
       workspaces: [
-        { root: h.root, repositories: [h.root], epicIds: ["alpha-epic"] },
+        {
+          root: h.workspace,
+          repositories: [h.workspace],
+          epicIds: ["alpha-epic"],
+        },
       ],
     },
   };
@@ -203,7 +211,7 @@ test("a project reservation refuses two allowed spellings of the same checkout b
 
   const store = createProjectStore(h.home);
   const before = store.read();
-  const separator = h.root.includes("\\") ? "\\" : "/";
+  const separator = h.workspace.includes("\\") ? "\\" : "/";
   const request = {
     requestId: "6a1310d8-3d4b-4e38-bbdb-391fd2bce280",
     expectedCatalogRevision: before.revision,
@@ -214,8 +222,8 @@ test("a project reservation refuses two allowed spellings of the same checkout b
       icon: "A",
       workspaces: [
         {
-          root: h.root,
-          repositories: [h.root, `${h.root}${separator}`],
+          root: h.workspace,
+          repositories: [h.workspace, `${h.workspace}${separator}`],
           epicIds: ["alpha-epic"],
         },
       ],
@@ -269,7 +277,11 @@ test("a reserved project is committed once or explicitly retired without droppin
     description: "",
     icon: "A",
     workspaces: [
-      { root: h.root, repositories: [h.root], epicIds: ["alpha-epic"] },
+      {
+        root: h.workspace,
+        repositories: [h.workspace],
+        epicIds: ["alpha-epic"],
+      },
     ],
   };
   const headers = h.headers(h.hearth.token);
@@ -278,7 +290,9 @@ test("a reserved project is committed once or explicitly retired without droppin
     headers,
     body: JSON.stringify({ requestId, expectedCatalogRevision: 0, original }),
   });
+  expect(reserve.status).toBe(201);
   const reserved = await reserve.json();
+  expect(reserved).toMatchObject({ ok: true, error: null });
   const requestHash = reserved.data.requestHash as string;
   const scopeHash = reserved.data.scopeHash as string;
   const commitPath = `${h.api}/projects/create-reservations/${requestId}/commit`;
@@ -403,8 +417,8 @@ test("a reservation rechecks live project scope after waiting for the catalog wr
         icon: "R",
         workspaces: [
           {
-            root: h.root,
-            repositories: [h.root],
+            root: h.workspace,
+            repositories: [h.workspace],
             epicIds: ["alpha-epic"],
           },
         ],
@@ -475,8 +489,8 @@ test("commit rechecks its reviewed epic source after waiting for the catalog wri
     icon: "R",
     workspaces: [
       {
-        root: h.root,
-        repositories: [h.root],
+        root: h.workspace,
+        repositories: [h.workspace],
         epicIds: ["alpha-epic"],
       },
     ],
@@ -487,7 +501,9 @@ test("commit rechecks its reviewed epic source after waiting for the catalog wri
     headers,
     body: JSON.stringify({ requestId, expectedCatalogRevision: 0, original }),
   });
+  expect(reserve.status).toBe(201);
   const reserved = await reserve.json();
+  expect(reserved).toMatchObject({ ok: true, error: null });
   const requestHash = reserved.data.requestHash as string;
   const reviewedScopeHash = reserved.data.scopeHash as string;
 
@@ -605,8 +621,8 @@ test("a lost project commit reply is recovered by its exact UUID without creatin
     icon: "L",
     workspaces: [
       {
-        root: h.root,
-        repositories: [h.root],
+        root: h.workspace,
+        repositories: [h.workspace],
         epicIds: ["alpha-epic"],
       },
     ],
@@ -617,7 +633,9 @@ test("a lost project commit reply is recovered by its exact UUID without creatin
     headers,
     body: JSON.stringify({ requestId, expectedCatalogRevision: 0, original }),
   });
+  expect(reservation.status).toBe(201);
   const reserved = await reservation.json();
+  expect(reserved).toMatchObject({ ok: true, error: null });
   const requestHash = reserved.data.requestHash as string;
   const reviewedScopeHash = reserved.data.scopeHash as string;
   const controller = new AbortController();
@@ -680,7 +698,11 @@ test("project create reservations preserve legacy catalogs, collide by exact UUI
     description: "",
     icon: "C",
     workspaces: [
-      { root: h.root, repositories: [h.root], epicIds: ["alpha-epic"] },
+      {
+        root: h.workspace,
+        repositories: [h.workspace],
+        epicIds: ["alpha-epic"],
+      },
     ],
   };
   const firstId = "5a3b32b3-3e0d-4bba-a143-f7d72d6c12c4";
