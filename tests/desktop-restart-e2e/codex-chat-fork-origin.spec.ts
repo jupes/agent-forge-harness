@@ -412,6 +412,11 @@ async function observeEmptyFirstDocument(page: Page, generation: number) {
           JSON.stringify({
             identity: localStorage.getItem(identityKey),
             sessionKey: localStorage.getItem(sessionKey),
+            localStorageLength: localStorage.length,
+            localStorageKeys: Array.from(
+              { length: localStorage.length },
+              (_, index) => localStorage.key(index),
+            ),
           }),
         );
     },
@@ -457,6 +462,8 @@ async function authenticateNewHost(
   );
   expect(observed?.["identity"]).toBeNull();
   expect(observed?.["sessionKey"]).toBeNull();
+  expect(observed?.["localStorageLength"]).toBe(0);
+  expect(observed?.["localStorageKeys"]).toEqual([]);
   return origin;
 }
 
@@ -542,10 +549,13 @@ async function holdEffectfulRoute(
     }
     handlerEntered = true;
     const origin = new URL(route.request().url()).origin;
+    const pageOrigin = new URL(page.url()).origin;
     const headers = await route.request().allHeaders();
     if (
+      origin !== pageOrigin ||
       headers["origin"] !== origin ||
-      headers["sec-fetch-site"] !== "same-origin"
+      (headers["sec-fetch-site"] !== undefined &&
+        headers["sec-fetch-site"] !== "same-origin")
     )
       throw new Error(
         "The browser Fork request did not carry its actual origin.",
