@@ -3424,6 +3424,122 @@ test("a delayed older Fork review cannot replace a newer selection", async ({
     .click();
 });
 
+test("Fork reservation waits for verified original discovery", async ({
+  page,
+}) => {
+  mode("fork-service-tier-null");
+  const { pane, record } = await startedChat(page);
+  const selectedTurnRequestId = await completeForkSourceTurn(
+    page,
+    pane,
+    record.id,
+  );
+  const turn = saved(record.id).turns.find(
+    (row) => row.requestId === selectedTurnRequestId,
+  );
+  if (!turn || turn.phase !== "completed")
+    throw Error("No completed Fork source turn");
+
+  const indexPath = `/__agent-forge/projects/${record.projectId}/session-operation-identities`;
+  let indexReads = 0;
+  await page.route(`**${indexPath}`, async (route) => {
+    if (route.request().method() !== "GET") {
+      await route.continue();
+      return;
+    }
+    indexReads += 1;
+    const headers = await route.request().allHeaders();
+    const response = await route.fetch({
+      headers: {
+        ...headers,
+        Origin: new URL(route.request().url()).origin,
+        "Sec-Fetch-Site": "same-origin",
+      },
+    });
+    const raw: unknown = await response.json();
+    const envelope = z
+      .object({ ok: z.literal(true), data: z.unknown(), error: z.null() })
+      .strict()
+      .safeParse(raw);
+    const realPage = envelope.success
+      ? sessionOperationIdentityPageSchema.safeParse(envelope.data.data)
+      : null;
+    if (
+      response.status() !== 200 ||
+      !realPage?.success ||
+      realPage.data.scope.projectId !== record.projectId
+    )
+      throw Error(
+        "The real protected identity page was not valid for this project.",
+      );
+    if (indexReads === 1) {
+      await route.fulfill({
+        response,
+        body: JSON.stringify({
+          ok: true,
+          data: { ...realPage.data, operations: "malformed" },
+          error: null,
+        }),
+      });
+      return;
+    }
+    await route.fulfill({ response });
+  });
+
+  const opener = pane.getByRole("button", {
+    name: `Review Fork through ${turn.requestId.slice(0, 8)}`,
+    exact: true,
+  });
+  const observedPosts: string[] = [];
+  const captureForkWrite = (request: Request) => {
+    const path = new URL(request.url()).pathname;
+    if (
+      request.method() === "POST" &&
+      (path.endsWith("/fork-reservations") || path.endsWith("/forks"))
+    )
+      observedPosts.push(path);
+  };
+  page.on("request", captureForkWrite);
+  await opener.click();
+  const dialog = page.getByRole("dialog", {
+    name: "Review native Codex Fork",
+    exact: true,
+  });
+  await expect(dialog).toContainText(
+    "The saved source or existing Fork originals could not be verified. No Fork was reserved.",
+  );
+  await expect(
+    dialog.getByRole("button", {
+      name: "Reserve this exact Fork",
+      exact: true,
+    }),
+  ).toHaveCount(0);
+  expect(indexReads).toBe(1);
+  expect(observedPosts).toHaveLength(0);
+  expect(
+    calls().filter((row) => row.kind === "rpc" && row.method === "thread/fork"),
+  ).toHaveLength(0);
+
+  await dialog
+    .getByRole("button", { name: "Close dialog", exact: true })
+    .click();
+  await opener.click();
+  await expect(dialog).toContainText("Captured settings");
+  await expect(
+    dialog.getByRole("button", {
+      name: "Reserve this exact Fork",
+      exact: true,
+    }),
+  ).toBeEnabled();
+  expect(indexReads).toBe(2);
+  expect(observedPosts).toHaveLength(0);
+  expect(
+    calls().filter((row) => row.kind === "rpc" && row.method === "thread/fork"),
+  ).toHaveLength(0);
+  page.off("request", captureForkWrite);
+  await page.unroute(`**${indexPath}`);
+});
+
 test("Codex Chat explicitly reviews, forks, reloads and controls only the linked child", async ({
   page,
 }) => {
@@ -3723,20 +3839,32 @@ test("Codex Chat explicitly reviews, forks, reloads and controls only the linked
       exact: true,
     }),
   ).toBeEnabled();
+  const approvalDecisionPosts: Array<{ path: string; body: unknown }> = [];
+  const childTurnBodies: unknown[] = [];
+  const captureChildAction = (request: Request) => {
+    const path = new URL(request.url()).pathname;
+    if (request.method() !== "POST") return;
+    if (
+      path ===
+      `/__agent-forge/projects/${record.projectId}/sessions/${child.id}/fork-approval-decisions`
+    )
+      approvalDecisionPosts.push({ path, body: request.postDataJSON() });
+    if (
+      path ===
+      `/__agent-forge/projects/${record.projectId}/sessions/${child.id}/fork-turns`
+    )
+      childTurnBodies.push(request.postDataJSON());
+  };
+  page.on("request", captureChildAction);
   await recoveredDialog
     .getByRole("button", { name: "Send child turn", exact: true })
     .click();
-  const approvalDecisionPosts: string[] = [];
-  const captureApprovalDecision = (request: Request) => {
-    const url = new URL(request.url());
-    if (
-      request.method() === "POST" &&
-      url.pathname.includes("/fork-approvals/") &&
-      url.pathname.endsWith("/decision")
-    )
-      approvalDecisionPosts.push(url.pathname);
-  };
-  page.on("request", captureApprovalDecision);
+  expect(childTurnBodies).toHaveLength(1);
+  const childTurnBody = z
+    .object({ requestId: z.string().uuid() })
+    .passthrough()
+    .safeParse(childTurnBodies[0]);
+  expect(childTurnBody.success).toBe(true);
   const childNativeId = saved(child.id).binding?.sessionId;
   if (!childNativeId)
     throw Error("The linked child native identity is missing");
@@ -3770,9 +3898,36 @@ test("Codex Chat explicitly reviews, forks, reloads and controls only the linked
     .getByRole("button", { name: "accept", exact: true })
     .click();
   await expect.poll(() => approvalDecisionPosts.length).toBe(1);
+  const decisionPath = `/__agent-forge/projects/${record.projectId}/sessions/${child.id}/fork-approval-decisions`;
+  const decisionBody = z
+    .object({
+      requestId: z.string().uuid(),
+      turnRequestId: z.string().uuid(),
+      approvalId: z.string().uuid(),
+      decision: z.literal("accept"),
+    })
+    .strict()
+    .safeParse(approvalDecisionPosts[0]?.body);
+  expect(approvalDecisionPosts[0]?.path).toBe(decisionPath);
+  expect(decisionBody.success).toBe(true);
+  if (decisionBody.success && childTurnBody.success)
+    expect(decisionBody.data.turnRequestId).toBe(childTurnBody.data.requestId);
+  expect(
+    calls().filter((row) => row.kind === "rpc" && row.method === "thread/fork"),
+  ).toHaveLength(1);
+  await expect
+    .poll(() => saved(child.id).turns.some((row) => row.phase === "completed"))
+    .toBe(true);
+  await recoveredDialog
+    .getByRole("button", {
+      name: "Refresh child transcript and permissions",
+      exact: true,
+    })
+    .click();
   await expect(
     recoveredDialog.getByText("Hello world", { exact: true }),
   ).toBeVisible();
+  expect(childTurnBodies).toHaveLength(1);
 
   mode("fork-child-lost-turn-reply");
   await recoveredDialog
@@ -3798,7 +3953,7 @@ test("Codex Chat explicitly reviews, forks, reloads and controls only the linked
     )
     .toBe(false);
   page.off("request", captureForkPost);
-  page.off("request", captureApprovalDecision);
+  page.off("request", captureChildAction);
 });
 
 test("an undispatched Fork original can be explicitly retired after reload", async ({
