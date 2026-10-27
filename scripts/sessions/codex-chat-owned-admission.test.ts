@@ -512,12 +512,28 @@ test("owned Chat durably binds one private generation before dispatch and releas
   if (!lastFrame) throw Error("The inert owned Chat journal was empty.");
   expect(publicPage.lastSequence).toBe(lastFrame.seq);
   expect(JSON.stringify(publicPage)).not.toContain(generationId);
+  const exported = createSessionLibrary({
+    root: f.root,
+    home: f.home,
+  }).exportTranscript(f.project.id, started.session.id);
+  expect(sessionTranscriptExportSchema.safeParse(exported).success).toBe(true);
+  expect(JSON.stringify(exported)).not.toContain(generationId);
+  expect(JSON.stringify(exported)).not.toContain("codexChatOwnerLifecycle");
 });
 
 test("pure owner release fold accepts the exact reopened completed ordinary Chat state", async () => {
   const f = await fixture("normal"),
     service = f.open(),
     started = await service.start(f.project.id, f.request);
+  await service.settled(f.project.id, started.session.id);
+  const initialPage = await service.read(f.project.id, started.session.id),
+    secondRequestId = randomUUID();
+  await service.send(f.project.id, started.session.id, {
+    requestId: secondRequestId,
+    expectedRevision: initialPage.revision,
+    text: "A later ordinary Chat turn",
+    about: [],
+  });
   await service.settled(f.project.id, started.session.id);
 
   const owner = createSessionRegistry(f.home, "codex", "chat").read(
@@ -532,19 +548,21 @@ test("pure owner release fold accepts the exact reopened completed ordinary Chat
     reopened = createConversationStore(f.home, undefined, address).read(
       f.project.id,
     ),
-    folded = foldCodexChatOwnerRelease({
+    foldInput = {
       owner,
       state: reopened,
       projectId: f.project.id,
       conversationId: started.session.id,
       workspaceKey: workspaceKey(resolveCheckout(f.root).workspace),
-    });
+    },
+    folded = foldCodexChatOwnerRelease(foldInput);
 
   expect(ownedCodingStateSchema.safeParse(reopened).success).toBe(true);
+  expect(reopened.turns).toHaveLength(2);
   expect(reopened.turns.at(-1)?.phase).toBe("completed");
   expect(folded).toMatchObject({
     eligible: true,
-    turnRequestId: f.request.requestId,
+    turnRequestId: secondRequestId,
     binding: {
       provider: "codex",
       sessionId: expect.any(String),
@@ -552,6 +570,136 @@ test("pure owner release fold accepts the exact reopened completed ordinary Chat
       turnId: expect.any(String),
     },
   });
+
+  const legacy = structuredClone(reopened);
+  delete legacy.codexChatOwnerLifecycle;
+  expect(foldCodexChatOwnerRelease({ ...foldInput, state: legacy })).toEqual({
+    eligible: false,
+    reason: "release-missing",
+  });
+
+  const missingRelease = structuredClone(reopened);
+  missingRelease.codexChatOwnerLifecycle =
+    missingRelease.codexChatOwnerLifecycle?.filter(
+      (fact) => fact.kind !== "generation-released",
+    );
+  expect(
+    foldCodexChatOwnerRelease({ ...foldInput, state: missingRelease }),
+  ).toEqual({ eligible: false, reason: "release-missing" });
+
+  const unknownTurn = structuredClone(reopened),
+    unknownLatest = unknownTurn.turns.at(-1);
+  if (!unknownLatest) throw Error("The owned Chat turn was missing.");
+  unknownLatest.phase = "unknown";
+  expect(
+    foldCodexChatOwnerRelease({ ...foldInput, state: unknownTurn }),
+  ).toEqual({ eligible: false, reason: "turn-incomplete" });
+
+  const stoppedTurn = structuredClone(reopened),
+    stoppedLatest = stoppedTurn.turns.at(-1);
+  if (!stoppedLatest) throw Error("The owned Chat turn was missing.");
+  stoppedLatest.phase = "cancelled";
+  expect(
+    foldCodexChatOwnerRelease({ ...foldInput, state: stoppedTurn }),
+  ).toEqual({ eligible: false, reason: "turn-incomplete" });
+
+  const tamperedTurnHash = structuredClone(reopened),
+    hashedLatest = tamperedTurnHash.turns.at(-1);
+  if (!hashedLatest) throw Error("The owned Chat turn was missing.");
+  hashedLatest.hash = "0".repeat(64);
+  expect(
+    foldCodexChatOwnerRelease({ ...foldInput, state: tamperedTurnHash }),
+  ).toEqual({ eligible: false, reason: "turn-mismatch" });
+
+  const timedOutOutcome = structuredClone(reopened),
+    latestNativeOutcome = timedOutOutcome.frames.find(
+      (frame) =>
+        frame.turnId === secondRequestId &&
+        frame.event.kind === "coding-chat" &&
+        frame.event.event.kind === "outcome",
+    );
+  if (
+    latestNativeOutcome?.event.kind !== "coding-chat" ||
+    latestNativeOutcome.event.event.kind !== "outcome"
+  )
+    throw Error("The completed native outcome was missing.");
+  latestNativeOutcome.event.event.outcome.timedOut = true;
+  expect(
+    foldCodexChatOwnerRelease({ ...foldInput, state: timedOutOutcome }),
+  ).toEqual({ eligible: false, reason: "binding-mismatch" });
+
+  const tamperedStartOwner = { ...owner, requestHash: "0".repeat(64) };
+  expect(
+    foldCodexChatOwnerRelease({ ...foldInput, owner: tamperedStartOwner }),
+  ).toEqual({ eligible: false, reason: "start-mismatch" });
+
+  const forkOwner = {
+    ...owner,
+    origin: {
+      kind: "codex-chat-fork" as const,
+      projectId: owner.projectId,
+      parentSessionId: randomUUID(),
+      throughTurnRequestId: f.request.requestId,
+      parentTurnHash: "a".repeat(64),
+      parentNativeThreadId: randomUUID(),
+      throughNativeTurnId: randomUUID(),
+      childNativeThreadId: randomUUID(),
+      captureHash: "b".repeat(64),
+      protocolVersion: "0.163.0-alpha.10.2" as const,
+    },
+  };
+  expect(foldCodexChatOwnerRelease({ ...foldInput, owner: forkOwner })).toEqual(
+    { eligible: false, reason: "invalid-owner" },
+  );
+
+  expect(
+    foldCodexChatOwnerRelease({
+      ...foldInput,
+      workspaceKey: `${foldInput.workspaceKey}-outside`,
+    }),
+  ).toEqual({ eligible: false, reason: "scope-mismatch" });
+
+  const laterSelection = structuredClone(reopened),
+    laterUser = laterSelection.frames.find(
+      (frame) =>
+        frame.turnId === secondRequestId && frame.event.kind === "user",
+    ),
+    laterTurn = laterSelection.turns.find(
+      (turn) => turn.requestId === secondRequestId,
+    );
+  if (
+    laterUser?.event.kind !== "user" ||
+    !("codexChat" in laterUser.event) ||
+    !laterUser.event.codexChat ||
+    !laterTurn
+  )
+    throw Error("The later ordinary Chat turn was missing.");
+  laterUser.event.codexChat.launch.model = "later-model-selection";
+  for (const frame of laterSelection.frames) {
+    if (
+      frame.turnId !== secondRequestId ||
+      frame.event.kind !== "coding-chat" ||
+      frame.event.provider !== "codex"
+    )
+      continue;
+    if (frame.event.event.kind === "process")
+      frame.event.event.requestedModel = "later-model-selection";
+    else if (frame.event.event.kind === "configuration")
+      frame.event.event.model = "later-model-selection";
+  }
+  laterTurn.hash = createHash("sha256")
+    .update(
+      JSON.stringify({
+        text: laterUser.event.text,
+        about: laterUser.event.about,
+        codexChat: laterUser.event.codexChat,
+      }),
+    )
+    .digest("hex");
+  expect(ownedCodingStateSchema.safeParse(laterSelection).success).toBe(true);
+  expect(
+    foldCodexChatOwnerRelease({ ...foldInput, state: laterSelection }),
+  ).toMatchObject({ eligible: true, turnRequestId: secondRequestId });
 });
 
 const heldSummaryUpdates: CodexChatReasoningSummary["update"][] = [
