@@ -4,6 +4,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   rmdirSync,
   statSync,
   symlinkSync,
@@ -330,6 +331,9 @@ test.each([
     userHome = join(home, "user"),
     configDirectory = join(userHome, ".agent-forge"),
     workspace = join(root, "workspace"),
+    launchWorkspace = fixtureMode.startsWith("fork-restart")
+      ? join(root, "workspace-alias")
+      : workspace,
     binDirectory = join(home, "bd-stand-in", "bin"),
     executable = join(binDirectory, "codex.exe"),
     log = join(home, "codex-chat-fixture-calls.jsonl"),
@@ -340,6 +344,12 @@ test.each([
     mkdirSync(configDirectory, { recursive: true });
     mkdirSync(workspace, { recursive: true });
     mkdirSync(join(workspace, ".git"));
+    if (launchWorkspace !== workspace)
+      symlinkSync(
+        workspace,
+        launchWorkspace,
+        process.platform === "win32" ? "junction" : "dir",
+      );
     mkdirSync(binDirectory, { recursive: true });
     plantInertCodexSyncFixture(workspace);
     writeFileSync(
@@ -427,15 +437,15 @@ test.each([
       }),
       launch: CodexChatLaunch = {
         mode: "chat",
-        cwd: workspace,
+        cwd: launchWorkspace,
         model: "gpt-5-codex",
         sandbox: "workspace-write",
         approvalPolicy: "on-request",
         prompt: "Fixture-only Codex compatibility check",
         context: {
           projectId: "project-fixture",
-          repository: workspace,
-          worktree: workspace,
+          repository: launchWorkspace,
+          worktree: launchWorkspace,
           about: [],
         },
       };
@@ -444,6 +454,15 @@ test.each([
       smith: "codex-journeyman",
       launch,
     });
+    if (fixtureMode.startsWith("fork-restart")) {
+      const physicalLaunchWorkspace = realpathSync.native(launch.cwd),
+        expectedCanonicalWorkspace =
+          process.platform === "win32"
+            ? physicalLaunchWorkspace.toLowerCase()
+            : physicalLaunchWorkspace;
+      expect(launch.cwd).not.toBe(prepared.canonicalCwd);
+      expect(prepared.canonicalCwd).toBe(expectedCanonicalWorkspace);
+    }
     expect(prepared.capabilities.version).toBe(version);
     status = "dispatch";
     const events: CodexChatEvent[] = [];
