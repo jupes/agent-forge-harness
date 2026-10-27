@@ -530,7 +530,9 @@ export function supervise(
     if (settled) return;
     interrupted = true;
     failInput(new Error("Interactive stdin is closed."));
-    if (process.platform === "win32") {
+    if (process.platform === "win32" && interactive) {
+      startWindowsStopSettlement();
+    } else if (process.platform === "win32") {
       startWindowsStopSettlement();
       if (!windowsStopSettlement || preserveWindowsStopGuard)
         killTree(proc.pid);

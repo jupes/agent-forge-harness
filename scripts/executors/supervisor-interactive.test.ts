@@ -430,6 +430,70 @@ test("Windows interactive refused tree settlement cannot report a released owner
   }
 });
 
+test("Windows interactive missing settlement capability retains its real job until owner cleanup", async () => {
+  if (process.platform !== "win32") return;
+  const actual: { guard: ReturnType<typeof guardRequiredTree> } = {
+    guard: null,
+  };
+  let terminateCalls = 0;
+  let releaseCalls = 0;
+  let announce!: (line: string) => void;
+  const ready = new Promise<string>((resolve) => {
+    announce = resolve;
+  });
+  const handle = supervise({
+    windowsHide: true,
+    command: [process.execPath, fake, "exit-tree"],
+    cwd: import.meta.dir,
+    env: buildChildEnv(process.env, []),
+    stdinMode: "interactive",
+    timeoutMs: 5000,
+    interactiveGuard(pid) {
+      const realGuard = guardRequiredTree(pid);
+      if (!realGuard)
+        throw new Error("The real process job could not be created.");
+      actual.guard = realGuard;
+      return {
+        release() {
+          releaseCalls++;
+          realGuard.release();
+        },
+        // Deliberately withhold settleStopped while retaining the real job.
+        // Production must not fall back to PID-based tree termination here.
+        terminate() {
+          terminateCalls++;
+        },
+      };
+    },
+    onLine: announce,
+  });
+  let childPid = 0;
+  try {
+    const line = await ready;
+    const parsed: unknown = JSON.parse(line);
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      !("childPid" in parsed) ||
+      typeof parsed.childPid !== "number"
+    )
+      throw new Error("The real-job fixture did not announce its helper.");
+    childPid = parsed.childPid;
+
+    await expect(handle.done).rejects.toThrow(
+      "Windows owned process cleanup could not be confirmed.",
+    );
+    expect(terminateCalls).toBeGreaterThan(0);
+    expect(releaseCalls).toBe(0);
+    expect(await gone(childPid)).toBe(false);
+  } finally {
+    const realGuard = actual.guard;
+    realGuard?.terminate?.();
+    await handle.done.catch(() => undefined);
+    if (childPid > 0) expect(await gone(childPid)).toBe(true);
+  }
+});
+
 test("interactive queue bounds reject before buffering oversized input and preserve legacy stdin", async () => {
   const before = liveChildCount();
   const handle = supervise({
