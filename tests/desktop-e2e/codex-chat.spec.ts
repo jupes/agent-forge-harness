@@ -311,7 +311,10 @@ async function attachForkChildApprovalDiagnostic(info: TestInfo) {
     }
   }
 }
-async function verifiedIdentityReadBarrier(page: Page) {
+async function verifiedIdentityReadBarrier(
+  page: Page,
+  shouldHold: () => boolean = () => true,
+) {
   let armed = false,
     held = false,
     releaseRead: () => void = () => {},
@@ -353,7 +356,7 @@ async function verifiedIdentityReadBarrier(page: Page) {
         throw Error(
           "The real Session Start identity page could not be verified.",
         );
-      if (armed) {
+      if (armed && shouldHold()) {
         armed = false;
         held = true;
         await released;
@@ -373,9 +376,15 @@ async function verifiedIdentityReadBarrier(page: Page) {
     release: () => releaseRead(),
   };
 }
-async function startedChat(page: Page) {
+type VerifiedIdentityReadBarrier = Awaited<
+  ReturnType<typeof verifiedIdentityReadBarrier>
+>;
+async function startedChat(
+  page: Page,
+  identityRead?: VerifiedIdentityReadBarrier,
+) {
   await openSettled(page, `/index.html#/desktop/project/${alpha.id}/sessions`);
-  const dialog = await composer(page);
+  const dialog = await composer(page, false, false, identityRead);
   await dialog.getByRole("button", { name: "Start", exact: true }).click();
   const pane = page.getByRole("region", {
     name: "Session conversation",
@@ -584,7 +593,12 @@ test.afterEach(async ({ page }) => {
     }
   }
 });
-async function composer(page: Page, capture = false, alreadyOpen = false) {
+async function composer(
+  page: Page,
+  capture = false,
+  alreadyOpen = false,
+  identityRead?: VerifiedIdentityReadBarrier,
+) {
   if (!alreadyOpen)
     await page
       .getByRole("button", { name: "New session", exact: true })
@@ -606,9 +620,37 @@ async function composer(page: Page, capture = false, alreadyOpen = false) {
   await dialog
     .getByRole("textbox", { name: "Session prompt", exact: true })
     .fill("PRIVATE native Chat first question");
-  await dialog
-    .getByRole("button", { name: "Check supported options", exact: true })
-    .click();
+  const startIdentitySection = dialog.getByRole("region", {
+    name: "Original Start requests",
+    exact: true,
+  });
+  if (identityRead) {
+    await expect(
+      startIdentitySection.getByRole("button", {
+        name: "Check server",
+        exact: true,
+      }),
+    ).toBeEnabled();
+    identityRead.arm();
+  }
+  try {
+    await dialog
+      .getByRole("button", { name: "Check supported options", exact: true })
+      .click();
+    if (identityRead) {
+      await expect.poll(identityRead.held).toBe(true);
+      await expect(startIdentitySection.getByRole("status")).toContainText(
+        "Checking the server-owned identity page",
+      );
+      await expect(
+        dialog.getByRole("button", { name: "Start", exact: true }),
+      ).toBeDisabled();
+    }
+  } finally {
+    identityRead?.release();
+  }
+  if (identityRead)
+    await expect(startIdentitySection.getByRole("status")).toBeHidden();
   await expect(
     dialog.getByRole("region", {
       name: "Equivalent session command",
@@ -4594,8 +4636,28 @@ test("an undispatched Fork original can be explicitly retired after reload", asy
   const nativeForksBefore = calls().filter(
     (row) => row.kind === "rpc" && row.method === "thread/fork",
   ).length;
+  let previewRequested = false;
+  const observePreviewRequest = (request: Request) => {
+    const url = new URL(request.url());
+    if (
+      request.method() === "POST" &&
+      url.pathname === `/__agent-forge/projects/${alpha.id}/sessions/preview`
+    )
+      previewRequested = true;
+  };
+  const identityRead = await verifiedIdentityReadBarrier(
+    page,
+    () => previewRequested,
+  );
+  page.on("request", observePreviewRequest);
   mode("fork-service-tier-null");
-  const { pane, record } = await startedChat(page);
+  const { pane, record } = await (async () => {
+    try {
+      return await startedChat(page, identityRead);
+    } finally {
+      page.off("request", observePreviewRequest);
+    }
+  })();
   const selectedTurnRequestId = await completeForkSourceTurn(
     page,
     pane,
