@@ -1,5 +1,11 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import { SHIFT_LIMITS } from "../config/defaults";
@@ -53,7 +59,9 @@ const alive = (pid: number) => {
 async function fixture(mode = "startup-tree") {
   const root = realpathSync.native(scratch.make("owned shift launch ")),
     home = join(root, "home"),
-    log = join(root, "tree.jsonl");
+    log = join(root, "tree.jsonl"),
+    publicationReady = join(root, "tree-publication.ready"),
+    publicationRelease = join(root, "tree-publication.release");
   mkdirSync(join(root, ".git"));
   const originals = createProjectShiftRegistry({ root, home });
   const saved = await originals.reserve(
@@ -89,14 +97,53 @@ async function fixture(mode = "startup-tree") {
         ...buildChildEnv(process.env, []),
         AGENT_FORGE_HOME: home,
         INTERACTIVE_TREE_LOG: log,
+        INTERACTIVE_TREE_PUBLICATION_READY: publicationReady,
+        INTERACTIVE_TREE_PUBLICATION_RELEASE: publicationRelease,
       },
     };
   const tree = () =>
     existsSync(log)
       ? treeSchema.parse(parsed(readFileSync(log, "utf8").trim()))
       : null;
-  return { root, home, log, intent, originals, command, spec, tree };
+  return {
+    root,
+    home,
+    log,
+    publicationReady,
+    publicationRelease,
+    intent,
+    originals,
+    command,
+    spec,
+    tree,
+  };
 }
+
+test("an incomplete owned fixture announcement waits for its complete row", async () => {
+  const f = await fixture("partial-tree"),
+    child = createOwnedProjectShiftLauncher(f)(f.spec, f.intent);
+  try {
+    const enginePid = await child.enginePid;
+    await until(() => (existsSync(f.publicationReady) ? true : null));
+    expect(f.tree()).toBeNull();
+    writeFileSync(f.publicationRelease, "release");
+    const row = await until(f.tree);
+    expect(row).toEqual({ pid: enginePid, childPid: expect.any(Number) });
+  } finally {
+    writeFileSync(f.publicationRelease, "release");
+    await child.stop();
+    await child.done;
+  }
+});
+
+test("complete malformed and interior owned fixture rows are never skipped", async () => {
+  const f = await fixture(),
+    validRow = JSON.stringify({ pid: 123, childPid: 456 });
+  writeFileSync(f.log, "not-json\n");
+  expect(() => f.tree()).toThrow("Invalid owned fixture announcement");
+  writeFileSync(f.log, `${validRow}\nnot-json\n${validRow}\n`);
+  expect(() => f.tree()).toThrow("Invalid owned fixture announcement");
+});
 
 test("the mandatory project launch holds engine code before its grant and fences a late continuation after Stop", async () => {
   const f = await fixture();
