@@ -186,6 +186,8 @@ export function hearthCouncilRunner(
 export interface OperatorApiOverrides {
   /** Trusted fixture/embedding source; never an HTTP field. */
   forgeGateLogRoot?: string;
+  /** Trusted repository registry root; absent defaults to localStateRoot(root). */
+  projectRepositoryRegistryRoot?: string;
   /** Trusted attended project launcher; null explicitly holds Start. Never public request data. */
   projectShiftRuntime?: ProjectShiftRuntime | null | undefined;
   /** Fixed status probes only; tests supply a fixture and never inspect real accounts. */
@@ -515,6 +517,7 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
   }
   const table = operatorRoutes({
     projectHome: home,
+    projectRepositoryRegistryRoot: options.api?.projectRepositoryRegistryRoot,
     smithCreateService,
     smithEditService,
     smithRoutingEditService,

@@ -3,6 +3,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ProjectCatalog } from "../../../types/projects";
 import { resolveCheckout } from "../../ledger/workspace";
+import { workspaceKey } from "../../projects/scope";
 import { createProjectStore } from "../../projects/store";
 import { withQueueLock } from "../../scheduler/queue-lock";
 import { startTestHearth, type TestHearth } from "../testing";
@@ -452,12 +453,14 @@ test("trusted registry override is shared by options, preview, reserve, and comm
   expect(optionsEnvelope).toMatchObject({ ok: true, error: null });
   const optionRows = optionsEnvelope.data.repositories as Array<{
     path: string;
+    key: string;
     name: string;
     served: boolean;
   }>;
   const injectedPath = resolveCheckout(injectedCheckout).worktree;
   expect(optionRows).toContainEqual({
     path: injectedPath,
+    key: workspaceKey(injectedPath),
     name: injectedName,
     served: false,
   });

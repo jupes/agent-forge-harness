@@ -52,6 +52,8 @@ interface PreferenceChange {
 export interface ProjectCreateRouteOptions {
   root: string;
   workspace: string;
+  /** Trusted internal registry source; defaults to the checkout's local state root. */
+  projectRepositoryRegistryRoot?: string;
   loadScope(): Promise<ProjectSnapshot>;
 }
 
@@ -93,7 +95,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * malformed or missing registered checkout cannot be mistaken for an empty
  * registry.
  */
-function completeRepositoryOptions(root: string): ProjectRepositoryOption[] {
+function completeRepositoryOptions(
+  root: string,
+  registryRoot?: string,
+): ProjectRepositoryOption[] {
   const served = resolveCheckout(root).workspace;
   const servedOption: ProjectRepositoryOption = {
     path: served,
@@ -101,7 +106,7 @@ function completeRepositoryOptions(root: string): ProjectRepositoryOption[] {
     name: basename(served),
     served: true,
   };
-  const local = localStateRoot(root);
+  const local = registryRoot ?? localStateRoot(root);
   const repositoryRoot = join(local, "repos");
   try {
     const repositoryRootStat = lstatSync(repositoryRoot);
@@ -236,7 +241,10 @@ function projectCreateOptionsData(
       parentId: issue.parent ?? null,
     }))
     .sort((left, right) => left.id.localeCompare(right.id));
-  const repositoryOptions = completeRepositoryOptions(options.root);
+  const repositoryOptions = completeRepositoryOptions(
+    options.root,
+    options.projectRepositoryRegistryRoot,
+  );
   if (epics.length > MAX_PROJECT_CREATE_OPTION_EPICS)
     throw unavailableProjectOptions();
   const checked = projectCreateOptionsSchema.safeParse({
@@ -270,10 +278,14 @@ function projectScopePreviewInput(
   return { ok: true, value: parsed.data };
 }
 
-function registeredRepositoryOptions(root: string): Set<string> {
+function registeredRepositoryOptions(
+  root: string,
+  registryRoot?: string,
+): Set<string> {
   const allowed = new Set([workspaceKey(resolveCheckout(root).workspace)]);
-  const local = localStateRoot(root);
-  for (const name of readRepoContext(root).context?.knownRepos ?? []) {
+  const local = registryRoot ?? localStateRoot(root);
+  for (const name of readRepoContext(root, registryRoot).context?.knownRepos ??
+    []) {
     if (
       !/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(name) ||
       name === "." ||
@@ -320,7 +332,10 @@ function checkedScope(
       409,
       "This hearth does not serve the selected project workspace.",
     );
-  const allowedRepositories = registeredRepositoryOptions(options.root);
+  const allowedRepositories = registeredRepositoryOptions(
+    options.root,
+    options.projectRepositoryRegistryRoot,
+  );
   if (
     scope.repositories.some(
       (repository) => !allowedRepositories.has(workspaceKey(repository)),
