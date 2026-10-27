@@ -560,14 +560,54 @@ test("retirement is explicit and a tombstone readback unlocks a fresh review", a
 });
 
 test("Projects offers the explicit New project flow", async ({ page }) => {
+  const writes: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() !== "POST") return;
+    const path = new URL(request.url()).pathname;
+    if (
+      path.includes("/projects/create-reservations") ||
+      path.endsWith("/session-start-identities")
+    )
+      writes.push(path);
+  });
+
   await openSettled(page, "/index.html#/desktop/projects");
   const create = page.getByRole("button", {
     name: "New project",
     exact: true,
   });
   await expect(create).toBeEnabled();
-  await create.click();
-  await expect(page.getByRole("dialog")).toBeVisible();
+  await create.focus();
+  await expect(create).toBeFocused();
+  await page.keyboard.press("Enter");
+
+  const dialog = page.getByRole("dialog", { name: "Create a project" });
+  const close = dialog.getByRole("button", { name: "Close dialog" });
+  const reviewScope = dialog.getByRole("button", {
+    name: "Review trusted project scope",
+  });
+  await expect(dialog).toBeVisible();
+  await expect(close).toBeFocused();
+
+  await page.keyboard.press("Shift+Tab");
+  await expect(reviewScope).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(close).toBeFocused();
+  await page.keyboard.press("Tab");
+  const name = dialog.getByRole("textbox", { name: "Project name" });
+  await expect(name).toBeFocused();
+  await page.keyboard.type("Keyboard project draft");
+  await expect(name).toHaveValue("Keyboard project draft");
+  await expect(name).toBeFocused();
+
+  await page.keyboard.press("Escape");
+  await expect(dialog).not.toBeVisible();
+  await expect(create).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(dialog).toBeVisible();
+  await expect(close).toBeFocused();
+  await expect(name).toHaveValue("Keyboard project draft");
+  expect(writes).toEqual([]);
 });
 
 test("Projects remains rendered while trusted workspace scope hydrates", async ({
@@ -982,10 +1022,18 @@ test("a protected project reservation stays private until a separate create acti
   await page
     .getByRole("button", { name: "Review reserved project", exact: true })
     .click();
+  const reviewTrigger = page.getByRole("button", {
+    name: "Review reserved project",
+    exact: true,
+  });
   const reviewDialog = page.getByRole("dialog", {
     name: "Review saved project original",
   });
+  const reviewClose = reviewDialog.getByRole("button", {
+    name: "Close dialog",
+  });
   await expect(reviewDialog).toBeVisible();
+  await expect(reviewClose).toBeFocused();
   await page.screenshot({
     path: test.info().outputPath("project-create-reserved-review.png"),
   });
@@ -995,6 +1043,12 @@ test("a protected project reservation stays private until a separate create acti
   await expect(
     reviewDialog.getByText("reserved", { exact: true }),
   ).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(reviewDialog).not.toBeVisible();
+  await expect(reviewTrigger).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(reviewDialog).toBeVisible();
+  await expect(reviewClose).toBeFocused();
   expect(postedPaths).toEqual(["/__agent-forge/projects/create-reservations"]);
   expect(identityPosts).toBe(0);
   expect(catalogBefore.projects.map(({ id, slug }) => ({ id, slug }))).toEqual([
