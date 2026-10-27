@@ -153,14 +153,9 @@ test("reserve persists a stable child ID and exact original across reopen", asyn
 });
 
 test("new reservation metadata does not change the established Fork request hash", async () => {
-  const direct = fixture(
-      scratch.make("codex-fork-direct-"),
-      new MemoryStorage(),
-    ).journal,
-    preflight = fixture(
-      scratch.make("codex-fork-preflight-"),
-      new MemoryStorage(),
-    ).journal,
+  const root = scratch.make("codex-fork-metadata-hash-"),
+    direct = fixture(root, new MemoryStorage()).journal,
+    preflight = fixture(root, new MemoryStorage()).journal,
     directOriginal = await direct.reserve(projectId, parentSessionId, {
       requestId,
       throughTurnRequestId,
