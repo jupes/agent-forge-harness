@@ -1,12 +1,18 @@
+import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
+import { smithsViewSchema } from "../../apps/desktop/src/smiths-protocol";
 import { OPERATOR_HEADER, SURFACE_HEADER } from "../../scripts/hearth/paths";
 import { resolveCheckout } from "../../scripts/ledger/workspace";
 import {
   projectCreateOptionsSchema,
   projectScopePreviewSchema,
 } from "../../scripts/projects/create-options-protocol";
+import {
+  projectCreateDiscoverySchema,
+  projectCreateIdentitySchema,
+} from "../../scripts/projects/create-protocol";
 import { projectFixture } from "../../scripts/projects/testing";
 import type { ProjectCatalog } from "../../types/projects";
 import { readState, withStateLock, writeState } from "../e2e/bd-stand-in-state";
@@ -59,6 +65,874 @@ test.beforeEach(() => {
   );
 });
 
+async function reserveFromProjectFlow(
+  page: import("@playwright/test").Page,
+  input: { slug: string; name: string },
+) {
+  await expect(
+    page.getByRole("button", { name: "New project", exact: true }),
+  ).toBeEnabled();
+  await page.getByRole("button", { name: "New project", exact: true }).click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toBeVisible();
+  const token = await pageToken(page);
+  const headers = {
+    "Content-Type": "application/json",
+    [OPERATOR_HEADER]: token,
+    [SURFACE_HEADER]: "ui",
+  };
+  const source = await page.evaluate(
+    async ({ headers }) => {
+      const [optionsResponse, smithsResponse, catalogResponse] =
+        await Promise.all([
+          fetch("/__agent-forge/projects/create-options", { headers }),
+          fetch("/__agent-forge/smiths", { headers }),
+          fetch("/__agent-forge/projects", { headers }),
+        ]);
+      return {
+        optionsStatus: optionsResponse.status,
+        options: await optionsResponse.json(),
+        smithsStatus: smithsResponse.status,
+        smiths: await smithsResponse.json(),
+        catalogStatus: catalogResponse.status,
+        catalog: await catalogResponse.json(),
+      };
+    },
+    { headers },
+  );
+  expect(source.optionsStatus).toBe(200);
+  expect(source.smithsStatus).toBe(200);
+  expect(source.catalogStatus).toBe(200);
+  const trusted = projectCreateOptionsSchema.parse(source.options.data);
+  const configured = smithsViewSchema.parse(source.smiths.data);
+  const catalogValue = source.catalog.data as ProjectCatalog;
+  const repositoryIndex = trusted.repositories.findIndex((row) => row.served);
+  const epic = trusted.epics[0];
+  const keeper = configured.smiths.find((row) => row.enabled);
+  expect(repositoryIndex).toBeGreaterThanOrEqual(0);
+  expect(epic).toBeDefined();
+  expect(keeper).toBeDefined();
+
+  await dialog.getByRole("textbox", { name: "Project name" }).fill(input.name);
+  await dialog.getByRole("textbox", { name: "Project slug" }).fill(input.slug);
+  await dialog
+    .getByRole("textbox", { name: "Project description" })
+    .fill(`Reviewed original for ${input.slug}.`);
+  await dialog.getByRole("textbox", { name: "Project icon" }).fill("P");
+  const keeperSelect = dialog.getByRole("combobox", { name: "Project Keeper" });
+  await expect(keeperSelect).toHaveValue("");
+  await keeperSelect.selectOption(keeper!.name);
+  await dialog
+    .getByRole("combobox", { name: "Project color" })
+    .selectOption("green");
+  await dialog
+    .locator("fieldset")
+    .nth(0)
+    .getByRole("checkbox")
+    .nth(repositoryIndex)
+    .check();
+  await dialog.locator("fieldset").nth(1).getByRole("checkbox").first().check();
+
+  await dialog
+    .getByRole("button", { name: "Review trusted project scope" })
+    .click();
+  await expect(
+    dialog.getByText("This exact original is reviewed", { exact: false }),
+  ).toBeVisible();
+  const reviewed = dialog.locator("dl.af-project-create-original");
+  await expect(
+    reviewed
+      .getByText("Workspace", { exact: true })
+      .locator("xpath=following-sibling::dd[1]"),
+  ).toHaveText(trusted.workspace.path);
+  await expect(
+    reviewed
+      .getByText("Repositories", { exact: true })
+      .locator("xpath=following-sibling::dd[1]"),
+  ).toHaveText(trusted.repositories[repositoryIndex]!.path);
+  const original = {
+    slug: input.slug,
+    name: input.name,
+    description: `Reviewed original for ${input.slug}.`,
+    icon: "P",
+    keeperSmith: keeper!.name,
+    color: "green" as const,
+    workspaces: [
+      {
+        root: trusted.workspace.path,
+        repositories: [trusted.repositories[repositoryIndex]!.path],
+        epicIds: [epic!.id],
+      },
+    ],
+  };
+  const beforeWrites = await page.evaluate(
+    async ({ headers }) => {
+      const response = await fetch(
+        "/__agent-forge/projects/create-reservations",
+        { headers },
+      );
+      return { status: response.status, body: await response.json() };
+    },
+    { headers },
+  );
+  expect(beforeWrites.status).toBe(200);
+  expect(beforeWrites.body.data.operations).toEqual([]);
+
+  await dialog
+    .getByRole("button", { name: "Reserve reviewed original" })
+    .click();
+  const reviewButton = page.getByRole("button", {
+    name: "Review reserved project",
+    exact: true,
+  });
+  await expect(reviewButton).toBeVisible();
+  const discovery = await page.evaluate(
+    async ({ headers }) => {
+      const response = await fetch(
+        "/__agent-forge/projects/create-reservations",
+        { headers },
+      );
+      return { status: response.status, body: await response.json() };
+    },
+    { headers },
+  );
+  expect(discovery.status).toBe(200);
+  const discoveryPage = projectCreateDiscoverySchema.parse(discovery.body.data);
+  expect(discoveryPage.operations).toHaveLength(1);
+  const reservedRow = discoveryPage.operations[0]!;
+  expect(reservedRow.state).toBe("reserved");
+  const identityRead = await page.evaluate(
+    async ({ headers, requestId }) => {
+      const response = await fetch(
+        `/__agent-forge/projects/create-reservations/${requestId}`,
+        { headers },
+      );
+      return { status: response.status, body: await response.json() };
+    },
+    { headers, requestId: reservedRow!.requestId },
+  );
+  expect(identityRead.status).toBe(200);
+  const identity = projectCreateIdentitySchema.parse(identityRead.body.data);
+  expect(identity).toMatchObject({ state: "reserved", original });
+  expect(identity.baseRevision).toBe(catalogValue.revision);
+  return {
+    requestId: identity.requestId,
+    requestHash: identity.requestHash,
+    original,
+  };
+}
+
+test("a reviewed project is created from its saved original and opens Overview", async ({
+  page,
+}) => {
+  const mutations: Array<{ path: string; body: unknown }> = [];
+  let sessionStartPosts = 0;
+  let commitRequestSeen = false;
+  let summaryRequests = 0;
+  let releaseSummary!: () => void;
+  const summaryRelease = new Promise<void>((resolve) => {
+    releaseSummary = resolve;
+  });
+  await page.route("**/__agent-forge/projects/summary", async (route) => {
+    if (!commitRequestSeen) {
+      await route.continue();
+      return;
+    }
+    summaryRequests += 1;
+    await summaryRelease;
+    await route.continue();
+  });
+  page.on("request", (request) => {
+    const path = new URL(request.url()).pathname;
+    if (path.endsWith(`/commit`) && request.method() === "POST")
+      commitRequestSeen = true;
+    if (request.method() !== "POST") return;
+    if (path.endsWith("/session-start-identities")) sessionStartPosts++;
+    if (path.startsWith("/__agent-forge/projects/create-reservations"))
+      mutations.push({ path, body: request.postDataJSON() });
+  });
+  await openSettled(page, "/index.html#/desktop/projects");
+  const saved = await reserveFromProjectFlow(page, {
+    slug: "reviewed-project-flow",
+    name: "Reviewed project flow",
+  });
+  expect(mutations).toHaveLength(1);
+  expect(mutations[0]).toMatchObject({
+    path: "/__agent-forge/projects/create-reservations",
+    body: {
+      requestId: saved.requestId,
+      original: saved.original,
+    },
+  });
+  expect(sessionStartPosts).toBe(0);
+
+  await page
+    .getByRole("button", { name: "Review reserved project", exact: true })
+    .click();
+  const review = page.getByRole("dialog");
+  await expect(
+    review.getByText(saved.requestId, { exact: true }),
+  ).toBeVisible();
+  await expect(
+    review.getByText(saved.requestHash, { exact: true }),
+  ).toBeVisible();
+  const summaryBeforeCommit = await page.evaluate(async () => {
+    const response = await fetch("/__agent-forge/projects/summary", {
+      cache: "no-store",
+    });
+    const body: unknown = await response.json();
+    return { status: response.status, body };
+  });
+  expect(summaryBeforeCommit.status).toBe(200);
+  expect(
+    (
+      summaryBeforeCommit.body as {
+        data: { catalog: { projects: ProjectCatalog["projects"] } };
+      }
+    ).data.catalog.projects.some(
+      (project) => project.slug === saved.original.slug,
+    ),
+  ).toBe(false);
+  let createdProjectId = "";
+  try {
+    const commitReply = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname ===
+        `/__agent-forge/projects/create-reservations/${saved.requestId}/commit`,
+    );
+    await review
+      .getByRole("button", { name: "Create project from this original" })
+      .click();
+    const commitResponse = await commitReply;
+    expect(commitResponse.status()).toBe(200);
+    const committed = projectCreateIdentitySchema.parse(
+      (await commitResponse.json()).data.operation,
+    );
+    expect(committed.projectId).not.toBeNull();
+    createdProjectId = committed.projectId!;
+    await expect.poll(() => summaryRequests).toBeGreaterThan(0);
+    expect(new URL(page.url()).hash).toContain("/desktop/projects");
+  } finally {
+    releaseSummary();
+  }
+  await expect(page).toHaveURL(
+    new RegExp(`/project/${createdProjectId}/overview$`),
+  );
+  await expect(page.locator(".af-desktop-project-name")).toHaveText(
+    saved.original.name,
+  );
+  expect(mutations.map((item) => item.path)).toEqual([
+    "/__agent-forge/projects/create-reservations",
+    `/__agent-forge/projects/create-reservations/${saved.requestId}/commit`,
+  ]);
+  expect(mutations[1]?.body).toMatchObject({
+    requestHash: saved.requestHash,
+    reviewedScopeHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+  });
+  expect(sessionStartPosts).toBe(0);
+
+  const token = await pageToken(page);
+  const headers = {
+    [OPERATOR_HEADER]: token,
+    [SURFACE_HEADER]: "ui",
+  };
+  const readback = await page.evaluate(
+    async ({ headers, requestId }) => {
+      const [identityResponse, catalogResponse] = await Promise.all([
+        fetch(`/__agent-forge/projects/create-reservations/${requestId}`, {
+          headers,
+        }),
+        fetch("/__agent-forge/projects", { headers }),
+      ]);
+      return {
+        identityStatus: identityResponse.status,
+        identity: await identityResponse.json(),
+        catalogStatus: catalogResponse.status,
+        catalog: await catalogResponse.json(),
+      };
+    },
+    { headers, requestId: saved.requestId },
+  );
+  expect(readback.identityStatus).toBe(200);
+  expect(readback.catalogStatus).toBe(200);
+  expect(
+    projectCreateIdentitySchema.parse(readback.identity.data),
+  ).toMatchObject({
+    requestId: saved.requestId,
+    requestHash: saved.requestHash,
+    original: saved.original,
+    state: "created",
+    projectId: createdProjectId,
+  });
+  expect(readback.catalog.data.projects).toContainEqual(
+    expect.objectContaining({
+      id: createdProjectId,
+      slug: saved.original.slug,
+    }),
+  );
+});
+
+test("a lost commit reply reloads the same created original without replay", async ({
+  page,
+}) => {
+  const mutations: Array<{ path: string; body: unknown }> = [];
+  let commitEffectReached!: () => void;
+  let releaseCommitReply!: () => void;
+  const effectReached = new Promise<void>((resolve) => {
+    commitEffectReached = resolve;
+  });
+  const commitReplyRelease = new Promise<void>((resolve) => {
+    releaseCommitReply = resolve;
+  });
+  const commitPathPattern = "**/create-reservations/*/commit";
+  const loseCommitReply = async (route: import("@playwright/test").Route) => {
+    await route.fetch();
+    commitEffectReached();
+    await commitReplyRelease;
+    await route.abort("failed").catch(() => undefined);
+  };
+  await page.route(commitPathPattern, loseCommitReply);
+  let recoveryOriginalReads = 0;
+  let countRecoveryReads = false;
+  page.on("request", (request) => {
+    const path = new URL(request.url()).pathname;
+    if (
+      request.method() === "GET" &&
+      /^\/__agent-forge\/projects\/create-reservations\/[0-9a-f-]+$/.test(
+        path,
+      ) &&
+      countRecoveryReads
+    )
+      recoveryOriginalReads += 1;
+    if (request.method() !== "POST") return;
+    if (path.startsWith("/__agent-forge/projects/create-reservations"))
+      mutations.push({ path, body: request.postDataJSON() });
+  });
+
+  await openSettled(page, "/index.html#/desktop/projects");
+  const saved = await reserveFromProjectFlow(page, {
+    slug: "lost-commit-reply-project",
+    name: "Lost commit reply project",
+  });
+  await page
+    .getByRole("button", { name: "Review reserved project", exact: true })
+    .click();
+  const review = page.getByRole("dialog");
+  const click = review
+    .getByRole("button", { name: "Create project from this original" })
+    .click()
+    .catch(() => undefined);
+  const recoveryPath = `/__agent-forge/projects/create-reservations/${saved.requestId}`;
+  const recoveryCaptureKey = `__projectCreateRecovery_${saved.requestId.replaceAll(
+    "-",
+    "",
+  )}`;
+  const recoveryCaptureId = `${Date.now()}-${Math.random()}`;
+  try {
+    await effectReached;
+    const token = await pageToken(page);
+    const verifiedBeforeReload = await page.evaluate(
+      async ({ token, requestId }) => {
+        const response = await fetch(
+          `/__agent-forge/projects/create-reservations/${requestId}`,
+          {
+            headers: {
+              ["X-Agent-Forge-Operator"]: token,
+              ["X-Agent-Forge-Surface"]: "ui",
+            },
+          },
+        );
+        return { status: response.status, body: await response.json() };
+      },
+      { token, requestId: saved.requestId },
+    );
+    expect(verifiedBeforeReload.status).toBe(200);
+    const createdBeforeReload = projectCreateIdentitySchema.parse(
+      verifiedBeforeReload.body.data,
+    );
+    expect(createdBeforeReload).toMatchObject({
+      requestId: saved.requestId,
+      requestHash: saved.requestHash,
+      original: saved.original,
+      state: "created",
+    });
+    expect(createdBeforeReload.projectId).not.toBeNull();
+
+    countRecoveryReads = true;
+    await page.addInitScript(
+      ({ key, captureId, exactPath, maxBytes }) => {
+        const target = window as unknown as Record<string, unknown>;
+        target[key] = null;
+        const originalFetch = window.fetch.bind(window);
+        let captured = false;
+        const wrappedFetch = async (
+          input: RequestInfo | URL,
+          init?: RequestInit,
+        ): Promise<Response> => {
+          let requestUrl: URL | null = null;
+          let method = init?.method;
+          try {
+            if (input instanceof Request) {
+              requestUrl = new URL(input.url);
+              method ??= input.method;
+            } else {
+              requestUrl = new URL(String(input), window.location.href);
+            }
+          } catch {
+            return originalFetch(input, init);
+          }
+          method ??= "GET";
+          if (
+            captured ||
+            requestUrl.pathname !== exactPath ||
+            method.toUpperCase() !== "GET"
+          )
+            return originalFetch(input, init);
+
+          captured = true;
+          let response: Response;
+          try {
+            response = await originalFetch(input, init);
+          } catch (error) {
+            target[key] = {
+              captureId,
+              status: null,
+              bodyText: null,
+              origin: requestUrl.origin,
+              pathname: requestUrl.pathname,
+              responseOrigin: null,
+              responsePathname: null,
+              method,
+              sameOrigin: requestUrl.origin === window.location.origin,
+              captureError: "fetch_failed",
+            };
+            throw error;
+          }
+
+          const sameOrigin = requestUrl.origin === window.location.origin;
+          let responseUrl: URL | null = null;
+          try {
+            responseUrl = new URL(response.url);
+          } catch {
+            // A missing or malformed final URL is recorded as a fixed mismatch.
+          }
+          const responseMatches =
+            responseUrl?.origin === window.location.origin &&
+            responseUrl.pathname === exactPath;
+          let bodyText: string | null = null;
+          let captureError: string | null = !sameOrigin
+            ? "foreign_origin"
+            : !responseMatches
+              ? "response_url_mismatch"
+              : null;
+          if (sameOrigin) {
+            try {
+              const reader = response.clone().body?.getReader();
+              if (!reader) {
+                captureError = "body_unavailable";
+              } else {
+                const chunks: Uint8Array[] = [];
+                let byteLength = 0;
+                while (true) {
+                  const part = await reader.read();
+                  if (part.done) break;
+                  byteLength += part.value.byteLength;
+                  if (byteLength > maxBytes) {
+                    captureError = "body_too_large";
+                    void reader.cancel().catch(() => undefined);
+                    reader.releaseLock();
+                    break;
+                  }
+                  chunks.push(part.value);
+                }
+                if (captureError === null) {
+                  const bytes = new Uint8Array(byteLength);
+                  let offset = 0;
+                  for (const chunk of chunks) {
+                    bytes.set(chunk, offset);
+                    offset += chunk.byteLength;
+                  }
+                  bodyText = new TextDecoder("utf-8", { fatal: true }).decode(
+                    bytes,
+                  );
+                }
+              }
+            } catch {
+              captureError = "body_read_failed";
+            }
+          }
+          target[key] = {
+            captureId,
+            status: response.status,
+            bodyText,
+            origin: requestUrl.origin,
+            pathname: requestUrl.pathname,
+            responseOrigin: responseUrl?.origin ?? null,
+            responsePathname: responseUrl?.pathname ?? null,
+            method,
+            sameOrigin,
+            captureError,
+          };
+          return response;
+        };
+        Object.defineProperty(window, "fetch", {
+          configurable: true,
+          value: wrappedFetch,
+          writable: true,
+        });
+      },
+      {
+        key: recoveryCaptureKey,
+        captureId: recoveryCaptureId,
+        exactPath: recoveryPath,
+        maxBytes: 64 * 1024,
+      },
+    );
+    await page.reload();
+    releaseCommitReply();
+    await click;
+    await expect.poll(() =>
+      page.evaluate(
+        (key) => (window as unknown as Record<string, unknown>)[key] !== null,
+        recoveryCaptureKey,
+      ),
+    ).toBe(true);
+    const recoveredRead = (await page.evaluate((key) => {
+      const value = (window as unknown as Record<string, unknown>)[key];
+      return typeof value === "object" && value !== null ? value : null;
+    }, recoveryCaptureKey)) as {
+      captureId: string;
+      status: number | null;
+      bodyText: string | null;
+      origin: string;
+      pathname: string;
+      responseOrigin: string | null;
+      responsePathname: string | null;
+      method: string;
+      sameOrigin: boolean;
+      captureError: string | null;
+    } | null;
+    expect(recoveredRead).not.toBeNull();
+    if (!recoveredRead) throw Error("The recovery read was not captured.");
+    expect(recoveredRead.captureError).toBeNull();
+    expect(recoveredRead.captureId).toBe(recoveryCaptureId);
+    expect(recoveredRead.pathname).toBe(recoveryPath);
+    expect(recoveredRead.method).toBe("GET");
+    expect(recoveredRead.origin).toBe(new URL(page.url()).origin);
+    expect(recoveredRead.responseOrigin).toBe(new URL(page.url()).origin);
+    expect(recoveredRead.responsePathname).toBe(recoveryPath);
+    expect(recoveredRead.sameOrigin).toBe(true);
+    expect(recoveredRead.status).toBe(200);
+    if (recoveredRead.bodyText === null)
+      throw Error("The recovered project original envelope was unavailable.");
+    let recoveredBody: unknown;
+    try {
+      recoveredBody = JSON.parse(recoveredRead.bodyText);
+    } catch {
+      throw Error("The recovered project original was not valid JSON.");
+    }
+    if (
+      typeof recoveredBody !== "object" ||
+      recoveredBody === null ||
+      !("data" in recoveredBody)
+    )
+      throw Error("The recovered project original envelope was unavailable.");
+    const recoveredIdentity = projectCreateIdentitySchema.parse(
+      recoveredBody.data,
+    );
+    expect(recoveredIdentity).toMatchObject({
+      requestId: saved.requestId,
+      requestHash: saved.requestHash,
+      original: saved.original,
+      state: "created",
+    });
+    expect(recoveredIdentity.projectId).toBe(createdBeforeReload.projectId);
+    await expect(
+      page.getByRole("link", { name: saved.original.name, exact: true }),
+    ).toBeVisible();
+    expect(recoveryOriginalReads).toBe(1);
+    expect(mutations.map((item) => item.path)).toEqual([
+      "/__agent-forge/projects/create-reservations",
+      `/__agent-forge/projects/create-reservations/${saved.requestId}/commit`,
+    ]);
+    expect(mutations[1]?.body).toMatchObject({
+      requestHash: saved.requestHash,
+      reviewedScopeHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+  } finally {
+    releaseCommitReply();
+    await click;
+    await page.unroute(commitPathPattern, loseCommitReply);
+  }
+});
+
+test("retirement is explicit and a tombstone readback unlocks a fresh review", async ({
+  page,
+}) => {
+  const mutations: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "POST")
+      mutations.push(new URL(request.url()).pathname);
+  });
+  await openSettled(page, "/index.html#/desktop/projects");
+  const saved = await reserveFromProjectFlow(page, {
+    slug: "retired-project-flow",
+    name: "Retired project flow",
+  });
+  await page
+    .getByRole("button", { name: "Review reserved project", exact: true })
+    .click();
+  const review = page.getByRole("dialog");
+  await review
+    .getByRole("button", { name: "Retire reserved original" })
+    .click();
+  const confirmation = review.getByRole("alertdialog", {
+    name: "Confirm project retirement",
+  });
+  await expect(confirmation).toContainText(saved.requestId);
+  await confirmation
+    .getByRole("button", { name: "Confirm retirement" })
+    .click();
+  await expect(
+    page.getByRole("button", { name: "New project", exact: true }),
+  ).toBeEnabled();
+  const token = await pageToken(page);
+  const retired = await page.evaluate(
+    async ({ token, requestId }) => {
+      const response = await fetch(
+        `/__agent-forge/projects/create-reservations/${requestId}`,
+        {
+          headers: {
+            ["X-Agent-Forge-Operator"]: token,
+            ["X-Agent-Forge-Surface"]: "ui",
+          },
+        },
+      );
+      return { status: response.status, body: await response.json() };
+    },
+    { token, requestId: saved.requestId },
+  );
+  expect(retired.status).toBe(200);
+  expect(projectCreateIdentitySchema.parse(retired.body.data)).toMatchObject({
+    requestId: saved.requestId,
+    requestHash: saved.requestHash,
+    original: saved.original,
+    state: "retired-before-create",
+    projectId: null,
+  });
+  expect(mutations).toEqual([
+    "/__agent-forge/projects/create-reservations",
+    `/__agent-forge/projects/create-reservations/${saved.requestId}/retire`,
+  ]);
+});
+
+test("Projects offers the explicit New project flow", async ({ page }) => {
+  const writes: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() !== "POST") return;
+    const path = new URL(request.url()).pathname;
+    if (
+      path.includes("/projects/create-reservations") ||
+      path.endsWith("/session-start-identities")
+    )
+      writes.push(path);
+  });
+
+  await openSettled(page, "/index.html#/desktop/projects");
+  const create = page.getByRole("button", {
+    name: "New project",
+    exact: true,
+  });
+  await expect(create).toBeEnabled();
+  await create.focus();
+  await expect(create).toBeFocused();
+  await page.keyboard.press("Enter");
+
+  const dialog = page.getByRole("dialog", { name: "Create a project" });
+  const close = dialog.getByRole("button", { name: "Close dialog" });
+  const reviewScope = dialog.getByRole("button", {
+    name: "Review trusted project scope",
+  });
+  await expect(dialog).toBeVisible();
+  await expect(close).toBeFocused();
+
+  await page.keyboard.press("Shift+Tab");
+  await expect(reviewScope).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(close).toBeFocused();
+  await page.keyboard.press("Tab");
+  const name = dialog.getByRole("textbox", { name: "Project name" });
+  await expect(name).toBeFocused();
+  await page.keyboard.type("Keyboard project draft");
+  await expect(name).toHaveValue("Keyboard project draft");
+  await expect(name).toBeFocused();
+
+  await page.keyboard.press("Escape");
+  await expect(dialog).not.toBeVisible();
+  await expect(create).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(dialog).toBeVisible();
+  await expect(close).toBeFocused();
+  await expect(name).toHaveValue("Keyboard project draft");
+  expect(writes).toEqual([]);
+});
+
+test("Projects remains rendered while trusted workspace scope hydrates", async ({
+  page,
+}) => {
+  const pageErrors: string[] = [];
+  const writes: string[] = [];
+  page.on("pageerror", (error) => pageErrors.push(error.message));
+  page.on("request", (request) => {
+    if (
+      request.method() !== "GET" &&
+      /\/__agent-forge\/projects\/create-(?:reservations|commit|retire)/.test(
+        request.url(),
+      )
+    )
+      writes.push(request.method());
+  });
+
+  await openSettled(page, "/index.html#/desktop/projects");
+  const create = page.getByRole("button", {
+    name: "New project",
+    exact: true,
+  });
+  await expect(create).toBeEnabled();
+
+  expect(pageErrors).toEqual([]);
+  expect(writes).toEqual([]);
+});
+
+test("reload recovers a reserved original with protected reads only", async ({
+  page,
+}) => {
+  const requestId = randomUUID();
+  const slug = "recoverable-onboarding-project";
+  const name = "Recoverable onboarding project";
+  await openSettled(page, "/index.html#/desktop/projects");
+  const token = await pageToken(page);
+  const headers = {
+    "Content-Type": "application/json",
+    [OPERATOR_HEADER]: token,
+    [SURFACE_HEADER]: "ui",
+  };
+  const source = await page.evaluate(
+    async ({ headers }) => {
+      const [optionsResponse, smithsResponse] = await Promise.all([
+        fetch("/__agent-forge/projects/create-options", { headers }),
+        fetch("/__agent-forge/smiths", { headers }),
+      ]);
+      return {
+        optionsStatus: optionsResponse.status,
+        options: await optionsResponse.json(),
+        smithsStatus: smithsResponse.status,
+        smiths: await smithsResponse.json(),
+      };
+    },
+    { headers },
+  );
+  expect(source.optionsStatus).toBe(200);
+  expect(source.smithsStatus).toBe(200);
+  const options = projectCreateOptionsSchema.parse(source.options.data);
+  const smiths = smithsViewSchema.parse(source.smiths.data);
+  const keeperSmith = smiths.smiths.find((smith) => smith.enabled);
+  const epic = options.epics.find((candidate) => candidate.id === "alpha-epic");
+  const repository = options.repositories.find((candidate) => candidate.served);
+  expect(keeperSmith).toBeDefined();
+  expect(epic).toBeDefined();
+  expect(repository).toBeDefined();
+
+  const original = {
+    slug,
+    name,
+    description:
+      "The saved original must remain available for explicit review.",
+    icon: "P",
+    keeperSmith: keeperSmith!.name,
+    workspaces: [
+      {
+        root: options.workspace.path,
+        repositories: [repository!.path],
+        epicIds: [epic!.id],
+      },
+    ],
+  };
+  const previewQuery = new URLSearchParams({ slug, epicId: epic!.id });
+  const previewResult = await page.evaluate(
+    async ({ headers, query }) => {
+      const response = await fetch(
+        `/__agent-forge/projects/create-scope-preview?${query}`,
+        { headers },
+      );
+      return { status: response.status, body: await response.json() };
+    },
+    { headers, query: previewQuery.toString() },
+  );
+  expect(previewResult.status).toBe(200);
+  const preview = projectScopePreviewSchema.parse(previewResult.body.data);
+  const reservation = {
+    requestId,
+    expectedCatalogRevision: catalog.revision,
+    original,
+  };
+  const reserved = await page.evaluate(
+    async ({ headers, reservation }) => {
+      const response = await fetch(
+        "/__agent-forge/projects/create-reservations",
+        {
+          method: "POST",
+          headers,
+          body: JSON.stringify(reservation),
+        },
+      );
+      return { status: response.status, body: await response.json() };
+    },
+    { headers, reservation },
+  );
+  expect(reserved.status).toBe(201);
+  const identity = projectCreateIdentitySchema.parse(reserved.body.data);
+  expect(identity).toMatchObject({
+    requestId,
+    baseRevision: catalog.revision,
+    original,
+    scopeHash: preview.scopeHash,
+    state: "reserved",
+  });
+
+  const createWrites: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() !== "POST") return;
+    const path = new URL(request.url()).pathname;
+    if (path.startsWith("/__agent-forge/projects/create-"))
+      createWrites.push(path);
+  });
+  await reloadSettled(page);
+  const review = page.getByRole("button", {
+    name: "Review reserved project",
+    exact: true,
+  });
+  await expect(review).toBeEnabled();
+  await review.click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+  await expect(page.getByText(name, { exact: true })).toBeVisible();
+  const recovered = await page.evaluate(
+    async ({ headers, requestId }) => {
+      const response = await fetch(
+        `/__agent-forge/projects/create-reservations/${requestId}`,
+        { headers },
+      );
+      return { status: response.status, body: await response.json() };
+    },
+    { headers, requestId },
+  );
+  expect(recovered.status).toBe(200);
+  expect(projectCreateIdentitySchema.parse(recovered.body.data)).toEqual(
+    identity,
+  );
+  expect(createWrites).toEqual([]);
+});
+
 test("a protected project reservation stays private until a separate create action", async ({
   page,
 }) => {
@@ -95,6 +969,8 @@ test("a protected project reservation stays private until a separate create acti
   };
   const postedPaths: string[] = [];
   let identityPosts = 0;
+  let originalReads = 0;
+  const requestId = "ab847e06-4f01-4dd3-a425-47bf9053e006";
   page.on("request", (request) => {
     const url = new URL(request.url());
     if (
@@ -102,6 +978,12 @@ test("a protected project reservation stays private until a separate create acti
       url.pathname.endsWith("/session-start-identities")
     )
       identityPosts++;
+    if (
+      request.method() === "GET" &&
+      url.pathname ===
+        `/__agent-forge/projects/create-reservations/${requestId}`
+    )
+      originalReads++;
     if (
       request.method() === "POST" &&
       url.pathname.includes("/projects/create-reservations")
@@ -200,7 +1082,6 @@ test("a protected project reservation stays private until a separate create acti
   expect(postedPaths).toEqual([]);
   expect(identityPosts).toBe(0);
 
-  const requestId = "ab847e06-4f01-4dd3-a425-47bf9053e006";
   const reserve = await page.evaluate(
     async ({ headers, requestId, original, revision }) => {
       const response = await fetch(
@@ -287,7 +1168,8 @@ test("a protected project reservation stays private until a separate create acti
 
   await expect(
     page.getByRole("button", { name: "New project", exact: true }),
-  ).toBeDisabled();
+  ).toBeEnabled();
+  const readsBeforeReload = originalReads;
   await reloadSettled(page);
   await expect(
     page.getByRole("article", { name: "Alpha", exact: true }),
@@ -295,11 +1177,47 @@ test("a protected project reservation stays private until a separate create acti
   await expect(
     page.getByRole("article", { name: "Beta", exact: true }),
   ).toBeVisible();
-  await expect(page.getByText(privateName, { exact: true })).toHaveCount(0);
+  await expect(
+    page
+      .getByRole("region", { name: "Project cards" })
+      .getByRole("article", { name: privateName, exact: true }),
+  ).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: "New project", exact: true }),
   ).toBeDisabled();
+  expect(originalReads).toBeGreaterThan(readsBeforeReload);
+  await page
+    .getByRole("button", { name: "Review reserved project", exact: true })
+    .click();
+  const reviewTrigger = page.getByRole("button", {
+    name: "Review reserved project",
+    exact: true,
+  });
+  const reviewDialog = page.getByRole("dialog", {
+    name: "Review saved project original",
+  });
+  const reviewClose = reviewDialog.getByRole("button", {
+    name: "Close dialog",
+  });
+  await expect(reviewDialog).toBeVisible();
+  await expect(reviewClose).toBeFocused();
+  await page.screenshot({
+    path: test.info().outputPath("project-create-reserved-review.png"),
+  });
+  await expect(reviewDialog).toContainText(privateName);
+  await expect(reviewDialog).toContainText(requestId);
+  await expect(reviewDialog).toContainText(requestHash);
+  await expect(
+    reviewDialog.getByText("reserved", { exact: true }),
+  ).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(reviewDialog).not.toBeVisible();
+  await expect(reviewTrigger).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(reviewDialog).toBeVisible();
+  await expect(reviewClose).toBeFocused();
   expect(postedPaths).toEqual(["/__agent-forge/projects/create-reservations"]);
+  expect(identityPosts).toBe(0);
   expect(catalogBefore.projects.map(({ id, slug }) => ({ id, slug }))).toEqual([
     { id: alpha.id, slug: alpha.slug },
     { id: beta.id, slug: beta.slug },
