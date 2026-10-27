@@ -116,14 +116,16 @@ async function openSmithEdit(page: Page, name = fixtureSmith) {
   await expect(dialog).toBeVisible();
   return { opener, dialog };
 }
-async function reloadAndReadDocumentJson(
+async function reloadAndReadDocumentJsons(
   page: Page,
-  pathname: string,
+  pathnames: readonly string[],
   options: {
     unavailableBodyFor?: string;
     onUnavailableBody?: () => void;
   } = {},
 ) {
+  if (pathnames.length === 0 || new Set(pathnames).size !== pathnames.length)
+    throw new Error("Reload capture paths must be nonempty and unique.");
   let documentGeneration = 0,
     reloadGeneration: number | null = null,
     replacing = false;
@@ -131,8 +133,8 @@ async function reloadAndReadDocumentJson(
   const captureKey = `__agentForgeReloadedOriginalResponse_${randomUUID()}`;
   let unavailableBodyInjected = false;
   await page.addInitScript(
-    ({ key, expectedPath }) => {
-      Reflect.set(window, key, null);
+    ({ key, expectedPaths }) => {
+      Reflect.set(window, key, {});
       const originalFetch = window.fetch.bind(window);
       const captureFetch = async (
         input: RequestInfo | URL,
@@ -152,28 +154,41 @@ async function reloadAndReadDocumentJson(
         if (
           method === "GET" &&
           url.origin === window.location.origin &&
-          url.pathname === expectedPath
+          expectedPaths.includes(url.pathname)
         ) {
-          const body = await response.clone().text();
-          Reflect.set(window, key, {
-            method,
-            pathname: url.pathname,
-            status: response.status,
-            body,
-          });
+          const captured = Reflect.get(window, key) as Record<string, unknown>;
+          if (!Object.hasOwn(captured, url.pathname)) {
+            try {
+              const body = await response.clone().text();
+              captured[url.pathname] = {
+                method,
+                pathname: url.pathname,
+                status: response.status,
+                body,
+              };
+            } catch {
+              // Keep the real fetch response untouched if clone inspection fails.
+              captured[url.pathname] = {
+                method,
+                pathname: url.pathname,
+                status: response.status,
+                body: null,
+              };
+            }
+          }
         }
         return response;
       };
       Reflect.set(window, "fetch", captureFetch);
     },
-    { key: captureKey, expectedPath: pathname },
+    { key: captureKey, expectedPaths: pathnames },
   );
   const onRequest = (request: Request) => {
     if (request.isNavigationRequest() && request.frame() === page.mainFrame())
       replacing = true;
     if (
       request.method() === "GET" &&
-      new URL(request.url()).pathname === pathname
+      pathnames.includes(new URL(request.url()).pathname)
     )
       requestGenerations.set(request, documentGeneration);
   };
@@ -212,36 +227,67 @@ async function reloadAndReadDocumentJson(
   try {
     await reloadSettled(page);
     await page.waitForFunction(
-      (key) => Reflect.get(window, key) !== null,
-      captureKey,
+      ({ key, expectedPaths }) => {
+        const captured = Reflect.get(window, key);
+        return (
+          typeof captured === "object" &&
+          captured !== null &&
+          expectedPaths.every((path) => Object.hasOwn(captured, path))
+        );
+      },
+      { key: captureKey, expectedPaths: pathnames },
     );
     const captured = z
-      .object({
-        method: z.literal("GET"),
-        pathname: z.string(),
-        status: z.number().int(),
-        body: z.string().max(65_536),
-      })
-      .strict()
+      .record(
+        z.string(),
+        z
+          .object({
+            method: z.literal("GET"),
+            pathname: z.string(),
+            status: z.number().int(),
+            body: z.string().max(65_536),
+          })
+          .strict(),
+      )
       .parse(
         await page.evaluate((key) => Reflect.get(window, key), captureKey),
       );
-    if (captured.pathname !== pathname)
-      throw new Error(
-        "Captured original response did not match its exact path.",
-      );
-    let body: unknown;
-    try {
-      body = JSON.parse(captured.body);
-    } catch {
-      throw new Error("Captured original response was not valid JSON.");
+    const results = new Map<string, { status: number; body: unknown }>();
+    for (const pathname of pathnames) {
+      const response = captured[pathname];
+      if (!response || response.pathname !== pathname)
+        throw new Error(
+          "Captured original response did not match its exact path.",
+        );
+      let body: unknown;
+      try {
+        body = JSON.parse(response.body);
+      } catch {
+        throw new Error("Captured original response was not valid JSON.");
+      }
+      results.set(pathname, { status: response.status, body });
     }
-    return { status: captured.status, body };
+    return results;
   } finally {
     page.off("request", onRequest);
     page.off("framenavigated", onFrameNavigated);
     page.off("response", onResponse);
   }
+}
+
+async function reloadAndReadDocumentJson(
+  page: Page,
+  pathname: string,
+  options: {
+    unavailableBodyFor?: string;
+    onUnavailableBody?: () => void;
+  } = {},
+) {
+  const responses = await reloadAndReadDocumentJsons(page, [pathname], options);
+  const response = responses.get(pathname);
+  if (!response)
+    throw new Error("The requested original response was not captured.");
+  return response;
 }
 async function reviewSmithEdit(dialog: Locator) {
   await dialog
@@ -540,30 +586,20 @@ test("creates a reviewed Smith in the temporary workspace config and recovers it
     (key) => localStorage.removeItem(key),
     SMITH_CREATE_IDENTITIES,
   );
-  const identityIndex = page.waitForResponse(
-      (response) =>
-        response.request().method() === "GET" &&
-        new URL(response.url()).pathname === "/__agent-forge/smiths/creates",
-    ),
-    originalRead = page
-      .waitForResponse(
-        (response) =>
-          response.request().method() === "GET" &&
-          new URL(response.url()).pathname.startsWith(
-            "/__agent-forge/smiths/creates/",
-          ),
-      )
-      .then(async (response) => ({
-        pathname: new URL(response.url()).pathname,
-        status: response.status(),
-        body: await response.json(),
-      }));
-  await reloadSettled(page);
-  const indexReply = await identityIndex;
-  expect(indexReply.status()).toBe(200);
-  const indexEnvelope = await indexReply.json();
   const exactRequest = createdOriginal.value;
   if (!exactRequest) throw Error("The create request was not observed.");
+  const indexPath = "/__agent-forge/smiths/creates";
+  const originalPath = `${indexPath}/${exactRequest.requestId}`;
+  const recoveredDocuments = await reloadAndReadDocumentJsons(page, [
+    indexPath,
+    originalPath,
+  ]);
+  const indexEnvelope = recoveredDocuments.get(indexPath)?.body as {
+    data: { entries: unknown[] };
+  };
+  const recovered = recoveredDocuments.get(originalPath);
+  expect(recoveredDocuments.get(indexPath)?.status).toBe(200);
+  expect(recovered?.status).toBe(200);
   expect(indexEnvelope.data.entries).toContainEqual({
     requestId: exactRequest.requestId,
     ownerScopeHash: expect.any(String),
@@ -575,13 +611,11 @@ test("creates a reviewed Smith in the temporary workspace config and recovers it
     stage: "terminal",
     createdAt: expect.any(String),
   });
-  const recovered = await originalRead;
-  expect(recovered.status).toBe(200);
-  expect(recovered.pathname).toBe(
-    `/__agent-forge/smiths/creates/${exactRequest.requestId}`,
-  );
-  expect(recovered.body.data.original).toEqual(exactRequest);
-  expect(recovered.body.data.inputHash).toBe(
+  const originalEnvelope = recovered?.body as {
+    data: { original: unknown; inputHash: string };
+  };
+  expect(originalEnvelope.data.original).toEqual(exactRequest);
+  expect(originalEnvelope.data.inputHash).toBe(
     createHash("sha256")
       .update(canonicalSmithConfigCreateRequest(exactRequest))
       .digest("hex"),
@@ -809,48 +843,30 @@ test("a NotSent create POST can only continue or retire its server-reserved orig
     (key) => localStorage.removeItem(key),
     SMITH_CREATE_IDENTITIES,
   );
-  let denyNextCollectionBody = false,
-    collectionBodyDenials = 0;
-  page.on("response", (response: PlaywrightResponse) => {
-    if (
-      !denyNextCollectionBody ||
-      response.request().method() !== "GET" ||
-      new URL(response.url()).pathname !== "/__agent-forge/smiths/creates"
-    )
-      return;
-    denyNextCollectionBody = false;
-    collectionBodyDenials++;
-    Object.defineProperty(response, "json", {
-      configurable: true,
-      value: async () => {
-        throw new Error(
-          "Injected Playwright response-body loss for the collection index.",
-        );
-      },
-    });
-  });
-  const indexRead = page.waitForResponse(
-      (response) =>
-        response.request().method() === "GET" &&
-        new URL(response.url()).pathname === "/__agent-forge/smiths/creates",
-    ),
-    originalRead = page.waitForResponse(
-      (response) =>
-        response.request().method() === "GET" &&
-        new URL(response.url()).pathname ===
-          `/__agent-forge/smiths/creates/${exactRequest.requestId}`,
-    );
-  denyNextCollectionBody = true;
-  await reloadSettled(page);
-  const indexResponse = await indexRead;
+  let collectionBodyDenials = 0;
+  const indexPath = "/__agent-forge/smiths/creates";
+  const originalPath = `${indexPath}/${exactRequest.requestId}`;
+  const recoveredDocuments = await reloadAndReadDocumentJsons(
+    page,
+    [indexPath, originalPath],
+    {
+      unavailableBodyFor: indexPath,
+      onUnavailableBody: () => collectionBodyDenials++,
+    },
+  );
   expect(collectionBodyDenials).toBe(1);
-  const index = await indexResponse.json();
+  const index = recoveredDocuments.get(indexPath)?.body as {
+    data: { entries: unknown[] };
+  };
+  const originalResponse = recoveredDocuments.get(originalPath);
+  expect(recoveredDocuments.get(indexPath)?.status).toBe(200);
+  expect(originalResponse?.status).toBe(200);
   await expect(
     page.getByRole("region", { name: "Original Smith create receipts" }),
   ).toContainText(name);
-  const originalResponse = await originalRead;
-  expect(originalResponse.status()).toBe(200);
-  const originalEnvelope = await originalResponse.json();
+  const originalEnvelope = originalResponse?.body as {
+    data: { inputHash: string; original: unknown; result: unknown };
+  };
   const originalId = exactRequest.requestId;
   if (
     typeof originalId !== "string" ||
@@ -858,9 +874,7 @@ test("a NotSent create POST can only continue or retire its server-reserved orig
   )
     throw Error("The reserved original identity was not valid.");
   const originalHash: string = originalEnvelope.data.inputHash;
-  expect(new URL(originalResponse.url()).pathname).toBe(
-    `/__agent-forge/smiths/creates/${originalId}`,
-  );
+  expect(originalPath).toBe(`/__agent-forge/smiths/creates/${originalId}`);
   expect(originalEnvelope.data.original).toEqual(exactRequest);
   expect(originalEnvelope.data.result).toMatchObject({
     phase: "held",
@@ -944,10 +958,14 @@ test("a correlated stale-revision refusal reads back its exact original after re
     posts: string[] = [],
     originalReads: { requestId: string; status: number }[] = [],
     name = `browser-refused-${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+  let postedOriginal: Record<string, unknown> | null = null;
   page.on("request", (request) => {
     const path = new URL(request.url()).pathname;
-    if (request.method() === "POST" && path.startsWith("/__agent-forge/"))
+    if (request.method() === "POST" && path.startsWith("/__agent-forge/")) {
       posts.push(path);
+      if (path === "/__agent-forge/config/smiths/creates")
+        postedOriginal = request.postDataJSON() as Record<string, unknown>;
+    }
   });
   page.on("response", (response) => {
     const path = new URL(response.url()).pathname,
@@ -995,51 +1013,25 @@ test("a correlated stale-revision refusal reads back its exact original after re
     readFileSync(join(REPOSITORY, "agent-forge.toml"), "utf8"),
   ).not.toContain(`[smiths.${name}]`);
 
-  let documentGeneration = 0,
-    reloadGeneration: number | null = null,
-    replacing = false;
-  const requestGenerations = new WeakMap<Request, number>();
-  const onRequest = (request: Request) => {
-    if (request.isNavigationRequest() && request.frame() === page.mainFrame())
-      replacing = true;
-    const path = new URL(request.url()).pathname;
-    if (
-      request.method() === "GET" &&
-      path.startsWith("/__agent-forge/smiths/creates/")
-    )
-      requestGenerations.set(request, documentGeneration);
-  };
-  const onFrameNavigated = (frame: Frame) => {
-    if (frame === page.mainFrame() && replacing) {
-      replacing = false;
-      reloadGeneration = ++documentGeneration;
-    }
-  };
-  page.on("request", onRequest);
-  page.on("framenavigated", onFrameNavigated);
-  const originalRead = page
-    .waitForResponse(
-      (response) =>
-        response.request().method() === "GET" &&
-        new URL(response.url()).pathname.startsWith(
-          "/__agent-forge/smiths/creates/",
-        ) &&
-        reloadGeneration !== null &&
-        requestGenerations.get(response.request()) === reloadGeneration,
-    )
-    .then(async (response) => ({
-      status: response.status(),
-      // Consume the body as soon as the matching new-document response
-      // arrives. The trace showed Chromium discarded the earlier body.
-      body: await response.json(),
-    }))
-    .finally(() => {
-      page.off("request", onRequest);
-      page.off("framenavigated", onFrameNavigated);
-    });
-  await reloadSettled(page);
-  const recovered = await originalRead;
-  expect(recovered.status).toBe(200);
+  const indexPath = "/__agent-forge/smiths/creates";
+  if (!postedOriginal)
+    throw new Error("The refused original was not captured.");
+  const originalPath = `${indexPath}/${String(postedOriginal["requestId"])}`;
+  const recoveredDocuments = await reloadAndReadDocumentJsons(page, [
+    indexPath,
+    originalPath,
+  ]);
+  const index = recoveredDocuments.get(indexPath);
+  const recovered = recoveredDocuments.get(originalPath);
+  if (!index || !recovered)
+    throw new Error("Reloaded source evidence was not captured.");
+  expect(index?.status).toBe(200);
+  expect(recovered?.status).toBe(200);
+  expect(
+    (index?.body as { data: { entries: unknown[] } }).data.entries,
+  ).toContainEqual(
+    expect.objectContaining({ requestId: postedOriginal["requestId"] }),
+  );
   const receipt = recovered.body as {
     data: {
       inputHash: string;
@@ -1063,6 +1055,14 @@ test("a correlated stale-revision refusal reads back its exact original after re
     reason: "stale-revision",
   });
   expect(receipt.data.inputHash).toMatch(/^[a-f0-9]{64}$/);
+  expect(
+    (index.body as { data: { entries: unknown[] } }).data.entries,
+  ).toContainEqual(
+    expect.objectContaining({
+      requestId: receipt.data.original.requestId,
+      inputHash: receipt.data.inputHash,
+    }),
+  );
   await expect(
     page.getByRole("region", { name: "Original Smith create receipts" }),
   ).toContainText(name);
@@ -1179,48 +1179,22 @@ const unavailableCreateHeldTest = async ({ page }: { page: Page }) => {
       .map((read) => read.status);
   expect(exactOriginalReadStatuses()).toEqual([404]);
 
-  let documentGeneration = 0,
-    reloadGeneration: number | null = null,
-    replacing = false;
-  const requestGenerations = new WeakMap<Request, number>();
-  const onRequest = (request: Request) => {
-    if (request.isNavigationRequest() && request.frame() === page.mainFrame())
-      replacing = true;
-    const path = new URL(request.url()).pathname;
-    if (
-      request.method() === "GET" &&
-      path === `/__agent-forge/smiths/creates/${requestId.value}`
-    )
-      requestGenerations.set(request, documentGeneration);
-  };
-  const onFrameNavigated = (frame: Frame) => {
-    if (frame === page.mainFrame() && replacing) {
-      replacing = false;
-      reloadGeneration = ++documentGeneration;
-    }
-  };
-  page.on("request", onRequest);
-  page.on("framenavigated", onFrameNavigated);
-  const freshOriginalRead = page
-    .waitForResponse(
-      (response) =>
-        response.request().method() === "GET" &&
-        new URL(response.url()).pathname ===
-          `/__agent-forge/smiths/creates/${requestId.value}` &&
-        reloadGeneration !== null &&
-        requestGenerations.get(response.request()) === reloadGeneration,
-    )
-    .then((response) => ({
-      requestId: new URL(response.url()).pathname.split("/").at(-1),
-      status: response.status(),
-    }))
-    .finally(() => {
-      page.off("request", onRequest);
-      page.off("framenavigated", onFrameNavigated);
-    });
-  await reloadSettled(page);
-  const freshRead = await freshOriginalRead;
-  expect(freshRead).toEqual({ requestId: requestId.value, status: 404 });
+  const indexPath = "/__agent-forge/smiths/creates";
+  const originalPath = `${indexPath}/${requestId.value}`;
+  const reloadedDocuments = await reloadAndReadDocumentJsons(page, [
+    indexPath,
+    originalPath,
+  ]);
+  const freshIndex = reloadedDocuments.get(indexPath);
+  const freshRead = reloadedDocuments.get(originalPath);
+  if (!freshIndex || !freshRead)
+    throw new Error("Reloaded source evidence was not captured.");
+  expect(freshIndex.status).toBe(200);
+  expect(freshRead.status).toBe(404);
+  expect(freshRead.body).toMatchObject({ ok: false, data: null });
+  expect(
+    (freshIndex.body as { data: { entries: unknown[] } }).data.entries,
+  ).toContainEqual(expect.objectContaining({ requestId: requestId.value }));
   // Additional recovery effects may issue another identical GET. Require the
   // first fresh-document read, and keep every observed read tied to this UUID
   // and the expected 404 without depending on incidental duplicate timing.
@@ -1325,18 +1299,29 @@ test("a reply lost after actual temporary publication recovers the exact origina
   ]);
   await page.unroute("**/config/smiths/creates");
 
-  const originalRead = page.waitForResponse(
-    (response) =>
-      response.request().method() === "GET" &&
-      new URL(response.url()).pathname ===
-        `/__agent-forge/smiths/creates/${String(posted["requestId"])}`,
-  );
-  await reloadSettled(page);
-  const recoveredResponse = await originalRead;
-  expect(recoveredResponse.status()).toBe(200);
-  const receipt = (await recoveredResponse.json()) as {
+  const indexPath = "/__agent-forge/smiths/creates";
+  const originalPath = `${indexPath}/${String(posted["requestId"])}`;
+  const recoveredDocuments = await reloadAndReadDocumentJsons(page, [
+    indexPath,
+    originalPath,
+  ]);
+  const index = recoveredDocuments.get(indexPath);
+  const recoveredResponse = recoveredDocuments.get(originalPath);
+  if (!index || !recoveredResponse)
+    throw new Error("Reloaded source evidence was not captured.");
+  expect(index?.status).toBe(200);
+  expect(recoveredResponse?.status).toBe(200);
+  const indexEntries = (index?.body as { data: { entries: unknown[] } }).data
+    .entries;
+  const receipt = recoveredResponse.body as {
     data: { inputHash: string; original: Record<string, unknown> };
   };
+  expect(indexEntries).toContainEqual(
+    expect.objectContaining({
+      requestId: posted["requestId"],
+      inputHash: receipt.data.inputHash,
+    }),
+  );
   expect(receipt.data.original).toEqual(posted);
   expect(receipt.data.inputHash).toBe(
     createHash("sha256")
@@ -1538,16 +1523,10 @@ test("edits an existing Smith after a complete review and recovers the exact ori
   ]);
 
   const posted = postedEdit!;
-  const recovered = page.waitForResponse(
-    (response) =>
-      response.request().method() === "GET" &&
-      new URL(response.url()).pathname ===
-        `/__agent-forge/smiths/edits/${String(posted["requestId"])}`,
-  );
-  await reloadSettled(page);
-  const recoveredResponse = await recovered;
-  expect(recoveredResponse.status()).toBe(200);
-  const receipt = (await recoveredResponse.json()) as {
+  const originalPath = `/__agent-forge/smiths/edits/${String(posted["requestId"])}`;
+  const recoveredResponse = await reloadAndReadDocumentJson(page, originalPath);
+  expect(recoveredResponse.status).toBe(200);
+  const receipt = recoveredResponse.body as {
     data: { inputHash: string; original: Record<string, unknown> };
   };
   expect(receipt.data.original).toEqual(posted);
@@ -2380,16 +2359,10 @@ test("a reply lost after actual Smith edit publication recovers only the exact o
     "/__agent-forge/config/smiths/edits",
   ]);
   await page.unroute("**/config/smiths/edits");
-  const originalRead = page.waitForResponse(
-    (response) =>
-      response.request().method() === "GET" &&
-      new URL(response.url()).pathname ===
-        `/__agent-forge/smiths/edits/${String(posted["requestId"])}`,
-  );
-  await reloadSettled(page);
-  const recovered = await originalRead;
-  expect(recovered.status()).toBe(200);
-  const receipt = (await recovered.json()) as {
+  const originalPath = `/__agent-forge/smiths/edits/${String(posted["requestId"])}`;
+  const recovered = await reloadAndReadDocumentJson(page, originalPath);
+  expect(recovered.status).toBe(200);
+  const receipt = recovered.body as {
     data: { inputHash: string; original: Record<string, unknown> };
   };
   expect(receipt.data.original).toEqual(posted);
