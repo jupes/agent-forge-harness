@@ -2,8 +2,12 @@
 import { appendFileSync } from "node:fs";
 import { codexReportedActivity } from "./reported-activity";
 
-export async function runCodexTaskRuntimeFixture() {
+export async function runCodexTaskRuntimeFixture(sourceEntry?: string) {
   const argv = process.argv.slice(2);
+  if (argv[0] === "--agent-forge-fixture-descendant") {
+    await new Promise(() => setInterval(() => {}, 1000));
+    return;
+  }
   const kind = argv.includes("--version")
     ? "version"
     : argv.includes("--help")
@@ -17,11 +21,20 @@ export async function runCodexTaskRuntimeFixture() {
     (kind === "task" && mode === "hang-tree") ||
     (kind === "sync" && mode === "hang-sync") ||
     (kind === "help" && mode === "hang-help")
-      ? Bun.spawn([process.execPath, "-e", "setInterval(() => {}, 1000)"], {
-          stdin: "ignore",
-          stdout: "ignore",
-          stderr: "ignore",
-        }).pid
+      ? Bun.spawn(
+          sourceEntry
+            ? [
+                process.execPath,
+                sourceEntry,
+                "--agent-forge-fixture-descendant",
+              ]
+            : [process.execPath, "--agent-forge-fixture-descendant"],
+          {
+            stdin: "ignore",
+            stdout: "ignore",
+            stderr: "ignore",
+          },
+        ).pid
       : null;
   const log = process.env["CODEX_RUNTIME_LOG"];
   if (!log) throw new Error("A fixture-owned private log is required.");

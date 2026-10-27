@@ -39,6 +39,12 @@ if (
     "mcp-tool-calls-held",
     "web-search",
     "web-search-held",
+    "fork-service-tier-null",
+    "fork-service-tier-null-child-approval",
+    "fork-lost-response",
+    "fork-lost-response-eof",
+    "fork-approval-command",
+    "fork-child-lost-turn-reply",
   ].includes(String(mode))
 )
   throw Error("Unknown isolated Chat fixture mode.");

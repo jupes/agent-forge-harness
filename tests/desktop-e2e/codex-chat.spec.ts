@@ -1,20 +1,34 @@
 import {
   existsSync,
+  mkdirSync,
   readFileSync,
   realpathSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
-import { expect, type Page, type Request, test } from "@playwright/test";
+import { dirname, join } from "node:path";
+import {
+  expect,
+  type Locator,
+  type Page,
+  type Request,
+  type Route,
+  type TestInfo,
+  test,
+} from "@playwright/test";
 import { z } from "zod";
 import { OPERATOR_HEADER } from "../../scripts/hearth/paths";
 import { serializeCodexChat } from "../../scripts/sessions/codex-app-server-protocol";
+import { codexChatForkSourcePageSchema } from "../../scripts/sessions/codex-chat-fork-review-protocol";
 import { codexChatApprovalPageSchema } from "../../scripts/sessions/codex-chat-owned-protocol";
-import { ownedCodingStateSchema } from "../../scripts/sessions/codex-owned-journal";
+import {
+  ownedCodingPageSchema,
+  ownedCodingStateSchema,
+} from "../../scripts/sessions/codex-owned-journal";
 import { ownedCodingSessionSchema } from "../../scripts/sessions/codex-owned-wire-protocol";
 import { sessionStartIdentityPageSchema } from "../../scripts/sessions/identity-protocol";
 import { sessionTranscriptExportSchema } from "../../scripts/sessions/library-protocol";
+import { sessionOperationIdentityPageSchema } from "../../scripts/sessions/session-operation-identities-protocol";
 import { openSettled, reloadSettled } from "../e2e/fixtures";
 import { pageToken } from "../e2e/launch-link";
 import { HEARTH_HOME } from "../e2e/servers";
@@ -54,6 +68,9 @@ function calls(): Array<{
   result?: unknown;
   pid?: number;
   childPid?: number;
+  fixtureMode?: unknown;
+  threadId?: unknown;
+  turnId?: unknown;
 }> {
   const path = join(HEARTH_HOME, "codex-chat-fixture-calls.jsonl");
   if (!existsSync(path)) return [];
@@ -72,6 +89,143 @@ function mode(value: string) {
     join(HEARTH_HOME, "codex-chat-fixture-mode.json"),
     JSON.stringify(value),
   );
+}
+async function attachForkChildApprovalDiagnostic(info: TestInfo) {
+  const allowedId = (value: unknown) =>
+    typeof value === "string" && /^[0-9a-f-]{1,64}$/i.test(value)
+      ? value
+      : null;
+  let fixtureRows: ReturnType<typeof calls> = [];
+  let logReadError: string | null = null;
+  try {
+    fixtureRows = calls();
+  } catch (error) {
+    logReadError = error instanceof Error ? error.name.slice(0, 80) : "unknown";
+  }
+  const nativeFacts = fixtureRows.slice(-96).map((row) => {
+    if (typeof row !== "object" || row === null)
+      return { kind: "malformed-row" };
+    const params = row.params;
+    const result = row.result;
+    const thread =
+      typeof result === "object" && result !== null && "thread" in result
+        ? (result as { thread?: unknown }).thread
+        : null;
+    const threadObject =
+      typeof thread === "object" && thread !== null
+        ? (thread as Record<string, unknown>)
+        : null;
+    const eventThread =
+      params && typeof params === "object" && "thread" in params
+        ? (params as Record<string, unknown>).thread
+        : null;
+    const eventThreadObject =
+      typeof eventThread === "object" && eventThread !== null
+        ? (eventThread as Record<string, unknown>)
+        : null;
+    const status = threadObject?.status;
+    const threadStatus =
+      typeof status === "object" && status !== null
+        ? (status as Record<string, unknown>).type
+        : null;
+    const safeKind =
+      typeof row.kind === "string" && /^[a-zA-Z0-9/._-]{1,80}$/.test(row.kind)
+        ? row.kind
+        : "other";
+    const safeMethod =
+      typeof row.method === "string" &&
+      /^[a-zA-Z0-9/._-]{1,80}$/.test(row.method)
+        ? row.method
+        : null;
+    const safeParams =
+      typeof params === "object" && params !== null
+        ? (params as Record<string, unknown>)
+        : null;
+    return {
+      kind: safeKind,
+      ...(safeMethod ? { method: safeMethod } : {}),
+      ...(safeKind === "process" &&
+      row.fixtureMode === "fork-service-tier-null-child-approval"
+        ? { fixtureMode: row.fixtureMode }
+        : {}),
+      ...(safeParams
+        ? {
+            threadId: allowedId(safeParams.threadId),
+            turnId: allowedId(safeParams.turnId),
+            requestId: allowedId(safeParams.requestId),
+            lastTurnId: allowedId(safeParams.lastTurnId),
+          }
+        : {}),
+      ...(safeKind === "approval-offer"
+        ? {
+            threadId: allowedId(row.threadId),
+            turnId: allowedId(row.turnId),
+          }
+        : {}),
+      ...(eventThreadObject
+        ? { eventThreadId: allowedId(eventThreadObject.id) }
+        : {}),
+      ...(threadObject
+        ? {
+            resultThreadId: allowedId(threadObject.id),
+            resultParentId: allowedId(threadObject.forkedFromId),
+            resultState:
+              typeof threadStatus === "string" &&
+              /^[a-zA-Z0-9_-]{1,32}$/.test(threadStatus)
+                ? threadStatus
+                : null,
+          }
+        : {}),
+    };
+  });
+  const payload = {
+    capturePhase: "approval-assertion-finally",
+    ...(logReadError ? { logReadError } : {}),
+    truncated: fixtureRows.length > 96 || forkJourneyHttpFacts.length > 96,
+    nativeFacts,
+    httpFacts: forkJourneyHttpFacts.slice(-96),
+  };
+  const body = Buffer.from(JSON.stringify(payload));
+  const boundedBody =
+    body.length <= 256 * 1024
+      ? body
+      : Buffer.from(
+          JSON.stringify({
+            capturePhase: payload.capturePhase,
+            truncated: true,
+            fixtureRows: fixtureRows.length,
+            httpFactCount: forkJourneyHttpFacts.length,
+          }),
+        );
+  try {
+    await info.attach("fork-child-approval-diagnostic.json", {
+      contentType: "application/json",
+      body: boundedBody,
+    });
+  } catch (error) {
+    const errorName =
+      error instanceof Error ? error.name.slice(0, 80) : "unknown";
+    const fallback = Buffer.from(
+      JSON.stringify({
+        ...payload,
+        attachment: "failed",
+        attachmentError: errorName,
+      }),
+    );
+    if (fallback.length <= 256 * 1024) {
+      try {
+        const output = info.outputPath("fork-child-approval-diagnostic.json");
+        mkdirSync(dirname(output), { recursive: true });
+        writeFileSync(output, fallback);
+        await info.attach("fork-child-approval-diagnostic.json", {
+          contentType: "application/json",
+          path: output,
+        });
+      } catch {
+        // The existing assertion remains the primary outcome.
+      }
+    }
+  }
 }
 async function verifiedIdentityReadBarrier(page: Page) {
   let armed = false,
@@ -151,7 +305,43 @@ async function startedChat(page: Page) {
   if (!record) throw Error("No accepted Chat record");
   return { pane, record };
 }
+async function completeForkSourceTurn(
+  page: Page,
+  pane: Locator,
+  sessionId: string,
+): Promise<string> {
+  const priorIds = new Set(
+    saved(sessionId).turns.map((turn) => turn.requestId),
+  );
+  const message = page.getByRole("textbox", {
+    name: "Session reply prompt",
+    exact: true,
+  });
+  await message.fill("PRIVATE_FORK_SOURCE_PROMPT");
+  await pane
+    .getByRole("button", { name: "Send session message", exact: true })
+    .click();
+  let selectedRequestId: string | null = null;
+  await expect
+    .poll(() => {
+      const selected = saved(sessionId).turns.find(
+        (turn) => !priorIds.has(turn.requestId),
+      );
+      if (!selected) return null;
+      selectedRequestId = selected.requestId;
+      return selected.phase;
+    })
+    .toBe("completed");
+  if (!selectedRequestId)
+    throw Error("The new Fork source turn was not recorded");
+  return selectedRequestId;
+}
 let previous = new Set<string>();
+let forkJourneyHttpFacts: Array<{
+  method: string;
+  path: string;
+  status: number | null;
+}> = [];
 test.beforeEach(() => {
   seedProjects();
   for (const name of [
@@ -162,6 +352,7 @@ test.beforeEach(() => {
     if (existsSync(file)) unlinkSync(file);
   }
   previous = new Set(records().map((record) => record.id));
+  forkJourneyHttpFacts = [];
   mode("approval-command");
 });
 test.afterEach(async ({ page }) => {
@@ -1861,7 +2052,10 @@ test("Codex Chat reviews native options, allows one actual command and resumes i
   ).toBeDisabled();
   await expect(
     support.getByRole("button", { name: "Fork session", exact: true }),
-  ).toBeDisabled();
+  ).toHaveCount(0);
+  await expect(
+    support.getByRole("term", { name: "Fork", exact: true }),
+  ).toHaveCount(0);
   await expect(
     support.getByRole("button", {
       name: "Open session in terminal",
@@ -3030,4 +3224,934 @@ test("a saved native timeout withdraws old choices before final metadata settles
     before + 1,
   );
   expect(decisions).toBe(0);
+});
+
+test("a delayed older Fork review cannot replace a newer selection", async ({
+  page,
+}) => {
+  mode("fork-service-tier-null");
+  const { pane, record } = await startedChat(page);
+  const selectedRequestId = await completeForkSourceTurn(page, pane, record.id);
+  const completed = saved(record.id).turns.filter(
+    (row) => row.phase === "completed",
+  );
+  const selected = completed.find((row) => row.requestId === selectedRequestId);
+  const earlier = completed.find((row) => row.requestId !== selectedRequestId);
+  if (!selected || !earlier)
+    throw Error("The stale-review case needs two completed parent turns");
+  const opener = (requestId: string) =>
+    pane.getByRole("button", {
+      name: `Review Fork through ${requestId.slice(0, 8)}`,
+      exact: true,
+    });
+  const dialog = page.getByRole("dialog", {
+    name: "Review native Codex Fork",
+    exact: true,
+  });
+  const posts: Array<{ path: string; body: unknown }> = [];
+  const capturePost = (request: Request) => {
+    const path = new URL(request.url()).pathname;
+    if (
+      request.method() === "POST" &&
+      (path.endsWith("/fork-reservations") || path.endsWith("/forks"))
+    )
+      posts.push({ path, body: request.postDataJSON() });
+  };
+  page.on("request", capturePost);
+  await opener(earlier.requestId).click();
+  await expect(dialog).toContainText("PRIVATE native Chat first question");
+  await dialog
+    .getByRole("button", { name: "Reserve this exact Fork", exact: true })
+    .click();
+  await expect(
+    dialog.getByRole("button", {
+      name: "Create the native child thread once",
+      exact: true,
+    }),
+  ).toBeEnabled();
+  expect(posts).toHaveLength(1);
+  expect(posts[0]?.path).toBe(
+    `/__agent-forge/projects/${record.projectId}/sessions/${record.id}/fork-reservations`,
+  );
+  const originalBody = posts[0]?.body as
+    | {
+        requestId?: unknown;
+        throughTurnRequestId?: unknown;
+      }
+    | undefined;
+  expect(typeof originalBody?.requestId).toBe("string");
+  expect(originalBody).toMatchObject({
+    throughTurnRequestId: earlier.requestId,
+  });
+  const originalRequestId = originalBody?.requestId as string;
+  const identityToken = await pageToken(page);
+  const rawIdentity: unknown = await page.evaluate(
+    async ({ project, token, header }) => {
+      const response = await fetch(
+        `/__agent-forge/projects/${project}/session-operation-identities`,
+        { headers: { [header]: token } },
+      );
+      return response.json();
+    },
+    {
+      project: record.projectId,
+      token: identityToken,
+      header: OPERATOR_HEADER,
+    },
+  );
+  const identityEnvelope =
+    typeof rawIdentity === "object" &&
+    rawIdentity !== null &&
+    "data" in rawIdentity
+      ? (rawIdentity as { data: unknown }).data
+      : null;
+  const identityPage =
+    sessionOperationIdentityPageSchema.parse(identityEnvelope);
+  const persistedOriginal = identityPage.operations.find(
+    (row) =>
+      row.family === "codex-chat-fork" && row.requestId === originalRequestId,
+  );
+  expect(persistedOriginal).toMatchObject({
+    requestId: originalRequestId,
+    parentSessionId: record.id,
+    throughTurnRequestId: earlier.requestId,
+    state: "reserved",
+  });
+  expect(persistedOriginal?.requestHash).toMatch(/^[a-f0-9]{64}$/);
+  const nativeForksBefore = calls().filter(
+    (row) => row.kind === "rpc" && row.method === "thread/fork",
+  ).length;
+  await dialog
+    .getByRole("button", { name: "Close dialog", exact: true })
+    .click();
+
+  let staleReviewStarted!: () => void;
+  let releaseStaleReview!: () => void;
+  const staleReviewEntered = new Promise<void>((resolve) => {
+    staleReviewStarted = resolve;
+  });
+  const staleReviewBarrier = new Promise<void>((resolve) => {
+    releaseStaleReview = resolve;
+  });
+  let finishStaleReview!: () => void;
+  let staleReviewHandlerStarted = false;
+  const staleReviewFinished = new Promise<void>((resolve) => {
+    finishStaleReview = resolve;
+  });
+  const staleReviewMatcher = (url: URL) =>
+    url.pathname.endsWith(`/sessions/${record.id}/fork-review`) &&
+    url.searchParams.get("throughTurnRequestId") === earlier.requestId;
+  let staleResponseVerified = false;
+  const delayedStaleReview = async (route: Route) => {
+    try {
+      staleReviewHandlerStarted = true;
+      const requestHeaders = await route.request().allHeaders();
+      const origin = new URL(route.request().url()).origin;
+      const response = await route.fetch({
+        headers: {
+          ...requestHeaders,
+          Origin: origin,
+          "Sec-Fetch-Site": "same-origin",
+        },
+      });
+      const body = await response.body();
+      try {
+        const raw: unknown = JSON.parse(body.toString("utf8"));
+        const envelope = z
+          .object({ ok: z.literal(true), data: z.unknown(), error: z.null() })
+          .safeParse(raw);
+        const source = envelope.success
+          ? codexChatForkSourcePageSchema.safeParse(envelope.data.data)
+          : null;
+        staleResponseVerified =
+          response.status() === 200 &&
+          source?.success === true &&
+          source.data.projectId === record.projectId &&
+          source.data.parentSessionId === record.id &&
+          source.data.requestId === null &&
+          source.data.throughTurnRequestId === earlier.requestId;
+      } catch {
+        staleResponseVerified = false;
+      }
+      staleReviewStarted();
+      await staleReviewBarrier;
+      await route.fulfill({ response, body });
+    } finally {
+      finishStaleReview();
+    }
+  };
+  await page.route(staleReviewMatcher, delayedStaleReview);
+  try {
+    await opener(earlier.requestId).click();
+    await staleReviewEntered;
+    expect(staleResponseVerified).toBe(true);
+    await dialog
+      .getByRole("button", { name: "Close dialog", exact: true })
+      .click();
+    await opener(selected.requestId).click();
+    await expect(dialog).toContainText("PRIVATE_FORK_SOURCE_PROMPT");
+    const staleResponse = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return response.request().method() === "GET" && staleReviewMatcher(url);
+    });
+    releaseStaleReview();
+    await staleResponse;
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        ),
+    );
+    await expect(dialog).toContainText("PRIVATE_FORK_SOURCE_PROMPT");
+    await expect(dialog).not.toContainText(originalRequestId);
+    await expect(
+      dialog.getByRole("button", {
+        name: "Reserve this exact Fork",
+        exact: true,
+      }),
+    ).toBeEnabled();
+    expect(posts).toHaveLength(1);
+    expect(
+      calls().filter(
+        (row) => row.kind === "rpc" && row.method === "thread/fork",
+      ),
+    ).toHaveLength(nativeForksBefore);
+  } finally {
+    releaseStaleReview();
+    if (staleReviewHandlerStarted) await staleReviewFinished;
+    await page.unroute(staleReviewMatcher, delayedStaleReview);
+    page.off("request", capturePost);
+  }
+  await dialog
+    .getByRole("button", { name: "Close dialog", exact: true })
+    .click();
+});
+
+test("Fork reservation waits for verified original discovery", async ({
+  page,
+}) => {
+  mode("fork-service-tier-null");
+  const { pane, record } = await startedChat(page);
+  const selectedTurnRequestId = await completeForkSourceTurn(
+    page,
+    pane,
+    record.id,
+  );
+  const turn = saved(record.id).turns.find(
+    (row) => row.requestId === selectedTurnRequestId,
+  );
+  if (!turn || turn.phase !== "completed")
+    throw Error("No completed Fork source turn");
+
+  const indexPath = `/__agent-forge/projects/${record.projectId}/session-operation-identities`;
+  let indexReads = 0;
+  await page.route(`**${indexPath}`, async (route) => {
+    if (route.request().method() !== "GET") {
+      await route.continue();
+      return;
+    }
+    indexReads += 1;
+    const headers = await route.request().allHeaders();
+    const response = await route.fetch({
+      headers: {
+        ...headers,
+        Origin: new URL(route.request().url()).origin,
+        "Sec-Fetch-Site": "same-origin",
+      },
+    });
+    const raw: unknown = await response.json();
+    const envelope = z
+      .object({ ok: z.literal(true), data: z.unknown(), error: z.null() })
+      .strict()
+      .safeParse(raw);
+    const realPage = envelope.success
+      ? sessionOperationIdentityPageSchema.safeParse(envelope.data.data)
+      : null;
+    if (
+      response.status() !== 200 ||
+      !realPage?.success ||
+      realPage.data.scope.projectId !== record.projectId
+    )
+      throw Error(
+        "The real protected identity page was not valid for this project.",
+      );
+    if (indexReads === 1) {
+      await route.fulfill({
+        response,
+        body: JSON.stringify({
+          ok: true,
+          data: { ...realPage.data, operations: "malformed" },
+          error: null,
+        }),
+      });
+      return;
+    }
+    await route.fulfill({ response });
+  });
+
+  const opener = pane.getByRole("button", {
+    name: `Review Fork through ${turn.requestId.slice(0, 8)}`,
+    exact: true,
+  });
+  const observedPosts: string[] = [];
+  const captureForkWrite = (request: Request) => {
+    const path = new URL(request.url()).pathname;
+    if (
+      request.method() === "POST" &&
+      (path.endsWith("/fork-reservations") || path.endsWith("/forks"))
+    )
+      observedPosts.push(path);
+  };
+  page.on("request", captureForkWrite);
+  await opener.click();
+  const dialog = page.getByRole("dialog", {
+    name: "Review native Codex Fork",
+    exact: true,
+  });
+  await expect(dialog).toContainText(
+    "The saved source or existing Fork originals could not be verified. No Fork was reserved.",
+  );
+  await expect(
+    dialog.getByRole("button", {
+      name: "Reserve this exact Fork",
+      exact: true,
+    }),
+  ).toHaveCount(0);
+  expect(indexReads).toBe(1);
+  expect(observedPosts).toHaveLength(0);
+  expect(
+    calls().filter((row) => row.kind === "rpc" && row.method === "thread/fork"),
+  ).toHaveLength(0);
+
+  await dialog
+    .getByRole("button", { name: "Close dialog", exact: true })
+    .click();
+  await opener.click();
+  await expect(dialog).toContainText("Captured settings");
+  await expect(
+    dialog.getByRole("button", {
+      name: "Reserve this exact Fork",
+      exact: true,
+    }),
+  ).toBeEnabled();
+  expect(indexReads).toBe(2);
+  expect(observedPosts).toHaveLength(0);
+  expect(
+    calls().filter((row) => row.kind === "rpc" && row.method === "thread/fork"),
+  ).toHaveLength(0);
+  page.off("request", captureForkWrite);
+  await page.unroute(`**${indexPath}`);
+});
+
+test("Codex Chat explicitly reviews, forks, reloads and controls only the linked child", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 1100, height: 760 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  forkJourneyHttpFacts = [];
+  const tracked = new Map<Request, (typeof forkJourneyHttpFacts)[number]>();
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (
+      !/\/(?:fork-review|fork-reservations|forks|fork-turns|fork-approvals)(?:\/|$)/.test(
+        url.pathname,
+      )
+    )
+      return;
+    if (forkJourneyHttpFacts.length >= 96) return;
+    const fact = {
+      method: request.method(),
+      path: url.pathname,
+      status: null,
+    };
+    forkJourneyHttpFacts.push(fact);
+    tracked.set(request, fact);
+  });
+  page.on("response", (response) => {
+    const fact = tracked.get(response.request());
+    if (fact) fact.status = response.status();
+  });
+  mode("fork-service-tier-null-child-approval");
+  const { pane, record } = await startedChat(page);
+  const selectedTurnRequestId = await completeForkSourceTurn(
+    page,
+    pane,
+    record.id,
+  );
+  const turn = saved(record.id).turns.find(
+    (row) => row.requestId === selectedTurnRequestId,
+  );
+  if (!turn || turn.phase !== "completed")
+    throw Error("No completed Fork source turn");
+  const parentNativeId = saved(record.id).binding?.sessionId;
+  if (!parentNativeId)
+    throw Error("The parent native Chat identity is missing");
+
+  const opener = pane.getByRole("button", {
+    name: `Review Fork through ${turn.requestId.slice(0, 8)}`,
+    exact: true,
+  });
+  await opener.focus();
+  await page.keyboard.press("Enter");
+  const dialog = page.getByRole("dialog", {
+    name: "Review native Codex Fork",
+    exact: true,
+  });
+  await expect(dialog).toContainText("Captured settings");
+  await expect(dialog).toContainText("Explicitly unset");
+  await expect(dialog).toContainText("PRIVATE_FORK_SOURCE_PROMPT");
+  await expect(dialog).toContainText("Saved completed parent turn");
+  await expect(dialog).not.toContainText(parentNativeId);
+  const forkCallsBeforeReview = calls().filter(
+    (row) => row.kind === "rpc" && row.method === "thread/fork",
+  ).length;
+  const forkPosts: Array<{ path: string; body: unknown }> = [];
+  const captureForkPost = (request: Request) => {
+    const path = new URL(request.url()).pathname;
+    if (
+      request.method() !== "POST" ||
+      !(path.endsWith("/fork-reservations") || path.endsWith("/forks"))
+    )
+      return;
+    forkPosts.push({
+      path,
+      body: request.postDataJSON(),
+    });
+  };
+  page.on("request", captureForkPost);
+  expect(forkCallsBeforeReview).toBe(0);
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await expect(opener).toBeFocused();
+  await opener.click();
+  await expect(dialog).toContainText("PRIVATE_FORK_SOURCE_PROMPT");
+  await dialog
+    .getByRole("button", { name: "Reserve this exact Fork", exact: true })
+    .click();
+  const reserve = dialog.getByRole("button", {
+    name: "Create the native child thread once",
+    exact: true,
+  });
+  await expect(reserve).toBeEnabled();
+  expect(
+    calls().filter((row) => row.kind === "rpc" && row.method === "thread/fork"),
+  ).toHaveLength(0);
+  expect(forkPosts.map((post) => post.path)).toEqual([
+    `/__agent-forge/projects/${record.projectId}/sessions/${record.id}/fork-reservations`,
+  ]);
+  expect(forkPosts[0]?.body).toMatchObject({
+    requestId: expect.any(String),
+    throughTurnRequestId: turn.requestId,
+  });
+  const savedIdentity = forkPosts[0]?.body as { requestId: string };
+  const identityToken = await pageToken(page);
+  const rawIdentity: unknown = await page.evaluate(
+    async ({ project, token, header }) => {
+      const response = await fetch(
+        `/__agent-forge/projects/${project}/session-operation-identities`,
+        { headers: { [header]: token } },
+      );
+      return response.json();
+    },
+    {
+      project: record.projectId,
+      token: identityToken,
+      header: OPERATOR_HEADER,
+    },
+  );
+  const identityEnvelope =
+    typeof rawIdentity === "object" &&
+    rawIdentity !== null &&
+    "data" in rawIdentity
+      ? (rawIdentity as { data: unknown }).data
+      : null;
+  const identityPage =
+      sessionOperationIdentityPageSchema.parse(identityEnvelope),
+    savedOperation = identityPage.operations.find(
+      (row) =>
+        row.family === "codex-chat-fork" &&
+        row.requestId === savedIdentity.requestId,
+    );
+  expect(savedOperation).toMatchObject({
+    family: "codex-chat-fork",
+    requestId: savedIdentity.requestId,
+    state: "reserved",
+  });
+  expect(JSON.stringify(savedOperation)).not.toContain(
+    "PRIVATE_FORK_SOURCE_PROMPT",
+  );
+
+  await reserve.click();
+  await expect
+    .poll(
+      () =>
+        calls().filter(
+          (row) => row.kind === "rpc" && row.method === "thread/fork",
+        ).length,
+    )
+    .toBe(1);
+  const nativeFork = calls().find(
+    (row) => row.kind === "rpc" && row.method === "thread/fork",
+  );
+  const originalFrame = saved(record.id).frames.find(
+    (frame) =>
+      frame.event.kind === "user" &&
+      "codexChat" in frame.event &&
+      frame.event.codexChat,
+  );
+  if (
+    originalFrame?.event.kind !== "user" ||
+    !("codexChat" in originalFrame.event) ||
+    !originalFrame.event.codexChat
+  )
+    throw Error("The saved parent configuration is unavailable");
+  expect(nativeFork?.params).toMatchObject({
+    threadId: parentNativeId,
+    lastTurnId: "0199a213-81c0-7800-8aa1-bbab2a035a55",
+    model: originalFrame.event.codexChat.launch.model,
+    modelProvider: "openai",
+    serviceTier: null,
+    approvalPolicy: "on-request",
+  });
+  await expect(
+    dialog.getByText("Child conversation", { exact: true }),
+  ).toBeVisible();
+  await expect(dialog.getByText("PRIVATE_FORK_SOURCE_PROMPT")).toBeVisible();
+  await expect(dialog).toContainText("Native child session");
+  expect(savedIdentity.requestId).toBeTruthy();
+
+  const postsBeforeReload = forkPosts.length;
+  const child = records().find(
+    (row) =>
+      row.id !== record.id &&
+      "origin" in row &&
+      row.origin?.kind === "codex-chat-fork" &&
+      row.origin.parentSessionId === record.id,
+  );
+  if (!child) throw Error("The linked Fork child was not registered");
+  await reloadSettled(page);
+  const recoveredOpener = pane.getByRole("button", {
+    name: `Review Fork through ${turn.requestId.slice(0, 8)}`,
+    exact: true,
+  });
+  let childReadStarted!: () => void;
+  let releaseChildRead!: () => void;
+  const childReadEntered = new Promise<void>((resolve) => {
+    childReadStarted = resolve;
+  });
+  const childReadBarrier = new Promise<void>((resolve) => {
+    releaseChildRead = resolve;
+  });
+  let finishChildRead!: () => void;
+  let childReadHandlerStarted = false;
+  const childReadFinished = new Promise<void>((resolve) => {
+    finishChildRead = resolve;
+  });
+  let childResponseVerified = false;
+  const childPageRoute = async (route: Route) => {
+    try {
+      childReadHandlerStarted = true;
+      const requestHeaders = await route.request().allHeaders();
+      const origin = new URL(route.request().url()).origin;
+      const response = await route.fetch({
+        headers: {
+          ...requestHeaders,
+          Origin: origin,
+          "Sec-Fetch-Site": "same-origin",
+        },
+      });
+      const body = await response.body();
+      try {
+        const raw: unknown = JSON.parse(body.toString("utf8"));
+        const envelope = z
+          .object({ ok: z.literal(true), data: z.unknown(), error: z.null() })
+          .safeParse(raw);
+        const childPage = envelope.success
+          ? ownedCodingPageSchema.safeParse(envelope.data.data)
+          : null;
+        childResponseVerified =
+          response.status() === 200 &&
+          childPage?.success === true &&
+          childPage.data.projectId === record.projectId &&
+          childPage.data.conversationId === child.id &&
+          childPage.data.binding?.provider === "codex";
+      } catch {
+        childResponseVerified = false;
+      }
+      childReadStarted();
+      await childReadBarrier;
+      await route.fulfill({ response, body });
+    } finally {
+      finishChildRead();
+    }
+  };
+  const childPageUrl = (url: URL) =>
+    url.pathname.endsWith(
+      `/sessions/${encodeURIComponent(child.id)}/fork-turns`,
+    ) && url.searchParams.get("requestId") === savedIdentity.requestId;
+  const childPageRouteMatcher = (url: URL) => childPageUrl(url);
+  await page.route(childPageRouteMatcher, childPageRoute);
+  try {
+    await recoveredOpener.click();
+    await childReadEntered;
+    expect(childResponseVerified).toBe(true);
+    const recoveredDialog = page.getByRole("dialog", {
+      name: "Review native Codex Fork",
+      exact: true,
+    });
+    await expect(recoveredDialog).toContainText(savedIdentity.requestId);
+    await expect(
+      recoveredDialog.getByText("Child conversation", { exact: true }),
+    ).toBeVisible();
+    await recoveredDialog
+      .getByRole("textbox", { name: "Continue this child" })
+      .fill("PRIVATE_CHILD_APPROVAL_PROMPT");
+    await expect(
+      recoveredDialog.getByRole("button", {
+        name: "Send child turn",
+        exact: true,
+      }),
+    ).toBeDisabled({ timeout: 250 });
+    const childResponse = page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return response.request().method() === "GET" && childPageUrl(url);
+    });
+    releaseChildRead();
+    await childResponse;
+  } finally {
+    releaseChildRead();
+    if (childReadHandlerStarted) await childReadFinished;
+    await page.unroute(childPageRouteMatcher, childPageRoute);
+  }
+  const recoveredDialog = page.getByRole("dialog", {
+    name: "Review native Codex Fork",
+    exact: true,
+  });
+  await expect(recoveredDialog).toContainText(savedIdentity.requestId);
+  await expect(
+    recoveredDialog.getByText("Child conversation", { exact: true }),
+  ).toBeVisible();
+  expect(
+    calls().filter((row) => row.kind === "rpc" && row.method === "thread/fork"),
+  ).toHaveLength(1);
+  expect(forkPosts).toHaveLength(postsBeforeReload);
+  page.off("request", captureForkPost);
+  await expect(
+    recoveredDialog.getByRole("button", {
+      name: "Send child turn",
+      exact: true,
+    }),
+  ).toBeEnabled();
+  const approvalDecisionPosts: Array<{ path: string; body: unknown }> = [];
+  const childTurnBodies: unknown[] = [];
+  const captureChildAction = (request: Request) => {
+    const path = new URL(request.url()).pathname;
+    if (request.method() !== "POST") return;
+    if (
+      path ===
+      `/__agent-forge/projects/${record.projectId}/sessions/${child.id}/fork-approval-decisions`
+    )
+      approvalDecisionPosts.push({ path, body: request.postDataJSON() });
+    if (
+      path ===
+      `/__agent-forge/projects/${record.projectId}/sessions/${child.id}/fork-turns`
+    )
+      childTurnBodies.push(request.postDataJSON());
+  };
+  page.on("request", captureChildAction);
+  await recoveredDialog
+    .getByRole("button", { name: "Send child turn", exact: true })
+    .click();
+  expect(childTurnBodies).toHaveLength(1);
+  const childTurnBody = z
+    .object({ requestId: z.string().uuid() })
+    .passthrough()
+    .safeParse(childTurnBodies[0]);
+  expect(childTurnBody.success).toBe(true);
+  const childNativeId = saved(child.id).binding?.sessionId;
+  if (!childNativeId)
+    throw Error("The linked child native identity is missing");
+  await expect
+    .poll(() =>
+      calls().some(
+        (row) =>
+          row.kind === "approval-offer" &&
+          row.threadId === childNativeId &&
+          typeof row.turnId === "string",
+      ),
+    )
+    .toBe(true);
+  expect(approvalDecisionPosts).toHaveLength(0);
+  await recoveredDialog
+    .getByRole("button", {
+      name: "Refresh child transcript and permissions",
+      exact: true,
+    })
+    .click();
+  const commandApproval = recoveredDialog.getByText(
+    "Permission request · command",
+    { exact: true },
+  );
+  try {
+    await expect(commandApproval).toBeVisible();
+    await recoveredDialog
+      .getByRole("region", {
+        name: "Fork child conversation",
+        exact: true,
+      })
+      .screenshot({
+        path: test.info().outputPath("native-fork-child-review.png"),
+      });
+  } finally {
+    await attachForkChildApprovalDiagnostic(test.info());
+  }
+  await recoveredDialog
+    .getByRole("button", { name: "accept", exact: true })
+    .click();
+  await expect.poll(() => approvalDecisionPosts.length).toBe(1);
+  const decisionPath = `/__agent-forge/projects/${record.projectId}/sessions/${child.id}/fork-approval-decisions`;
+  const decisionBody = z
+    .object({
+      requestId: z.string().uuid(),
+      turnRequestId: z.string().uuid(),
+      approvalId: z.string().uuid(),
+      decision: z.literal("accept"),
+    })
+    .strict()
+    .safeParse(approvalDecisionPosts[0]?.body);
+  expect(approvalDecisionPosts[0]?.path).toBe(decisionPath);
+  expect(decisionBody.success).toBe(true);
+  if (decisionBody.success && childTurnBody.success)
+    expect(decisionBody.data.turnRequestId).toBe(childTurnBody.data.requestId);
+  expect(
+    calls().filter((row) => row.kind === "rpc" && row.method === "thread/fork"),
+  ).toHaveLength(1);
+  await expect
+    .poll(() => saved(child.id).turns.some((row) => row.phase === "completed"))
+    .toBe(true);
+  await recoveredDialog
+    .getByRole("button", {
+      name: "Refresh child transcript and permissions",
+      exact: true,
+    })
+    .click();
+  await expect(
+    recoveredDialog.getByText("Hello world", { exact: true }),
+  ).toBeVisible();
+  expect(childTurnBodies).toHaveLength(1);
+
+  mode("fork-child-lost-turn-reply");
+  await recoveredDialog
+    .getByRole("textbox", { name: "Continue this child" })
+    .fill("PRIVATE_CHILD_STOP_PROMPT");
+  await recoveredDialog
+    .getByRole("button", { name: "Send child turn", exact: true })
+    .click();
+  await expect(
+    recoveredDialog.getByRole("button", {
+      name: "Stop this Fork child",
+      exact: true,
+    }),
+  ).toBeEnabled();
+  await recoveredDialog
+    .getByRole("button", { name: "Stop this Fork child", exact: true })
+    .click();
+  await expect
+    .poll(() =>
+      saved(child.id).turns.some((turn) =>
+        ["accepted", "running", "cancelling"].includes(turn.phase),
+      ),
+    )
+    .toBe(false);
+  page.off("request", captureForkPost);
+  page.off("request", captureChildAction);
+});
+
+test("an undispatched Fork original can be explicitly retired after reload", async ({
+  page,
+}) => {
+  const nativeForksBefore = calls().filter(
+    (row) => row.kind === "rpc" && row.method === "thread/fork",
+  ).length;
+  mode("fork-service-tier-null");
+  const { pane, record } = await startedChat(page);
+  const selectedTurnRequestId = await completeForkSourceTurn(
+    page,
+    pane,
+    record.id,
+  );
+  const turn = saved(record.id).turns.find(
+    (row) => row.requestId === selectedTurnRequestId,
+  );
+  if (!turn || turn.phase !== "completed")
+    throw Error("No completed Fork source turn");
+  const forkPosts: Array<{ path: string; body: unknown }> = [];
+  const captureForkPost = (request: Request) => {
+    const path = new URL(request.url()).pathname;
+    if (
+      request.method() === "POST" &&
+      (path.endsWith("/fork-reservations") ||
+        path.includes("/fork-reservations/") ||
+        path.endsWith("/forks"))
+    )
+      forkPosts.push({ path, body: request.postDataJSON() });
+  };
+  page.on("request", captureForkPost);
+
+  const opener = () =>
+    pane.getByRole("button", {
+      name: `Review Fork through ${turn.requestId.slice(0, 8)}`,
+      exact: true,
+    });
+  await opener().click();
+  const dialog = () =>
+    page.getByRole("dialog", {
+      name: "Review native Codex Fork",
+      exact: true,
+    });
+  const review = dialog();
+  await expect(review).toContainText("Captured settings");
+  await review
+    .getByRole("button", { name: "Reserve this exact Fork", exact: true })
+    .click();
+  const reserve = review.getByRole("button", {
+    name: "Create the native child thread once",
+    exact: true,
+  });
+  await expect(reserve).toBeEnabled();
+  const retire = review.getByRole("button", {
+    name: "Retire verified not-sent original",
+    exact: true,
+  });
+  await expect(retire).toBeEnabled();
+  expect(forkPosts).toHaveLength(1);
+  const identity = forkPosts[0]?.body as {
+    requestId: string;
+    throughTurnRequestId: string;
+  };
+  expect(identity).toMatchObject({ throughTurnRequestId: turn.requestId });
+  expect(
+    calls().filter((row) => row.kind === "rpc" && row.method === "thread/fork"),
+  ).toHaveLength(nativeForksBefore);
+
+  await reloadSettled(page);
+  await opener().click();
+  const recovered = dialog();
+  await expect(recovered).toContainText(identity.requestId);
+  const recoveredRetire = recovered.getByRole("button", {
+    name: "Retire verified not-sent original",
+    exact: true,
+  });
+  await expect(recoveredRetire).toBeEnabled();
+  await recoveredRetire.click();
+  await expect(recovered).toContainText("its reservation was retired");
+  await expect(recovered).toContainText("retired");
+  expect(forkPosts).toHaveLength(2);
+  expect(forkPosts[1]?.path).toBe(
+    `/__agent-forge/projects/${record.projectId}/sessions/${record.id}/fork-reservations/${identity.requestId}/retire`,
+  );
+  expect(forkPosts[1]?.body).toMatchObject({ requestHash: expect.any(String) });
+  expect(forkPosts.some((post) => post.path.endsWith("/forks"))).toBe(false);
+  expect(
+    calls().filter((row) => row.kind === "rpc" && row.method === "thread/fork"),
+  ).toHaveLength(nativeForksBefore);
+  page.off("request", captureForkPost);
+});
+
+test("lost native Fork reply remains held across reload without another Fork POST", async ({
+  page,
+}) => {
+  mode("fork-service-tier-null");
+  const { pane, record } = await startedChat(page);
+  const selectedTurnRequestId = await completeForkSourceTurn(
+    page,
+    pane,
+    record.id,
+  );
+  const turn = saved(record.id).turns.find(
+    (row) => row.requestId === selectedTurnRequestId,
+  );
+  if (!turn) throw Error("No completed source turn");
+  const opener = pane.getByRole("button", {
+    name: `Review Fork through ${turn.requestId.slice(0, 8)}`,
+    exact: true,
+  });
+  await opener.click();
+  const dialog = page.getByRole("dialog", {
+    name: "Review native Codex Fork",
+    exact: true,
+  });
+  const forkPosts: string[] = [],
+    originalGets: string[] = [];
+  let reservedRequestId: string | null = null;
+  const captureForkPost = (request: Request) => {
+    const path = new URL(request.url()).pathname;
+    if (
+      request.method() === "POST" &&
+      (path.endsWith("/fork-reservations") || path.endsWith("/forks"))
+    ) {
+      forkPosts.push(path);
+      if (path.endsWith("/fork-reservations")) {
+        const body: unknown = request.postDataJSON();
+        if (
+          typeof body === "object" &&
+          body !== null &&
+          "requestId" in body &&
+          typeof body.requestId === "string"
+        )
+          reservedRequestId = body.requestId;
+      }
+    }
+    if (request.method() === "GET" && path.includes("/codex-chat-forks/"))
+      originalGets.push(path);
+  };
+  page.on("request", captureForkPost);
+  await dialog
+    .getByRole("button", { name: "Reserve this exact Fork", exact: true })
+    .click();
+  await expect(
+    dialog.getByRole("button", {
+      name: "Create the native child thread once",
+      exact: true,
+    }),
+  ).toBeEnabled();
+  expect(reservedRequestId).toMatch(/^[0-9a-f-]{36}$/);
+  mode("fork-lost-response-eof");
+  await dialog
+    .getByRole("button", {
+      name: "Create the native child thread once",
+      exact: true,
+    })
+    .click();
+  await expect(dialog).toContainText("native outcome is not confirmed");
+  expect(
+    calls().filter((row) => row.kind === "fork-created-without-response"),
+  ).toHaveLength(1);
+  expect(forkPosts).toEqual([
+    `/__agent-forge/projects/${record.projectId}/sessions/${record.id}/fork-reservations`,
+    `/__agent-forge/projects/${record.projectId}/sessions/${record.id}/forks`,
+  ]);
+  const heldRequestCount = forkPosts.length;
+  await reloadSettled(page);
+  const recovered = pane.getByRole("button", {
+    name: `Review Fork through ${turn.requestId.slice(0, 8)}`,
+    exact: true,
+  });
+  await recovered.click();
+  const recoveredDialog = page.getByRole("dialog", {
+    name: "Review native Codex Fork",
+    exact: true,
+  });
+  await expect(recoveredDialog).toContainText("held");
+  await expect(recoveredDialog).not.toContainText(
+    "Create the native child thread once",
+  );
+  expect(originalGets).toContain(
+    `/__agent-forge/projects/${record.projectId}/codex-chat-forks/${reservedRequestId}`,
+  );
+  expect(
+    calls().filter((row) => row.kind === "fork-created-without-response"),
+  ).toHaveLength(1);
+  expect(forkPosts).toHaveLength(heldRequestCount);
+  page.off("request", captureForkPost);
 });

@@ -755,6 +755,7 @@ export function DesktopApp(): JSX.Element {
             projectId={project.id}
             sessionId={selectedOwnedSession}
             client={sessions}
+            forkClient={sessions.fork}
             keeper={keeper}
             writesAllowed={writesAllowed}
             archived={project.archived}
