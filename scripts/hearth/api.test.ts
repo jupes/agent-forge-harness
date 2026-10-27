@@ -242,6 +242,9 @@ const API_CODEX_CHAT_FORK_CONTROL_CHILD_ID =
   "session-80e40be9-e811-47c3-a71d-b988e6717801";
 const API_CODEX_CHAT_FORK_CONTROL_CHILD_REQUEST_ID =
   "80e40be9-e811-47c3-a71d-b988e6717802";
+const API_CODEX_CHAT_FORK_CHILD_ID = API_CODEX_CHAT_FORK_CONTROL_CHILD_ID;
+const API_CODEX_CHAT_FORK_CHILD_REQUEST_ID =
+  API_CODEX_CHAT_FORK_CONTROL_CHILD_REQUEST_ID;
 const API_CODEX_CHAT_FORK_CONTROL_DECISION_ID =
   "80e40be9-e811-47c3-a71d-b988e6717803";
 const API_CODEX_CHAT_FORK_CONTROL_STOP_ID =
@@ -2822,6 +2825,7 @@ const ACTIONS: Record<string, ActionFixture> = {
 const READS: Record<string, string> = {
   "GET /projects/:id/session-start-identities": `/projects/${FIXTURE_PROJECT_ID}/session-start-identities`,
   "GET /projects/:id/codex-chat-forks/:requestId": `/projects/${FIXTURE_PROJECT_ID}/codex-chat-forks/${API_CODEX_CHAT_FORK_ID}`,
+  "GET /projects/:id/codex-chat-forks/:requestId/context": `/projects/${FIXTURE_PROJECT_ID}/codex-chat-forks/${API_CODEX_CHAT_FORK_CHILD_REQUEST_ID}/context`,
   "GET /projects/:id/session-operation-identities": `/projects/${FIXTURE_PROJECT_ID}/session-operation-identities`,
   "GET /projects/:id/runs": `/projects/${FIXTURE_PROJECT_ID}/runs`,
   "GET /projects/:id/runs/:slug": `/projects/${FIXTURE_PROJECT_ID}/runs/demo`,
@@ -2845,7 +2849,8 @@ const READS: Record<string, string> = {
   "GET /projects/:id/activity": `/projects/${FIXTURE_PROJECT_ID}/activity`,
   "GET /projects/:id/activity/:eventId": `/projects/${FIXTURE_PROJECT_ID}/activity/1`,
   "GET /projects/:id/sessions/:sessionId": `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_OWNED_SESSION_ID}`,
-  "GET /projects/:id/sessions/:sessionId/fork-turns": `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_CODEX_CHAT_FORK_CONTROL_CHILD_ID}/fork-turns`,
+  "GET /projects/:id/sessions/:sessionId/fork-turns": `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_CODEX_CHAT_FORK_CHILD_ID}/fork-turns`,
+  "GET /projects/:id/sessions/:sessionId/fork-review": `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_CODEX_CHAT_FORK_SOURCE.sessionId}/fork-review?throughTurnRequestId=${API_CODEX_CHAT_FORK_SOURCE.turnRequestId}`,
   "GET /projects/:id/sessions/:sessionId/fork-approvals": `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_CODEX_CHAT_FORK_CONTROL_CHILD_ID}/fork-approvals`,
   "GET /projects/:id/sessions/:sessionId/approvals": `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_CHAT_SESSION}/approvals`,
   "GET /projects/:id/session-library": `/projects/${FIXTURE_PROJECT_ID}/session-library`,
@@ -2902,6 +2907,11 @@ async function seedForkReadOriginal(h: TestHearth): Promise<void> {
     state: "reserved",
     requestId: API_CODEX_CHAT_FORK_ID,
   });
+}
+
+/** The source-review read row addresses this exact completed parent/turn pair. */
+async function seedForkReadSourceReview(h: TestHearth): Promise<void> {
+  await seedForkableCodexChatSource(h, API_CODEX_CHAT_FORK_SOURCE);
 }
 
 /** A bounded linked child transcript fixture for the protected child-only read row. */
@@ -3777,6 +3787,7 @@ describe("a read row or the stream while another connection holds the write lock
     // Seed the private Fork journal without an audited HTTP action, which
     // would open the otherwise-cold ledger before this lock assertion.
     await seedForkReadChild(h);
+    await seedForkReadSourceReview(h);
     await seedForkReadOriginal(h);
     const rows = h.hearth.routes.filter(
       (route) => route.kind === "read" || route.kind === "stream",
@@ -4883,6 +4894,7 @@ describe("every read row (iterating the table)", () => {
     await seedSmithEditOriginal(h);
     await seedSmithRoutingEditOriginal(h);
     await seedForkReadChild(h);
+    await seedForkReadSourceReview(h);
     await seedForkReadOriginal(h);
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");
@@ -4930,6 +4942,7 @@ describe("every read row (iterating the table)", () => {
     await seedSmithEditOriginal(h);
     await seedSmithRoutingEditOriginal(h);
     await seedForkReadChild(h);
+    await seedForkReadSourceReview(h);
     await seedForkReadOriginal(h);
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");

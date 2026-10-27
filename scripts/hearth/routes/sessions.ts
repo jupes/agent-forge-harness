@@ -22,6 +22,7 @@ import {
   codexChatForkOriginalHash,
   codexChatForkOriginalHashInput,
 } from "../../sessions/codex-chat-fork-protocol";
+import { CODEX_CHAT_FORK_REVIEW_LIMITS } from "../../sessions/codex-chat-fork-review-protocol";
 import { createCodexChatPreview } from "../../sessions/codex-chat-owned-preview";
 import { parseCodexChatDecision } from "../../sessions/codex-chat-owned-protocol";
 import type { createCodexChatRuntime } from "../../sessions/codex-chat-runtime";
@@ -173,6 +174,52 @@ export function createOwnedSessionRoutes(
       ? { ok: true, value: { projectId: selected.value, sessionId } }
       : fail("Expected an owned session id.");
   };
+  const reviewPageQuery = (
+    request: RouteRequest,
+    includeTurn: boolean,
+  ): ValidationResult<{
+    after: number;
+    limit: number;
+    throughTurnRequestId?: string;
+  }> => {
+    const allowed = new Set([
+      "after",
+      "limit",
+      ...(includeTurn ? ["throughTurnRequestId"] : []),
+    ]);
+    for (const key of request.query.keys())
+      if (!allowed.has(key)) return fail("Unexpected Fork review query field.");
+    for (const key of allowed)
+      if (request.query.getAll(key).length > 1)
+        return fail("Fork review query fields must not be duplicated.");
+    const parseInteger = (
+      key: string,
+      fallback: number,
+      maximum: number,
+    ): number | null => {
+      const raw = request.query.get(key);
+      if (raw === null) return fallback;
+      if (!/^(0|[1-9][0-9]{0,8})$/.test(raw)) return null;
+      const value = Number(raw);
+      return Number.isSafeInteger(value) && value <= maximum ? value : null;
+    };
+    const after = parseInteger("after", 0, Number.MAX_SAFE_INTEGER),
+      limit = parseInteger(
+        "limit",
+        CODEX_CHAT_FORK_REVIEW_LIMITS.pageItems,
+        CODEX_CHAT_FORK_REVIEW_LIMITS.pageItems,
+      );
+    if (after === null || limit === null || limit < 1)
+      return fail("Fork review pagination is outside the supported bounds.");
+    if (!includeTurn) return { ok: true, value: { after, limit } };
+    const turn = request.query.get("throughTurnRequestId");
+    return isConversationRequestId(turn)
+      ? {
+          ok: true,
+          value: { after, limit, throughTurnRequestId: turn },
+        }
+      : fail("Fork review requires one exact completed turn request UUID.");
+  };
   const readable = (projectId: string) => {
     const selected = createProjectStore(home)
       .read()
@@ -261,6 +308,78 @@ export function createOwnedSessionRoutes(
       answer(200, () => {
         readable(projectId);
         return service.readForkOriginal(projectId, requestId);
+      }),
+  };
+  const forkSourceReview: ReadRoute<{
+    projectId: string;
+    parentSessionId: string;
+    throughTurnRequestId: string;
+    after: number;
+    limit: number;
+  }> = {
+    kind: "read",
+    method: "GET",
+    path: "/projects/:id/sessions/:sessionId/fork-review",
+    operatorOnly: true,
+    validate: (request) => {
+      const selected = address(request),
+        query = reviewPageQuery(request, true);
+      if (!selected.ok) return selected;
+      if (!query.ok) return query;
+      const throughTurnRequestId = query.value.throughTurnRequestId;
+      if (!throughTurnRequestId)
+        return fail(
+          "Fork review requires one exact completed turn request UUID.",
+        );
+      return {
+        ok: true,
+        value: {
+          projectId: selected.value.projectId,
+          parentSessionId: selected.value.sessionId,
+          throughTurnRequestId,
+          after: query.value.after,
+          limit: query.value.limit,
+        },
+      };
+    },
+    read: (input) =>
+      answer(200, () => {
+        readable(input.projectId);
+        return service.readForkSourceReview(input);
+      }),
+  };
+  const forkOriginalContext: ReadRoute<{
+    projectId: string;
+    requestId: string;
+    after: number;
+    limit: number;
+  }> = {
+    kind: "read",
+    method: "GET",
+    path: "/projects/:id/codex-chat-forks/:requestId/context",
+    operatorOnly: true,
+    validate: (request) => {
+      const selected = project(request),
+        query = reviewPageQuery(request, false),
+        requestId = request.params["requestId"];
+      if (!selected.ok) return selected;
+      if (!query.ok) return query;
+      if (!isConversationRequestId(requestId))
+        return fail("Expected a lowercase Codex Fork request UUID.");
+      return {
+        ok: true,
+        value: {
+          projectId: selected.value,
+          requestId,
+          after: query.value.after,
+          limit: query.value.limit,
+        },
+      };
+    },
+    read: (input) =>
+      answer(200, () => {
+        readable(input.projectId);
+        return service.readForkOriginalContext(input);
       }),
   };
   const fork: ActionRoute<{
@@ -1024,6 +1143,8 @@ export function createOwnedSessionRoutes(
     identityList,
     identityOperations,
     forkOriginal,
+    forkSourceReview,
+    forkOriginalContext,
     fork,
     forkReserve,
     forkRetire,

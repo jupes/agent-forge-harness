@@ -564,6 +564,43 @@ export function createOwnedCodingSessionService(options: {
         );
       }
     },
+    async readForkSourceReview(input: {
+      projectId: string;
+      parentSessionId: string;
+      throughTurnRequestId: string;
+      after: number;
+      limit: number;
+    }) {
+      try {
+        return await forkCoordinator.readSourceReview(input);
+      } catch (error) {
+        if (error instanceof ConversationError) throw error;
+        if (error instanceof CodexChatForkJournalError)
+          throw forkJournalFailure(error);
+        throw new ConversationError(
+          503,
+          "The exact Codex Fork source review is unavailable.",
+        );
+      }
+    },
+    async readForkOriginalContext(input: {
+      projectId: string;
+      requestId: string;
+      after: number;
+      limit: number;
+    }) {
+      try {
+        return await forkCoordinator.readOriginalContext(input);
+      } catch (error) {
+        if (error instanceof ConversationError) throw error;
+        if (error instanceof CodexChatForkJournalError)
+          throw forkJournalFailure(error);
+        throw new ConversationError(
+          503,
+          "The exact Codex Fork source context is unavailable; its original remains held.",
+        );
+      }
+    },
     async listOperationIdentities(
       projectId: string,
     ): Promise<SessionOperationIdentityPage> {
