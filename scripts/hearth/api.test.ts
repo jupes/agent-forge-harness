@@ -6766,6 +6766,17 @@ test("the protected owner-release read reports an ordinary Chat receipt without 
   expect(Object.keys(projection).sort()).toEqual(["reason", "state"]);
   expect(JSON.stringify(projection)).not.toContain(generationId);
   expect(JSON.stringify(projection)).not.toContain(startRequest.launch.prompt);
+  const wrongMethod = await fetch(
+    `${h.api}/projects/${FIXTURE_PROJECT_ID}/sessions/${owner.id}/owner-release`,
+    {
+      method: "POST",
+      headers: h.headers(h.hearth.token),
+      body: "{}",
+    },
+  );
+  expect(wrongMethod.status).toBe(405);
+  expect(wrongMethod.headers.get("allow")).toBe("GET");
+  await wrongMethod.body?.cancel();
   const afterState = store.read(FIXTURE_PROJECT_ID);
   expect({
     revision: afterState.revision,
@@ -6783,16 +6794,19 @@ test("the protected owner-release read reports an ordinary Chat receipt without 
       address,
     ),
     registryPath = sessionRegistryFile(h.home),
+    catalogPath = projectCatalogPath(h.home),
     beforeConversationBytes = readFileSync(conversationPath),
-    beforeRegistryBytes = readFileSync(registryPath);
+    beforeRegistryBytes = readFileSync(registryPath),
+    beforeCatalogBytes = readFileSync(catalogPath);
   let auditCalls = 0;
+  let currentGit: GitRun = fixtureSessionGit;
   const freshDeps = {
     root: h.root,
     workspace: h.workspace,
     ledgerPath: h.ledger,
     runBd: (args: string[], options?: { timeoutMs?: number }) =>
       h.bd.run(args, options),
-    git: fixtureSessionGit,
+    git: (args: readonly string[], cwd: string) => currentGit(args, cwd),
     appendEvent: () => {
       auditCalls++;
       return {
@@ -6818,16 +6832,24 @@ test("the protected owner-release read reports an ordinary Chat receipt without 
     [reconstructed.ownerRelease],
   );
   const origin = "http://127.0.0.1:43121";
-  const callFreshApi = async () => {
+  const callFreshApi = async (
+    options: {
+      query?: string;
+      includeToken?: boolean;
+      sessionId?: string;
+    } = {},
+  ) => {
     let freshBody = "";
+    const token = options.includeToken === false ? undefined : h.hearth.token,
+      path = `${API_PREFIX}/projects/${FIXTURE_PROJECT_ID}/sessions/${options.sessionId ?? owner.id}/owner-release${options.query ?? ""}`;
     const request = {
       method: "GET",
-      url: `${API_PREFIX}/projects/${FIXTURE_PROJECT_ID}/sessions/${owner.id}/owner-release`,
+      url: path,
       headers: {
         host: "127.0.0.1:43121",
         origin,
         "sec-fetch-site": "same-origin",
-        [OPERATOR_HEADER]: h.hearth.token,
+        ...(token ? { [OPERATOR_HEADER]: token } : {}),
       },
       rawHeaders: [
         "host",
@@ -6836,8 +6858,7 @@ test("the protected owner-release read reports an ordinary Chat receipt without 
         origin,
         "sec-fetch-site",
         "same-origin",
-        OPERATOR_HEADER,
-        h.hearth.token,
+        ...(token ? [OPERATOR_HEADER, token] : []),
       ],
       socket: { remoteAddress: "127.0.0.1" },
     } as unknown as IncomingMessage;
@@ -6874,8 +6895,21 @@ test("the protected owner-release read reports an ordinary Chat receipt without 
       reason: null,
     });
 
-    const catalogPath = projectCatalogPath(h.home),
-      originalCatalogBytes = readFileSync(catalogPath);
+    const unauthorized = await callFreshApi({ includeToken: false });
+    expect(unauthorized.status).toBe(403);
+    expect(unauthorized.envelope.ok).toBe(true);
+    if (!unauthorized.envelope.ok)
+      throw new Error("The unauthorized refusal envelope was invalid.");
+    expect(unauthorized.envelope.value.ok).toBe(false);
+    for (const query of ["?unexpected=1", "?unexpected=1&unexpected=2"]) {
+      const invalidQuery = await callFreshApi({ query });
+      expect(invalidQuery.status).toBe(400);
+      expect(invalidQuery.envelope.ok).toBe(true);
+      if (!invalidQuery.envelope.ok)
+        throw new Error("The query refusal envelope was invalid.");
+      expect(invalidQuery.envelope.value.ok).toBe(false);
+    }
+
     try {
       const catalog = createProjectStore(h.home).read();
       writeOwnerOnly(
@@ -6892,10 +6926,138 @@ test("the protected owner-release read reports an ordinary Chat receipt without 
       writeFileSync(conversationPath, "{}");
       const staleScope = await callFreshApi();
       expect(staleScope.status).toBe(409);
-      expect(staleScope.envelope.ok).toBe(false);
+      expect(staleScope.envelope.ok).toBe(true);
+      if (!staleScope.envelope.ok)
+        throw new Error("The stale-scope refusal envelope was invalid.");
+      expect(staleScope.envelope.value.ok).toBe(false);
     } finally {
       writeFileSync(conversationPath, beforeConversationBytes);
-      writeFileSync(catalogPath, originalCatalogBytes);
+      writeFileSync(catalogPath, beforeCatalogBytes);
+    }
+
+    const currentCatalog = createProjectStore(h.home).read(),
+      originalConversation = store.read(FIXTURE_PROJECT_ID);
+    const assertScopeRefusesBeforeConversationRead = async (
+      projects: typeof currentCatalog.projects,
+      status: number,
+      git?: typeof fixtureSessionGit,
+    ) => {
+      if (git) currentGit = git;
+      writeOwnerOnly(
+        catalogPath,
+        JSON.stringify({ ...currentCatalog, projects }),
+      );
+      writeFileSync(conversationPath, "{}");
+      const result = await callFreshApi();
+      expect(result.status).toBe(status);
+      expect(result.envelope.ok).toBe(true);
+      if (!result.envelope.ok)
+        throw new Error("The scope refusal envelope was invalid.");
+      expect(result.envelope.value.ok).toBe(false);
+    };
+    const project = currentCatalog.projects.find(
+      (item) => item.id === FIXTURE_PROJECT_ID,
+    );
+    if (!project) throw new Error("The project fixture disappeared.");
+    try {
+      await assertScopeRefusesBeforeConversationRead(
+        currentCatalog.projects.filter(
+          (item) => item.id !== FIXTURE_PROJECT_ID,
+        ),
+        404,
+      );
+      await assertScopeRefusesBeforeConversationRead(
+        currentCatalog.projects.map((item) =>
+          item.id === FIXTURE_PROJECT_ID ? { ...item, workspaces: [] } : item,
+        ),
+        409,
+      );
+      await assertScopeRefusesBeforeConversationRead(
+        currentCatalog.projects.map((item) =>
+          item.id === FIXTURE_PROJECT_ID
+            ? {
+                ...item,
+                workspaces: item.workspaces.map((workspace) => ({
+                  ...workspace,
+                  root: `${h.workspace}-outside`,
+                  repositories: [`${h.workspace}-outside`],
+                })),
+              }
+            : item,
+        ),
+        409,
+      );
+      await assertScopeRefusesBeforeConversationRead(
+        currentCatalog.projects.map((item) =>
+          item.id === FIXTURE_PROJECT_ID
+            ? {
+                ...item,
+                workspaces: item.workspaces.map((workspace) => ({
+                  ...workspace,
+                  repositories: [],
+                })),
+              }
+            : item,
+        ),
+        409,
+      );
+      await assertScopeRefusesBeforeConversationRead(
+        currentCatalog.projects,
+        409,
+        (args, cwd) =>
+          args[0] === "worktree"
+            ? { status: 0, stdout: "", stderr: "" }
+            : fixtureSessionGit(args, cwd),
+      );
+    } finally {
+      currentGit = fixtureSessionGit;
+      writeFileSync(conversationPath, JSON.stringify(originalConversation));
+      writeFileSync(catalogPath, beforeCatalogBytes);
+    }
+
+    const legacy = structuredClone(originalConversation);
+    delete legacy.codexChatOwnerLifecycle;
+    const withoutLifecycle = async (state: typeof originalConversation) => {
+      writeFileSync(conversationPath, JSON.stringify(state));
+      const result = await callFreshApi();
+      expect(result.status).toBe(200);
+      expect(result.envelope.ok).toBe(true);
+      if (!result.envelope.ok)
+        throw new Error("The unavailable projection envelope was invalid.");
+      expect(result.envelope.value.data).toEqual({
+        state: "unavailable",
+        reason: "owner-release-unavailable",
+      });
+      expect(Object.keys(result.envelope.value.data as object).sort()).toEqual([
+        "reason",
+        "state",
+      ]);
+    };
+    try {
+      await withoutLifecycle(legacy);
+      const missingRelease = structuredClone(originalConversation);
+      missingRelease.codexChatOwnerLifecycle =
+        missingRelease.codexChatOwnerLifecycle?.filter(
+          (fact) => fact.kind !== "generation-released",
+        );
+      await withoutLifecycle(missingRelease);
+      const corrupt = structuredClone(originalConversation);
+      const released = corrupt.codexChatOwnerLifecycle?.find(
+        (fact) => fact.kind === "generation-released",
+      );
+      if (released?.kind !== "generation-released")
+        throw new Error("The owner-release fact disappeared from its fixture.");
+      released.afterSequence = Number.MAX_SAFE_INTEGER;
+      writeFileSync(conversationPath, JSON.stringify(corrupt));
+      const invalidReceipt = await callFreshApi();
+      expect(invalidReceipt.status).toBe(503);
+      expect(invalidReceipt.envelope.ok).toBe(true);
+      if (!invalidReceipt.envelope.ok)
+        throw new Error("The corrupt-receipt envelope was invalid.");
+      expect(invalidReceipt.envelope.value.ok).toBe(false);
+    } finally {
+      writeFileSync(conversationPath, beforeConversationBytes);
+      writeFileSync(catalogPath, beforeCatalogBytes);
     }
   } finally {
     await reconstructed.close();
