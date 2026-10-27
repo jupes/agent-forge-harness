@@ -339,13 +339,17 @@ test("owned Chat durably binds one private generation before dispatch and releas
         ),
         isRecord = (value: unknown): value is Record<string, unknown> =>
           typeof value === "object" && value !== null && !Array.isArray(value);
-      if (isRecord(journal) && Array.isArray(journal.frames))
-        generationWasDurableBeforeRuntime = journal.frames.some(
-          (frame) =>
-            isRecord(frame) &&
-            isRecord(frame.event) &&
-            frame.event.kind === "owner-generation-started",
-        );
+      if (isRecord(journal) && Array.isArray(journal.codexChatOwnerLifecycle))
+        generationWasDurableBeforeRuntime =
+          journal.codexChatOwnerLifecycle.some(
+            (fact) =>
+              isRecord(fact) &&
+              fact.kind === "generation-started" &&
+              fact.requestId === f.request.requestId &&
+              typeof fact.afterSequence === "number" &&
+              Array.isArray(journal.frames) &&
+              fact.afterSequence === journal.frames.length,
+          );
     }
     return runtimeRun(input, persist, signal, callbacks);
   };
@@ -370,16 +374,15 @@ test("owned Chat durably binds one private generation before dispatch and releas
               : [],
           )
         : [],
-    lifecycle = frames.filter(
-      ({ event }) =>
-        event.kind === "owner-generation-started" ||
-        event.kind === "owner-generation-released",
-    );
+    lifecycle =
+      isRecord(stored) && Array.isArray(stored.codexChatOwnerLifecycle)
+        ? stored.codexChatOwnerLifecycle.filter(isRecord)
+        : [];
 
   expect(generationWasDurableBeforeRuntime).toBe(true);
-  expect(lifecycle.map(({ event }) => event.kind)).toEqual([
-    "owner-generation-started",
-    "owner-generation-released",
+  expect(lifecycle.map(({ kind }) => kind)).toEqual([
+    "generation-started",
+    "generation-released",
   ]);
   const generationStarted = lifecycle[0],
     generationReleased = lifecycle[1],
@@ -411,7 +414,7 @@ test("owned Chat durably binds one private generation before dispatch and releas
     !isRecord(finalOutcome.event.event)
   )
     throw Error("The inert owned Chat did not persist its lifecycle chain.");
-  const generationId = generationStarted.event.generationId;
+  const generationId = generationStarted.generationId;
   expect(typeof generationId).toBe("string");
   if (typeof generationId !== "string")
     throw Error("The private owner generation identifier was missing.");
@@ -421,20 +424,73 @@ test("owned Chat durably binds one private generation before dispatch and releas
   expect(generationId).not.toBe(f.request.requestId);
   expect(generationId).not.toBe(nativeIdentity.event.sessionId);
   expect(generationId).not.toBe(nativeTurn.event.event.turnId);
-  expect(generationStarted.seq).toBeLessThan(nativeIdentity.seq);
-  expect(generationReleased.seq).toBeLessThan(finalOutcome.seq);
-  expect(generationReleased.event).toMatchObject({
-    kind: "owner-generation-released",
+  const processFrame = frames.find(
+    ({ event }) =>
+      event.kind === "coding-chat" &&
+      isRecord(event.event) &&
+      event.event.kind === "process",
+  );
+  expect(processFrame).toBeDefined();
+  if (!processFrame) throw Error("The inert native process fact was missing.");
+  expect(generationStarted.afterSequence).toBeLessThan(processFrame.seq);
+  expect(generationReleased.afterSequence).toBeLessThan(finalOutcome.seq);
+  expect(generationReleased).toMatchObject({
+    kind: "generation-released",
     generationId,
-    threadId: nativeIdentity.event.sessionId,
-    turnId: nativeTurn.event.event.turnId,
-    release: "physical-tree-settled",
+    binding: {
+      provider: "codex",
+      sessionId: nativeIdentity.event.sessionId,
+      version: nativeIdentity.event.version,
+      turnId: nativeTurn.event.event.turnId,
+    },
   });
   expect(finalOutcome.event.event).toMatchObject({
     kind: "outcome",
     outcome: { phase: "completed" },
   });
-  const publicPage = await service.read(f.project.id, started.session.id);
+  if (!isRecord(stored) || !Array.isArray(stored.codexChatOwnerLifecycle))
+    throw Error("The inert owned Chat lifecycle receipt was missing.");
+  const legacyState = structuredClone(stored);
+  if (!isRecord(legacyState)) throw Error("The legacy journal was invalid.");
+  delete legacyState.codexChatOwnerLifecycle;
+  expect(ownedCodingStateSchema.safeParse(legacyState).success).toBe(true);
+  const mismatchedGeneration = structuredClone(stored);
+  if (
+    isRecord(mismatchedGeneration) &&
+    Array.isArray(mismatchedGeneration.codexChatOwnerLifecycle)
+  ) {
+    const released = mismatchedGeneration.codexChatOwnerLifecycle.find(
+      (fact) => isRecord(fact) && fact.kind === "generation-released",
+    );
+    if (isRecord(released)) released.generationId = randomUUID();
+  }
+  expect(ownedCodingStateSchema.safeParse(mismatchedGeneration).success).toBe(
+    false,
+  );
+  const mismatchedTurn = structuredClone(stored);
+  if (
+    isRecord(mismatchedTurn) &&
+    Array.isArray(mismatchedTurn.codexChatOwnerLifecycle)
+  ) {
+    const released = mismatchedTurn.codexChatOwnerLifecycle.find(
+      (fact) => isRecord(fact) && fact.kind === "generation-released",
+    );
+    if (isRecord(released) && isRecord(released.binding))
+      released.binding.turnId = randomUUID();
+  }
+  expect(ownedCodingStateSchema.safeParse(mismatchedTurn).success).toBe(false);
+  const duplicateFact = structuredClone(stored);
+  if (
+    isRecord(duplicateFact) &&
+    Array.isArray(duplicateFact.codexChatOwnerLifecycle)
+  )
+    duplicateFact.codexChatOwnerLifecycle.push(
+      structuredClone(duplicateFact.codexChatOwnerLifecycle[0]),
+    );
+  expect(ownedCodingStateSchema.safeParse(duplicateFact).success).toBe(false);
+  await service.close();
+  const reopened = f.open(),
+    publicPage = await reopened.read(f.project.id, started.session.id);
   const lastFrame = frames.at(-1);
   expect(lastFrame).toBeDefined();
   if (!lastFrame) throw Error("The inert owned Chat journal was empty.");

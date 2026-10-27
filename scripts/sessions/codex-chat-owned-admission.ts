@@ -108,6 +108,36 @@ export function createCodexOwnedChatService(options: Options) {
       root: options.root,
       home: options.home,
       address: address(session),
+      ...(session.origin === undefined
+        ? {
+            ownerLifecycle: ({
+              requestId,
+              owner,
+            }: {
+              requestId: string;
+              owner: string;
+            }) => {
+              const store = storeFor(session);
+              return {
+                started: (generationId: string) =>
+                  store.recordCodexChatOwnerGenerationStarted(
+                    session.projectId,
+                    requestId,
+                    owner,
+                    generationId,
+                  ),
+                released: (generationId, binding) =>
+                  store.recordCodexChatOwnerGenerationReleased(
+                    session.projectId,
+                    requestId,
+                    owner,
+                    generationId,
+                    binding,
+                  ),
+              };
+            },
+          }
+        : {}),
       transport: createCodexChatOwnedTransport(
         options.runtime,
         broker,

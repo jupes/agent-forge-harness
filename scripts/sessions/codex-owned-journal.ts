@@ -203,6 +203,35 @@ const frame = z
     event: ownedCodingEventSchema,
   })
   .strict();
+const ownerLifecycleFact = z.discriminatedUnion("kind", [
+  z
+    .object({
+      kind: z.literal("generation-started"),
+      requestId: z.string().uuid(),
+      generationId: z.string().uuid(),
+      afterSequence: z.number().int().nonnegative(),
+      revision: z.number().int().positive(),
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal("generation-released"),
+      requestId: z.string().uuid(),
+      generationId: z.string().uuid(),
+      afterSequence: z.number().int().nonnegative(),
+      revision: z.number().int().positive(),
+      binding: z
+        .object({
+          provider: z.literal("codex"),
+          sessionId: z.string().uuid(),
+          version: z.string().min(1).max(100),
+          turnId: z.string().uuid(),
+        })
+        .strict(),
+    })
+    .strict(),
+]);
+const ownerLifecycle = z.array(ownerLifecycleFact).max(2000);
 const inProject = (value: {
   projectId: string;
   conversationId: string;
@@ -802,10 +831,98 @@ function nativeChatHistory(value: {
   }
   return true;
 }
+function validOwnerLifecycle(value: {
+  revision: number;
+  binding: { provider: string; sessionId: string; version: string } | null;
+  turns: { requestId: string }[];
+  frames: { seq: number; turnId: string; event: ConversationEvent }[];
+  codexChatOwnerLifecycle?: z.infer<typeof ownerLifecycle> | undefined;
+}) {
+  const facts = value.codexChatOwnerLifecycle ?? [],
+    generations = new Map<string, string>(),
+    started = new Map<string, z.infer<typeof ownerLifecycleFact>>(),
+    released = new Set<string>();
+  let previousRevision = 0;
+  for (const fact of facts) {
+    const generationOwner = generations.get(fact.generationId);
+    if (
+      fact.afterSequence > value.frames.length ||
+      fact.revision > value.revision ||
+      fact.revision <= previousRevision ||
+      !value.turns.some((turn) => turn.requestId === fact.requestId)
+    )
+      return false;
+    previousRevision = fact.revision;
+    if (fact.kind === "generation-started") {
+      if (started.has(fact.requestId) || generationOwner) return false;
+      const process = value.frames.find(
+        (item) =>
+          item.turnId === fact.requestId &&
+          item.event.kind === "coding-chat" &&
+          item.event.event.kind === "process",
+      );
+      if (process && process.seq <= fact.afterSequence) return false;
+      generations.set(fact.generationId, fact.requestId);
+      started.set(fact.requestId, fact);
+      continue;
+    }
+    const begin = started.get(fact.requestId),
+      identityFrame = value.frames.find(
+        (item) =>
+          item.turnId === fact.requestId && item.event.kind === "identity",
+      ),
+      nativeTurnFrame = value.frames.find(
+        (item) =>
+          item.turnId === fact.requestId &&
+          item.event.kind === "coding-chat" &&
+          item.event.event.kind === "turn",
+      ),
+      identity = identityFrame?.event,
+      nativeTurn = nativeTurnFrame?.event;
+    if (
+      !begin ||
+      generationOwner !== fact.requestId ||
+      begin.generationId !== fact.generationId ||
+      begin.revision >= fact.revision ||
+      fact.afterSequence < begin.afterSequence ||
+      fact.afterSequence < (identityFrame?.seq ?? 0) ||
+      fact.afterSequence < (nativeTurnFrame?.seq ?? 0) ||
+      released.has(fact.requestId) ||
+      value.binding?.provider !== "codex" ||
+      value.binding.sessionId !== fact.binding.sessionId ||
+      value.binding.version !== fact.binding.version ||
+      identity?.kind !== "identity" ||
+      identity.provider !== "codex" ||
+      identity.sessionId !== fact.binding.sessionId ||
+      identity.version !== fact.binding.version ||
+      nativeTurn?.kind !== "coding-chat" ||
+      nativeTurn.event.kind !== "turn" ||
+      nativeTurn.event.threadId !== fact.binding.sessionId ||
+      nativeTurn.event.turnId !== fact.binding.turnId
+    )
+      return false;
+    const outcome = value.frames.find(
+      (item) =>
+        item.turnId === fact.requestId &&
+        item.event.kind === "coding-chat" &&
+        item.event.event.kind === "outcome",
+    )?.seq;
+    if (outcome !== undefined && outcome <= fact.afterSequence) return false;
+    released.add(fact.requestId);
+  }
+  return facts.every(
+    (fact) => fact.kind === "generation-started" || started.has(fact.requestId),
+  );
+}
+
 export const ownedCodingStateSchema = stateSchema
-  .extend({ frames: z.array(frame).max(20_000) })
+  .extend({
+    frames: z.array(frame).max(20_000),
+    codexChatOwnerLifecycle: ownerLifecycle.optional(),
+  })
   .strict()
   .refine(inProject)
+  .refine(validOwnerLifecycle)
   .refine((value) => reportedTurn(value, true))
   .refine(nativeChatHistory)
   .refine(validGeminiChatHistory)

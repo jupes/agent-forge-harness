@@ -73,6 +73,29 @@ export interface ConversationTurn {
   owner: string | null;
 }
 
+/** Private application lifecycle facts for one ordinary owned Codex Chat turn. */
+export type CodexChatOwnerLifecycleFact =
+  | {
+      kind: "generation-started";
+      requestId: string;
+      generationId: string;
+      afterSequence: number;
+      revision: number;
+    }
+  | {
+      kind: "generation-released";
+      requestId: string;
+      generationId: string;
+      afterSequence: number;
+      revision: number;
+      binding: {
+        provider: "codex";
+        sessionId: string;
+        version: string;
+        turnId: string;
+      };
+    };
+
 export interface ConversationBinding {
   provider: "claude" | "codex" | "gemini" | "grok";
   sessionId: string;
@@ -146,6 +169,8 @@ export interface ConversationState {
   binding: ConversationBinding | null;
   turns: ConversationTurn[];
   frames: ConversationFrame[];
+  /** Private owned-chat receipt facts; public pages and exports omit this field. */
+  codexChatOwnerLifecycle?: CodexChatOwnerLifecycleFact[] | undefined;
   keeperRecovery?: KeeperRecoveryState | undefined;
 }
 
@@ -156,7 +181,10 @@ export interface ConversationReceipt {
 }
 
 export interface ConversationPage
-  extends Omit<ConversationState, "keeperRecovery"> {
+  extends Omit<
+    ConversationState,
+    "keeperRecovery" | "codexChatOwnerLifecycle"
+  > {
   keeperRecovery?: Omit<KeeperRecoveryState, "records"> | undefined;
   more: boolean;
   nextCursor: number;

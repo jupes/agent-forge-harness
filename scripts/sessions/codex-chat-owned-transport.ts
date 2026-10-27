@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { ConversationError } from "../conversations/error";
 import type { ConversationTransport } from "../conversations/transport";
 import { preparedCodexChatSchema } from "./codex-app-server-protocol";
@@ -27,6 +28,8 @@ export function createCodexChatOwnedTransport(
           "The private Codex Chat intent or saved native identity could not be verified.",
         );
       const prepared = snapshot.data;
+      const generationId = request.ownerLifecycle ? randomUUID() : null;
+      if (generationId) await request.ownerLifecycle?.started(generationId);
       const result = await runtime.run(
         {
           prepared,
@@ -97,6 +100,13 @@ export function createCodexChatOwnedTransport(
               version: prepared.capabilities.version,
               persist,
             }),
+          ...(generationId && request.ownerLifecycle
+            ? {
+                onOwnedTreeReleased: (binding) =>
+                  request.ownerLifecycle?.released(generationId, binding) ??
+                  Promise.resolve(),
+              }
+            : {}),
         },
       );
       return { phase: result.phase, reason: result.reason };
