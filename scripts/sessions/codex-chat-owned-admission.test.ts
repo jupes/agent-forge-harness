@@ -454,6 +454,21 @@ test("owned Chat durably binds one private generation before dispatch and releas
   if (!isRecord(legacyState)) throw Error("The legacy journal was invalid.");
   delete legacyState.codexChatOwnerLifecycle;
   expect(ownedCodingStateSchema.safeParse(legacyState).success).toBe(true);
+  const truncatedLifecycleFrames = structuredClone(stored);
+  if (
+    !isRecord(truncatedLifecycleFrames) ||
+    !Array.isArray(truncatedLifecycleFrames.frames)
+  )
+    throw Error("The lifecycle journal frames were invalid.");
+  truncatedLifecycleFrames.frames = truncatedLifecycleFrames.frames.filter(
+    (frame) =>
+      !isRecord(frame) ||
+      !isRecord(frame.event) ||
+      frame.event.kind !== "identity",
+  );
+  expect(
+    ownedCodingStateSchema.safeParse(truncatedLifecycleFrames).success,
+  ).toBe(false);
   const mismatchedGeneration = structuredClone(stored);
   if (
     isRecord(mismatchedGeneration) &&
@@ -1114,11 +1129,13 @@ test("actual native mutable turn plans stay exact through private whole and part
     before = readFileSync(path),
     registry = readFileSync(sessionRegistryFile(f.home));
   expect(ownedCodingStateSchema.safeParse(state).success).toBe(true);
-  for (const missing of ["user", "process", "native-turn"])
+  for (const missing of ["user", "process", "native-turn"]) {
+    const legacy = structuredClone(state);
+    delete legacy.codexChatOwnerLifecycle;
     expect(
       ownedCodingStateSchema.safeParse({
-        ...state,
-        frames: state.frames.filter((frame) =>
+        ...legacy,
+        frames: legacy.frames.filter((frame) =>
           missing === "native-turn"
             ? frame.event.kind !== "coding-chat" ||
               frame.event.event.kind !== "turn"
@@ -1126,10 +1143,13 @@ test("actual native mutable turn plans stay exact through private whole and part
         ),
       }).success,
     ).toBe(false);
+  }
+  const legacyPlanState = structuredClone(state);
+  delete legacyPlanState.codexChatOwnerLifecycle;
   expect(
     ownedCodingStateSchema.safeParse({
-      ...state,
-      frames: state.frames.filter(
+      ...legacyPlanState,
+      frames: legacyPlanState.frames.filter(
         (frame) => !plans.some((plan) => plan.seq === frame.seq),
       ),
     }).success,
@@ -1429,11 +1449,13 @@ test("actual explicit native summaries preserve private indexed facts and a shar
   expect(ownedCodingStateSchema.safeParse(state).success).toBe(true);
   // Older saved turns have no additive summaries, or no final-turn summary.
   // Their immutable user/command/outcome history remains valid unchanged.
-  for (const omitAll of [true, false])
+  for (const omitAll of [true, false]) {
+    const legacy = structuredClone(state);
+    delete legacy.codexChatOwnerLifecycle;
     expect(
       ownedCodingStateSchema.safeParse({
-        ...state,
-        frames: state.frames.filter(
+        ...legacy,
+        frames: legacy.frames.filter(
           (frame) =>
             frame.event.kind !== "coding-chat" ||
             frame.event.event.kind !== "reasoning-summary" ||
@@ -1441,6 +1463,7 @@ test("actual explicit native summaries preserve private indexed facts and a shar
         ),
       }).success,
     ).toBe(true);
+  }
   for (const conflict of [false, true]) {
     const altered = structuredClone(state),
       index = altered.frames.findIndex(
@@ -2076,12 +2099,16 @@ test("actual native command history stays exact across protected partial reads, 
     Object.assign(target.event.event, change);
     expect(ownedCodingStateSchema.safeParse(altered).success).toBe(false);
   }
-  const beforeCommand = state.frames.filter(
+  const legacyState = structuredClone(state);
+  delete legacyState.codexChatOwnerLifecycle;
+  const beforeCommand = legacyState.frames.filter(
     (frame) => frame.seq < firstCommand.seq,
   );
   expect(
-    ownedCodingStateSchema.safeParse({ ...state, frames: beforeCommand })
-      .success,
+    ownedCodingStateSchema.safeParse({
+      ...legacyState,
+      frames: beforeCommand,
+    }).success,
   ).toBe(true);
   expect(
     ownedCodingStateSchema.safeParse({
