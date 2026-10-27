@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { appendFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, statSync } from "node:fs";
 
 /** Inert native-process app-server fixture. No provider, account, shell or network access. */
 const argv = process.argv.slice(2),
@@ -26,6 +26,56 @@ if (argv.includes("--child"))
   await new Promise(() => setInterval(() => {}, 1000));
 const record = (value: unknown) => {
   if (log) appendFileSync(log, `${JSON.stringify(value)}\n`);
+};
+const readFixtureRecords = (): Record<string, unknown>[] | null => {
+  if (!log || !existsSync(log)) return null;
+  try {
+    if (statSync(log).size > 65_536) return null;
+    const text = readFileSync(log, "utf8");
+    if (!text.endsWith("\n")) return null;
+    const lines = text.slice(0, -1).split("\n");
+    if (lines.length > 256) return null;
+    const records: Record<string, unknown>[] = [];
+    for (const line of lines) {
+      let value: unknown;
+      try {
+        value = JSON.parse(line);
+      } catch {
+        return null;
+      }
+      if (typeof value !== "object" || value === null || Array.isArray(value))
+        return null;
+      records.push(value as Record<string, unknown>);
+    }
+    return records;
+  } catch {
+    return null;
+  }
+};
+const recordedForkParent = (parentThreadId: string, lastTurnId: string) => {
+  const records = readFixtureRecords();
+  if (!records) return null;
+  const parent = records
+    .filter(
+      (row) =>
+        row.kind === "fixture-parent" &&
+        row.threadId === parentThreadId &&
+        typeof row.processId === "number" &&
+        row.processId !== process.pid,
+    )
+    .at(-1);
+  if (
+    !parent ||
+    !records.some(
+      (row) =>
+        row.kind === "fixture-completed-turn" &&
+        row.threadId === parentThreadId &&
+        row.turnId === lastTurnId &&
+        row.status === "completed",
+    )
+  )
+    return null;
+  return parent;
 };
 if (argv.includes("--version")) {
   record({ kind: "version" });
@@ -143,6 +193,14 @@ const finish = async (extraItems: unknown[] = []) => {
       },
     },
   });
+  if (mode === "fork-restart")
+    record({
+      kind: "fixture-completed-turn",
+      processId: process.pid,
+      threadId,
+      turnId,
+      status: "completed",
+    });
   if (mode === "bad-exit") process.exit(7);
 };
 const reportedFileChanges = [
@@ -541,17 +599,48 @@ while (true) {
         });
       }
     } else if (method === "thread/fork") {
+      const forkParams =
+        params && typeof params === "object" && !Array.isArray(params)
+          ? (params as Record<string, unknown>)
+          : null;
+      const forkParent =
+        mode === "fork-restart" &&
+        typeof forkParams?.["threadId"] === "string" &&
+        typeof forkParams["lastTurnId"] === "string"
+          ? recordedForkParent(forkParams["threadId"], forkParams["lastTurnId"])
+          : null;
       if (
         !mode?.startsWith("fork") ||
-        !params ||
-        typeof params !== "object" ||
-        !("threadId" in params) ||
-        params.threadId !== threadId ||
-        !("lastTurnId" in params) ||
-        typeof params.lastTurnId !== "string"
+        !forkParams ||
+        typeof forkParams["threadId"] !== "string" ||
+        typeof forkParams["lastTurnId"] !== "string" ||
+        (mode === "fork-restart"
+          ? !forkParent
+          : forkParams["threadId"] !== threadId)
       )
         process.exit(14);
-      const fork = params as Record<string, unknown>;
+      const fork = forkParams;
+      const configuredEffort =
+        fork.config &&
+        typeof fork.config === "object" &&
+        !Array.isArray(fork.config) &&
+        "model_reasoning_effort" in fork.config
+          ? fork.config.model_reasoning_effort
+          : null;
+      if (
+        forkParent &&
+        (forkParent.model !== fork.model ||
+          forkParent.modelProvider !== fork.modelProvider ||
+          forkParent.serviceTierPresent !== true ||
+          !Object.hasOwn(fork, "serviceTier") ||
+          forkParent.serviceTier !== fork.serviceTier ||
+          forkParent.reasoningEffort !== configuredEffort ||
+          forkParent.cwd !== fork.cwd ||
+          forkParent.approvalPolicy !== fork.approvalPolicy ||
+          forkParent.sandbox !== fork.sandbox)
+      )
+        process.exit(14);
+      if (forkParent) threadId = fork["threadId"] as string;
       if (mode === "fork-lost-response-eof") {
         record({ kind: "fork-created-without-response", params });
         process.exit(0);
@@ -560,19 +649,33 @@ while (true) {
         record({ kind: "fork-created-without-response", params });
         hangTree();
       }
-      const forkCwd = typeof fork.cwd === "string" ? fork.cwd : "";
-      const forkModel = typeof fork.model === "string" ? fork.model : "";
+      const forkCwd =
+        typeof forkParent?.cwd === "string"
+          ? forkParent.cwd
+          : typeof fork.cwd === "string"
+            ? fork.cwd
+            : "";
+      const forkModel =
+        typeof forkParent?.model === "string"
+          ? forkParent.model
+          : typeof fork.model === "string"
+            ? fork.model
+            : "";
       const forkProvider =
-        typeof fork.modelProvider === "string" ? fork.modelProvider : "";
-      const forkTier = "serviceTier" in fork ? fork.serviceTier : null;
-      const effort =
-        fork.config &&
-        typeof fork.config === "object" &&
-        "model_reasoning_effort" in fork.config
-          ? fork.config.model_reasoning_effort
+        typeof forkParent?.modelProvider === "string"
+          ? forkParent.modelProvider
+          : typeof fork.modelProvider === "string"
+            ? fork.modelProvider
+            : "";
+      const forkTier = forkParent
+        ? forkParent.serviceTier
+        : "serviceTier" in fork
+          ? fork.serviceTier
           : null;
+      const effort = forkParent ? forkParent.reasoningEffort : configuredEffort;
+      const forkSandboxMode = forkParent ? forkParent.sandbox : fork.sandbox;
       const forkSandbox =
-        fork.sandbox === "read-only"
+        forkSandboxMode === "read-only"
           ? { type: "readOnly", networkAccess: false }
           : {
               type: "workspaceWrite",
@@ -627,7 +730,7 @@ while (true) {
         cwd: forkCwd,
         runtimeWorkspaceRoots: [forkCwd],
         instructionSources: [],
-        approvalPolicy: fork.approvalPolicy,
+        approvalPolicy: forkParent?.approvalPolicy ?? fork.approvalPolicy,
         approvalsReviewer: fork.approvalsReviewer,
         sandbox: forkSandbox,
         activePermissionProfile: { id: ":workspace", extends: null },
@@ -747,6 +850,20 @@ while (true) {
           },
         },
       });
+      if (mode === "fork-restart")
+        record({
+          kind: "fixture-parent",
+          processId: process.pid,
+          threadId,
+          model,
+          modelProvider: "openai",
+          serviceTierPresent: serviceTierAwareMode,
+          serviceTier: configuredServiceTier,
+          reasoningEffort: null,
+          cwd,
+          approvalPolicy,
+          sandbox,
+        });
     } else if (method === "turn/start") {
       await send({
         id,

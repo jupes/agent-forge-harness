@@ -373,7 +373,7 @@ test("the compiled desktop Codex stand-in completes prepare and dispatch in fork
     if (serviceTier === undefined)
       throw new Error("The inert Codex fixture omitted nullable service tier.");
     status = "cross-process-native-fork";
-    const crossProcessFork = await runtime.fork({
+    const forkInput = {
       prepared,
       parent: { provider: "codex", threadId: outcome.threadId, version },
       lastTurnId: initialTurn.turnId,
@@ -382,7 +382,8 @@ test("the compiled desktop Codex stand-in completes prepare and dispatch in fork
         serviceTier,
         reasoningEffort: initialConfiguration.effort,
       },
-    });
+    };
+    const crossProcessFork = await runtime.fork(forkInput);
     expect(crossProcessFork).toMatchObject({
       parentThreadId: outcome.threadId,
       lastTurnId: initialTurn.turnId,
@@ -396,6 +397,30 @@ test("the compiled desktop Codex stand-in completes prepare and dispatch in fork
       },
     });
     expect(crossProcessFork.threadId).not.toBe(outcome.threadId);
+    await expect(
+      runtime.fork({
+        ...forkInput,
+        parent: {
+          ...forkInput.parent,
+          threadId: "0199a213-81c0-7800-8aa1-bbab2a035a56",
+        },
+      }),
+    ).rejects.toThrow();
+    await expect(
+      runtime.fork({
+        ...forkInput,
+        lastTurnId: "0199a213-81c0-7800-8aa1-bbab2a035a57",
+      }),
+    ).rejects.toThrow();
+    const forkRecords = readCompiledFixtureRecords(log);
+    expect(
+      forkRecords.filter((row) => row.kind === "fork-result"),
+    ).toHaveLength(1);
+    expect(
+      forkRecords.filter(
+        (row) => row.kind === "rpc" && row.method === "thread/fork",
+      ),
+    ).toHaveLength(3);
 
     status = "ordinary-native-resume";
     const ordinaryResumeEvents: CodexChatEvent[] = [];
@@ -467,17 +492,17 @@ test("the compiled desktop Codex stand-in completes prepare and dispatch in fork
     expect(facts).toMatchObject({
       state: "available",
       kindCounts: {
-        version: 5,
-        help: 5,
-        process: 4,
-        rpc: 11,
-        notification: 4,
+        version: 7,
+        help: 7,
+        process: 6,
+        rpc: 15,
+        notification: 6,
         answer: 0,
       },
       argvCategories: {
-        versionProbe: 5,
-        helpProbe: 5,
-        appServerStdio: 4,
+        versionProbe: 7,
+        helpProbe: 7,
+        appServerStdio: 6,
       },
     });
   } catch {
