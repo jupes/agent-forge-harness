@@ -130,7 +130,6 @@ test("facts remain bounded when an observer reports more than the fixed event li
 
 test("failure file is first-write-only under an exclusive fixture lock", () => {
   const home = scratch.make("codex-chat-startup-fact-");
-  mkdirSync(home);
   const first = {
     version: 1 as const,
     target: "initial-host-first-run" as const,
@@ -158,7 +157,6 @@ test("failure file is first-write-only under an exclusive fixture lock", () => {
 
 test("a pre-existing lock or owner-only writer failure leaves evidence untouched", () => {
   const home = scratch.make("codex-chat-startup-lock-");
-  mkdirSync(home);
   const fact = {
     version: 1 as const,
     target: "initial-host-first-run" as const,
@@ -192,7 +190,6 @@ test("a pre-existing lock or owner-only writer failure leaves evidence untouched
 
 test("initial host claim is exclusive even when no prepare facts exist", () => {
   const home = scratch.make("codex-chat-startup-host-claim-");
-  mkdirSync(home);
   expect(claimCodexChatStartupDiagnosticHost(home)).toBe(true);
   expect(claimCodexChatStartupDiagnosticHost(home)).toBe(false);
   expect(
