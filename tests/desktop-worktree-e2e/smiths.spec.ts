@@ -13,6 +13,7 @@ import {
   type Locator,
   type Page,
   type Request,
+  type Response as PlaywrightResponse,
   test,
 } from "@playwright/test";
 import { z } from "zod";
@@ -115,7 +116,14 @@ async function openSmithEdit(page: Page, name = fixtureSmith) {
   await expect(dialog).toBeVisible();
   return { opener, dialog };
 }
-async function reloadAndReadDocumentJson(page: Page, pathname: string) {
+async function reloadAndReadDocumentJson(
+  page: Page,
+  pathname: string,
+  options: {
+    unavailableBodyFor?: string;
+    onUnavailableBody?: () => void;
+  } = {},
+) {
   let documentGeneration = 0,
     reloadGeneration: number | null = null,
     replacing = false;
@@ -135,8 +143,30 @@ async function reloadAndReadDocumentJson(page: Page, pathname: string) {
       reloadGeneration = ++documentGeneration;
     }
   };
+  const onResponse = (response: PlaywrightResponse) => {
+    if (
+      options.unavailableBodyFor === undefined ||
+      response.request().method() !== "GET" ||
+      new URL(response.url()).pathname !== options.unavailableBodyFor ||
+      reloadGeneration === null ||
+      requestGenerations.get(response.request()) !== reloadGeneration
+    )
+      return;
+    options.onUnavailableBody?.();
+    // Reproduce Chromium losing the CDP response resource after navigation.
+    // The network request and server response remain real and untouched.
+    Object.defineProperty(response, "json", {
+      configurable: true,
+      value: async () => {
+        throw new Error(
+          "Protocol error (Network.getResponseBody): No data found for resource with given identifier",
+        );
+      },
+    });
+  };
   page.on("request", onRequest);
   page.on("framenavigated", onFrameNavigated);
+  page.on("response", onResponse);
   const originalRead = page
     .waitForResponse(
       (response) =>
@@ -157,6 +187,7 @@ async function reloadAndReadDocumentJson(page: Page, pathname: string) {
   } finally {
     page.off("request", onRequest);
     page.off("framenavigated", onFrameNavigated);
+    page.off("response", onResponse);
   }
 }
 async function reviewSmithEdit(dialog: Locator) {
@@ -544,10 +575,7 @@ test("a source-proven reservation NotSent leaves the server clear across reload"
   page.on("response", (response) => {
     const path = new URL(response.url()).pathname,
       prefix = "/__agent-forge/smiths/creates/";
-    if (
-      response.request().method() === "GET" &&
-      path.startsWith(prefix)
-    )
+    if (response.request().method() === "GET" && path.startsWith(prefix))
       originalReads.push({
         requestId: path.slice(prefix.length),
         status: response.status(),
@@ -848,10 +876,7 @@ test("a correlated stale-revision refusal reads back its exact original after re
   page.on("response", (response) => {
     const path = new URL(response.url()).pathname,
       prefix = "/__agent-forge/smiths/creates/";
-    if (
-      response.request().method() === "GET" &&
-      path.startsWith(prefix)
-    )
+    if (response.request().method() === "GET" && path.startsWith(prefix))
       originalReads.push({
         requestId: path.slice(prefix.length),
         status: response.status(),
@@ -1008,10 +1033,7 @@ const unavailableCreateHeldTest = async ({ page }: { page: Page }) => {
   page.on("response", (response) => {
     const path = new URL(response.url()).pathname,
       prefix = "/__agent-forge/smiths/creates/";
-    if (
-      response.request().method() === "GET" &&
-      path.startsWith(prefix)
-    )
+    if (response.request().method() === "GET" && path.startsWith(prefix))
       originalReads.push({
         requestId: path.slice(prefix.length),
         status: response.status(),
@@ -1857,10 +1879,13 @@ test("keeps duplicate fractional bench rows ordered through review, save, and re
   expect((await saved).status()).toBe(200);
   expect(posted).not.toBeNull();
   const request = smithRoutingEditRequestSchema.parse(posted);
-  const recovered = await reloadAndReadDocumentJson(
-    page,
-    `/__agent-forge/smiths/routing-edits/${String(request["requestId"])}`,
-  );
+  const recoveryPath = `/__agent-forge/smiths/routing-edits/${String(request["requestId"])}`;
+  let unavailableBodyResponses = 0;
+  const recovered = await reloadAndReadDocumentJson(page, recoveryPath, {
+    unavailableBodyFor: recoveryPath,
+    onUnavailableBody: () => unavailableBodyResponses++,
+  });
+  expect(unavailableBodyResponses).toBe(1);
   expect(recovered.status).toBe(200);
   const body = recovered.body as {
     data: {
