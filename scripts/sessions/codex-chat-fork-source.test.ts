@@ -887,6 +887,7 @@ test("Fork adoption persists parsed identity snapshots across the bootstrap awai
         parent.id,
         { requestId, throughTurnRequestId: source.requestId },
         seal,
+        "direct-v1",
       ),
       ref = {
         projectId: reserved.projectId,
@@ -898,6 +899,7 @@ test("Fork adoption persists parsed identity snapshots across the bootstrap awai
         protocolVersion: reserved.protocolVersion,
         childAppSessionId: reserved.childAppSessionId,
         sourceSeal: reserved.sourceSeal,
+        reservationKind: reserved.reservationKind,
       };
     const attempted = await journal.markAttempted(ref);
     if (!attempted.mayDispatch) throw Error("Fixture attempt was not claimed.");
@@ -1011,6 +1013,7 @@ test("captured local-link recovery refuses changed source settings without redis
         parent.id,
         { requestId, throughTurnRequestId: source.requestId },
         seal,
+        "direct-v1",
       ),
       ref = {
         projectId: reserved.projectId,
@@ -1022,6 +1025,7 @@ test("captured local-link recovery refuses changed source settings without redis
         protocolVersion: reserved.protocolVersion,
         childAppSessionId: reserved.childAppSessionId,
         sourceSeal: reserved.sourceSeal,
+        reservationKind: reserved.reservationKind,
       },
       attempt = await journal.markAttempted(ref);
     if (!attempt.mayDispatch) throw Error("Fixture attempt was not claimed.");
@@ -1282,6 +1286,7 @@ test("Fork adoption refuses a child ID already claimed by another owner", async 
         parent.id,
         { requestId, throughTurnRequestId: source.requestId },
         seal,
+        "direct-v1",
       ),
       ref = {
         projectId: reserved.projectId,
@@ -1293,6 +1298,7 @@ test("Fork adoption refuses a child ID already claimed by another owner", async 
         protocolVersion: reserved.protocolVersion,
         childAppSessionId: reserved.childAppSessionId,
         sourceSeal: reserved.sourceSeal,
+        reservationKind: reserved.reservationKind,
       },
       attempt = await journal.markAttempted(ref);
     if (!attempt.mayDispatch) throw Error("Fixture attempt was not claimed.");

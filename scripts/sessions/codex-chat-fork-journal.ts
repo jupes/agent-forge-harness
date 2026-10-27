@@ -7,6 +7,7 @@ import type {
   CodexChatForkLink,
   CodexChatForkOriginal,
   CodexChatForkOriginalRef,
+  CodexChatForkReservationKind,
   CodexChatForkSourceSeal,
 } from "../../types/codex-chat-fork";
 import { resolveCheckout } from "../ledger/workspace";
@@ -34,6 +35,7 @@ import {
   codexChatForkOriginalHash,
   codexChatForkOriginalRefSchema,
   codexChatForkOriginalSchema,
+  codexChatForkReservationKindSchema,
   codexChatForkSourceSealSchema,
 } from "./codex-chat-fork-protocol";
 import {
@@ -115,6 +117,9 @@ const immutableIdentity = (record: CodexChatForkOriginal) => ({
   throughTurnRequestId: record.throughTurnRequestId,
   protocolVersion: record.protocolVersion,
   childAppSessionId: record.childAppSessionId,
+  ...(record.reservationKind === undefined
+    ? {}
+    : { reservationKind: record.reservationKind }),
   ...(record.sourceSeal === undefined ? {} : { sourceSeal: record.sourceSeal }),
   createdAt: record.createdAt,
 });
@@ -130,6 +135,7 @@ const matchesRef = (
   record.throughTurnRequestId === ref.throughTurnRequestId &&
   record.protocolVersion === ref.protocolVersion &&
   record.childAppSessionId === ref.childAppSessionId &&
+  record.reservationKind === ref.reservationKind &&
   same(record.sourceSeal ?? null, ref.sourceSeal ?? null);
 const same = (left: unknown, right: unknown) =>
   JSON.stringify(left) === JSON.stringify(right);
@@ -203,6 +209,14 @@ function originalHash(record: CodexChatForkOriginal): string {
 function validRecord(record: CodexChatForkOriginal): boolean {
   if (record.requestHash !== originalHash(record)) return false;
   if (record.childAppSessionId === record.parentSessionId) return false;
+  if (record.reservationKind !== undefined && record.sourceSeal === undefined)
+    return false;
+  if (
+    record.state === "retired" &&
+    (record.reservationKind !== "preflight-v1" ||
+      record.retiredReason !== "verified-not-sent")
+  )
+    return false;
   if (record.state === "captured" || record.state === "linked") {
     if (
       record.capture.parentNativeThreadId ===
@@ -230,7 +244,12 @@ function latestRecordIsLegal(
   if (!same(immutableIdentity(previous), immutableIdentity(current)))
     return false;
   if (previous.state === "reserved")
-    return current.state === "attempted" && previousOperationHash !== null;
+    return (
+      (current.state === "attempted" ||
+        (current.state === "retired" &&
+          previous.reservationKind === "preflight-v1")) &&
+      previousOperationHash !== null
+    );
   if (previous.state === "attempted")
     return (
       (current.state === "captured" || current.state === "held") &&
@@ -304,7 +323,8 @@ function loadChain(storage: CodexChatForkJournalStorage): LoadedChain {
         record.projectId === event.record.projectId &&
         record.workspaceKey === event.record.workspaceKey &&
         record.parentSessionId === event.record.parentSessionId &&
-        record.state !== "linked",
+        record.state !== "linked" &&
+        record.state !== "retired",
     );
     if (
       !latestRecordIsLegal(prior, event.record, event.previousOperationHash) ||
@@ -430,12 +450,18 @@ export function createCodexChatForkJournal(
       parentSessionId: string,
       raw: CodexChatForkIntent,
       rawSourceSeal: CodexChatForkSourceSeal,
+      rawReservationKind?: CodexChatForkReservationKind,
     ): Promise<CodexChatForkOriginal> {
       const intent = codexChatForkIntentSchema.safeParse(raw);
       const sourceSeal = codexChatForkSourceSealSchema.safeParse(rawSourceSeal);
+      const reservationKind =
+        rawReservationKind === undefined
+          ? undefined
+          : codexChatForkReservationKindSchema.safeParse(rawReservationKind);
       if (
         !intent.success ||
         !sourceSeal.success ||
+        (reservationKind !== undefined && !reservationKind.success) ||
         !sessionProjectIdSchema.safeParse(projectId).success ||
         !ownedSessionIdSchema.safeParse(parentSessionId).success
       )
@@ -461,6 +487,7 @@ export function createCodexChatForkJournal(
             existing.throughTurnRequestId !==
               intent.data.throughTurnRequestId ||
             existing.requestHash !== requestHash ||
+            existing.reservationKind !== reservationKind?.data ||
             !same(existing.sourceSeal ?? null, sourceSeal.data)
           )
             return conflict();
@@ -472,7 +499,8 @@ export function createCodexChatForkJournal(
               record.projectId === projectId &&
               record.workspaceKey === workspace &&
               record.parentSessionId === parentSessionId &&
-              record.state !== "linked",
+              record.state !== "linked" &&
+              record.state !== "retired",
           )
         )
           return conflict();
@@ -499,6 +527,9 @@ export function createCodexChatForkJournal(
           protocolVersion: CODEX_CHAT_FORK_PROTOCOL_VERSION,
           childAppSessionId,
           sourceSeal: sourceSeal.data,
+          ...(reservationKind === undefined
+            ? {}
+            : { reservationKind: reservationKind.data }),
           state: "reserved",
           createdAt: at,
           updatedAt: at,
@@ -539,7 +570,8 @@ export function createCodexChatForkJournal(
             chain.originals.get(expected.requestId),
             expected,
           );
-        if (!current.sourceSeal) return { record: current, mayDispatch: false };
+        if (!current.sourceSeal || current.reservationKind === undefined)
+          return { record: current, mayDispatch: false };
         if (current.state !== "reserved")
           return { record: current, mayDispatch: false };
         const at = now(),
@@ -675,6 +707,36 @@ export function createCodexChatForkJournal(
             ...current,
             state: "held",
             heldReason: reason.data,
+            updatedAt: now(),
+          }),
+        );
+      });
+    },
+    async retirePreflight(rawRef: CodexChatForkOriginalRef) {
+      const expected = checkedRef(rawRef, workspace);
+      return runExclusive(async () => {
+        const chain = loadChain(storage),
+          current = assertExpected(
+            chain.originals.get(expected.requestId),
+            expected,
+          );
+        if (
+          current.state === "retired" &&
+          current.reservationKind === "preflight-v1"
+        )
+          return current;
+        if (
+          current.state !== "reserved" ||
+          current.reservationKind !== "preflight-v1"
+        )
+          return conflict();
+        return append(
+          chain,
+          current,
+          codexChatForkOriginalSchema.parse({
+            ...current,
+            state: "retired",
+            retiredReason: "verified-not-sent",
             updatedAt: now(),
           }),
         );

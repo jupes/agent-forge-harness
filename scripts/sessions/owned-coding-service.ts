@@ -193,18 +193,31 @@ export function createOwnedCodingSessionService(options: {
   };
   const forkMetadata = (
     row: CodexChatForkOriginal,
-  ): CodexChatForkIdentityMetadata => ({
-    family: "codex-chat-fork",
-    requestId: row.requestId,
-    requestHash: row.requestHash,
-    parentSessionId: row.parentSessionId,
-    throughTurnRequestId: row.throughTurnRequestId,
-    state: row.state,
-    ...(row.state === "linked"
-      ? { childSessionId: row.childAppSessionId }
-      : {}),
-    ...(row.state === "held" ? { heldReason: row.heldReason } : {}),
-  });
+  ): CodexChatForkIdentityMetadata => {
+    const legacyReserved =
+        row.state === "reserved" && row.reservationKind === undefined,
+      state = legacyReserved ? "held" : row.state;
+    return {
+      family: "codex-chat-fork",
+      requestId: row.requestId,
+      requestHash: row.requestHash,
+      parentSessionId: row.parentSessionId,
+      throughTurnRequestId: row.throughTurnRequestId,
+      state,
+      ...(row.state === "linked"
+        ? { childSessionId: row.childAppSessionId }
+        : {}),
+      ...(state === "held"
+        ? {
+            heldReason:
+              row.state === "held"
+                ? row.heldReason
+                : ("unknown-native-outcome" as const),
+          }
+        : {}),
+      ...(row.state === "retired" ? { retiredReason: row.retiredReason } : {}),
+    };
+  };
   const forkJournalFailure = (error: CodexChatForkJournalError) =>
     new ConversationError(
       error.reason === "conflict"
@@ -438,6 +451,76 @@ export function createOwnedCodingSessionService(options: {
         throw new ConversationError(
           503,
           "The Codex Fork could not be safely verified; its original remains authoritative.",
+        );
+      }
+    },
+    async reserveFork(
+      projectId: string,
+      parentSessionId: string,
+      request: unknown,
+      auditEventId: number,
+    ): Promise<CodexChatForkIdentityMetadata> {
+      if (!Number.isSafeInteger(auditEventId) || auditEventId <= 0)
+        throw new ConversationError(
+          503,
+          "A confirmed operator audit receipt is required before Fork reservation.",
+        );
+      try {
+        const original = await forkCoordinator.reservePreflight({
+          projectId,
+          parentSessionId,
+          request,
+          auditEventId,
+        });
+        return forkMetadata(original);
+      } catch (error) {
+        if (error instanceof ConversationError) throw error;
+        if (error instanceof CodexChatForkOriginalConflict)
+          throw new ConversationError(
+            409,
+            "This Fork UUID belongs to another immutable source.",
+          );
+        if (error instanceof CodexChatForkJournalError)
+          throw forkJournalFailure(error);
+        throw new ConversationError(
+          503,
+          "The Codex Fork reservation could not be safely verified.",
+        );
+      }
+    },
+    async retireFork(
+      projectId: string,
+      parentSessionId: string,
+      requestId: string,
+      requestHash: string,
+      auditEventId: number,
+    ): Promise<CodexChatForkIdentityMetadata> {
+      if (!Number.isSafeInteger(auditEventId) || auditEventId <= 0)
+        throw new ConversationError(
+          503,
+          "A confirmed operator audit receipt is required before Fork retirement.",
+        );
+      try {
+        const original = await forkCoordinator.retirePreflight({
+          projectId,
+          parentSessionId,
+          requestId,
+          requestHash,
+          auditEventId,
+        });
+        return forkMetadata(original);
+      } catch (error) {
+        if (error instanceof ConversationError) throw error;
+        if (error instanceof CodexChatForkOriginalConflict)
+          throw new ConversationError(
+            409,
+            "The exact preflight Fork reservation could not be retired.",
+          );
+        if (error instanceof CodexChatForkJournalError)
+          throw forkJournalFailure(error);
+        throw new ConversationError(
+          503,
+          "The Codex Fork reservation retirement could not be verified.",
         );
       }
     },
