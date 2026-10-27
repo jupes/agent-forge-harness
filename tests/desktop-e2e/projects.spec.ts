@@ -423,33 +423,11 @@ test("a lost commit reply reloads the same created original without replay", asy
     .click()
     .catch(() => undefined);
   const recoveryPath = `/__agent-forge/projects/create-reservations/${saved.requestId}`;
-  let reloadDocumentObserved = false;
-  const observeReloadNavigation = (frame: import("@playwright/test").Frame) => {
-    if (frame === page.mainFrame()) reloadDocumentObserved = true;
-  };
-  let resolveRecoveryRead!: (value: {
-    status: number | null;
-    body: unknown;
-    fromReloadedDocument: boolean;
-    sameOrigin: boolean;
-    captureError: string | null;
-  }) => void;
-  let recoveryRead: Promise<{
-    status: number | null;
-    body: unknown;
-    fromReloadedDocument: boolean;
-    sameOrigin: boolean;
-    captureError: string | null;
-  }> | null = null;
-  let recoveryReadStarted = false;
-  let finishRecoveryRead!: () => void;
-  const recoveryReadFinished = new Promise<void>((resolve) => {
-    finishRecoveryRead = resolve;
-  });
-  let captureRecoveryRead:
-    | ((route: import("@playwright/test").Route) => Promise<void>)
-    | null = null;
-  const recoveryPathMatcher = (url: URL) => url.pathname === recoveryPath;
+  const recoveryCaptureKey = `__projectCreateRecovery_${saved.requestId.replaceAll(
+    "-",
+    "",
+  )}`;
+  const recoveryCaptureId = `${Date.now()}-${Math.random()}`;
   try {
     await effectReached;
     const token = await pageToken(page);
@@ -481,91 +459,166 @@ test("a lost commit reply reloads the same created original without replay", asy
     expect(createdBeforeReload.projectId).not.toBeNull();
 
     countRecoveryReads = true;
-    page.on("framenavigated", observeReloadNavigation);
-    recoveryRead = new Promise((resolve) => {
-      resolveRecoveryRead = resolve;
-    });
-    captureRecoveryRead = async (route: import("@playwright/test").Route) => {
-      recoveryReadStarted = true;
-      const fromReloadedDocument = reloadDocumentObserved;
-      if (route.request().method() !== "GET") {
-        resolveRecoveryRead({
-          status: null,
-          body: null,
-          fromReloadedDocument,
-          sameOrigin: false,
-          captureError: "unexpected_method",
+    await page.addInitScript(
+      ({ key, captureId, exactPath, maxBytes }) => {
+        const target = window as unknown as Record<string, unknown>;
+        target[key] = null;
+        const originalFetch = window.fetch.bind(window);
+        let captured = false;
+        const wrappedFetch = async (
+          input: RequestInfo | URL,
+          init?: RequestInit,
+        ): Promise<Response> => {
+          let requestUrl: URL | null = null;
+          let method = init?.method;
+          try {
+            if (input instanceof Request) {
+              requestUrl = new URL(input.url);
+              method ??= input.method;
+            } else {
+              requestUrl = new URL(String(input), window.location.href);
+            }
+          } catch {
+            return originalFetch(input, init);
+          }
+          method ??= "GET";
+          if (
+            captured ||
+            requestUrl.pathname !== exactPath ||
+            method.toUpperCase() !== "GET"
+          )
+            return originalFetch(input, init);
+
+          captured = true;
+          let response: Response;
+          try {
+            response = await originalFetch(input, init);
+          } catch (error) {
+            target[key] = {
+              captureId,
+              status: null,
+              bodyText: null,
+              origin: requestUrl.origin,
+              pathname: requestUrl.pathname,
+              method,
+              sameOrigin: requestUrl.origin === window.location.origin,
+              captureError: "fetch_failed",
+            };
+            throw error;
+          }
+
+          const sameOrigin = requestUrl.origin === window.location.origin;
+          let bodyText: string | null = null;
+          let captureError: string | null = sameOrigin
+            ? null
+            : "foreign_origin";
+          if (sameOrigin) {
+            try {
+              const reader = response.clone().body?.getReader();
+              if (!reader) {
+                captureError = "body_unavailable";
+              } else {
+                const chunks: Uint8Array[] = [];
+                let byteLength = 0;
+                while (true) {
+                  const part = await reader.read();
+                  if (part.done) break;
+                  byteLength += part.value.byteLength;
+                  if (byteLength > maxBytes) {
+                    captureError = "body_too_large";
+                    await reader.cancel();
+                    break;
+                  }
+                  chunks.push(part.value);
+                }
+                if (captureError === null) {
+                  const bytes = new Uint8Array(byteLength);
+                  let offset = 0;
+                  for (const chunk of chunks) {
+                    bytes.set(chunk, offset);
+                    offset += chunk.byteLength;
+                  }
+                  bodyText = new TextDecoder("utf-8", { fatal: true }).decode(
+                    bytes,
+                  );
+                }
+              }
+            } catch {
+              captureError = "body_read_failed";
+            }
+          }
+          target[key] = {
+            captureId,
+            status: response.status,
+            bodyText,
+            origin: requestUrl.origin,
+            pathname: requestUrl.pathname,
+            method,
+            sameOrigin,
+            captureError,
+          };
+          return response;
+        };
+        Object.defineProperty(window, "fetch", {
+          configurable: true,
+          value: wrappedFetch,
+          writable: true,
         });
-        finishRecoveryRead();
-        await route.abort("failed").catch(() => undefined);
-        return;
-      }
-      let fetchedResponse: import("@playwright/test").APIResponse | null = null;
-      try {
-        const url = new URL(route.request().url());
-        const originalHeaders = await route.request().allHeaders();
-        const originalOrigin = originalHeaders["origin"];
-        const originalFetchSite = originalHeaders["sec-fetch-site"];
-        const sameOrigin =
-          url.origin === new URL(page.url()).origin &&
-          (!originalOrigin || originalOrigin === url.origin) &&
-          (!originalFetchSite || originalFetchSite === "same-origin") &&
-          (originalOrigin === url.origin ||
-            originalFetchSite === "same-origin");
-        if (!sameOrigin)
-          throw Error("The recovery read did not match the current origin.");
-        fetchedResponse = await route.fetch({ headers: originalHeaders });
-        let body: unknown;
-        try {
-          body = await fetchedResponse.json();
-        } catch {
-          throw Error("The recovered project original was not valid JSON.");
-        }
-        await route.fulfill({ response: fetchedResponse });
-        resolveRecoveryRead({
-          status: fetchedResponse.status(),
-          body,
-          fromReloadedDocument,
-          sameOrigin,
-          captureError: null,
-        });
-      } catch {
-        resolveRecoveryRead({
-          status: null,
-          body: null,
-          fromReloadedDocument,
-          sameOrigin: false,
-          captureError: "read_failed",
-        });
-        if (fetchedResponse) {
-          await route
-            .fulfill({ response: fetchedResponse })
-            .catch(() => undefined);
-        } else {
-          await route.abort("failed").catch(() => undefined);
-        }
-      } finally {
-        finishRecoveryRead();
-      }
-    };
-    await page.route(recoveryPathMatcher, captureRecoveryRead);
+      },
+      {
+        key: recoveryCaptureKey,
+        captureId: recoveryCaptureId,
+        exactPath: recoveryPath,
+        maxBytes: 64 * 1024,
+      },
+    );
     await page.reload();
     releaseCommitReply();
     await click;
-    if (!recoveryRead) throw Error("The recovery read was not armed.");
-    const recoveredRead = await recoveryRead;
+    await expect.poll(() =>
+      page.evaluate(
+        (key) => (window as unknown as Record<string, unknown>)[key] !== null,
+        recoveryCaptureKey,
+      ),
+    ).toBe(true);
+    const recoveredRead = (await page.evaluate((key) => {
+      const value = (window as unknown as Record<string, unknown>)[key];
+      return typeof value === "object" && value !== null ? value : null;
+    }, recoveryCaptureKey)) as {
+      captureId: string;
+      status: number | null;
+      bodyText: string | null;
+      origin: string;
+      pathname: string;
+      method: string;
+      sameOrigin: boolean;
+      captureError: string | null;
+    } | null;
+    expect(recoveredRead).not.toBeNull();
+    if (!recoveredRead) throw Error("The recovery read was not captured.");
     expect(recoveredRead.captureError).toBeNull();
-    expect(recoveredRead.fromReloadedDocument).toBe(true);
+    expect(recoveredRead.captureId).toBe(recoveryCaptureId);
+    expect(recoveredRead.pathname).toBe(recoveryPath);
+    expect(recoveredRead.method).toBe("GET");
+    expect(recoveredRead.origin).toBe(new URL(page.url()).origin);
     expect(recoveredRead.sameOrigin).toBe(true);
     expect(recoveredRead.status).toBe(200);
+    if (recoveredRead.bodyText === null)
+      throw Error("The recovered project original envelope was unavailable.");
+    let recoveredBody: unknown;
+    try {
+      recoveredBody = JSON.parse(recoveredRead.bodyText);
+    } catch {
+      throw Error("The recovered project original was not valid JSON.");
+    }
     if (
-      typeof recoveredRead.body !== "object" ||
-      recoveredRead.body === null ||
-      !("data" in recoveredRead.body)
+      typeof recoveredBody !== "object" ||
+      recoveredBody === null ||
+      !("data" in recoveredBody)
     )
       throw Error("The recovered project original envelope was unavailable.");
     const recoveredIdentity = projectCreateIdentitySchema.parse(
-      recoveredRead.body.data,
+      recoveredBody.data,
     );
     expect(recoveredIdentity).toMatchObject({
       requestId: saved.requestId,
@@ -589,10 +642,6 @@ test("a lost commit reply reloads the same created original without replay", asy
   } finally {
     releaseCommitReply();
     await click;
-    if (recoveryReadStarted) await recoveryReadFinished;
-    if (captureRecoveryRead)
-      await page.unroute(recoveryPathMatcher, captureRecoveryRead);
-    page.off("framenavigated", observeReloadNavigation);
     await page.unroute(commitPathPattern, loseCommitReply);
   }
 });
