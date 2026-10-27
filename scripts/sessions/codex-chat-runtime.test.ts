@@ -1,14 +1,17 @@
 import { afterEach, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
   rmdirSync,
+  statSync,
   symlinkSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import type { CodexChatEvent, CodexChatLaunch } from "../../types/codex-chat";
 import { scratchDirs } from "../test-scratch";
 import {
@@ -21,12 +24,220 @@ import {
   type CodexChatCallbacks,
   createCodexChatRuntime,
 } from "./codex-chat-runtime";
+import { plantInertCodexSyncFixture } from "./codex-chat-sync-fixture.test-utils";
 
 const scratch = scratchDirs();
 afterEach(() => scratch.cleanup());
 const fake = join(import.meta.dir, "fixtures/codex-app-server-cli.ts");
 const version = "0.163.0-alpha.10.2";
 const threadId = "0199a213-81c0-7800-8aa1-bbab2a035a53";
+const COMPILED_FIXTURE_KINDS = [
+  "version",
+  "help",
+  "process",
+  "rpc",
+  "notification",
+  "answer",
+] as const;
+type CompiledFixtureKind = (typeof COMPILED_FIXTURE_KINDS)[number];
+
+function readCompiledFixtureRecords(path: string): Record<string, unknown>[] {
+  if (statSync(path).size > 65_536)
+    throw new Error("The inert fixture call log exceeded its bound.");
+  const text = readFileSync(path, "utf8");
+  if (!text.endsWith("\n"))
+    throw new Error("The inert fixture call log is incomplete.");
+  const lines = text.slice(0, -1).split("\n");
+  if (lines.length > 256)
+    throw new Error("The inert fixture call log exceeded its row bound.");
+  return lines.map((line) => {
+    let value: unknown;
+    try {
+      value = JSON.parse(line);
+    } catch {
+      throw new Error("The inert fixture call log is malformed.");
+    }
+    if (typeof value !== "object" || value === null || Array.isArray(value))
+      throw new Error("The inert fixture call log is malformed.");
+    return value as Record<string, unknown>;
+  });
+}
+
+function readRecentCompiledFixtureRecords(path: string): {
+  totalRows: number;
+  rows: Record<string, unknown>[];
+} {
+  if (statSync(path).size > 65_536)
+    throw new Error("The inert fixture call log exceeded its byte bound.");
+  const text = readFileSync(path, "utf8");
+  if (!text.endsWith("\n"))
+    throw new Error("The inert fixture call log is incomplete.");
+  const lines = text.slice(0, -1).split("\n"),
+    rows: Record<string, unknown>[] = [];
+  for (const line of lines.slice(-96)) {
+    let value: unknown;
+    try {
+      value = JSON.parse(line);
+    } catch {
+      throw new Error("The inert fixture call log is malformed.");
+    }
+    if (typeof value !== "object" || value === null || Array.isArray(value))
+      throw new Error("The inert fixture call log is malformed.");
+    rows.push(value as Record<string, unknown>);
+  }
+  return { totalRows: lines.length, rows };
+}
+
+function summarizeCompiledFixtureLog(path: string, status: string) {
+  const unavailable = {
+    state: "unavailable" as const,
+    status,
+    kindCounts: null,
+    argvCategories: null,
+    forkRestartDiagnostics: null,
+  };
+  try {
+    const size = statSync(path).size;
+    if (size > 65_536) return { ...unavailable, state: "over-limit" as const };
+    const text = readFileSync(path, "utf8");
+    if (!text.endsWith("\n"))
+      return { ...unavailable, state: "partial" as const };
+    const lines = text.slice(0, -1).split("\n");
+    if (lines.length > 256)
+      return { ...unavailable, state: "over-limit" as const };
+    const kindCounts: Record<CompiledFixtureKind, number> = {
+        version: 0,
+        help: 0,
+        process: 0,
+        rpc: 0,
+        notification: 0,
+        answer: 0,
+      },
+      argvCategories = {
+        versionProbe: 0,
+        helpProbe: 0,
+        appServerStdio: 0,
+        other: 0,
+      };
+    const forkRestartDiagnostics: {
+      stage:
+        | "fixture-proof-unavailable"
+        | "parent-not-found"
+        | "turn-not-found"
+        | "source-found"
+        | "settings-mismatch"
+        | "source-accepted";
+      parentFound: boolean;
+      turnFound: boolean;
+      settingsMatches: Record<
+        | "model"
+        | "modelProvider"
+        | "serviceTierPresent"
+        | "serviceTier"
+        | "reasoningEffort"
+        | "workspace"
+        | "approvalPolicy"
+        | "sandbox",
+        boolean
+      > | null;
+    }[] = [];
+    for (const line of lines) {
+      let raw: unknown;
+      try {
+        raw = JSON.parse(line);
+      } catch {
+        return { ...unavailable, state: "invalid" as const };
+      }
+      if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+        return { ...unavailable, state: "invalid" as const };
+      const row = raw as Record<string, unknown>;
+      if (
+        row.kind === "fork-restart-diagnostic" &&
+        forkRestartDiagnostics.length < 3
+      ) {
+        const stages = [
+          "fixture-proof-unavailable",
+          "parent-not-found",
+          "turn-not-found",
+          "source-found",
+          "settings-mismatch",
+          "source-accepted",
+        ] as const;
+        const matches = row.settingsMatches;
+        const matchRecord =
+          typeof matches === "object" &&
+          matches !== null &&
+          !Array.isArray(matches)
+            ? (matches as Record<string, unknown>)
+            : null;
+        const matchKeys = [
+          "model",
+          "modelProvider",
+          "serviceTierPresent",
+          "serviceTier",
+          "reasoningEffort",
+          "workspace",
+          "approvalPolicy",
+          "sandbox",
+        ] as const;
+        if (
+          typeof row.stage === "string" &&
+          stages.includes(row.stage as (typeof stages)[number]) &&
+          typeof row.parentFound === "boolean" &&
+          typeof row.turnFound === "boolean" &&
+          (matches === null ||
+            (matchRecord !== null &&
+              matchKeys.every((key) => typeof matchRecord[key] === "boolean")))
+        ) {
+          forkRestartDiagnostics.push({
+            stage: row.stage as (typeof stages)[number],
+            parentFound: row.parentFound,
+            turnFound: row.turnFound,
+            settingsMatches:
+              matches === null
+                ? null
+                : {
+                    model: matchRecord?.model === true,
+                    modelProvider: matchRecord?.modelProvider === true,
+                    serviceTierPresent:
+                      matchRecord?.serviceTierPresent === true,
+                    serviceTier: matchRecord?.serviceTier === true,
+                    reasoningEffort: matchRecord?.reasoningEffort === true,
+                    workspace: matchRecord?.workspace === true,
+                    approvalPolicy: matchRecord?.approvalPolicy === true,
+                    sandbox: matchRecord?.sandbox === true,
+                  },
+          });
+        }
+      }
+      if (COMPILED_FIXTURE_KINDS.includes(row.kind as CompiledFixtureKind))
+        kindCounts[row.kind as CompiledFixtureKind]++;
+      if (row.kind === "version") argvCategories.versionProbe++;
+      else if (row.kind === "help") argvCategories.helpProbe++;
+      else if (row.kind === "process") {
+        const argv = row.argv;
+        if (
+          Array.isArray(argv) &&
+          argv.length === 2 &&
+          argv[0] === "app-server" &&
+          argv[1] === "--stdio"
+        )
+          argvCategories.appServerStdio++;
+        else argvCategories.other++;
+      }
+    }
+    return {
+      state: "available" as const,
+      status,
+      kindCounts,
+      argvCategories,
+      forkRestartDiagnostics,
+    };
+  } catch {
+    return unavailable;
+  }
+}
+
 function fixture(mode = "normal") {
   const root = scratch.make("codex-chat-runtime-"),
     home = join(root, "home"),
@@ -110,6 +321,466 @@ function fixture(mode = "normal") {
     readFailureFacts: () => readCodexChatFixtureLog(log),
   };
 }
+
+test.each([
+  "fork-restart",
+  "fork-restart-child-approval",
+] as const)("the compiled desktop Codex stand-in completes prepare and dispatch in %s mode", async (fixtureMode) => {
+  const root = scratch.make("codex-chat-compiled-stand-in-"),
+    home = join(root, "fixture-home"),
+    userHome = join(home, "user"),
+    configDirectory = join(userHome, ".agent-forge"),
+    workspace = join(root, "workspace"),
+    launchWorkspace = fixtureMode.startsWith("fork-restart")
+      ? join(root, "workspace-alias")
+      : workspace,
+    binDirectory = join(home, "bd-stand-in", "bin"),
+    executable = join(binDirectory, "codex.exe"),
+    log = join(home, "codex-chat-fixture-calls.jsonl"),
+    environment: Record<string, string> = {};
+  let status = "compile";
+  const summarize = () => summarizeCompiledFixtureLog(log, status);
+  try {
+    mkdirSync(configDirectory, { recursive: true });
+    mkdirSync(workspace, { recursive: true });
+    mkdirSync(join(workspace, ".git"));
+    if (launchWorkspace !== workspace)
+      symlinkSync(
+        workspace,
+        launchWorkspace,
+        process.platform === "win32" ? "junction" : "dir",
+      );
+    mkdirSync(binDirectory, { recursive: true });
+    plantInertCodexSyncFixture(workspace);
+    writeFileSync(
+      join(configDirectory, "config.toml"),
+      '[smiths.codex-journeyman]\nprovider = "codex"\nmodel = "gpt-5-codex"\neffort = "medium"\nenabled = true\n',
+      { mode: 0o600 },
+    );
+    writeFileSync(
+      join(workspace, "agent-forge.toml"),
+      "[execution.env]\npass = []\n",
+    );
+    writeFileSync(
+      join(home, "codex-chat-fixture-mode.json"),
+      JSON.stringify(fixtureMode),
+      { mode: 0o600 },
+    );
+    for (const name of [
+      "SystemRoot",
+      "SystemDrive",
+      "WINDIR",
+      "COMSPEC",
+      "PATHEXT",
+      "TEMP",
+      "TMP",
+      "LANG",
+      "LC_ALL",
+    ]) {
+      const value = process.env[name];
+      if (value !== undefined) environment[name] = value;
+    }
+    const pathKey =
+      Object.keys(process.env).find((name) => name.toUpperCase() === "PATH") ??
+      "PATH";
+    environment[pathKey] = [binDirectory, dirname(process.execPath)].join(
+      delimiter,
+    );
+    Object.assign(environment, {
+      HOME: userHome,
+      USERPROFILE: userHome,
+      APPDATA: join(userHome, "AppData", "Roaming"),
+      LOCALAPPDATA: join(userHome, "AppData", "Local"),
+      XDG_CONFIG_HOME: join(userHome, "config"),
+      AGENT_FORGE_HOME: home,
+    });
+    const source = join(
+      import.meta.dir,
+      "../../tests/desktop-e2e/codex-chat-cli-stand-in.ts",
+    );
+    const compiled = spawnSync(
+      process.execPath,
+      ["build", "--compile", source, "--outfile", executable],
+      { encoding: "utf8", env: environment, timeout: 60_000 },
+    );
+    if (compiled.status !== 0)
+      throw new Error("The compiled inert Codex fixture did not build.");
+
+    const overfilledContinuityLog = fixtureMode === "fork-restart";
+    if (overfilledContinuityLog) {
+      writeFileSync(
+        log,
+        `${Array.from({ length: 257 }, (_, sequence) =>
+          JSON.stringify({ kind: "unrelated-diagnostic", sequence }),
+        ).join("\n")}\n`,
+      );
+    }
+
+    const runtime = createCodexChatRuntime({
+        root: workspace,
+        home,
+        configHome: userHome,
+        command: [executable],
+        environment,
+        operatorToken: () => null,
+        timeoutMs: 10_000,
+        rpcTimeoutMs: 2_000,
+        modelEfforts: [
+          {
+            model: "gpt-5-codex",
+            efforts: ["medium"],
+            source: "model/list" as const,
+            cliVersion: version,
+            asOf: "2026-10-23T00:00:00.000Z",
+          },
+        ],
+      }),
+      launch: CodexChatLaunch = {
+        mode: "chat",
+        cwd: launchWorkspace,
+        model: "gpt-5-codex",
+        sandbox: "workspace-write",
+        approvalPolicy: "on-request",
+        prompt: "Fixture-only Codex compatibility check",
+        context: {
+          projectId: "project-fixture",
+          repository: launchWorkspace,
+          worktree: launchWorkspace,
+          about: [],
+        },
+      };
+    status = "prepare";
+    const prepared = await runtime.prepare({
+      smith: "codex-journeyman",
+      launch,
+    });
+    if (fixtureMode.startsWith("fork-restart")) {
+      const physicalLaunchWorkspace = realpathSync.native(launch.cwd),
+        expectedCanonicalWorkspace =
+          process.platform === "win32"
+            ? physicalLaunchWorkspace.toLowerCase()
+            : physicalLaunchWorkspace;
+      expect(launch.cwd).not.toBe(prepared.canonicalCwd);
+      expect(prepared.canonicalCwd).toBe(expectedCanonicalWorkspace);
+    }
+    expect(prepared.capabilities.version).toBe(version);
+    status = "dispatch";
+    const events: CodexChatEvent[] = [];
+    const outcome = await runtime.run(
+      { prepared, resume: null },
+      async (event) => {
+        events.push(event);
+      },
+      new AbortController().signal,
+      { requestApproval: async () => "decline" },
+    );
+    status = `outcome-${outcome.phase}`;
+    expect(outcome).toMatchObject({
+      phase: "completed",
+      exitCode: 0,
+      stopped: false,
+      timedOut: false,
+    });
+    status = "verify-initial-native-configuration";
+    const initialConfiguration = events.find(
+      (event) => event.kind === "configuration",
+    );
+    status = Object.hasOwn(initialConfiguration ?? {}, "serviceTier")
+      ? "initial-service-tier-present"
+      : "initial-service-tier-missing";
+    expect(initialConfiguration).toMatchObject({
+      modelProvider: "openai",
+    });
+    expect(initialConfiguration).toHaveProperty("serviceTier", null);
+    expect(events).toContainEqual({
+      kind: "text",
+      itemId: "message-a",
+      text: "Hello",
+    });
+    expect(events).toContainEqual({
+      kind: "text",
+      itemId: "message-a",
+      text: " world",
+    });
+    expect(
+      readFileSync(join(workspace, "codex-sync-fixture-marker.txt"), "utf8"),
+    ).toBe("inert sync ran\n");
+
+    if (!outcome.threadId)
+      throw new Error("The inert Codex fixture did not return a thread.");
+    const initialTurn = events.find(
+      (event): event is Extract<CodexChatEvent, { kind: "turn" }> =>
+        event.kind === "turn",
+    );
+    if (!initialTurn || !initialConfiguration)
+      throw new Error("The inert Codex fixture did not retain its source.");
+    const serviceTier = initialConfiguration.serviceTier;
+    if (serviceTier === undefined)
+      throw new Error("The inert Codex fixture omitted nullable service tier.");
+    status = "cross-process-native-fork";
+    const forkInput = {
+      prepared,
+      parent: { provider: "codex", threadId: outcome.threadId, version },
+      lastTurnId: initialTurn.turnId,
+      sourceSettings: {
+        modelProvider: initialConfiguration.modelProvider,
+        serviceTier,
+        reasoningEffort: initialConfiguration.effort,
+      },
+    };
+    const crossProcessFork = await runtime.fork(forkInput);
+    expect(crossProcessFork).toMatchObject({
+      parentThreadId: outcome.threadId,
+      lastTurnId: initialTurn.turnId,
+      forkedFromId: outcome.threadId,
+      status: "idle",
+      canAcceptDirectInput: true,
+      settings: {
+        modelProvider: initialConfiguration.modelProvider,
+        serviceTier,
+        reasoningEffort: initialConfiguration.effort,
+      },
+    });
+    expect(crossProcessFork.threadId).not.toBe(outcome.threadId);
+    status = "reject-unknown-parent";
+    await expect(
+      runtime.fork({
+        ...forkInput,
+        parent: {
+          ...forkInput.parent,
+          threadId: "0199a213-81c0-7800-8aa1-bbab2a035a56",
+        },
+      }),
+    ).rejects.toThrow();
+    status = "reject-unknown-turn";
+    await expect(
+      runtime.fork({
+        ...forkInput,
+        lastTurnId: "0199a213-81c0-7800-8aa1-bbab2a035a57",
+      }),
+    ).rejects.toThrow();
+    status = "verify-fork-result-count";
+    let forkRecords: Record<string, unknown>[];
+    if (overfilledContinuityLog) {
+      const recent = readRecentCompiledFixtureRecords(log);
+      expect(recent.totalRows).toBeGreaterThan(256);
+      forkRecords = recent.rows;
+    } else forkRecords = readCompiledFixtureRecords(log);
+    expect(
+      forkRecords.filter((row) => row.kind === "fork-result"),
+    ).toHaveLength(1);
+    expect(
+      forkRecords.filter(
+        (row) => row.kind === "rpc" && row.method === "thread/fork",
+      ),
+    ).toHaveLength(3);
+
+    if (fixtureMode === "fork-restart-child-approval") {
+      status = "verified-child-resume";
+      const childEvents: CodexChatEvent[] = [];
+      const childResumed = await runtime.run(
+        {
+          prepared,
+          resume: {
+            provider: "codex",
+            threadId: crossProcessFork.threadId,
+            version,
+          },
+          resumeSettings: {
+            modelProvider: crossProcessFork.settings.modelProvider,
+            serviceTier: crossProcessFork.settings.serviceTier,
+            reasoningEffort: crossProcessFork.settings.reasoningEffort,
+          },
+        },
+        async (event) => {
+          childEvents.push(event);
+        },
+        new AbortController().signal,
+        { requestApproval: async () => "decline" },
+      );
+      expect(childResumed).toMatchObject({
+        phase: "completed",
+        threadId: crossProcessFork.threadId,
+        exitCode: 0,
+      });
+      const childResumeRows = readCompiledFixtureRecords(log);
+      expect(
+        childResumeRows.filter(
+          (row) =>
+            row.kind === "rpc" &&
+            row.method === "thread/resume" &&
+            typeof row.params === "object" &&
+            row.params !== null &&
+            "threadId" in row.params &&
+            row.params.threadId === crossProcessFork.threadId,
+        ),
+      ).toHaveLength(1);
+      expect(
+        childResumeRows.filter(
+          (row) =>
+            row.kind === "approval-offer" &&
+            row.threadId === crossProcessFork.threadId,
+        ),
+      ).toHaveLength(1);
+      expect(childEvents.some((event) => event.kind === "turn")).toBe(true);
+    }
+
+    status = "ordinary-native-resume";
+    const ordinaryResumeEvents: CodexChatEvent[] = [];
+    const ordinaryResumed = await runtime.run(
+      {
+        prepared,
+        resume: { provider: "codex", threadId: outcome.threadId, version },
+      },
+      async (event) => {
+        ordinaryResumeEvents.push(event);
+      },
+      new AbortController().signal,
+      { requestApproval: async () => "decline" },
+    );
+    status = `ordinary-resume-outcome-${ordinaryResumed.phase}`;
+    expect(ordinaryResumed).toMatchObject({
+      phase: "completed",
+      threadId: outcome.threadId,
+      exitCode: 0,
+    });
+    const ordinaryConfiguration = ordinaryResumeEvents.find(
+      (event) => event.kind === "configuration",
+    );
+    expect(ordinaryConfiguration).toHaveProperty("serviceTier", null);
+
+    status = "resume-dispatch";
+    const resumeEvents: CodexChatEvent[] = [];
+    const resumed = await runtime.run(
+      {
+        prepared,
+        resume: { provider: "codex", threadId: outcome.threadId, version },
+        resumeSettings: {
+          modelProvider: "openai",
+          serviceTier: null,
+          reasoningEffort: null,
+        },
+      },
+      async (event) => {
+        resumeEvents.push(event);
+      },
+      new AbortController().signal,
+      { requestApproval: async () => "decline" },
+    );
+    status = `resume-outcome-${resumed.phase}`;
+    expect(resumed).toMatchObject({
+      phase: "completed",
+      threadId: outcome.threadId,
+      exitCode: 0,
+    });
+    const resumeConfiguration = resumeEvents.find(
+      (event) => event.kind === "configuration",
+    );
+    expect(resumeConfiguration).toMatchObject({
+      modelProvider: "openai",
+    });
+    expect(resumeConfiguration).toHaveProperty("serviceTier", null);
+    const resumeRows = overfilledContinuityLog
+      ? readRecentCompiledFixtureRecords(log).rows
+      : readCompiledFixtureRecords(log);
+    const resumeRpcRows = resumeRows
+      .filter((row) => row.kind === "rpc" && row.method === "thread/resume")
+      .map((row) => row.params);
+    status = "verify-resume-call-counts";
+    expect(resumeRpcRows).toHaveLength(
+      fixtureMode === "fork-restart-child-approval" ? 3 : 2,
+    );
+    const resumeThreadId = (params: unknown) =>
+      typeof params === "object" &&
+      params !== null &&
+      !Array.isArray(params) &&
+      "threadId" in params &&
+      typeof params.threadId === "string"
+        ? params.threadId
+        : null;
+    const parentResumeParams = resumeRpcRows.filter(
+        (params) => resumeThreadId(params) === outcome.threadId,
+      ),
+      childResumeParams = resumeRpcRows.filter(
+        (params) => resumeThreadId(params) === crossProcessFork.threadId,
+      );
+    status = "verify-parent-resume-parameters";
+    expect(parentResumeParams).toHaveLength(2);
+    expect(parentResumeParams[0]).not.toHaveProperty("modelProvider");
+    expect(parentResumeParams[0]).not.toHaveProperty("serviceTier");
+    expect(parentResumeParams[1]).toMatchObject({
+      threadId: outcome.threadId,
+      modelProvider: "openai",
+      serviceTier: null,
+    });
+    status = "verify-child-resume-parameters";
+    if (fixtureMode === "fork-restart-child-approval") {
+      expect(childResumeParams).toHaveLength(1);
+      expect(childResumeParams[0]).toMatchObject({
+        threadId: crossProcessFork.threadId,
+        modelProvider: crossProcessFork.settings.modelProvider,
+        serviceTier: crossProcessFork.settings.serviceTier,
+      });
+    } else expect(childResumeParams).toHaveLength(0);
+    status = "verify-final-continuity-facts";
+    const facts = summarize();
+    if (overfilledContinuityLog) {
+      expect(facts).toMatchObject({
+        state: "over-limit",
+        status: "verify-final-continuity-facts",
+      });
+    } else {
+      expect(facts).toMatchObject({
+        state: "available",
+        forkRestartDiagnostics: [
+          {
+            stage: "source-accepted",
+            parentFound: true,
+            turnFound: true,
+            settingsMatches: {
+              model: true,
+              modelProvider: true,
+              serviceTierPresent: true,
+              serviceTier: true,
+              reasoningEffort: true,
+              workspace: true,
+              approvalPolicy: true,
+              sandbox: true,
+            },
+          },
+          {
+            stage: "fixture-proof-unavailable",
+            parentFound: false,
+            turnFound: false,
+            settingsMatches: null,
+          },
+          {
+            stage: "turn-not-found",
+            parentFound: true,
+            turnFound: false,
+          },
+        ],
+        kindCounts: {
+          version: fixtureMode === "fork-restart-child-approval" ? 8 : 7,
+          help: fixtureMode === "fork-restart-child-approval" ? 8 : 7,
+          process: fixtureMode === "fork-restart-child-approval" ? 7 : 6,
+          rpc: fixtureMode === "fork-restart-child-approval" ? 18 : 15,
+          notification: fixtureMode === "fork-restart-child-approval" ? 7 : 6,
+          answer: fixtureMode === "fork-restart-child-approval" ? 1 : 0,
+        },
+        argvCategories: {
+          versionProbe: fixtureMode === "fork-restart-child-approval" ? 8 : 7,
+          helpProbe: fixtureMode === "fork-restart-child-approval" ? 8 : 7,
+          appServerStdio: fixtureMode === "fork-restart-child-approval" ? 7 : 6,
+        },
+      });
+    }
+  } catch {
+    throw new Error(
+      `Compiled Codex compatibility fixture failed: ${JSON.stringify(summarize())}`,
+    );
+  }
+}, 60_000);
 
 async function forkInput(f: ReturnType<typeof fixture>) {
   const prepared = await f.runtime.prepare({
