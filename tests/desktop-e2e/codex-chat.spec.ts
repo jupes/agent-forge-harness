@@ -3726,6 +3726,37 @@ test("Codex Chat explicitly reviews, forks, reloads and controls only the linked
   await recoveredDialog
     .getByRole("button", { name: "Send child turn", exact: true })
     .click();
+  const approvalDecisionPosts: string[] = [];
+  const captureApprovalDecision = (request: Request) => {
+    const url = new URL(request.url());
+    if (
+      request.method() === "POST" &&
+      url.pathname.includes("/fork-approvals/") &&
+      url.pathname.endsWith("/decision")
+    )
+      approvalDecisionPosts.push(url.pathname);
+  };
+  page.on("request", captureApprovalDecision);
+  const childNativeId = saved(child.id).binding?.sessionId;
+  if (!childNativeId)
+    throw Error("The linked child native identity is missing");
+  await expect
+    .poll(() =>
+      calls().some(
+        (row) =>
+          row.kind === "approval-offer" &&
+          row.threadId === childNativeId &&
+          typeof row.turnId === "string",
+      ),
+    )
+    .toBe(true);
+  expect(approvalDecisionPosts).toHaveLength(0);
+  await recoveredDialog
+    .getByRole("button", {
+      name: "Refresh child transcript and permissions",
+      exact: true,
+    })
+    .click();
   const commandApproval = recoveredDialog.getByText(
     "Permission request · command",
     { exact: true },
@@ -3738,6 +3769,7 @@ test("Codex Chat explicitly reviews, forks, reloads and controls only the linked
   await recoveredDialog
     .getByRole("button", { name: "accept", exact: true })
     .click();
+  await expect.poll(() => approvalDecisionPosts.length).toBe(1);
   await expect(
     recoveredDialog.getByText("Hello world", { exact: true }),
   ).toBeVisible();
@@ -3766,6 +3798,7 @@ test("Codex Chat explicitly reviews, forks, reloads and controls only the linked
     )
     .toBe(false);
   page.off("request", captureForkPost);
+  page.off("request", captureApprovalDecision);
 });
 
 test("an undispatched Fork original can be explicitly retired after reload", async ({

@@ -498,7 +498,7 @@ export function CodexChatForkPanel(props: {
       await refreshChild(identity, owner);
       if (!isCurrentIdentity(owner, identity)) return;
       setMessage(
-        "The child turn was submitted once. Check its saved transcript for the result.",
+        "The child turn was submitted once. Use Refresh child transcript and permissions to check its result or any approvals.",
       );
     } catch {
       if (isCurrentIdentity(owner, identity))
