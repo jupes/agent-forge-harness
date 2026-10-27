@@ -280,6 +280,52 @@ test("Fork source requires explicit tier evidence while preserving known null an
       sourceSettings: { modelProvider: "openai", serviceTier: null },
     });
     if (!eligible.eligible) throw Error("Missing prepared source evidence.");
+    const savedConfig = source.state.frames.find(
+      (frame) =>
+        frame.event.kind === "coding-chat" &&
+        frame.event.event.kind === "configuration",
+    );
+    if (
+      savedConfig?.event.kind !== "coding-chat" ||
+      savedConfig.event.event.kind !== "configuration"
+    )
+      throw Error("Missing raw-cwd legacy configuration evidence.");
+    expect(savedConfig.event.event.cwd).toBe(eligible.prepared.cwd);
+    const canonicalConfig = structuredClone(source.state),
+      canonicalFrame = canonicalConfig.frames.find(
+        (frame) =>
+          frame.event.kind === "coding-chat" &&
+          frame.event.event.kind === "configuration",
+      );
+    if (
+      canonicalFrame?.event.kind !== "coding-chat" ||
+      canonicalFrame.event.event.kind !== "configuration"
+    )
+      throw Error("Missing canonical configuration fixture.");
+    canonicalFrame.event.event.cwd = eligible.prepared.canonicalCwd;
+    expect(resolve(canonicalConfig)).toMatchObject({ eligible: true });
+    for (const field of ["cwd", "model", "effort"] as const) {
+      const changed = structuredClone(source.state),
+        changedConfig = changed.frames.find(
+          (frame) =>
+            frame.event.kind === "coding-chat" &&
+            frame.event.event.kind === "configuration",
+        );
+      if (
+        changedConfig?.event.kind !== "coding-chat" ||
+        changedConfig.event.event.kind !== "configuration"
+      )
+        throw Error("Missing changed configuration fixture.");
+      if (field === "cwd")
+        changedConfig.event.event.cwd = `${eligible.prepared.canonicalCwd}/outside`;
+      else if (field === "model")
+        changedConfig.event.event.model = "different-model";
+      else changedConfig.event.event.effort = "medium";
+      expect(resolve(changed)).toEqual({
+        eligible: false,
+        reason: "settings-mismatch",
+      });
+    }
     const omittedAboutOwner = {
       ...source.owner,
       requestHash: originalRequestHash(
