@@ -3515,8 +3515,7 @@ test("a delayed older Fork review cannot replace a newer selection", async ({
     ).toHaveCount(0);
     const afterStaleRead = (await readOperationPage()).operations.find(
       (row) =>
-        row.family === "codex-chat-fork" &&
-        row.requestId === originalRequestId,
+        row.family === "codex-chat-fork" && row.requestId === originalRequestId,
     );
     expect(afterStaleRead).toMatchObject({
       requestId: originalRequestId,
