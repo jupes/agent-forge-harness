@@ -3054,6 +3054,9 @@ const ACTIONS: Record<string, ActionFixture> = {
 
 /** A concrete path per read row; a row with none fails the suite. */
 const READS: Record<string, string> = {
+  "GET /projects/create-options": "/projects/create-options",
+  "GET /projects/create-scope-preview":
+    "/projects/create-scope-preview?slug=alpha&epicId=alpha-epic",
   "GET /projects/create-reservations": "/projects/create-reservations",
   "GET /projects/create-reservations/:requestId": `/projects/create-reservations/${API_PROJECT_CREATE_READ_ID}`,
   "GET /projects/:id/session-start-identities": `/projects/${FIXTURE_PROJECT_ID}/session-start-identities`,
@@ -3439,21 +3442,82 @@ describe("the route table", () => {
 
 describe("every action row (iterating the table)", () => {
   test("with the token, from the hearth's own origin: one operator.action is appended, then the effect runs", async () => {
-    const { h, probes } = await probed();
-    const rows = actionRows(h);
-    let progress: { row: number; action: string; stage: string } = {
+    type InventoryStage =
+      | "hearth-setup"
+      | "fixture-setup"
+      | "post-await"
+      | "response-body"
+      | "settled"
+      | "assertions"
+      | "happened"
+      | "council-run-finished";
+    const startedAt = performance.now();
+    let progress: {
+      row: number;
+      action: string;
+      stage: InventoryStage;
+      rowStartedAt: number;
+      stageStartedAt: number;
+    } = {
       row: 0,
       action: "setup",
-      stage: "start",
+      stage: "hearth-setup",
+      rowStartedAt: startedAt,
+      stageStartedAt: startedAt,
     };
-    const diagnostic = setTimeout(() => {
-      console.error(
-        `[api-action-inventory] ${JSON.stringify({ event: "slow", ...progress })}`,
-      );
-    }, 10_000);
+    let completedRows = 0;
+    let lastCompleted: {
+      row: number;
+      action: string;
+      elapsedMs: number;
+    } | null = null;
+    let probes: Probe[] = [];
+    const diagnostics: ReturnType<typeof setTimeout>[] = [];
+    const delays = [10_000, 20_000, 25_000] as const;
+    const roundedMs = (value: number): number => Math.max(0, Math.round(value));
+    const diagnosticTimers = delays.map((delayMs) => {
+      const timer = setTimeout(() => {
+        const now = performance.now();
+        const diagnostic = {
+          event: "sample",
+          elapsedMs: roundedMs(now - startedAt),
+          completedRows,
+          lastCompleted,
+          current: {
+            row: progress.row,
+            action: progress.action.slice(0, 80),
+            stage: progress.stage,
+            rowElapsedMs: roundedMs(now - progress.rowStartedAt),
+            stageElapsedMs: roundedMs(now - progress.stageStartedAt),
+          },
+          configEditEffectEntered:
+            progress.action === "smith.config.edit"
+              ? probes.some(
+                  (probe) => probe.row === "POST /config/smiths/edits",
+                )
+              : null,
+        };
+        const line = `[api-action-inventory] ${JSON.stringify(diagnostic)}`;
+        if (line.length <= 4_096) console.error(line);
+      }, delayMs);
+      timer.unref?.();
+      return timer;
+    });
+    diagnostics.push(...diagnosticTimers);
     try {
+      const started = await probed();
+      const h = started.h;
+      probes = started.probes;
+      const rows = actionRows(h);
       for (const [index, row] of rows.entries()) {
-        progress = { row: index + 1, action: row.action, stage: "prepare" };
+        const rowStartedAt = performance.now();
+        progress = {
+          row: index + 1,
+          action: row.action,
+          stage: "fixture-setup",
+          rowStartedAt,
+          stageStartedAt: rowStartedAt,
+        };
         const {
           valid,
           prepare,
@@ -3468,9 +3532,11 @@ describe("every action row (iterating the table)", () => {
         const before = snapshot(h);
         const seen = probes.length;
 
-        progress.stage = "post";
+        progress.stage = "post-await";
+        progress.stageStartedAt = performance.now();
         const response = await post(h, valid.path, valid.body);
-        progress.stage = "read-response";
+        progress.stage = "response-body";
+        progress.stageStartedAt = performance.now();
         const body = await envelope(response);
         expect({
           row: key(row),
@@ -3484,10 +3550,13 @@ describe("every action row (iterating the table)", () => {
           error: valid.error ?? null,
         });
         progress.stage = "settled";
+        progress.stageStartedAt = performance.now();
         await settled?.(h);
 
         // This row's audit row first, then exactly the events its fixture says
         // a successful effect leaves: for most rows, none.
+        progress.stage = "assertions";
+        progress.stageStartedAt = performance.now();
         const added = h.events().filter((event) => !before.includes(event.id));
         expect(
           added.map((event) => ({
@@ -3517,14 +3586,22 @@ describe("every action row (iterating the table)", () => {
         expect(calls[0]?.audit.at(-1)?.id).toBe(added[0]?.id);
 
         progress.stage = "happened";
+        progress.stageStartedAt = performance.now();
         await happened(h, body.data, beforeDomain);
         if (row.action === "council.run.start" && valid.target !== undefined) {
           progress.stage = "council-run-finished";
+          progress.stageStartedAt = performance.now();
           await councilRunFinished(h, valid.target);
         }
+        completedRows++;
+        lastCompleted = {
+          row: index + 1,
+          action: row.action.slice(0, 80),
+          elapsedMs: roundedMs(performance.now() - rowStartedAt),
+        };
       }
     } finally {
-      clearTimeout(diagnostic);
+      for (const timer of diagnostics) clearTimeout(timer);
     }
   }, 30_000);
 
