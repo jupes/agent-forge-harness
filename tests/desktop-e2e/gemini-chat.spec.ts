@@ -1281,11 +1281,13 @@ test("saved native deadline hides a genuinely actionable old offer before generi
     identityRegion.getByRole("button", { name: "Check server", exact: true }),
   ).toBeEnabled();
   let previewPostObserved = false;
-  const previewPath = `/projects/${alpha.id}/sessions/preview`;
+  const previewPath = `/__agent-forge/projects/${alpha.id}/sessions/preview`;
+  const previewOrigin = new URL(page.url()).origin;
   const observePreviewPost = (request: Request) => {
     const url = new URL(request.url());
     if (
       request.method() === "POST" &&
+      url.origin === previewOrigin &&
       url.pathname === previewPath &&
       url.search === ""
     )
@@ -1308,6 +1310,7 @@ test("saved native deadline hides a genuinely actionable old offer before generi
     const previewResponse = page.waitForResponse(
       (response) =>
         response.request().method() === "POST" &&
+        new URL(response.url()).origin === previewOrigin &&
         new URL(response.url()).pathname === previewPath &&
         new URL(response.url()).search === "",
     );
