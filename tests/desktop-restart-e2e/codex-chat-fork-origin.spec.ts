@@ -1,7 +1,13 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { join } from "node:path";
-import { expect, type Page, type Route, test } from "@playwright/test";
+import {
+  expect,
+  type Page,
+  type Request,
+  type Route,
+  test,
+} from "@playwright/test";
 import { SESSION_START_IDENTITIES } from "../../apps/desktop/src/session-start-identities";
 import {
   OPERATOR_HEADER,
@@ -9,8 +15,14 @@ import {
   SESSION_ROUTE,
 } from "../../scripts/hearth/paths";
 import { ownedCodingStateSchema } from "../../scripts/sessions/codex-owned-journal";
-import { ownedCodingSessionSchema } from "../../scripts/sessions/codex-owned-wire-protocol";
-import { sessionStartIdentityPageSchema } from "../../scripts/sessions/identity-protocol";
+import {
+  ownedCodingSessionSchema,
+  ownedCodingStartReceiptSchema,
+} from "../../scripts/sessions/codex-owned-wire-protocol";
+import {
+  sessionStartIdentityPageSchema,
+  sessionStartIdentityReplySchema,
+} from "../../scripts/sessions/identity-protocol";
 import {
   codexChatForkIdentityMetadataSchema,
   sessionOperationIdentityPageSchema,
@@ -195,7 +207,45 @@ function rpcCount(method: string): number {
     .length;
 }
 
-async function openNewSession(page: Page, url: string): Promise<SessionRow> {
+type ParentStartReadFacts = {
+  stage:
+    | "prepared"
+    | "preview-pending"
+    | "identity-read-held"
+    | "reads-released"
+    | "start-dispatched"
+    | "start-receipted";
+  identityGetCount: number;
+  sessionGetCount: number;
+  identityStatus: number | null;
+  sessionStatus: number | null;
+  identityScopeMatched: boolean | null;
+  identityValid: boolean | null;
+  sessionValid: boolean | null;
+  sessionRows: number | null;
+  checkingVisible: boolean | null;
+  startDisabledWhileHeld: boolean | null;
+  reservePosts: number;
+  startPosts: number;
+  errorVisibleWhileHeld: boolean | null;
+  timingMs: {
+    previewResponse: number | null;
+    identityRead: number | null;
+    heldUiObserved: number | null;
+    readsReleased: number | null;
+    startClick: number | null;
+    reserveRequest: number | null;
+    startRequest: number | null;
+    startReceipt: number | null;
+    readyAfterReads: number | null;
+  };
+};
+
+async function openNewSession(
+  page: Page,
+  url: string,
+  reportFacts: (facts: ParentStartReadFacts) => void,
+): Promise<SessionRow> {
   if (
     page.url() === "about:blank" ||
     new URL(page.url()).origin !== new URL(url).origin
@@ -233,43 +283,271 @@ async function openNewSession(page: Page, url: string): Promise<SessionRow> {
   await dialog
     .getByRole("textbox", { name: "Session prompt", exact: true })
     .fill("Fork restart parent start");
-  await dialog
-    .getByRole("button", { name: "Check supported options", exact: true })
-    .click();
-  await expect(
-    dialog.getByRole("button", { name: "Start", exact: true }),
-  ).toBeEnabled();
-  const identityRead = page.waitForResponse((response) => {
-    const url = new URL(response.url());
+  let identityArrived!: () => void;
+  const identityRead = new Promise<void>((resolve) => {
+    identityArrived = resolve;
+  });
+  let sessionsArrived!: () => void;
+  const sessionsRead = new Promise<void>((resolve) => {
+    sessionsArrived = resolve;
+  });
+  const facts: ParentStartReadFacts = {
+    stage: "prepared",
+    identityGetCount: 0,
+    sessionGetCount: 0,
+    identityStatus: null,
+    sessionStatus: null,
+    identityScopeMatched: null,
+    identityValid: null,
+    sessionValid: null,
+    sessionRows: null,
+    checkingVisible: null,
+    startDisabledWhileHeld: null,
+    errorVisibleWhileHeld: null,
+    reservePosts: 0,
+    startPosts: 0,
+    timingMs: {
+      previewResponse: null,
+      identityRead: null,
+      heldUiObserved: null,
+      readsReleased: null,
+      startClick: null,
+      reserveRequest: null,
+      startRequest: null,
+      startReceipt: null,
+      readyAfterReads: null,
+    },
+  };
+  const startedAt = Date.now();
+  reportFacts(facts);
+  const expectedOrigin = new URL(page.url()).origin;
+  const identityPath = `/__agent-forge/projects/${alpha.id}/session-start-identities`;
+  const sessionsPath = `/__agent-forge/projects/${alpha.id}/sessions`;
+  let gateReads = false;
+  let identityHeld = false;
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const readMatcher = (candidate: URL) =>
+    candidate.pathname === identityPath || candidate.pathname === sessionsPath;
+  const readHandler = async (route: Route) => {
+    const request = route.request();
+    const requestUrl = new URL(request.url());
+    if (
+      !gateReads ||
+      request.method() !== "GET" ||
+      requestUrl.origin !== expectedOrigin
+    ) {
+      await route.continue();
+      return;
+    }
+    const isIdentity = requestUrl.pathname === identityPath;
+    if (!isIdentity) {
+      facts.sessionGetCount++;
+      const response = await route.fetch();
+      facts.sessionStatus = response.status();
+      try {
+        const envelope = record(await response.json());
+        if (envelope?.["ok"] === true && Array.isArray(envelope["data"])) {
+          facts.sessionRows = ownedCodingSessionSchema
+            .array()
+            .parse(envelope["data"]).length;
+          facts.sessionValid = true;
+        } else {
+          facts.sessionValid = false;
+        }
+      } catch {
+        facts.sessionValid = false;
+      }
+      try {
+        await route.fulfill({ response });
+      } finally {
+        sessionsArrived();
+      }
+      return;
+    }
+    if (identityHeld) {
+      await route.continue();
+      return;
+    }
+    identityHeld = true;
+    facts.identityGetCount++;
+    const response = await route.fetch();
+    facts.identityStatus = response.status();
+    try {
+      const envelope = record(await response.json());
+      if (envelope?.["ok"] === true) {
+        const identityPage = sessionStartIdentityPageSchema.parse(
+          envelope["data"],
+        );
+        facts.identityValid = true;
+        facts.identityScopeMatched =
+          identityPage.scope.family === "owned-session-start" &&
+          identityPage.scope.projectId === alpha.id &&
+          identityPage.scope.workspace === alpha.workspaces[0]?.root;
+      } else {
+        facts.identityValid = false;
+        facts.identityScopeMatched = false;
+      }
+    } catch {
+      facts.identityValid = false;
+      facts.identityScopeMatched = false;
+    }
+    identityArrived();
+    await held;
+    await route.fulfill({ response });
+  };
+  const previewResponse = page.waitForResponse((response) => {
+    const responseUrl = new URL(response.url());
     return (
-      response.request().method() === "GET" &&
-      url.origin === new URL(page.url()).origin &&
-      url.pathname ===
-        `/__agent-forge/projects/${alpha.id}/session-start-identities`
+      response.request().method() === "POST" &&
+      responseUrl.origin === expectedOrigin &&
+      responseUrl.pathname ===
+        `/__agent-forge/projects/${alpha.id}/sessions/preview`
     );
   });
-  await dialog
-    .getByRole("region", { name: "Original Start requests", exact: true })
-    .getByRole("button", { name: "Check server", exact: true })
-    .click();
-  const identityResponse = await identityRead;
-  expect(identityResponse.status()).toBe(200);
-  const identityEnvelope = record(
-    parseJson(await identityResponse.text(), "Session Start identity page"),
-  );
-  const identityPage = sessionStartIdentityPageSchema.parse(
-    identityEnvelope?.["data"],
-  );
-  expect(identityPage.scope).toEqual({
-    family: "owned-session-start",
-    projectId: alpha.id,
-    workspace: alpha.workspaces[0]?.root,
-  });
+  await page.route(readMatcher, readHandler);
+  facts.stage = "preview-pending";
+  gateReads = true;
+  try {
+    await dialog
+      .getByRole("button", { name: "Check supported options", exact: true })
+      .click();
+    const preview = await previewResponse;
+    facts.timingMs.previewResponse = Date.now() - startedAt;
+    expect(preview.status()).toBe(200);
+    await dialog
+      .getByRole("region", { name: "Original Start requests", exact: true })
+      .getByRole("button", { name: "Check server", exact: true })
+      .click();
+    await identityRead;
+    facts.stage = "identity-read-held";
+    facts.timingMs.identityRead = Date.now() - startedAt;
+    expect(facts.identityStatus).toBe(200);
+    expect(facts.identityValid).toBe(true);
+    expect(facts.identityScopeMatched).toBe(true);
+    if (facts.sessionGetCount > 0) {
+      await sessionsRead;
+      expect(facts.sessionStatus).toBe(200);
+      expect(facts.sessionValid).toBe(true);
+    }
+    const starts = dialog.getByRole("button", { name: "Start", exact: true });
+    await expect(
+      dialog.getByRole("status", {
+        name: "Checking the server-owned identity page…",
+        exact: true,
+      }),
+    ).toBeVisible();
+    await expect(starts).toBeDisabled();
+    facts.checkingVisible = true;
+    facts.startDisabledWhileHeld = true;
+    facts.errorVisibleWhileHeld =
+      (await dialog.getByRole("alert").count()) > 0 ||
+      (await dialog.locator(".af-session-warning").count()) > 0;
+    facts.timingMs.heldUiObserved = Date.now() - startedAt;
+  } finally {
+    gateReads = false;
+    facts.timingMs.readsReleased = Date.now() - startedAt;
+    facts.stage = "reads-released";
+    release();
+    await page.unroute(readMatcher, readHandler);
+  }
   await expect(
     dialog.getByRole("button", { name: "Start", exact: true }),
   ).toBeEnabled();
+  facts.timingMs.readyAfterReads = Date.now() - startedAt;
   const before = new Set(rows().map((item) => item.id));
+  const reservePath = identityPath;
+  const startPath = `/__agent-forge/projects/${alpha.id}/sessions`;
+  let reserveRequestId: string | null = null;
+  let reserveRequestHash: string | null = null;
+  const countStartRequests = (request: Request) => {
+    const requestUrl = new URL(request.url());
+    if (request.method() !== "POST" || requestUrl.origin !== expectedOrigin)
+      return;
+    if (requestUrl.pathname === reservePath) {
+      facts.reservePosts++;
+      facts.timingMs.reserveRequest = Date.now() - startedAt;
+    }
+    if (requestUrl.pathname === startPath) {
+      facts.startPosts++;
+      facts.timingMs.startRequest = Date.now() - startedAt;
+    }
+  };
+  page.on("request", countStartRequests);
+  const reserveResponse = page.waitForResponse(async (response) => {
+    const responseUrl = new URL(response.url());
+    if (
+      response.request().method() !== "POST" ||
+      responseUrl.origin !== expectedOrigin ||
+      responseUrl.pathname !== reservePath
+    )
+      return false;
+    const envelope = record(await response.json().catch(() => null));
+    if (envelope?.["ok"] !== true) return false;
+    const reply = sessionStartIdentityReplySchema.parse(envelope["data"]);
+    expect(reply.scope).toEqual({
+      family: "owned-session-start",
+      projectId: alpha.id,
+      workspace: alpha.workspaces[0]?.root,
+    });
+    expect(reply.identity).toMatchObject({
+      provider: "codex",
+      mode: "chat",
+      state: "reserved",
+    });
+    reserveRequestId = reply.identity.requestId;
+    reserveRequestHash = reply.identity.requestHash;
+    return true;
+  });
+  const startRequest = page.waitForRequest((request) => {
+    const requestUrl = new URL(request.url());
+    return (
+      request.method() === "POST" &&
+      requestUrl.origin === expectedOrigin &&
+      requestUrl.pathname === startPath
+    );
+  });
+  const startResponse = page.waitForResponse((response) => {
+    const responseUrl = new URL(response.url());
+    return (
+      response.request().method() === "POST" &&
+      responseUrl.origin === expectedOrigin &&
+      responseUrl.pathname === startPath
+    );
+  });
+  facts.stage = "start-dispatched";
+  facts.timingMs.startClick = Date.now() - startedAt;
   await dialog.getByRole("button", { name: "Start", exact: true }).click();
+  let receiptSession: SessionRow | null = null;
+  try {
+    const [reserved, startReq, started] = await Promise.all([
+      reserveResponse,
+      startRequest,
+      startResponse,
+    ]);
+    expect(reserved.status()).toBe(200);
+    expect(started.status()).toBe(202);
+    const startBody = record(startReq.postDataJSON());
+    const startEnvelope = record(await started.json());
+    if (startEnvelope?.["ok"] !== true)
+      throw new Error("The actual parent Start receipt was invalid.");
+    const receipt = ownedCodingStartReceiptSchema.parse(startEnvelope["data"]);
+    receiptSession = receipt.session;
+    expect(receipt.session.requestId).toBe(reserveRequestId);
+    expect(receipt.session.requestHash).toBe(reserveRequestHash);
+    expect(receipt.session.provider).toBe("codex");
+    expect(receipt.session.mode).toBe("chat");
+    expect(startBody?.["requestId"]).toBe(reserveRequestId);
+    expect(facts.reservePosts).toBe(1);
+    expect(facts.startPosts).toBe(1);
+    facts.timingMs.startReceipt = Date.now() - startedAt;
+    facts.stage = "start-receipted";
+    reportFacts(facts);
+  } finally {
+    page.off("request", countStartRequests);
+  }
   const pane = page.getByRole("region", {
     name: "Session conversation",
     exact: true,
@@ -281,6 +559,8 @@ async function openNewSession(page: Page, url: string): Promise<SessionRow> {
   const parent = rows().find((item) => !before.has(item.id));
   if (!parent)
     throw new Error("The actual Codex Chat parent was not recorded.");
+  expect(parent.requestId).toBe(receiptSession?.requestId);
+  expect(parent.requestHash).toBe(receiptSession?.requestHash);
   await expect(pane).toContainText("Hello world");
   expect(
     readFileSync(join(ROOT, "codex-sync-fixture-marker.txt"), "utf8"),
@@ -614,6 +894,7 @@ test("two actual host replacements recover the exact Fork original before and af
   let stage = "initializing";
   const forksBefore = rpcCount("thread/fork");
   const startsBefore = rpcCount("thread/start");
+  let parentStartFacts: ParentStartReadFacts | null = null;
   page.on("request", (request) => {
     if (request.method() !== "POST") return;
     const url = new URL(request.url());
@@ -685,6 +966,7 @@ test("two actual host replacements recover the exact Fork original before and af
         forkRpcCalls: rpcCount("thread/fork"),
         startRpcCalls: rpcCount("thread/start"),
       },
+      parentStart: parentStartFacts,
     };
   };
 
@@ -703,7 +985,14 @@ test("two actual host replacements recover the exact Fork original before and af
   observedOrigin = currentOrigin;
   let beforeFirstReplacement = { starts: 0, writes: 0, forks: 0 };
 
-  const firstParent = await openNewSession(page, currentUrl);
+  const captureParentStartFacts = (facts: ParentStartReadFacts) => {
+    parentStartFacts = facts;
+  };
+  const firstParent = await openNewSession(
+    page,
+    currentUrl,
+    captureParentStartFacts,
+  );
   stage = "first-parent-created";
   let first = await createCompletedSourceTurn(page, firstParent, "A");
   stage = "first-source-turn-completed";
@@ -963,7 +1252,11 @@ test("two actual host replacements recover the exact Fork original before and af
   await page.keyboard.press("Escape");
   await expect(reviewA).toBeHidden();
 
-  const secondParent = await openNewSession(page, currentUrl);
+  const secondParent = await openNewSession(
+    page,
+    currentUrl,
+    captureParentStartFacts,
+  );
   stage = "second-parent-created";
   const second = await createCompletedSourceTurn(page, secondParent, "B");
   stage = "second-source-turn-completed";
