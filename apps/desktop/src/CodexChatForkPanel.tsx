@@ -31,6 +31,9 @@ export function CodexChatForkPanel(props: {
     [identity, setIdentity] = useState<CodexChatForkIdentityMetadata | null>(
       null,
     ),
+    [historyOriginals, setHistoryOriginals] = useState<
+      CodexChatForkIdentityMetadata[]
+    >([]),
     [sourceContext, setSourceContext] = useState<Awaited<
       ReturnType<typeof props.client.readContext>
     > | null>(null),
@@ -51,10 +54,14 @@ export function CodexChatForkPanel(props: {
     epoch = useRef(0),
     childReadEpoch = useRef(0),
     sourceReadEpoch = useRef(0),
+    historyReadEpoch = useRef(0),
     selection = useRef<PanelSelection | null>(null),
     openRef = useRef(false),
     selected =
       props.page?.turns.find((turn) => turn.requestId === turnId) ?? null;
+  const unresolvedHistory = historyOriginals.filter(
+    (row) => row.state !== "linked" && row.state !== "retired",
+  );
 
   const isCurrent = (owner: PanelSelection) =>
     openRef.current &&
@@ -95,10 +102,12 @@ export function CodexChatForkPanel(props: {
     epoch.current += 1;
     childReadEpoch.current += 1;
     sourceReadEpoch.current += 1;
+    historyReadEpoch.current += 1;
     selection.current = null;
     setOpen(false);
     setBusy(false);
     setDraft("");
+    setHistoryOriginals([]);
     setIdentityDiscovery("idle");
     setChildReadState("idle");
   };
@@ -106,10 +115,12 @@ export function CodexChatForkPanel(props: {
     epoch.current += 1;
     childReadEpoch.current += 1;
     sourceReadEpoch.current += 1;
+    historyReadEpoch.current += 1;
     selection.current = null;
     openRef.current = false;
     setOpen(false);
     setIdentity(null);
+    setHistoryOriginals([]);
     setReview(null);
     setSourceContext(null);
     setChildPage(null);
@@ -125,6 +136,7 @@ export function CodexChatForkPanel(props: {
       epoch.current += 1;
       childReadEpoch.current += 1;
       sourceReadEpoch.current += 1;
+      historyReadEpoch.current += 1;
       selection.current = null;
     },
     [],
@@ -200,6 +212,7 @@ export function CodexChatForkPanel(props: {
     setTurnId(requestId);
     setReview(null);
     setIdentity(null);
+    setHistoryOriginals([]);
     setSourceContext(null);
     setChildPage(null);
     setApprovals(null);
@@ -218,6 +231,7 @@ export function CodexChatForkPanel(props: {
       const parentOriginals = originals.filter(
         (row) => row.parentSessionId === props.parentSessionId,
       );
+      setHistoryOriginals(parentOriginals);
       const unresolved = parentOriginals.filter(
         (row) => row.state !== "linked" && row.state !== "retired",
       );
@@ -255,6 +269,11 @@ export function CodexChatForkPanel(props: {
         const original = recovered.original ?? recovered.identity;
         if (!original)
           throw new Error("The exact Fork original is unavailable.");
+        setHistoryOriginals((current) =>
+          current.map((row) =>
+            row.requestId === original.requestId ? original : row,
+          ),
+        );
         selection.current = { ...owner, requestId: original.requestId };
         setIdentity(original);
         setIdentityDiscovery("ready");
@@ -292,6 +311,83 @@ export function CodexChatForkPanel(props: {
         setIdentityDiscovery("failed");
         setMessage(
           "The saved source or existing Fork originals could not be verified. No Fork was reserved.",
+        );
+      }
+    }
+  };
+
+  const inspectHistoryOriginal = async (
+    selected: CodexChatForkIdentityMetadata,
+  ) => {
+    const owner = selection.current,
+      readEpoch = ++historyReadEpoch.current;
+    if (
+      !owner ||
+      !isCurrent(owner) ||
+      selected.parentSessionId !== props.parentSessionId ||
+      selected.throughTurnRequestId !== turnId ||
+      !historyOriginals.some(
+        (row) =>
+          row.requestId === selected.requestId &&
+          row.requestHash === selected.requestHash &&
+          row.parentSessionId === selected.parentSessionId &&
+          row.throughTurnRequestId === selected.throughTurnRequestId,
+      )
+    )
+      return;
+    const nextOwner = {
+      ...owner,
+      requestId: selected.requestId,
+      throughTurnRequestId: selected.throughTurnRequestId,
+    };
+    selection.current = nextOwner;
+    setIdentity(null);
+    setIdentityDiscovery("loading");
+    setMessage("Checking the exact saved Fork original…");
+    try {
+      const recovered = await props.client.recoverOriginal(
+        props.projectId,
+        selected.requestId,
+      );
+      if (
+        !isCurrent(nextOwner) ||
+        selection.current?.requestId !== selected.requestId ||
+        historyReadEpoch.current !== readEpoch
+      )
+        return;
+      const original = recovered.original;
+      if (
+        !original ||
+        original.requestId !== selected.requestId ||
+        original.requestHash !== selected.requestHash ||
+        original.parentSessionId !== selected.parentSessionId ||
+        original.throughTurnRequestId !== selected.throughTurnRequestId ||
+        original.state !== selected.state
+      )
+        throw new Error("The exact saved Fork original could not be verified.");
+      setIdentity(original);
+      setHistoryOriginals((current) =>
+        current.map((row) =>
+          row.requestId === original.requestId ? original : row,
+        ),
+      );
+      setIdentityDiscovery("ready");
+      setSourceContext(recovered.context);
+      setMessage(
+        original.state === "retired"
+          ? "This exact Fork reservation is retired and remains available for inspection."
+          : "This exact Fork original is selected for inspection; no Fork was sent.",
+      );
+    } catch {
+      if (
+        isCurrent(nextOwner) &&
+        selection.current?.requestId === selected.requestId &&
+        historyReadEpoch.current === readEpoch
+      ) {
+        setIdentity(null);
+        setIdentityDiscovery("failed");
+        setMessage(
+          "The exact saved Fork original could not be verified. No action was sent.",
         );
       }
     }
@@ -377,6 +473,7 @@ export function CodexChatForkPanel(props: {
       !turnId ||
       owner.throughTurnRequestId !== turnId ||
       (owner.requestId !== null && !retiredInspection) ||
+      unresolvedHistory.length > 0 ||
       !props.writesAllowed
     )
       return;
@@ -389,6 +486,10 @@ export function CodexChatForkPanel(props: {
         source: review,
       });
       if (!isCurrent(owner)) return;
+      setHistoryOriginals((current) => [
+        ...current.filter((saved) => saved.requestId !== row.requestId),
+        row,
+      ]);
       selection.current = { ...owner, requestId: row.requestId };
       setIdentity(row);
       setMessage(
@@ -432,6 +533,10 @@ export function CodexChatForkPanel(props: {
       if (!original) throw new Error("The exact Fork original is unavailable.");
       selection.current = { ...owner, requestId: original.requestId };
       setIdentity(original);
+      setHistoryOriginals((current) => [
+        ...current.filter((saved) => saved.requestId !== original.requestId),
+        original,
+      ]);
       if (recovered.original?.state === "linked") {
         try {
           await refreshChild(recovered.original, owner);
@@ -478,6 +583,10 @@ export function CodexChatForkPanel(props: {
         identity.requestId,
       );
       if (!isCurrentIdentity(owner, identity)) return;
+      setHistoryOriginals((current) => [
+        ...current.filter((saved) => saved.requestId !== retired.requestId),
+        retired,
+      ]);
       selection.current = { ...owner, requestId: retired.requestId };
       setIdentity(retired);
       setMessage(
@@ -777,6 +886,26 @@ export function CodexChatForkPanel(props: {
                   </article>
                 ))}
               </div>
+              {historyOriginals.some(
+                (row) => row.throughTurnRequestId === turnId,
+              ) && (
+                <section aria-label="Saved Fork originals">
+                  <h3>Saved Fork originals for this turn</h3>
+                  {historyOriginals
+                    .filter((row) => row.throughTurnRequestId === turnId)
+                    .map((row) => (
+                      <button
+                        type="button"
+                        key={row.requestId}
+                        disabled={busy || identity?.requestId === row.requestId}
+                        onClick={() => void inspectHistoryOriginal(row)}
+                      >
+                        Inspect Fork original {row.requestId.slice(0, 8)} ·{" "}
+                        {row.state}
+                      </button>
+                    ))}
+                </section>
+              )}
               {identity && (
                 <p>
                   Original {identity.requestId} · {identity.state}
@@ -798,7 +927,8 @@ export function CodexChatForkPanel(props: {
                 )}
               {props.writesAllowed &&
                 identityDiscovery === "ready" &&
-                (!identity || identity.state === "retired") && (
+                (!identity || identity.state === "retired") &&
+                unresolvedHistory.length === 0 && (
                   <button
                     type="button"
                     disabled={busy || !selected || !complete(selected.phase)}
