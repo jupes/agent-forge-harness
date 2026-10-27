@@ -1,15 +1,19 @@
+import { Database } from "bun:sqlite";
 import { afterEach, expect, test } from "bun:test";
 import {
+  closeSync,
   existsSync,
   linkSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
   renameSync,
   rmSync,
   symlinkSync,
   truncateSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -61,9 +65,10 @@ function privateReading(target: "directory" | "file"): AclReading {
 }
 
 /** Injected ACL only: no native ACL calls or child processes occur in these tests. */
-function fakeAcl(): WindowsAcl {
+function fakeAcl(beforeRead?: (path: string) => void): WindowsAcl {
   const readings = new Map<string, AclReading>(),
     reading = (path: string): AclReading => {
+      beforeRead?.(path);
       const saved = readings.get(path);
       if (saved) return saved;
       const info = lstatSync(path);
@@ -89,7 +94,45 @@ function fakeAcl(): WindowsAcl {
         file: { reading: reading(file), bytes },
       };
     },
+    createOwnerOnlyExclusive(path) {
+      let descriptor: number;
+      try {
+        descriptor = openSync(path, "wx", 0o600);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EEXIST")
+          return { kind: "exists" };
+        throw error;
+      }
+      readings.set(path, privateReading("file"));
+      let closed = false;
+      return {
+        kind: "created",
+        remove() {
+          unlinkSync(path);
+        },
+        close() {
+          if (closed) return;
+          closed = true;
+          closeSync(descriptor);
+        },
+      };
+    },
   };
+}
+
+function sqlitePageFixture(): Uint8Array {
+  const path = join(scratch.make("codex-fork-sqlite-page-"), "page.sqlite");
+  const database = new Database(path, { create: true });
+  try {
+    database.exec("PRAGMA busy_timeout = 0");
+    database.exec("BEGIN EXCLUSIVE");
+    database.exec("COMMIT");
+  } finally {
+    database.close();
+  }
+  const bytes = readFileSync(path);
+  rmSync(path);
+  return bytes;
 }
 
 function journal(
@@ -182,6 +225,39 @@ test("read-only storage inspection does not create a profile-wide namespace", ()
 
   expect([...storage.listEvents()]).toEqual([]);
   expect(existsSync(join(home, CODEX_CHAT_FORK_JOURNAL_DIRECTORY))).toBe(false);
+});
+
+test("failed verification removes only the exact newly created mutex handle", async () => {
+  const root = scratch.make("codex-fork-root-"),
+    home = join(scratch.make("codex-fork-profile-"), "profile"),
+    acl = fakeAcl();
+  mkdirSync(home, { recursive: true });
+  const mutex = join(
+      home,
+      CODEX_CHAT_FORK_JOURNAL_DIRECTORY,
+      "locks",
+      "journal.sqlite",
+    ),
+    read = acl.read.bind(acl),
+    create = acl.createOwnerOnlyExclusive!.bind(acl);
+  let refuseReadback = false;
+  acl.createOwnerOnlyExclusive = (path) => {
+    const result = create(path);
+    if (result.kind === "created") refuseReadback = true;
+    return result;
+  };
+  acl.read = (path) =>
+    refuseReadback && path === mutex
+      ? { ...privateReading("file"), protected: false }
+      : read(path);
+
+  await expect(
+    createCodexChatForkJournalStorage(home, {
+      platform: "win32",
+      acl,
+    }).exclusive(async () => undefined),
+  ).rejects.toThrow();
+  expect(existsSync(mutex)).toBe(false);
 });
 
 test("private immutable records reopen through independent profile-wide stores", async () => {
@@ -526,6 +602,71 @@ test("unknown lock debris after an empty snapshot refuses callback and preserves
   expect(readdirSync(events)).toEqual([]);
 });
 
+test("a trusted new SQLite sidecar is made private before strict in-lock verification", async () => {
+  const home = join(scratch.make("codex-fork-new-sidecar-"), "profile"),
+    locks = join(home, CODEX_CHAT_FORK_JOURNAL_DIRECTORY, "locks"),
+    sidecar = join(locks, "journal.sqlite-wal"),
+    contents = "new SQLite sidecar";
+  mkdirSync(home, { recursive: true });
+  const acl = fakeAcl(),
+    read = acl.read.bind(acl),
+    apply = acl.apply.bind(acl);
+  let armed = false,
+    inLockMutexReads = 0,
+    inserted = false,
+    aclRepairs = 0,
+    enteredWork = false;
+  acl.read = (path) => {
+    if (
+      path === join(locks, "journal.sqlite") &&
+      armed &&
+      ++inLockMutexReads === 5
+    ) {
+      writeFileSync(sidecar, contents, { flag: "wx" });
+      inserted = true;
+    }
+    if (path === sidecar && inserted && aclRepairs === 0)
+      return unprotectedReading("file");
+    return read(path);
+  };
+  acl.apply = (path, target) => {
+    if (path === sidecar) aclRepairs++;
+    apply(path, target);
+  };
+  const diagnostics: CodexChatForkMutexDiagnostic[] = [];
+
+  const storage = createCodexChatForkJournalStorage(home, {
+    platform: "win32",
+    acl,
+    onMutexDiagnostic: (diagnostic) => diagnostics.push(diagnostic),
+    beforeExclusivePreLockAssert: () => {
+      armed = true;
+    },
+  });
+  let operationError: unknown;
+  try {
+    await storage.exclusive(async () => {
+      enteredWork = true;
+    });
+  } catch (error) {
+    operationError = error;
+  }
+
+  expect(inserted).toBe(true);
+  if (operationError !== undefined)
+    expect(diagnostics).toContainEqual(
+      expect.objectContaining({
+        phase: "exclusive-in-lock-assert",
+        guard: "sqlite-sidecar-private",
+      }),
+    );
+  expect(operationError).toBeUndefined();
+  expect(aclRepairs).toBe(1);
+  expect(enteredWork).toBe(true);
+  expect(readFileSync(sidecar, "utf8")).toBe(contents);
+  expect(read(sidecar)).toEqual(privateReading("file"));
+});
+
 test("a mutex that stays non-private times out untouched before callback", async () => {
   const home = join(scratch.make("codex-fork-profile-"), "profile"),
     acl = fakeAcl();
@@ -721,4 +862,129 @@ test("pre-lock diagnostics identify linked mutexes and unknown lock entries", as
     ),
   ).toMatchObject({ phase: "exclusive-pre-lock-assert" });
   expect(readFileSync(unexpected, "utf8")).toBe(debrisBytes);
+});
+
+test("the pre-lock snapshot accepts only SQLite's private initial 4096-byte page", async () => {
+  const home = join(scratch.make("codex-fork-initial-page-"), "profile"),
+    initialAcl = fakeAcl();
+  mkdirSync(home, { recursive: true });
+  const prepared = await prepareDiagnosticProfile(home, initialAcl);
+  truncateSync(prepared.mutex);
+  let mutexReads = 0,
+    enteredWork = false;
+  const acl = fakeAcl((path) => {
+    if (path !== prepared.mutex || ++mutexReads !== 3) return;
+    const database = new Database(prepared.mutex, { create: true });
+    try {
+      database.exec("PRAGMA busy_timeout = 0");
+      database.exec("BEGIN EXCLUSIVE");
+      database.exec("COMMIT");
+    } finally {
+      database.close();
+    }
+  });
+
+  await createCodexChatForkJournalStorage(home, {
+    platform: "win32",
+    acl,
+  }).exclusive(async () => {
+    enteredWork = true;
+  });
+  expect(enteredWork).toBe(true);
+  expect(lstatSync(prepared.mutex, { bigint: true }).size).toBe(4096n);
+});
+
+test("the pre-lock SQLite page exception rejects malformed and nonzero-start changes", async () => {
+  for (const variant of ["malformed", "nonzero-start"] as const) {
+    const home = join(
+        scratch.make(`codex-fork-initial-page-${variant}-`),
+        "profile",
+      ),
+      initialAcl = fakeAcl();
+    mkdirSync(home, { recursive: true });
+    const prepared = await prepareDiagnosticProfile(home, initialAcl),
+      validPage = sqlitePageFixture();
+    truncateSync(prepared.mutex, variant === "nonzero-start" ? 1 : 0);
+    let mutexReads = 0,
+      enteredWork = false;
+    const acl = fakeAcl((path) => {
+      if (path !== prepared.mutex || ++mutexReads !== 3) return;
+      if (variant === "malformed") {
+        const database = new Database(prepared.mutex, { create: true });
+        try {
+          database.exec("PRAGMA busy_timeout = 0");
+          database.exec("BEGIN EXCLUSIVE");
+          database.exec("COMMIT");
+        } finally {
+          database.close();
+        }
+        const bytes = readFileSync(prepared.mutex);
+        bytes[0] = 0;
+        writeFileSync(prepared.mutex, bytes);
+      } else writeFileSync(prepared.mutex, validPage);
+    });
+
+    await expect(
+      createCodexChatForkJournalStorage(home, {
+        platform: "win32",
+        acl,
+      }).exclusive(async () => {
+        enteredWork = true;
+      }),
+    ).rejects.toThrow();
+    expect(enteredWork).toBe(false);
+  }
+});
+
+test("the exclusive pre-lock snapshot accepts the same verified SQLite first page", async () => {
+  const home = join(scratch.make("codex-fork-prelock-page-"), "profile"),
+    initialAcl = fakeAcl();
+  mkdirSync(home, { recursive: true });
+  const prepared = await prepareDiagnosticProfile(home, initialAcl);
+  truncateSync(prepared.mutex);
+  let mutexReads = 0,
+    enteredWork = false;
+  const acl = fakeAcl((path) => {
+    if (path !== prepared.mutex || ++mutexReads !== 7) return;
+    const database = new Database(prepared.mutex, { create: true });
+    try {
+      database.exec("PRAGMA busy_timeout = 0");
+      database.exec("BEGIN EXCLUSIVE");
+      database.exec("COMMIT");
+    } finally {
+      database.close();
+    }
+  });
+
+  await createCodexChatForkJournalStorage(home, {
+    platform: "win32",
+    acl,
+  }).exclusive(async () => {
+    enteredWork = true;
+  });
+  expect(enteredWork).toBe(true);
+  expect(lstatSync(prepared.mutex, { bigint: true }).size).toBe(4096n);
+});
+
+test("the initial-page allowance does not permit an inside-lock size change", async () => {
+  const home = join(scratch.make("codex-fork-in-lock-size-"), "profile"),
+    initialAcl = fakeAcl();
+  mkdirSync(home, { recursive: true });
+  const prepared = await prepareDiagnosticProfile(home, initialAcl);
+  let mutexReads = 0,
+    enteredWork = false;
+  const acl = fakeAcl((path) => {
+    if (path === prepared.mutex && ++mutexReads === 11)
+      writeFileSync(prepared.mutex, new Uint8Array(4097));
+  });
+
+  await expect(
+    createCodexChatForkJournalStorage(home, {
+      platform: "win32",
+      acl,
+    }).exclusive(async () => {
+      enteredWork = true;
+    }),
+  ).rejects.toThrow();
+  expect(enteredWork).toBe(false);
 });
