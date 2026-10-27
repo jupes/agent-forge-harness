@@ -218,6 +218,43 @@ test("Stop during native capability help settles its owned probe before any prom
       await Bun.sleep(10);
     }
     expect(readFileSync(f.record, "utf8")).toContain('"kind":"help"');
+    if (process.platform === "win32") {
+      const contents = readFileSync(f.record, "utf8"),
+        identities = fixtureProcessIdentities(contents, executable),
+        helper = identities.find((identity) => identity.relation === "helper"),
+        api = windowsProbeProcessApi();
+      if (!helper) throw new Error("Compiled help fixture has no held child.");
+      const handle = api.open(helper.pid);
+      if (handle === null)
+        throw new Error("Compiled help descendant exited before Stop.");
+      try {
+        const image = api.executable(handle),
+          creationTime = api.creationTime(handle);
+        let state = api.wait(handle);
+        const deadline = Date.now() + 250;
+        while (state === 258 && Date.now() < deadline) {
+          await Bun.sleep(10);
+          state = api.wait(handle);
+        }
+        const calls = readFileSync(f.record, "utf8")
+          .trim()
+          .split("\n")
+          .map((line) => JSON.parse(line) as { kind?: unknown });
+        expect({
+          helperImage: image?.toLowerCase(),
+          helperCreationTime: creationTime,
+          helperState: state === 258 ? "alive" : "exited-or-unknown",
+          providerCalls: calls.map((call) => call.kind),
+        }).toEqual({
+          helperImage: executable.toLowerCase(),
+          helperCreationTime: expect.any(String),
+          helperState: "alive",
+          providerCalls: ["version", "help"],
+        });
+      } finally {
+        api.close(handle);
+      }
+    }
     if (diagnosticEnabled) {
       identities = fixtureProcessIdentities(
         readFileSync(f.record, "utf8"),

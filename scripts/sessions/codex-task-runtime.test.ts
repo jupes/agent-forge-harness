@@ -522,6 +522,16 @@ test("Stop during a capability probe waits for cleanup and returns a known pre-d
     await until(
       () => f.records().filter((record) => record.kind === "help").length === 2,
     );
+    const preStopProbe = f
+      .records()
+      .filter((record) => record.kind === "help")
+      .at(-1);
+    if (
+      typeof preStopProbe?.pid !== "number" ||
+      typeof preStopProbe.childPid !== "number"
+    )
+      throw new Error("Missing capability process tree before Stop");
+    expect(running(preStopProbe.childPid)).toBe(true);
     controller.abort();
     const result = await job;
     expect(result.phase).toBe("failed");
