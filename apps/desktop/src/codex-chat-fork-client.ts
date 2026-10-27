@@ -517,7 +517,8 @@ export function createCodexChatForkClient(
           entry.scope.projectId === scope.projectId &&
           entry.scope.workspace === scope.workspace &&
           entry.parentSessionId === input.parentSessionId &&
-          entry.identity.state === "reserved",
+          entry.identity.state !== "linked" &&
+          entry.identity.state !== "retired",
       );
       if (activeReservation) {
         if (
@@ -700,7 +701,9 @@ export function createCodexChatForkClient(
         const local = reserved.get(requestId);
         if (
           !page.operations.some((row) => row.requestId === requestId) &&
-          local?.identity.state === "reserved" &&
+          local &&
+          local.identity.state !== "linked" &&
+          local.identity.state !== "retired" &&
           local.scope.projectId === scope.projectId &&
           local.scope.workspace === scope.workspace
         )
@@ -809,7 +812,8 @@ export function createCodexChatForkClient(
       );
       for (const entry of reserved.values())
         if (
-          entry.identity.state === "reserved" &&
+          entry.identity.state !== "linked" &&
+          entry.identity.state !== "retired" &&
           entry.scope.projectId === scope.projectId &&
           entry.scope.workspace === scope.workspace &&
           !serverRequestIds.has(entry.identity.requestId)
