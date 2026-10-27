@@ -229,6 +229,24 @@ test("create requires a current reviewed preview and an identity that read-backs
   value.client.dispose();
 });
 
+test("field patches and target changes merge against the current client draft", () => {
+  const value = setup();
+  value.client.setDraft("workspace", smith);
+
+  // These operations model callbacks from one rendered form. Each must apply
+  // to the latest client state, even before a component rerender occurs.
+  value.client.patchDraft({ name: "smith-next" });
+  value.client.setTarget("user");
+  value.client.patchDraft({ model: "model-next" });
+
+  expect(value.client.get()).toMatchObject({
+    target: "user",
+    smith: { ...smith, name: "smith-next", model: "model-next" },
+    preview: null,
+  });
+  value.client.dispose();
+});
+
 test("editing during a pending preview clears its stale busy state", async () => {
   let releaseFirst: ((value: unknown) => void) | undefined,
     previewCalls = 0;

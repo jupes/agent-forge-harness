@@ -10,7 +10,8 @@ export function SmithCreateFormView({
   draftReady,
   canWrite,
   canStart,
-  onDraft,
+  onDraftPatch,
+  onTarget,
   onPreview,
   onCreate,
 }: {
@@ -19,10 +20,8 @@ export function SmithCreateFormView({
   draftReady: boolean;
   canWrite: boolean;
   canStart: boolean;
-  onDraft(
-    target: SmithCreateClientState["target"],
-    smith: SmithCreateClientState["smith"],
-  ): void;
+  onDraftPatch(patch: Partial<SmithCreateClientState["smith"]>): void;
+  onTarget(target: SmithCreateClientState["target"]): void;
   onPreview(): void;
   onCreate(): void;
 }): JSX.Element {
@@ -38,7 +37,7 @@ export function SmithCreateFormView({
     draftBlocked = !draftReady || state.creating,
     update = (patch: Partial<SmithConfigPreviewRequest["smith"]>) => {
       if (draftBlocked) return;
-      onDraft(state.target, { ...smith, ...patch });
+      onDraftPatch(patch);
     };
   return (
     <div class="af-smith-create">
@@ -88,9 +87,8 @@ export function SmithCreateFormView({
           disabled={draftBlocked}
           onChange={(event) => {
             if (draftBlocked) return;
-            onDraft(
+            onTarget(
               event.currentTarget.value === "user" ? "user" : "workspace",
-              smith,
             );
           }}
         >

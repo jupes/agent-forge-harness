@@ -63,7 +63,8 @@ test("create review exposes every complete Smith field and requires a matching c
     draftReady: true,
     canWrite: true,
     canStart: true,
-    onDraft() {},
+    onDraftPatch() {},
+    onTarget() {},
     onPreview() {},
     onCreate() {},
   });
@@ -81,7 +82,8 @@ test("create review exposes every complete Smith field and requires a matching c
     draftReady: true,
     canWrite: true,
     canStart: true,
-    onDraft() {},
+    onDraftPatch() {},
+    onTarget() {},
     onPreview() {},
     onCreate() {},
   });
@@ -98,7 +100,8 @@ test("create review exposes every complete Smith field and requires a matching c
     draftReady: true,
     canWrite: true,
     canStart: true,
-    onDraft() {},
+    onDraftPatch() {},
+    onTarget() {},
     onPreview() {},
     onCreate() {},
   });
@@ -108,16 +111,18 @@ test("create review exposes every complete Smith field and requires a matching c
 test("rapid field and target edits merge into the current draft from one rendered view", () => {
   const current: {
     target: "workspace" | "user";
-    smith: typeof smith;
+    smith: SmithCreateClientState["smith"];
   } = { target: "workspace", smith: structuredClone(smith) };
   const rendered = SmithCreateFormView({
     state: state(),
     draftReady: true,
     canWrite: true,
     canStart: true,
-    onDraft(target, nextSmith) {
+    onDraftPatch(patch) {
+      current.smith = { ...current.smith, ...patch };
+    },
+    onTarget(target) {
       current.target = target;
-      current.smith = structuredClone(nextSmith);
     },
     onPreview() {},
     onCreate() {},
@@ -153,7 +158,10 @@ test("unverified workspace keeps Smith draft controls inert without changing wri
     draftReady: false,
     canWrite: true,
     canStart: false,
-    onDraft() {
+    onDraftPatch() {
+      draftChanges++;
+    },
+    onTarget() {
       draftChanges++;
     },
     onPreview() {},

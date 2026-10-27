@@ -247,7 +247,8 @@ export function Smiths({
           draftReady={creates.client !== null}
           canWrite={creates.canWrite}
           canStart={creates.client?.canStart() ?? false}
-          onDraft={(target, smith) => creates.client?.setDraft(target, smith)}
+          onDraftPatch={(patch) => creates.client?.patchDraft(patch)}
+          onTarget={(target) => creates.client?.setTarget(target)}
           onPreview={() => void creates.client?.preview()}
           onCreate={() => void creates.client?.create()}
         />

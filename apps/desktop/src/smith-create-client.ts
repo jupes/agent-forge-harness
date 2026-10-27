@@ -125,6 +125,19 @@ export function createSmithConfigCreateClient(deps: {
       for (const listener of listeners) listener();
     }
   };
+  const updateDraft = (
+    target: SmithConfigTarget,
+    smith: SmithConfigPreviewRequest["smith"],
+  ) => {
+    const changed = target !== state.target || !sameSmith(state.smith, smith);
+    if (!changed) return;
+    state.target = target;
+    state.smith = structuredClone(smith);
+    state.preview = null;
+    state.notice = "Draft changed. Review a fresh candidate before creating.";
+    generation++;
+    emit();
+  };
   const entry = (requestId: string) =>
     state.entries.find((item) => item.identity.requestId === requestId);
   const canStart = () => {
@@ -279,14 +292,13 @@ export function createSmithConfigCreateClient(deps: {
       target: SmithConfigTarget,
       smith: SmithConfigPreviewRequest["smith"],
     ) {
-      const changed = target !== state.target || !sameSmith(state.smith, smith);
-      if (!changed) return;
-      state.target = target;
-      state.smith = structuredClone(smith);
-      state.preview = null;
-      state.notice = "Draft changed. Review a fresh candidate before creating.";
-      generation++;
-      emit();
+      updateDraft(target, smith);
+    },
+    patchDraft(patch: Partial<SmithConfigPreviewRequest["smith"]>) {
+      updateDraft(state.target, { ...state.smith, ...patch });
+    },
+    setTarget(target: SmithConfigTarget) {
+      updateDraft(target, state.smith);
     },
     async preview() {
       if (!state.serverDiscoveryReady) await client.recover();
