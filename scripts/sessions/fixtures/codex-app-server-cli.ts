@@ -178,6 +178,14 @@ const finish = async (extraItems: unknown[] = []) => {
       },
     },
   });
+  if (mode === "fork-restart")
+    record({
+      kind: "fixture-completed-turn",
+      processId: process.pid,
+      threadId,
+      turnId,
+      status: "completed",
+    });
   await send({
     method: "turn/completed",
     params: {
@@ -193,14 +201,6 @@ const finish = async (extraItems: unknown[] = []) => {
       },
     },
   });
-  if (mode === "fork-restart")
-    record({
-      kind: "fixture-completed-turn",
-      processId: process.pid,
-      threadId,
-      turnId,
-      status: "completed",
-    });
   if (mode === "bad-exit") process.exit(7);
 };
 const reportedFileChanges = [
