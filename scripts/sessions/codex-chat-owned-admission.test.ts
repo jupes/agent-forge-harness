@@ -28,6 +28,7 @@ import { createProjectStore } from "../projects/store";
 import { scratchDirs } from "../test-scratch";
 import { resolveCodexChatForkSource } from "./codex-chat-fork-source";
 import { createCodexOwnedChatService } from "./codex-chat-owned-admission";
+import { foldCodexChatOwnerRelease } from "./codex-chat-owner-release";
 import { createCodexChatRuntime } from "./codex-chat-runtime";
 import {
   ownedCodingEventSchema,
@@ -511,6 +512,46 @@ test("owned Chat durably binds one private generation before dispatch and releas
   if (!lastFrame) throw Error("The inert owned Chat journal was empty.");
   expect(publicPage.lastSequence).toBe(lastFrame.seq);
   expect(JSON.stringify(publicPage)).not.toContain(generationId);
+});
+
+test("pure owner release fold accepts the exact reopened completed ordinary Chat state", async () => {
+  const f = await fixture("normal"),
+    service = f.open(),
+    started = await service.start(f.project.id, f.request);
+  await service.settled(f.project.id, started.session.id);
+
+  const owner = createSessionRegistry(f.home, "codex", "chat").read(
+      f.project.id,
+      started.session.id,
+    ),
+    address = {
+      kind: "session" as const,
+      projectId: f.project.id,
+      sessionId: started.session.id,
+    },
+    reopened = createConversationStore(f.home, undefined, address).read(
+      f.project.id,
+    ),
+    folded = foldCodexChatOwnerRelease({
+      owner,
+      state: reopened,
+      projectId: f.project.id,
+      conversationId: started.session.id,
+      workspaceKey: workspaceKey(resolveCheckout(f.root).workspace),
+    });
+
+  expect(ownedCodingStateSchema.safeParse(reopened).success).toBe(true);
+  expect(reopened.turns.at(-1)?.phase).toBe("completed");
+  expect(folded).toMatchObject({
+    eligible: true,
+    turnRequestId: f.request.requestId,
+    binding: {
+      provider: "codex",
+      sessionId: expect.any(String),
+      version: expect.any(String),
+      turnId: expect.any(String),
+    },
+  });
 });
 
 const heldSummaryUpdates: CodexChatReasoningSummary["update"][] = [
