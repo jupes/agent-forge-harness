@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -189,6 +190,27 @@ async function runChild(script: string): Promise<unknown> {
       await child.exited;
     }
     children.delete(child);
+  }
+}
+
+function startQuietChild(script: string): Bun.Subprocess {
+  const child = Bun.spawn([process.execPath, "-e", script], {
+    cwd: process.cwd(),
+    stdin: "ignore",
+    stdout: "ignore",
+    stderr: "ignore",
+    timeout: childTimeoutMs,
+  });
+  children.add(child);
+  return child;
+}
+
+async function waitForMarker(path: string, label: string): Promise<void> {
+  const deadline = Date.now() + 4_000;
+  while (!existsSync(path)) {
+    if (Date.now() >= deadline)
+      throw new Error(`Fork mutex publication marker timed out: ${label}`);
+    await Bun.sleep(10);
   }
 }
 
@@ -402,6 +424,186 @@ test.skipIf(!nativeEnabled)(
     ).toBeNull();
   },
   30_000,
+);
+
+test.skipIf(!nativeEnabled)(
+  "Windows exposes the first Fork mutex inode only after its DACL is private",
+  async () => {
+    expect(Bun.version).toBe("1.4.2");
+    const { base, root, home } = fixture("private-mutex-publication"),
+      barrier = join(base, "publication"),
+      mutex = join(
+        home,
+        CODEX_CHAT_FORK_JOURNAL_DIRECTORY,
+        "locks",
+        "journal.sqlite",
+      ),
+      creatorVisible = join(barrier, "creator-visible"),
+      peerSnapshot = join(barrier, "peer-snapshot"),
+      releaseCreator = join(barrier, "release-creator"),
+      creatorResult = join(barrier, "creator-result"),
+      peerResult = join(barrier, "peer-result"),
+      native = nativeWindowsAcl();
+    mkdirSync(barrier);
+
+    const publicationScript = (requestId: string, creator: boolean) => `
+      import { existsSync, lstatSync, writeFileSync } from "node:fs";
+      import { join } from "node:path";
+      import { CodexChatForkJournalError, createCodexChatForkJournal } from ${JSON.stringify(join(import.meta.dir, "codex-chat-fork-journal.ts"))};
+      import { CODEX_CHAT_FORK_JOURNAL_DIRECTORY, createCodexChatForkJournalStorage } from ${JSON.stringify(join(import.meta.dir, "codex-chat-fork-journal-storage.ts"))};
+      import { nativeWindowsAcl, ownerOnlyProblem } from ${JSON.stringify(join(import.meta.dir, "../hearth/acl-windows.ts"))};
+      const root = ${JSON.stringify(root)}, home = ${JSON.stringify(home)}, barrier = ${JSON.stringify(barrier)};
+      const mutex = join(home, CODEX_CHAT_FORK_JOURNAL_DIRECTORY, "locks", "journal.sqlite");
+      const native = nativeWindowsAcl();
+      const identity = () => { const info = lstatSync(mutex, { bigint: true }); return { dev: String(info.dev), ino: String(info.ino), size: Number(info.size) }; };
+      const reading = () => { const acl = native.read(mutex); return { ownerOnly: ownerOnlyProblem(acl, "file", native.userSid()) === null, protected: acl.protected }; };
+      const acl = {
+        userSid: () => native.userSid(),
+        defaultOwnerSid: () => native.defaultOwnerSid?.(),
+        read: (path) => native.read(path),
+        readInFolder: native.readInFolder ? (folder, name, maxBytes) => native.readInFolder(folder, name, maxBytes) : undefined,
+        apply(path, target) {
+          if (${creator} && path === mutex && target === "file") {
+            writeFileSync(${JSON.stringify(creatorVisible)}, JSON.stringify({ ...identity(), ...reading() }), { flag: "wx" });
+            const wait = new Int32Array(new SharedArrayBuffer(4));
+            const deadline = Date.now() + 6_000;
+            while (!existsSync(${JSON.stringify(releaseCreator)})) {
+              if (Date.now() >= deadline) throw new Error("creator publication barrier timed out");
+              Atomics.wait(wait, 0, 0, 10);
+            }
+          }
+          native.apply(path, target);
+        },
+      };
+      const diagnostics = [];
+      const storage = createCodexChatForkJournalStorage(home, {
+        platform: "win32",
+        acl,
+        afterMutexDirectorySnapshot: ${creator} ? undefined : (empty) => {
+          writeFileSync(${JSON.stringify(peerSnapshot)}, JSON.stringify({ empty, ...identity(), ...reading() }), { flag: "wx" });
+        },
+        onMutexDiagnostic: (item) => {
+          if (item.guard !== null && diagnostics.length < 8) diagnostics.push({ phase: item.phase, guard: item.guard, fileSize: item.fileSize, identityStable: item.identityStable, failure: item.failure });
+        },
+      });
+      const journal = createCodexChatForkJournal({ root, home, storage });
+      try {
+        const record = await journal.reserve(
+          ${JSON.stringify(projectId)},
+          ${JSON.stringify(parentSessionId)},
+          ${JSON.stringify(intent(requestId))},
+          ${JSON.stringify(testSourceSeal)},
+          "direct-v1",
+        );
+        writeFileSync(${JSON.stringify(creator ? creatorResult : peerResult)}, JSON.stringify({ ok: true, requestId: record.requestId, state: record.state, diagnostics }));
+      } catch (error) {
+        writeFileSync(${JSON.stringify(creator ? creatorResult : peerResult)}, JSON.stringify({ ok: false, reason: error instanceof CodexChatForkJournalError ? error.reason : "unexpected", diagnostics }));
+      }
+    `;
+
+    const spawned: Bun.Subprocess[] = [];
+    let setupFailure: unknown;
+    try {
+      spawned.push(
+        startQuietChild(
+          publicationScript("0199a213-81c0-7800-8aa1-bbab2a035a57", true),
+        ),
+      );
+      await waitForMarker(creatorVisible, "creator-visible");
+      spawned.push(
+        startQuietChild(
+          publicationScript("0199a213-81c0-7800-8aa1-bbab2a035a58", false),
+        ),
+      );
+      await waitForMarker(peerSnapshot, "peer-snapshot");
+    } catch (error) {
+      setupFailure = error;
+    } finally {
+      if (!existsSync(releaseCreator))
+        writeFileSync(releaseCreator, "release", { flag: "wx" });
+      const exits = await Promise.all(spawned.map((child) => child.exited));
+      for (const child of spawned) children.delete(child);
+      if (exits.some((code) => code !== 0) && setupFailure === undefined)
+        setupFailure = new Error(
+          `Fork mutex publication child exited unexpectedly: ${exits.join(",")}`,
+        );
+    }
+    if (setupFailure !== undefined) throw setupFailure;
+
+    const publication = z
+        .object({
+          dev: z.string(),
+          ino: z.string(),
+          size: z.number().int().min(0),
+          ownerOnly: z.boolean(),
+          protected: z.boolean(),
+        })
+        .strict()
+        .parse(JSON.parse(readFileSync(creatorVisible, "utf8"))),
+      peer = z
+        .object({
+          empty: z.boolean(),
+          dev: z.string(),
+          ino: z.string(),
+          size: z.number().int().min(0),
+          ownerOnly: z.boolean(),
+          protected: z.boolean(),
+        })
+        .strict()
+        .parse(JSON.parse(readFileSync(peerSnapshot, "utf8"))),
+      reply = z.discriminatedUnion("ok", [
+        z
+          .object({
+            ok: z.literal(true),
+            requestId: z.string(),
+            state: z.literal("reserved"),
+            diagnostics: z.array(z.unknown()).max(8),
+          })
+          .strict(),
+        z
+          .object({
+            ok: z.literal(false),
+            reason: z.enum(["conflict", "held", "missing", "unexpected"]),
+            diagnostics: z.array(z.unknown()).max(8),
+          })
+          .strict(),
+      ]);
+    const results = [
+      reply.parse(JSON.parse(readFileSync(creatorResult, "utf8"))),
+      reply.parse(JSON.parse(readFileSync(peerResult, "utf8"))),
+    ];
+    expect(peer.empty).toBe(false);
+    expect(publication.size).toBe(0);
+    expect(peer.size).toBe(0);
+    expect(peer.dev).toBe(publication.dev);
+    expect(peer.ino).toBe(publication.ino);
+
+    const winner = results.find((result) => result.ok),
+      loser = results.find((result) => !result.ok);
+    if (winner === undefined || loser === undefined)
+      throw new Error(
+        "Fork mutex publication did not produce one winner and one refusal.",
+      );
+    expect(winner.state).toBe("reserved");
+    expect(loser.reason).toBe("conflict");
+    const records = createCodexChatForkJournal({ root, home }).list(projectId);
+    expect(records.map((record) => record.requestId)).toEqual([
+      winner.requestId,
+    ]);
+    const finalInfo = lstatSync(mutex, { bigint: true });
+    expect(`${finalInfo.dev}:${finalInfo.ino}`).toBe(
+      `${publication.dev}:${publication.ino}`,
+    );
+    assertOwnerOnly(mutex, "file", native);
+
+    // This assertion is deliberately after release and full child cleanup so a
+    // causal RED cannot strand either process or hide the winner/conflict proof.
+    expect(publication.ownerOnly).toBe(true);
+    expect(publication.protected).toBe(true);
+    expect(peer.ownerOnly).toBe(true);
+    expect(peer.protected).toBe(true);
+  },
+  20_000,
 );
 
 test.skipIf(!nativeEnabled)(
