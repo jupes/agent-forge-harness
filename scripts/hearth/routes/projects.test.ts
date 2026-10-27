@@ -519,7 +519,21 @@ test("trusted registry override is shared by options, preview, reserve, and comm
     scopeHash: preview.scopeHash,
     scopeCount: preview.scopeCount,
   });
-  expect(createProjectStore(h.home).read()).toEqual(before);
+  const afterReserve = createProjectStore(h.home).read();
+  expect(afterReserve.revision).toBe(before.revision);
+  expect(afterReserve.projects).toEqual(before.projects);
+  expect(afterReserve.createOperations).toHaveLength(1);
+  expect(createProjectStore(h.home).readCreate(requestId)).toMatchObject({
+    requestId,
+    requestHash: reserveEnvelope.data.requestHash,
+    original,
+    baseRevision: before.revision,
+    scopeHash: preview.scopeHash,
+    scopeCount: preview.scopeCount,
+    state: "reserved",
+    projectId: null,
+    createdRevision: null,
+  });
 
   const commitResponse = await fetch(
     `${h.api}/projects/create-reservations/${requestId}/commit`,
