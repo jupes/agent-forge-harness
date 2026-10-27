@@ -1,11 +1,12 @@
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type {
   CodexChatDecisionRequest,
   CodexChatStartRequest,
 } from "../../../types/codex-owned-chat";
+import { conversationFile } from "../../conversations/paths";
 import { projectCatalogPath } from "../../projects/store";
 import {
   FIXTURE_PROJECT_ID,
@@ -660,6 +661,10 @@ test("a linked Codex Fork child accepts a turn through its dedicated action", as
     const childSessionId = forkEnvelope.data.childSessionId;
     if (typeof childSessionId !== "string")
       throw Error("The native Fork child was not linked to an app session");
+    const unauthenticatedRead = await fetch(
+      `${f.h.api}/projects/${FIXTURE_PROJECT_ID}/sessions/${childSessionId}/fork-turns`,
+    );
+    expect(unauthenticatedRead.status).toBe(403);
 
     const childTurnInput = {
       requestId: randomUUID(),
@@ -727,6 +732,21 @@ test("a linked Codex Fork child accepts a turn through its dedicated action", as
       turns = records.filter((row) => row.method === "turn/start");
     expect(childPage.turns.map((turn) => turn.phase)).toEqual(["completed"]);
     expect(refreshedChildPage.turns).toHaveLength(1);
+    expect(JSON.stringify(refreshedChildPage)).not.toContain(
+      "PRIVATE-CHAT-PROMPT",
+    );
+    expect(JSON.stringify(refreshedChildPage)).not.toContain(
+      "PRIVATE-CHAT-CONTEXT",
+    );
+    for (const privateSourceField of [
+      "sourceSeal",
+      "parentNativeThreadId",
+      "throughNativeTurnId",
+      "captureHash",
+    ])
+      expect(JSON.stringify(refreshedChildPage)).not.toContain(
+        privateSourceField,
+      );
     expect(starts).toHaveLength(1);
     expect(records.filter((row) => row.method === "thread/fork")).toHaveLength(
       1,
@@ -873,12 +893,21 @@ test("a lost Fork-child turn reply stays unknown after parent activity and never
     requestId: childInput.requestId,
     phase: "unknown",
   });
-  const afterDuplicate = await f.forkPage(childSessionId);
+  const beforeReadRecords = f.records(),
+    beforeReadAudit = f.h.events(["operator.action"]),
+    afterDuplicate = await f.forkPage(childSessionId);
   expect(afterDuplicate.turns).toHaveLength(1);
   expect(afterDuplicate.turns[0]).toMatchObject({
     requestId: childInput.requestId,
     phase: "unknown",
   });
+  expect(f.records()).toEqual(beforeReadRecords);
+  expect(f.h.events(["operator.action"])).toEqual(beforeReadAudit);
+  const ordinaryRead = await fetch(
+    `${f.h.api}/projects/${FIXTURE_PROJECT_ID}/sessions/${childSessionId}`,
+    { headers: f.h.headers(f.h.hearth.token) },
+  );
+  expect(ordinaryRead.status).toBe(409);
   const anotherTurn = await f.post(`/${childSessionId}/fork-turns`, {
     requestId: randomUUID(),
     expectedRevision: childAfterLoss.revision,
@@ -901,6 +930,90 @@ test("a lost Fork-child turn reply stays unknown after parent activity and never
           parentNativeThreadId,
     );
   expect(parentTurnRows).toHaveLength(2);
+  expect(
+    f.records().filter((row) => row.method === "thread/fork"),
+  ).toHaveLength(1);
+}, 20_000);
+
+test("a linked child transcript remains readable when parent history is unavailable but continuation refuses", async () => {
+  const f = await fixture("fork-service-tier-null", false, false, "never"),
+    start = await f.post("", f.request);
+  expect(start.status).toBe(202);
+  const started = ownedCodingStartReceiptSchema.parse(
+      (await start.json()).data,
+    ),
+    parentSessionId = started.session.id,
+    parentPage = await f.settle(parentSessionId),
+    selectedTurn = parentPage.turns.find(
+      (turn) => turn.requestId === f.request.requestId,
+    );
+  if (!selectedTurn)
+    throw Error("The parent did not retain a completed Fork source turn");
+  const forkResponse = await f.post(`/${parentSessionId}/forks`, {
+      requestId: randomUUID(),
+      throughTurnRequestId: selectedTurn.requestId,
+    }),
+    forkEnvelope = await forkResponse.json();
+  expect(forkResponse.status).toBe(200);
+  const childSessionId = forkEnvelope.data.childSessionId;
+  if (typeof childSessionId !== "string")
+    throw Error("The native Fork child was not linked");
+
+  const childInput = {
+    requestId: randomUUID(),
+    expectedRevision: 0,
+    text: "A completed child-owned turn remains readable.",
+    about: [],
+  };
+  expect(
+    (await f.post(`/${childSessionId}/fork-turns`, childInput)).status,
+  ).toBe(202);
+  const savedChild = await f.settleFork(childSessionId);
+  expect(savedChild.turns).toMatchObject([
+    { requestId: childInput.requestId, phase: "completed" },
+  ]);
+
+  rmSync(
+    conversationFile(f.h.home, FIXTURE_PROJECT_ID, {
+      kind: "session",
+      projectId: FIXTURE_PROJECT_ID,
+      sessionId: parentSessionId,
+    }),
+    { force: true },
+  );
+  const recordsBeforeRead = f.records(),
+    auditBeforeRead = f.h.events(["operator.action"]),
+    rereadChild = await f.forkPage(childSessionId);
+  expect(rereadChild.turns).toMatchObject([
+    { requestId: childInput.requestId, phase: "completed" },
+  ]);
+  expect(JSON.stringify(rereadChild)).not.toContain("PRIVATE-CHAT-PROMPT");
+  expect(f.records()).toEqual(recordsBeforeRead);
+  expect(f.h.events(["operator.action"])).toEqual(auditBeforeRead);
+
+  const childNativeThreadId = "0199a213-81c0-7800-8aa1-bbab2a035a55",
+    childEffects = () =>
+      f
+        .records()
+        .filter(
+          (row) =>
+            (row.method === "thread/resume" || row.method === "turn/start") &&
+            (row.params as Record<string, unknown> | undefined)?.threadId ===
+              childNativeThreadId,
+        ),
+    newTurn = await f.post(`/${childSessionId}/fork-turns`, {
+      requestId: randomUUID(),
+      expectedRevision: rereadChild.revision,
+      text: "This must refuse without the sealed parent source.",
+      about: [],
+    });
+  expect(newTurn.status).toBe(409);
+  expect(
+    childEffects().filter((row) => row.method === "thread/resume"),
+  ).toHaveLength(1);
+  expect(
+    childEffects().filter((row) => row.method === "turn/start"),
+  ).toHaveLength(1);
   expect(
     f.records().filter((row) => row.method === "thread/fork"),
   ).toHaveLength(1);

@@ -764,6 +764,71 @@ export function createCodexChatForkCoordinator(
     readOriginal(projectId: string, requestId: string) {
       return journal.read(projectId, requestId);
     },
+    /** Verify the saved link and captured child binding without consulting mutable parent history. */
+    readLinkedChild(projectId: string, childSessionId: string) {
+      const child = registry.read(projectId, childSessionId);
+      if (
+        child.provider !== "codex" ||
+        child.mode !== "chat" ||
+        child.projectId !== projectId ||
+        child.origin?.kind !== "codex-chat-fork" ||
+        workspaceKey(child.workspace) !== workspace
+      )
+        throw new ConversationError(
+          409,
+          "Only a registered Codex Fork child has this read-only transcript.",
+        );
+      const original = journal.read(projectId, child.requestId);
+      if (
+        !original ||
+        original.state !== "linked" ||
+        original.requestId !== child.requestId ||
+        original.requestHash !== child.requestHash ||
+        original.childAppSessionId !== child.id ||
+        !original.sourceSeal ||
+        original.link.childAppSessionId !== child.id ||
+        original.link.childRequestId !== child.requestId ||
+        original.link.childRequestHash !== child.requestHash ||
+        original.sourceSeal.parentNativeThreadId !==
+          original.capture.parentNativeThreadId ||
+        original.sourceSeal.throughNativeTurnId !==
+          original.capture.throughNativeTurnId ||
+        original.capture.protocolVersion !== original.protocolVersion ||
+        original.link.captureHash !== codexChatForkCaptureHash(original.capture)
+      )
+        throw new ConversationError(
+          409,
+          "The saved Fork child link is unavailable or does not match this session.",
+        );
+      const expectedOrigin = codexChatForkOriginSchema.parse({
+        kind: "codex-chat-fork",
+        projectId: original.projectId,
+        parentSessionId: original.parentSessionId,
+        throughTurnRequestId: original.throughTurnRequestId,
+        parentTurnHash: original.sourceSeal.parentTurnHash,
+        parentNativeThreadId: original.capture.parentNativeThreadId,
+        throughNativeTurnId: original.capture.throughNativeTurnId,
+        childNativeThreadId: original.capture.childNativeThreadId,
+        captureHash: codexChatForkCaptureHash(original.capture),
+        protocolVersion: original.protocolVersion,
+      });
+      if (!same(child.origin, expectedOrigin))
+        throw new ConversationError(
+          409,
+          "The registered Fork child does not match its captured original.",
+        );
+      const childState = storeFor(child.id, child.projectId).read(projectId);
+      if (
+        childState.binding?.provider !== "codex" ||
+        childState.binding.sessionId !== child.origin.childNativeThreadId ||
+        childState.binding.version !== child.origin.protocolVersion
+      )
+        throw new ConversationError(
+          409,
+          "The Fork child transcript does not match its captured native binding.",
+        );
+      return child;
+    },
     async prepareLinkedChildTurn(input: {
       projectId: string;
       childSessionId: string;

@@ -532,6 +532,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     ownedSessions.forkOriginal,
     ownedSessions.list,
     ownedSessions.read,
+    ownedSessions.forkTurnRead,
     ownedSessions.approvals,
     ...ownedSessions.library.reads,
     sessionWorktrees.read,

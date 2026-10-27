@@ -586,6 +586,53 @@ export function createOwnedSessionRoutes(
         return service.read(projectId, sessionId, query);
       }),
   };
+  const forkTurnRead: ReadRoute<
+    Address & { after?: number; limit?: number; requestId?: string }
+  > = {
+    kind: "read",
+    method: "GET",
+    path: "/projects/:id/sessions/:sessionId/fork-turns",
+    operatorOnly: true,
+    validate: (request) => {
+      const selected = address(request);
+      if (!selected.ok) return selected;
+      if (
+        [...request.query.keys()].some(
+          (key) =>
+            !["after", "limit", "requestId"].includes(key) ||
+            request.query.getAll(key).length !== 1,
+        )
+      )
+        return fail("Unsupported Fork-child transcript query.");
+      const after = request.query.get("after"),
+        limit = request.query.get("limit"),
+        requestId = request.query.get("requestId");
+      if (
+        (after !== null &&
+          (!/^\d+$/.test(after) || !Number.isSafeInteger(Number(after)))) ||
+        (limit !== null &&
+          (!/^\d+$/.test(limit) || Number(limit) < 1 || Number(limit) > 100)) ||
+        (requestId !== null && !isConversationRequestId(requestId))
+      )
+        return fail(
+          "Expected a bounded Fork-child cursor, page size or request id.",
+        );
+      return {
+        ok: true,
+        value: {
+          ...selected.value,
+          ...(after !== null ? { after: Number(after) } : {}),
+          ...(limit !== null ? { limit: Number(limit) } : {}),
+          ...(requestId !== null ? { requestId } : {}),
+        },
+      };
+    },
+    read: ({ projectId, sessionId, ...query }) =>
+      answer(200, () => {
+        readable(projectId);
+        return service.readForkChild(projectId, sessionId, query);
+      }),
+  };
   const events: StreamRoute<Address & { after: number }> = {
     kind: "stream",
     method: "GET",
@@ -854,6 +901,7 @@ export function createOwnedSessionRoutes(
     identityReserve,
     identityRetire,
     read,
+    forkTurnRead,
     events,
     start,
     preview,

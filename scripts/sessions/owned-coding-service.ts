@@ -782,6 +782,39 @@ export function createOwnedCodingSessionService(options: {
     ) {
       return selected(projectId, sessionId).read(projectId, sessionId, query);
     },
+    async readForkChild(
+      projectId: string,
+      sessionId: string,
+      query: { after?: number; limit?: number; requestId?: string } = {},
+    ) {
+      let child: ReturnType<typeof forkCoordinator.readLinkedChild>;
+      try {
+        child = forkCoordinator.readLinkedChild(projectId, sessionId);
+      } catch (error) {
+        if (error instanceof ConversationError) throw error;
+        if (error instanceof CodexChatForkJournalError)
+          throw forkJournalFailure(error);
+        throw new ConversationError(
+          503,
+          "The saved Fork child link could not be verified.",
+        );
+      }
+      await options.validateScope(projectId, child, []);
+      const page = await chat.read(projectId, sessionId, query);
+      if (
+        page.binding?.provider !== "codex" ||
+        page.binding.sessionId !== child.origin?.childNativeThreadId ||
+        page.binding.version !== child.origin?.protocolVersion
+      )
+        throw new ConversationError(
+          409,
+          "The Fork child transcript changed during readback.",
+        );
+      for (const frame of page.frames)
+        if (frame.event.kind === "user")
+          await options.validateScope(projectId, child, frame.event.about);
+      return page;
+    },
     list(projectId: string) {
       return registry
         .listAll(projectId)
