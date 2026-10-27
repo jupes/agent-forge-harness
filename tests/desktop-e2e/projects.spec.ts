@@ -762,6 +762,8 @@ test("a protected project reservation stays private until a separate create acti
   };
   const postedPaths: string[] = [];
   let identityPosts = 0;
+  let originalReads = 0;
+  const requestId = "ab847e06-4f01-4dd3-a425-47bf9053e006";
   page.on("request", (request) => {
     const url = new URL(request.url());
     if (
@@ -769,6 +771,12 @@ test("a protected project reservation stays private until a separate create acti
       url.pathname.endsWith("/session-start-identities")
     )
       identityPosts++;
+    if (
+      request.method() === "GET" &&
+      url.pathname ===
+        `/__agent-forge/projects/create-reservations/${requestId}`
+    )
+      originalReads++;
     if (
       request.method() === "POST" &&
       url.pathname.includes("/projects/create-reservations")
@@ -867,7 +875,6 @@ test("a protected project reservation stays private until a separate create acti
   expect(postedPaths).toEqual([]);
   expect(identityPosts).toBe(0);
 
-  const requestId = "ab847e06-4f01-4dd3-a425-47bf9053e006";
   const reserve = await page.evaluate(
     async ({ headers, requestId, original, revision }) => {
       const response = await fetch(
@@ -952,9 +959,7 @@ test("a protected project reservation stays private until a separate create acti
   expect(JSON.stringify(publicCatalog.body)).not.toContain(privateName);
   expect(JSON.stringify(publicCatalog.body)).not.toContain(privateSlug);
 
-  await expect(
-    page.getByRole("button", { name: "New project", exact: true }),
-  ).toBeDisabled();
+  const readsBeforeReload = originalReads;
   await reloadSettled(page);
   await expect(
     page.getByRole("article", { name: "Alpha", exact: true }),
@@ -962,11 +967,35 @@ test("a protected project reservation stays private until a separate create acti
   await expect(
     page.getByRole("article", { name: "Beta", exact: true }),
   ).toBeVisible();
-  await expect(page.getByText(privateName, { exact: true })).toHaveCount(0);
+  await expect(
+    page
+      .getByRole("region", { name: "Project cards" })
+      .getByRole("article", { name: privateName, exact: true }),
+  ).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: "New project", exact: true }),
-  ).toBeDisabled();
+  ).toBeEnabled();
+  await page.getByRole("button", { name: "New project", exact: true }).click();
+  const createDialog = page.getByRole("dialog", { name: "Create a project" });
+  await expect(createDialog).toBeVisible();
+  expect(originalReads).toBeGreaterThan(readsBeforeReload);
+  const reopened = await page.evaluate(
+    async ({ headers, requestId }) => {
+      const response = await fetch(
+        `/__agent-forge/projects/create-reservations/${requestId}`,
+        { headers },
+      );
+      return { status: response.status, body: await response.json() };
+    },
+    { headers, requestId },
+  );
+  expect(reopened.status).toBe(200);
+  expect(reopened.body).toMatchObject({
+    ok: true,
+    data: { requestId, requestHash, state: "reserved", original },
+  });
   expect(postedPaths).toEqual(["/__agent-forge/projects/create-reservations"]);
+  expect(identityPosts).toBe(0);
   expect(catalogBefore.projects.map(({ id, slug }) => ({ id, slug }))).toEqual([
     { id: alpha.id, slug: alpha.slug },
     { id: beta.id, slug: beta.slug },
