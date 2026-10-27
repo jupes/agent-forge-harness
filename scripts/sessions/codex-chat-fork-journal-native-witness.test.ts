@@ -457,6 +457,7 @@ test.skipIf(!nativeEnabled)(
       const native = nativeWindowsAcl();
       const stages = [];
       let peerWriteOpen = "not-probed";
+      let creatorReadOpen = "not-probed";
       const identity = () => { const info = lstatSync(mutex, { bigint: true }); return { dev: String(info.dev), ino: String(info.ino), size: Number(info.size) }; };
       const reading = () => { const acl = native.read(mutex); return { ownerOnly: ownerOnlyProblem(acl, "file", native.userSid()) === null, protected: acl.protected }; };
       const acl = {
@@ -468,10 +469,21 @@ test.skipIf(!nativeEnabled)(
           const created = native.createOwnerOnlyExclusive!(path);
           if (path === mutex) stages.push(created.kind === "created" ? "exclusive-created" : "exclusive-exists");
           if (${creator} && path === mutex && created.kind === "created") {
+            stages.push("creator-read-open-before");
+            try {
+              const descriptor = openSync(mutex, "r");
+              closeSync(descriptor);
+              creatorReadOpen = "opened";
+              stages.push("creator-read-open-after");
+            } catch (error) {
+              const code = error && typeof error === "object" && "code" in error ? error.code : undefined;
+              creatorReadOpen = code === "EACCES" || code === "EPERM" || code === "EBUSY" ? "denied" : "other-error";
+              stages.push("creator-read-open-denied");
+            }
             // The descriptor supplies a private DACL at creation; the held
             // no-delete handle protects identity during readback and the peer probe.
             try {
-              writeFileSync(${JSON.stringify(creatorVisible)}, JSON.stringify({ ...identity(), ...reading() }), { flag: "wx" });
+              writeFileSync(${JSON.stringify(creatorVisible)}, JSON.stringify({ ...identity(), ...reading(), creatorReadOpen }), { flag: "wx" });
               const wait = new Int32Array(new SharedArrayBuffer(4));
               const deadline = Date.now() + 6_000;
               while (!existsSync(${JSON.stringify(releaseCreator)})) {
@@ -525,11 +537,11 @@ test.skipIf(!nativeEnabled)(
           "direct-v1",
         );
         stages.push("reserved");
-        writeFileSync(${JSON.stringify(creator ? creatorResult : peerResult)}, JSON.stringify({ ok: true, requestId: record.requestId, state: record.state, diagnostics, stages: stages.slice(0, 8), peerWriteOpen }));
+        writeFileSync(${JSON.stringify(creator ? creatorResult : peerResult)}, JSON.stringify({ ok: true, requestId: record.requestId, state: record.state, diagnostics, stages: stages.slice(0, 8), peerWriteOpen, creatorReadOpen }));
       } catch (error) {
         const reason = error instanceof CodexChatForkJournalError ? error.reason : "unexpected";
         stages.push("refused-" + reason);
-        writeFileSync(${JSON.stringify(creator ? creatorResult : peerResult)}, JSON.stringify({ ok: false, reason, diagnostics, stages: stages.slice(0, 8), peerWriteOpen }));
+        writeFileSync(${JSON.stringify(creator ? creatorResult : peerResult)}, JSON.stringify({ ok: false, reason, diagnostics, stages: stages.slice(0, 8), peerWriteOpen, creatorReadOpen }));
       }
     `;
 
@@ -569,6 +581,12 @@ test.skipIf(!nativeEnabled)(
           size: z.number().int().min(0),
           ownerOnly: z.boolean(),
           protected: z.boolean(),
+          creatorReadOpen: z.enum([
+            "not-probed",
+            "opened",
+            "denied",
+            "other-error",
+          ]),
         })
         .strict()
         .parse(JSON.parse(readFileSync(creatorVisible, "utf8"))),
@@ -598,6 +616,12 @@ test.skipIf(!nativeEnabled)(
               "denied",
               "other-error",
             ]),
+            creatorReadOpen: z.enum([
+              "not-probed",
+              "opened",
+              "denied",
+              "other-error",
+            ]),
           })
           .strict(),
         z
@@ -607,6 +631,12 @@ test.skipIf(!nativeEnabled)(
             diagnostics: z.array(z.unknown()).max(8),
             stages: z.array(z.string().max(40)).max(8),
             peerWriteOpen: z.enum([
+              "not-probed",
+              "opened",
+              "denied",
+              "other-error",
+            ]),
+            creatorReadOpen: z.enum([
               "not-probed",
               "opened",
               "denied",
@@ -635,7 +665,7 @@ test.skipIf(!nativeEnabled)(
     expect(winner.state).toBe("reserved");
     if (loser.reason !== "conflict")
       throw new Error(
-        `Fork mutex publication loser was ${loser.reason}; first-visible=${JSON.stringify({ ownerOnly: publication.ownerOnly, protected: publication.protected, sameIdentity: peer.dev === publication.dev && peer.ino === publication.ino, peerWriteOpen: peer.peerWriteOpen })}; bounded child stages/guards=${JSON.stringify(results.map((result) => ({ stages: result.stages, guards: result.diagnostics }))).slice(0, 2_000)}`,
+        `Fork mutex publication loser was ${loser.reason}; first-visible=${JSON.stringify({ ownerOnly: publication.ownerOnly, protected: publication.protected, sameIdentity: peer.dev === publication.dev && peer.ino === publication.ino, creatorReadOpen: publication.creatorReadOpen, peerWriteOpen: peer.peerWriteOpen })}; bounded child stages/guards=${JSON.stringify(results.map((result) => ({ stages: result.stages, guards: result.diagnostics }))).slice(0, 2_000)}`,
       );
     expect(loser.reason).toBe("conflict");
     const records = createCodexChatForkJournal({ root, home }).list(projectId);
