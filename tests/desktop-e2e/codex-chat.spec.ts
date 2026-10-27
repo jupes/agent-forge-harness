@@ -4098,7 +4098,10 @@ test("an undispatched Fork original can be explicitly retired after reload", asy
     calls().filter((row) => row.kind === "rpc" && row.method === "thread/fork"),
   ).toHaveLength(nativeForksBefore);
   await reopened
-    .getByRole("button", { name: "Reserve this exact Fork", exact: true })
+    .getByRole("button", {
+      name: "Reserve a new Fork from this turn",
+      exact: true,
+    })
     .click();
   await expect(
     reopened.getByRole("button", {
