@@ -6,6 +6,7 @@ import type {
   ProjectPreferences,
 } from "../../../types/projects";
 import { readRepoContext } from "../../beads/repo-context";
+import { loadConfig } from "../../config/load";
 import { resolveCheckout } from "../../ledger/workspace";
 import {
   projectCreateCommitSchema,
@@ -40,7 +41,37 @@ interface PreferenceChange {
 export interface ProjectCreateRouteOptions {
   root: string;
   workspace: string;
+  configHome?: string;
   loadScope(): Promise<ProjectSnapshot>;
+}
+
+function validateConfiguredKeeperSmith(
+  name: string,
+  options: ProjectCreateRouteOptions,
+): void {
+  let config: ReturnType<typeof loadConfig>["config"];
+  try {
+    config = loadConfig({
+      harnessRoot: options.root,
+      ...(options.configHome !== undefined ? { home: options.configHome } : {}),
+      env: {},
+    }).config;
+  } catch {
+    throw new ProjectStoreError(
+      503,
+      "The configured Keeper Smiths could not be verified. Check configuration before changing projects.",
+    );
+  }
+  const smith = Object.hasOwn(config.smiths, name)
+    ? config.smiths[name]
+    : undefined;
+  if (!smith)
+    throw new ProjectStoreError(
+      400,
+      "The selected Keeper Smith is not configured.",
+    );
+  if (!smith.enabled)
+    throw new ProjectStoreError(400, "The selected Keeper Smith is disabled.");
 }
 
 function publicCatalog(catalog: ProjectCatalog) {
@@ -391,6 +422,8 @@ export function projectRoutes(
                 await createOptions.loadScope(),
                 createOptions,
               ),
+            validateKeeperSmith: (name) =>
+              validateConfiguredKeeperSmith(name, createOptions),
           });
           if (!result.created) responseStatus = 200;
           return result.operation;
@@ -451,6 +484,8 @@ export function projectRoutes(
               await createOptions.loadScope(),
               createOptions,
             ),
+          validateKeeperSmith: (name) =>
+            validateConfiguredKeeperSmith(name, createOptions),
         });
         return {
           operation: result.operation,

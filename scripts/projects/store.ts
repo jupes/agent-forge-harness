@@ -283,6 +283,9 @@ export function parseProjectCatalog(value: unknown): ProjectCatalog {
             project.name === item.original.name &&
             project.description === item.original.description &&
             project.icon === item.original.icon &&
+            Object.hasOwn(project, "keeperSmith") ===
+              Object.hasOwn(item.original, "keeperSmith") &&
+            project.keeperSmith === item.original.keeperSmith &&
             originalScope !== undefined &&
             createdScope !== undefined &&
             comparableCheckout(createdScope.root) ===
@@ -559,6 +562,7 @@ export function createProjectStore(
       expectedCatalogRevision: number;
       preflightScope: { hash: string; count: number };
       validateScope(): Promise<{ hash: string; count: number }>;
+      validateKeeperSmith?(name: string): void;
     }): Promise<{
       catalog: ProjectCatalog;
       operation: ProjectCreateOperation;
@@ -643,6 +647,8 @@ export function createProjectStore(
             400,
             "Choose each canonical project repository only once.",
           );
+        if (input.original.keeperSmith !== undefined)
+          input.validateKeeperSmith?.(input.original.keeperSmith);
         const scope = await input.validateScope();
         if (
           !digest(scope.hash) ||
@@ -724,6 +730,7 @@ export function createProjectStore(
       reviewedScopeHash: string;
       preflightScope: { hash: string; count: number };
       validateScope(): Promise<{ hash: string; count: number }>;
+      validateKeeperSmith?(name: string): void;
     }): Promise<{
       catalog: ProjectCatalog;
       operation: ProjectCreateOperation;
@@ -779,6 +786,8 @@ export function createProjectStore(
             409,
             "A project already uses that slug. Check the saved original before continuing.",
           );
+        if (found.original.keeperSmith !== undefined)
+          input.validateKeeperSmith?.(found.original.keeperSmith);
         const scope = await input.validateScope();
         if (
           !digest(scope.hash) ||

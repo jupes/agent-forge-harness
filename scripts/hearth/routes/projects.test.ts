@@ -446,6 +446,112 @@ test("explicit Keeper configuration is revalidated after waiting for the project
   expect(store.readCreate(requestId)).toBeNull();
 });
 
+test("an explicit Keeper is revalidated before commit after configuration changes under the catalog lock", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  const issue = {
+    id: "alpha-epic",
+    title: "Keeper commit source",
+    issue_type: "epic",
+    priority: 2,
+    status: "open",
+    labels: ["project:keeper-commit-race"],
+    created_at: "2026-10-26T00:00:00.000Z",
+    updated_at: "2026-10-26T00:00:00.000Z",
+  };
+  h.bd.issues.set(issue.id, issue);
+  h.bd.answer = (args) =>
+    args[0] === "export"
+      ? {
+          status: 0,
+          stdout: JSON.stringify(issue),
+          stderr: "",
+        }
+      : undefined;
+  const configDirectory = join(h.configHome, ".agent-forge");
+  const userConfig = join(configDirectory, "config.toml");
+  mkdirSync(configDirectory, { recursive: true });
+  writeFileSync(userConfig, "[smiths.claude-master]\nenabled = true\n", "utf8");
+
+  const requestId = "4f2e47b0-f594-4e08-82fa-f3cb92566747";
+  const headers = h.headers(h.hearth.token);
+  const reserve = await fetch(`${h.api}/projects/create-reservations`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      requestId,
+      expectedCatalogRevision: 0,
+      original: {
+        slug: "keeper-commit-race",
+        name: "Keeper Commit Race",
+        description: "",
+        icon: "K",
+        workspaces: [
+          {
+            root: h.workspace,
+            repositories: [h.workspace],
+            epicIds: ["alpha-epic"],
+          },
+        ],
+        keeperSmith: "claude-master",
+      },
+    }),
+  });
+  expect(reserve.status).toBe(201);
+  const reserved: unknown = await reserve.json();
+  expect(reserved).toMatchObject({ ok: true, error: null });
+  const reservation = createProjectStore(h.home).readCreate(requestId);
+  if (!reservation) throw new Error("Keeper reservation missing before commit");
+
+  const initialRead = deferred<void>();
+  h.bd.answer = (args) => {
+    if (args[0] !== "export") return undefined;
+    initialRead.resolve();
+    return { status: 0, stdout: JSON.stringify(issue), stderr: "" };
+  };
+  const locked = deferred<void>();
+  const unlock = deferred<void>();
+  const writer = withQueueLock(
+    join(h.home, "projects", "write.lock.db"),
+    async () => {
+      locked.resolve();
+      await unlock.promise;
+    },
+    { waitMs: 10_000 },
+  );
+  await locked.promise;
+  const responsePromise = fetch(
+    `${h.api}/projects/create-reservations/${requestId}/commit`,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        requestHash: reservation.requestHash,
+        reviewedScopeHash: reservation.scopeHash,
+      }),
+    },
+  );
+  try {
+    await initialRead.promise;
+    writeFileSync(
+      userConfig,
+      "[smiths.claude-master]\nenabled = false\n",
+      "utf8",
+    );
+  } finally {
+    unlock.resolve();
+  }
+  await writer;
+  const response = await responsePromise;
+  expect(response.status).toBe(400);
+  const store = createProjectStore(h.home);
+  expect(store.read().projects).toEqual([]);
+  expect(store.readCreate(requestId)).toMatchObject({
+    requestHash: reservation.requestHash,
+    state: "reserved",
+  });
+});
+
 test("a project reservation refuses two allowed spellings of the same checkout before writing", async () => {
   const h = await startTestHearth();
   opened.push(h);
