@@ -319,8 +319,7 @@ export function CodexChatForkPanel(props: {
   const inspectHistoryOriginal = async (
     selected: CodexChatForkIdentityMetadata,
   ) => {
-    const owner = selection.current,
-      readEpoch = ++historyReadEpoch.current;
+    const owner = selection.current;
     if (
       !owner ||
       !isCurrent(owner) ||
@@ -335,14 +334,15 @@ export function CodexChatForkPanel(props: {
       )
     )
       return;
-    const nextOwner = {
-      ...owner,
-      requestId: selected.requestId,
-      throughTurnRequestId: selected.throughTurnRequestId,
-    };
-    selection.current = nextOwner;
+    const nextOwner = beginSelection(
+      selected.throughTurnRequestId,
+      selected.requestId,
+    );
+    const readEpoch = ++historyReadEpoch.current;
     setIdentity(null);
-    setIdentityDiscovery("loading");
+    setSourceContext(null);
+    setChildPage(null);
+    setApprovals(null);
     setMessage("Checking the exact saved Fork original…");
     try {
       const recovered = await props.client.recoverOriginal(
@@ -371,8 +371,19 @@ export function CodexChatForkPanel(props: {
           row.requestId === original.requestId ? original : row,
         ),
       );
-      setIdentityDiscovery("ready");
       setSourceContext(recovered.context);
+      if (original.state === "linked") {
+        if (!original.childSessionId)
+          throw new Error("The linked Fork child identity is incomplete.");
+        await refreshChild(original, nextOwner);
+        if (
+          !isCurrent(nextOwner) ||
+          selection.current?.requestId !== selected.requestId ||
+          historyReadEpoch.current !== readEpoch
+        )
+          return;
+      }
+      setIdentityDiscovery("ready");
       setMessage(
         original.state === "retired"
           ? "This exact Fork reservation is retired and remains available for inspection."
