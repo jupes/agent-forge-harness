@@ -1,12 +1,22 @@
 import { createHash } from "node:crypto";
-import { existsSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, lstatSync, readFileSync, statSync } from "node:fs";
+import { basename, join } from "node:path";
 import type {
   ProjectCatalog,
   ProjectPreferences,
 } from "../../../types/projects";
-import { readRepoContext } from "../../beads/repo-context";
+import { REPOS_FILE, readRepoContext } from "../../beads/repo-context";
 import { resolveCheckout } from "../../ledger/workspace";
+import {
+  MAX_PROJECT_CREATE_OPTION_EPICS,
+  MAX_PROJECT_CREATE_OPTION_REPOSITORIES,
+  MAX_PROJECT_CREATE_OPTIONS_BYTES,
+  type ProjectCreateOptions,
+  type ProjectScopePreviewQuery,
+  projectCreateOptionsSchema,
+  projectScopePreviewQuerySchema,
+  projectScopePreviewSchema,
+} from "../../projects/create-options-protocol";
 import {
   projectCreateCommitSchema,
   projectCreateReserveSchema,
@@ -31,6 +41,8 @@ import { localStateRoot } from "./dev-api";
 import { bodyFields, fail, noParameters } from "./operator-reads";
 import type { ProjectSnapshot } from "./project-summaries";
 
+const MAX_PROJECT_REPOSITORY_REGISTRY_BYTES = 64 * 1024;
+
 interface PreferenceChange {
   id: string;
   revision: number;
@@ -40,6 +52,8 @@ interface PreferenceChange {
 export interface ProjectCreateRouteOptions {
   root: string;
   workspace: string;
+  /** Trusted internal registry source; defaults to the checkout's local state root. */
+  projectRepositoryRegistryRoot?: string;
   loadScope(): Promise<ProjectSnapshot>;
 }
 
@@ -51,10 +65,227 @@ function publicCatalog(catalog: ProjectCatalog) {
   };
 }
 
-function registeredRepositoryOptions(root: string): Set<string> {
+interface ProjectRepositoryOption {
+  path: string;
+  key: string;
+  name: string;
+  served: boolean;
+}
+
+function unavailableProjectOptions(): ProjectStoreError {
+  return new ProjectStoreError(
+    503,
+    "Complete project setup options are unavailable. Refresh before continuing.",
+  );
+}
+
+function errorCode(error: unknown): string | null {
+  if (typeof error !== "object" || error === null || !("code" in error))
+    return null;
+  return typeof error.code === "string" ? error.code : null;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Build a complete bounded repository choice list. The served checkout is
+ * always available; a present registration file is all-or-nothing so a
+ * malformed or missing registered checkout cannot be mistaken for an empty
+ * registry.
+ */
+function completeRepositoryOptions(
+  root: string,
+  registryRoot?: string,
+): ProjectRepositoryOption[] {
+  const served = resolveCheckout(root).workspace;
+  const servedOption: ProjectRepositoryOption = {
+    path: served,
+    key: workspaceKey(served),
+    name: basename(served),
+    served: true,
+  };
+  const local = registryRoot ?? localStateRoot(root);
+  const repositoryRoot = join(local, "repos");
+  try {
+    const repositoryRootStat = lstatSync(repositoryRoot);
+    if (
+      repositoryRootStat.isSymbolicLink() ||
+      !repositoryRootStat.isDirectory()
+    )
+      throw unavailableProjectOptions();
+  } catch (error) {
+    if (error instanceof ProjectStoreError) throw error;
+    if (errorCode(error) !== "ENOENT") throw unavailableProjectOptions();
+  }
+  const registryPath = join(local, REPOS_FILE);
+  let registryStat: ReturnType<typeof lstatSync>;
+  try {
+    registryStat = lstatSync(registryPath);
+  } catch (error) {
+    if (errorCode(error) === "ENOENT") return [servedOption];
+    throw unavailableProjectOptions();
+  }
+  if (
+    registryStat.isSymbolicLink() ||
+    !registryStat.isFile() ||
+    registryStat.size > MAX_PROJECT_REPOSITORY_REGISTRY_BYTES
+  )
+    throw unavailableProjectOptions();
+
+  let parsed: unknown;
+  try {
+    const text = readFileSync(registryPath, "utf8");
+    const afterRead = lstatSync(registryPath);
+    if (Buffer.byteLength(text, "utf8") > MAX_PROJECT_REPOSITORY_REGISTRY_BYTES)
+      throw unavailableProjectOptions();
+    if (
+      afterRead.isSymbolicLink() ||
+      !afterRead.isFile() ||
+      afterRead.dev !== registryStat.dev ||
+      afterRead.ino !== registryStat.ino ||
+      afterRead.size !== registryStat.size ||
+      afterRead.mtimeMs !== registryStat.mtimeMs
+    )
+      throw unavailableProjectOptions();
+    parsed = JSON.parse(text);
+  } catch {
+    throw unavailableProjectOptions();
+  }
+  if (
+    !isRecord(parsed) ||
+    Object.keys(parsed).length !== 1 ||
+    !Array.isArray(parsed["repos"])
+  )
+    throw unavailableProjectOptions();
+  const entries: unknown[] = parsed["repos"];
+  const allowedFields = new Set(["name", "url", "defaultBranch", "archived"]);
+  if (
+    entries.length + 1 > MAX_PROJECT_CREATE_OPTION_REPOSITORIES ||
+    entries.some((entry) => {
+      if (!isRecord(entry)) return true;
+      if (Object.keys(entry).some((key) => !allowedFields.has(key)))
+        return true;
+      return (
+        typeof entry["name"] !== "string" ||
+        !/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(entry["name"]) ||
+        entry["name"] === "." ||
+        entry["name"] === ".." ||
+        (entry["url"] !== undefined && typeof entry["url"] !== "string") ||
+        (entry["defaultBranch"] !== undefined &&
+          typeof entry["defaultBranch"] !== "string") ||
+        (entry["archived"] !== undefined &&
+          typeof entry["archived"] !== "boolean")
+      );
+    })
+  )
+    throw unavailableProjectOptions();
+
+  const options = [servedOption];
+  const names = new Set<string>();
+  const keys = new Set([servedOption.key]);
+  for (const entry of entries) {
+    if (!isRecord(entry) || typeof entry["name"] !== "string")
+      throw unavailableProjectOptions();
+    const name = entry["name"];
+    if (names.has(name)) throw unavailableProjectOptions();
+    names.add(name);
+    const path = join(local, "repos", name);
+    let repositoryStat: ReturnType<typeof lstatSync>;
+    let gitStat: ReturnType<typeof lstatSync>;
+    try {
+      repositoryStat = lstatSync(path);
+      gitStat = lstatSync(join(path, ".git"));
+    } catch {
+      throw unavailableProjectOptions();
+    }
+    if (
+      repositoryStat.isSymbolicLink() ||
+      !repositoryStat.isDirectory() ||
+      gitStat.isSymbolicLink() ||
+      (!gitStat.isDirectory() && !gitStat.isFile())
+    )
+      throw unavailableProjectOptions();
+    let canonical: string;
+    try {
+      canonical = resolveCheckout(path).worktree;
+    } catch {
+      throw unavailableProjectOptions();
+    }
+    const key = workspaceKey(canonical);
+    if (keys.has(key)) throw unavailableProjectOptions();
+    keys.add(key);
+    options.push({ path: canonical, key, name, served: false });
+  }
+  return options;
+}
+
+function projectCreateOptionsData(
+  snapshot: ProjectSnapshot,
+  options: ProjectCreateRouteOptions,
+): ProjectCreateOptions {
+  const served = resolveCheckout(options.root).workspace;
+  const servedKey = workspaceKey(served);
+  if (
+    workspaceKey(options.workspace) !== servedKey ||
+    workspaceKey(snapshot.source.workspace) !== servedKey ||
+    snapshot.source.issues === null
+  )
+    throw unavailableProjectOptions();
+  const epics = snapshot.source.issues
+    .filter((issue) => issue.type === "epic")
+    .map((issue) => ({
+      id: issue.id,
+      title: issue.title,
+      parentId: issue.parent ?? null,
+    }))
+    .sort((left, right) => left.id.localeCompare(right.id));
+  const repositoryOptions = completeRepositoryOptions(
+    options.root,
+    options.projectRepositoryRegistryRoot,
+  );
+  if (epics.length > MAX_PROJECT_CREATE_OPTION_EPICS)
+    throw unavailableProjectOptions();
+  const checked = projectCreateOptionsSchema.safeParse({
+    complete: true,
+    workspace: { path: served, key: servedKey },
+    repositories: repositoryOptions,
+    epics,
+  });
+  if (!checked.success) throw unavailableProjectOptions();
+  if (
+    Buffer.byteLength(JSON.stringify(checked.data), "utf8") >
+    MAX_PROJECT_CREATE_OPTIONS_BYTES
+  )
+    throw unavailableProjectOptions();
+  return checked.data;
+}
+
+function projectScopePreviewInput(
+  request: RouteRequest,
+): ValidationResult<ProjectScopePreviewQuery> {
+  const allowed = new Set(["slug", "epicId"]);
+  for (const name of request.query.keys())
+    if (!allowed.has(name)) return fail("The scope preview query is invalid.");
+  const slugs = request.query.getAll("slug");
+  const parsed = projectScopePreviewQuerySchema.safeParse({
+    slug: slugs[0],
+    epicIds: request.query.getAll("epicId"),
+  });
+  if (slugs.length !== 1 || !parsed.success)
+    return fail("The scope preview query is invalid.");
+  return { ok: true, value: parsed.data };
+}
+
+function registeredRepositoryOptions(
+  root: string,
+  registryRoot?: string,
+): Set<string> {
   const allowed = new Set([workspaceKey(resolveCheckout(root).workspace)]);
-  const local = localStateRoot(root);
-  for (const name of readRepoContext(root).context?.knownRepos ?? []) {
+  const local = registryRoot ?? localStateRoot(root);
+  for (const name of readRepoContext(root, registryRoot).context?.knownRepos ??
+    []) {
     if (
       !/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(name) ||
       name === "." ||
@@ -101,7 +332,10 @@ function checkedScope(
       409,
       "This hearth does not serve the selected project workspace.",
     );
-  const allowedRepositories = registeredRepositoryOptions(options.root);
+  const allowedRepositories = registeredRepositoryOptions(
+    options.root,
+    options.projectRepositoryRegistryRoot,
+  );
   if (
     scope.repositories.some(
       (repository) => !allowedRepositories.has(workspaceKey(repository)),
@@ -275,6 +509,64 @@ export function projectRoutes(
     path: "/projects",
     validate: noParameters,
     read: () => reply(() => publicCatalog(store.read())),
+  };
+  const createOptionsRead: ReadRoute<null> = {
+    kind: "read",
+    method: "GET",
+    path: "/projects/create-options",
+    operatorOnly: true,
+    validate: noParameters,
+    read: () =>
+      reply(async () =>
+        projectCreateOptionsData(
+          await createOptions.loadScope(),
+          createOptions,
+        ),
+      ),
+  };
+  const scopePreview: ReadRoute<ProjectScopePreviewQuery> = {
+    kind: "read",
+    method: "GET",
+    path: "/projects/create-scope-preview",
+    operatorOnly: true,
+    validate: projectScopePreviewInput,
+    read: (query) =>
+      reply(async () => {
+        const snapshot = await createOptions.loadScope();
+        // Keep direct preview reads subject to the same complete source and
+        // option bounds as the choices route.
+        projectCreateOptionsData(snapshot, createOptions);
+        const served = resolveCheckout(createOptions.root).workspace;
+        const original = {
+          slug: query.slug,
+          name: "Scope preview",
+          description: "",
+          icon: "P",
+          workspaces: [
+            {
+              root: served,
+              repositories: [served],
+              epicIds: [...query.epicIds].sort(),
+            },
+          ],
+        };
+        const proof = checkedScope(original, snapshot, createOptions);
+        const result = projectScopePreviewSchema.safeParse({
+          complete: true,
+          workspaceKey: workspaceKey(served),
+          slug: query.slug,
+          epicIds: [...query.epicIds].sort(),
+          scopeCount: proof.count,
+          scopeHash: proof.hash,
+        });
+        if (!result.success) throw unavailableProjectOptions();
+        if (
+          Buffer.byteLength(JSON.stringify(result.data), "utf8") >
+          MAX_PROJECT_CREATE_OPTIONS_BYTES
+        )
+          throw unavailableProjectOptions();
+        return result.data;
+      }),
   };
   const preferences: ActionRoute<PreferenceChange> = {
     kind: "action",
@@ -482,6 +774,8 @@ export function projectRoutes(
   };
   return {
     projects,
+    createOptionsRead,
+    scopePreview,
     preferences,
     createList,
     createOriginal,
