@@ -50,6 +50,7 @@ export async function verifiedIdentityReadBarrier(
       return;
     }
 
+    const holdThisRead = armed && (options.shouldHold?.() ?? true);
     const response = await route.fetch({
       headers: {
         ...(await request.allHeaders()),
@@ -93,7 +94,7 @@ export async function verifiedIdentityReadBarrier(
         "The real Session Start identity page could not be verified.",
       );
 
-    if (armed && (options.shouldHold?.() ?? true)) {
+    if (holdThisRead) {
       held = true;
       heldReadCount++;
       pendingHeldReads++;
