@@ -4,6 +4,7 @@ import type { OwnedCodingSessionRecord } from "../../../types/codex-owned-task";
 import type { ConversationPage } from "../../../types/conversation";
 import type { CodexChatForkIdentityMetadata } from "../../../types/session-operation-identities";
 import type { CodexChatForkClient } from "./codex-chat-fork-client";
+import { keeperTurns } from "./keeper-model";
 
 const complete = (phase: string) => phase === "completed";
 type PanelSelection = {
@@ -886,9 +887,10 @@ function ForkChildPanel(props: {
   onStop(): void;
 }) {
   const active =
-    props.page?.turns.some((turn) =>
-      ["accepted", "running", "cancelling"].includes(turn.phase),
-    ) ?? false;
+      props.page?.turns.some((turn) =>
+        ["accepted", "running", "cancelling"].includes(turn.phase),
+      ) ?? false,
+    turns = keeperTurns(props.page);
   return (
     <section aria-label="Fork child conversation" class="af-session-fork-child">
       <h3>Child conversation</h3>
@@ -912,14 +914,43 @@ function ForkChildPanel(props: {
           disabled until a complete read succeeds.
         </p>
       )}
-      {props.page?.frames.map((frame) =>
-        frame.event.kind === "user" || frame.event.kind === "text" ? (
-          <article key={frame.seq}>
-            <p>{frame.event.kind === "user" ? "You" : "Codex"}</p>
-            <p>{frame.event.text}</p>
-          </article>
-        ) : null,
-      )}
+      {turns.map((turn) => (
+        <div class="af-owned-turn" key={turn.id}>
+          {turn.question && (
+            <article class="af-owned-question" aria-label="Your child message">
+              <p>{turn.question}</p>
+            </article>
+          )}
+          {turn.reply && (
+            <article class="af-owned-reply" aria-label="Child reply">
+              <p>{turn.reply}</p>
+            </article>
+          )}
+          {turn.turn &&
+            ["accepted", "running", "cancelling"].includes(turn.turn.phase) && (
+              <p role="status" class="af-session-note">
+                This child turn is still in progress; its displayed reply may be
+                partial.
+              </p>
+            )}
+          {turn.turn?.phase === "unknown" && (
+            <p role="status" class="af-session-warning">
+              The child turn outcome is unknown. Its saved reply may be partial;
+              no request was resent.
+            </p>
+          )}
+          {turn.turn?.phase === "failed" && (
+            <p role="status" class="af-session-warning">
+              The child turn could not finish.
+            </p>
+          )}
+          {turn.turn?.phase === "cancelled" && (
+            <p role="status" class="af-session-note">
+              The child turn was stopped.
+            </p>
+          )}
+        </div>
+      ))}
       {props.approvals?.pending.map((item) => (
         <article key={item.approval.id}>
           <h4>Permission request · {item.approval.kind}</h4>
