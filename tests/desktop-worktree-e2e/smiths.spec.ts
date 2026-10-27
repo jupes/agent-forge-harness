@@ -12,8 +12,8 @@ import {
   type Frame,
   type Locator,
   type Page,
-  type Request,
   type Response as PlaywrightResponse,
+  type Request,
   test,
 } from "@playwright/test";
 import { z } from "zod";
@@ -809,6 +809,26 @@ test("a NotSent create POST can only continue or retire its server-reserved orig
     (key) => localStorage.removeItem(key),
     SMITH_CREATE_IDENTITIES,
   );
+  let denyNextCollectionBody = false,
+    collectionBodyDenials = 0;
+  page.on("response", (response: PlaywrightResponse) => {
+    if (
+      !denyNextCollectionBody ||
+      response.request().method() !== "GET" ||
+      new URL(response.url()).pathname !== "/__agent-forge/smiths/creates"
+    )
+      return;
+    denyNextCollectionBody = false;
+    collectionBodyDenials++;
+    Object.defineProperty(response, "json", {
+      configurable: true,
+      value: async () => {
+        throw new Error(
+          "Injected Playwright response-body loss for the collection index.",
+        );
+      },
+    });
+  });
   const indexRead = page.waitForResponse(
       (response) =>
         response.request().method() === "GET" &&
@@ -820,8 +840,11 @@ test("a NotSent create POST can only continue or retire its server-reserved orig
         new URL(response.url()).pathname ===
           `/__agent-forge/smiths/creates/${exactRequest.requestId}`,
     );
+  denyNextCollectionBody = true;
   await reloadSettled(page);
-  const index = await (await indexRead).json();
+  const indexResponse = await indexRead;
+  expect(collectionBodyDenials).toBe(1);
+  const index = await indexResponse.json();
   await expect(
     page.getByRole("region", { name: "Original Smith create receipts" }),
   ).toContainText(name);
