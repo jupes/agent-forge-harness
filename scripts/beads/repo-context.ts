@@ -88,11 +88,14 @@ function readIfPresent(path: string): string | null {
 }
 
 /** The registered repository names and the repository map for the checkout at `root`. */
-export function readRepoContext(root: string): {
+export function readRepoContext(
+  root: string,
+  registryRoot?: string,
+): {
   context: RepoContext;
   warnings: string[];
 } {
-  const local = localStateRoot(root);
+  const local = registryRoot ?? localStateRoot(root);
   const knownRepos: string[] = [];
   for (const entry of parseReposConfig(
     readIfPresent(join(local, REPOS_FILE)),

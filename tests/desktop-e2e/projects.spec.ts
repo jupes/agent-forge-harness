@@ -3,6 +3,10 @@ import { join } from "node:path";
 import { expect, test } from "@playwright/test";
 import { OPERATOR_HEADER, SURFACE_HEADER } from "../../scripts/hearth/paths";
 import { resolveCheckout } from "../../scripts/ledger/workspace";
+import {
+  projectCreateOptionsSchema,
+  projectScopePreviewSchema,
+} from "../../scripts/projects/create-options-protocol";
 import { projectFixture } from "../../scripts/projects/testing";
 import type { ProjectCatalog } from "../../types/projects";
 import { readState, withStateLock, writeState } from "../e2e/bd-stand-in-state";
@@ -12,6 +16,9 @@ import { BD_STAND_IN_STATE, HEARTH_HOME } from "../e2e/servers";
 
 const catalogFile = join(HEARTH_HOME, "projects", "catalog.json");
 const workspace = resolveCheckout(process.cwd()).workspace;
+const onboardingRepository = resolveCheckout(
+  join(HEARTH_HOME, "project-create-registry", "repos", "onboarding-fixture"),
+).worktree;
 const alpha = projectFixture(workspace);
 const beta = projectFixture(workspace, {
   id: "project-b5832fa0-7a21-403b-8184-44892f0d8d86",
@@ -79,16 +86,27 @@ test("a protected project reservation stays private until a separate create acti
     description: "This reserved original is private until an explicit create.",
     icon: "P",
     workspaces: [
-      { root: workspace, repositories: [workspace], epicIds: [epicId] },
+      {
+        root: workspace,
+        repositories: [workspace, onboardingRepository],
+        epicIds: [epicId],
+      },
     ],
   };
   const postedPaths: string[] = [];
+  let identityPosts = 0;
   page.on("request", (request) => {
+    const url = new URL(request.url());
     if (
       request.method() === "POST" &&
-      request.url().includes("/projects/create-reservations")
+      url.pathname.endsWith("/session-start-identities")
     )
-      postedPaths.push(new URL(request.url()).pathname);
+      identityPosts++;
+    if (
+      request.method() === "POST" &&
+      url.pathname.includes("/projects/create-reservations")
+    )
+      postedPaths.push(url.pathname);
   });
 
   await openSettled(page, "/index.html#/desktop/projects");
@@ -111,6 +129,76 @@ test("a protected project reservation stays private until a separate create acti
     data: { revision: 1, projects: [{ slug: "alpha" }, { slug: "beta" }] },
   });
   const catalogBefore = before.body.data as ProjectCatalog;
+
+  const optionsResponse = await page.evaluate(
+    async ({ headers }) => {
+      const response = await fetch("/__agent-forge/projects/create-options", {
+        headers,
+      });
+      return { status: response.status, body: await response.json() };
+    },
+    { headers },
+  );
+  expect(optionsResponse.status).toBe(200);
+  expect(optionsResponse.body).toMatchObject({ ok: true, error: null });
+  const options = projectCreateOptionsSchema.parse(optionsResponse.body.data);
+  expect(options.complete).toBe(true);
+  expect(options.workspace.path).toBe(workspace);
+  expect(
+    options.repositories.find((repository) => repository.served),
+  ).toMatchObject({
+    path: workspace,
+    key: options.workspace.key,
+    served: true,
+  });
+  expect(options.repositories).toContainEqual({
+    path: onboardingRepository,
+    key: expect.any(String),
+    name: "onboarding-fixture",
+    served: false,
+  });
+  expect(options.epics.find((epic) => epic.id === epicId)).toMatchObject({
+    id: epicId,
+    title: "Private onboarding epic",
+  });
+
+  const previewResponse = await page.evaluate(
+    async ({ headers, slug, epicId }) => {
+      const query = new URLSearchParams({ slug, epicId });
+      const response = await fetch(
+        `/__agent-forge/projects/create-scope-preview?${query}`,
+        { headers },
+      );
+      return { status: response.status, body: await response.json() };
+    },
+    { headers, slug: privateSlug, epicId },
+  );
+  expect(previewResponse.status).toBe(200);
+  expect(previewResponse.body).toMatchObject({ ok: true, error: null });
+  const preview = projectScopePreviewSchema.parse(previewResponse.body.data);
+  expect(preview).toMatchObject({
+    complete: true,
+    workspaceKey: options.workspace.key,
+    slug: privateSlug,
+    epicIds: [epicId],
+  });
+  expect(preview.scopeCount).toBeGreaterThanOrEqual(0);
+  expect(postedPaths).toEqual([]);
+  expect(identityPosts).toBe(0);
+
+  const catalogAfterRead = await page.evaluate(
+    async ({ headers }) => {
+      const response = await fetch("/__agent-forge/projects", { headers });
+      return { status: response.status, body: await response.json() };
+    },
+    { headers },
+  );
+  expect(catalogAfterRead).toEqual({
+    status: 200,
+    body: { ok: true, data: catalogBefore, error: null },
+  });
+  expect(postedPaths).toEqual([]);
+  expect(identityPosts).toBe(0);
 
   const requestId = "ab847e06-4f01-4dd3-a425-47bf9053e006";
   const reserve = await page.evaluate(
@@ -143,11 +231,25 @@ test("a protected project reservation stays private until a separate create acti
       requestId,
       state: "reserved",
       original,
-      scopeCount: expect.any(Number),
+      scopeCount: preview.scopeCount,
+      scopeHash: preview.scopeHash,
       requestHash: expect.stringMatching(/^[a-f0-9]{64}$/),
     },
   });
+  expect(reserve.body.data.scopeCount).toBe(preview.scopeCount);
+  expect(reserve.body.data.scopeHash).toBe(preview.scopeHash);
   const requestHash = reserve.body.data.requestHash as string;
+
+  const catalogAfterReservation = await page.evaluate(
+    async ({ headers }) => {
+      const response = await fetch("/__agent-forge/projects", { headers });
+      return { status: response.status, body: await response.json() };
+    },
+    { headers },
+  );
+  expect(catalogAfterReservation.status).toBe(200);
+  expect(catalogAfterReservation.body).toMatchObject({ ok: true, error: null });
+  expect(identityPosts).toBe(0);
 
   const recovered = await page.evaluate(
     async ({ headers, requestId }) => {
@@ -174,7 +276,11 @@ test("a protected project reservation stays private until a separate create acti
   );
   expect(publicCatalog).toEqual({
     status: 200,
-    body: { ok: true, data: catalogBefore, error: null },
+    body: {
+      ok: true,
+      data: catalogAfterReservation.body.data,
+      error: null,
+    },
   });
   expect(JSON.stringify(publicCatalog.body)).not.toContain(privateName);
   expect(JSON.stringify(publicCatalog.body)).not.toContain(privateSlug);
