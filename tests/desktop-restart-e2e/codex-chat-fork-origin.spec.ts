@@ -141,6 +141,50 @@ function waitForTextResponse(
   }));
 }
 
+async function captureTextResponseThroughRoute(
+  page: Page,
+  matcher: (url: URL) => boolean,
+): Promise<{
+  response: Promise<{ status: number; text: string }>;
+  dispose(): Promise<void>;
+}> {
+  let resolveResponse!: (value: { status: number; text: string }) => void;
+  let rejectResponse!: (error: Error) => void;
+  const response = new Promise<{ status: number; text: string }>(
+    (resolve, reject) => {
+      resolveResponse = resolve;
+      rejectResponse = reject;
+    },
+  );
+  void response.catch(() => undefined);
+  const handler = async (route: Route) => {
+    if (route.request().method() !== "POST") {
+      await route.continue();
+      return;
+    }
+    try {
+      const actual = await route.fetch();
+      const body = await actual.body();
+      await route.fulfill({ response: actual, body });
+      resolveResponse({ status: actual.status(), text: body.toString("utf8") });
+    } catch (error) {
+      await route.abort("failed").catch(() => undefined);
+      rejectResponse(
+        error instanceof Error
+          ? error
+          : new Error("The routed response could not be captured."),
+      );
+    }
+  };
+  await page.route(matcher, handler);
+  return {
+    response,
+    async dispose() {
+      await page.unroute(matcher, handler);
+    },
+  };
+}
+
 function rows(): SessionRow[] {
   const path = join(HEARTH_HOME, "sessions", "registry.json");
   if (!existsSync(path)) return [];
@@ -1269,22 +1313,25 @@ test("two actual host replacements recover the exact Fork original before and af
   });
   expect(rpcCount("thread/fork")).toBe(forksBefore);
 
-  const replacementReserveResponse = waitForTextResponse(page, (response) => {
-    const url = new URL(response.url());
-    return (
-      response.request().method() === "POST" &&
+  const replacementReserveCapture = await captureTextResponseThroughRoute(
+    page,
+    (url) =>
       url.origin === currentOrigin &&
       url.pathname ===
-        `/__agent-forge/projects/${alpha.id}/sessions/${first.parent.id}/fork-reservations`
-    );
-  });
-  await reviewA
-    .getByRole("button", {
-      name: "Reserve a new Fork from this turn",
-      exact: true,
-    })
-    .click();
-  const replacementReserveHttp = await replacementReserveResponse;
+        `/__agent-forge/projects/${alpha.id}/sessions/${first.parent.id}/fork-reservations`,
+  );
+  let replacementReserveHttp: { status: number; text: string };
+  try {
+    await reviewA
+      .getByRole("button", {
+        name: "Reserve a new Fork from this turn",
+        exact: true,
+      })
+      .click();
+    replacementReserveHttp = await replacementReserveCapture.response;
+  } finally {
+    await replacementReserveCapture.dispose();
+  }
   expect(replacementReserveHttp.status).toBe(200);
   const replacementReserveEnvelope = record(
     parseJson(replacementReserveHttp.text, "replacement Fork reservation"),

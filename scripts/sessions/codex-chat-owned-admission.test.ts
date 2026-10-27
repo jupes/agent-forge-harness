@@ -1,6 +1,13 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { ownedSessionLifecycle } from "../../apps/desktop/src/session-activity";
 import type {
@@ -27,6 +34,7 @@ import {
   ownedCodingPageSchema,
   ownedCodingStateSchema,
 } from "./codex-owned-journal";
+import { canonicalOwnedSessionStart } from "./codex-owned-protocol";
 import { createSessionLibrary } from "./library";
 import { sessionTranscriptExportSchema } from "./library-protocol";
 import { createSessionRegistry, sessionRegistryFile } from "./registry";
@@ -40,9 +48,16 @@ afterEach(async () => {
 async function fixture(mode = "normal", rpcTimeoutMs = 5000) {
   const root = scratch.make("codex-chat-owned-"),
     home = join(root, "home"),
-    configHome = join(root, "config");
+    configHome = join(root, "config"),
+    workspaceAlias = join(root, "workspace-alias");
   mkdirSync(join(root, ".git"));
   mkdirSync(configHome);
+  if (mode === "canonical-cwd-ack")
+    symlinkSync(
+      root,
+      workspaceAlias,
+      process.platform === "win32" ? "junction" : "dir",
+    );
   writeFileSync(
     join(root, "agent-forge.toml"),
     '[execution.env]\npass = ["CODEX_CHAT_MODE", "CODEX_CHAT_LOG"]\n',
@@ -72,6 +87,19 @@ async function fixture(mode = "normal", rpcTimeoutMs = 5000) {
     timeoutMs: 5000,
     rpcTimeoutMs,
     approvalTimeoutMs: 3000,
+    ...(mode === "canonical-cwd-ack"
+      ? {
+          modelEfforts: [
+            {
+              model: "exact-model",
+              efforts: ["medium"],
+              source: "model/list" as const,
+              cliVersion: "0.163.0-alpha.10.2",
+              asOf: "2026-10-23T00:00:00.000Z",
+            },
+          ],
+        }
+      : {}),
   });
   const open = () => {
     const service = createCodexOwnedChatService({
@@ -79,10 +107,14 @@ async function fixture(mode = "normal", rpcTimeoutMs = 5000) {
       home,
       runtime,
       async validateScope(id, metadata) {
+        const selectedPath = (value: string) =>
+          mode === "canonical-cwd-ack"
+            ? realpathSync.native(value) === realpathSync.native(root)
+            : value === root;
         if (
           id !== project.id ||
-          metadata.repository !== root ||
-          metadata.worktree !== root
+          !selectedPath(metadata.repository) ||
+          !selectedPath(metadata.worktree)
         )
           throw Error("Foreign planted scope");
       },
@@ -116,8 +148,171 @@ async function fixture(mode = "normal", rpcTimeoutMs = 5000) {
       throw Error("Invalid completed fake log");
     }
   };
-  return { root, home, project, request, open, records, runtime };
+  return {
+    root,
+    home,
+    project,
+    request,
+    workspaceAlias,
+    open,
+    records,
+    runtime,
+  };
 }
+
+test("a canonical native Chat configuration persists without rewriting the aliased original launch", async () => {
+  const f = await fixture("canonical-cwd-ack"),
+    request = {
+      ...f.request,
+      repository: f.workspaceAlias,
+      worktree: f.workspaceAlias,
+      launch: { ...f.request.launch, effort: "medium" },
+    },
+    canonicalWorkspace = realpathSync.native(f.workspaceAlias),
+    canonicalWorkspaceKey =
+      process.platform === "win32"
+        ? canonicalWorkspace.toLowerCase()
+        : canonicalWorkspace,
+    expectedHash = createHash("sha256")
+      .update(canonicalOwnedSessionStart(request))
+      .digest("hex"),
+    service = f.open();
+  expect(canonicalWorkspaceKey).toBe(
+    process.platform === "win32"
+      ? realpathSync.native(f.root).toLowerCase()
+      : realpathSync.native(f.root),
+  );
+  expect(f.workspaceAlias).not.toBe(canonicalWorkspaceKey);
+
+  const started = await service.start(f.project.id, request);
+  await service.settled(f.project.id, started.session.id);
+  expect(f.records()).toContainEqual({
+    kind: "canonical-cwd-ack",
+    requestedCwdWasAlias: true,
+    acknowledgedCwdIsCanonical: true,
+  });
+
+  const registry = createSessionRegistry(f.home, "codex", "chat"),
+    record = registry.read(f.project.id, started.session.id),
+    address = {
+      kind: "session" as const,
+      projectId: f.project.id,
+      sessionId: started.session.id,
+    },
+    state = createConversationStore(f.home, undefined, address).read(
+      f.project.id,
+    ),
+    user = state.frames.find(
+      (frame) =>
+        frame.event.kind === "user" && frame.event.codexChat !== undefined,
+    )?.event,
+    configuration = state.frames.find(
+      (frame) =>
+        frame.event.kind === "coding-chat" &&
+        frame.event.event.kind === "configuration",
+    )?.event;
+
+  expect(record.requestId).toBe(request.requestId);
+  expect(record.requestHash).toBe(expectedHash);
+  expect(user).toMatchObject({
+    kind: "user",
+    codexChat: {
+      canonicalCwd: canonicalWorkspaceKey,
+      launch: {
+        cwd: f.workspaceAlias,
+        prompt: request.launch.prompt,
+        attachments: request.launch.attachments,
+      },
+    },
+  });
+  expect(configuration).toMatchObject({
+    kind: "coding-chat",
+    provider: "codex",
+    event: {
+      kind: "configuration",
+      cwd: canonicalWorkspaceKey,
+      model: request.launch.model,
+      effort: "medium",
+    },
+  });
+  expect(configuration).toHaveProperty("event.serviceTier", null);
+  if (
+    configuration?.kind !== "coding-chat" ||
+    configuration.event.kind !== "configuration"
+  )
+    throw Error("Missing persisted native configuration frame");
+  const owner = createSessionRegistry(f.home, "codex", "chat").read(
+      f.project.id,
+      started.session.id,
+    ),
+    selectedNativeTurn = state.frames.find(
+      (frame) =>
+        frame.turnId === request.requestId &&
+        frame.event.kind === "coding-chat" &&
+        frame.event.event.kind === "turn",
+    );
+  if (
+    selectedNativeTurn?.event.kind !== "coding-chat" ||
+    selectedNativeTurn.event.event.kind !== "turn"
+  )
+    throw Error("Missing captured native turn identity");
+  const forkSource = resolveCodexChatForkSource({
+    owner,
+    state,
+    projectId: f.project.id,
+    conversationId: started.session.id,
+    workspaceKey: workspaceKey(resolveCheckout(f.root).workspace),
+    selectedTurnRequestId: request.requestId,
+  });
+  expect(configuration.event.cwd).toBe(canonicalWorkspaceKey);
+  expect(user).toMatchObject({
+    kind: "user",
+    codexChat: { launch: { cwd: f.workspaceAlias } },
+  });
+  expect(forkSource).toMatchObject({
+    eligible: true,
+    selectedTurnRequestId: request.requestId,
+    lastTurnId: selectedNativeTurn.event.event.turnId,
+    sourceSettings: {
+      modelProvider: configuration.event.modelProvider,
+      serviceTier: null,
+      reasoningEffort: "medium",
+    },
+  });
+  expect(ownedCodingStateSchema.safeParse(state).success).toBe(true);
+
+  const configurationIndex = state.frames.findIndex(
+    (frame) =>
+      frame.event.kind === "coding-chat" &&
+      frame.event.event.kind === "configuration",
+  );
+  for (const field of ["cwd", "model", "effort"] as const) {
+    const altered = structuredClone(state),
+      frame = altered.frames[configurationIndex];
+    if (
+      frame?.event.kind !== "coding-chat" ||
+      frame.event.event.kind !== "configuration"
+    )
+      throw Error("Missing persisted native configuration frame");
+    if (field === "cwd")
+      frame.event.event.cwd = `${frame.event.event.cwd}/outside`;
+    else if (field === "model") frame.event.event.model = "different-model";
+    else frame.event.event.effort = "low";
+    expect(ownedCodingStateSchema.safeParse(altered).success).toBe(false);
+  }
+
+  const reopened = createConversationStore(f.home, undefined, address).read(
+    f.project.id,
+  );
+  expect(ownedCodingStateSchema.safeParse(reopened).success).toBe(true);
+  expect(
+    reopened.frames.find(
+      (frame) =>
+        frame.event.kind === "coding-chat" &&
+        frame.event.event.kind === "configuration",
+    )?.event,
+  ).toEqual(configuration);
+});
 
 const heldSummaryUpdates: CodexChatReasoningSummary["update"][] = [
   {

@@ -990,8 +990,9 @@ export function createCodexChatRuntime(options: CodexChatRuntimeOptions) {
           threadParams,
           (value) => {
             const ack = stream.thread(value);
+            const canonicalAckCwd = directory(ack.cwd);
             if (
-              directory(ack.cwd) !== snapshot.canonicalCwd ||
+              canonicalAckCwd !== snapshot.canonicalCwd ||
               ack.writableRoots.some((path) => {
                 const rel = relative(snapshot.canonicalCwd, directory(path));
                 return (
@@ -1004,7 +1005,12 @@ export function createCodexChatRuntime(options: CodexChatRuntimeOptions) {
               })
             )
               throw new Error("Native Chat scope changed.");
-            for (const event of ack.events) void enqueue(event);
+            for (const event of ack.events)
+              void enqueue(
+                event.kind === "configuration"
+                  ? { ...event, cwd: canonicalAckCwd }
+                  : event,
+              );
           },
         );
         await writes;
