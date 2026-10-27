@@ -326,6 +326,131 @@ export function createOwnedSessionRoutes(
         );
       }),
   };
+  const forkReserve: ActionRoute<{
+    projectId: string;
+    parentSessionId: string;
+    input: { requestId: string; throughTurnRequestId: string };
+  }> = {
+    kind: "action",
+    method: "POST",
+    path: "/projects/:id/sessions/:sessionId/fork-reservations",
+    action: "session.fork.reserve",
+    maxBodyBytes: 2_048,
+    validate: (request) => {
+      const selected = address(request),
+        query = noParameters(request),
+        body = bodyFields(request, ["requestId", "throughTurnRequestId"]);
+      if (!selected.ok) return selected;
+      if (!query.ok) return query;
+      if (!body.ok) return body;
+      const input = codexChatForkIntentSchema.safeParse(body.value);
+      return input.success
+        ? {
+            ok: true,
+            value: {
+              projectId: selected.value.projectId,
+              parentSessionId: selected.value.sessionId,
+              input: input.data,
+            },
+          }
+        : fail("Expected a strict Codex Chat Fork reservation request.");
+    },
+    subject: ({ projectId, parentSessionId, input }) => ({
+      target: `codex-chat-fork:${projectId}:${parentSessionId}`,
+      family: "codex-chat-fork",
+      requestId: input.requestId,
+      inputHash: codexChatForkOriginalHash(
+        codexChatForkOriginalHashInput({
+          projectId,
+          workspaceKey: workspaceKey(deps.workspace),
+          parentSessionId,
+          throughTurnRequestId: input.throughTurnRequestId,
+          requestId: input.requestId,
+          protocolVersion: CODEX_CHAT_FORK_PROTOCOL_VERSION,
+        }),
+      ),
+    }),
+    effect: (input, context?: ActionContext) =>
+      answer(200, () => {
+        readable(input.projectId);
+        if (
+          !context ||
+          !Number.isSafeInteger(context.auditEventId) ||
+          context.auditEventId <= 0
+        )
+          throw new ConversationError(
+            503,
+            "A confirmed operator audit receipt is required before Fork reservation.",
+          );
+        return service.reserveFork(
+          input.projectId,
+          input.parentSessionId,
+          input.input,
+          context.auditEventId,
+        );
+      }),
+  };
+  const forkRetire: ActionRoute<{
+    projectId: string;
+    parentSessionId: string;
+    requestId: string;
+    requestHash: string;
+  }> = {
+    kind: "action",
+    method: "POST",
+    path: "/projects/:id/sessions/:sessionId/fork-reservations/:requestId/retire",
+    action: "session.fork.retire",
+    maxBodyBytes: 2_048,
+    validate: (request) => {
+      const selected = address(request),
+        query = noParameters(request),
+        body = bodyFields(request, ["requestHash"]);
+      if (!selected.ok) return selected;
+      if (!query.ok) return query;
+      if (!body.ok) return body;
+      const requestId = request.params["requestId"],
+        hash = sessionRequestHashSchema.safeParse(body.value["requestHash"]);
+      if (!isConversationRequestId(requestId))
+        return fail("Expected the exact Fork request UUID.");
+      return hash.success
+        ? {
+            ok: true,
+            value: {
+              projectId: selected.value.projectId,
+              parentSessionId: selected.value.sessionId,
+              requestId,
+              requestHash: hash.data,
+            },
+          }
+        : fail("Expected the exact Fork request hash.");
+    },
+    subject: ({ projectId, parentSessionId, requestId, requestHash }) => ({
+      target: `codex-chat-fork:${projectId}:${parentSessionId}`,
+      family: "codex-chat-fork",
+      requestId,
+      inputHash: requestHash,
+    }),
+    effect: (input, context?: ActionContext) =>
+      answer(200, () => {
+        readable(input.projectId);
+        if (
+          !context ||
+          !Number.isSafeInteger(context.auditEventId) ||
+          context.auditEventId <= 0
+        )
+          throw new ConversationError(
+            503,
+            "A confirmed operator audit receipt is required before Fork retirement.",
+          );
+        return service.retireFork(
+          input.projectId,
+          input.parentSessionId,
+          input.requestId,
+          input.requestHash,
+          context.auditEventId,
+        );
+      }),
+  };
   const identityReserve: ActionRoute<{
     projectId: string;
     input: OwnedSessionStartRequest;
@@ -673,6 +798,8 @@ export function createOwnedSessionRoutes(
     identityOperations,
     forkOriginal,
     fork,
+    forkReserve,
+    forkRetire,
     identityReserve,
     identityRetire,
     read,

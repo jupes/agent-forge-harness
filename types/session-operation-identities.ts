@@ -7,10 +7,11 @@ export interface CodexChatForkIdentityMetadata {
   requestHash: string;
   parentSessionId: string;
   throughTurnRequestId: string;
-  state: "reserved" | "attempted" | "captured" | "linked" | "held";
+  state: "reserved" | "attempted" | "captured" | "linked" | "held" | "retired";
   /** Published only once the child is linked to a verified local record. */
   childSessionId?: string | undefined;
   heldReason?: "unknown-native-outcome" | "invalid-native-outcome" | undefined;
+  retiredReason?: "verified-not-sent" | undefined;
 }
 
 export type SessionOperationIdentity =

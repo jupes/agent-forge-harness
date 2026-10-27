@@ -584,6 +584,8 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       keeperSessionStarts.start,
       keeperShiftStarts.start,
       ownedSessions.fork,
+      ownedSessions.forkReserve,
+      ownedSessions.forkRetire,
       conversations.stop,
       ownedSessions.start,
       ownedSessions.identityReserve,

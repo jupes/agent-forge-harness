@@ -13,7 +13,10 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import type { CodexChatForkOriginal } from "../../types/codex-chat-fork";
+import type {
+  CodexChatForkOriginal,
+  CodexChatForkReservationKind,
+} from "../../types/codex-chat-fork";
 import {
   type AclReading,
   FILE_ALL_ACCESS,
@@ -114,7 +117,9 @@ function journal(
       project: string,
       parent: string,
       intent: Parameters<typeof actual.reserve>[2],
-    ) => actual.reserve(project, parent, intent, testSourceSeal),
+      reservationKind?: CodexChatForkReservationKind,
+    ) =>
+      actual.reserve(project, parent, intent, testSourceSeal, reservationKind),
   };
 }
 
@@ -164,6 +169,7 @@ function ref(record: CodexChatForkOriginal) {
     protocolVersion: record.protocolVersion,
     childAppSessionId: record.childAppSessionId,
     sourceSeal: record.sourceSeal,
+    reservationKind: record.reservationKind,
   };
 }
 
@@ -210,10 +216,15 @@ test("two independent filesystem stores serialize the one-shot dispatch claim", 
     home = join(scratch.make("codex-fork-profile-"), "profile");
   mkdirSync(home, { recursive: true });
   const first = journal(root, home),
-    reserved = await first.reserve(projectId, parentSessionId, {
-      requestId,
-      throughTurnRequestId,
-    }),
+    reserved = await first.reserve(
+      projectId,
+      parentSessionId,
+      {
+        requestId,
+        throughTurnRequestId,
+      },
+      "direct-v1",
+    ),
     second = journal(root, home),
     claims = await Promise.all([
       first.markAttempted(ref(reserved)),
