@@ -22,6 +22,7 @@ const canonicalRoot = resolveCheckout(ROOT).workspace;
 const environment = fixtureEnvironment();
 const controlPath = "/__desktop-restart-fixture/restart-host";
 const forkControlPath = "/__desktop-restart-fixture/restart-host-fork";
+const restoreControlPath = "/__desktop-restart-fixture/restore-base-origin";
 const controlHeader = "x-agent-forge-fixture-secret";
 const controlSecret = randomBytes(32).toString("hex");
 const replacementProof = join(
@@ -168,7 +169,9 @@ async function handleControl(
     timingSafeEqual(supplied, expected);
   if (
     request.method !== "POST" ||
-    (request.url !== controlPath && request.url !== forkControlPath) ||
+    (request.url !== controlPath &&
+      request.url !== forkControlPath &&
+      request.url !== restoreControlPath) ||
     request.headers.host !== expectedHost ||
     !["127.0.0.1", "::ffff:127.0.0.1"].includes(
       request.socket.remoteAddress ?? "",
@@ -191,10 +194,13 @@ async function handleControl(
     });
     return;
   }
-  const forkFlow = request.url === forkControlPath;
+  const forkFlow = request.url === forkControlPath,
+    restoreFlow = request.url === restoreControlPath;
   if (
     restartInProgress ||
-    (forkFlow ? forkRestartCount >= 2 : singleRestartCount !== 0)
+    (forkFlow
+      ? forkRestartCount >= 2
+      : !restoreFlow && singleRestartCount !== 0)
   ) {
     request.resume();
     respond(response, 409, {
@@ -225,9 +231,28 @@ async function handleControl(
       });
       return;
     }
+    if (restoreFlow && Number(new URL(host.url).port) === DASHBOARD_PORT) {
+      void ownedHearthPid(host)
+        .then((pid) =>
+          respond(response, 200, {
+            ok: true,
+            data: { owner: host.owner, url: host.url, pid },
+            error: null,
+          }),
+        )
+        .catch(() =>
+          respond(response, 503, {
+            ok: false,
+            data: null,
+            error: "The base desktop host could not be verified.",
+          }),
+        );
+      return;
+    }
     restartInProgress = true;
     if (forkFlow) forkRestartCount++;
-    else singleRestartCount++;
+    else if (!restoreFlow) singleRestartCount++;
+    let restoredPid: number | null = null;
     replacementPromise = (async () => {
       const previous = host;
       const oldPort = Number(new URL(previous.url).port);
@@ -241,7 +266,7 @@ async function handleControl(
         root: canonicalRoot,
         home: HEARTH_HOME,
         assetsRoot: ASSETS,
-        port: 0,
+        port: restoreFlow ? DASHBOARD_PORT : 0,
         hearthCommand: [process.execPath, resolve("scripts/hearth/server.ts")],
       });
       try {
@@ -253,15 +278,19 @@ async function handleControl(
         }
         const newPort = Number(new URL(next.url).port);
         const newPid = await ownedHearthPid(next);
+        restoredPid = newPid;
         const nextHostCreatedAtMs = Date.now();
         if (
           oldPort < 1 ||
           newPort < 1 ||
-          oldPort === newPort ||
+          (restoreFlow ? newPort !== DASHBOARD_PORT : oldPort === newPort) ||
           oldPid === newPid
         )
           throw new Error("The replaced desktop host identity was not unique.");
-        if (forkFlow) {
+        if (restoreFlow) {
+          // Fixture cleanup restoration is intentionally excluded from the
+          // two-generation Fork replacement witness and its counters.
+        } else if (forkFlow) {
           let generations: unknown[] = [];
           if (existsSync(forkReplacementProof)) {
             let prior: unknown;
@@ -374,7 +403,13 @@ async function handleControl(
       .then(() => {
         respond(response, 200, {
           ok: true,
-          data: { owner: host.owner, url: host.url },
+          data: {
+            owner: host.owner,
+            url: host.url,
+            ...(restoreFlow && restoredPid !== null
+              ? { pid: restoredPid }
+              : {}),
+          },
           error: null,
         });
       })
