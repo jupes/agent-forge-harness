@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { z } from "zod";
 import { scratchDirs } from "../test-scratch";
 import { prepareConfigTransaction, withConfigTransaction } from "./transaction";
+import { emitTransactionFixtureFailureFactsAndRethrow } from "./transaction-process-diagnostic.test-utils";
 import { windowsConfigLeafKind } from "./transaction-windows";
 
 const scratch = scratchDirs();
@@ -92,12 +93,72 @@ function start(root: string, role: "moved-home" | "hold" | "write"): Child {
   return child;
 }
 
-async function marker(root: string, name: string) {
+async function marker(
+  root: string,
+  name: string,
+  child: Child,
+  role: "hold" | "write",
+) {
   const deadline = performance.now() + 5_000;
   while (!existsSync(join(root, name))) {
-    if (performance.now() >= deadline)
-      throw Error(`Fixture did not reach ${name}`);
+    if (performance.now() >= deadline) {
+      const error = Error(`Fixture did not reach ${name}`);
+      await emitTransactionFixtureFailureFactsAndRethrow(
+        error,
+        () => fixtureFailureFacts(root, child, role),
+        (line) => console.error(line.trimEnd()),
+      );
+    }
     await Bun.sleep(5);
+  }
+}
+
+async function fixtureFailureFacts(
+  root: string,
+  child: Child,
+  role: "hold" | "write",
+) {
+  const exitCode = child.process.exitCode;
+  if (exitCode === null)
+    return {
+      stage: fixtureStage(root, role),
+      child: "running" as const,
+      stderr: "unavailable" as const,
+    };
+  let stderr: "empty" | "nonempty" | "unavailable" = "unavailable";
+  try {
+    const settled = await Promise.race([
+      child.done,
+      Bun.sleep(100).then(() => null),
+    ]);
+    if (settled !== null)
+      stderr = settled.stderr.length === 0 ? "empty" : "nonempty";
+  } catch {
+    // A pipe read failure leaves only the process exit category available.
+  }
+  return {
+    stage: fixtureStage(root, role),
+    child:
+      exitCode === 0 ? ("exited-zero" as const) : ("exited-nonzero" as const),
+    stderr,
+  };
+}
+
+function fixtureStage(root: string, role: "hold" | "write") {
+  try {
+    if (role === "hold") {
+      if (existsSync(join(root, "hold-transaction-entered")))
+        return "transaction-entered" as const;
+      if (existsSync(join(root, "hold-transaction-prepared")))
+        return "transaction-prepared" as const;
+    } else if (existsSync(join(root, "write-cli-started"))) {
+      return "cli-started" as const;
+    }
+    if (existsSync(join(root, `${role}-child-started`)))
+      return "child-started" as const;
+    return "none" as const;
+  } catch {
+    return "unavailable" as const;
   }
 }
 
@@ -168,11 +229,15 @@ test("with no home given, --user writes config.toml in AGENT_FORGE_HOME, and sho
 test("two actual writers in different profile and checkout spellings serialize without losing either change", async () => {
   const root = box();
   const holder = start(root, "hold");
-  await marker(root, "holder-entered");
+  await marker(root, "holder-entered", holder, "hold");
+  expect(existsSync(join(root, "hold-child-started"))).toBe(true);
+  expect(existsSync(join(root, "hold-transaction-prepared"))).toBe(true);
+  expect(existsSync(join(root, "hold-transaction-entered"))).toBe(true);
   const lock = join(root, "coordination", "write.lock.db");
   const heldIdentity = lstatSync(lock, { bigint: true });
   const writer = start(root, "write");
-  await marker(root, "writer-entered");
+  await marker(root, "writer-entered", writer, "write");
+  expect(existsSync(join(root, "write-child-started"))).toBe(true);
   // A separate acquisition refuses while the first process owns the lock.
   const context = prepareConfigTransaction({
     options: {
@@ -212,7 +277,7 @@ test("two actual writers in different profile and checkout spellings serialize w
 test("death of the actual lock owner releases it for a new scalar writer and keeps the persistent mutex", async () => {
   const root = box();
   const holder = start(root, "hold");
-  await marker(root, "holder-entered");
+  await marker(root, "holder-entered", holder, "hold");
   const lock = join(root, "coordination", "write.lock.db");
   const heldIdentity = lstatSync(lock, { bigint: true });
   holder.process.kill();

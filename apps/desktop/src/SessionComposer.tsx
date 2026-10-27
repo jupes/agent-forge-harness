@@ -16,6 +16,7 @@ import { KeeperSuggestions } from "./KeeperSuggestions";
 import type { KeeperClient } from "./keeper-client";
 import { insertKeeperSuggestion, keeperPicker } from "./keeper-context";
 import { providerUsageLabel, readinessLabel } from "./providers-model";
+import { SessionStartIdentityControls } from "./SessionStartIdentityControls";
 import type { SessionsClient } from "./session-client";
 import {
   chooseSessionSmith,
@@ -38,6 +39,7 @@ export interface SessionComposerProps {
   writesAllowed: boolean;
   onCancel(): void;
   onStarted(id: string): void;
+  onOpenOriginal?(id: string): void;
 }
 export function SessionComposer(props: SessionComposerProps) {
   const view = props.client.project(props.project.id);
@@ -88,6 +90,7 @@ export function ClaudeSessionComposer({
   writesAllowed,
   onCancel,
   onStarted,
+  onOpenOriginal,
   providers,
 }: {
   project: ProjectRecord;
@@ -96,6 +99,7 @@ export function ClaudeSessionComposer({
   writesAllowed: boolean;
   onCancel(): void;
   onStarted(id: string): void;
+  onOpenOriginal?(id: string): void;
   providers?: ProviderReadinessPage | null;
 }) {
   const view = client.project(project.id),
@@ -234,9 +238,11 @@ export function ClaudeSessionComposer({
     ...new Set(project.workspaces.flatMap((scope) => scope.repositories)),
   ];
   let serialized: SerializedClaudeLaunch | null = null,
+    recoveryInput: ReturnType<typeof sessionStartBody> | null = null,
     validation = "";
   try {
     const body = sessionStartBody(draft);
+    recoveryInput = body;
     if (snapshot)
       serialized = serializeClaudeLaunch(
         {
@@ -261,12 +267,19 @@ export function ClaudeSessionComposer({
         : "Review the selected launch options.";
   }
   const busy = checking || attaching || view.starting;
+  const identityReady =
+    client.purpose === "keeper-proposal" ||
+    (!!view.identityPage &&
+      !view.identityLoading &&
+      view.identityGeneration !== null &&
+      view.identityGeneration !== undefined);
   const canStart =
     claudeReadiness?.authentication.mode !== "signed-out" &&
     writesAllowed &&
     !project.archived &&
     !view.inputLocked &&
     !busy &&
+    identityReady &&
     !view.pendingStart &&
     !view.startIdentity &&
     !view.startIdentityError &&
@@ -1065,29 +1078,38 @@ export function ClaudeSessionComposer({
           </p>
         )}
         {view.notice && <p role="status">{view.notice}</p>}
-        {(view.pendingStart ||
-          view.startIdentity ||
-          view.startIdentityError) && (
-          <div class="af-session-composer-row">
-            <Button
-              onClick={() => {
-                void client.refresh(project.id);
-              }}
-              disabled={view.loading}
-            >
-              Check original Start
-            </Button>
-            {view.pendingStart && (
+        {client.purpose === "keeper-proposal" &&
+          (view.keeperOriginalKnown === true || view.pendingStart) &&
+          !view.lastStarted && (
+            <section aria-label="Keeper original Start recovery">
               <Button
-                onClick={() => {
-                  void client.retryStart(project.id);
-                }}
-                disabled={!writesAllowed || project.archived || view.starting}
+                disabled={!!view.loading || !!view.starting}
+                onClick={() => void client.refresh(project.id)}
               >
-                Retry original Start
+                Check original Start
               </Button>
-            )}
-          </div>
+              {view.retryStartAvailable === true && (
+                <Button
+                  disabled={
+                    !writesAllowed || project.archived || busy || !!view.loading
+                  }
+                  onClick={() => void client.retryStart(project.id)}
+                >
+                  Retry original Start
+                </Button>
+              )}
+            </section>
+          )}
+        {client.purpose === "ordinary-session" && (
+          <SessionStartIdentityControls
+            projectId={project.id}
+            view={view}
+            client={client}
+            request={recoveryInput}
+            writesAllowed={writesAllowed}
+            archived={project.archived}
+            onOpenOriginal={onOpenOriginal}
+          />
         )}
         <div class="af-session-composer-actions">
           <Button onClick={onCancel}>
