@@ -353,13 +353,40 @@ test("legacy project originals keep their absent color and create hash unchanged
     validateScope: async () => ({ hash: "d".repeat(64), count: 1 }),
   });
   const bytes = readFileSync(projectCatalogPath(home), "utf8");
+  const saved = JSON.parse(bytes) as {
+    createOperations: Array<{ original: Record<string, unknown> }>;
+  };
   const reopened = createProjectStore(home).readCreate(requestId);
   expect(reserved.operation.requestHash).toBe(hash);
   expect(reopened).toEqual(reserved.operation);
   expect(reopened?.requestHash).toBe(hash);
   expect(Object.hasOwn(reopened?.original ?? {}, "color")).toBe(false);
-  expect(bytes).toContain(JSON.stringify(original));
+  expect(saved.createOperations[0]?.original).toEqual(original);
+  expect(
+    Object.hasOwn(saved.createOperations[0]?.original ?? {}, "color"),
+  ).toBe(false);
   expect(bytes).toBe(readFileSync(projectCatalogPath(home), "utf8"));
+
+  const fixedLegacyOriginal = {
+    slug: "alpha",
+    name: "Alpha",
+    description: "A scoped project",
+    icon: "A",
+    workspaces: [
+      {
+        root: "C:\\repo",
+        repositories: ["C:\\repo"],
+        epicIds: ["demo-epic"],
+      },
+    ],
+  };
+  expect(
+    hashProjectCreateRequest({
+      requestId,
+      expectedCatalogRevision: 0,
+      original: fixedLegacyOriginal,
+    }),
+  ).toBe("e40ff6ef46f0ebd197ef281770868f6856ffcea886763a64b458536ae371b2b2");
 });
 
 test("bounded project color IDs are hash-bound and survive exact create readback", async () => {
