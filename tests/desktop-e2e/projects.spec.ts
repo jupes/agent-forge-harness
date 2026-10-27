@@ -261,21 +261,29 @@ async function commitProjectFromOriginal(
     .click();
   const response = await commitResponse;
   expect(response.status()).toBe(200);
-  const envelope: unknown = await response.json();
-  expect(envelope).toMatchObject({ ok: true, error: null });
-  const operation = projectCreateIdentitySchema.parse(
-    (envelope as { data: { operation: unknown } }).data.operation,
+  await expect(page).toHaveURL(
+    /\/project\/project-[0-9a-f-]{36}\/overview$/,
   );
-  expect(operation).toMatchObject({
+  const projectId = /\/project\/(project-[0-9a-f-]{36})\/overview$/.exec(
+    new URL(page.url()).hash,
+  )?.[1];
+  expect(projectId).toBeDefined();
+  const identityRead = await protectedRead(
+    page,
+    `/__agent-forge/projects/create-reservations/${saved.requestId}`,
+  );
+  expect(identityRead.status).toBe(200);
+  expect(identityRead.body).toMatchObject({ ok: true, error: null });
+  const identity = projectCreateIdentitySchema.parse(
+    (identityRead.body as { data: unknown }).data,
+  );
+  expect(identity).toMatchObject({
     requestId: saved.requestId,
     requestHash: saved.requestHash,
     original: saved.original,
     state: "created",
-    projectId: expect.any(String),
+    projectId,
   });
-  const projectId = operation.projectId;
-  expect(projectId).not.toBeNull();
-  await expect(page).toHaveURL(new RegExp(`/project/${projectId}/overview$`));
   await expect(page.locator(".af-desktop-project-name")).toHaveText(
     saved.original.name,
   );
@@ -295,6 +303,13 @@ function keeperFixtureStarts(): number {
 
 function setKeeperFixtureMode(mode: "normal" | "brief" | "legacy") {
   writeFileSync(keeperFixtureModeFile, JSON.stringify(mode));
+}
+
+function expectedProjectCreatePosts(requestId: string): string[] {
+  return [
+    "/__agent-forge/projects/create-reservations",
+    `/__agent-forge/projects/create-reservations/${requestId}/commit`,
+  ];
 }
 
 async function protectedRead(
@@ -497,28 +512,15 @@ test("a created project gets its first Keeper brief only after explicit Refresh"
     ).toBeEnabled();
     await expect.poll(() => keeperFixtureStarts()).toBe(startsBefore);
 
-    const createdProjectPosts = () =>
-      posts.filter((path) =>
-        path.startsWith("/__agent-forge/projects/create-reservations"),
-      );
-    const keeperEffectPosts = () =>
-      posts.filter(
-        (path) =>
-          path.includes("/keeper/") ||
-          path.includes("/session-start-identities") ||
-          /\/providers\/(?:[^/]+\/)?sign-in(?:\/|$)/.test(path),
-      );
-
-    expect(createdProjectPosts()).toHaveLength(2);
-    expect(keeperEffectPosts()).toEqual([]);
+    const createPosts = expectedProjectCreatePosts(saved.requestId);
+    expect(posts).toEqual(createPosts);
     await reloadSettled(page);
     await expect(page.locator(".af-desktop-project-name")).toHaveText(
       saved.original.name,
     );
     await expect(panel).toContainText("No confirmed brief yet");
     await expect.poll(() => keeperFixtureStarts()).toBe(startsBefore);
-    expect(createdProjectPosts()).toHaveLength(2);
-    expect(keeperEffectPosts()).toEqual([]);
+    expect(posts).toEqual(createPosts);
 
     const token = await pageToken(page);
     const headers = {
@@ -591,11 +593,10 @@ test("a created project gets its first Keeper brief only after explicit Refresh"
       requestId: refreshBody.requestId,
       expectedRevision: conversationPage.revision,
     });
-    expect(createdProjectPosts()).toHaveLength(2);
-    expect(keeperEffectPosts()).toHaveLength(1);
-    expect(keeperEffectPosts()[0]).toBe(
+    expect(posts).toEqual([
+      ...createPosts,
       `/__agent-forge/projects/${projectId}/keeper/briefs`,
-    );
+    ]);
 
     const card = panel.getByRole("article", {
       name: "Keeper brief card",
@@ -655,7 +656,12 @@ test("a created project gets its first Keeper brief only after explicit Refresh"
     );
     expect(savedBriefs.projectId).toBe(projectId);
     expect(savedBriefs.latest?.requestId).toBe(refreshBody.requestId);
-    expect(savedBriefs.latest?.snapshot.projectId).toBe(projectId);
+    expect(savedBriefs.latest?.snapshot).toMatchObject({
+      projectId,
+      projectName: saved.original.name,
+      workspace: saved.original.workspaces[0]!.root,
+      scope: { epicIds: saved.original.workspaces[0]!.epicIds },
+    });
     expect(savedBriefs.refresh).toMatchObject({
       requestId: refreshBody.requestId,
       phase: "completed",
@@ -668,8 +674,10 @@ test("a created project gets its first Keeper brief only after explicit Refresh"
         (turn) => turn.requestId === refreshBody.requestId,
       )?.phase,
     ).toBe("completed");
-    const auditEvents = (auditAfterRead.body as { data: EventsPage }).data
-      .events;
+    const auditPage = (auditAfterRead.body as { data: EventsPage }).data;
+    const auditEvents = auditPage.events;
+    expect(auditPage.more).toBe(false);
+    expect(auditEvents).toHaveLength(1);
     const refreshAudits = auditEvents.filter(
       (event): event is LedgerEventOf<"operator.action"> =>
         event.kind === "operator.action" &&
@@ -681,7 +689,10 @@ test("a created project gets its first Keeper brief only after explicit Refresh"
       surface: "ui",
       target: projectId,
     });
-    expect(keeperEffectPosts()).toHaveLength(1);
+    expect(posts).toEqual([
+      ...createPosts,
+      `/__agent-forge/projects/${projectId}/keeper/briefs`,
+    ]);
     expect(keeperFixtureStarts()).toBe(startsBefore + 1);
   } finally {
     setKeeperFixtureMode("normal");
@@ -693,16 +704,10 @@ test("a new project's legacy Keeper capability stays unavailable without fallbac
 }) => {
   setKeeperFixtureMode("legacy");
   const startsBefore = keeperFixtureStarts();
-  const keeperEffectPosts: string[] = [];
+  const posts: string[] = [];
   page.on("request", (request) => {
-    if (request.method() !== "POST") return;
-    const path = new URL(request.url()).pathname;
-    if (
-      path.includes("/keeper/") ||
-      path.includes("/session-start-identities") ||
-      /\/providers\/(?:[^/]+\/)?sign-in(?:\/|$)/.test(path)
-    )
-      keeperEffectPosts.push(path);
+    if (request.method() === "POST")
+      posts.push(new URL(request.url()).pathname);
   });
 
   try {
@@ -710,6 +715,7 @@ test("a new project's legacy Keeper capability stays unavailable without fallbac
       slug: "legacy-keeper-capability",
       name: "Legacy Keeper capability",
     });
+    const createPosts = expectedProjectCreatePosts(saved.requestId);
     const panel = page.getByRole("region", {
       name: "Keeper brief",
       exact: true,
@@ -752,7 +758,7 @@ test("a new project's legacy Keeper capability stays unavailable without fallbac
       reason:
         "The Keeper adapter capability check could not be verified. Recheck before sending.",
     });
-    expect(keeperEffectPosts).toEqual([]);
+    expect(posts).toEqual(createPosts);
     expect(keeperFixtureStarts()).toBe(startsBefore);
   } finally {
     setKeeperFixtureMode("normal");
@@ -978,14 +984,12 @@ test("a lost commit reply reloads the same created original without replay", asy
     await page.reload();
     releaseCommitReply();
     await click;
-    await expect
-      .poll(() =>
-        page.evaluate(
-          (key) => (window as unknown as Record<string, unknown>)[key] !== null,
-          recoveryCaptureKey,
-        ),
-      )
-      .toBe(true);
+    await expect.poll(() =>
+      page.evaluate(
+        (key) => (window as unknown as Record<string, unknown>)[key] !== null,
+        recoveryCaptureKey,
+      ),
+    ).toBe(true);
     const recoveredRead = (await page.evaluate((key) => {
       const value = (window as unknown as Record<string, unknown>)[key];
       return typeof value === "object" && value !== null ? value : null;
