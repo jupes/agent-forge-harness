@@ -138,6 +138,15 @@ function validNew(value: unknown): value is NewProject {
   );
 }
 
+function hasUniqueCanonicalRepositories(original: NewProject): boolean {
+  return original.workspaces.every((scope) => {
+    const repositories = scope.repositories.map(
+      (path) => resolveCheckout(path).workspace,
+    );
+    return new Set(repositories).size === repositories.length;
+  });
+}
+
 function validProject(value: unknown): value is ProjectRecord {
   return (
     record(value) &&
@@ -574,6 +583,11 @@ export function createProjectStore(
           );
         return { catalog: read(), operation: existing, created: false };
       }
+      if (!hasUniqueCanonicalRepositories(input.original))
+        throw new ProjectStoreError(
+          400,
+          "Choose each canonical project repository only once.",
+        );
       const stamp = now().toISOString();
       let operation: ProjectCreateOperation | null = null;
       let created = false;
@@ -610,6 +624,11 @@ export function createProjectStore(
           throw new ProjectStoreError(
             409,
             "Another project with that slug is already reserved.",
+          );
+        if (!hasUniqueCanonicalRepositories(input.original))
+          throw new ProjectStoreError(
+            400,
+            "Choose each canonical project repository only once.",
           );
         const scope = await input.validateScope();
         if (
@@ -731,6 +750,11 @@ export function createProjectStore(
           throw new ProjectStoreError(
             409,
             "This project create reservation was retired. Start a new reviewed project only after checking the original.",
+          );
+        if (!hasUniqueCanonicalRepositories(found.original))
+          throw new ProjectStoreError(
+            400,
+            "The saved project original names the same canonical repository more than once.",
           );
         if (current.revision !== found.baseRevision)
           throw new ProjectStoreError(

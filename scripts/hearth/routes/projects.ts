@@ -111,6 +111,14 @@ function checkedScope(
       400,
       "Choose only the served checkout or a registered repository.",
     );
+  const canonicalRepositories = scope.repositories.map(
+    (repository) => resolveCheckout(repository).workspace,
+  );
+  if (new Set(canonicalRepositories).size !== canonicalRepositories.length)
+    throw new ProjectStoreError(
+      400,
+      "Choose each canonical project repository only once.",
+    );
   if (snapshot.source.issues === null)
     throw new ProjectStoreError(
       503,
