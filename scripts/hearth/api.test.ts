@@ -3509,9 +3509,9 @@ describe("a read row or the stream while another connection holds the write lock
   test("every read row and the stream answer while locked, ledger readers refuse with an error envelope, and health answers; released, every row answers 200", async () => {
     // The worktree row's git is a stand-in listing the root alone: this test
     // is about the ledger, and a real git on a loaded machine can fail it.
-    let root = "";
+    let workspace = "";
     const git: GitRun = (args) => {
-      const top = root.replaceAll("\\", "/");
+      const top = workspace.replaceAll("\\", "/");
       if (args[0] === "rev-parse")
         return { status: 0, stdout: `${top}\n`, stderr: "" };
       if (args[0] === "worktree")
@@ -3528,7 +3528,7 @@ describe("a read row or the stream while another connection holds the write lock
       files: { ".tmp/work/forge-runs/demo.json": RUN_STATE },
       api: { git },
     });
-    root = h.root;
+    workspace = h.workspace;
     await seedOwnedSession(h);
     await seedChatDecision(h);
     await seedProjectShift(h);
