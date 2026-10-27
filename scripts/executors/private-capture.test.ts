@@ -465,6 +465,9 @@ test("private output failure stops and awaits the supervised tree and cannot bec
   let deadlineMissed = false;
   let doneAtDeadline: DoneState = "pending";
   let descendantAliveAtDeadline: boolean | null = null;
+  const cleanupOutcome: {
+    value: "pending" | "settled" | "rejected";
+  } = { value: "pending" };
   mark("adapter-spawn-requested");
   const handle = await claudeAdapter.spawn({
     ...f.request,
@@ -529,35 +532,48 @@ test("private output failure stops and awaits the supervised tree and cannot bec
     if (descendantPid !== null) expect(alive(descendantPid)).toBe(false);
   } finally {
     if (deadlineMissed) mark("cleanup-stop-requested");
-    await handle.stop("fixture cleanup");
-    await handle.done;
-    if (deadlineMissed) {
-      mark("cleanup-settled");
-      const facts = {
-        version: 1,
-        stages,
-        lineCount,
-        finishCount,
-        doneAtDeadline,
-        doneAfterCleanup: doneState,
-        descendantSeen: descendant !== null,
-        descendantAliveAtDeadline,
-        descendantAliveAfterCleanup:
-          descendant === null ? null : alive(descendant),
-      };
+    const cleanup = async () => {
       try {
-        const serialized = JSON.stringify(facts);
-        console.error(
-          `[private-capture-settlement] ${
-            serialized.length <= 2048
-              ? serialized
-              : JSON.stringify({ version: 1, truncated: true })
-          }`,
-        );
-      } catch {
-        console.error(
-          '[private-capture-settlement] {"version":1,"unavailable":true}',
-        );
+        await handle.stop("fixture cleanup");
+        await handle.done;
+        cleanupOutcome.value = "settled";
+      } catch (error) {
+        cleanupOutcome.value = "rejected";
+        throw error;
+      }
+    };
+    try {
+      await cleanup();
+    } finally {
+      if (deadlineMissed) {
+        if (cleanupOutcome.value === "settled") mark("cleanup-settled");
+        const facts = {
+          version: 1,
+          stages,
+          lineCount,
+          finishCount,
+          doneAtDeadline,
+          doneAfterCleanup: doneState,
+          cleanupOutcome: cleanupOutcome.value,
+          descendantSeen: descendant !== null,
+          descendantAliveAtDeadline,
+          descendantAliveAfterCleanup:
+            descendant === null ? null : alive(descendant),
+        };
+        try {
+          const serialized = JSON.stringify(facts);
+          console.error(
+            `[private-capture-settlement] ${
+              serialized.length <= 2048
+                ? serialized
+                : JSON.stringify({ version: 1, truncated: true })
+            }`,
+          );
+        } catch {
+          console.error(
+            '[private-capture-settlement] {"version":1,"unavailable":true}',
+          );
+        }
       }
     }
   }
