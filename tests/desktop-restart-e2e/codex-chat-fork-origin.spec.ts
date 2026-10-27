@@ -31,6 +31,44 @@ type FixtureCall = {
   result?: unknown;
 };
 
+let forkOriginFailureFacts: (() => Record<string, unknown>) | null = null;
+
+test.afterEach(async (_fixtures, testInfo) => {
+  if (testInfo.errors.length === 0 || !forkOriginFailureFacts) return;
+  try {
+    let facts: Record<string, unknown>;
+    try {
+      facts = forkOriginFailureFacts();
+    } catch {
+      facts = { availability: "unavailable" };
+    }
+    let body = JSON.stringify(facts);
+    if (Buffer.byteLength(body, "utf8") > 8 * 1024)
+      body = JSON.stringify({ availability: "unavailable", reason: "cap" });
+    await testInfo.attach("fork-origin-failure-facts.json", {
+      body: Buffer.from(body, "utf8"),
+      contentType: "application/json",
+    });
+  } catch {
+    // Diagnostics are best effort and must not replace the original failure.
+  }
+});
+
+function safeIdentityFacts(
+  identity: ReturnType<typeof codexChatForkIdentityMetadataSchema.parse>,
+) {
+  return {
+    requestId: identity.requestId,
+    requestHash: identity.requestHash,
+    parentSessionId: identity.parentSessionId,
+    throughTurnRequestId: identity.throughTurnRequestId,
+    state: identity.state,
+    ...(identity.childSessionId
+      ? { childSessionId: identity.childSessionId }
+      : {}),
+  };
+}
+
 function record(value: unknown): Record<string, unknown> | null {
   return typeof value === "object" && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -481,6 +519,9 @@ test("two actual host replacements recover the exact Fork original before and af
   const startWrites: string[] = [];
   const identityWrites: string[] = [];
   const forkBodies: Array<{ path: string; body: unknown }> = [];
+  const knownIdentities: Array<Record<string, unknown>> = [];
+  let observedOrigin = "unavailable";
+  let stage = "initializing";
   const forksBefore = rpcCount("thread/fork");
   const startsBefore = rpcCount("thread/start");
   page.on("request", (request) => {
@@ -501,6 +542,60 @@ test("two actual host replacements recover the exact Fork original before and af
       forkBodies.push({ path: url.pathname, body: request.postDataJSON() });
     }
   });
+  forkOriginFailureFacts = () => {
+    let sessionFacts: Array<Record<string, unknown>> | null = null;
+    let nativeCalls: Array<Record<string, unknown>> | null = null;
+    try {
+      sessionFacts = rows()
+        .slice(0, 32)
+        .map((row) => {
+          const origin = record(row.origin);
+          return {
+            sessionId: row.id,
+            projectId: row.projectId,
+            originKind: origin?.["kind"] ?? null,
+            originParentSessionId: origin?.["parentSessionId"] ?? null,
+            originRequestId: origin?.["requestId"] ?? null,
+          };
+        });
+    } catch {
+      sessionFacts = null;
+    }
+    try {
+      const counts = new Map<string, number>();
+      for (const call of calls().slice(0, 128)) {
+        if (call.kind !== "rpc" || !call.method) continue;
+        const threadId = call.params?.["threadId"];
+        const key = `${call.method}\u0000${typeof threadId === "string" ? threadId : "unavailable"}`;
+        counts.set(key, (counts.get(key) ?? 0) + 1);
+      }
+      nativeCalls = [...counts.entries()].slice(0, 32).map(([key, count]) => {
+        const [method, threadId] = key.split("\u0000");
+        return { method, threadId, count };
+      });
+    } catch {
+      nativeCalls = null;
+    }
+    return {
+      version: 1,
+      stage,
+      origin: observedOrigin,
+      projectId: alpha.id,
+      identities: knownIdentities.slice(0, 8),
+      posts: forkBodies.slice(0, 32).map((entry) => ({
+        path: entry.path,
+        requestId: record(entry.body)?.["requestId"] ?? null,
+      })),
+      nativeRpcCounts: nativeCalls,
+      sessions: sessionFacts,
+      counts: {
+        startPosts: startWrites.length,
+        identityPosts: identityWrites.length,
+        forkRpcCalls: rpcCount("thread/fork"),
+        startRpcCalls: rpcCount("thread/start"),
+      },
+    };
+  };
 
   const firstManifestText = readFileSync(
     join(HEARTH_HOME, "restart-fixture.json"),
@@ -514,10 +609,13 @@ test("two actual host replacements recover the exact Fork original before and af
     throw new Error("The first owned host URL is unavailable.");
   let currentUrl = firstUrl;
   let currentOrigin = new URL(firstUrl).origin;
+  observedOrigin = currentOrigin;
   let beforeFirstReplacement = { starts: 0, writes: 0, forks: 0 };
 
   const firstParent = await openNewSession(page, currentUrl);
+  stage = "first-parent-created";
   let first = await createCompletedSourceTurn(page, firstParent, "A");
+  stage = "first-source-turn-completed";
   const firstReview = await originalReview(page, first.parent.id, first.turnId);
   const firstReservation = await holdEffectfulRoute(
     page,
@@ -537,6 +635,8 @@ test("two actual host replacements recover the exact Fork original before and af
       throughTurnRequestId: first.turnId,
       state: "reserved",
     });
+    knownIdentities.push(safeIdentityFacts(firstIdentity));
+    stage = "first-reservation-response-held";
     beforeFirstReplacement = {
       starts: startWrites.length,
       writes: identityWrites.length,
@@ -545,6 +645,8 @@ test("two actual host replacements recover the exact Fork original before and af
     const firstRestart = await issueRestart();
     currentUrl = firstRestart.url;
     currentOrigin = await authenticateNewHost(page, currentUrl, 1);
+    observedOrigin = currentOrigin;
+    stage = "first-new-origin-authenticated";
   } finally {
     await firstReservation.release();
   }
@@ -573,6 +675,7 @@ test("two actual host replacements recover the exact Fork original before and af
     throughTurnRequestId: first.turnId,
     state: "reserved",
   });
+  stage = "first-reservation-recovered";
   expect(rpcCount("thread/fork")).toBe(forksBefore);
   const beforeExplicitFirstDispatch = {
     starts: startWrites.length,
@@ -617,6 +720,8 @@ test("two actual host replacements recover the exact Fork original before and af
     throughTurnRequestId: first.turnId,
     state: "retired",
   });
+  knownIdentities.push(safeIdentityFacts(firstRetired));
+  stage = "first-reservation-retired";
   const retiredRead = page.waitForResponse((response) => {
     const url = new URL(response.url());
     return (
@@ -680,6 +785,8 @@ test("two actual host replacements recover the exact Fork original before and af
     throughTurnRequestId: first.turnId,
     state: "reserved",
   });
+  knownIdentities.push(safeIdentityFacts(firstReplacement));
+  stage = "replacement-reserved";
   expect(firstReplacement.requestId).not.toBe(firstRequestId);
   expect(firstReplacement.requestHash).not.toBe(firstRequestHash);
   const historyARead = page.waitForResponse((response) => {
@@ -745,6 +852,8 @@ test("two actual host replacements recover the exact Fork original before and af
   const firstLinked = codexChatForkIdentityMetadataSchema.parse(
     firstLinkedEnvelope["data"],
   );
+  knownIdentities.push(safeIdentityFacts(firstLinked));
+  stage = "replacement-linked";
   expect(firstLinked).toMatchObject({
     requestId: firstReplacement.requestId,
     requestHash: firstReplacement.requestHash,
@@ -780,7 +889,9 @@ test("two actual host replacements recover the exact Fork original before and af
   await expect(reviewA).toBeHidden();
 
   const secondParent = await openNewSession(page, currentUrl);
+  stage = "second-parent-created";
   const second = await createCompletedSourceTurn(page, secondParent, "B");
+  stage = "second-source-turn-completed";
   const reviewB = await originalReview(page, second.parent.id, second.turnId);
   const secondReservation = await holdEffectfulRoute(
     page,
@@ -810,6 +921,8 @@ test("two actual host replacements recover the exact Fork original before and af
       throughTurnRequestId: second.turnId,
       state: "linked",
     });
+    knownIdentities.push(safeIdentityFacts(secondIdentity));
+    stage = "second-linked-response-held";
     await expect.poll(() => rpcCount("thread/fork")).toBe(forksBefore + 2);
     beforeSecondReplacement = {
       forks: rpcCount("thread/fork"),
@@ -819,6 +932,8 @@ test("two actual host replacements recover the exact Fork original before and af
     const secondRestart = await issueRestart();
     currentUrl = secondRestart.url;
     currentOrigin = await authenticateNewHost(page, currentUrl, 2);
+    observedOrigin = currentOrigin;
+    stage = "second-new-origin-authenticated";
   } finally {
     await secondReservation.release();
   }
