@@ -1,4 +1,4 @@
-import { useRef, useState } from "preact/hooks";
+import { useEffect, useRef, useState } from "preact/hooks";
 import { Dialog } from "../../../docs/js/ds/Dialog";
 import type { OwnedCodingSessionRecord } from "../../../types/codex-owned-task";
 import type { ConversationPage } from "../../../types/conversation";
@@ -6,6 +6,13 @@ import type { CodexChatForkIdentityMetadata } from "../../../types/session-opera
 import type { CodexChatForkClient } from "./codex-chat-fork-client";
 
 const complete = (phase: string) => phase === "completed";
+type PanelSelection = {
+  epoch: number;
+  projectId: string;
+  viewedSessionId: string;
+  throughTurnRequestId: string | null;
+  requestId: string | null;
+};
 
 export function CodexChatForkPanel(props: {
   projectId: string;
@@ -32,54 +39,167 @@ export function CodexChatForkPanel(props: {
     > | null>(null),
     [draft, setDraft] = useState(""),
     [busy, setBusy] = useState(false),
-    [message, setMessage] = useState("");
+    [message, setMessage] = useState(""),
+    [childReadState, setChildReadState] = useState<
+      "idle" | "loading" | "ready" | "failed"
+    >("idle"),
+    [identityDiscovery, setIdentityDiscovery] = useState<
+      "idle" | "loading" | "ready" | "failed"
+    >("idle");
   const opener = useRef<HTMLElement>(null),
+    epoch = useRef(0),
+    childReadEpoch = useRef(0),
+    sourceReadEpoch = useRef(0),
+    selection = useRef<PanelSelection | null>(null),
+    openRef = useRef(false),
     selected =
       props.page?.turns.find((turn) => turn.requestId === turnId) ?? null;
 
-  const refreshChild = async (row: CodexChatForkIdentityMetadata) => {
-    if (!row.childSessionId) return;
-    const [page, permissionPage, context] = await Promise.all([
-      (async () => {
-        let after = 0;
-        const frames: ConversationPage["frames"] = [];
-        for (let count = 0; count < 40; count++) {
-          const next = await props.client.readChildTurns(
-            props.projectId,
-            row.childSessionId!,
-            row.requestId,
-            after,
-          );
-          frames.push(...next.frames);
-          if (frames.length > 2_000)
-            throw new Error("The child transcript exceeds its page bound.");
-          if (!next.more) return { ...next, frames };
-          if (next.nextCursor <= after)
-            throw new Error("The child transcript cursor did not advance.");
-          after = next.nextCursor;
-        }
-        throw new Error("The child transcript exceeds its page bound.");
-      })(),
-      props.client.readChildApprovals(
-        props.projectId,
-        row.childSessionId,
-        row.requestId,
-      ),
-      props.client
-        .readContext(props.projectId, row.requestId)
-        .catch(() => null),
-    ]);
+  const isCurrent = (owner: PanelSelection) =>
+    openRef.current &&
+    selection.current?.epoch === owner.epoch &&
+    props.projectId === owner.projectId &&
+    props.parentSessionId === owner.viewedSessionId;
+  const isCurrentIdentity = (
+    owner: PanelSelection,
+    row: CodexChatForkIdentityMetadata,
+  ) =>
+    isCurrent(owner) &&
+    selection.current?.requestId === row.requestId &&
+    selection.current?.throughTurnRequestId === row.throughTurnRequestId;
+  const beginSelection = (
+    throughTurnRequestId: string | null,
+    requestId: string | null = null,
+  ): PanelSelection => {
+    childReadEpoch.current += 1;
+    sourceReadEpoch.current += 1;
+    const next = {
+      epoch: ++epoch.current,
+      projectId: props.projectId,
+      viewedSessionId: props.parentSessionId,
+      throughTurnRequestId,
+      requestId,
+    };
+    selection.current = next;
+    openRef.current = true;
+    setOpen(true);
+    setBusy(false);
+    setDraft("");
+    setIdentityDiscovery("loading");
+    setChildReadState("idle");
+    return next;
+  };
+  const closePanel = () => {
+    openRef.current = false;
+    epoch.current += 1;
+    childReadEpoch.current += 1;
+    sourceReadEpoch.current += 1;
+    selection.current = null;
+    setOpen(false);
+    setBusy(false);
+    setDraft("");
+    setIdentityDiscovery("idle");
+    setChildReadState("idle");
+  };
+  useEffect(() => {
+    epoch.current += 1;
+    childReadEpoch.current += 1;
+    sourceReadEpoch.current += 1;
+    selection.current = null;
+    openRef.current = false;
+    setOpen(false);
+    setIdentity(null);
+    setReview(null);
+    setSourceContext(null);
+    setChildPage(null);
+    setApprovals(null);
+    setDraft("");
+    setTurnId(null);
+    setIdentityDiscovery("idle");
+    setChildReadState("idle");
+  }, [props.projectId, props.parentSessionId]);
+  useEffect(
+    () => () => {
+      openRef.current = false;
+      epoch.current += 1;
+      childReadEpoch.current += 1;
+      sourceReadEpoch.current += 1;
+      selection.current = null;
+    },
+    [],
+  );
+
+  const refreshChild = async (
+    row: CodexChatForkIdentityMetadata,
+    owner = selection.current,
+  ) => {
+    if (!owner || !row.childSessionId || !isCurrentIdentity(owner, row)) return;
+    const readEpoch = ++childReadEpoch.current;
+    setChildReadState("loading");
+    setChildPage(null);
+    setApprovals(null);
+    let page: ConversationPage,
+      permissionPage: Awaited<
+        ReturnType<CodexChatForkClient["readChildApprovals"]>
+      >,
+      context: Awaited<ReturnType<CodexChatForkClient["readContext"]>> | null;
+    try {
+      [page, permissionPage, context] = await Promise.all([
+        (async () => {
+          let after = 0;
+          const frames: ConversationPage["frames"] = [];
+          for (let count = 0; count < 40; count++) {
+            const next = await props.client.readChildTurns(
+              props.projectId,
+              row.childSessionId!,
+              row.requestId,
+              after,
+            );
+            frames.push(...next.frames);
+            if (frames.length > 2_000)
+              throw new Error("The child transcript exceeds its page bound.");
+            if (!next.more) return { ...next, frames };
+            if (next.nextCursor <= after)
+              throw new Error("The child transcript cursor did not advance.");
+            after = next.nextCursor;
+          }
+          throw new Error("The child transcript exceeds its page bound.");
+        })(),
+        props.client.readChildApprovals(
+          props.projectId,
+          row.childSessionId,
+          row.requestId,
+        ),
+        props.client
+          .readContext(props.projectId, row.requestId)
+          .catch(() => null),
+      ]);
+    } catch (error) {
+      if (
+        isCurrentIdentity(owner, row) &&
+        childReadEpoch.current === readEpoch
+      ) {
+        setChildPage(null);
+        setApprovals(null);
+        setChildReadState("failed");
+      }
+      throw error;
+    }
+    if (!isCurrentIdentity(owner, row) || childReadEpoch.current !== readEpoch)
+      return;
     setChildPage(page);
     setApprovals(permissionPage);
     setSourceContext(context);
+    setChildReadState("ready");
   };
 
   const openReview = async (requestId: string, event: MouseEvent) => {
     opener.current = event.currentTarget as HTMLElement;
-    setOpen(true);
+    const owner = beginSelection(requestId);
     setTurnId(requestId);
     setReview(null);
     setIdentity(null);
+    setSourceContext(null);
     setChildPage(null);
     setApprovals(null);
     setMessage("Loading the selected saved turn and Fork originals…");
@@ -92,6 +212,7 @@ export function CodexChatForkPanel(props: {
         }),
         props.client.listOriginals(props.projectId),
       ]);
+      if (!isCurrent(owner)) return;
       setReview(source);
       const previous = originals.find(
         (row) =>
@@ -103,36 +224,64 @@ export function CodexChatForkPanel(props: {
           props.projectId,
           previous.requestId,
         );
-        setIdentity(recovered.original ?? recovered.identity);
-        if (recovered.original?.state === "linked")
-          await refreshChild(recovered.original);
-        setMessage(
-          recovered.state === "verified"
-            ? "This exact original is verified. Opening it did not retry Fork."
-            : "This original is held for inspection. It was not retried.",
-        );
+        if (!isCurrent(owner)) return;
+        const original = recovered.original ?? recovered.identity;
+        if (!original)
+          throw new Error("The exact Fork original is unavailable.");
+        selection.current = { ...owner, requestId: original.requestId };
+        setIdentity(original);
+        setIdentityDiscovery("ready");
+        let childReadFailed = false;
+        if (recovered.original?.state === "linked") {
+          try {
+            await refreshChild(recovered.original, owner);
+          } catch {
+            childReadFailed = true;
+            if (isCurrentIdentity(owner, original)) {
+              setChildReadState("failed");
+              setMessage(
+                "The linked child history or permissions could not be verified. Sending is disabled until a complete read succeeds.",
+              );
+            }
+          }
+        }
+        if (!isCurrent(owner)) return;
+        if (!childReadFailed)
+          setMessage(
+            recovered.state === "verified"
+              ? "This exact original is verified. Opening it did not retry Fork."
+              : "This original is held for inspection. It was not retried.",
+          );
       } else {
+        selection.current = { ...owner, requestId: null };
+        setIdentityDiscovery("ready");
         setMessage(
           "Review the saved settings and bounded history before reserving a Fork.",
         );
       }
     } catch {
-      setMessage(
-        "The saved source could not be verified. No Fork was reserved.",
-      );
+      if (isCurrent(owner)) {
+        setReview(null);
+        setIdentityDiscovery("failed");
+        setMessage(
+          "The saved source or existing Fork originals could not be verified. No Fork was reserved.",
+        );
+      }
     }
   };
 
   const openChild = async (event: MouseEvent) => {
     opener.current = event.currentTarget as HTMLElement;
-    setOpen(true);
+    const owner = beginSelection(null);
     setReview(null);
     setIdentity(null);
+    setSourceContext(null);
     setChildPage(null);
     setApprovals(null);
     setMessage("Reading the saved Fork identity and child-only transcript…");
     try {
       const rows = await props.client.listOriginals(props.projectId);
+      if (!isCurrent(owner)) return;
       const linked = rows.find(
         (row) =>
           row.state === "linked" &&
@@ -150,20 +299,55 @@ export function CodexChatForkPanel(props: {
         original.childSessionId !== props.parentSessionId
       )
         throw new Error("The exact child identity could not be verified.");
+      if (!isCurrent(owner)) return;
+      selection.current = {
+        ...owner,
+        requestId: original.requestId,
+        throughTurnRequestId: original.throughTurnRequestId,
+      };
       setIdentity(original);
-      await refreshChild(original);
+      setIdentityDiscovery("ready");
+      try {
+        await refreshChild(original, owner);
+      } catch {
+        if (isCurrentIdentity(owner, original)) {
+          setChildReadState("failed");
+          setMessage(
+            "The child history or permissions could not be verified. Sending is disabled until a complete read succeeds.",
+          );
+        }
+        return;
+      }
+      if (!isCurrent(owner)) return;
       setMessage(
         "The child transcript and controls were read from this child session. Parent history is a separate read-only view.",
       );
     } catch {
-      setMessage(
-        "The saved child identity could not be verified. No action was sent.",
-      );
+      if (isCurrent(owner)) {
+        setIdentity(null);
+        setIdentityDiscovery("failed");
+        setChildReadState("failed");
+        setMessage(
+          "The saved child identity could not be verified. No action was sent.",
+        );
+      }
     }
   };
 
   const reserve = async () => {
-    if (!review || !turnId) return;
+    const owner = selection.current;
+    if (
+      !owner ||
+      !isCurrent(owner) ||
+      !review ||
+      identityDiscovery !== "ready" ||
+      identity ||
+      !turnId ||
+      owner.throughTurnRequestId !== turnId ||
+      owner.requestId !== null ||
+      !props.writesAllowed
+    )
+      return;
     setBusy(true);
     try {
       const row = await props.client.reserveFork({
@@ -172,6 +356,8 @@ export function CodexChatForkPanel(props: {
         throughTurnRequestId: turnId,
         source: review,
       });
+      if (!isCurrent(owner)) return;
+      selection.current = { ...owner, requestId: row.requestId };
       setIdentity(row);
       setMessage(
         props.client.canDispatchReservedFork(row.requestId)
@@ -179,92 +365,165 @@ export function CodexChatForkPanel(props: {
           : "Reservation reply was uncertain. This exact original is held; inspect it without retrying.",
       );
     } catch {
-      setMessage(
-        "The source changed or could not be reserved. Review it again before any new Fork.",
-      );
+      if (isCurrent(owner))
+        setMessage(
+          "The source changed or could not be reserved. Review it again before any new Fork.",
+        );
     } finally {
-      setBusy(false);
+      if (isCurrent(owner)) setBusy(false);
     }
   };
 
   const dispatch = async () => {
-    if (!identity) return;
+    const owner = selection.current;
+    if (
+      !identity ||
+      !owner ||
+      !isCurrentIdentity(owner, identity) ||
+      !props.writesAllowed ||
+      !props.client.canDispatchReservedFork(identity.requestId)
+    )
+      return;
     setBusy(true);
     try {
       const result = await props.client.dispatchReservedFork(
         props.projectId,
         identity.requestId,
       );
+      if (!isCurrentIdentity(owner, identity)) return;
       const recovered = await props.client.recoverOriginal(
         props.projectId,
         identity.requestId,
       );
-      setIdentity(recovered.original ?? recovered.identity);
-      if (recovered.original?.state === "linked")
-        await refreshChild(recovered.original);
+      if (!isCurrentIdentity(owner, identity)) return;
+      const original = recovered.original ?? recovered.identity;
+      if (!original) throw new Error("The exact Fork original is unavailable.");
+      selection.current = { ...owner, requestId: original.requestId };
+      setIdentity(original);
+      if (recovered.original?.state === "linked") {
+        try {
+          await refreshChild(recovered.original, owner);
+        } catch {
+          if (isCurrentIdentity(owner, original)) {
+            setChildReadState("failed");
+            setMessage(
+              "The linked child history or permissions could not be verified. Sending is disabled until a complete read succeeds.",
+            );
+          }
+          return;
+        }
+      }
+      if (!isCurrentIdentity(owner, original)) return;
       setMessage(
         result.state === "linked"
           ? "The original Fork is linked to its child session."
           : "The native outcome is not confirmed. The original remains held; no retry was sent.",
       );
+    } catch {
+      if (isCurrentIdentity(owner, identity))
+        setMessage(
+          "The native outcome is uncertain. The original remains held; inspect it without retrying.",
+        );
     } finally {
-      setBusy(false);
+      if (isCurrent(owner)) setBusy(false);
     }
   };
 
   const retireNotSent = async () => {
-    if (!identity || !props.client.canRetireFork(identity.requestId)) return;
+    const owner = selection.current;
+    if (
+      !identity ||
+      !owner ||
+      !isCurrentIdentity(owner, identity) ||
+      !props.writesAllowed ||
+      !props.client.canRetireFork(identity.requestId)
+    )
+      return;
     setBusy(true);
     try {
       const retired = await props.client.retireFork(
         props.projectId,
         identity.requestId,
       );
+      if (!isCurrentIdentity(owner, identity)) return;
+      selection.current = { ...owner, requestId: retired.requestId };
       setIdentity(retired);
       setMessage(
         "The transport proved this exact Fork request was not sent; its reservation was retired.",
       );
     } catch {
-      setMessage(
-        "The original could not be safely retired. It remains held for inspection.",
-      );
+      if (isCurrentIdentity(owner, identity))
+        setMessage(
+          "The original could not be safely retired. It remains held for inspection.",
+        );
     } finally {
-      setBusy(false);
+      if (isCurrent(owner)) setBusy(false);
     }
   };
 
   const sendTurn = async () => {
-    if (!identity?.childSessionId || !childPage || !draft.trim()) return;
+    const owner = selection.current;
+    if (
+      !identity?.childSessionId ||
+      !owner ||
+      !isCurrentIdentity(owner, identity) ||
+      !props.writesAllowed ||
+      childReadState !== "ready" ||
+      !childPage ||
+      !draft.trim()
+    ) {
+      if (identity && owner && isCurrentIdentity(owner, identity))
+        setMessage(
+          "The child transcript and permissions must be verified before sending.",
+        );
+      return;
+    }
+    const text = draft;
+    const expectedRevision = childPage.revision;
+    const requestId = crypto.randomUUID();
     setBusy(true);
     try {
       await props.client.sendChildTurn(
         props.projectId,
         identity.childSessionId,
         {
-          requestId: crypto.randomUUID(),
-          expectedRevision: childPage.revision,
-          text: draft,
+          requestId,
+          expectedRevision,
+          text,
           about: [],
         },
       );
+      if (!isCurrentIdentity(owner, identity)) return;
       setDraft("");
-      await refreshChild(identity);
+      await refreshChild(identity, owner);
+      if (!isCurrentIdentity(owner, identity)) return;
       setMessage(
         "The child turn was submitted once. Check its saved transcript for the result.",
       );
     } catch {
-      setMessage(
-        "The child turn outcome is uncertain. Inspect this child; do not submit it again automatically.",
-      );
+      if (isCurrentIdentity(owner, identity))
+        setMessage(
+          "The child turn outcome is uncertain. Inspect this child; do not submit it again automatically.",
+        );
     } finally {
-      setBusy(false);
+      if (isCurrent(owner)) setBusy(false);
     }
   };
 
   const loadMoreSource = async () => {
-    if (!sourceContext?.available || !sourceContext.source || !identity) return;
-    const cursor = sourceContext.source.nextCursor;
+    const owner = selection.current;
+    const context = sourceContext;
+    if (
+      !owner ||
+      !identity ||
+      !isCurrentIdentity(owner, identity) ||
+      !context?.available ||
+      !context.source
+    )
+      return;
+    const cursor = context.source.nextCursor;
     if (cursor === null) return;
+    const readEpoch = ++sourceReadEpoch.current;
     try {
       const next = await props.client.readContext(
         props.projectId,
@@ -272,15 +531,20 @@ export function CodexChatForkPanel(props: {
         cursor,
       );
       if (
+        !isCurrentIdentity(owner, identity) ||
+        sourceReadEpoch.current !== readEpoch
+      )
+        return;
+      if (
         !next.available ||
         !next.source ||
-        next.requestHash !== sourceContext.requestHash ||
-        next.parentSessionId !== sourceContext.parentSessionId ||
-        next.throughTurnRequestId !== sourceContext.throughTurnRequestId ||
-        next.source.selectedTurnHash !== sourceContext.source.selectedTurnHash
+        next.requestHash !== context.requestHash ||
+        next.parentSessionId !== context.parentSessionId ||
+        next.throughTurnRequestId !== context.throughTurnRequestId ||
+        next.source.selectedTurnHash !== context.source.selectedTurnHash
       )
         throw new Error("The inherited source changed between pages.");
-      const allFrames = [...sourceContext.source.frames, ...next.source.frames];
+      const allFrames = [...context.source.frames, ...next.source.frames];
       if (
         allFrames.length > 2_000 ||
         new Set(allFrames.map((frame) => frame.seq)).size !== allFrames.length
@@ -293,9 +557,101 @@ export function CodexChatForkPanel(props: {
         source: { ...next.source, frames: allFrames },
       });
     } catch {
-      setMessage(
-        "More inherited history could not be verified. The child transcript remains available separately.",
+      if (
+        isCurrentIdentity(owner, identity) &&
+        sourceReadEpoch.current === readEpoch
+      )
+        setMessage(
+          "More inherited history could not be verified. The child transcript remains available separately.",
+        );
+    }
+  };
+  const refreshCurrentChild = async (row: CodexChatForkIdentityMetadata) => {
+    const owner = selection.current;
+    try {
+      await refreshChild(row, owner);
+    } catch {
+      if (owner && isCurrentIdentity(owner, row))
+        setMessage(
+          "The child history or permissions could not be verified. Sending is disabled until a complete read succeeds.",
+        );
+    }
+  };
+  const decideChild = async (
+    approvalId: string,
+    turnRequestId: string,
+    decision: "accept" | "decline" | "cancel",
+  ) => {
+    const owner = selection.current;
+    const row = identity;
+    if (
+      !row?.childSessionId ||
+      !owner ||
+      !isCurrentIdentity(owner, row) ||
+      childReadState !== "ready" ||
+      !childPage ||
+      !props.writesAllowed
+    )
+      return;
+    setBusy(true);
+    try {
+      await props.client.decideChildApproval(
+        props.projectId,
+        row.childSessionId,
+        {
+          requestId: crypto.randomUUID(),
+          turnRequestId,
+          approvalId,
+          decision,
+        },
       );
+      if (!isCurrentIdentity(owner, row)) return;
+      await refreshChild(row, owner);
+      if (isCurrentIdentity(owner, row))
+        setMessage("The permission decision was recorded for this child.");
+    } catch {
+      if (isCurrentIdentity(owner, row))
+        setMessage(
+          "The permission decision is uncertain. Read the child receipt before acting again.",
+        );
+    } finally {
+      if (isCurrent(owner)) setBusy(false);
+    }
+  };
+  const stopChild = async () => {
+    const owner = selection.current;
+    const row = identity;
+    if (
+      !row?.childSessionId ||
+      !owner ||
+      !isCurrentIdentity(owner, row) ||
+      childReadState !== "ready" ||
+      !childPage ||
+      !props.writesAllowed
+    )
+      return;
+    const running = childPage.turns.find((turn) =>
+      ["accepted", "running", "cancelling"].includes(turn.phase),
+    );
+    if (!running) return;
+    setBusy(true);
+    try {
+      await props.client.stopChild(
+        props.projectId,
+        row.childSessionId,
+        running.requestId,
+      );
+      if (!isCurrentIdentity(owner, row)) return;
+      await refreshChild(row, owner);
+      if (isCurrentIdentity(owner, row))
+        setMessage("The Stop result was read from this Fork child.");
+    } catch {
+      if (isCurrentIdentity(owner, row))
+        setMessage(
+          "Stop outcome is uncertain. Inspect this child before sending another action.",
+        );
+    } finally {
+      if (isCurrent(owner)) setBusy(false);
     }
   };
 
@@ -333,7 +689,7 @@ export function CodexChatForkPanel(props: {
         open={open}
         title="Review native Codex Fork"
         titleId="codex-chat-fork-review-title"
-        onClose={() => setOpen(false)}
+        onClose={closePanel}
         returnFocusRef={opener}
         class="af-session-library-dialog"
       >
@@ -395,15 +751,30 @@ export function CodexChatForkPanel(props: {
                   {identity.heldReason ? ` · ${identity.heldReason}` : ""}
                 </p>
               )}
-              {!identity && props.writesAllowed && (
-                <button
-                  type="button"
-                  disabled={busy || !selected || !complete(selected.phase)}
-                  onClick={() => void reserve()}
-                >
-                  Reserve this exact Fork
-                </button>
-              )}
+              {!identity &&
+                props.writesAllowed &&
+                identityDiscovery === "loading" && (
+                  <p role="status">Checking saved Fork originals…</p>
+                )}
+              {!identity &&
+                props.writesAllowed &&
+                identityDiscovery === "failed" && (
+                  <p role="status">
+                    Existing Fork originals could not be verified. Close and
+                    reopen this review before reserving.
+                  </p>
+                )}
+              {!identity &&
+                props.writesAllowed &&
+                identityDiscovery === "ready" && (
+                  <button
+                    type="button"
+                    disabled={busy || !selected || !complete(selected.phase)}
+                    onClick={() => void reserve()}
+                  >
+                    Reserve this exact Fork
+                  </button>
+                )}
               {identity?.state === "reserved" &&
                 props.client.canDispatchReservedFork(identity.requestId) && (
                   <button
@@ -436,60 +807,15 @@ export function CodexChatForkPanel(props: {
                   identity={identity}
                   page={childPage}
                   approvals={approvals}
+                  readState={childReadState}
                   draft={draft}
                   setDraft={setDraft}
                   busy={busy}
                   writesAllowed={props.writesAllowed}
-                  onRefresh={() => void refreshChild(identity)}
+                  onRefresh={() => void refreshCurrentChild(identity)}
                   onSend={() => void sendTurn()}
-                  onDecision={async (approvalId, turnRequestId, decision) => {
-                    setBusy(true);
-                    try {
-                      await props.client.decideChildApproval(
-                        props.projectId,
-                        identity.childSessionId!,
-                        {
-                          requestId: crypto.randomUUID(),
-                          turnRequestId,
-                          approvalId,
-                          decision,
-                        },
-                      );
-                      await refreshChild(identity);
-                      setMessage(
-                        "The permission decision was recorded for this child.",
-                      );
-                    } catch {
-                      setMessage(
-                        "The permission decision is uncertain. Read the child receipt before acting again.",
-                      );
-                    } finally {
-                      setBusy(false);
-                    }
-                  }}
-                  onStop={async () => {
-                    const running = childPage?.turns.find((turn) =>
-                      ["accepted", "running", "cancelling"].includes(
-                        turn.phase,
-                      ),
-                    );
-                    if (!running) return;
-                    setBusy(true);
-                    try {
-                      await props.client.stopChild(
-                        props.projectId,
-                        identity.childSessionId!,
-                        running.requestId,
-                      );
-                      await refreshChild(identity);
-                    } catch {
-                      setMessage(
-                        "Stop outcome is uncertain. Inspect this child before sending another action.",
-                      );
-                    } finally {
-                      setBusy(false);
-                    }
-                  }}
+                  onDecision={decideChild}
+                  onStop={stopChild}
                 />
               )}
             </>
@@ -522,58 +848,15 @@ export function CodexChatForkPanel(props: {
                 identity={identity}
                 page={childPage}
                 approvals={approvals}
+                readState={childReadState}
                 draft={draft}
                 setDraft={setDraft}
                 busy={busy}
                 writesAllowed={props.writesAllowed}
-                onRefresh={() => void refreshChild(identity)}
+                onRefresh={() => void refreshCurrentChild(identity)}
                 onSend={() => void sendTurn()}
-                onDecision={async (approvalId, turnRequestId, decision) => {
-                  setBusy(true);
-                  try {
-                    await props.client.decideChildApproval(
-                      props.projectId,
-                      identity.childSessionId!,
-                      {
-                        requestId: crypto.randomUUID(),
-                        turnRequestId,
-                        approvalId,
-                        decision,
-                      },
-                    );
-                    await refreshChild(identity);
-                    setMessage(
-                      "The permission decision was recorded for this child.",
-                    );
-                  } catch {
-                    setMessage(
-                      "The permission decision is uncertain. Read the child receipt before acting again.",
-                    );
-                  } finally {
-                    setBusy(false);
-                  }
-                }}
-                onStop={async () => {
-                  const running = childPage?.turns.find((turn) =>
-                    ["accepted", "running", "cancelling"].includes(turn.phase),
-                  );
-                  if (!running) return;
-                  setBusy(true);
-                  try {
-                    await props.client.stopChild(
-                      props.projectId,
-                      identity.childSessionId!,
-                      running.requestId,
-                    );
-                    await refreshChild(identity);
-                  } catch {
-                    setMessage(
-                      "Stop outcome is uncertain. Inspect this child before acting again.",
-                    );
-                  } finally {
-                    setBusy(false);
-                  }
-                }}
+                onDecision={decideChild}
+                onStop={stopChild}
               />
             )}
         </div>
@@ -585,6 +868,7 @@ export function CodexChatForkPanel(props: {
 function ForkChildPanel(props: {
   identity: CodexChatForkIdentityMetadata;
   page: ConversationPage | null;
+  readState: "idle" | "loading" | "ready" | "failed";
   approvals: Awaited<
     ReturnType<CodexChatForkClient["readChildApprovals"]>
   > | null;
@@ -612,9 +896,22 @@ function ForkChildPanel(props: {
         Native child session {props.identity.childSessionId}. This transcript is
         read from the child only; the reviewed parent prefix remains separate.
       </p>
-      <button type="button" onClick={props.onRefresh}>
+      <button
+        type="button"
+        disabled={props.busy || props.readState === "loading"}
+        onClick={props.onRefresh}
+      >
         Refresh child transcript and permissions
       </button>
+      {props.readState === "loading" && (
+        <p role="status">Verifying child transcript and permissions…</p>
+      )}
+      {props.readState === "failed" && (
+        <p role="status">
+          Child transcript and permissions could not be verified. Sending is
+          disabled until a complete read succeeds.
+        </p>
+      )}
       {props.page?.frames.map((frame) =>
         frame.event.kind === "user" || frame.event.kind === "text" ? (
           <article key={frame.seq}>
@@ -634,7 +931,11 @@ function ForkChildPanel(props: {
           {item.approval.availableDecisions.map((decision) => (
             <button
               type="button"
-              disabled={!props.writesAllowed || props.busy}
+              disabled={
+                !props.writesAllowed ||
+                props.busy ||
+                props.readState !== "ready"
+              }
               onClick={() =>
                 props.onDecision(item.approval.id, item.turnRequestId, decision)
               }
@@ -647,7 +948,9 @@ function ForkChildPanel(props: {
       {active && (
         <button
           type="button"
-          disabled={!props.writesAllowed || props.busy}
+          disabled={
+            !props.writesAllowed || props.busy || props.readState !== "ready"
+          }
           onClick={props.onStop}
         >
           Stop this Fork child
@@ -665,7 +968,11 @@ function ForkChildPanel(props: {
       <button
         type="button"
         disabled={
-          !props.writesAllowed || props.busy || !props.draft.trim() || active
+          !props.writesAllowed ||
+          props.busy ||
+          props.readState !== "ready" ||
+          !props.draft.trim() ||
+          active
         }
         onClick={props.onSend}
       >

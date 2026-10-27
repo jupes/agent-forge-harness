@@ -247,7 +247,9 @@ async function completeForkSourceTurn(
   pane: Locator,
   sessionId: string,
 ): Promise<string> {
-  const priorIds = new Set(saved(sessionId).turns.map((turn) => turn.requestId));
+  const priorIds = new Set(
+    saved(sessionId).turns.map((turn) => turn.requestId),
+  );
   const message = page.getByRole("textbox", {
     name: "Session reply prompt",
     exact: true,
@@ -3120,11 +3122,7 @@ test("a delayed older Fork review cannot replace a newer selection", async ({
 }) => {
   mode("fork-service-tier-null");
   const { pane, record } = await startedChat(page);
-  const selectedRequestId = await completeForkSourceTurn(
-    page,
-    pane,
-    record.id,
-  );
+  const selectedRequestId = await completeForkSourceTurn(page, pane, record.id);
   const completed = saved(record.id).turns.filter(
     (row) => row.phase === "completed",
   );
@@ -3202,8 +3200,7 @@ test("a delayed older Fork review cannot replace a newer selection", async ({
     sessionOperationIdentityPageSchema.parse(identityEnvelope);
   const persistedOriginal = identityPage.operations.find(
     (row) =>
-      row.family === "codex-chat-fork" &&
-      row.requestId === originalRequestId,
+      row.family === "codex-chat-fork" && row.requestId === originalRequestId,
   );
   expect(persistedOriginal).toMatchObject({
     requestId: originalRequestId,
@@ -3227,42 +3224,52 @@ test("a delayed older Fork review cannot replace a newer selection", async ({
   const staleReviewBarrier = new Promise<void>((resolve) => {
     releaseStaleReview = resolve;
   });
+  let finishStaleReview!: () => void;
+  let staleReviewHandlerStarted = false;
+  const staleReviewFinished = new Promise<void>((resolve) => {
+    finishStaleReview = resolve;
+  });
   const staleReviewMatcher = (url: URL) =>
     url.pathname.endsWith(`/sessions/${record.id}/fork-review`) &&
     url.searchParams.get("throughTurnRequestId") === earlier.requestId;
   let staleResponseVerified = false;
   const delayedStaleReview = async (route: Route) => {
-    const requestHeaders = await route.request().allHeaders();
-    const origin = new URL(route.request().url()).origin;
-    const response = await route.fetch({
-      headers: {
-        ...requestHeaders,
-        Origin: origin,
-        "Sec-Fetch-Site": "same-origin",
-      },
-    });
-    const body = await response.body();
     try {
-      const raw: unknown = JSON.parse(body.toString("utf8"));
-      const envelope = z
-        .object({ ok: z.literal(true), data: z.unknown(), error: z.null() })
-        .safeParse(raw);
-      const source = envelope.success
-        ? codexChatForkSourcePageSchema.safeParse(envelope.data.data)
-        : null;
-      staleResponseVerified =
-        response.status() === 200 &&
-        source?.success === true &&
-        source.data.projectId === record.projectId &&
-        source.data.parentSessionId === record.id &&
-        source.data.requestId === null &&
-        source.data.throughTurnRequestId === earlier.requestId;
-    } catch {
-      staleResponseVerified = false;
+      staleReviewHandlerStarted = true;
+      const requestHeaders = await route.request().allHeaders();
+      const origin = new URL(route.request().url()).origin;
+      const response = await route.fetch({
+        headers: {
+          ...requestHeaders,
+          Origin: origin,
+          "Sec-Fetch-Site": "same-origin",
+        },
+      });
+      const body = await response.body();
+      try {
+        const raw: unknown = JSON.parse(body.toString("utf8"));
+        const envelope = z
+          .object({ ok: z.literal(true), data: z.unknown(), error: z.null() })
+          .safeParse(raw);
+        const source = envelope.success
+          ? codexChatForkSourcePageSchema.safeParse(envelope.data.data)
+          : null;
+        staleResponseVerified =
+          response.status() === 200 &&
+          source?.success === true &&
+          source.data.projectId === record.projectId &&
+          source.data.parentSessionId === record.id &&
+          source.data.requestId === null &&
+          source.data.throughTurnRequestId === earlier.requestId;
+      } catch {
+        staleResponseVerified = false;
+      }
+      staleReviewStarted();
+      await staleReviewBarrier;
+      await route.fulfill({ response, body });
+    } finally {
+      finishStaleReview();
     }
-    staleReviewStarted();
-    await staleReviewBarrier;
-    await route.fulfill({ response, body });
   };
   await page.route(staleReviewMatcher, delayedStaleReview);
   try {
@@ -3276,9 +3283,7 @@ test("a delayed older Fork review cannot replace a newer selection", async ({
     await expect(dialog).toContainText("PRIVATE_FORK_SOURCE_PROMPT");
     const staleResponse = page.waitForResponse((response) => {
       const url = new URL(response.url());
-      return (
-        response.request().method() === "GET" && staleReviewMatcher(url)
-      );
+      return response.request().method() === "GET" && staleReviewMatcher(url);
     });
     releaseStaleReview();
     await staleResponse;
@@ -3298,10 +3303,13 @@ test("a delayed older Fork review cannot replace a newer selection", async ({
     ).toBeEnabled();
     expect(posts).toHaveLength(1);
     expect(
-      calls().filter((row) => row.kind === "rpc" && row.method === "thread/fork"),
+      calls().filter(
+        (row) => row.kind === "rpc" && row.method === "thread/fork",
+      ),
     ).toHaveLength(nativeForksBefore);
   } finally {
     releaseStaleReview();
+    if (staleReviewHandlerStarted) await staleReviewFinished;
     await page.unroute(staleReviewMatcher, delayedStaleReview);
     page.off("request", capturePost);
   }
@@ -3509,38 +3517,48 @@ test("Codex Chat explicitly reviews, forks, reloads and controls only the linked
   const childReadBarrier = new Promise<void>((resolve) => {
     releaseChildRead = resolve;
   });
+  let finishChildRead!: () => void;
+  let childReadHandlerStarted = false;
+  const childReadFinished = new Promise<void>((resolve) => {
+    finishChildRead = resolve;
+  });
   let childResponseVerified = false;
   const childPageRoute = async (route: Route) => {
-    const requestHeaders = await route.request().allHeaders();
-    const origin = new URL(route.request().url()).origin;
-    const response = await route.fetch({
-      headers: {
-        ...requestHeaders,
-        Origin: origin,
-        "Sec-Fetch-Site": "same-origin",
-      },
-    });
-    const body = await response.body();
     try {
-      const raw: unknown = JSON.parse(body.toString("utf8"));
-      const envelope = z
-        .object({ ok: z.literal(true), data: z.unknown(), error: z.null() })
-        .safeParse(raw);
-      const childPage = envelope.success
-        ? ownedCodingPageSchema.safeParse(envelope.data.data)
-        : null;
-      childResponseVerified =
-        response.status() === 200 &&
-        childPage?.success === true &&
-        childPage.data.projectId === record.projectId &&
-        childPage.data.conversationId === child.id &&
-        childPage.data.binding?.provider === "codex";
-    } catch {
-      childResponseVerified = false;
+      childReadHandlerStarted = true;
+      const requestHeaders = await route.request().allHeaders();
+      const origin = new URL(route.request().url()).origin;
+      const response = await route.fetch({
+        headers: {
+          ...requestHeaders,
+          Origin: origin,
+          "Sec-Fetch-Site": "same-origin",
+        },
+      });
+      const body = await response.body();
+      try {
+        const raw: unknown = JSON.parse(body.toString("utf8"));
+        const envelope = z
+          .object({ ok: z.literal(true), data: z.unknown(), error: z.null() })
+          .safeParse(raw);
+        const childPage = envelope.success
+          ? ownedCodingPageSchema.safeParse(envelope.data.data)
+          : null;
+        childResponseVerified =
+          response.status() === 200 &&
+          childPage?.success === true &&
+          childPage.data.projectId === record.projectId &&
+          childPage.data.conversationId === child.id &&
+          childPage.data.binding?.provider === "codex";
+      } catch {
+        childResponseVerified = false;
+      }
+      childReadStarted();
+      await childReadBarrier;
+      await route.fulfill({ response, body });
+    } finally {
+      finishChildRead();
     }
-    childReadStarted();
-    await childReadBarrier;
-    await route.fulfill({ response, body });
   };
   const childPageUrl = (url: URL) =>
     url.pathname.endsWith(
@@ -3571,14 +3589,13 @@ test("Codex Chat explicitly reviews, forks, reloads and controls only the linked
     ).toBeDisabled({ timeout: 250 });
     const childResponse = page.waitForResponse((response) => {
       const url = new URL(response.url());
-      return (
-        response.request().method() === "GET" && childPageUrl(url)
-      );
+      return response.request().method() === "GET" && childPageUrl(url);
     });
     releaseChildRead();
     await childResponse;
   } finally {
     releaseChildRead();
+    if (childReadHandlerStarted) await childReadFinished;
     await page.unroute(childPageRouteMatcher, childPageRoute);
   }
   const recoveredDialog = page.getByRole("dialog", {
@@ -3825,7 +3842,7 @@ test("lost native Fork reply remains held across reload without another Fork POS
     "Create the native child thread once",
   );
   expect(originalGets).toContain(
-      `/__agent-forge/projects/${record.projectId}/codex-chat-forks/${reservedRequestId}`,
+    `/__agent-forge/projects/${record.projectId}/codex-chat-forks/${reservedRequestId}`,
   );
   expect(
     calls().filter((row) => row.kind === "fork-created-without-response"),
