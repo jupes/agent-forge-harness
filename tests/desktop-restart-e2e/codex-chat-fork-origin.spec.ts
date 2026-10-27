@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { join } from "node:path";
 import { expect, type Page, type Route, test } from "@playwright/test";
@@ -29,7 +29,17 @@ type FixtureCall = {
   method?: string;
   params?: Record<string, unknown>;
   result?: unknown;
+  argvCategory?: "version-probe" | "help-probe" | "app-server-stdio" | "other";
 };
+
+const FIXTURE_CALL_KINDS = [
+  "version",
+  "help",
+  "process",
+  "rpc",
+  "notification",
+  "answer",
+] as const;
 
 let forkOriginFailureFacts: (() => Record<string, unknown>) | null = null;
 
@@ -113,8 +123,13 @@ function saved(id: string) {
 function calls(): FixtureCall[] {
   const path = join(HEARTH_HOME, "codex-chat-fixture-calls.jsonl");
   if (!existsSync(path)) return [];
-  return readFileSync(path, "utf8")
-    .split("\n")
+  const size = statSync(path).size;
+  if (size > 8 * 1024 * 1024)
+    throw new Error("Codex fixture call log exceeded its bound.");
+  const lines = readFileSync(path, "utf8").split("\n");
+  if (lines.length > 4097)
+    throw new Error("Codex fixture call log exceeded its row bound.");
+  return lines
     .filter((line) => line.length > 0)
     .map((line) => record(parseJson(line, "Codex fixture event")))
     .filter((value): value is Record<string, unknown> => value !== null)
@@ -125,7 +140,54 @@ function calls(): FixtureCall[] {
         : {}),
       ...(record(value["params"]) ? { params: record(value["params"])! } : {}),
       ...(value["result"] !== undefined ? { result: value["result"] } : {}),
+      ...(value["kind"] === "version"
+        ? { argvCategory: "version-probe" as const }
+        : value["kind"] === "help"
+          ? { argvCategory: "help-probe" as const }
+          : value["kind"] === "process"
+            ? {
+                argvCategory:
+                  Array.isArray(value["argv"]) &&
+                  value["argv"].length === 2 &&
+                  value["argv"][0] === "app-server" &&
+                  value["argv"][1] === "--stdio"
+                    ? ("app-server-stdio" as const)
+                    : ("other" as const),
+              }
+            : {}),
     }));
+}
+
+function fixtureCallFacts() {
+  try {
+    const rows = calls();
+    if (rows.length > 4096) return { state: "over-limit" as const };
+    const kindCounts = Object.fromEntries(
+        FIXTURE_CALL_KINDS.map((kind) => [kind, 0]),
+      ) as Record<(typeof FIXTURE_CALL_KINDS)[number], number>,
+      argvCategories = {
+        versionProbe: 0,
+        helpProbe: 0,
+        appServerStdio: 0,
+        other: 0,
+      };
+    for (const row of rows) {
+      if (
+        FIXTURE_CALL_KINDS.includes(
+          row.kind as (typeof FIXTURE_CALL_KINDS)[number],
+        )
+      )
+        kindCounts[row.kind as (typeof FIXTURE_CALL_KINDS)[number]]++;
+      if (row.argvCategory === "version-probe") argvCategories.versionProbe++;
+      else if (row.argvCategory === "help-probe") argvCategories.helpProbe++;
+      else if (row.argvCategory === "app-server-stdio")
+        argvCategories.appServerStdio++;
+      else if (row.argvCategory === "other") argvCategories.other++;
+    }
+    return { state: "available" as const, kindCounts, argvCategories };
+  } catch {
+    return { state: "unavailable" as const };
+  }
 }
 
 function rpcCount(method: string): number {
@@ -602,6 +664,7 @@ test("two actual host replacements recover the exact Fork original before and af
         requestId: record(entry.body)?.["requestId"] ?? null,
       })),
       nativeRpcCounts: nativeCalls,
+      fixtureCalls: fixtureCallFacts(),
       sessions: sessionFacts,
       counts: {
         startPosts: startWrites.length,

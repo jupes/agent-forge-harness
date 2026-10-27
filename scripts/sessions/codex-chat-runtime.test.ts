@@ -1,14 +1,16 @@
 import { afterEach, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
   readFileSync,
   rmdirSync,
+  statSync,
   symlinkSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { join } from "node:path";
+import { delimiter, dirname, join } from "node:path";
 import type { CodexChatEvent, CodexChatLaunch } from "../../types/codex-chat";
 import { scratchDirs } from "../test-scratch";
 import {
@@ -27,6 +29,78 @@ afterEach(() => scratch.cleanup());
 const fake = join(import.meta.dir, "fixtures/codex-app-server-cli.ts");
 const version = "0.163.0-alpha.10.2";
 const threadId = "0199a213-81c0-7800-8aa1-bbab2a035a53";
+const COMPILED_FIXTURE_KINDS = [
+  "version",
+  "help",
+  "process",
+  "rpc",
+  "notification",
+  "answer",
+] as const;
+type CompiledFixtureKind = (typeof COMPILED_FIXTURE_KINDS)[number];
+
+function summarizeCompiledFixtureLog(path: string, status: string) {
+  const unavailable = {
+    state: "unavailable" as const,
+    status,
+    kindCounts: null,
+    argvCategories: null,
+  };
+  try {
+    const size = statSync(path).size;
+    if (size > 65_536) return { ...unavailable, state: "over-limit" as const };
+    const text = readFileSync(path, "utf8");
+    if (!text.endsWith("\n"))
+      return { ...unavailable, state: "partial" as const };
+    const lines = text.slice(0, -1).split("\n");
+    if (lines.length > 256)
+      return { ...unavailable, state: "over-limit" as const };
+    const kindCounts: Record<CompiledFixtureKind, number> = {
+        version: 0,
+        help: 0,
+        process: 0,
+        rpc: 0,
+        notification: 0,
+        answer: 0,
+      },
+      argvCategories = {
+        versionProbe: 0,
+        helpProbe: 0,
+        appServerStdio: 0,
+        other: 0,
+      };
+    for (const line of lines) {
+      let raw: unknown;
+      try {
+        raw = JSON.parse(line);
+      } catch {
+        return { ...unavailable, state: "invalid" as const };
+      }
+      if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+        return { ...unavailable, state: "invalid" as const };
+      const row = raw as Record<string, unknown>;
+      if (COMPILED_FIXTURE_KINDS.includes(row.kind as CompiledFixtureKind))
+        kindCounts[row.kind as CompiledFixtureKind]++;
+      if (row.kind === "version") argvCategories.versionProbe++;
+      else if (row.kind === "help") argvCategories.helpProbe++;
+      else if (row.kind === "process") {
+        const argv = row.argv;
+        if (
+          Array.isArray(argv) &&
+          argv.length === 2 &&
+          argv[0] === "app-server" &&
+          argv[1] === "--stdio"
+        )
+          argvCategories.appServerStdio++;
+        else argvCategories.other++;
+      }
+    }
+    return { state: "available" as const, status, kindCounts, argvCategories };
+  } catch {
+    return unavailable;
+  }
+}
+
 function fixture(mode = "normal") {
   const root = scratch.make("codex-chat-runtime-"),
     home = join(root, "home"),
@@ -110,6 +184,169 @@ function fixture(mode = "normal") {
     readFailureFacts: () => readCodexChatFixtureLog(log),
   };
 }
+
+test("the compiled desktop Codex stand-in completes prepare and dispatch in fork-restart mode", async () => {
+  const root = scratch.make("codex-chat-compiled-stand-in-"),
+    home = join(root, "fixture-home"),
+    userHome = join(home, "user"),
+    configDirectory = join(userHome, ".agent-forge"),
+    workspace = join(root, "workspace"),
+    binDirectory = join(home, "bd-stand-in", "bin"),
+    executable = join(binDirectory, "codex.exe"),
+    log = join(home, "codex-chat-fixture-calls.jsonl"),
+    environment: Record<string, string> = {};
+  let status = "compile";
+  const summarize = () => summarizeCompiledFixtureLog(log, status);
+  try {
+    mkdirSync(configDirectory, { recursive: true });
+    mkdirSync(workspace, { recursive: true });
+    mkdirSync(join(workspace, ".git"));
+    mkdirSync(binDirectory, { recursive: true });
+    writeFileSync(
+      join(configDirectory, "config.toml"),
+      '[smiths.codex-journeyman]\nprovider = "codex"\nmodel = "gpt-5-codex"\neffort = "medium"\nenabled = true\n',
+      { mode: 0o600 },
+    );
+    writeFileSync(
+      join(workspace, "agent-forge.toml"),
+      "[execution.env]\npass = []\n",
+    );
+    writeFileSync(
+      join(home, "codex-chat-fixture-mode.json"),
+      JSON.stringify("fork-restart"),
+      { mode: 0o600 },
+    );
+    for (const name of [
+      "SystemRoot",
+      "SystemDrive",
+      "WINDIR",
+      "COMSPEC",
+      "PATHEXT",
+      "TEMP",
+      "TMP",
+      "LANG",
+      "LC_ALL",
+    ]) {
+      const value = process.env[name];
+      if (value !== undefined) environment[name] = value;
+    }
+    const pathKey =
+      Object.keys(process.env).find((name) => name.toUpperCase() === "PATH") ??
+      "PATH";
+    environment[pathKey] = [binDirectory, dirname(process.execPath)].join(
+      delimiter,
+    );
+    Object.assign(environment, {
+      HOME: userHome,
+      USERPROFILE: userHome,
+      APPDATA: join(userHome, "AppData", "Roaming"),
+      LOCALAPPDATA: join(userHome, "AppData", "Local"),
+      XDG_CONFIG_HOME: join(userHome, "config"),
+      AGENT_FORGE_HOME: home,
+    });
+    const source = join(
+      import.meta.dir,
+      "../../tests/desktop-e2e/codex-chat-cli-stand-in.ts",
+    );
+    const compiled = spawnSync(
+      process.execPath,
+      ["build", "--compile", source, "--outfile", executable],
+      { encoding: "utf8", env: environment, timeout: 60_000 },
+    );
+    if (compiled.status !== 0)
+      throw new Error("The compiled inert Codex fixture did not build.");
+
+    const runtime = createCodexChatRuntime({
+        root: workspace,
+        home,
+        configHome: userHome,
+        command: [executable],
+        syncCommand: [executable, "--sync"],
+        environment,
+        operatorToken: () => null,
+        timeoutMs: 10_000,
+        rpcTimeoutMs: 2_000,
+        modelEfforts: [
+          {
+            model: "gpt-5-codex",
+            efforts: ["medium"],
+            source: "model/list" as const,
+            cliVersion: version,
+            asOf: "2026-10-23T00:00:00.000Z",
+          },
+        ],
+      }),
+      launch: CodexChatLaunch = {
+        mode: "chat",
+        cwd: workspace,
+        model: "gpt-5-codex",
+        effort: "medium",
+        sandbox: "workspace-write",
+        approvalPolicy: "on-request",
+        prompt: "Fixture-only Codex compatibility check",
+        context: {
+          projectId: "project-fixture",
+          repository: workspace,
+          worktree: workspace,
+          about: [],
+        },
+      };
+    status = "prepare";
+    const prepared = await runtime.prepare({
+      smith: "codex-journeyman",
+      launch,
+    });
+    expect(prepared.capabilities.version).toBe(version);
+    status = "dispatch";
+    const events: CodexChatEvent[] = [];
+    const outcome = await runtime.run(
+      { prepared, resume: null },
+      async (event) => {
+        events.push(event);
+      },
+      new AbortController().signal,
+      { requestApproval: async () => "decline" },
+    );
+    status = `outcome-${outcome.phase}`;
+    expect(outcome).toMatchObject({
+      phase: "completed",
+      exitCode: 0,
+      stopped: false,
+      timedOut: false,
+    });
+    expect(events).toContainEqual({
+      kind: "text",
+      itemId: "message-a",
+      text: "Hello",
+    });
+    expect(events).toContainEqual({
+      kind: "text",
+      itemId: "message-a",
+      text: " world",
+    });
+    const facts = summarize();
+    expect(facts).toMatchObject({
+      state: "available",
+      kindCounts: {
+        version: 2,
+        help: 2,
+        process: 1,
+        rpc: 3,
+        notification: 1,
+        answer: 0,
+      },
+      argvCategories: {
+        versionProbe: 2,
+        helpProbe: 2,
+        appServerStdio: 1,
+      },
+    });
+  } catch {
+    throw new Error(
+      `Compiled Codex compatibility fixture failed: ${JSON.stringify(summarize())}`,
+    );
+  }
+}, 60_000);
 
 async function forkInput(f: ReturnType<typeof fixture>) {
   const prepared = await f.runtime.prepare({
