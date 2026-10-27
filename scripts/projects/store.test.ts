@@ -1,9 +1,30 @@
 import { afterEach, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeOwnerOnly } from "../hearth/token";
-import { createProjectStore } from "./store";
+import {
+  createProjectStore,
+  hashProjectCreateRequest,
+  projectCatalogPath,
+} from "./store";
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (typeof value === "object" && value !== null) {
+    const object = value as Record<string, unknown>;
+    return `{${Object.keys(object)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(object[key])}`)
+      .join(",")}}`;
+  }
+  return JSON.stringify(value) ?? "null";
+}
+
+function createRequestHash(value: unknown): string {
+  return createHash("sha256").update(canonicalJson(value)).digest("hex");
+}
 
 const homes: string[] = [];
 afterEach(() => {
@@ -115,4 +136,233 @@ test("a project survives reopening with stable identity and revision-checked pre
     updatedAt: expect.any(String),
   });
   expect(createProjectStore(home).read()).toEqual(updated);
+});
+
+test("create identity hashes bind the UUID and expected semantic revision", async () => {
+  const { store, input } = fixture();
+  const firstId = "cf2ca2e2-a2d1-42bb-b9b4-1517c3db434e";
+  const first = await store.reserveCreate({
+    requestId: firstId,
+    original: input,
+    expectedCatalogRevision: 0,
+    preflightScope: { hash: "a".repeat(64), count: 0 },
+    validateScope: async () => ({ hash: "a".repeat(64), count: 0 }),
+  });
+  expect(first.created).toBe(true);
+  expect(first.operation.requestHash).toBe(
+    createRequestHash({
+      requestId: firstId,
+      expectedCatalogRevision: 0,
+      original: input,
+    }),
+  );
+  const hashInput = {
+    requestId: firstId,
+    expectedCatalogRevision: 0,
+    original: input,
+    validateScope: async () => ({ hash: "a".repeat(64), count: 0 }),
+  };
+  expect(hashProjectCreateRequest(hashInput)).toBe(first.operation.requestHash);
+  await expect(
+    store.reserveCreate({
+      requestId: firstId,
+      original: input,
+      expectedCatalogRevision: 1,
+      preflightScope: { hash: "a".repeat(64), count: 0 },
+      validateScope: async () => ({ hash: "a".repeat(64), count: 0 }),
+    }),
+  ).rejects.toMatchObject({ status: 409 });
+  const replay = await store.reserveCreate({
+    requestId: firstId,
+    original: input,
+    expectedCatalogRevision: 0,
+    preflightScope: { hash: "a".repeat(64), count: 0 },
+    validateScope: async () => ({ hash: "a".repeat(64), count: 0 }),
+  });
+  expect(replay.created).toBe(false);
+  expect(replay.operation).toEqual(first.operation);
+
+  await store.retireCreate(firstId, first.operation.requestHash);
+  const secondId = "975d7e7a-4694-4b06-995c-b087d7fda3a0";
+  const second = await store.reserveCreate({
+    requestId: secondId,
+    original: input,
+    expectedCatalogRevision: 0,
+    preflightScope: { hash: "a".repeat(64), count: 0 },
+    validateScope: async () => ({ hash: "a".repeat(64), count: 0 }),
+  });
+  expect(second.operation.requestHash).toBe(
+    createRequestHash({
+      requestId: secondId,
+      expectedCatalogRevision: 0,
+      original: input,
+    }),
+  );
+  expect(second.operation.requestHash).not.toBe(first.operation.requestHash);
+});
+
+test("project catalog preferences preserve pending create originals without advancing their metadata revision", async () => {
+  const { home, store, input } = fixture();
+  const existing = await store.create(input, 0);
+  const current = existing.projects[0];
+  if (!current) throw new Error("project missing");
+  const reserved = await store.reserveCreate({
+    requestId: "bfefeb99-b4a8-4e6b-b6b1-5916b9d355c1",
+    original: { ...input, slug: "beta", name: "Beta" },
+    expectedCatalogRevision: 1,
+    preflightScope: { hash: "b".repeat(64), count: 3 },
+    validateScope: async () => ({ hash: "b".repeat(64), count: 3 }),
+  });
+  expect(reserved.catalog.revision).toBe(1);
+  const updated = await store.preferences(current.id, 1, { pinned: true });
+  expect(updated.revision).toBe(2);
+  expect(updated.projects[0]).toMatchObject({ id: current.id, pinned: true });
+  expect(
+    createProjectStore(home).readCreate(reserved.operation.requestId),
+  ).toEqual(reserved.operation);
+});
+
+test("a project reservation refuses distinct repository spellings of the same canonical checkout", async () => {
+  const { store, input } = fixture();
+  const separator = process.platform === "win32" ? "\\" : "/";
+  const original = {
+    ...input,
+    workspaces: [
+      {
+        root: input.workspaces[0]!.root,
+        repositories: [
+          input.workspaces[0]!.root,
+          `${input.workspaces[0]!.root}${separator}`,
+        ],
+        epicIds: input.workspaces[0]!.epicIds,
+      },
+    ],
+  };
+  const before = store.read();
+  const requestId = "78ff0894-37dc-457c-b818-11238edb9722";
+  await expect(
+    store.reserveCreate({
+      requestId,
+      original,
+      expectedCatalogRevision: 0,
+      preflightScope: { hash: "a".repeat(64), count: 1 },
+      validateScope: async () => ({ hash: "a".repeat(64), count: 1 }),
+    }),
+  ).rejects.toMatchObject({ status: 400 });
+  expect(store.read()).toEqual(before);
+  expect(store.readCreate(requestId)).toBeNull();
+});
+
+test("project create ledger refuses a reservation that would exceed the catalog byte cap", async () => {
+  const { home, store, input } = fixture();
+  const catalogFile = projectCatalogPath(home);
+  let lastError: unknown;
+  for (let index = 0; index < 300; index += 1) {
+    const requestId = `00000000-0000-4000-8000-${index.toString(16).padStart(12, "0")}`;
+    try {
+      await store.reserveCreate({
+        requestId,
+        original: {
+          ...input,
+          slug: `capacity-${index}`,
+          name: `Capacity ${index}`,
+          description: "x".repeat(450),
+        },
+        expectedCatalogRevision: 0,
+        preflightScope: { hash: "b".repeat(64), count: 1 },
+        validateScope: async () => ({ hash: "b".repeat(64), count: 1 }),
+      });
+    } catch (error) {
+      lastError = error;
+      break;
+    }
+  }
+  expect(lastError).toMatchObject({ status: 400 });
+  const before = readFileSync(catalogFile, "utf8");
+  await expect(
+    store.reserveCreate({
+      requestId: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+      original: {
+        ...input,
+        slug: "capacity-after-full",
+        name: "Capacity after full",
+        description: "x".repeat(450),
+      },
+      expectedCatalogRevision: 0,
+      preflightScope: { hash: "b".repeat(64), count: 1 },
+      validateScope: async () => ({ hash: "b".repeat(64), count: 1 }),
+    }),
+  ).rejects.toMatchObject({ status: 400 });
+  expect(readFileSync(catalogFile, "utf8")).toBe(before);
+});
+
+test("concurrent commit and retirement leave one durable terminal outcome", async () => {
+  const { store, input } = fixture();
+  const requestId = "65b017ba-2f30-4439-a9cc-18a55ff2ed4c";
+  const reserved = await store.reserveCreate({
+    requestId,
+    original: input,
+    expectedCatalogRevision: 0,
+    preflightScope: { hash: "c".repeat(64), count: 1 },
+    validateScope: async () => ({ hash: "c".repeat(64), count: 1 }),
+  });
+  const outcomes = await Promise.allSettled([
+    store.commitCreate({
+      requestId,
+      requestHash: reserved.operation.requestHash,
+      reviewedScopeHash: reserved.operation.scopeHash,
+      preflightScope: { hash: reserved.operation.scopeHash, count: 1 },
+      validateScope: async () => ({
+        hash: reserved.operation.scopeHash,
+        count: 1,
+      }),
+    }),
+    store.retireCreate(requestId, reserved.operation.requestHash),
+  ]);
+  expect(
+    outcomes.filter((outcome) => outcome.status === "fulfilled"),
+  ).toHaveLength(1);
+  expect(
+    outcomes.filter((outcome) => outcome.status === "rejected"),
+  ).toHaveLength(1);
+  const current = store.read();
+  const identity = store.readCreate(requestId);
+  expect(
+    identity?.state === "created" ||
+      identity?.state === "retired-before-create",
+  ).toBe(true);
+  expect(current.projects.length).toBe(identity?.state === "created" ? 1 : 0);
+  expect(current.revision).toBe(identity?.state === "created" ? 1 : 0);
+});
+
+test("a modified saved create original is a corrupt catalog and is never repaired from elsewhere", async () => {
+  const { home, store, input } = fixture();
+  const reserved = await store.reserveCreate({
+    requestId: "01e1a1bc-36fa-4df3-ae65-d1068d1b97dc",
+    original: input,
+    expectedCatalogRevision: 0,
+    preflightScope: { hash: "f".repeat(64), count: 0 },
+    validateScope: async () => ({ hash: "f".repeat(64), count: 0 }),
+  });
+  const file = projectCatalogPath(home);
+  const saved = JSON.parse(readFileSync(file, "utf8")) as {
+    createOperations: Array<{ original: { name: string } }>;
+  };
+  saved.createOperations[0]!.original.name = "Tampered";
+  const corrupted = JSON.stringify(saved);
+  writeOwnerOnly(file, corrupted);
+  expect(() => store.read()).toThrow();
+  await expect(
+    store.commitCreate({
+      requestId: reserved.operation.requestId,
+      requestHash: reserved.operation.requestHash,
+      reviewedScopeHash: reserved.operation.scopeHash,
+      preflightScope: { hash: reserved.operation.scopeHash, count: 0 },
+      validateScope: async () => ({
+        hash: reserved.operation.scopeHash,
+        count: 0,
+      }),
+    }),
+  ).rejects.toThrow();
+  expect(readFileSync(file, "utf8")).toBe(corrupted);
 });

@@ -32,6 +32,7 @@ import type {
   SmithsView,
 } from "../../types/hearth";
 import type { OwnedSessionRecord } from "../../types/owned-session";
+import type { ProjectCatalog } from "../../types/projects";
 import type { SmithConfigEditRequest } from "../../types/smith-config-edit";
 import type { SmithRoutingEditRequest } from "../../types/smith-routing-edit";
 import { type LoadedConfig, loadConfig } from "../config/load";
@@ -72,7 +73,11 @@ import { keeperShiftStartRequestSchema } from "../keeper/shift-start-protocol";
 import { type AppendResult, appendEvent } from "../ledger/append";
 import { setSessionModel } from "../ledger/session-models";
 import { workspaceKey } from "../projects/scope";
-import { createProjectStore, projectCatalogPath } from "../projects/store";
+import {
+  createProjectStore,
+  hashProjectCreateRequest,
+  projectCatalogPath,
+} from "../projects/store";
 import { FIXTURE_PROJECT_ID, projectCatalogFixture } from "../projects/testing";
 import { providerLoginFile } from "../providers/login";
 import { queueTracker } from "../scheduler/queue-fixture";
@@ -624,8 +629,72 @@ interface ActionFixture {
   effects?: string[];
   /** What the valid request needs to exist first. */
   prepare?(h: TestHearth): Promise<void>;
+  /** Snapshot a relevant domain collection immediately after fixture setup. */
+  captureBefore?(h: TestHearth): ProjectCatalog["projects"];
   /** The effect itself, not its status: what the valid request must have changed. */
-  happened(h: TestHearth, answer: unknown): Promise<void>;
+  happened(
+    h: TestHearth,
+    answer: unknown,
+    before?: ProjectCatalog["projects"],
+  ): Promise<void>;
+}
+
+const API_PROJECT_CREATE_RESERVE_ID = "3eed32cc-a41d-49b7-b895-9236743781fd";
+const API_PROJECT_CREATE_COMMIT_ID = "a506e878-f16f-492f-8e2b-d2d35e2cf11f";
+const API_PROJECT_CREATE_RETIRE_ID = "61a2f73e-a0fd-4d9f-928d-38e5cf398c1b";
+const API_PROJECT_CREATE_READ_ID = "8de54683-b2d1-45a4-907e-6a1bfcb40221";
+function apiProjectCreateOriginal(slug: string, root = "") {
+  return {
+    slug,
+    name: `Project ${slug}`,
+    description: "",
+    icon: "P",
+    workspaces: [
+      {
+        root,
+        repositories: [root],
+        epicIds: ["alpha-epic"],
+      },
+    ],
+  };
+}
+
+function seedProjectCreateScope(h: TestHearth, slug: string): void {
+  h.bd.issues.set("alpha-epic", {
+    id: "alpha-epic",
+    title: "Project creation epic",
+    issue_type: "epic",
+    priority: 2,
+    status: "open",
+    labels: [`project:${slug}`],
+    created_at: "2026-10-26T00:00:00.000Z",
+    updated_at: "2026-10-26T00:00:00.000Z",
+  });
+  h.bd.answer = (args) =>
+    args[0] === "export"
+      ? {
+          status: 0,
+          stdout: [...h.bd.issues.values()]
+            .map((row) => JSON.stringify(row))
+            .join("\n"),
+          stderr: "",
+        }
+      : undefined;
+}
+
+async function seedProjectCreateReservation(
+  h: TestHearth,
+  requestId: string,
+  slug: string,
+): Promise<void> {
+  const original = apiProjectCreateOriginal(slug, h.workspace);
+  await createProjectStore(h.home).reserveCreate({
+    requestId,
+    original,
+    expectedCatalogRevision: createProjectStore(h.home).read().revision,
+    preflightScope: { hash: "a".repeat(64), count: 0 },
+    validateScope: async () => ({ hash: "a".repeat(64), count: 0 }),
+  });
 }
 
 function projectBeadFixture(
@@ -2306,6 +2375,168 @@ const ACTIONS: Record<string, ActionFixture> = {
       });
     },
   },
+  "POST /projects/create-reservations": {
+    valid: {
+      path: "/projects/create-reservations",
+      body: {
+        requestId: API_PROJECT_CREATE_RESERVE_ID,
+        expectedCatalogRevision: 0,
+        original: apiProjectCreateOriginal("api-project-create", "C:\\repo"),
+      },
+      status: 201,
+      target: "api-project-create",
+      audit: {
+        family: "project-create",
+        requestId: API_PROJECT_CREATE_RESERVE_ID,
+      },
+    },
+    invalid: {
+      path: "/projects/create-reservations",
+      body: { requestId: "invalid", expectedCatalogRevision: 0, original: {} },
+    },
+    prepare: async (h) => {
+      seedProjectCreateScope(h, "api-project-create");
+      const row = ACTIONS["POST /projects/create-reservations"]!;
+      const original = apiProjectCreateOriginal(
+        "api-project-create",
+        h.workspace,
+      );
+      row.valid.body = {
+        requestId: API_PROJECT_CREATE_RESERVE_ID,
+        expectedCatalogRevision: createProjectStore(h.home).read().revision,
+        original,
+      };
+      row.valid.audit = {
+        family: "project-create",
+        requestId: API_PROJECT_CREATE_RESERVE_ID,
+        inputHash: hashProjectCreateRequest({
+          requestId: API_PROJECT_CREATE_RESERVE_ID,
+          expectedCatalogRevision: createProjectStore(h.home).read().revision,
+          original,
+        }),
+      };
+    },
+    captureBefore: (h) => createProjectStore(h.home).read().projects,
+    happened: async (h, _answer, before) => {
+      if (!before) throw new Error("project catalog baseline was not captured");
+      expect(
+        createProjectStore(h.home).readCreate(API_PROJECT_CREATE_RESERVE_ID),
+      ).toMatchObject({
+        state: "reserved",
+        original: apiProjectCreateOriginal("api-project-create", h.workspace),
+      });
+      expect(createProjectStore(h.home).read().projects).toEqual(before);
+    },
+  },
+  "POST /projects/create-reservations/:requestId/commit": {
+    valid: {
+      path: `/projects/create-reservations/${API_PROJECT_CREATE_COMMIT_ID}/commit`,
+      body: { requestHash: "a".repeat(64), reviewedScopeHash: "b".repeat(64) },
+      status: 200,
+      target: API_PROJECT_CREATE_COMMIT_ID,
+      audit: {
+        family: "project-create",
+        requestId: API_PROJECT_CREATE_COMMIT_ID,
+      },
+    },
+    invalid: {
+      path: "/projects/create-reservations/not-a-uuid/commit",
+      body: { requestHash: "a".repeat(64), reviewedScopeHash: "b".repeat(64) },
+    },
+    prepare: async (h) => {
+      seedProjectCreateScope(h, "api-project-commit");
+      const original = apiProjectCreateOriginal(
+        "api-project-commit",
+        h.workspace,
+      );
+      const reservation = await fetch(`${h.api}/projects/create-reservations`, {
+        method: "POST",
+        headers: h.headers(h.hearth.token),
+        body: JSON.stringify({
+          requestId: API_PROJECT_CREATE_COMMIT_ID,
+          expectedCatalogRevision: createProjectStore(h.home).read().revision,
+          original,
+        }),
+      });
+      expect(reservation.status).toBe(201);
+      const answer = await reservation.json();
+      expect(answer).toMatchObject({ ok: true, error: null });
+      const operation = answer.data as {
+        requestHash: string;
+        scopeHash: string;
+      };
+      const row =
+        ACTIONS["POST /projects/create-reservations/:requestId/commit"]!;
+      row.valid.body = {
+        requestHash: operation.requestHash,
+        reviewedScopeHash: operation.scopeHash,
+      };
+      row.valid.audit = {
+        family: "project-create",
+        requestId: API_PROJECT_CREATE_COMMIT_ID,
+        inputHash: operation.requestHash,
+      };
+    },
+    happened: async (h) => {
+      expect(
+        createProjectStore(h.home).readCreate(API_PROJECT_CREATE_COMMIT_ID)
+          ?.state,
+      ).toBe("created");
+      expect(
+        createProjectStore(h.home)
+          .read()
+          .projects.map((item) => item.slug),
+      ).toContain("api-project-commit");
+    },
+  },
+  "POST /projects/create-reservations/:requestId/retire": {
+    valid: {
+      path: `/projects/create-reservations/${API_PROJECT_CREATE_RETIRE_ID}/retire`,
+      body: { requestHash: "a".repeat(64) },
+      status: 200,
+      target: API_PROJECT_CREATE_RETIRE_ID,
+      audit: {
+        family: "project-create",
+        requestId: API_PROJECT_CREATE_RETIRE_ID,
+      },
+    },
+    invalid: {
+      path: "/projects/create-reservations/not-a-uuid/retire",
+      body: { requestHash: "a".repeat(64) },
+    },
+    prepare: async (h) => {
+      const original = apiProjectCreateOriginal(
+        "api-project-retire",
+        h.workspace,
+      );
+      await createProjectStore(h.home).reserveCreate({
+        requestId: API_PROJECT_CREATE_RETIRE_ID,
+        original,
+        expectedCatalogRevision: createProjectStore(h.home).read().revision,
+        preflightScope: { hash: "c".repeat(64), count: 0 },
+        validateScope: async () => ({ hash: "c".repeat(64), count: 0 }),
+      });
+      const hash = hashProjectCreateRequest({
+        requestId: API_PROJECT_CREATE_RETIRE_ID,
+        expectedCatalogRevision: createProjectStore(h.home).read().revision,
+        original,
+      });
+      const row =
+        ACTIONS["POST /projects/create-reservations/:requestId/retire"]!;
+      row.valid.body = { requestHash: hash };
+      row.valid.audit = {
+        family: "project-create",
+        requestId: API_PROJECT_CREATE_RETIRE_ID,
+        inputHash: hash,
+      };
+    },
+    happened: async (h) => {
+      expect(
+        createProjectStore(h.home).readCreate(API_PROJECT_CREATE_RETIRE_ID)
+          ?.state,
+      ).toBe("retired-before-create");
+    },
+  },
   // A child that inherited its parent's label: in no state, so propose takes it in.
   "POST /queue/:id/propose": {
     valid: {
@@ -2823,6 +3054,8 @@ const ACTIONS: Record<string, ActionFixture> = {
 
 /** A concrete path per read row; a row with none fails the suite. */
 const READS: Record<string, string> = {
+  "GET /projects/create-reservations": "/projects/create-reservations",
+  "GET /projects/create-reservations/:requestId": `/projects/create-reservations/${API_PROJECT_CREATE_READ_ID}`,
   "GET /projects/:id/session-start-identities": `/projects/${FIXTURE_PROJECT_ID}/session-start-identities`,
   "GET /projects/:id/codex-chat-forks/:requestId": `/projects/${FIXTURE_PROJECT_ID}/codex-chat-forks/${API_CODEX_CHAT_FORK_ID}`,
   "GET /projects/:id/codex-chat-forks/:requestId/context": `/projects/${FIXTURE_PROJECT_ID}/codex-chat-forks/${API_CODEX_CHAT_FORK_ID}/context`,
@@ -3224,12 +3457,14 @@ describe("every action row (iterating the table)", () => {
         const {
           valid,
           prepare,
+          captureBefore,
           happened,
           outcome = [],
           effects = [],
           settled,
         } = fixture(row);
         await prepare?.(h);
+        const beforeDomain = captureBefore?.(h);
         const before = snapshot(h);
         const seen = probes.length;
 
@@ -3282,7 +3517,7 @@ describe("every action row (iterating the table)", () => {
         expect(calls[0]?.audit.at(-1)?.id).toBe(added[0]?.id);
 
         progress.stage = "happened";
-        await happened(h, body.data);
+        await happened(h, body.data, beforeDomain);
         if (row.action === "council.run.start" && valid.target !== undefined) {
           progress.stage = "council-run-finished";
           await councilRunFinished(h, valid.target);
@@ -3781,6 +4016,11 @@ describe("a read row or the stream while another connection holds the write lock
     await seedKeeperShiftStartHistory(h);
     seedSmithVerificationRead(h);
     activityReadMembership(h);
+    await seedProjectCreateReservation(
+      h,
+      API_PROJECT_CREATE_READ_ID,
+      "cold-ledger-project-read",
+    );
     await seedSmithCreateOriginal(h);
     await seedSmithEditOriginal(h);
     await seedSmithRoutingEditOriginal(h);
@@ -4896,6 +5136,11 @@ describe("every read row (iterating the table)", () => {
     await seedForkReadChild(h);
     await seedForkReadSourceReview(h);
     await seedForkReadOriginal(h);
+    await seedProjectCreateReservation(
+      h,
+      API_PROJECT_CREATE_READ_ID,
+      "api-project-read",
+    );
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");
     for (const row of rows) {
@@ -4944,6 +5189,11 @@ describe("every read row (iterating the table)", () => {
     await seedForkReadChild(h);
     await seedForkReadSourceReview(h);
     await seedForkReadOriginal(h);
+    await seedProjectCreateReservation(
+      h,
+      API_PROJECT_CREATE_READ_ID,
+      "api-project-read",
+    );
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");
     const refused: Array<[string, Record<string, string>]> = [

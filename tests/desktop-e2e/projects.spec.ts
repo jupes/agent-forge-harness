@@ -1,10 +1,13 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
+import { OPERATOR_HEADER, SURFACE_HEADER } from "../../scripts/hearth/paths";
 import { resolveCheckout } from "../../scripts/ledger/workspace";
 import { projectFixture } from "../../scripts/projects/testing";
 import type { ProjectCatalog } from "../../types/projects";
 import { readState, withStateLock, writeState } from "../e2e/bd-stand-in-state";
+import { openSettled, reloadSettled } from "../e2e/fixtures";
+import { pageToken } from "../e2e/launch-link";
 import { BD_STAND_IN_STATE, HEARTH_HOME } from "../e2e/servers";
 
 const catalogFile = join(HEARTH_HOME, "projects", "catalog.json");
@@ -47,6 +50,154 @@ test.beforeEach(() => {
       ),
     ),
   );
+});
+
+test("a protected project reservation stays private until a separate create action", async ({
+  page,
+}) => {
+  const epicId = "onboarding-private-epic";
+  const privateSlug = "uncommitted-private-draft";
+  const privateName = "Private onboarding draft — must not appear in Projects";
+  withStateLock(BD_STAND_IN_STATE, () => {
+    const state = readState(BD_STAND_IN_STATE);
+    state[epicId] = {
+      id: epicId,
+      title: "Private onboarding epic",
+      issue_type: "epic",
+      status: "open",
+      priority: 2,
+      created_at: "2026-10-27T00:00:00.000Z",
+      updated_at: "2026-10-27T00:00:00.000Z",
+      labels: [`project:${privateSlug}`],
+    };
+    writeState(BD_STAND_IN_STATE, state);
+  });
+
+  const original = {
+    slug: privateSlug,
+    name: privateName,
+    description: "This reserved original is private until an explicit create.",
+    icon: "P",
+    workspaces: [
+      { root: workspace, repositories: [workspace], epicIds: [epicId] },
+    ],
+  };
+  const postedPaths: string[] = [];
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      request.url().includes("/projects/create-reservations")
+    )
+      postedPaths.push(new URL(request.url()).pathname);
+  });
+
+  await openSettled(page, "/index.html#/desktop/projects");
+  const token = await pageToken(page);
+  const headers = {
+    "Content-Type": "application/json",
+    [OPERATOR_HEADER]: token,
+    [SURFACE_HEADER]: "ui",
+  };
+  const before = await page.evaluate(
+    async ({ headers }) => {
+      const response = await fetch("/__agent-forge/projects", { headers });
+      return { status: response.status, body: await response.json() };
+    },
+    { headers },
+  );
+  expect(before.status).toBe(200);
+  expect(before.body).toMatchObject({
+    ok: true,
+    data: { revision: 1, projects: [{ slug: "alpha" }, { slug: "beta" }] },
+  });
+  const catalogBefore = before.body.data as ProjectCatalog;
+
+  const requestId = "ab847e06-4f01-4dd3-a425-47bf9053e006";
+  const reserve = await page.evaluate(
+    async ({ headers, requestId, original, revision }) => {
+      const response = await fetch(
+        "/__agent-forge/projects/create-reservations",
+        {
+          method: "POST",
+          headers,
+          body: JSON.stringify({
+            requestId,
+            expectedCatalogRevision: revision,
+            original,
+          }),
+        },
+      );
+      return { status: response.status, body: await response.json() };
+    },
+    {
+      headers,
+      requestId,
+      original,
+      revision: catalogBefore.revision,
+    },
+  );
+  expect(reserve.status).toBe(201);
+  expect(reserve.body).toMatchObject({
+    ok: true,
+    data: {
+      requestId,
+      state: "reserved",
+      original,
+      scopeCount: expect.any(Number),
+      requestHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+    },
+  });
+  const requestHash = reserve.body.data.requestHash as string;
+
+  const recovered = await page.evaluate(
+    async ({ headers, requestId }) => {
+      const response = await fetch(
+        `/__agent-forge/projects/create-reservations/${requestId}`,
+        { headers },
+      );
+      return { status: response.status, body: await response.json() };
+    },
+    { headers, requestId },
+  );
+  expect(recovered.status).toBe(200);
+  expect(recovered.body).toMatchObject({
+    ok: true,
+    data: { requestId, requestHash, state: "reserved", original },
+  });
+
+  const publicCatalog = await page.evaluate(
+    async ({ headers }) => {
+      const response = await fetch("/__agent-forge/projects", { headers });
+      return { status: response.status, body: await response.json() };
+    },
+    { headers },
+  );
+  expect(publicCatalog).toEqual({
+    status: 200,
+    body: { ok: true, data: catalogBefore, error: null },
+  });
+  expect(JSON.stringify(publicCatalog.body)).not.toContain(privateName);
+  expect(JSON.stringify(publicCatalog.body)).not.toContain(privateSlug);
+
+  await expect(
+    page.getByRole("button", { name: "New project", exact: true }),
+  ).toBeDisabled();
+  await reloadSettled(page);
+  await expect(
+    page.getByRole("article", { name: "Alpha", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("article", { name: "Beta", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText(privateName, { exact: true })).toHaveCount(0);
+  await expect(
+    page.getByRole("button", { name: "New project", exact: true }),
+  ).toBeDisabled();
+  expect(postedPaths).toEqual(["/__agent-forge/projects/create-reservations"]);
+  expect(catalogBefore.projects.map(({ id, slug }) => ({ id, slug }))).toEqual([
+    { id: alpha.id, slug: alpha.slug },
+    { id: beta.id, slug: beta.slug },
+  ]);
 });
 
 test("projects persist pin/archive through the real hearth, filter and switch without stale selection", async ({
