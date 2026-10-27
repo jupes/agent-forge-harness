@@ -439,8 +439,10 @@ test.skipIf(!nativeEnabled)(
         "journal.sqlite",
       ),
       creatorVisible = join(barrier, "creator-visible"),
+      creatorMetadataRead = join(barrier, "creator-metadata-read"),
       peerSnapshot = join(barrier, "peer-snapshot"),
       releaseCreator = join(barrier, "release-creator"),
+      releaseCreatorMetadata = join(barrier, "release-creator-metadata"),
       creatorResult = join(barrier, "creator-result"),
       peerResult = join(barrier, "peer-result"),
       native = nativeWindowsAcl();
@@ -457,6 +459,7 @@ test.skipIf(!nativeEnabled)(
       const native = nativeWindowsAcl();
       const stages = [];
       const metadataReads = [];
+      let mutexAclReads = 0;
       let peerWriteOpen = "not-probed";
       let creatorReadOpen = "not-probed";
       const fileKind = (path) => {
@@ -474,12 +477,31 @@ test.skipIf(!nativeEnabled)(
         defaultOwnerSid: () => native.defaultOwnerSid?.(),
         read(path) {
           const kind = fileKind(path);
+          if (kind === "mutex") {
+            mutexAclReads++;
+            if (${creator} && mutexAclReads === 3) {
+              // Source order is lstat/path metadata, then this ACL read.
+              // Hold here while the peer performs its actual reserve.
+              const sizeBeforePeer = Number(lstatSync(path, { bigint: true }).size);
+              stages.push("creator-mutex-acl-read-3-before");
+              writeFileSync(${JSON.stringify(creatorMetadataRead)}, "ready", { flag: "wx" });
+              const wait = new Int32Array(new SharedArrayBuffer(4));
+              const deadline = Date.now() + 6_000;
+              while (!existsSync(${JSON.stringify(releaseCreatorMetadata)})) {
+                if (Date.now() >= deadline)
+                  throw new Error("creator metadata barrier timed out");
+                Atomics.wait(wait, 0, 0, 10);
+              }
+              stages.push("creator-mutex-acl-read-3-after");
+              recordRead({ operation: "mutex-acl-read-gap", kind: "mutex", beforeBytes: sizeBeforePeer, afterBytes: Number(lstatSync(path, { bigint: true }).size) });
+            }
+          }
           try {
             const result = native.read(path);
-            recordRead({ operation: "acl", kind, ok: true });
+            if (kind !== "other") recordRead({ operation: "acl", kind, ok: true });
             return result;
           } catch (error) {
-            recordRead({ operation: "acl", kind, ok: false });
+            if (kind !== "other") recordRead({ operation: "acl", kind, ok: false });
             throw error;
           }
         },
@@ -487,10 +509,10 @@ test.skipIf(!nativeEnabled)(
           const kind = name === null ? "folder" : fileKind(join(folder, name));
           try {
             const result = native.readInFolder(folder, name, maxBytes);
-            recordRead({ operation: "file", kind, present: result?.file !== null && result?.file !== undefined, bytes: result?.file?.bytes.byteLength ?? 0 });
+            if (kind !== "other" && kind !== "folder") recordRead({ operation: "file", kind, present: result?.file !== null && result?.file !== undefined, bytes: result?.file?.bytes.byteLength ?? 0 });
             return result;
           } catch (error) {
-            recordRead({ operation: "file", kind, present: false, bytes: 0 });
+            if (kind !== "other" && kind !== "folder") recordRead({ operation: "file", kind, present: false, bytes: 0 });
             throw error;
           }
         } : undefined,
@@ -551,7 +573,18 @@ test.skipIf(!nativeEnabled)(
           }
           writeFileSync(${JSON.stringify(peerSnapshot)}, JSON.stringify({ empty, ...identity(), ...reading(), peerWriteOpen }), { flag: "wx" });
         },
-        beforeExclusivePreLockAssert: () => { if (stages.length < 8) stages.push("before-pre-lock-assert"); },
+        beforeExclusivePreLockAssert: () => {
+          if (stages.length < 8) stages.push("before-pre-lock-assert");
+          if (!${creator}) {
+            const wait = new Int32Array(new SharedArrayBuffer(4));
+            const deadline = Date.now() + 6_000;
+            while (!existsSync(${JSON.stringify(creatorMetadataRead)})) {
+              if (Date.now() >= deadline)
+                throw new Error("peer metadata barrier timed out");
+              Atomics.wait(wait, 0, 0, 10);
+            }
+          }
+        },
         onMutexDiagnostic: (item) => {
           if (diagnostics.length < 8) diagnostics.push({ phase: item.phase, guard: item.guard, fileSize: item.fileSize, identityStable: item.identityStable, failure: item.failure });
         },
@@ -589,11 +622,20 @@ test.skipIf(!nativeEnabled)(
         ),
       );
       await waitForMarker(peerSnapshot, "peer-snapshot");
+      writeFileSync(releaseCreator, "release", { flag: "wx" });
+      await waitForMarker(
+        creatorMetadataRead,
+        "creator-metadata-read-after-mutex-lstat",
+      );
+      await waitForMarker(peerResult, "peer-reserved");
+      writeFileSync(releaseCreatorMetadata, "release", { flag: "wx" });
     } catch (error) {
       setupFailure = error;
     } finally {
       if (!existsSync(releaseCreator))
         writeFileSync(releaseCreator, "release", { flag: "wx" });
+      if (!existsSync(releaseCreatorMetadata))
+        writeFileSync(releaseCreatorMetadata, "release", { flag: "wx" });
       const exits = await Promise.all(spawned.map((child) => child.exited));
       for (const child of spawned) children.delete(child);
       if (exits.some((code) => code !== 0) && setupFailure === undefined)

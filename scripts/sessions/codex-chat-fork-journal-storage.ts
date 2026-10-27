@@ -1183,7 +1183,19 @@ export function createCodexChatForkJournalStorage(
     const mutexIdentity = identity(mutexInfo),
       sidecars = (() => {
         try {
-          return inspectLockMetadata(new Map([[MUTEX_FILE, mutexIdentity]]));
+          // Preserve the same checks while naming their bounded guard sites
+          // when a peer changes the SQLite file during this initial snapshot.
+          return inspectLockMetadata(
+            new Map([[MUTEX_FILE, mutexIdentity]]),
+            false,
+            true,
+            {
+              phase: "sidecar-layout",
+              rootIdentity,
+              locksIdentity: lockIdentity,
+              mutexIdentity,
+            },
+          );
         } catch (error) {
           reportMutexDiagnostic("sidecar-layout", error, mutexIdentity);
           throw error;
