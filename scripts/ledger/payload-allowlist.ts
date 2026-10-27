@@ -144,6 +144,7 @@ const NESTED: Readonly<Record<string, (value: unknown) => unknown>> = {
   family: (value) =>
     value === "smith-config-edit" ||
     value === "smith-routing-edit" ||
+    value === "smith-config-create" ||
     value === "codex-chat-fork"
       ? value
       : DROP,

@@ -310,15 +310,18 @@ test("unknown-entry capacity overflow refuses and preserves every file", async (
     storage.writeOnce(id, "intent.json", "{}");
   });
   const operation = join(home, "smith-create-journal", "records", id);
-  for (let index = 0; index < 7; index++)
+  for (let index = 0; index < 8; index++)
     writeFileSync(join(operation, `unknown-${index}.json`), "future", {
       mode: 0o600,
       flag: "wx",
     });
 
   expect(() => storage.inspect(id)).toThrow("entry limit");
-  expect(readdirSync(operation)).toHaveLength(8);
+  expect(readdirSync(operation)).toHaveLength(9);
   expect(readFileSync(join(operation, "unknown-6.json"), "utf8")).toBe(
+    "future",
+  );
+  expect(readFileSync(join(operation, "unknown-7.json"), "utf8")).toBe(
     "future",
   );
 });

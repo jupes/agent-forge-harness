@@ -50,7 +50,13 @@ export type SmithConfigCreateResult =
   | {
       phase: "held";
       /** Historical saved stage, never evidence that a producer is currently live. */
-      stage: "intent" | "prepared" | "attempted" | "unconfirmed";
+      stage:
+        | "intent"
+        | "reserved"
+        | "claimed"
+        | "prepared"
+        | "attempted"
+        | "unconfirmed";
       preview: SmithConfigPreview | null;
     }
   | {
@@ -75,4 +81,30 @@ export interface SmithConfigCreateReceipt {
   createdAt: string;
   original: SmithConfigCreateRequest;
   result: SmithConfigCreateResult;
+}
+
+/** Metadata-only projection of one server-owned Smith Create original. */
+export interface SmithCreateIdentitySummary {
+  requestId: string;
+  ownerScopeHash: string;
+  inputHash: string;
+  target: SmithConfigTarget;
+  state: "reserved" | "held" | "confirmed" | "refused";
+  stage:
+    | "reserved"
+    | "legacy"
+    | "claimed"
+    | "prepared"
+    | "attempted"
+    | "unconfirmed"
+    | "terminal";
+  createdAt: string;
+}
+
+/** A complete bounded index; a prefix or failed scan is never a valid answer. */
+export interface SmithCreateIdentityIndex {
+  version: 1;
+  complete: true;
+  ownerScopeHash: string;
+  entries: SmithCreateIdentitySummary[];
 }

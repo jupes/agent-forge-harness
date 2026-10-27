@@ -446,6 +446,15 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
       readOriginal() {
         throw new Error("The trusted Smith create selectors are unavailable.");
       },
+      async reserveIdentity() {
+        throw new Error("The trusted Smith create selectors are unavailable.");
+      },
+      listIdentities() {
+        throw new Error("The trusted Smith create selectors are unavailable.");
+      },
+      async retireReserved() {
+        throw new Error("The trusted Smith create selectors are unavailable.");
+      },
     };
   }
   let smithEditService: SmithEditService;

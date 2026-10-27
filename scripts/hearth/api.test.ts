@@ -29,8 +29,10 @@ import type { OwnedSessionRecord } from "../../types/owned-session";
 import type { SmithConfigEditRequest } from "../../types/smith-config-edit";
 import type { SmithRoutingEditRequest } from "../../types/smith-routing-edit";
 import { type LoadedConfig, loadConfig } from "../config/load";
+import { smithCreateInputHash } from "../config/smith-create-journal-protocol";
 import {
   smithConfigCreateReceiptSchema,
+  smithConfigCreateRequestSchema,
   smithConfigPreviewSchema,
 } from "../config/smith-create-protocol";
 import { createSmithCreateService } from "../config/smith-create-service";
@@ -219,6 +221,13 @@ const RUN_STATE = JSON.stringify({
 });
 
 const API_SMITH_CREATE_ID = "dc9078cf-6200-4fed-aeb8-2be646ee7953";
+const API_SMITH_CREATE_RESERVE_ID = "dc9078cf-6200-4fed-aeb8-2be646ee7954";
+const API_SMITH_CREATE_RETIRE_ID = "dc9078cf-6200-4fed-aeb8-2be646ee7955";
+const API_SMITH_CREATE_REVISION = {
+  version: 1 as const,
+  user: "0".repeat(64),
+  workspace: "0".repeat(64),
+};
 const API_CODEX_CHAT_FORK_ID = "80e40be9-e811-47c3-a71d-b988e67178a0";
 const API_CODEX_CHAT_FORK_RESERVE_ID = "808b8f84-1f86-44bf-9cf4-518c58b59a11";
 const API_CODEX_CHAT_FORK_RETIRE_ID = "808b8f84-1f86-44bf-9cf4-518c58b59a12";
@@ -256,6 +265,14 @@ const API_SMITH_CREATE_SMITH = {
   effort: "high",
   enabled: true,
   tags: ["fixture"],
+};
+const API_SMITH_CREATE_RESERVE_SMITH = {
+  ...API_SMITH_CREATE_SMITH,
+  name: "api-route-reserve-smith",
+};
+const API_SMITH_CREATE_RETIRE_SMITH = {
+  ...API_SMITH_CREATE_SMITH,
+  name: "api-route-retire-smith",
 };
 const API_SMITH_EDIT_ID = "122d0b56-96f3-4818-8789-6ab562c092e8";
 const API_SMITH_EDIT_SMITH = {
@@ -339,7 +356,7 @@ async function seedSmithCreateOriginal(h: TestHearth): Promise<void> {
     target: "workspace",
     smith: API_SMITH_CREATE_SMITH,
   });
-  await service.create({
+  await service.reserveIdentity({
     requestId: API_SMITH_CREATE_ID,
     target: "workspace",
     smith: API_SMITH_CREATE_SMITH,
@@ -556,7 +573,7 @@ interface ActionFixture {
     path: string;
     body: unknown;
     status: number;
-    target: string;
+    target?: string;
     audit?: Record<string, string>;
   };
   /** A request the row's validator refuses. */
@@ -1122,6 +1139,128 @@ const ACTIONS: Record<string, ActionFixture> = {
       expect(smithConfigPreviewSchema.safeParse(answer).success).toBe(true);
     },
   },
+  "POST /config/smiths/creates/reserve": {
+    valid: {
+      path: "/config/smiths/creates/reserve",
+      body: {
+        requestId: API_SMITH_CREATE_RESERVE_ID,
+        target: "workspace",
+        smith: API_SMITH_CREATE_RESERVE_SMITH,
+        expectedRevision: API_SMITH_CREATE_REVISION,
+      },
+      status: 200,
+      target: "workspace",
+      audit: {
+        family: "smith-config-create",
+        requestId: API_SMITH_CREATE_RESERVE_ID,
+        inputHash: smithCreateInputHash({
+          requestId: API_SMITH_CREATE_RESERVE_ID,
+          target: "workspace",
+          smith: API_SMITH_CREATE_RESERVE_SMITH,
+          expectedRevision: API_SMITH_CREATE_REVISION,
+        }),
+      },
+    },
+    invalid: {
+      path: "/config/smiths/creates/reserve",
+      body: { requestId: "invalid" },
+    },
+    prepare: async (h) => {
+      const preview = await post(h, "/config/smiths/preview", {
+        target: "workspace",
+        smith: API_SMITH_CREATE_RESERVE_SMITH,
+      });
+      const checked = smithConfigPreviewSchema.parse(
+        (await envelope(preview)).data,
+      );
+      const request = {
+        requestId: API_SMITH_CREATE_RESERVE_ID,
+        target: "workspace" as const,
+        smith: API_SMITH_CREATE_RESERVE_SMITH,
+        expectedRevision: checked.expectedRevision,
+      };
+      const fixture = ACTIONS["POST /config/smiths/creates/reserve"]!;
+      fixture.valid.body = request;
+      fixture.valid.audit = {
+        family: "smith-config-create",
+        requestId: request.requestId,
+        inputHash: smithCreateInputHash(request),
+      };
+    },
+    settled: async (h) => {
+      const service = createSmithCreateService(
+        { options: { harnessRoot: h.root, home: h.configHome, env: {} } },
+        { profileHome: h.home, coordinationRoot: h.home },
+      );
+      const request = smithConfigCreateRequestSchema.parse(
+        ACTIONS["POST /config/smiths/creates/reserve"]!.valid.body,
+      );
+      await service.retireReserved(
+        request.requestId,
+        smithCreateInputHash(request),
+      );
+    },
+    happened: async (_h, answer) => {
+      expect(smithConfigCreateReceiptSchema.parse(answer).result).toMatchObject(
+        {
+          phase: "held",
+          stage: "reserved",
+        },
+      );
+    },
+  },
+  "POST /config/smiths/creates/:requestId/retire": {
+    valid: {
+      path: `/config/smiths/creates/${API_SMITH_CREATE_RETIRE_ID}/retire`,
+      body: { inputHash: "0".repeat(64) },
+      status: 200,
+      audit: {
+        family: "smith-config-create",
+        requestId: API_SMITH_CREATE_RETIRE_ID,
+        inputHash: "0".repeat(64),
+      },
+    },
+    invalid: {
+      path: "/config/smiths/creates/not-a-uuid/retire",
+      body: { inputHash: "0".repeat(64) },
+    },
+    prepare: async (h) => {
+      const preview = await post(h, "/config/smiths/preview", {
+        target: "workspace",
+        smith: API_SMITH_CREATE_RETIRE_SMITH,
+      });
+      const checked = smithConfigPreviewSchema.parse(
+        (await envelope(preview)).data,
+      );
+      const request = {
+        requestId: API_SMITH_CREATE_RETIRE_ID,
+        target: "workspace" as const,
+        smith: API_SMITH_CREATE_RETIRE_SMITH,
+        expectedRevision: checked.expectedRevision,
+      };
+      const service = createSmithCreateService(
+        { options: { harnessRoot: h.root, home: h.configHome, env: {} } },
+        { profileHome: h.home, coordinationRoot: h.home },
+      );
+      await service.reserveIdentity(request);
+      const inputHash = smithCreateInputHash(request),
+        fixture = ACTIONS["POST /config/smiths/creates/:requestId/retire"]!;
+      fixture.valid.body = { inputHash };
+      fixture.valid.audit = {
+        family: "smith-config-create",
+        requestId: request.requestId,
+        inputHash,
+      };
+    },
+    happened: async (_h, answer) => {
+      expect(smithConfigCreateReceiptSchema.parse(answer).result).toMatchObject(
+        {
+          phase: "refused",
+          reason: "cancelled-before-attempt",
+        },
+      );
+    },
+  },
   "POST /config/smiths/creates": {
     valid: {
       path: "/config/smiths/creates",
@@ -1141,11 +1280,18 @@ const ACTIONS: Record<string, ActionFixture> = {
       const checked = smithConfigPreviewSchema.parse(
         (await envelope(preview)).data,
       );
-      ACTIONS["POST /config/smiths/creates"]!.valid.body = {
+      const request = {
         requestId: API_SMITH_CREATE_ID,
         target: "workspace",
         smith: API_SMITH_CREATE_SMITH,
         expectedRevision: checked.expectedRevision,
+      };
+      const fixture = ACTIONS["POST /config/smiths/creates"]!;
+      fixture.valid.body = request;
+      fixture.valid.audit = {
+        family: "smith-config-create",
+        requestId: request.requestId,
+        inputHash: smithCreateInputHash(request),
       };
     },
     happened: async (_h, answer) => {
@@ -2587,6 +2733,7 @@ const READS: Record<string, string> = {
   "GET /eligibility": "/eligibility",
   "GET /smiths": "/smiths",
   "GET /smiths/verification": "/smiths/verification",
+  "GET /smiths/creates": "/smiths/creates",
   "GET /smiths/creates/:requestId": `/smiths/creates/${API_SMITH_CREATE_ID}`,
   "GET /smiths/edits/:requestId": `/smiths/edits/${API_SMITH_EDIT_ID}`,
   "GET /smiths/routing-edits/:requestId": `/smiths/routing-edits/${API_SMITH_ROUTING_EDIT_ORIGINAL_ID}`,
@@ -2801,67 +2948,89 @@ describe("the route table", () => {
 describe("every action row (iterating the table)", () => {
   test("with the token, from the hearth's own origin: one operator.action is appended, then the effect runs", async () => {
     const { h, probes } = await probed();
-    for (const row of actionRows(h)) {
-      const {
-        valid,
-        prepare,
-        happened,
-        outcome = [],
-        effects = [],
-        settled,
-      } = fixture(row);
-      await prepare?.(h);
-      const before = snapshot(h);
-      const seen = probes.length;
+    const rows = actionRows(h);
+    let progress: { row: number; action: string; stage: string } = {
+      row: 0,
+      action: "setup",
+      stage: "start",
+    };
+    const diagnostic = setTimeout(() => {
+      console.error(
+        `[api-action-inventory] ${JSON.stringify({ event: "slow", ...progress })}`,
+      );
+    }, 10_000);
+    try {
+      for (const [index, row] of rows.entries()) {
+        progress = { row: index + 1, action: row.action, stage: "prepare" };
+        const {
+          valid,
+          prepare,
+          happened,
+          outcome = [],
+          effects = [],
+          settled,
+        } = fixture(row);
+        await prepare?.(h);
+        const before = snapshot(h);
+        const seen = probes.length;
 
-      const response = await post(h, valid.path, valid.body);
-      const body = await envelope(response);
-      expect({
-        row: key(row),
-        status: response.status,
-        ok: body.ok,
-        error: body.error,
-      }).toEqual({
-        row: key(row),
-        status: valid.status,
-        ok: true,
-        error: null,
-      });
-      await settled?.(h);
+        progress.stage = "post";
+        const response = await post(h, valid.path, valid.body);
+        progress.stage = "read-response";
+        const body = await envelope(response);
+        expect({
+          row: key(row),
+          status: response.status,
+          ok: body.ok,
+          error: body.error,
+        }).toEqual({
+          row: key(row),
+          status: valid.status,
+          ok: true,
+          error: null,
+        });
+        progress.stage = "settled";
+        await settled?.(h);
 
-      // This row's audit row first, then exactly the events its fixture says
-      // a successful effect leaves: for most rows, none.
-      const added = h.events().filter((event) => !before.includes(event.id));
-      expect(
-        added.map((event) => ({
-          row: key(row),
-          kind: event.kind,
-          payload: event.payload,
-        })),
-      ).toEqual([
-        {
-          row: key(row),
-          kind: "operator.action",
-          payload: {
-            action: row.action,
-            surface: "api",
-            target: valid.target,
-            ...valid.audit,
+        // This row's audit row first, then exactly the events its fixture says
+        // a successful effect leaves: for most rows, none.
+        const added = h.events().filter((event) => !before.includes(event.id));
+        expect(
+          added.map((event) => ({
+            row: key(row),
+            kind: event.kind,
+            payload: event.payload,
+          })),
+        ).toEqual([
+          {
+            row: key(row),
+            kind: "operator.action",
+            payload: {
+              action: row.action,
+              surface: "api",
+              ...(valid.target === undefined ? {} : { target: valid.target }),
+              ...valid.audit,
+            },
           },
-        },
-        ...(typeof outcome === "function" ? outcome(h) : outcome).map(
-          (event) => ({ row: key(row), ...event }),
-        ),
-      ]);
+          ...(typeof outcome === "function" ? outcome(h) : outcome).map(
+            (event) => ({ row: key(row), ...event }),
+          ),
+        ]);
 
-      // The effect ran once, and that row was already stored when it started.
-      const calls = probes.slice(seen);
-      expect(calls.map((call) => call.row)).toEqual([key(row), ...effects]);
-      expect(calls[0]?.audit.at(-1)?.id).toBe(added[0]?.id);
+        // The effect ran once, and that row was already stored when it started.
+        const calls = probes.slice(seen);
+        expect(calls.map((call) => call.row)).toEqual([key(row), ...effects]);
+        expect(calls[0]?.audit.at(-1)?.id).toBe(added[0]?.id);
 
-      await happened(h, body.data);
-      if (row.action === "council.run.start")
-        await councilRunFinished(h, valid.target);
+        progress.stage = "happened";
+        await happened(h, body.data);
+        if (row.action === "council.run.start" && valid.target !== undefined) {
+          progress.stage = "council-run-finished";
+          await councilRunFinished(h, valid.target);
+        }
+      }
+    } finally {
+      clearTimeout(diagnostic);
     }
   }, 30_000);
 
@@ -3030,7 +3199,30 @@ describe("every action row (iterating the table)", () => {
     test(`when the audit append ${label}: 503 and the effect is not called`, async () => {
       const { h, probes } = await probed({ api: { appendEvent } });
       for (const row of actionRows(h)) {
-        const { valid } = fixture(row);
+        const { valid, prepare } = fixture(row);
+        if (row.action === "session.preview") {
+          // This builder uses only the current hearth's fixed workspace value;
+          // it needs neither an audited preview nor any provider/filesystem work.
+          valid.body = sessionStartFixture(h);
+        } else if (row.action === "smith.config.create") {
+          // This action only needs a schema-valid revision to reach the audit
+          // boundary. Do not depend on the aggregate success loop's preview,
+          // which is intentionally unavailable when the audit appender refuses.
+          valid.body = {
+            requestId: API_SMITH_CREATE_ID,
+            target: "workspace",
+            smith: API_SMITH_CREATE_SMITH,
+            expectedRevision: {
+              version: 1,
+              user: "a".repeat(64),
+              workspace: "b".repeat(64),
+            },
+          };
+        } else if (row.path.includes("/keeper/proposals/")) {
+          // Keeper proposal validation reads the durable source and revision
+          // before reaching the audit boundary, so seed that inert fixture.
+          await prepare?.(h);
+        }
         const response = await post(h, valid.path, valid.body);
         const body = await envelope(response);
         expect({ row: key(row), status: response.status, ok: body.ok }).toEqual(

@@ -212,6 +212,29 @@ test("Cancel, templates and checked options start nothing; a lost Start reply cr
   await expect(
     dialog.getByText("text · notes.txt", { exact: false }),
   ).toBeVisible();
+  let identityGetCount = 0;
+  let identityReadHeld = false;
+  const identityStatuses: number[] = [];
+  let releaseIdentityReads!: () => void;
+  const identityReadGate = new Promise<void>((resolve) => {
+    releaseIdentityReads = resolve;
+  });
+  page.once("close", releaseIdentityReads);
+  await page.route(
+    `**/__agent-forge/projects/${alpha.id}/session-start-identities`,
+    async (route) => {
+      if (route.request().method() !== "GET" || identityReadHeld) {
+        await route.continue();
+        return;
+      }
+      identityReadHeld = true;
+      identityGetCount++;
+      await identityReadGate;
+      const response = await forward(route);
+      identityStatuses.push(response.status());
+      await route.fulfill({ response });
+    },
+  );
   await dialog
     .getByRole("button", { name: "Check supported options", exact: true })
     .click();
@@ -219,6 +242,16 @@ test("Cancel, templates and checked options start nothing; a lost Start reply cr
     dialog.getByRole("region", { name: "Equivalent session command" }),
   ).toContainText("stream-json");
   expect(starts()).toBe(beforeStarts);
+  await expect.poll(() => identityGetCount).toBeGreaterThan(0);
+  const startButton = dialog.getByRole("button", {
+    name: "Start",
+    exact: true,
+  });
+  await expect(startButton).toBeDisabled();
+  expect(identityStatuses).toHaveLength(0);
+  releaseIdentityReads();
+  await expect.poll(() => identityStatuses[0] ?? 0).toBe(200);
+  await expect(startButton).toBeEnabled();
   let posted = 0;
   await page.route(
     `**/__agent-forge/projects/${alpha.id}/sessions`,
@@ -232,16 +265,12 @@ test("Cancel, templates and checked options start nothing; a lost Start reply cr
       await route.abort("failed");
     },
   );
-  await dialog.getByRole("button", { name: "Start", exact: true }).focus();
+  await startButton.focus();
   await page.keyboard.press("Tab");
   await page.keyboard.press("Shift+Tab");
-  await expect(
-    dialog.getByRole("button", { name: "Start", exact: true }),
-  ).toBeFocused();
+  await expect(startButton).toBeFocused();
   expect(
-    await dialog
-      .getByRole("button", { name: "Start", exact: true })
-      .evaluate((node) => getComputedStyle(node).outlineWidth),
+    await startButton.evaluate((node) => getComputedStyle(node).outlineWidth),
   ).toBe("2px");
   await page.keyboard.press("Enter");
   await expect(

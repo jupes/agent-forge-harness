@@ -193,6 +193,93 @@ test("create statuses must match a strict receipt correlated to this exact reque
   });
 });
 
+test("reservation discovery, exact original reads, and retirement use fixed protected paths", async () => {
+  const reserved = await receipt("held");
+  reserved.result = { phase: "held", stage: "reserved", preview: null };
+  const retired: SmithConfigCreateReceipt = {
+    ...reserved,
+    result: {
+      phase: "refused",
+      refusedAt: "2026-10-25T20:01:00.000Z",
+      reason: "cancelled-before-attempt",
+      preview: null,
+    },
+  };
+  const posts: { path: string; body: unknown }[] = [],
+    reads: {
+      path: string;
+      method: string | undefined;
+      limit: number | undefined;
+    }[] = [];
+  const api = createSmithCreateApi({
+    post: async (path, body) => {
+      posts.push({ path, body });
+      return Response.json(
+        {
+          ok: true,
+          data: path.endsWith("/retire") ? retired : reserved,
+          error: null,
+        },
+        { status: 200 },
+      );
+    },
+    read: async (path, init, limits) => {
+      reads.push({ path, method: init?.method, limit: limits?.maxBodyBytes });
+      return Response.json({
+        ok: true,
+        data:
+          path === "/__agent-forge/smiths/creates"
+            ? {
+                version: 1,
+                complete: true,
+                ownerScopeHash: reserved.ownerScopeHash,
+                entries: [
+                  {
+                    requestId: request.requestId,
+                    ownerScopeHash: reserved.ownerScopeHash,
+                    inputHash: reserved.inputHash,
+                    target: request.target,
+                    state: "reserved",
+                    stage: "reserved",
+                    createdAt: reserved.createdAt,
+                  },
+                ],
+              }
+            : reserved,
+        error: null,
+      });
+    },
+  });
+
+  expect(await api.reserve(request)).toMatchObject({ state: "sent" });
+  await api.list();
+  await api.original(request.requestId);
+  await api.retireReserved(request.requestId, reserved.inputHash);
+
+  expect(posts).toEqual([
+    {
+      path: "/__agent-forge/config/smiths/creates/reserve",
+      body: request,
+    },
+    {
+      path: `/__agent-forge/config/smiths/creates/${request.requestId}/retire`,
+      body: { inputHash: reserved.inputHash },
+    },
+  ]);
+  expect(reads).toEqual([
+    {
+      path: "/__agent-forge/smiths/creates",
+      method: "GET",
+      limit: 524_288,
+    },
+    {
+      path: `/__agent-forge/smiths/creates/${request.requestId}`,
+      method: "GET",
+      limit: 65_536,
+    },
+  ]);
+});
+
 test("preview and original require HTTP 200 even when an error carries a valid body", async () => {
   const valid = await receipt("confirmed");
   const api = createSmithCreateApi({
