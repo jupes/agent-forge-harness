@@ -1,7 +1,14 @@
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { expect, type Route, test } from "@playwright/test";
-import type { ConversationState } from "../../types/conversation";
+import { expect, type Page, type Route, test } from "@playwright/test";
+import {
+  conversationReceiptSchema,
+  parseConversationSend,
+} from "../../scripts/conversations/protocol";
+import type {
+  ConversationSend,
+  ConversationState,
+} from "../../types/conversation";
 import type { OperatorEnvelope, SmithsView } from "../../types/hearth";
 import type { KeeperRecoveryPage } from "../../types/keeper-recovery";
 import type { ProjectCatalog } from "../../types/projects";
@@ -49,6 +56,32 @@ function record(): { argv: string[]; input: { message: string } } {
   } catch {
     throw new Error("Fake CLI recording is unavailable");
   }
+}
+async function sendExactKeeperTurn(page: Page, text: string) {
+  await page.getByRole("textbox", { name: "Message the Keeper" }).fill(text);
+  const path = `/__agent-forge/projects/${alpha.id}/keeper/turns`;
+  const posted = page.waitForRequest(
+    (request) =>
+      request.method() === "POST" && new URL(request.url()).pathname === path,
+  );
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  const request = await posted;
+  const input: ConversationSend = parseConversationSend(request.postDataJSON());
+  expect(input.text).toBe(text);
+  const response = await request.response();
+  if (!response) throw new Error("The exact Keeper turn POST had no response.");
+  expect(response.status()).toBe(202);
+  const envelope = (await response.json()) as OperatorEnvelope<unknown>;
+  if (!envelope.ok) throw new Error(`Keeper turn refused: ${envelope.error}`);
+  const receipt = conversationReceiptSchema.parse(envelope.data);
+  expect(receipt.turn.requestId).toBe(input.requestId);
+  await expect
+    .poll(
+      () =>
+        state().turns.find((turn) => turn.requestId === input.requestId)?.phase,
+    )
+    .toBe("completed");
+  return input.requestId;
 }
 test.beforeEach(() => {
   seedProjects();
@@ -130,11 +163,7 @@ test("project Keeper Smith overrides the global default until an explicit saved 
   expect(state()).toEqual(before);
   expect(starts()).toBe(beforeStarts);
 
-  await page
-    .getByRole("textbox", { name: "Message the Keeper" })
-    .fill("Use the project's explicit Smith");
-  await page.getByRole("button", { name: "Send", exact: true }).click();
-  await expect.poll(() => state().turns.at(-1)?.phase).toBe("completed");
+  await sendExactKeeperTurn(page, "Use the project's explicit Smith");
   expect(starts()).toBe(beforeStarts + 1);
   expect(record().argv).toContain("claude-opus-5-5");
 
@@ -156,11 +185,7 @@ test("project Keeper Smith overrides the global default until an explicit saved 
     page.getByRole("button", { name: "claude-project-choice", exact: true }),
   ).toBeVisible();
   expect(starts()).toBe(beforeStarts + 1);
-  await page
-    .getByRole("textbox", { name: "Message the Keeper" })
-    .fill("Keep the saved conversation Smith");
-  await page.getByRole("button", { name: "Send", exact: true }).click();
-  await expect.poll(() => state().turns.at(-1)?.phase).toBe("completed");
+  await sendExactKeeperTurn(page, "Keep the saved conversation Smith");
   expect(starts()).toBe(beforeStarts + 2);
   expect(record().argv).toContain("fixture-project-choice-model");
   expect(state().frames).toEqual(
