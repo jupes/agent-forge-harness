@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ProjectCatalog } from "../../../types/projects";
 import { resolveCheckout } from "../../ledger/workspace";
@@ -377,6 +377,219 @@ test("project-create options include registered canonical repos or refuse the in
   });
   expect(unavailable.status).toBe(503);
   expect(await unavailable.json()).toMatchObject({ ok: false, data: null });
+});
+
+test("trusted registry override is shared by options, preview, reserve, and commit", async () => {
+  const h = await startTestHearth({
+    linkedWorktree: true,
+    projectRepositoryRegistryRoot: (home) => join(home, "fixture-registry"),
+  });
+  opened.push(h);
+  if (!h.main) throw new Error("the linked-worktree fixture needs a main root");
+
+  const injectedRoot = join(h.home, "fixture-registry");
+  const injectedName = "onboarding-fixture";
+  const injectedCheckout = join(injectedRoot, "repos", injectedName);
+  mkdirSync(join(injectedCheckout, ".git"), { recursive: true });
+  writeFileSync(
+    join(injectedRoot, "repos", "repos.json"),
+    JSON.stringify({
+      repos: [
+        {
+          name: injectedName,
+          url: "https://example.invalid/onboarding-fixture",
+          defaultBranch: "main",
+        },
+      ],
+    }),
+  );
+
+  const leakedName = "must-not-leak-from-real-root";
+  const leakedCheckout = join(h.main, "repos", leakedName);
+  mkdirSync(join(leakedCheckout, ".git"), { recursive: true });
+  writeFileSync(
+    join(h.main, "repos", "repos.json"),
+    JSON.stringify({
+      repos: [
+        {
+          name: leakedName,
+          url: "https://example.invalid/real-root-only",
+          defaultBranch: "main",
+        },
+      ],
+    }),
+  );
+
+  const epicId = "project-create-registry-epic";
+  h.bd.issues.set(epicId, {
+    id: epicId,
+    title: "Project create registry epic",
+    issue_type: "epic",
+    priority: 2,
+    status: "open",
+    labels: ["project:registry-override"],
+    created_at: "2026-10-27T00:00:00.000Z",
+    updated_at: "2026-10-27T00:00:00.000Z",
+  });
+  h.bd.answer = (args) =>
+    args[0] === "export"
+      ? {
+          status: 0,
+          stdout: [...h.bd.issues.values()]
+            .map((issue) => JSON.stringify(issue))
+            .join("\n"),
+          stderr: "",
+        }
+      : undefined;
+
+  const headers = h.headers(h.hearth.token);
+  const before = createProjectStore(h.home).read();
+  const optionsResponse = await fetch(`${h.api}/projects/create-options`, {
+    headers,
+  });
+  expect(optionsResponse.status).toBe(200);
+  const optionsEnvelope = await optionsResponse.json();
+  expect(optionsEnvelope).toMatchObject({ ok: true, error: null });
+  const optionRows = optionsEnvelope.data.repositories as Array<{
+    path: string;
+    name: string;
+    served: boolean;
+  }>;
+  const injectedPath = resolveCheckout(injectedCheckout).worktree;
+  expect(optionRows).toContainEqual({
+    path: injectedPath,
+    name: injectedName,
+    served: false,
+  });
+  expect(optionRows.some((row) => row.name === leakedName)).toBe(false);
+  expect(optionRows.filter((row) => row.served)).toHaveLength(1);
+
+  const slug = "registry-override-project";
+  const previewResponse = await fetch(
+    `${h.api}/projects/create-scope-preview?${new URLSearchParams({
+      slug,
+      epicId,
+    })}`,
+    { headers },
+  );
+  expect(previewResponse.status).toBe(200);
+  const previewEnvelope = await previewResponse.json();
+  expect(previewEnvelope).toMatchObject({ ok: true, error: null });
+  const preview = previewEnvelope.data as {
+    scopeHash: string;
+    scopeCount: number;
+  };
+
+  expect(createProjectStore(h.home).read()).toEqual(before);
+  expect(h.events(["operator.action"])).toEqual([]);
+
+  const requestId = "20caf845-92e1-4cc5-a6fb-44d74d11a84c";
+  const original = {
+    slug,
+    name: "Registry Override Project",
+    description: "",
+    icon: "R",
+    workspaces: [
+      {
+        root: h.workspace,
+        repositories: [h.workspace, injectedPath],
+        epicIds: [epicId],
+      },
+    ],
+  };
+  const reserveResponse = await fetch(`${h.api}/projects/create-reservations`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      requestId,
+      expectedCatalogRevision: before.revision,
+      original,
+    }),
+  });
+  expect(reserveResponse.status).toBe(201);
+  const reserveEnvelope = await reserveResponse.json();
+  expect(reserveEnvelope).toMatchObject({ ok: true, error: null });
+  expect(reserveEnvelope.data).toMatchObject({
+    requestId,
+    state: "reserved",
+    original,
+    scopeHash: preview.scopeHash,
+    scopeCount: preview.scopeCount,
+  });
+  expect(createProjectStore(h.home).read()).toEqual(before);
+
+  const commitResponse = await fetch(
+    `${h.api}/projects/create-reservations/${requestId}/commit`,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        requestHash: reserveEnvelope.data.requestHash,
+        reviewedScopeHash: preview.scopeHash,
+      }),
+    },
+  );
+  expect(commitResponse.status).toBe(200);
+  expect(await commitResponse.json()).toMatchObject({
+    ok: true,
+    data: { operation: { requestId, state: "created", original } },
+    error: null,
+  });
+  expect(createProjectStore(h.home).read().projects).toHaveLength(1);
+  expect(
+    h.events(["operator.action"]).map((event) => event.payload),
+  ).toMatchObject([
+    { action: "project.create.reserve", requestId },
+    { action: "project.create", requestId },
+  ]);
+});
+
+test("an invalid trusted registry override refuses without falling back to the real root", async () => {
+  const h = await startTestHearth({
+    linkedWorktree: true,
+    projectRepositoryRegistryRoot: (home) => join(home, "incomplete-registry"),
+  });
+  opened.push(h);
+  if (!h.main) throw new Error("the linked-worktree fixture needs a main root");
+
+  const leakedName = "valid-only-in-real-root";
+  mkdirSync(join(h.main, "repos", leakedName, ".git"), { recursive: true });
+  writeFileSync(
+    join(h.main, "repos", "repos.json"),
+    JSON.stringify({
+      repos: [
+        {
+          name: leakedName,
+          url: "https://example.invalid/real-root-only",
+          defaultBranch: "main",
+        },
+      ],
+    }),
+  );
+  const incompleteRoot = join(h.home, "incomplete-registry");
+  mkdirSync(join(incompleteRoot, "repos"), { recursive: true });
+  writeFileSync(
+    join(incompleteRoot, "repos", "repos.json"),
+    JSON.stringify({
+      repos: [
+        {
+          name: "missing-checkout",
+          url: "https://example.invalid/missing-checkout",
+          defaultBranch: "main",
+        },
+      ],
+    }),
+  );
+
+  const before = createProjectStore(h.home).read();
+  const response = await fetch(`${h.api}/projects/create-options`, {
+    headers: h.headers(h.hearth.token),
+  });
+  expect(response.status).toBe(503);
+  expect(await response.json()).toMatchObject({ ok: false, data: null });
+  expect(createProjectStore(h.home).read()).toEqual(before);
+  expect(createProjectStore(h.home).listCreates()).toEqual([]);
+  expect(h.events(["operator.action"])).toEqual([]);
 });
 
 test("project-create options refuse malformed, oversized, or over-cap choice sources", async () => {

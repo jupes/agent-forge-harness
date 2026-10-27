@@ -374,6 +374,8 @@ export interface TestHearth {
 
 export interface TestHearthOptions {
   api?: OperatorApiOverrides;
+  /** Trusted test-only repository registry root; omitted keeps the real default. */
+  projectRepositoryRegistryRoot?: (home: string) => string;
   /** Hand the hearth a council ledger (this hearth's own), as `main()` does. Off by default. */
   councilRuns?: boolean;
   /** Files to write under the root before the hearth starts. */
@@ -525,6 +527,12 @@ export async function startTestHearth(
     councilRunCommand: commands.run,
     ...(options.launchNow ? { launchNow: options.launchNow } : {}),
     api: {
+      ...(options.projectRepositoryRegistryRoot
+        ? {
+            projectRepositoryRegistryRoot:
+              options.projectRepositoryRegistryRoot(home),
+          }
+        : {}),
       ledgerPath: ledger,
       providerInspector: createProviderInspector({
         root,

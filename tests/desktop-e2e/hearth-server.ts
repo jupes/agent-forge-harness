@@ -1,6 +1,6 @@
 /** Production hearth with an explicit native Codex fixture and inert sync seam. */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { operatorCouncilLedger } from "../../scripts/council/ledger-wiring";
 import { supervise } from "../../scripts/executors/supervisor";
@@ -22,6 +22,29 @@ async function main() {
   const root = index >= 0 ? args[index + 1] : process.cwd();
   if (!root)
     throw Error("The desktop fixture requires its explicit repository.");
+  const projectRepositoryRegistryRoot = join(home, "project-create-registry");
+  const projectRepositoryName = "onboarding-fixture";
+  const projectRepositoryPath = join(
+    projectRepositoryRegistryRoot,
+    "repos",
+    projectRepositoryName,
+  );
+  mkdirSync(join(projectRepositoryPath, ".git"), { recursive: true });
+  mkdirSync(join(projectRepositoryRegistryRoot, "repos"), {
+    recursive: true,
+  });
+  writeFileSync(
+    join(projectRepositoryRegistryRoot, "repos", "repos.json"),
+    JSON.stringify({
+      repos: [
+        {
+          name: projectRepositoryName,
+          url: "https://example.invalid/onboarding-fixture",
+          defaultBranch: "main",
+        },
+      ],
+    }),
+  );
   const command = join(
     home,
     "bd-stand-in",
@@ -104,6 +127,7 @@ async function main() {
     councilLedger: operatorCouncilLedger(),
     port: Number(process.env["HEARTH_PORT"] ?? 0),
     api: {
+      ...{ projectRepositoryRegistryRoot },
       // Run inspection never reads this machine's hook log during the fixture suite.
       forgeGateLogRoot: join(home, "run-gate-logs"),
       geminiChatRuntime: {

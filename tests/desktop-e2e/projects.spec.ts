@@ -16,6 +16,9 @@ import { BD_STAND_IN_STATE, HEARTH_HOME } from "../e2e/servers";
 
 const catalogFile = join(HEARTH_HOME, "projects", "catalog.json");
 const workspace = resolveCheckout(process.cwd()).workspace;
+const onboardingRepository = resolveCheckout(
+  join(HEARTH_HOME, "project-create-registry", "repos", "onboarding-fixture"),
+).worktree;
 const alpha = projectFixture(workspace);
 const beta = projectFixture(workspace, {
   id: "project-b5832fa0-7a21-403b-8184-44892f0d8d86",
@@ -83,7 +86,11 @@ test("a protected project reservation stays private until a separate create acti
     description: "This reserved original is private until an explicit create.",
     icon: "P",
     workspaces: [
-      { root: workspace, repositories: [workspace], epicIds: [epicId] },
+      {
+        root: workspace,
+        repositories: [workspace, onboardingRepository],
+        epicIds: [epicId],
+      },
     ],
   };
   const postedPaths: string[] = [];
@@ -143,6 +150,12 @@ test("a protected project reservation stays private until a separate create acti
     path: workspace,
     key: options.workspace.key,
     served: true,
+  });
+  expect(options.repositories).toContainEqual({
+    path: onboardingRepository,
+    key: expect.any(String),
+    name: "onboarding-fixture",
+    served: false,
   });
   expect(options.epics.find((epic) => epic.id === epicId)).toMatchObject({
     id: epicId,
