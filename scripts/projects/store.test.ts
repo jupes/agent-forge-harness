@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeOwnerOnly } from "../hearth/token";
-import { createProjectStore } from "./store";
+import { createProjectStore, projectCatalogPath } from "./store";
 
 function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
@@ -178,4 +178,88 @@ test("create identity hashes bind the UUID and expected semantic revision", asyn
     }),
   );
   expect(second.operation.requestHash).not.toBe(first.operation.requestHash);
+});
+
+test("project catalog preferences preserve pending create originals without advancing their metadata revision", async () => {
+  const { home, store, input } = fixture();
+  const existing = await store.create(input, 0);
+  const current = existing.projects[0];
+  if (!current) throw new Error("project missing");
+  const reserved = await store.reserveCreate({
+    requestId: "bfefeb99-b4a8-4e6b-b6b1-5916b9d355c1",
+    original: { ...input, slug: "beta", name: "Beta" },
+    expectedCatalogRevision: 1,
+    scopeHash: "b".repeat(64),
+    scopeCount: 3,
+  });
+  expect(reserved.catalog.revision).toBe(1);
+  const updated = await store.preferences(current.id, 1, { pinned: true });
+  expect(updated.revision).toBe(2);
+  expect(updated.projects[0]).toMatchObject({ id: current.id, pinned: true });
+  expect(
+    createProjectStore(home).readCreate(reserved.operation.requestId),
+  ).toEqual(reserved.operation);
+});
+
+test("concurrent commit and retirement leave one durable terminal outcome", async () => {
+  const { store, input } = fixture();
+  const requestId = "65b017ba-2f30-4439-a9cc-18a55ff2ed4c";
+  const reserved = await store.reserveCreate({
+    requestId,
+    original: input,
+    expectedCatalogRevision: 0,
+    scopeHash: "c".repeat(64),
+    scopeCount: 1,
+  });
+  const outcomes = await Promise.allSettled([
+    store.commitCreate({
+      requestId,
+      requestHash: reserved.operation.requestHash,
+      reviewedScopeHash: reserved.operation.scopeHash,
+      currentScopeHash: reserved.operation.scopeHash,
+    }),
+    store.retireCreate(requestId, reserved.operation.requestHash),
+  ]);
+  expect(
+    outcomes.filter((outcome) => outcome.status === "fulfilled"),
+  ).toHaveLength(1);
+  expect(
+    outcomes.filter((outcome) => outcome.status === "rejected"),
+  ).toHaveLength(1);
+  const current = store.read();
+  const identity = store.readCreate(requestId);
+  expect(
+    identity?.state === "created" ||
+      identity?.state === "retired-before-create",
+  ).toBe(true);
+  expect(current.projects.length).toBe(identity?.state === "created" ? 1 : 0);
+  expect(current.revision).toBe(identity?.state === "created" ? 1 : 0);
+});
+
+test("a modified saved create original is a corrupt catalog and is never repaired from elsewhere", async () => {
+  const { home, store, input } = fixture();
+  const reserved = await store.reserveCreate({
+    requestId: "01e1a1bc-36fa-4df3-ae65-d1068d1b97dc",
+    original: input,
+    expectedCatalogRevision: 0,
+    scopeHash: "f".repeat(64),
+    scopeCount: 0,
+  });
+  const file = projectCatalogPath(home);
+  const saved = JSON.parse(readFileSync(file, "utf8")) as {
+    createOperations: Array<{ original: { name: string } }>;
+  };
+  saved.createOperations[0]!.original.name = "Tampered";
+  const corrupted = JSON.stringify(saved);
+  writeOwnerOnly(file, corrupted);
+  expect(() => store.read()).toThrow();
+  await expect(
+    store.commitCreate({
+      requestId: reserved.operation.requestId,
+      requestHash: reserved.operation.requestHash,
+      reviewedScopeHash: reserved.operation.scopeHash,
+      currentScopeHash: reserved.operation.scopeHash,
+    }),
+  ).rejects.toThrow();
+  expect(readFileSync(file, "utf8")).toBe(corrupted);
 });

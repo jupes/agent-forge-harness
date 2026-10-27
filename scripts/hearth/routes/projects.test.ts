@@ -381,6 +381,228 @@ test("a reservation rechecks live project scope after waiting for the catalog wr
   });
 });
 
+test("commit rechecks its reviewed epic source after waiting for the catalog writer", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  const initialIssue = {
+    id: "alpha-epic",
+    title: "Initial selected epic",
+    issue_type: "epic",
+    priority: 2,
+    status: "open",
+    labels: ["project:commit-race"],
+    created_at: "2026-10-26T00:00:00.000Z",
+    updated_at: "2026-10-26T00:00:00.000Z",
+  };
+  h.bd.issues.set(initialIssue.id, initialIssue);
+  h.bd.answer = (args) =>
+    args[0] === "export"
+      ? {
+          status: 0,
+          stdout: [...h.bd.issues.values()]
+            .map((issue) => JSON.stringify(issue))
+            .join("\n"),
+          stderr: "",
+        }
+      : undefined;
+  const requestId = "0e274d59-b415-4ad3-b1ac-045abaa0d325";
+  const original = {
+    slug: "commit-race",
+    name: "Commit Race",
+    description: "",
+    icon: "R",
+    workspaces: [
+      {
+        root: h.root,
+        repositories: [h.root],
+        epicIds: ["alpha-epic"],
+      },
+    ],
+  };
+  const headers = h.headers(h.hearth.token);
+  const reserve = await fetch(`${h.api}/projects/create-reservations`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ requestId, expectedCatalogRevision: 0, original }),
+  });
+  const reserved = await reserve.json();
+  const requestHash = reserved.data.requestHash as string;
+  const reviewedScopeHash = reserved.data.scopeHash as string;
+
+  const initialRead = deferred<void>();
+  h.bd.answer = (args) => {
+    if (args[0] !== "export") return undefined;
+    initialRead.resolve();
+    return {
+      status: 0,
+      stdout: JSON.stringify(initialIssue),
+      stderr: "",
+    };
+  };
+  const locked = deferred<void>();
+  const unlock = deferred<void>();
+  const writer = withQueueLock(
+    join(h.home, "projects", "write.lock.db"),
+    async () => {
+      locked.resolve();
+      await unlock.promise;
+    },
+    { waitMs: 10_000 },
+  );
+  await locked.promise;
+  const responsePromise = fetch(
+    `${h.api}/projects/create-reservations/${requestId}/commit`,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ requestHash, reviewedScopeHash }),
+    },
+  );
+  try {
+    await initialRead.promise;
+    h.bd.issues.set(initialIssue.id, {
+      ...initialIssue,
+      labels: ["project:changed"],
+      updated_at: "2026-10-27T00:00:00.000Z",
+    });
+    h.bd.answer = (args) =>
+      args[0] === "export"
+        ? {
+            status: 0,
+            stdout: [...h.bd.issues.values()]
+              .map((issue) => JSON.stringify(issue))
+              .join("\n"),
+            stderr: "",
+          }
+        : undefined;
+  } finally {
+    unlock.resolve();
+  }
+  await writer;
+  const response = await responsePromise;
+  expect(response.status).toBe(409);
+  const current = createProjectStore(h.home);
+  expect(current.read().projects).toEqual([]);
+  expect(current.readCreate(requestId)).toMatchObject({
+    requestHash,
+    scopeHash: reviewedScopeHash,
+    state: "reserved",
+  });
+});
+
+test("a lost project commit reply is recovered by its exact UUID without creating a second project", async () => {
+  const persisted = deferred<void>();
+  const releaseResponse = deferred<void>();
+  const h = await startTestHearth({
+    api: {
+      decorate: (routes) =>
+        routes.map((route) => {
+          if (
+            route.kind !== "action" ||
+            route.action !== "project.create.commit"
+          )
+            return route;
+          return {
+            ...route,
+            effect: async (input, context) => {
+              const result = await route.effect(input, context);
+              persisted.resolve();
+              await releaseResponse.promise;
+              return result;
+            },
+          };
+        }),
+    },
+  });
+  opened.push(h);
+  h.bd.issues.set("alpha-epic", {
+    id: "alpha-epic",
+    title: "Onboarding epic",
+    issue_type: "epic",
+    priority: 2,
+    status: "open",
+    labels: ["project:lost-reply"],
+    created_at: "2026-10-26T00:00:00.000Z",
+    updated_at: "2026-10-26T00:00:00.000Z",
+  });
+  h.bd.answer = (args) =>
+    args[0] === "export"
+      ? {
+          status: 0,
+          stdout: [...h.bd.issues.values()]
+            .map((issue) => JSON.stringify(issue))
+            .join("\n"),
+          stderr: "",
+        }
+      : undefined;
+  const requestId = "d49c9700-88a0-4987-a692-449b4639a7b9";
+  const original = {
+    slug: "lost-reply",
+    name: "Lost Reply",
+    description: "",
+    icon: "L",
+    workspaces: [
+      {
+        root: h.root,
+        repositories: [h.root],
+        epicIds: ["alpha-epic"],
+      },
+    ],
+  };
+  const headers = h.headers(h.hearth.token);
+  const reservation = await fetch(`${h.api}/projects/create-reservations`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ requestId, expectedCatalogRevision: 0, original }),
+  });
+  const reserved = await reservation.json();
+  const requestHash = reserved.data.requestHash as string;
+  const reviewedScopeHash = reserved.data.scopeHash as string;
+  const controller = new AbortController();
+  const request = fetch(
+    `${h.api}/projects/create-reservations/${requestId}/commit`,
+    {
+      method: "POST",
+      headers,
+      signal: controller.signal,
+      body: JSON.stringify({ requestHash, reviewedScopeHash }),
+    },
+  );
+  try {
+    await persisted.promise;
+    controller.abort();
+  } finally {
+    releaseResponse.resolve();
+  }
+  await request.catch(() => undefined);
+
+  const recovered = await fetch(
+    `${h.api}/projects/create-reservations/${requestId}`,
+    { headers },
+  );
+  expect(recovered.status).toBe(200);
+  expect(await recovered.json()).toMatchObject({
+    ok: true,
+    data: {
+      requestId,
+      requestHash,
+      state: "created",
+      original,
+    },
+  });
+  const replay = await fetch(
+    `${h.api}/projects/create-reservations/${requestId}/commit`,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ requestHash, reviewedScopeHash }),
+    },
+  );
+  expect(replay.status).toBe(200);
+  expect(createProjectStore(h.home).read().projects).toHaveLength(1);
+  expect(createProjectStore(h.home).listCreates()).toHaveLength(1);
+});
+
 test("project create reservations preserve legacy catalogs, collide by exact UUID, and serialize slug races", async () => {
   const h = await startTestHearth();
   opened.push(h);
