@@ -479,9 +479,14 @@ test("ambiguous reservation stays on its exact UUID when discovery is empty or t
     reservePosts = 0,
     forkPosts = 0,
     currentGeneration = 3,
-    releaseReservation!: (response: Response) => void;
+    releaseReservation!: (response: Response) => void,
+    markReservationEntered!: () => void;
+  const firstReservations: Array<Promise<CodexChatForkIdentityMetadata>> = [];
   const reservationReply = new Promise<Response>((resolve) => {
     releaseReservation = resolve;
+  });
+  const reservationEntered = new Promise<void>((resolve) => {
+    markReservationEntered = resolve;
   });
   const module = await loadForkClient(),
     client = module.createCodexChatForkClient({
@@ -533,6 +538,7 @@ test("ambiguous reservation stays on its exact UUID when discovery is empty or t
         calls.push({ method: "POST", path, body: structuredClone(body) });
         if (path.endsWith("/fork-reservations")) {
           reservePosts++;
+          markReservationEntered();
           return reservationReply;
         }
         if (path.endsWith("/forks")) forkPosts++;
@@ -542,16 +548,18 @@ test("ambiguous reservation stays on its exact UUID when discovery is empty or t
 
   try {
     const firstSource = await client.reviewSource({
-        projectId,
-        parentSessionId,
-        throughTurnRequestId,
-      }),
-      firstReservation = client.reserveFork({
-        projectId,
-        parentSessionId,
-        throughTurnRequestId,
-        source: firstSource,
-      });
+      projectId,
+      parentSessionId,
+      throughTurnRequestId,
+    });
+    const firstReservation = client.reserveFork({
+      projectId,
+      parentSessionId,
+      throughTurnRequestId,
+      source: firstSource,
+    });
+    firstReservations.push(firstReservation);
+    await reservationEntered;
     await expect(
       client.reserveFork({
         projectId,
@@ -618,6 +626,10 @@ test("ambiguous reservation stays on its exact UUID when discovery is empty or t
     expect(requestIds).toBe(1);
     expect(reservePosts).toBe(1);
   } finally {
+    releaseReservation(
+      new Response("reply lost after request", { status: 503 }),
+    );
+    await firstReservations[0]?.catch(() => undefined);
     client.dispose();
   }
 });
