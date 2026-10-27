@@ -9,6 +9,7 @@ const activeCaptures = new WeakMap<
   Page,
   {
     id: string;
+    origin: string;
     resolve(value: { status: number; text: string }): void;
     reject(error: Error): void;
   }
@@ -150,8 +151,25 @@ async function installBrowserCapture(page: Page): Promise<void> {
   let installation = installations.get(page);
   if (!installation) {
     installation = (async () => {
-      await page.exposeBinding(CAPTURE_BINDING, (_source, value: unknown) => {
+      await page.exposeBinding(CAPTURE_BINDING, (source, value: unknown) => {
         const active = activeCaptures.get(page);
+        if (!active) return;
+        if (source.frame !== page.mainFrame()) return;
+        let sourceOrigin: string;
+        try {
+          sourceOrigin = new URL(source.frame.url()).origin;
+        } catch {
+          active.reject(
+            new Error("The browser response capture source was unavailable."),
+          );
+          return;
+        }
+        if (sourceOrigin !== active.origin) {
+          active.reject(
+            new Error("The browser response capture source origin changed."),
+          );
+          return;
+        }
         const payload = record(value);
         if (
           !active ||
@@ -218,6 +236,7 @@ export async function captureTextResponseThroughBrowserFetch(
   const captureId = `browser-response-${++nextCaptureId}`;
   activeCaptures.set(page, {
     id: captureId,
+    origin: expected.origin,
     resolve: resolveResponse,
     reject: rejectResponse,
   });

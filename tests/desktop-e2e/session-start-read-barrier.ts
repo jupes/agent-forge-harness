@@ -57,6 +57,18 @@ export async function verifiedIdentityReadBarrier(
         "Sec-Fetch-Site": "same-origin",
       },
     });
+    let responseUrl: URL;
+    try {
+      responseUrl = new URL(response.url());
+    } catch {
+      throw new Error("The Session Start identity response URL was invalid.");
+    }
+    if (
+      responseUrl.origin !== requestUrl.origin ||
+      responseUrl.pathname !== path ||
+      responseUrl.search !== ""
+    )
+      throw new Error("The Session Start identity response was redirected.");
     let payload: unknown;
     try {
       payload = await response.json();
