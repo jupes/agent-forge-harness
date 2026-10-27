@@ -687,7 +687,7 @@ async function seedProjectCreateReservation(
   requestId: string,
   slug: string,
 ): Promise<void> {
-  const original = apiProjectCreateOriginal(slug, h.root);
+  const original = apiProjectCreateOriginal(slug, h.workspace);
   await createProjectStore(h.home).reserveCreate({
     requestId,
     original,
@@ -2397,7 +2397,10 @@ const ACTIONS: Record<string, ActionFixture> = {
     prepare: async (h) => {
       seedProjectCreateScope(h, "api-project-create");
       const row = ACTIONS["POST /projects/create-reservations"]!;
-      const original = apiProjectCreateOriginal("api-project-create", h.root);
+      const original = apiProjectCreateOriginal(
+        "api-project-create",
+        h.workspace,
+      );
       row.valid.body = {
         requestId: API_PROJECT_CREATE_RESERVE_ID,
         expectedCatalogRevision: createProjectStore(h.home).read().revision,
@@ -2420,7 +2423,7 @@ const ACTIONS: Record<string, ActionFixture> = {
         createProjectStore(h.home).readCreate(API_PROJECT_CREATE_RESERVE_ID),
       ).toMatchObject({
         state: "reserved",
-        original: apiProjectCreateOriginal("api-project-create", h.root),
+        original: apiProjectCreateOriginal("api-project-create", h.workspace),
       });
       expect(createProjectStore(h.home).read().projects).toEqual(before);
     },
@@ -2442,7 +2445,10 @@ const ACTIONS: Record<string, ActionFixture> = {
     },
     prepare: async (h) => {
       seedProjectCreateScope(h, "api-project-commit");
-      const original = apiProjectCreateOriginal("api-project-commit", h.root);
+      const original = apiProjectCreateOriginal(
+        "api-project-commit",
+        h.workspace,
+      );
       const reservation = await fetch(`${h.api}/projects/create-reservations`, {
         method: "POST",
         headers: h.headers(h.hearth.token),
@@ -2452,7 +2458,9 @@ const ACTIONS: Record<string, ActionFixture> = {
           original,
         }),
       });
+      expect(reservation.status).toBe(201);
       const answer = await reservation.json();
+      expect(answer).toMatchObject({ ok: true, error: null });
       const operation = answer.data as {
         requestHash: string;
         scopeHash: string;
@@ -2497,7 +2505,10 @@ const ACTIONS: Record<string, ActionFixture> = {
       body: { requestHash: "a".repeat(64) },
     },
     prepare: async (h) => {
-      const original = apiProjectCreateOriginal("api-project-retire", h.root);
+      const original = apiProjectCreateOriginal(
+        "api-project-retire",
+        h.workspace,
+      );
       await createProjectStore(h.home).reserveCreate({
         requestId: API_PROJECT_CREATE_RETIRE_ID,
         original,
