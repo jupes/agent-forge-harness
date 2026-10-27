@@ -1,12 +1,15 @@
+import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
+import { smithsViewSchema } from "../../apps/desktop/src/smiths-protocol";
 import { OPERATOR_HEADER, SURFACE_HEADER } from "../../scripts/hearth/paths";
 import { resolveCheckout } from "../../scripts/ledger/workspace";
 import {
   projectCreateOptionsSchema,
   projectScopePreviewSchema,
 } from "../../scripts/projects/create-options-protocol";
+import { hashProjectCreateRequest } from "../../scripts/projects/store";
 import { projectFixture } from "../../scripts/projects/testing";
 import type { ProjectCatalog } from "../../types/projects";
 import { readState, withStateLock, writeState } from "../e2e/bd-stand-in-state";
@@ -57,6 +60,128 @@ test.beforeEach(() => {
       ),
     ),
   );
+});
+
+test("Projects offers the explicit New project flow", async ({ page }) => {
+  await openSettled(page, "/index.html#/desktop/projects");
+  const create = page.getByRole("button", {
+    name: "New project",
+    exact: true,
+  });
+  await expect(create).toBeEnabled();
+  await create.click();
+  await expect(page.getByRole("dialog")).toBeVisible();
+});
+
+test("reload recovers a reserved original with protected reads only", async ({
+  page,
+}) => {
+  const requestId = randomUUID();
+  const slug = "recoverable-onboarding-project";
+  const name = "Recoverable onboarding project";
+  await openSettled(page, "/index.html#/desktop/projects");
+  const token = await pageToken(page);
+  const headers = {
+    "Content-Type": "application/json",
+    [OPERATOR_HEADER]: token,
+    [SURFACE_HEADER]: "ui",
+  };
+  const source = await page.evaluate(
+    async ({ headers }) => {
+      const [optionsResponse, smithsResponse] = await Promise.all([
+        fetch("/__agent-forge/projects/create-options", { headers }),
+        fetch("/__agent-forge/smiths", { headers }),
+      ]);
+      return {
+        optionsStatus: optionsResponse.status,
+        options: await optionsResponse.json(),
+        smithsStatus: smithsResponse.status,
+        smiths: await smithsResponse.json(),
+      };
+    },
+    { headers },
+  );
+  expect(source.optionsStatus).toBe(200);
+  expect(source.smithsStatus).toBe(200);
+  const options = projectCreateOptionsSchema.parse(source.options.data);
+  const smiths = smithsViewSchema.parse(source.smiths.data);
+  const keeperSmith = smiths.smiths.find((smith) => smith.enabled);
+  const epic = options.epics.find((candidate) => candidate.id === "alpha-epic");
+  const repository = options.repositories.find((candidate) => candidate.served);
+  expect(keeperSmith).toBeDefined();
+  expect(epic).toBeDefined();
+  expect(repository).toBeDefined();
+
+  const original = {
+    slug,
+    name,
+    description:
+      "The saved original must remain available for explicit review.",
+    icon: "P",
+    keeperSmith: keeperSmith!.name,
+    workspaces: [
+      {
+        root: options.workspace.path,
+        repositories: [repository!.path],
+        epicIds: [epic!.id],
+      },
+    ],
+  };
+  const previewQuery = new URLSearchParams({ slug, epicId: epic!.id });
+  const previewResult = await page.evaluate(
+    async ({ headers, query }) => {
+      const response = await fetch(
+        `/__agent-forge/projects/create-scope-preview?${query}`,
+        { headers },
+      );
+      return { status: response.status, body: await response.json() };
+    },
+    { headers, query: previewQuery.toString() },
+  );
+  expect(previewResult.status).toBe(200);
+  const preview = projectScopePreviewSchema.parse(previewResult.body.data);
+  const reservation = {
+    requestId,
+    expectedCatalogRevision: catalog.revision,
+    original,
+  };
+  const reserved = await page.evaluate(
+    async ({ headers, reservation }) => {
+      const response = await fetch(
+        "/__agent-forge/projects/create-reservations",
+        {
+          method: "POST",
+          headers,
+          body: JSON.stringify(reservation),
+        },
+      );
+      return { status: response.status, body: await response.json() };
+    },
+    { headers, reservation },
+  );
+  expect(reserved.status).toBe(201);
+  const requestHash = hashProjectCreateRequest(reservation);
+  expect(reserved.body.data).toMatchObject({
+    requestId,
+    requestHash,
+    original,
+    scopeHash: preview.scopeHash,
+    state: "reserved",
+  });
+
+  const createWrites: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() !== "POST") return;
+    const path = new URL(request.url()).pathname;
+    if (path.startsWith("/__agent-forge/projects/create-"))
+      createWrites.push(path);
+  });
+  await reloadSettled(page);
+  await expect(page.getByText(name, { exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Review reserved project", exact: true }),
+  ).toBeEnabled();
+  expect(createWrites).toEqual([]);
 });
 
 test("a protected project reservation stays private until a separate create action", async ({
