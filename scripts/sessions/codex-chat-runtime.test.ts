@@ -702,7 +702,7 @@ test.each([
             },
           },
           {
-            stage: "parent-not-found",
+            stage: "fixture-proof-unavailable",
             parentFound: false,
             turnFound: false,
             settingsMatches: null,
