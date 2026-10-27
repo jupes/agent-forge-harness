@@ -10,6 +10,7 @@ import type {
   CodexChatForkSourcePage,
 } from "../../scripts/sessions/codex-chat-fork-review-protocol";
 import { codexChatForkContextPageSchema } from "../../scripts/sessions/codex-chat-fork-review-protocol";
+import { codexChatForkIdentityMetadataSchema } from "../../scripts/sessions/session-operation-identities-protocol";
 import type { CodexChatForkIdentityMetadata } from "../../types/session-operation-identities";
 
 const projectId = "project-a5832fa0-7a21-403b-8184-44892f0d8d86",
@@ -573,8 +574,17 @@ test("an undispatched reservation remains safely retireable after reload", async
         post: (async (path, body) => {
           posts.push({ path, body: structuredClone(body) });
           if (path.endsWith("/fork-reservations")) return envelope(reserved);
-          if (path.endsWith(`/fork-reservations/${requestId}/retire`))
-            return envelope({ ...reserved, state: "retired" });
+          if (path.endsWith(`/fork-reservations/${requestId}/retire`)) {
+            const retired = {
+              ...reserved,
+              state: "retired" as const,
+              retiredReason: "verified-not-sent" as const,
+            };
+            expect(
+              codexChatForkIdentityMetadataSchema.safeParse(retired).success,
+            ).toBe(true);
+            return envelope(retired);
+          }
           throw new Error(`Unexpected POST ${path}`);
         }) satisfies OperatorPost,
       });
