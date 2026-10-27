@@ -443,7 +443,7 @@ test("Windows interactive missing settlement capability retains its real job unt
   });
   const handle = supervise({
     windowsHide: true,
-    command: [process.execPath, fake, "exit-tree"],
+    command: [process.execPath, fake, "blocked"],
     cwd: import.meta.dir,
     env: buildChildEnv(process.env, []),
     stdinMode: "interactive",
@@ -468,6 +468,7 @@ test("Windows interactive missing settlement capability retains its real job unt
     onLine: announce,
   });
   let childPid = 0;
+  let stopping: Promise<void> | null = null;
   try {
     const line = await ready;
     const parsed: unknown = JSON.parse(line);
@@ -480,6 +481,10 @@ test("Windows interactive missing settlement capability retains its real job unt
       throw new Error("The real-job fixture did not announce its helper.");
     childPid = parsed.childPid;
 
+    stopping = handle.stop("missing settlement capability fixture");
+    await expect(stopping).rejects.toThrow(
+      "Windows owned process cleanup could not be confirmed.",
+    );
     await expect(handle.done).rejects.toThrow(
       "Windows owned process cleanup could not be confirmed.",
     );
@@ -488,8 +493,9 @@ test("Windows interactive missing settlement capability retains its real job unt
     expect(await gone(childPid)).toBe(false);
   } finally {
     const realGuard = actual.guard;
-    realGuard?.terminate?.();
+    if (realGuard?.settleStopped) await realGuard.settleStopped();
     await handle.done.catch(() => undefined);
+    await stopping?.catch(() => undefined);
     if (childPid > 0) expect(await gone(childPid)).toBe(true);
   }
 });
