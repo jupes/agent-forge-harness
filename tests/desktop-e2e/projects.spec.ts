@@ -287,7 +287,11 @@ async function commitProjectFromOriginal(
   await expect(page.locator(".af-desktop-project-name")).toHaveText(
     saved.original.name,
   );
-  return { saved, projectId: projectId! };
+  return {
+    saved,
+    projectId: projectId!,
+    createdRevision: identity.createdRevision!,
+  };
 }
 
 function keeperFixtureStarts(): number {
@@ -498,10 +502,11 @@ test("a created project gets its first Keeper brief only after explicit Refresh"
   });
 
   try {
-    const { saved, projectId } = await commitProjectFromOriginal(page, {
-      slug: "first-brief-explicit",
-      name: "First brief explicit",
-    });
+    const { saved, projectId, createdRevision } =
+      await commitProjectFromOriginal(page, {
+        slug: "first-brief-explicit",
+        name: "First brief explicit",
+      });
     const panel = page.getByRole("region", {
       name: "Keeper brief",
       exact: true,
@@ -660,7 +665,13 @@ test("a created project gets its first Keeper brief only after explicit Refresh"
       projectId,
       projectName: saved.original.name,
       workspace: saved.original.workspaces[0]!.root,
-      scope: { epicIds: saved.original.workspaces[0]!.epicIds },
+      catalogRevision: createdRevision,
+      scope: {
+        label: `project:${saved.original.slug}`,
+        epicIds: saved.original.workspaces[0]!.epicIds,
+        epicCount: saved.original.workspaces[0]!.epicIds.length,
+        repositoryCount: saved.original.workspaces[0]!.repositories.length,
+      },
     });
     expect(savedBriefs.refresh).toMatchObject({
       requestId: refreshBody.requestId,
