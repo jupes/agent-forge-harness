@@ -10,6 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeOwnerOnly } from "../hearth/token";
+import { resolveCheckout } from "../ledger/workspace";
 import {
   createProjectStore,
   hashProjectCreateRequest,
@@ -217,12 +218,14 @@ test("an explicit project Keeper Smith is bound to the saved original and commit
     checkoutAlias,
     process.platform === "win32" ? "junction" : "dir",
   );
+  const canonicalCheckout = resolveCheckout(checkoutAlias).workspace;
+  expect(canonicalCheckout).not.toBe(checkoutAlias);
   const original = {
     ...input,
     workspaces: [
       {
-        root: checkoutAlias,
-        repositories: [checkoutAlias],
+        root: canonicalCheckout,
+        repositories: [canonicalCheckout],
         epicIds: ["demo-epic"],
       },
     ],
@@ -312,12 +315,14 @@ test("a legacy original commits on the direct store path without a Keeper field"
     checkoutAlias,
     process.platform === "win32" ? "junction" : "dir",
   );
+  const canonicalCheckout = resolveCheckout(checkoutAlias).workspace;
+  expect(canonicalCheckout).not.toBe(checkoutAlias);
   const original = {
     ...input,
     workspaces: [
       {
-        root: checkoutAlias,
-        repositories: [checkoutAlias],
+        root: canonicalCheckout,
+        repositories: [canonicalCheckout],
         epicIds: ["demo-epic"],
       },
     ],
