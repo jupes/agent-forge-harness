@@ -40,6 +40,28 @@ const COMPILED_FIXTURE_KINDS = [
 ] as const;
 type CompiledFixtureKind = (typeof COMPILED_FIXTURE_KINDS)[number];
 
+function readCompiledFixtureRecords(path: string): Record<string, unknown>[] {
+  if (statSync(path).size > 65_536)
+    throw new Error("The inert fixture call log exceeded its bound.");
+  const text = readFileSync(path, "utf8");
+  if (!text.endsWith("\n"))
+    throw new Error("The inert fixture call log is incomplete.");
+  const lines = text.slice(0, -1).split("\n");
+  if (lines.length > 256)
+    throw new Error("The inert fixture call log exceeded its row bound.");
+  return lines.map((line) => {
+    let value: unknown;
+    try {
+      value = JSON.parse(line);
+    } catch {
+      throw new Error("The inert fixture call log is malformed.");
+    }
+    if (typeof value !== "object" || value === null || Array.isArray(value))
+      throw new Error("The inert fixture call log is malformed.");
+    return value as Record<string, unknown>;
+  });
+}
+
 function summarizeCompiledFixtureLog(path: string, status: string) {
   const unavailable = {
     state: "unavailable" as const,
@@ -281,7 +303,6 @@ test("the compiled desktop Codex stand-in completes prepare and dispatch in fork
         mode: "chat",
         cwd: workspace,
         model: "gpt-5-codex",
-        effort: "medium",
         sandbox: "workspace-write",
         approvalPolicy: "on-request",
         prompt: "Fixture-only Codex compatibility check",
@@ -315,6 +336,14 @@ test("the compiled desktop Codex stand-in completes prepare and dispatch in fork
       stopped: false,
       timedOut: false,
     });
+    status = "verify-initial-native-configuration";
+    const initialConfiguration = events.find(
+      (event) => event.kind === "configuration",
+    );
+    expect(initialConfiguration).toMatchObject({
+      modelProvider: "openai",
+    });
+    expect(initialConfiguration).toHaveProperty("serviceTier", null);
     expect(events).toContainEqual({
       kind: "text",
       itemId: "message-a",
@@ -328,21 +357,64 @@ test("the compiled desktop Codex stand-in completes prepare and dispatch in fork
     expect(
       readFileSync(join(workspace, "codex-sync-fixture-marker.txt"), "utf8"),
     ).toBe("inert sync ran\n");
+
+    if (!outcome.threadId)
+      throw new Error("The inert Codex fixture did not return a thread.");
+    status = "resume-dispatch";
+    const resumeEvents: CodexChatEvent[] = [];
+    const resumed = await runtime.run(
+      {
+        prepared,
+        resume: { provider: "codex", threadId: outcome.threadId, version },
+        resumeSettings: {
+          modelProvider: "openai",
+          serviceTier: null,
+          reasoningEffort: null,
+        },
+      },
+      async (event) => {
+        resumeEvents.push(event);
+      },
+      new AbortController().signal,
+      { requestApproval: async () => "decline" },
+    );
+    status = `resume-outcome-${resumed.phase}`;
+    expect(resumed).toMatchObject({
+      phase: "completed",
+      threadId: outcome.threadId,
+      exitCode: 0,
+    });
+    const resumeConfiguration = resumeEvents.find(
+      (event) => event.kind === "configuration",
+    );
+    expect(resumeConfiguration).toMatchObject({
+      modelProvider: "openai",
+    });
+    expect(resumeConfiguration).toHaveProperty("serviceTier", null);
+    expect(
+      readCompiledFixtureRecords(log).find(
+        (row) => row.kind === "rpc" && row.method === "thread/resume",
+      )?.params,
+    ).toMatchObject({
+      threadId: outcome.threadId,
+      modelProvider: "openai",
+      serviceTier: null,
+    });
     const facts = summarize();
     expect(facts).toMatchObject({
       state: "available",
       kindCounts: {
-        version: 2,
-        help: 2,
-        process: 1,
-        rpc: 3,
-        notification: 1,
+        version: 3,
+        help: 3,
+        process: 2,
+        rpc: 6,
+        notification: 2,
         answer: 0,
       },
       argvCategories: {
-        versionProbe: 2,
-        helpProbe: 2,
-        appServerStdio: 1,
+        versionProbe: 3,
+        helpProbe: 3,
+        appServerStdio: 2,
       },
     });
   } catch {
