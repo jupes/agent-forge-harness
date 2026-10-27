@@ -61,3 +61,58 @@ test("a damaged project catalog is a failed read, never empty or overwritten", a
   expect(body.ok).toBe(false);
   expect(body.data).toBeNull();
 });
+
+test("a protected project reservation preserves its exact original before project creation", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  const request = {
+    requestId: "63e76212-2d32-4fe2-ab4f-f37a4c827e31",
+    expectedCatalogRevision: 0,
+    original: {
+      slug: "onboarding-alpha",
+      name: "Onboarding Alpha",
+      description: "",
+      icon: "A",
+      workspaces: [
+        { root: h.root, repositories: [h.root], epicIds: ["alpha-epic"] },
+      ],
+    },
+  };
+  const headers = h.headers(h.hearth.token);
+  const reserve = await fetch(`${h.api}/projects/create-reservations`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(request),
+  });
+  expect(reserve.status).toBe(201);
+  const reserved: unknown = await reserve.json();
+  expect(reserved).toMatchObject({
+    ok: true,
+    data: {
+      requestId: request.requestId,
+      state: "reserved",
+      original: request.original,
+    },
+    error: null,
+  });
+  expect(createProjectStore(h.home).read().projects).toEqual([]);
+  expect(h.events(["operator.action"]).at(-1)?.payload).toMatchObject({
+    action: "project.create.reserve",
+  });
+
+  const original = await fetch(
+    `${h.api}/projects/create-reservations/${request.requestId}`,
+    { headers },
+  );
+  expect(original.status).toBe(200);
+  expect(await original.json()).toMatchObject({
+    ok: true,
+    data: {
+      requestId: request.requestId,
+      state: "reserved",
+      original: request.original,
+    },
+    error: null,
+  });
+  expect(h.events(["operator.action"])).toHaveLength(1);
+});
