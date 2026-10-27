@@ -415,8 +415,7 @@ export function CodexChatForkPanel(props: {
                   </button>
                 )}
               {identity?.state === "reserved" &&
-                !props.client.canDispatchReservedFork(identity.requestId) &&
-                (props.client.canRetireFork(identity.requestId) ? (
+                props.client.canRetireFork(identity.requestId) && (
                   <button
                     type="button"
                     disabled={busy || !props.writesAllowed}
@@ -424,11 +423,14 @@ export function CodexChatForkPanel(props: {
                   >
                     Retire verified not-sent original
                   </button>
-                ) : (
+                )}
+              {identity?.state === "reserved" &&
+                !props.client.canDispatchReservedFork(identity.requestId) &&
+                !props.client.canRetireFork(identity.requestId) && (
                   <button type="button" disabled>
                     Original reservation is held
                   </button>
-                ))}
+                )}
               {identity?.state === "linked" && identity.childSessionId && (
                 <ForkChildPanel
                   identity={identity}

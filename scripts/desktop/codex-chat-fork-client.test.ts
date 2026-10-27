@@ -506,7 +506,7 @@ test("an undispatched reservation remains safely retireable after reload", async
     throughTurnRequestId,
     state: "reserved",
   };
-  let posts = 0;
+  const posts: Array<{ path: string; body: unknown }> = [];
   const module = await loadForkClient(),
     make = () =>
       module.createCodexChatForkClient({
@@ -515,6 +515,23 @@ test("an undispatched reservation remains safely retireable after reload", async
         requestId: () => requestId,
         read: (async (path) => {
           const pathname = requestPath(path);
+          if (pathname.endsWith("/fork-review"))
+            return envelope(
+              sourcePage({
+                frames: [
+                  {
+                    kind: "user",
+                    seq: 1,
+                    turnId: throughTurnRequestId,
+                    at: "2026-10-23T03:00:00.000Z",
+                    text: "PRIVATE original prompt",
+                    about: [],
+                  },
+                ],
+                complete: true,
+                nextCursor: null,
+              }),
+            );
           if (pathname.endsWith("/session-operation-identities"))
             return envelope({
               version: 1,
@@ -553,9 +570,12 @@ test("an undispatched reservation remains safely retireable after reload", async
             });
           throw new Error(`Unexpected GET ${path}`);
         }) satisfies OperatorRead,
-        post: (async () => {
-          posts++;
-          return envelope({ ...reserved, state: "retired" });
+        post: (async (path, body) => {
+          posts.push({ path, body: structuredClone(body) });
+          if (path.endsWith("/fork-reservations")) return envelope(reserved);
+          if (path.endsWith(`/fork-reservations/${requestId}/retire`))
+            return envelope({ ...reserved, state: "retired" });
+          throw new Error(`Unexpected POST ${path}`);
         }) satisfies OperatorPost,
       });
   const first = make();
@@ -583,7 +603,16 @@ test("an undispatched reservation remains safely retireable after reload", async
     expect(await recovered.retireFork(projectId, requestId)).toMatchObject({
       state: "retired",
     });
-    expect(posts).toBe(2); // One reservation and one exact safe retirement.
+    expect(posts).toEqual([
+      {
+        path: `/__agent-forge/projects/${projectId}/sessions/${parentSessionId}/fork-reservations`,
+        body: { requestId, throughTurnRequestId },
+      },
+      {
+        path: `/__agent-forge/projects/${projectId}/sessions/${parentSessionId}/fork-reservations/${requestId}/retire`,
+        body: { requestHash },
+      },
+    ]);
   } finally {
     recovered.dispose();
   }

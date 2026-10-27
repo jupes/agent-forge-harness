@@ -3171,6 +3171,82 @@ test("Codex Chat explicitly reviews, forks, reloads and controls only the linked
   page.off("request", captureForkPost);
 });
 
+test("an undispatched Fork original can be explicitly retired after reload", async ({
+  page,
+}) => {
+  mode("fork-service-tier-null");
+  const { pane, record } = await startedChat(page);
+  await completeForkSourceTurn(page, pane);
+  const turn = saved(record.id).turns.at(-1);
+  if (!turn || turn.phase !== "completed")
+    throw Error("No completed Fork source turn");
+  const forkPosts: Array<{ path: string; body: unknown }> = [];
+  const captureForkPost = (request: Request) => {
+    const path = new URL(request.url()).pathname;
+    if (
+      request.method() === "POST" &&
+      (path.endsWith("/fork-reservations") || path.endsWith("/forks"))
+    )
+      forkPosts.push({ path, body: request.postDataJSON() });
+  };
+  page.on("request", captureForkPost);
+
+  const opener = () =>
+    pane.getByRole("button", {
+      name: `Review Fork through ${turn.requestId.slice(0, 8)}`,
+      exact: true,
+    });
+  await opener().click();
+  const dialog = () =>
+    page.getByRole("dialog", {
+      name: "Review native Codex Fork",
+      exact: true,
+    });
+  const review = dialog();
+  await expect(review).toContainText("Captured settings");
+  await review
+    .getByRole("button", { name: "Reserve this exact Fork", exact: true })
+    .click();
+  const reserve = review.getByRole("button", {
+    name: "Create the native child thread once",
+    exact: true,
+  });
+  await expect(reserve).toBeEnabled();
+  const retire = review.getByRole("button", {
+    name: "Retire verified not-sent original",
+    exact: true,
+  });
+  await expect(retire).toBeEnabled();
+  expect(forkPosts).toHaveLength(1);
+  const identity = forkPosts[0]?.body as {
+    requestId: string;
+    throughTurnRequestId: string;
+  };
+  expect(identity).toMatchObject({ throughTurnRequestId: turn.requestId });
+  expect(calls().filter((row) => row.kind === "rpc" && row.method === "thread/fork")).toHaveLength(0);
+
+  await reloadSettled(page);
+  await opener().click();
+  const recovered = dialog();
+  await expect(recovered).toContainText(identity.requestId);
+  const recoveredRetire = recovered.getByRole("button", {
+    name: "Retire verified not-sent original",
+    exact: true,
+  });
+  await expect(recoveredRetire).toBeEnabled();
+  await recoveredRetire.click();
+  await expect(recovered).toContainText("its reservation was retired");
+  await expect(recovered).toContainText("retired");
+  expect(forkPosts).toHaveLength(2);
+  expect(forkPosts[1]?.path).toBe(
+    `/__agent-forge/projects/${record.projectId}/sessions/${record.id}/fork-reservations/${identity.requestId}/retire`,
+  );
+  expect(forkPosts[1]?.body).toMatchObject({ requestHash: expect.any(String) });
+  expect(forkPosts.some((post) => post.path.endsWith("/forks"))).toBe(false);
+  expect(calls().filter((row) => row.kind === "rpc" && row.method === "thread/fork")).toHaveLength(0);
+  page.off("request", captureForkPost);
+});
+
 test("lost native Fork reply remains held across reload without another Fork POST", async ({
   page,
 }) => {
