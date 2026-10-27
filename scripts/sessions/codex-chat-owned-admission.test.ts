@@ -87,6 +87,19 @@ async function fixture(mode = "normal", rpcTimeoutMs = 5000) {
     timeoutMs: 5000,
     rpcTimeoutMs,
     approvalTimeoutMs: 3000,
+    ...(mode === "canonical-cwd-ack"
+      ? {
+          modelEfforts: [
+            {
+              model: "exact-model",
+              efforts: ["medium"],
+              source: "model/list" as const,
+              cliVersion: "0.163.0-alpha.10.2",
+              asOf: "2026-10-23T00:00:00.000Z",
+            },
+          ],
+        }
+      : {}),
   });
   const open = () => {
     const service = createCodexOwnedChatService({
