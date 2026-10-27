@@ -3668,8 +3668,8 @@ describe("a read row or the stream while another connection holds the write lock
       const aliasFacade = { ...baselineHearth, root: worktreeAlias };
       expect(aliasFacade.workspace).toBe(baselineHearth.workspace);
       // The facade's root is an alias, while its workspace and the saved child
-      // metadata remain canonical. A Git adapter must report workspace, not root.
-      baselineWorkspace = aliasFacade.root;
+      // metadata remain canonical. The adapter reports the canonical workspace.
+      baselineWorkspace = aliasFacade.workspace;
       const aliasedFacadeResponse = await get(
         baselineHearth,
         forkChildPath,
