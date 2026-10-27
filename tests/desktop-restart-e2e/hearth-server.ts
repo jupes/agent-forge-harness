@@ -1,14 +1,17 @@
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { operatorCouncilLedger } from "../../scripts/council/ledger-wiring";
-import { hearthHome } from "../../scripts/hearth/home";
+import { hearthHome, tokenPath } from "../../scripts/hearth/home";
 import {
   closeOnSignal,
   createHearth,
 } from "../../scripts/hearth/server-runtime";
-import { writeOwnerOnly } from "../../scripts/hearth/token";
+import { readToken, writeOwnerOnly } from "../../scripts/hearth/token";
+import { resolveCheckout } from "../../scripts/ledger/workspace";
 import { createCodexChatRuntime } from "../../scripts/sessions/codex-chat-runtime";
 import { observeCodexChatPersist } from "../../scripts/sessions/fixtures/codex-chat-persist-diagnostic";
+import { isRunHome } from "../e2e/servers";
+import { ROOT } from "./environment";
 
 const FACT_FILE = "codex-chat-private-persist-failure.json";
 
@@ -33,16 +36,55 @@ function requestedPort(value: string | undefined): number | undefined {
   return port;
 }
 
+function ownedFixtureHome(): string {
+  const configured = process.env["AGENT_FORGE_HOME"],
+    fixture = process.env["AGENT_FORGE_E2E_HOME"];
+  if (
+    !configured ||
+    !fixture ||
+    resolve(configured) !== resolve(fixture) ||
+    !isRunHome(configured)
+  )
+    throw new Error("The restart fixture requires its isolated owned home.");
+  return resolve(configured);
+}
+
+function ownedFixtureRoot(value: string): string {
+  const fixture = resolveCheckout(ROOT),
+    expectedRoot = fixture.workspace,
+    expected = resolveCheckout(expectedRoot),
+    actual = resolveCheckout(value);
+  const comparable = (path: string) => {
+    const normalized = resolve(path).replaceAll("\\", "/");
+    return process.platform === "win32" ? normalized.toLowerCase() : normalized;
+  };
+  if (
+    actual.workspace !== expected.workspace ||
+    actual.worktree !== expected.worktree ||
+    comparable(value) !== comparable(expectedRoot)
+  )
+    throw new Error("The restart fixture requires its owned checkout.");
+  return expectedRoot;
+}
+
 async function run(): Promise<void> {
-  const root = rootArgument(process.argv.slice(2));
-  const home = hearthHome(process.env);
+  const root = ownedFixtureRoot(rootArgument(process.argv.slice(2)));
+  const home = ownedFixtureHome();
+  if (hearthHome(process.env) !== home)
+    throw new Error("The restart fixture home changed during startup.");
+  const tokenFile = tokenPath(home, root);
   const token = { current: null as string | null };
   const port = requestedPort(process.env["HEARTH_PORT"]);
   const defaultRuntime = createCodexChatRuntime({
     root,
     home,
     environment: process.env,
-    operatorToken: () => token.current,
+    operatorToken: () => {
+      const expected = token.current;
+      return expected !== null && readToken(tokenFile) === expected
+        ? expected
+        : null;
+    },
   });
   const codexChatRuntime: ReturnType<typeof createCodexChatRuntime> = {
     ...defaultRuntime,
