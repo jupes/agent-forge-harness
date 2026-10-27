@@ -2967,7 +2967,7 @@ test("Codex Chat explicitly reviews, forks, reloads and controls only the linked
 }) => {
   await page.setViewportSize({ width: 1100, height: 760 });
   await page.emulateMedia({ reducedMotion: "reduce" });
-  mode("fork-service-tier-null");
+  mode("fork-service-tier-null-child-approval");
   const { pane, record } = await startedChat(page);
   const selectedTurnRequestId = await completeForkSourceTurn(
     page,
@@ -3145,7 +3145,6 @@ test("Codex Chat explicitly reviews, forks, reloads and controls only the linked
   );
   if (!child) throw Error("The linked Fork child was not registered");
 
-  mode("fork-approval-command");
   await recoveredDialog
     .getByRole("textbox", { name: "Continue this child" })
     .fill("PRIVATE_CHILD_APPROVAL_PROMPT");
@@ -3193,6 +3192,9 @@ test("Codex Chat explicitly reviews, forks, reloads and controls only the linked
 test("an undispatched Fork original can be explicitly retired after reload", async ({
   page,
 }) => {
+  const nativeForksBefore = calls().filter(
+    (row) => row.kind === "rpc" && row.method === "thread/fork",
+  ).length;
   mode("fork-service-tier-null");
   const { pane, record } = await startedChat(page);
   const selectedTurnRequestId = await completeForkSourceTurn(
@@ -3250,7 +3252,9 @@ test("an undispatched Fork original can be explicitly retired after reload", asy
     throughTurnRequestId: string;
   };
   expect(identity).toMatchObject({ throughTurnRequestId: turn.requestId });
-  expect(calls().filter((row) => row.kind === "rpc" && row.method === "thread/fork")).toHaveLength(0);
+  expect(
+    calls().filter((row) => row.kind === "rpc" && row.method === "thread/fork"),
+  ).toHaveLength(nativeForksBefore);
 
   await reloadSettled(page);
   await opener().click();
@@ -3270,7 +3274,9 @@ test("an undispatched Fork original can be explicitly retired after reload", asy
   );
   expect(forkPosts[1]?.body).toMatchObject({ requestHash: expect.any(String) });
   expect(forkPosts.some((post) => post.path.endsWith("/forks"))).toBe(false);
-  expect(calls().filter((row) => row.kind === "rpc" && row.method === "thread/fork")).toHaveLength(0);
+  expect(
+    calls().filter((row) => row.kind === "rpc" && row.method === "thread/fork"),
+  ).toHaveLength(nativeForksBefore);
   page.off("request", captureForkPost);
 });
 

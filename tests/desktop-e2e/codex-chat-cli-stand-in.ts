@@ -40,6 +40,7 @@ if (
     "web-search",
     "web-search-held",
     "fork-service-tier-null",
+    "fork-service-tier-null-child-approval",
     "fork-lost-response",
     "fork-lost-response-eof",
     "fork-approval-command",
