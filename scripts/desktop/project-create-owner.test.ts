@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import type { ProjectCreateWriteResult } from "../../apps/desktop/src/project-create-api";
 import {
   createProjectCreateIdentities,
+  PROJECT_CREATE_IDENTITIES,
   projectCreateRequestHash,
 } from "../../apps/desktop/src/project-create-identities";
 import { createProjectCreateOwner } from "../../apps/desktop/src/project-create-owner";
@@ -100,7 +101,14 @@ function identity(
 
 function fixture(
   reserveResults: ProjectCreateWriteResult<ProjectCreateIdentity>[] = [],
-  overrides: { preview?: () => Promise<ProjectScopePreview> } = {},
+  overrides: {
+    options?: () => Promise<ProjectCreateOptions>;
+    original?: (
+      id: string,
+      current: ProjectCreateIdentity,
+    ) => Promise<ProjectCreateIdentity> | ProjectCreateIdentity;
+    preview?: () => Promise<ProjectScopePreview>;
+  } = {},
 ) {
   const storage = new Map<string, string>();
   const identities = createProjectCreateIdentities({
@@ -149,7 +157,7 @@ function fixture(
   });
   const api = {
     async options() {
-      return options;
+      return overrides.options ? overrides.options() : options;
     },
     async smiths() {
       return smiths;
@@ -162,7 +170,9 @@ function fixture(
     },
     async original(id: string) {
       if (!server || server.requestId !== id) throw Error("404");
-      return structuredClone(server);
+      return overrides.original
+        ? overrides.original(id, structuredClone(server))
+        : structuredClone(server);
     },
     async catalog() {
       return {
@@ -352,6 +362,69 @@ test("project creation reserves, commits, and opens only the verified exact orig
   owner.dispose();
 });
 
+test("concurrent reserve clicks admit only one project reservation", async () => {
+  const { owner, writes } = fixture();
+  await owner.recover();
+
+  const results = await Promise.all([
+    owner.reserve(original, preview),
+    owner.reserve(original, preview),
+  ]);
+
+  expect(results.filter(Boolean)).toHaveLength(1);
+  expect(writes.map((write) => write.kind)).toEqual(["reserve"]);
+  owner.dispose();
+});
+
+test("a mismatched protected original readback remains held without another write", async () => {
+  let returnMismatch = false;
+  const { owner, writes } = fixture([], {
+    original: (_id, current) =>
+      returnMismatch
+        ? {
+            ...current,
+            original: {
+              ...current.original,
+              name: "Different server original",
+            },
+          }
+        : current,
+  });
+  await owner.recover();
+  expect(await owner.reserve(original, preview)).toBe(true);
+  expect(writes.map((write) => write.kind)).toEqual(["reserve"]);
+
+  returnMismatch = true;
+  await owner.recover();
+
+  expect(owner.get().entries[0]).toMatchObject({
+    phase: "unknown",
+    identity: null,
+  });
+  expect(writes.map((write) => write.kind)).toEqual(["reserve"]);
+  owner.dispose();
+});
+
+test("a stale recovery read cannot restore ready scope after workspace changes", async () => {
+  let finishOptions!: (value: ProjectCreateOptions) => void;
+  const pendingOptions = new Promise<ProjectCreateOptions>((resolve) => {
+    finishOptions = resolve;
+  });
+  const { owner, writes, identities, setCurrentWorkspace } = fixture([], {
+    options: () => pendingOptions,
+  });
+
+  const recovery = owner.recover();
+  setCurrentWorkspace("/fixture/other-workspace");
+  finishOptions(options);
+  await recovery;
+
+  expect(owner.get().phase).toBe("unavailable");
+  expect(writes).toEqual([]);
+  expect(identities.list()).toEqual([]);
+  owner.dispose();
+});
+
 test("only a typed pre-send refusal permits explicit same-UUID reservation retry", async () => {
   const { owner, writes, identities } = fixture([
     { state: "not-sent", message: "Operator access is unavailable." },
@@ -395,7 +468,7 @@ test("recovery never retries a saved body whose original hash no longer matches"
   expect(writes).toHaveLength(1);
   owner.dispose();
 
-  const key = "agent-forge.project-create-identities.v1";
+  const key = PROJECT_CREATE_IDENTITIES;
   const encoded = storage.get(key);
   expect(encoded).toBeDefined();
   let saved: unknown;
@@ -422,12 +495,14 @@ test("recovery never retries a saved body whose original hash no longer matches"
     original: { ...request.original, name: "Changed after durable refusal" },
   };
   storage.set(key, JSON.stringify(saved));
+  const corruptBytes = storage.get(key);
 
   const recovered = reopen();
   await recovered.recover();
-  expect(recovered.get().entries[0]).toMatchObject({ phase: "not-sent" });
+  expect(recovered.get().entries[0]).toMatchObject({ phase: "unknown" });
   expect(await recovered.retryReservation(requestId)).toBe(false);
   expect(writes).toHaveLength(1);
+  expect(storage.get(key)).toBe(corruptBytes);
   recovered.dispose();
 });
 

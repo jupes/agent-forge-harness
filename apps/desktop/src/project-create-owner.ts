@@ -13,7 +13,10 @@ import { workspaceKey } from "../../../scripts/projects/scope";
 import type { SmithsView } from "../../../types/hearth";
 import type { ProjectCreateWriteResult } from "./project-create-api";
 import type { ProjectCreateLocalIdentity } from "./project-create-identities";
-import { canonicalProjectCreateJson } from "./project-create-identities";
+import {
+  canonicalProjectCreateJson,
+  projectCreateRequestHash,
+} from "./project-create-identities";
 
 export interface ProjectCreateEntry {
   identity: ProjectCreateIdentity | null;
@@ -247,6 +250,15 @@ export function createProjectCreateOwner(deps: {
       const locals = new Map(
         localRows.map((entry) => [entry.request.requestId, entry]),
       );
+      const localHashesValid = new Map<string, boolean>();
+      for (const local of localRows) {
+        const hash = await projectCreateRequestHash(local.request);
+        if (disposed || current !== generation) return;
+        localHashesValid.set(
+          local.request.requestId,
+          hash === local.requestHash,
+        );
+      }
       const seen = new Set<string>();
       const entries: ProjectCreateEntry[] = [];
       for (const row of page.operations) {
@@ -256,6 +268,7 @@ export function createProjectCreateOwner(deps: {
           const identity = await deps.api.original(row.requestId);
           if (disposed || current !== generation) return;
           if (
+            (local && !localHashesValid.get(local.request.requestId)) ||
             !rowMatchesIdentity(row, identity) ||
             workspaceKey(identity.original.workspaces[0]!.root) !== scope ||
             (local &&
@@ -311,7 +324,11 @@ export function createProjectCreateOwner(deps: {
             identity: null,
             local,
             original: local.request.original,
-            phase: local.state === "not-sent" ? "not-sent" : "unknown",
+            phase:
+              local.state === "not-sent" &&
+              localHashesValid.get(local.request.requestId) === true
+                ? "not-sent"
+                : "unknown",
           });
       }
       if (disposed || current !== generation) return;
@@ -614,6 +631,7 @@ export function createProjectCreateOwner(deps: {
       if (
         !entry?.local ||
         entry.identity ||
+        entry.phase !== "not-sent" ||
         entry.local.state !== "not-sent" ||
         state.busy ||
         !deps.canWrite() ||
@@ -626,6 +644,17 @@ export function createProjectCreateOwner(deps: {
       const current = ++generation;
       emit();
       try {
+        const originalHash = await projectCreateRequestHash(
+          entry.local.request,
+        );
+        if (disposed || current !== generation) return false;
+        if (originalHash !== entry.local.requestHash) {
+          replaceEntry({ ...entry, phase: "unknown" });
+          state.error =
+            "The saved project original changed and remains held. No retry was sent.";
+          state.notice = "The saved original could not be verified.";
+          return false;
+        }
         const [options, smiths, preview, page] = await Promise.all([
           deps.api.options(),
           deps.api.smiths(),
