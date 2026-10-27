@@ -112,8 +112,14 @@ export function NewBeadForm({
   const [state, setState] = useState(initial);
   const [submitted, setSubmitted] = useState(false);
   const titleInput = useRef<HTMLInputElement>(null);
+  const initialFocusAttempted = useRef(false);
+  const userInteracted = useRef(false);
   useEffect(() => {
-    const frame = requestAnimationFrame(() => titleInput.current?.focus());
+    if (!options || initialFocusAttempted.current) return;
+    initialFocusAttempted.current = true;
+    const frame = requestAnimationFrame(() => {
+      if (!userInteracted.current) titleInput.current?.focus();
+    });
     return () => cancelAnimationFrame(frame);
   }, [options]);
   const scope = { projectId: page.projectId, workspace: page.workspace };
@@ -152,6 +158,15 @@ export function NewBeadForm({
   return (
     <form
       class="af-bead-form"
+      onInput={() => {
+        userInteracted.current = true;
+      }}
+      onKeyDown={() => {
+        userInteracted.current = true;
+      }}
+      onPointerDown={() => {
+        userInteracted.current = true;
+      }}
       onSubmit={(event) => {
         event.preventDefault();
         if (!valid || submitted || held) return;
