@@ -177,6 +177,68 @@ test("a protected project reservation preserves its exact original before projec
   expect(summaryText).not.toContain(request.original.name);
 });
 
+test("a project reservation refuses two allowed spellings of the same checkout before writing", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  h.bd.issues.set("alpha-epic", {
+    id: "alpha-epic",
+    title: "Onboarding epic",
+    issue_type: "epic",
+    priority: 2,
+    status: "open",
+    labels: ["project:canonical-alias"],
+    created_at: "2026-10-26T00:00:00.000Z",
+    updated_at: "2026-10-26T00:00:00.000Z",
+  });
+  h.bd.answer = (args) =>
+    args[0] === "export"
+      ? {
+          status: 0,
+          stdout: [...h.bd.issues.values()]
+            .map((issue) => JSON.stringify(issue))
+            .join("\n"),
+          stderr: "",
+        }
+      : undefined;
+
+  const store = createProjectStore(h.home);
+  const before = store.read();
+  const separator = h.root.includes("\\") ? "\\" : "/";
+  const request = {
+    requestId: "6a1310d8-3d4b-4e38-bbdb-391fd2bce280",
+    expectedCatalogRevision: before.revision,
+    original: {
+      slug: "canonical-alias",
+      name: "Canonical Alias",
+      description: "",
+      icon: "A",
+      workspaces: [
+        {
+          root: h.root,
+          repositories: [h.root, `${h.root}${separator}`],
+          epicIds: ["alpha-epic"],
+        },
+      ],
+    },
+  };
+  const response = await fetch(`${h.api}/projects/create-reservations`, {
+    method: "POST",
+    headers: h.headers(h.hearth.token),
+    body: JSON.stringify(request),
+  });
+
+  expect(response.status).toBe(400);
+  expect(store.read()).toEqual(before);
+  expect(store.listCreates()).toEqual([]);
+  const actions = h.events(["operator.action"]);
+  expect(actions).toHaveLength(1);
+  expect(actions[0]?.payload).toMatchObject({
+    action: "project.create.reserve",
+    family: "project-create",
+    requestId: request.requestId,
+  });
+});
+
 test("a reserved project is committed once or explicitly retired without dropping its UUID", async () => {
   const h = await startTestHearth();
   opened.push(h);

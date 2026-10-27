@@ -222,6 +222,27 @@ test("project catalog preferences preserve pending create originals without adva
   ).toEqual(reserved.operation);
 });
 
+test("project creation refuses distinct repository spellings of the same canonical checkout", async () => {
+  const { store, input } = fixture();
+  const separator = process.platform === "win32" ? "\\" : "/";
+  const original = {
+    ...input,
+    workspaces: [
+      {
+        root: input.workspaces[0]!.root,
+        repositories: [
+          input.workspaces[0]!.root,
+          `${input.workspaces[0]!.root}${separator}`,
+        ],
+        epicIds: input.workspaces[0]!.epicIds,
+      },
+    ],
+  };
+  const before = store.read();
+  await expect(store.create(original, 0)).rejects.toThrow();
+  expect(store.read()).toEqual(before);
+});
+
 test("project create ledger refuses a reservation that would exceed the catalog byte cap", async () => {
   const { home, store, input } = fixture();
   const catalogFile = projectCatalogPath(home);
