@@ -44,6 +44,7 @@ interface ForkClient {
     throughTurnRequestId: string;
     source: CodexChatForkSourcePage;
   }): Promise<CodexChatForkIdentityMetadata>;
+  listOriginals(projectId: string): Promise<CodexChatForkIdentityMetadata[]>;
   dispatchReservedFork(projectId: string, requestId: string): Promise<unknown>;
   canDispatchReservedFork(requestId: string): boolean;
   canRetireFork(requestId: string): boolean;
@@ -212,6 +213,86 @@ test("Fork source review reads every page for the explicit turn and never posts"
   } finally {
     client.dispose();
   }
+});
+
+test("Fork discovery preserves a verified empty page but rejects incomplete or unavailable identity reads", async () => {
+  const emptyPage = {
+    version: 1,
+    scope: { projectId, workspace },
+    operations: [],
+  };
+  let posts = 0;
+  const emptyModule = await loadForkClient(),
+    emptyClient = emptyModule.createCodexChatForkClient({
+      currentScope: scope,
+      canWrite: () => true,
+      requestId: () => requestId,
+      read: (async () => envelope(emptyPage)) satisfies OperatorRead,
+      post: (async () => {
+        posts++;
+        throw new Error("Discovery must not POST");
+      }) satisfies OperatorPost,
+    });
+  try {
+    await expect(emptyClient.listOriginals(projectId)).resolves.toEqual([]);
+  } finally {
+    emptyClient.dispose();
+  }
+
+  const unavailablePages: Array<{ name: string; response: Response }> = [
+    { name: "404", response: new Response("", { status: 404 }) },
+    { name: "unavailable", response: new Response("", { status: 503 }) },
+    {
+      name: "malformed JSON",
+      response: new Response("{", { status: 200 }),
+    },
+    {
+      name: "invalid page",
+      response: envelope({
+        version: 1,
+        scope: { projectId, workspace },
+        operations: [{}],
+      }),
+    },
+    {
+      name: "wrong project scope",
+      response: envelope({
+        ...emptyPage,
+        scope: {
+          projectId: "project-00000000-0000-4000-8000-000000000000",
+          workspace,
+        },
+      }),
+    },
+    {
+      name: "oversized page",
+      response: new Response("x".repeat(65_537), { status: 200 }),
+    },
+  ];
+
+  for (const scenario of unavailablePages) {
+    const module = await loadForkClient(),
+      client = module.createCodexChatForkClient({
+        currentScope: scope,
+        canWrite: () => true,
+        requestId: () => requestId,
+        read: (async () => scenario.response.clone()) satisfies OperatorRead,
+        post: (async () => {
+          posts++;
+          throw new Error("Failed discovery must not POST");
+        }) satisfies OperatorPost,
+      });
+    try {
+      await expect(client.listOriginals(projectId)).rejects.toThrow();
+    } catch (error) {
+      throw new Error(`Fork discovery did not hold on ${scenario.name}.`, {
+        cause: error,
+      });
+    } finally {
+      client.dispose();
+    }
+  }
+  expect(posts).toBe(0);
 });
 
 test("lost Fork reply reloads the same reserved UUID and hash, keeps a missing original held, and never re-POSTs", async () => {
