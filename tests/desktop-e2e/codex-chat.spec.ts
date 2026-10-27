@@ -3288,28 +3288,28 @@ test("a delayed older Fork review cannot replace a newer selection", async ({
   });
   const originalRequestId = originalBody?.requestId as string;
   const identityToken = await pageToken(page);
-  const rawIdentity: unknown = await page.evaluate(
-    async ({ project, token, header }) => {
-      const response = await fetch(
-        `/__agent-forge/projects/${project}/session-operation-identities`,
-        { headers: { [header]: token } },
-      );
-      return response.json();
-    },
-    {
-      project: record.projectId,
-      token: identityToken,
-      header: OPERATOR_HEADER,
-    },
-  );
-  const identityEnvelope =
-    typeof rawIdentity === "object" &&
-    rawIdentity !== null &&
-    "data" in rawIdentity
-      ? (rawIdentity as { data: unknown }).data
-      : null;
-  const identityPage =
-    sessionOperationIdentityPageSchema.parse(identityEnvelope);
+  const readOperationPage = async () => {
+    const raw: unknown = await page.evaluate(
+      async ({ project, token, header }) => {
+        const response = await fetch(
+          `/__agent-forge/projects/${project}/session-operation-identities`,
+          { headers: { [header]: token } },
+        );
+        return response.json();
+      },
+      {
+        project: record.projectId,
+        token: identityToken,
+        header: OPERATOR_HEADER,
+      },
+    );
+    const envelope = z
+      .object({ ok: z.literal(true), data: z.unknown(), error: z.null() })
+      .strict()
+      .parse(raw);
+    return sessionOperationIdentityPageSchema.parse(envelope.data);
+  };
+  const identityPage = await readOperationPage();
   const persistedOriginal = identityPage.operations.find(
     (row) =>
       row.family === "codex-chat-fork" && row.requestId === originalRequestId,
@@ -3320,7 +3320,10 @@ test("a delayed older Fork review cannot replace a newer selection", async ({
     throughTurnRequestId: earlier.requestId,
     state: "reserved",
   });
-  expect(persistedOriginal?.requestHash).toMatch(/^[a-f0-9]{64}$/);
+  if (!persistedOriginal)
+    throw new Error("The earlier Fork reservation was not persisted");
+  expect(persistedOriginal.requestHash).toMatch(/^[a-f0-9]{64}$/);
+  const originalHash = persistedOriginal.requestHash;
   const nativeForksBefore = calls().filter(
     (row) => row.kind === "rpc" && row.method === "thread/fork",
   ).length;
@@ -3406,13 +3409,27 @@ test("a delayed older Fork review cannot replace a newer selection", async ({
         ),
     );
     await expect(dialog).toContainText("PRIVATE_FORK_SOURCE_PROMPT");
-    await expect(dialog).not.toContainText(originalRequestId);
+    await expect(dialog).toContainText(
+      "Another Fork original is unresolved for this parent. Review that exact original before creating another.",
+    );
     await expect(
       dialog.getByRole("button", {
         name: "Reserve this exact Fork",
         exact: true,
       }),
-    ).toBeEnabled();
+    ).toHaveCount(0);
+    const afterStaleRead = (await readOperationPage()).operations.find(
+      (row) =>
+        row.family === "codex-chat-fork" &&
+        row.requestId === originalRequestId,
+    );
+    expect(afterStaleRead).toMatchObject({
+      requestId: originalRequestId,
+      requestHash: originalHash,
+      parentSessionId: record.id,
+      throughTurnRequestId: earlier.requestId,
+      state: "reserved",
+    });
     expect(posts).toHaveLength(1);
     expect(
       calls().filter(
@@ -3988,6 +4005,10 @@ test("Codex Chat explicitly reviews, forks, reloads and controls only the linked
 test("switching linked Fork originals clears the prior child state before reading the next child", async ({
   page,
 }) => {
+  const nativeForkCount = () =>
+    calls().filter((row) => row.kind === "rpc" && row.method === "thread/fork")
+      .length;
+  const nativeForksBefore = nativeForkCount();
   mode("fork-restart-child-approval");
   const { pane, record } = await startedChat(page),
     selectedTurnRequestId = await completeForkSourceTurn(page, pane, record.id),
@@ -4027,9 +4048,7 @@ test("switching linked Fork originals clears the prior child state before readin
   await expect(
     dialog.getByText("Child conversation", { exact: true }),
   ).toBeVisible();
-  expect(
-    calls().filter((row) => row.kind === "rpc" && row.method === "thread/fork"),
-  ).toHaveLength(1);
+  expect(nativeForkCount()).toBe(nativeForksBefore + 1);
   const firstReservation = z
     .object({
       requestId: z.string().uuid(),
@@ -4184,9 +4203,7 @@ test("switching linked Fork originals clears the prior child state before readin
   expect(childB.id).not.toBe(childA.id);
   expect(nativeChildB).not.toBe(nativeChildA);
   expect(forkPosts).toHaveLength(4);
-  expect(
-    calls().filter((row) => row.kind === "rpc" && row.method === "thread/fork"),
-  ).toHaveLength(2);
+  expect(nativeForkCount()).toBe(nativeForksBefore + 2);
   const originalAResponse = await page.evaluate(
     async ({ projectId, requestId, token, header }) => {
       const response = await fetch(
