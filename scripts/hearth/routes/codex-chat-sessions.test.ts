@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import type {
   CodexChatDecisionRequest,
@@ -17,13 +17,14 @@ import { codexChatPreviewReceiptSchema } from "../../sessions/codex-chat-preview
 import { createCodexChatRuntime } from "../../sessions/codex-chat-runtime";
 import { ownedCodingPageSchema } from "../../sessions/codex-owned-journal";
 import { ownedCodingStartReceiptSchema } from "../../sessions/codex-owned-wire-protocol";
+import { sessionRegistryFile } from "../../sessions/registry";
 import {
   codexChatForkIdentityMetadataSchema,
   sessionOperationIdentityPageSchema,
 } from "../../sessions/session-operation-identities-protocol";
 import { expectStartIdentityState } from "../../sessions/session-start-identity-test-witness";
 import { scratchDirs } from "../../test-scratch";
-import { startTestHearth, type TestHearth } from "../testing";
+import { fakeBd, startTestHearth, type TestHearth } from "../testing";
 import { writeOwnerOnly } from "../token";
 import { fixtureSessionGit } from "./session-fixture";
 
@@ -88,6 +89,11 @@ async function fixture(
     markForkEffectReached: () => void = () => {},
     markForkReplyReleased: () => void = () => {},
     forkReplyHeld = false;
+  let nextScopeBarrier: {
+    enter(): void;
+    released: Promise<void>;
+  } | null = null;
+  const tracker = fakeBd();
   const answerGate = new Promise<void>((resolve) => {
     release = resolve;
   });
@@ -109,6 +115,15 @@ async function fixture(
     },
     api: {
       git: fixtureSessionGit,
+      runBd: async (args, options) => {
+        const barrier = nextScopeBarrier;
+        if (barrier) {
+          nextScopeBarrier = null;
+          barrier.enter();
+          await barrier.released;
+        }
+        return tracker.run(args, options);
+      },
       codexChatRuntime: {
         async check(input) {
           const event = h.events(["operator.action"]).at(-1);
@@ -321,6 +336,20 @@ async function fixture(
       throw Error("Invalid completed native fixture recording");
     }
   };
+  const pauseNextScopeValidation = () => {
+    let enter: () => void = () => {},
+      release: () => void = () => {};
+    const entered = new Promise<void>((resolve) => {
+        enter = resolve;
+      }),
+      released = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+    if (nextScopeBarrier)
+      throw Error("A scope-validation barrier is already armed");
+    nextScopeBarrier = { enter, released };
+    return { entered, release };
+  };
   return {
     h,
     request,
@@ -332,12 +361,147 @@ async function fixture(
     settle,
     settleFork,
     records,
+    pauseNextScopeValidation,
     release,
     held: () => held,
     forkEffectReached,
     releaseForkReply,
     forkReplyReleased,
   };
+}
+
+async function waitForAnswerCount(
+  f: Awaited<ReturnType<typeof fixture>>,
+  expected: number,
+) {
+  const deadline = Date.now() + 5000;
+  while (f.records().filter((row) => row.kind === "answer").length < expected) {
+    if (Date.now() >= deadline)
+      throw Error("The inert native approval answer was not recorded");
+    await Bun.sleep(20);
+  }
+}
+
+async function closeFixture(f: Awaited<ReturnType<typeof fixture>>) {
+  await f.h.close();
+  const index = opened.indexOf(f.h);
+  if (index >= 0) opened.splice(index, 1);
+}
+
+function changeForkChildWorktree(
+  f: Awaited<ReturnType<typeof fixture>>,
+  childSessionId: string,
+) {
+  const path = sessionRegistryFile(f.h.home),
+    original = readFileSync(path, "utf8");
+  let raw: unknown;
+  try {
+    raw = JSON.parse(original);
+  } catch {
+    throw Error("The private session registry could not be inspected");
+  }
+  if (
+    typeof raw !== "object" ||
+    raw === null ||
+    !("records" in raw) ||
+    !Array.isArray(raw.records)
+  )
+    throw Error("The private session registry fixture was invalid");
+  const child = raw.records.find(
+    (record) =>
+      typeof record === "object" &&
+      record !== null &&
+      "id" in record &&
+      record.id === childSessionId,
+  );
+  if (typeof child !== "object" || child === null || !("worktree" in child))
+    throw Error("The Fork child registry fixture was missing");
+  const changedWorktree = join(f.h.root, "unregistered-fork-child-worktree");
+  mkdirSync(changedWorktree, { recursive: true });
+  (child as Record<string, unknown>).worktree = changedWorktree;
+  writeOwnerOnly(path, JSON.stringify(raw));
+  return () => writeOwnerOnly(path, original);
+}
+
+async function expectForkTurnAccepted(
+  f: Awaited<ReturnType<typeof fixture>>,
+  response: Response,
+) {
+  if (response.status === 202) return;
+  let error = "unavailable";
+  try {
+    const envelope: unknown = await response.json();
+    if (
+      typeof envelope === "object" &&
+      envelope !== null &&
+      "error" in envelope &&
+      typeof envelope.error === "string"
+    )
+      error = envelope.error
+        .replaceAll(f.h.root, "<fixture-root>")
+        .replaceAll(f.h.home, "<fixture-home>")
+        .slice(0, 160);
+  } catch {
+    error = "invalid-public-envelope";
+  }
+  throw Error(`Fork child admission returned ${response.status}: ${error}`);
+}
+
+async function rejectsForkControlAfterScopeChange(
+  control: "read" | "decision" | "stop",
+) {
+  const f = await fixture("fork-approval-command");
+  try {
+    const { childSessionId } = await createApprovedFork(f),
+      childTurn = {
+        requestId: randomUUID(),
+        expectedRevision: 0,
+        text: "A child turn remains bound to its validated worktree.",
+        about: [],
+      },
+      accepted = await f.post(`/${childSessionId}/fork-turns`, childTurn);
+    await expectForkTurnAccepted(f, accepted);
+    const pending = await waitForkApproval(f, childSessionId),
+      barrier = f.pauseNextScopeValidation();
+    const operation =
+      control === "read"
+        ? fetch(
+            `${f.h.api}/projects/${FIXTURE_PROJECT_ID}/sessions/${childSessionId}/fork-approvals`,
+            { headers: f.h.headers(f.h.hearth.token) },
+          )
+        : control === "decision"
+          ? f.post(`/${childSessionId}/fork-approval-decisions`, {
+              requestId: randomUUID(),
+              approvalId: pending.approval.id,
+              turnRequestId: pending.turnRequestId,
+              decision: "accept",
+            })
+          : f.post(`/${childSessionId}/fork-stop`, {
+              requestId: childTurn.requestId,
+            });
+    await barrier.entered;
+    const restore = changeForkChildWorktree(f, childSessionId);
+    barrier.release();
+    let response: Response;
+    try {
+      response = await operation;
+    } finally {
+      restore();
+    }
+    expect(response.status).toBe(409);
+    await response.text();
+    expect(f.records().filter((row) => row.kind === "answer")).toHaveLength(1);
+    if (control === "stop")
+      expect((await f.forkPage(childSessionId)).turns[0]?.phase).toBe(
+        "running",
+      );
+    else
+      expect((await waitForkApproval(f, childSessionId)).approval.id).toBe(
+        pending.approval.id,
+      );
+  } finally {
+    await closeFixture(f);
+  }
 }
 
 async function createApprovedFork(f: Awaited<ReturnType<typeof fixture>>) {
@@ -852,7 +1016,7 @@ test("Fork child approvals use dedicated controls after the parent prefix is una
     about: [],
   };
   const accepted = await f.post(`/${childSessionId}/fork-turns`, childTurn);
-  expect(accepted.status).toBe(202);
+  await expectForkTurnAccepted(f, accepted);
   const pending = await waitForkApproval(f, childSessionId),
     readActionsBefore = f.h.events(["operator.action"]).length;
   const unauthenticatedRead = await fetch(
@@ -914,6 +1078,7 @@ test("Fork child approvals use dedicated controls after the parent prefix is una
   expect(f.h.events(["operator.action"])).toHaveLength(
     beforeDecisionActions + 2,
   );
+  await waitForAnswerCount(f, beforeAnswers + 1);
   expect(f.records().filter((row) => row.kind === "answer")).toHaveLength(
     beforeAnswers + 1,
   );
@@ -923,6 +1088,7 @@ test("Fork child approvals use dedicated controls after the parent prefix is una
   );
   expect(replay.status).toBe(200);
   expect((await replay.json()).data).toEqual(receipt);
+  await waitForAnswerCount(f, beforeAnswers + 1);
   expect(f.records().filter((row) => row.kind === "answer")).toHaveLength(
     beforeAnswers + 1,
   );
@@ -950,9 +1116,8 @@ test("Fork-specific Stop aborts only the owned child turn without parent history
       text: "This child turn will be stopped.",
       about: [],
     };
-  expect(
-    (await f.post(`/${childSessionId}/fork-turns`, childTurn)).status,
-  ).toBe(202);
+  const accepted = await f.post(`/${childSessionId}/fork-turns`, childTurn);
+  await expectForkTurnAccepted(f, accepted);
   const pending = await waitForkApproval(f, childSessionId);
   rmSync(
     conversationFile(f.h.home, FIXTURE_PROJECT_ID, {
@@ -1007,6 +1172,15 @@ test("Fork-specific Stop aborts only the owned child turn without parent history
     2,
   );
 });
+
+test("Fork approval reads refuse a changed child worktree after scope validation", async () =>
+  rejectsForkControlAfterScopeChange("read"));
+
+test("Fork approval decisions refuse a changed child worktree after scope validation", async () =>
+  rejectsForkControlAfterScopeChange("decision"));
+
+test("Fork Stop refuses a changed child worktree after scope validation", async () =>
+  rejectsForkControlAfterScopeChange("stop"));
 
 test("a lost Fork-child turn reply stays unknown after parent activity and never replays", async () => {
   const f = await fixture("fork-child-lost-turn-reply", false, false, "never"),
