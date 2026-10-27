@@ -959,6 +959,9 @@ test("a protected project reservation stays private until a separate create acti
   expect(JSON.stringify(publicCatalog.body)).not.toContain(privateName);
   expect(JSON.stringify(publicCatalog.body)).not.toContain(privateSlug);
 
+  await expect(
+    page.getByRole("button", { name: "New project", exact: true }),
+  ).toBeEnabled();
   const readsBeforeReload = originalReads;
   await reloadSettled(page);
   await expect(
@@ -974,26 +977,24 @@ test("a protected project reservation stays private until a separate create acti
   ).toHaveCount(0);
   await expect(
     page.getByRole("button", { name: "New project", exact: true }),
-  ).toBeEnabled();
-  await page.getByRole("button", { name: "New project", exact: true }).click();
-  const createDialog = page.getByRole("dialog", { name: "Create a project" });
-  await expect(createDialog).toBeVisible();
+  ).toBeDisabled();
   expect(originalReads).toBeGreaterThan(readsBeforeReload);
-  const reopened = await page.evaluate(
-    async ({ headers, requestId }) => {
-      const response = await fetch(
-        `/__agent-forge/projects/create-reservations/${requestId}`,
-        { headers },
-      );
-      return { status: response.status, body: await response.json() };
-    },
-    { headers, requestId },
-  );
-  expect(reopened.status).toBe(200);
-  expect(reopened.body).toMatchObject({
-    ok: true,
-    data: { requestId, requestHash, state: "reserved", original },
+  await page
+    .getByRole("button", { name: "Review reserved project", exact: true })
+    .click();
+  const reviewDialog = page.getByRole("dialog", {
+    name: "Review saved project original",
   });
+  await expect(reviewDialog).toBeVisible();
+  await page.screenshot({
+    path: test.info().outputPath("project-create-reserved-review.png"),
+  });
+  await expect(reviewDialog).toContainText(privateName);
+  await expect(reviewDialog).toContainText(requestId);
+  await expect(reviewDialog).toContainText(requestHash);
+  await expect(
+    reviewDialog.getByText("reserved", { exact: true }),
+  ).toBeVisible();
   expect(postedPaths).toEqual(["/__agent-forge/projects/create-reservations"]);
   expect(identityPosts).toBe(0);
   expect(catalogBefore.projects.map(({ id, slug }) => ({ id, slug }))).toEqual([
