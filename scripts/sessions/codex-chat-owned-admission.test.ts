@@ -236,6 +236,49 @@ test("a canonical native Chat configuration persists without rewriting the alias
     },
   });
   expect(configuration).toHaveProperty("event.serviceTier", null);
+  if (
+    configuration?.kind !== "coding-chat" ||
+    configuration.event.kind !== "configuration"
+  )
+    throw Error("Missing persisted native configuration frame");
+  const owner = createSessionRegistry(f.home, "codex", "chat").read(
+      f.project.id,
+      started.session.id,
+    ),
+    selectedNativeTurn = state.frames.find(
+      (frame) =>
+        frame.turnId === request.requestId &&
+        frame.event.kind === "coding-chat" &&
+        frame.event.event.kind === "turn",
+    );
+  if (
+    selectedNativeTurn?.event.kind !== "coding-chat" ||
+    selectedNativeTurn.event.event.kind !== "turn"
+  )
+    throw Error("Missing captured native turn identity");
+  const forkSource = resolveCodexChatForkSource({
+    owner,
+    state,
+    projectId: f.project.id,
+    conversationId: started.session.id,
+    workspaceKey: workspaceKey(resolveCheckout(f.root).workspace),
+    selectedTurnRequestId: request.requestId,
+  });
+  expect(configuration.event.cwd).toBe(canonicalWorkspaceKey);
+  expect(user).toMatchObject({
+    kind: "user",
+    codexChat: { launch: { cwd: f.workspaceAlias } },
+  });
+  expect(forkSource).toMatchObject({
+    eligible: true,
+    selectedTurnRequestId: request.requestId,
+    lastTurnId: selectedNativeTurn.event.event.turnId,
+    sourceSettings: {
+      modelProvider: configuration.event.modelProvider,
+      serviceTier: null,
+      reasoningEffort: "medium",
+    },
+  });
   expect(ownedCodingStateSchema.safeParse(state).success).toBe(true);
 
   const configurationIndex = state.frames.findIndex(
