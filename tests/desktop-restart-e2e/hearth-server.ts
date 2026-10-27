@@ -10,6 +10,11 @@ import { readToken, writeOwnerOnly } from "../../scripts/hearth/token";
 import { resolveCheckout } from "../../scripts/ledger/workspace";
 import { createCodexChatRuntime } from "../../scripts/sessions/codex-chat-runtime";
 import { observeCodexChatPersist } from "../../scripts/sessions/fixtures/codex-chat-persist-diagnostic";
+import {
+  createCodexChatPrepareDiagnostics,
+  createFilePrepareDiagnosticIo,
+  initializePrepareDiagnosticFiles,
+} from "../../scripts/sessions/fixtures/codex-chat-prepare-diagnostics";
 import { isRunHome } from "../e2e/servers";
 import { ROOT } from "./environment";
 
@@ -75,6 +80,13 @@ async function run(): Promise<void> {
   const tokenFile = tokenPath(home, root);
   const token = { current: null as string | null };
   const port = requestedPort(process.env["HEARTH_PORT"]);
+  const initialPrepareOrdinal = initializePrepareDiagnosticFiles(
+    home,
+    writeOwnerOnly,
+  );
+  const prepareDiagnostics = createCodexChatPrepareDiagnostics(
+    createFilePrepareDiagnosticIo(home, writeOwnerOnly, initialPrepareOrdinal),
+  );
   const defaultRuntime = createCodexChatRuntime({
     root,
     home,
@@ -88,6 +100,16 @@ async function run(): Promise<void> {
   });
   const codexChatRuntime: ReturnType<typeof createCodexChatRuntime> = {
     ...defaultRuntime,
+    check(input) {
+      return prepareDiagnostics.observe("check", () =>
+        defaultRuntime.check(input),
+      );
+    },
+    prepare(input) {
+      return prepareDiagnostics.observe("prepare", () =>
+        defaultRuntime.prepare(input),
+      );
+    },
     run(input, persist, signal, callbacks) {
       return defaultRuntime.run(
         input,
