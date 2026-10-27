@@ -11,7 +11,9 @@ import "./projects.css";
 import type { ProviderReadinessPage } from "../../../types/provider-readiness";
 import { ProjectKeeperLine } from "./KeeperBrief";
 import type { KeeperClient } from "./keeper-client";
+import { ProjectCreateControls } from "./ProjectCreateControls";
 import { ProviderUsageStrip } from "./Providers";
+import type { ProjectCreateState } from "./project-create-client";
 
 export interface ProjectsHomeProps {
   providers?: ProviderReadinessPage | null;
@@ -23,6 +25,9 @@ export interface ProjectsHomeProps {
   held: boolean;
   writesAllowed: boolean;
   keeper?: KeeperClient;
+  projectCreate: ProjectCreateState;
+  canCreateProject: boolean;
+  refreshProjectCreate(): Promise<void>;
   reload(): void;
   change(id: string, patch: ProjectPreferences): Promise<void>;
 }
@@ -49,6 +54,9 @@ export function ProjectsHomeView({
   held,
   writesAllowed,
   keeper,
+  projectCreate,
+  canCreateProject,
+  refreshProjectCreate,
   reload,
   change,
   filter,
@@ -329,14 +337,11 @@ export function ProjectsHomeView({
             </footer>
           </article>
         ))}
-        <div class="af-project-new">
-          <Button
-            disabled
-            title="Project creation is not available in this build"
-          >
-            New project
-          </Button>
-        </div>
+        <ProjectCreateControls
+          state={projectCreate}
+          refresh={refreshProjectCreate}
+          canWrite={canCreateProject}
+        />
       </section>
       <section aria-label="Subscriptions" class="af-projects-subscriptions">
         <ProviderUsageStrip

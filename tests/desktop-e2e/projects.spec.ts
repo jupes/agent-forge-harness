@@ -177,10 +177,14 @@ test("reload recovers a reserved original with protected reads only", async ({
       createWrites.push(path);
   });
   await reloadSettled(page);
+  const review = page.getByRole("button", {
+    name: "Review reserved project",
+    exact: true,
+  });
+  await expect(review).toBeEnabled();
+  await review.click();
+  await expect(page.getByRole("dialog")).toBeVisible();
   await expect(page.getByText(name, { exact: true })).toBeVisible();
-  await expect(
-    page.getByRole("button", { name: "Review reserved project", exact: true }),
-  ).toBeEnabled();
   const recovered = await page.evaluate(
     async ({ headers, requestId }) => {
       const response = await fetch(

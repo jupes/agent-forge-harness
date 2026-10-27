@@ -55,6 +55,7 @@ import { useKeeperProposals } from "./use-keeper-proposals";
 import { useKeeperSessionReviews } from "./use-keeper-session-reviews";
 import { useKeeperShiftReviews } from "./use-keeper-shift-reviews";
 import { useProjectActivity } from "./use-project-activity";
+import { useProjectCreate } from "./use-project-create";
 import { useProjectRuns } from "./use-project-runs";
 import { useProjectShifts } from "./use-project-shifts";
 import { useProjects } from "./use-projects";
@@ -78,6 +79,7 @@ export function DesktopApp(): JSX.Element {
   const recovery = useDesktopRecovery();
   const projects = useProjects();
   const providers = useProviders();
+  const projectCreate = useProjectCreate(providers.data?.workspace ?? null);
   const smiths = useSmiths(
     route.destination === "smiths",
     providers.data?.workspace ?? null,
@@ -542,6 +544,9 @@ export function DesktopApp(): JSX.Element {
             providers={providers.data}
             providerStale={providers.stale}
             keeper={keeper}
+            projectCreate={projectCreate.state}
+            refreshProjectCreate={projectCreate.refresh}
+            canCreateProject={recovery?.connection.writesAllowed ?? false}
             home={projects.data}
             error={projects.error}
             loading={projects.loading}
