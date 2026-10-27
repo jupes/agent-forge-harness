@@ -656,7 +656,7 @@ while (true) {
       if (
         forkServiceTierResumeMode &&
         resuming &&
-        params.threadId === "0199a213-81c0-7800-8aa1-bbab2a035a55" &&
+        params.threadId === resumedTurnId &&
         (params.modelProvider !== "openai" ||
           !Object.hasOwn(params, "serviceTier") ||
           params.serviceTier !== configuredServiceTier)
@@ -730,7 +730,11 @@ while (true) {
         method: "turn/started",
         params: { threadId, turn: { id: turnId, status: "inProgress" } },
       });
-      if (mode === "fork-child-lost-turn-reply" && resuming) {
+      if (
+        mode === "fork-child-lost-turn-reply" &&
+        resuming &&
+        threadId === resumedTurnId
+      ) {
         record({ kind: "child-turn-effect", threadId, turnId });
         hangTree();
       } else if (mode === "hang" || mode === "hang-text") {

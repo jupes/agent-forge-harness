@@ -833,15 +833,41 @@ test("a lost Fork-child turn reply stays unknown after parent activity and never
   if (typeof childSessionId !== "string")
     throw Error("The native Fork child was not linked");
 
-  const laterParentTurn = await f.post(`/${parentSessionId}/turns`, {
-    requestId: randomUUID(),
-    expectedRevision: initialParent.revision,
-    text: "A later parent turn must not replace the captured child prefix.",
-    about: [],
-  });
+  const laterParentInput = {
+      requestId: randomUUID(),
+      expectedRevision: initialParent.revision,
+      text: "A later parent turn must not replace the captured child prefix.",
+      about: [],
+    },
+    laterParentTurn = await f.post(
+      `/${parentSessionId}/turns`,
+      laterParentInput,
+    );
   expect(laterParentTurn.status).toBe(202);
   const parentAfterLaterTurn = await f.settle(parentSessionId);
   expect(parentAfterLaterTurn.turns).toHaveLength(2);
+  expect(parentAfterLaterTurn.turns).toContainEqual(
+    expect.objectContaining({
+      requestId: laterParentInput.requestId,
+      phase: "completed",
+    }),
+  );
+  const parentEffectRows = () =>
+    f
+      .records()
+      .filter(
+        (row) =>
+          (row.method === "thread/resume" || row.method === "turn/start") &&
+          (row.params as Record<string, unknown> | undefined)?.threadId ===
+            parentNativeThreadId,
+      );
+  const parentEffectsBeforeChild = parentEffectRows(),
+    parentResumesBeforeChild = parentEffectsBeforeChild.filter(
+      (row) => row.method === "thread/resume",
+    ).length,
+    parentTurnsBeforeChild = parentEffectsBeforeChild.filter(
+      (row) => row.method === "turn/start",
+    ).length;
 
   const childInput = {
     requestId: randomUUID(),
@@ -930,6 +956,12 @@ test("a lost Fork-child turn reply stays unknown after parent activity and never
           parentNativeThreadId,
     );
   expect(parentTurnRows).toHaveLength(2);
+  expect(
+    parentEffectRows().filter((row) => row.method === "thread/resume"),
+  ).toHaveLength(parentResumesBeforeChild);
+  expect(
+    parentEffectRows().filter((row) => row.method === "turn/start"),
+  ).toHaveLength(parentTurnsBeforeChild);
   expect(
     f.records().filter((row) => row.method === "thread/fork"),
   ).toHaveLength(1);
