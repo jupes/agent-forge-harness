@@ -292,6 +292,31 @@ test("Fork discovery preserves a verified empty page but rejects incomplete or u
       client.dispose();
     }
   }
+  let wrongScopeReads = 0;
+  const wrongScopeModule = await loadForkClient(),
+    wrongScopeClient = wrongScopeModule.createCodexChatForkClient({
+      currentScope: scope,
+      canWrite: () => true,
+      requestId: () => requestId,
+      read: (async () => {
+        wrongScopeReads++;
+        return envelope(emptyPage);
+      }) satisfies OperatorRead,
+      post: (async () => {
+        posts++;
+        throw new Error("Invalid scope must not POST");
+      }) satisfies OperatorPost,
+    });
+  try {
+    await expect(
+      wrongScopeClient.listOriginals(
+        "project-00000000-0000-4000-8000-000000000000",
+      ),
+    ).rejects.toThrow();
+  } finally {
+    wrongScopeClient.dispose();
+  }
+  expect(wrongScopeReads).toBe(0);
   expect(posts).toBe(0);
 });
 

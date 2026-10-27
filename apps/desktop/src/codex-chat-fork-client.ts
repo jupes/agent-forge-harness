@@ -358,14 +358,15 @@ export function createCodexChatForkClient(
       `${OPERATOR_API_PREFIX}/projects/${encodeURIComponent(projectId)}/session-operation-identities`,
       scope,
     );
-    if (data === null) return null;
+    if (data === null)
+      throw new Error("Fork identity discovery could not be verified.");
     const parsed = sessionOperationIdentityPageSchema.safeParse(data);
     if (
       !parsed.success ||
       parsed.data.scope.projectId !== scope.projectId ||
       workspaceKey(parsed.data.scope.workspace) !== scope.workspace
     )
-      return null;
+      throw new Error("Fork identity discovery could not be verified.");
     return parsed.data;
   };
 
@@ -666,9 +667,12 @@ export function createCodexChatForkClient(
       } catch {
         return { state: "held", identity: null, original: null, context: null };
       }
-      const page = await readOperationPage(projectId, scope);
-      if (!page)
+      let page: Awaited<ReturnType<typeof readOperationPage>>;
+      try {
+        page = await readOperationPage(projectId, scope);
+      } catch {
         return { state: "held", identity: null, original: null, context: null };
+      }
       const operation = page.operations.find(
         (row) =>
           row.family === "codex-chat-fork" && row.requestId === requestId,
@@ -740,21 +744,17 @@ export function createCodexChatForkClient(
       };
     },
     async listOriginals(projectId) {
-      let scope: ForkClientScope;
-      try {
-        scope = snapshotScope(dependencies.currentScope());
-        if (projectId !== scope.projectId) return [];
-        check(scope);
-      } catch {
-        return [];
-      }
+      const scope = snapshotScope(dependencies.currentScope());
+      if (projectId !== scope.projectId)
+        throw new Error(
+          "Fork identity discovery is unavailable in this scope.",
+        );
+      check(scope);
       const page = await readOperationPage(projectId, scope);
-      return page
-        ? page.operations.filter(
-            (row): row is CodexChatForkIdentityMetadata =>
-              row.family === "codex-chat-fork",
-          )
-        : [];
+      return page.operations.filter(
+        (row): row is CodexChatForkIdentityMetadata =>
+          row.family === "codex-chat-fork",
+      );
     },
     readContext,
     async readChildTurns(
