@@ -2867,7 +2867,19 @@ async function seedForkReadChild(h: TestHearth): Promise<void> {
       sourceSeal,
       "direct-v1",
     ),
-    attempt = await journal.markAttempted(reserved);
+    reservedRef = {
+      projectId: reserved.projectId,
+      workspaceKey: reserved.workspaceKey,
+      requestId: reserved.requestId,
+      requestHash: reserved.requestHash,
+      parentSessionId: reserved.parentSessionId,
+      throughTurnRequestId: reserved.throughTurnRequestId,
+      protocolVersion: reserved.protocolVersion,
+      childAppSessionId: reserved.childAppSessionId,
+      reservationKind: reserved.reservationKind,
+      sourceSeal: reserved.sourceSeal,
+    },
+    attempt = await journal.markAttempted(reservedRef);
   if (attempt.record.state !== "attempted" || !attempt.mayDispatch)
     throw new Error("Could not seed a new Fork-child read original");
   const capture: CodexChatForkCapture = {
@@ -2876,7 +2888,7 @@ async function seedForkReadChild(h: TestHearth): Promise<void> {
       throughNativeTurnId: sourceSeal.throughNativeTurnId,
       protocolVersion: CODEX_CHAT_FORK_PROTOCOL_VERSION,
     },
-    captured = await journal.capture(attempt.record, capture);
+    captured = await journal.capture(reservedRef, capture);
   if (captured.state !== "captured")
     throw new Error("Could not seed a captured Fork-child read original");
   const origin = {
@@ -2911,7 +2923,7 @@ async function seedForkReadChild(h: TestHearth): Promise<void> {
       capture.protocolVersion,
     );
   });
-  const linked = await journal.markLinked(attempt.record, {
+  const linked = await journal.markLinked(reservedRef, {
     childAppSessionId: child.id,
     childRequestId: child.requestId,
     childRequestHash: child.requestHash,
@@ -4612,6 +4624,7 @@ describe("every read row (iterating the table)", () => {
   test("answers a valid envelope for its fixture path", async () => {
     const h = await start({
       files: { ".tmp/work/forge-runs/demo.json": RUN_STATE },
+      api: { git: fixtureSessionGit },
     });
     await seedOwnedSession(h);
     await seedChatDecision(h);
@@ -4640,10 +4653,16 @@ describe("every read row (iterating the table)", () => {
         h.headers(row.operatorOnly ? h.hearth.token : undefined),
       );
       const body = await envelope(response);
-      expect({ row: key(row), status: response.status, ok: body.ok }).toEqual({
+      expect({
+        row: key(row),
+        status: response.status,
+        ok: body.ok,
+        error: body.error,
+      }).toEqual({
         row: key(row),
         status: 200,
         ok: true,
+        error: null,
       });
       expect(response.headers.get("cache-control")).toBe("no-store");
     }
@@ -4652,6 +4671,7 @@ describe("every read row (iterating the table)", () => {
   test("refuses a request that does not declare the hearth's own origin, and appends nothing", async () => {
     const h = await start({
       files: { ".tmp/work/forge-runs/demo.json": RUN_STATE },
+      api: { git: fixtureSessionGit },
     });
     await seedOwnedSession(h);
     await seedChatDecision(h);
