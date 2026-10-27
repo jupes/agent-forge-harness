@@ -1,12 +1,6 @@
 import { type ChildProcessWithoutNullStreams, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import {
-  existsSync,
-  mkdirSync,
-  readFileSync,
-  unlinkSync,
-  writeFileSync,
-} from "node:fs";
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { join, resolve } from "node:path";
 import { createInterface } from "node:readline";
@@ -22,14 +16,84 @@ import { tokenPath } from "../../scripts/hearth/home";
 import { ensurePrivateHome } from "../../scripts/hearth/home-guard";
 import { OPERATOR_HEADER, SESSION_ROUTE } from "../../scripts/hearth/paths";
 import { readToken } from "../../scripts/hearth/token";
+import { resolveCheckout } from "../../scripts/ledger/workspace";
+import { workspaceKey } from "../../scripts/projects/scope";
 import { projectCatalogFixture } from "../../scripts/projects/testing";
 import type { SmithConfigCreateReceipt } from "../../types/smith-config-create";
 import { bunPath, HEARTH_HOME } from "../e2e/servers";
 import { ASSETS, fixtureEnvironment, ROOT } from "./environment";
 
 type FixtureReply =
-  | { ok: true; data: { owner: string; url: string }; error: null }
-  | { ok: true; data: { closed: true }; error: null };
+  | {
+      ok: true;
+      data: { helperPid: number; owner: string; url: string };
+      error: null;
+    }
+  | { ok: true; data: { closed: true; helperPid: number }; error: null };
+
+type HostFact = { dashboardPort: number; hearthPid: number };
+
+async function trustedHostPid(page: Page): Promise<number> {
+  const health: unknown = await page.evaluate(async () => {
+    const response = await fetch("/__agent-forge/health");
+    let value: unknown;
+    try {
+      value = await response.json();
+    } catch {
+      throw new Error("The isolated hearth health response was not JSON.");
+    }
+    if (
+      !response.ok ||
+      !value ||
+      typeof value !== "object" ||
+      !("ok" in value) ||
+      value.ok !== true ||
+      !("data" in value) ||
+      !value.data ||
+      typeof value.data !== "object" ||
+      !("pid" in value.data) ||
+      typeof value.data.pid !== "number" ||
+      !Number.isSafeInteger(value.data.pid) ||
+      value.data.pid <= 0 ||
+      !("root" in value.data) ||
+      typeof value.data.root !== "string"
+    )
+      throw new Error("The isolated hearth health identity was invalid.");
+    return { pid: value.data.pid, root: value.data.root };
+  });
+  if (
+    !health ||
+    typeof health !== "object" ||
+    !("pid" in health) ||
+    typeof health.pid !== "number" ||
+    !("root" in health) ||
+    typeof health.root !== "string" ||
+    workspaceKey(health.root) !== workspaceKey(resolveCheckout(ROOT).workspace)
+  )
+    throw new Error(
+      "The host health identity did not match the served checkout.",
+    );
+  return health.pid;
+}
+
+function publishHostProof(
+  hearthPort: number,
+  fixtureHelperPid: number,
+  hosts: HostFact[],
+): void {
+  if (hosts.length !== 3)
+    throw new Error(
+      "The origin replacement proof requires exactly three hosts.",
+    );
+  const path = join(HEARTH_HOME, "smith-origin-replacement-proof.json");
+  if (existsSync(path))
+    throw new Error("A prior Smith origin replacement proof is still present.");
+  writeFileSync(
+    path,
+    `${JSON.stringify({ version: 1, hearthPort, fixtureHelperPid, hosts })}\n`,
+    { mode: 0o600, flag: "wx" },
+  );
+}
 
 function replyShape(value: unknown): FixtureReply {
   if (
@@ -48,10 +112,21 @@ function replyShape(value: unknown): FixtureReply {
     "url" in value.data &&
     typeof value.data.url === "string" &&
     "owner" in value.data &&
-    typeof value.data.owner === "string"
+    typeof value.data.owner === "string" &&
+    "helperPid" in value.data &&
+    typeof value.data.helperPid === "number" &&
+    Number.isSafeInteger(value.data.helperPid) &&
+    value.data.helperPid > 0
   )
     return value as FixtureReply;
-  if ("closed" in value.data && value.data.closed === true)
+  if (
+    "closed" in value.data &&
+    value.data.closed === true &&
+    "helperPid" in value.data &&
+    typeof value.data.helperPid === "number" &&
+    Number.isSafeInteger(value.data.helperPid) &&
+    value.data.helperPid > 0
+  )
     return value as FixtureReply;
   throw new Error("The owned Smith origin host returned an invalid reply.");
 }
@@ -236,6 +311,8 @@ test("pre-effect reservation and post-effect confirmation recover across two fre
       releasePublication = resolveHeld;
     });
   const apiPosts: Array<{ origin: string; path: string; body: unknown }> = [];
+  const hostFacts: HostFact[] = [];
+  let fixtureHelperPid: number | null = null;
   const apiReads: Array<{ origin: string; path: string }> = [];
   page.on("request", (request) => {
     const path = new URL(request.url()).pathname;
@@ -272,8 +349,13 @@ test("pre-effect reservation and post-effect confirmation recover across two fre
     if (!("url" in oldReply.data))
       throw new Error("The original Smith host did not start.");
     const oldOrigin = new URL(oldReply.data.url).origin;
+    fixtureHelperPid = oldReply.data.helperPid;
     await page.emulateMedia({ reducedMotion: "reduce" });
     await launched(page, oldReply.data.url);
+    hostFacts.push({
+      dashboardPort: Number(new URL(oldReply.data.url).port),
+      hearthPid: await trustedHostPid(page),
+    });
     const originalPage = await page.goto(
       `${oldOrigin}/index.html#/desktop/smiths`,
     );
@@ -369,6 +451,7 @@ test("pre-effect reservation and post-effect confirmation recover across two fre
     if (!("url" in newReply.data))
       throw new Error("The replacement Smith host did not start.");
     const newOrigin = new URL(newReply.data.url).origin;
+    expect(newReply.data.helperPid).toBe(fixtureHelperPid);
     expect(newOrigin).not.toBe(oldOrigin);
     release?.();
     await createClick;
@@ -378,6 +461,12 @@ test("pre-effect reservation and post-effect confirmation recover across two fre
 
     apiPosts.length = 0;
     await launched(page, newReply.data.url);
+    hostFacts.push({
+      dashboardPort: Number(new URL(newReply.data.url).port),
+      hearthPid: await trustedHostPid(page),
+    });
+    expect(new Set(hostFacts.map((host) => host.dashboardPort)).size).toBe(2);
+    expect(new Set(hostFacts.map((host) => host.hearthPid)).size).toBe(2);
     expect(new URL(page.url()).origin).toBe(newOrigin);
     expect(
       await page.evaluate(
@@ -508,6 +597,7 @@ test("pre-effect reservation and post-effect confirmation recover across two fre
     if (!("url" in finalReply.data))
       throw new Error("The post-effect replacement host did not start.");
     const finalOrigin = new URL(finalReply.data.url).origin;
+    expect(finalReply.data.helperPid).toBe(fixtureHelperPid);
     expect(finalOrigin).not.toBe(newOrigin);
     releasePublication?.();
     await continueClick;
@@ -518,6 +608,12 @@ test("pre-effect reservation and post-effect confirmation recover across two fre
     apiPosts.length = 0;
     apiReads.length = 0;
     await launched(page, finalReply.data.url);
+    hostFacts.push({
+      dashboardPort: Number(new URL(finalReply.data.url).port),
+      hearthPid: await trustedHostPid(page),
+    });
+    expect(new Set(hostFacts.map((host) => host.dashboardPort)).size).toBe(3);
+    expect(new Set(hostFacts.map((host) => host.hearthPid)).size).toBe(3);
     expect(new URL(page.url()).origin).toBe(finalOrigin);
     expect(
       await page.evaluate(
@@ -586,6 +682,9 @@ test("pre-effect reservation and post-effect confirmation recover across two fre
       (item) => item.path === "/__agent-forge/config/smiths/creates",
     );
     expect(continuedCall).toEqual([]);
+    if (fixtureHelperPid === null)
+      throw new Error("The owned fixture helper identity was unavailable.");
+    publishHostProof(hearthPort, fixtureHelperPid, hostFacts);
   } finally {
     release?.();
     releasePublication?.();

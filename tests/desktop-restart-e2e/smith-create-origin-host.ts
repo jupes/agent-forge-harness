@@ -29,7 +29,7 @@ async function start(): Promise<DesktopHost> {
 }
 
 let host: DesktopHost | null = await start();
-send({ url: host.url, owner: host.owner });
+send({ url: host.url, owner: host.owner, helperPid: process.pid });
 const input = createInterface({ input: process.stdin });
 for await (const line of input) {
   let command: unknown;
@@ -55,7 +55,7 @@ for await (const line of input) {
   if (command.action === "close" || command.action === "quit") {
     await host?.close();
     host = null;
-    send({ closed: true });
+    send({ closed: true, helperPid: process.pid });
     if (command.action === "quit") break;
   } else {
     if (host !== null) {
@@ -64,7 +64,7 @@ for await (const line of input) {
       break;
     }
     host = await start();
-    send({ url: host.url, owner: host.owner });
+    send({ url: host.url, owner: host.owner, helperPid: process.pid });
   }
 }
 await host?.close();
