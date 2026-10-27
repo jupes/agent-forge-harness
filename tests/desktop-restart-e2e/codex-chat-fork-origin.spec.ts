@@ -19,14 +19,13 @@ import {
   ownedCodingSessionSchema,
   ownedCodingStartReceiptSchema,
 } from "../../scripts/sessions/codex-owned-wire-protocol";
-import {
-  sessionStartIdentityPageSchema,
-  sessionStartIdentityReplySchema,
-} from "../../scripts/sessions/identity-protocol";
+import { sessionStartIdentityReplySchema } from "../../scripts/sessions/identity-protocol";
 import {
   codexChatForkIdentityMetadataSchema,
   sessionOperationIdentityPageSchema,
 } from "../../scripts/sessions/session-operation-identities-protocol";
+import { captureTextResponseThroughBrowserFetch } from "../desktop-e2e/browser-response-capture";
+import { verifiedIdentityReadBarrier } from "../desktop-e2e/session-start-read-barrier";
 import { pageToken } from "../e2e/launch-link";
 import { DASHBOARD_PORT, HEARTH_HOME } from "../e2e/servers";
 import { alpha, ROOT } from "./environment";
@@ -34,9 +33,6 @@ import { alpha, ROOT } from "./environment";
 const FORK_RESTART_PATH = "/__desktop-restart-fixture/restart-host-fork";
 const CONTROL_HEADER = "x-agent-forge-fixture-secret";
 const INITIAL_STORAGE_KEY = "__fork_restart_initial_storage__";
-const FORK_RESPONSE_BINDING = "__agentForgeCaptureForkResponse";
-const FORK_RESPONSE_STATE = "__agentForgeForkResponseState";
-const FORK_RESPONSE_LIMIT = 1024 * 1024;
 
 type SessionRow = ReturnType<typeof ownedCodingSessionSchema.parse>;
 type FixtureCall = {
@@ -59,16 +55,6 @@ const FIXTURE_CALL_KINDS = [
 let forkOriginFailureFacts: (() => Record<string, unknown>) | null = null;
 let forkBaseRestoreNeeded = false;
 let forkBaseRestoreStatus: "not-needed" | "verified" | "failed" = "not-needed";
-const forkCaptureInstallations = new WeakMap<Page, Promise<void>>();
-const activeForkCaptures = new WeakMap<
-  Page,
-  {
-    id: string;
-    resolve(value: { status: number; text: string }): void;
-    reject(error: Error): void;
-  }
->();
-let nextForkCaptureId = 0;
 
 test.afterEach(async ({ page }, testInfo) => {
   let restorationError: unknown = null;
@@ -141,264 +127,6 @@ function parseJson(value: string, label: string): unknown {
   } catch {
     throw new Error(`The owned ${label} was invalid.`);
   }
-}
-
-function installBrowserFetchObserver(options: {
-  bindingName: string;
-  stateName: string;
-  maxBytes: number;
-}) {
-  type ArmedCapture = {
-    id: string;
-    method: string;
-    origin: string;
-    path: string;
-  };
-  type CaptureState = {
-    originalFetch: typeof window.fetch;
-    wrapper: typeof window.fetch;
-    armed: ArmedCapture | null;
-  };
-  const globals = window as unknown as Record<string, unknown>;
-  if (globals[options.stateName]) return;
-
-  const originalFetch = window.fetch;
-  const state: CaptureState = {
-    originalFetch,
-    wrapper: originalFetch,
-    armed: null,
-  };
-  const readClone = async (response: Response): Promise<string> => {
-    const reader = response.body?.getReader();
-    if (!reader) return "";
-    const chunks: Uint8Array[] = [];
-    let length = 0;
-    while (true) {
-      const next = await reader.read();
-      if (next.done) break;
-      length += next.value.byteLength;
-      if (length > options.maxBytes) {
-        void reader.cancel().catch(() => undefined);
-        try {
-          reader.releaseLock();
-        } catch {
-          // The clone may still be settling while the original response proceeds.
-        }
-        throw new Error("response-size-limit");
-      }
-      chunks.push(next.value);
-    }
-    const bytes = new Uint8Array(length);
-    let offset = 0;
-    for (const chunk of chunks) {
-      bytes.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
-    return new TextDecoder().decode(bytes);
-  };
-  const wrapper = async function (
-    this: Window,
-    ...args: Parameters<typeof fetch>
-  ) {
-    const armed = state.armed;
-    if (!armed) return originalFetch.apply(this, args);
-
-    const [input, init] = args;
-    let url: URL;
-    let method: string;
-    try {
-      url = new URL(
-        input instanceof Request ? input.url : String(input),
-        location.href,
-      );
-      method =
-        init?.method ?? (input instanceof Request ? input.method : "GET");
-    } catch {
-      return originalFetch.apply(this, args);
-    }
-    if (
-      method.toUpperCase() !== armed.method ||
-      url.origin !== armed.origin ||
-      url.pathname !== armed.path ||
-      url.search !== ""
-    )
-      return originalFetch.apply(this, args);
-
-    state.armed = null;
-    let response: Response;
-    try {
-      response = await originalFetch.apply(this, args);
-    } catch (error) {
-      const binding = globals[options.bindingName];
-      if (typeof binding === "function")
-        await (binding as (payload: unknown) => Promise<void>)({
-          captureId: armed.id,
-          ok: false,
-        }).catch(() => undefined);
-      throw error;
-    }
-
-    let payload: Record<string, unknown>;
-    try {
-      const responseUrl = new URL(response.url);
-      if (
-        responseUrl.origin !== armed.origin ||
-        responseUrl.pathname !== armed.path ||
-        responseUrl.search !== ""
-      )
-        throw new Error("response-url-mismatch");
-      payload = {
-        captureId: armed.id,
-        ok: true,
-        status: response.status,
-        text: await readClone(response.clone()),
-      };
-    } catch {
-      payload = { captureId: armed.id, ok: false };
-    }
-    const binding = globals[options.bindingName];
-    if (typeof binding === "function")
-      await (binding as (value: unknown) => Promise<void>)(payload).catch(
-        () => undefined,
-      );
-    return response;
-  } as typeof window.fetch;
-  state.wrapper = wrapper;
-  globals[options.stateName] = state;
-  window.fetch = wrapper;
-}
-
-async function installForkResponseCapture(page: Page): Promise<void> {
-  let installation = forkCaptureInstallations.get(page);
-  if (!installation) {
-    installation = (async () => {
-      await page.exposeBinding(
-        FORK_RESPONSE_BINDING,
-        (_source, value: unknown) => {
-          const active = activeForkCaptures.get(page);
-          const payload = record(value);
-          if (
-            !active ||
-            payload?.["captureId"] !== active.id ||
-            payload["ok"] !== true ||
-            typeof payload["status"] !== "number" ||
-            !Number.isInteger(payload["status"]) ||
-            typeof payload["text"] !== "string" ||
-            Buffer.byteLength(payload["text"], "utf8") > FORK_RESPONSE_LIMIT
-          ) {
-            if (active && payload?.["captureId"] === active.id)
-              active.reject(
-                new Error("The browser response capture was invalid."),
-              );
-            return;
-          }
-          active.resolve({
-            status: payload["status"],
-            text: payload["text"],
-          });
-        },
-      );
-      await page.addInitScript(installBrowserFetchObserver, {
-        bindingName: FORK_RESPONSE_BINDING,
-        stateName: FORK_RESPONSE_STATE,
-        maxBytes: FORK_RESPONSE_LIMIT,
-      });
-    })();
-    forkCaptureInstallations.set(page, installation);
-  }
-  await installation;
-  await page.evaluate(installBrowserFetchObserver, {
-    bindingName: FORK_RESPONSE_BINDING,
-    stateName: FORK_RESPONSE_STATE,
-    maxBytes: FORK_RESPONSE_LIMIT,
-  });
-}
-
-async function captureTextResponseThroughBrowserFetch(
-  page: Page,
-  expected: { method: "GET" | "POST"; origin: string; path: string },
-): Promise<{
-  response: Promise<{ status: number; text: string }>;
-  dispose(): Promise<void>;
-}> {
-  if (activeForkCaptures.has(page))
-    throw new Error("A Fork response capture is already active.");
-  await installForkResponseCapture(page);
-
-  let resolveResponse!: (value: { status: number; text: string }) => void;
-  let rejectResponse!: (error: Error) => void;
-  const response = new Promise<{ status: number; text: string }>(
-    (resolve, reject) => {
-      resolveResponse = resolve;
-      rejectResponse = reject;
-    },
-  );
-  void response.catch(() => undefined);
-  const captureTimer = setTimeout(
-    () => rejectResponse(new Error("The browser response capture timed out.")),
-    30_000,
-  );
-  captureTimer.unref?.();
-  void response.then(
-    () => clearTimeout(captureTimer),
-    () => clearTimeout(captureTimer),
-  );
-  const captureId = `fork-response-${++nextForkCaptureId}`;
-  activeForkCaptures.set(page, {
-    id: captureId,
-    resolve: resolveResponse,
-    reject: rejectResponse,
-  });
-  try {
-    await page.evaluate(
-      ({ stateName, capture }) => {
-        const state = (window as unknown as Record<string, unknown>)[
-          stateName
-        ] as { armed: unknown } | undefined;
-        if (!state)
-          throw new Error("The browser response capture is unavailable.");
-        state.armed = capture;
-      },
-      {
-        stateName: FORK_RESPONSE_STATE,
-        capture: { id: captureId, ...expected },
-      },
-    );
-  } catch (error) {
-    rejectResponse(
-      error instanceof Error
-        ? error
-        : new Error("The browser response capture could not be armed."),
-    );
-    activeForkCaptures.delete(page);
-    throw error;
-  }
-  return {
-    response,
-    async dispose() {
-      const active = activeForkCaptures.get(page);
-      if (active?.id === captureId)
-        active.reject(new Error("The browser response capture was disposed."));
-      activeForkCaptures.delete(page);
-      try {
-        await page.evaluate((stateName) => {
-          const globals = window as unknown as Record<string, unknown>;
-          const state = globals[stateName] as
-            | {
-                originalFetch: typeof window.fetch;
-                wrapper: typeof window.fetch;
-              }
-            | undefined;
-          if (!state) return;
-          if (window.fetch === state.wrapper)
-            window.fetch = state.originalFetch;
-          delete globals[stateName];
-        }, FORK_RESPONSE_STATE);
-      } catch {
-        // Navigation may have closed the old document before cleanup.
-      }
-    },
-  };
 }
 
 function rows(): SessionRow[] {
@@ -570,14 +298,6 @@ async function openNewSession(
   await dialog
     .getByRole("textbox", { name: "Session prompt", exact: true })
     .fill("Fork restart parent start");
-  let identityArrived!: () => void;
-  let identityFulfilled!: () => void;
-  const identityRead = new Promise<void>((resolve) => {
-    identityArrived = resolve;
-  });
-  const identitySettled = new Promise<void>((resolve) => {
-    identityFulfilled = resolve;
-  });
   let sessionsArrived!: () => void;
   const sessionsRead = new Promise<void>((resolve) => {
     sessionsArrived = resolve;
@@ -612,17 +332,28 @@ async function openNewSession(
   const startedAt = performance.now();
   reportFacts(facts);
   const expectedOrigin = new URL(page.url()).origin;
-  const identityPath = `/__agent-forge/projects/${alpha.id}/session-start-identities`;
   const sessionsPath = `/__agent-forge/projects/${alpha.id}/sessions`;
   let gateReads = false;
   let previewCompleted = false;
-  let identityHeld = false;
-  let release!: () => void;
-  const held = new Promise<void>((resolve) => {
-    release = resolve;
+  let previewRequested = false;
+  const observePreviewRequest = (request: Request) => {
+    const requestUrl = new URL(request.url());
+    if (
+      request.method() === "POST" &&
+      requestUrl.origin === expectedOrigin &&
+      requestUrl.pathname ===
+        `/__agent-forge/projects/${alpha.id}/sessions/preview`
+    )
+      previewRequested = true;
+  };
+  const workspace = alpha.workspaces[0]?.root;
+  if (!workspace) throw new Error("The Fork parent workspace is unavailable.");
+  const identityRead = await verifiedIdentityReadBarrier(page, {
+    projectId: alpha.id,
+    workspace,
+    shouldHold: () => previewRequested,
   });
-  const readMatcher = (candidate: URL) =>
-    candidate.pathname === identityPath || candidate.pathname === sessionsPath;
+  const readMatcher = (candidate: URL) => candidate.pathname === sessionsPath;
   const readHandler = async (route: Route) => {
     const request = route.request();
     const requestUrl = new URL(request.url());
@@ -635,52 +366,7 @@ async function openNewSession(
       await route.continue();
       return;
     }
-    const isIdentity = requestUrl.pathname === identityPath;
-    if (!isIdentity) {
-      facts.sessionGetCount++;
-      const requestUrl = new URL(request.url());
-      const response = await route
-        .fetch({
-          headers: {
-            ...(await request.allHeaders()),
-            Origin: requestUrl.origin,
-            "Sec-Fetch-Site": "same-origin",
-          },
-        })
-        .catch(() => null);
-      if (!response) {
-        facts.sessionValid = false;
-        await route.abort("failed").catch(() => {});
-        sessionsArrived();
-        return;
-      }
-      facts.sessionStatus = response.status();
-      try {
-        const envelope = record(await response.json());
-        if (envelope?.["ok"] === true && Array.isArray(envelope["data"])) {
-          facts.sessionRows = ownedCodingSessionSchema
-            .array()
-            .parse(envelope["data"]).length;
-          facts.sessionValid = true;
-        } else {
-          facts.sessionValid = false;
-        }
-      } catch {
-        facts.sessionValid = false;
-      }
-      try {
-        await route.fulfill({ response });
-      } finally {
-        sessionsArrived();
-      }
-      return;
-    }
-    if (identityHeld) {
-      await route.continue();
-      return;
-    }
-    identityHeld = true;
-    facts.identityGetCount++;
+    facts.sessionGetCount++;
     const response = await route
       .fetch({
         headers: {
@@ -691,39 +377,29 @@ async function openNewSession(
       })
       .catch(() => null);
     if (!response) {
-      facts.identityValid = false;
-      facts.identityScopeMatched = false;
-      identityArrived();
-      identityFulfilled();
+      facts.sessionValid = false;
       await route.abort("failed").catch(() => {});
+      sessionsArrived();
       return;
     }
-    facts.identityStatus = response.status();
+    facts.sessionStatus = response.status();
     try {
       const envelope = record(await response.json());
-      if (envelope?.["ok"] === true) {
-        const identityPage = sessionStartIdentityPageSchema.parse(
-          envelope["data"],
-        );
-        facts.identityValid = true;
-        facts.identityScopeMatched =
-          identityPage.scope.family === "owned-session-start" &&
-          identityPage.scope.projectId === alpha.id &&
-          identityPage.scope.workspace === alpha.workspaces[0]?.root;
+      if (envelope?.["ok"] === true && Array.isArray(envelope["data"])) {
+        facts.sessionRows = ownedCodingSessionSchema
+          .array()
+          .parse(envelope["data"]).length;
+        facts.sessionValid = true;
       } else {
-        facts.identityValid = false;
-        facts.identityScopeMatched = false;
+        facts.sessionValid = false;
       }
     } catch {
-      facts.identityValid = false;
-      facts.identityScopeMatched = false;
+      facts.sessionValid = false;
     }
-    identityArrived();
     try {
-      await held;
       await route.fulfill({ response });
     } finally {
-      identityFulfilled();
+      sessionsArrived();
     }
   };
   const previewResponse = page.waitForResponse((response) => {
@@ -735,11 +411,16 @@ async function openNewSession(
         `/__agent-forge/projects/${alpha.id}/sessions/preview`
     );
   });
+  await expect(
+    dialog
+      .getByRole("region", { name: "Original Start requests", exact: true })
+      .getByRole("button", { name: "Check server", exact: true }),
+  ).toBeEnabled();
+  identityRead.arm();
+  page.on("request", observePreviewRequest);
   await page.route(readMatcher, readHandler);
   facts.stage = "preview-pending";
   gateReads = true;
-  let checkServerClick: Promise<void> = Promise.resolve();
-  let checkServerClickFailed = false;
   try {
     await dialog
       .getByRole("button", { name: "Check supported options", exact: true })
@@ -748,15 +429,11 @@ async function openNewSession(
     facts.timingMs.previewResponse = Math.round(performance.now() - startedAt);
     expect(preview.status()).toBe(200);
     previewCompleted = true;
-    if (!identityHeld)
-      checkServerClick = dialog
-        .getByRole("region", { name: "Original Start requests", exact: true })
-        .getByRole("button", { name: "Check server", exact: true })
-        .click()
-        .catch(() => {
-          checkServerClickFailed = true;
-        });
-    await identityRead;
+    await expect.poll(identityRead.held).toBe(true);
+    facts.identityGetCount = identityRead.heldReadCount();
+    facts.identityStatus = 200;
+    facts.identityValid = true;
+    facts.identityScopeMatched = true;
     facts.stage = "identity-read-held";
     facts.timingMs.identityRead = Math.round(performance.now() - startedAt);
     expect(facts.identityStatus).toBe(200);
@@ -784,18 +461,23 @@ async function openNewSession(
     gateReads = false;
     facts.timingMs.readsReleased = Math.round(performance.now() - startedAt);
     facts.stage = "reads-released";
-    release();
-    if (identityHeld) await identitySettled;
+    await identityRead.release();
+    await identityRead.dispose();
     await page.unroute(readMatcher, readHandler);
+    page.off("request", observePreviewRequest);
   }
-  await checkServerClick;
-  expect(checkServerClickFailed).toBe(false);
+  await expect(
+    dialog
+      .getByRole("region", { name: "Original Start requests", exact: true })
+      .getByRole("status")
+      .filter({ hasText: "Checking the server-owned identity page…" }),
+  ).toBeHidden();
   await expect(
     dialog.getByRole("button", { name: "Start", exact: true }),
   ).toBeEnabled();
   facts.timingMs.readyAfterReads = Math.round(performance.now() - startedAt);
   const before = new Set(rows().map((item) => item.id));
-  const reservePath = identityPath;
+  const reservePath = `/__agent-forge/projects/${alpha.id}/session-start-identities`;
   const startPath = `/__agent-forge/projects/${alpha.id}/sessions`;
   let reserveRequestId: string | null = null;
   let reserveRequestHash: string | null = null;

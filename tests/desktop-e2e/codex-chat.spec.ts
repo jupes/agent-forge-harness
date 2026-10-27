@@ -27,7 +27,6 @@ import {
   ownedCodingStateSchema,
 } from "../../scripts/sessions/codex-owned-journal";
 import { ownedCodingSessionSchema } from "../../scripts/sessions/codex-owned-wire-protocol";
-import { sessionStartIdentityPageSchema } from "../../scripts/sessions/identity-protocol";
 import { sessionTranscriptExportSchema } from "../../scripts/sessions/library-protocol";
 import {
   codexChatForkIdentityMetadataSchema,
@@ -36,6 +35,7 @@ import {
 import { openSettled, reloadSettled } from "../e2e/fixtures";
 import { pageToken } from "../e2e/launch-link";
 import { HEARTH_HOME } from "../e2e/servers";
+import { captureTextResponseThroughBrowserFetch } from "./browser-response-capture";
 import {
   alpha,
   beta,
@@ -44,6 +44,10 @@ import {
   seedProjects,
   workspace,
 } from "./project-fixtures";
+import {
+  type VerifiedIdentityReadBarrier,
+  verifiedIdentityReadBarrier,
+} from "./session-start-read-barrier";
 
 function records() {
   try {
@@ -311,71 +315,12 @@ async function attachForkChildApprovalDiagnostic(info: TestInfo) {
     }
   }
 }
-async function verifiedIdentityReadBarrier(page: Page) {
-  let armed = false,
-    held = false,
-    releaseRead: () => void = () => {},
-    released = Promise.resolve();
-  await page.route(
-    `**/__agent-forge/projects/${alpha.id}/session-start-identities`,
-    async (route) => {
-      if (route.request().method() !== "GET") {
-        await route.continue();
-        return;
-      }
-      const response = await route.fetch({
-        headers: {
-          ...(await route.request().allHeaders()),
-          Origin: new URL(route.request().url()).origin,
-          "Sec-Fetch-Site": "same-origin",
-        },
-      });
-      let payload: unknown;
-      try {
-        payload = await response.json();
-      } catch {
-        throw Error("The Session Start identity read was not valid JSON.");
-      }
-      const envelope = z
-        .object({
-          ok: z.literal(true),
-          data: sessionStartIdentityPageSchema,
-          error: z.null(),
-        })
-        .strict()
-        .safeParse(payload);
-      if (
-        response.status() !== 200 ||
-        !envelope.success ||
-        envelope.data.data.scope.projectId !== alpha.id ||
-        envelope.data.data.scope.workspace !== workspace
-      )
-        throw Error(
-          "The real Session Start identity page could not be verified.",
-        );
-      if (armed) {
-        armed = false;
-        held = true;
-        await released;
-      }
-      await route.fulfill({ response });
-    },
-  );
-  return {
-    arm() {
-      held = false;
-      armed = true;
-      released = new Promise<void>((resolve) => {
-        releaseRead = resolve;
-      });
-    },
-    held: () => held,
-    release: () => releaseRead(),
-  };
-}
-async function startedChat(page: Page) {
+async function startedChat(
+  page: Page,
+  identityRead?: VerifiedIdentityReadBarrier,
+) {
   await openSettled(page, `/index.html#/desktop/project/${alpha.id}/sessions`);
-  const dialog = await composer(page);
+  const dialog = await composer(page, false, false, identityRead);
   await dialog.getByRole("button", { name: "Start", exact: true }).click();
   const pane = page.getByRole("region", {
     name: "Session conversation",
@@ -584,7 +529,12 @@ test.afterEach(async ({ page }) => {
     }
   }
 });
-async function composer(page: Page, capture = false, alreadyOpen = false) {
+async function composer(
+  page: Page,
+  capture = false,
+  alreadyOpen = false,
+  identityRead?: VerifiedIdentityReadBarrier,
+) {
   if (!alreadyOpen)
     await page
       .getByRole("button", { name: "New session", exact: true })
@@ -606,9 +556,38 @@ async function composer(page: Page, capture = false, alreadyOpen = false) {
   await dialog
     .getByRole("textbox", { name: "Session prompt", exact: true })
     .fill("PRIVATE native Chat first question");
-  await dialog
-    .getByRole("button", { name: "Check supported options", exact: true })
-    .click();
+  const startIdentitySection = dialog.getByRole("region", {
+    name: "Original Start requests",
+    exact: true,
+  });
+  if (identityRead) {
+    await expect(
+      startIdentitySection.getByRole("button", {
+        name: "Check server",
+        exact: true,
+      }),
+    ).toBeEnabled();
+    identityRead.arm();
+  }
+  try {
+    await dialog
+      .getByRole("button", { name: "Check supported options", exact: true })
+      .click();
+    if (identityRead) {
+      await expect.poll(identityRead.held).toBe(true);
+      await expect(startIdentitySection.getByRole("status")).toContainText(
+        "Checking the server-owned identity page",
+      );
+      await expect(
+        dialog.getByRole("button", { name: "Start", exact: true }),
+      ).toBeDisabled();
+    }
+  } finally {
+    await identityRead?.release();
+    await identityRead?.dispose();
+  }
+  if (identityRead)
+    await expect(startIdentitySection.getByRole("status")).toBeHidden();
   await expect(
     dialog.getByRole("region", {
       name: "Equivalent session command",
@@ -2078,7 +2057,10 @@ test("Codex Chat reviews native options, allows one actual command and resumes i
   await expect(
     dialog.getByRole("button", { name: "Start", exact: true }),
   ).toBeDisabled();
-  const identityRead = await verifiedIdentityReadBarrier(page),
+  const identityRead = await verifiedIdentityReadBarrier(page, {
+      projectId: alpha.id,
+      workspace,
+    }),
     checkingIdentity = dialog
       .getByRole("region", { name: "Original Start requests", exact: true })
       .getByRole("status");
@@ -2095,7 +2077,8 @@ test("Codex Chat reviews native options, allows one actual command and resumes i
       dialog.getByRole("button", { name: "Start", exact: true }),
     ).toBeDisabled();
   } finally {
-    identityRead.release();
+    await identityRead.release();
+    await identityRead.dispose();
   }
   await expect(checkingIdentity).toBeHidden();
   await expect(
@@ -2714,7 +2697,10 @@ test("a synchronous draft edit before the next paint cannot dispatch an unreview
 }) => {
   await openSettled(page, `/index.html#/desktop/project/${alpha.id}/sessions`);
   const dialog = await composer(page);
-  const identityRead = await verifiedIdentityReadBarrier(page);
+  const identityRead = await verifiedIdentityReadBarrier(page, {
+    projectId: alpha.id,
+    workspace,
+  });
   try {
     identityRead.arm();
     await dialog
@@ -2730,7 +2716,8 @@ test("a synchronous draft edit before the next paint cannot dispatch an unreview
       dialog.getByRole("button", { name: "Start", exact: true }),
     ).toBeDisabled();
   } finally {
-    identityRead.release();
+    await identityRead.release();
+    await identityRead.dispose();
   }
   await expect(
     dialog
@@ -4594,8 +4581,29 @@ test("an undispatched Fork original can be explicitly retired after reload", asy
   const nativeForksBefore = calls().filter(
     (row) => row.kind === "rpc" && row.method === "thread/fork",
   ).length;
+  let previewRequested = false;
+  const observePreviewRequest = (request: Request) => {
+    const url = new URL(request.url());
+    if (
+      request.method() === "POST" &&
+      url.pathname === `/__agent-forge/projects/${alpha.id}/sessions/preview`
+    )
+      previewRequested = true;
+  };
+  const identityRead = await verifiedIdentityReadBarrier(page, {
+    projectId: alpha.id,
+    workspace,
+    shouldHold: () => previewRequested,
+  });
+  page.on("request", observePreviewRequest);
   mode("fork-service-tier-null");
-  const { pane, record } = await startedChat(page);
+  const { pane, record } = await (async () => {
+    try {
+      return await startedChat(page, identityRead);
+    } finally {
+      page.off("request", observePreviewRequest);
+    }
+  })();
   const selectedTurnRequestId = await completeForkSourceTurn(
     page,
     pane,
@@ -4777,25 +4785,37 @@ test("an undispatched Fork original can be explicitly retired after reload", asy
   expect(newReservation?.requestHash).not.toBe(retiredHash);
 
   const retiredOriginalPath = `/__agent-forge/projects/${record.projectId}/codex-chat-forks/${identity.requestId}`;
-  const retiredOriginalRead = page.waitForResponse((response) => {
-    const url = new URL(response.url());
-    return (
-      response.request().method() === "GET" &&
-      url.pathname === retiredOriginalPath
-    );
-  });
-  await reopened
-    .getByRole("button", {
-      name: `Inspect Fork original ${identity.requestId.slice(0, 8)} · retired`,
-      exact: true,
-    })
-    .click();
-  const retiredOriginalResponse = await retiredOriginalRead;
-  expect(retiredOriginalResponse.status()).toBe(200);
+  const retiredOriginalCapture = await captureTextResponseThroughBrowserFetch(
+    page,
+    {
+      method: "GET",
+      origin: new URL(page.url()).origin,
+      path: retiredOriginalPath,
+    },
+  );
+  let retiredOriginalHttp: { status: number; text: string };
+  try {
+    await reopened
+      .getByRole("button", {
+        name: `Inspect Fork original ${identity.requestId.slice(0, 8)} · retired`,
+        exact: true,
+      })
+      .click();
+    retiredOriginalHttp = await retiredOriginalCapture.response;
+  } finally {
+    await retiredOriginalCapture.dispose();
+  }
+  expect(retiredOriginalHttp.status).toBe(200);
+  let retiredOriginalRaw: unknown;
+  try {
+    retiredOriginalRaw = JSON.parse(retiredOriginalHttp.text);
+  } catch {
+    throw new Error("The retired Fork original response was not valid JSON.");
+  }
   const retiredOriginalEnvelope = z
     .object({ ok: z.literal(true), data: z.unknown(), error: z.null() })
     .strict()
-    .parse(await retiredOriginalResponse.json());
+    .parse(retiredOriginalRaw);
   expect(
     codexChatForkIdentityMetadataSchema.parse(retiredOriginalEnvelope.data),
   ).toMatchObject({
