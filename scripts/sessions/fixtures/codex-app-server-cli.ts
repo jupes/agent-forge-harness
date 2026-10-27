@@ -679,7 +679,10 @@ while (true) {
       if (
         forkServiceTierResumeMode &&
         resuming &&
-        (mode === "fork-restart" || params.threadId === resumedTurnId) &&
+        (mode === "fork-restart"
+          ? Object.hasOwn(params, "modelProvider") ||
+            Object.hasOwn(params, "serviceTier")
+          : params.threadId === resumedTurnId) &&
         (params.modelProvider !== "openai" ||
           !Object.hasOwn(params, "serviceTier") ||
           params.serviceTier !== configuredServiceTier)
