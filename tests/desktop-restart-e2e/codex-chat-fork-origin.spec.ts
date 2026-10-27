@@ -16,13 +16,15 @@ import {
   SESSION_ROUTE,
 } from "../../scripts/hearth/paths";
 import { ownedCodingStateSchema } from "../../scripts/sessions/codex-owned-journal";
-import { canonicalOwnedSessionStart } from "../../scripts/sessions/codex-owned-protocol";
+import {
+  canonicalOwnedSessionStart,
+  parseOwnedSessionStart,
+} from "../../scripts/sessions/codex-owned-protocol";
 import {
   ownedCodingSessionSchema,
   ownedCodingStartReceiptSchema,
 } from "../../scripts/sessions/codex-owned-wire-protocol";
 import { sessionStartIdentityReplySchema } from "../../scripts/sessions/identity-protocol";
-import { sessionStartSchema } from "../../scripts/sessions/request-protocol";
 import {
   codexChatForkIdentityMetadataSchema,
   sessionOperationIdentityPageSchema,
@@ -551,7 +553,11 @@ async function openNewSession(
     reserveRequestHash = reserveReply.identity.requestHash;
 
     expect(started.status).toBe(202);
-    const startBody = sessionStartSchema.parse(startReq.postDataJSON());
+    const startBody = parseOwnedSessionStart(startReq.postDataJSON());
+    if (!("provider" in startBody))
+      throw new Error("The parent Start body omitted its provider.");
+    expect(startBody.provider).toBe("codex");
+    expect(startBody.launch.mode).toBe("chat");
     const startBodyHash = createHash("sha256")
       .update(canonicalOwnedSessionStart(startBody))
       .digest("hex");

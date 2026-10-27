@@ -257,7 +257,7 @@ export async function captureTextResponsesThroughBrowserFetch(
   await installBrowserCapture(page);
 
   const group = new Map<string, PendingCapture>();
-  const captureSpecs = expected.map((spec) => {
+  const captures = expected.map((spec) => {
     const id = `browser-response-${++nextCaptureId}`;
     let resolveResponse!: (value: CapturedTextResponse) => void;
     let rejectResponse!: (error: Error) => void;
@@ -281,8 +281,10 @@ export async function captureTextResponsesThroughBrowserFetch(
       reject: rejectResponse,
       timer,
     });
-    return { id, ...spec };
+    return { spec: { id, ...spec }, handle: { response } };
   });
+  const captureSpecs = captures.map(({ spec }) => spec);
+  const captureHandles = captures.map(({ handle }) => handle);
   activeCaptures.set(page, group);
   try {
     await page.evaluate(
@@ -309,12 +311,7 @@ export async function captureTextResponsesThroughBrowserFetch(
   }
   let disposed = false;
   return {
-    captures: captureSpecs.map(({ id }) => {
-      const pending = group.get(id);
-      if (!pending)
-        throw new Error("The browser response capture was unavailable.");
-      return { response: pending.response };
-    }),
+    captures: captureHandles,
     async dispose() {
       if (disposed) return;
       disposed = true;
