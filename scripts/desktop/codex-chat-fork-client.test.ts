@@ -44,6 +44,7 @@ interface ForkClient {
     throughTurnRequestId: string;
     source: CodexChatForkSourcePage;
   }): Promise<CodexChatForkIdentityMetadata>;
+  listOriginals(projectId: string): Promise<CodexChatForkIdentityMetadata[]>;
   dispatchReservedFork(projectId: string, requestId: string): Promise<unknown>;
   canDispatchReservedFork(requestId: string): boolean;
   canRetireFork(requestId: string): boolean;
@@ -214,6 +215,111 @@ test("Fork source review reads every page for the explicit turn and never posts"
   }
 });
 
+test("Fork discovery preserves a verified empty page but rejects incomplete or unavailable identity reads", async () => {
+  const emptyPage = {
+    version: 1,
+    scope: { projectId, workspace },
+    operations: [],
+  };
+  let posts = 0;
+  const emptyModule = await loadForkClient(),
+    emptyClient = emptyModule.createCodexChatForkClient({
+      currentScope: scope,
+      canWrite: () => true,
+      requestId: () => requestId,
+      read: (async () => envelope(emptyPage)) satisfies OperatorRead,
+      post: (async () => {
+        posts++;
+        throw new Error("Discovery must not POST");
+      }) satisfies OperatorPost,
+    });
+  try {
+    await expect(emptyClient.listOriginals(projectId)).resolves.toEqual([]);
+  } finally {
+    emptyClient.dispose();
+  }
+
+  const unavailablePages: Array<{ name: string; response: Response }> = [
+    { name: "404", response: new Response("", { status: 404 }) },
+    { name: "unavailable", response: new Response("", { status: 503 }) },
+    {
+      name: "malformed JSON",
+      response: new Response("{", { status: 200 }),
+    },
+    {
+      name: "invalid page",
+      response: envelope({
+        version: 1,
+        scope: { projectId, workspace },
+        operations: [{}],
+      }),
+    },
+    {
+      name: "wrong project scope",
+      response: envelope({
+        ...emptyPage,
+        scope: {
+          projectId: "project-00000000-0000-4000-8000-000000000000",
+          workspace,
+        },
+      }),
+    },
+    {
+      name: "oversized page",
+      response: new Response("x".repeat(65_537), { status: 200 }),
+    },
+  ];
+
+  for (const scenario of unavailablePages) {
+    const module = await loadForkClient(),
+      client = module.createCodexChatForkClient({
+        currentScope: scope,
+        canWrite: () => true,
+        requestId: () => requestId,
+        read: (async () => scenario.response.clone()) satisfies OperatorRead,
+        post: (async () => {
+          posts++;
+          throw new Error("Failed discovery must not POST");
+        }) satisfies OperatorPost,
+      });
+    try {
+      await expect(client.listOriginals(projectId)).rejects.toThrow();
+    } catch (error) {
+      throw new Error(`Fork discovery did not hold on ${scenario.name}.`, {
+        cause: error,
+      });
+    } finally {
+      client.dispose();
+    }
+  }
+  let wrongScopeReads = 0;
+  const wrongScopeModule = await loadForkClient(),
+    wrongScopeClient = wrongScopeModule.createCodexChatForkClient({
+      currentScope: scope,
+      canWrite: () => true,
+      requestId: () => requestId,
+      read: (async () => {
+        wrongScopeReads++;
+        return envelope(emptyPage);
+      }) satisfies OperatorRead,
+      post: (async () => {
+        posts++;
+        throw new Error("Invalid scope must not POST");
+      }) satisfies OperatorPost,
+    });
+  try {
+    await expect(
+      wrongScopeClient.listOriginals(
+        "project-00000000-0000-4000-8000-000000000000",
+      ),
+    ).rejects.toThrow();
+  } finally {
+    wrongScopeClient.dispose();
+  }
+  expect(wrongScopeReads).toBe(0);
+  expect(posts).toBe(0);
+});
+
 test("lost Fork reply reloads the same reserved UUID and hash, keeps a missing original held, and never re-POSTs", async () => {
   const calls: Array<{ method: string; path: string; body?: unknown }> = [],
     intent = { requestId, throughTurnRequestId },
@@ -354,6 +460,320 @@ test("lost Fork reply reloads the same reserved UUID and hash, keeps a missing o
     expect(requestIds).toBe(1);
   } finally {
     recoveryClient.dispose();
+  }
+});
+
+test("ambiguous reservation stays on its exact UUID when discovery is empty or the original is missing", async () => {
+  const calls: Array<{ method: string; path: string; body?: unknown }> = [],
+    intent = { requestId, throughTurnRequestId },
+    reserved: CodexChatForkIdentityMetadata = {
+      family: "codex-chat-fork",
+      requestId,
+      requestHash,
+      parentSessionId,
+      throughTurnRequestId,
+      state: "reserved",
+    };
+  let requestIds = 0,
+    identityReads = 0,
+    reservePosts = 0,
+    forkPosts = 0,
+    currentGeneration = 3,
+    releaseReservation!: (response: Response) => void,
+    markReservationEntered!: () => void;
+  const firstReservations: Array<Promise<CodexChatForkIdentityMetadata>> = [];
+  const reservationReply = new Promise<Response>((resolve) => {
+    releaseReservation = resolve;
+  });
+  const reservationEntered = new Promise<void>((resolve) => {
+    markReservationEntered = resolve;
+  });
+  const module = await loadForkClient(),
+    client = module.createCodexChatForkClient({
+      currentScope: () => ({
+        projectId,
+        workspace,
+        generation: currentGeneration,
+      }),
+      canWrite: () => true,
+      requestId: () => {
+        requestIds++;
+        return requestIds === 1
+          ? requestId
+          : "b2a3a3c8-e9fa-4f45-8ba8-a29a3ee0fa01";
+      },
+      read: (async (path, init) => {
+        calls.push({ method: init?.method ?? "GET", path });
+        if (path.includes("/fork-review?"))
+          return envelope(
+            sourcePage({
+              frames: [
+                {
+                  kind: "user",
+                  seq: 1,
+                  turnId: throughTurnRequestId,
+                  at: "2026-10-23T03:00:00.000Z",
+                  text: "PRIVATE original prompt",
+                  about: [],
+                },
+              ],
+              complete: true,
+              nextCursor: null,
+            }),
+          );
+        const pathname = requestPath(path);
+        if (pathname.endsWith("/session-operation-identities")) {
+          identityReads++;
+          return envelope({
+            version: 1,
+            scope: { projectId, workspace },
+            operations: identityReads === 1 ? [] : [reserved],
+          });
+        }
+        if (pathname.endsWith(`/codex-chat-forks/${requestId}`))
+          return new Response("not found", { status: 404 });
+        throw new Error(`Unexpected GET ${path}`);
+      }) satisfies OperatorRead,
+      post: (async (path, body) => {
+        calls.push({ method: "POST", path, body: structuredClone(body) });
+        if (path.endsWith("/fork-reservations")) {
+          reservePosts++;
+          markReservationEntered();
+          return reservationReply;
+        }
+        if (path.endsWith("/forks")) forkPosts++;
+        throw new Error("No Fork dispatch is allowed in this recovery case.");
+      }) satisfies OperatorPost,
+    });
+
+  try {
+    const firstSource = await client.reviewSource({
+      projectId,
+      parentSessionId,
+      throughTurnRequestId,
+    });
+    const firstReservation = client.reserveFork({
+      projectId,
+      parentSessionId,
+      throughTurnRequestId,
+      source: firstSource,
+    });
+    firstReservations.push(firstReservation);
+    await reservationEntered;
+    await expect(
+      client.reserveFork({
+        projectId,
+        parentSessionId,
+        throughTurnRequestId,
+        source: firstSource,
+      }),
+    ).rejects.toThrow();
+    expect(requestIds).toBe(1);
+    expect(reservePosts).toBe(1);
+    releaseReservation(
+      new Response("reply lost after request", { status: 503 }),
+    );
+    const pending = await firstReservation;
+    expect(pending).toMatchObject({
+      requestId,
+      requestHash,
+      parentSessionId,
+      throughTurnRequestId,
+      state: "reserved",
+    });
+
+    await expect(client.listOriginals(projectId)).resolves.toEqual([pending]);
+    expect(await client.recoverOriginal(projectId, requestId)).toMatchObject({
+      state: "held",
+      identity: reserved,
+      original: null,
+      context: null,
+    });
+
+    const refreshedSource = await client.reviewSource({
+        projectId,
+        parentSessionId,
+        throughTurnRequestId,
+      }),
+      repeated = await client.reserveFork({
+        projectId,
+        parentSessionId,
+        throughTurnRequestId,
+        source: refreshedSource,
+      });
+    expect(repeated).toEqual(pending);
+    expect(requestIds).toBe(1);
+    expect(reservePosts).toBe(1);
+    expect(forkPosts).toBe(0);
+    expect(calls.filter((call) => call.method === "POST")).toEqual([
+      {
+        method: "POST",
+        path: `/__agent-forge/projects/${projectId}/sessions/${parentSessionId}/fork-reservations`,
+        body: intent,
+      },
+    ]);
+    expect(client.canDispatchReservedFork(requestId)).toBe(false);
+
+    currentGeneration++;
+    await expect(
+      client.reserveFork({
+        projectId,
+        parentSessionId,
+        throughTurnRequestId,
+        source: refreshedSource,
+      }),
+    ).rejects.toThrow();
+    expect(requestIds).toBe(1);
+    expect(reservePosts).toBe(1);
+  } finally {
+    releaseReservation(
+      new Response("reply lost after request", { status: 503 }),
+    );
+    await firstReservations[0]?.catch(() => undefined);
+    client.dispose();
+  }
+});
+
+test("attempted and held dispatch readbacks cannot release an unresolved parent reservation", async () => {
+  for (const state of ["attempted", "held"] as const) {
+    const calls: Array<{ method: string; path: string; body?: unknown }> = [],
+      intent = { requestId, throughTurnRequestId },
+      reserved: CodexChatForkIdentityMetadata = {
+        family: "codex-chat-fork",
+        requestId,
+        requestHash,
+        parentSessionId,
+        throughTurnRequestId,
+        state: "reserved",
+      },
+      outcome: CodexChatForkIdentityMetadata =
+        state === "held"
+          ? {
+              ...reserved,
+              state,
+              heldReason: "unknown-native-outcome",
+            }
+          : { ...reserved, state };
+    let requestIds = 0,
+      identityReads = 0,
+      reservePosts = 0,
+      forkPosts = 0,
+      generation = 3;
+    const module = await loadForkClient(),
+      client = module.createCodexChatForkClient({
+        currentScope: () => ({ projectId, workspace, generation }),
+        canWrite: () => true,
+        requestId: () => {
+          requestIds++;
+          return requestIds === 1
+            ? requestId
+            : "b2a3a3c8-e9fa-4f45-8ba8-a29a3ee0fa01";
+        },
+        read: (async (path, init) => {
+          calls.push({ method: init?.method ?? "GET", path });
+          if (path.includes("/fork-review?"))
+            return envelope(
+              sourcePage({
+                frames: [
+                  {
+                    kind: "user",
+                    seq: 1,
+                    turnId: throughTurnRequestId,
+                    at: "2026-10-23T03:00:00.000Z",
+                    text: "PRIVATE original prompt",
+                    about: [],
+                  },
+                ],
+                complete: true,
+                nextCursor: null,
+              }),
+            );
+          const pathname = requestPath(path);
+          if (pathname.endsWith("/session-operation-identities")) {
+            identityReads++;
+            return envelope({
+              version: 1,
+              scope: { projectId, workspace },
+              operations: [],
+            });
+          }
+          throw new Error(`Unexpected GET ${path}`);
+        }) satisfies OperatorRead,
+        post: (async (path, body) => {
+          calls.push({ method: "POST", path, body: structuredClone(body) });
+          if (path.endsWith("/fork-reservations")) {
+            reservePosts++;
+            return envelope(reserved);
+          }
+          if (path.endsWith("/forks")) {
+            forkPosts++;
+            return envelope(outcome, 202);
+          }
+          throw new Error(`Unexpected POST ${path}`);
+        }) satisfies OperatorPost,
+      });
+
+    try {
+      const firstSource = await client.reviewSource({
+        projectId,
+        parentSessionId,
+        throughTurnRequestId,
+      });
+      await client.reserveFork({
+        projectId,
+        parentSessionId,
+        throughTurnRequestId,
+        source: firstSource,
+      });
+      await expect(
+        client.dispatchReservedFork(projectId, requestId),
+      ).resolves.toEqual({ state: "held" });
+
+      await expect(client.listOriginals(projectId)).resolves.toEqual([outcome]);
+      expect(await client.recoverOriginal(projectId, requestId)).toMatchObject({
+        state: "held",
+        identity: outcome,
+        original: null,
+        context: null,
+      });
+      const refreshedSource = await client.reviewSource({
+        projectId,
+        parentSessionId,
+        throughTurnRequestId,
+      });
+      await expect(
+        client.reserveFork({
+          projectId,
+          parentSessionId,
+          throughTurnRequestId,
+          source: refreshedSource,
+        }),
+      ).resolves.toEqual(outcome);
+      expect(requestIds).toBe(1);
+      expect(reservePosts).toBe(1);
+      expect(forkPosts).toBe(1);
+      expect(identityReads).toBe(2);
+
+      generation++;
+      const changedScopeSource = await client.reviewSource({
+        projectId,
+        parentSessionId,
+        throughTurnRequestId,
+      });
+      await expect(
+        client.reserveFork({
+          projectId,
+          parentSessionId,
+          throughTurnRequestId,
+          source: changedScopeSource,
+        }),
+      ).rejects.toThrow();
+      expect(requestIds).toBe(1);
+      expect(reservePosts).toBe(1);
+      expect(forkPosts).toBe(1);
+    } finally {
+      client.dispose();
+    }
   }
 });
 

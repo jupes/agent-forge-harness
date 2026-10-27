@@ -358,14 +358,15 @@ export function createCodexChatForkClient(
       `${OPERATOR_API_PREFIX}/projects/${encodeURIComponent(projectId)}/session-operation-identities`,
       scope,
     );
-    if (data === null) return null;
+    if (data === null)
+      throw new Error("Fork identity discovery could not be verified.");
     const parsed = sessionOperationIdentityPageSchema.safeParse(data);
     if (
       !parsed.success ||
       parsed.data.scope.projectId !== scope.projectId ||
       workspaceKey(parsed.data.scope.workspace) !== scope.workspace
     )
-      return null;
+      throw new Error("Fork identity discovery could not be verified.");
     return parsed.data;
   };
 
@@ -511,6 +512,25 @@ export function createCodexChatForkClient(
         throw new Error(
           "Review the exact Fork source again before reserving it.",
         );
+      const activeReservation = [...reserved.values()].find(
+        (entry) =>
+          entry.scope.projectId === scope.projectId &&
+          entry.scope.workspace === scope.workspace &&
+          entry.parentSessionId === input.parentSessionId &&
+          entry.identity.state !== "linked" &&
+          entry.identity.state !== "retired",
+      );
+      if (activeReservation) {
+        if (
+          sameScope(activeReservation.scope, scope) &&
+          activeReservation.intent.throughTurnRequestId ===
+            input.throughTurnRequestId
+        )
+          return activeReservation.identity;
+        throw new Error(
+          "An earlier Fork reservation is still held for this parent session.",
+        );
+      }
       busy.add(busyKey);
       try {
         const request = intentSchema.parse({
@@ -615,6 +635,7 @@ export function createCodexChatForkClient(
           })
         )
           return { state: "held" };
+        entry.identity = parsed.data;
         if (parsed.data.state === "linked") return { state: "linked" };
         if (parsed.data.state === "retired") return { state: "retired" };
         return { state: "held" };
@@ -666,15 +687,34 @@ export function createCodexChatForkClient(
       } catch {
         return { state: "held", identity: null, original: null, context: null };
       }
-      const page = await readOperationPage(projectId, scope);
-      if (!page)
+      let page: Awaited<ReturnType<typeof readOperationPage>>;
+      try {
+        page = await readOperationPage(projectId, scope);
+      } catch {
         return { state: "held", identity: null, original: null, context: null };
+      }
       const operation = page.operations.find(
         (row) =>
           row.family === "codex-chat-fork" && row.requestId === requestId,
       );
-      if (!operation || operation.family !== "codex-chat-fork")
+      if (!operation || operation.family !== "codex-chat-fork") {
+        const local = reserved.get(requestId);
+        if (
+          !page.operations.some((row) => row.requestId === requestId) &&
+          local &&
+          local.identity.state !== "linked" &&
+          local.identity.state !== "retired" &&
+          local.scope.projectId === scope.projectId &&
+          local.scope.workspace === scope.workspace
+        )
+          return {
+            state: "held",
+            identity: local.identity,
+            original: null,
+            context: null,
+          };
         return { state: "held", identity: null, original: null, context: null };
+      }
       const identity = operation;
       const original = await readOriginal(projectId, requestId, scope);
       if (
@@ -727,6 +767,8 @@ export function createCodexChatForkClient(
           confirmed: true,
           notSent: false,
         });
+      } else if (original.state === "linked" || original.state === "retired") {
+        reserved.delete(requestId);
       }
       return {
         state:
@@ -740,21 +782,44 @@ export function createCodexChatForkClient(
       };
     },
     async listOriginals(projectId) {
-      let scope: ForkClientScope;
-      try {
-        scope = snapshotScope(dependencies.currentScope());
-        if (projectId !== scope.projectId) return [];
-        check(scope);
-      } catch {
-        return [];
-      }
+      const scope = snapshotScope(dependencies.currentScope());
+      if (projectId !== scope.projectId)
+        throw new Error(
+          "Fork identity discovery is unavailable in this scope.",
+        );
+      check(scope);
       const page = await readOperationPage(projectId, scope);
-      return page
-        ? page.operations.filter(
-            (row): row is CodexChatForkIdentityMetadata =>
-              row.family === "codex-chat-fork",
-          )
-        : [];
+      const originals = page.operations.filter(
+        (row): row is CodexChatForkIdentityMetadata =>
+          row.family === "codex-chat-fork",
+      );
+      for (const identity of originals) {
+        const local = reserved.get(identity.requestId);
+        if (
+          local &&
+          (identity.state === "linked" || identity.state === "retired") &&
+          matchesIdentity(identity, {
+            requestId: local.identity.requestId,
+            requestHash: local.identity.requestHash,
+            parentSessionId: local.parentSessionId,
+            throughTurnRequestId: local.intent.throughTurnRequestId,
+          })
+        )
+          reserved.delete(identity.requestId);
+      }
+      const serverRequestIds = new Set(
+        page.operations.map((row) => row.requestId),
+      );
+      for (const entry of reserved.values())
+        if (
+          entry.identity.state !== "linked" &&
+          entry.identity.state !== "retired" &&
+          entry.scope.projectId === scope.projectId &&
+          entry.scope.workspace === scope.workspace &&
+          !serverRequestIds.has(entry.identity.requestId)
+        )
+          originals.push(entry.identity);
+      return originals;
     },
     readContext,
     async readChildTurns(
