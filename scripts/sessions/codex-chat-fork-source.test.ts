@@ -512,23 +512,51 @@ test("the filesystem coordinator captures once, adopts the exact child and resol
         auditEventId: 1,
       };
     const firstCall = coordinator.fork(input);
-    let first: Awaited<typeof firstCall>,
-      concurrent: Awaited<ReturnType<typeof coordinator.fork>>;
+    let attemptedHash: string | null = null,
+      attemptedChildAppSessionId: string | null = null;
     try {
       // Hold the first call after it owns the parent lease and has crossed the
       // durable attempt fence. The second identical call now exercises the
       // bounded contention path deterministically instead of racing startup.
-      await runtimeEntered;
-      [first, concurrent] = await Promise.all([
-        firstCall,
-        coordinator.fork(input),
+      const firstState = await Promise.race([
+        runtimeEntered.then(() => ({ kind: "entered" as const })),
+        firstCall.then(
+          (value) => ({ kind: "settled" as const, value }),
+          (error: unknown) => ({ kind: "failed" as const, error }),
+        ),
       ]);
+      if (firstState.kind !== "entered")
+        throw new Error(
+          firstState.kind === "failed"
+            ? "The first Fork failed before reaching its native attempt."
+            : "The first Fork settled before reaching its native attempt.",
+        );
+
+      await expect(coordinator.fork(input)).rejects.toThrow(
+        "The parent conversation is busy; no Fork was accepted.",
+      );
+      const journal = createCodexChatForkJournal({
+          home: h.home,
+          root: h.root,
+        }),
+        attempted = journal.read(FIXTURE_PROJECT_ID, selectedRequestId);
+      expect(attempted).toMatchObject({
+        requestId: selectedRequestId,
+        parentSessionId: parent.id,
+        throughTurnRequestId: source.requestId,
+        state: "attempted",
+      });
+      if (attempted?.state !== "attempted")
+        throw new Error("The attempted Fork original was not persisted.");
+      attemptedHash = attempted.requestHash;
+      attemptedChildAppSessionId = attempted.childAppSessionId;
+      expect(runtimeCalls).toBe(1);
     } finally {
       releaseRuntime?.();
       await firstCall.catch(() => {});
     }
+    const first = await firstCall;
     expect(first.state).toBe("linked");
-    expect(concurrent).toEqual(first);
     expect(runtimeCalls).toBe(1);
     if (first.state !== "linked") throw Error("The Fork was not linked.");
     const selectedTurn = source.state.turns[0];
@@ -539,6 +567,9 @@ test("the filesystem coordinator captures once, adopts the exact child and resol
     expect(original?.state).toBe("linked");
     if (original?.state !== "linked")
       throw Error("Missing linked Fork original.");
+    expect(original.requestId).toBe(selectedRequestId);
+    expect(original.requestHash).toBe(attemptedHash);
+    expect(original.childAppSessionId).toBe(attemptedChildAppSessionId);
     const child = createSessionRegistry(h.home, "codex", "chat").read(
       FIXTURE_PROJECT_ID,
       first.childSessionId,
