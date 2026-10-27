@@ -28,7 +28,10 @@ import {
 import { ownedCodingSessionSchema } from "../../scripts/sessions/codex-owned-wire-protocol";
 import { sessionStartIdentityPageSchema } from "../../scripts/sessions/identity-protocol";
 import { sessionTranscriptExportSchema } from "../../scripts/sessions/library-protocol";
-import { sessionOperationIdentityPageSchema } from "../../scripts/sessions/session-operation-identities-protocol";
+import {
+  codexChatForkIdentityMetadataSchema,
+  sessionOperationIdentityPageSchema,
+} from "../../scripts/sessions/session-operation-identities-protocol";
 import { openSettled, reloadSettled } from "../e2e/fixtures";
 import { pageToken } from "../e2e/launch-link";
 import { HEARTH_HOME } from "../e2e/servers";
@@ -4121,6 +4124,9 @@ test("an undispatched Fork original can be explicitly retired after reload", asy
   const replacement = forkPosts[2]?.body as
     | { requestId?: unknown; throughTurnRequestId?: unknown }
     | undefined;
+  const replacementRequestId = replacement?.requestId;
+  if (typeof replacementRequestId !== "string")
+    throw new Error("The fresh Fork reservation did not return its UUID.");
   expect(replacement).toMatchObject({
     throughTurnRequestId: turn.requestId,
   });
@@ -4151,6 +4157,71 @@ test("an undispatched Fork original can be explicitly retired after reload", asy
     state: "reserved",
   });
   expect(newReservation?.requestHash).not.toBe(retiredHash);
+
+  const retiredOriginalPath = `/__agent-forge/projects/${record.projectId}/codex-chat-forks/${identity.requestId}`;
+  const retiredOriginalRead = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return (
+      response.request().method() === "GET" &&
+      url.pathname === retiredOriginalPath
+    );
+  });
+  await reopened
+    .getByRole("button", {
+      name: `Inspect Fork original ${identity.requestId.slice(0, 8)}`,
+      exact: true,
+    })
+    .click();
+  const retiredOriginalResponse = await retiredOriginalRead;
+  expect(retiredOriginalResponse.status()).toBe(200);
+  const retiredOriginalEnvelope = z
+    .object({ ok: z.literal(true), data: z.unknown(), error: z.null() })
+    .strict()
+    .parse(await retiredOriginalResponse.json());
+  expect(
+    codexChatForkIdentityMetadataSchema.parse(retiredOriginalEnvelope.data),
+  ).toMatchObject({
+    requestId: identity.requestId,
+    requestHash: retiredHash,
+    parentSessionId: record.id,
+    throughTurnRequestId: turn.requestId,
+    state: "retired",
+  });
+  await expect(reopened).toContainText(`${identity.requestId} · retired`);
+  await expect(
+    reopened.getByRole("button", {
+      name: "Reserve a new Fork from this turn",
+      exact: true,
+    }),
+  ).toHaveCount(0);
+  expect(forkPosts).toHaveLength(3);
+  expect(
+    calls().filter((row) => row.kind === "rpc" && row.method === "thread/fork"),
+  ).toHaveLength(nativeForksBefore);
+
+  await reopened
+    .getByRole("button", {
+      name: `Inspect Fork original ${replacementRequestId.slice(0, 8)}`,
+      exact: true,
+    })
+    .click();
+  await expect(reopened).toContainText(`${replacementRequestId} · reserved`);
+  await expect(
+    reopened.getByRole("button", {
+      name: "Create the native child thread once",
+      exact: true,
+    }),
+  ).toBeEnabled();
+  await expect(
+    reopened.getByRole("button", {
+      name: "Reserve a new Fork from this turn",
+      exact: true,
+    }),
+  ).toHaveCount(0);
+  expect(forkPosts).toHaveLength(3);
+  expect(
+    calls().filter((row) => row.kind === "rpc" && row.method === "thread/fork"),
+  ).toHaveLength(nativeForksBefore);
   page.off("request", captureForkPost);
 });
 
