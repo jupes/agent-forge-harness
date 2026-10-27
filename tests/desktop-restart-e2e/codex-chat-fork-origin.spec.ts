@@ -92,6 +92,15 @@ async function openNewSession(page: Page, url: string): Promise<SessionRow> {
     new URL(page.url()).origin !== new URL(url).origin
   )
     await page.goto(url);
+  const sessionsUrl = new URL(
+    `/index.html#/desktop/project/${encodeURIComponent(alpha.id)}/sessions`,
+    url,
+  );
+  if (
+    new URL(page.url()).pathname !== sessionsUrl.pathname ||
+    new URL(page.url()).hash !== sessionsUrl.hash
+  )
+    await page.goto(sessionsUrl.toString());
   await page.getByRole("button", { name: "New session", exact: true }).click();
   const dialog = page.getByRole("dialog", {
     name: "New session · Alpha",
@@ -575,6 +584,144 @@ test("two actual host replacements recover the exact Fork original before and af
   );
   expect(startWrites.length).toBe(beforeExplicitFirstDispatch.starts);
   expect(identityWrites.length).toBe(beforeExplicitFirstDispatch.identity);
+
+  const firstRequestId = firstReservation.metadata()!.requestId;
+  const firstRequestHash = firstReservation.metadata()!.requestHash;
+  const retirementResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return (
+      response.request().method() === "POST" &&
+      url.pathname.endsWith(`/fork-reservations/${firstRequestId}/retire`)
+    );
+  });
+  await reviewA
+    .getByRole("button", {
+      name: "Retire verified not-sent original",
+      exact: true,
+    })
+    .click();
+  const retirementHttp = await retirementResponse;
+  expect(retirementHttp.status()).toBe(200);
+  const retirementEnvelope = record(
+    parseJson(await retirementHttp.text(), "retired Fork original"),
+  );
+  if (retirementEnvelope?.["ok"] !== true)
+    throw new Error("The Fork reservation retirement was not confirmed.");
+  const firstRetired = codexChatForkIdentityMetadataSchema.parse(
+    retirementEnvelope["data"],
+  );
+  expect(firstRetired).toMatchObject({
+    requestId: firstRequestId,
+    requestHash: firstRequestHash,
+    parentSessionId: first.parent.id,
+    throughTurnRequestId: first.turnId,
+    state: "retired",
+  });
+  const retiredRead = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return (
+      response.request().method() === "GET" &&
+      url.pathname ===
+        `/__agent-forge/projects/${alpha.id}/codex-chat-forks/${firstRequestId}`
+    );
+  });
+  await reviewA
+    .getByRole("button", {
+      name: `Inspect Fork original ${firstRequestId.slice(0, 8)} · retired`,
+      exact: true,
+    })
+    .click();
+  const retiredReadHttp = await retiredRead;
+  expect(retiredReadHttp.status()).toBe(200);
+  const retiredReadEnvelope = record(
+    parseJson(await retiredReadHttp.text(), "retired Fork readback"),
+  );
+  const retiredReadIdentity = codexChatForkIdentityMetadataSchema.parse(
+    retiredReadEnvelope?.["data"],
+  );
+  expect(retiredReadIdentity).toMatchObject({
+    requestId: firstRequestId,
+    requestHash: firstRequestHash,
+    parentSessionId: first.parent.id,
+    throughTurnRequestId: first.turnId,
+    state: "retired",
+  });
+  expect(rpcCount("thread/fork")).toBe(forksBefore);
+
+  const replacementReserveResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return (
+      response.request().method() === "POST" &&
+      url.pathname ===
+        `/__agent-forge/projects/${alpha.id}/sessions/${first.parent.id}/fork-reservations`
+    );
+  });
+  await reviewA
+    .getByRole("button", {
+      name: "Reserve a new Fork from this turn",
+      exact: true,
+    })
+    .click();
+  const replacementReserveHttp = await replacementReserveResponse;
+  expect(replacementReserveHttp.status()).toBe(200);
+  const replacementReserveEnvelope = record(
+    parseJson(
+      await replacementReserveHttp.text(),
+      "replacement Fork reservation",
+    ),
+  );
+  if (replacementReserveEnvelope?.["ok"] !== true)
+    throw new Error("The replacement Fork reservation was not confirmed.");
+  const firstReplacement = codexChatForkIdentityMetadataSchema.parse(
+    replacementReserveEnvelope["data"],
+  );
+  expect(firstReplacement).toMatchObject({
+    parentSessionId: first.parent.id,
+    throughTurnRequestId: first.turnId,
+    state: "reserved",
+  });
+  expect(firstReplacement.requestId).not.toBe(firstRequestId);
+  expect(firstReplacement.requestHash).not.toBe(firstRequestHash);
+  const historyARead = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return (
+      response.request().method() === "GET" &&
+      url.pathname ===
+        `/__agent-forge/projects/${alpha.id}/codex-chat-forks/${firstRequestId}`
+    );
+  });
+  await reviewA
+    .getByRole("button", {
+      name: `Inspect Fork original ${firstRequestId.slice(0, 8)} · retired`,
+      exact: true,
+    })
+    .click();
+  const historyAHttp = await historyARead;
+  expect(historyAHttp.status()).toBe(200);
+  const historyAEnvelope = record(
+    parseJson(await historyAHttp.text(), "retired Fork history"),
+  );
+  expect(
+    codexChatForkIdentityMetadataSchema.parse(historyAEnvelope?.["data"]),
+  ).toMatchObject({
+    requestId: firstRequestId,
+    requestHash: firstRequestHash,
+    state: "retired",
+  });
+  await expect(
+    reviewA.getByRole("button", {
+      name: "Reserve a new Fork from this turn",
+      exact: true,
+    }),
+  ).toHaveCount(0);
+  expect(rpcCount("thread/fork")).toBe(forksBefore);
+  await reviewA
+    .getByRole("button", {
+      name: `Inspect Fork original ${firstReplacement.requestId.slice(0, 8)} · reserved`,
+      exact: true,
+    })
+    .click();
+
   const firstLinkedResponse = page.waitForResponse((response) => {
     const url = new URL(response.url());
     return (
@@ -599,17 +746,22 @@ test("two actual host replacements recover the exact Fork original before and af
     firstLinkedEnvelope["data"],
   );
   expect(firstLinked).toMatchObject({
-    requestId: firstReservation.metadata()!.requestId,
-    requestHash: firstReservation.metadata()!.requestHash,
+    requestId: firstReplacement.requestId,
+    requestHash: firstReplacement.requestHash,
     parentSessionId: first.parent.id,
     throughTurnRequestId: first.turnId,
     state: "linked",
   });
   await expect.poll(() => rpcCount("thread/fork")).toBe(forksBefore + 1);
-  expect(forkBodies).toHaveLength(2);
-  expect(forkBodies[0]?.body).toEqual(forkBodies[1]?.body);
-  expect(forkBodies[0]?.body).toMatchObject({
-    requestId: firstIdentityBefore[0]?.requestId,
+  const firstReplacementBodies = forkBodies.filter(
+    (entry) => record(entry.body)?.["requestId"] === firstReplacement.requestId,
+  );
+  expect(firstReplacementBodies).toHaveLength(2);
+  expect(firstReplacementBodies[0]?.body).toEqual(
+    firstReplacementBodies[1]?.body,
+  );
+  expect(firstReplacementBodies[0]?.body).toMatchObject({
+    requestId: firstReplacement.requestId,
     throughTurnRequestId: first.turnId,
   });
   expect(
@@ -680,7 +832,11 @@ test("two actual host replacements recover the exact Fork original before and af
     identityWrites: identityWrites.length,
   };
   const recoveredRows = await operationRows(page, currentOrigin);
-  for (const identity of [firstLinked, secondReservation.metadata()])
+  for (const identity of [
+    firstRetired,
+    firstLinked,
+    secondReservation.metadata(),
+  ])
     expect(recoveredRows).toContainEqual(identity);
   const recoveredFirst = await readForkOriginal(
     page,
@@ -694,6 +850,18 @@ test("two actual host replacements recover the exact Fork original before and af
     throughTurnRequestId: first.turnId,
     state: "linked",
     childSessionId: firstLinked.childSessionId,
+  });
+  const recoveredRetiredFirst = await readForkOriginal(
+    page,
+    currentOrigin,
+    firstRequestId,
+  );
+  expect(recoveredRetiredFirst).toMatchObject({
+    requestId: firstRequestId,
+    requestHash: firstRequestHash,
+    parentSessionId: first.parent.id,
+    throughTurnRequestId: first.turnId,
+    state: "retired",
   });
   const recoveredSecond = await readForkOriginal(
     page,
@@ -735,9 +903,16 @@ test("two actual host replacements recover the exact Fork original before and af
   expect(rpcCount("thread/start")).toBe(startsBefore + 2);
   expect(rpcCount("thread/fork")).toBe(forksBefore + 2);
   expect(secondReservation.metadata()!.childSessionId).not.toBe(firstChild.id);
-  expect(forkBodies).toHaveLength(4);
-  expect(forkBodies[2]?.body).toEqual(forkBodies[3]?.body);
-  expect(forkBodies[2]?.body).toMatchObject({
+  const secondReplacementBodies = forkBodies.filter(
+    (entry) =>
+      record(entry.body)?.["requestId"] ===
+      secondReservation.metadata()!.requestId,
+  );
+  expect(secondReplacementBodies).toHaveLength(2);
+  expect(secondReplacementBodies[0]?.body).toEqual(
+    secondReplacementBodies[1]?.body,
+  );
+  expect(secondReplacementBodies[0]?.body).toMatchObject({
     requestId: secondReservation.metadata()!.requestId,
     throughTurnRequestId: second.turnId,
   });
