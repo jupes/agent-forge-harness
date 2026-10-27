@@ -62,6 +62,31 @@ function readCompiledFixtureRecords(path: string): Record<string, unknown>[] {
   });
 }
 
+function readRecentCompiledFixtureRecords(path: string): {
+  totalRows: number;
+  rows: Record<string, unknown>[];
+} {
+  if (statSync(path).size > 65_536)
+    throw new Error("The inert fixture call log exceeded its byte bound.");
+  const text = readFileSync(path, "utf8");
+  if (!text.endsWith("\n"))
+    throw new Error("The inert fixture call log is incomplete.");
+  const lines = text.slice(0, -1).split("\n"),
+    rows: Record<string, unknown>[] = [];
+  for (const line of lines.slice(-96)) {
+    let value: unknown;
+    try {
+      value = JSON.parse(line);
+    } catch {
+      throw new Error("The inert fixture call log is malformed.");
+    }
+    if (typeof value !== "object" || value === null || Array.isArray(value))
+      throw new Error("The inert fixture call log is malformed.");
+    rows.push(value as Record<string, unknown>);
+  }
+  return { totalRows: lines.length, rows };
+}
+
 function summarizeCompiledFixtureLog(path: string, status: string) {
   const unavailable = {
     state: "unavailable" as const,
@@ -371,6 +396,16 @@ test.each([
     if (compiled.status !== 0)
       throw new Error("The compiled inert Codex fixture did not build.");
 
+    const overfilledContinuityLog = fixtureMode === "fork-restart";
+    if (overfilledContinuityLog) {
+      writeFileSync(
+        log,
+        `${Array.from({ length: 257 }, (_, sequence) =>
+          JSON.stringify({ kind: "unrelated-diagnostic", sequence }),
+        ).join("\n")}\n`,
+      );
+    }
+
     const runtime = createCodexChatRuntime({
         root: workspace,
         home,
@@ -506,7 +541,12 @@ test.each([
       }),
     ).rejects.toThrow();
     status = "verify-fork-result-count";
-    const forkRecords = readCompiledFixtureRecords(log);
+    let forkRecords: Record<string, unknown>[];
+    if (overfilledContinuityLog) {
+      const recent = readRecentCompiledFixtureRecords(log);
+      expect(recent.totalRows).toBeGreaterThan(256);
+      forkRecords = recent.rows;
+    } else forkRecords = readCompiledFixtureRecords(log);
     expect(
       forkRecords.filter((row) => row.kind === "fork-result"),
     ).toHaveLength(1);
@@ -571,7 +611,10 @@ test.each([
       modelProvider: "openai",
     });
     expect(resumeConfiguration).toHaveProperty("serviceTier", null);
-    const resumeParams = readCompiledFixtureRecords(log)
+    const resumeRows = overfilledContinuityLog
+      ? readRecentCompiledFixtureRecords(log).rows
+      : readCompiledFixtureRecords(log);
+    const resumeParams = resumeRows
       .filter((row) => row.kind === "rpc" && row.method === "thread/resume")
       .map((row) => row.params);
     expect(resumeParams).toHaveLength(2);
@@ -583,50 +626,57 @@ test.each([
       serviceTier: null,
     });
     const facts = summarize();
-    expect(facts).toMatchObject({
-      state: "available",
-      forkRestartDiagnostics: [
-        {
-          stage: "source-accepted",
-          parentFound: true,
-          turnFound: true,
-          settingsMatches: {
-            model: true,
-            modelProvider: true,
-            serviceTierPresent: true,
-            serviceTier: true,
-            reasoningEffort: true,
-            workspace: true,
-            approvalPolicy: true,
-            sandbox: true,
+    if (overfilledContinuityLog) {
+      expect(facts).toMatchObject({
+        state: "over-limit",
+        status: "resume-outcome-completed",
+      });
+    } else {
+      expect(facts).toMatchObject({
+        state: "available",
+        forkRestartDiagnostics: [
+          {
+            stage: "source-accepted",
+            parentFound: true,
+            turnFound: true,
+            settingsMatches: {
+              model: true,
+              modelProvider: true,
+              serviceTierPresent: true,
+              serviceTier: true,
+              reasoningEffort: true,
+              workspace: true,
+              approvalPolicy: true,
+              sandbox: true,
+            },
           },
+          {
+            stage: "parent-not-found",
+            parentFound: false,
+            turnFound: false,
+            settingsMatches: null,
+          },
+          {
+            stage: "turn-not-found",
+            parentFound: true,
+            turnFound: false,
+          },
+        ],
+        kindCounts: {
+          version: 7,
+          help: 7,
+          process: 6,
+          rpc: 15,
+          notification: 6,
+          answer: 0,
         },
-        {
-          stage: "parent-not-found",
-          parentFound: false,
-          turnFound: false,
-          settingsMatches: null,
+        argvCategories: {
+          versionProbe: 7,
+          helpProbe: 7,
+          appServerStdio: 6,
         },
-        {
-          stage: "turn-not-found",
-          parentFound: true,
-          turnFound: false,
-        },
-      ],
-      kindCounts: {
-        version: 7,
-        help: 7,
-        process: 6,
-        rpc: 15,
-        notification: 6,
-        answer: 0,
-      },
-      argvCategories: {
-        versionProbe: 7,
-        helpProbe: 7,
-        appServerStdio: 6,
-      },
-    });
+      });
+    }
   } catch {
     throw new Error(
       `Compiled Codex compatibility fixture failed: ${JSON.stringify(summarize())}`,

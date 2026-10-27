@@ -3,6 +3,7 @@ import {
   mkdirSync,
   readFileSync,
   realpathSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -85,6 +86,86 @@ function calls(): Array<{
       .map((line) => JSON.parse(line));
   } catch {
     throw Error("Invalid complete native Chat fixture log");
+  }
+}
+function readForkContinuityFacts(): Record<string, unknown> {
+  const unavailable = {
+    state: "unavailable",
+    bytes: null,
+    rows: null,
+    sampledRows: 0,
+    methodCounts: null,
+    lastForkDiagnostic: null,
+  };
+  try {
+    const path = join(HEARTH_HOME, "codex-chat-fixture-calls.jsonl"),
+      bytes = statSync(path).size;
+    if (bytes > 1_048_576)
+      return { ...unavailable, state: "over-limit", bytes };
+    const text = readFileSync(path, "utf8");
+    if (!text.endsWith("\n"))
+      return { ...unavailable, state: "partial", bytes };
+    const lines = text.slice(0, -1).split("\n"),
+      methodCounts = {
+        initialize: 0,
+        "thread/start": 0,
+        "turn/start": 0,
+        "thread/resume": 0,
+        "thread/fork": 0,
+      },
+      stages = [
+        "fixture-log-unavailable",
+        "parent-not-found",
+        "turn-not-found",
+        "source-found",
+        "settings-mismatch",
+        "source-accepted",
+      ] as const;
+    let lastForkDiagnostic: {
+      stage: (typeof stages)[number];
+      parentFound: boolean;
+      turnFound: boolean;
+    } | null = null;
+    const sampled = lines.slice(-96);
+    for (const line of sampled) {
+      let value: unknown;
+      try {
+        value = JSON.parse(line);
+      } catch {
+        return { ...unavailable, state: "invalid", bytes, rows: lines.length };
+      }
+      if (typeof value !== "object" || value === null || Array.isArray(value))
+        return { ...unavailable, state: "invalid", bytes, rows: lines.length };
+      const row = value as Record<string, unknown>;
+      if (
+        row.kind === "rpc" &&
+        typeof row.method === "string" &&
+        Object.hasOwn(methodCounts, row.method)
+      )
+        methodCounts[row.method as keyof typeof methodCounts]++;
+      if (
+        row.kind === "fork-restart-diagnostic" &&
+        typeof row.stage === "string" &&
+        stages.includes(row.stage as (typeof stages)[number]) &&
+        typeof row.parentFound === "boolean" &&
+        typeof row.turnFound === "boolean"
+      )
+        lastForkDiagnostic = {
+          stage: row.stage as (typeof stages)[number],
+          parentFound: row.parentFound,
+          turnFound: row.turnFound,
+        };
+    }
+    return {
+      state: "available",
+      bytes,
+      rows: lines.length,
+      sampledRows: sampled.length,
+      methodCounts,
+      lastForkDiagnostic,
+    };
+  } catch {
+    return unavailable;
   }
 }
 function mode(value: string) {
@@ -360,6 +441,20 @@ test.beforeEach(() => {
 });
 test.afterEach(async ({ page }) => {
   const info = test.info();
+  if (
+    info.title ===
+      "switching linked Fork originals clears the prior child state before reading the next child" &&
+    info.status !== info.expectedStatus
+  ) {
+    try {
+      await info.attach("fork-history-continuity-failure-facts.json", {
+        contentType: "application/json",
+        body: Buffer.from(JSON.stringify(readForkContinuityFacts())),
+      });
+    } catch {
+      // Diagnostic collection must not replace the original assertion.
+    }
+  }
   if (
     info.title ===
       "native Chat web-search reports retain literal snapshots through export and reload without retrying the turn" &&
