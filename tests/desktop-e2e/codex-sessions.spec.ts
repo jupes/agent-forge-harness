@@ -691,8 +691,7 @@ test("a durable pre-dispatch NotSent Start retries only by explicit same-UUID re
     identityWrites = 0;
   page.on("request", (request) => {
     const url = new URL(request.url());
-    const identityPath =
-      `/__agent-forge/projects/${alpha.id}/session-start-identities`;
+    const identityPath = `/__agent-forge/projects/${alpha.id}/session-start-identities`;
     if (url.pathname === identityPath && request.method() === "GET")
       identityReads++;
     if (url.pathname === identityPath && request.method() === "POST")
@@ -744,9 +743,37 @@ test("a durable pre-dispatch NotSent Start retries only by explicit same-UUID re
   await expect(
     row.getByRole("button", { name: "Retry exact original", exact: true }),
   ).toBeEnabled();
+  const admittedRead = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return (
+      response.request().method() === "GET" &&
+      url.pathname ===
+        `/__agent-forge/projects/${alpha.id}/session-start-identities` &&
+      startStatuses.includes(202)
+    );
+  });
   await row
     .getByRole("button", { name: "Retry exact original", exact: true })
     .click();
+  const admittedResponse = await admittedRead;
+  expect(admittedResponse.status()).toBe(200);
+  const admittedEnvelope = sessionStartIdentitySuccessEnvelopeSchema.parse(
+      await admittedResponse.json(),
+    ),
+    admittedIdentity = admittedEnvelope.data.identities.find(
+      (identity) => identity.requestId === original.requestId,
+    );
+  expect(admittedEnvelope.data.scope).toEqual({
+    projectId: alpha.id,
+    workspace,
+  });
+  expect(admittedIdentity).toMatchObject({
+    requestId: original.requestId,
+    requestHash: originalHash,
+    provider: "codex",
+    mode: "task",
+    state: "admitted",
+  });
   await expect(
     page.getByRole("article", { name: "Session reply", exact: true }),
   ).toContainText("Codex Task reply 🌱");
@@ -758,15 +785,13 @@ test("a durable pre-dispatch NotSent Start retries only by explicit same-UUID re
   expect(identityWrites).toBe(2);
   await expect.poll(() => tasks().length).toBe(before + 1);
 
-  // A successful Start closes the composer. Reopen it and verify the admitted
-  // row through the server's GET projection, without another write or Start.
-  const readsBeforeReopen = identityReads;
+  // A successful Start's protected readback above proves admission. Reopening
+  // shows that already-verified projection without requiring a redundant GET.
   await page.getByRole("button", { name: "New session", exact: true }).click();
   const reopened = page.getByRole("dialog", {
     name: "New session · Alpha",
     exact: true,
   });
-  await expect.poll(() => identityReads).toBeGreaterThan(readsBeforeReopen);
   const admittedRow = reopened
     .locator(".af-start-identities-list li")
     .filter({ hasText: original.requestId });
