@@ -556,6 +556,51 @@ test.each([
       ),
     ).toHaveLength(3);
 
+    if (fixtureMode === "fork-restart-child-approval") {
+      status = "verified-child-resume";
+      const childEvents: CodexChatEvent[] = [];
+      const childResumed = await runtime.run(
+        {
+          prepared,
+          resume: {
+            provider: "codex",
+            threadId: crossProcessFork.threadId,
+            version,
+          },
+        },
+        async (event) => {
+          childEvents.push(event);
+        },
+        new AbortController().signal,
+        { requestApproval: async () => "decline" },
+      );
+      expect(childResumed).toMatchObject({
+        phase: "completed",
+        threadId: crossProcessFork.threadId,
+        exitCode: 0,
+      });
+      const childResumeRows = readCompiledFixtureRecords(log);
+      expect(
+        childResumeRows.filter(
+          (row) =>
+            row.kind === "rpc" &&
+            row.method === "thread/resume" &&
+            typeof row.params === "object" &&
+            row.params !== null &&
+            "threadId" in row.params &&
+            row.params.threadId === crossProcessFork.threadId,
+        ),
+      ).toHaveLength(1);
+      expect(
+        childResumeRows.filter(
+          (row) =>
+            row.kind === "approval-offer" &&
+            row.threadId === crossProcessFork.threadId,
+        ),
+      ).toHaveLength(1);
+      expect(childEvents.some((event) => event.kind === "turn")).toBe(true);
+    }
+
     status = "ordinary-native-resume";
     const ordinaryResumeEvents: CodexChatEvent[] = [];
     const ordinaryResumed = await runtime.run(
@@ -617,7 +662,9 @@ test.each([
     const resumeParams = resumeRows
       .filter((row) => row.kind === "rpc" && row.method === "thread/resume")
       .map((row) => row.params);
-    expect(resumeParams).toHaveLength(2);
+    expect(resumeParams).toHaveLength(
+      fixtureMode === "fork-restart-child-approval" ? 3 : 2,
+    );
     expect(resumeParams[0]).not.toHaveProperty("modelProvider");
     expect(resumeParams[0]).not.toHaveProperty("serviceTier");
     expect(resumeParams[1]).toMatchObject({
@@ -625,6 +672,10 @@ test.each([
       modelProvider: "openai",
       serviceTier: null,
     });
+    if (fixtureMode === "fork-restart-child-approval")
+      expect(resumeParams[2]).toMatchObject({
+        threadId: crossProcessFork.threadId,
+      });
     const facts = summarize();
     if (overfilledContinuityLog) {
       expect(facts).toMatchObject({
@@ -663,17 +714,17 @@ test.each([
           },
         ],
         kindCounts: {
-          version: 7,
-          help: 7,
-          process: 6,
-          rpc: 15,
-          notification: 6,
-          answer: 0,
+          version: fixtureMode === "fork-restart-child-approval" ? 8 : 7,
+          help: fixtureMode === "fork-restart-child-approval" ? 8 : 7,
+          process: fixtureMode === "fork-restart-child-approval" ? 7 : 6,
+          rpc: fixtureMode === "fork-restart-child-approval" ? 18 : 15,
+          notification: fixtureMode === "fork-restart-child-approval" ? 7 : 6,
+          answer: fixtureMode === "fork-restart-child-approval" ? 1 : 0,
         },
         argvCategories: {
-          versionProbe: 7,
-          helpProbe: 7,
-          appServerStdio: 6,
+          versionProbe: fixtureMode === "fork-restart-child-approval" ? 8 : 7,
+          helpProbe: fixtureMode === "fork-restart-child-approval" ? 8 : 7,
+          appServerStdio: fixtureMode === "fork-restart-child-approval" ? 7 : 6,
         },
       });
     }

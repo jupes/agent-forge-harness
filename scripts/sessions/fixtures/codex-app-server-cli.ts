@@ -278,7 +278,12 @@ const recordParentStart = (threadId: string, resuming: boolean) => {
     sandbox,
     completedTurnIds: previous?.completedTurnIds ?? [],
   };
-  return writeContinuityProof(path, proof, previous !== null);
+  return writeContinuityProof(
+    path,
+    proof,
+    previous !== null,
+    previous ?? undefined,
+  );
 };
 const recordCompletedParentTurn = (
   threadId: string,
