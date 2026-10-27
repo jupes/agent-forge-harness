@@ -213,7 +213,7 @@ async function fixture(
           ],
         }
       : {}),
-    timeoutMs: 8000,
+    timeoutMs: mode === "fork-child-lost-turn-reply" ? 2_000 : 8_000,
     approvalTimeoutMs: 6000,
   });
   writeOwnerOnly(
@@ -761,6 +761,126 @@ test("Fork children with on-request policy refuse before accepting a turn", asyn
     1,
   );
 });
+
+test("a lost Fork-child turn reply stays unknown after parent activity and never replays", async () => {
+  const f = await fixture("fork-child-lost-turn-reply", false, false, "never"),
+    start = await f.post("", f.request);
+  expect(start.status).toBe(202);
+  const started = ownedCodingStartReceiptSchema.parse(
+      (await start.json()).data,
+    ),
+    parentSessionId = started.session.id,
+    initialParent = await f.settle(parentSessionId),
+    parentNativeThreadId = initialParent.binding?.sessionId,
+    selectedTurn = initialParent.turns.find(
+      (turn) => turn.requestId === f.request.requestId,
+    );
+  if (!selectedTurn || !parentNativeThreadId)
+    throw Error("The completed Fork parent did not retain its source identity");
+
+  const forkRequest = {
+      requestId: randomUUID(),
+      throughTurnRequestId: selectedTurn.requestId,
+    },
+    forkResponse = await f.post(`/${parentSessionId}/forks`, forkRequest),
+    forkEnvelope = await forkResponse.json();
+  expect(forkResponse.status).toBe(200);
+  const childSessionId = forkEnvelope.data.childSessionId;
+  if (typeof childSessionId !== "string")
+    throw Error("The native Fork child was not linked");
+
+  const laterParentTurn = await f.post(`/${parentSessionId}/turns`, {
+    requestId: randomUUID(),
+    expectedRevision: initialParent.revision,
+    text: "A later parent turn must not replace the captured child prefix.",
+    about: [],
+  });
+  expect(laterParentTurn.status).toBe(202);
+  const parentAfterLaterTurn = await f.settle(parentSessionId);
+  expect(parentAfterLaterTurn.turns).toHaveLength(2);
+
+  const childInput = {
+    requestId: randomUUID(),
+    expectedRevision: 0,
+    text: "The child dispatch reply will be lost after native acceptance.",
+    about: [],
+  };
+  expect(
+    (await f.post(`/${childSessionId}/fork-turns`, childInput)).status,
+  ).toBe(202);
+  const childAfterLoss = await f.settle(childSessionId),
+    originalChildTurn = childAfterLoss.turns.find(
+      (turn) => turn.requestId === childInput.requestId,
+    );
+  expect(originalChildTurn?.phase).toBe("unknown");
+  const childEffectRows = () =>
+    f
+      .records()
+      .filter(
+        (row) =>
+          (row.method === "thread/resume" || row.method === "turn/start") &&
+          (row.params as Record<string, unknown> | undefined)?.threadId ===
+            "0199a213-81c0-7800-8aa1-bbab2a035a55",
+      );
+  expect(
+    f.records().filter((row) => row.kind === "child-turn-effect"),
+  ).toHaveLength(1);
+  expect(
+    childEffectRows().filter((row) => row.method === "thread/resume"),
+  ).toHaveLength(1);
+  expect(
+    childEffectRows().filter((row) => row.method === "turn/start"),
+  ).toHaveLength(1);
+  const childTurnRpc = childEffectRows().find(
+    (row) => row.method === "turn/start",
+  );
+  expect(childTurnRpc?.params).toMatchObject({
+    threadId: "0199a213-81c0-7800-8aa1-bbab2a035a55",
+  });
+  expect(JSON.stringify(childTurnRpc?.params)).toContain(childInput.text);
+  expect(JSON.stringify(childTurnRpc?.params)).not.toContain(
+    f.request.launch.prompt,
+  );
+
+  const duplicate = await f.post(`/${childSessionId}/fork-turns`, childInput),
+    duplicateEnvelope = await duplicate.json();
+  expect(duplicate.status).toBe(202);
+  expect(duplicateEnvelope.data.turn).toMatchObject({
+    requestId: childInput.requestId,
+    phase: "unknown",
+  });
+  const afterDuplicate = await f.page(childSessionId);
+  expect(afterDuplicate.turns).toHaveLength(1);
+  expect(afterDuplicate.turns[0]).toMatchObject({
+    requestId: childInput.requestId,
+    phase: "unknown",
+  });
+  const anotherTurn = await f.post(`/${childSessionId}/fork-turns`, {
+    requestId: randomUUID(),
+    expectedRevision: childAfterLoss.revision,
+    text: "A new identity cannot replace the unknown child outcome.",
+    about: [],
+  });
+  expect(anotherTurn.status).toBe(409);
+  expect(
+    childEffectRows().filter((row) => row.method === "thread/resume"),
+  ).toHaveLength(1);
+  expect(
+    childEffectRows().filter((row) => row.method === "turn/start"),
+  ).toHaveLength(1);
+  const parentTurnRows = f
+    .records()
+    .filter(
+      (row) =>
+        row.method === "turn/start" &&
+        (row.params as Record<string, unknown> | undefined)?.threadId ===
+          parentNativeThreadId,
+    );
+  expect(parentTurnRows).toHaveLength(2);
+  expect(
+    f.records().filter((row) => row.method === "thread/fork"),
+  ).toHaveLength(1);
+}, 20_000);
 
 test("preflight Fork reservation is durably discoverable without creating a native child", async () => {
   const f = await fixture("fork-service-tier-null"),

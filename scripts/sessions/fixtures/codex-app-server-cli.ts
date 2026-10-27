@@ -7,7 +7,12 @@ const mode = process.env.CODEX_CHAT_MODE;
 const serviceTierAwareMode =
     mode === "service-tier-null" ||
     mode === "fork-service-tier-null" ||
-    mode === "fork-service-tier-priority",
+    mode === "fork-service-tier-priority" ||
+    mode === "fork-child-lost-turn-reply",
+  forkServiceTierResumeMode =
+    mode === "fork-service-tier-null" ||
+    mode === "fork-service-tier-priority" ||
+    mode === "fork-child-lost-turn-reply",
   configuredServiceTier =
     mode === "fork-service-tier-priority" ? "priority" : null;
 if (argv.includes("--child"))
@@ -649,10 +654,10 @@ while (true) {
       )
         process.exit(13);
       if (
-        (mode === "fork-service-tier-null" ||
-          mode === "fork-service-tier-priority") &&
-        (!resuming ||
-          params.modelProvider !== "openai" ||
+        forkServiceTierResumeMode &&
+        resuming &&
+        params.threadId === "0199a213-81c0-7800-8aa1-bbab2a035a55" &&
+        (params.modelProvider !== "openai" ||
           !Object.hasOwn(params, "serviceTier") ||
           params.serviceTier !== configuredServiceTier)
       )
@@ -725,7 +730,10 @@ while (true) {
         method: "turn/started",
         params: { threadId, turn: { id: turnId, status: "inProgress" } },
       });
-      if (mode === "hang" || mode === "hang-text") {
+      if (mode === "fork-child-lost-turn-reply" && resuming) {
+        record({ kind: "child-turn-effect", threadId, turnId });
+        hangTree();
+      } else if (mode === "hang" || mode === "hang-text") {
         hangTree();
         if (mode === "hang-text")
           await send({
