@@ -33,12 +33,21 @@ type FixtureCall = {
 
 let forkOriginFailureFacts: (() => Record<string, unknown>) | null = null;
 
-test.afterEach(async (_fixtures, testInfo) => {
+test.afterEach(async ({ page }, testInfo) => {
   if (testInfo.errors.length === 0 || !forkOriginFailureFacts) return;
   try {
+    let currentOrigin: string | null = null;
+    try {
+      const currentUrl = page.url();
+      if (currentUrl !== "about:blank")
+        currentOrigin = new URL(currentUrl).origin;
+    } catch {
+      // Keep the last observed origin when the page is no longer readable.
+    }
     let facts: Record<string, unknown>;
     try {
       facts = forkOriginFailureFacts();
+      if (currentOrigin) facts.origin = currentOrigin;
     } catch {
       facts = { availability: "unavailable" };
     }
@@ -139,7 +148,12 @@ async function openNewSession(page: Page, url: string): Promise<SessionRow> {
     new URL(page.url()).hash !== sessionsUrl.hash
   )
     await page.goto(sessionsUrl.toString());
-  await page.getByRole("button", { name: "New session", exact: true }).click();
+  const newSessionButton = page.getByRole("button", {
+    name: "New session",
+    exact: true,
+  });
+  await expect(newSessionButton).toBeEnabled();
+  await newSessionButton.click();
   const dialog = page.getByRole("dialog", {
     name: "New session · Alpha",
     exact: true,
