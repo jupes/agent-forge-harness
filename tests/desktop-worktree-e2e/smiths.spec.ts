@@ -710,6 +710,12 @@ test("a NotSent create POST can only continue or retire its server-reserved orig
   );
   await dialog.getByRole("button", { name: "Create Smith" }).click();
   expect((await notSent).status()).toBe(403);
+  const original = smithConfigCreateRequestSchema.safeParse(
+    savedOriginal.value,
+  );
+  if (!original.success)
+    throw Error("The reserved original request was not observed.");
+  const exactRequest = original.data;
   await expect(
     page.getByRole("region", { name: "Original Smith create receipts" }),
   ).toContainText("server reservation remains held");
@@ -730,9 +736,8 @@ test("a NotSent create POST can only continue or retire its server-reserved orig
     originalRead = page.waitForResponse(
       (response) =>
         response.request().method() === "GET" &&
-        new URL(response.url()).pathname.startsWith(
-          "/__agent-forge/smiths/creates/",
-        ),
+        new URL(response.url()).pathname ===
+          `/__agent-forge/smiths/creates/${exactRequest.requestId}`,
     );
   await reloadSettled(page);
   const index = await (await indexRead).json();
@@ -742,8 +747,6 @@ test("a NotSent create POST can only continue or retire its server-reserved orig
   const originalResponse = await originalRead;
   expect(originalResponse.status()).toBe(200);
   const originalEnvelope = await originalResponse.json();
-  const exactRequest = savedOriginal.value;
-  if (!exactRequest) throw Error("The create request was not observed.");
   const originalId = exactRequest.requestId;
   if (
     typeof originalId !== "string" ||
