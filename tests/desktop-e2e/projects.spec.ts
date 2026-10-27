@@ -509,12 +509,12 @@ test("a lost commit reply reloads the same created original without replay", asy
         const sameOrigin =
           url.origin === new URL(page.url()).origin &&
           (!originalOrigin || originalOrigin === url.origin) &&
-          (!originalFetchSite || originalFetchSite === "same-origin");
+          (!originalFetchSite || originalFetchSite === "same-origin") &&
+          (originalOrigin === url.origin ||
+            originalFetchSite === "same-origin");
         if (!sameOrigin)
           throw Error("The recovery read did not match the current origin.");
-        // Preserve the browser's actual request headers. The GET itself must
-        // carry the trusted same-origin boundary; capture must not add it.
-        fetchedResponse = await route.fetch();
+        fetchedResponse = await route.fetch({ headers: originalHeaders });
         let body: unknown;
         try {
           body = await fetchedResponse.json();
