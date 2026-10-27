@@ -41,6 +41,9 @@ interface ForkClient {
     source: CodexChatForkSourcePage;
   }): Promise<CodexChatForkIdentityMetadata>;
   dispatchReservedFork(projectId: string, requestId: string): Promise<unknown>;
+  canDispatchReservedFork(requestId: string): boolean;
+  canRetireFork(requestId: string): boolean;
+  retireFork(projectId: string, requestId: string): Promise<unknown>;
   recoverOriginal(
     projectId: string,
     requestId: string,
@@ -188,8 +191,8 @@ test("Fork source review reads every page for the explicit turn and never posts"
       "PRIVATE original prompt",
     );
     expect(calls).toEqual([
-      `/projects/${projectId}/sessions/${parentSessionId}/fork-review?throughTurnRequestId=${throughTurnRequestId}&after=0&limit=50`,
-      `/projects/${projectId}/sessions/${parentSessionId}/fork-review?throughTurnRequestId=${throughTurnRequestId}&after=1&limit=50`,
+      `/__agent-forge/projects/${projectId}/sessions/${parentSessionId}/fork-review?throughTurnRequestId=${throughTurnRequestId}&after=0&limit=50`,
+      `/__agent-forge/projects/${projectId}/sessions/${parentSessionId}/fork-review?throughTurnRequestId=${throughTurnRequestId}&after=1&limit=50`,
     ]);
     expect(reads).toBe(2);
     expect(posts).toBe(0);
@@ -314,11 +317,11 @@ test("lost Fork reply reloads the same reserved UUID and hash, keeps a missing o
     expect(calls.slice(beforeRecovery)).toEqual([
       {
         method: "GET",
-        path: `/projects/${projectId}/session-operation-identities`,
+        path: `/__agent-forge/projects/${projectId}/session-operation-identities`,
       },
       {
         method: "GET",
-        path: `/projects/${projectId}/codex-chat-forks/${requestId}`,
+        path: `/__agent-forge/projects/${projectId}/codex-chat-forks/${requestId}`,
       },
     ]);
     expect(calls.filter((call) => call.method === "POST")).toEqual([
@@ -487,4 +490,225 @@ test("disposing a Fork client prevents a delayed source page from becoming actio
   );
   await expect(review).rejects.toThrow("cancelled");
   expect(posts).toBe(0);
+});
+
+test("an undispatched reservation remains safely retireable after reload", async () => {
+  const reserved: CodexChatForkIdentityMetadata = {
+    family: "codex-chat-fork",
+    requestId,
+    requestHash,
+    parentSessionId,
+    throughTurnRequestId,
+    state: "reserved",
+  };
+  let posts = 0;
+  const module = await loadForkClient(),
+    make = () =>
+      module.createCodexChatForkClient({
+        currentScope: scope,
+        canWrite: () => true,
+        requestId: () => requestId,
+        read: (async (path) => {
+          if (path.endsWith("/session-operation-identities"))
+            return envelope({
+              version: 1,
+              scope: { projectId, workspace },
+              operations: [reserved],
+            });
+          if (path.endsWith(`/codex-chat-forks/${requestId}`))
+            return envelope(reserved);
+          if (path.endsWith(`/codex-chat-forks/${requestId}/context`))
+            return envelope({
+              version: 1,
+              available: true,
+              requestId,
+              requestHash,
+              parentSessionId,
+              throughTurnRequestId,
+              state: "reserved",
+              reason: null,
+              source: sourcePage({
+                frames: [
+                  {
+                    kind: "user",
+                    seq: 1,
+                    turnId: throughTurnRequestId,
+                    at: "2026-10-23T03:00:00.000Z",
+                    text: "PRIVATE original prompt",
+                    about: [],
+                  },
+                ],
+                complete: true,
+                nextCursor: null,
+              }),
+            });
+          throw new Error(`Unexpected GET ${path}`);
+        }) satisfies OperatorRead,
+        post: (async () => {
+          posts++;
+          return envelope({ ...reserved, state: "retired" });
+        }) satisfies OperatorPost,
+      });
+  const first = make();
+  try {
+    const reviewed = await first.reviewSource({
+      projectId,
+      parentSessionId,
+      throughTurnRequestId,
+    });
+    await first.reserveFork({
+      projectId,
+      parentSessionId,
+      throughTurnRequestId,
+      source: reviewed,
+    });
+  } finally {
+    first.dispose();
+  }
+
+  const recovered = make();
+  try {
+    const result = await recovered.recoverOriginal(projectId, requestId);
+    expect(result).toMatchObject({ state: "verified", original: reserved });
+    expect(recovered.canRetireFork(requestId)).toBe(true);
+    expect(await recovered.retireFork(projectId, requestId)).toMatchObject({
+      state: "retired",
+    });
+    expect(posts).toBe(2); // One reservation and one exact safe retirement.
+  } finally {
+    recovered.dispose();
+  }
+});
+
+test("source review accepts 51 ordered frames across bounded pages", async () => {
+  const frames: CodexChatForkSourcePage["frames"] = Array.from(
+    { length: 51 },
+    (_, index) =>
+      index === 0
+        ? {
+            kind: "user" as const,
+            seq: 1,
+            turnId: throughTurnRequestId,
+            at: "2026-10-23T03:00:00.000Z",
+            text: "PRIVATE original prompt",
+            about: [],
+          }
+        : {
+            kind: "text" as const,
+            seq: index + 1,
+            turnId: throughTurnRequestId,
+            at: `2026-10-23T03:00:${String(index + 1).padStart(2, "0")}.000Z`,
+            text: `saved frame ${index + 1}`,
+          },
+  );
+  const pages = [
+    sourcePage({
+      frames: frames.slice(0, 50),
+      complete: false,
+      nextCursor: 50,
+    }),
+    sourcePage({ frames: frames.slice(50), complete: true, nextCursor: null }),
+  ];
+  let posts = 0,
+    reads = 0;
+  const module = await loadForkClient(),
+    client = module.createCodexChatForkClient({
+      currentScope: scope,
+      canWrite: () => true,
+      requestId: () => requestId,
+      read: (async () => {
+        reads++;
+        return envelope(pages.shift());
+      }) satisfies OperatorRead,
+      post: (async () => {
+        posts++;
+        throw new Error("Source review must remain GET-only.");
+      }) satisfies OperatorPost,
+    });
+  try {
+    const reviewed = await client.reviewSource({
+      projectId,
+      parentSessionId,
+      throughTurnRequestId,
+    });
+    expect(reviewed.frames.map((frame) => frame.seq)).toEqual(
+      Array.from({ length: 51 }, (_, index) => index + 1),
+    );
+    expect(reviewed.settings.serviceTier).toEqual({
+      present: true,
+      value: null,
+    });
+    expect(reads).toBe(2);
+    expect(posts).toBe(0);
+  } finally {
+    client.dispose();
+  }
+});
+
+test("a valid-shaped context for a different source stays held and cannot dispatch", async () => {
+  const reserved: CodexChatForkIdentityMetadata = {
+    family: "codex-chat-fork",
+    requestId,
+    requestHash,
+    parentSessionId,
+    throughTurnRequestId,
+    state: "reserved",
+  };
+  let posts = 0;
+  const module = await loadForkClient(),
+    client = module.createCodexChatForkClient({
+      currentScope: scope,
+      canWrite: () => true,
+      requestId: () => requestId,
+      read: (async (path) => {
+        if (path.endsWith("/session-operation-identities"))
+          return envelope({
+            version: 1,
+            scope: { projectId, workspace },
+            operations: [reserved],
+          });
+        if (path.endsWith(`/codex-chat-forks/${requestId}`))
+          return envelope(reserved);
+        if (path.endsWith(`/codex-chat-forks/${requestId}/context`))
+          return envelope({
+            version: 1,
+            available: true,
+            requestId,
+            requestHash: "b".repeat(64),
+            parentSessionId,
+            throughTurnRequestId,
+            state: "reserved",
+            reason: null,
+            source: sourcePage({
+              frames: [
+                {
+                  kind: "user",
+                  seq: 1,
+                  turnId: throughTurnRequestId,
+                  at: "2026-10-23T03:00:00.000Z",
+                  text: "PRIVATE original prompt",
+                  about: [],
+                },
+              ],
+              complete: true,
+              nextCursor: null,
+            }),
+          });
+        throw new Error(`Unexpected GET ${path}`);
+      }) satisfies OperatorRead,
+      post: (async () => {
+        posts++;
+        throw new Error("Mismatched source context cannot write.");
+      }) satisfies OperatorPost,
+    });
+  try {
+    const recovered = await client.recoverOriginal(projectId, requestId);
+    expect(recovered.state).toBe("held");
+    expect(recovered.original).toEqual(reserved);
+    expect(recovered.context?.requestHash).toBe("b".repeat(64));
+    expect(client.canDispatchReservedFork(requestId)).toBe(false);
+    expect(posts).toBe(0);
+  } finally {
+    client.dispose();
+  }
 });
