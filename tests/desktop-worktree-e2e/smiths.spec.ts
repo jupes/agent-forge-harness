@@ -981,6 +981,7 @@ const unavailableCreateHeldTest = async ({ page }: { page: Page }) => {
   const posts: string[] = [],
     originalReads: { requestId: string; status: number }[] = [],
     requestId = { value: null as string | null },
+    inputHash = { value: null as string | null },
     name = `browser-uncertain-${randomUUID().replaceAll("-", "").slice(0, 12)}`;
   page.on("request", (request) => {
     const path = new URL(request.url()).pathname;
@@ -993,7 +994,12 @@ const unavailableCreateHeldTest = async ({ page }: { page: Page }) => {
       const parsed = smithConfigCreateRequestSchema.safeParse(
         request.postDataJSON(),
       );
-      if (parsed.success) requestId.value = parsed.data.requestId;
+      if (parsed.success) {
+        requestId.value = parsed.data.requestId;
+        inputHash.value = createHash("sha256")
+          .update(canonicalSmithConfigCreateRequest(parsed.data))
+          .digest("hex");
+      }
     }
   });
   page.on("response", (response) => {
@@ -1034,7 +1040,10 @@ const unavailableCreateHeldTest = async ({ page }: { page: Page }) => {
   );
   await page.route("**/__agent-forge/smiths/creates/*", (route) => {
     const path = new URL(route.request().url()).pathname;
-    if (!requestId.value || path !== `/__agent-forge/smiths/creates/${requestId.value}`)
+    if (
+      !requestId.value ||
+      path !== `/__agent-forge/smiths/creates/${requestId.value}`
+    )
       return route.continue();
     return route.fulfill({
       status: 404,
@@ -1050,12 +1059,16 @@ const unavailableCreateHeldTest = async ({ page }: { page: Page }) => {
   );
   await dialog.getByRole("button", { name: "Create Smith" }).click();
   expect((await unavailable).status()).toBe(503);
-  if (!requestId.value)
-    throw Error("The reserved request ID was not observed.");
+  if (!requestId.value || !inputHash.value)
+    throw Error("The reserved request identity was not observed.");
   const receipts = page.getByRole("region", {
       name: "Original Smith create receipts",
     }),
-    uncertainCard = receipts.locator("article").filter({ hasText: name });
+    uncertainCard = receipts
+      .locator("article")
+      .filter({ hasText: requestId.value });
+  await expect(uncertainCard).toContainText(requestId.value);
+  await expect(uncertainCard).toContainText(inputHash.value);
   await expect(uncertainCard).toContainText("Reserved original — not started");
   await expect(uncertainCard).toContainText("UUID remains held");
   await page.unroute("**/config/smiths/creates");
@@ -1063,9 +1076,8 @@ const unavailableCreateHeldTest = async ({ page }: { page: Page }) => {
   const missingOriginal = page.waitForResponse(
     (response) =>
       response.request().method() === "GET" &&
-      new URL(response.url()).pathname.startsWith(
-        "/__agent-forge/smiths/creates/",
-      ),
+      new URL(response.url()).pathname ===
+        `/__agent-forge/smiths/creates/${requestId.value}`,
   );
   await reloadSettled(page);
   expect((await missingOriginal).status()).toBe(404);
