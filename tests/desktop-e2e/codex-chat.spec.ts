@@ -4047,6 +4047,99 @@ test("an undispatched Fork original can be explicitly retired after reload", asy
   expect(
     calls().filter((row) => row.kind === "rpc" && row.method === "thread/fork"),
   ).toHaveLength(nativeForksBefore);
+
+  const retiredHash = (
+    forkPosts[1]?.body as { requestHash?: unknown } | undefined
+  )?.requestHash;
+  expect(retiredHash).toMatch(/^[a-f0-9]{64}$/);
+  const identityToken = await pageToken(page);
+  const readOperationPage = async () => {
+    const raw: unknown = await page.evaluate(
+      async ({ project, token, header }) => {
+        const response = await fetch(
+          `/__agent-forge/projects/${project}/session-operation-identities`,
+          { headers: { [header]: token } },
+        );
+        return response.json();
+      },
+      {
+        project: record.projectId,
+        token: identityToken,
+        header: OPERATOR_HEADER,
+      },
+    );
+    const envelope = z
+      .object({ ok: z.literal(true), data: z.unknown(), error: z.null() })
+      .strict()
+      .parse(raw);
+    return sessionOperationIdentityPageSchema.parse(envelope.data);
+  };
+  const retiredPage = await readOperationPage();
+  const retired = retiredPage.operations.find(
+    (row) =>
+      row.family === "codex-chat-fork" && row.requestId === identity.requestId,
+  );
+  expect(retired).toMatchObject({
+    requestId: identity.requestId,
+    requestHash: retiredHash,
+    parentSessionId: record.id,
+    throughTurnRequestId: turn.requestId,
+    state: "retired",
+  });
+
+  await recovered
+    .getByRole("button", { name: "Close dialog", exact: true })
+    .click();
+  await opener().click();
+  const reopened = dialog();
+  await expect(reopened).toContainText(identity.requestId);
+  expect(forkPosts).toHaveLength(2);
+  expect(
+    calls().filter((row) => row.kind === "rpc" && row.method === "thread/fork"),
+  ).toHaveLength(nativeForksBefore);
+  await reopened
+    .getByRole("button", { name: "Reserve this exact Fork", exact: true })
+    .click();
+  await expect(
+    reopened.getByRole("button", {
+      name: "Create the native child thread once",
+      exact: true,
+    }),
+  ).toBeEnabled();
+  expect(forkPosts).toHaveLength(3);
+  const replacement = forkPosts[2]?.body as
+    | { requestId?: unknown; throughTurnRequestId?: unknown }
+    | undefined;
+  expect(replacement).toMatchObject({
+    throughTurnRequestId: turn.requestId,
+  });
+  expect(replacement?.requestId).toMatch(/^[0-9a-f-]{36}$/);
+  expect(replacement?.requestId).not.toBe(identity.requestId);
+  expect(
+    calls().filter((row) => row.kind === "rpc" && row.method === "thread/fork"),
+  ).toHaveLength(nativeForksBefore);
+  const replacementPage = await readOperationPage();
+  const oldTombstone = replacementPage.operations.find(
+    (row) =>
+      row.family === "codex-chat-fork" && row.requestId === identity.requestId,
+  );
+  const newReservation = replacementPage.operations.find(
+    (row) =>
+      row.family === "codex-chat-fork" &&
+      row.requestId === replacement?.requestId,
+  );
+  expect(oldTombstone).toMatchObject({
+    requestId: identity.requestId,
+    requestHash: retiredHash,
+    state: "retired",
+  });
+  expect(newReservation).toMatchObject({
+    requestId: replacement?.requestId,
+    parentSessionId: record.id,
+    throughTurnRequestId: turn.requestId,
+    state: "reserved",
+  });
+  expect(newReservation?.requestHash).not.toBe(retiredHash);
   page.off("request", captureForkPost);
 });
 
