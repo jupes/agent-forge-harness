@@ -68,7 +68,7 @@ function summarizeCompiledFixtureLog(path: string, status: string) {
     status,
     kindCounts: null,
     argvCategories: null,
-    forkRestartDiagnostic: null,
+    forkRestartDiagnostics: null,
   };
   try {
     const size = statSync(path).size;
@@ -93,7 +93,7 @@ function summarizeCompiledFixtureLog(path: string, status: string) {
         appServerStdio: 0,
         other: 0,
       };
-    let forkRestartDiagnostic: {
+    const forkRestartDiagnostics: {
       stage:
         | "fixture-log-unavailable"
         | "parent-not-found"
@@ -114,7 +114,7 @@ function summarizeCompiledFixtureLog(path: string, status: string) {
         | "sandbox",
         boolean
       > | null;
-    } | null = null;
+    }[] = [];
     for (const line of lines) {
       let raw: unknown;
       try {
@@ -125,7 +125,10 @@ function summarizeCompiledFixtureLog(path: string, status: string) {
       if (typeof raw !== "object" || raw === null || Array.isArray(raw))
         return { ...unavailable, state: "invalid" as const };
       const row = raw as Record<string, unknown>;
-      if (row.kind === "fork-restart-diagnostic" && !forkRestartDiagnostic) {
+      if (
+        row.kind === "fork-restart-diagnostic" &&
+        forkRestartDiagnostics.length < 3
+      ) {
         const stages = [
           "fixture-log-unavailable",
           "parent-not-found",
@@ -160,7 +163,7 @@ function summarizeCompiledFixtureLog(path: string, status: string) {
             (matchRecord !== null &&
               matchKeys.every((key) => typeof matchRecord[key] === "boolean")))
         ) {
-          forkRestartDiagnostic = {
+          forkRestartDiagnostics.push({
             stage: row.stage as (typeof stages)[number],
             parentFound: row.parentFound,
             turnFound: row.turnFound,
@@ -178,7 +181,7 @@ function summarizeCompiledFixtureLog(path: string, status: string) {
                     approvalPolicy: matchRecord?.approvalPolicy === true,
                     sandbox: matchRecord?.sandbox === true,
                   },
-          };
+          });
         }
       }
       if (COMPILED_FIXTURE_KINDS.includes(row.kind as CompiledFixtureKind))
@@ -202,7 +205,7 @@ function summarizeCompiledFixtureLog(path: string, status: string) {
       status,
       kindCounts,
       argvCategories,
-      forkRestartDiagnostic,
+      forkRestartDiagnostics,
     };
   } catch {
     return unavailable;
@@ -482,6 +485,7 @@ test("the compiled desktop Codex stand-in completes prepare and dispatch in fork
       },
     });
     expect(crossProcessFork.threadId).not.toBe(outcome.threadId);
+    status = "reject-unknown-parent";
     await expect(
       runtime.fork({
         ...forkInput,
@@ -491,12 +495,14 @@ test("the compiled desktop Codex stand-in completes prepare and dispatch in fork
         },
       }),
     ).rejects.toThrow();
+    status = "reject-unknown-turn";
     await expect(
       runtime.fork({
         ...forkInput,
         lastTurnId: "0199a213-81c0-7800-8aa1-bbab2a035a57",
       }),
     ).rejects.toThrow();
+    status = "verify-fork-result-count";
     const forkRecords = readCompiledFixtureRecords(log);
     expect(
       forkRecords.filter((row) => row.kind === "fork-result"),
@@ -576,21 +582,34 @@ test("the compiled desktop Codex stand-in completes prepare and dispatch in fork
     const facts = summarize();
     expect(facts).toMatchObject({
       state: "available",
-      forkRestartDiagnostic: {
-        stage: "source-accepted",
-        parentFound: true,
-        turnFound: true,
-        settingsMatches: {
-          model: true,
-          modelProvider: true,
-          serviceTierPresent: true,
-          serviceTier: true,
-          reasoningEffort: true,
-          workspace: true,
-          approvalPolicy: true,
-          sandbox: true,
+      forkRestartDiagnostics: [
+        {
+          stage: "source-accepted",
+          parentFound: true,
+          turnFound: true,
+          settingsMatches: {
+            model: true,
+            modelProvider: true,
+            serviceTierPresent: true,
+            serviceTier: true,
+            reasoningEffort: true,
+            workspace: true,
+            approvalPolicy: true,
+            sandbox: true,
+          },
         },
-      },
+        {
+          stage: "parent-not-found",
+          parentFound: false,
+          turnFound: false,
+          settingsMatches: null,
+        },
+        {
+          stage: "turn-not-found",
+          parentFound: true,
+          turnFound: false,
+        },
+      ],
       kindCounts: {
         version: 7,
         help: 7,

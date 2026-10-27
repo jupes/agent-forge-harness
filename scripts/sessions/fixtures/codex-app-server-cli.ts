@@ -651,9 +651,7 @@ while (true) {
         !forkParams ||
         typeof forkParams["threadId"] !== "string" ||
         typeof forkParams["lastTurnId"] !== "string" ||
-        (mode === "fork-restart"
-          ? !forkParent
-          : forkParams["threadId"] !== threadId)
+        (mode !== "fork-restart" && forkParams["threadId"] !== threadId)
       )
         process.exit(14);
       const fork = forkParams;
@@ -699,6 +697,13 @@ while (true) {
           turnFound: forkSourceCheck.turnFound,
           settingsMatches,
         });
+      if (
+        mode === "fork-restart" &&
+        (forkSourceCheck?.stage !== "source-found" ||
+          !forkSourceCheck.parentFound ||
+          !forkSourceCheck.turnFound)
+      )
+        process.exit(14);
       if (forkParent && !settingsMatch) process.exit(14);
       if (forkParent) threadId = fork["threadId"] as string;
       if (mode === "fork-lost-response-eof") {
