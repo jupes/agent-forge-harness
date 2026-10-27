@@ -12,12 +12,17 @@ import {
   type Frame,
   type Locator,
   type Page,
+  type Response as PlaywrightResponse,
   type Request,
   test,
 } from "@playwright/test";
 import { z } from "zod";
+import { SMITH_CREATE_IDENTITIES } from "../../apps/desktop/src/smith-create-identities";
 import { smithRoutingEditInputHash } from "../../apps/desktop/src/smith-routing-edit-identities";
-import { canonicalSmithConfigCreateRequest } from "../../scripts/config/smith-create-protocol";
+import {
+  canonicalSmithConfigCreateRequest,
+  smithConfigCreateRequestSchema,
+} from "../../scripts/config/smith-create-protocol";
 import { smithEditInputHash } from "../../scripts/config/smith-edit-journal-protocol";
 import { canonicalSmithConfigEditRequest } from "../../scripts/config/smith-edit-protocol";
 import {
@@ -111,17 +116,79 @@ async function openSmithEdit(page: Page, name = fixtureSmith) {
   await expect(dialog).toBeVisible();
   return { opener, dialog };
 }
-async function reloadAndReadDocumentJson(page: Page, pathname: string) {
+async function reloadAndReadDocumentJsons(
+  page: Page,
+  pathnames: readonly string[],
+  options: {
+    unavailableBodyFor?: string;
+    onUnavailableBody?: () => void;
+  } = {},
+) {
+  if (pathnames.length === 0 || new Set(pathnames).size !== pathnames.length)
+    throw new Error("Reload capture paths must be nonempty and unique.");
   let documentGeneration = 0,
     reloadGeneration: number | null = null,
     replacing = false;
   const requestGenerations = new WeakMap<Request, number>();
+  const captureKey = `__agentForgeReloadedOriginalResponse_${randomUUID()}`;
+  let unavailableBodyInjected = false;
+  await page.addInitScript(
+    ({ key, expectedPaths }) => {
+      Reflect.set(window, key, {});
+      const originalFetch = window.fetch.bind(window);
+      const captureFetch = async (
+        input: RequestInfo | URL,
+        init?: RequestInit,
+      ): Promise<Response> => {
+        const inputUrl =
+          input instanceof Request
+            ? input.url
+            : input instanceof URL
+              ? input.href
+              : String(input);
+        const method = (
+          init?.method ?? (input instanceof Request ? input.method : "GET")
+        ).toUpperCase();
+        const response = await originalFetch(input, init);
+        const url = new URL(inputUrl, window.location.href);
+        if (
+          method === "GET" &&
+          url.origin === window.location.origin &&
+          expectedPaths.includes(url.pathname)
+        ) {
+          const captured = Reflect.get(window, key) as Record<string, unknown>;
+          if (!Object.hasOwn(captured, url.pathname)) {
+            try {
+              const body = await response.clone().text();
+              captured[url.pathname] = {
+                method,
+                pathname: url.pathname,
+                status: response.status,
+                body,
+              };
+            } catch {
+              // Keep the real fetch response untouched if clone inspection fails.
+              captured[url.pathname] = {
+                method,
+                pathname: url.pathname,
+                status: response.status,
+                body: null,
+              };
+            }
+          }
+        }
+        return response;
+      };
+      Reflect.set(window, "fetch", captureFetch);
+    },
+    { key: captureKey, expectedPaths: pathnames },
+  );
   const onRequest = (request: Request) => {
     if (request.isNavigationRequest() && request.frame() === page.mainFrame())
       replacing = true;
     if (
       request.method() === "GET" &&
-      new URL(request.url()).pathname === pathname
+      pathnames.includes(new URL(request.url()).pathname)
     )
       requestGenerations.set(request, documentGeneration);
   };
@@ -131,29 +198,96 @@ async function reloadAndReadDocumentJson(page: Page, pathname: string) {
       reloadGeneration = ++documentGeneration;
     }
   };
+  const onResponse = (response: PlaywrightResponse) => {
+    if (
+      options.unavailableBodyFor === undefined ||
+      response.request().method() !== "GET" ||
+      new URL(response.url()).pathname !== options.unavailableBodyFor ||
+      reloadGeneration === null ||
+      requestGenerations.get(response.request()) !== reloadGeneration ||
+      unavailableBodyInjected
+    )
+      return;
+    unavailableBodyInjected = true;
+    options.onUnavailableBody?.();
+    // Reproduce Chromium losing the CDP response resource after navigation.
+    // The network request and server response remain real and untouched.
+    Object.defineProperty(response, "json", {
+      configurable: true,
+      value: async () => {
+        throw new Error(
+          "Protocol error (Network.getResponseBody): No data found for resource with given identifier",
+        );
+      },
+    });
+  };
   page.on("request", onRequest);
   page.on("framenavigated", onFrameNavigated);
-  const originalRead = page
-    .waitForResponse(
-      (response) =>
-        response.request().method() === "GET" &&
-        new URL(response.url()).pathname === pathname &&
-        reloadGeneration !== null &&
-        requestGenerations.get(response.request()) === reloadGeneration,
-    )
-    .then(async (response) => ({
-      status: response.status(),
-      // Chromium can discard the old document's body during reload. Consume
-      // JSON as soon as the matching new-document response arrives.
-      body: await response.json(),
-    }));
+  page.on("response", onResponse);
   try {
     await reloadSettled(page);
-    return await originalRead;
+    await page.waitForFunction(
+      ({ key, expectedPaths }) => {
+        const captured = Reflect.get(window, key);
+        return (
+          typeof captured === "object" &&
+          captured !== null &&
+          expectedPaths.every((path) => Object.hasOwn(captured, path))
+        );
+      },
+      { key: captureKey, expectedPaths: pathnames },
+    );
+    const captured = z
+      .record(
+        z.string(),
+        z
+          .object({
+            method: z.literal("GET"),
+            pathname: z.string(),
+            status: z.number().int(),
+            body: z.string().max(65_536),
+          })
+          .strict(),
+      )
+      .parse(
+        await page.evaluate((key) => Reflect.get(window, key), captureKey),
+      );
+    const results = new Map<string, { status: number; body: unknown }>();
+    for (const pathname of pathnames) {
+      const response = captured[pathname];
+      if (!response || response.pathname !== pathname)
+        throw new Error(
+          "Captured original response did not match its exact path.",
+        );
+      let body: unknown;
+      try {
+        body = JSON.parse(response.body);
+      } catch {
+        throw new Error("Captured original response was not valid JSON.");
+      }
+      results.set(pathname, { status: response.status, body });
+    }
+    return results;
   } finally {
     page.off("request", onRequest);
     page.off("framenavigated", onFrameNavigated);
+    page.off("response", onResponse);
   }
+}
+
+async function reloadAndReadDocumentJson(
+  page: Page,
+  pathname: string,
+  options: {
+    unavailableBodyFor?: string;
+    onUnavailableBody?: () => void;
+  } = {},
+) {
+  const responses = await reloadAndReadDocumentJsons(page, [pathname], options);
+  const response = responses.get(pathname);
+  if (!response)
+    throw new Error("The requested original response was not captured.");
+  return response;
 }
 async function reviewSmithEdit(dialog: Locator) {
   await dialog
@@ -350,6 +484,9 @@ test("creates a reviewed Smith in the temporary workspace config and recovers it
 }) => {
   const starts = providerStarts(),
     posts: string[] = [],
+    createdOriginal: { value: Record<string, unknown> | null } = {
+      value: null,
+    },
     createdName = `browser-create-${randomUUID().replaceAll("-", "").slice(0, 12)}`;
   page.on("request", (request) => {
     if (
@@ -357,6 +494,11 @@ test("creates a reviewed Smith in the temporary workspace config and recovers it
       request.url().includes("/__agent-forge/")
     )
       posts.push(new URL(request.url()).pathname);
+    if (
+      request.method() === "POST" &&
+      new URL(request.url()).pathname === "/__agent-forge/config/smiths/creates"
+    )
+      createdOriginal.value = request.postDataJSON() as Record<string, unknown>;
   });
   const fixtureRoot = checkedFixtureRoot();
   checkedOsHome();
@@ -436,48 +578,95 @@ test("creates a reviewed Smith in the temporary workspace config and recovers it
   ).toBe(true);
   expect(posts).toEqual([
     "/__agent-forge/config/smiths/preview",
+    "/__agent-forge/config/smiths/creates/reserve",
     "/__agent-forge/config/smiths/creates",
   ]);
 
-  const originalRead = page.waitForResponse(
-    (response) =>
-      response.request().method() === "GET" &&
-      new URL(response.url()).pathname.startsWith(
-        "/__agent-forge/smiths/creates/",
-      ),
+  await page.evaluate(
+    (key) => localStorage.removeItem(key),
+    SMITH_CREATE_IDENTITIES,
   );
-  await reloadSettled(page);
-  expect((await originalRead).status()).toBe(200);
+  const exactRequest = createdOriginal.value;
+  if (!exactRequest) throw Error("The create request was not observed.");
+  const indexPath = "/__agent-forge/smiths/creates";
+  const originalPath = `${indexPath}/${exactRequest.requestId}`;
+  const recoveredDocuments = await reloadAndReadDocumentJsons(page, [
+    indexPath,
+    originalPath,
+  ]);
+  const indexEnvelope = recoveredDocuments.get(indexPath)?.body as {
+    data: { entries: unknown[] };
+  };
+  const recovered = recoveredDocuments.get(originalPath);
+  expect(recoveredDocuments.get(indexPath)?.status).toBe(200);
+  expect(recovered?.status).toBe(200);
+  expect(indexEnvelope.data.entries).toContainEqual({
+    requestId: exactRequest.requestId,
+    ownerScopeHash: expect.any(String),
+    inputHash: createHash("sha256")
+      .update(canonicalSmithConfigCreateRequest(exactRequest))
+      .digest("hex"),
+    target: "workspace",
+    state: "confirmed",
+    stage: "terminal",
+    createdAt: expect.any(String),
+  });
+  const originalEnvelope = recovered?.body as {
+    data: { original: unknown; inputHash: string };
+  };
+  expect(originalEnvelope.data.original).toEqual(exactRequest);
+  expect(originalEnvelope.data.inputHash).toBe(
+    createHash("sha256")
+      .update(canonicalSmithConfigCreateRequest(exactRequest))
+      .digest("hex"),
+  );
   await expect(
     page.getByRole("region", { name: "Original Smith create receipts" }),
   ).toContainText(createdName);
   expect(posts).toEqual([
     "/__agent-forge/config/smiths/preview",
+    "/__agent-forge/config/smiths/creates/reserve",
     "/__agent-forge/config/smiths/creates",
   ]);
+  expect(
+    await page.evaluate(
+      (key) => localStorage.getItem(key),
+      SMITH_CREATE_IDENTITIES,
+    ),
+  ).toBeNull();
   expect(providerStarts()).toEqual(starts);
 });
 
-test("a source-proven NotSent retires across reload, while a lost response stays held on 404", async ({
+test("a source-proven reservation NotSent leaves the server clear across reload", async ({
   page,
 }) => {
   const starts = providerStarts(),
     posts: string[] = [],
-    originalReads: number[] = [],
+    originalReads: { requestId: string; status: number }[] = [],
+    reservedRequestId = { value: null as string | null },
     notSentName = `browser-not-sent-${randomUUID().replaceAll("-", "").slice(0, 12)}`;
   page.on("request", (request) => {
     const path = new URL(request.url()).pathname;
     if (request.method() === "POST" && path.startsWith("/__agent-forge/"))
       posts.push(path);
+    if (
+      request.method() === "POST" &&
+      path === "/__agent-forge/config/smiths/creates/reserve"
+    ) {
+      const parsed = smithConfigCreateRequestSchema.safeParse(
+        request.postDataJSON(),
+      );
+      if (parsed.success) reservedRequestId.value = parsed.data.requestId;
+    }
   });
   page.on("response", (response) => {
-    if (
-      response.request().method() === "GET" &&
-      new URL(response.url()).pathname.startsWith(
-        "/__agent-forge/smiths/creates/",
-      )
-    )
-      originalReads.push(response.status());
+    const path = new URL(response.url()).pathname,
+      prefix = "/__agent-forge/smiths/creates/";
+    if (response.request().method() === "GET" && path.startsWith(prefix))
+      originalReads.push({
+        requestId: path.slice(prefix.length),
+        status: response.status(),
+      });
   });
   checkedOsHome();
   if (!isRunHome(HEARTH_HOME) || !checkedFixtureRoot())
@@ -497,14 +686,14 @@ test("a source-proven NotSent retires across reload, while a lost response stays
     dialog.getByRole("region", { name: "Candidate review" }),
   ).toBeVisible();
 
-  await page.route("**/config/smiths/creates", (route) =>
+  await page.route("**/config/smiths/creates/reserve", (route) =>
     route.fulfill({
       status: 403,
       contentType: "application/json",
       body: JSON.stringify({
         ok: false,
         data: null,
-        error: "Operator access refused before any effect.",
+        error: "Operator access refused before reservation.",
       }),
     }),
   );
@@ -512,23 +701,30 @@ test("a source-proven NotSent retires across reload, while a lost response stays
     (response) =>
       response.request().method() === "POST" &&
       new URL(response.url()).pathname ===
-        "/__agent-forge/config/smiths/creates",
+        "/__agent-forge/config/smiths/creates/reserve",
   );
   await dialog.getByRole("button", { name: "Create Smith" }).click();
   expect((await refused).status()).toBe(403);
+  if (!reservedRequestId.value)
+    throw Error("The refused reserve request ID was not observed.");
   await expect(
-    page.getByRole("region", { name: "Original Smith create receipts" }),
-  ).toContainText("Not sent");
+    dialog.locator('[role="status"]').filter({
+      hasText: "No server reservation or create was recorded",
+    }),
+  ).toBeVisible();
   expect(
     readFileSync(join(REPOSITORY, "agent-forge.toml"), "utf8"),
   ).not.toContain(`[smiths.${notSentName}]`);
-  await page.unroute("**/config/smiths/creates");
+  await page.unroute("**/config/smiths/creates/reserve");
 
   await reloadSettled(page);
-  await expect(
-    page.getByRole("region", { name: "Original Smith create receipts" }),
-  ).toContainText("Not sent");
-  expect(originalReads).toEqual([]);
+  const receipts = page.getByRole("region", {
+    name: "Original Smith create receipts",
+  });
+  await expect(receipts).not.toContainText(notSentName);
+  expect(originalReads).not.toContainEqual(
+    expect.objectContaining({ requestId: reservedRequestId.value }),
+  );
   await page.getByRole("button", { name: "New smith", exact: true }).click();
   const afterReloadDialog = page.getByRole("dialog", {
     name: "Create a Smith",
@@ -552,6 +748,12 @@ test("a source-proven NotSent retires across reload, while a lost response stays
   await expect(
     afterReloadDialog.getByRole("region", { name: "Candidate review" }),
   ).toContainText(afterReload);
+  const reserveAgain = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname ===
+        "/__agent-forge/config/smiths/creates/reserve",
+  );
   const created = page.waitForResponse(
     (response) =>
       response.request().method() === "POST" &&
@@ -562,9 +764,190 @@ test("a source-proven NotSent retires across reload, while a lost response stays
     .getByRole("button", { name: "Create Smith", exact: true })
     .click();
   expect((await created).status()).toBe(200);
+  expect((await reserveAgain).status()).toBe(200);
   expect(readFileSync(join(REPOSITORY, "agent-forge.toml"), "utf8")).toContain(
     `[smiths.${afterReload}]`,
   );
+  expect(providerStarts()).toEqual(starts);
+});
+
+test("a NotSent create POST can only continue or retire its server-reserved original explicitly", async ({
+  page,
+}) => {
+  const starts = providerStarts(),
+    posts: string[] = [],
+    savedOriginal: { value: Record<string, unknown> | null } = { value: null },
+    name = `browser-reserved-${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+  page.on("request", (request) => {
+    const path = new URL(request.url()).pathname;
+    if (request.method() === "POST" && path.startsWith("/__agent-forge/"))
+      posts.push(path);
+    if (
+      request.method() === "POST" &&
+      path === "/__agent-forge/config/smiths/creates"
+    )
+      savedOriginal.value = request.postDataJSON() as Record<string, unknown>;
+  });
+  checkedOsHome();
+  if (!isRunHome(HEARTH_HOME) || !checkedFixtureRoot())
+    throw Error("Smith reservation recovery requires owned temporary homes.");
+
+  await page.setViewportSize({ width: 1100, height: 700 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await openSettled(page, "/index.html#/desktop/smiths");
+  await page.getByRole("button", { name: "New smith", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Create a Smith" });
+  await dialog.getByLabel("Smith name").fill(name);
+  await dialog.getByLabel("Provider").fill("codex");
+  await dialog.getByLabel("Model").fill("browser-reserved-model");
+  await dialog.getByLabel("Effort").fill("high");
+  await dialog.getByRole("button", { name: "Review candidate" }).click();
+  await expect(
+    dialog.getByRole("region", { name: "Candidate review" }),
+  ).toBeVisible();
+
+  await page.route("**/config/smiths/creates", (route) =>
+    route.fulfill({
+      status: 403,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: false,
+        data: null,
+        error: "Create was refused before its effect.",
+      }),
+    }),
+  );
+  const notSent = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname ===
+        "/__agent-forge/config/smiths/creates",
+  );
+  await dialog.getByRole("button", { name: "Create Smith" }).click();
+  expect((await notSent).status()).toBe(403);
+  const original = smithConfigCreateRequestSchema.safeParse(
+    savedOriginal.value,
+  );
+  if (!original.success)
+    throw Error("The reserved original request was not observed.");
+  const exactRequest = original.data;
+  await expect(
+    page.getByRole("region", { name: "Original Smith create receipts" }),
+  ).toContainText("server reservation remains held");
+  expect(
+    readFileSync(join(REPOSITORY, "agent-forge.toml"), "utf8"),
+  ).not.toContain(`[smiths.${name}]`);
+  await page.unroute("**/config/smiths/creates");
+
+  await page.evaluate(
+    (key) => localStorage.removeItem(key),
+    SMITH_CREATE_IDENTITIES,
+  );
+  let collectionBodyDenials = 0;
+  const indexPath = "/__agent-forge/smiths/creates";
+  const originalPath = `${indexPath}/${exactRequest.requestId}`;
+  const recoveredDocuments = await reloadAndReadDocumentJsons(
+    page,
+    [indexPath, originalPath],
+    {
+      unavailableBodyFor: indexPath,
+      onUnavailableBody: () => collectionBodyDenials++,
+    },
+  );
+  expect(collectionBodyDenials).toBe(1);
+  const index = recoveredDocuments.get(indexPath)?.body as {
+    data: { entries: unknown[] };
+  };
+  const originalResponse = recoveredDocuments.get(originalPath);
+  expect(recoveredDocuments.get(indexPath)?.status).toBe(200);
+  expect(originalResponse?.status).toBe(200);
+  await expect(
+    page.getByRole("region", { name: "Original Smith create receipts" }),
+  ).toContainText(name);
+  const originalEnvelope = originalResponse?.body as {
+    data: { inputHash: string; original: unknown; result: unknown };
+  };
+  const originalId = exactRequest.requestId;
+  if (
+    typeof originalId !== "string" ||
+    typeof originalEnvelope.data.inputHash !== "string"
+  )
+    throw Error("The reserved original identity was not valid.");
+  const originalHash: string = originalEnvelope.data.inputHash;
+  expect(originalPath).toBe(`/__agent-forge/smiths/creates/${originalId}`);
+  expect(originalEnvelope.data.original).toEqual(exactRequest);
+  expect(originalEnvelope.data.result).toMatchObject({
+    phase: "held",
+    stage: "reserved",
+  });
+  expect(index.data.entries).toContainEqual(
+    expect.objectContaining({
+      requestId: exactRequest.requestId,
+      inputHash: createHash("sha256")
+        .update(canonicalSmithConfigCreateRequest(exactRequest))
+        .digest("hex"),
+      target: "workspace",
+      state: "reserved",
+      stage: "reserved",
+    }),
+  );
+  const entries = page.getByRole("region", {
+    name: "Original Smith create receipts",
+  });
+  const retire = entries.getByRole("button", {
+    name: "Retire this reservation",
+    exact: true,
+  });
+  await expect(retire).toBeEnabled();
+  const reservationCard = entries.locator("article").filter({
+    hasText: originalId,
+  });
+  await expect(reservationCard).toContainText(originalId);
+  await expect(reservationCard).toContainText(originalHash);
+  await expect(
+    reservationCard.getByRole("button", {
+      name: "Continue this exact saved original",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(retire).toBeVisible();
+  if (process.env["AGENT_FORGE_WORKTREE_SCREENSHOT_DIR"])
+    await reservationCard.screenshot({
+      path: screenshotPath("smith-create-server-reserved-original.png"),
+      animations: "disabled",
+      mask: [
+        reservationCard.locator("dd").filter({ hasText: REPOSITORY }),
+        reservationCard.locator("dd").filter({ hasText: HEARTH_HOME }),
+      ],
+    });
+  expect(posts.slice(0, 3)).toEqual([
+    "/__agent-forge/config/smiths/preview",
+    "/__agent-forge/config/smiths/creates/reserve",
+    "/__agent-forge/config/smiths/creates",
+  ]);
+
+  const retired = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname.endsWith("/retire"),
+  );
+  await retire.click();
+  expect((await retired).status()).toBe(200);
+  await expect(entries).toContainText(
+    "explicitly retired before any create attempt",
+  );
+  expect(posts.slice(0, 3)).toEqual([
+    "/__agent-forge/config/smiths/preview",
+    "/__agent-forge/config/smiths/creates/reserve",
+    "/__agent-forge/config/smiths/creates",
+  ]);
+  expect(posts.at(-1)).toMatch(/\/config\/smiths\/creates\/[^/]+\/retire$/);
+  await page.getByRole("button", { name: "New smith", exact: true }).click();
+  await expect(
+    page
+      .getByRole("dialog", { name: "Create a Smith" })
+      .getByRole("button", { name: "Review candidate" }),
+  ).toBeEnabled();
   expect(providerStarts()).toEqual(starts);
 });
 
@@ -573,21 +956,25 @@ test("a correlated stale-revision refusal reads back its exact original after re
 }) => {
   const starts = providerStarts(),
     posts: string[] = [],
-    originalReads: number[] = [],
+    originalReads: { requestId: string; status: number }[] = [],
     name = `browser-refused-${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+  let postedOriginal: Record<string, unknown> | null = null;
   page.on("request", (request) => {
     const path = new URL(request.url()).pathname;
-    if (request.method() === "POST" && path.startsWith("/__agent-forge/"))
+    if (request.method() === "POST" && path.startsWith("/__agent-forge/")) {
       posts.push(path);
+      if (path === "/__agent-forge/config/smiths/creates")
+        postedOriginal = request.postDataJSON() as Record<string, unknown>;
+    }
   });
   page.on("response", (response) => {
-    if (
-      response.request().method() === "GET" &&
-      new URL(response.url()).pathname.startsWith(
-        "/__agent-forge/smiths/creates/",
-      )
-    )
-      originalReads.push(response.status());
+    const path = new URL(response.url()).pathname,
+      prefix = "/__agent-forge/smiths/creates/";
+    if (response.request().method() === "GET" && path.startsWith(prefix))
+      originalReads.push({
+        requestId: path.slice(prefix.length),
+        status: response.status(),
+      });
   });
   checkedOsHome();
   if (!isRunHome(HEARTH_HOME) || !checkedFixtureRoot())
@@ -626,55 +1013,32 @@ test("a correlated stale-revision refusal reads back its exact original after re
     readFileSync(join(REPOSITORY, "agent-forge.toml"), "utf8"),
   ).not.toContain(`[smiths.${name}]`);
 
-  let documentGeneration = 0,
-    reloadGeneration: number | null = null,
-    replacing = false;
-  const requestGenerations = new WeakMap<Request, number>();
-  const onRequest = (request: Request) => {
-    if (request.isNavigationRequest() && request.frame() === page.mainFrame())
-      replacing = true;
-    const path = new URL(request.url()).pathname;
-    if (
-      request.method() === "GET" &&
-      path.startsWith("/__agent-forge/smiths/creates/")
-    )
-      requestGenerations.set(request, documentGeneration);
-  };
-  const onFrameNavigated = (frame: Frame) => {
-    if (frame === page.mainFrame() && replacing) {
-      replacing = false;
-      reloadGeneration = ++documentGeneration;
-    }
-  };
-  page.on("request", onRequest);
-  page.on("framenavigated", onFrameNavigated);
-  const originalRead = page
-    .waitForResponse(
-      (response) =>
-        response.request().method() === "GET" &&
-        new URL(response.url()).pathname.startsWith(
-          "/__agent-forge/smiths/creates/",
-        ) &&
-        reloadGeneration !== null &&
-        requestGenerations.get(response.request()) === reloadGeneration,
-    )
-    .then(async (response) => ({
-      status: response.status(),
-      // Consume the body as soon as the matching new-document response
-      // arrives. The trace showed Chromium discarded the earlier body.
-      body: await response.json(),
-    }))
-    .finally(() => {
-      page.off("request", onRequest);
-      page.off("framenavigated", onFrameNavigated);
-    });
-  await reloadSettled(page);
-  const recovered = await originalRead;
-  expect(recovered.status).toBe(200);
+  const indexPath = "/__agent-forge/smiths/creates";
+  if (!postedOriginal)
+    throw new Error("The refused original was not captured.");
+  const originalPath = `${indexPath}/${String(postedOriginal["requestId"])}`;
+  const recoveredDocuments = await reloadAndReadDocumentJsons(page, [
+    indexPath,
+    originalPath,
+  ]);
+  const index = recoveredDocuments.get(indexPath);
+  const recovered = recoveredDocuments.get(originalPath);
+  if (!index || !recovered)
+    throw new Error("Reloaded source evidence was not captured.");
+  expect(index?.status).toBe(200);
+  expect(recovered?.status).toBe(200);
+  expect(
+    (index?.body as { data: { entries: unknown[] } }).data.entries,
+  ).toContainEqual(
+    expect.objectContaining({ requestId: postedOriginal["requestId"] }),
+  );
   const receipt = recovered.body as {
     data: {
       inputHash: string;
-      original: { smith: { name: string; model: string } };
+      original: {
+        requestId: string;
+        smith: { name: string; model: string };
+      };
       result: { phase: string; reason?: string };
     };
   };
@@ -691,39 +1055,65 @@ test("a correlated stale-revision refusal reads back its exact original after re
     reason: "stale-revision",
   });
   expect(receipt.data.inputHash).toMatch(/^[a-f0-9]{64}$/);
+  expect(
+    (index.body as { data: { entries: unknown[] } }).data.entries,
+  ).toContainEqual(
+    expect.objectContaining({
+      requestId: receipt.data.original.requestId,
+      inputHash: receipt.data.inputHash,
+    }),
+  );
   await expect(
     page.getByRole("region", { name: "Original Smith create receipts" }),
   ).toContainText(name);
   await expect(
     page.getByRole("region", { name: "Original Smith create receipts" }),
   ).toContainText("stale-revision");
-  expect(originalReads).toEqual([200]);
+  expect(originalReads).toContainEqual({
+    requestId: receipt.data.original.requestId,
+    status: 200,
+  });
   expect(posts).toEqual([
     "/__agent-forge/config/smiths/preview",
+    "/__agent-forge/config/smiths/creates/reserve",
     "/__agent-forge/config/smiths/creates",
   ]);
   expect(providerStarts()).toEqual(starts);
 });
 
-test("an unavailable create response remains held when the protected original returns 404", async ({
-  page,
-}) => {
+const unavailableCreateHeldTest = async ({ page }: { page: Page }) => {
   const posts: string[] = [],
-    originalReads: number[] = [],
+    originalReads: { requestId: string; status: number }[] = [],
+    requestId = { value: null as string | null },
+    inputHash = { value: null as string | null },
     name = `browser-uncertain-${randomUUID().replaceAll("-", "").slice(0, 12)}`;
   page.on("request", (request) => {
     const path = new URL(request.url()).pathname;
     if (request.method() === "POST" && path.startsWith("/__agent-forge/"))
       posts.push(path);
+    if (
+      request.method() === "POST" &&
+      path === "/__agent-forge/config/smiths/creates/reserve"
+    ) {
+      const parsed = smithConfigCreateRequestSchema.safeParse(
+        request.postDataJSON(),
+      );
+      if (parsed.success) {
+        requestId.value = parsed.data.requestId;
+        inputHash.value = createHash("sha256")
+          .update(canonicalSmithConfigCreateRequest(parsed.data))
+          .digest("hex");
+      }
+    }
   });
   page.on("response", (response) => {
-    if (
-      response.request().method() === "GET" &&
-      new URL(response.url()).pathname.startsWith(
-        "/__agent-forge/smiths/creates/",
-      )
-    )
-      originalReads.push(response.status());
+    const path = new URL(response.url()).pathname,
+      prefix = "/__agent-forge/smiths/creates/";
+    if (response.request().method() === "GET" && path.startsWith(prefix))
+      originalReads.push({
+        requestId: path.slice(prefix.length),
+        status: response.status(),
+      });
   });
   checkedOsHome();
   if (!isRunHome(HEARTH_HOME) || !checkedFixtureRoot())
@@ -749,6 +1139,19 @@ test("an unavailable create response remains held when the protected original re
       body: JSON.stringify({ ok: false, data: null, error: "unavailable" }),
     }),
   );
+  await page.route("**/__agent-forge/smiths/creates/*", (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (
+      !requestId.value ||
+      path !== `/__agent-forge/smiths/creates/${requestId.value}`
+    )
+      return route.continue();
+    return route.fulfill({
+      status: 404,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: false, data: null, error: "missing" }),
+    });
+  });
   const unavailable = page.waitForResponse(
     (response) =>
       response.request().method() === "POST" &&
@@ -757,23 +1160,51 @@ test("an unavailable create response remains held when the protected original re
   );
   await dialog.getByRole("button", { name: "Create Smith" }).click();
   expect((await unavailable).status()).toBe(503);
-  await expect(
-    page.getByRole("region", { name: "Original Smith create receipts" }),
-  ).toContainText("Outcome held");
+  if (!requestId.value || !inputHash.value)
+    throw Error("The reserved request identity was not observed.");
+  const receipts = page.getByRole("region", {
+      name: "Original Smith create receipts",
+    }),
+    uncertainCard = receipts
+      .locator("article")
+      .filter({ hasText: requestId.value });
+  await expect(uncertainCard).toContainText(requestId.value);
+  await expect(uncertainCard).toContainText(inputHash.value);
+  await expect(uncertainCard).toContainText("Reserved original — not started");
+  await expect(uncertainCard).toContainText("UUID remains held");
   await page.unroute("**/config/smiths/creates");
+  const exactOriginalReadStatuses = () =>
+    originalReads
+      .filter((read) => read.requestId === requestId.value)
+      .map((read) => read.status);
+  expect(exactOriginalReadStatuses()).toEqual([404]);
 
-  const missingOriginal = page.waitForResponse(
-    (response) =>
-      response.request().method() === "GET" &&
-      new URL(response.url()).pathname.startsWith(
-        "/__agent-forge/smiths/creates/",
-      ),
+  const indexPath = "/__agent-forge/smiths/creates";
+  const originalPath = `${indexPath}/${requestId.value}`;
+  const reloadedDocuments = await reloadAndReadDocumentJsons(page, [
+    indexPath,
+    originalPath,
+  ]);
+  const freshIndex = reloadedDocuments.get(indexPath);
+  const freshRead = reloadedDocuments.get(originalPath);
+  if (!freshIndex || !freshRead)
+    throw new Error("Reloaded source evidence was not captured.");
+  expect(freshIndex.status).toBe(200);
+  expect(freshRead.status).toBe(404);
+  expect(freshRead.body).toMatchObject({ ok: false, data: null });
+  expect(
+    (freshIndex.body as { data: { entries: unknown[] } }).data.entries,
+  ).toContainEqual(expect.objectContaining({ requestId: requestId.value }));
+  // Additional recovery effects may issue another identical GET. Require the
+  // first fresh-document read, and keep every observed read tied to this UUID
+  // and the expected 404 without depending on incidental duplicate timing.
+  await expect
+    .poll(() => exactOriginalReadStatuses().length)
+    .toBeGreaterThanOrEqual(2);
+  expect(exactOriginalReadStatuses().every((status) => status === 404)).toBe(
+    true,
   );
-  await reloadSettled(page);
-  expect((await missingOriginal).status()).toBe(404);
-  await expect(
-    page.getByRole("region", { name: "Original Smith create receipts" }),
-  ).toContainText("Outcome held");
+  await expect(uncertainCard).toContainText("UUID remains held");
   await page.getByRole("button", { name: "New smith", exact: true }).click();
   const recovered = page.getByRole("dialog", { name: "Create a Smith" });
   await expect(
@@ -782,15 +1213,18 @@ test("an unavailable create response remains held when the protected original re
   await expect(
     recovered.getByRole("button", { name: "Create Smith" }),
   ).toBeDisabled();
-  expect(originalReads).toEqual([404]);
+  expect(exactOriginalReadStatuses().every((status) => status === 404)).toBe(
+    true,
+  );
   expect(posts).toEqual([
     "/__agent-forge/config/smiths/preview",
+    "/__agent-forge/config/smiths/creates/reserve",
     "/__agent-forge/config/smiths/creates",
   ]);
   expect(
     readFileSync(join(REPOSITORY, "agent-forge.toml"), "utf8"),
   ).not.toContain(`[smiths.${name}]`);
-});
+};
 
 test("a reply lost after actual temporary publication recovers the exact original without a second write", async ({
   page,
@@ -846,7 +1280,7 @@ test("a reply lost after actual temporary publication recovers the exact origina
   expect(savedServerStatus).toBe(200);
   await expect(
     page.getByRole("region", { name: "Original Smith create receipts" }),
-  ).toContainText("Outcome held");
+  ).toContainText("Confirmed");
   expect(original).not.toBeNull();
   const posted = original!;
   expect(posted).toMatchObject({
@@ -860,22 +1294,34 @@ test("a reply lost after actual temporary publication recovers the exact origina
   ]).toHaveLength(1);
   expect(posts).toEqual([
     "/__agent-forge/config/smiths/preview",
+    "/__agent-forge/config/smiths/creates/reserve",
     "/__agent-forge/config/smiths/creates",
   ]);
   await page.unroute("**/config/smiths/creates");
 
-  const originalRead = page.waitForResponse(
-    (response) =>
-      response.request().method() === "GET" &&
-      new URL(response.url()).pathname ===
-        `/__agent-forge/smiths/creates/${String(posted["requestId"])}`,
-  );
-  await reloadSettled(page);
-  const recoveredResponse = await originalRead;
-  expect(recoveredResponse.status()).toBe(200);
-  const receipt = (await recoveredResponse.json()) as {
+  const indexPath = "/__agent-forge/smiths/creates";
+  const originalPath = `${indexPath}/${String(posted["requestId"])}`;
+  const recoveredDocuments = await reloadAndReadDocumentJsons(page, [
+    indexPath,
+    originalPath,
+  ]);
+  const index = recoveredDocuments.get(indexPath);
+  const recoveredResponse = recoveredDocuments.get(originalPath);
+  if (!index || !recoveredResponse)
+    throw new Error("Reloaded source evidence was not captured.");
+  expect(index?.status).toBe(200);
+  expect(recoveredResponse?.status).toBe(200);
+  const indexEntries = (index?.body as { data: { entries: unknown[] } }).data
+    .entries;
+  const receipt = recoveredResponse.body as {
     data: { inputHash: string; original: Record<string, unknown> };
   };
+  expect(indexEntries).toContainEqual(
+    expect.objectContaining({
+      requestId: posted["requestId"],
+      inputHash: receipt.data.inputHash,
+    }),
+  );
   expect(receipt.data.original).toEqual(posted);
   expect(receipt.data.inputHash).toBe(
     createHash("sha256")
@@ -893,10 +1339,20 @@ test("a reply lost after actual temporary publication recovers the exact origina
   );
   expect(posts).toEqual([
     "/__agent-forge/config/smiths/preview",
+    "/__agent-forge/config/smiths/creates/reserve",
     "/__agent-forge/config/smiths/creates",
   ]);
   expect(providerStarts()).toEqual(starts);
 });
+
+// This fixture leaves an intentionally unknown original after its protected
+// GET returns 404. Keep it after every create-start journey in this file so
+// its correct reservation hold cannot block a later create test in the same
+// persistent owner scope.
+test(
+  "an unavailable create response remains held when protected original reads are 404",
+  unavailableCreateHeldTest,
+);
 
 test("edits an existing Smith after a complete review and recovers the exact original after reload", async ({
   page,
@@ -1067,16 +1523,10 @@ test("edits an existing Smith after a complete review and recovers the exact ori
   ]);
 
   const posted = postedEdit!;
-  const recovered = page.waitForResponse(
-    (response) =>
-      response.request().method() === "GET" &&
-      new URL(response.url()).pathname ===
-        `/__agent-forge/smiths/edits/${String(posted["requestId"])}`,
-  );
-  await reloadSettled(page);
-  const recoveredResponse = await recovered;
-  expect(recoveredResponse.status()).toBe(200);
-  const receipt = (await recoveredResponse.json()) as {
+  const originalPath = `/__agent-forge/smiths/edits/${String(posted["requestId"])}`;
+  const recoveredResponse = await reloadAndReadDocumentJson(page, originalPath);
+  expect(recoveredResponse.status).toBe(200);
+  const receipt = recoveredResponse.body as {
     data: { inputHash: string; original: Record<string, unknown> };
   };
   expect(receipt.data.original).toEqual(posted);
@@ -1484,10 +1934,13 @@ test("keeps duplicate fractional bench rows ordered through review, save, and re
   expect((await saved).status()).toBe(200);
   expect(posted).not.toBeNull();
   const request = smithRoutingEditRequestSchema.parse(posted);
-  const recovered = await reloadAndReadDocumentJson(
-    page,
-    `/__agent-forge/smiths/routing-edits/${String(request["requestId"])}`,
-  );
+  const recoveryPath = `/__agent-forge/smiths/routing-edits/${String(request["requestId"])}`;
+  let unavailableBodyResponses = 0;
+  const recovered = await reloadAndReadDocumentJson(page, recoveryPath, {
+    unavailableBodyFor: recoveryPath,
+    onUnavailableBody: () => unavailableBodyResponses++,
+  });
+  expect(unavailableBodyResponses).toBe(1);
   expect(recovered.status).toBe(200);
   const body = recovered.body as {
     data: {
@@ -1906,16 +2359,10 @@ test("a reply lost after actual Smith edit publication recovers only the exact o
     "/__agent-forge/config/smiths/edits",
   ]);
   await page.unroute("**/config/smiths/edits");
-  const originalRead = page.waitForResponse(
-    (response) =>
-      response.request().method() === "GET" &&
-      new URL(response.url()).pathname ===
-        `/__agent-forge/smiths/edits/${String(posted["requestId"])}`,
-  );
-  await reloadSettled(page);
-  const recovered = await originalRead;
-  expect(recovered.status()).toBe(200);
-  const receipt = (await recovered.json()) as {
+  const originalPath = `/__agent-forge/smiths/edits/${String(posted["requestId"])}`;
+  const recovered = await reloadAndReadDocumentJson(page, originalPath);
+  expect(recovered.status).toBe(200);
+  const receipt = recovered.body as {
     data: { inputHash: string; original: Record<string, unknown> };
   };
   expect(receipt.data.original).toEqual(posted);

@@ -208,7 +208,7 @@ export function createSmithCreateService(
         smith: request.smith,
       } as const;
     try {
-      return await journal.reserve(request, async (writer) => {
+      return await journal.claim(request, async (writer) => {
         let attemptedMarkerBegan = false;
         try {
           const context = prepare(request.target);
@@ -282,5 +282,8 @@ export function createSmithCreateService(
     preview,
     create,
     readOriginal: journal.readOriginal,
+    reserveIdentity: journal.reserveOriginal,
+    listIdentities: journal.listOriginals,
+    retireReserved: journal.retireReserved,
   });
 }

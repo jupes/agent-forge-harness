@@ -4,6 +4,7 @@ import type {
   SmithConfigCreateRefusal,
   SmithConfigCreateRequest,
   SmithConfigPreview,
+  SmithCreateIdentityIndex,
 } from "../../types/smith-config-create";
 import {
   SMITH_CREATE_JOURNAL_LIMITS as limits,
@@ -24,6 +25,7 @@ import {
   smithConfigCreateRequestSchema,
   smithConfigPreviewSchema,
   smithConfigRequestIdSchema,
+  smithCreateIdentityIndexSchema,
 } from "./smith-create-protocol";
 
 export interface SmithCreateJournalEntry {
@@ -134,7 +136,7 @@ export function createSmithCreateJournalCore(
   const owner = frozen(checkedOwner.data),
     ownerScopeHash = smithCreateOwnerHash(owner);
 
-  const chain = (requestId: string) => {
+  const chain = (requestId: string, allowOtherOwner = false) => {
     const listing = storage.inspect(requestId);
     if (listing === null) return null;
     const files = metadata(listing).found,
@@ -160,9 +162,11 @@ export function createSmithCreateJournalCore(
     const intent = checkedIntent.data;
     if (
       intent.requestId !== requestId ||
-      intent.ownerScopeHash !== ownerScopeHash
+      intent.ownerScopeHash !== smithCreateOwnerHash(intent.owner)
     )
-      conflict();
+      held();
+    const belongsToOwner = intent.ownerScopeHash === ownerScopeHash;
+    if (!belongsToOwner && !allowOtherOwner) conflict();
     const phases: Partial<Record<SmithCreatePhase["kind"], SmithCreatePhase>> =
       {};
     for (const file of files.keys()) {
@@ -180,8 +184,8 @@ export function createSmithCreateJournalCore(
         held();
       phases[value.kind] = value;
     }
-    const prepared =
-        phases.prepared?.kind === "prepared" ? phases.prepared : null,
+    const claimed = phases.claimed?.kind === "claimed" ? phases.claimed : null,
+      prepared = phases.prepared?.kind === "prepared" ? phases.prepared : null,
       attempted =
         phases.attempted?.kind === "attempted" ? phases.attempted : null,
       confirmed =
@@ -192,6 +196,9 @@ export function createSmithCreateJournalCore(
       preparedHash = hashes.get("prepared.json") ?? null,
       attemptedHash = hashes.get("attempted.json") ?? null;
     if (
+      (claimed && intent.version !== 2) ||
+      (intent.version === 2 && prepared && !claimed) ||
+      (intent.version === 2 && attempted && !claimed) ||
       (attempted && (!prepared || attempted.preparedHash !== preparedHash)) ||
       (confirmed &&
         (!prepared ||
@@ -200,6 +207,11 @@ export function createSmithCreateJournalCore(
           confirmed.attemptedHash !== attemptedHash)) ||
       (refused &&
         (attempted || unconfirmed || refused.preparedHash !== preparedHash)) ||
+      (intent.version === 2 &&
+        refused &&
+        !claimed &&
+        (refused.reason !== "cancelled-before-attempt" ||
+          refused.preparedHash !== null)) ||
       (unconfirmed &&
         (!prepared ||
           unconfirmed.preparedHash !== preparedHash ||
@@ -230,7 +242,11 @@ export function createSmithCreateJournalCore(
                 ? "attempted"
                 : prepared
                   ? "prepared"
-                  : "intent",
+                  : claimed
+                    ? "claimed"
+                    : intent.version === 2
+                      ? "reserved"
+                      : "intent",
             preview,
           };
     const receipt = smithConfigCreateReceiptSchema.safeParse({
@@ -243,7 +259,7 @@ export function createSmithCreateJournalCore(
       result,
     });
     if (!receipt.success) held();
-    return { receipt: receipt.data, intent, hashes };
+    return { receipt: receipt.data, intent, hashes, belongsToOwner };
   };
 
   const assertRoom = () => {
@@ -266,9 +282,9 @@ export function createSmithCreateJournalCore(
     }
   };
 
-  const safeChain = (requestId: string) => {
+  const safeChain = (requestId: string, allowOtherOwner = false) => {
     try {
-      return chain(requestId);
+      return chain(requestId, allowOtherOwner);
     } catch (error) {
       if (error instanceof SmithCreateJournalError) throw error;
       held();
@@ -282,9 +298,104 @@ export function createSmithCreateJournalCore(
   const readOriginal = (requestId: string): SmithConfigCreateReceipt | null =>
     safeChain(checkedId(requestId))?.receipt ?? null;
 
-  const reserve = async (
+  const scan = () => {
+    let count = 0,
+      entries = 0,
+      bytes = 0;
+    const seen = new Set<string>(),
+      rows: NonNullable<ReturnType<typeof chain>>[] = [];
+    for (const operation of storage.operations()) {
+      if (
+        ++count > limits.operations ||
+        !smithConfigRequestIdSchema.safeParse(operation.requestId).success ||
+        seen.has(operation.requestId)
+      )
+        held();
+      seen.add(operation.requestId);
+      const found = metadata(operation.entries);
+      entries += found.count;
+      bytes += found.bytes;
+      if (entries > limits.entries || bytes > limits.bytes) held();
+      const row = safeChain(operation.requestId, true);
+      if (!row) held();
+      rows.push(row);
+    }
+    return rows;
+  };
+
+  const listOriginals = (): SmithCreateIdentityIndex => {
+    const entries = scan()
+      .filter((row) => row.belongsToOwner)
+      .map(({ receipt, intent }) => {
+        const result = receipt.result;
+        const state =
+          result.phase === "confirmed" || result.phase === "refused"
+            ? result.phase
+            : result.stage === "reserved"
+              ? "reserved"
+              : "held";
+        const stage =
+          result.phase !== "held"
+            ? "terminal"
+            : result.stage === "intent"
+              ? "legacy"
+              : result.stage;
+        return {
+          requestId: intent.requestId,
+          ownerScopeHash: intent.ownerScopeHash,
+          inputHash: intent.inputHash,
+          target: intent.original.target,
+          state,
+          stage,
+          createdAt: intent.at,
+        };
+      })
+      .sort((a, b) => a.requestId.localeCompare(b.requestId));
+    const checked = smithCreateIdentityIndexSchema.safeParse({
+      version: 1,
+      complete: true,
+      ownerScopeHash,
+      entries,
+    });
+    if (!checked.success) held();
+    return checked.data;
+  };
+
+  const assertOwnerSlotAvailable = (except?: string) => {
+    for (const row of scan()) {
+      if (!row.belongsToOwner || row.intent.requestId === except) continue;
+      if (row.receipt.result.phase === "held") conflict();
+    }
+  };
+
+  const encode = (record: unknown) => {
+    const text = JSON.stringify(record);
+    if (
+      text.length > limits.fileBytes ||
+      new TextEncoder().encode(text).byteLength > limits.fileBytes
+    )
+      held();
+    return text;
+  };
+
+  const makeIntent = (original: Readonly<SmithConfigCreateRequest>) => {
+    const intent = smithCreateIntentSchema.safeParse({
+      version: 2,
+      kind: "intent",
+      admission: "reserved",
+      requestId: original.requestId,
+      ownerScopeHash,
+      inputHash: smithCreateInputHash(original),
+      owner,
+      original,
+      at: now(),
+    });
+    if (!intent.success) held();
+    return intent.data;
+  };
+
+  const reserveOriginal = async (
     value: unknown,
-    work: (writer: SmithCreateJournalWriter) => void | Promise<void>,
   ): Promise<SmithConfigCreateReceipt> => {
     const parsed = smithConfigCreateRequestSchema.safeParse(value);
     if (!parsed.success) held();
@@ -303,32 +414,132 @@ export function createSmithCreateJournalCore(
         const previous = existing();
         if (previous) return previous.receipt;
         assertRoom();
-        const intent = smithCreateIntentSchema.safeParse({
+        assertOwnerSlotAvailable(requestId);
+        const initial = encode(makeIntent(original));
+        storage.writeOnce(requestId, "intent.json", initial);
+        const confirmed = existing();
+        if (
+          !confirmed ||
+          confirmed.hashes.get("intent.json") !==
+            smithCreateJournalHash(initial)
+        )
+          held();
+        return confirmed.receipt;
+      })
+      .catch((error: unknown) => {
+        if (error instanceof SmithCreateJournalError) throw error;
+        held();
+      });
+  };
+
+  const retireReserved = async (
+    requestIdValue: string,
+    inputHash: string,
+  ): Promise<SmithConfigCreateReceipt> => {
+    const requestId = checkedId(requestIdValue);
+    if (!/^[a-f0-9]{64}$/.test(inputHash)) held();
+    return storage
+      .exclusive(async () => {
+        const found = safeChain(requestId);
+        if (!found || found.intent.inputHash !== inputHash) conflict();
+        if (
+          found.receipt.result.phase !== "held" ||
+          found.receipt.result.stage !== "reserved" ||
+          found.intent.version !== 2
+        )
+          return found.receipt;
+        const text = encode({
           version: 1,
-          kind: "intent",
+          kind: "refused",
           requestId,
           ownerScopeHash,
           inputHash,
-          owner,
-          original,
+          intentHash: found.hashes.get("intent.json"),
           at: now(),
+          preparedHash: null,
+          reason: "cancelled-before-attempt",
         });
-        if (!intent.success) held();
-        const encode = (record: unknown) => {
-          const text = JSON.stringify(record);
+        storage.writeOnce(requestId, "refused.json", text);
+        const result = safeChain(requestId);
+        if (
+          !result ||
+          result.hashes.get("refused.json") !== smithCreateJournalHash(text)
+        )
+          held();
+        return result.receipt;
+      })
+      .catch((error: unknown) => {
+        if (error instanceof SmithCreateJournalError) throw error;
+        held();
+      });
+  };
+
+  const claim = async (
+    value: unknown,
+    work: (writer: SmithCreateJournalWriter) => void | Promise<void>,
+  ): Promise<SmithConfigCreateReceipt> => {
+    const parsed = smithConfigCreateRequestSchema.safeParse(value);
+    if (!parsed.success) held();
+    const original = frozen(parsed.data),
+      requestId = original.requestId,
+      inputHash = smithCreateInputHash(original);
+    const existing = () => {
+      const found = safeChain(requestId);
+      if (found && found.intent.inputHash !== inputHash) conflict();
+      return found;
+    };
+    const prior = existing();
+    if (
+      prior &&
+      (prior.receipt.result.phase !== "held" ||
+        prior.receipt.result.stage !== "reserved" ||
+        prior.intent.version !== 2)
+    )
+      return prior.receipt;
+    return storage
+      .exclusive(async () => {
+        let previous = existing();
+        if (
+          previous &&
+          (previous.receipt.result.phase !== "held" ||
+            previous.receipt.result.stage !== "reserved" ||
+            previous.intent.version !== 2)
+        )
+          return previous.receipt;
+        if (!previous) {
+          assertRoom();
+          assertOwnerSlotAvailable(requestId);
+          const initial = encode(makeIntent(original));
+          storage.writeOnce(requestId, "intent.json", initial);
+          previous = existing();
           if (
-            text.length > limits.fileBytes ||
-            new TextEncoder().encode(text).byteLength > limits.fileBytes
+            !previous ||
+            previous.hashes.get("intent.json") !==
+              smithCreateJournalHash(initial)
           )
             held();
-          return text;
-        };
-        const initial = encode(intent.data);
-        storage.writeOnce(requestId, "intent.json", initial);
+        }
+        if (
+          previous.receipt.result.phase !== "held" ||
+          previous.receipt.result.stage !== "reserved"
+        )
+          return previous.receipt;
+        assertOwnerSlotAvailable(requestId);
+        const claimText = encode({
+          version: 1,
+          kind: "claimed",
+          requestId,
+          ownerScopeHash,
+          inputHash,
+          intentHash: previous.hashes.get("intent.json"),
+          at: now(),
+        });
+        storage.writeOnce(requestId, "claimed.json", claimText);
         let current = safeChain(requestId);
         if (
           !current ||
-          current.hashes.get("intent.json") !== smithCreateJournalHash(initial)
+          current.hashes.get("claimed.json") !==
+            smithCreateJournalHash(claimText)
         )
           held();
         let active = true,
@@ -388,7 +599,7 @@ export function createSmithCreateJournalCore(
                 checked = smithConfigPreviewSchema.safeParse(preview);
               if (
                 found.receipt.result.phase !== "held" ||
-                found.receipt.result.stage !== "intent" ||
+                found.receipt.result.stage !== "claimed" ||
                 !checked.success
               )
                 held();
@@ -490,5 +701,13 @@ export function createSmithCreateJournalCore(
         held();
       });
   };
-  return { readOriginal, reserve };
+  return {
+    readOriginal,
+    listOriginals,
+    reserveOriginal,
+    retireReserved,
+    claim,
+    /** Existing in-process callers claim atomically; new UI callers reserve first. */
+    reserve: claim,
+  };
 }

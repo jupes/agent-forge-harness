@@ -7,61 +7,90 @@ import type {
 
 export function SmithCreateFormView({
   state,
+  draftReady,
   canWrite,
   canStart,
-  onDraft,
+  onDraftPatch,
+  onTarget,
   onPreview,
   onCreate,
 }: {
   state: SmithCreateClientState;
+  /** The current draft has a verified trusted workspace scope. */
+  draftReady: boolean;
   canWrite: boolean;
   canStart: boolean;
-  onDraft(
-    target: SmithCreateClientState["target"],
-    smith: SmithCreateClientState["smith"],
-  ): void;
+  onDraftPatch(patch: Partial<SmithCreateClientState["smith"]>): void;
+  onTarget(target: SmithCreateClientState["target"]): void;
   onPreview(): void;
   onCreate(): void;
 }): JSX.Element {
   const smith = state.smith,
-    held = state.entries.some((item) => item.state === "held"),
+    reserved = state.entries.some(
+      (item) => item.serverIdentity?.stage === "reserved",
+    ),
+    held = state.entries.some(
+      (item) =>
+        item.state === "held" && item.serverIdentity?.stage !== "reserved",
+    ),
     blocked = !canWrite || !canStart || held || state.creating,
-    update = (patch: Partial<SmithConfigPreviewRequest["smith"]>) =>
-      onDraft(state.target, { ...smith, ...patch });
+    draftBlocked = !draftReady || state.creating,
+    update = (patch: Partial<SmithConfigPreviewRequest["smith"]>) => {
+      if (draftBlocked) return;
+      onDraftPatch(patch);
+    };
   return (
     <div class="af-smith-create">
       <p>
         Review a complete Smith against the current paired configuration. Any
-        edit clears the candidate; nothing is saved until you choose Create.
+        edit clears the candidate. Create first reserves this exact original;
+        configuration changes only after a reviewed create attempt succeeds.
       </p>
+      {!draftReady && (
+        <p role="status">Waiting for a verified workspace before editing.</p>
+      )}
       {!canWrite && (
         <p role="status">
           The hearth is not ready for operator writes. Your draft is not sent.
         </p>
       )}
-      {canWrite && !canStart && !held && (
-        <p role="alert">
-          Saved create identities could not be verified. Their data was kept; no
-          new request can start.
-        </p>
+      {canWrite && !state.serverDiscoveryReady && (
+        <p role="status">Checking the complete server-owned create history…</p>
       )}
+      {canWrite &&
+        !canStart &&
+        !held &&
+        !reserved &&
+        state.serverDiscoveryReady && (
+          <p role="alert">
+            Saved create identities could not be verified. Their data was kept;
+            no new request can start.
+          </p>
+        )}
       {held && (
         <p role="alert">
           An earlier create has an unknown outcome. Check its original receipt
           below before starting another request.
         </p>
       )}
+      {reserved && (
+        <p role="alert">
+          An exact original is reserved by the server and has not started.
+          Review its saved details below, then explicitly continue it or retire
+          the reservation before creating another Smith.
+        </p>
+      )}
       <label>
         Save to
         <select
           value={state.target}
-          disabled={state.creating}
-          onChange={(event) =>
-            onDraft(
+          disabled={draftBlocked}
+          onChange={(event) => {
+            if (draftBlocked) return;
+            onTarget(
               event.currentTarget.value === "user" ? "user" : "workspace",
-              smith,
-            )
-          }
+            );
+          }}
         >
           <option value="workspace">Workspace configuration</option>
           <option value="user">User configuration</option>
@@ -72,7 +101,7 @@ export function SmithCreateFormView({
         <input
           value={smith.name}
           maxLength={128}
-          disabled={state.creating}
+          disabled={draftBlocked}
           onInput={(event) => update({ name: event.currentTarget.value })}
         />
       </label>
@@ -81,7 +110,7 @@ export function SmithCreateFormView({
         <input
           value={smith.provider}
           maxLength={128}
-          disabled={state.creating}
+          disabled={draftBlocked}
           onInput={(event) => update({ provider: event.currentTarget.value })}
         />
       </label>
@@ -90,7 +119,7 @@ export function SmithCreateFormView({
         <input
           value={smith.model}
           maxLength={512}
-          disabled={state.creating}
+          disabled={draftBlocked}
           onInput={(event) => update({ model: event.currentTarget.value })}
         />
       </label>
@@ -99,7 +128,7 @@ export function SmithCreateFormView({
         <input
           value={smith.effort}
           maxLength={128}
-          disabled={state.creating}
+          disabled={draftBlocked}
           onInput={(event) => update({ effort: event.currentTarget.value })}
         />
       </label>
@@ -107,7 +136,7 @@ export function SmithCreateFormView({
         <input
           type="checkbox"
           checked={smith.enabled}
-          disabled={state.creating}
+          disabled={draftBlocked}
           onChange={(event) => update({ enabled: event.currentTarget.checked })}
         />
         Enabled
@@ -118,7 +147,7 @@ export function SmithCreateFormView({
           value={smith.tags.join("\n")}
           maxLength={16_448}
           rows={3}
-          disabled={state.creating}
+          disabled={draftBlocked}
           onInput={(event) =>
             update({
               tags: event.currentTarget.value
@@ -216,11 +245,17 @@ function sameReview(state: SmithCreateClientState): boolean {
 export function SmithCreateReceiptsView({
   entries,
   canWrite,
+  creating,
   onCheck,
+  onContinue,
+  onRetire,
 }: {
   entries: readonly SmithCreateEntry[];
   canWrite: boolean;
+  creating: boolean;
   onCheck(requestId: string): void;
+  onContinue(requestId: string): void;
+  onRetire(requestId: string): void;
 }): JSX.Element | null {
   if (entries.length === 0) return null;
   return (
@@ -237,13 +272,15 @@ export function SmithCreateReceiptsView({
       {entries.map((entry) => (
         <article key={entry.identity.requestId}>
           <h3>
-            {entry.state === "confirmed"
-              ? "Confirmed"
-              : entry.state === "refused"
-                ? "Refused before publication"
-                : entry.state === "not-sent"
-                  ? "Not sent"
-                  : "Outcome held"}
+            {entry.serverIdentity?.stage === "reserved"
+              ? "Reserved original — not started"
+              : entry.state === "confirmed"
+                ? "Confirmed"
+                : entry.state === "refused"
+                  ? "Refused before publication"
+                  : entry.state === "not-sent"
+                    ? "Not sent"
+                    : "Outcome held"}
           </h3>
           <dl>
             <dt>Request UUID</dt>
@@ -323,13 +360,38 @@ export function SmithCreateReceiptsView({
             {entry.notice}
           </p>
           {entry.state === "held" && (
-            <button
-              type="button"
-              disabled={!canWrite || entry.checking}
-              onClick={() => onCheck(entry.identity.requestId)}
-            >
-              {entry.checking ? "Checking original…" : "Check original receipt"}
-            </button>
+            <>
+              <button
+                type="button"
+                disabled={entry.checking || creating}
+                onClick={() => onCheck(entry.identity.requestId)}
+              >
+                {entry.checking
+                  ? "Checking original…"
+                  : "Check original receipt"}
+              </button>
+              {entry.continueAllowed &&
+                entry.serverIdentity?.stage === "reserved" &&
+                entry.receipt?.result.phase === "held" &&
+                entry.receipt.result.stage === "reserved" && (
+                  <>
+                    <button
+                      type="button"
+                      disabled={!canWrite || entry.checking || creating}
+                      onClick={() => onContinue(entry.identity.requestId)}
+                    >
+                      Continue this exact saved original
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!canWrite || entry.checking || creating}
+                      onClick={() => onRetire(entry.identity.requestId)}
+                    >
+                      Retire this reservation
+                    </button>
+                  </>
+                )}
+            </>
           )}
         </article>
       ))}
