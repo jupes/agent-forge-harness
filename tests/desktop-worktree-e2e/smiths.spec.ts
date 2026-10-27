@@ -112,6 +112,50 @@ async function openSmithEdit(page: Page, name = fixtureSmith) {
   await expect(dialog).toBeVisible();
   return { opener, dialog };
 }
+async function reloadAndReadDocumentJson(page: Page, pathname: string) {
+  let documentGeneration = 0,
+    reloadGeneration: number | null = null,
+    replacing = false;
+  const requestGenerations = new WeakMap<Request, number>();
+  const onRequest = (request: Request) => {
+    if (request.isNavigationRequest() && request.frame() === page.mainFrame())
+      replacing = true;
+    if (
+      request.method() === "GET" &&
+      new URL(request.url()).pathname === pathname
+    )
+      requestGenerations.set(request, documentGeneration);
+  };
+  const onFrameNavigated = (frame: Frame) => {
+    if (frame === page.mainFrame() && replacing) {
+      replacing = false;
+      reloadGeneration = ++documentGeneration;
+    }
+  };
+  page.on("request", onRequest);
+  page.on("framenavigated", onFrameNavigated);
+  const originalRead = page
+    .waitForResponse(
+      (response) =>
+        response.request().method() === "GET" &&
+        new URL(response.url()).pathname === pathname &&
+        reloadGeneration !== null &&
+        requestGenerations.get(response.request()) === reloadGeneration,
+    )
+    .then(async (response) => ({
+      status: response.status(),
+      // Chromium can discard the old document's body during reload. Consume
+      // JSON as soon as the matching new-document response arrives.
+      body: await response.json(),
+    }));
+  try {
+    await reloadSettled(page);
+    return await originalRead;
+  } finally {
+    page.off("request", onRequest);
+    page.off("framenavigated", onFrameNavigated);
+  }
+}
 async function reviewSmithEdit(dialog: Locator) {
   await dialog
     .getByRole("button", { name: "Review candidate", exact: true })
@@ -1516,17 +1560,14 @@ test("reviews a manually entered configured default name and reloads its receipt
   ]);
   expect(posted).not.toBeNull();
   const request = smithRoutingEditRequestSchema.parse(posted);
-  const originalRead = page.waitForResponse(
-    (response) =>
-      response.request().method() === "GET" &&
-      new URL(response.url()).pathname ===
-        `/__agent-forge/smiths/routing-edits/${String(request["requestId"])}`,
+  const recovered = await reloadAndReadDocumentJson(
+    page,
+    `/__agent-forge/smiths/routing-edits/${String(request["requestId"])}`,
   );
-  await reloadSettled(page);
-  const recovered = await originalRead;
-  expect(recovered.status()).toBe(200);
-  const envelope = (await recovered.json()) as { data: unknown };
-  const receipt = smithRoutingEditReceiptSchema.parse(envelope.data);
+  expect(recovered.status).toBe(200);
+  const receipt = smithRoutingEditReceiptSchema.parse(
+    (recovered.body as { data: unknown }).data,
+  );
   expect(receipt.original).toEqual(request);
   expect(receipt.inputHash).toBe(await smithRoutingEditInputHash(request));
   expect(canonicalSmithRoutingEditRequest(receipt.original)).toBe(
@@ -1665,16 +1706,12 @@ test("keeps duplicate fractional bench rows ordered through review, save, and re
   expect((await saved).status()).toBe(200);
   expect(posted).not.toBeNull();
   const request = smithRoutingEditRequestSchema.parse(posted);
-  const originalRead = page.waitForResponse(
-    (response) =>
-      response.request().method() === "GET" &&
-      new URL(response.url()).pathname ===
-        `/__agent-forge/smiths/routing-edits/${String(request["requestId"])}`,
+  const recovered = await reloadAndReadDocumentJson(
+    page,
+    `/__agent-forge/smiths/routing-edits/${String(request["requestId"])}`,
   );
-  await reloadSettled(page);
-  const receipt = await originalRead;
-  expect(receipt.status()).toBe(200);
-  const body = (await receipt.json()) as {
+  expect(recovered.status).toBe(200);
+  const body = recovered.body as {
     data: {
       original: { change: { entries: { smith: string; weight: number }[] } };
     };
@@ -1779,16 +1816,12 @@ test("a stale paired revision is refused and permission refusal retires only as 
   writeFileSync(machineFile, machineBefore);
   expect(refusedOriginal).not.toBeNull();
   const refusedRequest = smithRoutingEditRequestSchema.parse(refusedOriginal);
-  const refusedRead = page.waitForResponse(
-    (response) =>
-      response.request().method() === "GET" &&
-      new URL(response.url()).pathname ===
-        `/__agent-forge/smiths/routing-edits/${refusedRequest.requestId}`,
+  const refusedReceiptResponse = await reloadAndReadDocumentJson(
+    page,
+    `/__agent-forge/smiths/routing-edits/${refusedRequest.requestId}`,
   );
-  await reloadSettled(page);
-  const refusedReceiptResponse = await refusedRead;
-  expect(refusedReceiptResponse.status()).toBe(200);
-  const refusedEnvelope = (await refusedReceiptResponse.json()) as {
+  expect(refusedReceiptResponse.status).toBe(200);
+  const refusedEnvelope = refusedReceiptResponse.body as {
     data: unknown;
   };
   const refusedReceipt = smithRoutingEditReceiptSchema.parse(
@@ -1937,16 +1970,12 @@ test("a routing edit reply lost after publication recovers the exact original wi
     "/__agent-forge/config/smiths/routing-edits",
   ]);
   await page.unroute("**/config/smiths/routing-edits");
-  const originalRead = page.waitForResponse(
-    (response) =>
-      response.request().method() === "GET" &&
-      new URL(response.url()).pathname ===
-        `/__agent-forge/smiths/routing-edits/${String(posted["requestId"])}`,
+  const recovered = await reloadAndReadDocumentJson(
+    page,
+    `/__agent-forge/smiths/routing-edits/${String(posted["requestId"])}`,
   );
-  await reloadSettled(page);
-  const recovered = await originalRead;
-  expect(recovered.status()).toBe(200);
-  const body = (await recovered.json()) as { data: unknown };
+  expect(recovered.status).toBe(200);
+  const body = recovered.body as { data: unknown };
   const receipt = smithRoutingEditReceiptSchema.parse(body.data);
   expect(receipt.original).toEqual(posted);
   expect(receipt.inputHash).toBe(await smithRoutingEditInputHash(posted));

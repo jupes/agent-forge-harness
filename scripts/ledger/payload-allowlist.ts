@@ -138,13 +138,14 @@ function findingCounts(value: unknown): unknown {
 
 /** Payload keys whose value is an object or array, and the shape each is cut to. */
 const NESTED: Readonly<Record<string, (value: unknown) => unknown>> = {
-  // Only this currently implemented durable request family is authorized to
+  // Only these implemented durable request families are authorized to
   // correlate an action with a saved original. These fields remain bounded
   // identifiers/digests; request content never enters the audit payload.
   family: (value) =>
     value === "smith-config-edit" ||
     value === "smith-routing-edit" ||
-    value === "smith-config-create"
+    value === "smith-config-create" ||
+    value === "codex-chat-fork"
       ? value
       : DROP,
   requestId: (value) =>

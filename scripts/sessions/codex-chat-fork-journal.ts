@@ -519,6 +519,18 @@ export function createCodexChatForkJournal(
         ? record
         : null;
     },
+    /** Reads the entire authenticated chain before returning a complete scoped list. */
+    list(projectId: string): CodexChatForkOriginal[] {
+      if (!sessionProjectIdSchema.safeParse(projectId).success)
+        return conflict();
+      const chain = loadChain(storage);
+      return [...chain.originals.values()]
+        .filter(
+          (record) =>
+            record.projectId === projectId && record.workspaceKey === workspace,
+        )
+        .sort((left, right) => left.requestId.localeCompare(right.requestId));
+    },
     async markAttempted(raw: CodexChatForkOriginalRef) {
       const expected = checkedRef(raw, workspace);
       return runExclusive(async () => {

@@ -244,3 +244,43 @@ test("Smith create actions retain only their fixed identity metadata", () => {
     inputHash: "a".repeat(64),
   });
 });
+
+describe("stripPayload: Codex Chat Fork action identity", () => {
+  test("keeps only the approved Fork family and bounded original correlation", () => {
+    expect(
+      stripPayload("operator.action", {
+        action: "session.fork",
+        surface: "api",
+        target:
+          "codex-chat-fork:project-a5832fa0-7a21-403b-8184-44892f0d8d86:session-e2772860-2001-4ac0-88ca-56d81f7c518a",
+        family: "codex-chat-fork",
+        requestId: "80e40be9-e811-47c3-a71d-b988e67178a0",
+        inputHash: "b".repeat(64),
+        throughTurnRequestId: "private turn id",
+        sourceSeal: { parentTurnHash: "private seal" },
+        prompt: "private Chat prompt",
+      }),
+    ).toEqual({
+      action: "session.fork",
+      surface: "api",
+      target:
+        "codex-chat-fork:project-a5832fa0-7a21-403b-8184-44892f0d8d86:session-e2772860-2001-4ac0-88ca-56d81f7c518a",
+      family: "codex-chat-fork",
+      requestId: "80e40be9-e811-47c3-a71d-b988e67178a0",
+      inputHash: "b".repeat(64),
+    });
+  });
+
+  test("still drops unrecognized families and malformed Fork correlation", () => {
+    expect(
+      stripPayload("operator.action", {
+        action: "session.fork",
+        surface: "api",
+        family: "private request data",
+        requestId: "not-a-uuid",
+        inputHash: "not-a-digest",
+        prompt: "private Chat prompt",
+      }),
+    ).toEqual({ action: "session.fork", surface: "api" });
+  });
+});

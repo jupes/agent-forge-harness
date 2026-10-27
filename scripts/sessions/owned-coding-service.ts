@@ -1,10 +1,15 @@
 import { createHash } from "node:crypto";
+import type { CodexChatForkOriginal } from "../../types/codex-chat-fork";
 import type { CodexChatDecisionRequest } from "../../types/codex-owned-chat";
 import type { OwnedCodingSessionRecord } from "../../types/codex-owned-task";
 import type { ConversationObject } from "../../types/conversation";
 import type { GeminiChatDecisionRequest } from "../../types/gemini-owned-chat";
 import type { OwnedSessionMetadata } from "../../types/owned-session";
 import type { ClaudeSessionLaunch } from "../../types/session-launch";
+import type {
+  CodexChatForkIdentityMetadata,
+  SessionOperationIdentityPage,
+} from "../../types/session-operation-identities";
 import type {
   SessionStartIdentityMetadata,
   SessionStartIdentityPage,
@@ -27,6 +32,11 @@ import {
 import { resolveCheckout } from "../ledger/workspace";
 import { workspaceKey } from "../projects/scope";
 import { createOwnedSessionService, type SessionRuntime } from "./admission";
+import {
+  CodexChatForkOriginalConflict,
+  createCodexChatForkCoordinator,
+} from "./codex-chat-fork-coordinator";
+import { CodexChatForkJournalError } from "./codex-chat-fork-journal";
 import { createCodexOwnedChatService } from "./codex-chat-owned-admission";
 import { parseCodexChatDecision } from "./codex-chat-owned-protocol";
 import type { createCodexChatRuntime } from "./codex-chat-runtime";
@@ -44,6 +54,7 @@ import type { createGeminiTaskRuntime } from "./gemini-task-runtime";
 import { requireOrdinarySession } from "./managed-origin";
 import { createSessionRegistry } from "./registry";
 import { readVerifiedOriginalStart } from "./restart-identity-proof";
+import { readSessionOperationIdentityPage } from "./session-operation-identities-protocol";
 
 export const unavailableCodexTaskRuntime: ReturnType<
   typeof createCodexTaskRuntime
@@ -144,6 +155,13 @@ export function createOwnedCodingSessionService(options: {
       return proof.kind === "verified" ? proof.value : null;
     },
   });
+  const forkCoordinator = createCodexChatForkCoordinator({
+    root: options.root,
+    home: options.home,
+    runtime: options.codexChatRuntime ?? unavailableCodexChatRuntime,
+    validateScope: (parent, about = [], launch) =>
+      options.validateScope(parent.projectId, parent, about, launch),
+  });
   const held = () =>
     new ConversationError(
       503,
@@ -173,6 +191,33 @@ export function createOwnedCodingSessionService(options: {
       state: row.state,
     } satisfies SessionStartIdentityMetadata;
   };
+  const forkMetadata = (
+    row: CodexChatForkOriginal,
+  ): CodexChatForkIdentityMetadata => ({
+    family: "codex-chat-fork",
+    requestId: row.requestId,
+    requestHash: row.requestHash,
+    parentSessionId: row.parentSessionId,
+    throughTurnRequestId: row.throughTurnRequestId,
+    state: row.state,
+    ...(row.state === "linked"
+      ? { childSessionId: row.childAppSessionId }
+      : {}),
+    ...(row.state === "held" ? { heldReason: row.heldReason } : {}),
+  });
+  const forkJournalFailure = (error: CodexChatForkJournalError) =>
+    new ConversationError(
+      error.reason === "conflict"
+        ? 409
+        : error.reason === "missing"
+          ? 404
+          : 503,
+      error.reason === "conflict"
+        ? "This Codex Fork UUID belongs to another immutable original."
+        : error.reason === "missing"
+          ? "The exact Codex Fork original is not present in this trusted workspace."
+          : "The private Codex Fork journal is held or unavailable.",
+    );
   const identityFor = (
     projectId: string,
     raw: unknown,
@@ -345,6 +390,92 @@ export function createOwnedCodingSessionService(options: {
         throw new ConversationError(
           503,
           "Session Start identities are unavailable.",
+        );
+      }
+    },
+    async fork(
+      projectId: string,
+      parentSessionId: string,
+      request: unknown,
+      auditEventId: number,
+    ): Promise<CodexChatForkIdentityMetadata> {
+      if (!Number.isSafeInteger(auditEventId) || auditEventId <= 0)
+        throw new ConversationError(
+          503,
+          "A confirmed operator audit receipt is required before Fork.",
+        );
+      try {
+        await forkCoordinator.fork({
+          projectId,
+          parentSessionId,
+          request,
+          auditEventId,
+        });
+        const original = forkCoordinator.readOriginal(
+          projectId,
+          typeof request === "object" &&
+            request !== null &&
+            "requestId" in request &&
+            typeof request.requestId === "string"
+            ? request.requestId
+            : "",
+        );
+        if (!original)
+          throw new ConversationError(
+            503,
+            "The Fork original could not be read back; its identity remains unconfirmed.",
+          );
+        return forkMetadata(original);
+      } catch (error) {
+        if (error instanceof ConversationError) throw error;
+        if (error instanceof CodexChatForkOriginalConflict)
+          throw new ConversationError(
+            409,
+            "This Fork UUID belongs to another immutable source.",
+          );
+        if (error instanceof CodexChatForkJournalError)
+          throw forkJournalFailure(error);
+        throw new ConversationError(
+          503,
+          "The Codex Fork could not be safely verified; its original remains authoritative.",
+        );
+      }
+    },
+    readForkOriginal(projectId: string, requestId: string) {
+      try {
+        const original = forkCoordinator.readOriginal(projectId, requestId);
+        if (!original)
+          throw new ConversationError(
+            404,
+            "The exact Codex Fork original is not present in this trusted workspace.",
+          );
+        return forkMetadata(original);
+      } catch (error) {
+        if (error instanceof ConversationError) throw error;
+        if (error instanceof CodexChatForkJournalError)
+          throw forkJournalFailure(error);
+        throw new ConversationError(
+          503,
+          "The private Codex Fork journal is unavailable.",
+        );
+      }
+    },
+    async listOperationIdentities(
+      projectId: string,
+    ): Promise<SessionOperationIdentityPage> {
+      try {
+        return await readSessionOperationIdentityPage({
+          projectId,
+          workspace,
+          readStarts: async () =>
+            (await identities.list(scopeFor(projectId))).map(metadata),
+          readForks: async () =>
+            forkCoordinator.listOriginals(projectId).map(forkMetadata),
+        });
+      } catch {
+        throw new ConversationError(
+          503,
+          "The complete session operation identity page is unavailable.",
         );
       }
     },
