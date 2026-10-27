@@ -634,6 +634,149 @@ test("ambiguous reservation stays on its exact UUID when discovery is empty or t
   }
 });
 
+test("attempted and held dispatch readbacks cannot release an unresolved parent reservation", async () => {
+  for (const state of ["attempted", "held"] as const) {
+    const calls: Array<{ method: string; path: string; body?: unknown }> = [],
+      intent = { requestId, throughTurnRequestId },
+      reserved: CodexChatForkIdentityMetadata = {
+        family: "codex-chat-fork",
+        requestId,
+        requestHash,
+        parentSessionId,
+        throughTurnRequestId,
+        state: "reserved",
+      },
+      outcome: CodexChatForkIdentityMetadata =
+        state === "held"
+          ? {
+              ...reserved,
+              state,
+              heldReason: "unknown-native-outcome",
+            }
+          : { ...reserved, state };
+    let requestIds = 0,
+      identityReads = 0,
+      reservePosts = 0,
+      forkPosts = 0,
+      generation = 3;
+    const module = await loadForkClient(),
+      client = module.createCodexChatForkClient({
+        currentScope: () => ({ projectId, workspace, generation }),
+        canWrite: () => true,
+        requestId: () => {
+          requestIds++;
+          return requestIds === 1
+            ? requestId
+            : "b2a3a3c8-e9fa-4f45-8ba8-a29a3ee0fa01";
+        },
+        read: (async (path, init) => {
+          calls.push({ method: init?.method ?? "GET", path });
+          if (path.includes("/fork-review?"))
+            return envelope(
+              sourcePage({
+                frames: [
+                  {
+                    kind: "user",
+                    seq: 1,
+                    turnId: throughTurnRequestId,
+                    at: "2026-10-23T03:00:00.000Z",
+                    text: "PRIVATE original prompt",
+                    about: [],
+                  },
+                ],
+                complete: true,
+                nextCursor: null,
+              }),
+            );
+          const pathname = requestPath(path);
+          if (pathname.endsWith("/session-operation-identities")) {
+            identityReads++;
+            return envelope({
+              version: 1,
+              scope: { projectId, workspace },
+              operations: [],
+            });
+          }
+          throw new Error(`Unexpected GET ${path}`);
+        }) satisfies OperatorRead,
+        post: (async (path, body) => {
+          calls.push({ method: "POST", path, body: structuredClone(body) });
+          if (path.endsWith("/fork-reservations")) {
+            reservePosts++;
+            return envelope(reserved);
+          }
+          if (path.endsWith("/forks")) {
+            forkPosts++;
+            return envelope(outcome, 202);
+          }
+          throw new Error(`Unexpected POST ${path}`);
+        }) satisfies OperatorPost,
+      });
+
+    try {
+      const firstSource = await client.reviewSource({
+        projectId,
+        parentSessionId,
+        throughTurnRequestId,
+      });
+      await client.reserveFork({
+        projectId,
+        parentSessionId,
+        throughTurnRequestId,
+        source: firstSource,
+      });
+      await expect(
+        client.dispatchReservedFork(projectId, requestId),
+      ).resolves.toEqual({ state: "held" });
+
+      await expect(client.listOriginals(projectId)).resolves.toEqual([outcome]);
+      expect(await client.recoverOriginal(projectId, requestId)).toMatchObject({
+        state: "held",
+        identity: outcome,
+        original: null,
+        context: null,
+      });
+      const refreshedSource = await client.reviewSource({
+        projectId,
+        parentSessionId,
+        throughTurnRequestId,
+      });
+      await expect(
+        client.reserveFork({
+          projectId,
+          parentSessionId,
+          throughTurnRequestId,
+          source: refreshedSource,
+        }),
+      ).resolves.toEqual(outcome);
+      expect(requestIds).toBe(1);
+      expect(reservePosts).toBe(1);
+      expect(forkPosts).toBe(1);
+      expect(identityReads).toBe(2);
+
+      generation++;
+      const changedScopeSource = await client.reviewSource({
+        projectId,
+        parentSessionId,
+        throughTurnRequestId,
+      });
+      await expect(
+        client.reserveFork({
+          projectId,
+          parentSessionId,
+          throughTurnRequestId,
+          source: changedScopeSource,
+        }),
+      ).rejects.toThrow();
+      expect(requestIds).toBe(1);
+      expect(reservePosts).toBe(1);
+      expect(forkPosts).toBe(1);
+    } finally {
+      client.dispose();
+    }
+  }
+});
+
 test("a changed scope or mixed source page cannot become a reserveable review", async () => {
   let generation = 3,
     calls = 0,
