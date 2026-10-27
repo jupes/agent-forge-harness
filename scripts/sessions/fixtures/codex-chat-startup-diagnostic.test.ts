@@ -213,13 +213,12 @@ test("per-run histories are isolated and late persistence cannot mutate a record
   second.observeRuntimePhase("provider-pid-wait-rejected", true);
 
   let releasePersist!: () => void;
-  const pending = first
-    .wrapPersist(
-      () =>
-        new Promise<void>((resolve) => {
-          releasePersist = resolve;
-        }),
-    )(processEvent);
+  const pending = first.wrapPersist(
+    () =>
+      new Promise<void>((resolve) => {
+        releasePersist = resolve;
+      }),
+  )(processEvent);
   first.finish("unknown");
   second.finish("failed");
   releasePersist();
@@ -233,8 +232,6 @@ test("per-run histories are isolated and late persistence cannot mutate a record
     ],
   });
   expect(facts[1]).toMatchObject({
-    events: [
-      { phase: "provider-pid-wait-rejected", signalAborted: true },
-    ],
+    events: [{ phase: "provider-pid-wait-rejected", signalAborted: true }],
   });
 });
