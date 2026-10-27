@@ -289,6 +289,123 @@ test("an explicit project Keeper Smith round-trips through the protected create 
   expect(auditText).not.toContain(original.name);
 });
 
+test("project color IDs round-trip through audited reservations without exposing the private identity", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  h.bd.issues.set("alpha-epic", {
+    id: "alpha-epic",
+    title: "Color project epic",
+    issue_type: "epic",
+    priority: 2,
+    status: "open",
+    labels: ["project:color-project"],
+    created_at: "2026-10-26T00:00:00.000Z",
+    updated_at: "2026-10-26T00:00:00.000Z",
+  });
+  h.bd.answer = (args) =>
+    args[0] === "export"
+      ? {
+          status: 0,
+          stdout: [...h.bd.issues.values()]
+            .map((issue) => JSON.stringify(issue))
+            .join("\n"),
+          stderr: "",
+        }
+      : undefined;
+  const requestId = "15a475a2-62a7-4f96-8c42-f6feefcaef8a";
+  const original = {
+    slug: "color-project",
+    name: "Color project",
+    description: "A bounded presentation color",
+    icon: "C",
+    color: "green" as const,
+    workspaces: [
+      {
+        root: h.workspace,
+        repositories: [h.workspace],
+        epicIds: ["alpha-epic"],
+      },
+    ],
+  };
+  const headers = h.headers(h.hearth.token);
+  const reserve = await fetch(`${h.api}/projects/create-reservations`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      requestId,
+      expectedCatalogRevision: 0,
+      original,
+    }),
+  });
+  expect(reserve.status).toBe(201);
+  expect(await reserve.json()).toMatchObject({
+    ok: true,
+    data: { requestId, state: "reserved", original },
+    error: null,
+  });
+  const reservation = createProjectStore(h.home).readCreate(requestId);
+  expect(reservation?.original).toEqual(original);
+  if (!reservation) throw new Error("Color project reservation missing");
+
+  const exact = await fetch(
+    `${h.api}/projects/create-reservations/${requestId}`,
+    { headers },
+  );
+  expect(exact.status).toBe(200);
+  expect(await exact.json()).toMatchObject({
+    ok: true,
+    data: {
+      requestId,
+      requestHash: reservation.requestHash,
+      original,
+      state: "reserved",
+    },
+    error: null,
+  });
+  const commit = await fetch(
+    `${h.api}/projects/create-reservations/${requestId}/commit`,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        requestHash: reservation.requestHash,
+        reviewedScopeHash: reservation.scopeHash,
+      }),
+    },
+  );
+  expect(commit.status).toBe(200);
+  expect(createProjectStore(h.home).read().projects[0]).toMatchObject({
+    slug: original.slug,
+    color: original.color,
+  });
+  const publicCatalog = await fetch(`${h.api}/projects`, { headers });
+  const publicBody: unknown = await publicCatalog.json();
+  expect(publicBody).toMatchObject({
+    ok: true,
+    data: { projects: [{ slug: original.slug, color: original.color }] },
+    error: null,
+  });
+  expect(JSON.stringify(publicBody)).not.toContain("createOperations");
+  expect(JSON.stringify(publicBody)).not.toContain(requestId);
+  expect(h.events(["operator.action"])).toHaveLength(2);
+  const auditText = JSON.stringify(h.events(["operator.action"]));
+  expect(auditText).not.toContain(original.color);
+  expect(auditText).not.toContain(original.name);
+
+  const invalid = await fetch(`${h.api}/projects/create-reservations`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      requestId: "4a8511e2-776a-43b7-9a5e-a34132bf27d8",
+      expectedCatalogRevision: 1,
+      original: { ...original, slug: "invalid-color", color: "#dcf1e6" },
+    }),
+  });
+  expect(invalid.status).toBe(400);
+  expect(createProjectStore(h.home).read().createOperations).toHaveLength(1);
+  expect(h.events(["operator.action"])).toHaveLength(2);
+});
+
 test("missing and disabled explicit Keeper names refuse before reserving a project", async () => {
   const h = await startTestHearth();
   opened.push(h);
