@@ -16,8 +16,12 @@ import {
   test,
 } from "@playwright/test";
 import { z } from "zod";
+import { SMITH_CREATE_IDENTITIES } from "../../apps/desktop/src/smith-create-identities";
 import { smithRoutingEditInputHash } from "../../apps/desktop/src/smith-routing-edit-identities";
-import { canonicalSmithConfigCreateRequest } from "../../scripts/config/smith-create-protocol";
+import {
+  canonicalSmithConfigCreateRequest,
+  smithConfigCreateRequestSchema,
+} from "../../scripts/config/smith-create-protocol";
 import { smithEditInputHash } from "../../scripts/config/smith-edit-journal-protocol";
 import { canonicalSmithConfigEditRequest } from "../../scripts/config/smith-edit-protocol";
 import {
@@ -350,6 +354,9 @@ test("creates a reviewed Smith in the temporary workspace config and recovers it
 }) => {
   const starts = providerStarts(),
     posts: string[] = [],
+    createdOriginal: { value: Record<string, unknown> | null } = {
+      value: null,
+    },
     createdName = `browser-create-${randomUUID().replaceAll("-", "").slice(0, 12)}`;
   page.on("request", (request) => {
     if (
@@ -357,6 +364,11 @@ test("creates a reviewed Smith in the temporary workspace config and recovers it
       request.url().includes("/__agent-forge/")
     )
       posts.push(new URL(request.url()).pathname);
+    if (
+      request.method() === "POST" &&
+      new URL(request.url()).pathname === "/__agent-forge/config/smiths/creates"
+    )
+      createdOriginal.value = request.postDataJSON() as Record<string, unknown>;
   });
   const fixtureRoot = checkedFixtureRoot();
   checkedOsHome();
@@ -436,48 +448,110 @@ test("creates a reviewed Smith in the temporary workspace config and recovers it
   ).toBe(true);
   expect(posts).toEqual([
     "/__agent-forge/config/smiths/preview",
+    "/__agent-forge/config/smiths/creates/reserve",
     "/__agent-forge/config/smiths/creates",
   ]);
 
-  const originalRead = page.waitForResponse(
-    (response) =>
-      response.request().method() === "GET" &&
-      new URL(response.url()).pathname.startsWith(
-        "/__agent-forge/smiths/creates/",
-      ),
+  await page.evaluate(
+    (key) => localStorage.removeItem(key),
+    SMITH_CREATE_IDENTITIES,
   );
+  const identityIndex = page.waitForResponse(
+      (response) =>
+        response.request().method() === "GET" &&
+        new URL(response.url()).pathname === "/__agent-forge/smiths/creates",
+    ),
+    originalRead = page
+      .waitForResponse(
+        (response) =>
+          response.request().method() === "GET" &&
+          new URL(response.url()).pathname.startsWith(
+            "/__agent-forge/smiths/creates/",
+          ),
+      )
+      .then(async (response) => ({
+        pathname: new URL(response.url()).pathname,
+        status: response.status(),
+        body: await response.json(),
+      }));
   await reloadSettled(page);
-  expect((await originalRead).status()).toBe(200);
+  const indexReply = await identityIndex;
+  expect(indexReply.status()).toBe(200);
+  const indexEnvelope = await indexReply.json();
+  const exactRequest = createdOriginal.value;
+  if (!exactRequest) throw Error("The create request was not observed.");
+  expect(indexEnvelope.data.entries).toContainEqual({
+    requestId: exactRequest.requestId,
+    ownerScopeHash: expect.any(String),
+    inputHash: createHash("sha256")
+      .update(canonicalSmithConfigCreateRequest(exactRequest))
+      .digest("hex"),
+    target: "workspace",
+    state: "confirmed",
+    stage: "terminal",
+    createdAt: expect.any(String),
+  });
+  const recovered = await originalRead;
+  expect(recovered.status).toBe(200);
+  expect(recovered.pathname).toBe(
+    `/__agent-forge/smiths/creates/${exactRequest.requestId}`,
+  );
+  expect(recovered.body.data.original).toEqual(exactRequest);
+  expect(recovered.body.data.inputHash).toBe(
+    createHash("sha256")
+      .update(canonicalSmithConfigCreateRequest(exactRequest))
+      .digest("hex"),
+  );
   await expect(
     page.getByRole("region", { name: "Original Smith create receipts" }),
   ).toContainText(createdName);
   expect(posts).toEqual([
     "/__agent-forge/config/smiths/preview",
+    "/__agent-forge/config/smiths/creates/reserve",
     "/__agent-forge/config/smiths/creates",
   ]);
+  expect(
+    await page.evaluate(
+      (key) => localStorage.getItem(key),
+      SMITH_CREATE_IDENTITIES,
+    ),
+  ).toBeNull();
   expect(providerStarts()).toEqual(starts);
 });
 
-test("a source-proven NotSent retires across reload, while a lost response stays held on 404", async ({
+test("a source-proven reservation NotSent leaves the server clear across reload", async ({
   page,
 }) => {
   const starts = providerStarts(),
     posts: string[] = [],
-    originalReads: number[] = [],
+    originalReads: { requestId: string; status: number }[] = [],
+    reservedRequestId = { value: null as string | null },
     notSentName = `browser-not-sent-${randomUUID().replaceAll("-", "").slice(0, 12)}`;
   page.on("request", (request) => {
     const path = new URL(request.url()).pathname;
     if (request.method() === "POST" && path.startsWith("/__agent-forge/"))
       posts.push(path);
+    if (
+      request.method() === "POST" &&
+      path === "/__agent-forge/config/smiths/creates/reserve"
+    ) {
+      const parsed = smithConfigCreateRequestSchema.safeParse(
+        request.postDataJSON(),
+      );
+      if (parsed.success) reservedRequestId.value = parsed.data.requestId;
+    }
   });
   page.on("response", (response) => {
+    const path = new URL(response.url()).pathname,
+      prefix = "/__agent-forge/smiths/creates/";
     if (
       response.request().method() === "GET" &&
-      new URL(response.url()).pathname.startsWith(
-        "/__agent-forge/smiths/creates/",
-      )
+      path.startsWith(prefix)
     )
-      originalReads.push(response.status());
+      originalReads.push({
+        requestId: path.slice(prefix.length),
+        status: response.status(),
+      });
   });
   checkedOsHome();
   if (!isRunHome(HEARTH_HOME) || !checkedFixtureRoot())
@@ -497,14 +571,14 @@ test("a source-proven NotSent retires across reload, while a lost response stays
     dialog.getByRole("region", { name: "Candidate review" }),
   ).toBeVisible();
 
-  await page.route("**/config/smiths/creates", (route) =>
+  await page.route("**/config/smiths/creates/reserve", (route) =>
     route.fulfill({
       status: 403,
       contentType: "application/json",
       body: JSON.stringify({
         ok: false,
         data: null,
-        error: "Operator access refused before any effect.",
+        error: "Operator access refused before reservation.",
       }),
     }),
   );
@@ -512,23 +586,30 @@ test("a source-proven NotSent retires across reload, while a lost response stays
     (response) =>
       response.request().method() === "POST" &&
       new URL(response.url()).pathname ===
-        "/__agent-forge/config/smiths/creates",
+        "/__agent-forge/config/smiths/creates/reserve",
   );
   await dialog.getByRole("button", { name: "Create Smith" }).click();
   expect((await refused).status()).toBe(403);
+  if (!reservedRequestId.value)
+    throw Error("The refused reserve request ID was not observed.");
   await expect(
-    page.getByRole("region", { name: "Original Smith create receipts" }),
-  ).toContainText("Not sent");
+    dialog.locator('[role="status"]').filter({
+      hasText: "No server reservation or create was recorded",
+    }),
+  ).toBeVisible();
   expect(
     readFileSync(join(REPOSITORY, "agent-forge.toml"), "utf8"),
   ).not.toContain(`[smiths.${notSentName}]`);
-  await page.unroute("**/config/smiths/creates");
+  await page.unroute("**/config/smiths/creates/reserve");
 
   await reloadSettled(page);
-  await expect(
-    page.getByRole("region", { name: "Original Smith create receipts" }),
-  ).toContainText("Not sent");
-  expect(originalReads).toEqual([]);
+  const receipts = page.getByRole("region", {
+    name: "Original Smith create receipts",
+  });
+  await expect(receipts).not.toContainText(notSentName);
+  expect(originalReads).not.toContainEqual(
+    expect.objectContaining({ requestId: reservedRequestId.value }),
+  );
   await page.getByRole("button", { name: "New smith", exact: true }).click();
   const afterReloadDialog = page.getByRole("dialog", {
     name: "Create a Smith",
@@ -552,6 +633,12 @@ test("a source-proven NotSent retires across reload, while a lost response stays
   await expect(
     afterReloadDialog.getByRole("region", { name: "Candidate review" }),
   ).toContainText(afterReload);
+  const reserveAgain = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname ===
+        "/__agent-forge/config/smiths/creates/reserve",
+  );
   const created = page.waitForResponse(
     (response) =>
       response.request().method() === "POST" &&
@@ -562,9 +649,187 @@ test("a source-proven NotSent retires across reload, while a lost response stays
     .getByRole("button", { name: "Create Smith", exact: true })
     .click();
   expect((await created).status()).toBe(200);
+  expect((await reserveAgain).status()).toBe(200);
   expect(readFileSync(join(REPOSITORY, "agent-forge.toml"), "utf8")).toContain(
     `[smiths.${afterReload}]`,
   );
+  expect(providerStarts()).toEqual(starts);
+});
+
+test("a NotSent create POST can only continue or retire its server-reserved original explicitly", async ({
+  page,
+}) => {
+  const starts = providerStarts(),
+    posts: string[] = [],
+    savedOriginal: { value: Record<string, unknown> | null } = { value: null },
+    name = `browser-reserved-${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+  page.on("request", (request) => {
+    const path = new URL(request.url()).pathname;
+    if (request.method() === "POST" && path.startsWith("/__agent-forge/"))
+      posts.push(path);
+    if (
+      request.method() === "POST" &&
+      path === "/__agent-forge/config/smiths/creates"
+    )
+      savedOriginal.value = request.postDataJSON() as Record<string, unknown>;
+  });
+  checkedOsHome();
+  if (!isRunHome(HEARTH_HOME) || !checkedFixtureRoot())
+    throw Error("Smith reservation recovery requires owned temporary homes.");
+
+  await page.setViewportSize({ width: 1100, height: 700 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await openSettled(page, "/index.html#/desktop/smiths");
+  await page.getByRole("button", { name: "New smith", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Create a Smith" });
+  await dialog.getByLabel("Smith name").fill(name);
+  await dialog.getByLabel("Provider").fill("codex");
+  await dialog.getByLabel("Model").fill("browser-reserved-model");
+  await dialog.getByLabel("Effort").fill("high");
+  await dialog.getByRole("button", { name: "Review candidate" }).click();
+  await expect(
+    dialog.getByRole("region", { name: "Candidate review" }),
+  ).toBeVisible();
+
+  await page.route("**/config/smiths/creates", (route) =>
+    route.fulfill({
+      status: 403,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: false,
+        data: null,
+        error: "Create was refused before its effect.",
+      }),
+    }),
+  );
+  const notSent = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname ===
+        "/__agent-forge/config/smiths/creates",
+  );
+  await dialog.getByRole("button", { name: "Create Smith" }).click();
+  expect((await notSent).status()).toBe(403);
+  const original = smithConfigCreateRequestSchema.safeParse(
+    savedOriginal.value,
+  );
+  if (!original.success)
+    throw Error("The reserved original request was not observed.");
+  const exactRequest = original.data;
+  await expect(
+    page.getByRole("region", { name: "Original Smith create receipts" }),
+  ).toContainText("server reservation remains held");
+  expect(
+    readFileSync(join(REPOSITORY, "agent-forge.toml"), "utf8"),
+  ).not.toContain(`[smiths.${name}]`);
+  await page.unroute("**/config/smiths/creates");
+
+  await page.evaluate(
+    (key) => localStorage.removeItem(key),
+    SMITH_CREATE_IDENTITIES,
+  );
+  const indexRead = page.waitForResponse(
+      (response) =>
+        response.request().method() === "GET" &&
+        new URL(response.url()).pathname === "/__agent-forge/smiths/creates",
+    ),
+    originalRead = page.waitForResponse(
+      (response) =>
+        response.request().method() === "GET" &&
+        new URL(response.url()).pathname ===
+          `/__agent-forge/smiths/creates/${exactRequest.requestId}`,
+    );
+  await reloadSettled(page);
+  const index = await (await indexRead).json();
+  await expect(
+    page.getByRole("region", { name: "Original Smith create receipts" }),
+  ).toContainText(name);
+  const originalResponse = await originalRead;
+  expect(originalResponse.status()).toBe(200);
+  const originalEnvelope = await originalResponse.json();
+  const originalId = exactRequest.requestId;
+  if (
+    typeof originalId !== "string" ||
+    typeof originalEnvelope.data.inputHash !== "string"
+  )
+    throw Error("The reserved original identity was not valid.");
+  const originalHash: string = originalEnvelope.data.inputHash;
+  expect(new URL(originalResponse.url()).pathname).toBe(
+    `/__agent-forge/smiths/creates/${originalId}`,
+  );
+  expect(originalEnvelope.data.original).toEqual(exactRequest);
+  expect(originalEnvelope.data.result).toMatchObject({
+    phase: "held",
+    stage: "reserved",
+  });
+  expect(index.data.entries).toContainEqual(
+    expect.objectContaining({
+      requestId: exactRequest.requestId,
+      inputHash: createHash("sha256")
+        .update(canonicalSmithConfigCreateRequest(exactRequest))
+        .digest("hex"),
+      target: "workspace",
+      state: "reserved",
+      stage: "reserved",
+    }),
+  );
+  const entries = page.getByRole("region", {
+    name: "Original Smith create receipts",
+  });
+  const retire = entries.getByRole("button", {
+    name: "Retire this reservation",
+    exact: true,
+  });
+  await expect(retire).toBeEnabled();
+  const reservationCard = entries.locator("article").filter({
+    hasText: originalId,
+  });
+  await expect(reservationCard).toContainText(originalId);
+  await expect(reservationCard).toContainText(originalHash);
+  await expect(
+    reservationCard.getByRole("button", {
+      name: "Continue this exact saved original",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(retire).toBeVisible();
+  if (process.env["AGENT_FORGE_WORKTREE_SCREENSHOT_DIR"])
+    await reservationCard.screenshot({
+      path: screenshotPath("smith-create-server-reserved-original.png"),
+      animations: "disabled",
+      mask: [
+        reservationCard.locator("dd").filter({ hasText: REPOSITORY }),
+        reservationCard.locator("dd").filter({ hasText: HEARTH_HOME }),
+      ],
+    });
+  expect(posts.slice(0, 3)).toEqual([
+    "/__agent-forge/config/smiths/preview",
+    "/__agent-forge/config/smiths/creates/reserve",
+    "/__agent-forge/config/smiths/creates",
+  ]);
+
+  const retired = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname.endsWith("/retire"),
+  );
+  await retire.click();
+  expect((await retired).status()).toBe(200);
+  await expect(entries).toContainText(
+    "explicitly retired before any create attempt",
+  );
+  expect(posts.slice(0, 3)).toEqual([
+    "/__agent-forge/config/smiths/preview",
+    "/__agent-forge/config/smiths/creates/reserve",
+    "/__agent-forge/config/smiths/creates",
+  ]);
+  expect(posts.at(-1)).toMatch(/\/config\/smiths\/creates\/[^/]+\/retire$/);
+  await page.getByRole("button", { name: "New smith", exact: true }).click();
+  await expect(
+    page
+      .getByRole("dialog", { name: "Create a Smith" })
+      .getByRole("button", { name: "Review candidate" }),
+  ).toBeEnabled();
   expect(providerStarts()).toEqual(starts);
 });
 
@@ -573,7 +838,7 @@ test("a correlated stale-revision refusal reads back its exact original after re
 }) => {
   const starts = providerStarts(),
     posts: string[] = [],
-    originalReads: number[] = [],
+    originalReads: { requestId: string; status: number }[] = [],
     name = `browser-refused-${randomUUID().replaceAll("-", "").slice(0, 12)}`;
   page.on("request", (request) => {
     const path = new URL(request.url()).pathname;
@@ -581,13 +846,16 @@ test("a correlated stale-revision refusal reads back its exact original after re
       posts.push(path);
   });
   page.on("response", (response) => {
+    const path = new URL(response.url()).pathname,
+      prefix = "/__agent-forge/smiths/creates/";
     if (
       response.request().method() === "GET" &&
-      new URL(response.url()).pathname.startsWith(
-        "/__agent-forge/smiths/creates/",
-      )
+      path.startsWith(prefix)
     )
-      originalReads.push(response.status());
+      originalReads.push({
+        requestId: path.slice(prefix.length),
+        status: response.status(),
+      });
   });
   checkedOsHome();
   if (!isRunHome(HEARTH_HOME) || !checkedFixtureRoot())
@@ -674,7 +942,10 @@ test("a correlated stale-revision refusal reads back its exact original after re
   const receipt = recovered.body as {
     data: {
       inputHash: string;
-      original: { smith: { name: string; model: string } };
+      original: {
+        requestId: string;
+        smith: { name: string; model: string };
+      };
       result: { phase: string; reason?: string };
     };
   };
@@ -697,33 +968,54 @@ test("a correlated stale-revision refusal reads back its exact original after re
   await expect(
     page.getByRole("region", { name: "Original Smith create receipts" }),
   ).toContainText("stale-revision");
-  expect(originalReads).toEqual([200]);
+  expect(originalReads).toContainEqual({
+    requestId: receipt.data.original.requestId,
+    status: 200,
+  });
   expect(posts).toEqual([
     "/__agent-forge/config/smiths/preview",
+    "/__agent-forge/config/smiths/creates/reserve",
     "/__agent-forge/config/smiths/creates",
   ]);
   expect(providerStarts()).toEqual(starts);
 });
 
-test("an unavailable create response remains held when the protected original returns 404", async ({
-  page,
-}) => {
+const unavailableCreateHeldTest = async ({ page }: { page: Page }) => {
   const posts: string[] = [],
-    originalReads: number[] = [],
+    originalReads: { requestId: string; status: number }[] = [],
+    requestId = { value: null as string | null },
+    inputHash = { value: null as string | null },
     name = `browser-uncertain-${randomUUID().replaceAll("-", "").slice(0, 12)}`;
   page.on("request", (request) => {
     const path = new URL(request.url()).pathname;
     if (request.method() === "POST" && path.startsWith("/__agent-forge/"))
       posts.push(path);
+    if (
+      request.method() === "POST" &&
+      path === "/__agent-forge/config/smiths/creates/reserve"
+    ) {
+      const parsed = smithConfigCreateRequestSchema.safeParse(
+        request.postDataJSON(),
+      );
+      if (parsed.success) {
+        requestId.value = parsed.data.requestId;
+        inputHash.value = createHash("sha256")
+          .update(canonicalSmithConfigCreateRequest(parsed.data))
+          .digest("hex");
+      }
+    }
   });
   page.on("response", (response) => {
+    const path = new URL(response.url()).pathname,
+      prefix = "/__agent-forge/smiths/creates/";
     if (
       response.request().method() === "GET" &&
-      new URL(response.url()).pathname.startsWith(
-        "/__agent-forge/smiths/creates/",
-      )
+      path.startsWith(prefix)
     )
-      originalReads.push(response.status());
+      originalReads.push({
+        requestId: path.slice(prefix.length),
+        status: response.status(),
+      });
   });
   checkedOsHome();
   if (!isRunHome(HEARTH_HOME) || !checkedFixtureRoot())
@@ -749,6 +1041,19 @@ test("an unavailable create response remains held when the protected original re
       body: JSON.stringify({ ok: false, data: null, error: "unavailable" }),
     }),
   );
+  await page.route("**/__agent-forge/smiths/creates/*", (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (
+      !requestId.value ||
+      path !== `/__agent-forge/smiths/creates/${requestId.value}`
+    )
+      return route.continue();
+    return route.fulfill({
+      status: 404,
+      contentType: "application/json",
+      body: JSON.stringify({ ok: false, data: null, error: "missing" }),
+    });
+  });
   const unavailable = page.waitForResponse(
     (response) =>
       response.request().method() === "POST" &&
@@ -757,23 +1062,41 @@ test("an unavailable create response remains held when the protected original re
   );
   await dialog.getByRole("button", { name: "Create Smith" }).click();
   expect((await unavailable).status()).toBe(503);
-  await expect(
-    page.getByRole("region", { name: "Original Smith create receipts" }),
-  ).toContainText("Outcome held");
+  if (!requestId.value || !inputHash.value)
+    throw Error("The reserved request identity was not observed.");
+  const receipts = page.getByRole("region", {
+      name: "Original Smith create receipts",
+    }),
+    uncertainCard = receipts
+      .locator("article")
+      .filter({ hasText: requestId.value });
+  await expect(uncertainCard).toContainText(requestId.value);
+  await expect(uncertainCard).toContainText(inputHash.value);
+  await expect(uncertainCard).toContainText("Reserved original — not started");
+  await expect(uncertainCard).toContainText("UUID remains held");
   await page.unroute("**/config/smiths/creates");
+  const exactOriginalReadStatuses = () =>
+    originalReads
+      .filter((read) => read.requestId === requestId.value)
+      .map((read) => read.status);
+  expect(exactOriginalReadStatuses()).toEqual([404]);
 
   const missingOriginal = page.waitForResponse(
     (response) =>
       response.request().method() === "GET" &&
-      new URL(response.url()).pathname.startsWith(
-        "/__agent-forge/smiths/creates/",
-      ),
+      new URL(response.url()).pathname ===
+        `/__agent-forge/smiths/creates/${requestId.value}`,
   );
   await reloadSettled(page);
   expect((await missingOriginal).status()).toBe(404);
-  await expect(
-    page.getByRole("region", { name: "Original Smith create receipts" }),
-  ).toContainText("Outcome held");
+  // Both fresh-document recovery effects perform an exact protected read.
+  // Wait for those responses instead of assuming the first GET is all of
+  // recovery, then verify opening the editor adds no more reads.
+  await expect
+    .poll(() => exactOriginalReadStatuses().length)
+    .toBe(3);
+  expect(exactOriginalReadStatuses()).toEqual([404, 404, 404]);
+  await expect(uncertainCard).toContainText("UUID remains held");
   await page.getByRole("button", { name: "New smith", exact: true }).click();
   const recovered = page.getByRole("dialog", { name: "Create a Smith" });
   await expect(
@@ -782,15 +1105,16 @@ test("an unavailable create response remains held when the protected original re
   await expect(
     recovered.getByRole("button", { name: "Create Smith" }),
   ).toBeDisabled();
-  expect(originalReads).toEqual([404]);
+  expect(exactOriginalReadStatuses()).toEqual([404, 404, 404]);
   expect(posts).toEqual([
     "/__agent-forge/config/smiths/preview",
+    "/__agent-forge/config/smiths/creates/reserve",
     "/__agent-forge/config/smiths/creates",
   ]);
   expect(
     readFileSync(join(REPOSITORY, "agent-forge.toml"), "utf8"),
   ).not.toContain(`[smiths.${name}]`);
-});
+};
 
 test("a reply lost after actual temporary publication recovers the exact original without a second write", async ({
   page,
@@ -846,7 +1170,7 @@ test("a reply lost after actual temporary publication recovers the exact origina
   expect(savedServerStatus).toBe(200);
   await expect(
     page.getByRole("region", { name: "Original Smith create receipts" }),
-  ).toContainText("Outcome held");
+  ).toContainText("Confirmed");
   expect(original).not.toBeNull();
   const posted = original!;
   expect(posted).toMatchObject({
@@ -860,6 +1184,7 @@ test("a reply lost after actual temporary publication recovers the exact origina
   ]).toHaveLength(1);
   expect(posts).toEqual([
     "/__agent-forge/config/smiths/preview",
+    "/__agent-forge/config/smiths/creates/reserve",
     "/__agent-forge/config/smiths/creates",
   ]);
   await page.unroute("**/config/smiths/creates");
@@ -893,10 +1218,20 @@ test("a reply lost after actual temporary publication recovers the exact origina
   );
   expect(posts).toEqual([
     "/__agent-forge/config/smiths/preview",
+    "/__agent-forge/config/smiths/creates/reserve",
     "/__agent-forge/config/smiths/creates",
   ]);
   expect(providerStarts()).toEqual(starts);
 });
+
+// This fixture leaves an intentionally unknown original after its protected
+// GET returns 404. Keep it after every create-start journey in this file so
+// its correct reservation hold cannot block a later create test in the same
+// persistent owner scope.
+test(
+  "an unavailable create response remains held when protected original reads are 404",
+  unavailableCreateHeldTest,
+);
 
 test("edits an existing Smith after a complete review and recovers the exact original after reload", async ({
   page,

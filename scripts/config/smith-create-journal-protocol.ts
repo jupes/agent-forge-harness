@@ -54,7 +54,7 @@ const common = {
   inputHash: smithConfigHashSchema,
   at: z.iso.datetime(),
 };
-export const smithCreateIntentSchema = z
+const legacySmithCreateIntentSchema = z
   .object({
     ...common,
     kind: z.literal("intent"),
@@ -68,10 +68,34 @@ export const smithCreateIntentSchema = z
       value.inputHash === smithCreateInputHash(value.original) &&
       value.ownerScopeHash === smithCreateOwnerHash(value.owner),
   );
+const reservedSmithCreateIntentSchema = z
+  .object({
+    version: z.literal(2),
+    kind: z.literal("intent"),
+    admission: z.literal("reserved"),
+    requestId: smithConfigRequestIdSchema,
+    ownerScopeHash: smithConfigHashSchema,
+    inputHash: smithConfigHashSchema,
+    at: z.iso.datetime(),
+    owner: smithCreateOwnerSchema,
+    original: smithConfigCreateRequestSchema,
+  })
+  .strict()
+  .refine(
+    (value) =>
+      value.requestId === value.original.requestId &&
+      value.inputHash === smithCreateInputHash(value.original) &&
+      value.ownerScopeHash === smithCreateOwnerHash(value.owner),
+  );
+export const smithCreateIntentSchema = z.union([
+  legacySmithCreateIntentSchema,
+  reservedSmithCreateIntentSchema,
+]);
 export type SmithCreateIntent = z.infer<typeof smithCreateIntentSchema>;
 
 const phase = { ...common, intentHash: smithConfigHashSchema };
 export const smithCreatePhaseSchema = z.discriminatedUnion("kind", [
+  z.object({ ...phase, kind: z.literal("claimed") }).strict(),
   z
     .object({
       ...phase,
@@ -122,6 +146,7 @@ export type SmithCreatePhase = z.infer<typeof smithCreatePhaseSchema>;
 
 export const SMITH_CREATE_JOURNAL_FILES = [
   "intent.json",
+  "claimed.json",
   "prepared.json",
   "attempted.json",
   "confirmed.json",

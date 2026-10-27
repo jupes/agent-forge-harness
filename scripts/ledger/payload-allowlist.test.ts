@@ -211,6 +211,39 @@ describe("stripPayload: Smith edit action identity", () => {
   });
 });
 
+test("Smith create actions retain only their fixed identity metadata", () => {
+  expect(
+    stripPayload("operator.action", {
+      action: "smith.config.create.reserve",
+      surface: "api",
+      target: "workspace",
+      family: "smith-config-create",
+      requestId: "122d0b56-96f3-4818-8789-6ab562c092e8",
+      inputHash: "a".repeat(64),
+      original: { smith: { name: "private" } },
+    }),
+  ).toEqual({
+    action: "smith.config.create.reserve",
+    surface: "api",
+    target: "workspace",
+    family: "smith-config-create",
+    requestId: "122d0b56-96f3-4818-8789-6ab562c092e8",
+    inputHash: "a".repeat(64),
+  });
+  expect(
+    stripPayload("operator.action", {
+      action: "smith.config.create.reserve",
+      family: "smith-config-create-private-data",
+      requestId: "122d0b56-96f3-4818-8789-6ab562c092e8",
+      inputHash: "a".repeat(64),
+    }),
+  ).toEqual({
+    action: "smith.config.create.reserve",
+    requestId: "122d0b56-96f3-4818-8789-6ab562c092e8",
+    inputHash: "a".repeat(64),
+  });
+});
+
 describe("stripPayload: Codex Chat Fork action identity", () => {
   test("keeps only the approved Fork family and bounded original correlation", () => {
     expect(

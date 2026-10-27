@@ -30,6 +30,7 @@ const emptyState: SmithCreateClientState = {
   creating: false,
   entries: [],
   activeRequestId: null,
+  serverDiscoveryReady: false,
   notice:
     "Workspace identity is unavailable; saved create receipts are hidden.",
 };
@@ -76,6 +77,9 @@ export function useSmithCreate(
       requestId: () => crypto.randomUUID(),
       preview: api.preview,
       post: api.create,
+      reserve: api.reserve,
+      list: api.list,
+      retireReserved: api.retireReserved,
       readOriginal: api.original,
     });
   }, [scope]);

@@ -6,6 +6,7 @@ import type {
   SmithConfigPreview,
   SmithConfigPreviewRequest,
   SmithConfigRevision,
+  SmithCreateIdentityIndex,
 } from "../../types/smith-config-create";
 import { validateSmith } from "../hearth/validate";
 
@@ -19,6 +20,7 @@ export const SMITH_CONFIG_CREATE_LIMITS = Object.freeze({
   privateRecordBytes: 65_536,
   privateLockBytes: 65_536,
   records: 1000,
+  identityIndexBytes: 524_288,
   pathLength: 1024,
 });
 
@@ -142,7 +144,14 @@ const result = z.discriminatedUnion("phase", [
   z
     .object({
       phase: z.literal("held"),
-      stage: z.enum(["intent", "prepared", "attempted", "unconfirmed"]),
+      stage: z.enum([
+        "intent",
+        "reserved",
+        "claimed",
+        "prepared",
+        "attempted",
+        "unconfirmed",
+      ]),
       preview: nullablePreview,
     })
     .strict(),
@@ -187,7 +196,12 @@ export const smithConfigCreateReceiptSchema = z
       refuse("The original belongs to another request.");
     const { result, original } = value;
     if (result.phase === "held") {
-      if (result.stage === "intent" && result.preview !== null)
+      if (
+        (result.stage === "intent" ||
+          result.stage === "reserved" ||
+          result.stage === "claimed") &&
+        result.preview !== null
+      )
         refuse("An intent cannot claim prepared review evidence.");
       if (
         (result.stage === "prepared" || result.stage === "attempted") &&
@@ -216,6 +230,55 @@ export const smithConfigCreateReceiptSchema = z
   .refine((value) =>
     encodedWithin(value, SMITH_CONFIG_CREATE_LIMITS.responseBytes),
   ) satisfies z.ZodType<SmithConfigCreateReceipt>;
+
+export const smithCreateIdentitySummarySchema = z
+  .object({
+    requestId: smithConfigRequestIdSchema,
+    ownerScopeHash: smithConfigHashSchema,
+    inputHash: smithConfigHashSchema,
+    target: z.enum(["user", "workspace"]),
+    state: z.enum(["reserved", "held", "confirmed", "refused"]),
+    stage: z.enum([
+      "reserved",
+      "legacy",
+      "claimed",
+      "prepared",
+      "attempted",
+      "unconfirmed",
+      "terminal",
+    ]),
+    createdAt: z.iso.datetime(),
+  })
+  .strict();
+
+export const smithCreateIdentityIndexSchema = z
+  .object({
+    version: z.literal(1),
+    complete: z.literal(true),
+    ownerScopeHash: smithConfigHashSchema,
+    entries: z
+      .array(smithCreateIdentitySummarySchema)
+      .max(SMITH_CONFIG_CREATE_LIMITS.records),
+  })
+  .strict()
+  .superRefine((value, context) => {
+    const seen = new Set<string>();
+    value.entries.forEach((entry, index) => {
+      if (
+        entry.ownerScopeHash !== value.ownerScopeHash ||
+        seen.has(entry.requestId)
+      )
+        context.addIssue({
+          code: "custom",
+          path: ["entries", index],
+          message: "The identity index is duplicated or crosses owner scope.",
+        });
+      seen.add(entry.requestId);
+    });
+  })
+  .refine((value) =>
+    encodedWithin(value, SMITH_CONFIG_CREATE_LIMITS.identityIndexBytes),
+  ) satisfies z.ZodType<SmithCreateIdentityIndex>;
 
 function sameSmith(a: Smith, b: Smith): boolean {
   return (

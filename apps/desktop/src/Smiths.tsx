@@ -244,9 +244,11 @@ export function Smiths({
       >
         <SmithCreateFormView
           state={creates.state}
+          draftReady={creates.client !== null}
           canWrite={creates.canWrite}
           canStart={creates.client?.canStart() ?? false}
-          onDraft={(target, smith) => creates.client?.setDraft(target, smith)}
+          onDraftPatch={(patch) => creates.client?.patchDraft(patch)}
+          onTarget={(target) => creates.client?.setTarget(target)}
           onPreview={() => void creates.client?.preview()}
           onCreate={() => void creates.client?.create()}
         />
@@ -333,7 +335,14 @@ export function Smiths({
       <SmithCreateReceiptsView
         entries={creates.state.entries}
         canWrite={creates.canWrite}
+        creating={creates.state.creating}
         onCheck={(requestId) => void creates.client?.check(requestId)}
+        onContinue={(requestId) =>
+          void creates.client?.continueReserved(requestId)
+        }
+        onRetire={(requestId) =>
+          void creates.client?.retireReservation(requestId)
+        }
       />
       <SmithEditReceiptsView
         entries={edits.state.entries}
