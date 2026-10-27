@@ -512,13 +512,9 @@ test("a lost commit reply reloads the same created original without replay", asy
           (!originalFetchSite || originalFetchSite === "same-origin");
         if (!sameOrigin)
           throw Error("The recovery read did not match the current origin.");
-        fetchedResponse = await route.fetch({
-          headers: {
-            ...originalHeaders,
-            Origin: url.origin,
-            "Sec-Fetch-Site": "same-origin",
-          },
-        });
+        // Preserve the browser's actual request headers. The GET itself must
+        // carry the trusted same-origin boundary; capture must not add it.
+        fetchedResponse = await route.fetch();
         let body: unknown;
         try {
           body = await fetchedResponse.json();
@@ -533,13 +529,13 @@ test("a lost commit reply reloads the same created original without replay", asy
           sameOrigin,
           captureError: null,
         });
-      } catch (error) {
+      } catch {
         resolveRecoveryRead({
           status: null,
           body: null,
           fromReloadedDocument,
           sameOrigin: false,
-          captureError: error instanceof Error ? "read_failed" : "read_unknown",
+          captureError: "read_failed",
         });
         if (fetchedResponse) {
           await route
