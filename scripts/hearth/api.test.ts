@@ -3449,7 +3449,8 @@ describe("every action row (iterating the table)", () => {
       | "response-body"
       | "settled"
       | "assertions"
-      | "happened";
+      | "happened"
+      | "council-run-finished";
     const startedAt = performance.now();
     let progress: {
       row: number;
@@ -3588,7 +3589,7 @@ describe("every action row (iterating the table)", () => {
         progress.stageStartedAt = performance.now();
         await happened(h, body.data, beforeDomain);
         if (row.action === "council.run.start" && valid.target !== undefined) {
-          progress.stage = "happened";
+          progress.stage = "council-run-finished";
           progress.stageStartedAt = performance.now();
           await councilRunFinished(h, valid.target);
         }
