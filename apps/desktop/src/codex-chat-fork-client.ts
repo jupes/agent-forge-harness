@@ -5,7 +5,6 @@ import {
   type OperatorPost,
   type OperatorRead,
 } from "../../../docs/js/operator";
-import { conversationPageSchema } from "../../../scripts/conversations/protocol";
 import { workspaceKey } from "../../../scripts/projects/scope";
 import { CODEX_CHAT_FORK_PROTOCOL_VERSION } from "../../../scripts/sessions/codex-chat-fork-origin-protocol";
 import {
@@ -17,6 +16,7 @@ import {
   codexChatForkSourcePageSchema,
 } from "../../../scripts/sessions/codex-chat-fork-review-protocol";
 import { codexChatApprovalPageSchema } from "../../../scripts/sessions/codex-chat-owned-protocol";
+import { ownedCodingPageSchema } from "../../../scripts/sessions/codex-owned-journal";
 import {
   sessionRequestHashSchema,
   sessionRequestIdSchema,
@@ -779,8 +779,13 @@ export function createCodexChatForkClient(
         scope,
         signal,
       );
-      const parsed = conversationPageSchema.safeParse(data);
-      if (!parsed.success || parsed.data.conversationId !== childSessionId)
+      const parsed = ownedCodingPageSchema.safeParse(data);
+      if (
+        !parsed.success ||
+        parsed.data.projectId !== projectId ||
+        parsed.data.conversationId !== childSessionId ||
+        parsed.data.binding?.provider !== "codex"
+      )
         throw new Error(
           "The exact Fork-child transcript could not be verified.",
         );

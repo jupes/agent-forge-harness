@@ -957,12 +957,27 @@ test("Fork child transcript reads preserve verified native coding frames and rej
       client.readChildTurns(projectId, childSessionId, requestId),
     ).rejects.toThrow("exact Fork-child transcript");
 
+    responsePage = {
+      ...page,
+      revision: 0,
+      binding: null,
+      turns: [],
+      frames: [],
+      more: false,
+      nextCursor: 0,
+      lastSequence: 0,
+    };
+    expect(ownedCodingPageSchema.safeParse(responsePage).success).toBe(true);
+    await expect(
+      client.readChildTurns(projectId, childSessionId, requestId),
+    ).rejects.toThrow("exact Fork-child transcript");
+
     responsePage = page;
     changeScopeOnRead = true;
     await expect(
       client.readChildTurns(projectId, childSessionId, requestId),
     ).rejects.toThrow("workspace changed");
-    expect(reads).toBe(4);
+    expect(reads).toBe(5);
   } finally {
     client.dispose();
   }
