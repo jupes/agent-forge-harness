@@ -82,6 +82,7 @@ export function DesktopApp(): JSX.Element {
   const projectCreate = useProjectCreate(
     providers.data?.workspace ?? null,
     recovery?.connection.writesAllowed ?? false,
+    projects.refreshProjectHome,
   );
   const smiths = useSmiths(
     route.destination === "smiths",

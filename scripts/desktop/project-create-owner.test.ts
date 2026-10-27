@@ -8,6 +8,7 @@ import {
 import { createProjectCreateOwner } from "../../apps/desktop/src/project-create-owner";
 import { smithsViewSchema } from "../../apps/desktop/src/smiths-protocol";
 import type { SmithsView } from "../../types/hearth";
+import type { ProjectsHome } from "../../types/project-summary";
 import {
   type ProjectCreateOptions,
   type ProjectScopePreview,
@@ -108,6 +109,8 @@ function fixture(
       current: ProjectCreateIdentity,
     ) => Promise<ProjectCreateIdentity> | ProjectCreateIdentity;
     preview?: () => Promise<ProjectScopePreview>;
+    commitReply?: "unknown";
+    refreshProjectHome?: () => Promise<ProjectsHome>;
   } = {},
 ) {
   const storage = new Map<string, string>();
@@ -148,13 +151,27 @@ function fixture(
         epicIds: ["epic-a"],
       },
     ],
-    keeperSmith: original.keeperSmith,
-    color: original.color,
+    ...(original.keeperSmith === undefined
+      ? {}
+      : { keeperSmith: original.keeperSmith }),
+    ...(original.color === undefined ? {} : { color: original.color }),
     pinned: false,
     archived: false,
     createdAt: "2026-10-27T00:00:00.000Z",
     updatedAt: "2026-10-27T00:00:00.000Z",
   });
+  const projectHome = (): ProjectsHome => {
+    const created = server?.state === "created";
+    return {
+      catalog: {
+        version: 1,
+        revision: created ? 5 : 4,
+        projects: created ? [project()] : [],
+      },
+      summaries: [],
+      asOf: "2026-10-27T00:00:00.000Z",
+    };
+  };
   const api = {
     async options() {
       return overrides.options ? overrides.options() : options;
@@ -210,7 +227,13 @@ function fixture(
         hash,
         "created",
       );
+      if (overrides.commitReply === "unknown")
+        return { state: "unknown", message: "The commit reply was lost." };
       return { state: "confirmed", value: structuredClone(server) };
+    },
+    async refreshProjectHome(): Promise<ProjectsHome> {
+      if (overrides.refreshProjectHome) return overrides.refreshProjectHome();
+      return projectHome();
     },
     async retire(
       id: string,
@@ -256,6 +279,7 @@ function fixture(
     writes,
     storage,
     reopen,
+    projectHome,
     setCurrentWorkspace(value: string | null) {
       currentWorkspace = value;
     },
@@ -319,6 +343,10 @@ test("missing workspace scope fails closed without identity or API reads", async
       async retire() {
         apiReads += 1;
         throw Error("unexpected API write");
+      },
+      async refreshProjectHome() {
+        apiReads += 1;
+        throw Error("unexpected API read");
       },
     },
     mint: () => requestId,
@@ -422,6 +450,81 @@ test("a stale recovery read cannot restore ready scope after workspace changes",
   expect(owner.get().phase).toBe("unavailable");
   expect(writes).toEqual([]);
   expect(identities.list()).toEqual([]);
+  owner.dispose();
+});
+
+test("commit waits for a fresh Projects summary before returning the new project", async () => {
+  let releaseHome!: (home: ProjectsHome) => void;
+  let announceRefresh!: () => void;
+  const refreshStarted = new Promise<void>((resolve) => {
+    announceRefresh = resolve;
+  });
+  const pendingHome = new Promise<ProjectsHome>((resolve) => {
+    releaseHome = resolve;
+  });
+  const { owner, writes, projectHome } = fixture([], {
+    refreshProjectHome: () => {
+      announceRefresh();
+      return pendingHome;
+    },
+  });
+  await owner.recover();
+  expect(await owner.reserve(original, preview)).toBe(true);
+  await owner.recover();
+
+  const committing = owner.commit(requestId);
+  await refreshStarted;
+  expect(owner.get().busy).toBe(true);
+  expect(writes.map((write) => write.kind)).toEqual(["reserve", "commit"]);
+
+  releaseHome(projectHome());
+  expect(await committing).toBe(createdProjectId);
+  expect(writes.map((write) => write.kind)).toEqual(["reserve", "commit"]);
+  owner.dispose();
+});
+
+test("a lost commit reply is recovered by exact readback without a second commit", async () => {
+  const { owner, writes, identities } = fixture([], {
+    commitReply: "unknown",
+  });
+  await owner.recover();
+  expect(await owner.reserve(original, preview)).toBe(true);
+  await owner.recover();
+
+  expect(await owner.commit(requestId)).toBe(createdProjectId);
+
+  expect(writes.map((write) => write.kind)).toEqual(["reserve", "commit"]);
+  expect(identities.list()).toMatchObject([
+    {
+      request: { requestId, original },
+      requestHash: await projectCreateRequestHash({
+        requestId,
+        expectedCatalogRevision: 4,
+        original,
+      }),
+      state: "created",
+    },
+  ]);
+  owner.dispose();
+});
+
+test("a failed Projects summary refresh preserves the created receipt without replay", async () => {
+  const { owner, writes, identities } = fixture([], {
+    refreshProjectHome: async () => {
+      throw Error("The fresh Projects view is unavailable.");
+    },
+  });
+  await owner.recover();
+  expect(await owner.reserve(original, preview)).toBe(true);
+  await owner.recover();
+
+  expect(await owner.commit(requestId)).toBeNull();
+
+  expect(owner.get().notice).toContain("Project creation is verified");
+  expect(identities.list()).toMatchObject([
+    { request: { requestId, original }, state: "created" },
+  ]);
+  expect(writes.map((write) => write.kind)).toEqual(["reserve", "commit"]);
   owner.dispose();
 });
 

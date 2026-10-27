@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { operatorPost, operatorRead } from "../../../docs/js/operator";
+import type { ProjectsHome } from "../../../types/project-summary";
 import { createProjectCreateApi } from "./project-create-api";
 import {
   createProjectCreateIdentities,
@@ -15,11 +16,14 @@ const api = createProjectCreateApi({ read: operatorRead, post: operatorPost });
 export function useProjectCreate(
   workspace: string | null,
   writesAllowed: boolean,
+  refreshProjectHome: () => Promise<ProjectsHome>,
 ) {
   const workspaceRef = useRef(workspace);
   workspaceRef.current = workspace;
   const writes = useMemo(() => ({ current: writesAllowed }), []);
   writes.current = writesAllowed;
+  const refreshProjects = useRef(refreshProjectHome);
+  refreshProjects.current = refreshProjectHome;
   const client = useMemo(() => {
     let storage: Storage | null = null;
     if (workspace) {
@@ -46,7 +50,10 @@ export function useProjectCreate(
           );
         },
       }),
-      api,
+      api: {
+        ...api,
+        refreshProjectHome: () => refreshProjects.current(),
+      },
       mint: () => crypto.randomUUID(),
       changed: () => undefined,
     });

@@ -11,6 +11,7 @@ import {
 } from "../../../scripts/projects/create-protocol";
 import { workspaceKey } from "../../../scripts/projects/scope";
 import type { SmithsView } from "../../../types/hearth";
+import type { ProjectsHome } from "../../../types/project-summary";
 import type { ProjectCreateWriteResult } from "./project-create-api";
 import type { ProjectCreateLocalIdentity } from "./project-create-identities";
 import {
@@ -102,6 +103,7 @@ type Api = {
     requestId: string,
     requestHash: string,
   ): Promise<ProjectCreateWriteResult<ProjectCreateIdentity>>;
+  refreshProjectHome(): Promise<ProjectsHome>;
 };
 
 const exactOriginal = (left: unknown, right: unknown) =>
@@ -115,6 +117,17 @@ const rowMatchesIdentity = (
   row.state === identity.state &&
   row.scopeCount === identity.scopeCount &&
   row.projectId === identity.projectId;
+const catalogOriginal = (project: Catalog["projects"][number]) => ({
+  slug: project.slug,
+  name: project.name,
+  description: project.description,
+  icon: project.icon,
+  ...(project.keeperSmith === undefined
+    ? {}
+    : { keeperSmith: project.keeperSmith }),
+  ...(project.color === undefined ? {} : { color: project.color }),
+  workspaces: project.workspaces,
+});
 
 const isActive = (entry: ProjectCreateEntry) =>
   entry.phase === "pending" ||
@@ -386,27 +399,15 @@ export function createProjectCreateOwner(deps: {
     const project = catalog.projects.find(
       (item) => item.id === expected.projectId,
     );
-    const catalogOriginal = project
-      ? {
-          slug: project.slug,
-          name: project.name,
-          description: project.description,
-          icon: project.icon,
-          ...(project.keeperSmith === undefined
-            ? {}
-            : { keeperSmith: project.keeperSmith }),
-          ...(project.color === undefined ? {} : { color: project.color }),
-          workspaces: project.workspaces,
-        }
-      : null;
+    const original = project ? catalogOriginal(project) : null;
     if (
       identity.state !== "created" ||
       identity.requestId !== expected.requestId ||
       identity.requestHash !== expected.requestHash ||
       !exactOriginal(identity.original, expected.original) ||
       !project ||
-      !catalogOriginal ||
-      !exactOriginal(catalogOriginal, expected.original) ||
+      !original ||
+      !exactOriginal(original, expected.original) ||
       catalog.revision < identity.createdRevision!
     )
       return null;
@@ -766,6 +767,7 @@ export function createProjectCreateOwner(deps: {
       state.notice = "Checking the reviewed project scope before create…";
       const current = ++generation;
       emit();
+      let creationVerified = false;
       try {
         const uncertain = await deps.identities.update(
           identity.requestId,
@@ -818,6 +820,21 @@ export function createProjectCreateOwner(deps: {
         const verified = await verifiedCreated(expected, current);
         if (!verified?.projectId)
           throw Error("The project receipt is not verified.");
+        creationVerified = true;
+        const freshHome = await deps.api.refreshProjectHome();
+        if (disposed || current !== generation || !currentScopeMatches())
+          return null;
+        const published = freshHome.catalog.projects.find(
+          (item) => item.id === verified.projectId,
+        );
+        if (
+          !published ||
+          freshHome.catalog.revision < verified.createdRevision! ||
+          !exactOriginal(catalogOriginal(published), verified.original)
+        )
+          throw Error(
+            "The refreshed Projects view did not contain the exact creation.",
+          );
         state.entries = state.entries.filter(
           (item) =>
             (item.identity?.requestId ?? item.local?.request.requestId) !==
@@ -826,8 +843,9 @@ export function createProjectCreateOwner(deps: {
         state.notice = "Project creation was read back from the hearth.";
         return verified.projectId;
       } catch {
-        state.notice =
-          "The create outcome could not be verified. Check this same original; no replacement is available.";
+        state.notice = creationVerified
+          ? "Project creation is verified, but the fresh Projects view is unavailable. Refresh Projects before opening it; no second create was sent."
+          : "The create outcome could not be verified. Check this same original; no replacement is available.";
         return null;
       } finally {
         if (!disposed && current === generation) {

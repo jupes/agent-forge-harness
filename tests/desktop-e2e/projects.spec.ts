@@ -227,9 +227,26 @@ test("a reviewed project is created from its saved original and opens Overview",
 }) => {
   const mutations: Array<{ path: string; body: unknown }> = [];
   let sessionStartPosts = 0;
+  let commitRequestSeen = false;
+  let summaryRequests = 0;
+  let releaseSummary!: () => void;
+  const summaryRelease = new Promise<void>((resolve) => {
+    releaseSummary = resolve;
+  });
+  await page.route("**/__agent-forge/projects/summary", async (route) => {
+    if (!commitRequestSeen) {
+      await route.continue();
+      return;
+    }
+    summaryRequests += 1;
+    await summaryRelease;
+    await route.continue();
+  });
   page.on("request", (request) => {
-    if (request.method() !== "POST") return;
     const path = new URL(request.url()).pathname;
+    if (path.endsWith(`/commit`) && request.method() === "POST")
+      commitRequestSeen = true;
+    if (request.method() !== "POST") return;
     if (path.endsWith("/session-start-identities")) sessionStartPosts++;
     if (path.startsWith("/__agent-forge/projects/create-reservations"))
       mutations.push({ path, body: request.postDataJSON() });
@@ -259,21 +276,45 @@ test("a reviewed project is created from its saved original and opens Overview",
   await expect(
     review.getByText(saved.requestHash, { exact: true }),
   ).toBeVisible();
-  const commitReply = page.waitForResponse(
-    (response) =>
-      new URL(response.url()).pathname ===
-      `/__agent-forge/projects/create-reservations/${saved.requestId}/commit`,
-  );
-  await review
-    .getByRole("button", { name: "Create project from this original" })
-    .click();
-  const commitResponse = await commitReply;
-  expect(commitResponse.status()).toBe(200);
-  const committed = projectCreateIdentitySchema.parse(
-    (await commitResponse.json()).data.operation,
-  );
-  expect(committed.projectId).not.toBeNull();
-  const createdProjectId = committed.projectId!;
+  const summaryBeforeCommit = await page.evaluate(async () => {
+    const response = await fetch("/__agent-forge/projects/summary", {
+      cache: "no-store",
+    });
+    const body: unknown = await response.json();
+    return { status: response.status, body };
+  });
+  expect(summaryBeforeCommit.status).toBe(200);
+  expect(
+    (
+      summaryBeforeCommit.body as {
+        data: { catalog: { projects: ProjectCatalog["projects"] } };
+      }
+    ).data.catalog.projects.some(
+      (project) => project.slug === saved.original.slug,
+    ),
+  ).toBe(false);
+  let createdProjectId = "";
+  try {
+    const commitReply = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname ===
+        `/__agent-forge/projects/create-reservations/${saved.requestId}/commit`,
+    );
+    await review
+      .getByRole("button", { name: "Create project from this original" })
+      .click();
+    const commitResponse = await commitReply;
+    expect(commitResponse.status()).toBe(200);
+    const committed = projectCreateIdentitySchema.parse(
+      (await commitResponse.json()).data.operation,
+    );
+    expect(committed.projectId).not.toBeNull();
+    createdProjectId = committed.projectId!;
+    await expect.poll(() => summaryRequests).toBeGreaterThan(0);
+    expect(new URL(page.url()).hash).toContain("/desktop/projects");
+  } finally {
+    releaseSummary();
+  }
   await expect(page).toHaveURL(
     new RegExp(`/project/${createdProjectId}/overview$`),
   );
@@ -329,6 +370,133 @@ test("a reviewed project is created from its saved original and opens Overview",
       slug: saved.original.slug,
     }),
   );
+});
+
+test("a lost commit reply reloads the same created original without replay", async ({
+  page,
+}) => {
+  const mutations: Array<{ path: string; body: unknown }> = [];
+  let commitEffectReached!: () => void;
+  let releaseCommitReply!: () => void;
+  const effectReached = new Promise<void>((resolve) => {
+    commitEffectReached = resolve;
+  });
+  const commitReplyRelease = new Promise<void>((resolve) => {
+    releaseCommitReply = resolve;
+  });
+  const commitPathPattern = "**/create-reservations/*/commit";
+  const loseCommitReply = async (route: import("@playwright/test").Route) => {
+    await route.fetch();
+    commitEffectReached();
+    await commitReplyRelease;
+    await route.abort("failed").catch(() => undefined);
+  };
+  await page.route(commitPathPattern, loseCommitReply);
+  let recoveryOriginalReads = 0;
+  let countRecoveryReads = false;
+  page.on("request", (request) => {
+    const path = new URL(request.url()).pathname;
+    if (
+      request.method() === "GET" &&
+      /^\/__agent-forge\/projects\/create-reservations\/[0-9a-f-]+$/.test(
+        path,
+      ) &&
+      countRecoveryReads
+    )
+      recoveryOriginalReads += 1;
+    if (request.method() !== "POST") return;
+    if (path.startsWith("/__agent-forge/projects/create-reservations"))
+      mutations.push({ path, body: request.postDataJSON() });
+  });
+
+  await openSettled(page, "/index.html#/desktop/projects");
+  const saved = await reserveFromProjectFlow(page, {
+    slug: "lost-commit-reply-project",
+    name: "Lost commit reply project",
+  });
+  await page
+    .getByRole("button", { name: "Review reserved project", exact: true })
+    .click();
+  const review = page.getByRole("dialog");
+  const click = review
+    .getByRole("button", { name: "Create project from this original" })
+    .click()
+    .catch(() => undefined);
+  try {
+    await effectReached;
+    const token = await pageToken(page);
+    const verifiedBeforeReload = await page.evaluate(
+      async ({ token, requestId }) => {
+        const response = await fetch(
+          `/__agent-forge/projects/create-reservations/${requestId}`,
+          {
+            headers: {
+              ["X-Agent-Forge-Operator"]: token,
+              ["X-Agent-Forge-Surface"]: "ui",
+            },
+          },
+        );
+        return { status: response.status, body: await response.json() };
+      },
+      { token, requestId: saved.requestId },
+    );
+    expect(verifiedBeforeReload.status).toBe(200);
+    const createdBeforeReload = projectCreateIdentitySchema.parse(
+      verifiedBeforeReload.body.data,
+    );
+    expect(createdBeforeReload).toMatchObject({
+      requestId: saved.requestId,
+      requestHash: saved.requestHash,
+      original: saved.original,
+      state: "created",
+    });
+    expect(createdBeforeReload.projectId).not.toBeNull();
+
+    countRecoveryReads = true;
+    const recoveryRead = page
+      .waitForResponse(
+        (response) =>
+          new URL(response.url()).pathname ===
+            `/__agent-forge/projects/create-reservations/${saved.requestId}` &&
+          response.request().method() === "GET",
+      )
+      .then(async (response) => ({
+        status: response.status(),
+        body: await response.json(),
+      }));
+    await page.reload();
+    releaseCommitReply();
+    await click;
+    const recoveredRead = await recoveryRead;
+    expect(recoveredRead.status).toBe(200);
+    expect(
+      projectCreateIdentitySchema.parse(recoveredRead.body.data),
+    ).toMatchObject({
+      requestId: saved.requestId,
+      requestHash: saved.requestHash,
+      original: saved.original,
+      state: "created",
+    });
+    expect(
+      projectCreateIdentitySchema.parse(recoveredRead.body.data).projectId,
+    ).toBe(createdBeforeReload.projectId);
+    await expect(
+      page.getByRole("link", { name: saved.original.name, exact: true }),
+    ).toBeVisible();
+    expect(recoveryOriginalReads).toBeGreaterThan(0);
+    expect(mutations.map((item) => item.path)).toEqual([
+      "/__agent-forge/projects/create-reservations",
+      `/__agent-forge/projects/create-reservations/${saved.requestId}/commit`,
+    ]);
+    expect(mutations[1]?.body).toMatchObject({
+      requestHash: saved.requestHash,
+      reviewedScopeHash: expect.stringMatching(/^[a-f0-9]{64}$/),
+    });
+  } finally {
+    releaseCommitReply();
+    await click;
+    await page.unroute(commitPathPattern, loseCommitReply);
+  }
 });
 
 test("retirement is explicit and a tombstone readback unlocks a fresh review", async ({
