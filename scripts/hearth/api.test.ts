@@ -3204,6 +3204,20 @@ describe("every action row (iterating the table)", () => {
           // This builder uses only the current hearth's fixed workspace value;
           // it needs neither an audited preview nor any provider/filesystem work.
           valid.body = sessionStartFixture(h);
+        } else if (row.action === "smith.config.create") {
+          // This action only needs a schema-valid revision to reach the audit
+          // boundary. Do not depend on the aggregate success loop's preview,
+          // which is intentionally unavailable when the audit appender refuses.
+          valid.body = {
+            requestId: API_SMITH_CREATE_ID,
+            target: "workspace",
+            smith: API_SMITH_CREATE_SMITH,
+            expectedRevision: {
+              version: 1,
+              user: "a".repeat(64),
+              workspace: "b".repeat(64),
+            },
+          };
         } else if (row.path.includes("/keeper/proposals/")) {
           // Keeper proposal validation reads the durable source and revision
           // before reaching the audit boundary, so seed that inert fixture.
