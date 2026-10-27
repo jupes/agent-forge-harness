@@ -21,6 +21,7 @@ import {
   type ExclusiveOwnerOnlyFile,
   makeOwnerOnly,
   nativeWindowsAcl,
+  ownerOnlyProblem,
   type WindowsAcl,
 } from "../hearth/acl-windows";
 import {
@@ -52,6 +53,8 @@ const MUTEX_ENTRIES = new Set([
   `${MUTEX_FILE}-shm`,
 ]);
 const MUTEX_BYTES = 65_536;
+const SQLITE_INITIAL_PAGE_BYTES = 4096;
+const SQLITE_HEADER_MAGIC = new TextEncoder().encode("SQLite format 3\0");
 interface FileIdentity {
   dev: string;
   ino: string;
@@ -594,6 +597,75 @@ export function createCodexChatForkJournalStorage(
     return info;
   };
 
+  const isPrivateInitialSQLitePage = (
+    path: string,
+    expected: FileIdentity,
+    expectedLocks: FileIdentity,
+  ): boolean => {
+    if ((options.platform ?? process.platform) !== "win32") return false;
+    const acl = options.acl ?? nativeWindowsAcl();
+    if (acl.readInFolder === undefined) return false;
+    try {
+      const before = lstatSync(path, { bigint: true });
+      if (
+        !before.isFile() ||
+        before.isSymbolicLink() ||
+        before.nlink !== 1n ||
+        before.size !== BigInt(SQLITE_INITIAL_PAGE_BYTES) ||
+        !sameIdentity(identity(before), expected) ||
+        !safePath(path)
+      )
+        return false;
+      const opened = acl.readInFolder(
+        locks,
+        MUTEX_FILE,
+        SQLITE_INITIAL_PAGE_BYTES,
+      );
+      if (
+        opened === null ||
+        ownerOnlyProblem(opened.folder, "directory", acl.userSid()) !== null ||
+        opened.file === null ||
+        ownerOnlyProblem(opened.file.reading, "file", acl.userSid()) !== null ||
+        opened.file.bytes.byteLength !== SQLITE_INITIAL_PAGE_BYTES
+      )
+        return false;
+      const bytes = opened.file.bytes;
+      if (!SQLITE_HEADER_MAGIC.every((byte, index) => bytes[index] === byte))
+        return false;
+      const header = new DataView(
+        bytes.buffer,
+        bytes.byteOffset,
+        bytes.byteLength,
+      );
+      if (
+        header.getUint16(16, false) !== SQLITE_INITIAL_PAGE_BYTES ||
+        (bytes[18] !== 1 && bytes[18] !== 2) ||
+        (bytes[19] !== 1 && bytes[19] !== 2) ||
+        bytes[21] !== 64 ||
+        bytes[22] !== 32 ||
+        bytes[23] !== 32 ||
+        header.getUint32(28, false) !== 1 ||
+        header.getUint32(24, false) !== header.getUint32(92, false)
+      )
+        return false;
+      const after = lstatSync(path, { bigint: true }),
+        currentLocks = lstatSync(locks, { bigint: true });
+      return (
+        after.isFile() &&
+        !after.isSymbolicLink() &&
+        after.nlink === 1n &&
+        after.size === BigInt(SQLITE_INITIAL_PAGE_BYTES) &&
+        sameIdentity(identity(after), expected) &&
+        currentLocks.isDirectory() &&
+        !currentLocks.isSymbolicLink() &&
+        sameIdentity(identity(currentLocks), expectedLocks) &&
+        safePath(path)
+      );
+    } catch {
+      return false;
+    }
+  };
+
   const waitForPrivateMutex = async (
     expectedRoot: FileIdentity,
     expectedLocks: FileIdentity,
@@ -801,6 +873,7 @@ export function createCodexChatForkJournalStorage(
     protectNewSidecars = false,
     requireMutex = true,
     diagnostic?: MutexGuardContext,
+    allowInitialMutexPage = false,
   ): ReadonlyMap<string, FileIdentity> => {
     const lockIdentity = diagnostic
       ? inspectDirectory(locks, {
@@ -911,8 +984,62 @@ export function createCodexChatForkJournalStorage(
       namespaceFailure("The private Codex Fork SQLite mutex is incomplete.");
     let totalBytes = 0n;
     const sidecars = new Map<string, FileIdentity>();
+    const verifiedSizes = new Map<string, bigint>();
+    const observedBytes = found.reduce(
+      (total, entry) => total + entry.info.size,
+      0n,
+    );
+    if (observedBytes > BigInt(MUTEX_BYTES)) {
+      const fail = () => {
+        throw new Error(
+          "The private Codex Fork mutex metadata exceeds its limit.",
+        );
+      };
+      if (diagnostic)
+        guarded(
+          diagnostic.phase,
+          "lock-namespace-size",
+          diagnostic.mutexIdentity,
+          fail,
+        );
+      else fail();
+    }
     for (const entry of found) {
-      totalBytes += entry.info.size;
+      const verified = assertPrivateLockFile(
+        entry.path,
+        entry.identity,
+        diagnostic
+          ? {
+              phase: diagnostic.phase,
+              expected: diagnostic.mutexIdentity,
+              prefix:
+                entry.name === MUTEX_FILE ? "mutex-sidecar" : "sqlite-sidecar",
+            }
+          : undefined,
+      );
+      const verifiedInitialPage =
+        allowInitialMutexPage &&
+        entry.name === MUTEX_FILE &&
+        entry.info.size === 0n &&
+        verified.size === BigInt(SQLITE_INITIAL_PAGE_BYTES) &&
+        isPrivateInitialSQLitePage(entry.path, entry.identity, lockIdentity);
+      if (verified.size !== entry.info.size && !verifiedInitialPage) {
+        const fail = () => {
+          throw new Error("The private Codex Fork mutex metadata changed.");
+        };
+        if (diagnostic)
+          guarded(
+            diagnostic.phase,
+            entry.name === MUTEX_FILE
+              ? "mutex-sidecar-size"
+              : "sqlite-sidecar-size",
+            diagnostic.mutexIdentity,
+            fail,
+          );
+        else fail();
+      }
+      verifiedSizes.set(entry.name, verified.size);
+      totalBytes += verified.size;
       if (totalBytes > BigInt(MUTEX_BYTES)) {
         const fail = () => {
           throw new Error(
@@ -936,11 +1063,36 @@ export function createCodexChatForkJournalStorage(
         secureNewSidecar(
           entry.path,
           entry.identity,
-          entry.info.size,
+          verified.size,
           lockIdentity,
         );
       }
-      const verified = assertPrivateLockFile(
+      if (entry.name !== MUTEX_FILE) sidecars.set(entry.name, entry.identity);
+    }
+    const afterNames = diagnostic
+      ? guarded(
+          diagnostic.phase,
+          "lock-namespace-read",
+          diagnostic.mutexIdentity,
+          () => directoryNames(locks, MUTEX_ENTRIES.size + 1).sort(),
+        )
+      : directoryNames(locks, MUTEX_ENTRIES.size + 1).sort();
+    if (afterNames.join("\0") !== names.join("\0")) {
+      const fail = () => {
+        throw new Error("The private Codex Fork mutex entries changed.");
+      };
+      if (diagnostic)
+        guarded(
+          diagnostic.phase,
+          "lock-namespace-stability",
+          diagnostic.mutexIdentity,
+          fail,
+        );
+      else fail();
+    }
+    let finalBytes = 0n;
+    for (const entry of found) {
+      const finalInfo = assertPrivateLockFile(
         entry.path,
         entry.identity,
         diagnostic
@@ -952,7 +1104,14 @@ export function createCodexChatForkJournalStorage(
             }
           : undefined,
       );
-      if (verified.size !== entry.info.size) {
+      const expectedSize = verifiedSizes.get(entry.name)!;
+      const stillValidInitialPage =
+        allowInitialMutexPage &&
+        entry.name === MUTEX_FILE &&
+        entry.info.size === 0n &&
+        finalInfo.size === BigInt(SQLITE_INITIAL_PAGE_BYTES) &&
+        isPrivateInitialSQLitePage(entry.path, entry.identity, lockIdentity);
+      if (finalInfo.size !== expectedSize && !stillValidInitialPage) {
         const fail = () => {
           throw new Error("The private Codex Fork mutex metadata changed.");
         };
@@ -967,9 +1126,24 @@ export function createCodexChatForkJournalStorage(
           );
         else fail();
       }
-      if (entry.name !== MUTEX_FILE) sidecars.set(entry.name, entry.identity);
+      finalBytes += finalInfo.size;
     }
-    const afterNames = diagnostic
+    if (finalBytes > BigInt(MUTEX_BYTES)) {
+      const fail = () => {
+        throw new Error(
+          "The private Codex Fork mutex metadata exceeds its limit.",
+        );
+      };
+      if (diagnostic)
+        guarded(
+          diagnostic.phase,
+          "lock-namespace-size",
+          diagnostic.mutexIdentity,
+          fail,
+        );
+      else fail();
+    }
+    const finalNames = diagnostic
       ? guarded(
           diagnostic.phase,
           "lock-namespace-read",
@@ -977,7 +1151,7 @@ export function createCodexChatForkJournalStorage(
           () => directoryNames(locks, MUTEX_ENTRIES.size + 1).sort(),
         )
       : directoryNames(locks, MUTEX_ENTRIES.size + 1).sort();
-    if (afterNames.join("\0") !== names.join("\0")) {
+    if (finalNames.join("\0") !== names.join("\0")) {
       const fail = () => {
         throw new Error("The private Codex Fork mutex entries changed.");
       };
@@ -1104,8 +1278,8 @@ export function createCodexChatForkJournalStorage(
         )
           throw new Error("The new private Codex Fork SQLite mutex changed.");
         if (exclusiveCreate !== undefined) {
-          // The ACL was verified through the newly created native handle
-          // before this path was visible to another process.
+          // Its private DACL existed at first visibility; this handle now
+          // verifies the published path before the mutex is used.
         } else if ((options.platform ?? process.platform) === "win32") {
           try {
             makeOwnerOnly(mutex, "file", options.acl ?? nativeWindowsAcl());
@@ -1195,6 +1369,7 @@ export function createCodexChatForkJournalStorage(
               locksIdentity: lockIdentity,
               mutexIdentity,
             },
+            true,
           );
         } catch (error) {
           reportMutexDiagnostic("sidecar-layout", error, mutexIdentity);
@@ -1237,6 +1412,7 @@ export function createCodexChatForkJournalStorage(
         locksIdentity: expectedLocks,
         mutexIdentity: expected,
       },
+      phase === "exclusive-pre-lock-assert",
     );
   };
 
