@@ -112,6 +112,7 @@ test("protected project-create options expose complete trusted choices without w
     body: JSON.stringify(privateRequest),
   });
   expect(reservation.status).toBe(201);
+  const catalogAfterSeed = createProjectStore(h.home).read();
   const eventsBeforeRead = h.events(["operator.action"]);
 
   const options = await fetch(`${h.api}/projects/create-options`, {
@@ -143,7 +144,7 @@ test("protected project-create options expose complete trusted choices without w
   });
   expect(protectedRead.status).toBe(403);
   expect(h.events(["operator.action"])).toEqual(eventsBeforeRead);
-  expect(createProjectStore(h.home).read()).toEqual(catalogBefore);
+  expect(createProjectStore(h.home).read()).toEqual(catalogAfterSeed);
   expect(h.bd.calls.every((args) => args[0] === "export")).toBe(true);
 });
 
