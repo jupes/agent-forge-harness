@@ -120,7 +120,7 @@ function summarizeCompiledFixtureLog(path: string, status: string) {
       };
     const forkRestartDiagnostics: {
       stage:
-        | "fixture-log-unavailable"
+        | "fixture-proof-unavailable"
         | "parent-not-found"
         | "turn-not-found"
         | "source-found"
@@ -155,7 +155,7 @@ function summarizeCompiledFixtureLog(path: string, status: string) {
         forkRestartDiagnostics.length < 3
       ) {
         const stages = [
-          "fixture-log-unavailable",
+          "fixture-proof-unavailable",
           "parent-not-found",
           "turn-not-found",
           "source-found",

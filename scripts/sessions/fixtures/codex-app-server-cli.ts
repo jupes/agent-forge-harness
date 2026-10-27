@@ -1,12 +1,15 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   appendFileSync,
   existsSync,
+  lstatSync,
   readFileSync,
   realpathSync,
+  renameSync,
   statSync,
+  writeFileSync,
 } from "node:fs";
-import { isAbsolute } from "node:path";
+import { isAbsolute, join } from "node:path";
 
 /** Inert native-process app-server fixture. No provider, account, shell or network access. */
 const argv = process.argv.slice(2),
@@ -46,66 +49,306 @@ const canonicalFixtureDirectory = (value: string): string | null => {
     return null;
   }
 };
-const readFixtureRecords = (): Record<string, unknown>[] | null => {
-  if (!log || !existsSync(log)) return null;
+const FIXTURE_UUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const MAX_CONTINUITY_FILE_BYTES = 16_384;
+const MAX_COMPLETED_TURNS_PER_PARENT = 64;
+type ForkParentProof = {
+  kind: "fork-parent-proof";
+  version: 1;
+  threadId: string;
+  processId: number;
+  model: string;
+  modelProvider: "openai";
+  serviceTierPresent: true;
+  serviceTier: string | null;
+  reasoningEffort: string | null;
+  cwd: string;
+  approvalPolicy: string;
+  sandbox: string;
+  completedTurnIds: string[];
+};
+type ForkChildProof = {
+  kind: "fork-child-proof";
+  version: 1;
+  threadId: string;
+  processId: number;
+  parentThreadId: string;
+  sourceTurnId: string;
+};
+const continuityProofPath = (kind: "parent" | "child", threadId: string) => {
+  const home = process.env.AGENT_FORGE_HOME;
+  if (!home || !FIXTURE_UUID.test(threadId)) return null;
+  const digest = createHash("sha256").update(threadId, "utf8").digest("hex");
+  return join(home, `codex-chat-fork-${kind}-${digest}.json`);
+};
+const hasExactKeys = (value: Record<string, unknown>, keys: string[]) => {
+  const actual = Object.keys(value).sort(),
+    expected = [...keys].sort();
+  return (
+    actual.length === expected.length &&
+    actual.every((key, index) => key === expected[index])
+  );
+};
+const readContinuityProof = (path: string | null): unknown | null => {
+  if (!path || !existsSync(path)) return null;
   try {
-    if (statSync(log).size > 65_536) return null;
-    const text = readFileSync(log, "utf8");
+    const metadata = lstatSync(path);
+    if (
+      !metadata.isFile() ||
+      metadata.isSymbolicLink() ||
+      metadata.size > MAX_CONTINUITY_FILE_BYTES
+    )
+      return null;
+    const text = readFileSync(path, "utf8");
     if (!text.endsWith("\n")) return null;
-    const lines = text.slice(0, -1).split("\n");
-    if (lines.length > 256) return null;
-    const records: Record<string, unknown>[] = [];
-    for (const line of lines) {
-      let value: unknown;
-      try {
-        value = JSON.parse(line);
-      } catch {
-        return null;
-      }
-      if (typeof value !== "object" || value === null || Array.isArray(value))
-        return null;
-      records.push(value as Record<string, unknown>);
+    let value: unknown;
+    try {
+      value = JSON.parse(text.slice(0, -1));
+    } catch {
+      return null;
     }
-    return records;
+    if (typeof value !== "object" || value === null || Array.isArray(value))
+      return null;
+    return value;
   } catch {
     return null;
   }
+};
+const validParentProof = (value: unknown): value is ForkParentProof => {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return false;
+  const proof = value as Record<string, unknown>;
+  return (
+    hasExactKeys(proof, [
+      "kind",
+      "version",
+      "threadId",
+      "processId",
+      "model",
+      "modelProvider",
+      "serviceTierPresent",
+      "serviceTier",
+      "reasoningEffort",
+      "cwd",
+      "approvalPolicy",
+      "sandbox",
+      "completedTurnIds",
+    ]) &&
+    proof.kind === "fork-parent-proof" &&
+    proof.version === 1 &&
+    typeof proof.threadId === "string" &&
+    FIXTURE_UUID.test(proof.threadId) &&
+    Number.isSafeInteger(proof.processId) &&
+    (proof.processId as number) > 0 &&
+    typeof proof.model === "string" &&
+    proof.model.length > 0 &&
+    proof.model.length <= 128 &&
+    proof.modelProvider === "openai" &&
+    proof.serviceTierPresent === true &&
+    (proof.serviceTier === null ||
+      (typeof proof.serviceTier === "string" &&
+        proof.serviceTier.length <= 64)) &&
+    (proof.reasoningEffort === null ||
+      (typeof proof.reasoningEffort === "string" &&
+        proof.reasoningEffort.length <= 64)) &&
+    typeof proof.cwd === "string" &&
+    proof.cwd.length > 0 &&
+    proof.cwd.length <= 2048 &&
+    typeof proof.approvalPolicy === "string" &&
+    proof.approvalPolicy.length > 0 &&
+    proof.approvalPolicy.length <= 64 &&
+    (proof.sandbox === "read-only" || proof.sandbox === "workspace-write") &&
+    Array.isArray(proof.completedTurnIds) &&
+    proof.completedTurnIds.length <= MAX_COMPLETED_TURNS_PER_PARENT &&
+    proof.completedTurnIds.every(
+      (turnId) => typeof turnId === "string" && FIXTURE_UUID.test(turnId),
+    ) &&
+    new Set(proof.completedTurnIds).size === proof.completedTurnIds.length
+  );
+};
+const validChildProof = (value: unknown): value is ForkChildProof => {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return false;
+  const proof = value as Record<string, unknown>;
+  return (
+    hasExactKeys(proof, [
+      "kind",
+      "version",
+      "threadId",
+      "processId",
+      "parentThreadId",
+      "sourceTurnId",
+    ]) &&
+    proof.kind === "fork-child-proof" &&
+    proof.version === 1 &&
+    typeof proof.threadId === "string" &&
+    FIXTURE_UUID.test(proof.threadId) &&
+    Number.isSafeInteger(proof.processId) &&
+    (proof.processId as number) > 0 &&
+    typeof proof.parentThreadId === "string" &&
+    FIXTURE_UUID.test(proof.parentThreadId) &&
+    typeof proof.sourceTurnId === "string" &&
+    FIXTURE_UUID.test(proof.sourceTurnId)
+  );
+};
+const writeContinuityProof = (
+  path: string | null,
+  proof: ForkParentProof | ForkChildProof,
+  replaceValidated: boolean,
+  expectedPrevious?: ForkParentProof | ForkChildProof,
+) => {
+  if (!path) return false;
+  const home = process.env.AGENT_FORGE_HOME;
+  if (!home || !canonicalFixtureDirectory(home)) return false;
+  let exists = false;
+  try {
+    const metadata = lstatSync(path);
+    exists = true;
+    if (!metadata.isFile() || metadata.isSymbolicLink()) return false;
+    if (metadata.size > MAX_CONTINUITY_FILE_BYTES) return false;
+    if (replaceValidated) {
+      const current = readContinuityProof(path);
+      if (
+        !current ||
+        !expectedPrevious ||
+        JSON.stringify(current) !== JSON.stringify(expectedPrevious)
+      )
+        return false;
+    }
+  } catch (error) {
+    if (
+      typeof error !== "object" ||
+      error === null ||
+      !("code" in error) ||
+      error.code !== "ENOENT"
+    )
+      return false;
+  }
+  if (exists !== replaceValidated) return false;
+  const serialized = `${JSON.stringify(proof)}\n`;
+  if (Buffer.byteLength(serialized, "utf8") > MAX_CONTINUITY_FILE_BYTES)
+    return false;
+  const temporaryPath = `${path}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(temporaryPath, serialized, {
+      encoding: "utf8",
+      flag: "wx",
+      mode: 0o600,
+    });
+    renameSync(temporaryPath, path);
+    return true;
+  } catch {
+    return false;
+  }
+};
+const readParentProof = (threadId: string): ForkParentProof | null => {
+  const value = readContinuityProof(continuityProofPath("parent", threadId));
+  return validParentProof(value) && value.threadId === threadId ? value : null;
+};
+const recordParentStart = (threadId: string, resuming: boolean) => {
+  const path = continuityProofPath("parent", threadId);
+  if (!path) return false;
+  const previous = resuming ? readParentProof(threadId) : null;
+  if (resuming && !previous) return false;
+  if (
+    previous &&
+    (previous.model !== model ||
+      previous.cwd !== cwd ||
+      previous.approvalPolicy !== approvalPolicy ||
+      previous.sandbox !== sandbox ||
+      previous.modelProvider !== "openai" ||
+      previous.serviceTierPresent !== true ||
+      previous.serviceTier !== configuredServiceTier ||
+      previous.reasoningEffort !== null)
+  )
+    return false;
+  const proof: ForkParentProof = {
+    kind: "fork-parent-proof",
+    version: 1,
+    threadId,
+    processId: process.pid,
+    model,
+    modelProvider: "openai",
+    serviceTierPresent: true,
+    serviceTier: configuredServiceTier,
+    reasoningEffort: null,
+    cwd,
+    approvalPolicy,
+    sandbox,
+    completedTurnIds: previous?.completedTurnIds ?? [],
+  };
+  return writeContinuityProof(path, proof, previous !== null);
+};
+const recordCompletedParentTurn = (
+  threadId: string,
+  completedTurnId: string,
+) => {
+  const previous = readParentProof(threadId);
+  if (
+    !previous ||
+    previous.processId !== process.pid ||
+    !FIXTURE_UUID.test(completedTurnId)
+  )
+    return false;
+  const completedTurnIds = previous.completedTurnIds.includes(completedTurnId)
+    ? previous.completedTurnIds
+    : [...previous.completedTurnIds, completedTurnId];
+  if (completedTurnIds.length > MAX_COMPLETED_TURNS_PER_PARENT) return false;
+  return writeContinuityProof(
+    continuityProofPath("parent", threadId),
+    { ...previous, completedTurnIds },
+    true,
+    previous,
+  );
+};
+const recordForkChild = (
+  threadId: string,
+  parentThreadId: string,
+  sourceTurnId: string,
+) => {
+  const parent = readParentProof(parentThreadId),
+    path = continuityProofPath("child", threadId);
+  if (
+    !path ||
+    !parent ||
+    !parent.completedTurnIds.includes(sourceTurnId) ||
+    existsSync(path)
+  )
+    return false;
+  return writeContinuityProof(
+    path,
+    {
+      kind: "fork-child-proof",
+      version: 1,
+      threadId,
+      processId: process.pid,
+      parentThreadId,
+      sourceTurnId,
+    },
+    false,
+  );
 };
 const inspectRecordedForkParent = (
   parentThreadId: string,
   lastTurnId: string,
 ) => {
-  const records = readFixtureRecords();
-  if (!records)
+  const parent = readParentProof(parentThreadId);
+  if (!parent)
     return {
-      stage: "fixture-log-unavailable" as const,
+      stage: "fixture-proof-unavailable" as const,
       parent: null,
       parentFound: false,
       turnFound: false,
     };
-  const parent = records
-    .filter(
-      (row) =>
-        row.kind === "fixture-parent" &&
-        row.threadId === parentThreadId &&
-        typeof row.processId === "number" &&
-        row.processId !== process.pid,
-    )
-    .at(-1);
-  if (!parent)
+  if (parent.processId === process.pid)
     return {
       stage: "parent-not-found" as const,
       parent: null,
       parentFound: false,
       turnFound: false,
     };
-  const turnFound = records.some(
-    (row) =>
-      row.kind === "fixture-completed-turn" &&
-      row.threadId === parentThreadId &&
-      row.turnId === lastTurnId &&
-      row.status === "completed",
-  );
+  const turnFound = parent.completedTurnIds.includes(lastTurnId);
   return {
     stage: turnFound ? ("source-found" as const) : ("turn-not-found" as const),
     parent,
@@ -114,25 +357,19 @@ const inspectRecordedForkParent = (
   };
 };
 const isRecordedForkChild = (candidateThreadId: string) => {
-  const records = readFixtureRecords();
+  const value = readContinuityProof(
+      continuityProofPath("child", candidateThreadId),
+    ),
+    child =
+      validChildProof(value) && value.threadId === candidateThreadId
+        ? value
+        : null,
+    parent = child ? readParentProof(child.parentThreadId) : null;
   return (
-    records?.some((row) => {
-      if (row.kind !== "fork-result") return false;
-      const result = row.result;
-      if (
-        typeof result !== "object" ||
-        result === null ||
-        Array.isArray(result)
-      )
-        return false;
-      const thread = (result as Record<string, unknown>).thread;
-      return (
-        typeof thread === "object" &&
-        thread !== null &&
-        !Array.isArray(thread) &&
-        (thread as Record<string, unknown>).id === candidateThreadId
-      );
-    }) ?? false
+    child !== null &&
+    child.processId !== process.pid &&
+    parent !== null &&
+    parent.completedTurnIds.includes(child.sourceTurnId)
   );
 };
 if (argv.includes("--version")) {
@@ -242,6 +479,11 @@ const finish = async (extraItems: unknown[] = []) => {
       turnId,
       status: "completed",
     });
+  if (forkRestartMode) {
+    const recordedParentTurn = recordCompletedParentTurn(threadId, turnId);
+    if (!recordedParentTurn && !isRecordedForkChild(threadId))
+      throw new Error("The inert Fork continuity proof could not be updated.");
+  }
   await send({
     method: "turn/completed",
     params: {
@@ -838,6 +1080,18 @@ while (true) {
           type: "active",
           activeFlags: [],
         };
+      if (forkRestartMode && forkParent) {
+        const childThreadId = forkThread.id;
+        if (
+          typeof childThreadId !== "string" ||
+          !recordForkChild(
+            childThreadId,
+            forkParent.threadId,
+            fork.lastTurnId as string,
+          )
+        )
+          process.exit(14);
+      }
       record({ kind: "fork-result", result });
       if (mode === "fork-lost-response") {
         // Deliberately retain an owned process tree after the synthetic native
@@ -926,6 +1180,9 @@ while (true) {
                 : "medium",
         },
       });
+      if (forkRestartMode && (!resuming || readParentProof(threadId))) {
+        if (!recordParentStart(threadId, resuming)) process.exit(14);
+      }
       await send({
         method: "thread/started",
         params: {

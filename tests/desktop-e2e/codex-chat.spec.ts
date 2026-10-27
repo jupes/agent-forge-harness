@@ -114,7 +114,7 @@ function readForkContinuityFacts(): Record<string, unknown> {
         "thread/fork": 0,
       },
       stages = [
-        "fixture-log-unavailable",
+        "fixture-proof-unavailable",
         "parent-not-found",
         "turn-not-found",
         "source-found",
