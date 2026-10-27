@@ -407,6 +407,8 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
   });
   const {
     projects,
+    createOptionsRead,
+    scopePreview,
     preferences,
     createList,
     createOriginal,
@@ -518,6 +520,8 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     counts,
     scoreboard,
     projects,
+    createOptionsRead,
+    scopePreview,
     createList,
     createOriginal,
     projectSummaryRoute(deps.projectHome, deps, projectSnapshot),

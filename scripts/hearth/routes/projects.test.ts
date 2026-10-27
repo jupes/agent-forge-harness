@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { ProjectCatalog } from "../../../types/projects";
 import { createProjectStore } from "../../projects/store";
@@ -247,6 +248,7 @@ test("project-create reads reject malformed queries and fail closed on incomplet
     "?slug=Not-Lowercase&epicId=alpha-epic",
     "?slug=alpha&epicId=alpha-epic&epicId=alpha-epic",
     "?slug=alpha&epicId=alpha-epic&unknown=value",
+    `?slug=alpha&${Array.from({ length: 65 }, (_, index) => `epicId=id-${index}`).join("&")}`,
   ];
   for (const query of invalidQueries) {
     const response = await fetch(
@@ -275,6 +277,190 @@ test("project-create reads reject malformed queries and fail closed on incomplet
     data: null,
   });
   expect(h.events(["operator.action"])).toEqual([]);
+});
+
+test("scope preview distinguishes a known empty scope from an unknown epic", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  h.bd.answer = (args) =>
+    args[0] === "export"
+      ? {
+          status: 0,
+          stdout: JSON.stringify({
+            id: "unassigned-epic",
+            title: "Unassigned epic",
+            issue_type: "epic",
+            priority: 2,
+            status: "open",
+            created_at: "2026-10-26T00:00:00.000Z",
+            updated_at: "2026-10-26T00:00:00.000Z",
+          }),
+          stderr: "",
+        }
+      : undefined;
+  const known = await fetch(
+    `${h.api}/projects/create-scope-preview?slug=empty-project&epicId=unassigned-epic`,
+    { headers: h.headers(h.hearth.token) },
+  );
+  expect(known.status).toBe(200);
+  expect(await known.json()).toMatchObject({
+    ok: true,
+    data: { complete: true, scopeCount: 0 },
+  });
+  const unknown = await fetch(
+    `${h.api}/projects/create-scope-preview?slug=empty-project&epicId=not-in-export`,
+    { headers: h.headers(h.hearth.token) },
+  );
+  expect(unknown.status).toBe(409);
+  expect(h.events(["operator.action"])).toEqual([]);
+});
+
+test("project-create options include registered canonical repos or refuse the incomplete registry", async () => {
+  const h = await startTestHearth({
+    files: {
+      "repos/repos.json": JSON.stringify({
+        repos: [
+          {
+            name: "registered-repo",
+            url: "https://example.invalid/repo",
+            defaultBranch: "main",
+          },
+        ],
+      }),
+    },
+  });
+  opened.push(h);
+  const checkout = join(h.root, "repos", "registered-repo");
+  mkdirSync(join(checkout, ".git"), { recursive: true });
+  const response = await fetch(`${h.api}/projects/create-options`, {
+    headers: h.headers(h.hearth.token),
+  });
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({
+    ok: true,
+    data: {
+      complete: true,
+      repositories: [
+        { path: h.workspace, served: true },
+        { path: checkout, name: "registered-repo", served: false },
+      ],
+    },
+    error: null,
+  });
+
+  const missing = await startTestHearth({
+    files: {
+      "repos/repos.json": JSON.stringify({
+        repos: [
+          {
+            name: "missing-repo",
+            url: "https://example.invalid/missing",
+            defaultBranch: "main",
+          },
+        ],
+      }),
+    },
+  });
+  opened.push(missing);
+  const unavailable = await fetch(`${missing.api}/projects/create-options`, {
+    headers: missing.headers(missing.hearth.token),
+  });
+  expect(unavailable.status).toBe(503);
+  expect(await unavailable.json()).toMatchObject({ ok: false, data: null });
+});
+
+test("project-create options refuse malformed, oversized, or over-cap choice sources", async () => {
+  const malformed = await startTestHearth({
+    files: { "repos/repos.json": "{invalid" },
+  });
+  opened.push(malformed);
+  const malformedResponse = await fetch(
+    `${malformed.api}/projects/create-options`,
+    { headers: malformed.headers(malformed.hearth.token) },
+  );
+  expect(malformedResponse.status).toBe(503);
+
+  const oversizedRegistry = await startTestHearth({
+    files: {
+      "repos/repos.json": `${JSON.stringify({ repos: [] })}${" ".repeat(65_536)}`,
+    },
+  });
+  opened.push(oversizedRegistry);
+  const registryBytesResponse = await fetch(
+    `${oversizedRegistry.api}/projects/create-options`,
+    { headers: oversizedRegistry.headers(oversizedRegistry.hearth.token) },
+  );
+  expect(registryBytesResponse.status).toBe(503);
+
+  const tooManyRepos = await startTestHearth({
+    files: {
+      "repos/repos.json": JSON.stringify({
+        repos: Array.from({ length: 128 }, (_, index) => ({
+          name: `repo-${index}`,
+          url: "https://example.invalid/repo",
+          defaultBranch: "main",
+        })),
+      }),
+    },
+  });
+  opened.push(tooManyRepos);
+  const repoLimitResponse = await fetch(
+    `${tooManyRepos.api}/projects/create-options`,
+    { headers: tooManyRepos.headers(tooManyRepos.hearth.token) },
+  );
+  expect(repoLimitResponse.status).toBe(503);
+
+  const tooManyEpics = await startTestHearth();
+  opened.push(tooManyEpics);
+  tooManyEpics.bd.answer = (args) =>
+    args[0] === "export"
+      ? {
+          status: 0,
+          stdout: Array.from({ length: 4_097 }, (_, index) =>
+            JSON.stringify({
+              id: `epic-${index}`,
+              title: `Epic ${index}`,
+              issue_type: "epic",
+              priority: 2,
+              status: "open",
+              created_at: "2026-10-26T00:00:00.000Z",
+              updated_at: "2026-10-26T00:00:00.000Z",
+            }),
+          ).join("\n"),
+          stderr: "",
+        }
+      : undefined;
+  const epicLimitResponse = await fetch(
+    `${tooManyEpics.api}/projects/create-options`,
+    { headers: tooManyEpics.headers(tooManyEpics.hearth.token) },
+  );
+  expect(epicLimitResponse.status).toBe(503);
+
+  const oversized = await startTestHearth();
+  opened.push(oversized);
+  oversized.bd.answer = (args) =>
+    args[0] === "export"
+      ? {
+          status: 0,
+          stdout: Array.from({ length: 1_200 }, (_, index) =>
+            JSON.stringify({
+              id: `large-epic-${index}`,
+              title: "x".repeat(1_000),
+              issue_type: "epic",
+              priority: 2,
+              status: "open",
+              created_at: "2026-10-26T00:00:00.000Z",
+              updated_at: "2026-10-26T00:00:00.000Z",
+            }),
+          ).join("\n"),
+          stderr: "",
+        }
+      : undefined;
+  const byteLimitResponse = await fetch(
+    `${oversized.api}/projects/create-options`,
+    { headers: oversized.headers(oversized.hearth.token) },
+  );
+  expect(byteLimitResponse.status).toBe(503);
 });
 
 test("a damaged project catalog is a failed read, never empty or overwritten", async () => {
