@@ -7,6 +7,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { connect } from "node:net";
@@ -89,6 +90,7 @@ import {
   codexChatForkOriginalHash,
   codexChatForkOriginalHashInput,
 } from "../sessions/codex-chat-fork-protocol";
+import { ownedCodingPageSchema } from "../sessions/codex-owned-journal";
 import { canonicalOwnedSessionStart } from "../sessions/codex-owned-protocol";
 import {
   sessionStartIdentityPageSchema,
@@ -236,10 +238,14 @@ const API_SMITH_CREATE_REVISION = {
   workspace: "0".repeat(64),
 };
 const API_CODEX_CHAT_FORK_ID = "80e40be9-e811-47c3-a71d-b988e67178a0";
-const API_CODEX_CHAT_FORK_CHILD_ID =
+const API_CODEX_CHAT_FORK_CONTROL_CHILD_ID =
   "session-80e40be9-e811-47c3-a71d-b988e6717801";
-const API_CODEX_CHAT_FORK_CHILD_REQUEST_ID =
+const API_CODEX_CHAT_FORK_CONTROL_CHILD_REQUEST_ID =
   "80e40be9-e811-47c3-a71d-b988e6717802";
+const API_CODEX_CHAT_FORK_CONTROL_DECISION_ID =
+  "80e40be9-e811-47c3-a71d-b988e6717803";
+const API_CODEX_CHAT_FORK_CONTROL_STOP_ID =
+  "80e40be9-e811-47c3-a71d-b988e6717804";
 const API_CODEX_CHAT_FORK_RESERVE_ID = "808b8f84-1f86-44bf-9cf4-518c58b59a11";
 const API_CODEX_CHAT_FORK_RETIRE_ID = "808b8f84-1f86-44bf-9cf4-518c58b59a12";
 const API_CODEX_CHAT_FORK_SOURCE = {
@@ -249,6 +255,16 @@ const API_CODEX_CHAT_FORK_SOURCE = {
   approvalId: "11cc8647-32c5-4278-85c6-a43fe9019842",
   threadId: "0199a213-81c0-7800-8aa1-bbab2a035a61",
   turnId: "0199a213-81c0-7800-8aa1-bbab2a035a62",
+};
+// Central control-route rows use their own source transcript. Earlier Fork
+// actions in the shared API inventory leave state for their own parent/turn.
+const API_CODEX_CHAT_FORK_CONTROL_SOURCE = {
+  sessionId: "session-71e40be9-e811-47c3-a71d-b988e6717810",
+  requestId: "71e40be9-e811-47c3-a71d-b988e6717811",
+  turnRequestId: "71e40be9-e811-47c3-a71d-b988e6717812",
+  approvalId: "71e40be9-e811-47c3-a71d-b988e6717813",
+  threadId: "0199a213-81c0-7800-8aa1-bbab2a035a80",
+  turnId: "0199a213-81c0-7800-8aa1-bbab2a035a81",
 };
 const API_CODEX_CHAT_FORK_RESERVE_SOURCE = {
   sessionId: "session-4b092165-2bc0-49e2-ae10-bf0b2f77c0cf",
@@ -2007,6 +2023,68 @@ const ACTIONS: Record<string, ActionFixture> = {
     },
     happened: async (_h, data) => expect(data).toBeNull(),
   },
+  "POST /projects/:id/sessions/:sessionId/fork-approval-decisions": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_CODEX_CHAT_FORK_CONTROL_CHILD_ID}/fork-approval-decisions`,
+      body: {
+        requestId: API_CODEX_CHAT_FORK_CONTROL_DECISION_ID,
+        turnRequestId: API_CODEX_CHAT_FORK_CONTROL_CHILD_REQUEST_ID,
+        approvalId: "80e40be9-e811-47c3-a71d-b988e6717805",
+        decision: "accept",
+      },
+      status: 409,
+      ok: false,
+      error: "The live approval has no matching private Fork-child turn.",
+      target: `codex-chat-fork-child:${FIXTURE_PROJECT_ID}:${API_CODEX_CHAT_FORK_CONTROL_CHILD_ID}`,
+      audit: {
+        family: "codex-chat-fork-approval",
+        requestId: API_CODEX_CHAT_FORK_CONTROL_DECISION_ID,
+        inputHash: createHash("sha256")
+          .update(
+            JSON.stringify({
+              requestId: API_CODEX_CHAT_FORK_CONTROL_DECISION_ID,
+              turnRequestId: API_CODEX_CHAT_FORK_CONTROL_CHILD_REQUEST_ID,
+              approvalId: "80e40be9-e811-47c3-a71d-b988e6717805",
+              decision: "accept",
+            }),
+          )
+          .digest("hex"),
+      },
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_CODEX_CHAT_FORK_CONTROL_CHILD_ID}/fork-approval-decisions`,
+      body: { requestId: "invalid" },
+    },
+    prepare: seedForkReadChild,
+    happened: async (_h, answer) => expect(answer).toBeNull(),
+  },
+  "POST /projects/:id/sessions/:sessionId/fork-stop": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_CODEX_CHAT_FORK_CONTROL_CHILD_ID}/fork-stop`,
+      body: { requestId: API_CODEX_CHAT_FORK_CONTROL_CHILD_REQUEST_ID },
+      status: 409,
+      ok: false,
+      error: "The requested Stop has no matching private Fork-child turn.",
+      target: `codex-chat-fork-child:${FIXTURE_PROJECT_ID}:${API_CODEX_CHAT_FORK_CONTROL_CHILD_ID}`,
+      audit: {
+        family: "codex-chat-fork-stop",
+        requestId: API_CODEX_CHAT_FORK_CONTROL_CHILD_REQUEST_ID,
+        inputHash: createHash("sha256")
+          .update(
+            JSON.stringify({
+              requestId: API_CODEX_CHAT_FORK_CONTROL_CHILD_REQUEST_ID,
+            }),
+          )
+          .digest("hex"),
+      },
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_CODEX_CHAT_FORK_CONTROL_CHILD_ID}/fork-stop`,
+      body: { requestId: "invalid" },
+    },
+    prepare: seedForkReadChild,
+    happened: async (_h, answer) => expect(answer).toBeNull(),
+  },
   "POST /projects/:id/sessions/:sessionId/stop": ownedSessionFixture("stop"),
   "POST /projects/:id/sessions/:sessionId/approval-decisions": {
     valid: {
@@ -2767,7 +2845,8 @@ const READS: Record<string, string> = {
   "GET /projects/:id/activity": `/projects/${FIXTURE_PROJECT_ID}/activity`,
   "GET /projects/:id/activity/:eventId": `/projects/${FIXTURE_PROJECT_ID}/activity/1`,
   "GET /projects/:id/sessions/:sessionId": `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_OWNED_SESSION_ID}`,
-  "GET /projects/:id/sessions/:sessionId/fork-turns": `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_CODEX_CHAT_FORK_CHILD_ID}/fork-turns`,
+  "GET /projects/:id/sessions/:sessionId/fork-turns": `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_CODEX_CHAT_FORK_CONTROL_CHILD_ID}/fork-turns`,
+  "GET /projects/:id/sessions/:sessionId/fork-approvals": `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_CODEX_CHAT_FORK_CONTROL_CHILD_ID}/fork-approvals`,
   "GET /projects/:id/sessions/:sessionId/approvals": `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_CHAT_SESSION}/approvals`,
   "GET /projects/:id/session-library": `/projects/${FIXTURE_PROJECT_ID}/session-library`,
   "GET /projects/:id/sessions/:sessionId/archive": `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_OWNED_SESSION_ID}/archive`,
@@ -2826,10 +2905,13 @@ async function seedForkReadOriginal(h: TestHearth): Promise<void> {
 }
 
 /** A bounded linked child transcript fixture for the protected child-only read row. */
+const seededForkReadChildren = new WeakSet<TestHearth>();
+
 async function seedForkReadChild(h: TestHearth): Promise<void> {
+  if (seededForkReadChildren.has(h)) return;
   const source = await seedForkableCodexChatSource(
       h,
-      API_CODEX_CHAT_FORK_SOURCE,
+      API_CODEX_CHAT_FORK_CONTROL_SOURCE,
     ),
     registry = createSessionRegistry(h.home, "codex", "chat"),
     parent = registry.read(source.projectId, source.parentSessionId),
@@ -2849,19 +2931,19 @@ async function seedForkReadChild(h: TestHearth): Promise<void> {
       parentRequestHash: parent.requestHash,
       parentTurnHash: selected.hash,
       parentNativeThreadId: parentState.binding.sessionId,
-      throughNativeTurnId: API_CODEX_CHAT_FORK_SOURCE.turnId,
+      throughNativeTurnId: API_CODEX_CHAT_FORK_CONTROL_SOURCE.turnId,
       sourceSettingsHash: "c".repeat(64),
     },
     journal = createCodexChatForkJournal({
       root: h.root,
       home: h.home,
-      createChildAppSessionId: () => API_CODEX_CHAT_FORK_CHILD_ID,
+      createChildAppSessionId: () => API_CODEX_CHAT_FORK_CONTROL_CHILD_ID,
     }),
     reserved = await journal.reserve(
       source.projectId,
       source.parentSessionId,
       {
-        requestId: API_CODEX_CHAT_FORK_CHILD_REQUEST_ID,
+        requestId: API_CODEX_CHAT_FORK_CONTROL_CHILD_REQUEST_ID,
         throughTurnRequestId: source.throughTurnRequestId,
       },
       sourceSeal,
@@ -2931,6 +3013,7 @@ async function seedForkReadChild(h: TestHearth): Promise<void> {
   });
   if (linked.state !== "linked")
     throw new Error("Could not seed the linked Fork-child read original");
+  seededForkReadChildren.add(h);
 }
 
 function fixture(route: ApiRoute): ActionFixture {
@@ -3534,18 +3617,131 @@ describe("a read row or the stream while another connection holds the write lock
   /** The status and whether the answer was an `ok` envelope (including an open stream). */
   async function answered(
     response: Response,
-  ): Promise<{ status: number; ok: boolean }> {
+  ): Promise<{ status: number; ok: boolean; error: string | null }> {
     if (response.headers.get("content-type")?.startsWith("text/event-stream")) {
       await response.body?.cancel();
-      return { status: response.status, ok: true };
+      return { status: response.status, ok: true, error: null };
     }
     const body = await envelope(response);
-    return { status: response.status, ok: body.ok };
+    return {
+      status: response.status,
+      ok: body.ok,
+      error:
+        typeof body.error === "string"
+          ? body.error.replace(/[^\x20-\x7e]/g, "?").slice(0, 160)
+          : null,
+    };
   }
 
   test("every read row and the stream answer while locked, ledger readers refuse with an error envelope, and health answers; released, every row answers 200", async () => {
     // The worktree row's git is a stand-in listing the root alone: this test
     // is about the ledger, and a real git on a loaded machine can fail it.
+    const forkReadGit =
+      (worktreePath: () => string): GitRun =>
+      (args) => {
+        const top = worktreePath().replaceAll("\\", "/");
+        if (args[0] === "rev-parse")
+          return { status: 0, stdout: `${top}\n`, stderr: "" };
+        if (args[0] === "worktree")
+          return {
+            status: 0,
+            stdout: [`worktree ${top}`, "HEAD aaa", "branch refs/heads/master"]
+              .concat("", "")
+              .join("\0"),
+            stderr: "",
+          };
+        return { status: 1, stdout: "", stderr: "" };
+      };
+    // Scope validation for this read consults projectSnapshotReader, which
+    // opens the Hearth ledger. Validate the child GET on a separate unlocked
+    // Hearth so the locked matrix below still starts with a cold ledger.
+    let baselineWorkspace = "";
+    const baselineHearth = await start({
+      api: { git: forkReadGit(() => baselineWorkspace) },
+    });
+    baselineWorkspace = baselineHearth.workspace;
+    await seedForkReadChild(baselineHearth);
+    const forkChildPath =
+      READS["GET /projects/:id/sessions/:sessionId/fork-turns"];
+    if (forkChildPath === undefined)
+      throw new Error("the Fork-child read row has no fixture path");
+    const baselineResponse = await get(
+      baselineHearth,
+      forkChildPath,
+      baselineHearth.headers(baselineHearth.hearth.token),
+    );
+    const baselineBody = await envelope<unknown>(baselineResponse);
+    const baselinePage = baselineBody.ok
+      ? ownedCodingPageSchema.safeParse(baselineBody.data)
+      : null;
+    expect({
+      status: baselineResponse.status,
+      ok: baselineBody.ok,
+      page: baselinePage?.success
+        ? {
+            projectId: baselinePage.data.projectId,
+            conversationId: baselinePage.data.conversationId,
+          }
+        : null,
+    }).toEqual({
+      status: 200,
+      ok: true,
+      page: {
+        projectId: FIXTURE_PROJECT_ID,
+        conversationId: API_CODEX_CHAT_FORK_CONTROL_CHILD_ID,
+      },
+    });
+    expect(existsSync(baselineHearth.ledger)).toBe(true);
+    // The validator intentionally compares canonical workspace spellings.
+    // A Git inventory recorded through a directory alias must not be confused
+    // with the canonical path persisted in the owned child metadata.
+    const worktreeAlias = join(baselineHearth.configHome, "root-alias");
+    symlinkSync(
+      baselineHearth.root,
+      worktreeAlias,
+      process.platform === "win32" ? "junction" : "dir",
+    );
+    try {
+      const aliasFacade = { ...baselineHearth, root: worktreeAlias };
+      expect(aliasFacade.workspace).toBe(baselineHearth.workspace);
+      // The facade's root is an alias, while its workspace and the saved child
+      // metadata remain canonical. The adapter reports the canonical workspace.
+      baselineWorkspace = aliasFacade.workspace;
+      const aliasedFacadeResponse = await get(
+        baselineHearth,
+        forkChildPath,
+        baselineHearth.headers(baselineHearth.hearth.token),
+      );
+      expect(aliasedFacadeResponse.status).toBe(200);
+      // An inventory that actually reports the alias remains out of registry.
+      baselineWorkspace = worktreeAlias;
+      const aliasResponse = await get(
+        baselineHearth,
+        forkChildPath,
+        baselineHearth.headers(baselineHearth.hearth.token),
+      );
+      const aliasBody = await envelope<unknown>(aliasResponse);
+      expect({
+        status: aliasResponse.status,
+        ok: aliasBody.ok,
+        error: aliasBody.error,
+      }).toEqual({
+        status: 409,
+        ok: false,
+        error:
+          "The selected worktree is not in this repository's current Git registry. No new turn was accepted.",
+      });
+    } finally {
+      baselineWorkspace = baselineHearth.workspace;
+      rmSync(worktreeAlias);
+    }
+    const canonicalResponse = await get(
+      baselineHearth,
+      forkChildPath,
+      baselineHearth.headers(baselineHearth.hearth.token),
+    );
+    expect(canonicalResponse.status).toBe(200);
+
     let workspace = "";
     const git: GitRun = (args) => {
       const top = workspace.replaceAll("\\", "/");
@@ -3611,6 +3807,7 @@ describe("a read row or the stream while another connection holds the write lock
       row: string;
       status: number;
       ok: boolean;
+      error: string | null;
     }> = [];
     try {
       const sent = performance.now();
@@ -3638,7 +3835,14 @@ describe("a read row or the stream while another connection holds the write lock
       expect(
         measured
           .filter((m) => m.status !== 200 || !m.ok)
-          .map((m) => ({ row: m.row, status: m.status, ok: m.ok }))
+          .map((m) => ({
+            row: m.row,
+            status: m.status,
+            ok: m.ok,
+            ...(m.row === "GET /projects/:id/sessions/:sessionId/fork-turns"
+              ? { error: m.error }
+              : {}),
+          }))
           .sort((a, b) => a.row.localeCompare(b.row)),
       ).toEqual(
         LEDGER_ROWS.map(([row, status]) => ({ row, status, ok: false })),

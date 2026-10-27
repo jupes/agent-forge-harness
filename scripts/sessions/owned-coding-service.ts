@@ -335,6 +335,19 @@ export function createOwnedCodingSessionService(options: {
       );
     return record.provider === "gemini" ? geminiChat : chat;
   };
+  const forkChat = (projectId: string, sessionId: string) => {
+    const record = registry.lookup(projectId, sessionId);
+    if (
+      record.provider !== "codex" ||
+      record.mode !== "chat" ||
+      record.origin?.kind !== "codex-chat-fork"
+    )
+      throw new ConversationError(
+        409,
+        "This control requires a registered Codex Fork child.",
+      );
+    return chat;
+  };
   return {
     async reserveIdentity(
       projectId: string,
@@ -830,6 +843,13 @@ export function createOwnedCodingSessionService(options: {
         requestId,
       );
     },
+    forkApprovals(projectId: string, sessionId: string, requestId?: string) {
+      return forkChat(projectId, sessionId).forkApprovals(
+        projectId,
+        sessionId,
+        requestId,
+      );
+    },
     decide(
       projectId: string,
       sessionId: string,
@@ -859,8 +879,26 @@ export function createOwnedCodingSessionService(options: {
         "This session has no native Chat permission protocol.",
       );
     },
+    decideFork(
+      projectId: string,
+      sessionId: string,
+      request: CodexChatDecisionRequest,
+    ) {
+      return forkChat(projectId, sessionId).decideFork(
+        projectId,
+        sessionId,
+        request,
+      );
+    },
     stop(projectId: string, sessionId: string, requestId: string) {
       return selected(projectId, sessionId).stop(
+        projectId,
+        sessionId,
+        requestId,
+      );
+    },
+    stopFork(projectId: string, sessionId: string, requestId: string) {
+      return forkChat(projectId, sessionId).stopFork(
         projectId,
         sessionId,
         requestId,
