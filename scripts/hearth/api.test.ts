@@ -7,6 +7,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { connect } from "node:net";
@@ -3654,6 +3655,43 @@ describe("a read row or the stream while another connection holds the write lock
       },
     });
     expect(existsSync(baselineHearth.ledger)).toBe(true);
+    // The validator intentionally compares canonical workspace spellings.
+    // A Git inventory recorded through a directory alias must not be confused
+    // with the canonical path persisted in the owned child metadata.
+    const worktreeAlias = join(baselineHearth.configHome, "root-alias");
+    symlinkSync(
+      baselineHearth.root,
+      worktreeAlias,
+      process.platform === "win32" ? "junction" : "dir",
+    );
+    try {
+      baselineWorkspace = worktreeAlias;
+      const aliasResponse = await get(
+        baselineHearth,
+        forkChildPath,
+        baselineHearth.headers(baselineHearth.hearth.token),
+      );
+      const aliasBody = await envelope<unknown>(aliasResponse);
+      expect({
+        status: aliasResponse.status,
+        ok: aliasBody.ok,
+        error: aliasBody.error,
+      }).toEqual({
+        status: 409,
+        ok: false,
+        error:
+          "The selected worktree is not in this repository's current Git registry. No new turn was accepted.",
+      });
+    } finally {
+      baselineWorkspace = baselineHearth.workspace;
+      rmSync(worktreeAlias);
+    }
+    const canonicalResponse = await get(
+      baselineHearth,
+      forkChildPath,
+      baselineHearth.headers(baselineHearth.hearth.token),
+    );
+    expect(canonicalResponse.status).toBe(200);
 
     const h = await start({
       files: { ".tmp/work/forge-runs/demo.json": RUN_STATE },
