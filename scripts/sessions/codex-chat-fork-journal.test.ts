@@ -279,6 +279,56 @@ test("legacy unmarked reserved originals are held from dispatch and cannot be re
   expect(legacy.read(projectId, requestId)).toEqual(reserved);
 });
 
+test("rehash-valid marked reservations without a source seal fail closed and retain the parent address", async () => {
+  for (const kind of ["preflight-v1", "direct-v1"] as const) {
+    const root = scratch.make(`codex-fork-missing-seal-${kind}-`),
+      storage = new MemoryStorage(),
+      journal = fixture(root, storage).journal,
+      reserved = await journal.reserve(
+        projectId,
+        parentSessionId,
+        { requestId, throughTurnRequestId },
+        kind,
+      ),
+      [name, text] = [...storage.events].at(-1) ?? [];
+    if (!name || !text) throw Error("Missing reserved event.");
+    const previous = codexChatForkJournalEventSchema.parse(JSON.parse(text)),
+      body = codexChatForkJournalEventBodySchema.parse({
+        version: previous.version,
+        sequence: previous.sequence,
+        previousEventHash: previous.previousEventHash,
+        previousOperationHash: previous.previousOperationHash,
+        transition: previous.transition,
+        record: {
+          ...previous.record,
+          sourceSeal: undefined,
+        },
+      }),
+      event = codexChatForkJournalEventSchema.parse({
+        ...body,
+        eventHash: codexChatForkJournalEventHash(body),
+      });
+    storage.events.delete(name);
+    storage.events.set(
+      `${String(event.sequence).padStart(8, "0")}-${event.eventHash}.json`,
+      canonicalCodexChatForkJournalEvent(event),
+    );
+
+    expect(() => journal.read(projectId, requestId)).toThrow();
+    await expect(
+      journal.retirePreflight(reference(reserved)),
+    ).rejects.toThrow();
+    await expect(
+      journal.reserve(
+        projectId,
+        parentSessionId,
+        { requestId: otherRequestId, throughTurnRequestId },
+        "preflight-v1",
+      ),
+    ).rejects.toThrow();
+  }
+});
+
 test("list validates the complete journal before returning every scoped original in stable order", async () => {
   const root = scratch.make("codex-fork-root-"),
     storage = new MemoryStorage(),
