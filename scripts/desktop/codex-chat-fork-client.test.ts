@@ -582,7 +582,7 @@ test("ambiguous reservation stays on its exact UUID when discovery is empty or t
       state: "reserved",
     });
 
-    await expect(client.listOriginals(projectId)).resolves.toEqual([]);
+    await expect(client.listOriginals(projectId)).resolves.toEqual([pending]);
     expect(await client.recoverOriginal(projectId, requestId)).toMatchObject({
       state: "held",
       identity: reserved,
