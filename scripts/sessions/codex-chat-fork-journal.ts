@@ -209,6 +209,8 @@ function originalHash(record: CodexChatForkOriginal): string {
 function validRecord(record: CodexChatForkOriginal): boolean {
   if (record.requestHash !== originalHash(record)) return false;
   if (record.childAppSessionId === record.parentSessionId) return false;
+  if (record.reservationKind !== undefined && record.sourceSeal === undefined)
+    return false;
   if (
     record.state === "retired" &&
     (record.reservationKind !== "preflight-v1" ||

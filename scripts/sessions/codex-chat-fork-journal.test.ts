@@ -315,6 +315,7 @@ test("rehash-valid marked reservations without a source seal fail closed and ret
     );
 
     expect(() => journal.read(projectId, requestId)).toThrow();
+    expect(() => journal.list(projectId)).toThrow();
     await expect(
       journal.retirePreflight(reference(reserved)),
     ).rejects.toThrow();
