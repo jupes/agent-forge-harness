@@ -3,9 +3,17 @@ import { join } from "node:path";
 import { expect, type Route, test } from "@playwright/test";
 import type { ConversationState } from "../../types/conversation";
 import type { KeeperRecoveryPage } from "../../types/keeper-recovery";
-import { openSettled } from "../e2e/fixtures";
+import type { ProjectCatalog } from "../../types/projects";
+import { openSettled, reloadSettled } from "../e2e/fixtures";
 import { HEARTH_HOME } from "../e2e/servers";
-import { alpha, beta, seedKeeper, seedProjects } from "./project-fixtures";
+import {
+  alpha,
+  beta,
+  catalog,
+  catalogFile,
+  seedKeeper,
+  seedProjects,
+} from "./project-fixtures";
 
 const journal = (id: string) =>
   join(HEARTH_HOME, "conversations", `keeper-${id}.json`);
@@ -43,6 +51,7 @@ function record(): { argv: string[]; input: { message: string } } {
 }
 test.beforeEach(() => {
   seedProjects();
+  rmSync(join(HEARTH_HOME, "config.toml"), { force: true });
   writeFileSync(
     join(HEARTH_HOME, "keeper-fixture-mode.json"),
     JSON.stringify("normal"),
@@ -69,6 +78,141 @@ test.afterEach(async () => {
       ),
     )
     .toBe(false);
+});
+
+function selectProjectSmith(name: string): void {
+  const updated: ProjectCatalog = {
+    ...catalog,
+    projects: catalog.projects.map((project) =>
+      project.id === alpha.id ? { ...project, keeperSmith: name } : project,
+    ),
+  };
+  writeFileSync(catalogFile, JSON.stringify(updated));
+}
+
+test("project Keeper Smith overrides the global default until an explicit saved conversation choice takes priority", async ({
+  page,
+}) => {
+  writeFileSync(
+    join(HEARTH_HOME, "config.toml"),
+    '[smiths.claude-project-choice]\nprovider = "claude"\nmodel = "fixture-project-choice-model"\neffort = "medium"\nenabled = true\n',
+  );
+  selectProjectSmith("claude-master");
+  const before = state(),
+    beforeStarts = starts();
+  await openSettled(page, `/index.html#/desktop/project/${alpha.id}/keeper`);
+  await expect(
+    page.getByRole("button", { name: "claude-master", exact: true }),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "claude-master", exact: true })
+    .click();
+  await expect(
+    page.getByRole("combobox", { name: "Keeper smith" }),
+  ).toHaveValue("claude-master");
+  expect(state()).toEqual(before);
+  expect(starts()).toBe(beforeStarts);
+
+  await reloadSettled(page);
+  await expect(
+    page.getByRole("button", { name: "claude-master", exact: true }),
+  ).toBeVisible();
+  expect(state()).toEqual(before);
+  expect(starts()).toBe(beforeStarts);
+
+  await page
+    .getByRole("textbox", { name: "Message the Keeper" })
+    .fill("Use the project's explicit Smith");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await expect.poll(() => state().turns.at(-1)?.phase).toBe("completed");
+  expect(starts()).toBe(beforeStarts + 1);
+  expect(record().argv).toContain("claude-opus-5-5");
+
+  await page
+    .getByRole("button", { name: "claude-master", exact: true })
+    .click();
+  await page
+    .getByRole("combobox", { name: "Keeper smith" })
+    .selectOption("claude-project-choice");
+  await page.getByRole("button", { name: "Use selected smith" }).click();
+  await expect(
+    page.getByText(
+      "Smith changed. The same provider conversation and saved history are retained. No turn was started.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await reloadSettled(page);
+  await expect(
+    page.getByRole("button", { name: "claude-project-choice", exact: true }),
+  ).toBeVisible();
+  expect(starts()).toBe(beforeStarts + 1);
+  await page
+    .getByRole("textbox", { name: "Message the Keeper" })
+    .fill("Keep the saved conversation Smith");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  await expect.poll(() => state().turns.at(-1)?.phase).toBe("completed");
+  expect(starts()).toBe(beforeStarts + 2);
+  expect(record().argv).toContain("fixture-project-choice-model");
+  expect(state().frames).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        event: expect.objectContaining({
+          kind: "process",
+          smith: "claude-project-choice",
+        }),
+      }),
+    ]),
+  );
+});
+
+test("missing and disabled explicit project Smiths stay unavailable without fallback or a send", async ({
+  page,
+}) => {
+  const before = state(),
+    beforeStarts = starts();
+  let turnPosts = 0;
+  await page.route("**/keeper/turns", async (route) => {
+    if (route.request().method() === "POST") turnPosts++;
+    await route.continue();
+  });
+
+  selectProjectSmith("project-smith-is-missing");
+  await openSettled(page, `/index.html#/desktop/project/${alpha.id}/keeper`);
+  await expect(
+    page.getByRole("button", { name: "project-smith-is-missing", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText(
+      "The selected smith is missing or its configuration could not be read. Choose an enabled smith after rechecking.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Send", exact: true }),
+  ).toBeDisabled();
+  expect(starts()).toBe(beforeStarts);
+  expect(turnPosts).toBe(0);
+  expect(state().turns).toEqual(before.turns);
+
+  await page.goto("about:blank");
+  writeFileSync(
+    join(HEARTH_HOME, "config.toml"),
+    '[workflow]\ndefault_crew = "claude-journeyman"\n[smiths.claude-master]\nenabled = false\n',
+  );
+  selectProjectSmith("claude-master");
+  await openSettled(page, `/index.html#/desktop/project/${alpha.id}/keeper`);
+  await expect(
+    page.getByRole("button", { name: "claude-master", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Keeper unavailable", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Send", exact: true }),
+  ).toBeDisabled();
+  expect(starts()).toBe(beforeStarts);
+  expect(turnPosts).toBe(0);
+  expect(state().turns).toEqual(before.turns);
 });
 
 test("a signed-out Keeper switches only on explicit confirmation, reconciles a lost answer, and shares selection with the drawer", async ({
