@@ -4325,7 +4325,7 @@ test("switching linked Fork originals clears the prior child state before readin
     await expect(reopenedChildA).toContainText(
       "Verifying child transcript and permissions…",
     );
-    await expect(reopenedChildA).toContainText(nativeChildB);
+    await expect(reopenedChildA).toContainText(childB.id);
     await expect(
       reopened.getByRole("button", { name: "Send child turn", exact: true }),
     ).toBeDisabled();
@@ -4349,7 +4349,7 @@ test("switching linked Fork originals clears the prior child state before readin
     await page.unroute(contextMatcher, contextHandler);
   }
   await expect(reopened).not.toContainText("PRIVATE_LINKED_CHILD_A_TRANSCRIPT");
-  await expect(reopenedChildA).toContainText(nativeChildB);
+  await expect(reopenedChildA).toContainText(childB.id);
   if (await historyA.isEnabled()) await historyA.click();
   await expect(reopened).toContainText(firstReservation.requestId);
   await reopenedChildA
@@ -4439,7 +4439,7 @@ test("switching linked Fork originals clears the prior child state before readin
     await expect(reopenedChildA).toContainText(
       "Verifying child transcript and permissions…",
     );
-    await expect(reopenedChildA).toContainText(nativeChildB);
+    await expect(reopenedChildA).toContainText(childB.id);
     expect(forkPosts).toHaveLength(terminalPostsBeforeSelection);
     expect(
       calls().filter(
