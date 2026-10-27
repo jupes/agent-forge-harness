@@ -12,6 +12,7 @@ import {
   CODEX_CHAT_FORK_REVIEW_LIMITS,
   type CodexChatForkContextPage,
   type CodexChatForkSourcePage,
+  codexChatForkCompleteSourceSchema,
   codexChatForkContextPageSchema,
   codexChatForkSourcePageSchema,
 } from "../../../scripts/sessions/codex-chat-fork-review-protocol";
@@ -459,7 +460,7 @@ export function createCodexChatForkClient(
             throw new Error(
               "The exact selected Fork turn is absent from the source.",
             );
-          const complete = codexChatForkSourcePageSchema.parse({
+          const complete = codexChatForkCompleteSourceSchema.parse({
             ...first,
             frames,
             complete: true,
@@ -644,7 +645,7 @@ export function createCodexChatForkClient(
       if (
         disposed ||
         !entry?.confirmed ||
-        !entry.notSent ||
+        (entry.dispatched && !entry.notSent) ||
         entry.identity.state !== "reserved" ||
         !dependencies.canWrite()
       )
@@ -698,6 +699,21 @@ export function createCodexChatForkClient(
         // A missing historical source does not settle the original. Linked child
         // transcript and controls use their own source-independent reads.
       }
+      if (
+        context &&
+        (context.requestId !== identity.requestId ||
+          context.requestHash !== identity.requestHash ||
+          context.parentSessionId !== identity.parentSessionId ||
+          context.throughTurnRequestId !== identity.throughTurnRequestId ||
+          context.state !== identity.state ||
+          (context.source !== null &&
+            (context.source.projectId !== projectId ||
+              context.source.parentSessionId !== identity.parentSessionId ||
+              context.source.throughTurnRequestId !==
+                identity.throughTurnRequestId ||
+              context.source.requestId !== identity.requestId)))
+      )
+        context = null;
       if (original.state === "reserved" && context?.available) {
         reserved.set(requestId, {
           scope,

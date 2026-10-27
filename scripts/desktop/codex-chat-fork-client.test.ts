@@ -664,8 +664,20 @@ test("a valid-shaped context for a different source stays held and cannot dispat
     state: "reserved",
   };
   let posts = 0;
-  const module = await loadForkClient(),
-    client = module.createCodexChatForkClient({
+  const module = await loadForkClient();
+  const mismatches: Array<{
+    context: Partial<CodexChatForkContextPage>;
+    sourceProjectId?: string;
+  }> = [
+    { context: { requestHash: "b".repeat(64) } },
+    { context: { state: "held" } },
+    {
+      context: {},
+      sourceProjectId: "project-b5832fa0-7a21-403b-8184-44892f0d8d86",
+    },
+  ];
+  for (const mismatch of mismatches) {
+    const client = module.createCodexChatForkClient({
       currentScope: scope,
       canWrite: () => true,
       requestId: () => requestId,
@@ -704,13 +716,14 @@ test("a valid-shaped context for a different source stays held and cannot dispat
                 complete: true,
                 nextCursor: null,
               }),
+              projectId: mismatch.sourceProjectId ?? projectId,
               requestId,
             },
           };
           expect(
             codexChatForkContextPageSchema.safeParse(matchingContext).success,
           ).toBe(true);
-          return envelope({ ...matchingContext, requestHash: "b".repeat(64) });
+          return envelope({ ...matchingContext, ...mismatch.context });
         }
         throw new Error(`Unexpected GET ${path}`);
       }) satisfies OperatorRead,
@@ -719,14 +732,81 @@ test("a valid-shaped context for a different source stays held and cannot dispat
         throw new Error("Mismatched source context cannot write.");
       }) satisfies OperatorPost,
     });
-  try {
-    const recovered = await client.recoverOriginal(projectId, requestId);
-    expect(recovered.state).toBe("held");
-    expect(recovered.original).toEqual(reserved);
-    expect(recovered.context).toBeNull();
-    expect(client.canDispatchReservedFork(requestId)).toBe(false);
-    expect(posts).toBe(0);
-  } finally {
-    client.dispose();
+    try {
+      const recovered = await client.recoverOriginal(projectId, requestId);
+      expect(recovered.state).toBe("held");
+      expect(recovered.original).toEqual(reserved);
+      expect(recovered.context).toBeNull();
+      expect(client.canDispatchReservedFork(requestId)).toBe(false);
+      expect(posts).toBe(0);
+    } finally {
+      client.dispose();
+    }
+  }
+});
+
+test("uncertain and unconfirmed Fork reservations cannot be retired", async () => {
+  const module = await loadForkClient();
+  for (const mode of ["reserve-unknown", "dispatch-unknown"] as const) {
+    let posts = 0;
+    const client = module.createCodexChatForkClient({
+      currentScope: scope,
+      canWrite: () => true,
+      requestId: () => requestId,
+      read: (async () =>
+        envelope(
+          sourcePage({
+            frames: [
+              {
+                kind: "user",
+                seq: 1,
+                turnId: throughTurnRequestId,
+                at: "2026-10-23T03:00:00.000Z",
+                text: "PRIVATE original prompt",
+                about: [],
+              },
+            ],
+            complete: true,
+            nextCursor: null,
+          }),
+        )) satisfies OperatorRead,
+      post: (async (path) => {
+        posts++;
+        if (mode === "reserve-unknown" || path.endsWith("/forks"))
+          throw new Error("The Fork outcome is not proven safe to retire.");
+        return envelope({
+          family: "codex-chat-fork",
+          requestId,
+          requestHash,
+          parentSessionId,
+          throughTurnRequestId,
+          state: "reserved",
+        });
+      }) satisfies OperatorPost,
+    });
+    try {
+      const reviewed = await client.reviewSource({
+        projectId,
+        parentSessionId,
+        throughTurnRequestId,
+      });
+      await client.reserveFork({
+        projectId,
+        parentSessionId,
+        throughTurnRequestId,
+        source: reviewed,
+      });
+      if (mode === "dispatch-unknown")
+        expect(await client.dispatchReservedFork(projectId, requestId)).toEqual(
+          { state: "held" },
+        );
+      expect(client.canRetireFork(requestId)).toBe(false);
+      await expect(client.retireFork(projectId, requestId)).rejects.toThrow(
+        "Only the exact unattempted Fork reservation can be retired.",
+      );
+      expect(posts).toBe(mode === "reserve-unknown" ? 1 : 2);
+    } finally {
+      client.dispose();
+    }
   }
 });
