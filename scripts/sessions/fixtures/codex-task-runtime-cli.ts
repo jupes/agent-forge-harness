@@ -2,4 +2,4 @@
 import { isMain } from "../../is-main";
 import { runCodexTaskRuntimeFixture } from "./codex-task-runtime-fixture";
 
-if (isMain(import.meta)) await runCodexTaskRuntimeFixture();
+if (isMain(import.meta)) await runCodexTaskRuntimeFixture(import.meta.path);
