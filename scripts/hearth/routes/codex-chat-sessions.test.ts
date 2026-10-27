@@ -260,6 +260,13 @@ async function fixture(
   };
   const page = async (id: string) =>
     ownedCodingPageSchema.parse(await get(`/${id}`));
+  const forkPage = async (id: string) => {
+    const response = await fetch(`${h.api}${path}/${id}/fork-turns`, {
+      headers: h.headers(h.hearth.token),
+    });
+    expect(response.status).toBe(200);
+    return ownedCodingPageSchema.parse((await response.json()).data);
+  };
   const waitApproval = async (id: string) => {
     const deadline = Date.now() + 5000;
     for (;;) {
@@ -287,6 +294,21 @@ async function fixture(
       await Bun.sleep(20);
     }
   };
+  const settleFork = async (id: string) => {
+    const deadline = Date.now() + 5000;
+    for (;;) {
+      const data = await forkPage(id);
+      if (
+        data.turns.every(
+          (turn) => !["accepted", "running", "cancelling"].includes(turn.phase),
+        )
+      )
+        return data;
+      if (Date.now() > deadline)
+        throw Error("The owned Fork-child turn did not settle");
+      await Bun.sleep(20);
+    }
+  };
   const records = (): Record<string, unknown>[] => {
     if (!existsSync(log)) return [];
     try {
@@ -304,8 +326,10 @@ async function fixture(
     post,
     get,
     page,
+    forkPage,
     waitApproval,
     settle,
+    settleFork,
     records,
     release,
     held: () => held,
@@ -674,7 +698,7 @@ test("a linked Codex Fork child accepts a turn through its dedicated action", as
       ),
       winner = contenders[winnerIndex];
     if (!winner) throw Error("No Fork-child turn won the admission race");
-    const childPage = await f.settle(childSessionId);
+    const childPage = await f.settleFork(childSessionId);
     expect((await f.post(`/${childSessionId}/fork-turns`, winner)).status).toBe(
       202,
     );
@@ -696,7 +720,7 @@ test("a linked Codex Fork child accepts a turn through its dedicated action", as
         })
       ).status,
     ).toBe(409);
-    const refreshedChildPage = await f.get(`/${childSessionId}`),
+    const refreshedChildPage = await f.forkPage(childSessionId),
       records = f.records(),
       resumes = records.filter((row) => row.method === "thread/resume"),
       starts = records.filter((row) => row.method === "thread/start"),
@@ -808,7 +832,7 @@ test("a lost Fork-child turn reply stays unknown after parent activity and never
   expect(
     (await f.post(`/${childSessionId}/fork-turns`, childInput)).status,
   ).toBe(202);
-  const childAfterLoss = await f.settle(childSessionId),
+  const childAfterLoss = await f.settleFork(childSessionId),
     originalChildTurn = childAfterLoss.turns.find(
       (turn) => turn.requestId === childInput.requestId,
     );
@@ -849,7 +873,7 @@ test("a lost Fork-child turn reply stays unknown after parent activity and never
     requestId: childInput.requestId,
     phase: "unknown",
   });
-  const afterDuplicate = await f.page(childSessionId);
+  const afterDuplicate = await f.forkPage(childSessionId);
   expect(afterDuplicate.turns).toHaveLength(1);
   expect(afterDuplicate.turns[0]).toMatchObject({
     requestId: childInput.requestId,
