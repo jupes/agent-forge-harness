@@ -383,6 +383,9 @@ test("project color IDs keep their paired tile styles after reload without a wri
 
   await reloadSettled(page);
   expect(await styles()).toEqual(beforeReload);
+  await page
+    .locator(".af-projects-grid")
+    .screenshot({ path: test.info().outputPath("project-colors.png") });
   expect(posts).toEqual([]);
 });
 
