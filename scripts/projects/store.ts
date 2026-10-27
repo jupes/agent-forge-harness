@@ -3,11 +3,13 @@ import { isAbsolute, join } from "node:path";
 import type {
   NewProject,
   ProjectCatalog,
+  ProjectColor,
   ProjectCreateOperation,
   ProjectPreferences,
   ProjectRecord,
   ProjectWorkspace,
 } from "../../types/projects";
+import { PROJECT_COLOR_IDS } from "../../types/projects";
 import { comparableCheckout } from "../forge/runs";
 import {
   ensurePrivateHome,
@@ -76,6 +78,9 @@ const requestId = (value: unknown): value is string =>
   );
 const digest = (value: unknown): value is string =>
   typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+const projectColor = (value: unknown): value is ProjectColor =>
+  typeof value === "string" &&
+  PROJECT_COLOR_IDS.some((candidate) => candidate === value);
 
 function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
@@ -125,7 +130,9 @@ function validNew(value: unknown): value is NewProject {
     !text(value["name"], 120) ||
     !text(value["description"], 500, true) ||
     !text(value["icon"], 16) ||
-    (Object.hasOwn(value, "keeperSmith") && !text(value["keeperSmith"], 1024))
+    (Object.hasOwn(value, "keeperSmith") &&
+      !text(value["keeperSmith"], 1024)) ||
+    (Object.hasOwn(value, "color") && !projectColor(value["color"]))
   )
     return false;
   const scopes = value["workspaces"];
@@ -159,6 +166,7 @@ function validProject(value: unknown): value is ProjectRecord {
       "icon",
       "workspaces",
       "keeperSmith",
+      "color",
       "pinned",
       "archived",
       "createdAt",
@@ -199,6 +207,7 @@ function validCreateOperation(value: unknown): value is ProjectCreateOperation {
       "icon",
       "workspaces",
       "keeperSmith",
+      "color",
     ]) ||
     !revision(value["baseRevision"]) ||
     !digest(value["scopeHash"]) ||
@@ -286,6 +295,9 @@ export function parseProjectCatalog(value: unknown): ProjectCatalog {
             Object.hasOwn(project, "keeperSmith") ===
               Object.hasOwn(item.original, "keeperSmith") &&
             project.keeperSmith === item.original.keeperSmith &&
+            Object.hasOwn(project, "color") ===
+              Object.hasOwn(item.original, "color") &&
+            project.color === item.original.color &&
             originalScope !== undefined &&
             createdScope !== undefined &&
             comparableCheckout(createdScope.root) ===
@@ -411,7 +423,7 @@ export function createProjectStore(
     id: string,
     stamp: string,
   ): ProjectRecord => {
-    const { keeperSmith, ...fields } = original;
+    const { color, keeperSmith, ...fields } = original;
     const workspaces = original.workspaces.map((scope) => ({
       root: resolveCheckout(scope.root).workspace,
       repositories: [
@@ -424,6 +436,7 @@ export function createProjectStore(
     return {
       ...fields,
       ...(keeperSmith !== undefined ? { keeperSmith } : {}),
+      ...(color !== undefined ? { color } : {}),
       workspaces,
       id,
       pinned: false,
@@ -477,6 +490,7 @@ export function createProjectStore(
           "icon",
           "workspaces",
           "keeperSmith",
+          "color",
         ])
       )
         throw new ProjectStoreError(
@@ -578,6 +592,7 @@ export function createProjectStore(
           "icon",
           "workspaces",
           "keeperSmith",
+          "color",
         ]) ||
         !revision(input.expectedCatalogRevision) ||
         !digest(input.preflightScope?.hash) ||
