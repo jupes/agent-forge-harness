@@ -13,12 +13,10 @@ import {
   smithCreateIdentityIndexSchema,
 } from "../../scripts/config/smith-create-protocol";
 import { tokenPath } from "../../scripts/hearth/home";
-import { ensurePrivateHome } from "../../scripts/hearth/home-guard";
 import { OPERATOR_HEADER, SESSION_ROUTE } from "../../scripts/hearth/paths";
 import { readToken } from "../../scripts/hearth/token";
 import { resolveCheckout } from "../../scripts/ledger/workspace";
 import { workspaceKey } from "../../scripts/projects/scope";
-import { projectCatalogFixture } from "../../scripts/projects/testing";
 import type { SmithConfigCreateReceipt } from "../../types/smith-config-create";
 import { bunPath, HEARTH_HOME } from "../e2e/servers";
 import { ASSETS, fixtureEnvironment, ROOT } from "./environment";
@@ -161,7 +159,7 @@ async function unusedPort(): Promise<number> {
   return port;
 }
 
-function spawnOwnedHost(home: string, hearthPort: number) {
+function spawnOwnedHost(home: string, hearthPort: number, basisName: string) {
   const child = spawn(
     bunPath(),
     [
@@ -169,6 +167,7 @@ function spawnOwnedHost(home: string, hearthPort: number) {
       ROOT,
       home,
       ASSETS,
+      basisName,
     ],
     {
       env: fixtureProcessEnvironment(home, hearthPort),
@@ -281,7 +280,6 @@ test("pre-effect reservation and post-effect confirmation recover across two fre
   test.setTimeout(120_000);
   const home = join(HEARTH_HOME, `smith-create-origin-${randomUUID()}`),
     configFile = join(home, "config.toml"),
-    projectFile = join(home, "projects", "catalog.json"),
     workspaceFile = join(ROOT, "agent-forge.toml"),
     beforeWorkspace = existsSync(workspaceFile)
       ? readFileSync(workspaceFile)
@@ -332,22 +330,14 @@ test("pre-effect reservation and post-effect confirmation recover across two fre
       });
   });
   try {
-    ensurePrivateHome(home);
-    ensurePrivateHome(join(home, "projects"));
-    writeFileSync(projectFile, JSON.stringify(projectCatalogFixture(ROOT)), {
-      mode: 0o600,
-    });
-    writeFileSync(
-      configFile,
-      `[smiths.${basisName}]\nprovider = "codex"\nmodel = "origin-basis-model"\neffort = "high"\nenabled = true\n`,
-      { mode: 0o600 },
-    );
-    const savedUserConfig = readFileSync(configFile);
     writeFileSync(workspaceFile, "# Smith create origin replacement fixture\n");
-    owner = spawnOwnedHost(home, hearthPort);
+    // The owned Bun helper creates and protects the private fixture tree before
+    // the Node Playwright worker reads any files beneath it.
+    owner = spawnOwnedHost(home, hearthPort, basisName);
     const oldReply = await owner.nextReply();
     if (!("url" in oldReply.data))
       throw new Error("The original Smith host did not start.");
+    const savedUserConfig = readFileSync(configFile);
     const oldOrigin = new URL(oldReply.data.url).origin;
     fixtureHelperPid = oldReply.data.helperPid;
     await page.emulateMedia({ reducedMotion: "reduce" });

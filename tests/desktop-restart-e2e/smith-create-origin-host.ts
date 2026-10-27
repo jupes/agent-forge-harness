@@ -1,16 +1,20 @@
+import { writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { createInterface } from "node:readline";
 import {
   type DesktopHost,
   startDesktopHost,
 } from "../../scripts/hearth/desktop-host";
+import { ensurePrivateHome } from "../../scripts/hearth/home-guard";
+import { projectCatalogFixture } from "../../scripts/projects/testing";
 
-const [root, home, assets] = process.argv.slice(2);
-if (!root || !home || !assets)
+const [root, home, assets, basisName] = process.argv.slice(2);
+if (!root || !home || !assets || !basisName)
   throw new Error("The Smith origin fixture requires its owned paths.");
 const rootPath = root!;
 const homePath = home!;
 const assetsPath = assets!;
+const basisNameValue = basisName!;
 
 function send(value: unknown): void {
   process.stdout.write(
@@ -27,6 +31,19 @@ async function start(): Promise<DesktopHost> {
     hearthCommand: [process.execPath, resolve("scripts/hearth/server.ts")],
   });
 }
+
+ensurePrivateHome(homePath);
+ensurePrivateHome(resolve(homePath, "projects"));
+writeFileSync(
+  resolve(homePath, "projects", "catalog.json"),
+  JSON.stringify(projectCatalogFixture(rootPath)),
+  { mode: 0o600, flag: "wx" },
+);
+writeFileSync(
+  resolve(homePath, "config.toml"),
+  `[smiths.${basisNameValue}]\nprovider = "codex"\nmodel = "origin-basis-model"\neffort = "high"\nenabled = true\n`,
+  { mode: 0o600, flag: "wx" },
+);
 
 let host: DesktopHost | null = await start();
 send({ url: host.url, owner: host.owner, helperPid: process.pid });
