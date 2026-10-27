@@ -4652,10 +4652,16 @@ describe("every read row (iterating the table)", () => {
         h.headers(row.operatorOnly ? h.hearth.token : undefined),
       );
       const body = await envelope(response);
-      expect({ row: key(row), status: response.status, ok: body.ok }).toEqual({
+      expect({
+        row: key(row),
+        status: response.status,
+        ok: body.ok,
+        error: body.error,
+      }).toEqual({
         row: key(row),
         status: 200,
         ok: true,
+        error: null,
       });
       expect(response.headers.get("cache-control")).toBe("no-store");
     }
