@@ -71,7 +71,7 @@ const revision = (value: unknown): value is number =>
   value < Number.MAX_SAFE_INTEGER;
 const requestId = (value: unknown): value is string =>
   typeof value === "string" &&
-  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
     value,
   );
 const digest = (value: unknown): value is string =>
@@ -87,8 +87,12 @@ function canonicalJson(value: unknown): string {
   return JSON.stringify(value) ?? "null";
 }
 
-export function hashProjectCreateOriginal(value: NewProject): string {
-  return createHash("sha256").update(canonicalJson(value)).digest("hex");
+export function hashProjectCreateRequest(input: {
+  requestId: string;
+  expectedCatalogRevision: number;
+  original: NewProject;
+}): string {
+  return createHash("sha256").update(canonicalJson(input)).digest("hex");
 }
 
 function validWorkspace(scope: unknown): scope is ProjectWorkspace {
@@ -191,7 +195,12 @@ function validCreateOperation(value: unknown): value is ProjectCreateOperation {
     ) ||
     !time(value["createdAt"]) ||
     !time(value["updatedAt"]) ||
-    value["requestHash"] !== hashProjectCreateOriginal(value["original"])
+    value["requestHash"] !==
+      hashProjectCreateRequest({
+        requestId: value["requestId"],
+        expectedCatalogRevision: value["baseRevision"],
+        original: value["original"],
+      })
   )
     return false;
   return value["state"] === "created"
@@ -346,16 +355,23 @@ export function createProjectStore(
   };
 
   const metadataChange = async (
-    update: (catalog: ProjectCatalog) => ProjectCatalog,
+    update: (catalog: ProjectCatalog) => Promise<ProjectCatalog>,
   ): Promise<ProjectCatalog> => {
     ensurePrivateHome(home);
     const result = await withQueueLock(
       join(home, "projects", "write.lock.db"),
       async () => {
         const catalog = read();
-        const next = parseProjectCatalog(update(catalog));
-        if (serialize(next) !== serialize(catalog)) writeCatalog(next);
-        return next;
+        const next = parseProjectCatalog(await update(catalog));
+        if (serialize(next) === serialize(catalog)) return read();
+        writeCatalog(next);
+        const confirmed = read();
+        if (serialize(confirmed) !== serialize(next))
+          throw new ProjectStoreError(
+            503,
+            "The project catalog write could not be confirmed. Read the exact create identity before continuing.",
+          );
+        return confirmed;
       },
       { waitMs: 1000 },
     );
@@ -502,7 +518,7 @@ export function createProjectStore(
       }));
     },
     readCreate(requestId: string): ProjectCreateOperation | null {
-      if (!requestId || !/^[0-9a-f-]{36}$/i.test(requestId)) return null;
+      if (!requestId || !/^[0-9a-f-]{36}$/.test(requestId)) return null;
       return exactOperation(read(), requestId);
     },
     listCreates(): ProjectCreateOperation[] {
@@ -512,8 +528,7 @@ export function createProjectStore(
       requestId: string;
       original: NewProject;
       expectedCatalogRevision: number;
-      scopeHash: string;
-      scopeCount: number;
+      validateScope(): Promise<{ hash: string; count: number }>;
     }): Promise<{
       catalog: ProjectCatalog;
       operation: ProjectCreateOperation;
@@ -521,17 +536,21 @@ export function createProjectStore(
       if (
         !requestId(input.requestId) ||
         !validNew(input.original) ||
+        !keys(input.original, [
+          "slug",
+          "name",
+          "description",
+          "icon",
+          "workspaces",
+        ]) ||
         !revision(input.expectedCatalogRevision) ||
-        !digest(input.scopeHash) ||
-        !Number.isSafeInteger(input.scopeCount) ||
-        input.scopeCount < 0 ||
-        input.scopeCount > 100_000
+        typeof input.validateScope !== "function"
       )
         throw new ProjectStoreError(
           400,
           "Expected a bounded project create original.",
         );
-      const requestHash = hashProjectCreateOriginal(input.original);
+      const requestHash = hashProjectCreateRequest(input);
       const existing = exactOperation(read(), input.requestId);
       if (existing) {
         if (existing.requestHash !== requestHash)
@@ -543,7 +562,7 @@ export function createProjectStore(
       }
       const stamp = now().toISOString();
       let operation: ProjectCreateOperation | null = null;
-      const catalog = await metadataChange((current) => {
+      const catalog = await metadataChange(async (current) => {
         const raced = exactOperation(current, input.requestId);
         if (raced) {
           if (raced.requestHash !== requestHash)
@@ -576,6 +595,17 @@ export function createProjectStore(
             409,
             "Another project with that slug is already reserved.",
           );
+        const scope = await input.validateScope();
+        if (
+          !digest(scope.hash) ||
+          !Number.isSafeInteger(scope.count) ||
+          scope.count < 0 ||
+          scope.count > 100_000
+        )
+          throw new ProjectStoreError(
+            503,
+            "The complete project source could not be verified. Refresh before reserving this project.",
+          );
         if (operations.length >= MAX_PROJECT_CREATE_OPERATIONS)
           throw new ProjectStoreError(
             503,
@@ -586,8 +616,8 @@ export function createProjectStore(
           requestHash,
           original: input.original,
           baseRevision: current.revision,
-          scopeHash: input.scopeHash,
-          scopeCount: input.scopeCount,
+          scopeHash: scope.hash,
+          scopeCount: scope.count,
           state: "reserved",
           projectId: null,
           createdRevision: null,
@@ -635,13 +665,23 @@ export function createProjectStore(
       requestId: string;
       requestHash: string;
       reviewedScopeHash: string;
-      currentScopeHash: string;
+      validateScope(): Promise<{ hash: string; count: number }>;
     }): Promise<{
       catalog: ProjectCatalog;
       operation: ProjectCreateOperation;
     }> {
+      if (
+        !requestId(input.requestId) ||
+        !digest(input.requestHash) ||
+        !digest(input.reviewedScopeHash) ||
+        typeof input.validateScope !== "function"
+      )
+        throw new ProjectStoreError(
+          400,
+          "Expected the exact project create reservation.",
+        );
       let operation: ProjectCreateOperation | null = null;
-      const catalog = await metadataChange((current) => {
+      const catalog = await metadataChange(async (current) => {
         const found = exactOperation(current, input.requestId);
         if (!found)
           throw new ProjectStoreError(
@@ -662,14 +702,6 @@ export function createProjectStore(
             409,
             "This project create reservation was retired. Start a new reviewed project only after checking the original.",
           );
-        if (
-          found.scopeHash !== input.reviewedScopeHash ||
-          found.scopeHash !== input.currentScopeHash
-        )
-          throw new ProjectStoreError(
-            409,
-            "The reviewed project scope changed. Check the saved original before continuing.",
-          );
         if (current.revision !== found.baseRevision)
           throw new ProjectStoreError(
             409,
@@ -679,6 +711,25 @@ export function createProjectStore(
           throw new ProjectStoreError(
             409,
             "A project already uses that slug. Check the saved original before continuing.",
+          );
+        const scope = await input.validateScope();
+        if (
+          !digest(scope.hash) ||
+          !Number.isSafeInteger(scope.count) ||
+          scope.count < 0 ||
+          scope.count > 100_000
+        )
+          throw new ProjectStoreError(
+            503,
+            "The complete project source could not be verified. Refresh before creating this project.",
+          );
+        if (
+          found.scopeHash !== input.reviewedScopeHash ||
+          found.scopeHash !== scope.hash
+        )
+          throw new ProjectStoreError(
+            409,
+            "The reviewed project scope changed. Check the saved original before continuing.",
           );
         const stamp = now().toISOString();
         const project = createRecord(
@@ -725,7 +776,7 @@ export function createProjectStore(
       requestHash: string,
     ): Promise<ProjectCreateOperation> {
       let operation: ProjectCreateOperation | null = null;
-      const catalog = await metadataChange((current) => {
+      const catalog = await metadataChange(async (current) => {
         const found = exactOperation(current, requestId);
         if (!found)
           throw new ProjectStoreError(

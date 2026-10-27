@@ -15,7 +15,7 @@ import {
 import { selectProjectBeads, workspaceKey } from "../../projects/scope";
 import {
   createProjectStore,
-  hashProjectCreateOriginal,
+  hashProjectCreateRequest,
   isProjectId,
   ProjectStoreError,
 } from "../../projects/store";
@@ -333,11 +333,15 @@ export function projectRoutes(
     path: "/projects/create-reservations",
     action: "project.create.reserve",
     validate: reserveInput,
-    subject: ({ requestId, original }) => ({
+    subject: ({ requestId, expectedCatalogRevision, original }) => ({
       target: original.slug,
       family: "project-create",
       requestId,
-      inputHash: hashProjectCreateOriginal(original),
+      inputHash: hashProjectCreateRequest({
+        requestId,
+        expectedCatalogRevision,
+        original,
+      }),
     }),
     effect: async (input, context) =>
       reply(async () => {
@@ -347,7 +351,7 @@ export function projectRoutes(
             "The project reservation was not audited.",
           );
         const existing = store.readCreate(input.requestId);
-        const requestHash = hashProjectCreateOriginal(input.original);
+        const requestHash = hashProjectCreateRequest(input);
         if (existing) {
           if (existing.requestHash !== requestHash)
             throw new ProjectStoreError(
@@ -356,14 +360,16 @@ export function projectRoutes(
             );
           return existing;
         }
-        const snapshot = await createOptions.loadScope();
-        const scope = checkedScope(input.original, snapshot, createOptions);
         const result = await store.reserveCreate({
           requestId: input.requestId,
           original: input.original,
           expectedCatalogRevision: input.expectedCatalogRevision,
-          scopeHash: scope.hash,
-          scopeCount: scope.count,
+          validateScope: async () =>
+            checkedScope(
+              input.original,
+              await createOptions.loadScope(),
+              createOptions,
+            ),
         });
         return result.operation;
       }, 201),
@@ -404,13 +410,16 @@ export function projectRoutes(
           );
         if (existing.state === "created")
           return { operation: existing, catalog: publicCatalog(store.read()) };
-        const snapshot = await createOptions.loadScope();
-        const scope = checkedScope(existing.original, snapshot, createOptions);
         const result = await store.commitCreate({
           requestId,
           requestHash,
           reviewedScopeHash,
-          currentScopeHash: scope.hash,
+          validateScope: async () =>
+            checkedScope(
+              existing.original,
+              await createOptions.loadScope(),
+              createOptions,
+            ),
         });
         return {
           operation: result.operation,

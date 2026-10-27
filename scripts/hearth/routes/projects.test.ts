@@ -626,8 +626,7 @@ test("project create reservations preserve legacy catalogs, collide by exact UUI
     requestId: firstId,
     original,
     expectedCatalogRevision: 4,
-    scopeHash: "d".repeat(64),
-    scopeCount: 0,
+    validateScope: async () => ({ hash: "d".repeat(64), count: 0 }),
   });
   expect(first.catalog.revision).toBe(4);
   expect(store.readCreate(firstId)?.requestHash).toBe(
@@ -638,8 +637,7 @@ test("project create reservations preserve legacy catalogs, collide by exact UUI
       requestId: firstId,
       original: { ...original, name: "Changed original" },
       expectedCatalogRevision: 4,
-      scopeHash: "d".repeat(64),
-      scopeCount: 0,
+      validateScope: async () => ({ hash: "d".repeat(64), count: 0 }),
     }),
   ).rejects.toMatchObject({ status: 409 });
 
@@ -652,8 +650,7 @@ test("project create reservations preserve legacy catalogs, collide by exact UUI
         requestId,
         original: { ...original, slug: "concurrent-second" },
         expectedCatalogRevision: 4,
-        scopeHash: "e".repeat(64),
-        scopeCount: 0,
+        validateScope: async () => ({ hash: "e".repeat(64), count: 0 }),
       }),
     ),
   );

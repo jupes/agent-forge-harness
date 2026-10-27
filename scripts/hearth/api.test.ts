@@ -74,7 +74,7 @@ import { setSessionModel } from "../ledger/session-models";
 import { workspaceKey } from "../projects/scope";
 import {
   createProjectStore,
-  hashProjectCreateOriginal,
+  hashProjectCreateRequest,
   projectCatalogPath,
 } from "../projects/store";
 import { FIXTURE_PROJECT_ID, projectCatalogFixture } from "../projects/testing";
@@ -685,8 +685,7 @@ async function seedProjectCreateReservation(
     requestId,
     original,
     expectedCatalogRevision: createProjectStore(h.home).read().revision,
-    scopeHash: "a".repeat(64),
-    scopeCount: 0,
+    validateScope: async () => ({ hash: "a".repeat(64), count: 0 }),
   });
 }
 
@@ -2399,7 +2398,11 @@ const ACTIONS: Record<string, ActionFixture> = {
       row.valid.audit = {
         family: "project-create",
         requestId: API_PROJECT_CREATE_RESERVE_ID,
-        inputHash: hashProjectCreateOriginal(original),
+        inputHash: hashProjectCreateRequest({
+          requestId: API_PROJECT_CREATE_RESERVE_ID,
+          expectedCatalogRevision: createProjectStore(h.home).read().revision,
+          original,
+        }),
       };
     },
     happened: async (h) => {
@@ -2489,10 +2492,13 @@ const ACTIONS: Record<string, ActionFixture> = {
         requestId: API_PROJECT_CREATE_RETIRE_ID,
         original,
         expectedCatalogRevision: createProjectStore(h.home).read().revision,
-        scopeHash: "c".repeat(64),
-        scopeCount: 0,
+        validateScope: async () => ({ hash: "c".repeat(64), count: 0 }),
       });
-      const hash = hashProjectCreateOriginal(original);
+      const hash = hashProjectCreateRequest({
+        requestId: API_PROJECT_CREATE_RETIRE_ID,
+        expectedCatalogRevision: createProjectStore(h.home).read().revision,
+        original,
+      });
       const row =
         ACTIONS["POST /projects/create-reservations/:requestId/retire"]!;
       row.valid.body = { requestHash: hash };

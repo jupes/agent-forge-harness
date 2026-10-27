@@ -141,8 +141,7 @@ test("create identity hashes bind the UUID and expected semantic revision", asyn
     requestId: firstId,
     original: input,
     expectedCatalogRevision: 0,
-    scopeHash: "a".repeat(64),
-    scopeCount: 0,
+    validateScope: async () => ({ hash: "a".repeat(64), count: 0 }),
   });
   expect(first.operation.requestHash).toBe(
     createRequestHash({
@@ -156,8 +155,7 @@ test("create identity hashes bind the UUID and expected semantic revision", asyn
       requestId: firstId,
       original: input,
       expectedCatalogRevision: 1,
-      scopeHash: "a".repeat(64),
-      scopeCount: 0,
+      validateScope: async () => ({ hash: "a".repeat(64), count: 0 }),
     }),
   ).rejects.toMatchObject({ status: 409 });
 
@@ -167,8 +165,7 @@ test("create identity hashes bind the UUID and expected semantic revision", asyn
     requestId: secondId,
     original: input,
     expectedCatalogRevision: 0,
-    scopeHash: "a".repeat(64),
-    scopeCount: 0,
+    validateScope: async () => ({ hash: "a".repeat(64), count: 0 }),
   });
   expect(second.operation.requestHash).toBe(
     createRequestHash({
@@ -189,8 +186,7 @@ test("project catalog preferences preserve pending create originals without adva
     requestId: "bfefeb99-b4a8-4e6b-b6b1-5916b9d355c1",
     original: { ...input, slug: "beta", name: "Beta" },
     expectedCatalogRevision: 1,
-    scopeHash: "b".repeat(64),
-    scopeCount: 3,
+    validateScope: async () => ({ hash: "b".repeat(64), count: 3 }),
   });
   expect(reserved.catalog.revision).toBe(1);
   const updated = await store.preferences(current.id, 1, { pinned: true });
@@ -201,6 +197,47 @@ test("project catalog preferences preserve pending create originals without adva
   ).toEqual(reserved.operation);
 });
 
+test("project create ledger refuses a reservation that would exceed the catalog byte cap", async () => {
+  const { home, store, input } = fixture();
+  const catalogFile = projectCatalogPath(home);
+  let lastError: unknown;
+  for (let index = 0; index < 300; index += 1) {
+    const requestId = `00000000-0000-4000-8000-${index.toString(16).padStart(12, "0")}`;
+    try {
+      await store.reserveCreate({
+        requestId,
+        original: {
+          ...input,
+          slug: `capacity-${index}`,
+          name: `Capacity ${index}`,
+          description: "x".repeat(450),
+        },
+        expectedCatalogRevision: 0,
+        validateScope: async () => ({ hash: "b".repeat(64), count: 1 }),
+      });
+    } catch (error) {
+      lastError = error;
+      break;
+    }
+  }
+  expect(lastError).toMatchObject({ status: 400 });
+  const before = readFileSync(catalogFile, "utf8");
+  await expect(
+    store.reserveCreate({
+      requestId: "ffffffff-ffff-4fff-8fff-ffffffffffff",
+      original: {
+        ...input,
+        slug: "capacity-after-full",
+        name: "Capacity after full",
+        description: "x".repeat(450),
+      },
+      expectedCatalogRevision: 0,
+      validateScope: async () => ({ hash: "b".repeat(64), count: 1 }),
+    }),
+  ).rejects.toMatchObject({ status: 400 });
+  expect(readFileSync(catalogFile, "utf8")).toBe(before);
+});
+
 test("concurrent commit and retirement leave one durable terminal outcome", async () => {
   const { store, input } = fixture();
   const requestId = "65b017ba-2f30-4439-a9cc-18a55ff2ed4c";
@@ -208,15 +245,17 @@ test("concurrent commit and retirement leave one durable terminal outcome", asyn
     requestId,
     original: input,
     expectedCatalogRevision: 0,
-    scopeHash: "c".repeat(64),
-    scopeCount: 1,
+    validateScope: async () => ({ hash: "c".repeat(64), count: 1 }),
   });
   const outcomes = await Promise.allSettled([
     store.commitCreate({
       requestId,
       requestHash: reserved.operation.requestHash,
       reviewedScopeHash: reserved.operation.scopeHash,
-      currentScopeHash: reserved.operation.scopeHash,
+      validateScope: async () => ({
+        hash: reserved.operation.scopeHash,
+        count: 1,
+      }),
     }),
     store.retireCreate(requestId, reserved.operation.requestHash),
   ]);
@@ -242,8 +281,7 @@ test("a modified saved create original is a corrupt catalog and is never repaire
     requestId: "01e1a1bc-36fa-4df3-ae65-d1068d1b97dc",
     original: input,
     expectedCatalogRevision: 0,
-    scopeHash: "f".repeat(64),
-    scopeCount: 0,
+    validateScope: async () => ({ hash: "f".repeat(64), count: 0 }),
   });
   const file = projectCatalogPath(home);
   const saved = JSON.parse(readFileSync(file, "utf8")) as {
@@ -258,7 +296,10 @@ test("a modified saved create original is a corrupt catalog and is never repaire
       requestId: reserved.operation.requestId,
       requestHash: reserved.operation.requestHash,
       reviewedScopeHash: reserved.operation.scopeHash,
-      currentScopeHash: reserved.operation.scopeHash,
+      validateScope: async () => ({
+        hash: reserved.operation.scopeHash,
+        count: 0,
+      }),
     }),
   ).rejects.toThrow();
   expect(readFileSync(file, "utf8")).toBe(corrupted);
