@@ -128,6 +128,45 @@ async function reloadAndReadDocumentJson(
     reloadGeneration: number | null = null,
     replacing = false;
   const requestGenerations = new WeakMap<Request, number>();
+  const captureKey = "__agentForgeReloadedOriginalResponse";
+  await page.addInitScript(
+    ({ key, expectedPath }) => {
+      Reflect.set(window, key, null);
+      const originalFetch = window.fetch.bind(window);
+      const captureFetch = async (
+        input: RequestInfo | URL,
+        init?: RequestInit,
+      ): Promise<Response> => {
+        const inputUrl =
+          input instanceof Request
+            ? input.url
+            : input instanceof URL
+              ? input.href
+              : String(input);
+        const method = (
+          init?.method ?? (input instanceof Request ? input.method : "GET")
+        ).toUpperCase();
+        const response = await originalFetch(input, init);
+        const url = new URL(inputUrl, window.location.href);
+        if (
+          method === "GET" &&
+          url.origin === window.location.origin &&
+          url.pathname === expectedPath
+        ) {
+          const body = await response.clone().text();
+          Reflect.set(window, key, {
+            method,
+            pathname: url.pathname,
+            status: response.status,
+            body,
+          });
+        }
+        return response;
+      };
+      Reflect.set(window, "fetch", captureFetch);
+    },
+    { key: captureKey, expectedPath: pathname },
+  );
   const onRequest = (request: Request) => {
     if (request.isNavigationRequest() && request.frame() === page.mainFrame())
       replacing = true;
@@ -167,23 +206,34 @@ async function reloadAndReadDocumentJson(
   page.on("request", onRequest);
   page.on("framenavigated", onFrameNavigated);
   page.on("response", onResponse);
-  const originalRead = page
-    .waitForResponse(
-      (response) =>
-        response.request().method() === "GET" &&
-        new URL(response.url()).pathname === pathname &&
-        reloadGeneration !== null &&
-        requestGenerations.get(response.request()) === reloadGeneration,
-    )
-    .then(async (response) => ({
-      status: response.status(),
-      // Chromium can discard the old document's body during reload. Consume
-      // JSON as soon as the matching new-document response arrives.
-      body: await response.json(),
-    }));
   try {
     await reloadSettled(page);
-    return await originalRead;
+    await page.waitForFunction(
+      (key) => Reflect.get(window, key) !== null,
+      captureKey,
+    );
+    const captured = z
+      .object({
+        method: z.literal("GET"),
+        pathname: z.string(),
+        status: z.number().int(),
+        body: z.string().max(65_536),
+      })
+      .strict()
+      .parse(
+        await page.evaluate((key) => Reflect.get(window, key), captureKey),
+      );
+    if (captured.pathname !== pathname)
+      throw new Error(
+        "Captured original response did not match its exact path.",
+      );
+    let body: unknown;
+    try {
+      body = JSON.parse(captured.body);
+    } catch {
+      throw new Error("Captured original response was not valid JSON.");
+    }
+    return { status: captured.status, body };
   } finally {
     page.off("request", onRequest);
     page.off("framenavigated", onFrameNavigated);
