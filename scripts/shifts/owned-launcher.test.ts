@@ -23,7 +23,7 @@ import { createProjectShiftRegistry } from "./registry";
 
 const scratch = scratchDirs();
 afterEach(() => scratch.cleanup());
-const treeSchema = z.object({ pid: z.number(), childPid: z.number() });
+const treeSchema = z.object({ pid: z.number(), childPid: z.number() }).strict();
 const holderSchema = z.object({
   holderPid: z.number(),
   wrapperPid: z.number(),
@@ -101,10 +101,19 @@ async function fixture(mode = "startup-tree") {
         INTERACTIVE_TREE_PUBLICATION_RELEASE: publicationRelease,
       },
     };
-  const tree = () =>
-    existsSync(log)
-      ? treeSchema.parse(parsed(readFileSync(log, "utf8").trim()))
-      : null;
+  const tree = () => {
+    if (!existsSync(log)) return null;
+    const contents = readFileSync(log, "utf8"),
+      completeEnd = contents.lastIndexOf("\n");
+    if (completeEnd < 0) return null;
+    const rows = contents
+      .slice(0, completeEnd)
+      .split(/\r?\n/)
+      .map((line) => treeSchema.parse(parsed(line)));
+    if (rows.length !== 1)
+      throw Error("Unexpected owned fixture announcement count");
+    return rows[0] ?? null;
+  };
   return {
     root,
     home,
@@ -141,6 +150,11 @@ test("complete malformed and interior owned fixture rows are never skipped", asy
     validRow = JSON.stringify({ pid: 123, childPid: 456 });
   writeFileSync(f.log, "not-json\n");
   expect(() => f.tree()).toThrow("Invalid owned fixture announcement");
+  writeFileSync(
+    f.log,
+    `${JSON.stringify({ pid: 123, childPid: 456, extra: true })}\n`,
+  );
+  expect(() => f.tree()).toThrow();
   writeFileSync(f.log, `${validRow}\nnot-json\n${validRow}\n`);
   expect(() => f.tree()).toThrow("Invalid owned fixture announcement");
 });
