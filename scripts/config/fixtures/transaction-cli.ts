@@ -25,6 +25,7 @@ async function main() {
     "config-transaction-fixture-v1\n"
   )
     throw Error("Missing fixture ownership marker");
+  writeFileSync(join(root, `${role}-child-started`), "fixture-stage-v1\n");
   const controls = { coordinationRoot: join(root, "coordination") };
   if (role === "moved-home") {
     const forgeHome = join(root, "moved forge home");
@@ -53,6 +54,7 @@ async function main() {
   };
   if (role === "write") {
     writeFileSync(join(root, "writer-entered"), String(process.pid));
+    writeFileSync(join(root, "write-cli-started"), "fixture-stage-v1\n");
     const result = await runConfigCli(
       ["set", "shift.max_usd", "5", "--workspace", "--json"],
       options,
@@ -66,7 +68,9 @@ async function main() {
     target: "workspace",
     ...controls,
   });
+  writeFileSync(join(root, "hold-transaction-prepared"), "fixture-stage-v1\n");
   return await withConfigTransaction(context, async (transaction) => {
+    writeFileSync(join(root, "hold-transaction-entered"), "fixture-stage-v1\n");
     writeFileSync(join(root, "holder-entered"), String(process.pid));
     const deadline = Date.now() + 10_000;
     while (!existsSync(join(root, "release-holder"))) {

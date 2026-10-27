@@ -7,20 +7,45 @@ import {
   pageReads,
   readOperatorRoute,
 } from "../../../docs/js/use-stream";
+import type { ProviderReadinessPage } from "../../../types/provider-readiness";
 import { createSessionsClient } from "./session-client";
-import {
-  createSessionStartIdentities,
-  SESSION_START_IDENTITIES,
-} from "./session-start-identities";
+import { createSessionStartIdentities } from "./session-start-identities";
+import { createSessionStartIdentityServer } from "./session-start-identity-server";
 
 const base = (id: string) => `/projects/${encodeURIComponent(id)}/sessions`;
 export function useSessions(
   projectId: string | null,
   sessionId: string | null,
   writesAllowed: boolean,
+  readiness: ProviderReadinessPage | null,
 ) {
   const writes = useRef(writesAllowed);
   writes.current = writesAllowed;
+  const scope = useRef<{
+    projectId: string;
+    workspace: string;
+    generation: number;
+  } | null>(null);
+  const scopeVersion = useRef(-1);
+  const scopeKey = useRef<string | null>(null);
+  const currentWorkspace = readiness?.workspace ?? null;
+  const currentProject = projectId;
+  const nextScopeKey =
+    currentProject && currentWorkspace
+      ? JSON.stringify([currentProject, currentWorkspace])
+      : null;
+  if (scopeKey.current !== nextScopeKey) {
+    scopeKey.current = nextScopeKey;
+    scopeVersion.current++;
+    scope.current =
+      currentProject && currentWorkspace
+        ? {
+            projectId: currentProject,
+            workspace: currentWorkspace,
+            generation: scopeVersion.current,
+          }
+        : null;
+  }
   const [, paint] = useState(0),
     held = useRef<ReturnType<typeof createSessionsClient> | null>(null);
   if (!held.current) {
@@ -28,23 +53,23 @@ export function useSessions(
     try {
       storage = window.localStorage;
     } catch {
-      /* Refuse Start before sending. */
+      /* The metadata hint cannot be read; ordinary Start remains held. */
     }
+    const legacyHints = createSessionStartIdentities({
+      storage,
+      // The server-backed client exposes only legacyHints.read, never reserve/release.
+      withLock: async (work) => work(),
+    });
     held.current = createSessionsClient({
       canWrite: () => writes.current,
       requestId: () => crypto.randomUUID(),
-      identities: createSessionStartIdentities({
-        storage,
-        withLock: async (work) => {
-          if (!navigator.locks)
-            throw Error("Shared original Start identity lock is unavailable.");
-          return navigator.locks.request(
-            SESSION_START_IDENTITIES,
-            { signal: AbortSignal.timeout(30_000) },
-            work,
-          );
-        },
+      legacyHint: (id) => legacyHints.read(id),
+      identityServer: createSessionStartIdentityServer({
+        currentScope: () => scope.current,
+        read: operatorRead,
+        post: operatorPost,
       }),
+      identityScope: () => scope.current,
       list: (id) =>
         readOperatorRoute(base(id), { ...pageReads(), fetch: operatorRead }),
       read: (id, session, query) =>
@@ -96,12 +121,9 @@ export function useSessions(
     [client],
   );
   useEffect(() => {
-    const update = (event: StorageEvent) => {
-      if (event.key === SESSION_START_IDENTITIES) client.refreshIdentities();
-    };
-    window.addEventListener("storage", update);
-    return () => window.removeEventListener("storage", update);
-  }, [client]);
+    client.identityScopeChanged();
+    if (projectId && scope.current) void client.refreshIdentities(projectId);
+  }, [client, projectId, currentWorkspace]);
   useEffect(() => {
     if (!projectId) return;
     void client.refresh(projectId);
@@ -109,12 +131,20 @@ export function useSessions(
       ["operator.action", "session.started", "session.ended"],
       () => {
         void client.refresh(projectId);
+        client.refreshIdentities(projectId);
       },
     );
-  }, [client, projectId]);
+  }, [client, projectId, currentWorkspace]);
   useEffect(() => {
     client.activate(projectId, sessionId);
   }, [client, projectId, sessionId]);
-  useEffect(() => () => client.dispose(), [client]);
+  useEffect(
+    () => () => {
+      scope.current = null;
+      scopeVersion.current++;
+      client.dispose();
+    },
+    [client],
+  );
   return client;
 }

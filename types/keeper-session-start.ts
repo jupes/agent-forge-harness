@@ -30,6 +30,8 @@ export interface KeeperSessionStartReceipt {
   record: KeeperProposalRecord;
   original: KeeperSessionStartRequest;
   startHash: string;
+  /** Derived only from the exact durable ordinary-identity NotSent row; never an admission claim. */
+  retryAvailable?: boolean | undefined;
   /** A registry-only reservation is unconfirmed until receipt names the original journal turn. */
   session: OwnedSessionRecord | null;
   receipt: ConversationReceipt | null;

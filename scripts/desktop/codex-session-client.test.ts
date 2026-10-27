@@ -1,10 +1,15 @@
 import { expect, test } from "bun:test";
 import { createSessionsClient } from "../../apps/desktop/src/session-client";
-import { sessionStartHash } from "../../apps/desktop/src/session-start-identities";
+import {
+  SESSION_START_IDENTITIES,
+  sessionStartHash,
+} from "../../apps/desktop/src/session-start-identities";
 import type {
   OwnedCodingSessionRecord,
   OwnedSessionStartRequest,
 } from "../../types/codex-owned-task";
+import { codexTaskLaunchFromStart } from "../sessions/codex-owned-preparation";
+import { preparedCodexTaskSchema } from "../sessions/codex-task-runtime-protocol";
 import { sessionStartFixture } from "./session-start-fixture";
 
 const projectId = "project-a5832fa0-7a21-403b-8184-44892f0d8d86";
@@ -44,9 +49,21 @@ const record = {
   createdAt: at,
 };
 record.requestHash = await sessionStartHash({ ...input, requestId });
+const originalTaskSnapshot = preparedCodexTaskSchema.parse({
+  version: 1,
+  provider: "codex",
+  smith: input.smith,
+  cwd: input.worktree,
+  canonicalCwd: input.worktree,
+  launch: codexTaskLaunchFromStart(projectId, input),
+  capabilities: {
+    version: "0.163.0-alpha.10.2",
+    flags: ["--json", "--color", "--sandbox", "--model", "--cd", "--config"],
+  },
+});
 const turn = {
   requestId,
-  hash: "a".repeat(64),
+  hash: record.requestHash,
   phase: "completed" as const,
   createdAt: at,
   updatedAt: at,
@@ -64,10 +81,22 @@ const page = {
     version: "0.163.0-alpha.10.2",
   },
   turns: [turn],
-  frames: [],
+  frames: [
+    {
+      seq: 1,
+      turnId: requestId,
+      at,
+      event: {
+        kind: "user" as const,
+        text: input.launch.prompt,
+        about: input.about,
+        codexTask: originalTaskSnapshot,
+      },
+    },
+  ],
   more: false,
-  nextCursor: 0,
-  lastSequence: 0,
+  nextCursor: 1,
+  lastSequence: 1,
   request: turn,
   controllable: false,
 };
@@ -242,16 +271,26 @@ test("recreating the client cannot replace a Start whose original POST has not r
 test("a restored metadata hold clears only after matching protected provider/hash and actual admitted turn", async () => {
   const journal = sessionStartFixture();
   let listed: OwnedCodingSessionRecord[] = [],
-    admitted = false,
-    posts = 0;
+    readMode: "malformed" | "no-turn" | "source-valid" = "no-turn",
+    posts = 0,
+    reads = 0;
   const make = () =>
     createSessionsClient({
       identities: journal.make(),
       canWrite: () => true,
       requestId: () => requestId,
       list: async () => listed,
-      read: async () =>
-        admitted ? page : { ...page, turns: [], request: null },
+      read: async () => {
+        reads++;
+        if (readMode === "malformed")
+          return {
+            ...page,
+            frames: [{ ...page.frames[0]!, seq: 0 }],
+          };
+        if (readMode === "no-turn")
+          return { ...page, turns: [], request: null };
+        return page;
+      },
       post: async () => {
         posts++;
         return { state: "unknown", message: "Unknown" };
@@ -263,15 +302,47 @@ test("a restored metadata hold clears only after matching protected provider/has
   first.dispose();
   const second = make();
   expect(second.project(projectId).startIdentity?.requestId).toBe(requestId);
+  await second.refresh(projectId);
+  expect(reads).toBe(0);
+  expect(second.project(projectId).startIdentity?.requestId).toBe(requestId);
   listed = [{ ...record, requestHash: "f".repeat(64) }];
   await second.refresh(projectId);
+  expect(reads).toBe(0);
   expect(second.project(projectId).lastStarted).toBeNull();
   expect(journal.identities.read(projectId)).not.toBeNull();
+
+  const stored = journal.values.get(SESSION_START_IDENTITIES);
+  if (!stored) throw Error("Missing persisted metadata-only Start identity.");
+  const changedIdentity = JSON.parse(stored) as {
+    version: number;
+    records: Array<Record<string, unknown>>;
+  };
+  changedIdentity.records = changedIdentity.records.map((row) => ({
+    ...row,
+    provider: "gemini",
+  }));
+  journal.values.set(SESSION_START_IDENTITIES, JSON.stringify(changedIdentity));
   listed = [record];
   await second.refresh(projectId);
+  expect(reads).toBe(0);
   expect(journal.identities.read(projectId)).not.toBeNull();
-  admitted = true;
+
+  journal.values.set(SESSION_START_IDENTITIES, stored);
+  readMode = "malformed";
   await second.refresh(projectId);
+  expect(reads).toBe(1);
+  expect(second.project(projectId).lastStarted).toBeNull();
+  expect(journal.identities.read(projectId)).not.toBeNull();
+
+  readMode = "no-turn";
+  await second.refresh(projectId);
+  expect(reads).toBe(2);
+  expect(second.project(projectId).lastStarted).toBeNull();
+  expect(journal.identities.read(projectId)).not.toBeNull();
+
+  readMode = "source-valid";
+  await second.refresh(projectId);
+  expect(reads).toBe(3);
   await journal.withLock(() => {});
   expect(second.project(projectId).lastStarted).toBe(id);
   expect(journal.identities.read(projectId)).toBeNull();

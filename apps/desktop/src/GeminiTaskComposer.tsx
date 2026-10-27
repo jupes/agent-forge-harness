@@ -7,6 +7,7 @@ import { geminiTaskLaunchFromStart } from "../../../scripts/sessions/gemini-owne
 import { serializeGeminiTask } from "../../../scripts/sessions/gemini-task";
 import { geminiTaskPreviewReceiptSchema } from "../../../scripts/sessions/gemini-task-preview-protocol";
 import type { WorktreeEntry } from "../../../types/beads";
+import type { OwnedSessionStartInput } from "../../../types/codex-owned-task";
 import type { GeminiTaskPreviewReceipt } from "../../../types/gemini-owned-task";
 import type { SmithsView } from "../../../types/hearth";
 import {
@@ -16,6 +17,7 @@ import {
 } from "./gemini-task-composer";
 import { providerUsageLabel, readinessLabel } from "./providers-model";
 import type { SessionComposerProps } from "./SessionComposer";
+import { SessionStartIdentityControls } from "./SessionStartIdentityControls";
 import { chooseSessionSmith, sessionAttachments } from "./session-composer";
 
 /** Explicit scoped native Gemini CLI Tasks; untouched native defaults remain omitted. */
@@ -25,6 +27,7 @@ export function GeminiTaskComposer({
   writesAllowed,
   onCancel,
   onStarted,
+  onOpenOriginal,
   providers,
 }: SessionComposerProps) {
   const geminiReadiness = providers?.providers.find(
@@ -168,10 +171,15 @@ export function GeminiTaskComposer({
   const busy = checking || attaching || view.starting;
   const pending =
     !!view.pendingStart || !!view.startIdentity || !!view.startIdentityError;
+  const identityReady =
+    !!view.identityPage &&
+    !view.identityLoading &&
+    view.identityGeneration !== null;
+  let recoveryInput: OwnedSessionStartInput | null = null;
   let validation =
     "Check supported options before starting. This check starts no model.";
   try {
-    geminiTaskStartBody(draft, options);
+    recoveryInput = geminiTaskStartBody(draft, options);
   } catch (error) {
     validation =
       error instanceof Error ? error.message : "Review the Task options.";
@@ -189,6 +197,7 @@ export function GeminiTaskComposer({
     !project.archived &&
     !busy &&
     !pending &&
+    identityReady &&
     !!serialized &&
     source?.enabled === true &&
     source.provider === "gemini";
@@ -784,28 +793,15 @@ export function GeminiTaskComposer({
           </p>
         )}
         {view.notice && <p role="status">{view.notice}</p>}
-        {pending && (
-          <div class="af-session-composer-row">
-            <Button
-              disabled={view.loading}
-              onClick={() => {
-                void client.refresh(project.id);
-              }}
-            >
-              Check original Start
-            </Button>
-            {view.pendingStart && (
-              <Button
-                disabled={!writesAllowed || view.starting}
-                onClick={() => {
-                  void client.retryStart(project.id);
-                }}
-              >
-                Retry original Start
-              </Button>
-            )}
-          </div>
-        )}
+        <SessionStartIdentityControls
+          projectId={project.id}
+          view={view}
+          client={client}
+          request={recoveryInput}
+          writesAllowed={writesAllowed}
+          archived={project.archived}
+          onOpenOriginal={onOpenOriginal}
+        />
         <div class="af-session-composer-actions">
           <Button onClick={onCancel}>
             {pending ? "Close composer (Start still pending)" : "Cancel"}

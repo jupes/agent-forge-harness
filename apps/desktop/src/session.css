@@ -446,3 +446,69 @@
   align-items: center;
   margin: 12px 0;
 }
+.af-start-identities {
+  display: grid;
+  gap: 10px;
+  margin: 12px 0;
+  padding: 12px;
+  border: 1px solid var(--color-neutral-700);
+  border-radius: 10px;
+  background: var(--color-neutral-900);
+}
+.af-start-identities-header,
+.af-start-identity-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+}
+.af-start-identities-header h3,
+.af-start-identities-header p {
+  margin: 0;
+}
+.af-start-identities-header p,
+.af-start-identities li span {
+  color: var(--color-neutral-400);
+  font-size: 12px;
+}
+.af-start-identities-list {
+  display: grid;
+  gap: 8px;
+  max-height: 360px;
+  overflow: auto;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.af-start-identities-list li {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--color-neutral-700);
+  border-radius: 8px;
+}
+.af-start-identity-details {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+.af-start-identity-details code {
+  overflow-wrap: anywhere;
+  color: var(--color-neutral-400);
+  font-size: 11px;
+}
+.af-start-identity-actions {
+  justify-content: flex-start;
+}
+.af-start-identity-retirement-details {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  margin: 0;
+}
+.af-start-identity-retirement-details dd {
+  min-width: 0;
+  margin-inline-start: 0;
+  overflow-wrap: anywhere;
+}
