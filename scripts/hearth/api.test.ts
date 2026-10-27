@@ -6968,7 +6968,18 @@ test("the protected owner-release read reports an ordinary Chat receipt without 
       );
       await assertScopeRefusesBeforeConversationRead(
         currentCatalog.projects.map((item) =>
-          item.id === FIXTURE_PROJECT_ID ? { ...item, workspaces: [] } : item,
+          item.id === FIXTURE_PROJECT_ID
+            ? {
+                ...item,
+                workspaces: [
+                  {
+                    root: `${h.workspace}-outside`,
+                    repositories: [`${h.workspace}-outside`],
+                    epicIds: ["alpha-epic"],
+                  },
+                ],
+              }
+            : item,
         ),
         409,
       );
@@ -6994,7 +7005,7 @@ test("the protected owner-release read reports an ordinary Chat receipt without 
                 ...item,
                 workspaces: item.workspaces.map((workspace) => ({
                   ...workspace,
-                  repositories: [],
+                  repositories: [`${h.workspace}-outside-repository`],
                 })),
               }
             : item,
