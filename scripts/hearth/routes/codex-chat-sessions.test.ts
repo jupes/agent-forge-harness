@@ -981,10 +981,11 @@ test("a linked child transcript remains readable when parent history is unavaila
     );
   if (!selectedTurn)
     throw Error("The parent did not retain a completed Fork source turn");
-  const forkResponse = await f.post(`/${parentSessionId}/forks`, {
+  const forkRequest = {
       requestId: randomUUID(),
       throughTurnRequestId: selectedTurn.requestId,
-    }),
+    },
+    forkResponse = await f.post(`/${parentSessionId}/forks`, forkRequest),
     forkEnvelope = await forkResponse.json();
   expect(forkResponse.status).toBe(200);
   const childSessionId = forkEnvelope.data.childSessionId;
@@ -1020,6 +1021,21 @@ test("a linked child transcript remains readable when parent history is unavaila
     { requestId: childInput.requestId, phase: "completed" },
   ]);
   expect(JSON.stringify(rereadChild)).not.toContain("PRIVATE-CHAT-PROMPT");
+  expect(f.records()).toEqual(recordsBeforeRead);
+  expect(f.h.events(["operator.action"])).toEqual(auditBeforeRead);
+  const unavailableContextResponse = await fetch(
+      `${f.h.api}/projects/${FIXTURE_PROJECT_ID}/codex-chat-forks/${forkRequest.requestId}/context`,
+      { headers: f.h.headers(f.h.hearth.token) },
+    ),
+    unavailableContext = await unavailableContextResponse.json();
+  expect(unavailableContextResponse.status).toBe(200);
+  expect(unavailableContext.data).toMatchObject({
+    available: false,
+    requestId: forkRequest.requestId,
+    state: "linked",
+    reason: "source-unavailable",
+    source: null,
+  });
   expect(f.records()).toEqual(recordsBeforeRead);
   expect(f.h.events(["operator.action"])).toEqual(auditBeforeRead);
 
@@ -1281,6 +1297,21 @@ test("protected Fork routes publish one audited native Fork and recover its exac
   ])
     expect(originalText).not.toContain(privateValue);
 
+  const linkedContextResponse = await fetch(`${originalUrl}/context?limit=1`, {
+      headers: f.h.headers(f.h.hearth.token),
+    }),
+    linkedContext = await linkedContextResponse.json();
+  expect(linkedContextResponse.status).toBe(200);
+  expect(linkedContext.data).toMatchObject({
+    available: true,
+    requestId: request.requestId,
+    requestHash: original.requestHash,
+    state: "linked",
+  });
+  expect(linkedContext.data.source.requestId).toBe(request.requestId);
+  expect(JSON.stringify(linkedContext)).not.toContain("sourceSeal");
+  expect(JSON.stringify(linkedContext)).not.toContain("parentNativeThreadId");
+
   const aggregateResponse = await fetch(`${f.h.api}${operationsPath}`, {
       headers: f.h.headers(f.h.hearth.token),
     }),
@@ -1335,21 +1366,63 @@ test("Fork review GET projects the explicitly selected completed parent turn wit
     selectedTurn = completed.turns.find(
       (turn) => turn.requestId === f.request.requestId,
     );
-  if (!selectedTurn)
+  if (!selectedTurn || !completed.binding)
     throw Error(
       "The selected source turn did not complete in the inert fixture",
     );
 
-  const requestPath = `/projects/${FIXTURE_PROJECT_ID}/sessions/${parentSessionId}/fork-review?throughTurnRequestId=${encodeURIComponent(selectedTurn.requestId)}`,
+  const requestPath = `/projects/${FIXTURE_PROJECT_ID}/sessions/${parentSessionId}/fork-review`,
     beforeRecords = f.records(),
     beforeAudit = f.h.events(["operator.action"]),
-    response = await fetch(`${f.h.api}${requestPath}`, {
-      headers: f.h.headers(f.h.hearth.token),
-    });
+    unauthorized = await fetch(
+      `${f.h.api}${requestPath}?throughTurnRequestId=${selectedTurn.requestId}`,
+    ),
+    duplicateQuery = await fetch(
+      `${f.h.api}${requestPath}?throughTurnRequestId=${selectedTurn.requestId}&throughTurnRequestId=${selectedTurn.requestId}`,
+      { headers: f.h.headers(f.h.hearth.token) },
+    ),
+    unknownQuery = await fetch(
+      `${f.h.api}${requestPath}?throughTurnRequestId=${selectedTurn.requestId}&nativeThreadId=forbidden`,
+      { headers: f.h.headers(f.h.hearth.token) },
+    ),
+    invalidCursor = await fetch(
+      `${f.h.api}${requestPath}?throughTurnRequestId=${selectedTurn.requestId}&after=999999999`,
+      { headers: f.h.headers(f.h.hearth.token) },
+    ),
+    response = await fetch(
+      `${f.h.api}${requestPath}?throughTurnRequestId=${selectedTurn.requestId}&limit=1`,
+      { headers: f.h.headers(f.h.hearth.token) },
+    );
+  expect(unauthorized.status).toBe(403);
+  expect(duplicateQuery.status).toBe(400);
+  expect(unknownQuery.status).toBe(400);
+  expect(invalidCursor.status).toBe(400);
   expect(response.status).toBe(200);
   const envelope = await response.json();
   expect(envelope.ok).toBe(true);
-  expect(JSON.stringify(envelope.data)).toContain(selectedTurn.requestId);
+  expect(envelope.data).toMatchObject({
+    requestId: null,
+    throughTurnRequestId: selectedTurn.requestId,
+    complete: false,
+  });
+  expect(JSON.stringify(envelope.data)).not.toContain("sourceSeal");
+  expect(JSON.stringify(envelope.data)).not.toContain("prepared");
+  expect(JSON.stringify(envelope.data)).not.toContain("PRIVATE-CHAT-CONTEXT");
+  expect(JSON.stringify(envelope.data)).not.toContain(
+    completed.binding.sessionId,
+  );
+  expect(envelope.data.frames).toHaveLength(1);
+  expect(typeof envelope.data.nextCursor).toBe("number");
+  const next = await fetch(
+      `${f.h.api}${requestPath}?throughTurnRequestId=${selectedTurn.requestId}&after=${envelope.data.nextCursor}&limit=1`,
+      { headers: f.h.headers(f.h.hearth.token) },
+    ),
+    nextEnvelope = await next.json();
+  expect(next.status).toBe(200);
+  expect(nextEnvelope.data.complete).toBe(true);
+  expect(nextEnvelope.data.frames[0]?.seq).toBeGreaterThan(
+    envelope.data.frames[0]?.seq,
+  );
   expect(f.records()).toEqual(beforeRecords);
   expect(f.h.events(["operator.action"])).toEqual(beforeAudit);
   expect(f.records().filter((row) => row.method === "thread/fork")).toEqual([]);
@@ -1382,6 +1455,11 @@ test("Fork original context GET correlates a durable reservation without changin
   const requestHash = reservation.data.requestHash;
   if (typeof requestHash !== "string")
     throw Error("The durable reservation did not return its canonical hash");
+  const missingOriginal = await fetch(
+    `${f.h.api}/projects/${FIXTURE_PROJECT_ID}/codex-chat-forks/${randomUUID()}/context`,
+    { headers: f.h.headers(f.h.hearth.token) },
+  );
+  expect(missingOriginal.status).toBe(404);
 
   const originalResponse = await fetch(
       `${f.h.api}/projects/${FIXTURE_PROJECT_ID}/codex-chat-forks/${request.requestId}`,
@@ -1400,7 +1478,7 @@ test("Fork original context GET correlates a durable reservation without changin
   const beforeRecords = f.records(),
     beforeAudit = f.h.events(["operator.action"]),
     contextResponse = await fetch(
-      `${f.h.api}/projects/${FIXTURE_PROJECT_ID}/codex-chat-forks/${request.requestId}/context`,
+      `${f.h.api}/projects/${FIXTURE_PROJECT_ID}/codex-chat-forks/${request.requestId}/context?limit=1`,
       { headers: f.h.headers(f.h.hearth.token) },
     );
   expect(contextResponse.status).toBe(200);
@@ -1408,7 +1486,26 @@ test("Fork original context GET correlates a durable reservation without changin
   expect(context.ok).toBe(true);
   expect(JSON.stringify(context.data)).toContain(selectedTurn.requestId);
   expect(JSON.stringify(context.data)).not.toContain("sourceSeal");
-  expect(JSON.stringify(context.data)).not.toContain("PRIVATE-CHAT-PROMPT");
+  expect(context.data).toMatchObject({
+    requestId: request.requestId,
+    requestHash,
+    parentSessionId,
+    throughTurnRequestId: selectedTurn.requestId,
+  });
+  expect(context.data.source).toMatchObject({
+    requestId: request.requestId,
+    complete: false,
+  });
+  expect(context.data.source.frames).toHaveLength(1);
+  const contextNextResponse = await fetch(
+      `${f.h.api}/projects/${FIXTURE_PROJECT_ID}/codex-chat-forks/${request.requestId}/context?after=${context.data.source.nextCursor}&limit=1`,
+      { headers: f.h.headers(f.h.hearth.token) },
+    ),
+    contextNext = await contextNextResponse.json();
+  expect(contextNextResponse.status).toBe(200);
+  expect(contextNext.data.source.complete).toBe(true);
+  expect(JSON.stringify(context.data)).not.toContain("parentNativeThreadId");
+  expect(JSON.stringify(context.data)).not.toContain("prepared");
   expect(f.records()).toEqual(beforeRecords);
   expect(f.h.events(["operator.action"])).toEqual(beforeAudit);
   expect(f.records().filter((row) => row.method === "thread/fork")).toEqual([]);

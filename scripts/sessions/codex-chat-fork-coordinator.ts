@@ -33,6 +33,14 @@ import {
   codexChatForkSourceSettingsHash,
 } from "./codex-chat-fork-protocol";
 import {
+  assertForkReviewEnvelopeBound,
+  CODEX_CHAT_FORK_REVIEW_LIMITS,
+  type CodexChatForkContextPage,
+  type CodexChatForkSourcePage,
+  codexChatForkContextPageSchema,
+  codexChatForkSourcePageSchema,
+} from "./codex-chat-fork-review-protocol";
+import {
   type CodexChatForkSourceResult,
   resolveCodexChatForkSource,
 } from "./codex-chat-fork-source";
@@ -278,6 +286,124 @@ export function createCodexChatForkCoordinator(
         projectId,
         sessionId,
       });
+
+  const sourcePage = (input: {
+    projectId: string;
+    parent: CodexChatOwnedRecord;
+    state: ConversationState;
+    source: Extract<CodexChatForkSourceResult, { eligible: true }>;
+    requestId: string | null;
+    after: number;
+    limit: number;
+  }): CodexChatForkSourcePage => {
+    const selectedIndex = input.state.turns.findIndex(
+        (turn) => turn.requestId === input.source.selectedTurnRequestId,
+      ),
+      selectedTurn = input.state.turns[selectedIndex];
+    if (!selectedTurn || selectedIndex < 0)
+      throw new ConversationError(
+        409,
+        "The exact completed Fork source turn is unavailable.",
+      );
+    const boundary =
+        input.state.frames
+          .filter((frame) => frame.turnId === selectedTurn.requestId)
+          .at(-1)?.seq ?? 0,
+      cursorValid =
+        input.after === 0 ||
+        input.state.frames.some(
+          (frame) =>
+            frame.seq === input.after &&
+            (frame.event.kind === "user" || frame.event.kind === "text"),
+        );
+    if (!cursorValid || input.after > boundary)
+      throw new ConversationError(
+        400,
+        "The Fork source review cursor is invalid for this boundary.",
+      );
+    const projected: CodexChatForkSourcePage["frames"] = [];
+    for (const frame of input.state.frames) {
+      if (frame.seq > boundary || frame.seq <= input.after) continue;
+      if (frame.event.kind === "user")
+        projected.push({
+          kind: "user",
+          seq: frame.seq,
+          turnId: frame.turnId,
+          at: frame.at,
+          text: frame.event.text,
+          about: [...frame.event.about],
+        });
+      else if (frame.event.kind === "text")
+        projected.push({
+          kind: "text",
+          seq: frame.seq,
+          turnId: frame.turnId,
+          at: frame.at,
+          text: frame.event.text,
+        });
+    }
+    if (
+      input.state.frames.length >
+        CODEX_CHAT_FORK_REVIEW_LIMITS.pageItems *
+          CODEX_CHAT_FORK_REVIEW_LIMITS.pages ||
+      projected.some(
+        (frame) =>
+          new TextEncoder().encode(frame.text).byteLength >
+          CODEX_CHAT_FORK_REVIEW_LIMITS.textBytes,
+      )
+    )
+      throw new ConversationError(
+        413,
+        "The exact Fork source exceeds the safe review limits.",
+      );
+    const frames = projected.slice(0, input.limit),
+      hasMore = projected.length > frames.length,
+      page: CodexChatForkSourcePage = {
+        version: 1,
+        projectId: input.projectId,
+        parentSessionId: input.parent.id,
+        requestId: input.requestId,
+        throughTurnRequestId: selectedTurn.requestId,
+        selectedTurnHash: selectedTurn.hash,
+        target: {
+          smith: input.parent.smith,
+          repository: input.parent.repository,
+          worktree: input.parent.worktree,
+          beadId: input.parent.beadId ?? null,
+        },
+        settings: {
+          model: input.source.prepared.launch.model,
+          provider: input.source.sourceSettings.modelProvider,
+          serviceTier: {
+            present: true,
+            value: input.source.sourceSettings.serviceTier,
+          },
+          effort: input.source.sourceSettings.reasoningEffort,
+          approvalPolicy: input.source.prepared.launch.approvalPolicy,
+          sandbox: {
+            mode: input.source.prepared.launch.sandbox,
+            networkAccess: "not-reported",
+          },
+        },
+        provenance: {
+          turn: "saved-completed-parent-turn",
+          configuration: "captured-native-configuration",
+        },
+        frames,
+        nextCursor: hasMore ? (frames.at(-1)?.seq ?? input.after) : null,
+        complete: !hasMore,
+      };
+    const parsed = codexChatForkSourcePageSchema.parse(page);
+    try {
+      assertForkReviewEnvelopeBound({ ok: true, data: parsed, error: null });
+    } catch {
+      throw new ConversationError(
+        413,
+        "The Fork source review exceeds the safe response limit.",
+      );
+    }
+    return parsed;
+  };
 
   const linkedResult = (
     original: CodexChatForkOriginal,
@@ -763,6 +889,182 @@ export function createCodexChatForkCoordinator(
     },
     readOriginal(projectId: string, requestId: string) {
       return journal.read(projectId, requestId);
+    },
+    async readSourceReview(input: {
+      projectId: string;
+      parentSessionId: string;
+      throughTurnRequestId: string;
+      after: number;
+      limit: number;
+    }) {
+      const parent = registry.read(input.projectId, input.parentSessionId);
+      if (
+        parent.provider !== "codex" ||
+        parent.mode !== "chat" ||
+        parent.origin !== undefined ||
+        parent.projectId !== input.projectId ||
+        workspaceKey(parent.workspace) !== workspace
+      )
+        throw new ConversationError(
+          409,
+          "Fork source review requires a trusted root Codex Chat session.",
+        );
+      const state = storeFor(parent.id, parent.projectId).read(
+          parent.projectId,
+        ),
+        source = sourceFor({
+          parent,
+          state,
+          projectId: input.projectId,
+          selectedTurnRequestId: input.throughTurnRequestId,
+          workspace,
+          admission: false,
+        });
+      if (!source.eligible)
+        throw new ConversationError(
+          409,
+          "The exact completed Fork source is unavailable for review.",
+        );
+      await options.validateScope(parent, [
+        ...(source.prepared.launch.context?.about ?? []),
+      ]);
+      return sourcePage({
+        projectId: input.projectId,
+        parent,
+        state,
+        source,
+        requestId: null,
+        after: input.after,
+        limit: input.limit,
+      });
+    },
+    async readOriginalContext(input: {
+      projectId: string;
+      requestId: string;
+      after: number;
+      limit: number;
+    }): Promise<CodexChatForkContextPage> {
+      const original = journal.read(input.projectId, input.requestId);
+      if (!original)
+        throw new ConversationError(
+          404,
+          "The exact Codex Fork original is not present in this trusted workspace.",
+        );
+      const unavailable = (
+        reason: "source-unavailable" | "source-mismatch",
+      ): CodexChatForkContextPage => ({
+        version: 1,
+        available: false,
+        requestId: original.requestId,
+        requestHash: original.requestHash,
+        parentSessionId: original.parentSessionId,
+        throughTurnRequestId: original.throughTurnRequestId,
+        state: original.state,
+        reason,
+        source: null,
+      });
+      if (
+        (original.state !== "reserved" && original.state !== "linked") ||
+        original.reservationKind === undefined ||
+        original.sourceSeal === undefined ||
+        original.projectId !== input.projectId
+      )
+        return unavailable("source-unavailable");
+
+      let parent: CodexChatOwnedRecord, state: ConversationState;
+      try {
+        parent = registry.read(input.projectId, original.parentSessionId);
+        if (
+          parent.provider !== "codex" ||
+          parent.mode !== "chat" ||
+          parent.origin !== undefined ||
+          parent.projectId !== original.projectId ||
+          workspaceKey(parent.workspace) !== original.workspaceKey ||
+          original.workspaceKey !== workspace
+        )
+          return unavailable("source-mismatch");
+        state = storeFor(parent.id, parent.projectId).read(parent.projectId);
+      } catch {
+        return unavailable("source-unavailable");
+      }
+      const source = sourceFor({
+        parent,
+        state,
+        projectId: original.projectId,
+        selectedTurnRequestId: original.throughTurnRequestId,
+        workspace,
+        admission: false,
+      });
+      const selected = state.turns.find(
+        (turn) => turn.requestId === original.throughTurnRequestId,
+      );
+      if (
+        !source.eligible ||
+        !selected ||
+        !same(original.sourceSeal, sourceSealFor(parent, selected.hash, source))
+      )
+        return unavailable("source-mismatch");
+      try {
+        await options.validateScope(parent, [
+          ...(source.prepared.launch.context?.about ?? []),
+        ]);
+      } catch {
+        return unavailable("source-mismatch");
+      }
+
+      if (original.state === "linked") {
+        try {
+          const linked = linkedResult(original);
+          if (linked.state !== "linked") return unavailable("source-mismatch");
+          const child = registry.read(
+              original.projectId,
+              original.childAppSessionId,
+            ),
+            childState = storeFor(child.id, child.projectId).read(
+              child.projectId,
+            );
+          resolveCodexChatForkPrefix({
+            origin: linked.origin,
+            parent,
+            parentState: state,
+            original,
+            child,
+            childState,
+          });
+        } catch {
+          return unavailable("source-unavailable");
+        }
+      }
+      const page = sourcePage({
+        projectId: input.projectId,
+        parent,
+        state,
+        source,
+        requestId: original.requestId,
+        after: input.after,
+        limit: input.limit,
+      });
+      const context: CodexChatForkContextPage = {
+        version: 1,
+        available: true,
+        requestId: original.requestId,
+        requestHash: original.requestHash,
+        parentSessionId: original.parentSessionId,
+        throughTurnRequestId: original.throughTurnRequestId,
+        state: original.state,
+        reason: null,
+        source: page,
+      };
+      const parsed = codexChatForkContextPageSchema.parse(context);
+      try {
+        assertForkReviewEnvelopeBound({ ok: true, data: parsed, error: null });
+      } catch {
+        throw new ConversationError(
+          413,
+          "The Fork source context exceeds the safe response limit.",
+        );
+      }
+      return parsed;
     },
     /** Verify the saved link and captured child binding without consulting mutable parent history. */
     readLinkedChild(projectId: string, childSessionId: string) {
