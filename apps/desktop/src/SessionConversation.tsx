@@ -30,8 +30,10 @@ import {
 } from "./session-composer";
 import "./session.css";
 import { CodexChatApprovals } from "./CodexChatApprovals";
+import { CodexChatForkPanel } from "./CodexChatForkPanel";
 import { CodexChatTerminal } from "./CodexChatTerminal";
 import { CodexChatUsage } from "./CodexChatUsage";
+import type { CodexChatForkClient } from "./codex-chat-fork-client";
 import { GeminiChatConversation } from "./GeminiChatConversation";
 import { SessionLibraryControls } from "./SessionLibraryControls";
 import { SessionReply } from "./SessionReply";
@@ -45,6 +47,7 @@ export interface SessionConversationProps {
   keeper: KeeperClient;
   writesAllowed: boolean;
   library?: SessionLibraryClient;
+  forkClient?: CodexChatForkClient;
   archived?: boolean;
 }
 export function SessionConversation(props: SessionConversationProps) {
@@ -68,6 +71,7 @@ function StandardSessionConversation({
   keeper,
   writesAllowed,
   library,
+  forkClient,
   archived = false,
 }: SessionConversationProps) {
   const view = client.session(projectId, sessionId),
@@ -317,9 +321,26 @@ function StandardSessionConversation({
                         ?.focus()
                   : undefined
               }
+              hasDedicatedForkReview={
+                isCodexChat &&
+                !!forkClient &&
+                record?.provider === "codex" &&
+                record.mode === "chat" &&
+                record.origin?.kind !== "codex-chat-fork"
+              }
             />
           )}
         </div>
+        {isCodexChat && forkClient && record && (
+          <CodexChatForkPanel
+            projectId={projectId}
+            parentSessionId={sessionId}
+            page={view.page}
+            record={record}
+            client={forkClient}
+            writesAllowed={writesAllowed && !archived}
+          />
+        )}
         {showLifecycleGuidance && (
           <p class="af-session-note">{lifecycle.detail}</p>
         )}

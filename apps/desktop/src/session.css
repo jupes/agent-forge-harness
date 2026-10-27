@@ -440,6 +440,35 @@
   margin: 0;
   color: var(--color-neutral-400);
 }
+.af-session-fork-review,
+.af-session-fork-child {
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid var(--color-neutral-700);
+  border-radius: 8px;
+}
+.af-session-fork-review h3,
+.af-session-fork-child h3 {
+  margin: 0 0 8px;
+}
+.af-session-fork-history {
+  max-height: min(38dvh, 340px);
+  overflow: auto;
+  border: 1px solid var(--color-neutral-700);
+  border-radius: 6px;
+  padding: 8px;
+}
+.af-session-fork-history article,
+.af-session-fork-child article {
+  padding: 8px 0;
+  border-bottom: 1px solid var(--color-neutral-800);
+  overflow-wrap: anywhere;
+}
+.af-session-fork-child label {
+  display: grid;
+  gap: 6px;
+  margin: 12px 0;
+}
 .af-session-archive-filter {
   display: inline-flex;
   gap: 8px;

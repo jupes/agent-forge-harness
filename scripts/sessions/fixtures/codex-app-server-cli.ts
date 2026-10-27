@@ -7,11 +7,13 @@ const mode = process.env.CODEX_CHAT_MODE;
 const serviceTierAwareMode =
     mode === "service-tier-null" ||
     mode === "fork-approval-command" ||
+    mode === "fork-service-tier-null-child-approval" ||
     mode === "fork-service-tier-null" ||
     mode === "fork-service-tier-priority" ||
     mode === "fork-child-lost-turn-reply",
   forkServiceTierResumeMode =
     mode === "fork-approval-command" ||
+    mode === "fork-service-tier-null-child-approval" ||
     mode === "fork-service-tier-null" ||
     mode === "fork-service-tier-priority" ||
     mode === "fork-child-lost-turn-reply",
@@ -40,6 +42,9 @@ if (argv.includes("--sync")) {
 }
 record({
   kind: "process",
+  ...(mode === "fork-service-tier-null-child-approval"
+    ? { fixtureMode: mode }
+    : {}),
   argv,
   cwd: process.cwd(),
   pid: process.pid,
@@ -538,6 +543,10 @@ while (true) {
       )
         process.exit(14);
       const fork = params as Record<string, unknown>;
+      if (mode === "fork-lost-response-eof") {
+        record({ kind: "fork-created-without-response", params });
+        process.exit(0);
+      }
       if (mode === "fork-lost-response") {
         record({ kind: "fork-created-without-response", params });
         hangTree();
@@ -998,6 +1007,9 @@ while (true) {
       } else if (
         mode?.startsWith("approval-command") ||
         mode === "fork-approval-command" ||
+        (mode === "fork-service-tier-null-child-approval" &&
+          resuming &&
+          threadId === resumedTurnId) ||
         mode === "approval-conflict" ||
         mode === "approval-resolved" ||
         mode === "approval-stale" ||
@@ -1043,6 +1055,8 @@ while (true) {
             ],
           },
         };
+        if (mode === "fork-service-tier-null-child-approval")
+          record({ kind: "approval-offer", threadId, turnId });
         await send(request);
         if (mode === "approval-command-duplicate") await send(request);
         if (mode === "approval-conflict")

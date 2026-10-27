@@ -92,6 +92,16 @@ const sourcePage = z
   })
   .strict();
 
+/** A fully assembled review may span bounded wire pages; each wire page remains capped at 50. */
+export const codexChatForkCompleteSourceSchema = sourcePage.extend({
+  frames: z
+    .array(visibleFrame)
+    .max(
+      CODEX_CHAT_FORK_REVIEW_LIMITS.pageItems *
+        CODEX_CHAT_FORK_REVIEW_LIMITS.pages,
+    ),
+});
+
 const contextPage = z
   .object({
     version: z.literal(1),
