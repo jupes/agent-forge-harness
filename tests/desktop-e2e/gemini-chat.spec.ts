@@ -30,12 +30,12 @@ import { sessionTranscriptExportSchema } from "../../scripts/sessions/library-pr
 import { openSettled, reloadSettled } from "../e2e/fixtures";
 import { pageToken } from "../e2e/launch-link";
 import { HEARTH_HOME } from "../e2e/servers";
-import { verifiedIdentityReadBarrier } from "./session-start-read-barrier";
 import {
   parseBoundedGeminiDiagnosticJson,
   withGeminiChatFailureFacts,
 } from "./gemini-chat-failure-facts";
 import { alpha, seedProjects, workspace } from "./project-fixtures";
+import { verifiedIdentityReadBarrier } from "./session-start-read-barrier";
 
 // Two actual native process lifetimes, protected reads and complete export share one bounded journey.
 test.setTimeout(60_000);
@@ -634,7 +634,8 @@ test("Gemini ACP composer keyboard-starts two explicit native turns with once ch
       dialog.getByRole("button", { name: "Start", exact: true }),
     ).toBeDisabled();
   } finally {
-    identityRead.release();
+    await identityRead.release();
+    await identityRead.dispose();
   }
   await expect(checkingIdentity).toBeHidden();
   const start = dialog.getByRole("button", { name: "Start", exact: true });
@@ -925,7 +926,8 @@ test("a fresh synchronous edit after Chat preview cannot reserve or dispatch an 
     expect(identityPosts).toBe(0);
     expect(promptCount()).toBe(before);
   } finally {
-    identityRead.release();
+    await identityRead.release();
+    await identityRead.dispose();
   }
   await expect(checkingIdentity).toBeHidden();
   await expect(start).toBeEnabled();
@@ -1347,7 +1349,8 @@ test("saved native deadline hides a genuinely actionable old offer before generi
     await expect(identityLoading).toBeVisible();
     await expect(start).toBeDisabled();
   } finally {
-    identityRead.release();
+    await identityRead.release();
+    await identityRead.dispose();
     if (previewClick) await previewClick.catch(() => undefined);
     page.off("request", observePreviewPost);
   }

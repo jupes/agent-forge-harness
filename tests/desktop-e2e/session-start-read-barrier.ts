@@ -1,4 +1,4 @@
-import type { Page } from "@playwright/test";
+import type { Page, Route } from "@playwright/test";
 import { z } from "zod";
 import { sessionStartIdentityPageSchema } from "../../scripts/sessions/identity-protocol";
 
@@ -11,17 +11,23 @@ export async function verifiedIdentityReadBarrier(
   },
 ) {
   const path = `/__agent-forge/projects/${encodeURIComponent(options.projectId)}/session-start-identities`;
+  const matcher = `**${path}`;
   let armed = false;
   let held = false;
+  let heldReadCount = 0;
+  let pendingHeldReads = 0;
   let releaseRead: () => void = () => {};
+  let settleHeldReads: () => void = () => {};
   let released = Promise.resolve();
+  let heldReadsSettled = Promise.resolve();
 
-  await page.route(`**${path}`, async (route) => {
+  const handler = async (route: Route) => {
     const request = route.request();
     if (request.method() !== "GET") {
       await route.continue();
       return;
     }
+
     const requestUrl = new URL(request.url());
     let frameUrl: URL;
     try {
@@ -43,8 +49,8 @@ export async function verifiedIdentityReadBarrier(
       await route.continue();
       return;
     }
-    const holdThisRead = armed && (options.shouldHold?.() ?? true);
 
+    const holdThisRead = armed && (options.shouldHold?.() ?? true);
     const response = await route.fetch({
       headers: {
         ...(await request.allHeaders()),
@@ -52,6 +58,18 @@ export async function verifiedIdentityReadBarrier(
         "Sec-Fetch-Site": "same-origin",
       },
     });
+    let responseUrl: URL;
+    try {
+      responseUrl = new URL(response.url());
+    } catch {
+      throw new Error("The Session Start identity response URL was invalid.");
+    }
+    if (
+      responseUrl.origin !== requestUrl.origin ||
+      responseUrl.pathname !== path ||
+      responseUrl.search !== ""
+    )
+      throw new Error("The Session Start identity response was redirected.");
     let payload: unknown;
     try {
       payload = await response.json();
@@ -77,22 +95,48 @@ export async function verifiedIdentityReadBarrier(
       );
 
     if (holdThisRead) {
-      armed = false;
       held = true;
+      heldReadCount++;
+      pendingHeldReads++;
       await released;
+      try {
+        await route.fulfill({ response });
+      } finally {
+        pendingHeldReads--;
+        if (!armed && pendingHeldReads === 0) settleHeldReads();
+      }
+      return;
     }
     await route.fulfill({ response });
-  });
+  };
+  await page.route(matcher, handler);
 
   return {
     arm() {
       held = false;
+      heldReadCount = 0;
+      pendingHeldReads = 0;
       armed = true;
       released = new Promise<void>((resolve) => {
         releaseRead = resolve;
       });
+      heldReadsSettled = new Promise<void>((resolve) => {
+        settleHeldReads = resolve;
+      });
     },
     held: () => held,
-    release: () => releaseRead(),
+    heldReadCount: () => heldReadCount,
+    release() {
+      armed = false;
+      releaseRead();
+      if (pendingHeldReads === 0) settleHeldReads();
+      return heldReadsSettled;
+    },
+    settled: () => heldReadsSettled,
+    dispose: () => page.unroute(matcher, handler),
   };
 }
+
+export type VerifiedIdentityReadBarrier = Awaited<
+  ReturnType<typeof verifiedIdentityReadBarrier>
+>;
