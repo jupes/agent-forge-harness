@@ -121,6 +121,7 @@ function reference(record: CodexChatForkOriginal) {
     protocolVersion: record.protocolVersion,
     childAppSessionId: record.childAppSessionId,
     sourceSeal: record.sourceSeal,
+    reservationKind: record.reservationKind,
   };
 }
 
@@ -309,10 +310,12 @@ test.skipIf(!nativeEnabled)(
         parentSessionId,
         intent(requestId),
         testSourceSeal,
+        "direct-v1",
       );
     } catch (error) {
       throw new Error(detail(error, mutex));
     }
+    expect(reserved.reservationKind).toBe("direct-v1");
     assertOwnerOnly(mutex, "file", nativeWindowsAcl());
     expect(
       createCodexChatForkJournal({ root, home }).read(projectId, requestId),
@@ -332,8 +335,10 @@ test.skipIf(!nativeEnabled)(
         parentSessionId,
         intent(requestId),
         testSourceSeal,
+        "direct-v1",
       ),
       barrier = join(base, "barrier");
+    expect(reserved.reservationKind).toBe("direct-v1");
     mkdirSync(barrier);
     const scripts = ["a", "b"].map(
       (slot) => `${journalImport(root, home)} ${childBarrier(barrier, slot)}
@@ -366,7 +371,7 @@ test.skipIf(!nativeEnabled)(
         index,
       ) => `${journalImport(root, home)} ${childBarrier(barrier, slot)}
         try {
-          const record = await journal.reserve(${JSON.stringify(projectId)},${JSON.stringify(parentSessionId)},${JSON.stringify(intent(ids[index]!))},${JSON.stringify(testSourceSeal)});
+          const record = await journal.reserve(${JSON.stringify(projectId)},${JSON.stringify(parentSessionId)},${JSON.stringify(intent(ids[index]!))},${JSON.stringify(testSourceSeal)},"direct-v1");
           process.stdout.write(JSON.stringify({ok:true,requestId:record.requestId,state:record.state,storageGuards}));
         } catch (error) {
           process.stdout.write(JSON.stringify({ok:false,reason:error instanceof CodexChatForkJournalError ? error.reason : "unexpected",storageGuards}));
