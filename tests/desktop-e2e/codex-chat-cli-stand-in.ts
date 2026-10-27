@@ -45,6 +45,7 @@ if (
     "fork-lost-response-eof",
     "fork-approval-command",
     "fork-child-lost-turn-reply",
+    "fork-restart",
   ].includes(String(mode))
 )
   throw Error("Unknown isolated Chat fixture mode.");

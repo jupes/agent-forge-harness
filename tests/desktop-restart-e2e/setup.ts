@@ -35,6 +35,7 @@ async function initialize() {
     ["bd", BD_STAND_IN_SOURCE],
     ["git", GIT_STAND_IN_SOURCE],
     ["claude", resolve("tests/desktop-restart-e2e/claude-stand-in.ts")],
+    ["codex", resolve("tests/desktop-e2e/codex-chat-cli-stand-in.ts")],
   ];
   for (const [name, source] of programs) {
     const executable = join(
@@ -53,6 +54,19 @@ async function initialize() {
   }
   mkdirSync(join(ROOT, "docs"), { recursive: true });
   mkdirSync(join(HEARTH_HOME, "projects"), { recursive: true });
+  mkdirSync(join(HEARTH_HOME, "user", ".agent-forge"), {
+    recursive: true,
+  });
+  writeFileSync(
+    join(HEARTH_HOME, "user", ".agent-forge", "config.toml"),
+    '[smiths.codex-journeyman]\nprovider = "codex"\nmodel = "gpt-5-codex"\neffort = "medium"\nenabled = true\n',
+    { mode: 0o600 },
+  );
+  writeFileSync(
+    join(HEARTH_HOME, "codex-chat-fixture-mode.json"),
+    JSON.stringify("fork-restart"),
+    { mode: 0o600 },
+  );
   writeFileSync(
     join(HEARTH_HOME, "projects", "catalog.json"),
     JSON.stringify(projectCatalogFixture(ROOT)),

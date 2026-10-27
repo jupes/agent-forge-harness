@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { appendFileSync } from "node:fs";
 
 /** Inert native-process app-server fixture. No provider, account, shell or network access. */
@@ -53,8 +54,14 @@ record({
   forged: process.env.AGENT_FORGE_FORGED,
   slug: process.env.FORGE_SLUG,
 });
-let threadId = "0199a213-81c0-7800-8aa1-bbab2a035a53";
-const firstTurnId = "0199a213-81c0-7800-8aa1-bbab2a035a54",
+let threadId: string =
+  mode === "fork-restart"
+    ? randomUUID()
+    : "0199a213-81c0-7800-8aa1-bbab2a035a53";
+const firstTurnId =
+    mode === "fork-restart"
+      ? randomUUID()
+      : "0199a213-81c0-7800-8aa1-bbab2a035a54",
   resumedTurnId = "0199a213-81c0-7800-8aa1-bbab2a035a55";
 let turnId = firstTurnId;
 let model = "",
@@ -573,7 +580,10 @@ while (true) {
               excludeSlashTmp: true,
             };
       const forkThread = {
-        id: "0199a213-81c0-7800-8aa1-bbab2a035a55",
+        id:
+          mode === "fork-restart"
+            ? randomUUID()
+            : "0199a213-81c0-7800-8aa1-bbab2a035a55",
         environments: [],
         extra: null,
         sessionId: threadId,
