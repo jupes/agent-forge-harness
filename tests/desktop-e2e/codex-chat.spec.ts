@@ -3894,6 +3894,14 @@ test("Codex Chat explicitly reviews, forks, reloads and controls only the linked
   );
   try {
     await expect(commandApproval).toBeVisible();
+    await recoveredDialog
+      .getByRole("region", {
+        name: "Fork child conversation",
+        exact: true,
+      })
+      .screenshot({
+        path: test.info().outputPath("native-fork-child-review.png"),
+      });
   } finally {
     await attachForkChildApprovalDiagnostic(test.info());
   }

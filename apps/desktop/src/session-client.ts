@@ -1196,14 +1196,27 @@ export function createSessionsClient(deps: {
         candidates.length !== 1 ||
         entry.legacyIdentityError ||
         entry.starting ||
-        entry.pendingStart ||
         identityMutations.has(projectId) ||
         !deps.canWrite()
       )
         return;
       const original = candidates[0];
       if (!original) return;
-      const request = makeStartRequest(input, original.requestId);
+      const reentered = makeStartRequest(input, original.requestId);
+      const pending = entry.pendingStart;
+      if (
+        pending &&
+        (original.state !== "not-sent" ||
+          pending.requestId !== original.requestId ||
+          canonicalOwnedSessionStart(pending) !==
+            canonicalOwnedSessionStart(reentered))
+      ) {
+        entry.notice =
+          "The retained Start does not match a durably not-sent original. Nothing was sent again.";
+        tell();
+        return;
+      }
+      const request = pending ?? reentered;
       identityMutations.add(projectId);
       entry.starting = true;
       entry.startIdentityError = "";
