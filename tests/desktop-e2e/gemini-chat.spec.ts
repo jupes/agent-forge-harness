@@ -10,7 +10,13 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { expect, type Locator, type Page, test } from "@playwright/test";
+import {
+  expect,
+  type Locator,
+  type Page,
+  type Request,
+  test,
+} from "@playwright/test";
 import { z } from "zod";
 import { OPERATOR_HEADER } from "../../scripts/hearth/paths";
 import { ownedCodingStateSchema } from "../../scripts/sessions/codex-owned-journal";
@@ -1267,28 +1273,70 @@ test("saved native deadline hides a genuinely actionable old offer before generi
   const before = promptCount(),
     answers = answerCount(),
     dialog = await openComposer(page);
-  await check(dialog);
-  const identityRead = await verifiedIdentityReadBarrier(page, {
-    projectId: alpha.id,
-    workspace,
-  });
   const identityRegion = dialog.getByRole("region", {
     name: "Original Start requests",
     exact: true,
   });
-  const start = dialog.getByRole("button", { name: "Start", exact: true });
-  const checkServer = identityRegion.getByRole("button", {
-    name: "Check server",
-    exact: true,
+  await expect(
+    identityRegion.getByRole("button", { name: "Check server", exact: true }),
+  ).toBeEnabled();
+  let previewPostObserved = false;
+  const previewPath = `/projects/${alpha.id}/sessions/preview`;
+  const observePreviewPost = (request: Request) => {
+    const url = new URL(request.url());
+    if (
+      request.method() === "POST" &&
+      url.pathname === previewPath &&
+      url.search === ""
+    )
+      previewPostObserved = true;
+  };
+  page.on("request", observePreviewPost);
+  const identityRead = await verifiedIdentityReadBarrier(page, {
+    projectId: alpha.id,
+    workspace,
+    shouldHold: () => previewPostObserved,
   });
+  const start = dialog.getByRole("button", { name: "Start", exact: true });
   const identityLoading = identityRegion.getByText(
     "Checking the server-owned identity page…",
     { exact: true },
   );
   identityRead.arm();
-  let checkServerClick: Promise<void> | null = null;
+  let previewClick: Promise<void> | null = null;
   try {
-    checkServerClick = checkServer.click();
+    const previewResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        new URL(response.url()).pathname === previewPath &&
+        new URL(response.url()).search === "",
+    );
+    previewClick = dialog
+      .getByRole("button", { name: "Check supported options", exact: true })
+      .click();
+    const response = await previewResponse;
+    expect(response.status()).toBe(200);
+    let rawPreview: unknown;
+    try {
+      rawPreview = await response.json();
+    } catch {
+      throw Error("The actual Gemini preview was not valid JSON.");
+    }
+    const envelope = z
+      .object({
+        ok: z.literal(true),
+        data: geminiChatPreviewReceiptSchema,
+        error: z.null(),
+      })
+      .strict()
+      .safeParse(rawPreview);
+    if (!envelope.success)
+      throw Error("The exact Gemini preview could not be verified.");
+    expect(envelope.data.data.provider).toBe("gemini");
+    expect(envelope.data.data.projectId).toBe(alpha.id);
+    expect(envelope.data.data.snapshot.launch.cwd).toBe(workspace);
+    expect(envelope.data.data.serialized.argv).toEqual(["--acp"]);
+    expect(promptCount()).toBe(before);
     await expect.poll(identityRead.held).toBe(true);
     await expect(
       identityRegion.getByRole("button", { name: "Checking…", exact: true }),
@@ -1297,7 +1345,8 @@ test("saved native deadline hides a genuinely actionable old offer before generi
     await expect(start).toBeDisabled();
   } finally {
     identityRead.release();
-    if (checkServerClick) await checkServerClick.catch(() => undefined);
+    if (previewClick) await previewClick.catch(() => undefined);
+    page.off("request", observePreviewPost);
   }
   await expect(identityLoading).toBeHidden();
   await expect(start).toBeEnabled();

@@ -22,7 +22,6 @@ export async function verifiedIdentityReadBarrier(
       await route.continue();
       return;
     }
-
     const requestUrl = new URL(request.url());
     let frameUrl: URL;
     try {
@@ -44,6 +43,7 @@ export async function verifiedIdentityReadBarrier(
       await route.continue();
       return;
     }
+    const holdThisRead = armed && (options.shouldHold?.() ?? true);
 
     const response = await route.fetch({
       headers: {
@@ -76,7 +76,7 @@ export async function verifiedIdentityReadBarrier(
         "The real Session Start identity page could not be verified.",
       );
 
-    if (armed && (options.shouldHold?.() ?? true)) {
+    if (holdThisRead) {
       armed = false;
       held = true;
       await released;
