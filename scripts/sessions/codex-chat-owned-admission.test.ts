@@ -26,8 +26,10 @@ import { resolveCheckout } from "../ledger/workspace";
 import { workspaceKey } from "../projects/scope";
 import { createProjectStore } from "../projects/store";
 import { scratchDirs } from "../test-scratch";
+import { createCodexChatApprovalBroker } from "./codex-chat-approval-broker";
 import { resolveCodexChatForkSource } from "./codex-chat-fork-source";
 import { createCodexOwnedChatService } from "./codex-chat-owned-admission";
+import { createCodexChatOwnedTransport } from "./codex-chat-owned-transport";
 import { foldCodexChatOwnerRelease } from "./codex-chat-owner-release";
 import { createCodexChatRuntime } from "./codex-chat-runtime";
 import {
@@ -46,7 +48,11 @@ afterEach(async () => {
   for (const close of closing.splice(0).reverse()) await close();
   scratch.cleanup();
 });
-async function fixture(mode = "normal", rpcTimeoutMs = 5000) {
+async function fixture(
+  mode = "normal",
+  rpcTimeoutMs = 5000,
+  persistenceTimeoutMs = 5000,
+) {
   const root = scratch.make("codex-chat-owned-"),
     home = join(root, "home"),
     configHome = join(root, "config"),
@@ -88,6 +94,7 @@ async function fixture(mode = "normal", rpcTimeoutMs = 5000) {
     timeoutMs: 5000,
     rpcTimeoutMs,
     approvalTimeoutMs: 3000,
+    persistenceTimeoutMs,
     ...(mode === "canonical-cwd-ack"
       ? {
           modelEfforts: [
@@ -587,6 +594,37 @@ test("pure owner release fold accepts the exact reopened completed ordinary Chat
     foldCodexChatOwnerRelease({ ...foldInput, state: missingRelease }),
   ).toEqual({ eligible: false, reason: "release-missing" });
 
+  const mismatchedGeneration = structuredClone(reopened),
+    mismatchedRelease = mismatchedGeneration.codexChatOwnerLifecycle?.find(
+      (fact) => fact.kind === "generation-released",
+    );
+  if (!mismatchedRelease)
+    throw Error("The reopened private release fact was missing.");
+  mismatchedRelease.generationId = randomUUID();
+  expect(ownedCodingStateSchema.safeParse(mismatchedGeneration).success).toBe(
+    false,
+  );
+  expect(
+    foldCodexChatOwnerRelease({
+      ...foldInput,
+      state: mismatchedGeneration,
+    }),
+  ).toEqual({ eligible: false, reason: "invalid-state" });
+
+  const mismatchedNativeIdentity = structuredClone(reopened),
+    identityFrame = mismatchedNativeIdentity.frames.find(
+      (frame) => frame.event.kind === "identity",
+    );
+  if (identityFrame?.event.kind !== "identity")
+    throw Error("The reopened native identity frame was missing.");
+  identityFrame.event.sessionId = randomUUID();
+  expect(
+    foldCodexChatOwnerRelease({
+      ...foldInput,
+      state: mismatchedNativeIdentity,
+    }),
+  ).toEqual({ eligible: false, reason: "invalid-state" });
+
   const unknownTurn = structuredClone(reopened),
     unknownLatest = unknownTurn.turns.at(-1);
   if (!unknownLatest) throw Error("The owned Chat turn was missing.");
@@ -626,7 +664,7 @@ test("pure owner release fold accepts the exact reopened completed ordinary Chat
   latestNativeOutcome.event.event.outcome.timedOut = true;
   expect(
     foldCodexChatOwnerRelease({ ...foldInput, state: timedOutOutcome }),
-  ).toEqual({ eligible: false, reason: "binding-mismatch" });
+  ).toEqual({ eligible: false, reason: "invalid-state" });
 
   const tamperedStartOwner = { ...owner, requestHash: "0".repeat(64) };
   expect(
@@ -700,6 +738,178 @@ test("pure owner release fold accepts the exact reopened completed ordinary Chat
   expect(
     foldCodexChatOwnerRelease({ ...foldInput, state: laterSelection }),
   ).toMatchObject({ eligible: true, turnRequestId: secondRequestId });
+});
+
+test("owned Chat transport refuses native dispatch when the generation-start receipt cannot be written", async () => {
+  const f = await fixture(),
+    { effort, attachments, ...launchWithoutOptionalValues } = f.request.launch,
+    prepared = await f.runtime.prepare({
+      smith: f.request.smith,
+      launch: {
+        ...launchWithoutOptionalValues,
+        ...(effort === undefined ? {} : { effort }),
+        ...(attachments === undefined ? {} : { attachments }),
+        cwd: f.root,
+        context: {
+          projectId: f.project.id,
+          repository: f.root,
+          worktree: f.root,
+          about: [],
+        },
+      },
+    }),
+    broker = createCodexChatApprovalBroker({ readIntents: () => [] }),
+    transport = createCodexChatOwnedTransport(f.runtime, broker, {
+      projectId: f.project.id,
+      sessionId: randomUUID(),
+    });
+  let runtimeCalls = 0;
+  const run = f.runtime.run.bind(f.runtime);
+  f.runtime.run = async (...args) => {
+    runtimeCalls++;
+    return run(...args);
+  };
+
+  await expect(
+    transport.run(
+      {
+        project: f.project,
+        root: f.root,
+        input: {
+          requestId: randomUUID(),
+          expectedRevision: 0,
+          text: prepared.launch.prompt,
+          about: [],
+          codexChat: prepared,
+        },
+        resume: null,
+        ownerLifecycle: {
+          async started() {
+            throw Error("The private generation receipt was refused.");
+          },
+          async released() {},
+        },
+      },
+      async () => {},
+      new AbortController().signal,
+    ),
+  ).rejects.toThrow("private generation receipt");
+  expect(runtimeCalls).toBe(0);
+  expect(
+    f.records().filter((record) => record.method === "thread/start"),
+  ).toHaveLength(0);
+});
+
+test("a refused physical-release receipt keeps an otherwise completed Chat turn unknown", async () => {
+  const f = await fixture(),
+    runtimeRun = f.runtime.run.bind(f.runtime);
+  f.runtime.run = async (input, persist, signal, callbacks) =>
+    runtimeRun(input, persist, signal, {
+      ...callbacks,
+      async onOwnedTreeReleased() {
+        throw Error("The private release receipt was refused.");
+      },
+    });
+
+  const service = f.open(),
+    started = await service.start(f.project.id, f.request);
+  await service.settled(f.project.id, started.session.id);
+  const address = {
+      kind: "session" as const,
+      projectId: f.project.id,
+      sessionId: started.session.id,
+    },
+    state = createConversationStore(f.home, undefined, address).read(
+      f.project.id,
+    ),
+    lifecycle = state.codexChatOwnerLifecycle ?? [];
+  expect(state.turns[0]?.phase).toBe("unknown");
+  expect(lifecycle.map((fact) => fact.kind)).toEqual(["generation-started"]);
+  expect(
+    state.frames.some(
+      (frame) =>
+        frame.event.kind === "coding-chat" &&
+        frame.event.event.kind === "outcome" &&
+        frame.event.event.outcome.phase === "unknown",
+    ),
+  ).toBe(true);
+  expect(
+    foldCodexChatOwnerRelease({
+      owner: createSessionRegistry(f.home, "codex", "chat").read(
+        f.project.id,
+        started.session.id,
+      ),
+      state,
+      projectId: f.project.id,
+      conversationId: started.session.id,
+      workspaceKey: workspaceKey(resolveCheckout(f.root).workspace),
+    }).eligible,
+  ).toBe(false);
+});
+
+test("a release write that completes after persistence expiry cannot settle an unknown turn", async () => {
+  const f = await fixture("normal", 5000, 30),
+    runtimeRun = f.runtime.run.bind(f.runtime);
+  let releaseEntered!: () => void,
+    allowLateRelease!: () => void,
+    lateRelease: Promise<void> | undefined;
+  const entered = new Promise<void>((resolve) => {
+    releaseEntered = resolve;
+  });
+  f.runtime.run = async (input, persist, signal, callbacks) =>
+    runtimeRun(input, persist, signal, {
+      ...callbacks,
+      async onOwnedTreeReleased(binding) {
+        releaseEntered();
+        const gate = new Promise<void>((resolve) => {
+          allowLateRelease = resolve;
+        });
+        lateRelease = gate.then(() => callbacks.onOwnedTreeReleased?.(binding));
+        return lateRelease;
+      },
+    });
+
+  const service = f.open(),
+    started = await service.start(f.project.id, f.request),
+    address = {
+      kind: "session" as const,
+      projectId: f.project.id,
+      sessionId: started.session.id,
+    },
+    store = createConversationStore(f.home, undefined, address);
+  await entered;
+  await service.settled(f.project.id, started.session.id);
+  const beforeLateWrite = store.read(f.project.id);
+  expect(beforeLateWrite.turns[0]?.phase).toBe("unknown");
+  expect(
+    beforeLateWrite.codexChatOwnerLifecycle?.filter(
+      (fact) => fact.kind === "generation-released",
+    ),
+  ).toEqual([]);
+
+  if (!allowLateRelease || !lateRelease)
+    throw Error("The delayed private release write was not prepared.");
+  allowLateRelease();
+  await expect(lateRelease).rejects.toThrow();
+  const afterLateWrite = store.read(f.project.id);
+  expect(afterLateWrite.turns[0]?.phase).toBe("unknown");
+  expect(
+    afterLateWrite.codexChatOwnerLifecycle?.filter(
+      (fact) => fact.kind === "generation-released",
+    ),
+  ).toEqual([]);
+  expect(
+    foldCodexChatOwnerRelease({
+      owner: createSessionRegistry(f.home, "codex", "chat").read(
+        f.project.id,
+        started.session.id,
+      ),
+      state: afterLateWrite,
+      projectId: f.project.id,
+      conversationId: started.session.id,
+      workspaceKey: workspaceKey(resolveCheckout(f.root).workspace),
+    }),
+  ).toMatchObject({ eligible: false, reason: "turn-incomplete" });
 });
 
 const heldSummaryUpdates: CodexChatReasoningSummary["update"][] = [
@@ -2720,6 +2930,28 @@ test.each([
   }
   const pending = (await service.approvals(f.project.id, sessionId)).pending[0];
   if (!pending) throw Error("Missing live native callback");
+  const pendingAddress = {
+      kind: "session" as const,
+      projectId: f.project.id,
+      sessionId,
+    },
+    pendingState = createConversationStore(
+      f.home,
+      undefined,
+      pendingAddress,
+    ).read(f.project.id);
+  expect(
+    foldCodexChatOwnerRelease({
+      owner: createSessionRegistry(f.home, "codex", "chat").read(
+        f.project.id,
+        sessionId,
+      ),
+      state: pendingState,
+      projectId: f.project.id,
+      conversationId: sessionId,
+      workspaceKey: workspaceKey(resolveCheckout(f.root).workspace),
+    }).eligible,
+  ).toBe(false);
   const request = {
     requestId: randomUUID(),
     turnRequestId: pending.turnRequestId,
