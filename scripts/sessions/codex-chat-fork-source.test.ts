@@ -338,9 +338,11 @@ test("Fork source requires explicit tier evidence while preserving known null an
       throw Error("Missing observed-effort configuration fixture.");
     observedEffortConfig.event.event.effort = "medium";
     expect(ownedCodingStateSchema.safeParse(observedEffort).success).toBe(true);
-    expect(resolve(observedEffort)).toMatchObject({
-      eligible: true,
-      sourceSettings: { reasoningEffort: "medium" },
+    // The journal accepts this observed value, but this fixture lacks the
+    // model/version capability evidence required to Fork with non-null effort.
+    expect(resolve(observedEffort)).toEqual({
+      eligible: false,
+      reason: "unsupported-source",
     });
     const omittedAboutOwner = {
       ...source.owner,
