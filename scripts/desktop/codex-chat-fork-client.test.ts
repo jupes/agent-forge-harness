@@ -10,7 +10,9 @@ import type {
   CodexChatForkSourcePage,
 } from "../../scripts/sessions/codex-chat-fork-review-protocol";
 import { codexChatForkContextPageSchema } from "../../scripts/sessions/codex-chat-fork-review-protocol";
+import { ownedCodingPageSchema } from "../../scripts/sessions/codex-owned-journal";
 import { codexChatForkIdentityMetadataSchema } from "../../scripts/sessions/session-operation-identities-protocol";
+import type { ConversationPage } from "../../types/conversation";
 import type { CodexChatForkIdentityMetadata } from "../../types/session-operation-identities";
 
 const projectId = "project-a5832fa0-7a21-403b-8184-44892f0d8d86",
@@ -46,6 +48,12 @@ interface ForkClient {
   canDispatchReservedFork(requestId: string): boolean;
   canRetireFork(requestId: string): boolean;
   retireFork(projectId: string, requestId: string): Promise<unknown>;
+  readChildTurns(
+    projectId: string,
+    childSessionId: string,
+    requestId: string,
+    after?: number,
+  ): Promise<ConversationPage>;
   recoverOriginal(
     projectId: string,
     requestId: string,
@@ -847,5 +855,115 @@ test("uncertain and unconfirmed Fork reservations cannot be retired", async () =
     } finally {
       client.dispose();
     }
+  }
+});
+
+test("Fork child transcript reads preserve verified native coding frames and reject wrong scope", async () => {
+  const childSessionId = "session-822c51d0-4d7a-48e9-9c90-9f252b3b8a8f",
+    page: ConversationPage = {
+      version: 1,
+      projectId,
+      conversationId: childSessionId,
+      revision: 1,
+      binding: {
+        provider: "codex",
+        sessionId: "0199a213-81c0-7800-8aa1-bbab2a035a53",
+        version: "0.163.0-alpha.10.2",
+      },
+      turns: [
+        {
+          requestId,
+          hash: "a".repeat(64),
+          phase: "completed",
+          createdAt: "2026-10-23T03:00:00.000Z",
+          updatedAt: "2026-10-23T03:00:01.000Z",
+          reason: null,
+          owner: null,
+        },
+      ],
+      frames: [
+        {
+          seq: 1,
+          turnId: requestId,
+          at: "2026-10-23T03:00:01.000Z",
+          event: {
+            kind: "coding-chat",
+            provider: "codex",
+            version: "0.163.0-alpha.10.2",
+            event: {
+              kind: "usage",
+              usage: {
+                lastResponse: { inputTokens: 7 },
+                threadTotal: { inputTokens: 70 },
+              },
+            },
+          },
+        },
+      ],
+      more: false,
+      nextCursor: 1,
+      lastSequence: 1,
+      request: null,
+      controllable: false,
+    };
+  expect(ownedCodingPageSchema.safeParse(page).success).toBe(true);
+  let responsePage: ConversationPage = page,
+    project = projectId,
+    generation = 3,
+    reads = 0,
+    changeScopeOnRead = false;
+  const module = await loadForkClient(),
+    client = module.createCodexChatForkClient({
+      currentScope: () => ({ projectId: project, workspace, generation }),
+      canWrite: () => true,
+      requestId: () => requestId,
+      read: (async () => {
+        reads++;
+        if (changeScopeOnRead) {
+          project = "project-b5832fa0-7a21-403b-8184-44892f0d8d86";
+          generation++;
+          changeScopeOnRead = false;
+        }
+        return envelope(responsePage);
+      }) satisfies OperatorRead,
+      post: (async () => {
+        throw new Error("Reading the child transcript must stay GET-only.");
+      }) satisfies OperatorPost,
+    });
+  try {
+    const childPage = await client.readChildTurns(
+      projectId,
+      childSessionId,
+      requestId,
+    );
+    expect(childPage).toEqual(page);
+    expect(childPage.frames[0]?.event.kind).toBe("coding-chat");
+
+    responsePage = {
+      ...page,
+      conversationId: "session-913d62e1-5e8b-49fa-ad01-a0643c4c9b90",
+    };
+    expect(ownedCodingPageSchema.safeParse(responsePage).success).toBe(true);
+    await expect(
+      client.readChildTurns(projectId, childSessionId, requestId),
+    ).rejects.toThrow("exact Fork-child transcript");
+
+    responsePage = {
+      ...page,
+      projectId: "project-b5832fa0-7a21-403b-8184-44892f0d8d86",
+    };
+    expect(ownedCodingPageSchema.safeParse(responsePage).success).toBe(true);
+    await expect(
+      client.readChildTurns(projectId, childSessionId, requestId),
+    ).rejects.toThrow("exact Fork-child transcript");
+
+    responsePage = page;
+    changeScopeOnRead = true;
+    await expect(
+      client.readChildTurns(projectId, childSessionId, requestId),
+    ).rejects.toThrow("workspace changed");
+    expect(reads).toBe(4);
+  } finally {
+    client.dispose();
   }
 });
