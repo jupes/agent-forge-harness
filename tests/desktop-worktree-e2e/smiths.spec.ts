@@ -721,8 +721,15 @@ test("a NotSent create POST can only continue or retire its server-reserved orig
   const originalEnvelope = await originalResponse.json();
   const exactRequest = savedOriginal.value;
   if (!exactRequest) throw Error("The create request was not observed.");
+  const originalId = exactRequest.requestId;
+  if (
+    typeof originalId !== "string" ||
+    typeof originalEnvelope.data.inputHash !== "string"
+  )
+    throw Error("The reserved original identity was not valid.");
+  const originalHash: string = originalEnvelope.data.inputHash;
   expect(new URL(originalResponse.url()).pathname).toBe(
-    `/__agent-forge/smiths/creates/${exactRequest.requestId}`,
+    `/__agent-forge/smiths/creates/${originalId}`,
   );
   expect(originalEnvelope.data.original).toEqual(exactRequest);
   expect(originalEnvelope.data.result).toMatchObject({
@@ -748,6 +755,27 @@ test("a NotSent create POST can only continue or retire its server-reserved orig
     exact: true,
   });
   await expect(retire).toBeEnabled();
+  const reservationCard = entries.locator("article").filter({
+    hasText: originalId,
+  });
+  await expect(reservationCard).toContainText(originalId);
+  await expect(reservationCard).toContainText(originalHash);
+  await expect(
+    reservationCard.getByRole("button", {
+      name: "Continue this exact saved original",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await expect(retire).toBeVisible();
+  if (process.env["AGENT_FORGE_WORKTREE_SCREENSHOT_DIR"])
+    await reservationCard.screenshot({
+      path: screenshotPath("smith-create-server-reserved-original.png"),
+      animations: "disabled",
+      mask: [
+        reservationCard.locator("dd").filter({ hasText: REPOSITORY }),
+        reservationCard.locator("dd").filter({ hasText: HEARTH_HOME }),
+      ],
+    });
   expect(posts.slice(0, 3)).toEqual([
     "/__agent-forge/config/smiths/preview",
     "/__agent-forge/config/smiths/creates/reserve",
