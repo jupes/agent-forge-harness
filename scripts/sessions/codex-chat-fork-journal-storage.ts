@@ -18,6 +18,7 @@ import { dirname, isAbsolute, join, resolve } from "node:path";
 import { agentForgeHome } from "../agent-forge-home";
 import {
   assertOwnerOnly,
+  type ExclusiveOwnerOnlyFile,
   makeOwnerOnly,
   nativeWindowsAcl,
   type WindowsAcl,
@@ -1044,27 +1045,50 @@ export function createCodexChatForkJournalStorage(
         throw error;
       }
     }
-    let descriptor: number | undefined, expectedMutex: FileIdentity | undefined;
+    let descriptor: number | undefined,
+      exclusiveCreate:
+        | Extract<ExclusiveOwnerOnlyFile, { kind: "created" }>
+        | undefined,
+      expectedMutex: FileIdentity | undefined;
     if (readyMutex === undefined) {
-      try {
-        descriptor = openSync(mutex, "wx", 0o600);
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+      if ((options.platform ?? process.platform) === "win32") {
+        const acl = options.acl ?? nativeWindowsAcl();
+        if (acl.createOwnerOnlyExclusive === undefined)
+          throw new Error("Windows cannot securely create the Fork mutex.");
+        try {
+          const result = acl.createOwnerOnlyExclusive(mutex);
+          if (result.kind === "exists")
+            readyMutex = await waitForPrivateMutex(rootIdentity, lockIdentity);
+          else exclusiveCreate = result;
+        } catch (error) {
           reportMutexDiagnostic("creator-open", error);
           throw error;
         }
-        readyMutex = await waitForPrivateMutex(rootIdentity, lockIdentity);
+      } else {
+        try {
+          descriptor = openSync(mutex, "wx", 0o600);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+            reportMutexDiagnostic("creator-open", error);
+            throw error;
+          }
+          readyMutex = await waitForPrivateMutex(rootIdentity, lockIdentity);
+        }
       }
     }
-    if (descriptor !== undefined) {
+    if (descriptor !== undefined || exclusiveCreate !== undefined) {
+      let verified = false;
       try {
-        const opened = fstatSync(descriptor, { bigint: true });
+        // The secure Windows handle denies writes and deletion while this
+        // path-based identity/readback validation is performed.
+        if (exclusiveCreate !== undefined) descriptor = openSync(mutex, "r");
+        const opened = fstatSync(descriptor!, { bigint: true });
         if (!opened.isFile() || opened.nlink !== 1n)
           throw new Error(
             "The new private Codex Fork SQLite mutex is not a plain file.",
           );
         expectedMutex = identity(opened);
-        fsyncSync(descriptor);
+        if (exclusiveCreate === undefined) fsyncSync(descriptor!);
         assertStableDirectory(root, rootIdentity);
         assertStableDirectory(locks, lockIdentity);
         const beforeAcl = lstatSync(mutex, { bigint: true });
@@ -1074,12 +1098,15 @@ export function createCodexChatForkJournalStorage(
           beforeAcl.nlink !== 1n ||
           !sameIdentity(identity(beforeAcl), expectedMutex) ||
           !sameIdentity(
-            identity(fstatSync(descriptor, { bigint: true })),
+            identity(fstatSync(descriptor!, { bigint: true })),
             expectedMutex,
           )
         )
           throw new Error("The new private Codex Fork SQLite mutex changed.");
-        if ((options.platform ?? process.platform) === "win32") {
+        if (exclusiveCreate !== undefined) {
+          // The ACL was verified through the newly created native handle
+          // before this path was visible to another process.
+        } else if ((options.platform ?? process.platform) === "win32") {
           try {
             makeOwnerOnly(mutex, "file", options.acl ?? nativeWindowsAcl());
           } catch (error) {
@@ -1087,7 +1114,7 @@ export function createCodexChatForkJournalStorage(
             throw error;
           }
         } else {
-          const owner = fstatSync(descriptor, { bigint: true }),
+          const owner = fstatSync(descriptor!, { bigint: true }),
             uid = BigInt(process.getuid?.() ?? 0);
           if (
             !sameIdentity(identity(owner), expectedMutex) ||
@@ -1096,10 +1123,10 @@ export function createCodexChatForkJournalStorage(
             throw new Error(
               "The new private Codex Fork SQLite mutex has a foreign owner.",
             );
-          fchmodSync(descriptor, 0o600);
+          fchmodSync(descriptor!, 0o600);
         }
         const afterAcl = lstatSync(mutex, { bigint: true }),
-          stillOpen = fstatSync(descriptor, { bigint: true });
+          stillOpen = fstatSync(descriptor!, { bigint: true });
         if (
           !afterAcl.isFile() ||
           afterAcl.isSymbolicLink() ||
@@ -1114,11 +1141,30 @@ export function createCodexChatForkJournalStorage(
           reportMutexDiagnostic("creator-readback", error, expectedMutex);
           throw error;
         }
-        fsyncSync(descriptor);
+        if (exclusiveCreate === undefined) fsyncSync(descriptor!);
         assertStableDirectory(root, rootIdentity);
         assertStableDirectory(locks, lockIdentity);
+        verified = true;
+      } catch (error) {
+        if (exclusiveCreate !== undefined && !verified) {
+          try {
+            exclusiveCreate.remove();
+          } catch (cleanupError) {
+            // Never fall back to path-based cleanup: the pathname may no
+            // longer identify the exact object created by this process.
+            throw new AggregateError(
+              [error, cleanupError],
+              "The new Fork mutex failed verification and its exact created handle could not remove it.",
+            );
+          }
+        }
+        throw error;
       } finally {
-        closeSync(descriptor);
+        try {
+          if (descriptor !== undefined) closeSync(descriptor);
+        } finally {
+          exclusiveCreate?.close();
+        }
       }
     }
     assertStableDirectory(root, rootIdentity);

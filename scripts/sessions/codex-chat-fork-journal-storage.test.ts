@@ -1,15 +1,18 @@
 import { afterEach, expect, test } from "bun:test";
 import {
+  closeSync,
   existsSync,
   linkSync,
   lstatSync,
   mkdirSync,
+  openSync,
   readdirSync,
   readFileSync,
   renameSync,
   rmSync,
   symlinkSync,
   truncateSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -87,6 +90,29 @@ function fakeAcl(): WindowsAcl {
       return {
         folder: reading(folder),
         file: { reading: reading(file), bytes },
+      };
+    },
+    createOwnerOnlyExclusive(path) {
+      let descriptor: number;
+      try {
+        descriptor = openSync(path, "wx", 0o600);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "EEXIST")
+          return { kind: "exists" };
+        throw error;
+      }
+      readings.set(path, privateReading("file"));
+      let closed = false;
+      return {
+        kind: "created",
+        remove() {
+          unlinkSync(path);
+        },
+        close() {
+          if (closed) return;
+          closed = true;
+          closeSync(descriptor);
+        },
       };
     },
   };
@@ -182,6 +208,39 @@ test("read-only storage inspection does not create a profile-wide namespace", ()
 
   expect([...storage.listEvents()]).toEqual([]);
   expect(existsSync(join(home, CODEX_CHAT_FORK_JOURNAL_DIRECTORY))).toBe(false);
+});
+
+test("failed verification removes only the exact newly created mutex handle", async () => {
+  const root = scratch.make("codex-fork-root-"),
+    home = join(scratch.make("codex-fork-profile-"), "profile"),
+    acl = fakeAcl();
+  mkdirSync(home, { recursive: true });
+  const mutex = join(
+      home,
+      CODEX_CHAT_FORK_JOURNAL_DIRECTORY,
+      "locks",
+      "journal.sqlite",
+    ),
+    read = acl.read.bind(acl),
+    create = acl.createOwnerOnlyExclusive!.bind(acl);
+  let refuseReadback = false;
+  acl.createOwnerOnlyExclusive = (path) => {
+    const result = create(path);
+    if (result.kind === "created") refuseReadback = true;
+    return result;
+  };
+  acl.read = (path) =>
+    refuseReadback && path === mutex
+      ? { ...privateReading("file"), protected: false }
+      : read(path);
+
+  await expect(
+    createCodexChatForkJournalStorage(home, {
+      platform: "win32",
+      acl,
+    }).exclusive(async () => undefined),
+  ).rejects.toThrow();
+  expect(existsSync(mutex)).toBe(false);
 });
 
 test("private immutable records reopen through independent profile-wide stores", async () => {

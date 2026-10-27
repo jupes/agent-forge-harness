@@ -462,16 +462,32 @@ test.skipIf(!nativeEnabled)(
         defaultOwnerSid: () => native.defaultOwnerSid?.(),
         read: (path) => native.read(path),
         readInFolder: native.readInFolder ? (folder, name, maxBytes) => native.readInFolder(folder, name, maxBytes) : undefined,
-        apply(path, target) {
-          if (${creator} && path === mutex && target === "file") {
-            writeFileSync(${JSON.stringify(creatorVisible)}, JSON.stringify({ ...identity(), ...reading() }), { flag: "wx" });
-            const wait = new Int32Array(new SharedArrayBuffer(4));
-            const deadline = Date.now() + 6_000;
-            while (!existsSync(${JSON.stringify(releaseCreator)})) {
-              if (Date.now() >= deadline) throw new Error("creator publication barrier timed out");
-              Atomics.wait(wait, 0, 0, 10);
+        createOwnerOnlyExclusive(path) {
+          const created = native.createOwnerOnlyExclusive!(path);
+          if (${creator} && path === mutex && created.kind === "created") {
+            // The operation has created and verified the final inode with its
+            // private DACL. Hold its no-delete handle while the peer inspects it.
+            try {
+              writeFileSync(${JSON.stringify(creatorVisible)}, JSON.stringify({ ...identity(), ...reading() }), { flag: "wx" });
+              const wait = new Int32Array(new SharedArrayBuffer(4));
+              const deadline = Date.now() + 6_000;
+              while (!existsSync(${JSON.stringify(releaseCreator)})) {
+                if (Date.now() >= deadline)
+                  throw new Error("creator publication barrier timed out");
+                Atomics.wait(wait, 0, 0, 10);
+              }
+            } catch (error) {
+              try {
+                created.remove();
+              } finally {
+                created.close();
+              }
+              throw error;
             }
           }
+          return created;
+        },
+        apply(path, target) {
           native.apply(path, target);
         },
       };
@@ -627,6 +643,11 @@ test.skipIf(!nativeEnabled)(
       expect(beforeText).toBe(inherited.text);
       expect(beforeAcl).toEqual(inherited.acl);
       expect(() => assertOwnerOnly(target, "file", acl)).toThrow();
+      if (kind === "mutex") {
+        // CREATE_NEW must report a collision without changing the foreign
+        // inode, its bytes, or its inherited ACL.
+        expect(acl.createOwnerOnlyExclusive!(target).kind).toBe("exists");
+      }
       await expect(
         createCodexChatForkJournalStorage(home).exclusive(
           async () => undefined,
