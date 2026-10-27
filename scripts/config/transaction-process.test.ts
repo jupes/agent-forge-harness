@@ -230,10 +230,14 @@ test("two actual writers in different profile and checkout spellings serialize w
   const root = box();
   const holder = start(root, "hold");
   await marker(root, "holder-entered", holder, "hold");
+  expect(existsSync(join(root, "hold-child-started"))).toBe(true);
+  expect(existsSync(join(root, "hold-transaction-prepared"))).toBe(true);
+  expect(existsSync(join(root, "hold-transaction-entered"))).toBe(true);
   const lock = join(root, "coordination", "write.lock.db");
   const heldIdentity = lstatSync(lock, { bigint: true });
   const writer = start(root, "write");
   await marker(root, "writer-entered", writer, "write");
+  expect(existsSync(join(root, "write-child-started"))).toBe(true);
   // A separate acquisition refuses while the first process owns the lock.
   const context = prepareConfigTransaction({
     options: {

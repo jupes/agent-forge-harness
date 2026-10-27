@@ -80,4 +80,22 @@ test("failure facts are emitted before cleanup and preserve the original error t
     caught = error;
   }
   expect(caught).toBe(original);
+
+  caught = undefined;
+  try {
+    await emitTransactionFixtureFailureFactsAndRethrow(
+      original,
+      async () => ({
+        stage: "transaction-prepared",
+        child: "exited-nonzero",
+        stderr: "empty",
+      }),
+      () => {
+        throw Error("private stderr failure");
+      },
+    );
+  } catch (error) {
+    caught = error;
+  }
+  expect(caught).toBe(original);
 });
