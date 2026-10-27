@@ -168,14 +168,21 @@ test("a canonical native Chat configuration persists without rewriting the alias
       worktree: f.workspaceAlias,
       launch: { ...f.request.launch, effort: "medium" },
     },
+    canonicalWorkspace = realpathSync.native(f.workspaceAlias),
+    canonicalWorkspaceKey =
+      process.platform === "win32"
+        ? canonicalWorkspace.toLowerCase()
+        : canonicalWorkspace,
     expectedHash = createHash("sha256")
       .update(canonicalOwnedSessionStart(request))
       .digest("hex"),
     service = f.open();
-  expect(realpathSync.native(f.workspaceAlias)).toBe(
-    realpathSync.native(f.root),
+  expect(canonicalWorkspaceKey).toBe(
+    process.platform === "win32"
+      ? realpathSync.native(f.root).toLowerCase()
+      : realpathSync.native(f.root),
   );
-  expect(f.workspaceAlias).not.toBe(realpathSync.native(f.workspaceAlias));
+  expect(f.workspaceAlias).not.toBe(canonicalWorkspaceKey);
 
   const started = await service.start(f.project.id, request);
   await service.settled(f.project.id, started.session.id);
@@ -210,6 +217,7 @@ test("a canonical native Chat configuration persists without rewriting the alias
   expect(user).toMatchObject({
     kind: "user",
     codexChat: {
+      canonicalCwd: canonicalWorkspaceKey,
       launch: {
         cwd: f.workspaceAlias,
         prompt: request.launch.prompt,
@@ -222,7 +230,7 @@ test("a canonical native Chat configuration persists without rewriting the alias
     provider: "codex",
     event: {
       kind: "configuration",
-      cwd: realpathSync.native(f.workspaceAlias),
+      cwd: canonicalWorkspaceKey,
       model: request.launch.model,
       effort: "medium",
     },
