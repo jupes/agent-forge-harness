@@ -363,6 +363,30 @@ test("the compiled desktop Codex stand-in completes prepare and dispatch in fork
 
     if (!outcome.threadId)
       throw new Error("The inert Codex fixture did not return a thread.");
+    status = "ordinary-native-resume";
+    const ordinaryResumeEvents: CodexChatEvent[] = [];
+    const ordinaryResumed = await runtime.run(
+      {
+        prepared,
+        resume: { provider: "codex", threadId: outcome.threadId, version },
+      },
+      async (event) => {
+        ordinaryResumeEvents.push(event);
+      },
+      new AbortController().signal,
+      { requestApproval: async () => "decline" },
+    );
+    status = `ordinary-resume-outcome-${ordinaryResumed.phase}`;
+    expect(ordinaryResumed).toMatchObject({
+      phase: "completed",
+      threadId: outcome.threadId,
+      exitCode: 0,
+    });
+    const ordinaryConfiguration = ordinaryResumeEvents.find(
+      (event) => event.kind === "configuration",
+    );
+    expect(ordinaryConfiguration).toHaveProperty("serviceTier", null);
+
     status = "resume-dispatch";
     const resumeEvents: CodexChatEvent[] = [];
     const resumed = await runtime.run(
@@ -394,11 +418,13 @@ test("the compiled desktop Codex stand-in completes prepare and dispatch in fork
       modelProvider: "openai",
     });
     expect(resumeConfiguration).toHaveProperty("serviceTier", null);
-    expect(
-      readCompiledFixtureRecords(log).find(
-        (row) => row.kind === "rpc" && row.method === "thread/resume",
-      )?.params,
-    ).toMatchObject({
+    const resumeParams = readCompiledFixtureRecords(log)
+      .filter((row) => row.kind === "rpc" && row.method === "thread/resume")
+      .map((row) => row.params);
+    expect(resumeParams).toHaveLength(2);
+    expect(resumeParams[0]).not.toHaveProperty("modelProvider");
+    expect(resumeParams[0]).not.toHaveProperty("serviceTier");
+    expect(resumeParams[1]).toMatchObject({
       threadId: outcome.threadId,
       modelProvider: "openai",
       serviceTier: null,
@@ -407,17 +433,17 @@ test("the compiled desktop Codex stand-in completes prepare and dispatch in fork
     expect(facts).toMatchObject({
       state: "available",
       kindCounts: {
-        version: 3,
-        help: 3,
-        process: 2,
-        rpc: 6,
-        notification: 2,
+        version: 4,
+        help: 4,
+        process: 3,
+        rpc: 9,
+        notification: 3,
         answer: 0,
       },
       argvCategories: {
-        versionProbe: 3,
-        helpProbe: 3,
-        appServerStdio: 2,
+        versionProbe: 4,
+        helpProbe: 4,
+        appServerStdio: 3,
       },
     });
   } catch {
