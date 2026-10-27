@@ -128,7 +128,8 @@ async function reloadAndReadDocumentJson(
     reloadGeneration: number | null = null,
     replacing = false;
   const requestGenerations = new WeakMap<Request, number>();
-  const captureKey = "__agentForgeReloadedOriginalResponse";
+  const captureKey = `__agentForgeReloadedOriginalResponse_${randomUUID()}`;
+  let unavailableBodyInjected = false;
   await page.addInitScript(
     ({ key, expectedPath }) => {
       Reflect.set(window, key, null);
@@ -188,9 +189,11 @@ async function reloadAndReadDocumentJson(
       response.request().method() !== "GET" ||
       new URL(response.url()).pathname !== options.unavailableBodyFor ||
       reloadGeneration === null ||
-      requestGenerations.get(response.request()) !== reloadGeneration
+      requestGenerations.get(response.request()) !== reloadGeneration ||
+      unavailableBodyInjected
     )
       return;
+    unavailableBodyInjected = true;
     options.onUnavailableBody?.();
     // Reproduce Chromium losing the CDP response resource after navigation.
     // The network request and server response remain real and untouched.
