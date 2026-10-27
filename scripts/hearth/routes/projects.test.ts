@@ -65,6 +65,26 @@ test("a damaged project catalog is a failed read, never empty or overwritten", a
 test("a protected project reservation preserves its exact original before project creation", async () => {
   const h = await startTestHearth();
   opened.push(h);
+  h.bd.issues.set("alpha-epic", {
+    id: "alpha-epic",
+    title: "Onboarding epic",
+    issue_type: "epic",
+    priority: 2,
+    status: "open",
+    labels: ["project:onboarding-alpha"],
+    created_at: "2026-10-26T00:00:00.000Z",
+    updated_at: "2026-10-26T00:00:00.000Z",
+  });
+  h.bd.answer = (args) =>
+    args[0] === "export"
+      ? {
+          status: 0,
+          stdout: [...h.bd.issues.values()]
+            .map((issue) => JSON.stringify(issue))
+            .join("\n"),
+          stderr: "",
+        }
+      : undefined;
   const request = {
     requestId: "63e76212-2d32-4fe2-ab4f-f37a4c827e31",
     expectedCatalogRevision: 0,
@@ -98,6 +118,8 @@ test("a protected project reservation preserves its exact original before projec
   expect(createProjectStore(h.home).read().projects).toEqual([]);
   expect(h.events(["operator.action"]).at(-1)?.payload).toMatchObject({
     action: "project.create.reserve",
+    family: "project-create",
+    requestId: request.requestId,
   });
 
   const original = await fetch(
@@ -115,4 +137,213 @@ test("a protected project reservation preserves its exact original before projec
     error: null,
   });
   expect(h.events(["operator.action"])).toHaveLength(1);
+  const listed = await fetch(`${h.api}/projects/create-reservations`, {
+    headers,
+  });
+  expect(listed.status).toBe(200);
+  expect(await listed.json()).toMatchObject({
+    ok: true,
+    data: {
+      complete: true,
+      operations: [
+        {
+          requestId: request.requestId,
+          state: "reserved",
+          scopeCount: 1,
+        },
+      ],
+    },
+  });
+  const publicCatalog = await fetch(`${h.api}/projects`, { headers });
+  expect(await publicCatalog.json()).toEqual({
+    ok: true,
+    data: { version: 1, revision: 0, projects: [] },
+    error: null,
+  });
+  const summary = await fetch(`${h.api}/projects/summary`, { headers });
+  const summaryText = await summary.text();
+  expect(summary.status).toBe(200);
+  expect(summaryText).not.toContain("createOperations");
+  expect(summaryText).not.toContain(request.requestId);
+  expect(summaryText).not.toContain(request.original.name);
+});
+
+test("a reserved project is committed once or explicitly retired without dropping its UUID", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  h.bd.issues.set("alpha-epic", {
+    id: "alpha-epic",
+    title: "Onboarding epic",
+    issue_type: "epic",
+    priority: 2,
+    status: "open",
+    labels: ["project:onboarding-alpha"],
+    created_at: "2026-10-26T00:00:00.000Z",
+    updated_at: "2026-10-26T00:00:00.000Z",
+  });
+  h.bd.answer = (args) =>
+    args[0] === "export"
+      ? {
+          status: 0,
+          stdout: [...h.bd.issues.values()]
+            .map((issue) => JSON.stringify(issue))
+            .join("\n"),
+          stderr: "",
+        }
+      : undefined;
+  const requestId = "21ece531-50de-4af8-aa29-e3407a1b6ff3";
+  const original = {
+    slug: "onboarding-alpha",
+    name: "Onboarding Alpha",
+    description: "",
+    icon: "A",
+    workspaces: [
+      { root: h.root, repositories: [h.root], epicIds: ["alpha-epic"] },
+    ],
+  };
+  const headers = h.headers(h.hearth.token);
+  const reserve = await fetch(`${h.api}/projects/create-reservations`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ requestId, expectedCatalogRevision: 0, original }),
+  });
+  const reserved = await reserve.json();
+  const requestHash = reserved.data.requestHash as string;
+  const scopeHash = reserved.data.scopeHash as string;
+  const commitPath = `${h.api}/projects/create-reservations/${requestId}/commit`;
+  const commitBody = JSON.stringify({
+    requestHash,
+    reviewedScopeHash: scopeHash,
+  });
+  const committed = await fetch(commitPath, {
+    method: "POST",
+    headers,
+    body: commitBody,
+  });
+  expect(committed.status).toBe(200);
+  expect(await committed.json()).toMatchObject({
+    ok: true,
+    data: { operation: { requestId, state: "created", original } },
+  });
+  const replay = await fetch(commitPath, {
+    method: "POST",
+    headers,
+    body: commitBody,
+  });
+  expect(replay.status).toBe(200);
+  expect(createProjectStore(h.home).read().projects).toHaveLength(1);
+
+  const otherId = "c2789b83-1b83-4846-9948-7e597fda1c45";
+  const retireReserve = await fetch(`${h.api}/projects/create-reservations`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      requestId: otherId,
+      expectedCatalogRevision: 1,
+      original: {
+        ...original,
+        slug: "onboarding-beta",
+        name: "Onboarding Beta",
+      },
+    }),
+  });
+  expect(retireReserve.status).toBe(201);
+  const retireData = await retireReserve.json();
+  const retired = await fetch(
+    `${h.api}/projects/create-reservations/${otherId}/retire`,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ requestHash: retireData.data.requestHash }),
+    },
+  );
+  expect(retired.status).toBe(200);
+  expect(await retired.json()).toMatchObject({
+    ok: true,
+    data: { requestId: otherId, state: "retired-before-create" },
+  });
+  const staleRetry = await fetch(`${h.api}/projects/create-reservations`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      requestId: otherId,
+      expectedCatalogRevision: 1,
+      original: {
+        ...original,
+        slug: "onboarding-beta",
+        name: "Onboarding Beta",
+      },
+    }),
+  });
+  expect(staleRetry.status).toBe(200);
+  expect(await staleRetry.json()).toMatchObject({
+    data: { requestId: otherId, state: "retired-before-create" },
+  });
+  expect(createProjectStore(h.home).read().projects).toHaveLength(1);
+});
+
+test("project create reservations preserve legacy catalogs, collide by exact UUID, and serialize slug races", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  const store = createProjectStore(h.home);
+  writeOwnerOnly(
+    join(h.home, "projects", "catalog.json"),
+    JSON.stringify({ version: 1, revision: 4, projects: [] }),
+  );
+  expect(store.read()).toEqual({ version: 1, revision: 4, projects: [] });
+  const original = {
+    slug: "concurrent-project",
+    name: "Concurrent Project",
+    description: "",
+    icon: "C",
+    workspaces: [
+      { root: h.root, repositories: [h.root], epicIds: ["alpha-epic"] },
+    ],
+  };
+  const firstId = "5a3b32b3-3e0d-4bba-a143-f7d72d6c12c4";
+  const first = await store.reserveCreate({
+    requestId: firstId,
+    original,
+    expectedCatalogRevision: 4,
+    scopeHash: "d".repeat(64),
+    scopeCount: 0,
+  });
+  expect(first.catalog.revision).toBe(4);
+  expect(store.readCreate(firstId)?.requestHash).toBe(
+    first.operation.requestHash,
+  );
+  expect(
+    store.reserveCreate({
+      requestId: firstId,
+      original: { ...original, name: "Changed original" },
+      expectedCatalogRevision: 4,
+      scopeHash: "d".repeat(64),
+      scopeCount: 0,
+    }),
+  ).rejects.toMatchObject({ status: 409 });
+
+  const contenders = await Promise.allSettled(
+    [
+      "a39713d5-39c7-4ef7-b1ea-673122ae6b91",
+      "54cf6ebf-a764-43df-8ad7-920048a98b19",
+    ].map((requestId) =>
+      store.reserveCreate({
+        requestId,
+        original: { ...original, slug: "concurrent-second" },
+        expectedCatalogRevision: 4,
+        scopeHash: "e".repeat(64),
+        scopeCount: 0,
+      }),
+    ),
+  );
+  expect(
+    contenders.filter((result) => result.status === "fulfilled"),
+  ).toHaveLength(1);
+  expect(
+    contenders.filter((result) => result.status === "rejected"),
+  ).toHaveLength(1);
+  const catalog = store.read();
+  expect(catalog.revision).toBe(4);
+  expect(catalog.createOperations).toHaveLength(2);
+  expect(catalog.projects).toEqual([]);
 });
