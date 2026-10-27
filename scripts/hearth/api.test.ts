@@ -220,6 +220,8 @@ const RUN_STATE = JSON.stringify({
 
 const API_SMITH_CREATE_ID = "dc9078cf-6200-4fed-aeb8-2be646ee7953";
 const API_CODEX_CHAT_FORK_ID = "80e40be9-e811-47c3-a71d-b988e67178a0";
+const API_CODEX_CHAT_FORK_RESERVE_ID = "808b8f84-1f86-44bf-9cf4-518c58b59a11";
+const API_CODEX_CHAT_FORK_RETIRE_ID = "808b8f84-1f86-44bf-9cf4-518c58b59a12";
 const API_CODEX_CHAT_FORK_SOURCE = {
   sessionId: "session-4b092165-2bc0-49e2-ae10-bf0b2f77c0ce",
   requestId: "22b8c0af-0446-4c9a-9c0a-3b7d6f23f5e1",
@@ -227,6 +229,14 @@ const API_CODEX_CHAT_FORK_SOURCE = {
   approvalId: "11cc8647-32c5-4278-85c6-a43fe9019842",
   threadId: "0199a213-81c0-7800-8aa1-bbab2a035a61",
   turnId: "0199a213-81c0-7800-8aa1-bbab2a035a62",
+};
+const API_CODEX_CHAT_FORK_RESERVE_SOURCE = {
+  sessionId: "session-4b092165-2bc0-49e2-ae10-bf0b2f77c0cf",
+  requestId: "22b8c0af-0446-4c9a-9c0a-3b7d6f23f5f2",
+  turnRequestId: "4ca96cdd-aab5-48e1-bde2-6f158f0b53bd",
+  approvalId: "11cc8647-32c5-4278-85c6-a43fe9019843",
+  threadId: "0199a213-81c0-7800-8aa1-bbab2a035a63",
+  turnId: "0199a213-81c0-7800-8aa1-bbab2a035a64",
 };
 const API_IDENTITY_START = {
   requestId: FIXTURE_IDENTITY_REQUEST,
@@ -1398,26 +1408,26 @@ const ACTIONS: Record<string, ActionFixture> = {
   },
   "POST /projects/:id/sessions/:sessionId/fork-reservations": {
     valid: {
-      path: `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_CODEX_CHAT_FORK_SOURCE.sessionId}/fork-reservations`,
+      path: `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_CODEX_CHAT_FORK_RESERVE_SOURCE.sessionId}/fork-reservations`,
       body: {
-        requestId: API_CODEX_CHAT_FORK_ID,
-        throughTurnRequestId: API_CODEX_CHAT_FORK_SOURCE.turnRequestId,
+        requestId: API_CODEX_CHAT_FORK_RESERVE_ID,
+        throughTurnRequestId: API_CODEX_CHAT_FORK_RESERVE_SOURCE.turnRequestId,
       },
       status: 200,
-      target: `codex-chat-fork:${FIXTURE_PROJECT_ID}:${API_CODEX_CHAT_FORK_SOURCE.sessionId}`,
+      target: `codex-chat-fork:${FIXTURE_PROJECT_ID}:${API_CODEX_CHAT_FORK_RESERVE_SOURCE.sessionId}`,
       audit: {},
     },
     invalid: {
       path: "/projects/not-a-project/sessions/not-a-session/fork-reservations",
       body: {
-        requestId: API_CODEX_CHAT_FORK_ID,
-        throughTurnRequestId: API_CODEX_CHAT_FORK_SOURCE.turnRequestId,
+        requestId: API_CODEX_CHAT_FORK_RESERVE_ID,
+        throughTurnRequestId: API_CODEX_CHAT_FORK_RESERVE_SOURCE.turnRequestId,
       },
     },
     prepare: async (h) => {
       const source = await seedForkableCodexChatSource(
           h,
-          API_CODEX_CHAT_FORK_SOURCE,
+          API_CODEX_CHAT_FORK_RESERVE_SOURCE,
         ),
         hash = codexChatForkOriginalHash(
           codexChatForkOriginalHashInput({
@@ -1425,7 +1435,7 @@ const ACTIONS: Record<string, ActionFixture> = {
             workspaceKey: source.workspace,
             parentSessionId: source.parentSessionId,
             throughTurnRequestId: source.throughTurnRequestId,
-            requestId: API_CODEX_CHAT_FORK_ID,
+            requestId: API_CODEX_CHAT_FORK_RESERVE_ID,
             protocolVersion: CODEX_CHAT_FORK_PROTOCOL_VERSION,
           }),
         );
@@ -1435,13 +1445,13 @@ const ACTIONS: Record<string, ActionFixture> = {
         {
           path: `/projects/${source.projectId}/sessions/${source.parentSessionId}/fork-reservations`,
           body: {
-            requestId: API_CODEX_CHAT_FORK_ID,
+            requestId: API_CODEX_CHAT_FORK_RESERVE_ID,
             throughTurnRequestId: source.throughTurnRequestId,
           },
           target: `codex-chat-fork:${source.projectId}:${source.parentSessionId}`,
           audit: {
             family: "codex-chat-fork",
-            requestId: API_CODEX_CHAT_FORK_ID,
+            requestId: API_CODEX_CHAT_FORK_RESERVE_ID,
             inputHash: hash,
           },
         },
@@ -1450,7 +1460,7 @@ const ACTIONS: Record<string, ActionFixture> = {
     happened: async (_h, answer) => {
       expect(answer).toMatchObject({
         family: "codex-chat-fork",
-        requestId: API_CODEX_CHAT_FORK_ID,
+        requestId: API_CODEX_CHAT_FORK_RESERVE_ID,
         state: "reserved",
       });
       expect(answer).not.toHaveProperty("sourceSeal");
@@ -1460,11 +1470,15 @@ const ACTIONS: Record<string, ActionFixture> = {
   "POST /projects/:id/sessions/:sessionId/fork-reservations/:requestId/retire":
     {
       valid: {
-        path: `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_CHAT_SESSION}/fork-reservations/${API_CODEX_CHAT_FORK_ID}/retire`,
-        body: { requestHash: "" },
+        path: `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_CHAT_SESSION}/fork-reservations/${API_CODEX_CHAT_FORK_RETIRE_ID}/retire`,
+        body: { requestHash: "d".repeat(64) },
         status: 200,
         target: `codex-chat-fork:${FIXTURE_PROJECT_ID}:${FIXTURE_CHAT_SESSION}`,
-        audit: {},
+        audit: {
+          family: "codex-chat-fork",
+          requestId: API_CODEX_CHAT_FORK_RETIRE_ID,
+          inputHash: "d".repeat(64),
+        },
       },
       invalid: {
         path: "/projects/not-a-project/sessions/not-a-session/fork-reservations/not-a-uuid/retire",
@@ -1479,7 +1493,7 @@ const ACTIONS: Record<string, ActionFixture> = {
             FIXTURE_PROJECT_ID,
             FIXTURE_CHAT_SESSION,
             {
-              requestId: API_CODEX_CHAT_FORK_ID,
+              requestId: API_CODEX_CHAT_FORK_RETIRE_ID,
               throughTurnRequestId: FIXTURE_CHAT_DECISION.turnRequestId,
             },
             {
@@ -1499,7 +1513,7 @@ const ACTIONS: Record<string, ActionFixture> = {
             body: { requestHash: original.requestHash },
             audit: {
               family: "codex-chat-fork",
-              requestId: API_CODEX_CHAT_FORK_ID,
+              requestId: API_CODEX_CHAT_FORK_RETIRE_ID,
               inputHash: original.requestHash,
             },
           },
@@ -1507,7 +1521,7 @@ const ACTIONS: Record<string, ActionFixture> = {
       },
       happened: async (_h, answer) => {
         expect(answer).toMatchObject({
-          requestId: API_CODEX_CHAT_FORK_ID,
+          requestId: API_CODEX_CHAT_FORK_RETIRE_ID,
           state: "retired",
           retiredReason: "verified-not-sent",
         });
