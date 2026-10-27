@@ -38,6 +38,7 @@ export const projectCreateOriginalSchema = z
     name: text.min(1).max(120),
     description: text.max(500),
     icon: text.min(1).max(16),
+    keeperSmith: text.min(1).optional(),
     workspaces: z
       .array(
         z

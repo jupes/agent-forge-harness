@@ -124,7 +124,8 @@ function validNew(value: unknown): value is NewProject {
     !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value["slug"]) ||
     !text(value["name"], 120) ||
     !text(value["description"], 500, true) ||
-    !text(value["icon"], 16)
+    !text(value["icon"], 16) ||
+    (Object.hasOwn(value, "keeperSmith") && !text(value["keeperSmith"], 1024))
   )
     return false;
   const scopes = value["workspaces"];
@@ -157,6 +158,7 @@ function validProject(value: unknown): value is ProjectRecord {
       "description",
       "icon",
       "workspaces",
+      "keeperSmith",
       "pinned",
       "archived",
       "createdAt",
@@ -196,6 +198,7 @@ function validCreateOperation(value: unknown): value is ProjectCreateOperation {
       "description",
       "icon",
       "workspaces",
+      "keeperSmith",
     ]) ||
     !revision(value["baseRevision"]) ||
     !digest(value["scopeHash"]) ||
@@ -405,6 +408,7 @@ export function createProjectStore(
     id: string,
     stamp: string,
   ): ProjectRecord => {
+    const { keeperSmith, ...fields } = original;
     const workspaces = original.workspaces.map((scope) => ({
       root: resolveCheckout(scope.root).workspace,
       repositories: [
@@ -415,7 +419,8 @@ export function createProjectStore(
       epicIds: [...scope.epicIds],
     }));
     return {
-      ...original,
+      ...fields,
+      ...(keeperSmith !== undefined ? { keeperSmith } : {}),
       workspaces,
       id,
       pinned: false,
@@ -462,7 +467,14 @@ export function createProjectStore(
     ): Promise<ProjectCatalog> {
       if (
         !validNew(input) ||
-        !keys(input, ["slug", "name", "description", "icon", "workspaces"])
+        !keys(input, [
+          "slug",
+          "name",
+          "description",
+          "icon",
+          "workspaces",
+          "keeperSmith",
+        ])
       )
         throw new ProjectStoreError(
           400,
@@ -561,6 +573,7 @@ export function createProjectStore(
           "description",
           "icon",
           "workspaces",
+          "keeperSmith",
         ]) ||
         !revision(input.expectedCatalogRevision) ||
         !digest(input.preflightScope?.hash) ||
