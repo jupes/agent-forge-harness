@@ -165,7 +165,11 @@ export function ProjectsHomeView({
             aria-labelledby={`project-${project.id}`}
           >
             <header>
-              <span class="af-project-tile" aria-hidden="true">
+              <span
+                class="af-project-tile"
+                data-color={project.color ?? "default"}
+                aria-hidden="true"
+              >
                 {project.icon}
               </span>
               <div>

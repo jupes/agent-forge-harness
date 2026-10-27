@@ -1,4 +1,5 @@
-import { expect, test } from "@playwright/test";
+import { expect, type Route, test } from "@playwright/test";
+import { z } from "zod";
 import { readState } from "../e2e/bd-stand-in-state";
 import { openSettled, reloadSettled } from "../e2e/fixtures";
 import { BD_STAND_IN_STATE } from "../e2e/servers";
@@ -7,6 +8,262 @@ import { alpha, beta, seedProjects } from "./project-fixtures";
 
 test.beforeEach(() => seedProjects());
 const createCalls = () => standInCalls().filter((args) => args[0] === "create");
+
+test("New bead title and description stay separate across delayed options focus", async ({
+  page,
+}) => {
+  let releaseOptions: (() => void) | undefined;
+  let markOptionsFinished: (() => void) | undefined;
+  let optionsHandlerStarted = false;
+  let optionsReadEntered = false;
+  const optionsFinished = new Promise<void>((resolve) => {
+    markOptionsFinished = resolve;
+  });
+  const heldOptions = new Promise<void>((resolve) => {
+    releaseOptions = resolve;
+  });
+  const optionsPath = "/__agent-forge/beads/options";
+  const createPath = `/__agent-forge/projects/${alpha.id}/beads`;
+  const optionsRoute = async (route: Route) => {
+    if (route.request().method() !== "GET") return route.continue();
+    optionsHandlerStarted = true;
+    try {
+      const request = route.request();
+      const requestOrigin = new URL(request.url()).origin;
+      const pageOrigin = new URL(page.url()).origin;
+      const headers = await request.allHeaders();
+      if (
+        requestOrigin !== pageOrigin ||
+        (headers.origin !== undefined && headers.origin !== requestOrigin) ||
+        (headers["sec-fetch-site"] !== undefined &&
+          headers["sec-fetch-site"] !== "same-origin")
+      )
+        throw Error(
+          "The observed options read was not an actual same-origin read.",
+        );
+      const response = await route.fetch({
+        headers: {
+          ...headers,
+          Origin: requestOrigin,
+          "Sec-Fetch-Site": "same-origin",
+        },
+      });
+      let raw: unknown;
+      try {
+        raw = await response.json();
+      } catch {
+        throw Error("The protected options read did not return valid JSON.");
+      }
+      const envelope = z
+        .object({
+          ok: z.literal(true),
+          data: z
+            .object({
+              types: z
+                .array(z.enum(["task", "feature", "bug", "chore", "epic"]))
+                .min(1)
+                .max(5),
+              priorities: z
+                .array(
+                  z
+                    .object({
+                      value: z.enum(["P0", "P1", "P2", "P3", "P4"]),
+                      tier: z.string().max(100),
+                      meaning: z.string().max(1000),
+                    })
+                    .strict(),
+                )
+                .min(1)
+                .max(5),
+              defaultPriority: z.enum(["P0", "P1", "P2", "P3", "P4"]),
+              complexities: z
+                .array(z.enum(["low", "medium", "high"]))
+                .length(3),
+              limits: z
+                .object({
+                  title: z.number().int().positive().max(200),
+                  description: z.number().int().positive().max(4000),
+                  acceptance: z.number().int().positive().max(2000),
+                  comment: z.number().int().positive().max(4000),
+                  reason: z.number().int().positive().max(1000),
+                  labels: z.number().int().positive().max(30),
+                  label: z.number().int().positive().max(100),
+                  fileMap: z.number().int().positive().max(100),
+                })
+                .strict(),
+            })
+            .strict(),
+          error: z.null(),
+        })
+        .strict()
+        .safeParse(raw);
+      if (response.status() !== 200 || !envelope.success)
+        throw Error("The protected options read could not be verified.");
+      optionsReadEntered = true;
+      await heldOptions;
+      await route.fulfill({ response });
+    } finally {
+      markOptionsFinished?.();
+    }
+  };
+  const optionsResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === "GET" &&
+      new URL(response.url()).pathname === optionsPath &&
+      response.status() === 200,
+    { timeout: 10_000 },
+  );
+  await page.route(`**${optionsPath}`, optionsRoute);
+  try {
+    await page.goto(`/index.html#/desktop/project/${alpha.id}/beads`, {
+      waitUntil: "load",
+    });
+    await expect(
+      page.getByRole("button", { name: "New bead", exact: true }),
+    ).toBeVisible();
+    await expect.poll(() => optionsReadEntered, { timeout: 10_000 }).toBe(true);
+    await page.getByRole("button", { name: "New bead", exact: true }).click();
+    const dialog = page.getByRole("dialog", { name: "New bead · Alpha" });
+    await expect(dialog.getByRole("status")).toContainText(
+      "Loading bead options",
+    );
+
+    await page.evaluate(() => {
+      const nativeRequest = window.requestAnimationFrame.bind(window);
+      const nativeCancel = window.cancelAnimationFrame.bind(window);
+      const callbacks = new Map<number, FrameRequestCallback>();
+      let nextId = 0;
+      window.requestAnimationFrame = ((callback: FrameRequestCallback) => {
+        const id = ++nextId;
+        callbacks.set(id, callback);
+        return id;
+      }) as typeof window.requestAnimationFrame;
+      window.cancelAnimationFrame = ((id: number) => {
+        callbacks.delete(id);
+      }) as typeof window.cancelAnimationFrame;
+      const target = window as typeof window & {
+        __beadFocusFrameGate?: {
+          pending(): number;
+          release(): Promise<number>;
+          restore(): void;
+        };
+      };
+      target.__beadFocusFrameGate = {
+        pending: () => callbacks.size,
+        async release() {
+          const queued = [...callbacks.values()];
+          callbacks.clear();
+          window.requestAnimationFrame = nativeRequest;
+          window.cancelAnimationFrame = nativeCancel;
+          await Promise.all(
+            queued.map(
+              (callback) =>
+                new Promise<void>((resolve) => {
+                  nativeRequest((time) => {
+                    callback(time);
+                    resolve();
+                  });
+                }),
+            ),
+          );
+          return queued.length;
+        },
+        restore() {
+          window.requestAnimationFrame = nativeRequest;
+          window.cancelAnimationFrame = nativeCancel;
+          callbacks.clear();
+        },
+      };
+    });
+    releaseOptions?.();
+    await optionsResponse;
+    const title = dialog.getByLabel("Title", { exact: true });
+    const description = dialog.getByLabel("Description", { exact: true });
+    await expect(title).toBeVisible();
+    await expect
+      .poll(
+        () =>
+          page.evaluate(
+            () =>
+              (
+                window as typeof window & {
+                  __beadFocusFrameGate?: { pending(): number };
+                }
+              ).__beadFocusFrameGate?.pending() ?? 0,
+          ),
+        { timeout: 10_000 },
+      )
+      .toBeGreaterThan(0);
+
+    await title.fill("Keep fields distinct");
+    await dialog
+      .getByRole("combobox", { name: "Parent epic", exact: true })
+      .selectOption("alpha-epic");
+    await description.fill("Preserve this");
+    const releasedFrames = await page.evaluate(
+      () =>
+        (
+          window as typeof window & {
+            __beadFocusFrameGate?: { release(): Promise<number> };
+          }
+        ).__beadFocusFrameGate?.release() ?? Promise.resolve(0),
+    );
+    expect(releasedFrames).toBeGreaterThan(0);
+    await page.keyboard.type(" separate description.");
+
+    const stateAfterRead = await dialog.evaluate((root) => {
+      const control = (labelText: string) => {
+        const label = Array.from(root.querySelectorAll("label")).find((item) =>
+          item.textContent?.trim().startsWith(labelText),
+        );
+        return (
+          label?.querySelector<HTMLInputElement | HTMLTextAreaElement>(
+            "input, textarea",
+          ) ?? null
+        );
+      };
+      const titleControl = control("Title");
+      const descriptionControl = control("Description");
+      return {
+        title: titleControl?.value ?? null,
+        description: descriptionControl?.value ?? null,
+        titleFocused: document.activeElement === titleControl,
+        descriptionFocused: document.activeElement === descriptionControl,
+      };
+    });
+    expect(stateAfterRead).toEqual({
+      title: "Keep fields distinct",
+      description: "Preserve this separate description.",
+      titleFocused: false,
+      descriptionFocused: true,
+    });
+
+    const createRequest = page.waitForRequest(
+      (request) =>
+        request.method() === "POST" &&
+        new URL(request.url()).pathname === createPath,
+    );
+    await dialog.getByRole("button", { name: "Create bead" }).click();
+    const request = await createRequest;
+    expect(request.postDataJSON()).toMatchObject({
+      title: "Keep fields distinct",
+      description: "Preserve this separate description.",
+    });
+  } finally {
+    releaseOptions?.();
+    await page
+      .evaluate(() =>
+        (
+          window as typeof window & {
+            __beadFocusFrameGate?: { restore(): void };
+          }
+        ).__beadFocusFrameGate?.restore(),
+      )
+      .catch(() => {});
+    if (optionsHandlerStarted) await optionsFinished;
+    await page.unroute(`**${optionsPath}`, optionsRoute);
+  }
+});
 
 test("rich New bead, Proposed, claim, live comment and evidence close use confirmed scoped writes", async ({
   page,

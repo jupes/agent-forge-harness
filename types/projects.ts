@@ -1,4 +1,7 @@
 /** Hearth-level project contract. Records contain metadata, never provider credentials. */
+export const PROJECT_COLOR_IDS = ["default", "green", "blue"] as const;
+export type ProjectColor = (typeof PROJECT_COLOR_IDS)[number];
+
 export interface ProjectWorkspace {
   /** Canonical ledger workspace, not a linked worktree. */
   root: string;
@@ -17,6 +20,10 @@ export interface ProjectRecord {
   description: string;
   icon: string;
   workspaces: ProjectWorkspace[];
+  /** Explicit configured Keeper choice; absent on legacy projects. */
+  keeperSmith?: string;
+  /** Optional bounded presentation token; absent on legacy projects. */
+  color?: ProjectColor;
   pinned: boolean;
   archived: boolean;
   createdAt: string;
@@ -55,7 +62,7 @@ export interface ProjectCreateOperation {
 export type NewProject = Pick<
   ProjectRecord,
   "slug" | "name" | "description" | "icon" | "workspaces"
->;
+> & { keeperSmith?: string | undefined; color?: ProjectColor | undefined };
 
 export interface ProjectPreferences {
   pinned?: boolean;

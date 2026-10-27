@@ -1,9 +1,17 @@
 import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeOwnerOnly } from "../hearth/token";
+import { resolveCheckout } from "../ledger/workspace";
+import { projectCreateOriginalSchema } from "./create-protocol";
 import {
   createProjectStore,
   hashProjectCreateRequest,
@@ -199,6 +207,334 @@ test("create identity hashes bind the UUID and expected semantic revision", asyn
     }),
   );
   expect(second.operation.requestHash).not.toBe(first.operation.requestHash);
+});
+
+test("an explicit project Keeper Smith is bound to the saved original and committed record while legacy originals stay absent", async () => {
+  const { home, store, input } = fixture();
+  const checkoutPath = join(home, "checkout");
+  mkdirSync(join(checkoutPath, ".git"), { recursive: true });
+  const checkout = resolveCheckout(checkoutPath).workspace;
+  const checkoutAlias = join(home, "checkout-alias");
+  symlinkSync(
+    checkout,
+    checkoutAlias,
+    process.platform === "win32" ? "junction" : "dir",
+  );
+  const canonicalCheckout = resolveCheckout(checkoutAlias).workspace;
+  expect(canonicalCheckout).not.toBe(checkoutAlias);
+  const original = {
+    ...input,
+    workspaces: [
+      {
+        root: canonicalCheckout,
+        repositories: [canonicalCheckout],
+        epicIds: ["demo-epic"],
+      },
+    ],
+  };
+  const requestId = "bba4e479-101f-48c4-bbb8-04f242e3d325";
+  const legacyHash = hashProjectCreateRequest({
+    requestId,
+    expectedCatalogRevision: 0,
+    original,
+  });
+  const explicitOriginal = Object.assign({}, original, {
+    keeperSmith: "claude-master",
+  });
+  const explicitHash = hashProjectCreateRequest({
+    requestId,
+    expectedCatalogRevision: 0,
+    original: explicitOriginal,
+  });
+  expect(explicitHash).not.toBe(legacyHash);
+
+  const reservation = await store.reserveCreate({
+    requestId,
+    original: explicitOriginal,
+    expectedCatalogRevision: 0,
+    preflightScope: { hash: "a".repeat(64), count: 0 },
+    validateScope: async () => ({ hash: "a".repeat(64), count: 0 }),
+  });
+  expect(reservation.operation.original).toEqual(explicitOriginal);
+  expect(reservation.operation.requestHash).toBe(explicitHash);
+  expect(createProjectStore(home).readCreate(requestId)).toEqual(
+    reservation.operation,
+  );
+
+  const committed = await store.commitCreate({
+    requestId,
+    requestHash: explicitHash,
+    reviewedScopeHash: reservation.operation.scopeHash,
+    preflightScope: { hash: reservation.operation.scopeHash, count: 0 },
+    validateScope: async () => ({
+      hash: reservation.operation.scopeHash,
+      count: 0,
+    }),
+  });
+  const committedProject = committed.catalog.projects[0];
+  expect(committedProject?.slug).toBe(original.slug);
+  expect(
+    committedProject && "keeperSmith" in committedProject
+      ? committedProject.keeperSmith
+      : undefined,
+  ).toBe("claude-master");
+  const reopenedProject = createProjectStore(home).read().projects[0];
+  expect(
+    reopenedProject && "keeperSmith" in reopenedProject
+      ? reopenedProject.keeperSmith
+      : undefined,
+  ).toBe("claude-master");
+  await expect(
+    store.reserveCreate({
+      requestId,
+      original: Object.assign({}, original, {
+        keeperSmith: "codex-journeyman",
+      }),
+      expectedCatalogRevision: 0,
+      preflightScope: { hash: "a".repeat(64), count: 0 },
+      validateScope: async () => ({ hash: "a".repeat(64), count: 0 }),
+    }),
+  ).rejects.toMatchObject({ status: 409 });
+
+  const file = projectCatalogPath(home);
+  const saved = JSON.parse(readFileSync(file, "utf8")) as {
+    projects: Array<Record<string, unknown>>;
+  };
+  saved.projects[0]!.keeperSmith = "codex-journeyman";
+  const corrupted = JSON.stringify(saved);
+  writeOwnerOnly(file, corrupted);
+  expect(() => store.read()).toThrow();
+  expect(readFileSync(file, "utf8")).toBe(corrupted);
+});
+
+test("a legacy original commits on the direct store path without a Keeper field", async () => {
+  const { home, store, input } = fixture();
+  const checkout = join(home, "checkout");
+  mkdirSync(join(checkout, ".git"), { recursive: true });
+  const checkoutAlias = join(home, "checkout-alias");
+  symlinkSync(
+    checkout,
+    checkoutAlias,
+    process.platform === "win32" ? "junction" : "dir",
+  );
+  const canonicalCheckout = resolveCheckout(checkoutAlias).workspace;
+  expect(canonicalCheckout).not.toBe(checkoutAlias);
+  const original = {
+    ...input,
+    workspaces: [
+      {
+        root: canonicalCheckout,
+        repositories: [canonicalCheckout],
+        epicIds: ["demo-epic"],
+      },
+    ],
+  };
+  const requestId = "5e091eab-8a4f-45dc-8fbb-19e9425d5c4e";
+  const reservation = await store.reserveCreate({
+    requestId,
+    original,
+    expectedCatalogRevision: 0,
+    preflightScope: { hash: "c".repeat(64), count: 0 },
+    validateScope: async () => ({ hash: "c".repeat(64), count: 0 }),
+  });
+  const committed = await store.commitCreate({
+    requestId,
+    requestHash: reservation.operation.requestHash,
+    reviewedScopeHash: reservation.operation.scopeHash,
+    preflightScope: { hash: reservation.operation.scopeHash, count: 0 },
+    validateScope: async () => ({
+      hash: reservation.operation.scopeHash,
+      count: 0,
+    }),
+  });
+  expect(committed.catalog.projects[0]?.slug).toBe(original.slug);
+  expect(
+    Object.hasOwn(committed.catalog.projects[0] ?? {}, "keeperSmith"),
+  ).toBe(false);
+});
+
+test("a legacy project create original remains byte-shape absent of Keeper selection", async () => {
+  const { home, store, input } = fixture();
+  const requestId = "b780a320-2335-4b04-b5ce-14455ac29335";
+  const legacy = await store.reserveCreate({
+    requestId,
+    original: input,
+    expectedCatalogRevision: 0,
+    preflightScope: { hash: "b".repeat(64), count: 0 },
+    validateScope: async () => ({ hash: "b".repeat(64), count: 0 }),
+  });
+  const reopened = createProjectStore(home).readCreate(requestId);
+  expect(reopened).toEqual(legacy.operation);
+  expect(Object.hasOwn(reopened?.original ?? {}, "keeperSmith")).toBe(false);
+});
+
+test("legacy project originals keep their absent color and create hash unchanged", async () => {
+  const { home, store, input } = fixture();
+  const requestId = "4b3aa122-2cf2-4edb-ae94-fcc29ff19a30";
+  const original = { ...input };
+  const hash = hashProjectCreateRequest({
+    requestId,
+    expectedCatalogRevision: 0,
+    original,
+  });
+  const reserved = await store.reserveCreate({
+    requestId,
+    original,
+    expectedCatalogRevision: 0,
+    preflightScope: { hash: "d".repeat(64), count: 1 },
+    validateScope: async () => ({ hash: "d".repeat(64), count: 1 }),
+  });
+  const bytes = readFileSync(projectCatalogPath(home), "utf8");
+  const saved = JSON.parse(bytes) as {
+    createOperations: Array<{ original: Record<string, unknown> }>;
+  };
+  const reopened = createProjectStore(home).readCreate(requestId);
+  expect(reserved.operation.requestHash).toBe(hash);
+  expect(reopened).toEqual(reserved.operation);
+  expect(reopened?.requestHash).toBe(hash);
+  expect(Object.hasOwn(reopened?.original ?? {}, "color")).toBe(false);
+  expect(saved.createOperations[0]?.original).toEqual(original);
+  expect(
+    Object.hasOwn(saved.createOperations[0]?.original ?? {}, "color"),
+  ).toBe(false);
+  expect(bytes).toBe(readFileSync(projectCatalogPath(home), "utf8"));
+
+  const fixedLegacyOriginal = {
+    slug: "alpha",
+    name: "Alpha",
+    description: "A scoped project",
+    icon: "A",
+    workspaces: [
+      {
+        root: "C:\\repo",
+        repositories: ["C:\\repo"],
+        epicIds: ["demo-epic"],
+      },
+    ],
+  };
+  expect(
+    hashProjectCreateRequest({
+      requestId,
+      expectedCatalogRevision: 0,
+      original: fixedLegacyOriginal,
+    }),
+  ).toBe("e40ff6ef46f0ebd197ef281770868f6856ffcea886763a64b458536ae371b2b2");
+});
+
+test("bounded project color IDs are hash-bound and survive exact create readback", async () => {
+  const { home, store, input } = fixture();
+  const checkoutPath = join(home, "checkout");
+  mkdirSync(join(checkoutPath, ".git"), { recursive: true });
+  const checkout = resolveCheckout(checkoutPath).workspace;
+  const base = {
+    ...input,
+    workspaces: [
+      { root: checkout, repositories: [checkout], epicIds: ["demo-epic"] },
+    ],
+  };
+  const colors = ["default", "green", "blue"] as const;
+
+  for (const [index, color] of colors.entries()) {
+    const requestId = [
+      "94111a92-01d0-42fc-a390-408e6f5515e6",
+      "a8112b0e-2334-47e2-86da-5c3603c3c428",
+      "25e8d00a-8493-4e66-9f62-2fc2ff68715e",
+    ][index]!;
+    const original = {
+      ...base,
+      slug: `alpha-${color}`,
+      name: `Alpha ${color}`,
+      color,
+    };
+    const parsed = projectCreateOriginalSchema.safeParse(original);
+    expect(parsed.success).toBe(true);
+    if (!parsed.success) continue;
+
+    const expectedCatalogRevision = store.read().revision;
+    const expectedHash = hashProjectCreateRequest({
+      requestId,
+      expectedCatalogRevision,
+      original: parsed.data,
+    });
+    if (color === "default") {
+      expect(
+        hashProjectCreateRequest({
+          requestId,
+          expectedCatalogRevision,
+          original: {
+            ...base,
+            slug: `alpha-${color}`,
+            name: `Alpha ${color}`,
+          },
+        }),
+      ).not.toBe(expectedHash);
+    }
+    const reserved = await store.reserveCreate({
+      requestId,
+      original: parsed.data,
+      expectedCatalogRevision,
+      preflightScope: { hash: "e".repeat(64), count: 1 },
+      validateScope: async () => ({ hash: "e".repeat(64), count: 1 }),
+    });
+    expect(reserved.operation.original).toMatchObject({ color });
+    expect(reserved.operation.requestHash).toBe(expectedHash);
+
+    const committed = await store.commitCreate({
+      requestId,
+      requestHash: expectedHash,
+      reviewedScopeHash: reserved.operation.scopeHash,
+      preflightScope: { hash: reserved.operation.scopeHash, count: 1 },
+      validateScope: async () => ({
+        hash: reserved.operation.scopeHash,
+        count: 1,
+      }),
+    });
+    expect(committed.catalog.projects.at(-1)).toMatchObject({ color });
+    expect(createProjectStore(home).readCreate(requestId)).toMatchObject({
+      original: { color },
+      requestHash: expectedHash,
+      state: "created",
+    });
+    expect(createProjectStore(home).read().projects.at(-1)).toMatchObject({
+      color,
+    });
+    await expect(
+      store.reserveCreate({
+        requestId,
+        original: {
+          ...base,
+          slug: `alpha-${color}`,
+          name: `Alpha ${color}`,
+          color: color === "green" ? "blue" : "green",
+        },
+        expectedCatalogRevision,
+        preflightScope: { hash: "e".repeat(64), count: 1 },
+        validateScope: async () => ({ hash: "e".repeat(64), count: 1 }),
+      }),
+    ).rejects.toMatchObject({ status: 409 });
+  }
+
+  const file = projectCatalogPath(home);
+  const saved = JSON.parse(readFileSync(file, "utf8")) as {
+    projects: Array<Record<string, unknown>>;
+  };
+  saved.projects[0]!.color = "blue";
+  const corrupted = JSON.stringify(saved);
+  writeOwnerOnly(file, corrupted);
+  expect(() => store.read()).toThrow();
+  expect(readFileSync(file, "utf8")).toBe(corrupted);
+});
+
+test("project color protocol rejects arbitrary CSS and unknown token names", () => {
+  const { input } = fixture();
+  expect(
+    projectCreateOriginalSchema.safeParse({ ...input, color: "#dcf1e6" })
+      .success,
+  ).toBe(false);
+  expect(
+    projectCreateOriginalSchema.safeParse({ ...input, color: "purple" })
+      .success,
+  ).toBe(false);
 });
 
 test("project catalog preferences preserve pending create originals without advancing their metadata revision", async () => {

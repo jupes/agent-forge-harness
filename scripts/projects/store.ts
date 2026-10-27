@@ -3,11 +3,13 @@ import { isAbsolute, join } from "node:path";
 import type {
   NewProject,
   ProjectCatalog,
+  ProjectColor,
   ProjectCreateOperation,
   ProjectPreferences,
   ProjectRecord,
   ProjectWorkspace,
 } from "../../types/projects";
+import { PROJECT_COLOR_IDS } from "../../types/projects";
 import { comparableCheckout } from "../forge/runs";
 import {
   ensurePrivateHome,
@@ -76,6 +78,9 @@ const requestId = (value: unknown): value is string =>
   );
 const digest = (value: unknown): value is string =>
   typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+const projectColor = (value: unknown): value is ProjectColor =>
+  typeof value === "string" &&
+  PROJECT_COLOR_IDS.some((candidate) => candidate === value);
 
 function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
@@ -124,7 +129,10 @@ function validNew(value: unknown): value is NewProject {
     !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(value["slug"]) ||
     !text(value["name"], 120) ||
     !text(value["description"], 500, true) ||
-    !text(value["icon"], 16)
+    !text(value["icon"], 16) ||
+    (Object.hasOwn(value, "keeperSmith") &&
+      !text(value["keeperSmith"], 1024)) ||
+    (Object.hasOwn(value, "color") && !projectColor(value["color"]))
   )
     return false;
   const scopes = value["workspaces"];
@@ -157,6 +165,8 @@ function validProject(value: unknown): value is ProjectRecord {
       "description",
       "icon",
       "workspaces",
+      "keeperSmith",
+      "color",
       "pinned",
       "archived",
       "createdAt",
@@ -196,6 +206,8 @@ function validCreateOperation(value: unknown): value is ProjectCreateOperation {
       "description",
       "icon",
       "workspaces",
+      "keeperSmith",
+      "color",
     ]) ||
     !revision(value["baseRevision"]) ||
     !digest(value["scopeHash"]) ||
@@ -280,6 +292,12 @@ export function parseProjectCatalog(value: unknown): ProjectCatalog {
             project.name === item.original.name &&
             project.description === item.original.description &&
             project.icon === item.original.icon &&
+            Object.hasOwn(project, "keeperSmith") ===
+              Object.hasOwn(item.original, "keeperSmith") &&
+            project.keeperSmith === item.original.keeperSmith &&
+            Object.hasOwn(project, "color") ===
+              Object.hasOwn(item.original, "color") &&
+            project.color === item.original.color &&
             originalScope !== undefined &&
             createdScope !== undefined &&
             comparableCheckout(createdScope.root) ===
@@ -405,6 +423,7 @@ export function createProjectStore(
     id: string,
     stamp: string,
   ): ProjectRecord => {
+    const { color, keeperSmith, ...fields } = original;
     const workspaces = original.workspaces.map((scope) => ({
       root: resolveCheckout(scope.root).workspace,
       repositories: [
@@ -415,7 +434,9 @@ export function createProjectStore(
       epicIds: [...scope.epicIds],
     }));
     return {
-      ...original,
+      ...fields,
+      ...(keeperSmith !== undefined ? { keeperSmith } : {}),
+      ...(color !== undefined ? { color } : {}),
       workspaces,
       id,
       pinned: false,
@@ -462,7 +483,15 @@ export function createProjectStore(
     ): Promise<ProjectCatalog> {
       if (
         !validNew(input) ||
-        !keys(input, ["slug", "name", "description", "icon", "workspaces"])
+        !keys(input, [
+          "slug",
+          "name",
+          "description",
+          "icon",
+          "workspaces",
+          "keeperSmith",
+          "color",
+        ])
       )
         throw new ProjectStoreError(
           400,
@@ -547,6 +576,7 @@ export function createProjectStore(
       expectedCatalogRevision: number;
       preflightScope: { hash: string; count: number };
       validateScope(): Promise<{ hash: string; count: number }>;
+      validateKeeperSmith?(name: string): void;
     }): Promise<{
       catalog: ProjectCatalog;
       operation: ProjectCreateOperation;
@@ -561,6 +591,8 @@ export function createProjectStore(
           "description",
           "icon",
           "workspaces",
+          "keeperSmith",
+          "color",
         ]) ||
         !revision(input.expectedCatalogRevision) ||
         !digest(input.preflightScope?.hash) ||
@@ -630,6 +662,8 @@ export function createProjectStore(
             400,
             "Choose each canonical project repository only once.",
           );
+        if (input.original.keeperSmith !== undefined)
+          input.validateKeeperSmith?.(input.original.keeperSmith);
         const scope = await input.validateScope();
         if (
           !digest(scope.hash) ||
@@ -711,6 +745,7 @@ export function createProjectStore(
       reviewedScopeHash: string;
       preflightScope: { hash: string; count: number };
       validateScope(): Promise<{ hash: string; count: number }>;
+      validateKeeperSmith?(name: string): void;
     }): Promise<{
       catalog: ProjectCatalog;
       operation: ProjectCreateOperation;
@@ -766,6 +801,8 @@ export function createProjectStore(
             409,
             "A project already uses that slug. Check the saved original before continuing.",
           );
+        if (found.original.keeperSmith !== undefined)
+          input.validateKeeperSmith?.(found.original.keeperSmith);
         const scope = await input.validateScope();
         if (
           !digest(scope.hash) ||

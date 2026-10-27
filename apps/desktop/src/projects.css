@@ -68,6 +68,14 @@
   height: 36px;
   flex-shrink: 0;
 }
+.af-project-tile[data-color="green"] {
+  background: #dcf1e6;
+  color: #1f6b4a;
+}
+.af-project-tile[data-color="blue"] {
+  background: #dbe5ff;
+  color: #3558c4;
+}
 .af-project-queue,
 .af-project-card footer {
   display: flex;

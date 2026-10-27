@@ -420,6 +420,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
   } = projectRoutes(deps.projectHome, {
     root: deps.root,
     workspace: deps.workspace,
+    ...(deps.configHome !== undefined ? { configHome: deps.configHome } : {}),
     ...(deps.projectRepositoryRegistryRoot === undefined
       ? {}
       : { projectRepositoryRegistryRoot: deps.projectRepositoryRegistryRoot }),

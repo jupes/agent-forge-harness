@@ -421,6 +421,80 @@ test("first-run, corrupt store and filtered-empty states stay distinct", async (
   await expect(page).toHaveURL(new RegExp(`/project/${alpha.id}/overview$`));
 });
 
+test("project color IDs keep their paired tile styles after reload without a write", async ({
+  page,
+}) => {
+  const projects = [
+    alpha,
+    projectFixture(workspace, { ...beta, color: "default" }),
+    projectFixture(workspace, {
+      id: "project-c5832fa0-7a21-403b-8184-44892f0d8d86",
+      slug: "green",
+      name: "Green",
+      color: "green",
+    }),
+    projectFixture(workspace, {
+      id: "project-d5832fa0-7a21-403b-8184-44892f0d8d86",
+      slug: "blue",
+      name: "Blue",
+      color: "blue",
+    }),
+  ];
+  writeFileSync(
+    catalogFile,
+    JSON.stringify({ version: 1, revision: 4, projects }),
+  );
+  const posts: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() !== "POST") return;
+    const path = new URL(request.url()).pathname;
+    if (path.startsWith("/__agent-forge/projects")) posts.push(path);
+  });
+
+  await openSettled(page, "/index.html#/desktop/projects");
+  const styles = async () => {
+    const result: Record<string, { background: string; foreground: string }> =
+      {};
+    for (const name of ["Alpha", "Beta", "Green", "Blue"]) {
+      const tile = page
+        .getByRole("article", { name, exact: true })
+        .locator(".af-project-tile");
+      await expect(tile).toBeVisible();
+      result[name] = await tile.evaluate((element) => {
+        const style = getComputedStyle(element);
+        return { background: style.backgroundColor, foreground: style.color };
+      });
+    }
+    return result;
+  };
+  const beforeReload = await styles();
+  expect(beforeReload).toEqual({
+    Alpha: {
+      background: "rgb(53, 57, 78)",
+      foreground: "rgb(233, 233, 237)",
+    },
+    Beta: {
+      background: "rgb(53, 57, 78)",
+      foreground: "rgb(233, 233, 237)",
+    },
+    Green: {
+      background: "rgb(220, 241, 230)",
+      foreground: "rgb(31, 107, 74)",
+    },
+    Blue: {
+      background: "rgb(219, 229, 255)",
+      foreground: "rgb(53, 88, 196)",
+    },
+  });
+
+  await reloadSettled(page);
+  expect(await styles()).toEqual(beforeReload);
+  await page
+    .locator(".af-projects-grid")
+    .screenshot({ path: test.info().outputPath("project-colors.png") });
+  expect(posts).toEqual([]);
+});
+
 test("a pending post cannot be unlocked by checking early or double clicking", async ({
   page,
 }) => {

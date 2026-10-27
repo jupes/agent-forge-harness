@@ -1,11 +1,27 @@
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { expect, type Route, test } from "@playwright/test";
-import type { ConversationState } from "../../types/conversation";
+import { expect, type Page, type Route, test } from "@playwright/test";
+import {
+  conversationReceiptSchema,
+  parseConversationSend,
+} from "../../scripts/conversations/protocol";
+import type {
+  ConversationSend,
+  ConversationState,
+} from "../../types/conversation";
+import type { OperatorEnvelope, SmithsView } from "../../types/hearth";
 import type { KeeperRecoveryPage } from "../../types/keeper-recovery";
-import { openSettled } from "../e2e/fixtures";
+import type { ProjectCatalog } from "../../types/projects";
+import { openSettled, reloadSettled } from "../e2e/fixtures";
 import { HEARTH_HOME } from "../e2e/servers";
-import { alpha, beta, seedKeeper, seedProjects } from "./project-fixtures";
+import {
+  alpha,
+  beta,
+  catalog,
+  catalogFile,
+  seedKeeper,
+  seedProjects,
+} from "./project-fixtures";
 
 const journal = (id: string) =>
   join(HEARTH_HOME, "conversations", `keeper-${id}.json`);
@@ -41,8 +57,35 @@ function record(): { argv: string[]; input: { message: string } } {
     throw new Error("Fake CLI recording is unavailable");
   }
 }
+async function sendExactKeeperTurn(page: Page, text: string) {
+  await page.getByRole("textbox", { name: "Message the Keeper" }).fill(text);
+  const path = `/__agent-forge/projects/${alpha.id}/keeper/turns`;
+  const posted = page.waitForRequest(
+    (request) =>
+      request.method() === "POST" && new URL(request.url()).pathname === path,
+  );
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  const request = await posted;
+  const input: ConversationSend = parseConversationSend(request.postDataJSON());
+  expect(input.text).toBe(text);
+  const response = await request.response();
+  if (!response) throw new Error("The exact Keeper turn POST had no response.");
+  expect(response.status()).toBe(202);
+  const envelope = (await response.json()) as OperatorEnvelope<unknown>;
+  if (!envelope.ok) throw new Error(`Keeper turn refused: ${envelope.error}`);
+  const receipt = conversationReceiptSchema.parse(envelope.data);
+  expect(receipt.turn.requestId).toBe(input.requestId);
+  await expect
+    .poll(
+      () =>
+        state().turns.find((turn) => turn.requestId === input.requestId)?.phase,
+    )
+    .toBe("completed");
+  return input.requestId;
+}
 test.beforeEach(() => {
   seedProjects();
+  rmSync(join(HEARTH_HOME, "config.toml"), { force: true });
   writeFileSync(
     join(HEARTH_HOME, "keeper-fixture-mode.json"),
     JSON.stringify("normal"),
@@ -69,6 +112,142 @@ test.afterEach(async () => {
       ),
     )
     .toBe(false);
+});
+
+function selectProjectSmith(name: string): void {
+  const updated: ProjectCatalog = {
+    ...catalog,
+    projects: catalog.projects.map((project) =>
+      project.id === alpha.id ? { ...project, keeperSmith: name } : project,
+    ),
+  };
+  writeFileSync(catalogFile, JSON.stringify(updated));
+}
+
+test("project Keeper Smith overrides the global default until an explicit saved conversation choice takes priority", async ({
+  page,
+}) => {
+  writeFileSync(
+    join(HEARTH_HOME, "config.toml"),
+    '[workflow]\ndefault_crew = "claude-journeyman"\n[smiths.claude-project-choice]\nprovider = "claude"\nmodel = "fixture-project-choice-model"\neffort = "medium"\nenabled = true\n',
+  );
+  selectProjectSmith("claude-master");
+  const before = state(),
+    beforeStarts = starts();
+  await openSettled(page, `/index.html#/desktop/project/${alpha.id}/keeper`);
+  const defaultRead = await page.evaluate(async () => {
+    const response = await fetch("/__agent-forge/smiths");
+    return { status: response.status, body: await response.json() };
+  });
+  expect(defaultRead.status).toBe(200);
+  expect(defaultRead.body as OperatorEnvelope<SmithsView>).toMatchObject({
+    ok: true,
+    data: { defaultSmith: "claude-journeyman" },
+  });
+  await expect(
+    page.getByRole("button", { name: "claude-master", exact: true }),
+  ).toBeVisible();
+  await page
+    .getByRole("button", { name: "claude-master", exact: true })
+    .click();
+  await expect(
+    page.getByRole("combobox", { name: "Keeper smith" }),
+  ).toHaveValue("claude-master");
+  expect(state()).toEqual(before);
+  expect(starts()).toBe(beforeStarts);
+
+  await reloadSettled(page);
+  await expect(
+    page.getByRole("button", { name: "claude-master", exact: true }),
+  ).toBeVisible();
+  expect(state()).toEqual(before);
+  expect(starts()).toBe(beforeStarts);
+
+  await sendExactKeeperTurn(page, "Use the project's explicit Smith");
+  expect(starts()).toBe(beforeStarts + 1);
+  expect(record().argv).toContain("claude-opus-5-5");
+
+  await page
+    .getByRole("button", { name: "claude-master", exact: true })
+    .click();
+  await page
+    .getByRole("combobox", { name: "Keeper smith" })
+    .selectOption("claude-project-choice");
+  await page.getByRole("button", { name: "Use selected smith" }).click();
+  await expect(
+    page.getByText(
+      "Smith changed. The same provider conversation and saved history are retained. No turn was started.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await reloadSettled(page);
+  await expect(
+    page.getByRole("button", { name: "claude-project-choice", exact: true }),
+  ).toBeVisible();
+  expect(starts()).toBe(beforeStarts + 1);
+  await sendExactKeeperTurn(page, "Keep the saved conversation Smith");
+  expect(starts()).toBe(beforeStarts + 2);
+  expect(record().argv).toContain("fixture-project-choice-model");
+  expect(state().frames).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        event: expect.objectContaining({
+          kind: "process",
+          smith: "claude-project-choice",
+        }),
+      }),
+    ]),
+  );
+});
+
+test("missing and disabled explicit project Smiths stay unavailable without fallback or a send", async ({
+  page,
+}) => {
+  const before = state(),
+    beforeStarts = starts();
+  let turnPosts = 0;
+  await page.route("**/keeper/turns", async (route) => {
+    if (route.request().method() === "POST") turnPosts++;
+    await route.continue();
+  });
+
+  selectProjectSmith("project-smith-is-missing");
+  await openSettled(page, `/index.html#/desktop/project/${alpha.id}/keeper`);
+  await expect(
+    page.getByRole("button", { name: "project-smith-is-missing", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText(
+      "The selected smith is missing or its configuration could not be read. Choose an enabled smith after rechecking.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Send", exact: true }),
+  ).toBeDisabled();
+  expect(starts()).toBe(beforeStarts);
+  expect(turnPosts).toBe(0);
+  expect(state().turns).toEqual(before.turns);
+
+  await page.goto("about:blank");
+  writeFileSync(
+    join(HEARTH_HOME, "config.toml"),
+    '[workflow]\ndefault_crew = "claude-journeyman"\n[smiths.claude-master]\nenabled = false\n',
+  );
+  selectProjectSmith("claude-master");
+  await openSettled(page, `/index.html#/desktop/project/${alpha.id}/keeper`);
+  await expect(
+    page.getByRole("button", { name: "claude-master", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Keeper unavailable", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Send", exact: true }),
+  ).toBeDisabled();
+  expect(starts()).toBe(beforeStarts);
+  expect(turnPosts).toBe(0);
+  expect(state().turns).toEqual(before.turns);
 });
 
 test("a signed-out Keeper switches only on explicit confirmation, reconciles a lost answer, and shares selection with the drawer", async ({

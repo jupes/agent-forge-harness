@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { PROJECT_COLOR_IDS } from "../../types/projects";
 
 if (typeof window !== "undefined") z.config({ jitless: true });
 
@@ -38,6 +39,8 @@ export const projectCreateOriginalSchema = z
     name: text.min(1).max(120),
     description: text.max(500),
     icon: text.min(1).max(16),
+    keeperSmith: text.min(1).optional(),
+    color: z.enum(PROJECT_COLOR_IDS).optional(),
     workspaces: z
       .array(
         z
