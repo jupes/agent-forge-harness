@@ -11,7 +11,12 @@ import "./projects.css";
 import type { ProviderReadinessPage } from "../../../types/provider-readiness";
 import { ProjectKeeperLine } from "./KeeperBrief";
 import type { KeeperClient } from "./keeper-client";
+import { ProjectCreateFlow } from "./ProjectCreateFlow";
 import { ProviderUsageStrip } from "./Providers";
+import type {
+  createProjectCreateOwner,
+  ProjectCreateState,
+} from "./project-create-owner";
 
 export interface ProjectsHomeProps {
   providers?: ProviderReadinessPage | null;
@@ -23,6 +28,9 @@ export interface ProjectsHomeProps {
   held: boolean;
   writesAllowed: boolean;
   keeper?: KeeperClient;
+  projectCreate: ProjectCreateState;
+  projectCreateOwner: ReturnType<typeof createProjectCreateOwner>;
+  canCreateProject: boolean;
   reload(): void;
   change(id: string, patch: ProjectPreferences): Promise<void>;
 }
@@ -49,6 +57,9 @@ export function ProjectsHomeView({
   held,
   writesAllowed,
   keeper,
+  projectCreate,
+  projectCreateOwner,
+  canCreateProject,
   reload,
   change,
   filter,
@@ -149,7 +160,7 @@ export function ProjectsHomeView({
       {!home.catalog.projects.length ? (
         <EmptyState
           title="Welcome to Agent Forge"
-          hint="Your projects will appear here. Project creation is not available in this build."
+          hint="Create a reviewed project to open its Overview. Creating a project does not start a Keeper conversation."
         />
       ) : cards.length === 0 ? (
         <EmptyState
@@ -329,14 +340,11 @@ export function ProjectsHomeView({
             </footer>
           </article>
         ))}
-        <div class="af-project-new">
-          <Button
-            disabled
-            title="Project creation is not available in this build"
-          >
-            New project
-          </Button>
-        </div>
+        <ProjectCreateFlow
+          state={projectCreate}
+          owner={projectCreateOwner}
+          canWrite={canCreateProject}
+        />
       </section>
       <section aria-label="Subscriptions" class="af-projects-subscriptions">
         <ProviderUsageStrip
