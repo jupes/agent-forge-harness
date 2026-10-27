@@ -6,10 +6,12 @@ const argv = process.argv.slice(2),
 const mode = process.env.CODEX_CHAT_MODE;
 const serviceTierAwareMode =
     mode === "service-tier-null" ||
+    mode === "fork-approval-command" ||
     mode === "fork-service-tier-null" ||
     mode === "fork-service-tier-priority" ||
     mode === "fork-child-lost-turn-reply",
   forkServiceTierResumeMode =
+    mode === "fork-approval-command" ||
     mode === "fork-service-tier-null" ||
     mode === "fork-service-tier-priority" ||
     mode === "fork-child-lost-turn-reply",
@@ -995,6 +997,7 @@ while (true) {
           });
       } else if (
         mode?.startsWith("approval-command") ||
+        mode === "fork-approval-command" ||
         mode === "approval-conflict" ||
         mode === "approval-resolved" ||
         mode === "approval-stale" ||

@@ -825,7 +825,7 @@ test("a linked Codex Fork child accepts a turn through its dedicated action", as
 });
 
 test("Fork child approvals use dedicated controls after the parent prefix is unavailable", async () => {
-  const f = await fixture("approval-command"),
+  const f = await fixture("fork-approval-command"),
     { parentSessionId, childSessionId } = await createApprovedFork(f);
   const genericRead = await fetch(
       `${f.h.api}/projects/${FIXTURE_PROJECT_ID}/sessions/${childSessionId}/approvals`,
@@ -942,7 +942,7 @@ test("Fork child approvals use dedicated controls after the parent prefix is una
 });
 
 test("Fork-specific Stop aborts only the owned child turn without parent history", async () => {
-  const f = await fixture("approval-command"),
+  const f = await fixture("fork-approval-command"),
     { parentSessionId, childSessionId } = await createApprovedFork(f),
     childTurn = {
       requestId: randomUUID(),
