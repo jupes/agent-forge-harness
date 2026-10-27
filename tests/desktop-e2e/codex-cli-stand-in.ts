@@ -39,7 +39,15 @@ export async function runCodexStandIn() {
   } catch {
     /* Explicit fixture mode is optional. */
   }
-  if (!["normal", "hang", "provider-error", "rich"].includes(String(mode)))
+  if (
+    ![
+      "normal",
+      "hang",
+      "provider-error",
+      "rich",
+      "capability-probe-failure",
+    ].includes(String(mode))
+  )
     throw Error("Unknown isolated Codex fixture mode.");
   const id = randomUUID();
   const childPid =
@@ -63,9 +71,10 @@ export async function runCodexStandIn() {
     }) + "\n",
   );
   if (kind === "version") console.log("codex-cli 0.163.0-alpha.10.2");
-  else if (kind === "help")
+  else if (kind === "help") {
+    if (mode === "capability-probe-failure") process.exit(7);
     console.log("--json --color --sandbox --model --cd --config");
-  else if (kind === "status")
+  } else if (kind === "status")
     console.log("Logged in using fixture credentials");
   else if (kind === "task") {
     const emit = (value: Record<string, unknown>) =>

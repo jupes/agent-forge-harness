@@ -1,6 +1,12 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { expect, type Locator, type Page, test } from "@playwright/test";
+import {
+  expect,
+  type Locator,
+  type Page,
+  type Response,
+  test,
+} from "@playwright/test";
 import { z } from "zod";
 import { OPERATOR_HEADER } from "../../scripts/hearth/paths";
 import { ownedCodingStateSchema } from "../../scripts/sessions/codex-owned-journal";
@@ -63,6 +69,15 @@ function journal(id: string) {
     throw Error("The isolated private Task journal is unavailable.");
   }
 }
+function journalIfPresent(id: string) {
+  const path = join(HEARTH_HOME, "conversations", `${id}.json`);
+  if (!existsSync(path)) return null;
+  try {
+    return ownedCodingStateSchema.parse(JSON.parse(readFileSync(path, "utf8")));
+  } catch {
+    throw Error("The isolated private Task journal is invalid.");
+  }
+}
 const tasks = () => calls().filter((call) => call.kind === "task");
 const alive = (pid: number) => {
   try {
@@ -84,7 +99,9 @@ test.beforeEach(() => {
 test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: "ignoreErrors" });
   for (const record of records().filter((record) => !previous.has(record.id))) {
-    const turn = journal(record.id).turns.find((item) =>
+    const state = journalIfPresent(record.id);
+    if (!state) continue;
+    const turn = state.turns.find((item) =>
       ["accepted", "running", "cancelling"].includes(item.phase),
     );
     if (!turn) continue;
@@ -662,6 +679,178 @@ test("a reserved Start after reload continues only after exact same-UUID body re
   ).toContainText("Codex Task reply 🌱");
   expect(starts).toHaveLength(2);
   expect(starts[1]).toEqual(original);
+  expect(tasks()).toHaveLength(before + 1);
+});
+
+test("a durable pre-dispatch NotSent Start retries only by explicit same-UUID re-entry", async ({
+  page,
+}) => {
+  const before = tasks().length;
+  await openSettled(page, `/index.html#/desktop/project/${alpha.id}/sessions`);
+  const dialog = await checkDefault(
+    page,
+    "Retry only the durably not-sent original",
+  );
+  const starts: CodexTaskStartRequest[] = [];
+  const startStatuses: number[] = [];
+  let identityReads = 0,
+    identityWrites = 0;
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    const identityPath = `/__agent-forge/projects/${alpha.id}/session-start-identities`;
+    if (url.pathname === identityPath && request.method() === "GET")
+      identityReads++;
+    if (url.pathname === identityPath && request.method() === "POST")
+      identityWrites++;
+    if (request.method() !== "POST") return;
+    if (url.pathname === `/__agent-forge/projects/${alpha.id}/sessions`) {
+      const parsed = codexTaskStartSchema.safeParse(request.postDataJSON());
+      if (!parsed.success) throw Error("Invalid Codex Task Start fixture.");
+      starts.push(parsed.data);
+    }
+  });
+  page.on("response", (response) => {
+    const url = new URL(response.url());
+    if (
+      url.pathname === `/__agent-forge/projects/${alpha.id}/sessions` &&
+      response.request().method() === "POST"
+    )
+      startStatuses.push(response.status());
+  });
+
+  // The preview already succeeded with the normal inert CLI. The real Start
+  // path re-prepares after reserving; make that bounded help probe refuse before
+  // any native Task process can be dispatched.
+  writeFileSync(
+    join(HEARTH_HOME, "codex-fixture-mode.json"),
+    JSON.stringify("capability-probe-failure"),
+  );
+  await dialog.getByRole("button", { name: "Start", exact: true }).click();
+  await expect.poll(() => starts.length).toBe(1);
+  const row = dialog.locator(".af-start-identities-list li").filter({
+    hasText: starts[0]?.requestId ?? "",
+  });
+  await expect(row).toContainText("codex task · not-sent");
+  const original = starts[0];
+  if (!original) throw Error("Missing original Codex Task Start request.");
+  const originalHash = await row.locator("code").nth(1).textContent();
+  expect(originalHash).toMatch(/^[0-9a-f]{64}$/);
+  expect(identityWrites).toBe(1);
+  expect(starts).toHaveLength(1);
+  expect(startStatuses).toEqual([503]);
+  expect(tasks()).toHaveLength(before);
+
+  // Only the explicit operator retry restores fixture capability. A background
+  // refresh alone must not dispatch the retained Start.
+  writeFileSync(
+    join(HEARTH_HOME, "codex-fixture-mode.json"),
+    JSON.stringify("normal"),
+  );
+  await expect(
+    row.getByRole("button", { name: "Retry exact original", exact: true }),
+  ).toBeEnabled();
+  const admittedReads: Array<
+      Promise<{
+        status: number;
+        page: z.infer<typeof sessionStartIdentityPageSchema>;
+      } | null>
+    > = [],
+    onIdentityResponse = (response: Response) => {
+      const url = new URL(response.url());
+      if (
+        response.request().method() !== "GET" ||
+        url.pathname !==
+          `/__agent-forge/projects/${alpha.id}/session-start-identities`
+      )
+        return;
+      admittedReads.push(
+        (async () => {
+          try {
+            const parsed = sessionStartIdentitySuccessEnvelopeSchema.safeParse(
+              await response.json(),
+            );
+            return parsed.success
+              ? { status: response.status(), page: parsed.data.data }
+              : null;
+          } catch {
+            return null;
+          }
+        })(),
+      );
+    };
+  const matchesAdmittedRead = (
+    snapshot: Awaited<(typeof admittedReads)[number]>,
+  ) =>
+    snapshot?.status === 200 &&
+    snapshot.page.scope.projectId === alpha.id &&
+    snapshot.page.scope.workspace === workspace &&
+    snapshot.page.identities.some(
+      (identity) =>
+        identity.requestId === original.requestId &&
+        identity.requestHash === originalHash &&
+        identity.provider === "codex" &&
+        identity.mode === "task" &&
+        identity.state === "admitted",
+    );
+  page.on("response", onIdentityResponse);
+  try {
+    await row
+      .getByRole("button", { name: "Retry exact original", exact: true })
+      .click();
+    await expect
+      .poll(async () => {
+        return (await Promise.all(admittedReads)).some(matchesAdmittedRead);
+      })
+      .toBe(true);
+  } finally {
+    page.off("response", onIdentityResponse);
+  }
+  const admittedSnapshot = (await Promise.all(admittedReads)).find(
+    matchesAdmittedRead,
+  );
+  if (!admittedSnapshot)
+    throw Error("The retried Start admission was not read back.");
+  const admittedPage = admittedSnapshot.page;
+  const admittedIdentity = admittedPage.identities.find(
+    (identity) => identity.requestId === original.requestId,
+  );
+  expect(admittedIdentity).toMatchObject({
+    requestId: original.requestId,
+    requestHash: originalHash,
+    provider: "codex",
+    mode: "task",
+    state: "admitted",
+  });
+  await expect(
+    page.getByRole("article", { name: "Session reply", exact: true }),
+  ).toContainText("Codex Task reply 🌱");
+
+  expect(starts).toHaveLength(2);
+  expect(startStatuses).toEqual([503, 202]);
+  expect(starts[1]).toEqual(original);
+  expect(starts[1]?.requestId).toBe(original.requestId);
+  expect(identityWrites).toBe(2);
+  await expect.poll(() => tasks().length).toBe(before + 1);
+
+  // A successful Start's protected readback above proves admission. Reopening
+  // shows that already-verified projection without requiring a redundant GET.
+  await page.getByRole("button", { name: "New session", exact: true }).click();
+  const reopened = page.getByRole("dialog", {
+    name: "New session · Alpha",
+    exact: true,
+  });
+  const admittedRow = reopened
+    .locator(".af-start-identities-list li")
+    .filter({ hasText: original.requestId });
+  await expect(admittedRow).toContainText("codex task · admitted");
+  await expect(admittedRow.locator("code").nth(1)).toHaveText(
+    originalHash ?? "",
+  );
+  expect(identityWrites).toBe(2);
+  expect(starts).toHaveLength(2);
+  await reopened.getByRole("button", { name: "Cancel", exact: true }).click();
+  expect(identityWrites).toBe(2);
+  expect(starts).toHaveLength(2);
   expect(tasks()).toHaveLength(before + 1);
 });
 
