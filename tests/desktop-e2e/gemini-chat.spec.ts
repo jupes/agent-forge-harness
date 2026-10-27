@@ -927,15 +927,58 @@ test("a fresh synchronous edit after Chat preview cannot reserve or dispatch an 
   mode("normal");
   const before = promptCount(),
     dialog = await openComposer(page);
-  await check(dialog);
-  let posts = 0;
+  let posts = 0,
+    identityPosts = 0,
+    startBodies: unknown[] = [];
   page.on("request", (request) => {
-    if (
-      request.method() === "POST" &&
-      request.url().endsWith(`/projects/${alpha.id}/sessions`)
-    )
+    if (request.method() !== "POST") return;
+    const url = new URL(request.url());
+    if (url.pathname.endsWith("/session-start-identities")) identityPosts++;
+    if (url.pathname.endsWith(`/projects/${alpha.id}/sessions`)) {
       posts++;
+      try {
+        startBodies.push(request.postDataJSON());
+      } catch {
+        throw Error("The actual session Start body was not valid JSON.");
+      }
+    }
   });
+  const identityRead = await verifiedIdentityReadBarrier(page),
+    checkingIdentity = dialog
+      .getByRole("region", { name: "Original Start requests", exact: true })
+      .getByRole("status"),
+    start = dialog.getByRole("button", { name: "Start", exact: true });
+  identityRead.arm();
+  try {
+    const previewResponse = page.waitForResponse(
+      (response) =>
+        response.request().method() === "POST" &&
+        response.url().endsWith(`/projects/${alpha.id}/sessions/preview`),
+    );
+    await dialog
+      .getByRole("button", { name: "Check supported options", exact: true })
+      .click();
+    await expect(
+      dialog.getByRole("region", {
+        name: "Equivalent session command",
+        exact: true,
+      }),
+    ).toContainText("--acp");
+    const response = await previewResponse;
+    expect(response.status()).toBe(200);
+    await expect.poll(identityRead.held).toBe(true);
+    await expect(checkingIdentity).toContainText(
+      "Checking the server-owned identity page",
+    );
+    await expect(start).toBeDisabled();
+    expect(posts).toBe(0);
+    expect(identityPosts).toBe(0);
+    expect(promptCount()).toBe(before);
+  } finally {
+    identityRead.release();
+  }
+  await expect(checkingIdentity).toBeHidden();
+  await expect(start).toBeEnabled();
   await dialog.evaluate((element) => {
     const input = element.querySelector<HTMLTextAreaElement>(
         '[aria-label="Session prompt"]',
@@ -944,6 +987,7 @@ test("a fresh synchronous edit after Chat preview cannot reserve or dispatch an 
         (button) => button.textContent?.trim() === "Start",
       );
     if (!input || !start) throw Error("No checked Chat controls");
+    if (start.disabled) throw Error("Start was not enabled before the edit.");
     input.value = "PRIVATE ACP SYNCHRONOUS EDIT";
     input.dispatchEvent(new Event("input", { bubbles: true }));
     start.click();
@@ -955,12 +999,17 @@ test("a fresh synchronous edit after Chat preview cannot reserve or dispatch an 
     ),
   ).toBeVisible();
   expect(posts).toBe(0);
+  expect(identityPosts).toBe(0);
   expect(promptCount()).toBe(before);
   await check(dialog);
-  await dialog.getByRole("button", { name: "Start", exact: true }).click();
+  await start.click();
   const record = await accepted();
   await expect.poll(() => saved(record.id).turns[0]?.phase).toBe("completed");
   expect(posts).toBe(1);
+  expect(identityPosts).toBe(1);
+  expect(startBodies).toHaveLength(1);
+  const reviewed = geminiChatStartSchema.parse(startBodies[0]);
+  expect(reviewed.launch.prompt).toBe("PRIVATE ACP SYNCHRONOUS EDIT");
   expect(promptCount()).toBe(before + 1);
 });
 
