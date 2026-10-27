@@ -261,7 +261,6 @@ test("the compiled desktop Codex stand-in completes prepare and dispatch in fork
         home,
         configHome: userHome,
         command: [executable],
-        syncCommand: [executable, "--sync"],
         environment,
         operatorToken: () => null,
         timeoutMs: 10_000,
