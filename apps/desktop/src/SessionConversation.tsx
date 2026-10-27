@@ -321,6 +321,13 @@ function StandardSessionConversation({
                         ?.focus()
                   : undefined
               }
+              hasDedicatedForkReview={
+                isCodexChat &&
+                !!forkClient &&
+                record?.provider === "codex" &&
+                record.mode === "chat" &&
+                record.origin?.kind !== "codex-chat-fork"
+              }
             />
           )}
         </div>

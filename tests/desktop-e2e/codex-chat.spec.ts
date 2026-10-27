@@ -2052,7 +2052,10 @@ test("Codex Chat reviews native options, allows one actual command and resumes i
   ).toBeDisabled();
   await expect(
     support.getByRole("button", { name: "Fork session", exact: true }),
-  ).toBeDisabled();
+  ).toHaveCount(0);
+  await expect(
+    support.getByRole("term", { name: "Fork", exact: true }),
+  ).toHaveCount(0);
   await expect(
     support.getByRole("button", {
       name: "Open session in terminal",

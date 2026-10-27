@@ -13,6 +13,7 @@ export function SessionLibraryControls({
   writesAllowed,
   onContinue,
   onPermissions,
+  hasDedicatedForkReview = false,
 }: {
   record: OwnedCodingSessionRecord;
   session: OwnedSessionView;
@@ -20,6 +21,7 @@ export function SessionLibraryControls({
   writesAllowed: boolean;
   onContinue(): void;
   onPermissions?: (() => void) | undefined;
+  hasDedicatedForkReview?: boolean | undefined;
 }) {
   const view = library.current();
   const selected =
@@ -167,7 +169,7 @@ export function SessionLibraryControls({
             >
               Copy original CLI preview
             </Button>
-            <Button disabled>Fork session</Button>
+            {!hasDedicatedForkReview && <Button disabled>Fork session</Button>}
             <Button disabled>Open session in terminal</Button>
             <Button
               disabled={
@@ -190,8 +192,12 @@ export function SessionLibraryControls({
             <dd>{controls.resume.reason}</dd>
             <dt>Stop</dt>
             <dd>{controls.stop.reason}</dd>
-            <dt>Fork</dt>
-            <dd>{controls.fork.reason}</dd>
+            {!hasDedicatedForkReview && (
+              <>
+                <dt>Fork</dt>
+                <dd>{controls.fork.reason}</dd>
+              </>
+            )}
             <dt>Terminal handoff</dt>
             <dd>{controls.terminal.reason}</dd>
             <dt>Permissions</dt>
