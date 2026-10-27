@@ -60,6 +60,7 @@ function state(
 test("create review exposes every complete Smith field and requires a matching candidate", () => {
   const noCandidate = SmithCreateFormView({
     state: state(),
+    draftReady: true,
     canWrite: true,
     canStart: true,
     onDraft() {},
@@ -77,6 +78,7 @@ test("create review exposes every complete Smith field and requires a matching c
 
   const reviewed = SmithCreateFormView({
     state: state(preview),
+    draftReady: true,
     canWrite: true,
     canStart: true,
     onDraft() {},
@@ -93,6 +95,7 @@ test("create review exposes every complete Smith field and requires a matching c
 
   const edited = SmithCreateFormView({
     state: { ...state(preview), smith: { ...smith, model: "changed" } },
+    draftReady: true,
     canWrite: true,
     canStart: true,
     onDraft() {},
@@ -100,6 +103,40 @@ test("create review exposes every complete Smith field and requires a matching c
     onCreate() {},
   });
   expect(attrs(findAll(edited, "button")[1])["disabled"]).toBe(true);
+});
+
+test("unverified workspace keeps Smith draft controls inert without changing write policy", () => {
+  let draftChanges = 0;
+  const pending = SmithCreateFormView({
+    state: { ...state(), serverDiscoveryReady: false },
+    draftReady: false,
+    canWrite: true,
+    canStart: false,
+    onDraft() {
+      draftChanges++;
+    },
+    onPreview() {},
+    onCreate() {},
+  });
+  expect(textOf(pending)).toContain(
+    "Waiting for a verified workspace before editing.",
+  );
+  for (const control of [
+    ...findAll(pending, "select"),
+    ...findAll(pending, "input"),
+    ...findAll(pending, "textarea"),
+  ])
+    expect(attrs(control)["disabled"]).toBe(true);
+
+  const name = findAll(pending, "input")[0],
+    input = attrs(name)["onInput"],
+    target = findAll(pending, "select")[0],
+    change = attrs(target)["onChange"];
+  if (typeof input !== "function" || typeof change !== "function")
+    throw Error("Smith draft controls lost their input handlers.");
+  input({ currentTarget: { value: "unscoped" } } as never);
+  change({ currentTarget: { value: "user" } } as never);
+  expect(draftChanges).toBe(0);
 });
 
 test("held original UI offers only an explicit same-UUID check, never a resend", () => {

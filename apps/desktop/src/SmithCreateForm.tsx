@@ -7,6 +7,7 @@ import type {
 
 export function SmithCreateFormView({
   state,
+  draftReady,
   canWrite,
   canStart,
   onDraft,
@@ -14,6 +15,8 @@ export function SmithCreateFormView({
   onCreate,
 }: {
   state: SmithCreateClientState;
+  /** The current draft has a verified trusted workspace scope. */
+  draftReady: boolean;
   canWrite: boolean;
   canStart: boolean;
   onDraft(
@@ -32,8 +35,11 @@ export function SmithCreateFormView({
         item.state === "held" && item.serverIdentity?.stage !== "reserved",
     ),
     blocked = !canWrite || !canStart || held || state.creating,
-    update = (patch: Partial<SmithConfigPreviewRequest["smith"]>) =>
+    draftBlocked = !draftReady || state.creating,
+    update = (patch: Partial<SmithConfigPreviewRequest["smith"]>) => {
+      if (draftBlocked) return;
       onDraft(state.target, { ...smith, ...patch });
+    };
   return (
     <div class="af-smith-create">
       <p>
@@ -41,6 +47,9 @@ export function SmithCreateFormView({
         edit clears the candidate. Create first reserves this exact original;
         configuration changes only after a reviewed create attempt succeeds.
       </p>
+      {!draftReady && (
+        <p role="status">Waiting for a verified workspace before editing.</p>
+      )}
       {!canWrite && (
         <p role="status">
           The hearth is not ready for operator writes. Your draft is not sent.
@@ -76,13 +85,14 @@ export function SmithCreateFormView({
         Save to
         <select
           value={state.target}
-          disabled={state.creating}
-          onChange={(event) =>
+          disabled={draftBlocked}
+          onChange={(event) => {
+            if (draftBlocked) return;
             onDraft(
               event.currentTarget.value === "user" ? "user" : "workspace",
               smith,
-            )
-          }
+            );
+          }}
         >
           <option value="workspace">Workspace configuration</option>
           <option value="user">User configuration</option>
@@ -93,7 +103,7 @@ export function SmithCreateFormView({
         <input
           value={smith.name}
           maxLength={128}
-          disabled={state.creating}
+          disabled={draftBlocked}
           onInput={(event) => update({ name: event.currentTarget.value })}
         />
       </label>
@@ -102,7 +112,7 @@ export function SmithCreateFormView({
         <input
           value={smith.provider}
           maxLength={128}
-          disabled={state.creating}
+          disabled={draftBlocked}
           onInput={(event) => update({ provider: event.currentTarget.value })}
         />
       </label>
@@ -111,7 +121,7 @@ export function SmithCreateFormView({
         <input
           value={smith.model}
           maxLength={512}
-          disabled={state.creating}
+          disabled={draftBlocked}
           onInput={(event) => update({ model: event.currentTarget.value })}
         />
       </label>
@@ -120,7 +130,7 @@ export function SmithCreateFormView({
         <input
           value={smith.effort}
           maxLength={128}
-          disabled={state.creating}
+          disabled={draftBlocked}
           onInput={(event) => update({ effort: event.currentTarget.value })}
         />
       </label>
@@ -128,7 +138,7 @@ export function SmithCreateFormView({
         <input
           type="checkbox"
           checked={smith.enabled}
-          disabled={state.creating}
+          disabled={draftBlocked}
           onChange={(event) => update({ enabled: event.currentTarget.checked })}
         />
         Enabled
@@ -139,7 +149,7 @@ export function SmithCreateFormView({
           value={smith.tags.join("\n")}
           maxLength={16_448}
           rows={3}
-          disabled={state.creating}
+          disabled={draftBlocked}
           onInput={(event) =>
             update({
               tags: event.currentTarget.value

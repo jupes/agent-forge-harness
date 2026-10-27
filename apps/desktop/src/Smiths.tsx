@@ -244,6 +244,7 @@ export function Smiths({
       >
         <SmithCreateFormView
           state={creates.state}
+          draftReady={creates.client !== null}
           canWrite={creates.canWrite}
           canStart={creates.client?.canStart() ?? false}
           onDraft={(target, smith) => creates.client?.setDraft(target, smith)}
