@@ -281,12 +281,17 @@ test("lost Fork reply reloads the same reserved UUID and hash, keeps a missing o
     expect(identity).toEqual(reserved);
     expect(calls.at(-1)).toEqual({
       method: "POST",
-      path: `/projects/${projectId}/sessions/${parentSessionId}/fork-reservations`,
+      path: `/__agent-forge/projects/${projectId}/sessions/${parentSessionId}/fork-reservations`,
       body: intent,
     });
     expect(
       await client.dispatchReservedFork(projectId, identity.requestId),
     ).toMatchObject({
+      state: "held",
+    });
+    expect(
+      await client.dispatchReservedFork(projectId, identity.requestId),
+    ).toEqual({
       state: "held",
     });
   } finally {
@@ -319,12 +324,12 @@ test("lost Fork reply reloads the same reserved UUID and hash, keeps a missing o
     expect(calls.filter((call) => call.method === "POST")).toEqual([
       {
         method: "POST",
-        path: `/projects/${projectId}/sessions/${parentSessionId}/fork-reservations`,
+        path: `/__agent-forge/projects/${projectId}/sessions/${parentSessionId}/fork-reservations`,
         body: intent,
       },
       {
         method: "POST",
-        path: `/projects/${projectId}/sessions/${parentSessionId}/forks`,
+        path: `/__agent-forge/projects/${projectId}/sessions/${parentSessionId}/forks`,
         body: intent,
       },
     ]);
@@ -333,4 +338,153 @@ test("lost Fork reply reloads the same reserved UUID and hash, keeps a missing o
   } finally {
     recoveryClient.dispose();
   }
+});
+
+test("a changed scope or mixed source page cannot become a reserveable review", async () => {
+  let generation = 3,
+    calls = 0,
+    posts = 0;
+  const module = await loadForkClient(),
+    client = module.createCodexChatForkClient({
+      currentScope: () => ({ projectId, workspace, generation }),
+      canWrite: () => true,
+      requestId: () => requestId,
+      read: (async () => {
+        calls++;
+        generation++;
+        return envelope(
+          sourcePage({
+            frames: [
+              {
+                kind: "user",
+                seq: 1,
+                turnId: throughTurnRequestId,
+                at: "2026-10-23T03:00:00.000Z",
+                text: "PRIVATE original prompt",
+                about: [],
+              },
+            ],
+            complete: true,
+            nextCursor: null,
+          }),
+        );
+      }) satisfies OperatorRead,
+      post: (async () => {
+        posts++;
+        throw new Error("A changed scope cannot reserve.");
+      }) satisfies OperatorPost,
+    });
+  try {
+    await expect(
+      client.reviewSource({ projectId, parentSessionId, throughTurnRequestId }),
+    ).rejects.toThrow("workspace changed");
+    expect(calls).toBe(1);
+    expect(posts).toBe(0);
+  } finally {
+    client.dispose();
+  }
+
+  const mixedReplies = [
+      sourcePage({
+        frames: [
+          {
+            kind: "user",
+            seq: 1,
+            turnId: throughTurnRequestId,
+            at: "2026-10-23T03:00:00.000Z",
+            text: "PRIVATE original prompt",
+            about: [],
+          },
+        ],
+        complete: false,
+        nextCursor: 1,
+      }),
+      {
+        ...sourcePage({
+          frames: [
+            {
+              kind: "text" as const,
+              seq: 2,
+              turnId: throughTurnRequestId,
+              at: "2026-10-23T03:00:01.000Z",
+              text: "Saved reply",
+            },
+          ],
+          complete: true,
+          nextCursor: null,
+        }),
+        settings: {
+          ...sourcePage({ frames: [], complete: true, nextCursor: null })
+            .settings,
+          effort: "low",
+        },
+      },
+    ],
+    wrongSourceClient = module.createCodexChatForkClient({
+      currentScope: scope,
+      canWrite: () => true,
+      requestId: () => requestId,
+      read: (async () => envelope(mixedReplies.shift())) satisfies OperatorRead,
+      post: (async () => {
+        posts++;
+        throw new Error("A mixed source cannot reserve.");
+      }) satisfies OperatorPost,
+    });
+  try {
+    await expect(
+      wrongSourceClient.reviewSource({
+        projectId,
+        parentSessionId,
+        throughTurnRequestId,
+      }),
+    ).rejects.toThrow("changed during review");
+    expect(posts).toBe(0);
+  } finally {
+    wrongSourceClient.dispose();
+  }
+});
+
+test("disposing a Fork client prevents a delayed source page from becoming actionable", async () => {
+  let finish: ((value: Response) => void) | undefined,
+    posts = 0;
+  const module = await loadForkClient(),
+    client = module.createCodexChatForkClient({
+      currentScope: scope,
+      canWrite: () => true,
+      requestId: () => requestId,
+      read: (() =>
+        new Promise<Response>((resolve) => {
+          finish = resolve;
+        })) satisfies OperatorRead,
+      post: (async () => {
+        posts++;
+        throw new Error("Disposed clients cannot write.");
+      }) satisfies OperatorPost,
+    }),
+    review = client.reviewSource({
+      projectId,
+      parentSessionId,
+      throughTurnRequestId,
+    });
+  client.dispose();
+  finish?.(
+    envelope(
+      sourcePage({
+        frames: [
+          {
+            kind: "user",
+            seq: 1,
+            turnId: throughTurnRequestId,
+            at: "2026-10-23T03:00:00.000Z",
+            text: "PRIVATE original prompt",
+            about: [],
+          },
+        ],
+        complete: true,
+        nextCursor: null,
+      }),
+    ),
+  );
+  await expect(review).rejects.toThrow("cancelled");
+  expect(posts).toBe(0);
 });

@@ -8,6 +8,7 @@ import {
   readOperatorRoute,
 } from "../../../docs/js/use-stream";
 import type { ProviderReadinessPage } from "../../../types/provider-readiness";
+import { createCodexChatForkClient } from "./codex-chat-fork-client";
 import { createSessionsClient } from "./session-client";
 import { createSessionStartIdentities } from "./session-start-identities";
 import { createSessionStartIdentityServer } from "./session-start-identity-server";
@@ -116,6 +117,18 @@ export function useSessions(
     });
   }
   const client = held.current;
+  const forkClient = useRef<ReturnType<
+    typeof createCodexChatForkClient
+  > | null>(null);
+  if (!forkClient.current)
+    forkClient.current = createCodexChatForkClient({
+      currentScope: () => scope.current,
+      canWrite: () => writes.current,
+      requestId: () => crypto.randomUUID(),
+      read: operatorRead,
+      post: operatorPost,
+    });
+  const fork = forkClient.current;
   useEffect(
     () => client.subscribe(() => paint((value) => value + 1)),
     [client],
@@ -143,8 +156,9 @@ export function useSessions(
       scope.current = null;
       scopeVersion.current++;
       client.dispose();
+      fork.dispose();
     },
-    [client],
+    [client, fork],
   );
-  return client;
+  return Object.assign(client, { fork });
 }
