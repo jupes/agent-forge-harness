@@ -25,6 +25,19 @@ export type CodexChatStartupFailureFact = {
   eventsCapped: boolean;
 };
 
+/** Atomically claims the first fixture host for this private home. */
+export function claimCodexChatStartupDiagnosticHost(home: string): boolean {
+  try {
+    mkdirSync(join(home, "codex-chat-startup-diagnostic-initial-host.claim"), {
+      mode: 0o700,
+    });
+    return true;
+  } catch {
+    // Existing or unavailable claims suppress diagnostics rather than guessing.
+    return false;
+  }
+}
+
 export function writeFirstCodexChatStartupFailure(options: {
   home: string;
   fact: CodexChatStartupFailureFact;
@@ -74,6 +87,7 @@ export function createCodexChatStartupDiagnostic(options: {
   let eventsCapped = false,
     finished = false;
   const append = (event: CodexChatStartupDiagnosticEvent) => {
+    if (finished) return;
     try {
       if (events.length >= MAX_EVENTS) {
         eventsCapped = true;

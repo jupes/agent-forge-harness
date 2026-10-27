@@ -12,7 +12,9 @@ import {
   createCodexChatRuntime,
   type CodexChatCallbacks,
 } from "../../scripts/sessions/codex-chat-runtime";
+import { observeCodexChatPersist } from "../../scripts/sessions/fixtures/codex-chat-persist-diagnostic";
 import {
+  claimCodexChatStartupDiagnosticHost,
   createCodexChatStartupDiagnostic,
   writeFirstCodexChatStartupFailure,
 } from "../../scripts/sessions/fixtures/codex-chat-startup-diagnostic";
@@ -24,6 +26,7 @@ import {
 import { isRunHome } from "../e2e/servers";
 import { ROOT } from "./environment";
 
+const FACT_FILE = "codex-chat-private-persist-failure.json";
 
 function rootArgument(argv: readonly string[]): string {
   if (
@@ -92,8 +95,8 @@ async function run(): Promise<void> {
   const prepareDiagnostics = createCodexChatPrepareDiagnostics(
     createFilePrepareDiagnosticIo(home, writeOwnerOnly, initialPrepareOrdinal),
   );
-  const targetInitialHostFirstRun = initialPrepareOrdinal === 0;
-  let runtimeRunOrdinal = 0;
+  let initialHostClaimed = false,
+    runtimeRunOrdinal = 0;
   const defaultRuntime = createCodexChatRuntime({
     root,
     home,
@@ -119,8 +122,15 @@ async function run(): Promise<void> {
     },
     run(input, persist, signal, callbacks) {
       runtimeRunOrdinal++;
-      if (!targetInitialHostFirstRun || runtimeRunOrdinal !== 1)
-        return defaultRuntime.run(input, persist, signal, callbacks);
+      const historicalPersist = observeCodexChatPersist({
+        persist,
+        recordFailure(fact) {
+          const path = join(home, FACT_FILE);
+          if (!existsSync(path)) writeOwnerOnly(path, JSON.stringify(fact));
+        },
+      });
+      if (!initialHostClaimed || runtimeRunOrdinal !== 1)
+        return defaultRuntime.run(input, historicalPersist, signal, callbacks);
 
       const diagnostic = createCodexChatStartupDiagnostic({
         recordFailure(fact) {
@@ -134,7 +144,7 @@ async function run(): Promise<void> {
           callbacks.onStartupPhase?.(phase, signalAborted);
         },
       };
-      const observedPersist = diagnostic.wrapPersist(persist);
+      const observedPersist = diagnostic.wrapPersist(historicalPersist);
       return (async () => {
         try {
           const outcome = await defaultRuntime.run(
@@ -161,10 +171,12 @@ async function run(): Promise<void> {
     councilLedger: operatorCouncilLedger(),
     api: { codexChatRuntime },
   });
-  process.stdout.write(
-    `hearth ${hearth.kind === "started" ? "listening" : "already running"} on ${hearth.url}\n`,
-  );
-  if (hearth.kind === "reused") return;
+  if (hearth.kind === "reused") {
+    process.stdout.write(`hearth already running on ${hearth.url}\n`);
+    return;
+  }
+  initialHostClaimed = claimCodexChatStartupDiagnosticHost(home);
+  process.stdout.write(`hearth listening on ${hearth.url}\n`);
   token.current = hearth.token;
   closeOnSignal(hearth);
 }

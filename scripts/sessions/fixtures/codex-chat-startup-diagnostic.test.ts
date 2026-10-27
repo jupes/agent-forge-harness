@@ -11,6 +11,7 @@ import type { CodexChatEvent } from "../../../types/codex-chat";
 import { scratchDirs } from "../../test-scratch";
 import {
   CODEX_CHAT_STARTUP_DIAGNOSTIC_MAX_BYTES,
+  claimCodexChatStartupDiagnosticHost,
   createCodexChatStartupDiagnostic,
   writeFirstCodexChatStartupFailure,
 } from "./codex-chat-startup-diagnostic";
@@ -187,4 +188,56 @@ test("a pre-existing lock or owner-only writer failure leaves evidence untouched
   expect(calls).toBe(1);
   expect(existsSync(path)).toBe(false);
   expect(existsSync(lock)).toBe(false);
+});
+
+test("initial host claim is exclusive even when no prepare facts exist", () => {
+  const home = scratch.make("codex-chat-startup-host-claim-");
+  mkdirSync(home);
+  expect(claimCodexChatStartupDiagnosticHost(home)).toBe(true);
+  expect(claimCodexChatStartupDiagnosticHost(home)).toBe(false);
+  expect(
+    existsSync(join(home, "codex-chat-startup-diagnostic-initial-host.claim")),
+  ).toBe(true);
+});
+
+test("per-run histories are isolated and late persistence cannot mutate a recorded fact", async () => {
+  const facts: unknown[] = [];
+  const first = createCodexChatStartupDiagnostic({
+      recordFailure(fact) {
+        facts.push(fact);
+      },
+    }),
+    second = createCodexChatStartupDiagnostic({
+      recordFailure(fact) {
+        facts.push(fact);
+      },
+    });
+  first.observeRuntimePhase("supervisor-returned", false);
+  second.observeRuntimePhase("provider-pid-wait-rejected", true);
+
+  let releasePersist!: () => void;
+  const pending = first
+    .wrapPersist(
+      () =>
+        new Promise<void>((resolve) => {
+          releasePersist = resolve;
+        }),
+    )(processEvent);
+  first.finish("unknown");
+  second.finish("failed");
+  releasePersist();
+  await pending;
+
+  expect(facts).toHaveLength(2);
+  expect(facts[0]).toMatchObject({
+    events: [
+      { phase: "supervisor-returned" },
+      { kind: "process-event-persist", outcome: "entered" },
+    ],
+  });
+  expect(facts[1]).toMatchObject({
+    events: [
+      { phase: "provider-pid-wait-rejected", signalAborted: true },
+    ],
+  });
 });
