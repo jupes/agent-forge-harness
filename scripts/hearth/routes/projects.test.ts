@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { ProjectCatalog } from "../../../types/projects";
+import { resolveCheckout } from "../../ledger/workspace";
 import { createProjectStore } from "../../projects/store";
 import { withQueueLock } from "../../scheduler/queue-lock";
 import { startTestHearth, type TestHearth } from "../testing";
@@ -342,7 +343,11 @@ test("project-create options include registered canonical repos or refuse the in
       complete: true,
       repositories: [
         { path: h.workspace, served: true },
-        { path: checkout, name: "registered-repo", served: false },
+        {
+          path: resolveCheckout(checkout).worktree,
+          name: "registered-repo",
+          served: false,
+        },
       ],
     },
     error: null,

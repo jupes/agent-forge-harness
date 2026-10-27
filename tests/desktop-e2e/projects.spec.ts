@@ -149,6 +149,16 @@ test("a protected project reservation stays private until a separate create acti
   });
   const requestHash = reserve.body.data.requestHash as string;
 
+  const catalogAfterReservation = await page.evaluate(
+    async ({ headers }) => {
+      const response = await fetch("/__agent-forge/projects", { headers });
+      return { status: response.status, body: await response.json() };
+    },
+    { headers },
+  );
+  expect(catalogAfterReservation.status).toBe(200);
+  expect(catalogAfterReservation.body).toMatchObject({ ok: true, error: null });
+
   const recovered = await page.evaluate(
     async ({ headers, requestId }) => {
       const response = await fetch(
@@ -174,7 +184,11 @@ test("a protected project reservation stays private until a separate create acti
   );
   expect(publicCatalog).toEqual({
     status: 200,
-    body: { ok: true, data: catalogBefore, error: null },
+    body: {
+      ok: true,
+      data: catalogAfterReservation.body.data,
+      error: null,
+    },
   });
   expect(JSON.stringify(publicCatalog.body)).not.toContain(privateName);
   expect(JSON.stringify(publicCatalog.body)).not.toContain(privateSlug);
