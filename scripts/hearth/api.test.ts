@@ -4624,6 +4624,7 @@ describe("every read row (iterating the table)", () => {
   test("answers a valid envelope for its fixture path", async () => {
     const h = await start({
       files: { ".tmp/work/forge-runs/demo.json": RUN_STATE },
+      api: { git: fixtureSessionGit },
     });
     await seedOwnedSession(h);
     await seedChatDecision(h);
@@ -4670,6 +4671,7 @@ describe("every read row (iterating the table)", () => {
   test("refuses a request that does not declare the hearth's own origin, and appends nothing", async () => {
     const h = await start({
       files: { ".tmp/work/forge-runs/demo.json": RUN_STATE },
+      api: { git: fixtureSessionGit },
     });
     await seedOwnedSession(h);
     await seedChatDecision(h);
