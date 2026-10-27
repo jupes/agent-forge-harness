@@ -524,7 +524,7 @@ test.skipIf(!nativeEnabled)(
         },
         beforeExclusivePreLockAssert: () => { if (stages.length < 8) stages.push("before-pre-lock-assert"); },
         onMutexDiagnostic: (item) => {
-          if (item.guard !== null && diagnostics.length < 8) diagnostics.push({ phase: item.phase, guard: item.guard, fileSize: item.fileSize, identityStable: item.identityStable, failure: item.failure });
+          if (diagnostics.length < 8) diagnostics.push({ phase: item.phase, guard: item.guard, fileSize: item.fileSize, identityStable: item.identityStable, failure: item.failure });
         },
       });
       const journal = createCodexChatForkJournal({ root, home, storage });
@@ -649,6 +649,25 @@ test.skipIf(!nativeEnabled)(
       reply.parse(JSON.parse(readFileSync(creatorResult, "utf8"))),
       reply.parse(JSON.parse(readFileSync(peerResult, "utf8"))),
     ];
+    const firstVisible = {
+      ownerOnly: publication.ownerOnly,
+      protected: publication.protected,
+      sameIdentity:
+        peer.dev === publication.dev && peer.ino === publication.ino,
+      creatorReadOpen: publication.creatorReadOpen,
+      peerWriteOpen: peer.peerWriteOpen,
+    };
+    process.stdout.write(
+      `[fork-mutex-publication-facts] ${JSON.stringify({
+        firstVisible,
+        children: results.map((result) => ({
+          ok: result.ok,
+          reason: result.ok ? null : result.reason,
+          stages: result.stages,
+          diagnostics: result.diagnostics,
+        })),
+      }).slice(0, 5_000)}\n`,
+    );
     expect(peer.empty).toBe(false);
     expect(publication.size).toBe(0);
     expect(peer.size).toBe(0);
@@ -665,7 +684,7 @@ test.skipIf(!nativeEnabled)(
     expect(winner.state).toBe("reserved");
     if (loser.reason !== "conflict")
       throw new Error(
-        `Fork mutex publication loser was ${loser.reason}; first-visible=${JSON.stringify({ ownerOnly: publication.ownerOnly, protected: publication.protected, sameIdentity: peer.dev === publication.dev && peer.ino === publication.ino, creatorReadOpen: publication.creatorReadOpen, peerWriteOpen: peer.peerWriteOpen })}; bounded child stages/guards=${JSON.stringify(results.map((result) => ({ stages: result.stages, guards: result.diagnostics }))).slice(0, 2_000)}`,
+        `Fork mutex publication loser was ${loser.reason}; bounded facts were emitted after cleanup.`,
       );
     expect(loser.reason).toBe("conflict");
     const records = createCodexChatForkJournal({ root, home }).list(projectId);
