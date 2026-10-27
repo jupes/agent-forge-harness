@@ -705,6 +705,30 @@ export function createOwnedSessionRoutes(
         return service.read(projectId, sessionId, query);
       }),
   };
+  const ownerRelease: ReadRoute<Address> = {
+    kind: "read",
+    method: "GET",
+    path: "/projects/:id/sessions/:sessionId/owner-release",
+    operatorOnly: true,
+    validate: (request) => {
+      const selected = address(request),
+        query = noParameters(request);
+      if (!selected.ok) return selected;
+      if (!query.ok) return query;
+      return selected;
+    },
+    read: ({ projectId, sessionId }) =>
+      answer(200, async () => {
+        readable(projectId);
+        const result = await service.readCodexChatOwnerRelease(
+          projectId,
+          sessionId,
+        );
+        return result.eligible
+          ? { state: "eligible", reason: null }
+          : { state: "unavailable", reason: "owner-release-unavailable" };
+      }),
+  };
   const forkTurnRead: ReadRoute<
     Address & { after?: number; limit?: number; requestId?: string }
   > = {
@@ -1151,6 +1175,7 @@ export function createOwnedSessionRoutes(
     identityReserve,
     identityRetire,
     read,
+    ownerRelease,
     forkTurnRead,
     forkApprovals,
     events,

@@ -10,6 +10,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { connect } from "node:net";
 import { join, resolve } from "node:path";
 import type { WorktreeEntry } from "../../types/beads";
@@ -60,6 +61,7 @@ import {
   type PreparedConfigTransaction,
   readConfigTransactionSources,
 } from "../config/transaction";
+import { conversationFile } from "../conversations/paths";
 import { createConversationStore } from "../conversations/store";
 import { runCouncilCli } from "../council/cli";
 import type { CommandResult, CommandRunner } from "../council/pr-source";
@@ -103,14 +105,24 @@ import {
   sessionStartIdentityReplySchema,
 } from "../sessions/identity-protocol";
 import { sessionLibraryReadSchema } from "../sessions/library-protocol";
+import { unavailableCodexChatRuntime } from "../sessions/owned-coding-service";
 import { canonicalSessionInput } from "../sessions/preparation";
 import { sessionPreviewReceiptSchema } from "../sessions/protocol";
-import { createSessionRegistry } from "../sessions/registry";
+import {
+  createSessionRegistry,
+  sessionRegistryFile,
+} from "../sessions/registry";
 import { APPRENTICE_VERIFICATION } from "../smith-verification";
-import type { ActionContext, ActionRoute, ApiRoute } from "./api";
+import {
+  type ActionContext,
+  type ActionRoute,
+  type ApiRoute,
+  createOperatorApi,
+} from "./api";
 import { sessionsPath, tokenPath } from "./home";
 import { createSessionStore, sessionCookieName } from "./launch";
 import {
+  API_PREFIX,
   HEALTH_ROUTE,
   OPERATOR_HEADER,
   SESSION_KEY_HEADER,
@@ -153,6 +165,7 @@ import {
   seedProjectShift,
   seedProjectShiftAttempt,
 } from "./routes/project-shift-fixture";
+import { projectSnapshotReader } from "./routes/project-summaries";
 import {
   FIXTURE_OWNED_SESSION_ID,
   FIXTURE_OWNED_STOP_ID,
@@ -160,6 +173,7 @@ import {
   FIXTURE_SESSION_SEND,
   FIXTURE_SESSION_START,
   FIXTURE_SESSION_STOP,
+  fakeSessionRuntime,
   fixtureSessionGit,
   seedOwnedSession,
   sessionStartFixture,
@@ -170,6 +184,7 @@ import {
   seedSessionWorktreeFixture,
   sessionWorktreeFixtureRequest,
 } from "./routes/session-worktree-fixture";
+import { createOwnedSessionRoutes } from "./routes/sessions";
 import {
   startTestHearth,
   type TestHearth,
@@ -3086,6 +3101,7 @@ const READS: Record<string, string> = {
   "GET /projects/:id/activity": `/projects/${FIXTURE_PROJECT_ID}/activity`,
   "GET /projects/:id/activity/:eventId": `/projects/${FIXTURE_PROJECT_ID}/activity/1`,
   "GET /projects/:id/sessions/:sessionId": `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_OWNED_SESSION_ID}`,
+  "GET /projects/:id/sessions/:sessionId/owner-release": `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_CHAT_SESSION}/owner-release`,
   "GET /projects/:id/sessions/:sessionId/fork-turns": `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_CODEX_CHAT_FORK_CONTROL_CHILD_ID}/fork-turns`,
   "GET /projects/:id/sessions/:sessionId/fork-review": `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_CODEX_CHAT_FORK_SOURCE.sessionId}/fork-review?throughTurnRequestId=${API_CODEX_CHAT_FORK_SOURCE.turnRequestId}`,
   "GET /projects/:id/sessions/:sessionId/fork-approvals": `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_CODEX_CHAT_FORK_CONTROL_CHILD_ID}/fork-approvals`,
@@ -6637,7 +6653,7 @@ describe("a bead as the source of a council run started through the hearth", () 
   });
 });
 
-test("the protected owner-release read reconstructs a completed ordinary Chat receipt without effects", async () => {
+test("the protected owner-release read reports an ordinary Chat receipt without effects", async () => {
   let liveRuntime: ReturnType<typeof createCodexChatRuntime> | undefined,
     prepareCalls = 0,
     runCalls = 0;
@@ -6760,4 +6776,131 @@ test("the protected owner-release read reconstructs a completed ordinary Chat re
   });
   expect(h.events()).toHaveLength(beforeEvents);
   expect({ prepareCalls, runCalls }).toEqual(beforeRuntimeCalls);
+
+  const conversationPath = conversationFile(
+      h.home,
+      FIXTURE_PROJECT_ID,
+      address,
+    ),
+    registryPath = sessionRegistryFile(h.home),
+    beforeConversationBytes = readFileSync(conversationPath),
+    beforeRegistryBytes = readFileSync(registryPath);
+  let auditCalls = 0;
+  const freshDeps = {
+    root: h.root,
+    workspace: h.workspace,
+    ledgerPath: h.ledger,
+    runBd: (args: string[], options?: { timeoutMs?: number }) =>
+      h.bd.run(args, options),
+    git: fixtureSessionGit,
+    appendEvent: () => {
+      auditCalls++;
+      return {
+        ok: true as const,
+        id: 1,
+        ulid: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      };
+    },
+  };
+  const reconstructed = createOwnedSessionRoutes(
+    h.home,
+    freshDeps,
+    projectSnapshotReader(h.home, freshDeps),
+    fakeSessionRuntime().runtime,
+    { codexChatRuntime: unavailableCodexChatRuntime },
+  );
+  const freshApi = createOperatorApi(
+    {
+      workspace: h.workspace,
+      expectedToken: () => h.hearth.token,
+      appendEvent: freshDeps.appendEvent,
+    },
+    [reconstructed.ownerRelease],
+  );
+  const origin = "http://127.0.0.1:43121";
+  const callFreshApi = async () => {
+    let freshBody = "";
+    const request = {
+      method: "GET",
+      url: `${API_PREFIX}/projects/${FIXTURE_PROJECT_ID}/sessions/${owner.id}/owner-release`,
+      headers: {
+        host: "127.0.0.1:43121",
+        origin,
+        "sec-fetch-site": "same-origin",
+        [OPERATOR_HEADER]: h.hearth.token,
+      },
+      rawHeaders: [
+        "host",
+        "127.0.0.1:43121",
+        "origin",
+        origin,
+        "sec-fetch-site",
+        "same-origin",
+        OPERATOR_HEADER,
+        h.hearth.token,
+      ],
+      socket: { remoteAddress: "127.0.0.1" },
+    } as unknown as IncomingMessage;
+    const freshResponse = {
+      statusCode: 0,
+      headersSent: false,
+      setHeader() {},
+      end(chunk?: string) {
+        freshBody = chunk ?? "";
+      },
+    } as unknown as ServerResponse;
+    await freshApi.handle(request, freshResponse, () => {
+      throw new Error("The reconstructed protected route was not mounted.");
+    });
+    let body: unknown;
+    try {
+      body = JSON.parse(freshBody);
+    } catch {
+      throw new Error("The reconstructed API returned invalid JSON.");
+    }
+    return {
+      status: freshResponse.statusCode,
+      envelope: validateOperatorEnvelope(body),
+    };
+  };
+  try {
+    const fresh = await callFreshApi();
+    expect(fresh.status).toBe(200);
+    expect(fresh.envelope.ok).toBe(true);
+    if (!fresh.envelope.ok)
+      throw new Error("The reconstructed API envelope was invalid.");
+    expect(fresh.envelope.value.data).toEqual({
+      state: "eligible",
+      reason: null,
+    });
+
+    const catalogPath = projectCatalogPath(h.home),
+      originalCatalogBytes = readFileSync(catalogPath);
+    try {
+      const catalog = createProjectStore(h.home).read();
+      writeOwnerOnly(
+        catalogPath,
+        JSON.stringify({
+          ...catalog,
+          projects: catalog.projects.map((project) =>
+            project.id === FIXTURE_PROJECT_ID
+              ? { ...project, archived: true }
+              : project,
+          ),
+        }),
+      );
+      writeFileSync(conversationPath, "{}");
+      const staleScope = await callFreshApi();
+      expect(staleScope.status).toBe(409);
+      expect(staleScope.envelope.ok).toBe(false);
+    } finally {
+      writeFileSync(conversationPath, beforeConversationBytes);
+      writeFileSync(catalogPath, originalCatalogBytes);
+    }
+  } finally {
+    await reconstructed.close();
+  }
+  expect(auditCalls).toBe(0);
+  expect(readFileSync(conversationPath)).toEqual(beforeConversationBytes);
+  expect(readFileSync(registryPath)).toEqual(beforeRegistryBytes);
 });

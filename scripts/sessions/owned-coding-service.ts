@@ -832,6 +832,9 @@ export function createOwnedCodingSessionService(options: {
     ) {
       return selected(projectId, sessionId).read(projectId, sessionId, query);
     },
+    readCodexChatOwnerRelease(projectId: string, sessionId: string) {
+      return chat.readOwnerRelease(projectId, sessionId);
+    },
     async readForkChild(
       projectId: string,
       sessionId: string,
