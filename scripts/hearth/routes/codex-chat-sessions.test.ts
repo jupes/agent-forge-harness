@@ -762,6 +762,143 @@ test("Fork children with on-request policy refuse before accepting a turn", asyn
   );
 });
 
+test("preflight Fork reservation is durably discoverable without creating a native child", async () => {
+  const f = await fixture("fork-service-tier-null"),
+    start = await f.post("", f.request);
+  expect(start.status).toBe(202);
+  const started = ownedCodingStartReceiptSchema.parse(
+      (await start.json()).data,
+    ),
+    parentSessionId = started.session.id,
+    completed = await f.settle(parentSessionId),
+    selectedTurn = completed.turns.find(
+      (turn) => turn.requestId === f.request.requestId,
+    );
+  if (!selectedTurn) throw Error("The source-valid parent turn did not settle");
+
+  const request = {
+      requestId: randomUUID(),
+      throughTurnRequestId: selectedTurn.requestId,
+    },
+    response = await f.post(`/${parentSessionId}/fork-reservations`, request),
+    envelope = await response.json();
+  expect(response.status).toBe(200);
+  expect(envelope).toMatchObject({
+    ok: true,
+    data: {
+      family: "codex-chat-fork",
+      requestId: request.requestId,
+      parentSessionId,
+      throughTurnRequestId: selectedTurn.requestId,
+      state: "reserved",
+    },
+  });
+  expect(f.records().filter((row) => row.method === "thread/fork")).toEqual([]);
+  expect(
+    f.records().filter((row) => row.method === "thread/start"),
+  ).toHaveLength(1);
+  expect(f.records().filter((row) => row.method === "turn/start")).toHaveLength(
+    1,
+  );
+  const operationsResponse = await fetch(
+      `${f.h.api}/projects/${FIXTURE_PROJECT_ID}/session-operation-identities`,
+      { headers: f.h.headers(f.h.hearth.token) },
+    ),
+    operationsEnvelope = await operationsResponse.json(),
+    operations = sessionOperationIdentityPageSchema.parse(
+      operationsEnvelope.data,
+    );
+  expect(operationsResponse.status).toBe(200);
+  expect(operations.operations).toContainEqual(
+    expect.objectContaining({
+      family: "codex-chat-fork",
+      requestId: request.requestId,
+      parentSessionId,
+      throughTurnRequestId: selectedTurn.requestId,
+      state: "reserved",
+    }),
+  );
+
+  const requestHash = envelope.data.requestHash;
+  expect(typeof requestHash).toBe("string");
+  const audit = f.h.events(["operator.action"]).at(-1);
+  expect(audit?.kind).toBe("operator.action");
+  if (audit?.kind !== "operator.action")
+    throw Error("The Fork reservation did not have an operator audit row");
+  expect(audit.payload).toMatchObject({
+    action: "session.fork.reserve",
+    family: "codex-chat-fork",
+    requestId: request.requestId,
+    inputHash: requestHash,
+  });
+  expect(JSON.stringify(audit.payload)).not.toContain("PRIVATE-CHAT");
+
+  const wrongRetirement = await f.post(
+    `/${parentSessionId}/fork-reservations/${request.requestId}/retire`,
+    { requestHash: "a".repeat(64) },
+  );
+  expect(wrongRetirement.status).toBe(409);
+  expect(f.records().filter((row) => row.method === "thread/fork")).toEqual([]);
+
+  const duplicateResponse = await f.post(
+      `/${parentSessionId}/fork-reservations`,
+      request,
+    ),
+    duplicate = await duplicateResponse.json();
+  expect(duplicateResponse.status).toBe(200);
+  expect(duplicate.data.requestHash).toBe(requestHash);
+  expect(
+    f
+      .records()
+      .filter((row) => row.kind === "rpc" && row.method === "thread/fork"),
+  ).toEqual([]);
+
+  const laterTurnId = randomUUID(),
+    laterTurn = await f.post(`/${parentSessionId}/turns`, {
+      requestId: laterTurnId,
+      expectedRevision: completed.revision,
+      text: "A later parent turn makes this source stale.",
+      about: [],
+    });
+  expect(laterTurn.status).toBe(202);
+
+  const retiredResponse = await f.post(
+      `/${parentSessionId}/fork-reservations/${request.requestId}/retire`,
+      { requestHash },
+    ),
+    retired = await retiredResponse.json();
+  expect(retiredResponse.status).toBe(200);
+  expect(retired.data).toMatchObject({
+    requestId: request.requestId,
+    requestHash,
+    state: "retired",
+    retiredReason: "verified-not-sent",
+  });
+  const recovered = await fetch(
+      `${f.h.api}/projects/${FIXTURE_PROJECT_ID}/codex-chat-forks/${request.requestId}`,
+      { headers: f.h.headers(f.h.hearth.token) },
+    ),
+    recoveredBody = await recovered.json();
+  expect(recovered.status).toBe(200);
+  expect(recoveredBody.data).toMatchObject({
+    requestId: request.requestId,
+    requestHash,
+    state: "retired",
+    retiredReason: "verified-not-sent",
+  });
+
+  const lateFork = await f.post(`/${parentSessionId}/forks`, request),
+    lateForkBody = await lateFork.json();
+  expect(lateFork.status).toBe(200);
+  expect(lateForkBody.data).toMatchObject({
+    requestId: request.requestId,
+    requestHash,
+    state: "retired",
+    retiredReason: "verified-not-sent",
+  });
+  expect(f.records().filter((row) => row.method === "thread/fork")).toEqual([]);
+});
+
 test("protected Fork routes publish one audited native Fork and recover its exact metadata-only original", async () => {
   const f = await fixture("fork-service-tier-null"),
     start = await f.post("", f.request);

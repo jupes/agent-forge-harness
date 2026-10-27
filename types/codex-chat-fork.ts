@@ -29,6 +29,8 @@ export interface CodexChatForkOriginalBase {
   childAppSessionId: string;
   /** Missing only on legacy rows; new coordinators never dispatch or adopt those rows. */
   sourceSeal?: CodexChatForkSourceSeal | undefined;
+  /** Missing only on legacy rows; never inferred from a `reserved` state. */
+  reservationKind?: CodexChatForkReservationKind | undefined;
   createdAt: string;
   updatedAt: string;
 }
@@ -53,6 +55,7 @@ export type CodexChatForkOriginalRef = Pick<
   | "protocolVersion"
   | "childAppSessionId"
   | "sourceSeal"
+  | "reservationKind"
 >;
 
 export type CodexChatForkOriginal =
@@ -69,7 +72,14 @@ export type CodexChatForkOriginal =
   | (CodexChatForkOriginalBase & {
       state: "held";
       heldReason: CodexChatForkHeldReason;
+    })
+  | (CodexChatForkOriginalBase & {
+      state: "retired";
+      retiredReason: "verified-not-sent";
     });
+
+/** Internal provenance for new reservation rows; never accepted from a route body. */
+export type CodexChatForkReservationKind = "preflight-v1" | "direct-v1";
 
 /** Persisted only after a later trusted coordinator verifies native Fork evidence. */
 export interface CodexChatForkCapture {

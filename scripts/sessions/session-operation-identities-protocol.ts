@@ -51,11 +51,19 @@ export const codexChatForkIdentityMetadataSchema = z
     requestHash: sessionRequestHashSchema,
     parentSessionId: ownedSessionIdSchema,
     throughTurnRequestId: sessionRequestIdSchema,
-    state: z.enum(["reserved", "attempted", "captured", "linked", "held"]),
+    state: z.enum([
+      "reserved",
+      "attempted",
+      "captured",
+      "linked",
+      "held",
+      "retired",
+    ]),
     childSessionId: ownedSessionIdSchema.optional(),
     heldReason: z
       .enum(["unknown-native-outcome", "invalid-native-outcome"])
       .optional(),
+    retiredReason: z.literal("verified-not-sent").optional(),
   })
   .strict()
   .superRefine((identity, context) => {
@@ -71,6 +79,14 @@ export const codexChatForkIdentityMetadataSchema = z
       context.addIssue({
         code: "custom",
         message: "Only held Forks expose a held reason.",
+      });
+    if (
+      (identity.state === "retired") !==
+      (identity.retiredReason !== undefined)
+    )
+      context.addIssue({
+        code: "custom",
+        message: "Only retired Forks expose a retirement reason.",
       });
   });
 

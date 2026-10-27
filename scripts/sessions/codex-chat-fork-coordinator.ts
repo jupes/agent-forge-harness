@@ -24,8 +24,11 @@ import {
 } from "./codex-app-server-protocol";
 import { createCodexChatForkJournal } from "./codex-chat-fork-journal";
 import {
+  CODEX_CHAT_FORK_PROTOCOL_VERSION,
   codexChatForkCaptureHash,
   codexChatForkIntentSchema,
+  codexChatForkOriginalHash,
+  codexChatForkOriginalHashInput,
   codexChatForkOriginSchema,
   codexChatForkSourceSettingsHash,
 } from "./codex-chat-fork-protocol";
@@ -59,7 +62,8 @@ export type CodexChatForkCoordinatorResult =
   | {
       state: "held";
       reason: "unknown-native-outcome" | "invalid-native-outcome";
-    };
+    }
+  | { state: "retired" };
 
 /** A known immutable UUID/source collision, distinct from uncertain failures. */
 export class CodexChatForkOriginalConflict extends Error {
@@ -71,6 +75,43 @@ export class CodexChatForkOriginalConflict extends Error {
 
 function same(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
+}
+
+function expectedRequestHash(input: {
+  projectId: string;
+  workspace: string;
+  parentSessionId: string;
+  request: { requestId: string; throughTurnRequestId: string };
+}) {
+  return codexChatForkOriginalHash(
+    codexChatForkOriginalHashInput({
+      projectId: input.projectId,
+      workspaceKey: input.workspace,
+      parentSessionId: input.parentSessionId,
+      throughTurnRequestId: input.request.throughTurnRequestId,
+      requestId: input.request.requestId,
+      protocolVersion: CODEX_CHAT_FORK_PROTOCOL_VERSION,
+    }),
+  );
+}
+
+function exactOriginal(
+  original: CodexChatForkOriginal | null,
+  input: {
+    projectId: string;
+    workspace: string;
+    parentSessionId: string;
+    request: { requestId: string; throughTurnRequestId: string };
+  },
+): original is CodexChatForkOriginal {
+  return Boolean(
+    original &&
+      original.projectId === input.projectId &&
+      original.workspaceKey === input.workspace &&
+      original.parentSessionId === input.parentSessionId &&
+      original.throughTurnRequestId === input.request.throughTurnRequestId &&
+      original.requestHash === expectedRequestHash(input),
+  );
 }
 
 function verifiedCaptureForSource(
@@ -139,6 +180,9 @@ function originalRef(original: CodexChatForkOriginal) {
     throughTurnRequestId: original.throughTurnRequestId,
     protocolVersion: original.protocolVersion,
     childAppSessionId: original.childAppSessionId,
+    ...(original.reservationKind === undefined
+      ? {}
+      : { reservationKind: original.reservationKind }),
     ...(original.sourceSeal === undefined
       ? {}
       : { sourceSeal: original.sourceSeal }),
@@ -318,21 +362,30 @@ export function createCodexChatForkCoordinator(
   };
 
   return {
-    async fork(raw: {
+    async reservePreflight(raw: {
       projectId: string;
       parentSessionId: string;
       request: unknown;
-      /** Trusted receipt from the common operator action runner, never request data. */
       auditEventId: number;
-    }): Promise<CodexChatForkCoordinatorResult> {
+    }): Promise<CodexChatForkOriginal> {
       if (!Number.isSafeInteger(raw.auditEventId) || raw.auditEventId <= 0)
         throw new Error("A confirmed operator audit receipt is required.");
-      const intent = codexChatForkIntentSchema.safeParse(raw.request);
-      if (!intent.success)
-        throw new Error("Expected a bounded Codex Fork request.");
-      const prior = journal.read(raw.projectId, intent.data.requestId);
-      if (!prior || (prior.state !== "captured" && prior.state !== "linked"))
-        await options.settled?.(raw.projectId, raw.parentSessionId);
+      const parsed = codexChatForkIntentSchema.safeParse(raw.request);
+      if (!parsed.success) throw new CodexChatForkOriginalConflict();
+      const intent = parsed.data,
+        scope = {
+          projectId: raw.projectId,
+          workspace,
+          parentSessionId: raw.parentSessionId,
+          request: intent,
+        },
+        previous = journal.read(raw.projectId, intent.requestId);
+      if (previous) {
+        if (!exactOriginal(previous, scope))
+          throw new CodexChatForkOriginalConflict();
+        return previous;
+      }
+      await options.settled?.(raw.projectId, raw.parentSessionId);
       const lease = conversationLeaseFile(options.home, raw.projectId, {
         kind: "session",
         projectId: raw.projectId,
@@ -341,7 +394,13 @@ export function createCodexChatForkCoordinator(
       const result = await withQueueLock(
         lease,
         async () => {
-          let parent = registry.read(raw.projectId, raw.parentSessionId);
+          const existing = journal.read(raw.projectId, intent.requestId);
+          if (existing) {
+            if (!exactOriginal(existing, scope))
+              throw new CodexChatForkOriginalConflict();
+            return existing;
+          }
+          const parent = registry.read(raw.projectId, raw.parentSessionId);
           if (
             parent.provider !== "codex" ||
             parent.mode !== "chat" ||
@@ -356,14 +415,138 @@ export function createCodexChatForkCoordinator(
           const state = storeFor(parent.id, parent.projectId).read(
               parent.projectId,
             ),
-            existing = journal.read(raw.projectId, intent.data.requestId);
-          if (
-            existing &&
-            (existing.parentSessionId !== parent.id ||
-              existing.throughTurnRequestId !==
-                intent.data.throughTurnRequestId)
-          )
+            source = sourceFor({
+              parent,
+              state,
+              projectId: raw.projectId,
+              selectedTurnRequestId: intent.throughTurnRequestId,
+              workspace,
+              admission: true,
+            });
+          if (!source.eligible)
+            throw new Error(
+              `The selected Codex source is not Fork eligible (${source.reason}).`,
+            );
+          const selected = state.turns.find(
+            (turn) => turn.requestId === intent.throughTurnRequestId,
+          );
+          if (!selected)
+            throw new Error("The selected source turn disappeared.");
+          const sourceSeal = sourceSealFor(parent, selected.hash, source),
+            sourceAbout = [...(source.prepared.launch.context?.about ?? [])];
+          await options.validateScope(parent, sourceAbout);
+          return journal.reserve(
+            raw.projectId,
+            parent.id,
+            intent,
+            sourceSeal,
+            "preflight-v1",
+          );
+        },
+        { waitMs: 1000 },
+      );
+      if (!result.ok)
+        throw new Error(
+          "The parent conversation is busy; no Fork reservation was accepted.",
+        );
+      return result.value;
+    },
+    async retirePreflight(raw: {
+      projectId: string;
+      parentSessionId: string;
+      requestId: string;
+      requestHash: string;
+      auditEventId: number;
+    }): Promise<CodexChatForkOriginal> {
+      if (!Number.isSafeInteger(raw.auditEventId) || raw.auditEventId <= 0)
+        throw new Error("A confirmed operator audit receipt is required.");
+      const existing = journal.read(raw.projectId, raw.requestId);
+      if (!existing) throw new CodexChatForkOriginalConflict();
+      if (
+        existing.workspaceKey !== workspace ||
+        existing.parentSessionId !== raw.parentSessionId ||
+        existing.requestHash !== raw.requestHash ||
+        existing.reservationKind !== "preflight-v1" ||
+        !exactOriginal(existing, {
+          projectId: raw.projectId,
+          workspace,
+          parentSessionId: raw.parentSessionId,
+          request: {
+            requestId: raw.requestId,
+            throughTurnRequestId: existing.throughTurnRequestId,
+          },
+        })
+      )
+        throw new CodexChatForkOriginalConflict();
+      return journal.retirePreflight(originalRef(existing));
+    },
+    async fork(raw: {
+      projectId: string;
+      parentSessionId: string;
+      request: unknown;
+      /** Trusted receipt from the common operator action runner, never request data. */
+      auditEventId: number;
+    }): Promise<CodexChatForkCoordinatorResult> {
+      if (!Number.isSafeInteger(raw.auditEventId) || raw.auditEventId <= 0)
+        throw new Error("A confirmed operator audit receipt is required.");
+      const intent = codexChatForkIntentSchema.safeParse(raw.request);
+      if (!intent.success)
+        throw new Error("Expected a bounded Codex Fork request.");
+      const requestScope = {
+          projectId: raw.projectId,
+          workspace,
+          parentSessionId: raw.parentSessionId,
+          request: intent.data,
+        },
+        prior = journal.read(raw.projectId, intent.data.requestId);
+      if (prior && !exactOriginal(prior, requestScope))
+        throw new CodexChatForkOriginalConflict();
+      if (prior?.state === "retired") return { state: "retired" };
+      if (prior?.state === "reserved" && prior.reservationKind === undefined)
+        return { state: "held", reason: "unknown-native-outcome" };
+      if (
+        !prior ||
+        (prior.state !== "captured" &&
+          prior.state !== "linked" &&
+          prior.reservationKind !== "preflight-v1")
+      )
+        await options.settled?.(raw.projectId, raw.parentSessionId);
+      const lease = conversationLeaseFile(options.home, raw.projectId, {
+        kind: "session",
+        projectId: raw.projectId,
+        sessionId: raw.parentSessionId,
+      });
+      const result = await withQueueLock(
+        lease,
+        async () => {
+          const existing = journal.read(raw.projectId, intent.data.requestId);
+          if (existing && !exactOriginal(existing, requestScope))
             throw new CodexChatForkOriginalConflict();
+          if (existing?.state === "retired")
+            return { state: "retired" } as const;
+          if (
+            existing?.state === "reserved" &&
+            existing.reservationKind === undefined
+          )
+            return {
+              state: "held",
+              reason: "unknown-native-outcome",
+            } as const;
+          let parent = registry.read(raw.projectId, raw.parentSessionId);
+          if (
+            parent.provider !== "codex" ||
+            parent.mode !== "chat" ||
+            parent.origin !== undefined
+          )
+            throw new Error(
+              "The selected parent is not an ordinary owned Codex Chat source.",
+            );
+          if (workspaceKey(parent.workspace) !== workspace)
+            throw new Error("The Codex Chat belongs to another workspace.");
+          await options.validateScope(parent);
+          const state = storeFor(parent.id, parent.projectId).read(
+            parent.projectId,
+          );
           if (existing?.state === "linked") return linkedResult(existing);
           if (existing?.state === "held")
             return { state: "held", reason: existing.heldReason } as const;
@@ -414,6 +597,7 @@ export function createCodexChatForkCoordinator(
               parent.id,
               intent.data,
               sourceSeal,
+              "direct-v1",
             ));
           if (original.state === "reserved") {
             const attempt = await journal.markAttempted(originalRef(original));
@@ -564,10 +748,17 @@ export function createCodexChatForkCoordinator(
         },
         { waitMs: 1000 },
       );
-      if (!result.ok)
+      if (!result.ok) {
+        const afterBusy = journal.read(raw.projectId, intent.data.requestId);
+        if (
+          exactOriginal(afterBusy, requestScope) &&
+          afterBusy.state === "retired"
+        )
+          return { state: "retired" };
         throw new Error(
           "The parent conversation is busy; no Fork was accepted.",
         );
+      }
       return result.value;
     },
     readOriginal(projectId: string, requestId: string) {
