@@ -222,7 +222,7 @@ test("project catalog preferences preserve pending create originals without adva
   ).toEqual(reserved.operation);
 });
 
-test("project creation refuses distinct repository spellings of the same canonical checkout", async () => {
+test("a project reservation refuses distinct repository spellings of the same canonical checkout", async () => {
   const { store, input } = fixture();
   const separator = process.platform === "win32" ? "\\" : "/";
   const original = {
@@ -239,8 +239,18 @@ test("project creation refuses distinct repository spellings of the same canonic
     ],
   };
   const before = store.read();
-  await expect(store.create(original, 0)).rejects.toThrow();
+  const requestId = "78ff0894-37dc-457c-b818-11238edb9722";
+  await expect(
+    store.reserveCreate({
+      requestId,
+      original,
+      expectedCatalogRevision: 0,
+      preflightScope: { hash: "a".repeat(64), count: 1 },
+      validateScope: async () => ({ hash: "a".repeat(64), count: 1 }),
+    }),
+  ).rejects.toMatchObject({ status: 400 });
   expect(store.read()).toEqual(before);
+  expect(store.readCreate(requestId)).toBeNull();
 });
 
 test("project create ledger refuses a reservation that would exceed the catalog byte cap", async () => {
