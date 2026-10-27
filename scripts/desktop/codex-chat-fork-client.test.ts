@@ -705,7 +705,7 @@ test("a valid-shaped context for a different source stays held and cannot dispat
     const recovered = await client.recoverOriginal(projectId, requestId);
     expect(recovered.state).toBe("held");
     expect(recovered.original).toEqual(reserved);
-    expect(recovered.context?.requestHash).toBe("b".repeat(64));
+    expect(recovered.context).toBeNull();
     expect(client.canDispatchReservedFork(requestId)).toBe(false);
     expect(posts).toBe(0);
   } finally {

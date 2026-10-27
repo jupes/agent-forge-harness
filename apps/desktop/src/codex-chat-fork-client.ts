@@ -51,6 +51,7 @@ const scopeSchema = z
 const RESPONSE_LIMIT = CODEX_CHAT_FORK_REVIEW_LIMITS.responseBytes;
 const PAGE_LIMIT = CODEX_CHAT_FORK_REVIEW_LIMITS.pageItems;
 const PAGE_COUNT_LIMIT = CODEX_CHAT_FORK_REVIEW_LIMITS.pages;
+const OPERATOR_API_PREFIX = "/__agent-forge";
 const FORK_HASH_DOMAIN = "agent-forge.codex-chat-fork.original.v1";
 
 export interface ForkClientScope {
@@ -340,7 +341,7 @@ export function createCodexChatForkClient(
     const parsedRequestId = sessionRequestIdSchema.safeParse(requestId);
     if (!parsedRequestId.success || projectId !== scope.projectId) return null;
     const data = await get(
-      `/projects/${encodeURIComponent(projectId)}/codex-chat-forks/${encodeURIComponent(requestId)}`,
+      `${OPERATOR_API_PREFIX}/projects/${encodeURIComponent(projectId)}/codex-chat-forks/${encodeURIComponent(requestId)}`,
       scope,
     );
     if (data === null) return null;
@@ -353,7 +354,7 @@ export function createCodexChatForkClient(
     scope: ForkClientScope,
   ) => {
     const data = await get(
-      `/projects/${encodeURIComponent(projectId)}/session-operation-identities`,
+      `${OPERATOR_API_PREFIX}/projects/${encodeURIComponent(projectId)}/session-operation-identities`,
       scope,
     );
     if (data === null) return null;
@@ -382,7 +383,7 @@ export function createCodexChatForkClient(
     )
       throw new Error("The exact Fork original is unavailable in this scope.");
     const data = await get(
-      `/projects/${encodeURIComponent(projectId)}/codex-chat-forks/${encodeURIComponent(requestId)}/context?after=${after}&limit=${PAGE_LIMIT}`,
+      `${OPERATOR_API_PREFIX}/projects/${encodeURIComponent(projectId)}/codex-chat-forks/${encodeURIComponent(requestId)}/context?after=${after}&limit=${PAGE_LIMIT}`,
       scope,
       signal,
     );
@@ -419,7 +420,7 @@ export function createCodexChatForkClient(
       for (;;) {
         if (++pageCount > PAGE_COUNT_LIMIT)
           throw new Error("The complete Fork source exceeds its page limit.");
-        const path = `/projects/${encodeURIComponent(input.projectId)}/sessions/${encodeURIComponent(input.parentSessionId)}/fork-review?throughTurnRequestId=${encodeURIComponent(input.throughTurnRequestId)}&after=${after}&limit=${PAGE_LIMIT}`;
+        const path = `${OPERATOR_API_PREFIX}/projects/${encodeURIComponent(input.projectId)}/sessions/${encodeURIComponent(input.parentSessionId)}/fork-review?throughTurnRequestId=${encodeURIComponent(input.throughTurnRequestId)}&after=${after}&limit=${PAGE_LIMIT}`;
         const data = await get(path, scope, signal);
         const parsed = codexChatForkSourcePageSchema.safeParse(data);
         if (
@@ -758,7 +759,7 @@ export function createCodexChatForkClient(
           "The Fork child transcript is unavailable in this scope.",
         );
       const data = await get(
-        `/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(childSessionId)}/fork-turns?after=${after}&limit=100&requestId=${encodeURIComponent(requestId)}`,
+        `${OPERATOR_API_PREFIX}/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(childSessionId)}/fork-turns?after=${after}&limit=100&requestId=${encodeURIComponent(requestId)}`,
         scope,
         signal,
       );
@@ -779,7 +780,7 @@ export function createCodexChatForkClient(
         ? `?requestId=${encodeURIComponent(requestId)}`
         : "";
       const data = await get(
-        `/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(childSessionId)}/fork-approvals${query}`,
+        `${OPERATOR_API_PREFIX}/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(childSessionId)}/fork-approvals${query}`,
         scope,
         signal,
       );
