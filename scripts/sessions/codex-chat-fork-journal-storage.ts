@@ -925,7 +925,7 @@ export function createCodexChatForkJournalStorage(
         previous = known.get(name);
       const entryKind: "mutex-sidecar" | "sqlite-sidecar" =
         name === MUTEX_FILE ? "mutex-sidecar" : "sqlite-sidecar";
-      const guardTarget = diagnostic
+      const guardTarget: MutexGuardTarget | undefined = diagnostic
           ? {
               phase: diagnostic.phase,
               expected: diagnostic.mutexIdentity,
@@ -1005,18 +1005,21 @@ export function createCodexChatForkJournalStorage(
       else fail();
     }
     for (const entry of found) {
-      const verified = assertPrivateLockFile(
-        entry.path,
-        entry.identity,
-        diagnostic
-          ? {
-              phase: diagnostic.phase,
-              expected: diagnostic.mutexIdentity,
-              prefix:
-                entry.name === MUTEX_FILE ? "mutex-sidecar" : "sqlite-sidecar",
-            }
-          : undefined,
-      );
+      const normalizeNewSidecar =
+        entry.name !== MUTEX_FILE &&
+        !known.has(entry.name) &&
+        protectNewSidecars;
+      const guardTarget: MutexGuardTarget | undefined = diagnostic
+        ? {
+            phase: diagnostic.phase,
+            expected: diagnostic.mutexIdentity,
+            prefix:
+              entry.name === MUTEX_FILE ? "mutex-sidecar" : "sqlite-sidecar",
+          }
+        : undefined;
+      const verified = normalizeNewSidecar
+        ? assertPlainLockFile(entry.path, entry.identity, guardTarget)
+        : assertPrivateLockFile(entry.path, entry.identity, guardTarget);
       const verifiedInitialPage =
         allowInitialMutexPage &&
         entry.name === MUTEX_FILE &&
@@ -1055,19 +1058,41 @@ export function createCodexChatForkJournalStorage(
           );
         else fail();
       }
-      if (
-        entry.name !== MUTEX_FILE &&
-        !known.has(entry.name) &&
-        protectNewSidecars
-      ) {
-        secureNewSidecar(
-          entry.path,
-          entry.identity,
-          verified.size,
-          lockIdentity,
-        );
-      }
       if (entry.name !== MUTEX_FILE) sidecars.set(entry.name, entry.identity);
+    }
+    for (const entry of found) {
+      if (
+        entry.name === MUTEX_FILE ||
+        known.has(entry.name) ||
+        !protectNewSidecars
+      )
+        continue;
+      const verifiedSize = verifiedSizes.get(entry.name)!;
+      secureNewSidecar(entry.path, entry.identity, verifiedSize, lockIdentity);
+      const secured = assertPrivateLockFile(
+        entry.path,
+        entry.identity,
+        diagnostic
+          ? {
+              phase: diagnostic.phase,
+              expected: diagnostic.mutexIdentity,
+              prefix: "sqlite-sidecar",
+            }
+          : undefined,
+      );
+      if (secured.size !== verifiedSize) {
+        const fail = () => {
+          throw new Error("The private Codex Fork mutex metadata changed.");
+        };
+        if (diagnostic)
+          guarded(
+            diagnostic.phase,
+            "sqlite-sidecar-size",
+            diagnostic.mutexIdentity,
+            fail,
+          );
+        else fail();
+      }
     }
     const afterNames = diagnostic
       ? guarded(
