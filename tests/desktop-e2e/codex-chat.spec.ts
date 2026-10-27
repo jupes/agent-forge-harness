@@ -3084,7 +3084,7 @@ test("Codex Chat explicitly reviews, forks, reloads and controls only the linked
     throw Error("The saved parent configuration is unavailable");
   expect(nativeFork?.params).toMatchObject({
     threadId: parentNativeId,
-    lastTurnId: "0199a213-81c0-7800-8aa1-bbab2a035a54",
+    lastTurnId: "0199a213-81c0-7800-8aa1-bbab2a035a55",
     model: originalFrame.event.codexChat.launch.model,
     modelProvider: "openai",
     serviceTier: null,
