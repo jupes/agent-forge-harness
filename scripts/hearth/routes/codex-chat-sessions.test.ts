@@ -1437,9 +1437,21 @@ test("Fork review GET projects the explicitly selected completed parent turn wit
   expect(new Set(reviewedFrames.map((frame) => frame.seq)).size).toBe(
     reviewedFrames.length,
   );
-  expect(reviewedFrames.map((frame) => frame.text).join(" ")).toContain(
-    "Hello world",
-  );
+  const promptIndex = reviewedFrames.findIndex(
+      (frame) =>
+        frame.kind === "user" && frame.text.includes("PRIVATE-CHAT-PROMPT"),
+    ),
+    firstReplyIndex = reviewedFrames.findIndex(
+      (frame) => frame.kind === "text",
+    ),
+    replyText = reviewedFrames
+      .filter((frame) => frame.kind === "text")
+      .map((frame) => frame.text)
+      .join("");
+  expect(promptIndex).toBeGreaterThanOrEqual(0);
+  expect(firstReplyIndex).toBeGreaterThan(promptIndex);
+  expect(replyText).toBe("Hello world");
+  expect(reviewedFrames[promptIndex]?.text).toContain("PRIVATE-CHAT-PROMPT");
   expect(f.records()).toEqual(beforeRecords);
   expect(f.h.events(["operator.action"])).toEqual(beforeAudit);
   expect(f.records().filter((row) => row.method === "thread/fork")).toEqual([]);
