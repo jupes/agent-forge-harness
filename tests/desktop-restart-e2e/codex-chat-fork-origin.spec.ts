@@ -10,6 +10,7 @@ import {
 } from "../../scripts/hearth/paths";
 import { ownedCodingStateSchema } from "../../scripts/sessions/codex-owned-journal";
 import { ownedCodingSessionSchema } from "../../scripts/sessions/codex-owned-wire-protocol";
+import { sessionStartIdentityPageSchema } from "../../scripts/sessions/identity-protocol";
 import {
   codexChatForkIdentityMetadataSchema,
   sessionOperationIdentityPageSchema,
@@ -112,6 +113,34 @@ async function openNewSession(page: Page, url: string): Promise<SessionRow> {
   await dialog
     .getByRole("button", { name: "Check supported options", exact: true })
     .click();
+  await expect(
+    dialog.getByRole("button", { name: "Start", exact: true }),
+  ).toBeEnabled();
+  const identityRead = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return (
+      response.request().method() === "GET" &&
+      url.origin === new URL(page.url()).origin &&
+      url.pathname ===
+        `/__agent-forge/projects/${alpha.id}/session-start-identities`
+    );
+  });
+  await dialog
+    .getByRole("region", { name: "Original Start requests", exact: true })
+    .getByRole("button", { name: "Check server", exact: true })
+    .click();
+  const identityResponse = await identityRead;
+  expect(identityResponse.status()).toBe(200);
+  const identityEnvelope = record(
+    parseJson(await identityResponse.text(), "Session Start identity page"),
+  );
+  const identityPage = sessionStartIdentityPageSchema.parse(
+    identityEnvelope?.["data"],
+  );
+  expect(identityPage.scope).toEqual({
+    projectId: alpha.id,
+    workspace: alpha.workspaces[0]?.root,
+  });
   await expect(
     dialog.getByRole("button", { name: "Start", exact: true }),
   ).toBeEnabled();
@@ -385,11 +414,16 @@ async function holdEffectfulRoute(
       return;
     }
     handlerEntered = true;
-    const headers = await route.request().allHeaders();
     const origin = new URL(route.request().url()).origin;
-    const response = await route.fetch({
-      headers: { ...headers, Origin: origin, "Sec-Fetch-Site": "same-origin" },
-    });
+    const headers = await route.request().allHeaders();
+    if (
+      headers["origin"] !== origin ||
+      headers["sec-fetch-site"] !== "same-origin"
+    )
+      throw new Error(
+        "The browser Fork request did not carry its actual origin.",
+      );
+    const response = await route.fetch({ headers });
     if (!response.ok())
       throw new Error(
         `The actual Fork operation returned ${response.status()}.`,
