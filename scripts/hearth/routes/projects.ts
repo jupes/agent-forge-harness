@@ -360,10 +360,16 @@ export function projectRoutes(
             );
           return existing;
         }
+        const preflightScope = checkedScope(
+          input.original,
+          await createOptions.loadScope(),
+          createOptions,
+        );
         const result = await store.reserveCreate({
           requestId: input.requestId,
           original: input.original,
           expectedCatalogRevision: input.expectedCatalogRevision,
+          preflightScope,
           validateScope: async () =>
             checkedScope(
               input.original,
@@ -410,10 +416,16 @@ export function projectRoutes(
           );
         if (existing.state === "created")
           return { operation: existing, catalog: publicCatalog(store.read()) };
+        const preflightScope = checkedScope(
+          existing.original,
+          await createOptions.loadScope(),
+          createOptions,
+        );
         const result = await store.commitCreate({
           requestId,
           requestHash,
           reviewedScopeHash,
+          preflightScope,
           validateScope: async () =>
             checkedScope(
               existing.original,

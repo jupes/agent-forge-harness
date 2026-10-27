@@ -685,6 +685,7 @@ async function seedProjectCreateReservation(
     requestId,
     original,
     expectedCatalogRevision: createProjectStore(h.home).read().revision,
+    preflightScope: { hash: "a".repeat(64), count: 0 },
     validateScope: async () => ({ hash: "a".repeat(64), count: 0 }),
   });
 }
@@ -2492,6 +2493,7 @@ const ACTIONS: Record<string, ActionFixture> = {
         requestId: API_PROJECT_CREATE_RETIRE_ID,
         original,
         expectedCatalogRevision: createProjectStore(h.home).read().revision,
+        preflightScope: { hash: "c".repeat(64), count: 0 },
         validateScope: async () => ({ hash: "c".repeat(64), count: 0 }),
       });
       const hash = hashProjectCreateRequest({

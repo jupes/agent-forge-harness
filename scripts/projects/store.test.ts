@@ -4,7 +4,11 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeOwnerOnly } from "../hearth/token";
-import { createProjectStore, projectCatalogPath } from "./store";
+import {
+  createProjectStore,
+  hashProjectCreateRequest,
+  projectCatalogPath,
+} from "./store";
 
 function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
@@ -141,6 +145,7 @@ test("create identity hashes bind the UUID and expected semantic revision", asyn
     requestId: firstId,
     original: input,
     expectedCatalogRevision: 0,
+    preflightScope: { hash: "a".repeat(64), count: 0 },
     validateScope: async () => ({ hash: "a".repeat(64), count: 0 }),
   });
   expect(first.operation.requestHash).toBe(
@@ -150,11 +155,19 @@ test("create identity hashes bind the UUID and expected semantic revision", asyn
       original: input,
     }),
   );
+  const hashInput = {
+    requestId: firstId,
+    expectedCatalogRevision: 0,
+    original: input,
+    validateScope: async () => ({ hash: "a".repeat(64), count: 0 }),
+  };
+  expect(hashProjectCreateRequest(hashInput)).toBe(first.operation.requestHash);
   await expect(
     store.reserveCreate({
       requestId: firstId,
       original: input,
       expectedCatalogRevision: 1,
+      preflightScope: { hash: "a".repeat(64), count: 0 },
       validateScope: async () => ({ hash: "a".repeat(64), count: 0 }),
     }),
   ).rejects.toMatchObject({ status: 409 });
@@ -165,6 +178,7 @@ test("create identity hashes bind the UUID and expected semantic revision", asyn
     requestId: secondId,
     original: input,
     expectedCatalogRevision: 0,
+    preflightScope: { hash: "a".repeat(64), count: 0 },
     validateScope: async () => ({ hash: "a".repeat(64), count: 0 }),
   });
   expect(second.operation.requestHash).toBe(
@@ -186,6 +200,7 @@ test("project catalog preferences preserve pending create originals without adva
     requestId: "bfefeb99-b4a8-4e6b-b6b1-5916b9d355c1",
     original: { ...input, slug: "beta", name: "Beta" },
     expectedCatalogRevision: 1,
+    preflightScope: { hash: "b".repeat(64), count: 3 },
     validateScope: async () => ({ hash: "b".repeat(64), count: 3 }),
   });
   expect(reserved.catalog.revision).toBe(1);
@@ -213,6 +228,7 @@ test("project create ledger refuses a reservation that would exceed the catalog 
           description: "x".repeat(450),
         },
         expectedCatalogRevision: 0,
+        preflightScope: { hash: "b".repeat(64), count: 1 },
         validateScope: async () => ({ hash: "b".repeat(64), count: 1 }),
       });
     } catch (error) {
@@ -232,6 +248,7 @@ test("project create ledger refuses a reservation that would exceed the catalog 
         description: "x".repeat(450),
       },
       expectedCatalogRevision: 0,
+      preflightScope: { hash: "b".repeat(64), count: 1 },
       validateScope: async () => ({ hash: "b".repeat(64), count: 1 }),
     }),
   ).rejects.toMatchObject({ status: 400 });
@@ -245,6 +262,7 @@ test("concurrent commit and retirement leave one durable terminal outcome", asyn
     requestId,
     original: input,
     expectedCatalogRevision: 0,
+    preflightScope: { hash: "c".repeat(64), count: 1 },
     validateScope: async () => ({ hash: "c".repeat(64), count: 1 }),
   });
   const outcomes = await Promise.allSettled([
@@ -252,6 +270,7 @@ test("concurrent commit and retirement leave one durable terminal outcome", asyn
       requestId,
       requestHash: reserved.operation.requestHash,
       reviewedScopeHash: reserved.operation.scopeHash,
+      preflightScope: { hash: reserved.operation.scopeHash, count: 1 },
       validateScope: async () => ({
         hash: reserved.operation.scopeHash,
         count: 1,
@@ -281,6 +300,7 @@ test("a modified saved create original is a corrupt catalog and is never repaire
     requestId: "01e1a1bc-36fa-4df3-ae65-d1068d1b97dc",
     original: input,
     expectedCatalogRevision: 0,
+    preflightScope: { hash: "f".repeat(64), count: 0 },
     validateScope: async () => ({ hash: "f".repeat(64), count: 0 }),
   });
   const file = projectCatalogPath(home);
@@ -296,6 +316,7 @@ test("a modified saved create original is a corrupt catalog and is never repaire
       requestId: reserved.operation.requestId,
       requestHash: reserved.operation.requestHash,
       reviewedScopeHash: reserved.operation.scopeHash,
+      preflightScope: { hash: reserved.operation.scopeHash, count: 0 },
       validateScope: async () => ({
         hash: reserved.operation.scopeHash,
         count: 0,

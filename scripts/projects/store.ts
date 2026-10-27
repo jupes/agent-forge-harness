@@ -92,7 +92,15 @@ export function hashProjectCreateRequest(input: {
   expectedCatalogRevision: number;
   original: NewProject;
 }): string {
-  return createHash("sha256").update(canonicalJson(input)).digest("hex");
+  return createHash("sha256")
+    .update(
+      canonicalJson({
+        requestId: input.requestId,
+        expectedCatalogRevision: input.expectedCatalogRevision,
+        original: input.original,
+      }),
+    )
+    .digest("hex");
 }
 
 function validWorkspace(scope: unknown): scope is ProjectWorkspace {
@@ -528,6 +536,7 @@ export function createProjectStore(
       requestId: string;
       original: NewProject;
       expectedCatalogRevision: number;
+      preflightScope: { hash: string; count: number };
       validateScope(): Promise<{ hash: string; count: number }>;
     }): Promise<{
       catalog: ProjectCatalog;
@@ -544,6 +553,10 @@ export function createProjectStore(
           "workspaces",
         ]) ||
         !revision(input.expectedCatalogRevision) ||
+        !digest(input.preflightScope?.hash) ||
+        !Number.isSafeInteger(input.preflightScope?.count) ||
+        input.preflightScope.count < 0 ||
+        input.preflightScope.count > 100_000 ||
         typeof input.validateScope !== "function"
       )
         throw new ProjectStoreError(
@@ -606,6 +619,14 @@ export function createProjectStore(
             503,
             "The complete project source could not be verified. Refresh before reserving this project.",
           );
+        if (
+          scope.hash !== input.preflightScope.hash ||
+          scope.count !== input.preflightScope.count
+        )
+          throw new ProjectStoreError(
+            409,
+            "The project source changed while reserving. Refresh and review the complete scope again.",
+          );
         if (operations.length >= MAX_PROJECT_CREATE_OPERATIONS)
           throw new ProjectStoreError(
             503,
@@ -665,6 +686,7 @@ export function createProjectStore(
       requestId: string;
       requestHash: string;
       reviewedScopeHash: string;
+      preflightScope: { hash: string; count: number };
       validateScope(): Promise<{ hash: string; count: number }>;
     }): Promise<{
       catalog: ProjectCatalog;
@@ -674,6 +696,10 @@ export function createProjectStore(
         !requestId(input.requestId) ||
         !digest(input.requestHash) ||
         !digest(input.reviewedScopeHash) ||
+        !digest(input.preflightScope?.hash) ||
+        !Number.isSafeInteger(input.preflightScope?.count) ||
+        input.preflightScope.count < 0 ||
+        input.preflightScope.count > 100_000 ||
         typeof input.validateScope !== "function"
       )
         throw new ProjectStoreError(
@@ -725,7 +751,9 @@ export function createProjectStore(
           );
         if (
           found.scopeHash !== input.reviewedScopeHash ||
-          found.scopeHash !== scope.hash
+          found.scopeHash !== scope.hash ||
+          found.scopeHash !== input.preflightScope.hash ||
+          scope.count !== input.preflightScope.count
         )
           throw new ProjectStoreError(
             409,
