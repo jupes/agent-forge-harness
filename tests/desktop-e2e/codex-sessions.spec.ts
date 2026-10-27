@@ -665,6 +665,78 @@ test("a reserved Start after reload continues only after exact same-UUID body re
   expect(tasks()).toHaveLength(before + 1);
 });
 
+test("a durable pre-dispatch NotSent Start retries only by explicit same-UUID re-entry", async ({
+  page,
+}) => {
+  const before = tasks().length;
+  await openSettled(page, `/index.html#/desktop/project/${alpha.id}/sessions`);
+  const dialog = await checkDefault(
+    page,
+    "Retry only the durably not-sent original",
+  );
+  const starts: CodexTaskStartRequest[] = [];
+  let identityWrites = 0;
+  page.on("request", (request) => {
+    if (request.method() !== "POST") return;
+    const url = new URL(request.url());
+    if (
+      url.pathname ===
+      `/__agent-forge/projects/${alpha.id}/session-start-identities`
+    )
+      identityWrites++;
+    if (url.pathname === `/__agent-forge/projects/${alpha.id}/sessions`) {
+      const parsed = codexTaskStartSchema.safeParse(request.postDataJSON());
+      if (!parsed.success) throw Error("Invalid Codex Task Start fixture.");
+      starts.push(parsed.data);
+    }
+  });
+
+  // The preview already succeeded with the normal inert CLI. The real Start
+  // path re-prepares after reserving; make that bounded help probe refuse before
+  // any native Task process can be dispatched.
+  writeFileSync(
+    join(HEARTH_HOME, "codex-fixture-mode.json"),
+    JSON.stringify("missing-sandbox-capability"),
+  );
+  await dialog.getByRole("button", { name: "Start", exact: true }).click();
+  await expect.poll(() => starts.length).toBe(1);
+  const row = dialog.locator(".af-start-identities-list li").filter({
+    hasText: starts[0]?.requestId ?? "",
+  });
+  await expect(row).toContainText("codex task · not-sent");
+  const original = starts[0];
+  if (!original) throw Error("Missing original Codex Task Start request.");
+  const originalHash = await row.locator("code").nth(1).textContent();
+  expect(originalHash).toMatch(/^[0-9a-f]{64}$/);
+  expect(identityWrites).toBe(1);
+  expect(starts).toHaveLength(1);
+  expect(tasks()).toHaveLength(before);
+
+  // Only the explicit operator retry restores fixture capability. A background
+  // refresh alone must not dispatch the retained Start.
+  writeFileSync(
+    join(HEARTH_HOME, "codex-fixture-mode.json"),
+    JSON.stringify("normal"),
+  );
+  await expect(
+    row.getByRole("button", { name: "Retry exact original", exact: true }),
+  ).toBeEnabled();
+  await row
+    .getByRole("button", { name: "Retry exact original", exact: true })
+    .click();
+  await expect(
+    page.getByRole("article", { name: "Session reply", exact: true }),
+  ).toContainText("Codex Task reply 🌱");
+
+  expect(starts).toHaveLength(2);
+  expect(starts[1]).toEqual(original);
+  expect(starts[1]?.requestId).toBe(original.requestId);
+  expect(identityWrites).toBe(2);
+  await expect(row).toContainText("codex task · admitted");
+  await expect(row.locator("code").nth(1)).toHaveText(originalHash ?? "");
+  expect(tasks()).toHaveLength(before + 1);
+});
+
 test("confirmed reserved retirement reads back the tombstone before a new UUID can start", async ({
   page,
 }) => {
