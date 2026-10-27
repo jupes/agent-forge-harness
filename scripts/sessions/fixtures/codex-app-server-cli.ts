@@ -674,7 +674,7 @@ while (true) {
         !forkParams ||
         typeof forkParams["threadId"] !== "string" ||
         typeof forkParams["lastTurnId"] !== "string" ||
-        (mode !== "fork-restart" && forkParams["threadId"] !== threadId)
+        (!forkRestartMode && forkParams["threadId"] !== threadId)
       )
         process.exit(14);
       const fork = forkParams;

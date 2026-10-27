@@ -296,7 +296,10 @@ function fixture(mode = "normal") {
   };
 }
 
-test("the compiled desktop Codex stand-in completes prepare and dispatch in fork-restart mode", async () => {
+test.each([
+  "fork-restart",
+  "fork-restart-child-approval",
+] as const)("the compiled desktop Codex stand-in completes prepare and dispatch in %s mode", async (fixtureMode) => {
   const root = scratch.make("codex-chat-compiled-stand-in-"),
     home = join(root, "fixture-home"),
     userHome = join(home, "user"),
@@ -325,7 +328,7 @@ test("the compiled desktop Codex stand-in completes prepare and dispatch in fork
     );
     writeFileSync(
       join(home, "codex-chat-fixture-mode.json"),
-      JSON.stringify("fork-restart"),
+      JSON.stringify(fixtureMode),
       { mode: 0o600 },
     );
     for (const name of [

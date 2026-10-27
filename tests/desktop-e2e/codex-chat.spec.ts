@@ -4365,10 +4365,18 @@ test("switching linked Fork originals clears the prior child state before readin
   await expect
     .poll(() => saved(childA.id).turns.some((row) => row.phase === "completed"))
     .toBe(true);
-
+  await reopenedChildA
+    .getByRole("button", {
+      name: "Refresh child transcript and permissions",
+      exact: true,
+    })
+    .click();
   await expect(reopenedChildA).toContainText(
     "PRIVATE_LINKED_CHILD_A_TRANSCRIPT",
   );
+  await expect(
+    reopened.getByText("Permission request · command", { exact: true }),
+  ).toHaveCount(0);
   await reopenedChildA
     .getByRole("textbox", { name: "Continue this child", exact: true })
     .fill("PRIVATE_LINKED_CHILD_A_TERMINAL_DRAFT");
