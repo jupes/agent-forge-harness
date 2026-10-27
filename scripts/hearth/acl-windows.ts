@@ -67,6 +67,17 @@ export interface FolderRead {
   file: OpenedFile | null;
 }
 
+/** A final-path file created with its private DACL before it became visible. */
+export type ExclusiveOwnerOnlyFile =
+  | { kind: "exists" }
+  | {
+      kind: "created";
+      /** Mark this exact still-open file for deletion; never removes by path. */
+      remove(): void;
+      /** Close the creation handle. Must be called after verification/removal. */
+      close(): void;
+    };
+
 /** What `makeOwnerOnly` asks of Windows; a test hands in its own. */
 export interface WindowsAcl {
   /** This process's user, `S-1-…`. */
@@ -112,6 +123,8 @@ export interface WindowsAcl {
     content: Uint8Array,
     beforeRename?: (temp: string) => void,
   ): void;
+  /** Exclusively create an empty final-path file with a private DACL at first visibility. */
+  createOwnerOnlyExclusive?(file: string): ExclusiveOwnerOnlyFile;
 }
 
 export const SYSTEM_SID = "S-1-5-18";
@@ -492,6 +505,8 @@ function openApi(ffi: typeof BunFfi) {
       returns: FFIType.u64,
     },
     GetFileSizeEx: { args: [FFIType.u64, FFIType.ptr], returns: FFIType.i32 },
+    GetLastError: { args: [], returns: FFIType.u32 },
+    FlushFileBuffers: { args: [FFIType.u64], returns: FFIType.i32 },
     WriteFile: {
       args: [FFIType.u64, FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.ptr],
       returns: FFIType.i32,
@@ -686,6 +701,9 @@ function nativeAcl(api: Api): WindowsAcl {
     createOwnerOnly(temp, file, content, beforeRename) {
       createThroughHandle(api, userSid(), temp, file, content, beforeRename);
     },
+    createOwnerOnlyExclusive(file) {
+      return createExclusiveOwnerOnly(api, userSid(), file);
+    },
   };
 }
 
@@ -700,6 +718,8 @@ const FILE_SHARE_READ = 0x1;
 /** `FILE_INFO_BY_HANDLE_CLASS`'s `FileRenameInfo` and `FileDispositionInfo`. */
 const FILE_RENAME_INFO = 3;
 const FILE_DISPOSITION_INFO = 4;
+const ERROR_FILE_EXISTS = 80;
+const ERROR_ALREADY_EXISTS = 183;
 
 /**
  * `createOwnerOnly`: `CreateFileW` with the owner-only descriptor in its
@@ -784,6 +804,87 @@ function createThroughHandle(
     api.kernel32.CloseHandle(handle);
     // A delete the handle refused: removed by its name instead, best effort.
     if (!deleteOnClose) rmSync(temp, { force: true });
+  }
+}
+
+/** Create a final-path empty file without ever exposing an inherited DACL. */
+function createExclusiveOwnerOnly(
+  api: Api,
+  userSid: string,
+  file: string,
+): ExclusiveOwnerOnlyFile {
+  const descriptor = ownerOnlyDescriptor(userSid, "file"),
+    attributes = new Uint8Array(24),
+    attributesView = new DataView(attributes.buffer);
+  attributesView.setUint32(0, 24, true);
+  attributesView.setBigUint64(8, BigInt(api.ffi.ptr(descriptor)), true);
+  const held: unknown[] = [descriptor];
+  const handle = BigInt(
+    api.kernel32.CreateFileW(
+      wide(file),
+      (GENERIC_WRITE | DELETE | READ_CONTROL | SYNCHRONIZE) >>> 0,
+      FILE_SHARE_READ,
+      attributes,
+      CREATE_NEW,
+      FILE_ATTRIBUTE_NORMAL,
+      null,
+    ),
+  );
+  held.length = 0;
+  if (handle === INVALID_HANDLE) {
+    const error = api.kernel32.GetLastError();
+    if (error === ERROR_FILE_EXISTS || error === ERROR_ALREADY_EXISTS)
+      return { kind: "exists" };
+    throw new Error(`Windows refused to exclusively create ${file}`);
+  }
+
+  let closed = false,
+    markedForRemoval = false;
+  const close = (): void => {
+    if (closed) return;
+    if (api.kernel32.CloseHandle(handle) === 0)
+      throw new Error(`Windows refused to close the exclusive file handle`);
+    closed = true;
+  };
+  const remove = (): void => {
+    if (closed) throw new Error("The exclusive file handle is already closed.");
+    if (markedForRemoval) return;
+    if (
+      api.kernel32.SetFileInformationByHandle(
+        handle,
+        FILE_DISPOSITION_INFO,
+        new Uint8Array([1, 0, 0, 0]),
+        4,
+      ) === 0
+    )
+      throw new Error("Windows refused to remove the exact created file.");
+    markedForRemoval = true;
+  };
+  try {
+    const size = new BigInt64Array(1);
+    if (api.kernel32.GetFileSizeEx(handle, size) === 0 || size[0] !== 0n)
+      throw new Error("The exclusive private file was not empty.");
+    const reading = handleReading(api, handle);
+    const problem = ownerOnlyProblem(reading, "file", userSid);
+    if (problem !== null)
+      throw new Error(
+        `The exclusive private file failed ACL verification: ${problem}`,
+      );
+    if (api.kernel32.FlushFileBuffers(handle) === 0)
+      throw new Error("Windows refused to flush the exclusive private file.");
+    return { kind: "created", remove, close };
+  } catch (error) {
+    try {
+      remove();
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [error, cleanupError],
+        "The new private Windows file failed verification and its exact created handle could not remove it.",
+      );
+    } finally {
+      close();
+    }
+    throw error;
   }
 }
 
