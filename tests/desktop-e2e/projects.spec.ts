@@ -422,6 +422,34 @@ test("a lost commit reply reloads the same created original without replay", asy
     .getByRole("button", { name: "Create project from this original" })
     .click()
     .catch(() => undefined);
+  const recoveryPath = `/__agent-forge/projects/create-reservations/${saved.requestId}`;
+  let reloadDocumentObserved = false;
+  const observeReloadNavigation = (frame: import("@playwright/test").Frame) => {
+    if (frame === page.mainFrame()) reloadDocumentObserved = true;
+  };
+  let resolveRecoveryRead!: (value: {
+    status: number | null;
+    body: unknown;
+    fromReloadedDocument: boolean;
+    sameOrigin: boolean;
+    captureError: string | null;
+  }) => void;
+  let recoveryRead: Promise<{
+    status: number | null;
+    body: unknown;
+    fromReloadedDocument: boolean;
+    sameOrigin: boolean;
+    captureError: string | null;
+  }> | null = null;
+  let recoveryReadStarted = false;
+  let finishRecoveryRead!: () => void;
+  const recoveryReadFinished = new Promise<void>((resolve) => {
+    finishRecoveryRead = resolve;
+  });
+  let captureRecoveryRead:
+    | ((route: import("@playwright/test").Route) => Promise<void>)
+    | null = null;
+  const recoveryPathMatcher = (url: URL) => url.pathname === recoveryPath;
   try {
     await effectReached;
     const token = await pageToken(page);
@@ -453,37 +481,107 @@ test("a lost commit reply reloads the same created original without replay", asy
     expect(createdBeforeReload.projectId).not.toBeNull();
 
     countRecoveryReads = true;
-    const recoveryRead = page
-      .waitForResponse(
-        (response) =>
-          new URL(response.url()).pathname ===
-            `/__agent-forge/projects/create-reservations/${saved.requestId}` &&
-          response.request().method() === "GET",
-      )
-      .then(async (response) => ({
-        status: response.status(),
-        body: await response.json(),
-      }));
+    page.on("framenavigated", observeReloadNavigation);
+    recoveryRead = new Promise((resolve) => {
+      resolveRecoveryRead = resolve;
+    });
+    captureRecoveryRead = async (route: import("@playwright/test").Route) => {
+      recoveryReadStarted = true;
+      const fromReloadedDocument = reloadDocumentObserved;
+      if (route.request().method() !== "GET") {
+        resolveRecoveryRead({
+          status: null,
+          body: null,
+          fromReloadedDocument,
+          sameOrigin: false,
+          captureError: "unexpected_method",
+        });
+        finishRecoveryRead();
+        await route.abort("failed").catch(() => undefined);
+        return;
+      }
+      let fetchedResponse: import("@playwright/test").APIResponse | null = null;
+      try {
+        const url = new URL(route.request().url());
+        const originalHeaders = await route.request().allHeaders();
+        const originalOrigin = originalHeaders["origin"];
+        const originalFetchSite = originalHeaders["sec-fetch-site"];
+        const sameOrigin =
+          url.origin === new URL(page.url()).origin &&
+          (!originalOrigin || originalOrigin === url.origin) &&
+          (!originalFetchSite || originalFetchSite === "same-origin");
+        if (!sameOrigin)
+          throw Error("The recovery read did not match the current origin.");
+        fetchedResponse = await route.fetch({
+          headers: {
+            ...originalHeaders,
+            Origin: url.origin,
+            "Sec-Fetch-Site": "same-origin",
+          },
+        });
+        let body: unknown;
+        try {
+          body = await fetchedResponse.json();
+        } catch {
+          throw Error("The recovered project original was not valid JSON.");
+        }
+        await route.fulfill({ response: fetchedResponse });
+        resolveRecoveryRead({
+          status: fetchedResponse.status(),
+          body,
+          fromReloadedDocument,
+          sameOrigin,
+          captureError: null,
+        });
+      } catch (error) {
+        resolveRecoveryRead({
+          status: null,
+          body: null,
+          fromReloadedDocument,
+          sameOrigin: false,
+          captureError: error instanceof Error ? "read_failed" : "read_unknown",
+        });
+        if (fetchedResponse) {
+          await route
+            .fulfill({ response: fetchedResponse })
+            .catch(() => undefined);
+        } else {
+          await route.abort("failed").catch(() => undefined);
+        }
+      } finally {
+        finishRecoveryRead();
+      }
+    };
+    await page.route(recoveryPathMatcher, captureRecoveryRead);
     await page.reload();
     releaseCommitReply();
     await click;
+    if (!recoveryRead) throw Error("The recovery read was not armed.");
     const recoveredRead = await recoveryRead;
+    expect(recoveredRead.captureError).toBeNull();
+    expect(recoveredRead.fromReloadedDocument).toBe(true);
+    expect(recoveredRead.sameOrigin).toBe(true);
     expect(recoveredRead.status).toBe(200);
-    expect(
-      projectCreateIdentitySchema.parse(recoveredRead.body.data),
-    ).toMatchObject({
+    if (
+      typeof recoveredRead.body !== "object" ||
+      recoveredRead.body === null ||
+      !("data" in recoveredRead.body)
+    )
+      throw Error("The recovered project original envelope was unavailable.");
+    const recoveredIdentity = projectCreateIdentitySchema.parse(
+      recoveredRead.body.data,
+    );
+    expect(recoveredIdentity).toMatchObject({
       requestId: saved.requestId,
       requestHash: saved.requestHash,
       original: saved.original,
       state: "created",
     });
-    expect(
-      projectCreateIdentitySchema.parse(recoveredRead.body.data).projectId,
-    ).toBe(createdBeforeReload.projectId);
+    expect(recoveredIdentity.projectId).toBe(createdBeforeReload.projectId);
     await expect(
       page.getByRole("link", { name: saved.original.name, exact: true }),
     ).toBeVisible();
-    expect(recoveryOriginalReads).toBeGreaterThan(0);
+    expect(recoveryOriginalReads).toBe(1);
     expect(mutations.map((item) => item.path)).toEqual([
       "/__agent-forge/projects/create-reservations",
       `/__agent-forge/projects/create-reservations/${saved.requestId}/commit`,
@@ -495,6 +593,10 @@ test("a lost commit reply reloads the same created original without replay", asy
   } finally {
     releaseCommitReply();
     await click;
+    if (recoveryReadStarted) await recoveryReadFinished;
+    if (captureRecoveryRead)
+      await page.unroute(recoveryPathMatcher, captureRecoveryRead);
+    page.off("framenavigated", observeReloadNavigation);
     await page.unroute(commitPathPattern, loseCommitReply);
   }
 });
