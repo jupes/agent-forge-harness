@@ -407,11 +407,12 @@ test("bounded project color IDs are hash-bound and survive exact create readback
       "a8112b0e-2334-47e2-86da-5c3603c3c428",
       "25e8d00a-8493-4e66-9f62-2fc2ff68715e",
     ][index]!;
-    const original = Object.assign({}, base, {
+    const original = {
+      ...base,
       slug: `alpha-${color}`,
       name: `Alpha ${color}`,
       color,
-    });
+    };
     const parsed = projectCreateOriginalSchema.safeParse(original);
     expect(parsed.success).toBe(true);
     if (!parsed.success) continue;
@@ -454,17 +455,28 @@ test("bounded project color IDs are hash-bound and survive exact create readback
     await expect(
       store.reserveCreate({
         requestId,
-        original: Object.assign({}, base, {
+        original: {
+          ...base,
           slug: `alpha-${color}`,
           name: `Alpha ${color}`,
           color: color === "green" ? "blue" : "green",
-        }),
+        },
         expectedCatalogRevision,
         preflightScope: { hash: "e".repeat(64), count: 1 },
         validateScope: async () => ({ hash: "e".repeat(64), count: 1 }),
       }),
     ).rejects.toMatchObject({ status: 409 });
   }
+
+  const file = projectCatalogPath(home);
+  const saved = JSON.parse(readFileSync(file, "utf8")) as {
+    projects: Array<Record<string, unknown>>;
+  };
+  saved.projects[0]!.color = "blue";
+  const corrupted = JSON.stringify(saved);
+  writeOwnerOnly(file, corrupted);
+  expect(() => store.read()).toThrow();
+  expect(readFileSync(file, "utf8")).toBe(corrupted);
 });
 
 test("project color protocol rejects arbitrary CSS and unknown token names", () => {
