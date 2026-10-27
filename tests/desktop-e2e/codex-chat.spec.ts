@@ -95,7 +95,12 @@ async function startedChat(page: Page) {
   if (!record) throw Error("No accepted Chat record");
   return { pane, record };
 }
-async function completeForkSourceTurn(page: Page, pane: Locator) {
+async function completeForkSourceTurn(
+  page: Page,
+  pane: Locator,
+  sessionId: string,
+): Promise<string> {
+  const priorIds = new Set(saved(sessionId).turns.map((turn) => turn.requestId));
   const message = page.getByRole("textbox", {
     name: "Session reply prompt",
     exact: true,
@@ -104,12 +109,20 @@ async function completeForkSourceTurn(page: Page, pane: Locator) {
   await pane
     .getByRole("button", { name: "Send session message", exact: true })
     .click();
+  let selectedRequestId: string | null = null;
   await expect
     .poll(() => {
-      const record = records().find((row) => !previous.has(row.id));
-      return record ? saved(record.id).turns.at(-1)?.phase : null;
+      const selected = saved(sessionId).turns.find(
+        (turn) => !priorIds.has(turn.requestId),
+      );
+      if (!selected) return null;
+      selectedRequestId = selected.requestId;
+      return selected.phase;
     })
     .toBe("completed");
+  if (!selectedRequestId)
+    throw Error("The new Fork source turn was not recorded");
+  return selectedRequestId;
 }
 let previous = new Set<string>();
 test.beforeEach(() => {
@@ -2956,8 +2969,14 @@ test("Codex Chat explicitly reviews, forks, reloads and controls only the linked
   await page.emulateMedia({ reducedMotion: "reduce" });
   mode("fork-service-tier-null");
   const { pane, record } = await startedChat(page);
-  await completeForkSourceTurn(page, pane);
-  const turn = saved(record.id).turns.at(-1);
+  const selectedTurnRequestId = await completeForkSourceTurn(
+    page,
+    pane,
+    record.id,
+  );
+  const turn = saved(record.id).turns.find(
+    (row) => row.requestId === selectedTurnRequestId,
+  );
   if (!turn || turn.phase !== "completed")
     throw Error("No completed Fork source turn");
   const parentNativeId = saved(record.id).binding?.sessionId;
@@ -3025,7 +3044,7 @@ test("Codex Chat explicitly reviews, forks, reloads and controls only the linked
   const rawIdentity: unknown = await page.evaluate(
     async ({ project, token, header }) => {
       const response = await fetch(
-        `/projects/${project}/session-operation-identities`,
+        `/__agent-forge/projects/${project}/session-operation-identities`,
         { headers: { [header]: token } },
       );
       return response.json();
@@ -3176,8 +3195,14 @@ test("an undispatched Fork original can be explicitly retired after reload", asy
 }) => {
   mode("fork-service-tier-null");
   const { pane, record } = await startedChat(page);
-  await completeForkSourceTurn(page, pane);
-  const turn = saved(record.id).turns.at(-1);
+  const selectedTurnRequestId = await completeForkSourceTurn(
+    page,
+    pane,
+    record.id,
+  );
+  const turn = saved(record.id).turns.find(
+    (row) => row.requestId === selectedTurnRequestId,
+  );
   if (!turn || turn.phase !== "completed")
     throw Error("No completed Fork source turn");
   const forkPosts: Array<{ path: string; body: unknown }> = [];
@@ -3185,7 +3210,9 @@ test("an undispatched Fork original can be explicitly retired after reload", asy
     const path = new URL(request.url()).pathname;
     if (
       request.method() === "POST" &&
-      (path.endsWith("/fork-reservations") || path.endsWith("/forks"))
+      (path.endsWith("/fork-reservations") ||
+        path.includes("/fork-reservations/") ||
+        path.endsWith("/forks"))
     )
       forkPosts.push({ path, body: request.postDataJSON() });
   };
@@ -3252,8 +3279,14 @@ test("lost native Fork reply remains held across reload without another Fork POS
 }) => {
   mode("fork-service-tier-null");
   const { pane, record } = await startedChat(page);
-  await completeForkSourceTurn(page, pane);
-  const turn = saved(record.id).turns.at(-1);
+  const selectedTurnRequestId = await completeForkSourceTurn(
+    page,
+    pane,
+    record.id,
+  );
+  const turn = saved(record.id).turns.find(
+    (row) => row.requestId === selectedTurnRequestId,
+  );
   if (!turn) throw Error("No completed source turn");
   const opener = pane.getByRole("button", {
     name: `Review Fork through ${turn.requestId.slice(0, 8)}`,
@@ -3330,7 +3363,7 @@ test("lost native Fork reply remains held across reload without another Fork POS
     "Create the native child thread once",
   );
   expect(originalGets).toContain(
-    `/projects/${record.projectId}/codex-chat-forks/${reservedRequestId}`,
+      `/__agent-forge/projects/${record.projectId}/codex-chat-forks/${reservedRequestId}`,
   );
   expect(
     calls().filter((row) => row.kind === "fork-created-without-response"),
