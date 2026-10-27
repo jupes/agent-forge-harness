@@ -63,6 +63,15 @@ function journal(id: string) {
     throw Error("The isolated private Task journal is unavailable.");
   }
 }
+function journalIfPresent(id: string) {
+  const path = join(HEARTH_HOME, "conversations", `${id}.json`);
+  if (!existsSync(path)) return null;
+  try {
+    return ownedCodingStateSchema.parse(JSON.parse(readFileSync(path, "utf8")));
+  } catch {
+    throw Error("The isolated private Task journal is invalid.");
+  }
+}
 const tasks = () => calls().filter((call) => call.kind === "task");
 const alive = (pid: number) => {
   try {
@@ -84,7 +93,9 @@ test.beforeEach(() => {
 test.afterEach(async ({ page }) => {
   await page.unrouteAll({ behavior: "ignoreErrors" });
   for (const record of records().filter((record) => !previous.has(record.id))) {
-    const turn = journal(record.id).turns.find((item) =>
+    const state = journalIfPresent(record.id);
+    if (!state) continue;
+    const turn = state.turns.find((item) =>
       ["accepted", "running", "cancelling"].includes(item.phase),
     );
     if (!turn) continue;
@@ -675,6 +686,7 @@ test("a durable pre-dispatch NotSent Start retries only by explicit same-UUID re
     "Retry only the durably not-sent original",
   );
   const starts: CodexTaskStartRequest[] = [];
+  const startStatuses: number[] = [];
   let identityWrites = 0;
   page.on("request", (request) => {
     if (request.method() !== "POST") return;
@@ -690,13 +702,21 @@ test("a durable pre-dispatch NotSent Start retries only by explicit same-UUID re
       starts.push(parsed.data);
     }
   });
+  page.on("response", (response) => {
+    const url = new URL(response.url());
+    if (
+      url.pathname === `/__agent-forge/projects/${alpha.id}/sessions` &&
+      response.request().method() === "POST"
+    )
+      startStatuses.push(response.status());
+  });
 
   // The preview already succeeded with the normal inert CLI. The real Start
   // path re-prepares after reserving; make that bounded help probe refuse before
   // any native Task process can be dispatched.
   writeFileSync(
     join(HEARTH_HOME, "codex-fixture-mode.json"),
-    JSON.stringify("missing-sandbox-capability"),
+    JSON.stringify("capability-probe-failure"),
   );
   await dialog.getByRole("button", { name: "Start", exact: true }).click();
   await expect.poll(() => starts.length).toBe(1);
@@ -710,6 +730,7 @@ test("a durable pre-dispatch NotSent Start retries only by explicit same-UUID re
   expect(originalHash).toMatch(/^[0-9a-f]{64}$/);
   expect(identityWrites).toBe(1);
   expect(starts).toHaveLength(1);
+  expect(startStatuses).toEqual([503]);
   expect(tasks()).toHaveLength(before);
 
   // Only the explicit operator retry restores fixture capability. A background
@@ -729,6 +750,7 @@ test("a durable pre-dispatch NotSent Start retries only by explicit same-UUID re
   ).toContainText("Codex Task reply 🌱");
 
   expect(starts).toHaveLength(2);
+  expect(startStatuses).toEqual([503, 200]);
   expect(starts[1]).toEqual(original);
   expect(starts[1]?.requestId).toBe(original.requestId);
   expect(identityWrites).toBe(2);
