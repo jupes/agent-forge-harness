@@ -12,6 +12,9 @@ import { isAbsolute } from "node:path";
 const argv = process.argv.slice(2),
   log = process.env.CODEX_CHAT_LOG;
 const mode = process.env.CODEX_CHAT_MODE;
+const forkRestartMode =
+    mode === "fork-restart" || mode === "fork-restart-child-approval",
+  forkRestartChildApprovalMode = mode === "fork-restart-child-approval";
 const serviceTierAwareMode =
     mode === "service-tier-null" ||
     mode === "fork-approval-command" ||
@@ -19,14 +22,14 @@ const serviceTierAwareMode =
     mode === "fork-service-tier-null" ||
     mode === "fork-service-tier-priority" ||
     mode === "fork-child-lost-turn-reply" ||
-    mode === "fork-restart",
+    forkRestartMode,
   forkServiceTierResumeMode =
     mode === "fork-approval-command" ||
     mode === "fork-service-tier-null-child-approval" ||
     mode === "fork-service-tier-null" ||
     mode === "fork-service-tier-priority" ||
     mode === "fork-child-lost-turn-reply" ||
-    mode === "fork-restart",
+    forkRestartMode,
   configuredServiceTier =
     mode === "fork-service-tier-priority" ? "priority" : null;
 if (argv.includes("--child"))
@@ -139,14 +142,12 @@ record({
   forged: process.env.AGENT_FORGE_FORGED,
   slug: process.env.FORGE_SLUG,
 });
-let threadId: string =
-  mode === "fork-restart"
+let threadId: string = forkRestartMode
+  ? randomUUID()
+  : "0199a213-81c0-7800-8aa1-bbab2a035a53";
+const firstTurnId = forkRestartMode
     ? randomUUID()
-    : "0199a213-81c0-7800-8aa1-bbab2a035a53";
-const firstTurnId =
-    mode === "fork-restart"
-      ? randomUUID()
-      : "0199a213-81c0-7800-8aa1-bbab2a035a54",
+    : "0199a213-81c0-7800-8aa1-bbab2a035a54",
   resumedTurnId = "0199a213-81c0-7800-8aa1-bbab2a035a55";
 let turnId = firstTurnId;
 let model = "",
@@ -211,7 +212,7 @@ const finish = async (extraItems: unknown[] = []) => {
       },
     },
   });
-  if (mode === "fork-restart")
+  if (forkRestartMode)
     record({
       kind: "fixture-completed-turn",
       processId: process.pid,
@@ -637,7 +638,7 @@ while (true) {
           ? (params as Record<string, unknown>)
           : null;
       const forkSourceCheck =
-        mode === "fork-restart" &&
+        forkRestartMode &&
         typeof forkParams?.["threadId"] === "string" &&
         typeof forkParams["lastTurnId"] === "string"
           ? inspectRecordedForkParent(
@@ -684,7 +685,7 @@ while (true) {
       const settingsMatch =
         settingsMatches !== null &&
         Object.values(settingsMatches).every(Boolean);
-      if (mode === "fork-restart" && forkSourceCheck)
+      if (forkRestartMode && forkSourceCheck)
         record({
           kind: "fork-restart-diagnostic",
           stage:
@@ -698,7 +699,7 @@ while (true) {
           settingsMatches,
         });
       if (
-        mode === "fork-restart" &&
+        forkRestartMode &&
         (forkSourceCheck?.stage !== "source-found" ||
           !forkSourceCheck.parentFound ||
           !forkSourceCheck.turnFound)
@@ -750,10 +751,9 @@ while (true) {
               excludeSlashTmp: true,
             };
       const forkThread = {
-        id:
-          mode === "fork-restart"
-            ? randomUUID()
-            : "0199a213-81c0-7800-8aa1-bbab2a035a55",
+        id: forkRestartMode
+          ? randomUUID()
+          : "0199a213-81c0-7800-8aa1-bbab2a035a55",
         environments: [],
         extra: null,
         sessionId: threadId,
@@ -847,7 +847,7 @@ while (true) {
       if (
         forkServiceTierResumeMode &&
         resuming &&
-        (mode === "fork-restart"
+        (forkRestartMode
           ? Object.hasOwn(params, "modelProvider") ||
             Object.hasOwn(params, "serviceTier")
           : params.threadId === resumedTurnId) &&
@@ -915,7 +915,7 @@ while (true) {
           },
         },
       });
-      if (mode === "fork-restart")
+      if (forkRestartMode)
         record({
           kind: "fixture-parent",
           processId: process.pid,
@@ -1207,6 +1207,7 @@ while (true) {
         (mode === "fork-service-tier-null-child-approval" &&
           resuming &&
           threadId === resumedTurnId) ||
+        (forkRestartChildApprovalMode && resuming) ||
         mode === "approval-conflict" ||
         mode === "approval-resolved" ||
         mode === "approval-stale" ||
@@ -1252,7 +1253,10 @@ while (true) {
             ],
           },
         };
-        if (mode === "fork-service-tier-null-child-approval")
+        if (
+          mode === "fork-service-tier-null-child-approval" ||
+          forkRestartChildApprovalMode
+        )
           record({ kind: "approval-offer", threadId, turnId });
         await send(request);
         if (mode === "approval-command-duplicate") await send(request);

@@ -3970,6 +3970,404 @@ test("Codex Chat explicitly reviews, forks, reloads and controls only the linked
   page.off("request", captureChildAction);
 });
 
+test("switching linked Fork originals clears the prior child state before reading the next child", async ({
+  page,
+}) => {
+  mode("fork-restart-child-approval");
+  const { pane, record } = await startedChat(page),
+    selectedTurnRequestId = await completeForkSourceTurn(page, pane, record.id),
+    turn = saved(record.id).turns.find(
+      (row) => row.requestId === selectedTurnRequestId,
+    );
+  if (!turn || turn.phase !== "completed")
+    throw Error("No completed Fork source turn");
+  const opener = pane.getByRole("button", {
+      name: `Review Fork through ${turn.requestId.slice(0, 8)}`,
+      exact: true,
+    }),
+    forkPosts: Array<{ path: string; body: unknown }> = [];
+  const captureForkPost = (request: Request) => {
+    const path = new URL(request.url()).pathname;
+    if (
+      request.method() === "POST" &&
+      (path.endsWith("/fork-reservations") || path.endsWith("/forks"))
+    )
+      forkPosts.push({ path, body: request.postDataJSON() });
+  };
+  page.on("request", captureForkPost);
+  await opener.click();
+  const dialog = page.getByRole("dialog", {
+      name: "Review native Codex Fork",
+      exact: true,
+    }),
+    createButton = dialog.getByRole("button", {
+      name: "Create the native child thread once",
+      exact: true,
+    });
+  await dialog
+    .getByRole("button", { name: "Reserve this exact Fork", exact: true })
+    .click();
+  await expect(createButton).toBeEnabled();
+  await createButton.click();
+  await expect(
+    dialog.getByText("Child conversation", { exact: true }),
+  ).toBeVisible();
+  expect(
+    calls().filter((row) => row.kind === "rpc" && row.method === "thread/fork"),
+  ).toHaveLength(1);
+  const firstReservation = z
+    .object({
+      requestId: z.string().uuid(),
+      throughTurnRequestId: z.string().uuid(),
+    })
+    .strict()
+    .parse(forkPosts[0]?.body);
+  expect(firstReservation.throughTurnRequestId).toBe(turn.requestId);
+  const childA = records().find(
+    (row) =>
+      row.id !== record.id &&
+      row.requestId === firstReservation.requestId &&
+      "origin" in row &&
+      row.origin?.kind === "codex-chat-fork",
+  );
+  if (!childA) throw Error("Linked Fork child A was not registered");
+  const nativeChildA = saved(childA.id).binding?.sessionId;
+  if (!nativeChildA) throw Error("Linked Fork child A has no native identity");
+  const childARegion = dialog.getByRole("region", {
+    name: "Fork child conversation",
+    exact: true,
+  });
+  await childARegion
+    .getByRole("textbox", { name: "Continue this child", exact: true })
+    .fill("PRIVATE_LINKED_CHILD_A_TRANSCRIPT");
+  await childARegion
+    .getByRole("button", { name: "Send child turn", exact: true })
+    .click();
+  await expect
+    .poll(() =>
+      calls().some(
+        (row) => row.kind === "approval-offer" && row.threadId === nativeChildA,
+      ),
+    )
+    .toBe(true);
+  await childARegion
+    .getByRole("button", {
+      name: "Refresh child transcript and permissions",
+      exact: true,
+    })
+    .click();
+  await expect(
+    dialog.getByText("Permission request · command", { exact: true }),
+  ).toBeVisible();
+  await expect(childARegion).toContainText("PRIVATE_LINKED_CHILD_A_TRANSCRIPT");
+  await childARegion
+    .getByRole("textbox", { name: "Continue this child", exact: true })
+    .fill("PRIVATE_LINKED_CHILD_A_DRAFT");
+
+  const token = await pageToken(page),
+    secondRequestId = await page.evaluate(() => crypto.randomUUID()),
+    secondReserveResponse = await page.evaluate(
+      async ({
+        projectId,
+        parentSessionId,
+        requestId,
+        throughTurnRequestId,
+        token,
+        header,
+      }) => {
+        const response = await fetch(
+          `/__agent-forge/projects/${projectId}/sessions/${parentSessionId}/fork-reservations`,
+          {
+            method: "POST",
+            headers: {
+              [header]: token,
+              "content-type": "application/json",
+            },
+            body: JSON.stringify({ requestId, throughTurnRequestId }),
+          },
+        );
+        return { status: response.status, body: await response.json() };
+      },
+      {
+        projectId: record.projectId,
+        parentSessionId: record.id,
+        requestId: secondRequestId,
+        throughTurnRequestId: turn.requestId,
+        token,
+        header: OPERATOR_HEADER,
+      },
+    );
+  expect(secondReserveResponse.status).toBe(200);
+  const secondReserveEnvelope = z
+    .object({ ok: z.literal(true), data: z.unknown(), error: z.null() })
+    .strict()
+    .parse(secondReserveResponse.body);
+  const identityB = codexChatForkIdentityMetadataSchema.parse(
+    secondReserveEnvelope.data,
+  );
+  expect(identityB).toMatchObject({
+    requestId: secondRequestId,
+    parentSessionId: record.id,
+    throughTurnRequestId: turn.requestId,
+    state: "reserved",
+  });
+  const secondForkResponse = await page.evaluate(
+    async ({
+      projectId,
+      parentSessionId,
+      requestId,
+      throughTurnRequestId,
+      token,
+      header,
+    }) => {
+      const response = await fetch(
+        `/__agent-forge/projects/${projectId}/sessions/${parentSessionId}/forks`,
+        {
+          method: "POST",
+          headers: {
+            [header]: token,
+            "content-type": "application/json",
+          },
+          body: JSON.stringify({ requestId, throughTurnRequestId }),
+        },
+      );
+      return { status: response.status, body: await response.json() };
+    },
+    {
+      projectId: record.projectId,
+      parentSessionId: record.id,
+      requestId: secondRequestId,
+      throughTurnRequestId: turn.requestId,
+      token,
+      header: OPERATOR_HEADER,
+    },
+  );
+  expect(secondForkResponse.status).toBe(200);
+  const secondForkEnvelope = z
+    .object({ ok: z.literal(true), data: z.unknown(), error: z.null() })
+    .strict()
+    .parse(secondForkResponse.body);
+  expect(
+    codexChatForkIdentityMetadataSchema.parse(secondForkEnvelope.data),
+  ).toMatchObject({
+    requestId: secondRequestId,
+    requestHash: identityB.requestHash,
+    parentSessionId: record.id,
+    throughTurnRequestId: turn.requestId,
+    state: "linked",
+  });
+  const childB = records().find(
+    (row) =>
+      row.id !== record.id &&
+      row.requestId === secondRequestId &&
+      "origin" in row &&
+      row.origin?.kind === "codex-chat-fork",
+  );
+  if (!childB) throw Error("Linked Fork child B was not registered");
+  const nativeChildB = saved(childB.id).binding?.sessionId;
+  if (!nativeChildB) throw Error("Linked Fork child B has no native identity");
+  expect(childB.id).not.toBe(childA.id);
+  expect(nativeChildB).not.toBe(nativeChildA);
+  expect(forkPosts).toHaveLength(4);
+  expect(
+    calls().filter((row) => row.kind === "rpc" && row.method === "thread/fork"),
+  ).toHaveLength(2);
+  const originalAResponse = await page.evaluate(
+    async ({ projectId, requestId, token, header }) => {
+      const response = await fetch(
+        `/__agent-forge/projects/${projectId}/codex-chat-forks/${requestId}`,
+        { headers: { [header]: token } },
+      );
+      return { status: response.status, body: await response.json() };
+    },
+    {
+      projectId: record.projectId,
+      requestId: firstReservation.requestId,
+      token,
+      header: OPERATOR_HEADER,
+    },
+  );
+  expect(originalAResponse.status).toBe(200);
+  const originalAEnvelope = z
+    .object({ ok: z.literal(true), data: z.unknown(), error: z.null() })
+    .strict()
+    .parse(originalAResponse.body);
+  const identityA = codexChatForkIdentityMetadataSchema.parse(
+    originalAEnvelope.data,
+  );
+  expect(identityA).toMatchObject({
+    requestId: firstReservation.requestId,
+    parentSessionId: record.id,
+    throughTurnRequestId: turn.requestId,
+    state: "linked",
+  });
+  expect(identityB.requestHash).not.toBe(identityA.requestHash);
+
+  await dialog
+    .getByRole("button", { name: "Close dialog", exact: true })
+    .click();
+  await opener.click();
+  const reopened = page.getByRole("dialog", {
+    name: "Review native Codex Fork",
+    exact: true,
+  });
+  const historyA = reopened.getByRole("button", {
+      name: `Inspect Fork original ${firstReservation.requestId.slice(0, 8)} · linked`,
+      exact: true,
+    }),
+    historyB = reopened.getByRole("button", {
+      name: `Inspect Fork original ${secondRequestId.slice(0, 8)} · linked`,
+      exact: true,
+    });
+  await expect(historyA).toBeVisible();
+  await expect(historyB).toBeVisible();
+  if (await historyA.isEnabled()) await historyA.click();
+  await expect(reopened).toContainText(firstReservation.requestId);
+  const reopenedChildA = reopened.getByRole("region", {
+    name: "Fork child conversation",
+    exact: true,
+  });
+  await reopenedChildA
+    .getByRole("button", {
+      name: "Refresh child transcript and permissions",
+      exact: true,
+    })
+    .click();
+  await expect(reopenedChildA).toContainText(
+    "PRIVATE_LINKED_CHILD_A_TRANSCRIPT",
+  );
+  await expect(
+    reopened.getByText("Permission request · command", { exact: true }),
+  ).toBeVisible();
+  const draftA = reopenedChildA.getByRole("textbox", {
+    name: "Continue this child",
+    exact: true,
+  });
+  await draftA.fill("PRIVATE_LINKED_CHILD_A_DRAFT");
+  await expect(draftA).toHaveValue("PRIVATE_LINKED_CHILD_A_DRAFT");
+
+  const makeReadGate = () => {
+    let release!: () => void,
+      didStart = false;
+    const released = new Promise<void>((resolve) => (release = resolve)),
+      handlers: Promise<void>[] = [];
+    return {
+      handlers,
+      release,
+      get started() {
+        return didStart;
+      },
+      handler: (route: Route) => {
+        const running = (async () => {
+          didStart = true;
+          await released;
+          await route.continue();
+        })();
+        handlers.push(running);
+        return running;
+      },
+    };
+  };
+  const turnGate = makeReadGate(),
+    approvalGate = makeReadGate(),
+    contextGate = makeReadGate();
+  let contextReads = 0;
+  const turnMatcher = (url: URL) =>
+      url.pathname.endsWith(`/sessions/${childB.id}/fork-turns`) &&
+      url.searchParams.get("requestId") === secondRequestId,
+    approvalMatcher = (url: URL) =>
+      url.pathname.endsWith(`/sessions/${childB.id}/fork-approvals`) &&
+      url.searchParams.get("requestId") === secondRequestId,
+    contextMatcher = (url: URL) =>
+      url.pathname.endsWith(`/codex-chat-forks/${secondRequestId}/context`);
+  const contextHandler = async (route: Route) => {
+    contextReads++;
+    if (contextReads === 1) {
+      await route.continue();
+      return;
+    }
+    await contextGate.handler(route);
+  };
+  await page.route(turnMatcher, turnGate.handler);
+  await page.route(approvalMatcher, approvalGate.handler);
+  await page.route(contextMatcher, contextHandler);
+  const postsBeforeSelection = forkPosts.length,
+    forksBeforeSelection = calls().filter(
+      (row) => row.kind === "rpc" && row.method === "thread/fork",
+    ).length;
+  try {
+    await historyB.click();
+    await expect(reopened).toContainText(secondRequestId);
+    await expect
+      .soft(reopened)
+      .not.toContainText("PRIVATE_LINKED_CHILD_A_TRANSCRIPT");
+    await expect
+      .soft(reopened.getByText("Permission request · command", { exact: true }))
+      .toHaveCount(0);
+    await expect
+      .soft(
+        reopenedChildA.getByRole("textbox", {
+          name: "Continue this child",
+          exact: true,
+        }),
+      )
+      .toHaveValue("");
+    await expect
+      .soft(
+        reopened.getByRole("button", { name: "Send child turn", exact: true }),
+      )
+      .toBeDisabled();
+    await expect
+      .poll(
+        () => turnGate.started && approvalGate.started && contextGate.started,
+      )
+      .toBe(true);
+    await expect(reopenedChildA).toContainText(
+      "Verifying child transcript and permissions…",
+    );
+    await expect(reopenedChildA).toContainText(nativeChildB);
+    await expect(
+      reopened.getByRole("button", { name: "Send child turn", exact: true }),
+    ).toBeDisabled();
+    expect(forkPosts).toHaveLength(postsBeforeSelection);
+    expect(
+      calls().filter(
+        (row) => row.kind === "rpc" && row.method === "thread/fork",
+      ),
+    ).toHaveLength(forksBeforeSelection);
+  } finally {
+    turnGate.release();
+    approvalGate.release();
+    contextGate.release();
+    await Promise.all([
+      ...turnGate.handlers,
+      ...approvalGate.handlers,
+      ...contextGate.handlers,
+    ]);
+    await page.unroute(turnMatcher, turnGate.handler);
+    await page.unroute(approvalMatcher, approvalGate.handler);
+    await page.unroute(contextMatcher, contextHandler);
+  }
+  await expect(reopened).not.toContainText("PRIVATE_LINKED_CHILD_A_TRANSCRIPT");
+  await expect(reopenedChildA).toContainText(nativeChildB);
+  if (await historyA.isEnabled()) await historyA.click();
+  await expect(reopened).toContainText(firstReservation.requestId);
+  await reopenedChildA
+    .getByRole("button", {
+      name: "Refresh child transcript and permissions",
+      exact: true,
+    })
+    .click();
+  await expect(
+    reopened.getByText("Permission request · command", { exact: true }),
+  ).toBeVisible();
+  await reopened.getByRole("button", { name: "accept", exact: true }).click();
+  await expect
+    .poll(() => saved(childA.id).turns.some((row) => row.phase === "completed"))
+    .toBe(true);
+  page.off("request", captureForkPost);
+});
+
 test("an undispatched Fork original can be explicitly retired after reload", async ({
   page,
 }) => {
