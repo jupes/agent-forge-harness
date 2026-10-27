@@ -199,6 +199,7 @@ async function openNewSession(page: Page, url: string): Promise<SessionRow> {
     identityEnvelope?.["data"],
   );
   expect(identityPage.scope).toEqual({
+    family: "owned-session-start",
     projectId: alpha.id,
     workspace: alpha.workspaces[0]?.root,
   });
@@ -736,27 +737,11 @@ test("two actual host replacements recover the exact Fork original before and af
   });
   knownIdentities.push(safeIdentityFacts(firstRetired));
   stage = "first-reservation-retired";
-  const retiredRead = page.waitForResponse((response) => {
-    const url = new URL(response.url());
-    return (
-      response.request().method() === "GET" &&
-      url.pathname ===
-        `/__agent-forge/projects/${alpha.id}/codex-chat-forks/${firstRequestId}`
-    );
-  });
-  await reviewA
-    .getByRole("button", {
-      name: `Inspect Fork original ${firstRequestId.slice(0, 8)} · retired`,
-      exact: true,
-    })
-    .click();
-  const retiredReadHttp = await retiredRead;
-  expect(retiredReadHttp.status()).toBe(200);
-  const retiredReadEnvelope = record(
-    parseJson(await retiredReadHttp.text(), "retired Fork readback"),
-  );
-  const retiredReadIdentity = codexChatForkIdentityMetadataSchema.parse(
-    retiredReadEnvelope?.["data"],
+  await expect(reviewA).toContainText(`${firstRequestId} · retired`);
+  const retiredReadIdentity = await readForkOriginal(
+    page,
+    currentOrigin,
+    firstRequestId,
   );
   expect(retiredReadIdentity).toMatchObject({
     requestId: firstRequestId,
