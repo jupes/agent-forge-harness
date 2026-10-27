@@ -1,9 +1,16 @@
 import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeOwnerOnly } from "../hearth/token";
+import { resolveCheckout } from "../ledger/workspace";
 import { projectCreateOriginalSchema } from "./create-protocol";
 import {
   createProjectStore,
@@ -204,12 +211,25 @@ test("create identity hashes bind the UUID and expected semantic revision", asyn
 
 test("an explicit project Keeper Smith is bound to the saved original and committed record while legacy originals stay absent", async () => {
   const { home, store, input } = fixture();
-  const checkout = join(home, "checkout");
-  mkdirSync(join(checkout, ".git"), { recursive: true });
+  const checkoutPath = join(home, "checkout");
+  mkdirSync(join(checkoutPath, ".git"), { recursive: true });
+  const checkout = resolveCheckout(checkoutPath).workspace;
+  const checkoutAlias = join(home, "checkout-alias");
+  symlinkSync(
+    checkout,
+    checkoutAlias,
+    process.platform === "win32" ? "junction" : "dir",
+  );
+  const canonicalCheckout = resolveCheckout(checkoutAlias).workspace;
+  expect(canonicalCheckout).not.toBe(checkoutAlias);
   const original = {
     ...input,
     workspaces: [
-      { root: checkout, repositories: [checkout], epicIds: ["demo-epic"] },
+      {
+        root: canonicalCheckout,
+        repositories: [canonicalCheckout],
+        epicIds: ["demo-epic"],
+      },
     ],
   };
   const requestId = "bba4e479-101f-48c4-bbb8-04f242e3d325";
@@ -291,10 +311,22 @@ test("a legacy original commits on the direct store path without a Keeper field"
   const { home, store, input } = fixture();
   const checkout = join(home, "checkout");
   mkdirSync(join(checkout, ".git"), { recursive: true });
+  const checkoutAlias = join(home, "checkout-alias");
+  symlinkSync(
+    checkout,
+    checkoutAlias,
+    process.platform === "win32" ? "junction" : "dir",
+  );
+  const canonicalCheckout = resolveCheckout(checkoutAlias).workspace;
+  expect(canonicalCheckout).not.toBe(checkoutAlias);
   const original = {
     ...input,
     workspaces: [
-      { root: checkout, repositories: [checkout], epicIds: ["demo-epic"] },
+      {
+        root: canonicalCheckout,
+        repositories: [canonicalCheckout],
+        epicIds: ["demo-epic"],
+      },
     ],
   };
   const requestId = "5e091eab-8a4f-45dc-8fbb-19e9425d5c4e";
@@ -391,8 +423,9 @@ test("legacy project originals keep their absent color and create hash unchanged
 
 test("bounded project color IDs are hash-bound and survive exact create readback", async () => {
   const { home, store, input } = fixture();
-  const checkout = join(home, "checkout");
-  mkdirSync(join(checkout, ".git"), { recursive: true });
+  const checkoutPath = join(home, "checkout");
+  mkdirSync(join(checkoutPath, ".git"), { recursive: true });
+  const checkout = resolveCheckout(checkoutPath).workspace;
   const base = {
     ...input,
     workspaces: [
