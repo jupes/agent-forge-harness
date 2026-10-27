@@ -18,7 +18,10 @@ import {
 import { z } from "zod";
 import { SMITH_CREATE_IDENTITIES } from "../../apps/desktop/src/smith-create-identities";
 import { smithRoutingEditInputHash } from "../../apps/desktop/src/smith-routing-edit-identities";
-import { canonicalSmithConfigCreateRequest } from "../../scripts/config/smith-create-protocol";
+import {
+  canonicalSmithConfigCreateRequest,
+  smithConfigCreateRequestSchema,
+} from "../../scripts/config/smith-create-protocol";
 import { smithEditInputHash } from "../../scripts/config/smith-edit-journal-protocol";
 import { canonicalSmithConfigEditRequest } from "../../scripts/config/smith-edit-protocol";
 import {
@@ -521,21 +524,34 @@ test("a source-proven reservation NotSent leaves the server clear across reload"
 }) => {
   const starts = providerStarts(),
     posts: string[] = [],
-    originalReads: number[] = [],
+    originalReads: { requestId: string; status: number }[] = [],
+    reservedRequestId = { value: null as string | null },
     notSentName = `browser-not-sent-${randomUUID().replaceAll("-", "").slice(0, 12)}`;
   page.on("request", (request) => {
     const path = new URL(request.url()).pathname;
     if (request.method() === "POST" && path.startsWith("/__agent-forge/"))
       posts.push(path);
+    if (
+      request.method() === "POST" &&
+      path === "/__agent-forge/config/smiths/creates/reserve"
+    ) {
+      const parsed = smithConfigCreateRequestSchema.safeParse(
+        request.postDataJSON(),
+      );
+      if (parsed.success) reservedRequestId.value = parsed.data.requestId;
+    }
   });
   page.on("response", (response) => {
+    const path = new URL(response.url()).pathname,
+      prefix = "/__agent-forge/smiths/creates/";
     if (
       response.request().method() === "GET" &&
-      new URL(response.url()).pathname.startsWith(
-        "/__agent-forge/smiths/creates/",
-      )
+      path.startsWith(prefix)
     )
-      originalReads.push(response.status());
+      originalReads.push({
+        requestId: path.slice(prefix.length),
+        status: response.status(),
+      });
   });
   checkedOsHome();
   if (!isRunHome(HEARTH_HOME) || !checkedFixtureRoot())
@@ -574,19 +590,26 @@ test("a source-proven reservation NotSent leaves the server clear across reload"
   );
   await dialog.getByRole("button", { name: "Create Smith" }).click();
   expect((await refused).status()).toBe(403);
+  if (!reservedRequestId.value)
+    throw Error("The refused reserve request ID was not observed.");
   await expect(
-    page.getByRole("region", { name: "Original Smith create receipts" }),
-  ).toContainText("No server reservation or create was recorded");
+    dialog.locator('[role="status"]').filter({
+      hasText: "No server reservation or create was recorded",
+    }),
+  ).toBeVisible();
   expect(
     readFileSync(join(REPOSITORY, "agent-forge.toml"), "utf8"),
   ).not.toContain(`[smiths.${notSentName}]`);
   await page.unroute("**/config/smiths/creates/reserve");
 
   await reloadSettled(page);
-  await expect(
-    page.getByRole("region", { name: "Original Smith create receipts" }),
-  ).not.toContainText("Outcome held");
-  expect(originalReads).toEqual([]);
+  const receipts = page.getByRole("region", {
+    name: "Original Smith create receipts",
+  });
+  await expect(receipts).not.toContainText(notSentName);
+  expect(originalReads).not.toContainEqual(
+    expect.objectContaining({ requestId: reservedRequestId.value }),
+  );
   await page.getByRole("button", { name: "New smith", exact: true }).click();
   const afterReloadDialog = page.getByRole("dialog", {
     name: "Create a Smith",
@@ -812,7 +835,7 @@ test("a correlated stale-revision refusal reads back its exact original after re
 }) => {
   const starts = providerStarts(),
     posts: string[] = [],
-    originalReads: number[] = [],
+    originalReads: { requestId: string; status: number }[] = [],
     name = `browser-refused-${randomUUID().replaceAll("-", "").slice(0, 12)}`;
   page.on("request", (request) => {
     const path = new URL(request.url()).pathname;
@@ -820,13 +843,16 @@ test("a correlated stale-revision refusal reads back its exact original after re
       posts.push(path);
   });
   page.on("response", (response) => {
+    const path = new URL(response.url()).pathname,
+      prefix = "/__agent-forge/smiths/creates/";
     if (
       response.request().method() === "GET" &&
-      new URL(response.url()).pathname.startsWith(
-        "/__agent-forge/smiths/creates/",
-      )
+      path.startsWith(prefix)
     )
-      originalReads.push(response.status());
+      originalReads.push({
+        requestId: path.slice(prefix.length),
+        status: response.status(),
+      });
   });
   checkedOsHome();
   if (!isRunHome(HEARTH_HOME) || !checkedFixtureRoot())
@@ -913,7 +939,10 @@ test("a correlated stale-revision refusal reads back its exact original after re
   const receipt = recovered.body as {
     data: {
       inputHash: string;
-      original: { smith: { name: string; model: string } };
+      original: {
+        requestId: string;
+        smith: { name: string; model: string };
+      };
       result: { phase: string; reason?: string };
     };
   };
@@ -936,7 +965,10 @@ test("a correlated stale-revision refusal reads back its exact original after re
   await expect(
     page.getByRole("region", { name: "Original Smith create receipts" }),
   ).toContainText("stale-revision");
-  expect(originalReads).toEqual([200]);
+  expect(originalReads).toContainEqual({
+    requestId: receipt.data.original.requestId,
+    status: 200,
+  });
   expect(posts).toEqual([
     "/__agent-forge/config/smiths/preview",
     "/__agent-forge/config/smiths/creates/reserve",
@@ -945,25 +977,36 @@ test("a correlated stale-revision refusal reads back its exact original after re
   expect(providerStarts()).toEqual(starts);
 });
 
-test("an unavailable create response remains held when protected original reads are 404", async ({
-  page,
-}) => {
+const unavailableCreateHeldTest = async ({ page }: { page: Page }) => {
   const posts: string[] = [],
-    originalReads: number[] = [],
+    originalReads: { requestId: string; status: number }[] = [],
+    requestId = { value: null as string | null },
     name = `browser-uncertain-${randomUUID().replaceAll("-", "").slice(0, 12)}`;
   page.on("request", (request) => {
     const path = new URL(request.url()).pathname;
     if (request.method() === "POST" && path.startsWith("/__agent-forge/"))
       posts.push(path);
+    if (
+      request.method() === "POST" &&
+      path === "/__agent-forge/config/smiths/creates/reserve"
+    ) {
+      const parsed = smithConfigCreateRequestSchema.safeParse(
+        request.postDataJSON(),
+      );
+      if (parsed.success) requestId.value = parsed.data.requestId;
+    }
   });
   page.on("response", (response) => {
+    const path = new URL(response.url()).pathname,
+      prefix = "/__agent-forge/smiths/creates/";
     if (
       response.request().method() === "GET" &&
-      new URL(response.url()).pathname.startsWith(
-        "/__agent-forge/smiths/creates/",
-      )
+      path.startsWith(prefix)
     )
-      originalReads.push(response.status());
+      originalReads.push({
+        requestId: path.slice(prefix.length),
+        status: response.status(),
+      });
   });
   checkedOsHome();
   if (!isRunHome(HEARTH_HOME) || !checkedFixtureRoot())
@@ -989,13 +1032,16 @@ test("an unavailable create response remains held when protected original reads 
       body: JSON.stringify({ ok: false, data: null, error: "unavailable" }),
     }),
   );
-  await page.route("**/__agent-forge/smiths/creates/*", (route) =>
-    route.fulfill({
+  await page.route("**/__agent-forge/smiths/creates/*", (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (!requestId.value || path !== `/__agent-forge/smiths/creates/${requestId.value}`)
+      return route.continue();
+    return route.fulfill({
       status: 404,
       contentType: "application/json",
       body: JSON.stringify({ ok: false, data: null, error: "missing" }),
-    }),
-  );
+    });
+  });
   const unavailable = page.waitForResponse(
     (response) =>
       response.request().method() === "POST" &&
@@ -1004,9 +1050,14 @@ test("an unavailable create response remains held when protected original reads 
   );
   await dialog.getByRole("button", { name: "Create Smith" }).click();
   expect((await unavailable).status()).toBe(503);
-  await expect(
-    page.getByRole("region", { name: "Original Smith create receipts" }),
-  ).toContainText("Outcome held");
+  if (!requestId.value)
+    throw Error("The reserved request ID was not observed.");
+  const receipts = page.getByRole("region", {
+      name: "Original Smith create receipts",
+    }),
+    uncertainCard = receipts.locator("article").filter({ hasText: name });
+  await expect(uncertainCard).toContainText("Reserved original — not started");
+  await expect(uncertainCard).toContainText("UUID remains held");
   await page.unroute("**/config/smiths/creates");
 
   const missingOriginal = page.waitForResponse(
@@ -1018,9 +1069,7 @@ test("an unavailable create response remains held when protected original reads 
   );
   await reloadSettled(page);
   expect((await missingOriginal).status()).toBe(404);
-  await expect(
-    page.getByRole("region", { name: "Original Smith create receipts" }),
-  ).toContainText("Outcome held");
+  await expect(uncertainCard).toContainText("UUID remains held");
   await page.getByRole("button", { name: "New smith", exact: true }).click();
   const recovered = page.getByRole("dialog", { name: "Create a Smith" });
   await expect(
@@ -1029,7 +1078,11 @@ test("an unavailable create response remains held when protected original reads 
   await expect(
     recovered.getByRole("button", { name: "Create Smith" }),
   ).toBeDisabled();
-  expect(originalReads).toEqual([404, 404]);
+  expect(
+    originalReads
+      .filter((read) => read.requestId === requestId.value)
+      .map((read) => read.status),
+  ).toEqual([404, 404]);
   expect(posts).toEqual([
     "/__agent-forge/config/smiths/preview",
     "/__agent-forge/config/smiths/creates/reserve",
@@ -1038,7 +1091,7 @@ test("an unavailable create response remains held when protected original reads 
   expect(
     readFileSync(join(REPOSITORY, "agent-forge.toml"), "utf8"),
   ).not.toContain(`[smiths.${name}]`);
-});
+};
 
 test("a reply lost after actual temporary publication recovers the exact original without a second write", async ({
   page,
@@ -1147,6 +1200,15 @@ test("a reply lost after actual temporary publication recovers the exact origina
   ]);
   expect(providerStarts()).toEqual(starts);
 });
+
+// This fixture leaves an intentionally unknown original after its protected
+// GET returns 404. Keep it after every create-start journey in this file so
+// its correct reservation hold cannot block a later create test in the same
+// persistent owner scope.
+test(
+  "an unavailable create response remains held when protected original reads are 404",
+  unavailableCreateHeldTest,
+);
 
 test("edits an existing Smith after a complete review and recovers the exact original after reload", async ({
   page,
