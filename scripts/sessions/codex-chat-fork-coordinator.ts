@@ -309,9 +309,12 @@ export function createCodexChatForkCoordinator(
         input.state.frames
           .filter((frame) => frame.turnId === selectedTurn.requestId)
           .at(-1)?.seq ?? 0,
+      prefixFrames = input.state.frames.filter(
+        (frame) => frame.seq <= boundary,
+      ),
       cursorValid =
         input.after === 0 ||
-        input.state.frames.some(
+        prefixFrames.some(
           (frame) =>
             frame.seq === input.after &&
             (frame.event.kind === "user" || frame.event.kind === "text"),
@@ -322,8 +325,8 @@ export function createCodexChatForkCoordinator(
         "The Fork source review cursor is invalid for this boundary.",
       );
     const projected: CodexChatForkSourcePage["frames"] = [];
-    for (const frame of input.state.frames) {
-      if (frame.seq > boundary || frame.seq <= input.after) continue;
+    for (const frame of prefixFrames) {
+      if (frame.seq <= input.after) continue;
       if (frame.event.kind === "user")
         projected.push({
           kind: "user",
@@ -343,13 +346,14 @@ export function createCodexChatForkCoordinator(
         });
     }
     if (
-      input.state.frames.length >
+      prefixFrames.length >
         CODEX_CHAT_FORK_REVIEW_LIMITS.pageItems *
           CODEX_CHAT_FORK_REVIEW_LIMITS.pages ||
-      projected.some(
+      prefixFrames.some(
         (frame) =>
-          new TextEncoder().encode(frame.text).byteLength >
-          CODEX_CHAT_FORK_REVIEW_LIMITS.textBytes,
+          (frame.event.kind === "user" || frame.event.kind === "text") &&
+          new TextEncoder().encode(frame.event.text).byteLength >
+            CODEX_CHAT_FORK_REVIEW_LIMITS.textBytes,
       )
     )
       throw new ConversationError(
@@ -982,7 +986,7 @@ export function createCodexChatForkCoordinator(
           workspaceKey(parent.workspace) !== original.workspaceKey ||
           original.workspaceKey !== workspace
         )
-          return unavailable("source-mismatch");
+          return unavailable("source-unavailable");
         state = storeFor(parent.id, parent.projectId).read(parent.projectId);
       } catch {
         return unavailable("source-unavailable");
@@ -998,9 +1002,9 @@ export function createCodexChatForkCoordinator(
       const selected = state.turns.find(
         (turn) => turn.requestId === original.throughTurnRequestId,
       );
+      if (!source.eligible || !selected)
+        return unavailable("source-unavailable");
       if (
-        !source.eligible ||
-        !selected ||
         !same(original.sourceSeal, sourceSealFor(parent, selected.hash, source))
       )
         return unavailable("source-mismatch");
@@ -1009,7 +1013,7 @@ export function createCodexChatForkCoordinator(
           ...(source.prepared.launch.context?.about ?? []),
         ]);
       } catch {
-        return unavailable("source-mismatch");
+        return unavailable("source-unavailable");
       }
 
       if (original.state === "linked") {

@@ -2,6 +2,7 @@ import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import type { CodexChatForkSourceSeal } from "../../../types/codex-chat-fork";
 import type {
   CodexChatDecisionRequest,
   CodexChatStartRequest,
@@ -13,6 +14,7 @@ import {
   FIXTURE_PROJECT_ID,
   projectCatalogFixture,
 } from "../../projects/testing";
+import { createCodexChatForkJournal } from "../../sessions/codex-chat-fork-journal";
 import { codexChatApprovalPageSchema } from "../../sessions/codex-chat-owned-protocol";
 import { codexChatPreviewReceiptSchema } from "../../sessions/codex-chat-preview-protocol";
 import { createCodexChatRuntime } from "../../sessions/codex-chat-runtime";
@@ -1516,6 +1518,46 @@ test("Fork review bounds the selected historical prefix instead of later parent 
   );
   expect(f.records()).toEqual(beforeRecords);
   expect(f.h.events(["operator.action"])).toEqual(beforeAudit);
+
+  const earlierTurnId = randomUUID(),
+    earlierTurn = state.turns.find((turn) => turn.requestId === laterTurnId);
+  if (!earlierTurn) throw Error("The synthetic later turn was not retained");
+  state.turns = [
+    {
+      ...earlierTurn,
+      requestId: earlierTurnId,
+      hash: "e".repeat(64),
+    },
+    ...state.turns.filter((turn) => turn.requestId !== laterTurnId),
+  ];
+  state.frames = [
+    ...state.frames
+      .filter((frame) => frame.turnId === laterTurnId)
+      .map((frame, index) => ({
+        ...frame,
+        seq: index + 1,
+        turnId: earlierTurnId,
+      })),
+    ...state.frames
+      .filter((frame) => frame.turnId !== laterTurnId)
+      .map((frame) => ({ ...frame, seq: frame.seq + 2_001 })),
+  ];
+  state.revision++;
+  writeOwnerOnly(
+    conversationFile(f.h.home, FIXTURE_PROJECT_ID, {
+      kind: "session",
+      projectId: FIXTURE_PROJECT_ID,
+      sessionId: parentSessionId,
+    }),
+    `${JSON.stringify(state)}\n`,
+  );
+  const oversizedPrefix = await fetch(
+    `${f.h.api}/projects/${FIXTURE_PROJECT_ID}/sessions/${parentSessionId}/fork-review?throughTurnRequestId=${selectedTurn.requestId}&limit=1`,
+    { headers: f.h.headers(f.h.hearth.token) },
+  );
+  expect(oversizedPrefix.status).toBe(413);
+  expect(f.records()).toEqual(beforeRecords);
+  expect(f.h.events(["operator.action"])).toEqual(beforeAudit);
 });
 
 test("Fork original context GET correlates a durable reservation without changing its identity", async () => {
@@ -1613,6 +1655,62 @@ test("Fork original context GET correlates a durable reservation without changin
   expect(f.records()).toEqual(beforeRecords);
   expect(f.h.events(["operator.action"])).toEqual(beforeAudit);
   expect(f.records().filter((row) => row.method === "thread/fork")).toEqual([]);
+});
+
+test("Fork original context distinguishes a proven source-seal mismatch from unavailable history", async () => {
+  const f = await fixture("fork-service-tier-null", false, false, "never"),
+    start = await f.post("", f.request);
+  expect(start.status).toBe(202);
+  const started = ownedCodingStartReceiptSchema.parse(
+      (await start.json()).data,
+    ),
+    parentSessionId = started.session.id,
+    completed = await f.settle(parentSessionId),
+    selectedTurn = completed.turns.find(
+      (turn) => turn.requestId === f.request.requestId,
+    );
+  if (!selectedTurn || !completed.binding)
+    throw Error("The source-valid parent turn did not complete");
+
+  const requestId = randomUUID(),
+    sourceSeal: CodexChatForkSourceSeal = {
+      parentRequestHash: "1".repeat(64),
+      parentTurnHash: "2".repeat(64),
+      parentNativeThreadId: completed.binding.sessionId,
+      throughNativeTurnId: "0199a213-81c0-7800-8aa1-bbab2a035a54",
+      sourceSettingsHash: "3".repeat(64),
+    },
+    journal = createCodexChatForkJournal({
+      root: f.h.root,
+      home: f.h.home,
+    });
+  await journal.reserve(
+    FIXTURE_PROJECT_ID,
+    parentSessionId,
+    { requestId, throughTurnRequestId: selectedTurn.requestId },
+    sourceSeal,
+    "direct-v1",
+  );
+
+  const beforeRecords = f.records(),
+    beforeAudit = f.h.events(["operator.action"]),
+    response = await fetch(
+      `${f.h.api}/projects/${FIXTURE_PROJECT_ID}/codex-chat-forks/${requestId}/context`,
+      { headers: f.h.headers(f.h.hearth.token) },
+    ),
+    envelope = await response.json();
+  expect(response.status).toBe(200);
+  expect(envelope.data).toMatchObject({
+    available: false,
+    requestId,
+    parentSessionId,
+    throughTurnRequestId: selectedTurn.requestId,
+    state: "reserved",
+    reason: "source-mismatch",
+    source: null,
+  });
+  expect(f.records()).toEqual(beforeRecords);
+  expect(f.h.events(["operator.action"])).toEqual(beforeAudit);
 });
 
 test("a lost Fork reply is recovered by exact original GET without repeating the native effect", async () => {
