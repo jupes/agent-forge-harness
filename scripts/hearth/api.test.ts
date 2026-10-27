@@ -2909,6 +2909,11 @@ async function seedForkReadOriginal(h: TestHearth): Promise<void> {
   });
 }
 
+/** The source-review read row addresses this exact completed parent/turn pair. */
+async function seedForkReadSourceReview(h: TestHearth): Promise<void> {
+  await seedForkableCodexChatSource(h, API_CODEX_CHAT_FORK_SOURCE);
+}
+
 /** A bounded linked child transcript fixture for the protected child-only read row. */
 const seededForkReadChildren = new WeakSet<TestHearth>();
 
@@ -3782,6 +3787,7 @@ describe("a read row or the stream while another connection holds the write lock
     // Seed the private Fork journal without an audited HTTP action, which
     // would open the otherwise-cold ledger before this lock assertion.
     await seedForkReadChild(h);
+    await seedForkReadSourceReview(h);
     await seedForkReadOriginal(h);
     const rows = h.hearth.routes.filter(
       (route) => route.kind === "read" || route.kind === "stream",
@@ -4888,6 +4894,7 @@ describe("every read row (iterating the table)", () => {
     await seedSmithEditOriginal(h);
     await seedSmithRoutingEditOriginal(h);
     await seedForkReadChild(h);
+    await seedForkReadSourceReview(h);
     await seedForkReadOriginal(h);
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");
@@ -4935,6 +4942,7 @@ describe("every read row (iterating the table)", () => {
     await seedSmithEditOriginal(h);
     await seedSmithRoutingEditOriginal(h);
     await seedForkReadChild(h);
+    await seedForkReadSourceReview(h);
     await seedForkReadOriginal(h);
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");
