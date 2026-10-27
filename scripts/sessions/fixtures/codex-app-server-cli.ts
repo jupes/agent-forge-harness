@@ -21,6 +21,7 @@ const forkRestartMode =
   forkRestartChildApprovalMode = mode === "fork-restart-child-approval";
 const serviceTierAwareMode =
     mode === "service-tier-null" ||
+    canonicalCwdAckMode ||
     mode === "fork-approval-command" ||
     mode === "fork-service-tier-null-child-approval" ||
     mode === "fork-service-tier-null" ||
@@ -1194,7 +1195,7 @@ while (true) {
           reasoningEffort:
             mode === "fork-service-tier-priority"
               ? "medium"
-              : serviceTierAwareMode
+              : serviceTierAwareMode && !canonicalCwdAckMode
                 ? null
                 : "medium",
         },

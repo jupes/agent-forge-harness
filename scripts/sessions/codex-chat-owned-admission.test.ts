@@ -153,6 +153,7 @@ test("a canonical native Chat configuration persists without rewriting the alias
       ...f.request,
       repository: f.workspaceAlias,
       worktree: f.workspaceAlias,
+      launch: { ...f.request.launch, effort: "medium" },
     },
     expectedHash = createHash("sha256")
       .update(canonicalOwnedSessionStart(request))
@@ -209,9 +210,33 @@ test("a canonical native Chat configuration persists without rewriting the alias
     event: {
       kind: "configuration",
       cwd: realpathSync.native(f.workspaceAlias),
+      model: request.launch.model,
+      effort: "medium",
     },
   });
+  expect(configuration).toHaveProperty("event.serviceTier", null);
   expect(ownedCodingStateSchema.safeParse(state).success).toBe(true);
+
+  const configurationIndex = state.frames.findIndex(
+    (frame) =>
+      frame.event.kind === "coding-chat" &&
+      frame.event.event.kind === "configuration",
+  );
+  for (const field of ["cwd", "model", "effort"] as const) {
+    const altered = structuredClone(state),
+      frame = altered.frames[configurationIndex];
+    if (
+      frame?.event.kind !== "coding-chat" ||
+      frame.event.event.kind !== "configuration"
+    )
+      throw Error("Missing persisted native configuration frame");
+    if (field === "cwd")
+      frame.event.event.cwd = `${frame.event.event.cwd}/outside`;
+    else if (field === "model") frame.event.event.model = "different-model";
+    else frame.event.event.effort = "low";
+    expect(ownedCodingStateSchema.safeParse(altered).success).toBe(false);
+  }
+
   const reopened = createConversationStore(f.home, undefined, address).read(
     f.project.id,
   );
