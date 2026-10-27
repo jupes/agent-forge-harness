@@ -1,5 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { appendFileSync, existsSync, readFileSync, statSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+} from "node:fs";
+import { isAbsolute } from "node:path";
 
 /** Inert native-process app-server fixture. No provider, account, shell or network access. */
 const argv = process.argv.slice(2),
@@ -26,6 +33,15 @@ if (argv.includes("--child"))
   await new Promise(() => setInterval(() => {}, 1000));
 const record = (value: unknown) => {
   if (log) appendFileSync(log, `${JSON.stringify(value)}\n`);
+};
+const canonicalFixtureDirectory = (value: string): string | null => {
+  try {
+    if (!isAbsolute(value) || !statSync(value).isDirectory()) return null;
+    const canonical = realpathSync.native(value);
+    return process.platform === "win32" ? canonical.toLowerCase() : canonical;
+  } catch {
+    return null;
+  }
 };
 const readFixtureRecords = (): Record<string, unknown>[] | null => {
   if (!log || !existsSync(log)) return null;
@@ -657,7 +673,12 @@ while (true) {
               Object.hasOwn(fork, "serviceTier"),
             serviceTier: forkParent.serviceTier === fork.serviceTier,
             reasoningEffort: forkParent.reasoningEffort === configuredEffort,
-            workspace: forkParent.cwd === fork.cwd,
+            workspace:
+              typeof forkParent.cwd === "string" &&
+              typeof fork.cwd === "string" &&
+              canonicalFixtureDirectory(forkParent.cwd) !== null &&
+              canonicalFixtureDirectory(forkParent.cwd) ===
+                canonicalFixtureDirectory(fork.cwd),
             approvalPolicy: forkParent.approvalPolicy === fork.approvalPolicy,
             sandbox: forkParent.sandbox === fork.sandbox,
           }
