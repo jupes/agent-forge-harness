@@ -314,6 +314,7 @@ test("normal native exit closes inherited helper pipes without losing buffered f
       exitCode: 0,
       timedOut: false,
       stopped: false,
+      ownedTreeReleased: true,
       stderr: "buffered private diagnostic",
     });
     expect(lines).toEqual([

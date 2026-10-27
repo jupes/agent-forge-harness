@@ -153,6 +153,7 @@ test("ordinary native exit one and forged stdout do not claim a bootstrap timeou
         exitCode: 1,
         timedOut: false,
         stopped: false,
+        ownedTreeReleased: true,
         stderr: "",
       });
       expect(lines.length).toBe(mode === "forged-timeout" ? 1 : 0);
@@ -161,6 +162,7 @@ test("ordinary native exit one and forged stdout do not claim a bootstrap timeou
         exitCode: 1,
         timedOut: false,
         stopped: false,
+        ownedTreeReleased: true,
         stderr: "",
       });
     } finally {
