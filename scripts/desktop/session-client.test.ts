@@ -827,6 +827,106 @@ test("an explicit retry preserves a server not-sent generation and sends the sam
   client.dispose();
 });
 
+test("a durably not-sent ordinary Start can be explicitly retried from its retained original", async () => {
+  const scope = { projectId, workspace: "/repo", generation: 1 },
+    expectedHash = await sessionStartHash({ ...input, requestId });
+  let state: "empty" | "reserved" | "not-sent" = "empty",
+    reserveCount = 0,
+    listCount = 0;
+  const posts: SessionStartRequest[] = [],
+    reserveHashes: string[] = [];
+  const identityServer: SessionStartIdentityServer = {
+    async list(current) {
+      listCount++;
+      return {
+        version: 1,
+        scope: {
+          family: "owned-session-start",
+          projectId: current.projectId,
+          workspace: current.workspace,
+        },
+        identities:
+          state === "empty"
+            ? []
+            : [
+                {
+                  version: 1,
+                  requestId,
+                  requestHash: expectedHash,
+                  provider: "claude",
+                  mode: "chat",
+                  state,
+                },
+              ],
+      };
+    },
+    async reserve(current, original) {
+      reserveCount++;
+      const requestHash = await sessionStartHash(original);
+      reserveHashes.push(requestHash);
+      if (state === "empty") state = "reserved";
+      return {
+        scope: {
+          family: "owned-session-start",
+          projectId: current.projectId,
+          workspace: current.workspace,
+        },
+        identity: {
+          version: 1,
+          requestId: original.requestId,
+          requestHash,
+          provider: "claude",
+          mode: "chat",
+          state,
+        },
+        request: original,
+        requestHash,
+      };
+    },
+    async retire() {
+      throw Error("Unexpected retirement");
+    },
+  };
+  const client = createSessionsClient({
+    identityServer,
+    identityScope: () => scope,
+    canWrite: () => true,
+    requestId: () => requestId,
+    list: async () => [],
+    read: async () => page,
+    post: async (_project, _session, action, body) => {
+      if (action !== "start") throw Error("Unexpected action");
+      posts.push(body as SessionStartRequest);
+      if (posts.length === 1) {
+        state = "not-sent";
+        return {
+          state: "refused",
+          message: "The provider was not reached.",
+          notSent: true,
+        };
+      }
+      return { state: "unknown", message: "Keep the original held." };
+    },
+    stream: () => () => ({ close() {} }),
+  });
+
+  await client.refreshIdentities(projectId);
+  await client.start(projectId, input);
+  expect(client.project(projectId).identityPage?.identities[0]?.state).toBe(
+    "not-sent",
+  );
+  expect(client.project(projectId).pendingStart?.requestId).toBe(requestId);
+  await client.resumeStart(projectId, input);
+
+  expect(reserveCount).toBe(2);
+  expect(posts).toHaveLength(2);
+  expect(posts[1]).toEqual(posts[0]);
+  expect(posts[1]?.requestId).toBe(requestId);
+  expect(reserveHashes).toEqual([expectedHash, expectedHash]);
+  expect(listCount).toBeGreaterThanOrEqual(3);
+  client.dispose();
+});
+
 for (const heldState of ["reserved", "not-sent"] as const) {
   test(`body re-entry compares the canonical original before reserve and resumes only that UUID from ${heldState}`, async () => {
     const scope = { projectId, workspace: "/repo", generation: 1 },
