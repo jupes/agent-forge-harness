@@ -15,6 +15,14 @@ if (
     "Ambient provider credentials or config reached the isolated fake CLI.",
   );
 let recordedIntent = false;
+const keeperProjectId = process.env["DESKTOP_RESTART_KEEPER_PROJECT_ID"];
+if (
+  !keeperProjectId ||
+  !/^project-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+    keeperProjectId,
+  )
+)
+  throw new Error("The dedicated Keeper fixture project was unavailable.");
 try {
   const marker = JSON.parse(
     readFileSync(join(home, "restart-fixture.json"), "utf8"),
@@ -29,11 +37,7 @@ try {
   );
   const journal = JSON.parse(
     readFileSync(
-      join(
-        home,
-        "conversations",
-        "keeper-project-a5832fa0-7a21-403b-8184-44892f0d8d86-proposals.json",
-      ),
+      join(home, "conversations", `keeper-${keeperProjectId}-proposals.json`),
       "utf8",
     ),
   );

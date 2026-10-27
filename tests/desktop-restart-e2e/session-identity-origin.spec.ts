@@ -1,8 +1,8 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 import { join } from "node:path";
-import { expect, test } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
 import { SESSION_START_IDENTITIES } from "../../apps/desktop/src/session-start-identities";
 import {
   OPERATOR_HEADER,
@@ -11,13 +11,16 @@ import {
 } from "../../scripts/hearth/paths";
 import { ownedCodingPageSchema } from "../../scripts/sessions/codex-owned-journal";
 import { canonicalOwnedSessionStart } from "../../scripts/sessions/codex-owned-protocol";
-import { sessionStartIdentityPageSchema } from "../../scripts/sessions/identity-protocol";
+import {
+  sessionStartIdentityPageSchema,
+  sessionStartIdentityReplySchema,
+} from "../../scripts/sessions/identity-protocol";
 import { sessionStartReceiptSchema } from "../../scripts/sessions/protocol";
 import { sessionStartSchema } from "../../scripts/sessions/request-protocol";
 import type { SessionStartRequest } from "../../types/session-requests";
 import { pageToken } from "../e2e/launch-link";
 import { HEARTH_HOME } from "../e2e/servers";
-import { alpha, ROOT } from "./environment";
+import { alpha, identityProject, ROOT } from "./environment";
 
 const FIXTURE_CONTROL_PATH = "/__desktop-restart-fixture/restart-host";
 const FIXTURE_CONTROL_HEADER = "x-agent-forge-fixture-secret";
@@ -53,6 +56,29 @@ function parseFixtureJson(value: string, description: string): unknown {
   } catch {
     throw new Error(`The owned desktop ${description} was invalid.`);
   }
+}
+
+async function readIdentityPage(
+  page: Page,
+  origin: string,
+  projectId: string,
+  token: string,
+) {
+  const path = `/__agent-forge/projects/${projectId}/session-start-identities`;
+  const response = await page.evaluate(
+    async ({ path, header, token, origin }) => {
+      if (window.location.origin !== origin)
+        throw new Error("The protected identity read left its trusted origin.");
+      const reply = await fetch(path, { headers: { [header]: token } });
+      return { status: reply.status, body: await reply.text() };
+    },
+    { path, header: OPERATOR_HEADER, token, origin },
+  );
+  expect(response.status).toBe(200);
+  const envelope = record(
+    parseFixtureJson(response.body, "scoped identity page"),
+  );
+  return sessionStartIdentityPageSchema.parse(envelope?.["data"]);
 }
 
 async function restartOwnedDesktopHost(): Promise<string> {
@@ -129,19 +155,120 @@ async function restartOwnedDesktopHost(): Promise<string> {
   return data["url"];
 }
 
+test.beforeEach(async ({ page }) => {
+  await page.goto(
+    `/index.html#/desktop/project/${identityProject.id}/sessions`,
+  );
+});
+
 test("a fresh trusted desktop origin discovers and inspects an admitted Start without writing", async ({
   page,
 }) => {
   test.setTimeout(90000);
   const providerEffectsBefore = lineCount("coding-fixture-starts.jsonl");
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await page.goto(`/index.html#/desktop/project/${alpha.id}/sessions`);
   const firstOrigin = new URL(page.url()).origin;
+  const operatorToken = await pageToken(page);
+  const foreignPath = `/__agent-forge/projects/${alpha.id}/session-start-identities`;
+  let foreignPage = await readIdentityPage(
+    page,
+    firstOrigin,
+    alpha.id,
+    operatorToken,
+  );
+  expect(foreignPage.scope).toEqual({
+    family: "owned-session-start",
+    projectId: alpha.id,
+    workspace: alpha.workspaces[0]?.root,
+  });
+  const activeStates = ["reserved", "attempted", "not-sent"];
+  if (
+    !foreignPage.identities.some((identity) =>
+      activeStates.includes(identity.state),
+    )
+  ) {
+    const foreignRequest = sessionStartSchema.parse({
+      requestId: randomUUID(),
+      smith: "claude-journeyman",
+      repository: ROOT,
+      worktree: ROOT,
+      beadId: alpha.workspaces[0]?.epicIds[0],
+      launch: {
+        mode: "chat",
+        model: "claude-fixture-reviewed",
+        permissionMode: "plan",
+        prompt: "Foreign scope reservation; do not dispatch",
+      },
+    });
+    const reservationResponse = await page.evaluate(
+      async ({ path, header, token, request }) => {
+        const reply = await fetch(path, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", [header]: token },
+          body: JSON.stringify(request),
+        });
+        return { status: reply.status, body: await reply.text() };
+      },
+      {
+        path: foreignPath,
+        header: OPERATOR_HEADER,
+        token: operatorToken,
+        request: foreignRequest,
+      },
+    );
+    expect(reservationResponse.status).toBe(200);
+    const reservedEnvelope = record(
+      parseFixtureJson(reservationResponse.body, "foreign reservation"),
+    );
+    const reservedReply = sessionStartIdentityReplySchema.parse(
+      reservedEnvelope?.["data"],
+    );
+    expect(reservedReply.scope).toEqual({
+      family: "owned-session-start",
+      projectId: alpha.id,
+      workspace: alpha.workspaces[0]?.root,
+    });
+    expect(reservedReply.identity).toMatchObject({
+      requestId: foreignRequest.requestId,
+      state: "reserved",
+    });
+    foreignPage = await readIdentityPage(
+      page,
+      firstOrigin,
+      alpha.id,
+      operatorToken,
+    );
+  }
+  expect(
+    foreignPage.identities.some((identity) =>
+      activeStates.includes(identity.state),
+    ),
+  ).toBe(true);
+  const foreignRowsBefore = structuredClone(foreignPage.identities);
+  const selectedIdentityBaseline = await readIdentityPage(
+    page,
+    firstOrigin,
+    identityProject.id,
+    operatorToken,
+  );
+  expect(selectedIdentityBaseline.scope).toEqual({
+    family: "owned-session-start",
+    projectId: identityProject.id,
+    workspace: identityProject.workspaces[0]?.root,
+  });
+  expect(selectedIdentityBaseline.identities).toEqual([]);
+  expect(lineCount("coding-fixture-starts.jsonl")).toBe(providerEffectsBefore);
   await page.getByRole("button", { name: "New session", exact: true }).click();
   const dialog = page.getByRole("dialog", {
     name: "New session · Alpha",
     exact: true,
   });
+  await expect(
+    dialog.getByRole("button", {
+      name: "Check supported options",
+      exact: true,
+    }),
+  ).toBeEnabled();
   await dialog
     .getByRole("textbox", { name: "Session prompt", exact: true })
     .fill("Changed origin must inspect the original admitted Start");
@@ -179,11 +306,11 @@ test("a fresh trusted desktop origin discovers and inspects an admitted Start wi
   page.on("request", (request) => {
     const url = new URL(request.url());
     if (url.origin === newOrigin) {
-      const identityPath = `/__agent-forge/projects/${alpha.id}/session-start-identities`;
+      const identityPath = `/__agent-forge/projects/${identityProject.id}/session-start-identities`;
       if (
         request.method() === "GET" &&
         url.pathname ===
-          `/__agent-forge/projects/${alpha.id}/session-start-identities`
+          `/__agent-forge/projects/${identityProject.id}/session-start-identities`
       )
         newOriginIdentityGets++;
       if (
@@ -194,12 +321,15 @@ test("a fresh trusted desktop origin discovers and inspects an admitted Start wi
         newOriginIdentityWrites++;
       if (
         request.method() === "POST" &&
-        url.pathname === `/__agent-forge/projects/${alpha.id}/sessions`
+        url.pathname ===
+          `/__agent-forge/projects/${identityProject.id}/sessions`
       )
         newOriginStartPosts++;
       if (
         request.method() === "GET" &&
-        url.pathname.startsWith(`/__agent-forge/projects/${alpha.id}/sessions/`)
+        url.pathname.startsWith(
+          `/__agent-forge/projects/${identityProject.id}/sessions/`,
+        )
       ) {
         const requestId = url.searchParams.get("requestId");
         if (requestId) originalReadIds.push(requestId);
@@ -208,18 +338,21 @@ test("a fresh trusted desktop origin discovers and inspects an admitted Start wi
     if (url.origin === firstOrigin) {
       if (
         request.method() === "POST" &&
-        url.pathname.endsWith(`/projects/${alpha.id}/session-start-identities`)
+        url.pathname.endsWith(
+          `/projects/${identityProject.id}/session-start-identities`,
+        )
       )
         identityReservePosts++;
       if (
         request.method() === "POST" &&
-        url.pathname === `/__agent-forge/projects/${alpha.id}/sessions`
+        url.pathname ===
+          `/__agent-forge/projects/${identityProject.id}/sessions`
       )
         startPosts++;
     }
   });
   await page.route(
-    `**/__agent-forge/projects/${alpha.id}/sessions`,
+    `**/__agent-forge/projects/${identityProject.id}/sessions`,
     async (route) => {
       if (route.request().method() !== "POST") {
         await route.continue();
@@ -288,7 +421,7 @@ test("a fresh trusted desktop origin discovers and inspects an admitted Start wi
               return { status: result.status, body: await result.text() };
             },
             {
-              path: `/__agent-forge/projects/${alpha.id}/sessions/${encodeURIComponent(originalSessionId)}?requestId=${encodeURIComponent(original.requestId)}`,
+              path: `/__agent-forge/projects/${identityProject.id}/sessions/${encodeURIComponent(originalSessionId)}?requestId=${encodeURIComponent(original.requestId)}`,
               header: OPERATOR_HEADER,
               token: operatorToken,
             },
@@ -315,7 +448,7 @@ test("a fresh trusted desktop origin discovers and inspects an admitted Start wi
             : null;
           return (
             conversation.success &&
-            conversation.data.projectId === alpha.id &&
+            conversation.data.projectId === identityProject.id &&
             conversation.data.conversationId === originalSessionId &&
             conversation.data.request?.requestId === original.requestId &&
             conversation.data.request.phase === "completed" &&
@@ -359,7 +492,7 @@ test("a fresh trusted desktop origin discovers and inspects an admitted Start wi
         new URL(response.url()).origin === newOrigin &&
         new URL(response.url()).pathname === SESSION_ROUTE,
     );
-    const identityPath = `/__agent-forge/projects/${alpha.id}/session-start-identities`;
+    const identityPath = `/__agent-forge/projects/${identityProject.id}/session-start-identities`;
     const browserIdentityRead = page.waitForResponse((response) => {
       try {
         const request = response.request(),
@@ -388,7 +521,7 @@ test("a fresh trusted desktop origin discovers and inspects an admitted Start wi
     // correlate the browser's real identity GET to that new main-frame origin.
     await page.evaluate((hash) => {
       window.location.hash = hash;
-    }, `#/desktop/project/${alpha.id}/sessions`);
+    }, `#/desktop/project/${identityProject.id}/sessions`);
     const browserIdentityResponse = await browserIdentityRead;
     expect(browserIdentityResponse.status()).toBe(200);
     const identityToken = await pageToken(page);
@@ -408,6 +541,18 @@ test("a fresh trusted desktop origin discovers and inspects an admitted Start wi
         parseFixtureJson(await identityResponse.text(), "identity page read"),
       )?.["data"],
     );
+    expect(identityPage.scope).toEqual({
+      family: "owned-session-start",
+      projectId: identityProject.id,
+      workspace: identityProject.workspaces[0]?.root,
+    });
+    const foreignAfter = await readIdentityPage(
+      page,
+      newOrigin,
+      alpha.id,
+      identityToken,
+    );
+    expect(foreignAfter.identities).toEqual(foreignRowsBefore);
     const observation = record(
       parseFixtureJson(
         (await page.evaluate(
@@ -429,8 +574,8 @@ test("a fresh trusted desktop origin discovers and inspects an admitted Start wi
     });
     expect(identityPage.scope).toEqual({
       family: "owned-session-start",
-      projectId: alpha.id,
-      workspace: alpha.workspaces[0]?.root,
+      projectId: identityProject.id,
+      workspace: identityProject.workspaces[0]?.root,
     });
     expect(newOriginIdentityGets).toBeGreaterThan(0);
     await expect(
