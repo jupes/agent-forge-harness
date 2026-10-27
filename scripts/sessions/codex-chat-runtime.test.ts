@@ -340,6 +340,9 @@ test("the compiled desktop Codex stand-in completes prepare and dispatch in fork
     const initialConfiguration = events.find(
       (event) => event.kind === "configuration",
     );
+    status = Object.hasOwn(initialConfiguration ?? {}, "serviceTier")
+      ? "initial-service-tier-present"
+      : "initial-service-tier-missing";
     expect(initialConfiguration).toMatchObject({
       modelProvider: "openai",
     });

@@ -11,13 +11,15 @@ const serviceTierAwareMode =
     mode === "fork-service-tier-null-child-approval" ||
     mode === "fork-service-tier-null" ||
     mode === "fork-service-tier-priority" ||
-    mode === "fork-child-lost-turn-reply",
+    mode === "fork-child-lost-turn-reply" ||
+    mode === "fork-restart",
   forkServiceTierResumeMode =
     mode === "fork-approval-command" ||
     mode === "fork-service-tier-null-child-approval" ||
     mode === "fork-service-tier-null" ||
     mode === "fork-service-tier-priority" ||
-    mode === "fork-child-lost-turn-reply",
+    mode === "fork-child-lost-turn-reply" ||
+    mode === "fork-restart",
   configuredServiceTier =
     mode === "fork-service-tier-priority" ? "priority" : null;
 if (argv.includes("--child"))
@@ -677,7 +679,7 @@ while (true) {
       if (
         forkServiceTierResumeMode &&
         resuming &&
-        params.threadId === resumedTurnId &&
+        (mode === "fork-restart" || params.threadId === resumedTurnId) &&
         (params.modelProvider !== "openai" ||
           !Object.hasOwn(params, "serviceTier") ||
           params.serviceTier !== configuredServiceTier)
