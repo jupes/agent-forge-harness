@@ -9,6 +9,7 @@ import type {
   CodexChatForkOriginal,
   CodexChatForkOriginalBase,
   CodexChatForkOriginalRef,
+  CodexChatForkReservationKind,
   CodexChatForkSourceSeal,
 } from "../../types/codex-chat-fork";
 import { workspaceKey } from "../projects/scope";
@@ -113,6 +114,7 @@ const baseRecordSchema = z
     protocolVersion: z.literal(CODEX_CHAT_FORK_PROTOCOL_VERSION),
     childAppSessionId: ownedSessionIdSchema,
     sourceSeal: codexChatForkSourceSealSchema.optional(),
+    reservationKind: z.enum(["preflight-v1", "direct-v1"]).optional(),
     createdAt: timestampSchema,
     updatedAt: timestampSchema,
   })
@@ -143,6 +145,12 @@ export const codexChatForkOriginalSchema: z.ZodType<CodexChatForkOriginal> =
         ]),
       })
       .strict(),
+    baseRecordSchema
+      .extend({
+        state: z.literal("retired"),
+        retiredReason: z.literal("verified-not-sent"),
+      })
+      .strict(),
   ]);
 
 export const codexChatForkOriginalRefSchema: z.ZodType<CodexChatForkOriginalRef> =
@@ -156,11 +164,14 @@ export const codexChatForkOriginalRefSchema: z.ZodType<CodexChatForkOriginalRef>
       throughTurnRequestId: sessionRequestIdSchema,
       protocolVersion: z.literal(CODEX_CHAT_FORK_PROTOCOL_VERSION),
       childAppSessionId: ownedSessionIdSchema,
+      reservationKind: z.enum(["preflight-v1", "direct-v1"]).optional(),
       sourceSeal: codexChatForkSourceSealSchema.optional(),
     })
     .strict();
 export const codexChatForkHeldReasonSchema: z.ZodType<CodexChatForkHeldReason> =
   z.enum(["unknown-native-outcome", "invalid-native-outcome"]);
+export const codexChatForkReservationKindSchema: z.ZodType<CodexChatForkReservationKind> =
+  z.enum(["preflight-v1", "direct-v1"]);
 
 /** Rebuilds the exact domain object so caller object-key order never affects bytes. */
 export function canonicalCodexChatForkOriginal(raw: unknown): string {
@@ -255,6 +266,9 @@ function orderedRecord(value: CodexChatForkOriginal): CodexChatForkOriginal {
     protocolVersion: value.protocolVersion,
     childAppSessionId: value.childAppSessionId,
     ...(value.sourceSeal === undefined ? {} : { sourceSeal: value.sourceSeal }),
+    ...(value.reservationKind === undefined
+      ? {}
+      : { reservationKind: value.reservationKind }),
     createdAt: value.createdAt,
     updatedAt: value.updatedAt,
   };
@@ -275,6 +289,8 @@ function orderedRecord(value: CodexChatForkOriginal): CodexChatForkOriginal {
     };
   if (value.state === "held")
     return { ...base, state: value.state, heldReason: value.heldReason };
+  if (value.state === "retired")
+    return { ...base, state: value.state, retiredReason: value.retiredReason };
   throw new Error("Expected a strict Codex Fork original state.");
 }
 
@@ -310,7 +326,14 @@ const journalEventFieldsSchema = z.object({
   sequence: z.number().int().min(1).max(CODEX_CHAT_FORK_LIMITS.events),
   previousEventHash: hashSchema,
   previousOperationHash: hashSchema.nullable(),
-  transition: z.enum(["reserved", "attempted", "captured", "linked", "held"]),
+  transition: z.enum([
+    "reserved",
+    "attempted",
+    "captured",
+    "linked",
+    "held",
+    "retired",
+  ]),
   record: codexChatForkOriginalSchema,
 });
 export const codexChatForkJournalEventBodySchema: z.ZodType<CodexChatForkJournalEventBody> =

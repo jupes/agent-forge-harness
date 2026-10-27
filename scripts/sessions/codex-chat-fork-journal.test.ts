@@ -83,6 +83,7 @@ function reference(record: CodexChatForkOriginal) {
     protocolVersion,
     childAppSessionId,
     sourceSeal,
+    reservationKind,
   } = record;
   return {
     projectId,
@@ -94,6 +95,7 @@ function reference(record: CodexChatForkOriginal) {
     protocolVersion,
     childAppSessionId,
     sourceSeal,
+    reservationKind,
   };
 }
 
@@ -114,13 +116,15 @@ function fixture(
   return {
     root,
     home,
+    raw: journal,
     journal: {
       ...journal,
       reserve: (
         project: string,
         parent: string,
         intent: Parameters<typeof journal.reserve>[2],
-      ) => journal.reserve(project, parent, intent, testSourceSeal),
+        kind: Parameters<typeof journal.reserve>[4] = "direct-v1",
+      ) => journal.reserve(project, parent, intent, testSourceSeal, kind),
     },
   };
 }
@@ -146,6 +150,133 @@ test("reserve persists a stable child ID and exact original across reopen", asyn
   expect(read?.childAppSessionId).toBe(
     "session-0199a213-81c0-7800-8aa1-bbab2a035a60",
   );
+});
+
+test("new reservation metadata does not change the established Fork request hash", async () => {
+  const direct = fixture(
+      scratch.make("codex-fork-direct-"),
+      new MemoryStorage(),
+    ).journal,
+    preflight = fixture(
+      scratch.make("codex-fork-preflight-"),
+      new MemoryStorage(),
+    ).journal,
+    directOriginal = await direct.reserve(projectId, parentSessionId, {
+      requestId,
+      throughTurnRequestId,
+    }),
+    preflightOriginal = await preflight.reserve(
+      projectId,
+      parentSessionId,
+      { requestId, throughTurnRequestId },
+      "preflight-v1",
+    );
+  expect(directOriginal.requestHash).toBe(preflightOriginal.requestHash);
+  expect(directOriginal.reservationKind).toBe("direct-v1");
+  expect(preflightOriginal.reservationKind).toBe("preflight-v1");
+});
+
+test("only an exact marked preflight reservation can be retired and its tombstone blocks late claims", async () => {
+  const root = scratch.make("codex-fork-root-"),
+    storage = new MemoryStorage(),
+    first = fixture(root, storage),
+    reserved = await first.journal.reserve(
+      projectId,
+      parentSessionId,
+      { requestId, throughTurnRequestId },
+      "preflight-v1",
+    );
+  expect(reserved.reservationKind).toBe("preflight-v1");
+  const competing = fixture(
+    root,
+    storage,
+    "session-0199a213-81c0-7800-8aa1-bbab2a035a62",
+  ).journal;
+  await expect(
+    competing.reserve(
+      projectId,
+      parentSessionId,
+      { requestId: otherRequestId, throughTurnRequestId },
+      "preflight-v1",
+    ),
+  ).rejects.toThrow();
+  expect(competing.read(projectId, otherRequestId)).toBeNull();
+  const reopened = fixture(root, storage).journal,
+    retired = await reopened.retirePreflight(reference(reserved));
+  expect(retired).toMatchObject({
+    state: "retired",
+    reservationKind: "preflight-v1",
+    retiredReason: "verified-not-sent",
+    requestId,
+    requestHash: reserved.requestHash,
+  });
+  expect(await reopened.retirePreflight(reference(retired))).toEqual(retired);
+  expect((await reopened.markAttempted(reference(retired))).mayDispatch).toBe(
+    false,
+  );
+  expect(reopened.read(projectId, requestId)).toEqual(retired);
+  const next = competing;
+  expect(
+    (
+      await next.reserve(
+        projectId,
+        parentSessionId,
+        { requestId: otherRequestId, throughTurnRequestId },
+        "preflight-v1",
+      )
+    ).state,
+  ).toBe("reserved");
+});
+
+test("preflight claim and retirement serialize to one terminal outcome", async () => {
+  const root = scratch.make("codex-fork-root-"),
+    storage = new MemoryStorage(),
+    first = fixture(root, storage).journal,
+    second = fixture(root, storage).journal,
+    reserved = await first.reserve(
+      projectId,
+      parentSessionId,
+      { requestId, throughTurnRequestId },
+      "preflight-v1",
+    ),
+    [claim, retirement] = await Promise.allSettled([
+      first.markAttempted(reference(reserved)),
+      second.retirePreflight(reference(reserved)),
+    ]),
+    current = first.read(projectId, requestId);
+  expect(current?.state === "attempted" || current?.state === "retired").toBe(
+    true,
+  );
+  if (current?.state === "attempted") {
+    expect(claim.status).toBe("fulfilled");
+    if (claim.status === "fulfilled")
+      expect(claim.value.mayDispatch).toBe(true);
+    expect(retirement.status).toBe("rejected");
+  } else {
+    expect(retirement.status).toBe("fulfilled");
+    expect(claim.status).toBe("fulfilled");
+    if (claim.status === "fulfilled")
+      expect(claim.value.mayDispatch).toBe(false);
+  }
+});
+
+test("legacy unmarked reserved originals are held from dispatch and cannot be retired", async () => {
+  const root = scratch.make("codex-fork-root-"),
+    storage = new MemoryStorage(),
+    legacy = fixture(root, storage).raw,
+    reserved = await legacy.reserve(
+      projectId,
+      parentSessionId,
+      { requestId, throughTurnRequestId },
+      testSourceSeal,
+    );
+  expect(reserved.state).toBe("reserved");
+  expect(reserved.reservationKind).toBeUndefined();
+  expect((await legacy.markAttempted(reference(reserved))).mayDispatch).toBe(
+    false,
+  );
+  await expect(legacy.retirePreflight(reference(reserved))).rejects.toThrow();
+  expect(legacy.read(projectId, requestId)).toEqual(reserved);
 });
 
 test("list validates the complete journal before returning every scoped original in stable order", async () => {

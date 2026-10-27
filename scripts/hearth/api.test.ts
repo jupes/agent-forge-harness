@@ -1396,6 +1396,125 @@ const ACTIONS: Record<string, ActionFixture> = {
       expect(answer).not.toHaveProperty("prompt");
     },
   },
+  "POST /projects/:id/sessions/:sessionId/fork-reservations": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_CODEX_CHAT_FORK_SOURCE.sessionId}/fork-reservations`,
+      body: {
+        requestId: API_CODEX_CHAT_FORK_ID,
+        throughTurnRequestId: API_CODEX_CHAT_FORK_SOURCE.turnRequestId,
+      },
+      status: 200,
+      target: `codex-chat-fork:${FIXTURE_PROJECT_ID}:${API_CODEX_CHAT_FORK_SOURCE.sessionId}`,
+      audit: {},
+    },
+    invalid: {
+      path: "/projects/not-a-project/sessions/not-a-session/fork-reservations",
+      body: {
+        requestId: API_CODEX_CHAT_FORK_ID,
+        throughTurnRequestId: API_CODEX_CHAT_FORK_SOURCE.turnRequestId,
+      },
+    },
+    prepare: async (h) => {
+      const source = await seedForkableCodexChatSource(
+          h,
+          API_CODEX_CHAT_FORK_SOURCE,
+        ),
+        hash = codexChatForkOriginalHash(
+          codexChatForkOriginalHashInput({
+            projectId: source.projectId,
+            workspaceKey: source.workspace,
+            parentSessionId: source.parentSessionId,
+            throughTurnRequestId: source.throughTurnRequestId,
+            requestId: API_CODEX_CHAT_FORK_ID,
+            protocolVersion: CODEX_CHAT_FORK_PROTOCOL_VERSION,
+          }),
+        );
+      Object.assign(
+        ACTIONS["POST /projects/:id/sessions/:sessionId/fork-reservations"]!
+          .valid,
+        {
+          path: `/projects/${source.projectId}/sessions/${source.parentSessionId}/fork-reservations`,
+          body: {
+            requestId: API_CODEX_CHAT_FORK_ID,
+            throughTurnRequestId: source.throughTurnRequestId,
+          },
+          target: `codex-chat-fork:${source.projectId}:${source.parentSessionId}`,
+          audit: {
+            family: "codex-chat-fork",
+            requestId: API_CODEX_CHAT_FORK_ID,
+            inputHash: hash,
+          },
+        },
+      );
+    },
+    happened: async (_h, answer) => {
+      expect(answer).toMatchObject({
+        family: "codex-chat-fork",
+        requestId: API_CODEX_CHAT_FORK_ID,
+        state: "reserved",
+      });
+      expect(answer).not.toHaveProperty("sourceSeal");
+      expect(answer).not.toHaveProperty("prompt");
+    },
+  },
+  "POST /projects/:id/sessions/:sessionId/fork-reservations/:requestId/retire":
+    {
+      valid: {
+        path: `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_CHAT_SESSION}/fork-reservations/${API_CODEX_CHAT_FORK_ID}/retire`,
+        body: { requestHash: "" },
+        status: 200,
+        target: `codex-chat-fork:${FIXTURE_PROJECT_ID}:${FIXTURE_CHAT_SESSION}`,
+        audit: {},
+      },
+      invalid: {
+        path: "/projects/not-a-project/sessions/not-a-session/fork-reservations/not-a-uuid/retire",
+        body: { requestHash: "invalid" },
+      },
+      prepare: async (h) => {
+        const journal = createCodexChatForkJournal({
+            root: h.root,
+            home: h.home,
+          }),
+          original = await journal.reserve(
+            FIXTURE_PROJECT_ID,
+            FIXTURE_CHAT_SESSION,
+            {
+              requestId: API_CODEX_CHAT_FORK_ID,
+              throughTurnRequestId: FIXTURE_CHAT_DECISION.turnRequestId,
+            },
+            {
+              parentRequestHash: "a".repeat(64),
+              parentTurnHash: "b".repeat(64),
+              parentNativeThreadId: "0199a213-81c0-7800-8aa1-bbab2a035a53",
+              throughNativeTurnId: "0199a213-81c0-7800-8aa1-bbab2a035a54",
+              sourceSettingsHash: "c".repeat(64),
+            },
+            "preflight-v1",
+          );
+        Object.assign(
+          ACTIONS[
+            "POST /projects/:id/sessions/:sessionId/fork-reservations/:requestId/retire"
+          ]!.valid,
+          {
+            body: { requestHash: original.requestHash },
+            audit: {
+              family: "codex-chat-fork",
+              requestId: API_CODEX_CHAT_FORK_ID,
+              inputHash: original.requestHash,
+            },
+          },
+        );
+      },
+      happened: async (_h, answer) => {
+        expect(answer).toMatchObject({
+          requestId: API_CODEX_CHAT_FORK_ID,
+          state: "retired",
+          retiredReason: "verified-not-sent",
+        });
+        expect(answer).not.toHaveProperty("sourceSeal");
+        expect(answer).not.toHaveProperty("prompt");
+      },
+    },
   "POST /providers/:provider/sign-in": {
     valid: {
       path: "/providers/claude/sign-in",
