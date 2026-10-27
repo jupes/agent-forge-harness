@@ -105,6 +105,47 @@ test("create review exposes every complete Smith field and requires a matching c
   expect(attrs(findAll(edited, "button")[1])["disabled"]).toBe(true);
 });
 
+test("rapid field and target edits merge into the current draft from one rendered view", () => {
+  const current: {
+    target: "workspace" | "user";
+    smith: typeof smith;
+  } = { target: "workspace", smith: structuredClone(smith) };
+  const rendered = SmithCreateFormView({
+    state: state(),
+    draftReady: true,
+    canWrite: true,
+    canStart: true,
+    onDraft(target, nextSmith) {
+      current.target = target;
+      current.smith = structuredClone(nextSmith);
+    },
+    onPreview() {},
+    onCreate() {},
+  });
+  const inputs = findAll(rendered, "input"),
+    target = findAll(rendered, "select")[0],
+    nameInput = attrs(inputs[0])["onInput"],
+    targetChange = attrs(target)["onChange"],
+    modelInput = attrs(inputs[2])["onInput"];
+  if (
+    typeof nameInput !== "function" ||
+    typeof targetChange !== "function" ||
+    typeof modelInput !== "function"
+  )
+    throw Error("Smith draft controls lost their edit handlers.");
+
+  // Invoke the same render's handlers in a row, as rapid browser edits can do
+  // before Preact commits another render.
+  nameInput({ currentTarget: { value: "smith-next" } } as never);
+  targetChange({ currentTarget: { value: "user" } } as never);
+  modelInput({ currentTarget: { value: "model-next" } } as never);
+
+  expect(current).toEqual({
+    target: "user",
+    smith: { ...smith, name: "smith-next", model: "model-next" },
+  });
+});
+
 test("unverified workspace keeps Smith draft controls inert without changing write policy", () => {
   let draftChanges = 0;
   const pending = SmithCreateFormView({
