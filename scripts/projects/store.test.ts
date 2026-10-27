@@ -203,13 +203,21 @@ test("create identity hashes bind the UUID and expected semantic revision", asyn
 
 test("an explicit project Keeper Smith is bound to the saved original and committed record while legacy originals stay absent", async () => {
   const { home, store, input } = fixture();
+  const checkout = join(home, "checkout");
+  mkdirSync(join(checkout, ".git"), { recursive: true });
+  const original = {
+    ...input,
+    workspaces: [
+      { root: checkout, repositories: [checkout], epicIds: ["demo-epic"] },
+    ],
+  };
   const requestId = "bba4e479-101f-48c4-bbb8-04f242e3d325";
   const legacyHash = hashProjectCreateRequest({
     requestId,
     expectedCatalogRevision: 0,
-    original: input,
+    original,
   });
-  const explicitOriginal = Object.assign({}, input, {
+  const explicitOriginal = Object.assign({}, original, {
     keeperSmith: "claude-master",
   });
   const explicitHash = hashProjectCreateRequest({
@@ -243,7 +251,7 @@ test("an explicit project Keeper Smith is bound to the saved original and commit
     }),
   });
   const committedProject = committed.catalog.projects[0];
-  expect(committedProject?.slug).toBe(input.slug);
+  expect(committedProject?.slug).toBe(original.slug);
   expect(
     committedProject && "keeperSmith" in committedProject
       ? committedProject.keeperSmith
@@ -258,7 +266,9 @@ test("an explicit project Keeper Smith is bound to the saved original and commit
   await expect(
     store.reserveCreate({
       requestId,
-      original: Object.assign({}, input, { keeperSmith: "codex-journeyman" }),
+      original: Object.assign({}, original, {
+        keeperSmith: "codex-journeyman",
+      }),
       expectedCatalogRevision: 0,
       preflightScope: { hash: "a".repeat(64), count: 0 },
       validateScope: async () => ({ hash: "a".repeat(64), count: 0 }),
@@ -277,11 +287,19 @@ test("an explicit project Keeper Smith is bound to the saved original and commit
 });
 
 test("a legacy original commits on the direct store path without a Keeper field", async () => {
-  const { store, input } = fixture();
+  const { home, store, input } = fixture();
+  const checkout = join(home, "checkout");
+  mkdirSync(join(checkout, ".git"), { recursive: true });
+  const original = {
+    ...input,
+    workspaces: [
+      { root: checkout, repositories: [checkout], epicIds: ["demo-epic"] },
+    ],
+  };
   const requestId = "5e091eab-8a4f-45dc-8fbb-19e9425d5c4e";
   const reservation = await store.reserveCreate({
     requestId,
-    original: input,
+    original,
     expectedCatalogRevision: 0,
     preflightScope: { hash: "c".repeat(64), count: 0 },
     validateScope: async () => ({ hash: "c".repeat(64), count: 0 }),
@@ -296,7 +314,7 @@ test("a legacy original commits on the direct store path without a Keeper field"
       count: 0,
     }),
   });
-  expect(committed.catalog.projects[0]?.slug).toBe(input.slug);
+  expect(committed.catalog.projects[0]?.slug).toBe(original.slug);
   expect(
     Object.hasOwn(committed.catalog.projects[0] ?? {}, "keeperSmith"),
   ).toBe(false);
