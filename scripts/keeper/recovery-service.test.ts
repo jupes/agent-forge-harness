@@ -15,7 +15,9 @@ const cleanup: (() => Promise<void>)[] = [];
 afterEach(async () => {
   for (const close of cleanup.splice(0).reverse()) await close();
 });
-async function fixture() {
+async function fixture(
+  options: { keeperSmith?: string; defaultSmith?: string } = {},
+) {
   const base = mkdtempSync(join(tmpdir(), "keeper-recovery-service-")),
     home = join(base, "home"),
     root = join(base, "root");
@@ -29,6 +31,9 @@ async function fixture() {
       name: "Alpha",
       description: "",
       icon: "A",
+      ...(options.keeperSmith !== undefined
+        ? { keeperSmith: options.keeperSmith }
+        : {}),
       workspaces: [{ root, repositories: [root], epicIds: ["alpha"] }],
     },
     0,
@@ -93,7 +98,7 @@ async function fixture() {
   const runtime: KeeperRuntime = {
     catalog() {
       if (!configuration) throw new Error("Configuration unavailable");
-      return { defaultSmith: "old", smiths };
+      return { defaultSmith: options.defaultSmith ?? "old", smiths };
     },
     transport(smith) {
       return smith.provider === "claude" ? claude : codex;
@@ -141,6 +146,44 @@ async function fixture() {
     },
   };
 }
+
+test("project Keeper selection is the first-read/send fallback while a saved conversation selection stays primary", async () => {
+  const f = await fixture({ keeperSmith: "new", defaultSmith: "old" });
+  expect((await f.service.recovery(f.id)).selectedSmith).toBe("new");
+  await f.send("Use the project selection");
+  expect(f.starts[0]).toMatchObject({ provider: "codex", smith: "new" });
+
+  const beforeSwitch = f.store.read(f.id);
+  await f.service.continueKeeper(f.id, {
+    requestId: randomUUID(),
+    expectedRevision: beforeSwitch.revision,
+    mode: "switch",
+    smith: "old",
+    summary: "The operator explicitly chose this conversation Smith.",
+  });
+  expect((await f.service.recovery(f.id)).selectedSmith).toBe("old");
+  await f.send("Keep the conversation selection");
+  expect(f.starts[1]).toMatchObject({ provider: "claude", smith: "old" });
+});
+
+test("legacy projects without a Keeper selection still use the global default", async () => {
+  const f = await fixture({ defaultSmith: "new" });
+  expect((await f.service.recovery(f.id)).selectedSmith).toBe("new");
+  await f.send("Keep legacy default behavior");
+  expect(f.starts[0]).toMatchObject({ provider: "codex", smith: "new" });
+});
+
+test("an explicit missing or disabled project Smith never falls back or starts a turn", async () => {
+  for (const keeperSmith of ["missing", "disabled"]) {
+    const f = await fixture({ keeperSmith, defaultSmith: "old" });
+    if (keeperSmith === "missing") f.smiths.splice(1, 1);
+    await expect(f.send("Must remain unavailable")).rejects.toThrow(
+      "unknown or disabled",
+    );
+    expect(f.starts).toEqual([]);
+    expect(f.store.read(f.id).turns).toEqual([]);
+  }
+});
 
 test("explicit cross-provider continuation passes only the reviewed summary and never another provider's native id", async () => {
   const f = await fixture();

@@ -837,6 +837,372 @@ test("a protected project reservation preserves its exact original before projec
   expect(summaryText).not.toContain(request.original.name);
 });
 
+test("an explicit project Keeper Smith round-trips through the protected create original and public record", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  h.bd.issues.set("alpha-epic", {
+    id: "alpha-epic",
+    title: "Onboarding epic",
+    issue_type: "epic",
+    priority: 2,
+    status: "open",
+    labels: ["project:keeper-choice"],
+    created_at: "2026-10-26T00:00:00.000Z",
+    updated_at: "2026-10-26T00:00:00.000Z",
+  });
+  h.bd.answer = (args) =>
+    args[0] === "export"
+      ? {
+          status: 0,
+          stdout: [...h.bd.issues.values()]
+            .map((issue) => JSON.stringify(issue))
+            .join("\n"),
+          stderr: "",
+        }
+      : undefined;
+  const requestId = "07d87f5a-10ca-4d83-87f5-70b222b0fe2e";
+  const original = {
+    slug: "keeper-choice",
+    name: "Keeper Choice",
+    description: "",
+    icon: "K",
+    workspaces: [
+      {
+        root: h.workspace,
+        repositories: [h.workspace],
+        epicIds: ["alpha-epic"],
+      },
+    ],
+    keeperSmith: "claude-master",
+  };
+  const headers = h.headers(h.hearth.token);
+  const reserve = await fetch(`${h.api}/projects/create-reservations`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      requestId,
+      expectedCatalogRevision: 0,
+      original,
+    }),
+  });
+  expect(reserve.status).toBe(201);
+  const reserved: unknown = await reserve.json();
+  expect(reserved).toMatchObject({
+    ok: true,
+    data: {
+      requestId,
+      original,
+      state: "reserved",
+    },
+    error: null,
+  });
+  const reservation = createProjectStore(h.home).readCreate(requestId);
+  expect(reservation?.original).toEqual(original);
+  if (!reservation) throw new Error("Keeper project reservation missing");
+
+  const exact = await fetch(
+    `${h.api}/projects/create-reservations/${requestId}`,
+    { headers },
+  );
+  expect(exact.status).toBe(200);
+  expect(await exact.json()).toMatchObject({
+    ok: true,
+    data: { requestId, requestHash: reservation.requestHash, original },
+    error: null,
+  });
+  const commit = await fetch(
+    `${h.api}/projects/create-reservations/${requestId}/commit`,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        requestHash: reservation.requestHash,
+        reviewedScopeHash: reservation.scopeHash,
+      }),
+    },
+  );
+  expect(commit.status).toBe(200);
+  expect(createProjectStore(h.home).read().projects[0]).toMatchObject({
+    slug: original.slug,
+    keeperSmith: original.keeperSmith,
+  });
+  const listed = await fetch(`${h.api}/projects`, { headers });
+  expect(await listed.json()).toMatchObject({
+    ok: true,
+    data: {
+      projects: [{ slug: original.slug, keeperSmith: original.keeperSmith }],
+    },
+    error: null,
+  });
+  expect(h.events(["operator.action"])).toHaveLength(2);
+  const auditText = JSON.stringify(h.events(["operator.action"]));
+  expect(auditText).not.toContain(original.keeperSmith);
+  expect(auditText).not.toContain(original.name);
+});
+
+test("missing and disabled explicit Keeper names refuse before reserving a project", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  h.bd.issues.set("alpha-epic", {
+    id: "alpha-epic",
+    title: "Onboarding epic",
+    issue_type: "epic",
+    priority: 2,
+    status: "open",
+    labels: ["project:keeper-refusal"],
+    created_at: "2026-10-26T00:00:00.000Z",
+    updated_at: "2026-10-26T00:00:00.000Z",
+  });
+  h.bd.answer = (args) =>
+    args[0] === "export"
+      ? {
+          status: 0,
+          stdout: [...h.bd.issues.values()]
+            .map((issue) => JSON.stringify(issue))
+            .join("\n"),
+          stderr: "",
+        }
+      : undefined;
+  const userConfig = join(h.configHome, ".agent-forge", "config.toml");
+  mkdirSync(join(h.configHome, ".agent-forge"), { recursive: true });
+  writeFileSync(
+    userConfig,
+    "[smiths.claude-master]\nenabled = false\n",
+    "utf8",
+  );
+  const headers = h.headers(h.hearth.token);
+  const choices = [
+    { slug: "unknown-keeper", keeperSmith: "not-configured" },
+    { slug: "disabled-keeper", keeperSmith: "claude-master" },
+  ];
+  for (const [index, choice] of choices.entries()) {
+    const response = await fetch(`${h.api}/projects/create-reservations`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        requestId:
+          index === 0
+            ? "15f08589-6ab8-4a04-9c68-377c1cabed8c"
+            : "bdbdf03a-843b-4833-89d4-2897b008aa88",
+        expectedCatalogRevision: 0,
+        original: {
+          slug: choice.slug,
+          name: choice.slug,
+          description: "",
+          icon: "K",
+          workspaces: [
+            {
+              root: h.workspace,
+              repositories: [h.workspace],
+              epicIds: ["alpha-epic"],
+            },
+          ],
+          keeperSmith: choice.keeperSmith,
+        },
+      }),
+    });
+    expect(response.status).toBe(400);
+    const body: unknown = await response.json();
+    expect(body).toMatchObject({ ok: false, data: null });
+    const errorText = JSON.stringify(body).toLowerCase();
+    expect(errorText).toMatch(
+      choice.keeperSmith === "claude-master"
+        ? /disabled|unavailable/
+        : /unknown|configured|unavailable/,
+    );
+  }
+  const store = createProjectStore(h.home);
+  expect(store.read().projects).toEqual([]);
+  expect(store.listCreates()).toEqual([]);
+});
+
+test("explicit Keeper configuration is revalidated after waiting for the project catalog writer", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  const issue = {
+    id: "alpha-epic",
+    title: "Keeper selection source",
+    issue_type: "epic",
+    priority: 2,
+    status: "open",
+    labels: ["project:keeper-config-race"],
+    created_at: "2026-10-26T00:00:00.000Z",
+    updated_at: "2026-10-26T00:00:00.000Z",
+  };
+  h.bd.issues.set(issue.id, issue);
+  const initialRead = deferred<void>();
+  h.bd.answer = (args) => {
+    if (args[0] !== "export") return undefined;
+    initialRead.resolve();
+    return {
+      status: 0,
+      stdout: JSON.stringify(issue),
+      stderr: "",
+    };
+  };
+  const configDirectory = join(h.configHome, ".agent-forge");
+  const userConfig = join(configDirectory, "config.toml");
+  mkdirSync(configDirectory, { recursive: true });
+  writeFileSync(userConfig, "[smiths.claude-master]\nenabled = true\n", "utf8");
+
+  const locked = deferred<void>();
+  const unlock = deferred<void>();
+  const writer = withQueueLock(
+    join(h.home, "projects", "write.lock.db"),
+    async () => {
+      locked.resolve();
+      await unlock.promise;
+    },
+    { waitMs: 10_000 },
+  );
+  await locked.promise;
+  const requestId = "88267545-9b7d-4bb0-9a8a-e531004201ac";
+  const responsePromise = fetch(`${h.api}/projects/create-reservations`, {
+    method: "POST",
+    headers: h.headers(h.hearth.token),
+    body: JSON.stringify({
+      requestId,
+      expectedCatalogRevision: 0,
+      original: {
+        slug: "keeper-config-race",
+        name: "Keeper Config Race",
+        description: "",
+        icon: "K",
+        workspaces: [
+          {
+            root: h.workspace,
+            repositories: [h.workspace],
+            epicIds: ["alpha-epic"],
+          },
+        ],
+        keeperSmith: "claude-master",
+      },
+    }),
+  });
+  try {
+    await initialRead.promise;
+    writeFileSync(
+      userConfig,
+      "[smiths.claude-master]\nenabled = false\n",
+      "utf8",
+    );
+  } finally {
+    unlock.resolve();
+  }
+  await writer;
+  const response = await responsePromise;
+  expect(response.status).toBe(400);
+  const store = createProjectStore(h.home);
+  expect(store.read().projects).toEqual([]);
+  expect(store.readCreate(requestId)).toBeNull();
+});
+
+test("an explicit Keeper is revalidated before commit after configuration changes under the catalog lock", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  const issue = {
+    id: "alpha-epic",
+    title: "Keeper commit source",
+    issue_type: "epic",
+    priority: 2,
+    status: "open",
+    labels: ["project:keeper-commit-race"],
+    created_at: "2026-10-26T00:00:00.000Z",
+    updated_at: "2026-10-26T00:00:00.000Z",
+  };
+  h.bd.issues.set(issue.id, issue);
+  h.bd.answer = (args) =>
+    args[0] === "export"
+      ? {
+          status: 0,
+          stdout: JSON.stringify(issue),
+          stderr: "",
+        }
+      : undefined;
+  const configDirectory = join(h.configHome, ".agent-forge");
+  const userConfig = join(configDirectory, "config.toml");
+  mkdirSync(configDirectory, { recursive: true });
+  writeFileSync(userConfig, "[smiths.claude-master]\nenabled = true\n", "utf8");
+
+  const requestId = "4f2e47b0-f594-4e08-82fa-f3cb92566747";
+  const headers = h.headers(h.hearth.token);
+  const reserve = await fetch(`${h.api}/projects/create-reservations`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      requestId,
+      expectedCatalogRevision: 0,
+      original: {
+        slug: "keeper-commit-race",
+        name: "Keeper Commit Race",
+        description: "",
+        icon: "K",
+        workspaces: [
+          {
+            root: h.workspace,
+            repositories: [h.workspace],
+            epicIds: ["alpha-epic"],
+          },
+        ],
+        keeperSmith: "claude-master",
+      },
+    }),
+  });
+  expect(reserve.status).toBe(201);
+  const reserved: unknown = await reserve.json();
+  expect(reserved).toMatchObject({ ok: true, error: null });
+  const reservation = createProjectStore(h.home).readCreate(requestId);
+  if (!reservation) throw new Error("Keeper reservation missing before commit");
+
+  const initialRead = deferred<void>();
+  h.bd.answer = (args) => {
+    if (args[0] !== "export") return undefined;
+    initialRead.resolve();
+    return { status: 0, stdout: JSON.stringify(issue), stderr: "" };
+  };
+  const locked = deferred<void>();
+  const unlock = deferred<void>();
+  const writer = withQueueLock(
+    join(h.home, "projects", "write.lock.db"),
+    async () => {
+      locked.resolve();
+      await unlock.promise;
+    },
+    { waitMs: 10_000 },
+  );
+  await locked.promise;
+  const responsePromise = fetch(
+    `${h.api}/projects/create-reservations/${requestId}/commit`,
+    {
+      method: "POST",
+      headers,
+      body: JSON.stringify({
+        requestHash: reservation.requestHash,
+        reviewedScopeHash: reservation.scopeHash,
+      }),
+    },
+  );
+  try {
+    await initialRead.promise;
+    writeFileSync(
+      userConfig,
+      "[smiths.claude-master]\nenabled = false\n",
+      "utf8",
+    );
+  } finally {
+    unlock.resolve();
+  }
+  await writer;
+  const response = await responsePromise;
+  expect(response.status).toBe(400);
+  const store = createProjectStore(h.home);
+  expect(store.read().projects).toEqual([]);
+  expect(store.readCreate(requestId)).toMatchObject({
+    requestHash: reservation.requestHash,
+    state: "reserved",
+  });
+});
+
 test("a project reservation refuses two allowed spellings of the same checkout before writing", async () => {
   const h = await startTestHearth();
   opened.push(h);

@@ -17,6 +17,8 @@ export interface ProjectRecord {
   description: string;
   icon: string;
   workspaces: ProjectWorkspace[];
+  /** Explicit configured Keeper choice; absent on legacy projects. */
+  keeperSmith?: string;
   pinned: boolean;
   archived: boolean;
   createdAt: string;
@@ -55,7 +57,7 @@ export interface ProjectCreateOperation {
 export type NewProject = Pick<
   ProjectRecord,
   "slug" | "name" | "description" | "icon" | "workspaces"
->;
+> & { keeperSmith?: string | undefined };
 
 export interface ProjectPreferences {
   pinned?: boolean;

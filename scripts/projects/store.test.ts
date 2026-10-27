@@ -1,9 +1,16 @@
 import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { writeOwnerOnly } from "../hearth/token";
+import { resolveCheckout } from "../ledger/workspace";
 import {
   createProjectStore,
   hashProjectCreateRequest,
@@ -199,6 +206,164 @@ test("create identity hashes bind the UUID and expected semantic revision", asyn
     }),
   );
   expect(second.operation.requestHash).not.toBe(first.operation.requestHash);
+});
+
+test("an explicit project Keeper Smith is bound to the saved original and committed record while legacy originals stay absent", async () => {
+  const { home, store, input } = fixture();
+  const checkout = join(home, "checkout");
+  mkdirSync(join(checkout, ".git"), { recursive: true });
+  const checkoutAlias = join(home, "checkout-alias");
+  symlinkSync(
+    checkout,
+    checkoutAlias,
+    process.platform === "win32" ? "junction" : "dir",
+  );
+  const canonicalCheckout = resolveCheckout(checkoutAlias).workspace;
+  expect(canonicalCheckout).not.toBe(checkoutAlias);
+  const original = {
+    ...input,
+    workspaces: [
+      {
+        root: canonicalCheckout,
+        repositories: [canonicalCheckout],
+        epicIds: ["demo-epic"],
+      },
+    ],
+  };
+  const requestId = "bba4e479-101f-48c4-bbb8-04f242e3d325";
+  const legacyHash = hashProjectCreateRequest({
+    requestId,
+    expectedCatalogRevision: 0,
+    original,
+  });
+  const explicitOriginal = Object.assign({}, original, {
+    keeperSmith: "claude-master",
+  });
+  const explicitHash = hashProjectCreateRequest({
+    requestId,
+    expectedCatalogRevision: 0,
+    original: explicitOriginal,
+  });
+  expect(explicitHash).not.toBe(legacyHash);
+
+  const reservation = await store.reserveCreate({
+    requestId,
+    original: explicitOriginal,
+    expectedCatalogRevision: 0,
+    preflightScope: { hash: "a".repeat(64), count: 0 },
+    validateScope: async () => ({ hash: "a".repeat(64), count: 0 }),
+  });
+  expect(reservation.operation.original).toEqual(explicitOriginal);
+  expect(reservation.operation.requestHash).toBe(explicitHash);
+  expect(createProjectStore(home).readCreate(requestId)).toEqual(
+    reservation.operation,
+  );
+
+  const committed = await store.commitCreate({
+    requestId,
+    requestHash: explicitHash,
+    reviewedScopeHash: reservation.operation.scopeHash,
+    preflightScope: { hash: reservation.operation.scopeHash, count: 0 },
+    validateScope: async () => ({
+      hash: reservation.operation.scopeHash,
+      count: 0,
+    }),
+  });
+  const committedProject = committed.catalog.projects[0];
+  expect(committedProject?.slug).toBe(original.slug);
+  expect(
+    committedProject && "keeperSmith" in committedProject
+      ? committedProject.keeperSmith
+      : undefined,
+  ).toBe("claude-master");
+  const reopenedProject = createProjectStore(home).read().projects[0];
+  expect(
+    reopenedProject && "keeperSmith" in reopenedProject
+      ? reopenedProject.keeperSmith
+      : undefined,
+  ).toBe("claude-master");
+  await expect(
+    store.reserveCreate({
+      requestId,
+      original: Object.assign({}, original, {
+        keeperSmith: "codex-journeyman",
+      }),
+      expectedCatalogRevision: 0,
+      preflightScope: { hash: "a".repeat(64), count: 0 },
+      validateScope: async () => ({ hash: "a".repeat(64), count: 0 }),
+    }),
+  ).rejects.toMatchObject({ status: 409 });
+
+  const file = projectCatalogPath(home);
+  const saved = JSON.parse(readFileSync(file, "utf8")) as {
+    projects: Array<Record<string, unknown>>;
+  };
+  saved.projects[0]!.keeperSmith = "codex-journeyman";
+  const corrupted = JSON.stringify(saved);
+  writeOwnerOnly(file, corrupted);
+  expect(() => store.read()).toThrow();
+  expect(readFileSync(file, "utf8")).toBe(corrupted);
+});
+
+test("a legacy original commits on the direct store path without a Keeper field", async () => {
+  const { home, store, input } = fixture();
+  const checkout = join(home, "checkout");
+  mkdirSync(join(checkout, ".git"), { recursive: true });
+  const checkoutAlias = join(home, "checkout-alias");
+  symlinkSync(
+    checkout,
+    checkoutAlias,
+    process.platform === "win32" ? "junction" : "dir",
+  );
+  const canonicalCheckout = resolveCheckout(checkoutAlias).workspace;
+  expect(canonicalCheckout).not.toBe(checkoutAlias);
+  const original = {
+    ...input,
+    workspaces: [
+      {
+        root: canonicalCheckout,
+        repositories: [canonicalCheckout],
+        epicIds: ["demo-epic"],
+      },
+    ],
+  };
+  const requestId = "5e091eab-8a4f-45dc-8fbb-19e9425d5c4e";
+  const reservation = await store.reserveCreate({
+    requestId,
+    original,
+    expectedCatalogRevision: 0,
+    preflightScope: { hash: "c".repeat(64), count: 0 },
+    validateScope: async () => ({ hash: "c".repeat(64), count: 0 }),
+  });
+  const committed = await store.commitCreate({
+    requestId,
+    requestHash: reservation.operation.requestHash,
+    reviewedScopeHash: reservation.operation.scopeHash,
+    preflightScope: { hash: reservation.operation.scopeHash, count: 0 },
+    validateScope: async () => ({
+      hash: reservation.operation.scopeHash,
+      count: 0,
+    }),
+  });
+  expect(committed.catalog.projects[0]?.slug).toBe(original.slug);
+  expect(
+    Object.hasOwn(committed.catalog.projects[0] ?? {}, "keeperSmith"),
+  ).toBe(false);
+});
+
+test("a legacy project create original remains byte-shape absent of Keeper selection", async () => {
+  const { home, store, input } = fixture();
+  const requestId = "b780a320-2335-4b04-b5ce-14455ac29335";
+  const legacy = await store.reserveCreate({
+    requestId,
+    original: input,
+    expectedCatalogRevision: 0,
+    preflightScope: { hash: "b".repeat(64), count: 0 },
+    validateScope: async () => ({ hash: "b".repeat(64), count: 0 }),
+  });
+  const reopened = createProjectStore(home).readCreate(requestId);
+  expect(reopened).toEqual(legacy.operation);
+  expect(Object.hasOwn(reopened?.original ?? {}, "keeperSmith")).toBe(false);
 });
 
 test("project catalog preferences preserve pending create originals without advancing their metadata revision", async () => {
