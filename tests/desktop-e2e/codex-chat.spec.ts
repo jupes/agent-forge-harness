@@ -1,6 +1,6 @@
 import {
-  mkdirSync,
   existsSync,
+  mkdirSync,
   readFileSync,
   realpathSync,
   unlinkSync,
@@ -12,6 +12,7 @@ import {
   type Locator,
   type Page,
   type Request,
+  type Route,
   type TestInfo,
   test,
 } from "@playwright/test";
@@ -200,7 +201,11 @@ async function attachForkChildApprovalDiagnostic(info: TestInfo) {
     const errorName =
       error instanceof Error ? error.name.slice(0, 80) : "unknown";
     const fallback = Buffer.from(
-      JSON.stringify({ ...payload, attachment: "failed", attachmentError: errorName }),
+      JSON.stringify({
+        ...payload,
+        attachment: "failed",
+        attachmentError: errorName,
+      }),
     );
     if (fallback.length <= 256 * 1024) {
       try {
@@ -3150,6 +3155,70 @@ test("Codex Chat explicitly reviews, forks, reloads and controls only the linked
   if (!parentNativeId)
     throw Error("The parent native Chat identity is missing");
 
+  const earlierTurn = saved(record.id).turns.find(
+    (candidate) =>
+      candidate.requestId !== turn.requestId && candidate.phase === "completed",
+  );
+  if (!earlierTurn)
+    throw Error("The delayed review race needs an earlier completed turn");
+  let staleReviewStarted!: () => void;
+  let releaseStaleReview!: () => void;
+  const staleReviewEntered = new Promise<void>((resolve) => {
+    staleReviewStarted = resolve;
+  });
+  const staleReviewBarrier = new Promise<void>((resolve) => {
+    releaseStaleReview = resolve;
+  });
+  const staleReviewMatcher = (url: URL) =>
+    url.pathname.endsWith(`/sessions/${record.id}/fork-review`) &&
+    url.searchParams.get("throughTurnRequestId") === earlierTurn.requestId;
+  const delayedStaleReview = async (route: Route) => {
+    const response = await route.fetch();
+    staleReviewStarted();
+    await staleReviewBarrier;
+    await route.fulfill({ response });
+  };
+  await page.route(staleReviewMatcher, delayedStaleReview);
+  const earlierOpener = pane.getByRole("button", {
+    name: `Review Fork through ${earlierTurn.requestId.slice(0, 8)}`,
+    exact: true,
+  });
+  const selectedOpener = pane.getByRole("button", {
+    name: `Review Fork through ${turn.requestId.slice(0, 8)}`,
+    exact: true,
+  });
+  const reviewDialog = page.getByRole("dialog", {
+    name: "Review native Codex Fork",
+    exact: true,
+  });
+  try {
+    await earlierOpener.click();
+    await staleReviewEntered;
+    await reviewDialog
+      .getByRole("button", { name: "Close dialog", exact: true })
+      .click();
+    await selectedOpener.click();
+    await expect(reviewDialog).toContainText("PRIVATE_FORK_SOURCE_PROMPT");
+    releaseStaleReview();
+    await page.waitForResponse((response) => {
+      const url = new URL(response.url());
+      return response.request().method() === "GET" && staleReviewMatcher(url);
+    });
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        ),
+    );
+    await expect(reviewDialog).toContainText("PRIVATE_FORK_SOURCE_PROMPT");
+  } finally {
+    releaseStaleReview();
+    await page.unroute(staleReviewMatcher, delayedStaleReview);
+  }
+  await reviewDialog
+    .getByRole("button", { name: "Close dialog", exact: true })
+    .click();
+
   const opener = pane.getByRole("button", {
     name: `Review Fork through ${turn.requestId.slice(0, 8)}`,
     exact: true,
@@ -3284,12 +3353,63 @@ test("Codex Chat explicitly reviews, forks, reloads and controls only the linked
   expect(savedIdentity.requestId).toBeTruthy();
 
   const postsBeforeReload = forkPosts.length;
+  const child = records().find(
+    (row) =>
+      row.id !== record.id &&
+      "origin" in row &&
+      row.origin?.kind === "codex-chat-fork" &&
+      row.origin.parentSessionId === record.id,
+  );
+  if (!child) throw Error("The linked Fork child was not registered");
   await reloadSettled(page);
   const recoveredOpener = pane.getByRole("button", {
     name: `Review Fork through ${turn.requestId.slice(0, 8)}`,
     exact: true,
   });
-  await recoveredOpener.click();
+  let childReadStarted!: () => void;
+  let releaseChildRead!: () => void;
+  const childReadEntered = new Promise<void>((resolve) => {
+    childReadStarted = resolve;
+  });
+  const childReadBarrier = new Promise<void>((resolve) => {
+    releaseChildRead = resolve;
+  });
+  const childPageRoute = async (route: Route) => {
+    const response = await route.fetch();
+    childReadStarted();
+    await childReadBarrier;
+    await route.fulfill({ response });
+  };
+  const childPageUrl = (url: URL) =>
+    url.pathname.endsWith(
+      `/sessions/${encodeURIComponent(child.id)}/fork-turns`,
+    ) && url.searchParams.get("requestId") === savedIdentity.requestId;
+  const childPageRouteMatcher = (url: URL) => childPageUrl(url);
+  await page.route(childPageRouteMatcher, childPageRoute);
+  try {
+    await recoveredOpener.click();
+    await childReadEntered;
+    const recoveredDialog = page.getByRole("dialog", {
+      name: "Review native Codex Fork",
+      exact: true,
+    });
+    await expect(recoveredDialog).toContainText(savedIdentity.requestId);
+    await expect(
+      recoveredDialog.getByText("Child conversation", { exact: true }),
+    ).toBeVisible();
+    await recoveredDialog
+      .getByRole("textbox", { name: "Continue this child" })
+      .fill("PRIVATE_CHILD_APPROVAL_PROMPT");
+    await expect(
+      recoveredDialog.getByRole("button", {
+        name: "Send child turn",
+        exact: true,
+      }),
+    ).toBeDisabled({ timeout: 250 });
+  } finally {
+    releaseChildRead();
+    await page.unroute(childPageRouteMatcher, childPageRoute);
+  }
   const recoveredDialog = page.getByRole("dialog", {
     name: "Review native Codex Fork",
     exact: true,
@@ -3303,18 +3423,12 @@ test("Codex Chat explicitly reviews, forks, reloads and controls only the linked
   ).toHaveLength(1);
   expect(forkPosts).toHaveLength(postsBeforeReload);
   page.off("request", captureForkPost);
-  const child = records().find(
-    (row) =>
-      row.id !== record.id &&
-      "origin" in row &&
-      row.origin?.kind === "codex-chat-fork" &&
-      row.origin.parentSessionId === record.id,
-  );
-  if (!child) throw Error("The linked Fork child was not registered");
-
-  await recoveredDialog
-    .getByRole("textbox", { name: "Continue this child" })
-    .fill("PRIVATE_CHILD_APPROVAL_PROMPT");
+  await expect(
+    recoveredDialog.getByRole("button", {
+      name: "Send child turn",
+      exact: true,
+    }),
+  ).toBeEnabled();
   await recoveredDialog
     .getByRole("button", { name: "Send child turn", exact: true })
     .click();
