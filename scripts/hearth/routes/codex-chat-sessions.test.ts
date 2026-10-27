@@ -72,6 +72,7 @@ async function fixture(
   mode = "approval-command",
   holdDecision = false,
   holdForkReply = false,
+  approvalPolicy: "never" | "on-request" = "on-request",
 ) {
   let h: TestHearth,
     actual: ReturnType<typeof createCodexChatRuntime> | undefined;
@@ -215,7 +216,7 @@ async function fixture(
       mode: "chat",
       model: "exact-model",
       sandbox: "workspace-write",
-      approvalPolicy: "on-request",
+      approvalPolicy,
       prompt: "PRIVATE-CHAT-PROMPT",
       attachments: [
         { kind: "text", name: "context.txt", text: "PRIVATE-CHAT-CONTEXT" },
@@ -589,6 +590,42 @@ test("file Allow stays unavailable without actual diffs, current/foreign scope r
       .map((row) => row.result),
   ).toEqual([{ decision: "cancel" }]);
   expect((await f.get(`/${id}/approvals`)).pending).toEqual([]);
+});
+
+test("a linked Codex Fork child accepts a turn through its dedicated action", async () => {
+  const f = await fixture("fork-service-tier-null", false, false, "never"),
+    start = await f.post("", f.request);
+  expect(start.status).toBe(202);
+  const started = ownedCodingStartReceiptSchema.parse(
+      (await start.json()).data,
+    ),
+    parentSessionId = started.session.id,
+    completed = await f.settle(parentSessionId),
+    selectedTurn = completed.turns.find(
+      (turn) => turn.requestId === f.request.requestId,
+    );
+  if (!selectedTurn)
+    throw Error("The never-policy Fork source turn did not settle");
+
+  const forkRequest = {
+      requestId: randomUUID(),
+      throughTurnRequestId: selectedTurn.requestId,
+    },
+    forkResponse = await f.post(`/${parentSessionId}/forks`, forkRequest),
+    forkEnvelope = await forkResponse.json();
+  expect(forkResponse.status).toBe(200);
+  expect(forkEnvelope.data.state).toBe("linked");
+  const childSessionId = forkEnvelope.data.childSessionId;
+  if (typeof childSessionId !== "string")
+    throw Error("The native Fork child was not linked to an app session");
+
+  const continuation = await f.post(`/${childSessionId}/fork-turns`, {
+    requestId: randomUUID(),
+    expectedRevision: 0,
+    text: "A new child-authored request.",
+    about: [],
+  });
+  expect(continuation.status).toBe(202);
 });
 
 test("protected Fork routes publish one audited native Fork and recover its exact metadata-only original", async () => {
