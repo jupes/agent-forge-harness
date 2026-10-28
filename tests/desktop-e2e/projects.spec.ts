@@ -1743,6 +1743,12 @@ test("first-run, corrupt store and filtered-empty states stay distinct", async (
   await expect(
     page.getByText("No matching projects", { exact: true }),
   ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "New project", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Skip provider setup", exact: true }),
+  ).toHaveCount(0);
   await page.getByLabel("Find projects").fill("");
   await page.setViewportSize({ width: 1100, height: 700 });
   await page.getByRole("link", { name: "Open Alpha", exact: true }).focus();
@@ -1931,8 +1937,8 @@ test("empty Projects can skip optional provider setup into the guarded create di
     page.getByText("Welcome to Agent Forge", { exact: true }),
   ).toBeVisible();
   await expect(
-    page.getByRole("button", { name: "New project", exact: true }),
-  ).toBeEnabled();
+    page.getByText("Checking saved project creations…", { exact: true }),
+  ).toHaveCount(0);
 
   const skip = page.getByRole("button", {
     name: "Skip provider setup",
@@ -1973,4 +1979,114 @@ test("empty Projects can skip optional provider setup into the guarded create di
   await expect(createDialog).toBeHidden();
   expect(effects).toEqual([]);
   expect(keeperFixtureStarts()).toBe(keeperStartsBefore);
+});
+
+test("empty Projects keep provider setup skippable disabled without a trusted workspace", async ({
+  page,
+}) => {
+  writeFileSync(
+    catalogFile,
+    JSON.stringify({ version: 1, revision: 1, projects: [] }),
+  );
+  await page.route("**/providers/readiness", (route) =>
+    route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: false,
+        data: null,
+        error: "Fixture readiness unavailable",
+      }),
+    }),
+  );
+  const effects: string[] = [];
+  const keeperStartsBefore = keeperFixtureStarts();
+  page.on("request", (request) => {
+    if (request.method() !== "POST") return;
+    const path = new URL(request.url()).pathname;
+    if (
+      path.startsWith("/__agent-forge/providers/") ||
+      path.startsWith("/__agent-forge/projects/")
+    )
+      effects.push(path);
+  });
+
+  await openSettled(page, "/index.html#/desktop/projects");
+  await expect(
+    page.getByText("Welcome to Agent Forge", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("No readiness report. Provider status is unknown.", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  const skip = page.getByRole("button", {
+    name: "Skip provider setup",
+    exact: true,
+  });
+  await expect(skip).toBeVisible();
+  await expect(skip).toBeDisabled();
+  expect(effects).toEqual([]);
+  expect(keeperFixtureStarts()).toBe(keeperStartsBefore);
+});
+
+test("empty Projects label a provider snapshot as last-known after readiness refresh fails", async ({
+  page,
+}) => {
+  writeFileSync(
+    catalogFile,
+    JSON.stringify({ version: 1, revision: 1, projects: [] }),
+  );
+  let readinessReads = 0;
+  await page.route("**/providers/readiness", async (route) => {
+    readinessReads++;
+    if (readinessReads === 1) {
+      await route.continue();
+      return;
+    }
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: false,
+        data: null,
+        error: "Fixture readiness unavailable",
+      }),
+    });
+  });
+
+  const firstRead = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname.endsWith("/providers/readiness") &&
+      response.status() === 200,
+  );
+  await openSettled(page, "/index.html#/desktop/projects");
+  expect((await firstRead).status()).toBe(200);
+  await expect(
+    page.getByRole("region", { name: "Provider readiness snapshot" }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Provider report", { exact: false }),
+  ).toBeVisible();
+
+  const failedRefresh = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname.endsWith("/providers/readiness") &&
+      response.status() === 503,
+  );
+  await page.evaluate(() =>
+    document.dispatchEvent(new Event("visibilitychange")),
+  );
+  await failedRefresh;
+  await expect(
+    page.getByText("Last-known provider report", { exact: false }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Last-known observation; recheck before relying on it.", {
+      exact: false,
+    }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Skip provider setup", exact: true }),
+  ).toBeEnabled();
 });

@@ -116,6 +116,56 @@
   border: 1px dashed #626881;
   border-radius: 10px;
 }
+.af-project-new-onboarding {
+  place-items: stretch;
+  min-height: 0;
+  border: 0;
+}
+.af-onboarding-entry {
+  display: grid;
+  gap: 12px;
+  padding: 18px;
+  border: 1px solid #626881;
+  border-radius: 10px;
+  background: #232637;
+}
+.af-onboarding-entry h2,
+.af-onboarding-entry p {
+  margin: 0;
+}
+.af-onboarding-entry > div:first-child p,
+.af-onboarding-brief-note,
+.af-onboarding-asof,
+.af-onboarding-provider-detail {
+  color: #b3b6cb;
+}
+.af-onboarding-providers {
+  display: grid;
+  gap: 8px;
+}
+.af-onboarding-provider-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 210px), 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.af-onboarding-provider-list li {
+  display: grid;
+  gap: 4px;
+  padding: 10px;
+  border: 1px solid #42475f;
+  border-radius: 6px;
+}
+.af-onboarding-provider-detail {
+  font-size: 12px;
+}
+.af-onboarding-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
 .af-project-create {
   display: grid;
   align-content: start;
