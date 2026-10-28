@@ -1002,6 +1002,7 @@ function installForkScopeHydrationObserver(options: {
   readinessPath: string;
   identityPath: string;
   maxBytes: number;
+  cloneDeadlineMs: number;
   holdProviderReadiness: boolean;
 }) {
   const globals = window as unknown as Record<string, unknown>;
@@ -1052,7 +1053,7 @@ function installForkScopeHydrationObserver(options: {
         timer = setTimeout(() => {
           cancelReader(reader!);
           resolve(null);
-        }, SCOPE_HYDRATION_CLONE_DEADLINE_MS);
+        }, options.cloneDeadlineMs);
       });
       return await Promise.race([read(), deadline]);
     } catch {
@@ -1306,6 +1307,7 @@ async function observeForkScopeHydration(
       readinessPath,
       identityPath,
       maxBytes: SCOPE_HYDRATION_BODY_LIMIT,
+      cloneDeadlineMs: SCOPE_HYDRATION_CLONE_DEADLINE_MS,
       holdProviderReadiness: options.holdProviderReadiness ?? true,
     });
   } catch (error) {
