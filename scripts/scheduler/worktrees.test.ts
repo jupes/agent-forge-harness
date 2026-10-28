@@ -3,15 +3,19 @@ import { spawnSync } from "node:child_process";
 import {
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
+  readlinkSync,
   rmSync,
+  symlinkSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { WorktreeEntry } from "../../types/beads";
 import {
   comparablePath,
@@ -852,6 +856,116 @@ describe("removeWorktree", () => {
     const forced = removeWorktree(dir, a.value.id, { force: true }, deps());
     expect(forced.ok).toBe(true);
     expect(existsSync(a.value.path)).toBe(false);
+  });
+
+  function expectJunctionTargetPreserved(force: boolean): void {
+    const dir = repo();
+    const scratch = resolve(dirname(dir));
+    const target = resolve(scratch, "external marker target");
+    mkdirSync(target);
+    const marker = join(target, "marker.bin");
+    writeFileSync(marker, "private fixture marker\n");
+
+    // Make the linked directory ignored and committed before creating the
+    // worktree, so Git cannot refuse removal merely because it is untracked.
+    writeFileSync(
+      join(dir, ".gitignore"),
+      `${readFileSync(join(dir, ".gitignore"), "utf8")}node_modules/\n`,
+    );
+    git(dir, "add", ".gitignore");
+    git(dir, "commit", "-q", "-m", "ignore linked dependency fixture");
+
+    const made = createWorktree(dir, dir, { branch: "feat/junction" }, deps());
+    if (!made.ok) throw new Error(made.error);
+    const path = resolve(made.value.path);
+    const link = join(path, "node_modules");
+    const cache = join(dir, "trees", ".state.json");
+
+    const assertWithinScratch = (candidate: string): void => {
+      const rel = relative(scratch, resolve(candidate));
+      if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel))
+        throw new Error(`fixture path escaped its private scratch root: ${candidate}`);
+    };
+    assertWithinScratch(dir);
+    assertWithinScratch(path);
+    assertWithinScratch(target);
+    assertWithinScratch(link);
+    assertWithinScratch(cache);
+    assertWithinScratch(marker);
+
+    let linked = false;
+    try {
+      symlinkSync(target, link, process.platform === "win32" ? "junction" : "dir");
+      linked = true;
+      const linkBefore = lstatSync(link);
+      expect(linkBefore.isSymbolicLink()).toBe(true);
+
+      const markerBefore = readFileSync(marker, "utf8");
+      const cacheBefore = readFileSync(cache, "utf8");
+      const linkTargetBefore = readlinkSync(link, "utf8");
+      const worktreesBefore = git(dir, "worktree", "list", "--porcelain");
+      let removeCalls = 0;
+      const spyingGit: GitRun = (args, cwd, timeoutMs) => {
+        if (args[0] === "worktree" && args[1] === "remove") removeCalls += 1;
+        return gitRun(args, cwd, timeoutMs);
+      };
+
+      const removed = removeWorktree(
+        dir,
+        made.value.id,
+        { force },
+        deps({ git: spyingGit }),
+      );
+
+      // Snapshot everything before assertions, including the external marker.
+      const markerExistsAfter = existsSync(marker);
+      const markerAfter = markerExistsAfter ? readFileSync(marker, "utf8") : null;
+      const cacheAfter = existsSync(cache) ? readFileSync(cache, "utf8") : null;
+      const worktreeAfter = existsSync(path);
+      const worktreesAfter = git(dir, "worktree", "list", "--porcelain");
+      let linkAfter: { isSymbolicLink: boolean; target: string } | null = null;
+      try {
+        linkAfter = {
+          isSymbolicLink: lstatSync(link).isSymbolicLink(),
+          target: readlinkSync(link, "utf8"),
+        };
+      } catch {
+        // A missing link is recorded as changed and asserted below.
+      }
+
+      expect(removed.ok).toBe(false);
+      expect(removeCalls).toBe(0);
+      expect(worktreeAfter).toBe(true);
+      expect(worktreesAfter).toBe(worktreesBefore);
+      expect(cacheAfter).toBe(cacheBefore);
+      expect(linkAfter).toEqual({
+        isSymbolicLink: true,
+        target: linkTargetBefore,
+      });
+      expect({ exists: markerExistsAfter, contents: markerAfter }).toEqual({
+        exists: true,
+        contents: markerBefore,
+      });
+    } finally {
+      // Only unlink the known fixture junction, non-recursively, before the
+      // shared afterAll scratch-root cleanup can recurse through the fixture.
+      if (linked) {
+        assertWithinScratch(link);
+        try {
+          if (lstatSync(link).isSymbolicLink()) unlinkSync(link);
+        } catch {
+          // Git may already have removed the link; never recurse into the target.
+        }
+      }
+    }
+  }
+
+  test("a junction to an external target is preserved without force", () => {
+    expectJunctionTargetPreserved(false);
+  });
+
+  test("force cannot remove a worktree with a junction to an external target", () => {
+    expectJunctionTargetPreserved(true);
   });
 
   test("only a worktree this tool made can be removed; a record git no longer lists is dropped", () => {
