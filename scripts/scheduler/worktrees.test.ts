@@ -93,17 +93,21 @@ function repo(ignoreTrees = true, tempParent = tmpdir()): string {
     source = makeRepo(ignoreTrees);
     prepared.set(ignoreTrees, source);
   }
-  const root = mkdtempSync(join(tempParent, "wt "));
-  roots.push(root);
-  const dir = join(root, "repo x");
+  const canonicalTempParent = realpathSync.native(resolve(tempParent));
+  const root = mkdtempSync(join(canonicalTempParent, "wt "));
+  const canonicalRoot = realpathSync.native(root);
+  roots.push(canonicalRoot);
+  const dir = join(canonicalRoot, "repo x");
   cpSync(source, dir, { recursive: true });
   return dir;
 }
 
 function makeRepo(ignoreTrees: boolean): string {
-  const root = mkdtempSync(join(tmpdir(), "wt "));
-  roots.push(root);
-  const dir = join(root, "repo x");
+  const canonicalTempParent = realpathSync.native(resolve(tmpdir()));
+  const root = mkdtempSync(join(canonicalTempParent, "wt "));
+  const canonicalRoot = realpathSync.native(root);
+  roots.push(canonicalRoot);
+  const dir = join(canonicalRoot, "repo x");
   mkdirSync(dir);
   git(dir, "init", "-q", "-b", "master");
   git(dir, "config", "user.email", "test@example.invalid");
@@ -121,22 +125,34 @@ function makeRepo(ignoreTrees: boolean): string {
 }
 
 function shortWindowsPath(path: string): string {
-  const { dlopen, FFIType } = bunFfi(),
-    { GetShortPathNameW } = dlopen("kernel32.dll", {
-      GetShortPathNameW: {
-        args: [FFIType.ptr, FFIType.ptr, FFIType.u32],
-        returns: FFIType.u32,
-      },
-    }).symbols,
-    output = Buffer.alloc(32_768 * 2),
-    length = GetShortPathNameW(
+  const { dlopen, FFIType } = bunFfi();
+  const library = dlopen("kernel32.dll", {
+    GetShortPathNameW: {
+      args: [FFIType.ptr, FFIType.ptr, FFIType.u32],
+      returns: FFIType.u32,
+    },
+  });
+  let primaryError: unknown;
+  try {
+    const output = Buffer.alloc(32_768 * 2);
+    const length = library.symbols.GetShortPathNameW(
       Buffer.from(`${path}\0`, "utf16le"),
       output,
       32_768,
     );
-  if (length === 0 || length >= 32_768)
-    throw new Error("Windows did not provide a bounded short path.");
-  return output.toString("utf16le", 0, length * 2);
+    if (length === 0 || length >= 32_768)
+      throw new Error("Windows did not provide a bounded short path.");
+    return output.toString("utf16le", 0, length * 2);
+  } catch (error) {
+    primaryError = error;
+    throw error;
+  } finally {
+    try {
+      library.close();
+    } catch (error) {
+      if (primaryError === undefined) throw error;
+    }
+  }
 }
 
 /**
@@ -151,7 +167,8 @@ const top = (dir: string): string => git(dir, "rev-parse", "--show-toplevel");
 
 function assertPrivateScratchPath(scratch: string, candidate: string): void {
   const root = resolve(scratch);
-  const rootRelative = relative(resolve(tmpdir()), root);
+  const canonicalTemp = realpathSync.native(resolve(tmpdir()));
+  const rootRelative = relative(canonicalTemp, root);
   const candidateRelative = relative(root, resolve(candidate));
   if (
     !roots.includes(root) ||
@@ -307,9 +324,15 @@ test("a commit in the repository repo() copies starts no background maintenance,
 describe("comparablePath", () => {
   test("an 8.3 short path, backslashes and drive case all meet git's spelling; a gone path still compares", () => {
     const dir = repo();
-    // tmpdir() is the short form on this machine; git prints the long one.
-    expect(comparablePath(dir)).toBe(comparablePath(top(dir)));
-    expect(comparablePath(windowsSpelling(dir))).toBe(comparablePath(top(dir)));
+    const shortDir =
+      process.platform === "win32" ? shortWindowsPath(dir) : dir;
+    if (process.platform === "win32")
+      expect(shortDir.toLowerCase()).not.toBe(dir.toLowerCase());
+    // Use an explicit actual alias; mkdtemp roots are canonicalized below.
+    expect(comparablePath(shortDir)).toBe(comparablePath(top(dir)));
+    expect(comparablePath(windowsSpelling(shortDir))).toBe(
+      comparablePath(top(dir)),
+    );
     const gone = join(dir, "not", "there");
     expect(comparablePath(gone)).toBe(comparablePath(`${gone}/`));
   });
@@ -861,8 +884,9 @@ describe("listWorktrees", () => {
   });
 
   test("a directory that is not the top of a repository lists nothing; git failing is an error, not an empty list", () => {
-    const loose = mkdtempSync(join(tmpdir(), "wt "));
-    roots.push(loose);
+    const canonicalTemp = realpathSync.native(resolve(tmpdir()));
+    const loose = mkdtempSync(join(canonicalTemp, "wt "));
+    roots.push(realpathSync.native(loose));
     // Under the OS home, git may find the home's own repository: still nothing.
     expect(listWorktrees(loose, deps())).toEqual({ ok: true, entries: [] });
     const dir = repo();
@@ -961,7 +985,7 @@ describe("removeWorktree", () => {
     const dir = repo();
     const scratch = resolve(dirname(dir));
     const assertPrivateScratch = (): void => {
-      const rel = relative(resolve(tmpdir()), scratch);
+      const rel = relative(realpathSync.native(resolve(tmpdir())), scratch);
       if (
         !roots.includes(scratch) ||
         !basename(scratch).startsWith("wt ") ||
