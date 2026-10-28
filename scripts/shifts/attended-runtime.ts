@@ -28,8 +28,8 @@ import type { ShiftAttemptFailurePhase } from "./attempt-owner";
 import type { ProjectShiftExecutionRuntime } from "./execution";
 import { observeProjectShift } from "./observations";
 import { createShiftPrBodyCheck } from "./pr-check";
-import { createShiftProviderPreparer } from "./provider-prepare";
 import type { ShiftProviderPrepareFailurePhase } from "./provider-prepare";
+import { createShiftProviderPreparer } from "./provider-prepare";
 import { createProjectShiftRegistry, projectShiftFlags } from "./registry";
 import { createProjectShiftScopeValidator } from "./scope";
 
