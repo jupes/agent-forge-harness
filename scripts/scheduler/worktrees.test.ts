@@ -8,6 +8,7 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   readlinkSync,
   rmSync,
   symlinkSync,
@@ -25,6 +26,7 @@ import {
   sep,
 } from "node:path";
 import type { WorktreeEntry } from "../../types/beads";
+import { bunFfi } from "../hearth/acl-windows";
 import {
   comparablePath,
   createWorktree,
@@ -85,13 +87,13 @@ const prepared = new Map<boolean, string>();
  * as the isolation re-run in `scripts/ledger/test-isolation.test.ts` runs
  * them, 31 of 240 runs failed that way; none of 160 with the setting.
  */
-function repo(ignoreTrees = true): string {
+function repo(ignoreTrees = true, tempParent = tmpdir()): string {
   let source = prepared.get(ignoreTrees);
   if (source === undefined) {
     source = makeRepo(ignoreTrees);
     prepared.set(ignoreTrees, source);
   }
-  const root = mkdtempSync(join(tmpdir(), "wt "));
+  const root = mkdtempSync(join(tempParent, "wt "));
   roots.push(root);
   const dir = join(root, "repo x");
   cpSync(source, dir, { recursive: true });
@@ -116,6 +118,25 @@ function makeRepo(ignoreTrees: boolean): string {
   git(dir, "add", ".");
   git(dir, "commit", "-q", "-m", "first");
   return dir;
+}
+
+function shortWindowsPath(path: string): string {
+  const { dlopen, FFIType } = bunFfi(),
+    { GetShortPathNameW } = dlopen("kernel32.dll", {
+      GetShortPathNameW: {
+        args: [FFIType.ptr, FFIType.ptr, FFIType.u32],
+        returns: FFIType.u32,
+      },
+    }).symbols,
+    output = Buffer.alloc(32_768 * 2),
+    length = GetShortPathNameW(
+      Buffer.from(`${path}\0`, "utf16le"),
+      output,
+      32_768,
+    );
+  if (length === 0 || length >= 32_768)
+    throw new Error("Windows did not provide a bounded short path.");
+  return output.toString("utf16le", 0, length * 2);
 }
 
 /**
@@ -885,6 +906,32 @@ describe("listWorktrees", () => {
 });
 
 describe("removeWorktree", () => {
+  test.skipIf(process.platform !== "win32")(
+    "the private scratch guard recognizes an actual 8.3 temp-root alias",
+    () => {
+      const normalTemp = resolve(tmpdir());
+      const shortTemp = shortWindowsPath(normalTemp);
+      expect(shortTemp.toLowerCase()).not.toBe(normalTemp.toLowerCase());
+      expect(realpathSync.native(shortTemp).toLowerCase()).toBe(
+        realpathSync.native(normalTemp).toLowerCase(),
+      );
+
+      const dir = repo(true, shortTemp);
+      const scratch = resolve(dirname(dir));
+      const made = createWorktree(
+        dir,
+        dir,
+        { branch: "feat/short-temp-alias" },
+        deps(),
+      );
+      if (!made.ok) throw new Error(made.error);
+
+      // Git's returned worktree path and the fixture's short temp spelling
+      // must both be accepted as one private scratch tree.
+      assertPrivateScratchPath(scratch, made.value.path);
+    },
+  );
+
   test("a clean worktree is removed and its record dropped, a mirror file notwithstanding", () => {
     const dir = repo();
     const a = createWorktree(dir, dir, { branch: "feat/r" }, deps());
