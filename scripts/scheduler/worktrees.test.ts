@@ -15,7 +15,15 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  sep,
+} from "node:path";
 import type { WorktreeEntry } from "../../types/beads";
 import {
   comparablePath,
@@ -861,9 +869,30 @@ describe("removeWorktree", () => {
   function expectJunctionTargetPreserved(force: boolean): void {
     const dir = repo();
     const scratch = resolve(dirname(dir));
+    const assertPrivateScratch = (): void => {
+      const rel = relative(resolve(tmpdir()), scratch);
+      if (
+        !roots.includes(scratch) ||
+        !basename(scratch).startsWith("wt ") ||
+        rel === ".." ||
+        rel.startsWith(`..${sep}`) ||
+        isAbsolute(rel)
+      ) {
+        throw new Error("fixture scratch root is outside its private temp boundary");
+      }
+    };
+    assertPrivateScratch();
     const target = resolve(scratch, "external marker target");
-    mkdirSync(target);
     const marker = join(target, "marker.bin");
+    const assertWithinScratch = (candidate: string): void => {
+      const rel = relative(scratch, resolve(candidate));
+      if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel))
+        throw new Error(`fixture path escaped its private scratch root: ${candidate}`);
+    };
+    assertWithinScratch(dir);
+    assertWithinScratch(target);
+    assertWithinScratch(marker);
+    mkdirSync(target);
     writeFileSync(marker, "private fixture marker\n");
 
     // Make the linked directory ignored and committed before creating the
@@ -881,11 +910,6 @@ describe("removeWorktree", () => {
     const link = join(path, "node_modules");
     const cache = join(dir, "trees", ".state.json");
 
-    const assertWithinScratch = (candidate: string): void => {
-      const rel = relative(scratch, resolve(candidate));
-      if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel))
-        throw new Error(`fixture path escaped its private scratch root: ${candidate}`);
-    };
     assertWithinScratch(dir);
     assertWithinScratch(path);
     assertWithinScratch(target);
@@ -933,28 +957,48 @@ describe("removeWorktree", () => {
         // A missing link is recorded as changed and asserted below.
       }
 
-      expect(removed.ok).toBe(false);
-      expect(removeCalls).toBe(0);
-      expect(worktreeAfter).toBe(true);
-      expect(worktreesAfter).toBe(worktreesBefore);
-      expect(cacheAfter).toBe(cacheBefore);
-      expect(linkAfter).toEqual({
-        isSymbolicLink: true,
-        target: linkTargetBefore,
-      });
-      expect({ exists: markerExistsAfter, contents: markerAfter }).toEqual({
-        exists: true,
-        contents: markerBefore,
+      expect({
+        marker: { exists: markerExistsAfter, contents: markerAfter },
+        worktreeExists: worktreeAfter,
+        worktrees: worktreesAfter,
+        cache: cacheAfter,
+        link: linkAfter,
+        removeCalls,
+        removed: removed.ok,
+      }).toEqual({
+        marker: { exists: true, contents: markerBefore },
+        worktreeExists: true,
+        worktrees: worktreesBefore,
+        cache: cacheBefore,
+        link: { isSymbolicLink: true, target: linkTargetBefore },
+        removeCalls: 0,
+        removed: false,
       });
     } finally {
       // Only unlink the known fixture junction, non-recursively, before the
       // shared afterAll scratch-root cleanup can recurse through the fixture.
       if (linked) {
+        assertPrivateScratch();
         assertWithinScratch(link);
         try {
-          if (lstatSync(link).isSymbolicLink()) unlinkSync(link);
-        } catch {
-          // Git may already have removed the link; never recurse into the target.
+          const linkStat = lstatSync(link);
+          if (!linkStat.isSymbolicLink())
+            throw new Error("fixture link path no longer names a link");
+          unlinkSync(link);
+        } catch (error) {
+          const missing =
+            typeof error === "object" &&
+            error !== null &&
+            "code" in error &&
+            error.code === "ENOENT";
+          if (!missing) {
+            assertPrivateScratch();
+            const rootIndex = roots.indexOf(scratch);
+            if (rootIndex >= 0) roots.splice(rootIndex, 1);
+            throw new Error(
+              "fixture junction cleanup failed; private scratch root retained for inspection",
+            );
+          }
         }
       }
     }
