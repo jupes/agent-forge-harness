@@ -785,16 +785,19 @@ describe("listWorktrees", () => {
 
   test("a cached path in 8.3 short form with backslashes is the worktree git lists, not a missing one", () => {
     const dir = repo();
-    // dir is under tmpdir(), which is the short form here.
     const path = join(dir, "trees", "short1");
     git(dir, "worktree", "add", "-q", "-b", "feat/short", "--", path);
+    const cachedPath =
+      process.platform === "win32" ? shortWindowsPath(path) : path;
+    if (process.platform === "win32")
+      expect(cachedPath.toLowerCase()).not.toBe(path.toLowerCase());
     writeFileSync(
       join(dir, "trees", ".state.json"),
       JSON.stringify({
         worktrees: [
           {
             id: "short1",
-            path: windowsSpelling(path),
+            path: windowsSpelling(cachedPath),
             branch: "feat/short",
             createdAt: "2026-10-02T00:00:00.000Z",
           },
