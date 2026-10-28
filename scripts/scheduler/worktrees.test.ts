@@ -88,12 +88,20 @@ const prepared = new Map<boolean, string>();
  * them, 31 of 240 runs failed that way; none of 160 with the setting.
  */
 function repo(ignoreTrees = true, tempParent = tmpdir()): string {
+  const canonicalTemp = realpathSync.native(resolve(tmpdir()));
+  const canonicalTempParent = realpathSync.native(resolve(tempParent));
+  const sameTempParent =
+    process.platform === "win32"
+      ? canonicalTempParent.toLowerCase() === canonicalTemp.toLowerCase()
+      : canonicalTempParent === canonicalTemp;
+  if (!sameTempParent)
+    throw new Error("fixture temp parent must resolve to the OS temp directory");
+
   let source = prepared.get(ignoreTrees);
   if (source === undefined) {
     source = makeRepo(ignoreTrees);
     prepared.set(ignoreTrees, source);
   }
-  const canonicalTempParent = realpathSync.native(resolve(tempParent));
   const root = mkdtempSync(join(canonicalTempParent, "wt "));
   const canonicalRoot = realpathSync.native(root);
   roots.push(canonicalRoot);
@@ -132,7 +140,9 @@ function shortWindowsPath(path: string): string {
       returns: FFIType.u32,
     },
   });
-  let primaryError: unknown;
+  let result: string | undefined;
+  let operationFailed = false;
+  let operationError: unknown;
   try {
     const output = Buffer.alloc(32_768 * 2);
     const length = library.symbols.GetShortPathNameW(
@@ -142,17 +152,29 @@ function shortWindowsPath(path: string): string {
     );
     if (length === 0 || length >= 32_768)
       throw new Error("Windows did not provide a bounded short path.");
-    return output.toString("utf16le", 0, length * 2);
+    result = output.toString("utf16le", 0, length * 2);
   } catch (error) {
-    primaryError = error;
-    throw error;
-  } finally {
-    try {
-      library.close();
-    } catch (error) {
-      if (primaryError === undefined) throw error;
-    }
+    operationFailed = true;
+    operationError = error;
   }
+  let closeFailed = false;
+  let closeError: unknown;
+  try {
+    library.close();
+  } catch (error) {
+    closeFailed = true;
+    closeError = error;
+  }
+  if (operationFailed && closeFailed)
+    throw new AggregateError(
+      [operationError, closeError],
+      "Windows short-path lookup and library cleanup both failed.",
+    );
+  if (operationFailed) throw operationError;
+  if (closeFailed) throw closeError;
+  if (result === undefined)
+    throw new Error("Windows did not provide a bounded short path.");
+  return result;
 }
 
 /**
