@@ -192,13 +192,8 @@ test("Start waits for the protected identity refresh emitted by preview", async 
       identityPosts++;
     if (path === `/__agent-forge/projects/${alpha.id}/sessions`) startPosts++;
   });
-  await openSettled(
-    page,
-    `/index.html#/desktop/project/${alpha.id}/sessions`,
-  );
-  await page
-    .getByRole("button", { name: "New session", exact: true })
-    .click();
+  await openSettled(page, `/index.html#/desktop/project/${alpha.id}/sessions`);
+  await page.getByRole("button", { name: "New session", exact: true }).click();
   const dialog = page.getByRole("dialog", {
     name: "New session · Alpha",
     exact: true,
