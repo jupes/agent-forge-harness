@@ -8,7 +8,10 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { BUILTIN_SMITHS } from "../config/defaults";
-import type { PrivateExecInput } from "../executors/private-capture";
+import {
+  PrivateCaptureError,
+  type PrivateExecInput,
+} from "../executors/private-capture";
 import { restartManagerLockerPids } from "../hearth/windows-cleanup-diagnostic";
 import { scratchDirs } from "../test-scratch";
 import { createShiftProviderPreparer } from "./provider-prepare";
@@ -138,6 +141,47 @@ function fixture(provider: "claude" | "codex" = "claude") {
   );
   return { root, record, input };
 }
+
+test("a changed smith reports only its private preparation failure phase", async () => {
+  const root = scratch.make("shift-private-preparation-");
+  mkdirSync(join(root, ".git"));
+  const smith = BUILTIN_SMITHS["claude-journeyman"];
+  if (!smith) throw Error("Fixture smith missing");
+  const record = join(root, "provider.json"),
+    observations: unknown[][] = [],
+    input: PrivateExecInput = {
+      provider: "claude",
+      beadId: "bounded-task-1",
+      runId: "bounded-run-1",
+      workspace: root,
+      cwd: root,
+      smith: { ...smith, model: "changed-model" },
+      command: [join(root, "missing-provider.exe"), "-p"],
+      stdin: "Never dispatched private input",
+      timeoutMs: 5000,
+    },
+    options = {
+      root,
+      configHome: root,
+      onFailure: (...args: unknown[]) => observations.push(args),
+    };
+  let failure: unknown;
+  try {
+    await createShiftProviderPreparer(options)(
+      input,
+      new AbortController().signal,
+    );
+  } catch (error) {
+    failure = error;
+  }
+  expect(failure).toBeInstanceOf(PrivateCaptureError);
+  expect(failure).toMatchObject({
+    message:
+      "The private provider transcript could not be verified. The shift must stop before another attempt.",
+  });
+  expect(existsSync(record)).toBe(false);
+  expect(observations).toEqual([["smith-config-check"]]);
+});
 
 test("preparation verifies the selected smith and current native CLI flags without sending a prompt", async () => {
   const f = fixture();
