@@ -2,10 +2,7 @@ import { expect, test } from "bun:test";
 import { join } from "node:path";
 import { buildChildEnv } from "./env";
 import { killTree, liveChildCount, supervise } from "./supervisor";
-import {
-  guardRequiredTree,
-  guardSuspendedWindowsProcess,
-} from "./tree-guard";
+import { guardRequiredTree, guardSuspendedWindowsProcess } from "./tree-guard";
 import type { WindowsJobSettlementFailurePhase } from "./windows-job-settlement";
 
 const fake = join(import.meta.dir, "fixtures/interactive-cli.ts");
@@ -166,9 +163,7 @@ function tree(
       ? {
           interactiveGuard: (pid: number) => ownership.attach(pid),
         }
-      : onFailurePhase &&
-          process.platform === "win32" &&
-          process.arch === "x64"
+      : onFailurePhase && process.platform === "win32" && process.arch === "x64"
         ? {
             interactiveGuard: (pid: number) =>
               guardSuspendedWindowsProcess(pid, {
@@ -256,13 +251,8 @@ test("a saturated pipe has a deadline even when the host accepts earlier bufferi
 
 test("Stop settles a backpressured write and EOF while confirming descendant cleanup", async () => {
   const phases: WindowsJobSettlementFailurePhase[] = [];
-  const f = tree(
-    "blocked",
-    2000,
-    8 * 1024 * 1024,
-    undefined,
-    5000,
-    (phase) => phases.push(phase),
+  const f = tree("blocked", 2000, 8 * 1024 * 1024, undefined, 5000, (phase) =>
+    phases.push(phase),
   );
   const child = await f.childPid();
   const writing = f.handle.write("x".repeat(4 * 1024 * 1024));

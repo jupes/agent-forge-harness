@@ -3,8 +3,8 @@ import {
   type AssignedRootProcess,
   settleWindowsJob,
   WINDOWS_JOB_SETTLEMENT_MS,
-  type WindowsJobSettlementFailurePhase,
   type WindowsJobSettlementApi,
+  type WindowsJobSettlementFailurePhase,
 } from "./windows-job-settlement";
 
 type FakeProcess = {
@@ -163,8 +163,7 @@ test("a failed process-handle close is reported after all handles are attempted"
   f.api.closeProcess = (process) => {
     closeAttempts.push(process.pid);
     f.closed.push(process.pid);
-    if (process.pid === 21)
-      throw new Error("private native close detail");
+    if (process.pid === 21) throw new Error("private native close detail");
   };
   const diagnosticApi = Object.assign(f.api, {
     onFailurePhase(phase: WindowsJobSettlementFailurePhase) {

@@ -34,8 +34,8 @@ import {
   type JobMembers,
   settleWindowsJob,
   WINDOWS_JOB_SETTLEMENT_MS,
-  type WindowsJobSettlementFailurePhase,
   type WindowsJobSettlementApi,
+  type WindowsJobSettlementFailurePhase,
 } from "./windows-job-settlement";
 
 export interface TreeGuard {
@@ -293,7 +293,9 @@ function windowsJobSettlementApi(
 
 function jobGuard(
   pid: number,
-  onWindowsSettlementFailure?: (phase: WindowsJobSettlementFailurePhase) => void,
+  onWindowsSettlementFailure?: (
+    phase: WindowsJobSettlementFailurePhase,
+  ) => void,
 ): TreeGuard {
   let failureReported = false;
   const reportFailure = (phase: WindowsJobSettlementFailurePhase) => {

@@ -91,16 +91,15 @@ export async function settleWindowsJob<Job, Process>(
   ]);
   let phase: WindowsJobSettlementFailurePhase = "capture-root",
     failurePhase: WindowsJobSettlementFailurePhase | null = null;
-  const refuse: (
-    failedAt?: WindowsJobSettlementFailurePhase,
-  ) => never = (failedAt = phase) => {
+  const refuse: (failedAt?: WindowsJobSettlementFailurePhase) => never = (
+    failedAt = phase,
+  ) => {
     failurePhase ??= failedAt;
     throw new Error(SETTLEMENT_ERROR);
   };
   const readTotalProcesses = (): number => {
     const total = api.totalProcesses(job);
-    if (total === null || !Number.isSafeInteger(total) || total < 0)
-      refuse();
+    if (total === null || !Number.isSafeInteger(total) || total < 0) refuse();
     return total;
   };
   const hasUnaccountedProcesses = (): boolean => {
@@ -121,8 +120,7 @@ export async function settleWindowsJob<Job, Process>(
       refuse();
     const seen = new Set<number>();
     for (const pid of result.processIds) {
-      if (!Number.isSafeInteger(pid) || pid < 1 || seen.has(pid))
-        refuse();
+      if (!Number.isSafeInteger(pid) || pid < 1 || seen.has(pid)) refuse();
       seen.add(pid);
     }
     return result.processIds;
@@ -173,8 +171,7 @@ export async function settleWindowsJob<Job, Process>(
     const capturedMembers = readMembers();
     if (readTotalProcesses() !== initialTotal || hasUnaccountedProcesses())
       refuse();
-    for (const pid of capturedMembers)
-      if (!retained.has(pid)) refuse();
+    for (const pid of capturedMembers) if (!retained.has(pid)) refuse();
     if (api.now() >= deadline) refuse("deadline");
     phase = "terminate";
     if (!api.terminate(job)) refuse();
