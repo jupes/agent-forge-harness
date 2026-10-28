@@ -10,7 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { killTree } from "../executors/supervisor";
-import { guardTree } from "../executors/tree-guard";
+import { guardTree, type TreeGuard } from "../executors/tree-guard";
 import {
   processAlive,
   readShiftRecord,
@@ -437,6 +437,8 @@ describe("an explicitly stopped Shift child", () => {
     const settlementStarted = new Promise<void>((resolve) => {
       signalSettlementStarted = resolve;
     });
+    let settlementCalls = 0;
+    let releaseCalls = 0;
     const child = superviseShift(
       {
         argv: [process.execPath, "-e", "setInterval(() => {}, 1000)"],
@@ -446,9 +448,13 @@ describe("an explicitly stopped Shift child", () => {
       (pid) => {
         const guard = guardTree(pid);
         return {
-          release: () => guard.release(),
+          release: () => {
+            releaseCalls += 1;
+            guard.release();
+          },
           ...(guard.terminate ? { terminate: () => guard.terminate?.() } : {}),
           settleStopped: async () => {
+            settlementCalls += 1;
             if (!guard.settleStopped)
               throw new Error("The inert Shift has no native settlement guard.");
             await guard.settleStopped();
@@ -461,6 +467,7 @@ describe("an explicitly stopped Shift child", () => {
     let stop: Promise<void> | undefined;
     try {
       stop = child.stop();
+      expect(child.stop()).toBe(stop);
       const first = await Promise.race([
         settlementStarted.then(() => "settlement" as const),
         stop.then(() => "stopped" as const),
@@ -485,9 +492,122 @@ describe("an explicitly stopped Shift child", () => {
       await child.done;
       expect(publicDone).toBe(true);
       expect(stopDone).toBe(true);
+      expect(settlementCalls).toBe(1);
+      expect(releaseCalls).toBe(1);
     } finally {
       releaseSettlement?.();
       if (stop) await stop.catch(() => undefined);
+      await child.done.catch(() => undefined);
+    }
+  });
+
+  test("Windows Stop refuses missing or rejected native settlement without releasing the guard", async () => {
+    if (process.platform !== "win32") return;
+
+    for (const witness of ["missing", "rejected"] as const) {
+      const owner: {
+        guard: TreeGuard | null;
+        releases: number;
+        settlements: number;
+      } = { guard: null, releases: 0, settlements: 0 };
+      const child = superviseShift(
+        {
+          argv: [process.execPath, "-e", "setInterval(() => {}, 1000)"],
+          cwd: scratch(),
+          env: { PATH: process.env["PATH"] ?? "" },
+        },
+        (pid) => {
+          const guard = guardTree(pid);
+          owner.guard = guard;
+          return {
+            release: () => {
+              owner.releases += 1;
+              guard.release();
+            },
+            ...(guard.terminate ? { terminate: () => guard.terminate?.() } : {}),
+            ...(witness === "rejected"
+              ? {
+                  settleStopped: () => {
+                    owner.settlements += 1;
+                    return Promise.reject(
+                      new Error(
+                        "Windows owned process cleanup could not be confirmed.",
+                      ),
+                    );
+                  },
+                }
+              : {}),
+          };
+        },
+      );
+      const stopping = child.stop();
+      try {
+        expect(child.stop()).toBe(stopping);
+        await expect(stopping).rejects.toThrow(
+          "Windows owned process cleanup could not be confirmed.",
+        );
+        expect(owner.settlements).toBe(witness === "rejected" ? 1 : 0);
+        expect(owner.releases).toBe(0);
+        expect(processAlive(child.pid)).toBe(true);
+      } finally {
+        owner.guard?.terminate?.();
+        await child.done.catch(() => undefined);
+      }
+    }
+  });
+
+  test("a naturally completed Shift refuses later Stop without disturbing its orphan", async () => {
+    const cwd = scratch();
+    const childRecord = join(cwd, "orphan.json");
+    const entry = join(cwd, "natural-exit.ts");
+    writeFileSync(
+      entry,
+      `
+import { writeFileSync } from "node:fs";
+const orphan = Bun.spawn([process.execPath, "-e", "setTimeout(() => {}, 1200)"], {
+  stdin: "ignore",
+  stdout: "ignore",
+  stderr: "ignore",
+});
+writeFileSync(${JSON.stringify(childRecord)}, JSON.stringify({ pid: orphan.pid }));
+process.exit(0);
+`,
+    );
+    let settlements = 0;
+    const child = superviseShift(
+      {
+        argv: [process.execPath, entry],
+        cwd,
+        env: { PATH: process.env["PATH"] ?? "" },
+      },
+      (pid) => {
+        const guard = guardTree(pid);
+        return {
+          release: () => guard.release(),
+          settleStopped: async () => {
+            settlements += 1;
+            if (!guard.settleStopped)
+              throw new Error("The Shift has no native settlement witness.");
+            await guard.settleStopped();
+          },
+        };
+      },
+    );
+
+    await child.done;
+    const orphan = (
+      JSON.parse(readFileSync(childRecord, "utf8")) as { pid: number }
+    ).pid;
+    try {
+      expect(processAlive(orphan)).toBe(true);
+      const stopping = child.stop();
+      await expect(stopping).rejects.toThrow(
+        "The Shift exited before its owned process tree could be settled.",
+      );
+      expect(settlements).toBe(0);
+      expect(processAlive(orphan)).toBe(true);
+      await until(() => (!processAlive(orphan) ? true : undefined), 5_000);
+    } finally {
       await child.done.catch(() => undefined);
     }
   });
@@ -549,6 +669,39 @@ describe("a shift started through a hearth, with the real launcher and a stand-i
     };
     return { h, specs, children, startShift, listed };
   }
+
+  test("explicit generic Stop settles a real Shift descendant before resolving", async () => {
+    const { h, children, startShift, listed } = await hearth(800);
+    const id = await startShift("stubborn", {});
+    const running = await until(async () => {
+      const entry = await listed(id);
+      return entry?.state === "running" ? entry : undefined;
+    });
+    const grandchild = await until(() => {
+      try {
+        return (
+          JSON.parse(
+            readFileSync(join(h.root, `grandchild-${id}.json`), "utf8"),
+          ) as { pid: number }
+        ).pid;
+      } catch {
+        return undefined;
+      }
+    });
+    const child = children[0];
+    if (!child) throw new Error("The real Shift child was not retained.");
+    expect(child.pid).toBe(running.pid);
+    expect(processAlive(child.pid)).toBe(true);
+    expect(processAlive(grandchild)).toBe(true);
+
+    await child.stop();
+    await child.done;
+    expect(processAlive(child.pid)).toBe(false);
+    expect(processAlive(grandchild)).toBe(false);
+    expect(readShiftRecord(join(h.home, SHIFTS_DIR), id)?.state).toBe(
+      "running",
+    );
+  }, 30_000);
 
   test("the child runs in the hearth's root with the hearth's home and PATH and the argv it was given; one that ends before writing its record is listed failed, with its exit code and its printed error redacted", async () => {
     const { h, specs, children, startShift, listed } = await hearth(5_000);
