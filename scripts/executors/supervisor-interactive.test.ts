@@ -2,7 +2,11 @@ import { expect, test } from "bun:test";
 import { join } from "node:path";
 import { buildChildEnv } from "./env";
 import { killTree, liveChildCount, supervise } from "./supervisor";
-import { guardRequiredTree } from "./tree-guard";
+import {
+  guardRequiredTree,
+  guardSuspendedWindowsProcess,
+} from "./tree-guard";
+import type { WindowsJobSettlementFailurePhase } from "./windows-job-settlement";
 
 const fake = join(import.meta.dir, "fixtures/interactive-cli.ts");
 
@@ -143,6 +147,7 @@ function tree(
   maxStdinBytes = 8 * 1024 * 1024,
   ownership?: ReturnType<typeof heldWindowsSettlementGuard>,
   timeoutMs = 5000,
+  onFailurePhase?: (phase: WindowsJobSettlementFailurePhase) => void,
 ) {
   let announce: (line: string) => void = () => undefined;
   const ready = new Promise<string>((resolve) => {
@@ -161,7 +166,16 @@ function tree(
       ? {
           interactiveGuard: (pid: number) => ownership.attach(pid),
         }
-      : {}),
+      : onFailurePhase &&
+          process.platform === "win32" &&
+          process.arch === "x64"
+        ? {
+            interactiveGuard: (pid: number) =>
+              guardSuspendedWindowsProcess(pid, {
+                onWindowsSettlementFailure: onFailurePhase,
+              }),
+          }
+        : {}),
     onLine: announce,
   });
   const childPid = async () => {
@@ -241,13 +255,31 @@ test("a saturated pipe has a deadline even when the host accepts earlier bufferi
 });
 
 test("Stop settles a backpressured write and EOF while confirming descendant cleanup", async () => {
-  const f = tree("blocked");
+  const phases: WindowsJobSettlementFailurePhase[] = [];
+  const f = tree(
+    "blocked",
+    2000,
+    8 * 1024 * 1024,
+    undefined,
+    5000,
+    (phase) => phases.push(phase),
+  );
   const child = await f.childPid();
   const writing = f.handle.write("x".repeat(4 * 1024 * 1024));
   const ending = f.handle.end();
   const settled = Promise.allSettled([writing, ending]);
   try {
-    await f.handle.stop("explicit Stop");
+    try {
+      await f.handle.stop("explicit Stop");
+    } catch (error) {
+      console.error(
+        JSON.stringify({
+          kind: "windows-stop-settlement-refusal",
+          phase: phases[0] ?? "unavailable",
+        }),
+      );
+      throw error;
+    }
     expect((await settled).map((entry) => entry.status)).toEqual([
       "rejected",
       "rejected",
