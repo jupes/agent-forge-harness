@@ -771,7 +771,7 @@ function nativeChatHistory(value: {
       }
     } else if (native.kind === "configuration") {
       if (
-        native.cwd !== snapshot.cwd ||
+        (native.cwd !== snapshot.cwd && native.cwd !== snapshot.canonicalCwd) ||
         native.model !== snapshot.launch.model ||
         (snapshot.launch.effort !== undefined &&
           native.effort !== snapshot.launch.effort)

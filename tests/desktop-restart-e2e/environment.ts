@@ -27,6 +27,28 @@ export const ROOT =
 export const ASSETS = join(HEARTH_HOME, "desktop-assets");
 export const MANIFEST = join(HEARTH_HOME, "restart-fixture.json");
 export const alpha = projectFixture(ROOT);
+const projectAtRoot = (id: string, slug: string, epicId: string) =>
+  projectFixture(ROOT, {
+    id,
+    slug,
+    workspaces: [{ root: ROOT, repositories: [ROOT], epicIds: [epicId] }],
+  });
+
+export const forkProject = projectAtRoot(
+  "project-8de45b14-1c28-4e2f-a2f8-5612dfab1601",
+  "fork-alpha",
+  "fork-epic",
+);
+export const keeperProject = projectAtRoot(
+  "project-8de45b14-1c28-4e2f-a2f8-5612dfab1602",
+  "keeper-alpha",
+  "keeper-epic",
+);
+export const identityProject = projectAtRoot(
+  "project-8de45b14-1c28-4e2f-a2f8-5612dfab1603",
+  "identity-alpha",
+  "identity-epic",
+);
 
 /** No ambient provider keys, proxy settings, config home or real command directories. */
 export function fixtureEnvironment(): Record<string, string> {

@@ -14,19 +14,35 @@ import { ensurePrivateHome } from "../../scripts/hearth/home-guard";
 import { writeOwnerOnly } from "../../scripts/hearth/token";
 import { resolveCheckout } from "../../scripts/ledger/workspace";
 import { DASHBOARD_PORT, HEARTH_HOME } from "../e2e/servers";
-import { ASSETS, fixtureEnvironment, MANIFEST, ROOT } from "./environment";
+import {
+  ASSETS,
+  fixtureEnvironment,
+  keeperProject,
+  MANIFEST,
+  ROOT,
+} from "./environment";
 
 ensurePrivateHome(HEARTH_HOME);
 mkdirSync(resolve(ROOT, ".git"), { recursive: true });
 const canonicalRoot = resolveCheckout(ROOT).workspace;
 const environment = fixtureEnvironment();
 const controlPath = "/__desktop-restart-fixture/restart-host";
+const forkControlPath = "/__desktop-restart-fixture/restart-host-fork";
+const restoreControlPath = "/__desktop-restart-fixture/restore-base-origin";
 const controlHeader = "x-agent-forge-fixture-secret";
 const controlSecret = randomBytes(32).toString("hex");
 const replacementProof = join(
   HEARTH_HOME,
   "desktop-host-replacement-proof.json",
 );
+const forkReplacementProof = join(
+  HEARTH_HOME,
+  "desktop-host-fork-replacement-proof-v2.json",
+);
+const restartHearthCommand = [
+  process.execPath,
+  resolve("tests/desktop-restart-e2e/hearth-server.ts"),
+] as const;
 for (const name of Object.keys(process.env)) delete process.env[name];
 Object.assign(process.env, environment);
 const build = Bun.spawn(
@@ -59,13 +75,15 @@ let host = await startDesktopHost({
   home: HEARTH_HOME,
   assetsRoot: ASSETS,
   port: DASHBOARD_PORT,
-  hearthCommand: [process.execPath, resolve("scripts/hearth/server.ts")],
+  hearthCommand: restartHearthCommand,
 });
+let hostCreatedAtMs = Date.now();
 const publishManifest = () =>
   writeOwnerOnly(
     MANIFEST,
     JSON.stringify({
       root: canonicalRoot,
+      keeperProjectId: keeperProject.id,
       owner: host.owner,
       url: host.url,
       fixtureControl: { port: controlPort, secret: controlSecret },
@@ -104,6 +122,28 @@ function record(value: unknown): Record<string, unknown> | null {
     ? (value as Record<string, unknown>)
     : null;
 }
+function isForkReplacementGeneration(value: unknown): boolean {
+  const item = record(value);
+  return (
+    item !== null &&
+    Object.keys(item).length === 10 &&
+    Number.isSafeInteger(item["oldDesktopHostPort"]) &&
+    Number.isSafeInteger(item["newDesktopHostPort"]) &&
+    Number.isSafeInteger(item["controlPort"]) &&
+    Number.isSafeInteger(item["oldOwnedHearthPid"]) &&
+    Number.isSafeInteger(item["newOwnedHearthPid"]) &&
+    Number.isSafeInteger(item["oldHostCreatedAtMs"]) &&
+    Number.isSafeInteger(item["newHostCreatedAtMs"]) &&
+    Number.isSafeInteger(item["replacedAtMs"]) &&
+    typeof item["oldHostOwner"] === "string" &&
+    typeof item["newHostOwner"] === "string" &&
+    item["oldDesktopHostPort"] !== item["newDesktopHostPort"] &&
+    item["oldOwnedHearthPid"] !== item["newOwnedHearthPid"] &&
+    (item["oldHostCreatedAtMs"] as number) <
+      (item["newHostCreatedAtMs"] as number) &&
+    (item["newHostCreatedAtMs"] as number) <= (item["replacedAtMs"] as number)
+  );
+}
 const repeatedHeader = (request: IncomingMessage, target: string) => {
   let count = 0;
   for (let index = 0; index < request.rawHeaders.length; index += 2)
@@ -111,7 +151,8 @@ const repeatedHeader = (request: IncomingMessage, target: string) => {
   return count > 1;
 };
 let restartInProgress = false,
-  restartCount = 0,
+  singleRestartCount = 0,
+  forkRestartCount = 0,
   closing = false,
   replacementPromise: Promise<void> | null = null;
 async function handleControl(
@@ -139,7 +180,9 @@ async function handleControl(
     timingSafeEqual(supplied, expected);
   if (
     request.method !== "POST" ||
-    request.url !== controlPath ||
+    (request.url !== controlPath &&
+      request.url !== forkControlPath &&
+      request.url !== restoreControlPath) ||
     request.headers.host !== expectedHost ||
     !["127.0.0.1", "::ffff:127.0.0.1"].includes(
       request.socket.remoteAddress ?? "",
@@ -162,7 +205,14 @@ async function handleControl(
     });
     return;
   }
-  if (restartInProgress || restartCount !== 0) {
+  const forkFlow = request.url === forkControlPath,
+    restoreFlow = request.url === restoreControlPath;
+  if (
+    restartInProgress ||
+    (forkFlow
+      ? forkRestartCount >= 2
+      : !restoreFlow && singleRestartCount !== 0)
+  ) {
     request.resume();
     respond(response, 409, {
       ok: false,
@@ -192,8 +242,28 @@ async function handleControl(
       });
       return;
     }
+    if (restoreFlow && Number(new URL(host.url).port) === DASHBOARD_PORT) {
+      void ownedHearthPid(host)
+        .then((pid) =>
+          respond(response, 200, {
+            ok: true,
+            data: { owner: host.owner, url: host.url, pid },
+            error: null,
+          }),
+        )
+        .catch(() =>
+          respond(response, 503, {
+            ok: false,
+            data: null,
+            error: "The base desktop host could not be verified.",
+          }),
+        );
+      return;
+    }
     restartInProgress = true;
-    restartCount++;
+    if (forkFlow) forkRestartCount++;
+    else if (!restoreFlow) singleRestartCount++;
+    let restoredPid: number | null = null;
     replacementPromise = (async () => {
       const previous = host;
       const oldPort = Number(new URL(previous.url).port);
@@ -207,8 +277,8 @@ async function handleControl(
         root: canonicalRoot,
         home: HEARTH_HOME,
         assetsRoot: ASSETS,
-        port: 0,
-        hearthCommand: [process.execPath, resolve("scripts/hearth/server.ts")],
+        port: restoreFlow ? DASHBOARD_PORT : 0,
+        hearthCommand: restartHearthCommand,
       });
       try {
         if (closing) {
@@ -219,25 +289,119 @@ async function handleControl(
         }
         const newPort = Number(new URL(next.url).port);
         const newPid = await ownedHearthPid(next);
+        restoredPid = newPid;
+        const nextHostCreatedAtMs = Date.now();
         if (
           oldPort < 1 ||
           newPort < 1 ||
-          oldPort === newPort ||
-          oldPid === newPid ||
-          existsSync(replacementProof)
+          (restoreFlow ? newPort !== DASHBOARD_PORT : oldPort === newPort) ||
+          oldPid === newPid
         )
           throw new Error("The replaced desktop host identity was not unique.");
-        writeOwnerOnly(
-          replacementProof,
-          JSON.stringify({
-            oldDesktopHostPort: oldPort,
-            newDesktopHostPort: newPort,
-            controlPort,
-            oldOwnedHearthPid: oldPid,
-            newOwnedHearthPid: newPid,
-          }),
-        );
+        if (restoreFlow) {
+          // Fixture cleanup restoration is intentionally excluded from the
+          // two-generation Fork replacement witness and its counters.
+        } else if (forkFlow) {
+          let generations: unknown[] = [];
+          if (existsSync(forkReplacementProof)) {
+            let prior: unknown;
+            try {
+              prior = JSON.parse(await Bun.file(forkReplacementProof).text());
+            } catch {
+              throw new Error("The Fork replacement proof is invalid.");
+            }
+            const priorRecord = record(prior);
+            if (
+              priorRecord?.["version"] !== 2 ||
+              !Array.isArray(priorRecord["generations"]) ||
+              priorRecord["generations"].length !== forkRestartCount - 1 ||
+              !priorRecord["generations"].every(isForkReplacementGeneration)
+            )
+              throw new Error("The Fork replacement proof is inconsistent.");
+            generations = priorRecord["generations"];
+          } else if (forkRestartCount !== 1) {
+            throw new Error("The Fork replacement proof is missing.");
+          }
+          const all = [
+            ...generations,
+            {
+              oldDesktopHostPort: oldPort,
+              newDesktopHostPort: newPort,
+              controlPort,
+              oldOwnedHearthPid: oldPid,
+              newOwnedHearthPid: newPid,
+              oldHostCreatedAtMs: hostCreatedAtMs,
+              newHostCreatedAtMs: nextHostCreatedAtMs,
+              oldHostOwner: previous.owner,
+              newHostOwner: next.owner,
+              replacedAtMs: Date.now(),
+            },
+          ];
+          const firstGeneration = record(all[0]);
+          const hostPorts = [
+            firstGeneration?.["oldDesktopHostPort"],
+            ...all.map((item) => record(item)?.["newDesktopHostPort"]),
+          ];
+          const hostPids = [
+            firstGeneration?.["oldOwnedHearthPid"],
+            ...all.map((item) => record(item)?.["newOwnedHearthPid"]),
+          ];
+          const hostOwners = [
+            firstGeneration?.["oldHostOwner"],
+            ...all.map((item) => record(item)?.["newHostOwner"]),
+          ];
+          const continuous = all.every((item, index) => {
+            if (index === 0) return true;
+            const previousGeneration = record(all[index - 1]);
+            const currentGeneration = record(item);
+            return (
+              previousGeneration?.["newDesktopHostPort"] ===
+                currentGeneration?.["oldDesktopHostPort"] &&
+              previousGeneration?.["newOwnedHearthPid"] ===
+                currentGeneration?.["oldOwnedHearthPid"] &&
+              previousGeneration?.["newHostOwner"] ===
+                currentGeneration?.["oldHostOwner"] &&
+              previousGeneration?.["newHostCreatedAtMs"] ===
+                currentGeneration?.["oldHostCreatedAtMs"]
+            );
+          });
+          if (
+            all.length > 2 ||
+            !all.every(isForkReplacementGeneration) ||
+            new Set(hostPorts).size !== hostPorts.length ||
+            new Set(hostPids).size !== hostPids.length ||
+            new Set(hostOwners).size !== hostOwners.length ||
+            !continuous ||
+            all.some((item) => record(item)?.["controlPort"] !== controlPort) ||
+            (all.length > 1 &&
+              (firstGeneration?.["newDesktopHostPort"] !== oldPort ||
+                firstGeneration?.["newOwnedHearthPid"] !== oldPid ||
+                firstGeneration?.["newHostOwner"] !== previous.owner ||
+                firstGeneration?.["newHostCreatedAtMs"] !== hostCreatedAtMs))
+          )
+            throw new Error("The Fork replacement proof exceeded its bound.");
+          writeOwnerOnly(
+            forkReplacementProof,
+            JSON.stringify({ version: 2, generations: all }),
+          );
+        } else {
+          if (singleRestartCount !== 1 || existsSync(replacementProof))
+            throw new Error(
+              "The replaced desktop host identity was not unique.",
+            );
+          writeOwnerOnly(
+            replacementProof,
+            JSON.stringify({
+              oldDesktopHostPort: oldPort,
+              newDesktopHostPort: newPort,
+              controlPort,
+              oldOwnedHearthPid: oldPid,
+              newOwnedHearthPid: newPid,
+            }),
+          );
+        }
         host = next;
+        hostCreatedAtMs = nextHostCreatedAtMs;
         publishManifest();
       } catch (error) {
         host = previous;
@@ -250,7 +414,13 @@ async function handleControl(
       .then(() => {
         respond(response, 200, {
           ok: true,
-          data: { owner: host.owner, url: host.url },
+          data: {
+            owner: host.owner,
+            url: host.url,
+            ...(restoreFlow && restoredPid !== null
+              ? { pid: restoredPid }
+              : {}),
+          },
           error: null,
         });
       })

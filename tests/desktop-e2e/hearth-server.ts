@@ -11,6 +11,7 @@ import { createProviderLoginService } from "../../scripts/providers/login";
 import { createClaudeSessionTransport } from "../../scripts/sessions/claude-transport";
 import { createCodexChatRuntime } from "../../scripts/sessions/codex-chat-runtime";
 import { createCodexTaskRuntime } from "../../scripts/sessions/codex-task-runtime";
+import { observeCodexChatPersist } from "../../scripts/sessions/fixtures/codex-chat-persist-diagnostic";
 import { createGeminiChatRuntime } from "../../scripts/sessions/gemini-chat-runtime";
 import { createGeminiTaskRuntime } from "../../scripts/sessions/gemini-task-runtime";
 
@@ -265,12 +266,32 @@ async function main() {
           } catch {
             /* Only the explicit inert mode selects a shorter approval deadline. */
           }
-          const result = await (mode === "outcome-held"
-            ? deadlineChat
-            : mode === "approval-timeout"
-              ? timedChat
-              : chat
-          ).run(...args);
+          const selectedRuntime =
+            mode === "outcome-held"
+              ? deadlineChat
+              : mode === "approval-timeout"
+                ? timedChat
+                : chat;
+          const [input, persist, signal, callbacks] = args;
+          const result = await selectedRuntime.run(
+            input,
+            observeCodexChatPersist({
+              persist,
+              recordFailure(fact) {
+                try {
+                  writeFileSync(
+                    join(home, "codex-chat-persist-failure.json"),
+                    JSON.stringify(fact),
+                    { encoding: "utf8", flag: "wx" },
+                  );
+                } catch {
+                  // A fixture artifact never replaces the original rejection.
+                }
+              },
+            }),
+            signal,
+            callbacks,
+          );
           if (mode === "outcome-held") {
             // Hold only the fixture's final application metadata write after
             // the real native tree and private outcome have already settled.
