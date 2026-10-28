@@ -45,11 +45,7 @@ export async function observePreviewIdentityRefresh(
       }
       const startedAfterPreview = previewRequested;
       const response = await route.fetch({
-        headers: {
-          ...(await route.request().allHeaders()),
-          Origin: new URL(route.request().url()).origin,
-          "Sec-Fetch-Site": "same-origin",
-        },
+        headers: await route.request().allHeaders(),
       });
       let raw: unknown;
       try {
@@ -130,7 +126,9 @@ export async function observeSiblingPreviewIdentityRefresh(
     }
     pendingReads++;
     try {
-      const response = await route.fetch();
+      const response = await route.fetch({
+        headers: await route.request().allHeaders(),
+      });
       let raw: unknown;
       try {
         raw = await response.json();
