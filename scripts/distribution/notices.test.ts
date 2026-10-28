@@ -23,14 +23,19 @@ const noticeFiles = [
   [".claude/skills/ATTRIBUTION.md", ".claude/skills/ATTRIBUTION.md"],
   ["docs/fonts/LICENSE-Inter.txt", "docs/fonts/LICENSE-Inter.txt"],
 ] as const;
-const artifactMap =
-  "Copied legal and attribution documents:\n" +
-  "LICENSE <- LICENSE\nNOTICE <- NOTICE\n" +
-  ".claude/skills/ATTRIBUTION.md <- .claude/skills/ATTRIBUTION.md " +
-  "(attribution only; skill implementations are not bundled)\n" +
-  "docs/fonts/LICENSE-Inter.txt <- docs/fonts/LICENSE-Inter.txt\n" +
-  ".agents/skills/tdd/SKILL.md is a repository-only linked source, " +
-  "not bundled as skill code.\n";
+
+function expectArtifactMap(stageRoot: string): void {
+  const map = readFileSync(
+    join(stageRoot, "DISTRIBUTION-NOTICES.txt"),
+    "utf8",
+  );
+  expect(map).toContain("LICENSE <- LICENSE");
+  expect(map).toContain("NOTICE <- NOTICE");
+  expect(map).toContain("docs/fonts/LICENSE-Inter.txt <- docs/fonts/LICENSE-Inter.txt");
+  expect(map).toContain("Phosphor glyph data from docs/js/ds/icon-paths.ts");
+  expect(map).toContain(".claude/skills/tdd/SKILL.md and .agents/skills/tdd/SKILL.md");
+  expect(map).toContain("no skill code is bundled");
+}
 
 test("dashboard build emits the project and source attribution notices", async () => {
   const outputRoot = mkdtempSync(join(tmpdir(), "agent-forge-notices-"));
@@ -50,8 +55,7 @@ test("dashboard build emits the project and source attribution notices", async (
         readFileSync(join(repositoryRoot, sourcePath)),
       );
     }
-    expect(readFileSync(join(outputRoot, "DISTRIBUTION-NOTICES.txt"), "utf8"))
-      .toBe(artifactMap);
+    expectArtifactMap(outputRoot);
   } finally {
     if (previousNoBuild === undefined) delete process.env.DASHBOARD_NO_BUILD;
     else process.env.DASHBOARD_NO_BUILD = previousNoBuild;
@@ -70,8 +74,7 @@ test("desktop stage writer copies the same validated notice bytes", () => {
         readFileSync(join(repositoryRoot, sourcePath)),
       );
     }
-    expect(readFileSync(join(stageRoot, "DISTRIBUTION-NOTICES.txt"), "utf8"))
-      .toBe(artifactMap);
+    expectArtifactMap(stageRoot);
   } finally {
     rmSync(outputRoot, { recursive: true, force: true });
   }

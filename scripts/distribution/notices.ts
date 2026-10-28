@@ -18,8 +18,10 @@ const artifactMap = Buffer.from(
     ".claude/skills/ATTRIBUTION.md <- .claude/skills/ATTRIBUTION.md " +
     "(attribution only; skill implementations are not bundled)\n" +
     "docs/fonts/LICENSE-Inter.txt <- docs/fonts/LICENSE-Inter.txt\n" +
-    ".agents/skills/tdd/SKILL.md is a repository-only linked source, " +
-    "not bundled as skill code.\n",
+    "Phosphor glyph data from docs/js/ds/icon-paths.ts is in generated " +
+    "dashboard JavaScript; that source file is not copied.\n" +
+    ".claude/skills/tdd/SKILL.md and .agents/skills/tdd/SKILL.md are " +
+    "repository-only references; no skill code is bundled.\n",
 );
 
 export function readDistributionNotices(
