@@ -993,6 +993,7 @@ async function operationRows(page: Page, origin: string) {
 
 let scopeHydrationWitnessSequence = 0;
 const SCOPE_HYDRATION_BODY_LIMIT = 65_536;
+const SCOPE_HYDRATION_CLONE_DEADLINE_MS = 1_500;
 
 function installForkScopeHydrationObserver(options: {
   bindingName: string;
@@ -1008,44 +1009,73 @@ function installForkScopeHydrationObserver(options: {
 
   const originalFetch = window.fetch;
   const documentId = crypto.randomUUID();
+  const readers = new Set<ReadableStreamDefaultReader<Uint8Array>>();
+  const cancelReader = (
+    reader: ReadableStreamDefaultReader<Uint8Array>,
+  ) => {
+    void reader.cancel().catch(() => undefined);
+    try {
+      reader.releaseLock();
+    } catch {
+      // A pending cloned read may already be settling; the original is untouched.
+    }
+  };
   const readText = async (response: Response): Promise<string | null> => {
     let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       reader = response.clone().body?.getReader();
       if (!reader) return null;
-      const chunks: Uint8Array[] = [];
-      let length = 0;
-      for (;;) {
-        const next = await reader.read();
-        if (next.done) break;
-        length += next.value.byteLength;
-        if (length > options.maxBytes) {
-          void reader.cancel().catch(() => undefined);
-          try {
-            reader.releaseLock();
-          } catch {
-            // The cloned branch may still be settling; the original is untouched.
+      readers.add(reader);
+      const read = async (): Promise<string | null> => {
+        const chunks: Uint8Array[] = [];
+        let length = 0;
+        for (;;) {
+          const next = await reader!.read();
+          if (next.done) break;
+          length += next.value.byteLength;
+          if (length > options.maxBytes) {
+            cancelReader(reader!);
+            return null;
           }
-          return null;
+          chunks.push(next.value);
         }
-        chunks.push(next.value);
-      }
-      const bytes = new Uint8Array(length);
-      let offset = 0;
-      for (const chunk of chunks) {
-        bytes.set(chunk, offset);
-        offset += chunk.byteLength;
-      }
-      return new TextDecoder().decode(bytes);
+        const bytes = new Uint8Array(length);
+        let offset = 0;
+        for (const chunk of chunks) {
+          bytes.set(chunk, offset);
+          offset += chunk.byteLength;
+        }
+        return new TextDecoder().decode(bytes);
+      };
+      const deadline = new Promise<null>((resolve) => {
+        timer = setTimeout(() => {
+          cancelReader(reader!);
+          resolve(null);
+        }, SCOPE_HYDRATION_CLONE_DEADLINE_MS);
+      });
+      return await Promise.race([read(), deadline]);
     } catch {
-      try {
-        reader?.releaseLock();
-      } catch {
-        // A failed clone read must not alter the browser response.
-      }
       return null;
+    } finally {
+      if (timer) clearTimeout(timer);
+      if (reader) {
+        readers.delete(reader);
+        try {
+          reader.releaseLock();
+        } catch {
+          // A failed clone read must not alter the browser response.
+        }
+      }
     }
   };
+  const state: {
+    active: boolean;
+    documentId: string;
+    originalFetch: typeof window.fetch;
+    readers: Set<ReadableStreamDefaultReader<Uint8Array>>;
+    wrapper?: typeof window.fetch;
+  } = { active: true, documentId, originalFetch, readers };
   const wrapper = async function (
     this: Window,
     ...args: Parameters<typeof fetch>
@@ -1075,7 +1105,7 @@ function installForkScopeHydrationObserver(options: {
             : null
         : null;
     const response = await originalFetch.apply(this, args);
-    if (!kind) return response;
+    if (!kind || !state.active) return response;
 
     let responseUrlMatches = false;
     try {
@@ -1090,12 +1120,14 @@ function installForkScopeHydrationObserver(options: {
     } catch {
       // Report a bounded invalid-response fact while returning the original.
     }
+    const text = await readText(response);
+    if (!state.active) return response;
     const payload = {
       kind,
       documentId,
       status: response.status,
       responseUrlMatches,
-      text: await readText(response),
+      text,
     };
     const binding = globals[options.bindingName];
     if (typeof binding === "function") {
@@ -1107,7 +1139,8 @@ function installForkScopeHydrationObserver(options: {
     }
     return response;
   } as typeof window.fetch;
-  globals[options.stateName] = { documentId, originalFetch, wrapper };
+  state.wrapper = wrapper;
+  globals[options.stateName] = state;
   window.fetch = wrapper;
 }
 
@@ -1191,7 +1224,8 @@ async function observeForkScopeHydration(
     scopeRead.resolve(value);
   };
 
-  await page.exposeBinding(bindingName, async (source, value) => {
+  try {
+    await page.exposeBinding(bindingName, async (source, value) => {
     try {
       if (source.frame !== page.mainFrame()) return;
       let sourceOrigin: string;
@@ -1264,16 +1298,27 @@ async function observeForkScopeHydration(
     } catch {
       // The observer is diagnostic only and must preserve the application response.
     }
-  });
-  await page.addInitScript(installForkScopeHydrationObserver, {
-    bindingName,
-    stateName,
-    origin: options.origin,
-    readinessPath,
-    identityPath,
-    maxBytes: SCOPE_HYDRATION_BODY_LIMIT,
-    holdProviderReadiness: options.holdProviderReadiness ?? true,
-  });
+    });
+    await page.addInitScript(installForkScopeHydrationObserver, {
+      bindingName,
+      stateName,
+      origin: options.origin,
+      readinessPath,
+      identityPath,
+      maxBytes: SCOPE_HYDRATION_BODY_LIMIT,
+      holdProviderReadiness: options.holdProviderReadiness ?? true,
+    });
+  } catch (error) {
+    active = false;
+    readinessReleased = true;
+    release.resolve(undefined);
+    try {
+      await page.removeExposedFunction(bindingName);
+    } catch {
+      // Preserve setup failure; cleanup is best effort.
+    }
+    throw error;
+  }
 
   return {
     readiness: readiness.promise,
@@ -1307,6 +1352,34 @@ async function observeForkScopeHydration(
       active = false;
       readinessReleased = true;
       release.resolve(undefined);
+      try {
+        await page.evaluate((stateName) => {
+          const globals = window as unknown as Record<string, unknown>;
+          const state = globals[stateName];
+          if (typeof state !== "object" || state === null) return;
+          const observer = state as {
+            active?: boolean;
+            originalFetch?: typeof window.fetch;
+            readers?: Set<ReadableStreamDefaultReader<Uint8Array>>;
+            wrapper?: typeof window.fetch;
+          };
+          observer.active = false;
+          for (const reader of observer.readers ?? []) {
+            void reader.cancel().catch(() => undefined);
+            try {
+              reader.releaseLock();
+            } catch {
+              // A cloned branch may still be settling.
+            }
+          }
+          observer.readers?.clear();
+          if (observer.wrapper && window.fetch === observer.wrapper)
+            window.fetch = observer.originalFetch ?? window.fetch;
+          delete globals[stateName];
+        }, stateName);
+      } catch {
+        // A closed document has no live observer or response to affect.
+      }
       try {
         await page.removeExposedFunction(bindingName);
       } catch {
