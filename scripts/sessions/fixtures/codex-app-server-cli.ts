@@ -1,22 +1,41 @@
-import { appendFileSync } from "node:fs";
+import { createHash, randomUUID } from "node:crypto";
+import {
+  appendFileSync,
+  existsSync,
+  lstatSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
+import { isAbsolute, join } from "node:path";
+import { recordProbeFact } from "./codex-chat-prepare-diagnostics";
 
 /** Inert native-process app-server fixture. No provider, account, shell or network access. */
 const argv = process.argv.slice(2),
   log = process.env.CODEX_CHAT_LOG;
 const mode = process.env.CODEX_CHAT_MODE;
+const forkRestartMode =
+    mode === "fork-restart" || mode === "fork-restart-child-approval",
+  canonicalCwdAckMode = mode === "canonical-cwd-ack",
+  forkRestartChildApprovalMode = mode === "fork-restart-child-approval";
 const serviceTierAwareMode =
     mode === "service-tier-null" ||
+    canonicalCwdAckMode ||
     mode === "fork-approval-command" ||
     mode === "fork-service-tier-null-child-approval" ||
     mode === "fork-service-tier-null" ||
     mode === "fork-service-tier-priority" ||
-    mode === "fork-child-lost-turn-reply",
+    mode === "fork-child-lost-turn-reply" ||
+    forkRestartMode,
   forkServiceTierResumeMode =
     mode === "fork-approval-command" ||
     mode === "fork-service-tier-null-child-approval" ||
     mode === "fork-service-tier-null" ||
     mode === "fork-service-tier-priority" ||
-    mode === "fork-child-lost-turn-reply",
+    mode === "fork-child-lost-turn-reply" ||
+    forkRestartMode,
   configuredServiceTier =
     mode === "fork-service-tier-priority" ? "priority" : null;
 if (argv.includes("--child"))
@@ -24,16 +43,373 @@ if (argv.includes("--child"))
 const record = (value: unknown) => {
   if (log) appendFileSync(log, `${JSON.stringify(value)}\n`);
 };
+const canonicalFixtureDirectory = (value: string): string | null => {
+  try {
+    if (!isAbsolute(value) || !statSync(value).isDirectory()) return null;
+    const canonical = realpathSync.native(value);
+    return process.platform === "win32" ? canonical.toLowerCase() : canonical;
+  } catch {
+    return null;
+  }
+};
+const FIXTURE_UUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const MAX_CONTINUITY_FILE_BYTES = 16_384;
+const MAX_COMPLETED_TURNS_PER_PARENT = 64;
+type ForkParentProof = {
+  kind: "fork-parent-proof";
+  version: 1;
+  threadId: string;
+  processId: number;
+  model: string;
+  modelProvider: "openai";
+  serviceTierPresent: true;
+  serviceTier: string | null;
+  reasoningEffort: string | null;
+  cwd: string;
+  approvalPolicy: string;
+  sandbox: string;
+  completedTurnIds: string[];
+};
+type ForkChildProof = {
+  kind: "fork-child-proof";
+  version: 1;
+  threadId: string;
+  processId: number;
+  parentThreadId: string;
+  sourceTurnId: string;
+};
+const continuityProofPath = (kind: "parent" | "child", threadId: string) => {
+  const home = process.env.AGENT_FORGE_HOME;
+  if (!home || !FIXTURE_UUID.test(threadId)) return null;
+  const digest = createHash("sha256").update(threadId, "utf8").digest("hex");
+  return join(home, `codex-chat-fork-${kind}-${digest}.json`);
+};
+const hasExactKeys = (value: Record<string, unknown>, keys: string[]) => {
+  const actual = Object.keys(value).sort(),
+    expected = [...keys].sort();
+  return (
+    actual.length === expected.length &&
+    actual.every((key, index) => key === expected[index])
+  );
+};
+const readContinuityProof = (path: string | null): unknown | null => {
+  if (!path || !existsSync(path)) return null;
+  try {
+    const metadata = lstatSync(path);
+    if (
+      !metadata.isFile() ||
+      metadata.isSymbolicLink() ||
+      metadata.size > MAX_CONTINUITY_FILE_BYTES
+    )
+      return null;
+    const text = readFileSync(path, "utf8");
+    if (!text.endsWith("\n")) return null;
+    let value: unknown;
+    try {
+      value = JSON.parse(text.slice(0, -1));
+    } catch {
+      return null;
+    }
+    if (typeof value !== "object" || value === null || Array.isArray(value))
+      return null;
+    return value;
+  } catch {
+    return null;
+  }
+};
+const validParentProof = (value: unknown): value is ForkParentProof => {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return false;
+  const proof = value as Record<string, unknown>;
+  return (
+    hasExactKeys(proof, [
+      "kind",
+      "version",
+      "threadId",
+      "processId",
+      "model",
+      "modelProvider",
+      "serviceTierPresent",
+      "serviceTier",
+      "reasoningEffort",
+      "cwd",
+      "approvalPolicy",
+      "sandbox",
+      "completedTurnIds",
+    ]) &&
+    proof.kind === "fork-parent-proof" &&
+    proof.version === 1 &&
+    typeof proof.threadId === "string" &&
+    FIXTURE_UUID.test(proof.threadId) &&
+    Number.isSafeInteger(proof.processId) &&
+    (proof.processId as number) > 0 &&
+    typeof proof.model === "string" &&
+    proof.model.length > 0 &&
+    proof.model.length <= 128 &&
+    proof.modelProvider === "openai" &&
+    proof.serviceTierPresent === true &&
+    (proof.serviceTier === null ||
+      (typeof proof.serviceTier === "string" &&
+        proof.serviceTier.length <= 64)) &&
+    (proof.reasoningEffort === null ||
+      (typeof proof.reasoningEffort === "string" &&
+        proof.reasoningEffort.length <= 64)) &&
+    typeof proof.cwd === "string" &&
+    proof.cwd.length > 0 &&
+    proof.cwd.length <= 2048 &&
+    typeof proof.approvalPolicy === "string" &&
+    proof.approvalPolicy.length > 0 &&
+    proof.approvalPolicy.length <= 64 &&
+    (proof.sandbox === "read-only" || proof.sandbox === "workspace-write") &&
+    Array.isArray(proof.completedTurnIds) &&
+    proof.completedTurnIds.length <= MAX_COMPLETED_TURNS_PER_PARENT &&
+    proof.completedTurnIds.every(
+      (turnId) => typeof turnId === "string" && FIXTURE_UUID.test(turnId),
+    ) &&
+    new Set(proof.completedTurnIds).size === proof.completedTurnIds.length
+  );
+};
+const validChildProof = (value: unknown): value is ForkChildProof => {
+  if (typeof value !== "object" || value === null || Array.isArray(value))
+    return false;
+  const proof = value as Record<string, unknown>;
+  return (
+    hasExactKeys(proof, [
+      "kind",
+      "version",
+      "threadId",
+      "processId",
+      "parentThreadId",
+      "sourceTurnId",
+    ]) &&
+    proof.kind === "fork-child-proof" &&
+    proof.version === 1 &&
+    typeof proof.threadId === "string" &&
+    FIXTURE_UUID.test(proof.threadId) &&
+    Number.isSafeInteger(proof.processId) &&
+    (proof.processId as number) > 0 &&
+    typeof proof.parentThreadId === "string" &&
+    FIXTURE_UUID.test(proof.parentThreadId) &&
+    typeof proof.sourceTurnId === "string" &&
+    FIXTURE_UUID.test(proof.sourceTurnId)
+  );
+};
+const writeContinuityProof = (
+  path: string | null,
+  proof: ForkParentProof | ForkChildProof,
+  replaceValidated: boolean,
+  expectedPrevious?: ForkParentProof | ForkChildProof,
+) => {
+  if (!path) return false;
+  const home = process.env.AGENT_FORGE_HOME;
+  if (!home || !canonicalFixtureDirectory(home)) return false;
+  let exists = false;
+  try {
+    const metadata = lstatSync(path);
+    exists = true;
+    if (!metadata.isFile() || metadata.isSymbolicLink()) return false;
+    if (metadata.size > MAX_CONTINUITY_FILE_BYTES) return false;
+    if (replaceValidated) {
+      const current = readContinuityProof(path);
+      if (
+        !current ||
+        !expectedPrevious ||
+        JSON.stringify(current) !== JSON.stringify(expectedPrevious)
+      )
+        return false;
+    }
+  } catch (error) {
+    if (
+      typeof error !== "object" ||
+      error === null ||
+      !("code" in error) ||
+      error.code !== "ENOENT"
+    )
+      return false;
+  }
+  if (exists !== replaceValidated) return false;
+  const serialized = `${JSON.stringify(proof)}\n`;
+  if (Buffer.byteLength(serialized, "utf8") > MAX_CONTINUITY_FILE_BYTES)
+    return false;
+  const temporaryPath = `${path}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(temporaryPath, serialized, {
+      encoding: "utf8",
+      flag: "wx",
+      mode: 0o600,
+    });
+    renameSync(temporaryPath, path);
+    return true;
+  } catch {
+    return false;
+  }
+};
+const readParentProof = (threadId: string): ForkParentProof | null => {
+  const value = readContinuityProof(continuityProofPath("parent", threadId));
+  return validParentProof(value) && value.threadId === threadId ? value : null;
+};
+const recordParentStart = (threadId: string, resuming: boolean) => {
+  const path = continuityProofPath("parent", threadId);
+  if (!path) return false;
+  const previous = resuming ? readParentProof(threadId) : null;
+  if (resuming && !previous) return false;
+  if (
+    previous &&
+    (previous.model !== model ||
+      previous.cwd !== cwd ||
+      previous.approvalPolicy !== approvalPolicy ||
+      previous.sandbox !== sandbox ||
+      previous.modelProvider !== "openai" ||
+      previous.serviceTierPresent !== true ||
+      previous.serviceTier !== configuredServiceTier ||
+      previous.reasoningEffort !== null)
+  )
+    return false;
+  const proof: ForkParentProof = {
+    kind: "fork-parent-proof",
+    version: 1,
+    threadId,
+    processId: process.pid,
+    model,
+    modelProvider: "openai",
+    serviceTierPresent: true,
+    serviceTier: configuredServiceTier,
+    reasoningEffort: null,
+    cwd,
+    approvalPolicy,
+    sandbox,
+    completedTurnIds: previous?.completedTurnIds ?? [],
+  };
+  return writeContinuityProof(
+    path,
+    proof,
+    previous !== null,
+    previous ?? undefined,
+  );
+};
+const recordCompletedParentTurn = (
+  threadId: string,
+  completedTurnId: string,
+) => {
+  const previous = readParentProof(threadId);
+  if (
+    !previous ||
+    previous.processId !== process.pid ||
+    !FIXTURE_UUID.test(completedTurnId)
+  )
+    return false;
+  const completedTurnIds = previous.completedTurnIds.includes(completedTurnId)
+    ? previous.completedTurnIds
+    : [...previous.completedTurnIds, completedTurnId];
+  if (completedTurnIds.length > MAX_COMPLETED_TURNS_PER_PARENT) return false;
+  return writeContinuityProof(
+    continuityProofPath("parent", threadId),
+    { ...previous, completedTurnIds },
+    true,
+    previous,
+  );
+};
+const recordForkChild = (
+  threadId: string,
+  parentThreadId: string,
+  sourceTurnId: string,
+) => {
+  const parent = readParentProof(parentThreadId),
+    path = continuityProofPath("child", threadId);
+  if (
+    !path ||
+    !parent ||
+    !parent.completedTurnIds.includes(sourceTurnId) ||
+    existsSync(path)
+  )
+    return false;
+  return writeContinuityProof(
+    path,
+    {
+      kind: "fork-child-proof",
+      version: 1,
+      threadId,
+      processId: process.pid,
+      parentThreadId,
+      sourceTurnId,
+    },
+    false,
+  );
+};
+const inspectRecordedForkParent = (
+  parentThreadId: string,
+  lastTurnId: string,
+) => {
+  const parent = readParentProof(parentThreadId);
+  if (!parent)
+    return {
+      stage: "fixture-proof-unavailable" as const,
+      parent: null,
+      parentFound: false,
+      turnFound: false,
+    };
+  if (parent.processId === process.pid)
+    return {
+      stage: "parent-not-found" as const,
+      parent: null,
+      parentFound: false,
+      turnFound: false,
+    };
+  const turnFound = parent.completedTurnIds.includes(lastTurnId);
+  return {
+    stage: turnFound ? ("source-found" as const) : ("turn-not-found" as const),
+    parent,
+    parentFound: true,
+    turnFound,
+  };
+};
+const isRecordedForkChild = (candidateThreadId: string) => {
+  const value = readContinuityProof(
+      continuityProofPath("child", candidateThreadId),
+    ),
+    child =
+      validChildProof(value) && value.threadId === candidateThreadId
+        ? value
+        : null,
+    parent = child ? readParentProof(child.parentThreadId) : null;
+  return (
+    child !== null &&
+    child.processId !== process.pid &&
+    parent !== null &&
+    parent.completedTurnIds.includes(child.sourceTurnId)
+  );
+};
 if (argv.includes("--version")) {
+  const startedAt = performance.now(),
+    diagnosticHome = process.env["AGENT_FORGE_HOME"];
+  if (diagnosticHome) recordProbeFact(diagnosticHome, "version", "started");
   record({ kind: "version" });
   await Bun.stdout.write("codex-cli 0.163.0-alpha.10.2\n");
+  if (diagnosticHome)
+    recordProbeFact(
+      diagnosticHome,
+      "version",
+      "completed",
+      performance.now() - startedAt,
+    );
   process.exit(0);
 }
 if (argv.includes("--help")) {
+  const startedAt = performance.now(),
+    diagnosticHome = process.env["AGENT_FORGE_HOME"];
+  if (diagnosticHome) recordProbeFact(diagnosticHome, "help", "started");
   record({ kind: "help" });
   await Bun.stdout.write(
     "Usage: codex app-server\n  --stdio\n  --listen <URL>\n",
   );
+  if (diagnosticHome)
+    recordProbeFact(
+      diagnosticHome,
+      "help",
+      "completed",
+      performance.now() - startedAt,
+    );
   process.exit(0);
 }
 if (argv.includes("--sync")) {
@@ -53,8 +429,12 @@ record({
   forged: process.env.AGENT_FORGE_FORGED,
   slug: process.env.FORGE_SLUG,
 });
-let threadId = "0199a213-81c0-7800-8aa1-bbab2a035a53";
-const firstTurnId = "0199a213-81c0-7800-8aa1-bbab2a035a54",
+let threadId: string = forkRestartMode
+  ? randomUUID()
+  : "0199a213-81c0-7800-8aa1-bbab2a035a53";
+const firstTurnId = forkRestartMode
+    ? randomUUID()
+    : "0199a213-81c0-7800-8aa1-bbab2a035a54",
   resumedTurnId = "0199a213-81c0-7800-8aa1-bbab2a035a55";
 let turnId = firstTurnId;
 let model = "",
@@ -119,6 +499,19 @@ const finish = async (extraItems: unknown[] = []) => {
       },
     },
   });
+  if (forkRestartMode)
+    record({
+      kind: "fixture-completed-turn",
+      processId: process.pid,
+      threadId,
+      turnId,
+      status: "completed",
+    });
+  if (forkRestartMode) {
+    const recordedParentTurn = recordCompletedParentTurn(threadId, turnId);
+    if (!recordedParentTurn && !isRecordedForkChild(threadId))
+      throw new Error("The inert Fork continuity proof could not be updated.");
+  }
   await send({
     method: "turn/completed",
     params: {
@@ -532,17 +925,80 @@ while (true) {
         });
       }
     } else if (method === "thread/fork") {
+      const forkParams =
+        params && typeof params === "object" && !Array.isArray(params)
+          ? (params as Record<string, unknown>)
+          : null;
+      const forkSourceCheck =
+        forkRestartMode &&
+        typeof forkParams?.["threadId"] === "string" &&
+        typeof forkParams["lastTurnId"] === "string"
+          ? inspectRecordedForkParent(
+              forkParams["threadId"],
+              forkParams["lastTurnId"],
+            )
+          : null;
+      const forkParent = forkSourceCheck?.parent ?? null;
       if (
         !mode?.startsWith("fork") ||
-        !params ||
-        typeof params !== "object" ||
-        !("threadId" in params) ||
-        params.threadId !== threadId ||
-        !("lastTurnId" in params) ||
-        typeof params.lastTurnId !== "string"
+        !forkParams ||
+        typeof forkParams["threadId"] !== "string" ||
+        typeof forkParams["lastTurnId"] !== "string" ||
+        (!forkRestartMode && forkParams["threadId"] !== threadId)
       )
         process.exit(14);
-      const fork = params as Record<string, unknown>;
+      const fork = forkParams;
+      const configuredEffort =
+        fork.config &&
+        typeof fork.config === "object" &&
+        !Array.isArray(fork.config) &&
+        "model_reasoning_effort" in fork.config
+          ? fork.config.model_reasoning_effort
+          : null;
+      const settingsMatches = forkParent
+        ? {
+            model: forkParent.model === fork.model,
+            modelProvider: forkParent.modelProvider === fork.modelProvider,
+            serviceTierPresent:
+              forkParent.serviceTierPresent === true &&
+              Object.hasOwn(fork, "serviceTier"),
+            serviceTier: forkParent.serviceTier === fork.serviceTier,
+            reasoningEffort: forkParent.reasoningEffort === configuredEffort,
+            workspace:
+              typeof forkParent.cwd === "string" &&
+              typeof fork.cwd === "string" &&
+              canonicalFixtureDirectory(forkParent.cwd) !== null &&
+              canonicalFixtureDirectory(forkParent.cwd) ===
+                canonicalFixtureDirectory(fork.cwd),
+            approvalPolicy: forkParent.approvalPolicy === fork.approvalPolicy,
+            sandbox: forkParent.sandbox === fork.sandbox,
+          }
+        : null;
+      const settingsMatch =
+        settingsMatches !== null &&
+        Object.values(settingsMatches).every(Boolean);
+      if (forkRestartMode && forkSourceCheck)
+        record({
+          kind: "fork-restart-diagnostic",
+          stage:
+            forkSourceCheck.stage !== "source-found"
+              ? forkSourceCheck.stage
+              : settingsMatch
+                ? "source-accepted"
+                : "settings-mismatch",
+          parentFound: forkSourceCheck.parentFound,
+          turnFound: forkSourceCheck.turnFound,
+          settingsMatches,
+        });
+      if (
+        forkRestartMode &&
+        (forkSourceCheck?.stage !== "source-found" ||
+          !forkSourceCheck.parentFound ||
+          !forkSourceCheck.turnFound)
+      )
+        process.exit(14);
+      if (forkParent && !settingsMatch) process.exit(14);
+      if (forkParent) threadId = fork["threadId"] as string;
       if (mode === "fork-lost-response-eof") {
         record({ kind: "fork-created-without-response", params });
         process.exit(0);
@@ -551,19 +1007,33 @@ while (true) {
         record({ kind: "fork-created-without-response", params });
         hangTree();
       }
-      const forkCwd = typeof fork.cwd === "string" ? fork.cwd : "";
-      const forkModel = typeof fork.model === "string" ? fork.model : "";
+      const forkCwd =
+        typeof forkParent?.cwd === "string"
+          ? forkParent.cwd
+          : typeof fork.cwd === "string"
+            ? fork.cwd
+            : "";
+      const forkModel =
+        typeof forkParent?.model === "string"
+          ? forkParent.model
+          : typeof fork.model === "string"
+            ? fork.model
+            : "";
       const forkProvider =
-        typeof fork.modelProvider === "string" ? fork.modelProvider : "";
-      const forkTier = "serviceTier" in fork ? fork.serviceTier : null;
-      const effort =
-        fork.config &&
-        typeof fork.config === "object" &&
-        "model_reasoning_effort" in fork.config
-          ? fork.config.model_reasoning_effort
+        typeof forkParent?.modelProvider === "string"
+          ? forkParent.modelProvider
+          : typeof fork.modelProvider === "string"
+            ? fork.modelProvider
+            : "";
+      const forkTier = forkParent
+        ? forkParent.serviceTier
+        : "serviceTier" in fork
+          ? fork.serviceTier
           : null;
+      const effort = forkParent ? forkParent.reasoningEffort : configuredEffort;
+      const forkSandboxMode = forkParent ? forkParent.sandbox : fork.sandbox;
       const forkSandbox =
-        fork.sandbox === "read-only"
+        forkSandboxMode === "read-only"
           ? { type: "readOnly", networkAccess: false }
           : {
               type: "workspaceWrite",
@@ -573,7 +1043,9 @@ while (true) {
               excludeSlashTmp: true,
             };
       const forkThread = {
-        id: "0199a213-81c0-7800-8aa1-bbab2a035a55",
+        id: forkRestartMode
+          ? randomUUID()
+          : "0199a213-81c0-7800-8aa1-bbab2a035a55",
         environments: [],
         extra: null,
         sessionId: threadId,
@@ -615,7 +1087,7 @@ while (true) {
         cwd: forkCwd,
         runtimeWorkspaceRoots: [forkCwd],
         instructionSources: [],
-        approvalPolicy: fork.approvalPolicy,
+        approvalPolicy: forkParent?.approvalPolicy ?? fork.approvalPolicy,
         approvalsReviewer: fork.approvalsReviewer,
         sandbox: forkSandbox,
         activePermissionProfile: { id: ":workspace", extends: null },
@@ -636,6 +1108,18 @@ while (true) {
           type: "active",
           activeFlags: [],
         };
+      if (forkRestartMode && forkParent) {
+        const childThreadId = forkThread.id;
+        if (
+          typeof childThreadId !== "string" ||
+          !recordForkChild(
+            childThreadId,
+            forkParent.threadId,
+            fork.lastTurnId as string,
+          )
+        )
+          process.exit(14);
+      }
       record({ kind: "fork-result", result });
       if (mode === "fork-lost-response") {
         // Deliberately retain an owned process tree after the synthetic native
@@ -667,14 +1151,30 @@ while (true) {
       if (
         forkServiceTierResumeMode &&
         resuming &&
-        params.threadId === resumedTurnId &&
+        (forkRestartMode
+          ? Object.hasOwn(params, "modelProvider") ||
+            Object.hasOwn(params, "serviceTier")
+          : params.threadId === resumedTurnId) &&
         (params.modelProvider !== "openai" ||
           !Object.hasOwn(params, "serviceTier") ||
           params.serviceTier !== configuredServiceTier)
       )
         process.exit(14);
       model = params.model;
-      cwd = params.cwd;
+      if (forkRestartMode) {
+        const canonicalCwd = canonicalFixtureDirectory(params.cwd);
+        if (!canonicalCwd) process.exit(14);
+        cwd = canonicalCwd;
+      } else if (canonicalCwdAckMode) {
+        const canonicalCwd = canonicalFixtureDirectory(params.cwd);
+        if (!canonicalCwd) process.exit(14);
+        cwd = canonicalCwd;
+        record({
+          kind: "canonical-cwd-ack",
+          requestedCwdWasAlias: params.cwd !== canonicalCwd,
+          acknowledgedCwdIsCanonical: canonicalFixtureDirectory(cwd) === cwd,
+        });
+      } else cwd = params.cwd;
       if ("sandbox" in params && typeof params.sandbox === "string")
         sandbox = params.sandbox;
       if (
@@ -716,11 +1216,14 @@ while (true) {
           reasoningEffort:
             mode === "fork-service-tier-priority"
               ? "medium"
-              : serviceTierAwareMode
+              : serviceTierAwareMode && !canonicalCwdAckMode
                 ? null
                 : "medium",
         },
       });
+      if (forkRestartMode && (!resuming || readParentProof(threadId))) {
+        if (!recordParentStart(threadId, resuming)) process.exit(14);
+      }
       await send({
         method: "thread/started",
         params: {
@@ -732,6 +1235,20 @@ while (true) {
           },
         },
       });
+      if (forkRestartMode)
+        record({
+          kind: "fixture-parent",
+          processId: process.pid,
+          threadId,
+          model,
+          modelProvider: "openai",
+          serviceTierPresent: serviceTierAwareMode,
+          serviceTier: configuredServiceTier,
+          reasoningEffort: null,
+          cwd,
+          approvalPolicy,
+          sandbox,
+        });
     } else if (method === "turn/start") {
       await send({
         id,
@@ -1010,6 +1527,9 @@ while (true) {
         (mode === "fork-service-tier-null-child-approval" &&
           resuming &&
           threadId === resumedTurnId) ||
+        (forkRestartChildApprovalMode &&
+          resuming &&
+          isRecordedForkChild(threadId)) ||
         mode === "approval-conflict" ||
         mode === "approval-resolved" ||
         mode === "approval-stale" ||
@@ -1055,7 +1575,10 @@ while (true) {
             ],
           },
         };
-        if (mode === "fork-service-tier-null-child-approval")
+        if (
+          mode === "fork-service-tier-null-child-approval" ||
+          forkRestartChildApprovalMode
+        )
           record({ kind: "approval-offer", threadId, turnId });
         await send(request);
         if (mode === "approval-command-duplicate") await send(request);

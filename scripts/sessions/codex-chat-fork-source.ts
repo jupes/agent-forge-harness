@@ -242,7 +242,8 @@ export function resolveCodexChatForkSource(input: {
     return { eligible: false, reason: "binding-mismatch" };
   if (
     configuration.model !== prepared.launch.model ||
-    configuration.cwd !== prepared.cwd ||
+    (configuration.cwd !== prepared.cwd &&
+      configuration.cwd !== prepared.canonicalCwd) ||
     (prepared.launch.effort !== undefined &&
       configuration.effort !== prepared.launch.effort)
   )
