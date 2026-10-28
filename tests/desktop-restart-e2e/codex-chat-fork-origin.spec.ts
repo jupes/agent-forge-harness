@@ -857,15 +857,19 @@ async function authenticateNewHost(
 }
 
 async function selectSession(page: Page, origin: string, sessionId: string) {
+  const expectedHash = `#/desktop/project/${forkProject.id}/sessions?selectionKind=session&selectionId=${encodeURIComponent(sessionId)}`;
   await page.evaluate(
     (hash) => {
       window.location.hash = hash;
     },
-    `#/desktop/project/${forkProject.id}/sessions?selectionKind=session&selectionId=${encodeURIComponent(sessionId)}`,
+    expectedHash,
   );
   await expect(
     page.getByRole("region", { name: "Session conversation", exact: true }),
   ).toBeVisible();
+  await expect
+    .poll(() => new URL(page.url()).hash)
+    .toBe(expectedHash);
   expect(new URL(page.url()).origin).toBe(origin);
 }
 
