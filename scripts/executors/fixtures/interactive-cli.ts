@@ -50,6 +50,7 @@ if (
     stdin: "ignore",
     stdout: mode === "exit-inherited-tree" ? "inherit" : "ignore",
     stderr: mode === "exit-inherited-tree" ? "inherit" : "ignore",
+    windowsHide: true,
   });
   const announcement = `${JSON.stringify({ pid: process.pid, childPid: child.pid })}\n`;
   if (process.env.INTERACTIVE_TREE_LOG) {

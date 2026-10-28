@@ -2,12 +2,84 @@ import { expect, test } from "bun:test";
 import { join } from "node:path";
 import { buildChildEnv } from "./env";
 import { killTree, liveChildCount, supervise } from "./supervisor";
+import { guardRequiredTree, guardSuspendedWindowsProcess } from "./tree-guard";
+import type { WindowsJobSettlementFailurePhase } from "./windows-job-settlement";
 
 const fake = join(import.meta.dir, "fixtures/interactive-cli.ts");
+
+type SettlementTestGuard = {
+  release(): void;
+  terminate(): void;
+  settleStopped(): Promise<void>;
+};
+
+function heldWindowsSettlementGuard() {
+  let enter!: () => void;
+  let confirm!: () => void;
+  let refuse!: (error: Error) => void;
+  let actual: ReturnType<typeof guardRequiredTree> = null;
+  let actualSettlement: Promise<void> | null = null;
+  let wrappedSettlement: Promise<void> | null = null;
+  const entered = new Promise<void>((resolve) => {
+    enter = resolve;
+  });
+  const settlement = new Promise<void>((resolve, reject) => {
+    confirm = resolve;
+    refuse = reject;
+  });
+  void settlement.catch(() => undefined);
+  const calls: string[] = [];
+  const guard: SettlementTestGuard = {
+    release() {
+      calls.push("release");
+      actual?.release();
+    },
+    terminate() {
+      // Keep the real job handle open so the deferred settlement can own it.
+      calls.push("terminate");
+    },
+    settleStopped() {
+      if (wrappedSettlement) return wrappedSettlement;
+      calls.push("settle-start");
+      enter();
+      wrappedSettlement = (async () => {
+        await settlement;
+        if (!actual?.settleStopped)
+          throw new Error("The retained Windows job cannot settle.");
+        actualSettlement ??= actual.settleStopped();
+        await actualSettlement;
+        calls.push("settle-confirmed");
+      })();
+      return wrappedSettlement;
+    },
+  };
+  return {
+    guard,
+    entered,
+    confirm,
+    refuse,
+    calls,
+    attach(pid: number) {
+      actual = guardRequiredTree(pid);
+      if (!actual?.settleStopped)
+        throw new Error("A retained Windows job could not be created.");
+      return guard;
+    },
+    async cleanup() {
+      confirm();
+      if (wrappedSettlement) await wrappedSettlement.catch(() => undefined);
+      if (actual?.settleStopped) {
+        actualSettlement ??= actual.settleStopped();
+        await actualSettlement.catch(() => undefined);
+      }
+    },
+  };
+}
 
 test("a trusted shift lifetime reaches the ownership grant exactly rather than shortening the reviewed timeout", async () => {
   const lines: string[] = [];
   const handle = supervise({
+    windowsHide: true,
     command: [process.execPath, fake],
     bootstrapCommand: [
       process.execPath,
@@ -35,6 +107,7 @@ test("interactive supervision exchanges multiple private stdin frames before exp
   const lines: string[] = [];
   const before = liveChildCount();
   const handle = supervise({
+    windowsHide: true,
     command: [process.execPath, fake],
     cwd: import.meta.dir,
     env: buildChildEnv(process.env, []),
@@ -50,6 +123,7 @@ test("interactive supervision exchanges multiple private stdin frames before exp
       exitCode: 0,
       timedOut: false,
       stopped: false,
+      ownedTreeReleased: true,
       stderr: "",
     });
     expect(lines).toEqual([
@@ -68,19 +142,35 @@ function tree(
   mode: "blocked" | "exit-tree",
   stdinTimeoutMs = 2000,
   maxStdinBytes = 8 * 1024 * 1024,
+  ownership?: ReturnType<typeof heldWindowsSettlementGuard>,
+  timeoutMs = 5000,
+  onFailurePhase?: (phase: WindowsJobSettlementFailurePhase) => void,
 ) {
   let announce: (line: string) => void = () => undefined;
   const ready = new Promise<string>((resolve) => {
     announce = resolve;
   });
   const handle = supervise({
+    windowsHide: true,
     command: [process.execPath, fake, mode],
     cwd: import.meta.dir,
     env: buildChildEnv(process.env, []),
     stdinMode: "interactive",
     maxStdinBytes,
     stdinTimeoutMs,
-    timeoutMs: 5000,
+    timeoutMs,
+    ...(ownership
+      ? {
+          interactiveGuard: (pid: number) => ownership.attach(pid),
+        }
+      : onFailurePhase && process.platform === "win32" && process.arch === "x64"
+        ? {
+            interactiveGuard: (pid: number) =>
+              guardSuspendedWindowsProcess(pid, {
+                onWindowsSettlementFailure: onFailurePhase,
+              }),
+          }
+        : {}),
     onLine: announce,
   });
   const childPid = async () => {
@@ -160,13 +250,26 @@ test("a saturated pipe has a deadline even when the host accepts earlier bufferi
 });
 
 test("Stop settles a backpressured write and EOF while confirming descendant cleanup", async () => {
-  const f = tree("blocked");
+  const phases: WindowsJobSettlementFailurePhase[] = [];
+  const f = tree("blocked", 2000, 8 * 1024 * 1024, undefined, 5000, (phase) =>
+    phases.push(phase),
+  );
   const child = await f.childPid();
   const writing = f.handle.write("x".repeat(4 * 1024 * 1024));
   const ending = f.handle.end();
   const settled = Promise.allSettled([writing, ending]);
   try {
-    await f.handle.stop("explicit Stop");
+    try {
+      await f.handle.stop("explicit Stop");
+    } catch (error) {
+      console.error(
+        JSON.stringify({
+          kind: "windows-stop-settlement-refusal",
+          phase: phases[0] ?? "unavailable",
+        }),
+      );
+      throw error;
+    }
     expect((await settled).map((entry) => entry.status)).toEqual([
       "rejected",
       "rejected",
@@ -192,9 +295,237 @@ test("interactive normal parent exit closes the ownership job and cleans its hel
   }
 });
 
+test("Windows interactive natural exit waits for held helper settlement before reporting owner release", async () => {
+  if (process.platform !== "win32") return;
+  const ownership = heldWindowsSettlementGuard();
+  const f = tree("exit-tree", 2000, 8 * 1024 * 1024, ownership);
+  try {
+    expect(await f.childPid()).toBeGreaterThan(0);
+    expect(
+      await Promise.race([
+        ownership.entered.then(() => "settling" as const),
+        Bun.sleep(1000).then(() => "not-settling" as const),
+      ]),
+    ).toBe("settling");
+    expect(ownership.calls).toEqual(["settle-start"]);
+    expect(
+      await Promise.race([
+        f.handle.done.then(
+          () => "done" as const,
+          () => "rejected" as const,
+        ),
+        Bun.sleep(25).then(() => "held" as const),
+      ]),
+    ).toBe("held");
+
+    ownership.confirm();
+    const result = await f.handle.done;
+    expect(result).toMatchObject({
+      exitCode: 0,
+      stopped: false,
+      timedOut: false,
+      ownedTreeReleased: true,
+    });
+    expect(ownership.calls.indexOf("settle-confirmed")).toBeGreaterThan(
+      ownership.calls.indexOf("settle-start"),
+    );
+    expect(ownership.calls.indexOf("release")).toBeGreaterThan(
+      ownership.calls.indexOf("settle-confirmed"),
+    );
+  } finally {
+    await ownership.cleanup();
+    await f.handle.done.catch(() => undefined);
+  }
+});
+
+test("Windows interactive Stop waits for held helper settlement and preserves stop attribution", async () => {
+  if (process.platform !== "win32") return;
+  const ownership = heldWindowsSettlementGuard();
+  const f = tree("blocked", 2000, 8 * 1024 * 1024, ownership);
+  let stopping: Promise<void> | null = null;
+  try {
+    expect(await f.childPid()).toBeGreaterThan(0);
+    stopping = f.handle.stop("explicit terminal Stop");
+    expect(
+      await Promise.race([
+        ownership.entered.then(() => "settling" as const),
+        Bun.sleep(1000).then(() => "not-settling" as const),
+      ]),
+    ).toBe("settling");
+    expect(ownership.calls).toEqual(["settle-start"]);
+    expect(
+      await Promise.race([
+        f.handle.done.then(
+          () => "done" as const,
+          () => "rejected" as const,
+        ),
+        Bun.sleep(25).then(() => "held" as const),
+      ]),
+    ).toBe("held");
+
+    ownership.confirm();
+    const result = await f.handle.done;
+    await stopping;
+    expect(result).toMatchObject({
+      stopped: true,
+      timedOut: false,
+      ownedTreeReleased: true,
+    });
+    expect(ownership.calls.indexOf("settle-confirmed")).toBeGreaterThan(
+      ownership.calls.indexOf("settle-start"),
+    );
+    expect(ownership.calls.indexOf("release")).toBeGreaterThan(
+      ownership.calls.indexOf("settle-confirmed"),
+    );
+  } finally {
+    await ownership.cleanup();
+    await f.handle.done.catch(() => undefined);
+    await stopping?.catch(() => undefined);
+  }
+});
+
+test("Windows interactive timeout waits for held helper settlement without changing timeout attribution", async () => {
+  if (process.platform !== "win32") return;
+  const ownership = heldWindowsSettlementGuard();
+  const f = tree("blocked", 2000, 8 * 1024 * 1024, ownership, 1000);
+  try {
+    expect(await f.childPid()).toBeGreaterThan(0);
+    expect(
+      await Promise.race([
+        ownership.entered.then(() => "settling" as const),
+        Bun.sleep(2000).then(() => "not-settling" as const),
+      ]),
+    ).toBe("settling");
+    expect(ownership.calls).toEqual(["settle-start"]);
+    expect(
+      await Promise.race([
+        f.handle.done.then(
+          () => "done" as const,
+          () => "rejected" as const,
+        ),
+        Bun.sleep(25).then(() => "held" as const),
+      ]),
+    ).toBe("held");
+
+    ownership.confirm();
+    const result = await f.handle.done;
+    expect(result).toMatchObject({
+      stopped: false,
+      timedOut: true,
+      ownedTreeReleased: true,
+    });
+    expect(ownership.calls.indexOf("settle-confirmed")).toBeGreaterThan(
+      ownership.calls.indexOf("settle-start"),
+    );
+    expect(ownership.calls.indexOf("release")).toBeGreaterThan(
+      ownership.calls.indexOf("settle-confirmed"),
+    );
+  } finally {
+    await ownership.cleanup();
+    await f.handle.done.catch(() => undefined);
+  }
+});
+
+test("Windows interactive refused tree settlement cannot report a released owner", async () => {
+  if (process.platform !== "win32") return;
+  const ownership = heldWindowsSettlementGuard();
+  const f = tree("exit-tree", 2000, 8 * 1024 * 1024, ownership, 5000);
+  try {
+    expect(await f.childPid()).toBeGreaterThan(0);
+    expect(
+      await Promise.race([
+        ownership.entered.then(() => "settling" as const),
+        Bun.sleep(1000).then(() => "not-settling" as const),
+      ]),
+    ).toBe("settling");
+    expect(ownership.calls).toEqual(["settle-start"]);
+    ownership.refuse(
+      new Error("Windows owned process cleanup could not be confirmed."),
+    );
+    await expect(f.handle.done).rejects.toThrow(
+      "Windows owned process cleanup could not be confirmed.",
+    );
+    expect(ownership.calls).not.toContain("release");
+  } finally {
+    await ownership.cleanup();
+    await f.handle.done.catch(() => undefined);
+  }
+});
+
+test("Windows interactive missing settlement capability retains its real job until owner cleanup", async () => {
+  if (process.platform !== "win32") return;
+  const actual: { guard: ReturnType<typeof guardRequiredTree> } = {
+    guard: null,
+  };
+  let terminateCalls = 0;
+  let releaseCalls = 0;
+  let announce!: (line: string) => void;
+  const ready = new Promise<string>((resolve) => {
+    announce = resolve;
+  });
+  const handle = supervise({
+    windowsHide: true,
+    command: [process.execPath, fake, "blocked"],
+    cwd: import.meta.dir,
+    env: buildChildEnv(process.env, []),
+    stdinMode: "interactive",
+    timeoutMs: 5000,
+    interactiveGuard(pid) {
+      const realGuard = guardRequiredTree(pid);
+      if (!realGuard)
+        throw new Error("The real process job could not be created.");
+      actual.guard = realGuard;
+      return {
+        release() {
+          releaseCalls++;
+          realGuard.release();
+        },
+        // Deliberately withhold settleStopped while retaining the real job.
+        // Production must not fall back to PID-based tree termination here.
+        terminate() {
+          terminateCalls++;
+        },
+      };
+    },
+    onLine: announce,
+  });
+  let childPid = 0;
+  let stopping: Promise<void> | null = null;
+  try {
+    const line = await ready;
+    const parsed: unknown = JSON.parse(line);
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      !("childPid" in parsed) ||
+      typeof parsed.childPid !== "number"
+    )
+      throw new Error("The real-job fixture did not announce its helper.");
+    childPid = parsed.childPid;
+
+    stopping = handle.stop("missing settlement capability fixture");
+    await expect(stopping).rejects.toThrow(
+      "Windows owned process cleanup could not be confirmed.",
+    );
+    await expect(handle.done).rejects.toThrow(
+      "Windows owned process cleanup could not be confirmed.",
+    );
+    expect(terminateCalls).toBeGreaterThan(0);
+    expect(releaseCalls).toBe(0);
+    expect(await gone(childPid)).toBe(false);
+  } finally {
+    const realGuard = actual.guard;
+    if (realGuard?.settleStopped) await realGuard.settleStopped();
+    await handle.done.catch(() => undefined);
+    await stopping?.catch(() => undefined);
+    if (childPid > 0) expect(await gone(childPid)).toBe(true);
+  }
+});
+
 test("interactive queue bounds reject before buffering oversized input and preserve legacy stdin", async () => {
   const before = liveChildCount();
   const handle = supervise({
+    windowsHide: true,
     command: [process.execPath, fake],
     cwd: import.meta.dir,
     env: buildChildEnv(process.env, []),
@@ -213,6 +544,7 @@ test("interactive queue bounds reject before buffering oversized input and prese
   }
   const lines: string[] = [];
   const legacy = supervise({
+    windowsHide: true,
     command: [process.execPath, fake],
     cwd: import.meta.dir,
     env: buildChildEnv(process.env, []),
@@ -229,6 +561,7 @@ test("a failed mandatory ownership guard refuses before any protocol stdin", asy
   const before = liveChildCount();
   expect(() =>
     supervise({
+      windowsHide: true,
       command: [process.execPath, fake],
       cwd: import.meta.dir,
       env: buildChildEnv(process.env, []),
@@ -254,6 +587,7 @@ test("private PID controls reject malformed or duplicate messages independently 
   for (const mode of ["malformed", "duplicate"]) {
     let errors = 0;
     const handle = supervise({
+      windowsHide: true,
       command: [process.execPath, fake],
       bootstrapCommand: [
         process.execPath,
@@ -287,6 +621,7 @@ test("private PID controls reject malformed or duplicate messages independently 
 test("the actual provider inherits neither bootstrap IPC API nor channel environment", async () => {
   const lines: string[] = [];
   const handle = supervise({
+    windowsHide: true,
     command: [process.execPath, fake, "ipc-probe"],
     cwd: import.meta.dir,
     env: buildChildEnv(process.env, []),
@@ -308,6 +643,7 @@ test("interactive inherited stdout and stderr retain cumulative byte bounds in t
   for (const mode of ["stdout-flood", "stderr-flood"]) {
     let errors = 0;
     const handle = supervise({
+      windowsHide: true,
       command: [process.execPath, fake, mode],
       cwd: import.meta.dir,
       env: buildChildEnv(process.env, []),

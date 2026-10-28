@@ -434,29 +434,95 @@ test("a refused private prepare starts no child and does not expose storage diag
 test("private output failure stops and awaits the supervised tree and cannot become provider success", async () => {
   const f = setup("hang-tree");
   let descendant: number | null = null;
+  const observedAt = performance.now();
+  type SettlementStage =
+    | "adapter-spawn-requested"
+    | "adapter-spawn-returned"
+    | "tree-held"
+    | "provider-started-callback"
+    | "first-line-callback"
+    | "private-line-rejected"
+    | "finish-entered"
+    | "finish-returned"
+    | "done-settled"
+    | "done-rejected"
+    | "existing-deadline-expired"
+    | "cleanup-stop-requested"
+    | "cleanup-settled";
+  const stages: { stage: SettlementStage; elapsedMs: number }[] = [];
+  const mark = (stage: SettlementStage) => {
+    if (stages.length >= 12 || stages.some((item) => item.stage === stage))
+      return;
+    stages.push({
+      stage,
+      elapsedMs: Math.max(0, Math.round(performance.now() - observedAt)),
+    });
+  };
+  let lineCount = 0;
+  let finishCount = 0;
+  type DoneState = "pending" | "private-failure" | "other-result" | "rejected";
+  let doneState: DoneState = "pending";
+  let deadlineMissed = false;
+  let doneAtDeadline: DoneState = "pending";
+  let descendantAliveAtDeadline: boolean | null = null;
+  const cleanupOutcome: {
+    value: "pending" | "settled" | "rejected";
+  } = { value: "pending" };
+  mark("adapter-spawn-requested");
   const handle = await claudeAdapter.spawn({
     ...f.request,
     privateCapture: {
       prepare: async () => ({
-        holdTree() {},
-        started() {},
+        holdTree() {
+          mark("tree-held");
+        },
+        started() {
+          mark("provider-started-callback");
+        },
         line(line) {
+          lineCount = Math.min(8, lineCount + 1);
+          mark("first-line-callback");
           try {
             const packet = JSON.parse(line);
             descendant = packet.childPid;
           } catch {
             /* only the fixed fixture PID is needed */
           }
+          mark("private-line-rejected");
           throw Error("private parse diagnostic");
         },
-        async finish() {},
+        async finish() {
+          finishCount = Math.min(2, finishCount + 1);
+          mark("finish-entered");
+          mark("finish-returned");
+        },
       }),
     },
   });
+  mark("adapter-spawn-returned");
+  void handle.done.then(
+    (result) => {
+      doneState = result.privateCaptureFailed
+        ? "private-failure"
+        : "other-result";
+      mark("done-settled");
+    },
+    () => {
+      doneState = "rejected";
+      mark("done-rejected");
+    },
+  );
   try {
     const result = await Promise.race([
       handle.done,
-      Bun.sleep(1500).then(() => null),
+      Bun.sleep(1500).then(() => {
+        deadlineMissed = true;
+        doneAtDeadline = doneState;
+        descendantAliveAtDeadline =
+          descendant === null ? null : alive(descendant);
+        mark("existing-deadline-expired");
+        return null;
+      }),
     ]);
     expect(result).not.toBeNull();
     expect(result).toMatchObject({ privateCaptureFailed: true, stopped: true });
@@ -465,8 +531,51 @@ test("private output failure stops and awaits the supervised tree and cannot bec
     const descendantPid = descendant;
     if (descendantPid !== null) expect(alive(descendantPid)).toBe(false);
   } finally {
-    await handle.stop("fixture cleanup");
-    await handle.done;
+    if (deadlineMissed) mark("cleanup-stop-requested");
+    const cleanup = async () => {
+      try {
+        await handle.stop("fixture cleanup");
+        await handle.done;
+        cleanupOutcome.value = "settled";
+      } catch (error) {
+        cleanupOutcome.value = "rejected";
+        throw error;
+      }
+    };
+    try {
+      await cleanup();
+    } finally {
+      if (deadlineMissed) {
+        if (cleanupOutcome.value === "settled") mark("cleanup-settled");
+        const facts = {
+          version: 1,
+          stages,
+          lineCount,
+          finishCount,
+          doneAtDeadline,
+          doneAfterCleanup: doneState,
+          cleanupOutcome: cleanupOutcome.value,
+          descendantSeen: descendant !== null,
+          descendantAliveAtDeadline,
+          descendantAliveAfterCleanup:
+            descendant === null ? null : alive(descendant),
+        };
+        try {
+          const serialized = JSON.stringify(facts);
+          console.error(
+            `[private-capture-settlement] ${
+              serialized.length <= 2048
+                ? serialized
+                : JSON.stringify({ version: 1, truncated: true })
+            }`,
+          );
+        } catch {
+          console.error(
+            '[private-capture-settlement] {"version":1,"unavailable":true}',
+          );
+        }
+      }
+    }
   }
 }, 10000);
 

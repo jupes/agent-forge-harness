@@ -9,6 +9,7 @@ const handle = supervise({
   command: [process.execPath, "-e", "process.exit(0)"],
   cwd: import.meta.dir,
   env: buildChildEnv(process.env, []),
+  windowsHide: true,
   stdinMode: "interactive",
   timeoutMs: 3000,
   onLine() {},
@@ -27,6 +28,13 @@ const handle = supervise({
         if (released) lateTermination++;
         guard.terminate?.();
       },
+      ...(guard.settleStopped
+        ? {
+            settleStopped() {
+              return guard.settleStopped?.call(guard) ?? Promise.reject();
+            },
+          }
+        : {}),
     };
   },
 });
