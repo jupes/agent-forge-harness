@@ -1215,21 +1215,30 @@ test("confirmed reserved retirement reads back the tombstone before a new UUID c
     await expect(confirm).toBeDisabled();
 
     await page.keyboard.press("Tab");
-    const body = retirement.locator(".af-dialog-body");
     expect(
       await retirement.evaluate((currentDialog) =>
         currentDialog.contains(document.activeElement),
       ),
     ).toBe(true);
-    if (await body.evaluate((element) => element === document.activeElement))
+    const pendingBody = retirement.locator(".af-dialog-body");
+    if (
+      await pendingBody.evaluate((element) => element === document.activeElement)
+    )
       await page.keyboard.press("Tab");
     await expect(keep).toBeFocused();
     await page.keyboard.press("Tab");
-    await expect(confirm).toBeFocused();
-    await page.keyboard.press("Tab");
     await expect(close).toBeFocused();
     await page.keyboard.press("Shift+Tab");
-    await expect(confirm).toBeFocused();
+    await expect(keep).toBeFocused();
+
+    siblingIdentityRefresh.release();
+    await siblingIdentityRefresh.settleHeldReads();
+    await expect(
+      identityRegion
+        .getByRole("status")
+        .filter({ hasText: "Checking the server-owned identity page" }),
+    ).not.toBeVisible();
+    await expect(confirm).toBeEnabled();
   } finally {
     siblingIdentityRefresh.release();
     try {
@@ -1268,6 +1277,24 @@ test("confirmed reserved retirement reads back the tombstone before a new UUID c
 
   await reviewRetirement.click();
   await expect(close).toBeFocused();
+  await page.keyboard.press("Tab");
+  expect(
+    await retirement.evaluate((currentDialog) =>
+      currentDialog.contains(document.activeElement),
+    ),
+  ).toBe(true);
+  const enabledBody = retirement.locator(".af-dialog-body");
+  if (
+    await enabledBody.evaluate((element) => element === document.activeElement)
+  )
+    await page.keyboard.press("Tab");
+  await expect(keep).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(confirm).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(close).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(confirm).toBeFocused();
   await expect(confirm).toBeInViewport();
   await captureShot(retirement, "session-start-retirement-confirmation.png", {
     mask: [retirement.locator("dd").nth(0)],
