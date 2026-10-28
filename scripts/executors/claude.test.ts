@@ -160,52 +160,91 @@ test("the Claude adapter freezes the executable from the current process PATH", 
       "--allowedTools",
       tools.CLAUDE_ALLOWED_TOOLS.join(","),
     ];
-    const before = supervisor.liveChildCount();
-    let prepareCalls = 0;
-    let privateExecutable = false;
-    let preparedInput = false;
-    let genericRefusal = false;
-    try {
-      await adapter.claudeAdapter.spawn({
-        beadId: "path-resolution-probe",
-        worktree,
-        workspace: root,
-        smith,
-        prompt: "private path resolution probe",
-        env: { PATH: general },
-        privateCapture: {
-          async prepare(input) {
-            prepareCalls++;
-            privateExecutable =
-              normalize(input.command[0] ?? "") === normalize(privateMarker);
-            preparedInput =
-              input.provider === "claude" &&
-              input.beadId === "path-resolution-probe" &&
-              input.runId === null &&
-              normalize(input.workspace) === normalize(root) &&
-              normalize(input.cwd) === normalize(worktree) &&
-              input.stdin === "private path resolution probe" &&
-              input.timeoutMs === null &&
-              input.smith.name === smith.name &&
-              input.command.length === expectedTail.length + 1 &&
-              input.command
-                .slice(1)
-                .every((part, index) => part === expectedTail[index]);
-            throw new capture.PrivateCaptureError();
+    const inspect = async (command, expectedExecutable) => {
+      const before = supervisor.liveChildCount();
+      let prepareCalls = 0;
+      let selectedExecutable = false;
+      let preparedInput = false;
+      let genericRefusal = false;
+      let notFound = false;
+      try {
+        await adapter.claudeAdapter.spawn({
+          ...(command === undefined ? {} : { command }),
+          beadId: "path-resolution-probe",
+          worktree,
+          workspace: root,
+          smith,
+          prompt: "private path resolution probe",
+          env: { PATH: general },
+          privateCapture: {
+            async prepare(input) {
+              prepareCalls++;
+              selectedExecutable =
+                normalize(input.command[0] ?? "") ===
+                normalize(expectedExecutable ?? "");
+              preparedInput =
+                input.provider === "claude" &&
+                input.beadId === "path-resolution-probe" &&
+                input.runId === null &&
+                normalize(input.workspace) === normalize(root) &&
+                normalize(input.cwd) === normalize(worktree) &&
+                input.stdin === "private path resolution probe" &&
+                input.timeoutMs === null &&
+                input.smith.name === smith.name &&
+                input.command.length === expectedTail.length + 1 &&
+                input.command
+                  .slice(1)
+                  .every((part, index) => part === expectedTail[index]);
+              throw new capture.PrivateCaptureError();
+            },
           },
-        },
-      });
-    } catch (error) {
-      genericRefusal =
-        error instanceof capture.PrivateCaptureError &&
-        error.message === capture.PRIVATE_CAPTURE_FAILURE;
-    }
+        });
+      } catch (error) {
+        genericRefusal =
+          error instanceof capture.PrivateCaptureError &&
+          error.message === capture.PRIVATE_CAPTURE_FAILURE;
+        notFound =
+          error instanceof Error && error.message === "claude not found on PATH";
+      }
+      return {
+        selectedExecutable,
+        preparedInput,
+        genericRefusal,
+        prepareOnce: prepareCalls === 1,
+        prepareSkipped: prepareCalls === 0,
+        notFound,
+        noChildEffect: supervisor.liveChildCount() === before,
+      };
+    };
+    const base = await inspect(undefined, privateMarker);
+    const override = await inspect([generalMarker], generalMarker);
+    process.env.PATH = "";
+    const empty = await inspect(undefined, null);
+    delete process.env.PATH;
+    const defaultPath = Bun.which("claude");
+    const unset = await inspect(undefined, defaultPath);
     const observation = {
-      privateExecutable,
-      preparedInput,
-      genericRefusal,
-      prepareOnce: prepareCalls === 1,
-      noChildEffect: supervisor.liveChildCount() === before,
+      basePrivate: base.selectedExecutable,
+      basePrepared: base.preparedInput,
+      baseRefusal: base.genericRefusal,
+      basePrepareOnce: base.prepareOnce,
+      baseNoChild: base.noChildEffect,
+      overridePreserved: override.selectedExecutable,
+      overridePrepared: override.preparedInput,
+      overrideRefusal: override.genericRefusal,
+      overridePrepareOnce: override.prepareOnce,
+      overrideNoChild: override.noChildEffect,
+      emptyNotFound: empty.notFound,
+      emptyPrepareSkipped: empty.prepareSkipped,
+      emptyNoChild: empty.noChildEffect,
+      unsetDefault:
+        defaultPath === null
+          ? unset.notFound && unset.prepareSkipped
+          : unset.selectedExecutable &&
+            unset.preparedInput &&
+            unset.genericRefusal &&
+            unset.prepareOnce,
+      unsetNoChild: unset.noChildEffect,
     };
     process.stdout.write(JSON.stringify(observation) + "\\n");
   `;
@@ -256,16 +295,26 @@ test("the Claude adapter freezes the executable from the current process PATH", 
   expect(
     record !== null &&
       Object.keys(record).sort().join(",") ===
-        "genericRefusal,noChildEffect,prepareOnce,preparedInput,privateExecutable" &&
+        "baseNoChild,basePrepareOnce,basePrepared,basePrivate,baseRefusal,emptyNoChild,emptyNotFound,emptyPrepareSkipped,overrideNoChild,overridePrepareOnce,overridePrepared,overridePreserved,overrideRefusal,unsetDefault,unsetNoChild" &&
       Object.values(record).every((item) => typeof item === "boolean"),
   ).toBe(true);
   expect(record).toMatchObject({
-    genericRefusal: true,
-    noChildEffect: true,
-    prepareOnce: true,
-    preparedInput: true,
+    baseNoChild: true,
+    basePrepareOnce: true,
+    basePrepared: true,
+    baseRefusal: true,
+    emptyNoChild: true,
+    emptyNotFound: true,
+    emptyPrepareSkipped: true,
+    overrideNoChild: true,
+    overridePrepareOnce: true,
+    overridePrepared: true,
+    overridePreserved: true,
+    overrideRefusal: true,
+    unsetDefault: true,
+    unsetNoChild: true,
   });
-  expect(record?.privateExecutable).toBe(true);
+  expect(record?.basePrivate).toBe(true);
 });
 
 describe("claude adapter through forge:exec: the model the stream reports (fake binary)", () => {
