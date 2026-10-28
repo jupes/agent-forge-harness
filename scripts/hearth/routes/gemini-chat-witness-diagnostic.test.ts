@@ -4,10 +4,115 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   emitGeminiChatWitnessFailureFactsAndRethrow,
+  projectGeminiChatFailureFacts,
   readGeminiChatWitnessLog,
   summarizeGeminiChatWitnessText,
   unavailableGeminiChatWitnessLog,
 } from "./gemini-chat-witness-diagnostic.test-utils";
+import { geminiChatPrivateFrameSchema } from "../../sessions/gemini-chat-owned-journal";
+
+test("exact-turn failure projection retains safe Gemini runtime outcome facts only", () => {
+  const requestId = "11111111-1111-4111-8111-111111111111";
+  const otherRequestId = "22222222-2222-4222-8222-222222222222";
+  const targetTurn = {
+    requestId,
+    phase: "failed",
+    reason: "PRIVATE original turn reason",
+  };
+  const otherTurn = {
+    requestId: otherRequestId,
+    phase: "unknown",
+    reason: "PRIVATE other turn reason",
+  };
+  const processFrame = geminiChatPrivateFrameSchema.parse({
+    kind: "coding-gemini-chat",
+    provider: "gemini",
+    version: "0.65.0",
+    event: {
+      kind: "process",
+      pid: 23456,
+      bootstrapPid: 12345,
+      smith: "gemini-example",
+      requestId,
+    },
+  });
+  const outcomeFrame = geminiChatPrivateFrameSchema.parse({
+    kind: "coding-gemini-chat",
+    provider: "gemini",
+    version: "0.65.0",
+    event: {
+      kind: "outcome",
+      outcome: {
+        phase: "failed",
+        reason: "PRIVATE runtime reason",
+        sessionId: null,
+        stopReason: null,
+        usage: null,
+      },
+      exitCode: 1,
+      stopped: false,
+      timedOut: true,
+      stderr: { text: "PRIVATE runtime stderr", truncated: false },
+    },
+  });
+  const unrelatedOutcome = geminiChatPrivateFrameSchema.parse({
+    kind: "coding-gemini-chat",
+    provider: "gemini",
+    version: "0.65.0",
+    event: {
+      kind: "outcome",
+      outcome: {
+        phase: "unknown",
+        reason: "PRIVATE unrelated runtime reason",
+        sessionId: null,
+        stopReason: null,
+        usage: null,
+      },
+      exitCode: null,
+      stopped: true,
+      timedOut: false,
+      stderr: { text: "PRIVATE unrelated runtime stderr", truncated: false },
+    },
+  });
+  const page = {
+    request: targetTurn,
+    turns: [targetTurn, otherTurn],
+    frames: [
+      { turnId: requestId, event: processFrame },
+      { turnId: requestId, event: outcomeFrame },
+      { turnId: otherRequestId, event: unrelatedOutcome },
+    ],
+  };
+  const projection = projectGeminiChatFailureFacts(page, requestId);
+
+  expect(projection.original).toEqual({ phase: "failed", reason: "present" });
+  const serialized = JSON.stringify(projection);
+  for (const value of [
+    requestId,
+    otherRequestId,
+    "23456",
+    "12345",
+    "PRIVATE original turn reason",
+    "PRIVATE other turn reason",
+    "PRIVATE runtime reason",
+    "PRIVATE runtime stderr",
+    "PRIVATE unrelated runtime reason",
+    "PRIVATE unrelated runtime stderr",
+  ])
+    expect(serialized).not.toContain(value);
+  expect(projection).toMatchObject({
+    runtime: {
+      processRecord: "observed",
+      outcome: "observed",
+      phase: "failed",
+      exitCode: "nonzero",
+      stopped: false,
+      timedOut: true,
+      nativeError: "not-observed",
+      nativeResult: "not-observed",
+    },
+  });
+});
 
 test("bounded Gemini witness summaries expose counts and a marker bit only", () => {
   const privateValues = [

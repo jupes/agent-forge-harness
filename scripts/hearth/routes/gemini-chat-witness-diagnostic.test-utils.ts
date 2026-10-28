@@ -51,6 +51,38 @@ export interface GeminiChatWitnessSummary {
   promptMarkerMatched: boolean;
 }
 
+type ProtectedTurn = {
+  requestId: string;
+  phase: string;
+  reason: string | null;
+};
+
+/** Project only the exact saved turn's phase and reason presence. */
+export function projectGeminiChatFailureFacts(
+  page: {
+    request: ProtectedTurn | null;
+    turns: readonly ProtectedTurn[];
+    frames: readonly { turnId: string; event: unknown }[];
+  },
+  requestId: string,
+) {
+  const turn =
+    page.request?.requestId === requestId
+      ? page.request
+      : (page.turns.find((item) => item.requestId === requestId) ?? null);
+  return {
+    original: {
+      phase: turn?.phase ?? "unknown",
+      reason:
+        turn === null
+          ? ("no-turn" as const)
+          : turn.reason === null
+            ? ("none" as const)
+            : ("present" as const),
+    },
+  };
+}
+
 function empty(
   state: LogState,
   reason: LogReason,

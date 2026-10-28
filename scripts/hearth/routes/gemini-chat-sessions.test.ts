@@ -25,6 +25,7 @@ import { startTestHearth, type TestHearth } from "../testing";
 import { writeOwnerOnly } from "../token";
 import {
   emitGeminiChatWitnessFailureFactsAndRethrow,
+  projectGeminiChatFailureFacts,
   readGeminiChatWitnessLog,
 } from "./gemini-chat-witness-diagnostic.test-utils";
 import { fixtureSessionGit } from "./session-fixture";
@@ -376,17 +377,13 @@ async function geminiChatWitnessFailureFacts(
     if (!parsed.success)
       original = { read: "invalid", phase: "unknown", reason: "invalid" };
     else {
-      const turn =
-        parsed.data.request?.requestId === f.request.requestId
-          ? parsed.data.request
-          : (parsed.data.turns.find(
-              (item) => item.requestId === f.request.requestId,
-            ) ?? null);
+      const projection = projectGeminiChatFailureFacts(
+        parsed.data,
+        f.request.requestId,
+      );
       original = {
         read: "ok",
-        phase: turn?.phase ?? "unknown",
-        reason:
-          turn === null ? "no-turn" : turn.reason === null ? "none" : "present",
+        ...projection.original,
       };
     }
   }
