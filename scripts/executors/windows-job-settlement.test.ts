@@ -142,13 +142,15 @@ test("a refused job census reports its bounded failure phase", async () => {
 
 test("a throwing refusal observer cannot change settlement or handle cleanup", async () => {
   const f = fixture();
-  f.setTotal(2);
+  f.setSnapshots([null]);
   const phases: string[] = [],
     witnesses: unknown[] = [];
+  let callbackArgumentCount = 0;
   const diagnosticApi = Object.assign(f.api, {
     onFailurePhase(phase: string, witness?: unknown) {
       phases.push(phase);
       witnesses.push(witness);
+      callbackArgumentCount = arguments.length;
       throw new Error("private observer failure");
     },
   });
@@ -156,19 +158,48 @@ test("a throwing refusal observer cannot change settlement or handle cleanup", a
   await expect(
     settleWindowsJob(diagnosticApi, {}, f.rootIdentity),
   ).rejects.toThrow("Windows owned process cleanup could not be confirmed.");
-  expect(phases).toEqual(["verify-census-generation"]);
-  expect(witnesses).toEqual([
-    {
-      reason: "growth-count-not-covered",
-      initialTotal: 1,
-      capturedTotal: 2,
-      retainedCount: 1,
-      capturedMemberCount: 0,
-    },
-  ]);
-  expect(f.calls).not.toContain("active");
+  expect(phases).toEqual(["capture-members"]);
+  expect(witnesses).toEqual([undefined]);
+  expect(callbackArgumentCount).toBe(1);
   expect(f.closed).toEqual([900]);
 });
+
+test(
+  "a throwing generation witness observer preserves refusal result and cleanup",
+  async () => {
+    const f = fixture();
+    f.setTotals([1, 2]);
+    f.setTotal(2);
+    const phases: string[] = [],
+      witnesses: unknown[] = [];
+    let callbackArgumentCount = 0;
+    const diagnosticApi = Object.assign(f.api, {
+      onFailurePhase(phase: string, witness?: unknown) {
+        phases.push(phase);
+        witnesses.push(witness);
+        callbackArgumentCount = arguments.length;
+        throw new Error("private observer failure");
+      },
+    });
+
+    await expect(
+      settleWindowsJob(diagnosticApi, {}, f.rootIdentity),
+    ).rejects.toThrow("Windows owned process cleanup could not be confirmed.");
+    expect(phases).toEqual(["verify-census-generation"]);
+    expect(witnesses).toEqual([
+      {
+        reason: "growth-count-not-covered",
+        initialTotal: 1,
+        capturedTotal: 2,
+        retainedCount: 1,
+        capturedMemberCount: 0,
+      },
+    ]);
+    expect(callbackArgumentCount).toBe(2);
+    expect(f.calls).not.toContain("active");
+    expect(f.closed).toEqual([900]);
+  },
+);
 
 test("a failed process-handle close is reported after all handles are attempted", async () => {
   const f = fixture([21]),
