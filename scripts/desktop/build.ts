@@ -1,10 +1,10 @@
 import { copyFileSync, cpSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
-import { isMain } from "../is-main";
 import {
   readDistributionNotices,
   writeDistributionNotices,
 } from "../distribution/notices";
+import { isMain } from "../is-main";
 
 const root = resolve(import.meta.dir, "../..");
 const app = join(root, "apps", "desktop");

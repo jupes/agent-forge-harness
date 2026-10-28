@@ -63,7 +63,8 @@ export function distributionNoticesPlugin(repositoryRoot: string): Plugin {
       notices = readDistributionNotices(repositoryRoot);
     },
     generateBundle() {
-      if (!notices) throw new Error("Distribution notices were not preflighted");
+      if (!notices)
+        throw new Error("Distribution notices were not preflighted");
       for (const [fileName, source] of noticeOutputs(notices)) {
         this.emitFile({ type: "asset", fileName, source });
       }

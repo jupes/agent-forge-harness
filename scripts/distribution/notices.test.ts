@@ -1,4 +1,3 @@
-import { build } from "vite";
 import { expect, test } from "bun:test";
 import {
   copyFileSync,
@@ -11,10 +10,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import {
-  readDistributionNotices,
-  writeDistributionNotices,
-} from "./notices";
+import { build } from "vite";
+import { readDistributionNotices, writeDistributionNotices } from "./notices";
 
 const repositoryRoot = resolve(import.meta.dir, "../..");
 const noticeFiles = [
@@ -25,15 +22,16 @@ const noticeFiles = [
 ] as const;
 
 function expectArtifactMap(stageRoot: string): void {
-  const map = readFileSync(
-    join(stageRoot, "DISTRIBUTION-NOTICES.txt"),
-    "utf8",
-  );
+  const map = readFileSync(join(stageRoot, "DISTRIBUTION-NOTICES.txt"), "utf8");
   expect(map).toContain("LICENSE <- LICENSE");
   expect(map).toContain("NOTICE <- NOTICE");
-  expect(map).toContain("docs/fonts/LICENSE-Inter.txt <- docs/fonts/LICENSE-Inter.txt");
+  expect(map).toContain(
+    "docs/fonts/LICENSE-Inter.txt <- docs/fonts/LICENSE-Inter.txt",
+  );
   expect(map).toContain("Phosphor glyph data from docs/js/ds/icon-paths.ts");
-  expect(map).toContain(".claude/skills/tdd/SKILL.md and .agents/skills/tdd/SKILL.md");
+  expect(map).toContain(
+    ".claude/skills/tdd/SKILL.md and .agents/skills/tdd/SKILL.md",
+  );
   expect(map).toContain("no skill code is bundled");
 }
 
