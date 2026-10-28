@@ -10,7 +10,12 @@ export const WINDOWS_JOB_SETTLEMENT_FAILURE_PHASES = [
   "guard-root",
   "capture-root",
   "capture-members",
-  "verify-census",
+  "verify-census-members",
+  "verify-census-total-read",
+  "verify-census-generation",
+  "verify-census-active-read",
+  "verify-census-unaccounted",
+  "verify-census-unretained",
   "terminate",
   "observe-settlement",
   "final-census",
@@ -167,10 +172,15 @@ export async function settleWindowsJob<Job, Process>(
     const initialTotal = readTotalProcesses(),
       initialMembers = readMembers();
     for (const pid of initialMembers) retain(pid);
-    phase = "verify-census";
+    phase = "verify-census-members";
     const capturedMembers = readMembers();
-    if (readTotalProcesses() !== initialTotal || hasUnaccountedProcesses())
-      refuse();
+    phase = "verify-census-total-read";
+    const capturedTotal = readTotalProcesses();
+    if (capturedTotal !== initialTotal) refuse("verify-census-generation");
+    phase = "verify-census-active-read";
+    const unaccounted = hasUnaccountedProcesses();
+    if (unaccounted) refuse("verify-census-unaccounted");
+    phase = "verify-census-unretained";
     for (const pid of capturedMembers) if (!retained.has(pid)) refuse();
     if (api.now() >= deadline) refuse("deadline");
     phase = "terminate";
