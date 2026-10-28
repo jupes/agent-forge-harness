@@ -57,6 +57,13 @@ export interface CodexChatCallbacks {
     approval: Readonly<CodexChatApproval>,
     signal: AbortSignal,
   ): Promise<CodexChatDecision>;
+  /** Private app sink, called only after this exact child's positive tree-release receipt. */
+  onOwnedTreeReleased?(binding: {
+    provider: "codex";
+    sessionId: string;
+    version: string;
+    turnId: string;
+  }): Promise<void>;
   /** Fixture-only fixed startup observations; never expose native details. */
   onStartupPhase?(phase: CodexChatStartupPhase, signalAborted: boolean): void;
 }
@@ -1149,6 +1156,46 @@ export function createCodexChatRuntime(options: CodexChatRuntimeOptions) {
         stopped: stopped || (exit?.stopped ?? false),
         timedOut: timedOut || (exit?.timedOut ?? false),
       };
+      if (callbacks.onOwnedTreeReleased) {
+        const binding = z
+          .object({
+            provider: z.literal("codex"),
+            sessionId: codexNativeUuidSchema,
+            version: z.literal(snapshot.capabilities.version),
+            turnId: codexNativeUuidSchema,
+          })
+          .strict()
+          .safeParse({
+            provider: "codex",
+            sessionId: current.threadId,
+            version: snapshot.capabilities.version,
+            turnId: current.turnId,
+          });
+        if (exit?.ownedTreeReleased === true && binding.success) {
+          try {
+            await bounded(
+              () => callbacks.onOwnedTreeReleased?.(binding.data),
+              persistenceTimeoutMs,
+              undefined,
+              "The private owner release receipt did not settle.",
+            );
+          } catch {
+            outcome = {
+              ...outcome,
+              phase: "unknown",
+              reason:
+                "The private owner release could not be confirmed. The turn was not resent.",
+            };
+          }
+        } else if (outcome.phase === "completed") {
+          outcome = {
+            ...outcome,
+            phase: "unknown",
+            reason:
+              "The owned process tree release could not be confirmed. The turn was not resent.",
+          };
+        }
+      }
       // The physical tree and earlier private callbacks have settled. This final
       // save has its own bounded wait, including after Stop aborted protocol work.
       if (!privateWriteFailed)

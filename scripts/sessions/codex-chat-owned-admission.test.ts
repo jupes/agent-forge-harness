@@ -26,8 +26,11 @@ import { resolveCheckout } from "../ledger/workspace";
 import { workspaceKey } from "../projects/scope";
 import { createProjectStore } from "../projects/store";
 import { scratchDirs } from "../test-scratch";
+import { createCodexChatApprovalBroker } from "./codex-chat-approval-broker";
 import { resolveCodexChatForkSource } from "./codex-chat-fork-source";
 import { createCodexOwnedChatService } from "./codex-chat-owned-admission";
+import { createCodexChatOwnedTransport } from "./codex-chat-owned-transport";
+import { foldCodexChatOwnerRelease } from "./codex-chat-owner-release";
 import { createCodexChatRuntime } from "./codex-chat-runtime";
 import {
   ownedCodingEventSchema,
@@ -45,7 +48,11 @@ afterEach(async () => {
   for (const close of closing.splice(0).reverse()) await close();
   scratch.cleanup();
 });
-async function fixture(mode = "normal", rpcTimeoutMs = 5000) {
+async function fixture(
+  mode = "normal",
+  rpcTimeoutMs = 5000,
+  persistenceTimeoutMs = 5000,
+) {
   const root = scratch.make("codex-chat-owned-"),
     home = join(root, "home"),
     configHome = join(root, "config"),
@@ -87,6 +94,7 @@ async function fixture(mode = "normal", rpcTimeoutMs = 5000) {
     timeoutMs: 5000,
     rpcTimeoutMs,
     approvalTimeoutMs: 3000,
+    persistenceTimeoutMs,
     ...(mode === "canonical-cwd-ack"
       ? {
           modelEfforts: [
@@ -312,6 +320,785 @@ test("a canonical native Chat configuration persists without rewriting the alias
         frame.event.event.kind === "configuration",
     )?.event,
   ).toEqual(configuration);
+});
+
+test("owned Chat durably binds one private generation before dispatch and release before outcome", async () => {
+  const f = await fixture("normal");
+  const readJournal = (path: string): unknown => {
+    try {
+      return JSON.parse(readFileSync(path, "utf8")) as unknown;
+    } catch {
+      throw Error("The inert owned Chat journal could not be read.");
+    }
+  };
+  let generationWasDurableBeforeRuntime = false;
+  const runtimeRun = f.runtime.run.bind(f.runtime);
+  f.runtime.run = async (input, persist, signal, callbacks) => {
+    const owner = createSessionRegistry(f.home, "codex", "chat")
+      .listAll(f.project.id)
+      .find((record) => record.requestId === f.request.requestId);
+    if (owner) {
+      const journal = readJournal(
+          conversationFile(f.home, f.project.id, {
+            kind: "session",
+            projectId: f.project.id,
+            sessionId: owner.id,
+          }),
+        ),
+        isRecord = (value: unknown): value is Record<string, unknown> =>
+          typeof value === "object" && value !== null && !Array.isArray(value);
+      if (isRecord(journal) && Array.isArray(journal.codexChatOwnerLifecycle))
+        generationWasDurableBeforeRuntime =
+          journal.codexChatOwnerLifecycle.some(
+            (fact) =>
+              isRecord(fact) &&
+              fact.kind === "generation-started" &&
+              fact.requestId === f.request.requestId &&
+              typeof fact.afterSequence === "number" &&
+              Array.isArray(journal.frames) &&
+              fact.afterSequence === journal.frames.length,
+          );
+    }
+    return runtimeRun(input, persist, signal, callbacks);
+  };
+  const service = f.open();
+  const started = await service.start(f.project.id, f.request);
+  await service.settled(f.project.id, started.session.id);
+  const path = conversationFile(f.home, f.project.id, {
+      kind: "session",
+      projectId: f.project.id,
+      sessionId: started.session.id,
+    }),
+    stored = readJournal(path);
+  const isRecord = (value: unknown): value is Record<string, unknown> =>
+      typeof value === "object" && value !== null && !Array.isArray(value),
+    frames =
+      isRecord(stored) && Array.isArray(stored.frames)
+        ? stored.frames.flatMap((frame) =>
+            isRecord(frame) &&
+            typeof frame.seq === "number" &&
+            isRecord(frame.event)
+              ? [{ seq: frame.seq, event: frame.event }]
+              : [],
+          )
+        : [],
+    lifecycle =
+      isRecord(stored) && Array.isArray(stored.codexChatOwnerLifecycle)
+        ? stored.codexChatOwnerLifecycle.filter(isRecord)
+        : [];
+
+  expect(generationWasDurableBeforeRuntime).toBe(true);
+  expect(lifecycle.map(({ kind }) => kind)).toEqual([
+    "generation-started",
+    "generation-released",
+  ]);
+  const generationStarted = lifecycle[0],
+    generationReleased = lifecycle[1],
+    nativeIdentity = frames.find(({ event }) => event.kind === "identity"),
+    nativeTurn = frames.find(
+      ({ event }) =>
+        event.kind === "coding-chat" &&
+        isRecord(event.event) &&
+        event.event.kind === "turn",
+    ),
+    finalOutcome = frames.find(
+      ({ event }) =>
+        event.kind === "coding-chat" &&
+        isRecord(event.event) &&
+        event.event.kind === "outcome",
+    );
+  expect(generationStarted).toBeDefined();
+  expect(generationReleased).toBeDefined();
+  expect(nativeIdentity).toBeDefined();
+  expect(nativeTurn).toBeDefined();
+  expect(finalOutcome).toBeDefined();
+  if (
+    !generationStarted ||
+    !generationReleased ||
+    !nativeIdentity ||
+    !nativeTurn ||
+    !finalOutcome ||
+    !isRecord(nativeTurn.event.event) ||
+    !isRecord(finalOutcome.event.event)
+  )
+    throw Error("The inert owned Chat did not persist its lifecycle chain.");
+  const generationId = generationStarted.generationId;
+  expect(typeof generationId).toBe("string");
+  if (typeof generationId !== "string")
+    throw Error("The private owner generation identifier was missing.");
+  expect(generationId).toMatch(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i,
+  );
+  expect(generationId).not.toBe(f.request.requestId);
+  expect(generationId).not.toBe(nativeIdentity.event.sessionId);
+  expect(generationId).not.toBe(nativeTurn.event.event.turnId);
+  const processFrame = frames.find(
+    ({ event }) =>
+      event.kind === "coding-chat" &&
+      isRecord(event.event) &&
+      event.event.kind === "process",
+  );
+  expect(processFrame).toBeDefined();
+  if (!processFrame) throw Error("The inert native process fact was missing.");
+  expect(generationStarted.afterSequence).toBeLessThan(processFrame.seq);
+  expect(generationReleased.afterSequence).toBeLessThan(finalOutcome.seq);
+  expect(generationReleased).toMatchObject({
+    kind: "generation-released",
+    generationId,
+    binding: {
+      provider: "codex",
+      sessionId: nativeIdentity.event.sessionId,
+      version: nativeIdentity.event.version,
+      turnId: nativeTurn.event.event.turnId,
+    },
+  });
+  expect(finalOutcome.event.event).toMatchObject({
+    kind: "outcome",
+    outcome: { phase: "completed" },
+  });
+  if (!isRecord(stored) || !Array.isArray(stored.codexChatOwnerLifecycle))
+    throw Error("The inert owned Chat lifecycle receipt was missing.");
+  const legacyState = structuredClone(stored);
+  if (!isRecord(legacyState)) throw Error("The legacy journal was invalid.");
+  delete legacyState.codexChatOwnerLifecycle;
+  expect(ownedCodingStateSchema.safeParse(legacyState).success).toBe(true);
+  const truncatedLifecycleFrames = structuredClone(stored);
+  if (
+    !isRecord(truncatedLifecycleFrames) ||
+    !Array.isArray(truncatedLifecycleFrames.frames)
+  )
+    throw Error("The lifecycle journal frames were invalid.");
+  truncatedLifecycleFrames.frames = truncatedLifecycleFrames.frames.filter(
+    (frame) =>
+      !isRecord(frame) ||
+      !isRecord(frame.event) ||
+      frame.event.kind !== "identity",
+  );
+  expect(
+    ownedCodingStateSchema.safeParse(truncatedLifecycleFrames).success,
+  ).toBe(false);
+  const mismatchedGeneration = structuredClone(stored);
+  if (
+    isRecord(mismatchedGeneration) &&
+    Array.isArray(mismatchedGeneration.codexChatOwnerLifecycle)
+  ) {
+    const released = mismatchedGeneration.codexChatOwnerLifecycle.find(
+      (fact) => isRecord(fact) && fact.kind === "generation-released",
+    );
+    if (isRecord(released)) released.generationId = randomUUID();
+  }
+  expect(ownedCodingStateSchema.safeParse(mismatchedGeneration).success).toBe(
+    false,
+  );
+  const mismatchedTurn = structuredClone(stored);
+  if (
+    isRecord(mismatchedTurn) &&
+    Array.isArray(mismatchedTurn.codexChatOwnerLifecycle)
+  ) {
+    const released = mismatchedTurn.codexChatOwnerLifecycle.find(
+      (fact) => isRecord(fact) && fact.kind === "generation-released",
+    );
+    if (isRecord(released) && isRecord(released.binding))
+      released.binding.turnId = randomUUID();
+  }
+  expect(ownedCodingStateSchema.safeParse(mismatchedTurn).success).toBe(false);
+  const duplicateFact = structuredClone(stored);
+  if (
+    isRecord(duplicateFact) &&
+    Array.isArray(duplicateFact.codexChatOwnerLifecycle)
+  )
+    duplicateFact.codexChatOwnerLifecycle.push(
+      structuredClone(duplicateFact.codexChatOwnerLifecycle[0]),
+    );
+  expect(ownedCodingStateSchema.safeParse(duplicateFact).success).toBe(false);
+  await service.close();
+  const reopened = f.open(),
+    publicPage = await reopened.read(f.project.id, started.session.id);
+  const lastFrame = frames.at(-1);
+  expect(lastFrame).toBeDefined();
+  if (!lastFrame) throw Error("The inert owned Chat journal was empty.");
+  expect(publicPage.lastSequence).toBe(lastFrame.seq);
+  expect(JSON.stringify(publicPage)).not.toContain(generationId);
+  const exported = createSessionLibrary({
+    root: f.root,
+    home: f.home,
+  }).exportTranscript(f.project.id, started.session.id);
+  expect(sessionTranscriptExportSchema.safeParse(exported).success).toBe(true);
+  expect(JSON.stringify(exported)).not.toContain(generationId);
+  expect(JSON.stringify(exported)).not.toContain("codexChatOwnerLifecycle");
+});
+
+test("pure owner release fold accepts the exact reopened completed ordinary Chat state", async () => {
+  const f = await fixture("normal"),
+    service = f.open(),
+    started = await service.start(f.project.id, f.request);
+  await service.settled(f.project.id, started.session.id);
+  const initialPage = await service.read(f.project.id, started.session.id),
+    secondRequestId = randomUUID();
+  await service.send(f.project.id, started.session.id, {
+    requestId: secondRequestId,
+    expectedRevision: initialPage.revision,
+    text: "A later ordinary Chat turn",
+    about: [],
+  });
+  await service.settled(f.project.id, started.session.id);
+
+  const owner = createSessionRegistry(f.home, "codex", "chat").read(
+      f.project.id,
+      started.session.id,
+    ),
+    address = {
+      kind: "session" as const,
+      projectId: f.project.id,
+      sessionId: started.session.id,
+    },
+    reopened = createConversationStore(f.home, undefined, address).read(
+      f.project.id,
+    ),
+    foldInput = {
+      owner,
+      state: reopened,
+      projectId: f.project.id,
+      conversationId: started.session.id,
+      workspaceKey: workspaceKey(resolveCheckout(f.root).workspace),
+    },
+    folded = foldCodexChatOwnerRelease(foldInput);
+
+  expect(ownedCodingStateSchema.safeParse(reopened).success).toBe(true);
+  expect(reopened.turns).toHaveLength(2);
+  expect(reopened.turns.at(-1)?.phase).toBe("completed");
+  expect(folded).toMatchObject({
+    eligible: true,
+    turnRequestId: secondRequestId,
+    binding: {
+      provider: "codex",
+      sessionId: expect.any(String),
+      version: expect.any(String),
+      turnId: expect.any(String),
+    },
+  });
+
+  const legacy = structuredClone(reopened);
+  delete legacy.codexChatOwnerLifecycle;
+  expect(foldCodexChatOwnerRelease({ ...foldInput, state: legacy })).toEqual({
+    eligible: false,
+    reason: "release-missing",
+  });
+
+  const missingRelease = structuredClone(reopened);
+  missingRelease.codexChatOwnerLifecycle =
+    missingRelease.codexChatOwnerLifecycle?.filter(
+      (fact) => fact.kind !== "generation-released",
+    );
+  expect(
+    foldCodexChatOwnerRelease({ ...foldInput, state: missingRelease }),
+  ).toEqual({ eligible: false, reason: "release-missing" });
+
+  const mismatchedGeneration = structuredClone(reopened),
+    mismatchedRelease = mismatchedGeneration.codexChatOwnerLifecycle?.find(
+      (fact) => fact.kind === "generation-released",
+    );
+  if (!mismatchedRelease)
+    throw Error("The reopened private release fact was missing.");
+  mismatchedRelease.generationId = randomUUID();
+  expect(ownedCodingStateSchema.safeParse(mismatchedGeneration).success).toBe(
+    false,
+  );
+  expect(
+    foldCodexChatOwnerRelease({
+      ...foldInput,
+      state: mismatchedGeneration,
+    }),
+  ).toEqual({ eligible: false, reason: "invalid-state" });
+
+  const mismatchedNativeIdentity = structuredClone(reopened),
+    identityFrame = mismatchedNativeIdentity.frames.find(
+      (frame) => frame.event.kind === "identity",
+    );
+  if (identityFrame?.event.kind !== "identity")
+    throw Error("The reopened native identity frame was missing.");
+  identityFrame.event.sessionId = randomUUID();
+  expect(
+    foldCodexChatOwnerRelease({
+      ...foldInput,
+      state: mismatchedNativeIdentity,
+    }),
+  ).toEqual({ eligible: false, reason: "invalid-state" });
+
+  const unknownTurn = structuredClone(reopened),
+    unknownLatest = unknownTurn.turns.at(-1);
+  if (!unknownLatest) throw Error("The owned Chat turn was missing.");
+  unknownLatest.phase = "unknown";
+  expect(
+    foldCodexChatOwnerRelease({ ...foldInput, state: unknownTurn }),
+  ).toEqual({ eligible: false, reason: "turn-incomplete" });
+
+  const stoppedTurn = structuredClone(reopened),
+    stoppedLatest = stoppedTurn.turns.at(-1);
+  if (!stoppedLatest) throw Error("The owned Chat turn was missing.");
+  stoppedLatest.phase = "cancelled";
+  expect(
+    foldCodexChatOwnerRelease({ ...foldInput, state: stoppedTurn }),
+  ).toEqual({ eligible: false, reason: "turn-incomplete" });
+
+  const tamperedTurnHash = structuredClone(reopened),
+    hashedLatest = tamperedTurnHash.turns.at(-1);
+  if (!hashedLatest) throw Error("The owned Chat turn was missing.");
+  hashedLatest.hash = "0".repeat(64);
+  expect(
+    foldCodexChatOwnerRelease({ ...foldInput, state: tamperedTurnHash }),
+  ).toEqual({ eligible: false, reason: "turn-mismatch" });
+
+  const timedOutOutcome = structuredClone(reopened),
+    latestNativeOutcome = timedOutOutcome.frames.find(
+      (frame) =>
+        frame.turnId === secondRequestId &&
+        frame.event.kind === "coding-chat" &&
+        frame.event.event.kind === "outcome",
+    );
+  if (
+    latestNativeOutcome?.event.kind !== "coding-chat" ||
+    latestNativeOutcome.event.event.kind !== "outcome"
+  )
+    throw Error("The completed native outcome was missing.");
+  latestNativeOutcome.event.event.outcome.timedOut = true;
+  expect(
+    foldCodexChatOwnerRelease({ ...foldInput, state: timedOutOutcome }),
+  ).toEqual({ eligible: false, reason: "invalid-state" });
+
+  const tamperedStartOwner = { ...owner, requestHash: "0".repeat(64) };
+  expect(
+    foldCodexChatOwnerRelease({ ...foldInput, owner: tamperedStartOwner }),
+  ).toEqual({ eligible: false, reason: "start-mismatch" });
+
+  const forkOwner = {
+    ...owner,
+    origin: {
+      kind: "codex-chat-fork" as const,
+      projectId: owner.projectId,
+      parentSessionId: randomUUID(),
+      throughTurnRequestId: f.request.requestId,
+      parentTurnHash: "a".repeat(64),
+      parentNativeThreadId: randomUUID(),
+      throughNativeTurnId: randomUUID(),
+      childNativeThreadId: randomUUID(),
+      captureHash: "b".repeat(64),
+      protocolVersion: "0.163.0-alpha.10.2" as const,
+    },
+  };
+  expect(foldCodexChatOwnerRelease({ ...foldInput, owner: forkOwner })).toEqual(
+    { eligible: false, reason: "invalid-owner" },
+  );
+
+  expect(
+    foldCodexChatOwnerRelease({
+      ...foldInput,
+      workspaceKey: `${foldInput.workspaceKey}-outside`,
+    }),
+  ).toEqual({ eligible: false, reason: "scope-mismatch" });
+
+  const laterSelection = structuredClone(reopened),
+    laterUser = laterSelection.frames.find(
+      (frame) =>
+        frame.turnId === secondRequestId && frame.event.kind === "user",
+    ),
+    laterTurn = laterSelection.turns.find(
+      (turn) => turn.requestId === secondRequestId,
+    );
+  if (
+    laterUser?.event.kind !== "user" ||
+    !("codexChat" in laterUser.event) ||
+    !laterUser.event.codexChat ||
+    !laterTurn
+  )
+    throw Error("The later ordinary Chat turn was missing.");
+  laterUser.event.codexChat.launch.model = "later-model-selection";
+  for (const frame of laterSelection.frames) {
+    if (
+      frame.turnId !== secondRequestId ||
+      frame.event.kind !== "coding-chat" ||
+      frame.event.provider !== "codex"
+    )
+      continue;
+    if (frame.event.event.kind === "process")
+      frame.event.event.requestedModel = "later-model-selection";
+    else if (frame.event.event.kind === "configuration")
+      frame.event.event.model = "later-model-selection";
+  }
+  laterTurn.hash = createHash("sha256")
+    .update(
+      JSON.stringify({
+        text: laterUser.event.text,
+        about: laterUser.event.about,
+        codexChat: laterUser.event.codexChat,
+      }),
+    )
+    .digest("hex");
+  expect(ownedCodingStateSchema.safeParse(laterSelection).success).toBe(true);
+  expect(
+    foldCodexChatOwnerRelease({ ...foldInput, state: laterSelection }),
+  ).toMatchObject({ eligible: true, turnRequestId: secondRequestId });
+});
+
+test("owner release fold accepts an authoritative native approval resolution without an app intent", async () => {
+  const f = await fixture("approval-resolved"),
+    service = f.open(),
+    started = await service.start(f.project.id, f.request);
+  await service.settled(f.project.id, started.session.id);
+
+  const state = createConversationStore(f.home, undefined, {
+      kind: "session",
+      projectId: f.project.id,
+      sessionId: started.session.id,
+    }).read(f.project.id),
+    frames = state.frames.flatMap((frame) =>
+      frame.event.kind === "coding-chat" && frame.event.provider === "codex"
+        ? [{ seq: frame.seq, event: frame.event.event }]
+        : [],
+    ),
+    requests = frames.filter(({ event }) => event.kind === "approval-request"),
+    decisions = frames.filter(
+      ({ event }) => event.kind === "approval-decision",
+    ),
+    resolutions = frames.filter(
+      ({ event }) => event.kind === "approval-resolved",
+    ),
+    folded = foldCodexChatOwnerRelease({
+      owner: createSessionRegistry(f.home, "codex", "chat").read(
+        f.project.id,
+        started.session.id,
+      ),
+      state,
+      projectId: f.project.id,
+      conversationId: started.session.id,
+      workspaceKey: workspaceKey(resolveCheckout(f.root).workspace),
+    });
+
+  expect(ownedCodingStateSchema.safeParse(state).success).toBe(true);
+  expect(state.turns.at(-1)?.phase).toBe("completed");
+  expect(requests).toHaveLength(1);
+  expect(decisions).toHaveLength(0);
+  expect(
+    state.frames.filter((frame) => frame.event.kind === "coding-chat-decision"),
+  ).toHaveLength(0);
+  expect(resolutions).toHaveLength(1);
+  const requested = requests[0]?.event,
+    resolved = resolutions[0]?.event;
+  if (
+    requested?.kind !== "approval-request" ||
+    resolved?.kind !== "approval-resolved"
+  )
+    throw Error("The inert native approval lifecycle was incomplete.");
+  expect(resolved.approvalId).toBe(requested.approval.id);
+  expect(resolved.source).toBe("serverRequest/resolved");
+  expect(folded.eligible).toBe(true);
+});
+
+test("owner release remains eligible when a persisted decision intent loses a race to authoritative native resolution", async () => {
+  const f = await fixture("approval-resolution-held"),
+    runtimeRun = f.runtime.run.bind(f.runtime);
+  let releaseCallback = () => {},
+    callbackReady = () => {};
+  const callbackReadyPromise = new Promise<void>((resolve) => {
+    callbackReady = resolve;
+  });
+  f.runtime.run = (input, persist, signal, callbacks) =>
+    runtimeRun(input, persist, signal, {
+      ...callbacks,
+      async requestApproval(approval, approvalSignal) {
+        const decision = await callbacks.requestApproval(
+          approval,
+          approvalSignal,
+        );
+        callbackReady();
+        await new Promise<void>((resolve) => {
+          releaseCallback = resolve;
+        });
+        return decision;
+      },
+    });
+  const service = f.open(),
+    started = await service.start(f.project.id, f.request),
+    sessionId = started.session.id,
+    deadline = Date.now() + 4000;
+  let pending = (await service.approvals(f.project.id, sessionId)).pending;
+  while (!pending.length) {
+    if (Date.now() > deadline)
+      throw Error("The native approval never became actionable.");
+    await Bun.sleep(20);
+    pending = (await service.approvals(f.project.id, sessionId)).pending;
+  }
+  const offered = pending[0];
+  if (!offered) throw Error("Missing live native approval.");
+  const receipt = await service.decide(f.project.id, sessionId, {
+    requestId: randomUUID(),
+    turnRequestId: offered.turnRequestId,
+    approvalId: offered.approval.id,
+    decision: "accept",
+  });
+  expect(receipt.state).toBe("recorded");
+  await callbackReadyPromise;
+
+  const address = {
+      kind: "session" as const,
+      projectId: f.project.id,
+      sessionId,
+    },
+    beforeResolution = createConversationStore(f.home, undefined, address).read(
+      f.project.id,
+    );
+  expect(
+    beforeResolution.frames.some(
+      (frame) => frame.event.kind === "coding-chat-decision",
+    ),
+  ).toBe(true);
+  expect(
+    beforeResolution.frames.find(
+      (frame) => frame.event.kind === "coding-chat-decision",
+    )?.event,
+  ).toMatchObject({ receipt });
+  expect(
+    beforeResolution.frames.some(
+      (frame) =>
+        frame.event.kind === "coding-chat" &&
+        frame.event.event.kind === "approval-decision",
+    ),
+  ).toBe(false);
+  writeFileSync(`${join(f.root, "record.jsonl")}.resolve-approval`, "release");
+  const resolutionDeadline = Date.now() + 4000;
+  let resolvedState = createConversationStore(f.home, undefined, address).read(
+    f.project.id,
+  );
+  while (
+    f.records().every((row) => row.kind !== "approval-resolution-sent") ||
+    !resolvedState.frames.some(
+      (frame) =>
+        frame.event.kind === "coding-chat" &&
+        frame.event.event.kind === "approval-resolved",
+    )
+  ) {
+    if (Date.now() > resolutionDeadline)
+      throw Error("The native approval resolution did not settle.");
+    await Bun.sleep(10);
+    resolvedState = createConversationStore(f.home, undefined, address).read(
+      f.project.id,
+    );
+  }
+  releaseCallback();
+  await service.settled(f.project.id, sessionId);
+
+  const state = createConversationStore(f.home, undefined, address).read(
+      f.project.id,
+    ),
+    folded = foldCodexChatOwnerRelease({
+      owner: createSessionRegistry(f.home, "codex", "chat").read(
+        f.project.id,
+        sessionId,
+      ),
+      state,
+      projectId: f.project.id,
+      conversationId: sessionId,
+      workspaceKey: workspaceKey(resolveCheckout(f.root).workspace),
+    });
+  expect(ownedCodingStateSchema.safeParse(state).success).toBe(true);
+  expect(state.turns.at(-1)?.phase).toBe("completed");
+  expect(
+    state.frames.filter((frame) => frame.event.kind === "coding-chat-decision"),
+  ).toHaveLength(1);
+  expect(
+    state.frames.filter(
+      (frame) =>
+        frame.event.kind === "coding-chat" &&
+        frame.event.event.kind === "approval-request",
+    ),
+  ).toHaveLength(1);
+  expect(
+    state.frames.filter(
+      (frame) =>
+        frame.event.kind === "coding-chat" &&
+        frame.event.event.kind === "approval-resolved",
+    ),
+  ).toHaveLength(1);
+  expect(
+    state.frames.filter(
+      (frame) =>
+        frame.event.kind === "coding-chat" &&
+        frame.event.event.kind === "approval-decision",
+    ),
+  ).toHaveLength(0);
+  expect(folded.eligible).toBe(true);
+});
+
+test("owned Chat transport refuses native dispatch when the generation-start receipt cannot be written", async () => {
+  const f = await fixture(),
+    { effort, attachments, ...launchWithoutOptionalValues } = f.request.launch,
+    prepared = await f.runtime.prepare({
+      smith: f.request.smith,
+      launch: {
+        ...launchWithoutOptionalValues,
+        ...(effort === undefined ? {} : { effort }),
+        ...(attachments === undefined ? {} : { attachments }),
+        cwd: f.root,
+        context: {
+          projectId: f.project.id,
+          repository: f.root,
+          worktree: f.root,
+          about: [],
+        },
+      },
+    }),
+    broker = createCodexChatApprovalBroker({ readIntents: () => [] }),
+    transport = createCodexChatOwnedTransport(f.runtime, broker, {
+      projectId: f.project.id,
+      sessionId: randomUUID(),
+    });
+  let runtimeCalls = 0;
+  const run = f.runtime.run.bind(f.runtime);
+  f.runtime.run = async (...args) => {
+    runtimeCalls++;
+    return run(...args);
+  };
+
+  await expect(
+    transport.run(
+      {
+        project: f.project,
+        root: f.root,
+        input: {
+          requestId: randomUUID(),
+          expectedRevision: 0,
+          text: prepared.launch.prompt,
+          about: [],
+          codexChat: prepared,
+        },
+        resume: null,
+        ownerLifecycle: {
+          async started() {
+            throw Error("The private generation receipt was refused.");
+          },
+          async released() {},
+        },
+      },
+      async () => {},
+      new AbortController().signal,
+    ),
+  ).rejects.toThrow("private generation receipt");
+  expect(runtimeCalls).toBe(0);
+  expect(
+    f.records().filter((record) => record.method === "thread/start"),
+  ).toHaveLength(0);
+});
+
+test("a refused physical-release receipt keeps an otherwise completed Chat turn unknown", async () => {
+  const f = await fixture(),
+    runtimeRun = f.runtime.run.bind(f.runtime);
+  f.runtime.run = async (input, persist, signal, callbacks) =>
+    runtimeRun(input, persist, signal, {
+      ...callbacks,
+      async onOwnedTreeReleased() {
+        throw Error("The private release receipt was refused.");
+      },
+    });
+
+  const service = f.open(),
+    started = await service.start(f.project.id, f.request);
+  await service.settled(f.project.id, started.session.id);
+  const address = {
+      kind: "session" as const,
+      projectId: f.project.id,
+      sessionId: started.session.id,
+    },
+    state = createConversationStore(f.home, undefined, address).read(
+      f.project.id,
+    ),
+    lifecycle = state.codexChatOwnerLifecycle ?? [];
+  expect(state.turns[0]?.phase).toBe("unknown");
+  expect(lifecycle.map((fact) => fact.kind)).toEqual(["generation-started"]);
+  expect(
+    state.frames.some(
+      (frame) =>
+        frame.event.kind === "coding-chat" &&
+        frame.event.event.kind === "outcome" &&
+        frame.event.event.outcome.phase === "unknown",
+    ),
+  ).toBe(true);
+  expect(
+    foldCodexChatOwnerRelease({
+      owner: createSessionRegistry(f.home, "codex", "chat").read(
+        f.project.id,
+        started.session.id,
+      ),
+      state,
+      projectId: f.project.id,
+      conversationId: started.session.id,
+      workspaceKey: workspaceKey(resolveCheckout(f.root).workspace),
+    }).eligible,
+  ).toBe(false);
+});
+
+test("a release write that completes after persistence expiry cannot settle an unknown turn", async () => {
+  const f = await fixture("normal", 5000, 30),
+    runtimeRun = f.runtime.run.bind(f.runtime);
+  let releaseEntered!: () => void,
+    allowLateRelease!: () => void,
+    lateRelease: Promise<void> | undefined;
+  const entered = new Promise<void>((resolve) => {
+    releaseEntered = resolve;
+  });
+  f.runtime.run = async (input, persist, signal, callbacks) =>
+    runtimeRun(input, persist, signal, {
+      ...callbacks,
+      async onOwnedTreeReleased(binding) {
+        releaseEntered();
+        const gate = new Promise<void>((resolve) => {
+          allowLateRelease = resolve;
+        });
+        lateRelease = gate.then(() => callbacks.onOwnedTreeReleased?.(binding));
+        return lateRelease;
+      },
+    });
+
+  const service = f.open(),
+    started = await service.start(f.project.id, f.request),
+    address = {
+      kind: "session" as const,
+      projectId: f.project.id,
+      sessionId: started.session.id,
+    },
+    store = createConversationStore(f.home, undefined, address);
+  await entered;
+  await service.settled(f.project.id, started.session.id);
+  const beforeLateWrite = store.read(f.project.id);
+  expect(beforeLateWrite.turns[0]?.phase).toBe("unknown");
+  expect(
+    beforeLateWrite.codexChatOwnerLifecycle?.filter(
+      (fact) => fact.kind === "generation-released",
+    ),
+  ).toEqual([]);
+
+  if (!allowLateRelease || !lateRelease)
+    throw Error("The delayed private release write was not prepared.");
+  allowLateRelease();
+  await expect(lateRelease).rejects.toThrow();
+  const afterLateWrite = store.read(f.project.id);
+  expect(afterLateWrite.turns[0]?.phase).toBe("unknown");
+  expect(
+    afterLateWrite.codexChatOwnerLifecycle?.filter(
+      (fact) => fact.kind === "generation-released",
+    ),
+  ).toEqual([]);
+  expect(
+    foldCodexChatOwnerRelease({
+      owner: createSessionRegistry(f.home, "codex", "chat").read(
+        f.project.id,
+        started.session.id,
+      ),
+      state: afterLateWrite,
+      projectId: f.project.id,
+      conversationId: started.session.id,
+      workspaceKey: workspaceKey(resolveCheckout(f.root).workspace),
+    }),
+  ).toMatchObject({ eligible: false, reason: "turn-incomplete" });
 });
 
 const heldSummaryUpdates: CodexChatReasoningSummary["update"][] = [
@@ -930,11 +1717,13 @@ test("actual native mutable turn plans stay exact through private whole and part
     before = readFileSync(path),
     registry = readFileSync(sessionRegistryFile(f.home));
   expect(ownedCodingStateSchema.safeParse(state).success).toBe(true);
-  for (const missing of ["user", "process", "native-turn"])
+  for (const missing of ["user", "process", "native-turn"]) {
+    const legacy = structuredClone(state);
+    delete legacy.codexChatOwnerLifecycle;
     expect(
       ownedCodingStateSchema.safeParse({
-        ...state,
-        frames: state.frames.filter((frame) =>
+        ...legacy,
+        frames: legacy.frames.filter((frame) =>
           missing === "native-turn"
             ? frame.event.kind !== "coding-chat" ||
               frame.event.event.kind !== "turn"
@@ -942,10 +1731,13 @@ test("actual native mutable turn plans stay exact through private whole and part
         ),
       }).success,
     ).toBe(false);
+  }
+  const legacyPlanState = structuredClone(state);
+  delete legacyPlanState.codexChatOwnerLifecycle;
   expect(
     ownedCodingStateSchema.safeParse({
-      ...state,
-      frames: state.frames.filter(
+      ...legacyPlanState,
+      frames: legacyPlanState.frames.filter(
         (frame) => !plans.some((plan) => plan.seq === frame.seq),
       ),
     }).success,
@@ -1245,11 +2037,13 @@ test("actual explicit native summaries preserve private indexed facts and a shar
   expect(ownedCodingStateSchema.safeParse(state).success).toBe(true);
   // Older saved turns have no additive summaries, or no final-turn summary.
   // Their immutable user/command/outcome history remains valid unchanged.
-  for (const omitAll of [true, false])
+  for (const omitAll of [true, false]) {
+    const legacy = structuredClone(state);
+    delete legacy.codexChatOwnerLifecycle;
     expect(
       ownedCodingStateSchema.safeParse({
-        ...state,
-        frames: state.frames.filter(
+        ...legacy,
+        frames: legacy.frames.filter(
           (frame) =>
             frame.event.kind !== "coding-chat" ||
             frame.event.event.kind !== "reasoning-summary" ||
@@ -1257,6 +2051,7 @@ test("actual explicit native summaries preserve private indexed facts and a shar
         ),
       }).success,
     ).toBe(true);
+  }
   for (const conflict of [false, true]) {
     const altered = structuredClone(state),
       index = altered.frames.findIndex(
@@ -1892,12 +2687,16 @@ test("actual native command history stays exact across protected partial reads, 
     Object.assign(target.event.event, change);
     expect(ownedCodingStateSchema.safeParse(altered).success).toBe(false);
   }
-  const beforeCommand = state.frames.filter(
+  const legacyState = structuredClone(state);
+  delete legacyState.codexChatOwnerLifecycle;
+  const beforeCommand = legacyState.frames.filter(
     (frame) => frame.seq < firstCommand.seq,
   );
   expect(
-    ownedCodingStateSchema.safeParse({ ...state, frames: beforeCommand })
-      .success,
+    ownedCodingStateSchema.safeParse({
+      ...legacyState,
+      frames: beforeCommand,
+    }).success,
   ).toBe(true);
   expect(
     ownedCodingStateSchema.safeParse({
@@ -2320,6 +3119,28 @@ test.each([
   }
   const pending = (await service.approvals(f.project.id, sessionId)).pending[0];
   if (!pending) throw Error("Missing live native callback");
+  const pendingAddress = {
+      kind: "session" as const,
+      projectId: f.project.id,
+      sessionId,
+    },
+    pendingState = createConversationStore(
+      f.home,
+      undefined,
+      pendingAddress,
+    ).read(f.project.id);
+  expect(
+    foldCodexChatOwnerRelease({
+      owner: createSessionRegistry(f.home, "codex", "chat").read(
+        f.project.id,
+        sessionId,
+      ),
+      state: pendingState,
+      projectId: f.project.id,
+      conversationId: sessionId,
+      workspaceKey: workspaceKey(resolveCheckout(f.root).workspace),
+    }).eligible,
+  ).toBe(false);
   const request = {
     requestId: randomUUID(),
     turnRequestId: pending.turnRequestId,
@@ -2347,6 +3168,23 @@ test.each([
   const answers = f.records().filter((row) => row.kind === "answer");
   expect(answers).toHaveLength(1);
   expect(answers[0]?.result).toEqual({ decision });
+  const completedState = createConversationStore(
+    f.home,
+    undefined,
+    pendingAddress,
+  ).read(f.project.id);
+  expect(
+    foldCodexChatOwnerRelease({
+      owner: createSessionRegistry(f.home, "codex", "chat").read(
+        f.project.id,
+        sessionId,
+      ),
+      state: completedState,
+      projectId: f.project.id,
+      conversationId: sessionId,
+      workspaceKey: workspaceKey(resolveCheckout(f.root).workspace),
+    }).eligible,
+  ).toBe(decision !== "cancel");
   await service.close();
   service = f.open();
   expect(await service.decide(f.project.id, sessionId, request)).toEqual(

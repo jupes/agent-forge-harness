@@ -32,6 +32,8 @@ export interface ConversationTransport {
             reasoningEffort: string | null;
           }
         | undefined;
+      /** Private app-owned ordinary Chat receipt sink; never sent to the provider. */
+      ownerLifecycle?: CodexChatOwnerLifecycleSink | undefined;
       smith?: string | undefined;
     },
     persist: (
@@ -42,6 +44,19 @@ export interface ConversationTransport {
     phase: "completed" | "failed" | "unknown";
     reason: string | null;
   }>;
+}
+
+export interface CodexChatOwnerLifecycleSink {
+  started(generationId: string): Promise<void>;
+  released(
+    generationId: string,
+    binding: {
+      provider: "codex";
+      sessionId: string;
+      version: string;
+      turnId: string;
+    },
+  ): Promise<void>;
 }
 
 /** Safe to project to the ledger: no prompt, reply, read output or provider error. */

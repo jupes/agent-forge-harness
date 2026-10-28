@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { linkSync, lstatSync, unlinkSync } from "node:fs";
 import type {
+  CodexChatOwnerLifecycleFact,
   ConversationEvent,
   ConversationReceipt,
   ConversationState,
@@ -31,6 +32,7 @@ import {
 
 import {
   eventSchema,
+  isConversationRequestId,
   parsePreparedConversationSend,
   stateSchema,
 } from "./protocol";
@@ -535,6 +537,158 @@ export function createConversationStore(
           at,
           event: parsed.data,
         });
+      });
+    },
+    /** Private application fact; never a provider frame or public conversation event. */
+    async recordCodexChatOwnerGenerationStarted(
+      projectId: string,
+      requestId: string,
+      owner: string,
+      generationId: string,
+      isCurrent?: () => boolean,
+    ) {
+      if (
+        !address ||
+        address.kind !== "session" ||
+        address.projectId !== projectId ||
+        !isConversationRequestId(requestId) ||
+        !isConversationRequestId(generationId)
+      )
+        throw new ConversationError(400, "Expected an owned Chat generation.");
+      return change(projectId, (state) => {
+        assertCurrentOwner(isCurrent);
+        const selected = state.turns.find(
+            (item) => item.requestId === requestId,
+          ),
+          original = state.frames.find(
+            (item) =>
+              item.turnId === requestId &&
+              item.event.kind === "user" &&
+              item.event.codexChat !== undefined,
+          )?.event;
+        if (
+          !selected ||
+          !["running", "cancelling"].includes(selected.phase) ||
+          selected.owner !== owner ||
+          original?.kind !== "user" ||
+          original.codexChat?.launch.mode !== "chat"
+        )
+          throw new ConversationError(
+            409,
+            "The private Chat generation no longer owns an ordinary active turn.",
+          );
+        const facts = state.codexChatOwnerLifecycle ?? [];
+        if (
+          facts.length >= 2000 ||
+          facts.some(
+            (fact) =>
+              fact.requestId === requestId ||
+              fact.generationId === generationId,
+          )
+        )
+          throw new ConversationError(
+            409,
+            "The private Chat generation identity is already recorded.",
+          );
+        const fact: CodexChatOwnerLifecycleFact = {
+          kind: "generation-started",
+          requestId,
+          generationId,
+          afterSequence: state.frames.length,
+          revision: state.revision + 1,
+        };
+        state.codexChatOwnerLifecycle = [...facts, fact];
+      });
+    },
+    /** Positive supervisor release is bound to the exact persisted native thread and turn. */
+    async recordCodexChatOwnerGenerationReleased(
+      projectId: string,
+      requestId: string,
+      owner: string,
+      generationId: string,
+      binding: {
+        provider: "codex";
+        sessionId: string;
+        version: string;
+        turnId: string;
+      },
+      isCurrent?: () => boolean,
+    ) {
+      if (
+        !address ||
+        address.kind !== "session" ||
+        address.projectId !== projectId ||
+        !isConversationRequestId(requestId) ||
+        !isConversationRequestId(generationId) ||
+        !isConversationRequestId(binding.sessionId) ||
+        !isConversationRequestId(binding.turnId) ||
+        !binding.version.trim() ||
+        binding.version.length > 100
+      )
+        throw new ConversationError(400, "Expected a bound Chat release.");
+      return change(projectId, (state) => {
+        assertCurrentOwner(isCurrent);
+        const selected = state.turns.find(
+            (item) => item.requestId === requestId,
+          ),
+          facts = state.codexChatOwnerLifecycle ?? [],
+          begun = facts.find(
+            (fact) =>
+              fact.kind === "generation-started" &&
+              fact.requestId === requestId,
+          ),
+          alreadyReleased = facts.some(
+            (fact) =>
+              fact.kind === "generation-released" &&
+              fact.requestId === requestId,
+          ),
+          identity = state.frames.find(
+            (frame) =>
+              frame.turnId === requestId && frame.event.kind === "identity",
+          )?.event,
+          nativeTurn = state.frames.find(
+            (frame) =>
+              frame.turnId === requestId &&
+              frame.event.kind === "coding-chat" &&
+              frame.event.event.kind === "turn",
+          )?.event;
+        if (
+          !selected ||
+          !["running", "cancelling"].includes(selected.phase) ||
+          selected.owner !== owner ||
+          !begun ||
+          begun.generationId !== generationId ||
+          alreadyReleased ||
+          state.binding?.provider !== "codex" ||
+          state.binding.sessionId !== binding.sessionId ||
+          state.binding.version !== binding.version ||
+          identity?.kind !== "identity" ||
+          identity.provider !== "codex" ||
+          identity.sessionId !== binding.sessionId ||
+          identity.version !== binding.version ||
+          nativeTurn?.kind !== "coding-chat" ||
+          nativeTurn.event.kind !== "turn" ||
+          nativeTurn.event.threadId !== binding.sessionId ||
+          nativeTurn.event.turnId !== binding.turnId
+        )
+          throw new ConversationError(
+            409,
+            "The private Chat release does not match its active native turn.",
+          );
+        if (facts.length >= 2000)
+          throw new ConversationError(
+            503,
+            "The private Chat lifecycle journal is full.",
+          );
+        const fact: CodexChatOwnerLifecycleFact = {
+          kind: "generation-released",
+          requestId,
+          generationId,
+          afterSequence: state.frames.length,
+          revision: state.revision + 1,
+          binding,
+        };
+        state.codexChatOwnerLifecycle = [...facts, fact];
       });
     },
     async requestStop(projectId: string, requestId: string) {

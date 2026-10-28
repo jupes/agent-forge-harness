@@ -1523,6 +1523,7 @@ while (true) {
           });
       } else if (
         mode?.startsWith("approval-command") ||
+        mode === "approval-resolution-held" ||
         mode === "fork-approval-command" ||
         (mode === "fork-service-tier-null-child-approval" &&
           resuming &&
@@ -1587,7 +1588,21 @@ while (true) {
             ...request,
             params: { ...request.params, command: "different intent" },
           });
-        if (mode === "approval-resolved" || mode === "approval-stale") {
+        if (mode === "approval-resolution-held") {
+          record({ kind: "approval-resolution-held" });
+          const releasePath = `${log ?? ""}.resolve-approval`,
+            deadline = Date.now() + 5000;
+          while (!log || !existsSync(releasePath)) {
+            if (Date.now() > deadline) process.exit(14);
+            await Bun.sleep(5);
+          }
+          await send({
+            method: "serverRequest/resolved",
+            params: { threadId, requestId: 1 },
+          });
+          record({ kind: "approval-resolution-sent" });
+          await finish();
+        } else if (mode === "approval-resolved" || mode === "approval-stale") {
           await send({
             method: "serverRequest/resolved",
             params: { threadId, requestId: 1 },

@@ -51,7 +51,11 @@ import {
   interruptedConversation,
   parseConversationSend,
 } from "./store";
-import type { ConversationTransport, ConversationUpdate } from "./transport";
+import type {
+  CodexChatOwnerLifecycleSink,
+  ConversationTransport,
+  ConversationUpdate,
+} from "./transport";
 
 export type { ConversationPage } from "../../types/conversation";
 
@@ -64,6 +68,12 @@ interface ConversationOptions {
   home: string;
   root: string;
   transport: ConversationTransport;
+  /** Trusted receipt writer is provided only by the ordinary owned Codex Chat service. */
+  ownerLifecycle?: (input: {
+    projectId: string;
+    requestId: string;
+    owner: string;
+  }) => CodexChatOwnerLifecycleSink;
   keeperRuntime?: KeeperRuntime | undefined;
   validateAbout?: ValidateConversationAbout | undefined;
   prepareBrief?:
@@ -956,6 +966,17 @@ export function createConversationService(options: ConversationOptions) {
                     : turnInput,
                   resume: state.binding,
                   ...(codexResumeSettings ? { codexResumeSettings } : {}),
+                  ...(options.ownerLifecycle &&
+                  selected.transport.provider === "codex" &&
+                  !forkChildTurn
+                    ? {
+                        ownerLifecycle: options.ownerLifecycle({
+                          projectId,
+                          requestId: input.requestId,
+                          owner,
+                        }),
+                      }
+                    : {}),
                   ...(selected.smith ? { smith: selected.smith.name } : {}),
                 },
                 async (event) => {
