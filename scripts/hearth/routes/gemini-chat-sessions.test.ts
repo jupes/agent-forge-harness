@@ -25,6 +25,8 @@ import { startTestHearth, type TestHearth } from "../testing";
 import { writeOwnerOnly } from "../token";
 import {
   emitGeminiChatWitnessFailureFactsAndRethrow,
+  projectGeminiChatFailureFacts,
+  type RuntimeProjection,
   readGeminiChatWitnessLog,
 } from "./gemini-chat-witness-diagnostic.test-utils";
 import { fixtureSessionGit } from "./session-fixture";
@@ -371,22 +373,29 @@ async function geminiChatWitnessFailureFacts(
     phase: string;
     reason: "none" | "present" | "no-turn" | "invalid";
   } = { read: originalRead.state, phase: "unavailable", reason: "no-turn" };
+  let runtime: RuntimeProjection = {
+    processRecord: "not-in-page",
+    outcome: "not-in-page",
+    phase: "not-observed",
+    exitCode: null,
+    stopped: null,
+    timedOut: null,
+    nativeError: "not-observed" as const,
+    nativeResult: "not-observed" as const,
+  };
   if (originalRead.state === "ok") {
     const parsed = ownedCodingPageSchema.safeParse(originalRead.data);
     if (!parsed.success)
       original = { read: "invalid", phase: "unknown", reason: "invalid" };
     else {
-      const turn =
-        parsed.data.request?.requestId === f.request.requestId
-          ? parsed.data.request
-          : (parsed.data.turns.find(
-              (item) => item.requestId === f.request.requestId,
-            ) ?? null);
+      const projection = projectGeminiChatFailureFacts(
+        parsed.data,
+        f.request.requestId,
+      );
+      runtime = projection.runtime;
       original = {
         read: "ok",
-        phase: turn?.phase ?? "unknown",
-        reason:
-          turn === null ? "no-turn" : turn.reason === null ? "none" : "present",
+        ...projection.original,
       };
     }
   }
@@ -424,7 +433,7 @@ async function geminiChatWitnessFailureFacts(
   return {
     log,
     runtimeCall: f.runtimeRunState(),
-    ownedProcess: "unavailable" as const,
+    runtime,
     identity,
     original,
   };

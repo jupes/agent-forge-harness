@@ -560,6 +560,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     ownedSessions.forkOriginal,
     ownedSessions.forkSourceReview,
     ownedSessions.forkOriginalContext,
+    ownedSessions.ownerRelease,
     ownedSessions.list,
     ownedSessions.read,
     ownedSessions.forkTurnRead,

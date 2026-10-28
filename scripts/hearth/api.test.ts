@@ -1,6 +1,6 @@
 import { Database } from "bun:sqlite";
 import { afterEach, describe, expect, spyOn, test } from "bun:test";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
@@ -10,6 +10,7 @@ import {
   symlinkSync,
   writeFileSync,
 } from "node:fs";
+import type { IncomingMessage, ServerResponse } from "node:http";
 import { connect } from "node:net";
 import { join, resolve } from "node:path";
 import type { WorktreeEntry } from "../../types/beads";
@@ -60,6 +61,7 @@ import {
   type PreparedConfigTransaction,
   readConfigTransactionSources,
 } from "../config/transaction";
+import { conversationFile } from "../conversations/paths";
 import { createConversationStore } from "../conversations/store";
 import { runCouncilCli } from "../council/cli";
 import type { CommandResult, CommandRunner } from "../council/pr-source";
@@ -95,6 +97,7 @@ import {
   codexChatForkOriginalHash,
   codexChatForkOriginalHashInput,
 } from "../sessions/codex-chat-fork-protocol";
+import { createCodexChatRuntime } from "../sessions/codex-chat-runtime";
 import { ownedCodingPageSchema } from "../sessions/codex-owned-journal";
 import { canonicalOwnedSessionStart } from "../sessions/codex-owned-protocol";
 import {
@@ -102,14 +105,24 @@ import {
   sessionStartIdentityReplySchema,
 } from "../sessions/identity-protocol";
 import { sessionLibraryReadSchema } from "../sessions/library-protocol";
+import { unavailableCodexChatRuntime } from "../sessions/owned-coding-service";
 import { canonicalSessionInput } from "../sessions/preparation";
 import { sessionPreviewReceiptSchema } from "../sessions/protocol";
-import { createSessionRegistry } from "../sessions/registry";
+import {
+  createSessionRegistry,
+  sessionRegistryFile,
+} from "../sessions/registry";
 import { APPRENTICE_VERIFICATION } from "../smith-verification";
-import type { ActionContext, ActionRoute, ApiRoute } from "./api";
+import {
+  type ActionContext,
+  type ActionRoute,
+  type ApiRoute,
+  createOperatorApi,
+} from "./api";
 import { sessionsPath, tokenPath } from "./home";
 import { createSessionStore, sessionCookieName } from "./launch";
 import {
+  API_PREFIX,
   HEALTH_ROUTE,
   OPERATOR_HEADER,
   SESSION_KEY_HEADER,
@@ -152,6 +165,7 @@ import {
   seedProjectShift,
   seedProjectShiftAttempt,
 } from "./routes/project-shift-fixture";
+import { projectSnapshotReader } from "./routes/project-summaries";
 import {
   FIXTURE_OWNED_SESSION_ID,
   FIXTURE_OWNED_STOP_ID,
@@ -159,6 +173,7 @@ import {
   FIXTURE_SESSION_SEND,
   FIXTURE_SESSION_START,
   FIXTURE_SESSION_STOP,
+  fakeSessionRuntime,
   fixtureSessionGit,
   seedOwnedSession,
   sessionStartFixture,
@@ -169,6 +184,7 @@ import {
   seedSessionWorktreeFixture,
   sessionWorktreeFixtureRequest,
 } from "./routes/session-worktree-fixture";
+import { createOwnedSessionRoutes } from "./routes/sessions";
 import {
   startTestHearth,
   type TestHearth,
@@ -3085,6 +3101,7 @@ const READS: Record<string, string> = {
   "GET /projects/:id/activity": `/projects/${FIXTURE_PROJECT_ID}/activity`,
   "GET /projects/:id/activity/:eventId": `/projects/${FIXTURE_PROJECT_ID}/activity/1`,
   "GET /projects/:id/sessions/:sessionId": `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_OWNED_SESSION_ID}`,
+  "GET /projects/:id/sessions/:sessionId/owner-release": `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_CHAT_SESSION}/owner-release`,
   "GET /projects/:id/sessions/:sessionId/fork-turns": `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_CODEX_CHAT_FORK_CONTROL_CHILD_ID}/fork-turns`,
   "GET /projects/:id/sessions/:sessionId/fork-review": `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_CODEX_CHAT_FORK_SOURCE.sessionId}/fork-review?throughTurnRequestId=${API_CODEX_CHAT_FORK_SOURCE.turnRequestId}`,
   "GET /projects/:id/sessions/:sessionId/fork-approvals": `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_CODEX_CHAT_FORK_CONTROL_CHILD_ID}/fork-approvals`,
@@ -6634,4 +6651,429 @@ describe("a bead as the source of a council run started through the hearth", () 
       ],
     ]);
   });
+});
+
+test("the protected owner-release read reports an ordinary Chat receipt without effects", async () => {
+  let liveRuntime: ReturnType<typeof createCodexChatRuntime> | undefined,
+    prepareCalls = 0,
+    runCalls = 0;
+  const runtime = new Proxy({} as ReturnType<typeof createCodexChatRuntime>, {
+    get(_target, key) {
+      if (!liveRuntime) return undefined;
+      const member: unknown = Reflect.get(liveRuntime, key);
+      if (typeof member !== "function") return member;
+      return (...args: unknown[]) => {
+        if (key === "prepare") prepareCalls++;
+        if (key === "run") runCalls++;
+        return Reflect.apply(member, liveRuntime, args);
+      };
+    },
+  });
+  const h = await start({
+    api: { codexChatRuntime: runtime, git: fixtureSessionGit },
+  });
+  liveRuntime = createCodexChatRuntime({
+    root: h.root,
+    home: h.home,
+    configHome: h.configHome,
+    command: [
+      process.execPath,
+      join(import.meta.dir, "../sessions/fixtures/codex-app-server-cli.ts"),
+    ],
+    syncCommand: [
+      process.execPath,
+      join(import.meta.dir, "../sessions/fixtures/codex-app-server-cli.ts"),
+      "--sync",
+    ],
+    environment: {
+      ...process.env,
+      CODEX_CHAT_MODE: "normal",
+      CODEX_CHAT_LOG: join(h.root, "owner-release-api.jsonl"),
+    },
+    timeoutMs: 5000,
+    rpcTimeoutMs: 5000,
+    approvalTimeoutMs: 3000,
+  });
+
+  const requestId = randomUUID(),
+    startRequest = {
+      provider: "codex",
+      requestId,
+      smith: "codex-journeyman",
+      repository: h.workspace,
+      worktree: h.workspace,
+      launch: {
+        mode: "chat",
+        model: "exact-model",
+        sandbox: "read-only",
+        approvalPolicy: "never",
+        prompt: "Private inert owner-release projection request",
+      },
+    };
+  const accepted = await post(
+    h,
+    `/projects/${FIXTURE_PROJECT_ID}/sessions`,
+    startRequest,
+  );
+  expect(accepted.status).toBe(202);
+
+  const registry = createSessionRegistry(h.home, "codex", "chat"),
+    deadline = Date.now() + 5000;
+  let owner = registry
+    .list(FIXTURE_PROJECT_ID)
+    .find((record) => record.requestId === requestId);
+  while (!owner) {
+    if (Date.now() >= deadline)
+      throw Error("The inert Codex Chat owner was not registered.");
+    await Bun.sleep(10);
+    owner = registry
+      .list(FIXTURE_PROJECT_ID)
+      .find((record) => record.requestId === requestId);
+  }
+  const address = {
+      kind: "session" as const,
+      projectId: FIXTURE_PROJECT_ID,
+      sessionId: owner.id,
+    },
+    store = createConversationStore(h.home, undefined, address);
+  let state = store.read(FIXTURE_PROJECT_ID);
+  while (state.turns.at(-1)?.phase !== "completed") {
+    if (Date.now() >= deadline)
+      throw Error("The inert owner-release Chat turn did not complete.");
+    await Bun.sleep(10);
+    state = store.read(FIXTURE_PROJECT_ID);
+  }
+  const generationId = state.codexChatOwnerLifecycle?.find(
+    (fact) => fact.kind === "generation-started",
+  )?.generationId;
+  if (!generationId)
+    throw Error("The inert owner-release receipt was not persisted.");
+  const beforeRevision = state.revision,
+    beforeFrameCount = state.frames.length,
+    beforeEvents = h.events().length,
+    beforeRuntimeCalls = { prepareCalls, runCalls };
+
+  const response = await get(
+    h,
+    `/projects/${FIXTURE_PROJECT_ID}/sessions/${owner.id}/owner-release`,
+    h.headers(h.hearth.token),
+  );
+  expect(response.status).toBe(200);
+  const result = await envelope<Record<string, unknown>>(response);
+  const projection = result.data;
+  if (!projection) throw Error("The owner-release projection was empty.");
+  expect(projection).toMatchObject({ state: "eligible", reason: null });
+  expect(Object.keys(projection).sort()).toEqual(["reason", "state"]);
+  expect(JSON.stringify(projection)).not.toContain(generationId);
+  expect(JSON.stringify(projection)).not.toContain(startRequest.launch.prompt);
+  const wrongMethod = await fetch(
+    `${h.api}/projects/${FIXTURE_PROJECT_ID}/sessions/${owner.id}/owner-release`,
+    {
+      method: "POST",
+      headers: h.headers(h.hearth.token),
+      body: "{}",
+    },
+  );
+  expect(wrongMethod.status).toBe(405);
+  expect(wrongMethod.headers.get("allow")).toBe("GET");
+  await wrongMethod.body?.cancel();
+  const afterState = store.read(FIXTURE_PROJECT_ID);
+  expect({
+    revision: afterState.revision,
+    frameCount: afterState.frames.length,
+  }).toEqual({
+    revision: beforeRevision,
+    frameCount: beforeFrameCount,
+  });
+  expect(h.events()).toHaveLength(beforeEvents);
+  expect({ prepareCalls, runCalls }).toEqual(beforeRuntimeCalls);
+
+  const conversationPath = conversationFile(
+      h.home,
+      FIXTURE_PROJECT_ID,
+      address,
+    ),
+    registryPath = sessionRegistryFile(h.home),
+    catalogPath = projectCatalogPath(h.home),
+    beforeConversationBytes = readFileSync(conversationPath),
+    beforeRegistryBytes = readFileSync(registryPath),
+    beforeCatalogBytes = readFileSync(catalogPath);
+  let auditCalls = 0;
+  let currentGit: GitRun = fixtureSessionGit;
+  const freshDeps = {
+    root: h.root,
+    workspace: h.workspace,
+    ledgerPath: h.ledger,
+    runBd: (args: string[], options?: { timeoutMs?: number }) =>
+      h.bd.run(args, options),
+    git: (args: readonly string[], cwd: string) => currentGit(args, cwd),
+    appendEvent: () => {
+      auditCalls++;
+      return {
+        ok: true as const,
+        id: 1,
+        ulid: "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+      };
+    },
+  };
+  const reconstructed = createOwnedSessionRoutes(
+    h.home,
+    freshDeps,
+    projectSnapshotReader(h.home, freshDeps),
+    fakeSessionRuntime().runtime,
+    { codexChatRuntime: unavailableCodexChatRuntime },
+  );
+  const freshApi = createOperatorApi(
+    {
+      workspace: h.workspace,
+      expectedToken: () => h.hearth.token,
+      appendEvent: freshDeps.appendEvent,
+    },
+    [reconstructed.ownerRelease],
+  );
+  const origin = "http://127.0.0.1:43121";
+  const callFreshApi = async (
+    options: {
+      query?: string;
+      includeToken?: boolean;
+      sessionId?: string;
+    } = {},
+  ) => {
+    let freshBody = "";
+    const token = options.includeToken === false ? undefined : h.hearth.token,
+      path = `${API_PREFIX}/projects/${FIXTURE_PROJECT_ID}/sessions/${options.sessionId ?? owner.id}/owner-release${options.query ?? ""}`;
+    const request = {
+      method: "GET",
+      url: path,
+      headers: {
+        host: "127.0.0.1:43121",
+        origin,
+        "sec-fetch-site": "same-origin",
+        ...(token ? { [OPERATOR_HEADER]: token } : {}),
+      },
+      rawHeaders: [
+        "host",
+        "127.0.0.1:43121",
+        "origin",
+        origin,
+        "sec-fetch-site",
+        "same-origin",
+        ...(token ? [OPERATOR_HEADER, token] : []),
+      ],
+      socket: { remoteAddress: "127.0.0.1" },
+    } as unknown as IncomingMessage;
+    const freshResponse = {
+      statusCode: 0,
+      headersSent: false,
+      setHeader() {},
+      end(chunk?: string) {
+        freshBody = chunk ?? "";
+      },
+    } as unknown as ServerResponse;
+    await freshApi.handle(request, freshResponse, () => {
+      throw new Error("The reconstructed protected route was not mounted.");
+    });
+    let body: unknown;
+    try {
+      body = JSON.parse(freshBody);
+    } catch {
+      throw new Error("The reconstructed API returned invalid JSON.");
+    }
+    return {
+      status: freshResponse.statusCode,
+      envelope: validateOperatorEnvelope(body),
+    };
+  };
+  try {
+    const fresh = await callFreshApi();
+    expect(fresh.status).toBe(200);
+    expect(fresh.envelope.ok).toBe(true);
+    if (!fresh.envelope.ok)
+      throw new Error("The reconstructed API envelope was invalid.");
+    expect(fresh.envelope.value.data).toEqual({
+      state: "eligible",
+      reason: null,
+    });
+
+    const unauthorized = await callFreshApi({ includeToken: false });
+    expect(unauthorized.status).toBe(403);
+    expect(unauthorized.envelope.ok).toBe(true);
+    if (!unauthorized.envelope.ok)
+      throw new Error("The unauthorized refusal envelope was invalid.");
+    expect(unauthorized.envelope.value.ok).toBe(false);
+    for (const query of ["?unexpected=1", "?unexpected=1&unexpected=2"]) {
+      const invalidQuery = await callFreshApi({ query });
+      expect(invalidQuery.status).toBe(400);
+      expect(invalidQuery.envelope.ok).toBe(true);
+      if (!invalidQuery.envelope.ok)
+        throw new Error("The query refusal envelope was invalid.");
+      expect(invalidQuery.envelope.value.ok).toBe(false);
+    }
+
+    try {
+      const catalog = createProjectStore(h.home).read();
+      writeOwnerOnly(
+        catalogPath,
+        JSON.stringify({
+          ...catalog,
+          projects: catalog.projects.map((project) =>
+            project.id === FIXTURE_PROJECT_ID
+              ? { ...project, archived: true }
+              : project,
+          ),
+        }),
+      );
+      writeFileSync(conversationPath, "{}");
+      const staleScope = await callFreshApi();
+      expect(staleScope.status).toBe(409);
+      expect(staleScope.envelope.ok).toBe(true);
+      if (!staleScope.envelope.ok)
+        throw new Error("The stale-scope refusal envelope was invalid.");
+      expect(staleScope.envelope.value.ok).toBe(false);
+    } finally {
+      writeFileSync(conversationPath, beforeConversationBytes);
+      writeFileSync(catalogPath, beforeCatalogBytes);
+    }
+
+    const currentCatalog = createProjectStore(h.home).read(),
+      originalConversation = store.read(FIXTURE_PROJECT_ID);
+    const assertScopeRefusesBeforeConversationRead = async (
+      projects: typeof currentCatalog.projects,
+      status: number,
+      git?: typeof fixtureSessionGit,
+    ) => {
+      if (git) currentGit = git;
+      writeOwnerOnly(
+        catalogPath,
+        JSON.stringify({ ...currentCatalog, projects }),
+      );
+      writeFileSync(conversationPath, "{}");
+      const result = await callFreshApi();
+      expect(result.status).toBe(status);
+      expect(result.envelope.ok).toBe(true);
+      if (!result.envelope.ok)
+        throw new Error("The scope refusal envelope was invalid.");
+      expect(result.envelope.value.ok).toBe(false);
+    };
+    const project = currentCatalog.projects.find(
+      (item) => item.id === FIXTURE_PROJECT_ID,
+    );
+    if (!project) throw new Error("The project fixture disappeared.");
+    try {
+      await assertScopeRefusesBeforeConversationRead(
+        currentCatalog.projects.filter(
+          (item) => item.id !== FIXTURE_PROJECT_ID,
+        ),
+        404,
+      );
+      await assertScopeRefusesBeforeConversationRead(
+        currentCatalog.projects.map((item) =>
+          item.id === FIXTURE_PROJECT_ID
+            ? {
+                ...item,
+                workspaces: [
+                  {
+                    root: `${h.workspace}-outside`,
+                    repositories: [`${h.workspace}-outside`],
+                    epicIds: ["alpha-epic"],
+                  },
+                ],
+              }
+            : item,
+        ),
+        409,
+      );
+      await assertScopeRefusesBeforeConversationRead(
+        currentCatalog.projects.map((item) =>
+          item.id === FIXTURE_PROJECT_ID
+            ? {
+                ...item,
+                workspaces: item.workspaces.map((workspace) => ({
+                  ...workspace,
+                  root: `${h.workspace}-outside`,
+                  repositories: [`${h.workspace}-outside`],
+                })),
+              }
+            : item,
+        ),
+        409,
+      );
+      await assertScopeRefusesBeforeConversationRead(
+        currentCatalog.projects.map((item) =>
+          item.id === FIXTURE_PROJECT_ID
+            ? {
+                ...item,
+                workspaces: item.workspaces.map((workspace) => ({
+                  ...workspace,
+                  repositories: [`${h.workspace}-outside-repository`],
+                })),
+              }
+            : item,
+        ),
+        409,
+      );
+      await assertScopeRefusesBeforeConversationRead(
+        currentCatalog.projects,
+        409,
+        (args, cwd) =>
+          args[0] === "worktree"
+            ? { status: 0, stdout: "", stderr: "" }
+            : fixtureSessionGit(args, cwd),
+      );
+    } finally {
+      currentGit = fixtureSessionGit;
+      writeFileSync(conversationPath, JSON.stringify(originalConversation));
+      writeFileSync(catalogPath, beforeCatalogBytes);
+    }
+
+    const legacy = structuredClone(originalConversation);
+    delete legacy.codexChatOwnerLifecycle;
+    const withoutLifecycle = async (state: typeof originalConversation) => {
+      writeFileSync(conversationPath, JSON.stringify(state));
+      const result = await callFreshApi();
+      expect(result.status).toBe(200);
+      expect(result.envelope.ok).toBe(true);
+      if (!result.envelope.ok)
+        throw new Error("The unavailable projection envelope was invalid.");
+      expect(result.envelope.value.data).toEqual({
+        state: "unavailable",
+        reason: "owner-release-unavailable",
+      });
+      expect(Object.keys(result.envelope.value.data as object).sort()).toEqual([
+        "reason",
+        "state",
+      ]);
+    };
+    try {
+      await withoutLifecycle(legacy);
+      const missingRelease = structuredClone(originalConversation);
+      missingRelease.codexChatOwnerLifecycle =
+        missingRelease.codexChatOwnerLifecycle?.filter(
+          (fact) => fact.kind !== "generation-released",
+        );
+      await withoutLifecycle(missingRelease);
+      const corrupt = structuredClone(originalConversation);
+      const released = corrupt.codexChatOwnerLifecycle?.find(
+        (fact) => fact.kind === "generation-released",
+      );
+      if (released?.kind !== "generation-released")
+        throw new Error("The owner-release fact disappeared from its fixture.");
+      released.afterSequence = Number.MAX_SAFE_INTEGER;
+      writeFileSync(conversationPath, JSON.stringify(corrupt));
+      const invalidReceipt = await callFreshApi();
+      expect(invalidReceipt.status).toBe(503);
+      expect(invalidReceipt.envelope.ok).toBe(true);
+      if (!invalidReceipt.envelope.ok)
+        throw new Error("The corrupt-receipt envelope was invalid.");
+      expect(invalidReceipt.envelope.value.ok).toBe(false);
+    } finally {
+      writeFileSync(conversationPath, beforeConversationBytes);
+      writeFileSync(catalogPath, beforeCatalogBytes);
+    }
+  } finally {
+    await reconstructed.close();
+  }
+  expect(auditCalls).toBe(0);
+  expect(readFileSync(conversationPath)).toEqual(beforeConversationBytes);
+  expect(readFileSync(registryPath)).toEqual(beforeRegistryBytes);
 });

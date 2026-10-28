@@ -26,6 +26,7 @@ import {
   parseCodexChatDecision,
 } from "./codex-chat-owned-protocol";
 import { createCodexChatOwnedTransport } from "./codex-chat-owned-transport";
+import { foldCodexChatOwnerRelease } from "./codex-chat-owner-release";
 import type { createCodexChatRuntime } from "./codex-chat-runtime";
 import { canonicalOwnedSessionStart } from "./codex-owned-protocol";
 import { requireOrdinarySession } from "./managed-origin";
@@ -373,6 +374,33 @@ export function createCodexOwnedChatService(options: Options) {
       query: { after?: number; limit?: number; requestId?: string } = {},
     ) {
       return forId(projectId, sessionId).read(projectId, query);
+    },
+    async readOwnerRelease(projectId: string, sessionId: string) {
+      const session = checked(projectId, sessionId);
+      requireOrdinarySession(session);
+      if (session.provider !== "codex" || session.mode !== "chat")
+        throw new ConversationError(
+          409,
+          "This session has no native Chat owner-release receipt.",
+        );
+
+      // Revalidate the current catalog, served workspace, repository and Git
+      // worktree before opening the private conversation journal.
+      await options.validateScope(projectId, session, []);
+      const state = storeFor(session).read(projectId);
+      const start = state.frames.find(
+        (frame) =>
+          frame.turnId === session.requestId && frame.event.kind === "user",
+      )?.event;
+      if (start?.kind === "user" && start.codexChat)
+        await options.validateScope(projectId, session, start.about);
+      return foldCodexChatOwnerRelease({
+        owner: session,
+        state,
+        projectId,
+        conversationId: session.id,
+        workspaceKey: workspace,
+      });
     },
     async approvals(projectId: string, sessionId: string, requestId?: string) {
       const session = checked(projectId, sessionId);
