@@ -215,6 +215,11 @@ function tree(
                   unaccountedFailure === undefined
                 )
                   onFailurePhase?.(phase);
+                else if (
+                  generationFailure !== undefined &&
+                  unaccountedFailure === undefined
+                )
+                  onFailurePhase?.(phase, generationFailure);
                 else
                   onFailurePhase?.(
                     phase,

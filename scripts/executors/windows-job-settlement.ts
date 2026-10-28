@@ -153,7 +153,8 @@ export async function settleWindowsJob<Job, Process>(
     const active = api.activeProcesses(job);
     if (active === null || !Number.isSafeInteger(active) || active < 0)
       refuse();
-    if (active > retained.size && census !== undefined) {
+    const unaccounted = active > retained.size;
+    if (unaccounted && census !== undefined) {
       unaccountedFailure = {
         activeCount: diagnosticUint32(active),
         retainedCount: diagnosticUint32(retained.size),
@@ -164,7 +165,7 @@ export async function settleWindowsJob<Job, Process>(
     }
     // This can only refuse conservatively. It is never used to assert that
     // retained members have exited or that a lower count proves completion.
-    return active > retained.size;
+    return unaccounted;
   };
   const readMembers = (): readonly number[] => {
     const result = api.members(job);
@@ -260,7 +261,10 @@ export async function settleWindowsJob<Job, Process>(
       capturedTotal,
       capturedMemberCount: capturedMembers.length,
     });
-    if (unaccounted) refuse("verify-census-unaccounted");
+    if (unaccounted) {
+      failurePhase ??= "verify-census-unaccounted";
+      refuse("verify-census-unaccounted");
+    }
     phase = "verify-census-unretained";
     for (const pid of capturedMembers) if (!retained.has(pid)) refuse();
     if (api.now() >= deadline) refuse("deadline");
