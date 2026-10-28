@@ -751,37 +751,62 @@ test("a durable pre-dispatch NotSent Start retries only by explicit same-UUID re
   await expect(
     row.getByRole("button", { name: "Retry exact original", exact: true }),
   ).toBeEnabled();
-  const admittedReads: Array<
-    Promise<{
-      status: number;
-      page: z.infer<typeof sessionStartIdentityPageSchema>;
-    } | null>
-  > = [];
+  type AdmittedRead = {
+    status: number;
+    page: z.infer<typeof sessionStartIdentityPageSchema>;
+  } | null;
+  const admittedReads: Array<{
+    settled: boolean;
+    snapshot: AdmittedRead;
+  }> = [];
   const explicitCheckRequests = new WeakSet<Request>();
   const identityPath = `/__agent-forge/projects/${alpha.id}/session-start-identities`;
+  const identityOrigin = new URL(page.url()).origin;
+  let poisonedCheckResponses = 0;
   let captureCheckRead = false;
   const onIdentityResponse = (response: Response) => {
     const url = new URL(response.url());
     if (
+      captureCheckRead &&
+      response.request().method() === "GET" &&
+      url.origin === identityOrigin &&
+      url.pathname === identityPath &&
+      url.search === ""
+    ) {
+      const poisonedBodyReader = async () => {
+        throw new Error("The Playwright response-body witness was poisoned.");
+      };
+      Object.defineProperties(response, {
+        json: { configurable: true, value: poisonedBodyReader },
+        text: { configurable: true, value: poisonedBodyReader },
+        body: { configurable: true, value: poisonedBodyReader },
+      });
+      poisonedCheckResponses++;
+    }
+    if (
       response.request().method() !== "GET" ||
       !explicitCheckRequests.has(response.request()) ||
-      url.pathname !== identityPath
+      url.origin !== identityOrigin ||
+      url.pathname !== identityPath ||
+      url.search !== ""
     )
       return;
-    admittedReads.push(
-      (async () => {
-        try {
-          const parsed = sessionStartIdentitySuccessEnvelopeSchema.safeParse(
-            await response.json(),
-          );
-          return parsed.success
-            ? { status: response.status(), page: parsed.data.data }
-            : null;
-        } catch {
-          return null;
-        }
-      })(),
-    );
+    const read = { settled: false, snapshot: null as AdmittedRead };
+    admittedReads.push(read);
+    void response
+      .json()
+      .then((value) => {
+        const parsed =
+          sessionStartIdentitySuccessEnvelopeSchema.safeParse(value);
+        return parsed.success
+          ? { status: response.status(), page: parsed.data.data }
+          : null;
+      })
+      .catch(() => null)
+      .then((snapshot) => {
+        read.snapshot = snapshot;
+        read.settled = true;
+      });
   };
   const onIdentityRequest = (request: Request) => {
     const url = new URL(request.url());
@@ -793,7 +818,7 @@ test("a durable pre-dispatch NotSent Start retries only by explicit same-UUID re
       explicitCheckRequests.add(request);
   };
   const matchesAdmittedRead = (
-    snapshot: Awaited<(typeof admittedReads)[number]>,
+    snapshot: AdmittedRead,
   ) =>
     snapshot?.status === 200 &&
     snapshot.page.scope.projectId === alpha.id &&
@@ -815,6 +840,12 @@ test("a durable pre-dispatch NotSent Start retries only by explicit same-UUID re
     await expect(
       page.getByRole("article", { name: "Session reply", exact: true }),
     ).toContainText("Codex Task reply 🌱");
+    expect(starts).toHaveLength(2);
+    expect(startStatuses).toEqual([503, 202]);
+    expect(starts[1]).toEqual(original);
+    expect(starts[1]?.requestId).toBe(original.requestId);
+    expect(identityWrites).toBe(2);
+    await expect.poll(() => tasks().length).toBe(before + 1);
     await page
       .getByRole("button", { name: "New session", exact: true })
       .click();
@@ -825,17 +856,32 @@ test("a durable pre-dispatch NotSent Start retries only by explicit same-UUID re
     captureCheckRead = true;
     await checkServer.click();
     await expect
-      .poll(async () => {
-        return (await Promise.all(admittedReads)).some(matchesAdmittedRead);
+      .poll(() => {
+        const noExtraEffects =
+          starts.length === 2 &&
+          startStatuses.length === 2 &&
+          startStatuses[0] === 503 &&
+          startStatuses[1] === 202 &&
+          starts[1]?.requestId === original.requestId &&
+          identityWrites === 2 &&
+          tasks().length === before + 1;
+        return {
+          poisoned: poisonedCheckResponses > 0,
+          admitted: admittedReads.some(
+            (read) => read.settled && matchesAdmittedRead(read.snapshot),
+          ),
+          noExtraEffects,
+        };
       })
-      .toBe(true);
+      .toEqual({ poisoned: true, admitted: true, noExtraEffects: true });
   } finally {
+    captureCheckRead = false;
     page.off("request", onIdentityRequest);
     page.off("response", onIdentityResponse);
   }
-  const admittedSnapshot = (await Promise.all(admittedReads)).find(
-    matchesAdmittedRead,
-  );
+  const admittedSnapshot = admittedReads.find(
+    (read) => read.settled && matchesAdmittedRead(read.snapshot),
+  )?.snapshot;
   if (!admittedSnapshot)
     throw Error("The retried Start admission was not read back.");
   const admittedPage = admittedSnapshot.page;
