@@ -375,16 +375,14 @@ test("a fresh trusted desktop origin discovers and inspects an admitted Start wi
       startHandlerEntries++;
       handlerEntered();
       let failureStage:
-        | "request"
-        | "backend-fetch"
-        | "http-status"
-        | "receipt"
-        | "original-identity" = "request",
+          | "request"
+          | "backend-fetch"
+          | "http-status"
+          | "receipt"
+          | "original-identity" = "request",
         failureStatus: number | undefined;
       try {
-        const input = sessionStartSchema.parse(
-          route.request().postDataJSON(),
-        );
+        const input = sessionStartSchema.parse(route.request().postDataJSON());
         originalStarts.push(input);
         failureStage = "backend-fetch";
         const response = await route.fetch({
