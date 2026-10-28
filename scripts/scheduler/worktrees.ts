@@ -16,6 +16,7 @@
  */
 
 import { spawnSync } from "node:child_process";
+import type { Dir, Dirent, Stats } from "node:fs";
 import {
   existsSync,
   lstatSync,
@@ -29,7 +30,6 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
-import type { Dir, Dirent, Stats } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type {

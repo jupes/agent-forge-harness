@@ -146,6 +146,31 @@ function assertPrivateScratchPath(scratch: string, candidate: string): void {
   }
 }
 
+function cleanupFixtureJunction(scratch: string, link: string): Error | null {
+  try {
+    assertPrivateScratchPath(scratch, link);
+    const linkInfo = lstatSync(link);
+    if (!linkInfo.isSymbolicLink())
+      throw new Error("fixture link path no longer names a link");
+    unlinkSync(link);
+    return null;
+  } catch (error) {
+    const missing =
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "ENOENT";
+    if (missing) return null;
+
+    assertPrivateScratchPath(scratch, scratch);
+    const rootIndex = roots.indexOf(resolve(scratch));
+    if (rootIndex >= 0) roots.splice(rootIndex, 1);
+    return new Error(
+      "fixture junction cleanup failed; private scratch root retained for inspection",
+    );
+  }
+}
+
 let ids = 0;
 function deps(more: Partial<RegistryDeps> = {}): Partial<RegistryDeps> {
   return {
@@ -939,14 +964,14 @@ describe("removeWorktree", () => {
     assertWithinScratch(cache);
     assertWithinScratch(marker);
 
-    let linked = false;
+    let testFailure: unknown;
+    let testFailed = false;
     try {
       symlinkSync(
         target,
         link,
         process.platform === "win32" ? "junction" : "dir",
       );
-      linked = true;
       const linkBefore = lstatSync(link);
       expect(linkBefore.isSymbolicLink()).toBe(true);
 
@@ -1002,34 +1027,20 @@ describe("removeWorktree", () => {
         removeCalls: 0,
         removed: false,
       });
-    } finally {
-      // Only unlink the known fixture junction, non-recursively, before the
-      // shared afterAll scratch-root cleanup can recurse through the fixture.
-      if (linked) {
-        assertPrivateScratch();
-        assertWithinScratch(link);
-        try {
-          const linkStat = lstatSync(link);
-          if (!linkStat.isSymbolicLink())
-            throw new Error("fixture link path no longer names a link");
-          unlinkSync(link);
-        } catch (error) {
-          const missing =
-            typeof error === "object" &&
-            error !== null &&
-            "code" in error &&
-            error.code === "ENOENT";
-          if (!missing) {
-            assertPrivateScratch();
-            const rootIndex = roots.indexOf(scratch);
-            if (rootIndex >= 0) roots.splice(rootIndex, 1);
-            throw new Error(
-              "fixture junction cleanup failed; private scratch root retained for inspection",
-            );
-          }
-        }
-      }
+    } catch (error) {
+      testFailure = error;
+      testFailed = true;
     }
+
+    // Run cleanup outside finally so cleanup errors cannot mask assertions.
+    const cleanupFailure = cleanupFixtureJunction(scratch, link);
+    if (testFailed && cleanupFailure !== null)
+      throw new AggregateError(
+        [testFailure, cleanupFailure],
+        "fixture assertion and junction cleanup both failed",
+      );
+    if (testFailed) throw testFailure;
+    if (cleanupFailure !== null) throw cleanupFailure;
   }
 
   test("a junction to an external target is preserved without force", () => {
