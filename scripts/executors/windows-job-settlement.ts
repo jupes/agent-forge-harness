@@ -91,9 +91,9 @@ export async function settleWindowsJob<Job, Process>(
   ]);
   let phase: WindowsJobSettlementFailurePhase = "capture-root",
     failurePhase: WindowsJobSettlementFailurePhase | null = null;
-  const refuse = (
-    failedAt: WindowsJobSettlementFailurePhase = phase,
-  ): never => {
+  const refuse: (
+    failedAt?: WindowsJobSettlementFailurePhase,
+  ) => never = (failedAt = phase) => {
     failurePhase ??= failedAt;
     throw new Error(SETTLEMENT_ERROR);
   };

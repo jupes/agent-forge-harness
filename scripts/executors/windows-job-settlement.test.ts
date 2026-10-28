@@ -129,7 +129,7 @@ test("a refused job census reports its bounded failure phase", async () => {
     phases: WindowsJobSettlementFailurePhase[] = [];
   f.setSnapshots([null]);
   const diagnosticApi = Object.assign(f.api, {
-    onFailurePhase(phase: string) {
+    onFailurePhase(phase: WindowsJobSettlementFailurePhase) {
       phases.push(phase);
     },
   });
