@@ -36,6 +36,7 @@ import {
   WINDOWS_JOB_SETTLEMENT_MS,
   type WindowsJobSettlementApi,
   type WindowsJobSettlementFailurePhase,
+  type WindowsJobSettlementGenerationFailureWitness,
 } from "./windows-job-settlement";
 
 export interface TreeGuard {
@@ -176,7 +177,10 @@ function processCreationTime(
 /** Query the exact job's bounded process list and the minimum identity facts. */
 function windowsJobSettlementApi(
   api: Kernel32,
-  onFailurePhase?: (phase: WindowsJobSettlementFailurePhase) => void,
+  onFailurePhase?: (
+    phase: WindowsJobSettlementFailurePhase,
+    generationFailure?: WindowsJobSettlementGenerationFailureWitness,
+  ) => void,
 ): WindowsJobSettlementApi<KernelHandle, KernelHandle> {
   return {
     ...(onFailurePhase ? { onFailurePhase } : {}),
@@ -295,14 +299,20 @@ function jobGuard(
   pid: number,
   onWindowsSettlementFailure?: (
     phase: WindowsJobSettlementFailurePhase,
+    generationFailure?: WindowsJobSettlementGenerationFailureWitness,
   ) => void,
 ): TreeGuard {
   let failureReported = false;
-  const reportFailure = (phase: WindowsJobSettlementFailurePhase) => {
+  const reportFailure = (
+    phase: WindowsJobSettlementFailurePhase,
+    generationFailure?: WindowsJobSettlementGenerationFailureWitness,
+  ) => {
     if (!onWindowsSettlementFailure || failureReported) return;
     failureReported = true;
     try {
-      onWindowsSettlementFailure(phase);
+      if (generationFailure === undefined)
+        onWindowsSettlementFailure(phase);
+      else onWindowsSettlementFailure(phase, generationFailure);
     } catch {
       // A trusted diagnostic observer cannot alter the ownership result.
     }
@@ -480,6 +490,7 @@ export function guardSuspendedWindowsProcess(
   diagnostics?: {
     onWindowsSettlementFailure: (
       phase: WindowsJobSettlementFailurePhase,
+      generationFailure?: WindowsJobSettlementGenerationFailureWitness,
     ) => void;
   },
 ): {

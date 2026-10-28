@@ -26,6 +26,31 @@ export const WINDOWS_JOB_SETTLEMENT_FAILURE_PHASES = [
 export type WindowsJobSettlementFailurePhase =
   (typeof WINDOWS_JOB_SETTLEMENT_FAILURE_PHASES)[number];
 
+export type WindowsJobSettlementGenerationFailureReason =
+  | "generation-decreased"
+  | "growth-count-not-covered"
+  | "growth-over-cap"
+  | "growth-member-unretained";
+
+export interface WindowsJobSettlementGenerationFailureWitness {
+  reason: WindowsJobSettlementGenerationFailureReason;
+  initialTotal: number | null;
+  capturedTotal: number | null;
+  retainedCount: number | null;
+  capturedMemberCount: number | null;
+}
+
+type WindowsJobSettlementFailureObserver = (
+  phase: WindowsJobSettlementFailurePhase,
+  generationFailure?: WindowsJobSettlementGenerationFailureWitness,
+) => void;
+
+const MAX_DIAGNOSTIC_UINT32 = 0xffff_ffff;
+
+function diagnosticUint32(value: number): number | null {
+  return value <= MAX_DIAGNOSTIC_UINT32 ? value : null;
+}
+
 export interface JobMembers {
   processIds: readonly number[];
   complete: boolean;
@@ -34,7 +59,7 @@ export interface JobMembers {
 /** Only kernel ownership and process-state facts cross this boundary. */
 export interface WindowsJobSettlementApi<Job, Process> {
   /** Optional trusted, synchronous refusal-phase observer. */
-  onFailurePhase?: (phase: WindowsJobSettlementFailurePhase) => void;
+  onFailurePhase?: WindowsJobSettlementFailureObserver;
   terminate(job: Job): boolean;
   /** Cumulative job-generation fence; never used as an exit witness. */
   totalProcesses(job: Job): number | null;
@@ -95,7 +120,9 @@ export async function settleWindowsJob<Job, Process>(
     ],
   ]);
   let phase: WindowsJobSettlementFailurePhase = "capture-root",
-    failurePhase: WindowsJobSettlementFailurePhase | null = null;
+    failurePhase: WindowsJobSettlementFailurePhase | null = null,
+    generationFailure: WindowsJobSettlementGenerationFailureWitness | null =
+      null;
   const refuse: (failedAt?: WindowsJobSettlementFailurePhase) => never = (
     failedAt = phase,
   ) => {
@@ -179,14 +206,30 @@ export async function settleWindowsJob<Job, Process>(
     // Accept growth only when the lifetime count is covered by retained identities.
     // This count fences generations; it never proves exit by itself.
     // Settlement still requires every retained process handle to signal.
-    if (
-      capturedTotal < initialTotal ||
-      (capturedTotal > initialTotal &&
-        (capturedTotal !== retained.size ||
-          retained.size > MAX_JOB_PROCESSES ||
-          capturedMembers.some((pid) => !retained.has(pid))))
-    )
+    let generationFailureReason:
+      | WindowsJobSettlementGenerationFailureReason
+      | null = null;
+    if (capturedTotal < initialTotal) {
+      generationFailureReason = "generation-decreased";
+    } else if (capturedTotal > initialTotal) {
+      if (capturedTotal !== retained.size) {
+        generationFailureReason = "growth-count-not-covered";
+      } else if (retained.size > MAX_JOB_PROCESSES) {
+        generationFailureReason = "growth-over-cap";
+      } else if (capturedMembers.some((pid) => !retained.has(pid))) {
+        generationFailureReason = "growth-member-unretained";
+      }
+    }
+    if (generationFailureReason !== null) {
+      generationFailure = {
+        reason: generationFailureReason,
+        initialTotal: diagnosticUint32(initialTotal),
+        capturedTotal: diagnosticUint32(capturedTotal),
+        retainedCount: diagnosticUint32(retained.size),
+        capturedMemberCount: diagnosticUint32(capturedMembers.length),
+      };
       refuse("verify-census-generation");
+    }
     phase = "verify-census-active-read";
     const unaccounted = hasUnaccountedProcesses();
     if (unaccounted) refuse("verify-census-unaccounted");
@@ -252,7 +295,12 @@ export async function settleWindowsJob<Job, Process>(
   if (!confirmed || closeFailed) {
     failurePhase ??= "deadline";
     try {
-      api.onFailurePhase?.(failurePhase);
+      if (
+        failurePhase === "verify-census-generation" &&
+        generationFailure !== null
+      )
+        api.onFailurePhase?.(failurePhase, generationFailure);
+      else api.onFailurePhase?.(failurePhase);
     } catch {
       // Diagnostic observers cannot change the settlement result.
     }

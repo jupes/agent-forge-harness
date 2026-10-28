@@ -3,7 +3,10 @@ import { join } from "node:path";
 import { buildChildEnv } from "./env";
 import { killTree, liveChildCount, supervise } from "./supervisor";
 import { guardRequiredTree, guardSuspendedWindowsProcess } from "./tree-guard";
-import type { WindowsJobSettlementFailurePhase } from "./windows-job-settlement";
+import type {
+  WindowsJobSettlementFailurePhase,
+  WindowsJobSettlementGenerationFailureWitness,
+} from "./windows-job-settlement";
 
 const fake = join(import.meta.dir, "fixtures/interactive-cli.ts");
 
@@ -144,7 +147,10 @@ function tree(
   maxStdinBytes = 8 * 1024 * 1024,
   ownership?: ReturnType<typeof heldWindowsSettlementGuard>,
   timeoutMs = 5000,
-  onFailurePhase?: (phase: WindowsJobSettlementFailurePhase) => void,
+  onFailurePhase?: (
+    phase: WindowsJobSettlementFailurePhase,
+    generationFailure?: WindowsJobSettlementGenerationFailureWitness,
+  ) => void,
 ) {
   let announce: (line: string) => void = () => undefined;
   const ready = new Promise<string>((resolve) => {
@@ -163,14 +169,36 @@ function tree(
       ? {
           interactiveGuard: (pid: number) => ownership.attach(pid),
         }
-      : onFailurePhase && process.platform === "win32" && process.arch === "x64"
-        ? {
-            interactiveGuard: (pid: number) =>
-              guardSuspendedWindowsProcess(pid, {
-                onWindowsSettlementFailure: onFailurePhase,
-              }),
-          }
-        : {}),
+      : {}),
+    ...(!ownership && process.platform === "win32" && process.arch === "x64"
+      ? {
+          interactiveGuard: (pid: number) =>
+            guardSuspendedWindowsProcess(pid, {
+              onWindowsSettlementFailure(phase, generationFailure) {
+                console.error(
+                  JSON.stringify({
+                    kind: "windows-stop-settlement-refusal",
+                    phase,
+                    generationFailure:
+                      generationFailure === undefined
+                        ? null
+                        : {
+                            reason: generationFailure.reason,
+                            initialTotal: generationFailure.initialTotal,
+                            capturedTotal: generationFailure.capturedTotal,
+                            retainedCount: generationFailure.retainedCount,
+                            capturedMemberCount:
+                              generationFailure.capturedMemberCount,
+                          },
+                  }),
+                );
+                if (generationFailure === undefined)
+                  onFailurePhase?.(phase);
+                else onFailurePhase?.(phase, generationFailure);
+              },
+            }),
+        }
+      : {}),
     onLine: announce,
   });
   const childPid = async () => {
