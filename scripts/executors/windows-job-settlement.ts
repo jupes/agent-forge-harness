@@ -227,6 +227,7 @@ export async function settleWindowsJob<Job, Process>(
         retainedCount: retained.size,
         capturedMemberCount: capturedMembers.length,
       };
+      failurePhase ??= "verify-census-generation";
       refuse("verify-census-generation");
     }
     phase = "verify-census-active-read";
