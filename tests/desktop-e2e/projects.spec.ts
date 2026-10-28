@@ -1948,6 +1948,10 @@ test("empty Projects can skip optional provider setup into the guarded create di
   await expect(skip).toBeEnabled();
   const skipBox = await skip.boundingBox();
   expect(skipBox?.height ?? 0).toBeGreaterThanOrEqual(24);
+  await page.screenshot({
+    path: test.info().outputPath("onboarding-first-project.png"),
+    fullPage: true,
+  });
   expect(
     await page.evaluate(() =>
       window.matchMedia("(prefers-reduced-motion: reduce)").matches,
@@ -1977,6 +1981,7 @@ test("empty Projects can skip optional provider setup into the guarded create di
     .getByRole("button", { name: "Cancel", exact: true })
     .press("Enter");
   await expect(createDialog).toBeHidden();
+  await expect(skip).toBeFocused();
   expect(effects).toEqual([]);
   expect(keeperFixtureStarts()).toBe(keeperStartsBefore);
 });
@@ -2134,11 +2139,21 @@ test("empty Projects label a provider snapshot as last-known after readiness ref
   await expect(
     page.getByText("Last-known provider report", { exact: false }),
   ).toBeVisible();
-  await expect(
-    page.getByText("Last-known observation; recheck before relying on it.", {
-      exact: false,
-    }),
-  ).toBeVisible();
+  const providerRows = page
+    .getByRole("region", { name: "Provider readiness snapshot" })
+    .getByRole("listitem");
+  const providerCount = await providerRows.count();
+  expect(providerCount).toBeGreaterThan(0);
+  for (let index = 0; index < providerCount; index++) {
+    await expect(
+      providerRows
+        .nth(index)
+        .getByText(
+          "Last-known observation; recheck before relying on it.",
+          { exact: true },
+        ),
+    ).toBeVisible();
+  }
   await expect(
     page.getByRole("button", { name: "Skip provider setup", exact: true }),
   ).toBeEnabled();
