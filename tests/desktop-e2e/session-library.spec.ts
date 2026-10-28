@@ -192,6 +192,27 @@ test("Start waits for the protected identity refresh emitted by preview", async 
       identityPosts++;
     if (path === `/__agent-forge/projects/${alpha.id}/sessions`) startPosts++;
   });
+  await openSettled(
+    page,
+    `/index.html#/desktop/project/${alpha.id}/sessions`,
+  );
+  await page
+    .getByRole("button", { name: "New session", exact: true })
+    .click();
+  const dialog = page.getByRole("dialog", {
+    name: "New session · Alpha",
+    exact: true,
+  });
+  await dialog
+    .getByRole("textbox", { name: "Session prompt", exact: true })
+    .fill("Private library fixture request");
+  await dialog
+    .getByRole("combobox", { name: "Session mode", exact: true })
+    .selectOption("task");
+  await dialog
+    .getByRole("combobox", { name: "Session effort", exact: true })
+    .selectOption("");
+
   const identityRefresh = await observePreviewIdentityRefresh(
     page,
     alpha.id,
@@ -199,27 +220,6 @@ test("Start waits for the protected identity refresh emitted by preview", async 
     { holdResponse: true },
   );
   try {
-    await openSettled(
-      page,
-      `/index.html#/desktop/project/${alpha.id}/sessions`,
-    );
-    await page
-      .getByRole("button", { name: "New session", exact: true })
-      .click();
-    const dialog = page.getByRole("dialog", {
-      name: "New session · Alpha",
-      exact: true,
-    });
-    await dialog
-      .getByRole("textbox", { name: "Session prompt", exact: true })
-      .fill("Private library fixture request");
-    await dialog
-      .getByRole("combobox", { name: "Session mode", exact: true })
-      .selectOption("task");
-    await dialog
-      .getByRole("combobox", { name: "Session effort", exact: true })
-      .selectOption("");
-
     await dialog
       .getByRole("button", { name: "Check supported options", exact: true })
       .click();
@@ -255,12 +255,15 @@ test("Start waits for the protected identity refresh emitted by preview", async 
     expect(records()).toHaveLength(before);
   } finally {
     identityRefresh.release();
+    try {
+      await identityRefresh.settledRead;
+    } catch {
+      // Preserve the primary assertion if the browser witness did not settle.
+    }
+    await identityRefresh.dispose();
   }
 
-  const dialog = page.getByRole("dialog", {
-    name: "New session · Alpha",
-    exact: true,
-  });
+  await identityRefresh.settledRead;
   await expect(
     dialog
       .getByRole("region", {
