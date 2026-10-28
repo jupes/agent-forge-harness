@@ -115,127 +115,131 @@ async function installIdentityFetchBarrier(
   let bindingDisposable: Awaited<ReturnType<Page["exposeBinding"]>>;
   try {
     bindingDisposable = await page.exposeBinding(
-    bindingName,
-    (source, raw: unknown) => {
-      if (
-        !active ||
-        disposed ||
-        proofFinished ||
-        source.frame !== page.mainFrame() ||
-        !isRecord(raw) ||
-        raw.captureId !== captureId ||
-        typeof raw.kind !== "string"
-      )
-        return false;
-      if (raw.kind === "armed") {
-        if (captureSeen || raw.armed !== true) return false;
-        armed = true;
-        armProofTimeout();
-        return true;
-      }
-      if (raw.kind === "claimed") {
-        if (!armed || raw.armed !== true || captureStarted || captureSeen)
+      bindingName,
+      (source, raw: unknown) => {
+        if (
+          !active ||
+          disposed ||
+          proofFinished ||
+          source.frame !== page.mainFrame() ||
+          !isRecord(raw) ||
+          raw.captureId !== captureId ||
+          typeof raw.kind !== "string"
+        )
           return false;
-        captureStarted = true;
-        armProofTimeout();
-        return true;
-      }
-      if (raw.kind === "fetch-rejected" || raw.kind === "capture-failed") {
-        if (captureSeen || raw.armed !== true) return false;
+        if (raw.kind === "armed") {
+          if (captureSeen || raw.armed !== true) return false;
+          armed = true;
+          armProofTimeout();
+          return true;
+        }
+        if (raw.kind === "claimed") {
+          if (!armed || raw.armed !== true || captureStarted || captureSeen)
+            return false;
+          captureStarted = true;
+          armProofTimeout();
+          return true;
+        }
+        if (raw.kind === "fetch-rejected" || raw.kind === "capture-failed") {
+          if (captureSeen || raw.armed !== true) return false;
+          armed = true;
+          captureStarted = true;
+          captureSeen = true;
+          failProof(
+            raw.kind === "fetch-rejected"
+              ? "The original browser identity fetch rejected."
+              : "The browser identity response could not be verified.",
+          );
+          return true;
+        }
+        if (raw.kind === "settled") {
+          if (!captureSeen || !captureValid) return false;
+          return passProof();
+        }
+        if (raw.kind !== "capture" || captureSeen || raw.armed !== true)
+          return false;
         armed = true;
         captureStarted = true;
         captureSeen = true;
-        failProof(
-          raw.kind === "fetch-rejected"
-            ? "The original browser identity fetch rejected."
-            : "The browser identity response could not be verified.",
-        );
-        return true;
-      }
-      if (raw.kind === "settled") {
-        if (!captureSeen || !captureValid) return false;
-        return passProof();
-      }
-      if (raw.kind !== "capture" || captureSeen || raw.armed !== true)
-        return false;
-      armed = true;
-      captureStarted = true;
-      captureSeen = true;
-      armProofTimeout();
+        armProofTimeout();
 
-      const invalid = () => {
-        failProof("The actual browser identity response failed validation.");
-        return false;
-      };
-      try {
-        const pageOrigin = new URL(source.frame.url()).origin;
-        if (
-          raw.method !== "GET" ||
-          raw.pageOrigin !== pageOrigin ||
-          typeof raw.requestUrl !== "string" ||
-          typeof raw.responseUrl !== "string" ||
-          raw.status !== 200 ||
-          raw.readState !== "ok" ||
-          typeof raw.body !== "string" ||
-          Buffer.byteLength(raw.body) > MAX_IDENTITY_BYTES
-        )
-          return invalid();
-        const requestUrl = new URL(raw.requestUrl);
-        const responseUrl = new URL(raw.responseUrl);
-        if (
-          requestUrl.origin !== pageOrigin ||
-          requestUrl.pathname !== identityPath ||
-          requestUrl.search !== "" ||
-          requestUrl.href !== responseUrl.href ||
-          responseUrl.origin !== pageOrigin ||
-          responseUrl.pathname !== identityPath ||
-          responseUrl.search !== ""
-        )
-          return invalid();
-
-        let parsedBody: unknown;
+        const invalid = () => {
+          failProof("The actual browser identity response failed validation.");
+          return false;
+        };
         try {
-          parsedBody = JSON.parse(raw.body);
+          const pageOrigin = new URL(source.frame.url()).origin;
+          if (
+            raw.method !== "GET" ||
+            raw.pageOrigin !== pageOrigin ||
+            typeof raw.requestUrl !== "string" ||
+            typeof raw.responseUrl !== "string" ||
+            raw.status !== 200 ||
+            raw.readState !== "ok" ||
+            typeof raw.body !== "string" ||
+            Buffer.byteLength(raw.body) > MAX_IDENTITY_BYTES
+          )
+            return invalid();
+          const requestUrl = new URL(raw.requestUrl);
+          const responseUrl = new URL(raw.responseUrl);
+          if (
+            requestUrl.origin !== pageOrigin ||
+            requestUrl.pathname !== identityPath ||
+            requestUrl.search !== "" ||
+            requestUrl.href !== responseUrl.href ||
+            responseUrl.origin !== pageOrigin ||
+            responseUrl.pathname !== identityPath ||
+            responseUrl.search !== ""
+          )
+            return invalid();
+
+          let parsedBody: unknown;
+          try {
+            parsedBody = JSON.parse(raw.body);
+          } catch {
+            return invalid();
+          }
+          const envelope = successEnvelope.safeParse(parsedBody);
+          if (
+            !envelope.success ||
+            envelope.data.data.scope.projectId !== projectId ||
+            envelope.data.data.scope.workspace !== workspace
+          )
+            return invalid();
+          if (expected.requestId !== undefined) {
+            const identity = envelope.data.data.identities.find(
+              (item) => item.requestId === expected.requestId,
+            );
+            if (
+              !identity ||
+              identity.requestHash !== expected.requestHash ||
+              (expected.provider !== undefined &&
+                identity.provider !== expected.provider) ||
+              (expected.mode !== undefined &&
+                identity.mode !== expected.mode) ||
+              (expected.state !== undefined &&
+                identity.state !== expected.state)
+            )
+              return invalid();
+          }
+          observed = true;
+          observedReads++;
+          captureValid = true;
+          held = options.holdResponse;
+          armProofTimeout();
+          return true;
         } catch {
           return invalid();
         }
-        const envelope = successEnvelope.safeParse(parsedBody);
-        if (
-          !envelope.success ||
-          envelope.data.data.scope.projectId !== projectId ||
-          envelope.data.data.scope.workspace !== workspace
-        )
-          return invalid();
-        if (expected.requestId !== undefined) {
-          const identity = envelope.data.data.identities.find(
-            (item) => item.requestId === expected.requestId,
-          );
-          if (
-            !identity ||
-            identity.requestHash !== expected.requestHash ||
-            (expected.provider !== undefined &&
-              identity.provider !== expected.provider) ||
-            (expected.mode !== undefined && identity.mode !== expected.mode) ||
-            (expected.state !== undefined && identity.state !== expected.state)
-          )
-            return invalid();
-        }
-        observed = true;
-        observedReads++;
-        captureValid = true;
-        held = options.holdResponse;
-        armProofTimeout();
-        return true;
-      } catch {
-        return invalid();
-      }
-    },
+      },
     );
   } catch (error) {
     active = false;
     disposed = true;
     page.off("close", onPageClose);
-    failProof("The browser identity validation binding could not be installed.");
+    failProof(
+      "The browser identity validation binding could not be installed.",
+    );
     clearProofTimer();
     throw error;
   }
@@ -295,13 +299,18 @@ async function installIdentityFetchBarrier(
               }
             };
             const readResult = await Promise.race([
-              readTask().catch(() => ({ readState: "read-failed", body: null })),
-              new Promise<{ readState: string; body: string | null }>((resolve) => {
-                timeoutId = window.setTimeout(() => {
-                  cancel();
-                  resolve({ readState: "timeout", body: null });
-                }, config.cloneBoundMs);
-              }),
+              readTask().catch(() => ({
+                readState: "read-failed",
+                body: null,
+              })),
+              new Promise<{ readState: string; body: string | null }>(
+                (resolve) => {
+                  timeoutId = window.setTimeout(() => {
+                    cancel();
+                    resolve({ readState: "timeout", body: null });
+                  }, config.cloneBoundMs);
+                },
+              ),
             ]);
             return readResult;
           } catch {
@@ -370,9 +379,14 @@ async function installIdentityFetchBarrier(
             const input = args[0];
             const init = args[1];
             const request = input instanceof Request ? input : null;
-            const url = new URL(request ? request.url : String(input), window.location.href);
+            const url = new URL(
+              request ? request.url : String(input),
+              window.location.href,
+            );
             requestUrl = url.href;
-            method = String(init?.method ?? request?.method ?? "GET").toUpperCase();
+            method = String(
+              init?.method ?? request?.method ?? "GET",
+            ).toUpperCase();
             if (
               config.previewPath !== null &&
               method === "POST" &&
@@ -422,75 +436,86 @@ async function installIdentityFetchBarrier(
                 restoreOwned();
                 return response;
               }
-            const report = reportClone(response, requestUrl, method);
-            if (!hold) {
-              void (async () => {
-                const accepted = await withinBound(report, config.cloneBoundMs);
-                if (accepted === true) {
-                  const settled = await withinBound(
-                    notifyBounded("settled"),
+              const report = reportClone(response, requestUrl, method);
+              if (!hold) {
+                void (async () => {
+                  const accepted = await withinBound(
+                    report,
                     config.cloneBoundMs,
                   );
-                  if (settled !== true)
+                  if (accepted === true) {
+                    const settled = await withinBound(
+                      notifyBounded("settled"),
+                      config.cloneBoundMs,
+                    );
+                    if (settled !== true)
+                      void notifyBounded("capture-failed", {
+                        armed: true,
+                      }).catch(() => {});
+                  } else {
                     void notifyBounded("capture-failed", { armed: true }).catch(
                       () => {},
                     );
+                  }
+                  restoreOwned();
+                })().catch(() => {
+                  void notifyBounded("capture-failed", { armed: true }).catch(
+                    () => {},
+                  );
+                  restoreOwned();
+                });
+                return response;
+              }
+              const heldResponse = new Promise<void>((resolve) => {
+                let finished = false;
+                const finish = () => {
+                  if (finished) return;
+                  finished = true;
+                  window.clearTimeout(timer);
+                  releaseCurrentHold = null;
+                  resolve();
+                };
+                const timer = window.setTimeout(finish, config.holdBoundMs);
+                releaseCurrentHold = finish;
+              });
+              return (async () => {
+                const accepted = await withinBound(
+                  report.catch(() => false),
+                  config.cloneBoundMs,
+                );
+                if (accepted !== true)
+                  void notifyBounded("capture-failed", { armed: true }).catch(
+                    () => {},
+                  );
+                if (accepted === true && !releaseRequested && !disposed) {
+                  await heldResponse;
                 } else {
+                  releaseCurrentHold?.();
+                }
+                try {
+                  if (accepted === true && !disposed) {
+                    const settled = await withinBound(
+                      notifyBounded("settled"),
+                      config.cloneBoundMs,
+                    );
+                    if (settled !== true)
+                      void notifyBounded("capture-failed", {
+                        armed: true,
+                      }).catch(() => {});
+                  }
+                } catch {
                   void notifyBounded("capture-failed", { armed: true }).catch(
                     () => {},
                   );
                 }
                 restoreOwned();
-              })().catch(() => {
-                void notifyBounded("capture-failed", { armed: true }).catch(() => {});
-                restoreOwned();
-              });
-              return response;
-            }
-            const heldResponse = new Promise<void>((resolve) => {
-              let finished = false;
-              const finish = () => {
-                if (finished) return;
-                finished = true;
-                window.clearTimeout(timer);
-                releaseCurrentHold = null;
-                resolve();
-              };
-              const timer = window.setTimeout(finish, config.holdBoundMs);
-              releaseCurrentHold = finish;
-            });
-            return (async () => {
-              const accepted = await withinBound(
-                report.catch(() => false),
-                config.cloneBoundMs,
-              );
-              if (accepted !== true)
-                void notifyBounded("capture-failed", { armed: true }).catch(() => {});
-              if (accepted === true && !releaseRequested && !disposed) {
-                await heldResponse;
-              } else {
-                releaseCurrentHold?.();
-              }
-              try {
-                if (accepted === true && !disposed) {
-                  const settled = await withinBound(
-                    notifyBounded("settled"),
-                    config.cloneBoundMs,
-                  );
-                  if (settled !== true)
-                    void notifyBounded("capture-failed", { armed: true }).catch(
-                      () => {},
-                    );
-                }
-              } catch {
-                void notifyBounded("capture-failed", { armed: true }).catch(() => {});
-              }
-              restoreOwned();
-              return response;
-            })();
+                return response;
+              })();
             },
             (error: unknown) => {
-              void notifyBounded("fetch-rejected", { armed: true }).catch(() => {});
+              void notifyBounded("fetch-rejected", { armed: true }).catch(
+                () => {},
+              );
               restoreOwned();
               throw error;
             },
@@ -598,7 +623,8 @@ async function installIdentityFetchBarrier(
       return settledRead;
     },
     arm() {
-      if (!active || disposed) return Promise.reject(new Error("Capture is inactive."));
+      if (!active || disposed)
+        return Promise.reject(new Error("Capture is inactive."));
       armed = true;
       armProofTimeout();
       return invokeController("arm").catch((error: unknown) => {
@@ -608,7 +634,9 @@ async function installIdentityFetchBarrier(
     },
     release() {
       if (!captureSeen)
-        failProof("The browser identity observer was released without a verified read.");
+        failProof(
+          "The browser identity observer was released without a verified read.",
+        );
       controllerOperation = invokeController("release").catch(() => {});
     },
     async settleHeldReads() {
@@ -618,7 +646,9 @@ async function installIdentityFetchBarrier(
     },
     async dispose() {
       if (!proofFinished)
-        failProof("The browser identity observer was disposed before settlement.");
+        failProof(
+          "The browser identity observer was disposed before settlement.",
+        );
       disposed = true;
       active = false;
       page.off("close", onPageClose);

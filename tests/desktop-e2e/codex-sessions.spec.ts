@@ -787,9 +787,7 @@ test("a durable pre-dispatch NotSent Start retries only by explicit same-UUID re
       poisonedCheckResponses++;
     }
   };
-  const matchesAdmittedRead = (
-    snapshot: AdmittedRead,
-  ) =>
+  const matchesAdmittedRead = (snapshot: AdmittedRead) =>
     snapshot?.status === 200 &&
     snapshot.page.scope.projectId === alpha.id &&
     snapshot.page.scope.workspace === workspace &&
@@ -851,9 +849,7 @@ test("a durable pre-dispatch NotSent Start retries only by explicit same-UUID re
           }
           const parsed =
             sessionStartIdentitySuccessEnvelopeSchema.safeParse(value);
-          return parsed.success
-            ? { status, page: parsed.data.data }
-            : null;
+          return parsed.success ? { status, page: parsed.data.data } : null;
         })
         .catch(() => null)
         .then((snapshot) => {
@@ -942,8 +938,9 @@ test("disposing an unused preview observer rejects before a later server identit
   const before = tasks().length;
   await openSettled(page, `/index.html#/desktop/project/${alpha.id}/sessions`);
   const originalFetch = await page.evaluateHandle(() => window.fetch);
-  let observer: Awaited<ReturnType<typeof observePreviewIdentityRefresh>> | null =
-    null;
+  let observer: Awaited<
+    ReturnType<typeof observePreviewIdentityRefresh>
+  > | null = null;
   let observerDisposed = false;
   let identityGets = 0,
     previewPosts = 0,
@@ -977,7 +974,9 @@ test("disposing an unused preview observer rejects before a later server identit
       await page.evaluate((prior) => window.fetch === prior, originalFetch),
     ).toBe(true);
 
-    await page.getByRole("button", { name: "New session", exact: true }).click();
+    await page
+      .getByRole("button", { name: "New session", exact: true })
+      .click();
     const dialog = await chooseCodex(page);
     const readsBeforeCheck = identityGets;
     await dialog
@@ -1222,7 +1221,9 @@ test("confirmed reserved retirement reads back the tombstone before a new UUID c
     ).toBe(true);
     const pendingBody = retirement.locator(".af-dialog-body");
     if (
-      await pendingBody.evaluate((element) => element === document.activeElement)
+      await pendingBody.evaluate(
+        (element) => element === document.activeElement,
+      )
     )
       await page.keyboard.press("Tab");
     await expect(keep).toBeFocused();
