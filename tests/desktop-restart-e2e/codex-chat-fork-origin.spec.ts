@@ -1314,11 +1314,7 @@ async function observeForkScopeHydration(
     active = false;
     readinessReleased = true;
     release.resolve(undefined);
-    try {
-      await page.removeExposedFunction(bindingName);
-    } catch {
-      // Preserve setup failure; cleanup is best effort.
-    }
+    // Playwright bindings live until Page teardown; the inactive closure is inert.
     throw error;
   }
 
@@ -1382,11 +1378,7 @@ async function observeForkScopeHydration(
       } catch {
         // A closed document has no live observer or response to affect.
       }
-      try {
-        await page.removeExposedFunction(bindingName);
-      } catch {
-        // Cleanup is best effort; no observer failure may replace the test failure.
-      }
+      // Playwright bindings live until Page teardown; the inactive closure is inert.
     },
   };
 }
