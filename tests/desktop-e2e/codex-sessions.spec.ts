@@ -21,8 +21,8 @@ import { HEARTH_HOME } from "../e2e/servers";
 import { alpha, beta, seedProjects, workspace } from "./project-fixtures";
 import { captureTextResponsesThroughBrowserFetch } from "./browser-response-capture";
 import {
+  holdNextVerifiedIdentityRead,
   observePreviewIdentityRefresh,
-  observeSiblingPreviewIdentityRefresh,
 } from "./session-start-refresh-barrier";
 
 const sessionStartIdentitySuccessEnvelopeSchema = z
@@ -936,6 +936,75 @@ test("a durable pre-dispatch NotSent Start retries only by explicit same-UUID re
   expect(tasks()).toHaveLength(before + 1);
 });
 
+test("disposing an unused preview observer rejects before a later server identity read", async ({
+  page,
+}) => {
+  const before = tasks().length;
+  await openSettled(page, `/index.html#/desktop/project/${alpha.id}/sessions`);
+  const originalFetch = await page.evaluateHandle(() => window.fetch);
+  let observer: Awaited<ReturnType<typeof observePreviewIdentityRefresh>> | null =
+    null;
+  let observerDisposed = false;
+  let identityGets = 0,
+    previewPosts = 0,
+    startPosts = 0;
+  const onRequest = (request: Request) => {
+    const path = new URL(request.url()).pathname;
+    if (
+      request.method() === "GET" &&
+      path === `/__agent-forge/projects/${alpha.id}/session-start-identities`
+    )
+      identityGets++;
+    if (request.method() !== "POST") return;
+    if (path === `/__agent-forge/projects/${alpha.id}/sessions/preview`)
+      previewPosts++;
+    if (path === `/__agent-forge/projects/${alpha.id}/sessions`) startPosts++;
+  };
+  page.on("request", onRequest);
+  try {
+    observer = await observePreviewIdentityRefresh(page, alpha.id, workspace);
+    expect(
+      await page.evaluate((prior) => window.fetch !== prior, originalFetch),
+    ).toBe(true);
+    await observer.dispose();
+    observerDisposed = true;
+    const proofRejected = await observer.settledRead.then(
+      () => false,
+      () => true,
+    );
+    expect(proofRejected).toBe(true);
+    expect(
+      await page.evaluate((prior) => window.fetch === prior, originalFetch),
+    ).toBe(true);
+
+    await page.getByRole("button", { name: "New session", exact: true }).click();
+    const dialog = await chooseCodex(page);
+    const readsBeforeCheck = identityGets;
+    await dialog
+      .getByRole("button", { name: "Check server", exact: true })
+      .click();
+    await expect.poll(() => identityGets).toBe(readsBeforeCheck + 1);
+    expect(observer.isObserved).toBe(false);
+    expect(previewPosts).toBe(0);
+    expect(startPosts).toBe(0);
+    expect(tasks()).toHaveLength(before);
+  } finally {
+    page.off("request", onRequest);
+    if (observer && !observerDisposed) {
+      try {
+        await observer.dispose();
+      } catch {
+        // Preserve the primary assertion failure if browser cleanup fails.
+      }
+    }
+    try {
+      await originalFetch.dispose();
+    } catch {
+      // The page may already have closed after a failure.
+    }
+  }
+});
+
 test("confirmed reserved retirement reads back the tombstone before a new UUID can start", async ({
   page,
 }) => {
@@ -1073,16 +1142,21 @@ test("confirmed reserved retirement reads back the tombstone before a new UUID c
     });
   await expect(close).toBeFocused();
   const betaPage = await page.context().newPage();
-  const siblingIdentityRefresh = await observeSiblingPreviewIdentityRefresh(
+  const siblingIdentityRefresh = await holdNextVerifiedIdentityRead(
     page,
-    betaPage,
     alpha.id,
-    beta.id,
     workspace,
     { requestId: originalId, requestHash: originalHash },
   );
-  let betaStartPosts = 0;
-  const onBetaStartRequest = (request: Request) => {
+  let betaPreviewPosts = 0,
+    betaStartPosts = 0;
+  const onBetaRequest = (request: Request) => {
+    if (
+      request.method() === "POST" &&
+      new URL(request.url()).pathname ===
+        `/__agent-forge/projects/${beta.id}/sessions/preview`
+    )
+      betaPreviewPosts++;
     if (
       request.method() === "POST" &&
       new URL(request.url()).pathname ===
@@ -1090,7 +1164,7 @@ test("confirmed reserved retirement reads back the tombstone before a new UUID c
     )
       betaStartPosts++;
   };
-  betaPage.on("request", onBetaStartRequest);
+  betaPage.on("request", onBetaRequest);
   try {
     await openSettled(
       betaPage,
@@ -1121,7 +1195,7 @@ test("confirmed reserved retirement reads back the tombstone before a new UUID c
       }),
     ).toContainText("--sandbox");
     await expect.poll(() => siblingIdentityRefresh.isObserved).toBe(true);
-    await expect.poll(() => siblingIdentityRefresh.isPreviewObserved).toBe(true);
+    expect(betaPreviewPosts).toBe(1);
     expect(siblingIdentityRefresh.observedReads).toBeGreaterThan(0);
     expect(betaStartPosts).toBe(0);
     expect(tasks()).toHaveLength(before);
@@ -1157,7 +1231,7 @@ test("confirmed reserved retirement reads back the tombstone before a new UUID c
     } catch {
       // Cleanup must not replace a causal focus assertion failure.
     }
-    betaPage.off("request", onBetaStartRequest);
+    betaPage.off("request", onBetaRequest);
     try {
       await siblingIdentityRefresh.dispose();
     } catch {
