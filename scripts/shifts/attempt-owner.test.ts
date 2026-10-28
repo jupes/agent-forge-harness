@@ -4,7 +4,10 @@ import { join } from "node:path";
 import type { ProjectShiftIntent } from "../../types/project-shifts";
 import { conversationFile } from "../conversations/paths";
 import { createConversationStore } from "../conversations/store";
-import type { PrivateExecInput } from "../executors/private-capture";
+import {
+  PrivateCaptureError,
+  type PrivateExecInput,
+} from "../executors/private-capture";
 import { resolveCheckout } from "../ledger/workspace";
 import {
   createSessionRegistry,
@@ -94,6 +97,32 @@ function fixture() {
     validated: () => validated,
   };
 }
+
+test("an invalid Shift origin reports only its failure phase", async () => {
+  const f = fixture(),
+    observations: unknown[][] = [],
+    options = {
+      ...f.options,
+      intent: { ...f.intent, requestHash: "invalid" },
+      onFailure: (...args: unknown[]) => observations.push(args),
+    };
+  let failure: unknown;
+  try {
+    await openShiftAttempt(options);
+  } catch (error) {
+    failure = error;
+  }
+  expect(failure).toBeInstanceOf(PrivateCaptureError);
+  expect(failure).toMatchObject({
+    message:
+      "The private provider transcript could not be verified. The shift must stop before another attempt.",
+  });
+  expect(f.prepared()).toBe(0);
+  expect(f.validated()).toBe(0);
+  expect(existsSync(sessionRegistryFile(f.home))).toBe(false);
+  expect(existsSync(join(f.home, "conversations"))).toBe(false);
+  expect(observations).toEqual([["origin"]]);
+});
 
 test("a fresh shift attempt privately correlates its full actual input before returning its owned turn", async () => {
   const f = fixture(),
