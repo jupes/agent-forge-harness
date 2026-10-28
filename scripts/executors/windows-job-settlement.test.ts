@@ -4,6 +4,7 @@ import {
   settleWindowsJob,
   WINDOWS_JOB_SETTLEMENT_MS,
   type WindowsJobSettlementApi,
+  type WindowsJobSettlementFailurePhase,
 } from "./windows-job-settlement";
 
 type FakeProcess = {
@@ -122,6 +123,84 @@ const settle = <Job extends object>(
   job: Job,
   ms = 50,
 ) => settleWindowsJob(f.api, job, f.rootIdentity, ms);
+
+test("a refused job census reports its bounded failure phase", async () => {
+  const f = fixture(),
+    phases: WindowsJobSettlementFailurePhase[] = [];
+  f.setSnapshots([null]);
+  const diagnosticApi = Object.assign(f.api, {
+    onFailurePhase(phase: WindowsJobSettlementFailurePhase) {
+      phases.push(phase);
+    },
+  });
+
+  await expect(
+    settleWindowsJob(diagnosticApi, {}, f.rootIdentity),
+  ).rejects.toThrow("Windows owned process cleanup could not be confirmed.");
+  expect(phases).toEqual(["capture-members"]);
+});
+
+test("a throwing refusal observer cannot change settlement or handle cleanup", async () => {
+  const f = fixture();
+  f.setSnapshots([null]);
+  const diagnosticApi = Object.assign(f.api, {
+    onFailurePhase() {
+      throw new Error("private observer failure");
+    },
+  });
+
+  await expect(
+    settleWindowsJob(diagnosticApi, {}, f.rootIdentity),
+  ).rejects.toThrow("Windows owned process cleanup could not be confirmed.");
+  expect(f.closed).toEqual([900]);
+});
+
+test("a failed process-handle close is reported after all handles are attempted", async () => {
+  const f = fixture([21]),
+    phases: WindowsJobSettlementFailurePhase[] = [];
+  f.processes.set(21, processRow(21));
+  const closeAttempts: number[] = [];
+  f.api.closeProcess = (process) => {
+    closeAttempts.push(process.pid);
+    f.closed.push(process.pid);
+    if (process.pid === 21) throw new Error("private native close detail");
+  };
+  const diagnosticApi = Object.assign(f.api, {
+    onFailurePhase(phase: WindowsJobSettlementFailurePhase) {
+      phases.push(phase);
+    },
+  });
+
+  await expect(
+    settleWindowsJob(diagnosticApi, {}, f.rootIdentity),
+  ).rejects.toThrow("Windows owned process cleanup could not be confirmed.");
+  expect(closeAttempts).toEqual([900, 21]);
+  expect(phases).toEqual(["close-process-handles"]);
+});
+
+test("deadline refusal is reported without extending the settlement clock", async () => {
+  const f = fixture(),
+    phases: WindowsJobSettlementFailurePhase[] = [];
+  f.rootIdentity.handle.signaled = false;
+  const diagnosticApi = Object.assign(f.api, {
+    onFailurePhase(phase: WindowsJobSettlementFailurePhase) {
+      phases.push(phase);
+    },
+  });
+
+  await expect(
+    settleWindowsJob(
+      diagnosticApi,
+      {},
+      f.rootIdentity,
+      WINDOWS_JOB_SETTLEMENT_MS,
+    ),
+  ).rejects.toThrow("Windows owned process cleanup could not be confirmed.");
+  expect(f.calls.filter((call) => call === "sleep").length).toBe(
+    WINDOWS_JOB_SETTLEMENT_MS / 10,
+  );
+  expect(phases).toEqual(["deadline"]);
+});
 
 test("an empty owned job settles after termination", async () => {
   const f = fixture();
