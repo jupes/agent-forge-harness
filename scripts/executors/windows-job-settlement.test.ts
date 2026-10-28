@@ -245,6 +245,65 @@ test("a changed member generation refuses settlement", async () => {
   ]);
 });
 
+test("verification census failures report bounded read and member phases", async () => {
+  const cases: {
+    phase: string;
+    prepare(f: ReturnType<typeof fixture>): void;
+  }[] = [
+    {
+      phase: "verify-census-members",
+      prepare(f) {
+        f.setSnapshots([[31], null]);
+      },
+    },
+    {
+      phase: "verify-census-total-read",
+      prepare(f) {
+        f.setTotals([2, null]);
+      },
+    },
+    {
+      phase: "verify-census-active-read",
+      prepare(f) {
+        f.setActiveSnapshots([null]);
+      },
+    },
+    {
+      phase: "verify-census-unaccounted",
+      prepare(f) {
+        f.setActive(3);
+      },
+    },
+    {
+      phase: "verify-census-unretained",
+      prepare(f) {
+        f.setSnapshots([[31], [31, 32]]);
+      },
+    },
+  ];
+
+  for (const check of cases) {
+    const f = fixture([31]),
+      phases: string[] = [];
+    f.processes.set(31, processRow(31));
+    check.prepare(f);
+    const diagnosticApi = Object.assign(f.api, {
+      onFailurePhase(phase: string) {
+        phases.push(phase);
+      },
+    });
+
+    await expect(
+      settleWindowsJob(diagnosticApi, {}, f.rootIdentity),
+    ).rejects.toThrow("Windows owned process cleanup could not be confirmed.");
+    expect(phases).toEqual([check.phase]);
+    expect(f.closed.sort()).toEqual([31, 900]);
+    expect(f.calls).not.toContain("terminate");
+    if (check.phase === "verify-census-unretained")
+      expect(f.calls).not.toContain("open:32");
+  }
+});
+
 test("a live member is polled until its process handle is signaled", async () => {
   const f = fixture([41]),
     row = processRow(41, { signaled: false });
