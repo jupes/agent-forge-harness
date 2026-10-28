@@ -226,12 +226,20 @@ test("signaled members can settle while identity handles keep them listed", asyn
 test("a changed member generation refuses settlement", async () => {
   const f = fixture([31]);
   f.processes.set(31, processRow(31));
-  f.setTotals([2, 2, 3]);
+  f.setTotals([2, 3]);
   f.setTotal(3);
-  await expect(settle(f, {})).rejects.toThrow(
-    "Windows owned process cleanup could not be confirmed.",
-  );
+  const phases: string[] = [];
+  const diagnosticApi = Object.assign(f.api, {
+    onFailurePhase(phase: string) {
+      phases.push(phase);
+    },
+  });
+  await expect(
+    settleWindowsJob(diagnosticApi, {}, f.rootIdentity),
+  ).rejects.toThrow("Windows owned process cleanup could not be confirmed.");
   expect(f.closed.sort()).toEqual([31, 900]);
+  expect(f.calls).not.toContain("active");
+  expect(phases).toEqual(["verify-census-generation"]);
   expect(f.calls.filter((call) => call.startsWith("open:"))).toEqual([
     "open:31",
   ]);
