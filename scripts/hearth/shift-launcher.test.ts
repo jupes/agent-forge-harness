@@ -456,7 +456,9 @@ describe("an explicitly stopped Shift child", () => {
           settleStopped: async () => {
             settlementCalls += 1;
             if (!guard.settleStopped)
-              throw new Error("The inert Shift has no native settlement guard.");
+              throw new Error(
+                "The inert Shift has no native settlement guard.",
+              );
             await guard.settleStopped();
             signalSettlementStarted?.();
             await settlement;
@@ -524,7 +526,9 @@ describe("an explicitly stopped Shift child", () => {
               owner.releases += 1;
               guard.release();
             },
-            ...(guard.terminate ? { terminate: () => guard.terminate?.() } : {}),
+            ...(guard.terminate
+              ? { terminate: () => guard.terminate?.() }
+              : {}),
             ...(witness === "rejected"
               ? {
                   settleStopped: () => {

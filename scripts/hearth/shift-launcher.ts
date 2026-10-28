@@ -255,9 +255,7 @@ export function superviseShift(
     if (process.platform === "win32") {
       if (guard.settleStopped === undefined) {
         rejectStop(
-          new Error(
-            "Windows owned process cleanup could not be confirmed.",
-          ),
+          new Error("Windows owned process cleanup could not be confirmed."),
         );
         return stopping;
       }
@@ -275,12 +273,14 @@ export function superviseShift(
           process.kill(-proc.pid, "SIGKILL");
         } catch (error) {
           if (
-            !(error instanceof Error && "code" in error && error.code === "ESRCH")
+            !(
+              error instanceof Error &&
+              "code" in error &&
+              error.code === "ESRCH"
+            )
           ) {
             rejectStop(
-              new Error(
-                "Owned process group cleanup could not be confirmed.",
-              ),
+              new Error("Owned process group cleanup could not be confirmed."),
             );
             return stopping;
           }
@@ -291,19 +291,16 @@ export function superviseShift(
       );
     }
 
-    void settlement.then(
-      async () => {
-        try {
-          await rootDone;
-          guard.release();
-          liveShifts.delete(proc.pid);
-          resolveStop();
-        } catch (error) {
-          rejectStop(error);
-        }
-      },
-      rejectStop,
-    );
+    void settlement.then(async () => {
+      try {
+        await rootDone;
+        guard.release();
+        liveShifts.delete(proc.pid);
+        resolveStop();
+      } catch (error) {
+        rejectStop(error);
+      }
+    }, rejectStop);
     return stopping;
   };
   return {
