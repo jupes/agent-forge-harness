@@ -35,6 +35,7 @@ import {
   settleWindowsJob,
   WINDOWS_JOB_SETTLEMENT_MS,
   type WindowsJobSettlementApi,
+  type WindowsJobSettlementFailurePhase,
 } from "./windows-job-settlement";
 
 export interface TreeGuard {
@@ -175,8 +176,10 @@ function processCreationTime(
 /** Query the exact job's bounded process list and the minimum identity facts. */
 function windowsJobSettlementApi(
   api: Kernel32,
+  onFailurePhase?: (phase: WindowsJobSettlementFailurePhase) => void,
 ): WindowsJobSettlementApi<KernelHandle, KernelHandle> {
   return {
+    ...(onFailurePhase ? { onFailurePhase } : {}),
     terminate(job) {
       return api.TerminateJobObject(job, 1) !== 0;
     },
@@ -288,17 +291,39 @@ function windowsJobSettlementApi(
   };
 }
 
-function jobGuard(pid: number): TreeGuard {
+function jobGuard(
+  pid: number,
+  onWindowsSettlementFailure?: (
+    phase: WindowsJobSettlementFailurePhase,
+  ) => void,
+): TreeGuard {
+  let failureReported = false;
+  const reportFailure = (phase: WindowsJobSettlementFailurePhase) => {
+    if (!onWindowsSettlementFailure || failureReported) return;
+    failureReported = true;
+    try {
+      onWindowsSettlementFailure(phase);
+    } catch {
+      // A trusted diagnostic observer cannot alter the ownership result.
+    }
+  };
   const api = jobApi();
-  if (api === null) return UNGUARDED;
+  if (api === null) {
+    reportFailure("guard-root");
+    return UNGUARDED;
+  }
   const job = api.CreateJobObjectW(null, null);
-  if (isNullHandle(job)) return UNGUARDED;
+  if (isNullHandle(job)) {
+    reportFailure("guard-root");
+    return UNGUARDED;
+  }
   const child = api.OpenProcess(ASSIGNED_ROOT_ACCESS, 0, pid);
   const assigned =
     !isNullHandle(child) &&
     setLimitFlags(api, job, KILL_ON_JOB_CLOSE) &&
     api.AssignProcessToJobObject(job, child) !== 0;
   if (!assigned || isNullHandle(child)) {
+    reportFailure("guard-root");
     if (!isNullHandle(child)) api.CloseHandle(child);
     // An empty job, or one the child is not in: closing it ends nothing.
     setLimitFlags(api, job, 0);
@@ -327,6 +352,7 @@ function jobGuard(pid: number): TreeGuard {
     preserveKillOnClose = true;
     try {
       if (api.CloseHandle(job) !== 0) held = false;
+      else reportFailure("close-job-handle");
     } finally {
       closeRootHandle();
     }
@@ -337,6 +363,7 @@ function jobGuard(pid: number): TreeGuard {
     },
     async settleStopped() {
       if (!held || rootHandle === null || rootCreationTime === null) {
+        reportFailure("guard-root");
         try {
           closeWithKillOnClose();
         } catch {
@@ -354,16 +381,18 @@ function jobGuard(pid: number): TreeGuard {
       rootHandle = null;
       try {
         await settleWindowsJob(
-          windowsJobSettlementApi(api),
+          windowsJobSettlementApi(api, reportFailure),
           job,
           assignedRoot,
           WINDOWS_JOB_SETTLEMENT_MS,
         );
         preserveKillOnClose = true;
-        if (api.CloseHandle(job) === 0)
+        if (api.CloseHandle(job) === 0) {
+          reportFailure("close-job-handle");
           throw new Error(
             "Windows owned process cleanup could not be confirmed.",
           );
+        }
         held = false;
       } catch {
         // Closing the retained job with kill-on-close still set is the fail-closed fallback.
@@ -446,13 +475,20 @@ export function guardRequiredTree(pid: number): TreeGuard | null {
 }
 
 /** New native processes remain suspended until this mandatory ownership succeeds. */
-export function guardSuspendedWindowsProcess(pid: number): {
+export function guardSuspendedWindowsProcess(
+  pid: number,
+  diagnostics?: {
+    onWindowsSettlementFailure: (
+      phase: WindowsJobSettlementFailurePhase,
+    ) => void;
+  },
+): {
   release(): void;
   terminate(): void;
   settleStopped(): Promise<void>;
 } | null {
   if (process.platform !== "win32" || process.arch !== "x64") return null;
-  const guard = jobGuard(pid),
+  const guard = jobGuard(pid, diagnostics?.onWindowsSettlementFailure),
     terminate = guard.terminate,
     settleStopped = guard.settleStopped;
   return terminate && settleStopped
