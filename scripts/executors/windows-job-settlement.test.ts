@@ -123,6 +123,22 @@ const settle = <Job extends object>(
   ms = 50,
 ) => settleWindowsJob(f.api, job, f.rootIdentity, ms);
 
+test("a refused job census reports its bounded failure phase", async () => {
+  const f = fixture(),
+    phases: string[] = [];
+  f.setSnapshots([null]);
+  const diagnosticApi = Object.assign(f.api, {
+    onFailurePhase(phase: string) {
+      phases.push(phase);
+    },
+  });
+
+  await expect(
+    settleWindowsJob(diagnosticApi, {}, f.rootIdentity),
+  ).rejects.toThrow("Windows owned process cleanup could not be confirmed.");
+  expect(phases).toEqual(["capture-members"]);
+});
+
 test("an empty owned job settles after termination", async () => {
   const f = fixture();
   await settle(f, {});
