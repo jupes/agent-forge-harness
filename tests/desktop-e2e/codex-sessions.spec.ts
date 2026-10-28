@@ -1178,12 +1178,18 @@ test("confirmed reserved retirement reads back the tombstone before a new UUID c
       exact: true,
     });
     await betaDialog.getByRole("button", { name: /Cx · Codex/ }).click();
+    await expect(
+      betaDialog.getByRole("combobox", { name: "Session smith", exact: true }),
+    ).toHaveValue("codex-journeyman");
     await betaDialog
       .getByRole("textbox", { name: "Session prompt", exact: true })
       .fill("Read Beta's supported Codex options only");
     await betaDialog
       .getByRole("combobox", { name: "Session effort", exact: true })
       .selectOption("");
+    await expect(
+      betaDialog.getByRole("combobox", { name: "Session effort", exact: true }),
+    ).toHaveValue("");
     await siblingIdentityRefresh.arm();
     await betaDialog
       .getByRole("button", { name: "Check supported options", exact: true })
