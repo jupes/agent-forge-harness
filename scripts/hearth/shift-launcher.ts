@@ -197,6 +197,7 @@ export function superviseShift(
   const rootDone = (async (): Promise<ShiftChildExit> => {
     const code = await proc.exited;
     rootExited = true;
+    liveShifts.delete(proc.pid);
     return {
       exitCode: proc.signalCode !== null ? null : code,
       stdout: await stdout,
@@ -248,6 +249,7 @@ export function superviseShift(
       resolveStop = resolve;
       rejectStop = reject;
     });
+    void stopping.catch(() => undefined);
 
     let settlement: Promise<void>;
     if (process.platform === "win32") {
