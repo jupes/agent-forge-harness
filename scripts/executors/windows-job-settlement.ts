@@ -176,7 +176,17 @@ export async function settleWindowsJob<Job, Process>(
     const capturedMembers = readMembers();
     phase = "verify-census-total-read";
     const capturedTotal = readTotalProcesses();
-    if (capturedTotal !== initialTotal) refuse("verify-census-generation");
+    // Accept growth only when the lifetime count is covered by retained identities.
+    // This count fences generations; it never proves exit by itself.
+    // Settlement still requires every retained process handle to signal.
+    if (
+      capturedTotal < initialTotal ||
+      (capturedTotal > initialTotal &&
+        (capturedTotal !== retained.size ||
+          retained.size > MAX_JOB_PROCESSES ||
+          capturedMembers.some((pid) => !retained.has(pid))))
+    )
+      refuse("verify-census-generation");
     phase = "verify-census-active-read";
     const unaccounted = hasUnaccountedProcesses();
     if (unaccounted) refuse("verify-census-unaccounted");
@@ -192,7 +202,7 @@ export async function settleWindowsJob<Job, Process>(
       if (
         // TotalProcesses detects members added since capture; it does not
         // prove that any member has exited.
-        readTotalProcesses() !== initialTotal ||
+        readTotalProcesses() !== capturedTotal ||
         hasUnaccountedProcesses() ||
         currentMembers.some((pid) => !retained.has(pid))
       )
@@ -206,14 +216,14 @@ export async function settleWindowsJob<Job, Process>(
 
       if (allSignaled) {
         phase = "final-census";
-        if (readTotalProcesses() !== initialTotal || hasUnaccountedProcesses())
+        if (readTotalProcesses() !== capturedTotal || hasUnaccountedProcesses())
           refuse();
         const finalMembers = readMembers();
         // Recheck generation only after every retained process handle is
         // signaled and the final same-job membership snapshot is available.
         if (
           api.now() < deadline &&
-          readTotalProcesses() === initialTotal &&
+          readTotalProcesses() === capturedTotal &&
           !hasUnaccountedProcesses() &&
           finalMembers.every((pid) => retained.has(pid))
         ) {

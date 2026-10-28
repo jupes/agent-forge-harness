@@ -245,6 +245,121 @@ test("a changed member generation refuses settlement", async () => {
   ]);
 });
 
+test("fully retained growth still waits for every retained process handle", async () => {
+  const f = fixture([21]),
+    child = processRow(21, { signaled: false }),
+    phases: WindowsJobSettlementFailurePhase[] = [];
+  f.processes.set(21, child);
+  f.setTotals([1, 2]);
+  f.setTotal(2);
+  const diagnosticApi = Object.assign(f.api, {
+    onFailurePhase(phase: WindowsJobSettlementFailurePhase) {
+      phases.push(phase);
+    },
+  });
+  let releaseChild!: () => void;
+  const childRelease = new Promise<void>((resolve) => {
+    releaseChild = resolve;
+  });
+  let settled = false;
+  let failure: unknown;
+  f.api.sleep = async (ms) => {
+    f.calls.push("sleep");
+    await childRelease;
+    child.signaled = true;
+    f.setNow(ms);
+  };
+  const settlement = settleWindowsJob(diagnosticApi, {}, f.rootIdentity).then(
+    () => {
+      settled = true;
+    },
+    (error: unknown) => {
+      settled = true;
+      failure = error;
+    },
+  );
+
+  expect(phases).toEqual([]);
+  expect(f.calls).toContain("sleep");
+  expect(settled).toBe(false);
+  expect(f.closed).toEqual([]);
+  expect(f.calls.indexOf("open:21")).toBeLessThan(f.calls.indexOf("terminate"));
+  expect(f.calls.indexOf("belongs:21")).toBeLessThan(
+    f.calls.indexOf("terminate"),
+  );
+  expect(f.calls.indexOf("creation:21")).toBeLessThan(
+    f.calls.indexOf("terminate"),
+  );
+
+  releaseChild();
+  await settlement;
+  expect(settled).toBe(true);
+  expect(failure).toBeUndefined();
+  expect(f.closed.sort()).toEqual([21, 900]);
+  expect(phases).toEqual([]);
+});
+
+test("a decreasing captured generation refuses settlement", async () => {
+  const f = fixture([31]),
+    phases: WindowsJobSettlementFailurePhase[] = [];
+  f.processes.set(31, processRow(31));
+  f.setTotals([2, 1]);
+  f.setTotal(1);
+  const diagnosticApi = Object.assign(f.api, {
+    onFailurePhase(phase: WindowsJobSettlementFailurePhase) {
+      phases.push(phase);
+    },
+  });
+
+  await expect(
+    settleWindowsJob(diagnosticApi, {}, f.rootIdentity),
+  ).rejects.toThrow("Windows owned process cleanup could not be confirmed.");
+  expect(phases).toEqual(["verify-census-generation"]);
+  expect(f.calls).not.toContain("terminate");
+  expect(f.closed.sort()).toEqual([31, 900]);
+});
+
+test("growth after a fully accounted capture refuses settlement", async () => {
+  const f = fixture([32]),
+    phases: WindowsJobSettlementFailurePhase[] = [];
+  f.processes.set(32, processRow(32));
+  f.setTotals([1, 2, 3]);
+  f.setTotal(3);
+  const diagnosticApi = Object.assign(f.api, {
+    onFailurePhase(phase: WindowsJobSettlementFailurePhase) {
+      phases.push(phase);
+    },
+  });
+
+  await expect(
+    settleWindowsJob(diagnosticApi, {}, f.rootIdentity),
+  ).rejects.toThrow("Windows owned process cleanup could not be confirmed.");
+  expect(phases).toEqual(["observe-settlement"]);
+  expect(f.calls).toContain("terminate");
+  expect(f.closed.sort()).toEqual([32, 900]);
+});
+
+test("fully retained growth above the identity cap refuses settlement", async () => {
+  const memberIds = Array.from({ length: 64 }, (_, index) => index + 1),
+    f = fixture(memberIds),
+    phases: WindowsJobSettlementFailurePhase[] = [];
+  for (const pid of memberIds) f.processes.set(pid, processRow(pid));
+  f.setTotals([64, 65]);
+  f.setTotal(65);
+  const diagnosticApi = Object.assign(f.api, {
+    onFailurePhase(phase: WindowsJobSettlementFailurePhase) {
+      phases.push(phase);
+    },
+  });
+
+  await expect(
+    settleWindowsJob(diagnosticApi, {}, f.rootIdentity),
+  ).rejects.toThrow("Windows owned process cleanup could not be confirmed.");
+  expect(phases).toEqual(["verify-census-generation"]);
+  expect(f.calls).not.toContain("terminate");
+  expect(f.closed).toHaveLength(65);
+});
+
 test("verification census failures report bounded read and member phases", async () => {
   const cases: {
     phase: string;

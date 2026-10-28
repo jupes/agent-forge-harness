@@ -532,10 +532,14 @@ export function ProjectCreateFlow({
   state,
   owner,
   canWrite,
+  renderEntry,
 }: {
   state: ProjectCreateState;
   owner: Owner;
   canWrite: boolean;
+  renderEntry?:
+    | ((props: { disabled: boolean; onSkip(): void }) => JSX.Element)
+    | undefined;
 }): JSX.Element {
   const [createOpen, setCreateOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -548,18 +552,29 @@ export function ProjectCreateFlow({
     : null;
   const active = state.entries.filter(isActiveEntry);
   const canCreate = state.phase === "ready" && active.length === 0;
+  const disabled = !canCreate || !canWrite || state.busy;
+  const openCreate = () => {
+    if (!disabled) setCreateOpen(true);
+  };
+  const entryClass = renderEntry
+    ? "af-project-new af-project-new-onboarding"
+    : "af-project-new";
   return (
     <section aria-label="Project creation" class="af-project-create">
-      <div class="af-project-new">
-        <Button
-          disabled={!canCreate || !canWrite || state.busy}
-          {...(state.phase === "unavailable"
-            ? { title: "Project creation details could not be verified" }
-            : {})}
-          onClick={() => setCreateOpen(true)}
-        >
-          New project
-        </Button>
+      <div class={entryClass}>
+        {renderEntry ? (
+          renderEntry({ disabled, onSkip: openCreate })
+        ) : (
+          <Button
+            disabled={disabled}
+            {...(state.phase === "unavailable"
+              ? { title: "Project creation details could not be verified" }
+              : {})}
+            onClick={openCreate}
+          >
+            New project
+          </Button>
+        )}
       </div>
       {state.phase === "loading" && (
         <p role="status">Checking saved project creations…</p>
