@@ -139,6 +139,7 @@ test("the Claude adapter freezes the executable from the current process PATH", 
     const worktree = ${JSON.stringify(worktree)};
     const general = ${JSON.stringify(general)};
     const privateDir = ${JSON.stringify(privateDir)};
+    const generalMarker = ${JSON.stringify(generalMarker)};
     const privateMarker = ${JSON.stringify(privateMarker)};
     const normalize = (path) => {
       const value = path.replaceAll("\\\\", "/");
