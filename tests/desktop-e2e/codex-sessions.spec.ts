@@ -4,6 +4,7 @@ import {
   expect,
   type Locator,
   type Page,
+  type Request,
   type Response,
   test,
 } from "@playwright/test";
@@ -19,7 +20,10 @@ import { pageToken } from "../e2e/launch-link";
 import { HEARTH_HOME } from "../e2e/servers";
 import { alpha, beta, seedProjects, workspace } from "./project-fixtures";
 import { captureTextResponsesThroughBrowserFetch } from "./browser-response-capture";
-import { observePreviewIdentityRefresh } from "./session-start-refresh-barrier";
+import {
+  holdNextVerifiedIdentityRead,
+  observePreviewIdentityRefresh,
+} from "./session-start-refresh-barrier";
 
 const sessionStartIdentitySuccessEnvelopeSchema = z
   .object({
@@ -783,9 +787,7 @@ test("a durable pre-dispatch NotSent Start retries only by explicit same-UUID re
       poisonedCheckResponses++;
     }
   };
-  const matchesAdmittedRead = (
-    snapshot: AdmittedRead,
-  ) =>
+  const matchesAdmittedRead = (snapshot: AdmittedRead) =>
     snapshot?.status === 200 &&
     snapshot.page.scope.projectId === alpha.id &&
     snapshot.page.scope.workspace === workspace &&
@@ -847,9 +849,7 @@ test("a durable pre-dispatch NotSent Start retries only by explicit same-UUID re
           }
           const parsed =
             sessionStartIdentitySuccessEnvelopeSchema.safeParse(value);
-          return parsed.success
-            ? { status, page: parsed.data.data }
-            : null;
+          return parsed.success ? { status, page: parsed.data.data } : null;
         })
         .catch(() => null)
         .then((snapshot) => {
@@ -932,6 +932,78 @@ test("a durable pre-dispatch NotSent Start retries only by explicit same-UUID re
   expect(tasks()).toHaveLength(before + 1);
 });
 
+test("disposing an unused preview observer rejects before a later server identity read", async ({
+  page,
+}) => {
+  const before = tasks().length;
+  await openSettled(page, `/index.html#/desktop/project/${alpha.id}/sessions`);
+  const originalFetch = await page.evaluateHandle(() => window.fetch);
+  let observer: Awaited<
+    ReturnType<typeof observePreviewIdentityRefresh>
+  > | null = null;
+  let observerDisposed = false;
+  let identityGets = 0,
+    previewPosts = 0,
+    startPosts = 0;
+  const onRequest = (request: Request) => {
+    const path = new URL(request.url()).pathname;
+    if (
+      request.method() === "GET" &&
+      path === `/__agent-forge/projects/${alpha.id}/session-start-identities`
+    )
+      identityGets++;
+    if (request.method() !== "POST") return;
+    if (path === `/__agent-forge/projects/${alpha.id}/sessions/preview`)
+      previewPosts++;
+    if (path === `/__agent-forge/projects/${alpha.id}/sessions`) startPosts++;
+  };
+  page.on("request", onRequest);
+  try {
+    observer = await observePreviewIdentityRefresh(page, alpha.id, workspace);
+    expect(
+      await page.evaluate((prior) => window.fetch !== prior, originalFetch),
+    ).toBe(true);
+    await observer.dispose();
+    observerDisposed = true;
+    const proofRejected = await observer.settledRead.then(
+      () => false,
+      () => true,
+    );
+    expect(proofRejected).toBe(true);
+    expect(
+      await page.evaluate((prior) => window.fetch === prior, originalFetch),
+    ).toBe(true);
+
+    await page
+      .getByRole("button", { name: "New session", exact: true })
+      .click();
+    const dialog = await chooseCodex(page);
+    const readsBeforeCheck = identityGets;
+    await dialog
+      .getByRole("button", { name: "Check server", exact: true })
+      .click();
+    await expect.poll(() => identityGets).toBe(readsBeforeCheck + 1);
+    expect(observer.isObserved).toBe(false);
+    expect(previewPosts).toBe(0);
+    expect(startPosts).toBe(0);
+    expect(tasks()).toHaveLength(before);
+  } finally {
+    page.off("request", onRequest);
+    if (observer && !observerDisposed) {
+      try {
+        await observer.dispose();
+      } catch {
+        // Preserve the primary assertion failure if browser cleanup fails.
+      }
+    }
+    try {
+      await originalFetch.dispose();
+    } catch {
+      // The page may already have closed after a failure.
+    }
+  }
+});
+
 test("confirmed reserved retirement reads back the tombstone before a new UUID can start", async ({
   page,
 }) => {
@@ -975,6 +1047,16 @@ test("confirmed reserved retirement reads back the tombstone before a new UUID c
     ).toBeDisabled();
   } finally {
     identityRefresh.release();
+    try {
+      await identityRefresh.settledRead;
+    } catch {
+      // A failed browser observation must not replace the original assertion.
+    }
+    try {
+      await identityRefresh.dispose();
+    } catch {
+      // A closed page must not replace the original assertion.
+    }
   }
   await identityRefresh.settledRead;
   await expect(
@@ -1035,6 +1117,7 @@ test("confirmed reserved retirement reads back the tombstone before a new UUID c
     .filter({ hasText: originalId });
   const originalHash = await identityRow.locator("code").nth(1).textContent();
   expect(originalHash).toMatch(/^[0-9a-f]{64}$/);
+  if (!originalHash) throw Error("Missing reserved Start request hash.");
   const reviewRetirement = dialog.getByRole("button", {
     name: "Review retirement",
     exact: true,
@@ -1057,22 +1140,125 @@ test("confirmed reserved retirement reads back the tombstone before a new UUID c
       exact: true,
     });
   await expect(close).toBeFocused();
-  await page.keyboard.press("Tab");
-  const body = retirement.locator(".af-dialog-body");
-  expect(
-    await retirement.evaluate((dialog) =>
-      dialog.contains(document.activeElement),
-    ),
-  ).toBe(true);
-  if (await body.evaluate((element) => element === document.activeElement))
+  const betaPage = await page.context().newPage();
+  const siblingIdentityRefresh = await holdNextVerifiedIdentityRead(
+    page,
+    alpha.id,
+    workspace,
+    { requestId: originalId, requestHash: originalHash },
+  );
+  let betaPreviewPosts = 0,
+    betaStartPosts = 0;
+  const onBetaRequest = (request: Request) => {
+    if (
+      request.method() === "POST" &&
+      new URL(request.url()).pathname ===
+        `/__agent-forge/projects/${beta.id}/sessions/preview`
+    )
+      betaPreviewPosts++;
+    if (
+      request.method() === "POST" &&
+      new URL(request.url()).pathname ===
+        `/__agent-forge/projects/${beta.id}/sessions`
+    )
+      betaStartPosts++;
+  };
+  betaPage.on("request", onBetaRequest);
+  try {
+    await openSettled(
+      betaPage,
+      `/index.html#/desktop/project/${beta.id}/sessions`,
+    );
+    await betaPage
+      .getByRole("button", { name: "New session", exact: true })
+      .click();
+    const betaDialog = betaPage.getByRole("dialog", {
+      name: "New session · Beta",
+      exact: true,
+    });
+    await betaDialog.getByRole("button", { name: /Cx · Codex/ }).click();
+    await expect(
+      betaDialog.getByRole("combobox", { name: "Session smith", exact: true }),
+    ).toHaveValue("codex-journeyman");
+    await betaDialog
+      .getByRole("textbox", { name: "Session prompt", exact: true })
+      .fill("Read Beta's supported Codex options only");
+    await betaDialog
+      .getByRole("combobox", { name: "Session effort", exact: true })
+      .selectOption("");
+    await expect(
+      betaDialog.getByRole("combobox", { name: "Session effort", exact: true }),
+    ).toHaveValue("");
+    await siblingIdentityRefresh.arm();
+    await betaDialog
+      .getByRole("button", { name: "Check supported options", exact: true })
+      .click();
+    await expect(
+      betaDialog.getByRole("region", {
+        name: "Equivalent session command",
+        exact: true,
+      }),
+    ).toContainText("--sandbox");
+    await expect.poll(() => siblingIdentityRefresh.isObserved).toBe(true);
+    expect(betaPreviewPosts).toBe(1);
+    expect(siblingIdentityRefresh.observedReads).toBeGreaterThan(0);
+    expect(betaStartPosts).toBe(0);
+    expect(tasks()).toHaveLength(before);
+    const identityRegion = dialog.getByRole("region", {
+      name: "Original Start requests",
+      exact: true,
+    });
+    await expect(identityRegion.getByRole("status")).toContainText(
+      "Checking the server-owned identity page",
+    );
+    await expect(confirm).toBeDisabled();
+
     await page.keyboard.press("Tab");
-  await expect(keep).toBeFocused();
-  await page.keyboard.press("Tab");
-  await expect(confirm).toBeFocused();
-  await page.keyboard.press("Tab");
-  await expect(close).toBeFocused();
-  await page.keyboard.press("Shift+Tab");
-  await expect(confirm).toBeFocused();
+    expect(
+      await retirement.evaluate((currentDialog) =>
+        currentDialog.contains(document.activeElement),
+      ),
+    ).toBe(true);
+    const pendingBody = retirement.locator(".af-dialog-body");
+    if (
+      await pendingBody.evaluate(
+        (element) => element === document.activeElement,
+      )
+    )
+      await page.keyboard.press("Tab");
+    await expect(keep).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(close).toBeFocused();
+    await page.keyboard.press("Shift+Tab");
+    await expect(keep).toBeFocused();
+
+    siblingIdentityRefresh.release();
+    await siblingIdentityRefresh.settleHeldReads();
+    await expect(
+      identityRegion
+        .getByRole("status")
+        .filter({ hasText: "Checking the server-owned identity page" }),
+    ).not.toBeVisible();
+    await expect(confirm).toBeEnabled();
+  } finally {
+    siblingIdentityRefresh.release();
+    try {
+      await siblingIdentityRefresh.settleHeldReads();
+    } catch {
+      // Cleanup must not replace a causal focus assertion failure.
+    }
+    betaPage.off("request", onBetaRequest);
+    try {
+      await siblingIdentityRefresh.dispose();
+    } catch {
+      // Disposing the held-read observer must not replace the test failure.
+    }
+    try {
+      await betaPage.close();
+    } catch {
+      // Closing the sibling preview page must not replace the test failure.
+    }
+  }
   await expect(confirm).toBeInViewport();
   await expect(retirement.getByText(originalId, { exact: true })).toBeVisible();
   const displayedHash = retirement.locator("dd").nth(3);
@@ -1092,6 +1278,24 @@ test("confirmed reserved retirement reads back the tombstone before a new UUID c
 
   await reviewRetirement.click();
   await expect(close).toBeFocused();
+  await page.keyboard.press("Tab");
+  expect(
+    await retirement.evaluate((currentDialog) =>
+      currentDialog.contains(document.activeElement),
+    ),
+  ).toBe(true);
+  const enabledBody = retirement.locator(".af-dialog-body");
+  if (
+    await enabledBody.evaluate((element) => element === document.activeElement)
+  )
+    await page.keyboard.press("Tab");
+  await expect(keep).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(confirm).toBeFocused();
+  await page.keyboard.press("Tab");
+  await expect(close).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(confirm).toBeFocused();
   await expect(confirm).toBeInViewport();
   await captureShot(retirement, "session-start-retirement-confirmation.png", {
     mask: [retirement.locator("dd").nth(0)],
