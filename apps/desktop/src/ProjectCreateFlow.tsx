@@ -537,7 +537,9 @@ export function ProjectCreateFlow({
   state: ProjectCreateState;
   owner: Owner;
   canWrite: boolean;
-  renderEntry?(props: { disabled: boolean; onSkip(): void }): JSX.Element;
+  renderEntry?:
+    | ((props: { disabled: boolean; onSkip(): void }) => JSX.Element)
+    | undefined;
 }): JSX.Element {
   const [createOpen, setCreateOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -551,7 +553,9 @@ export function ProjectCreateFlow({
   const active = state.entries.filter(isActiveEntry);
   const canCreate = state.phase === "ready" && active.length === 0;
   const disabled = !canCreate || !canWrite || state.busy;
-  const openCreate = () => setCreateOpen(true);
+  const openCreate = () => {
+    if (!disabled) setCreateOpen(true);
+  };
   const entryClass = renderEntry
     ? "af-project-new af-project-new-onboarding"
     : "af-project-new";

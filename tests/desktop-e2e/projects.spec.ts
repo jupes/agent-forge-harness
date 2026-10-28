@@ -2030,6 +2030,59 @@ test("empty Projects keep provider setup skippable disabled without a trusted wo
   expect(keeperFixtureStarts()).toBe(keeperStartsBefore);
 });
 
+test("empty Projects keep a reserved original reviewable without enabling Skip", async ({
+  page,
+}) => {
+  await openSettled(page, "/index.html#/desktop/projects");
+  const saved = await reserveFromProjectFlow(page, {
+    slug: "held-onboarding-project",
+    name: "Held onboarding project",
+  });
+  const effects: string[] = [];
+  const keeperStartsBefore = keeperFixtureStarts();
+  page.on("request", (request) => {
+    if (request.method() !== "POST") return;
+    const path = new URL(request.url()).pathname;
+    if (
+      path.startsWith("/__agent-forge/projects/create-reservations") ||
+      path.startsWith("/__agent-forge/keeper/") ||
+      path.startsWith("/__agent-forge/providers/")
+    )
+      effects.push(path);
+  });
+  writeFileSync(
+    catalogFile,
+    JSON.stringify({ version: 1, revision: catalog.revision, projects: [] }),
+  );
+
+  await page.getByRole("button", { name: "Refresh projects" }).click();
+  await expect(
+    page.getByText("Welcome to Agent Forge", { exact: true }),
+  ).toBeVisible();
+  const skip = page.getByRole("button", {
+    name: "Skip provider setup",
+    exact: true,
+  });
+  await expect(skip).toBeDisabled();
+  const reviewButton = page.getByRole("button", {
+    name: "Review reserved project",
+    exact: true,
+  });
+  await expect(reviewButton).toBeVisible();
+  await reviewButton.click();
+  const reviewDialog = page.getByRole("dialog", {
+    name: "Review saved project original",
+  });
+  await expect(reviewDialog).toBeVisible();
+  await expect(reviewDialog).toContainText(saved.original.name);
+  await expect(reviewDialog).toContainText(saved.requestId);
+  await expect(reviewDialog).toContainText(saved.requestHash);
+  await page.keyboard.press("Escape");
+  await expect(reviewDialog).not.toBeVisible();
+  expect(effects).toEqual([]);
+  expect(keeperFixtureStarts()).toBe(keeperStartsBefore);
+});
+
 test("empty Projects label a provider snapshot as last-known after readiness refresh fails", async ({
   page,
 }) => {

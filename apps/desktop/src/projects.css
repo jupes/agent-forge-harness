@@ -117,6 +117,7 @@
   border-radius: 10px;
 }
 .af-project-new-onboarding {
+  grid-column: 1 / -1;
   place-items: stretch;
   min-height: 0;
   border: 0;
