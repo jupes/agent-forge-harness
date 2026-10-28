@@ -20,6 +20,7 @@ import {
   projectCreateIdentitySchema,
 } from "../../scripts/projects/create-protocol";
 import { projectFixture } from "../../scripts/projects/testing";
+import { providerReadinessPageSchema } from "../../scripts/providers/protocol";
 import type { EventsPage, LedgerEventOf } from "../../types/hearth";
 import type { ProjectCatalog } from "../../types/projects";
 import { readState, withStateLock, writeState } from "../e2e/bd-stand-in-state";
@@ -1914,18 +1915,48 @@ test("empty Projects can skip optional provider setup into the guarded create di
     JSON.stringify({ version: 1, revision: 1, projects: [] }),
   );
   let readinessReads = 0;
+  let readinessWorkspace = "";
+  let readinessAuthModes: string[] = [];
   const effects: string[] = [];
   const keeperStartsBefore = keeperFixtureStarts();
   await page.route("**/__agent-forge/providers/readiness", async (route) => {
     readinessReads += 1;
+    const response = await route.fetch();
+    if (response.status() !== 200) {
+      await route.fulfill({ response });
+      return;
+    }
+    const raw: unknown = await response.json();
+    if (
+      typeof raw !== "object" ||
+      raw === null ||
+      !("data" in raw) ||
+      !("ok" in raw) ||
+      raw.ok !== true
+    )
+      throw Error("The fixture provider readiness envelope is unavailable.");
+    const original = providerReadinessPageSchema.parse(raw.data);
+    readinessWorkspace = original.workspace;
+    const readiness = providerReadinessPageSchema.parse({
+      ...original,
+      providers: original.providers.map((provider) => ({
+        ...provider,
+        authentication: {
+          ...provider.authentication,
+          mode: "unknown",
+          source: "unavailable",
+          observedAt: null,
+          reason: "Fixture authentication was not observed.",
+        },
+        state: "reporting-unavailable",
+      })),
+    });
+    readinessAuthModes = readiness.providers.map(
+      (provider) => provider.authentication.mode,
+    );
     await route.fulfill({
-      status: 503,
-      contentType: "application/json",
-      body: JSON.stringify({
-        ok: false,
-        data: null,
-        error: "Fixture readiness unavailable",
-      }),
+      response,
+      body: JSON.stringify({ ...raw, data: readiness }),
     });
   });
   page.on("request", (request) => {
@@ -1944,6 +1975,14 @@ test("empty Projects can skip optional provider setup into the guarded create di
     page.getByText("Welcome to Agent Forge", { exact: true }),
   ).toBeVisible();
   await expect.poll(() => readinessReads).toBeGreaterThan(0);
+  expect(readinessWorkspace).not.toBe("");
+  expect(readinessAuthModes).toEqual([
+    "unknown",
+    "unknown",
+    "unknown",
+    "unknown",
+    "unknown",
+  ]);
 
   const skip = page.getByRole("button", {
     name: "Skip provider setup",
@@ -1951,9 +1990,6 @@ test("empty Projects can skip optional provider setup into the guarded create di
   });
   await expect(skip).toBeVisible();
   await expect(skip).toBeEnabled();
-  await expect(
-    page.getByText("No readiness report", { exact: true }),
-  ).toBeVisible();
   const skipBox = await skip.boundingBox();
   expect(skipBox?.height ?? 0).toBeGreaterThanOrEqual(24);
   expect(
