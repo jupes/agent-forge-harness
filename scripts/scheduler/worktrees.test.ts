@@ -1203,7 +1203,17 @@ describe("removeWorktree", () => {
     const cache = join(dir, "trees", ".state.json");
     assertPrivateScratchPath(scratch, cache);
     const cacheBefore = readFileSync(cache, "utf8");
-    const worktreesBefore = git(dir, "worktree", "list", "--porcelain");
+    const listedBefore = byPath(listed(dir), path);
+    if (!listedBefore) throw new Error("fixture worktree is missing from Git's list");
+    const identityBefore = {
+      path: comparablePath(listedBefore.path),
+      id: listedBefore.id,
+      branch: listedBefore.branch,
+      head: listedBefore.head,
+      kind: listedBefore.kind,
+      detached: listedBefore.detached,
+      locked: listedBefore.locked,
+    };
     let injected = false;
     let removeCalls = 0;
     const racingGit: GitRun = (args, cwd, timeoutMs) => {
@@ -1224,24 +1234,37 @@ describe("removeWorktree", () => {
       deps({ git: racingGit }),
     );
     const cacheAfter = readFileSync(cache, "utf8");
-    const worktreeAfter = existsSync(path);
-    const worktreesAfter = git(dir, "worktree", "list", "--porcelain");
+    const worktreePathExistsAfter = existsSync(path);
+    const listedAfter = byPath(listed(dir), path);
+    const identityAfter = listedAfter
+      ? {
+          path: comparablePath(listedAfter.path),
+          id: listedAfter.id,
+          branch: listedAfter.branch,
+          head: listedAfter.head,
+          kind: listedAfter.kind,
+          detached: listedAfter.detached,
+          locked: listedAfter.locked,
+        }
+      : null;
 
     expect({
       result: removed.ok,
       reason: removed.ok ? "" : removed.error,
       injected,
       removeCalls,
-      worktreeAfter,
-      worktreesAfter,
+      worktreePathExistsAfter,
+      identityAfter,
+      prunable: listedAfter?.prunable,
       cacheAfter,
     }).toEqual({
       result: false,
       reason: expect.stringContaining("changed or could not be safely inspected"),
       injected: true,
       removeCalls: 0,
-      worktreeAfter: false,
-      worktreesAfter: worktreesBefore,
+      worktreePathExistsAfter: false,
+      identityAfter: identityBefore,
+      prunable: expect.any(Boolean),
       cacheAfter: cacheBefore,
     });
   });
