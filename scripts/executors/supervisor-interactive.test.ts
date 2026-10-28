@@ -193,8 +193,7 @@ function tree(
                   }),
                 );
                 // The optional observer remains a phase collector for this test.
-                if (generationFailure === undefined)
-                  onFailurePhase?.(phase);
+                if (generationFailure === undefined) onFailurePhase?.(phase);
                 else onFailurePhase?.(phase, generationFailure);
               },
             }),

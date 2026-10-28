@@ -310,8 +310,7 @@ function jobGuard(
     if (!onWindowsSettlementFailure || failureReported) return;
     failureReported = true;
     try {
-      if (generationFailure === undefined)
-        onWindowsSettlementFailure(phase);
+      if (generationFailure === undefined) onWindowsSettlementFailure(phase);
       else onWindowsSettlementFailure(phase, generationFailure);
     } catch {
       // A trusted diagnostic observer cannot alter the ownership result.

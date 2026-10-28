@@ -206,9 +206,8 @@ export async function settleWindowsJob<Job, Process>(
     // Accept growth only when the lifetime count is covered by retained identities.
     // This count fences generations; it never proves exit by itself.
     // Settlement still requires every retained process handle to signal.
-    let generationFailureReason:
-      | WindowsJobSettlementGenerationFailureReason
-      | null = null;
+    let generationFailureReason: WindowsJobSettlementGenerationFailureReason | null =
+      null;
     if (capturedTotal < initialTotal) {
       generationFailureReason = "generation-decreased";
     } else if (capturedTotal > initialTotal) {

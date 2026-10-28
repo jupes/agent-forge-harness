@@ -164,42 +164,39 @@ test("a throwing refusal observer cannot change settlement or handle cleanup", a
   expect(f.closed).toEqual([900]);
 });
 
-test(
-  "a throwing generation witness observer preserves refusal result and cleanup",
-  async () => {
-    const f = fixture();
-    f.setTotals([1, 2]);
-    f.setTotal(2);
-    const phases: string[] = [],
-      witnesses: unknown[] = [];
-    let callbackArgumentCount = 0;
-    const diagnosticApi = Object.assign(f.api, {
-      onFailurePhase(phase: string, witness?: unknown) {
-        phases.push(phase);
-        witnesses.push(witness);
-        callbackArgumentCount = arguments.length;
-        throw new Error("private observer failure");
-      },
-    });
+test("a throwing generation witness observer preserves refusal result and cleanup", async () => {
+  const f = fixture();
+  f.setTotals([1, 2]);
+  f.setTotal(2);
+  const phases: string[] = [],
+    witnesses: unknown[] = [];
+  let callbackArgumentCount = 0;
+  const diagnosticApi = Object.assign(f.api, {
+    onFailurePhase(phase: string, witness?: unknown) {
+      phases.push(phase);
+      witnesses.push(witness);
+      callbackArgumentCount = arguments.length;
+      throw new Error("private observer failure");
+    },
+  });
 
-    await expect(
-      settleWindowsJob(diagnosticApi, {}, f.rootIdentity),
-    ).rejects.toThrow("Windows owned process cleanup could not be confirmed.");
-    expect(phases).toEqual(["verify-census-generation"]);
-    expect(witnesses).toEqual([
-      {
-        reason: "growth-count-not-covered",
-        initialTotal: 1,
-        capturedTotal: 2,
-        retainedCount: 1,
-        capturedMemberCount: 0,
-      },
-    ]);
-    expect(callbackArgumentCount).toBe(2);
-    expect(f.calls).not.toContain("active");
-    expect(f.closed).toEqual([900]);
-  },
-);
+  await expect(
+    settleWindowsJob(diagnosticApi, {}, f.rootIdentity),
+  ).rejects.toThrow("Windows owned process cleanup could not be confirmed.");
+  expect(phases).toEqual(["verify-census-generation"]);
+  expect(witnesses).toEqual([
+    {
+      reason: "growth-count-not-covered",
+      initialTotal: 1,
+      capturedTotal: 2,
+      retainedCount: 1,
+      capturedMemberCount: 0,
+    },
+  ]);
+  expect(callbackArgumentCount).toBe(2);
+  expect(f.calls).not.toContain("active");
+  expect(f.closed).toEqual([900]);
+});
 
 test("a failed process-handle close is reported after all handles are attempted", async () => {
   const f = fixture([21]),
@@ -303,108 +300,99 @@ test("a changed member generation refuses settlement", async () => {
   ]);
 });
 
-test(
-  "a generation refusal reports bounded facts from the rejected census",
-  async () => {
-    const f = fixture([31]);
-    f.processes.set(31, processRow(31));
-    f.setTotals([2, 3]);
-    f.setTotal(3);
-    const phases: string[] = [],
-      witnesses: unknown[] = [];
-    const diagnosticApi = Object.assign(f.api, {
-      onFailurePhase(phase: string, witness?: unknown) {
-        phases.push(phase);
-        witnesses.push(witness);
-      },
-    });
+test("a generation refusal reports bounded facts from the rejected census", async () => {
+  const f = fixture([31]);
+  f.processes.set(31, processRow(31));
+  f.setTotals([2, 3]);
+  f.setTotal(3);
+  const phases: string[] = [],
+    witnesses: unknown[] = [];
+  const diagnosticApi = Object.assign(f.api, {
+    onFailurePhase(phase: string, witness?: unknown) {
+      phases.push(phase);
+      witnesses.push(witness);
+    },
+  });
 
-    await expect(
-      settleWindowsJob(diagnosticApi, {}, f.rootIdentity),
-    ).rejects.toThrow("Windows owned process cleanup could not be confirmed.");
-    expect(phases).toEqual(["verify-census-generation"]);
-    expect(witnesses).toEqual([
-      {
-        reason: "growth-count-not-covered",
-        initialTotal: 2,
-        capturedTotal: 3,
-        retainedCount: 2,
-        capturedMemberCount: 1,
-      },
-    ]);
-    expect(f.calls).not.toContain("active");
-    expect(f.closed.sort()).toEqual([31, 900]);
-  },
-);
+  await expect(
+    settleWindowsJob(diagnosticApi, {}, f.rootIdentity),
+  ).rejects.toThrow("Windows owned process cleanup could not be confirmed.");
+  expect(phases).toEqual(["verify-census-generation"]);
+  expect(witnesses).toEqual([
+    {
+      reason: "growth-count-not-covered",
+      initialTotal: 2,
+      capturedTotal: 3,
+      retainedCount: 2,
+      capturedMemberCount: 1,
+    },
+  ]);
+  expect(f.calls).not.toContain("active");
+  expect(f.closed.sort()).toEqual([31, 900]);
+});
 
-test(
-  "a new captured member reports the first matching growth refusal reason",
-  async () => {
-    const f = fixture([31]),
-      phases: string[] = [],
-      witnesses: unknown[] = [];
-    f.processes.set(31, processRow(31));
-    f.setSnapshots([[31], [32]]);
-    f.setTotals([1, 2]);
-    f.setTotal(2);
-    const diagnosticApi = Object.assign(f.api, {
-      onFailurePhase(phase: string, witness?: unknown) {
-        phases.push(phase);
-        witnesses.push(witness);
-      },
-    });
+test("a new captured member reports the first matching growth refusal reason", async () => {
+  const f = fixture([31]),
+    phases: string[] = [],
+    witnesses: unknown[] = [];
+  f.processes.set(31, processRow(31));
+  f.setSnapshots([[31], [32]]);
+  f.setTotals([1, 2]);
+  f.setTotal(2);
+  const diagnosticApi = Object.assign(f.api, {
+    onFailurePhase(phase: string, witness?: unknown) {
+      phases.push(phase);
+      witnesses.push(witness);
+    },
+  });
 
-    await expect(
-      settleWindowsJob(diagnosticApi, {}, f.rootIdentity),
-    ).rejects.toThrow("Windows owned process cleanup could not be confirmed.");
-    expect(phases).toEqual(["verify-census-generation"]);
-    expect(witnesses).toEqual([
-      {
-        reason: "growth-member-unretained",
-        initialTotal: 1,
-        capturedTotal: 2,
-        retainedCount: 2,
-        capturedMemberCount: 1,
-      },
-    ]);
-    expect(f.calls).not.toContain("open:32");
-    expect(f.calls).not.toContain("active");
-    expect(f.closed.sort()).toEqual([31, 900]);
-  },
-);
+  await expect(
+    settleWindowsJob(diagnosticApi, {}, f.rootIdentity),
+  ).rejects.toThrow("Windows owned process cleanup could not be confirmed.");
+  expect(phases).toEqual(["verify-census-generation"]);
+  expect(witnesses).toEqual([
+    {
+      reason: "growth-member-unretained",
+      initialTotal: 1,
+      capturedTotal: 2,
+      retainedCount: 2,
+      capturedMemberCount: 1,
+    },
+  ]);
+  expect(f.calls).not.toContain("open:32");
+  expect(f.calls).not.toContain("active");
+  expect(f.closed.sort()).toEqual([31, 900]);
+});
 
-test(
-  "generation witness totals outside uint32 are null without changing refusal",
-  async () => {
-    const f = fixture(),
-      phases: string[] = [],
-      witnesses: unknown[] = [];
-    f.setTotals([0x1_0000_0000, 0x1_0000_0001]);
-    f.setTotal(0x1_0000_0001);
-    const diagnosticApi = Object.assign(f.api, {
-      onFailurePhase(phase: string, witness?: unknown) {
-        phases.push(phase);
-        witnesses.push(witness);
-      },
-    });
+test("generation witness totals outside uint32 are null without changing refusal", async () => {
+  const f = fixture(),
+    phases: string[] = [],
+    witnesses: unknown[] = [];
+  f.setTotals([0x1_0000_0000, 0x1_0000_0001]);
+  f.setTotal(0x1_0000_0001);
+  const diagnosticApi = Object.assign(f.api, {
+    onFailurePhase(phase: string, witness?: unknown) {
+      phases.push(phase);
+      witnesses.push(witness);
+    },
+  });
 
-    await expect(
-      settleWindowsJob(diagnosticApi, {}, f.rootIdentity),
-    ).rejects.toThrow("Windows owned process cleanup could not be confirmed.");
-    expect(phases).toEqual(["verify-census-generation"]);
-    expect(witnesses).toEqual([
-      {
-        reason: "growth-count-not-covered",
-        initialTotal: null,
-        capturedTotal: null,
-        retainedCount: 1,
-        capturedMemberCount: 0,
-      },
-    ]);
-    expect(f.calls).not.toContain("active");
-    expect(f.closed).toEqual([900]);
-  },
-);
+  await expect(
+    settleWindowsJob(diagnosticApi, {}, f.rootIdentity),
+  ).rejects.toThrow("Windows owned process cleanup could not be confirmed.");
+  expect(phases).toEqual(["verify-census-generation"]);
+  expect(witnesses).toEqual([
+    {
+      reason: "growth-count-not-covered",
+      initialTotal: null,
+      capturedTotal: null,
+      retainedCount: 1,
+      capturedMemberCount: 0,
+    },
+  ]);
+  expect(f.calls).not.toContain("active");
+  expect(f.closed).toEqual([900]);
+});
 
 test("later unretained-member refusal carries no generation witness", async () => {
   const f = fixture([31]),
@@ -438,10 +426,7 @@ test("fully retained growth still waits for every retained process handle", asyn
   f.setTotals([1, 2]);
   f.setTotal(2);
   const diagnosticApi = Object.assign(f.api, {
-    onFailurePhase(
-      phase: WindowsJobSettlementFailurePhase,
-      witness?: unknown,
-    ) {
+    onFailurePhase(phase: WindowsJobSettlementFailurePhase, witness?: unknown) {
       phases.push(phase);
       witnesses.push(witness);
     },
@@ -497,10 +482,7 @@ test("a decreasing captured generation refuses settlement", async () => {
   f.setTotal(1);
   const witnesses: unknown[] = [];
   const diagnosticApi = Object.assign(f.api, {
-    onFailurePhase(
-      phase: WindowsJobSettlementFailurePhase,
-      witness?: unknown,
-    ) {
+    onFailurePhase(phase: WindowsJobSettlementFailurePhase, witness?: unknown) {
       phases.push(phase);
       witnesses.push(witness);
     },
@@ -552,10 +534,7 @@ test("fully retained growth above the identity cap refuses settlement", async ()
   f.setTotals([64, 65]);
   f.setTotal(65);
   const diagnosticApi = Object.assign(f.api, {
-    onFailurePhase(
-      phase: WindowsJobSettlementFailurePhase,
-      witness?: unknown,
-    ) {
+    onFailurePhase(phase: WindowsJobSettlementFailurePhase, witness?: unknown) {
       phases.push(phase);
       witnesses.push(witness);
     },
