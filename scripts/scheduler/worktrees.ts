@@ -179,7 +179,8 @@ function worktreeInspectionRefusal(root: string): string | null {
 
         entriesSeen += 1;
         if (entriesSeen > MAX_WORKTREE_INSPECTION_ENTRIES) {
-          refusal = "the worktree exceeds the bounded filesystem inspection limit";
+          refusal =
+            "the worktree exceeds the bounded filesystem inspection limit";
           break;
         }
 

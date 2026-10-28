@@ -896,7 +896,9 @@ describe("removeWorktree", () => {
         rel.startsWith(`..${sep}`) ||
         isAbsolute(rel)
       ) {
-        throw new Error("fixture scratch root is outside its private temp boundary");
+        throw new Error(
+          "fixture scratch root is outside its private temp boundary",
+        );
       }
     };
     assertPrivateScratch();
@@ -905,7 +907,9 @@ describe("removeWorktree", () => {
     const assertWithinScratch = (candidate: string): void => {
       const rel = relative(scratch, resolve(candidate));
       if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel))
-        throw new Error(`fixture path escaped its private scratch root: ${candidate}`);
+        throw new Error(
+          `fixture path escaped its private scratch root: ${candidate}`,
+        );
     };
     assertWithinScratch(dir);
     assertWithinScratch(target);
@@ -937,7 +941,11 @@ describe("removeWorktree", () => {
 
     let linked = false;
     try {
-      symlinkSync(target, link, process.platform === "win32" ? "junction" : "dir");
+      symlinkSync(
+        target,
+        link,
+        process.platform === "win32" ? "junction" : "dir",
+      );
       linked = true;
       const linkBefore = lstatSync(link);
       expect(linkBefore.isSymbolicLink()).toBe(true);
@@ -961,7 +969,9 @@ describe("removeWorktree", () => {
 
       // Snapshot everything before assertions, including the external marker.
       const markerExistsAfter = existsSync(marker);
-      const markerAfter = markerExistsAfter ? readFileSync(marker, "utf8") : null;
+      const markerAfter = markerExistsAfter
+        ? readFileSync(marker, "utf8")
+        : null;
       const cacheAfter = existsSync(cache) ? readFileSync(cache, "utf8") : null;
       const worktreeAfter = existsSync(path);
       const worktreesAfter = git(dir, "worktree", "list", "--porcelain");
@@ -1032,7 +1042,12 @@ describe("removeWorktree", () => {
 
   test("refuses before Git remove when the entry inspection limit is exceeded", () => {
     const dir = repo();
-    const made = createWorktree(dir, dir, { branch: "feat/entry-limit" }, deps());
+    const made = createWorktree(
+      dir,
+      dir,
+      { branch: "feat/entry-limit" },
+      deps(),
+    );
     if (!made.ok) throw new Error(made.error);
     const path = made.value.path;
     const scratch = resolve(dirname(dir));
@@ -1079,14 +1094,20 @@ describe("removeWorktree", () => {
 
   test("allows exactly 4096 descendant entries before Git remove", () => {
     const dir = repo();
-    const made = createWorktree(dir, dir, { branch: "feat/entry-limit-boundary" }, deps());
+    const made = createWorktree(
+      dir,
+      dir,
+      { branch: "feat/entry-limit-boundary" },
+      deps(),
+    );
     if (!made.ok) throw new Error(made.error);
     const path = made.value.path;
     const scratch = resolve(dirname(dir));
     assertPrivateScratchPath(scratch, path);
     const baselineEntries = readdirSync(path).length;
     const remainingEntries = 4_096 - baselineEntries;
-    if (remainingEntries < 0) throw new Error("fixture already exceeds the entry boundary");
+    if (remainingEntries < 0)
+      throw new Error("fixture already exceeds the entry boundary");
     for (let index = 0; index < remainingEntries; index += 1)
       writeFileSync(join(path, `boundary-entry-${index}.txt`), "");
 
@@ -1112,7 +1133,12 @@ describe("removeWorktree", () => {
 
   test("refuses before Git remove when directory depth exceeds 32", () => {
     const dir = repo();
-    const made = createWorktree(dir, dir, { branch: "feat/depth-limit" }, deps());
+    const made = createWorktree(
+      dir,
+      dir,
+      { branch: "feat/depth-limit" },
+      deps(),
+    );
     if (!made.ok) throw new Error(made.error);
     const path = made.value.path;
     const scratch = resolve(dirname(dir));
@@ -1162,7 +1188,12 @@ describe("removeWorktree", () => {
 
   test("allows directory depth 32 before Git remove", () => {
     const dir = repo();
-    const made = createWorktree(dir, dir, { branch: "feat/depth-limit-boundary" }, deps());
+    const made = createWorktree(
+      dir,
+      dir,
+      { branch: "feat/depth-limit-boundary" },
+      deps(),
+    );
     if (!made.ok) throw new Error(made.error);
     const path = made.value.path;
     const scratch = resolve(dirname(dir));
@@ -1195,7 +1226,12 @@ describe("removeWorktree", () => {
 
   test("refuses if a listed worktree disappears before filesystem inspection", () => {
     const dir = repo();
-    const made = createWorktree(dir, dir, { branch: "feat/inspection-race" }, deps());
+    const made = createWorktree(
+      dir,
+      dir,
+      { branch: "feat/inspection-race" },
+      deps(),
+    );
     if (!made.ok) throw new Error(made.error);
     const path = made.value.path;
     const scratch = resolve(dirname(dir));
@@ -1204,7 +1240,8 @@ describe("removeWorktree", () => {
     assertPrivateScratchPath(scratch, cache);
     const cacheBefore = readFileSync(cache, "utf8");
     const listedBefore = byPath(listed(dir), path);
-    if (!listedBefore) throw new Error("fixture worktree is missing from Git's list");
+    if (!listedBefore)
+      throw new Error("fixture worktree is missing from Git's list");
     const identityBefore = {
       path: comparablePath(listedBefore.path),
       id: listedBefore.id,
@@ -1259,7 +1296,9 @@ describe("removeWorktree", () => {
       cacheAfter,
     }).toEqual({
       result: false,
-      reason: expect.stringContaining("changed or could not be safely inspected"),
+      reason: expect.stringContaining(
+        "changed or could not be safely inspected",
+      ),
       injected: true,
       removeCalls: 0,
       worktreePathExistsAfter: false,
