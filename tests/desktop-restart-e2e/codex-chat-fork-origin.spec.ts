@@ -20,11 +20,15 @@ import {
   canonicalOwnedSessionStart,
   parseOwnedSessionStart,
 } from "../../scripts/sessions/codex-owned-protocol";
+import { providerReadinessPageSchema } from "../../scripts/providers/protocol";
 import {
   ownedCodingSessionSchema,
   ownedCodingStartReceiptSchema,
 } from "../../scripts/sessions/codex-owned-wire-protocol";
-import { sessionStartIdentityReplySchema } from "../../scripts/sessions/identity-protocol";
+import {
+  sessionStartIdentityPageSchema,
+  sessionStartIdentityReplySchema,
+} from "../../scripts/sessions/identity-protocol";
 import {
   codexChatForkIdentityMetadataSchema,
   sessionOperationIdentityPageSchema,
@@ -987,6 +991,331 @@ async function operationRows(page: Page, origin: string) {
   );
 }
 
+let scopeHydrationWitnessSequence = 0;
+const SCOPE_HYDRATION_BODY_LIMIT = 65_536;
+
+function installForkScopeHydrationObserver(options: {
+  bindingName: string;
+  stateName: string;
+  origin: string;
+  readinessPath: string;
+  identityPath: string;
+  maxBytes: number;
+  holdProviderReadiness: boolean;
+}) {
+  const globals = window as unknown as Record<string, unknown>;
+  if (globals[options.stateName]) return;
+
+  const originalFetch = window.fetch;
+  const documentId = crypto.randomUUID();
+  const readText = async (response: Response): Promise<string | null> => {
+    let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    try {
+      reader = response.clone().body?.getReader();
+      if (!reader) return null;
+      const chunks: Uint8Array[] = [];
+      let length = 0;
+      for (;;) {
+        const next = await reader.read();
+        if (next.done) break;
+        length += next.value.byteLength;
+        if (length > options.maxBytes) {
+          void reader.cancel().catch(() => undefined);
+          try {
+            reader.releaseLock();
+          } catch {
+            // The cloned branch may still be settling; the original is untouched.
+          }
+          return null;
+        }
+        chunks.push(next.value);
+      }
+      const bytes = new Uint8Array(length);
+      let offset = 0;
+      for (const chunk of chunks) {
+        bytes.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      return new TextDecoder().decode(bytes);
+    } catch {
+      try {
+        reader?.releaseLock();
+      } catch {
+        // A failed clone read must not alter the browser response.
+      }
+      return null;
+    }
+  };
+  const wrapper = async function (
+    this: Window,
+    ...args: Parameters<typeof fetch>
+  ) {
+    const [input, init] = args;
+    let requestUrl: URL;
+    let method: string;
+    try {
+      requestUrl = new URL(
+        input instanceof Request ? input.url : String(input),
+        location.href,
+      );
+      method = (
+        init?.method ?? (input instanceof Request ? input.method : "GET")
+      ).toUpperCase();
+    } catch {
+      return originalFetch.apply(this, args);
+    }
+    const kind =
+      method === "GET" &&
+      requestUrl.origin === options.origin &&
+      requestUrl.search === ""
+        ? requestUrl.pathname === options.readinessPath
+          ? "provider-readiness"
+          : requestUrl.pathname === options.identityPath
+            ? "session-start-identities"
+            : null
+        : null;
+    const response = await originalFetch.apply(this, args);
+    if (!kind) return response;
+
+    let responseUrlMatches = false;
+    try {
+      const responseUrl = new URL(response.url);
+      responseUrlMatches =
+        responseUrl.origin === options.origin &&
+        responseUrl.pathname ===
+          (kind === "provider-readiness"
+            ? options.readinessPath
+            : options.identityPath) &&
+        responseUrl.search === "";
+    } catch {
+      // Report a bounded invalid-response fact while returning the original.
+    }
+    const payload = {
+      kind,
+      documentId,
+      status: response.status,
+      responseUrlMatches,
+      text: await readText(response),
+    };
+    const binding = globals[options.bindingName];
+    if (typeof binding === "function") {
+      try {
+        await (binding as (value: unknown) => Promise<void>)(payload);
+      } catch {
+        // Test observation failures cannot change the native browser response.
+      }
+    }
+    return response;
+  } as typeof window.fetch;
+  globals[options.stateName] = { documentId, originalFetch, wrapper };
+  window.fetch = wrapper;
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((done) => {
+    resolve = done;
+  });
+  void promise.catch(() => undefined);
+  return { promise, resolve };
+}
+
+function boundedHydrationObservation<T>(promise: Promise<T>, message: string) {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(message)),
+      10_000,
+    );
+    timer.unref?.();
+    void promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error: unknown) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
+async function observeForkScopeHydration(
+  page: Page,
+  options: {
+    origin: string;
+    projectId: string;
+    workspace: string;
+    holdProviderReadiness?: boolean;
+  },
+) {
+  const witnessId = ++scopeHydrationWitnessSequence;
+  const bindingName = `__agentForgeForkScopeHydration_${witnessId}`;
+  const stateName = `__agentForgeForkScopeHydrationState_${witnessId}`;
+  const readinessPath = "/__agent-forge/providers/readiness";
+  const identityPath = `/__agent-forge/projects/${encodeURIComponent(options.projectId)}/session-start-identities`;
+  const readiness = deferred<{
+    documentId: string;
+    status: number;
+    valid: boolean;
+  }>();
+  const scopeRead = deferred<{
+    documentId: string;
+    status: number;
+    valid: boolean;
+  }>();
+  const release = deferred<void>();
+  let active = true;
+  let readinessCaptured = false;
+  let readinessHeld = false;
+  let readinessReleased = false;
+  let currentDocumentId: string | null = null;
+  let scopeReadCount = 0;
+  let pendingScopeRead: {
+    documentId: string;
+    status: number;
+    valid: boolean;
+  } | null = null;
+  const captureScopeRead = (value: {
+    documentId: string;
+    status: number;
+    valid: boolean;
+  }) => {
+    if (scopeReadCount > 0) return;
+    if (currentDocumentId === null) {
+      pendingScopeRead ??= value;
+      return;
+    }
+    if (value.documentId !== currentDocumentId) return;
+    scopeReadCount++;
+    scopeRead.resolve(value);
+  };
+
+  await page.exposeBinding(bindingName, async (source, value) => {
+    try {
+      if (source.frame !== page.mainFrame()) return;
+      let sourceOrigin: string;
+      try {
+        sourceOrigin = new URL(source.frame.url()).origin;
+      } catch {
+        return;
+      }
+      if (!active || sourceOrigin !== options.origin) return;
+      const payload = record(value);
+      const kind = payload?.["kind"];
+      const documentId = payload?.["documentId"];
+      const status = payload?.["status"];
+      const responseUrlMatches = payload?.["responseUrlMatches"] === true;
+      const text = payload?.["text"];
+      if (
+        (kind !== "provider-readiness" &&
+          kind !== "session-start-identities") ||
+        typeof documentId !== "string" ||
+        documentId.length > 64 ||
+        typeof status !== "number" ||
+        !Number.isInteger(status)
+      )
+        return;
+
+      let valid =
+        responseUrlMatches &&
+        status === 200 &&
+        typeof text === "string" &&
+        Buffer.byteLength(text, "utf8") <= SCOPE_HYDRATION_BODY_LIMIT;
+      if (typeof text === "string" && valid) {
+        try {
+          const envelope = record(parseJson(text, "scope hydration response"));
+          if (kind === "provider-readiness") {
+            const parsed = providerReadinessPageSchema.safeParse(
+              envelope?.["data"],
+            );
+            valid =
+              envelope?.["ok"] === true &&
+              envelope?.["error"] === null &&
+              parsed.success &&
+              parsed.data.workspace === options.workspace;
+          } else {
+            const parsed = sessionStartIdentityPageSchema.safeParse(
+              envelope?.["data"],
+            );
+            valid =
+              envelope?.["ok"] === true &&
+              envelope?.["error"] === null &&
+              parsed.success &&
+              parsed.data.scope.projectId === options.projectId &&
+              parsed.data.scope.workspace === options.workspace;
+          }
+        } catch {
+          valid = false;
+        }
+      }
+
+      if (kind === "provider-readiness") {
+        if (readinessCaptured) return;
+        readinessCaptured = true;
+        readiness.resolve({ documentId, status, valid });
+        if (valid && options.holdProviderReadiness) {
+          readinessHeld = true;
+          await release.promise;
+        }
+        return;
+      }
+      captureScopeRead({ documentId, status, valid });
+    } catch {
+      // The observer is diagnostic only and must preserve the application response.
+    }
+  });
+  await page.addInitScript(installForkScopeHydrationObserver, {
+    bindingName,
+    stateName,
+    origin: options.origin,
+    readinessPath,
+    identityPath,
+    maxBytes: SCOPE_HYDRATION_BODY_LIMIT,
+    holdProviderReadiness: options.holdProviderReadiness ?? true,
+  });
+
+  return {
+    readiness: readiness.promise,
+    scopeRead: scopeRead.promise,
+    scopeReadCount: () => scopeReadCount,
+    readinessPending: () => readinessHeld && !readinessReleased,
+    async currentDocumentId() {
+      const value = await page.evaluate((stateName) => {
+        const state = (window as unknown as Record<string, unknown>)[
+          stateName
+        ];
+        return typeof state === "object" && state !== null
+          ? (state as { documentId?: unknown }).documentId
+          : null;
+      }, stateName);
+      if (typeof value !== "string" || value.length > 64)
+        throw new Error("The current Fork document could not be identified.");
+      currentDocumentId = value;
+      if (pendingScopeRead) {
+        const pending = pendingScopeRead;
+        pendingScopeRead = null;
+        captureScopeRead(pending);
+      }
+      return value;
+    },
+    release() {
+      readinessReleased = true;
+      release.resolve(undefined);
+    },
+    async dispose() {
+      active = false;
+      readinessReleased = true;
+      release.resolve(undefined);
+      try {
+        await page.removeExposedFunction(bindingName);
+      } catch {
+        // Cleanup is best effort; no observer failure may replace the test failure.
+      }
+    },
+  };
+}
+
 test.beforeEach(async ({ page }) => {
   await page.goto(
     `/index.html#/desktop/project/${encodeURIComponent(forkProject.id)}/sessions`,
@@ -1138,13 +1467,72 @@ test("two actual host replacements recover the exact Fork original before and af
     forkBaseRestoreNeeded = true;
     const firstRestart = await issueRestart();
     currentUrl = firstRestart.url;
-    currentOrigin = await authenticateNewHost(page, currentUrl, 1);
-    observedOrigin = currentOrigin;
-    stage = "first-new-origin-authenticated";
+    const firstNewOrigin = new URL(currentUrl).origin;
+    const workspace = forkProject.workspaces[0]?.root;
+    if (!workspace)
+      throw new Error("The Fork parent workspace is unavailable.");
+    const scopeHydration = await observeForkScopeHydration(page, {
+      origin: firstNewOrigin,
+      projectId: forkProject.id,
+      workspace,
+    });
+    let newOriginReviewRequests = 0;
+    const countNewOriginReview = (request: Request) => {
+      const url = new URL(request.url());
+      if (
+        request.method() === "GET" &&
+        url.origin === firstNewOrigin &&
+        url.pathname ===
+          `/__agent-forge/projects/${forkProject.id}/sessions/${first.parent.id}/fork-review`
+      )
+        newOriginReviewRequests++;
+    };
+    page.on("request", countNewOriginReview);
+    try {
+      currentOrigin = await authenticateNewHost(page, currentUrl, 1);
+      observedOrigin = currentOrigin;
+      stage = "first-new-origin-authenticated";
+      const currentDocumentId = await scopeHydration.currentDocumentId();
+      const heldReadiness = await boundedHydrationObservation(
+        scopeHydration.readiness,
+        "The new document did not fetch provider readiness.",
+      );
+      expect(heldReadiness.status).toBe(200);
+      expect(heldReadiness.valid).toBe(true);
+      expect(heldReadiness.documentId === currentDocumentId).toBe(true);
+      expect(scopeHydration.readinessPending()).toBe(true);
+
+      // A visible conversation and completed-turn control do not establish that
+      // the new document has received its provider-backed workspace scope.
+      await selectSession(page, currentOrigin, first.parent.id);
+      const reviewControl = page.getByRole("button", {
+        name: `Review Fork through ${first.turnId.slice(0, 8)}`,
+        exact: true,
+      });
+      await expect(reviewControl).toBeVisible();
+      expect(scopeHydration.scopeReadCount()).toBe(0);
+      expect(newOriginReviewRequests).toBe(0);
+      expect(startWrites).toHaveLength(beforeFirstReplacement.starts);
+      expect(identityWrites).toHaveLength(beforeFirstReplacement.writes);
+      expect(rpcCount("thread/fork")).toBe(beforeFirstReplacement.forks);
+
+      scopeHydration.release();
+      const hydratedScope = await boundedHydrationObservation(
+        scopeHydration.scopeRead,
+        "The app-owned Session Start scope read did not settle.",
+      );
+      expect(hydratedScope.status).toBe(200);
+      expect(hydratedScope.valid).toBe(true);
+      expect(hydratedScope.documentId === currentDocumentId).toBe(true);
+      expect(scopeHydration.scopeReadCount()).toBe(1);
+    } finally {
+      scopeHydration.release();
+      page.off("request", countNewOriginReview);
+      await scopeHydration.dispose();
+    }
   } finally {
     await firstReservation.release();
   }
-  await selectSession(page, currentOrigin, first.parent.id);
   expect(startWrites).toHaveLength(beforeFirstReplacement.starts);
   expect(identityWrites).toHaveLength(beforeFirstReplacement.writes);
   expect(rpcCount("thread/fork")).toBe(beforeFirstReplacement.forks);
@@ -1425,13 +1813,51 @@ test("two actual host replacements recover the exact Fork original before and af
     forkBaseRestoreNeeded = true;
     const secondRestart = await issueRestart();
     currentUrl = secondRestart.url;
-    currentOrigin = await authenticateNewHost(page, currentUrl, 2);
-    observedOrigin = currentOrigin;
-    stage = "second-new-origin-authenticated";
+    const secondNewOrigin = new URL(currentUrl).origin;
+    const workspace = forkProject.workspaces[0]?.root;
+    if (!workspace)
+      throw new Error("The Fork parent workspace is unavailable.");
+    const scopeHydration = await observeForkScopeHydration(page, {
+      origin: secondNewOrigin,
+      projectId: forkProject.id,
+      workspace,
+      holdProviderReadiness: false,
+    });
+    try {
+      currentOrigin = await authenticateNewHost(page, currentUrl, 2);
+      observedOrigin = currentOrigin;
+      stage = "second-new-origin-authenticated";
+      const currentDocumentId = await scopeHydration.currentDocumentId();
+      const readiness = await boundedHydrationObservation(
+        scopeHydration.readiness,
+        "The second new document did not fetch provider readiness.",
+      );
+      expect(readiness.status).toBe(200);
+      expect(readiness.valid).toBe(true);
+      expect(readiness.documentId === currentDocumentId).toBe(true);
+      expect(scopeHydration.readinessPending()).toBe(false);
+      await selectSession(page, currentOrigin, second.parent.id);
+      await expect(
+        page.getByRole("button", {
+          name: `Review Fork through ${second.turnId.slice(0, 8)}`,
+          exact: true,
+        }),
+      ).toBeVisible();
+      const hydratedScope = await boundedHydrationObservation(
+        scopeHydration.scopeRead,
+        "The second app-owned Session Start scope read did not settle.",
+      );
+      expect(hydratedScope.status).toBe(200);
+      expect(hydratedScope.valid).toBe(true);
+      expect(hydratedScope.documentId === currentDocumentId).toBe(true);
+      expect(scopeHydration.scopeReadCount()).toBe(1);
+    } finally {
+      scopeHydration.release();
+      await scopeHydration.dispose();
+    }
   } finally {
     await secondReservation.release();
   }
-  await selectSession(page, currentOrigin, second.parent.id);
   expect(rpcCount("thread/fork")).toBe(beforeSecondReplacement.forks);
   expect(startWrites).toHaveLength(beforeSecondReplacement.starts);
   expect(identityWrites).toHaveLength(beforeSecondReplacement.writes);
