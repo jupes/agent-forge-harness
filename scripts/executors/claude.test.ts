@@ -1,6 +1,12 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, realpathSync } from "fs";
-import { join } from "path";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from "fs";
+import { delimiter, join } from "path";
 import { BUILTIN_SMITHS } from "../config/defaults";
 import { runVerdictWrite } from "../eval-verdict-cli";
 import { comparableCheckout } from "../forge/runs";
@@ -107,6 +113,159 @@ describe("claude adapter through forge:exec (fake binary)", () => {
     expect(data).not.toHaveProperty("eventsFile");
     expect(existsSync(join(root, ".tmp", "work", "exec-events"))).toBe(false);
   });
+});
+
+test("the Claude adapter freezes the executable from the current process PATH", async () => {
+  const { root, worktree } = setup();
+  const general = join(root, "general-path"),
+    privateDir = join(root, "private-path"),
+    markerName = process.platform === "win32" ? "claude.exe" : "claude",
+    generalMarker = join(general, markerName),
+    privateMarker = join(privateDir, markerName);
+  mkdirSync(general);
+  mkdirSync(privateDir);
+  writeFileSync(generalMarker, "", { mode: 0o700 });
+  writeFileSync(privateMarker, "", { mode: 0o700 });
+
+  const worker = `
+    const [adapter, capture, supervisor, defaults, tools] = await Promise.all([
+      import(${JSON.stringify(new URL("./claude.ts", import.meta.url).href)}),
+      import(${JSON.stringify(new URL("./private-capture.ts", import.meta.url).href)}),
+      import(${JSON.stringify(new URL("./supervisor.ts", import.meta.url).href)}),
+      import(${JSON.stringify(new URL("../config/defaults.ts", import.meta.url).href)}),
+      import(${JSON.stringify(new URL("./claude-tools.ts", import.meta.url).href)}),
+    ]);
+    const root = ${JSON.stringify(root)};
+    const worktree = ${JSON.stringify(worktree)};
+    const general = ${JSON.stringify(general)};
+    const privateDir = ${JSON.stringify(privateDir)};
+    const privateMarker = ${JSON.stringify(privateMarker)};
+    const normalize = (path) => {
+      const value = path.replaceAll("\\\\", "/");
+      return process.platform === "win32" ? value.toLowerCase() : value;
+    };
+    process.env.PATH = [privateDir, general].join(${JSON.stringify(delimiter)});
+    const smith = defaults.BUILTIN_SMITHS["claude-journeyman"];
+    const expectedTail = [
+      "-p",
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--model",
+      smith.model,
+      "--effort",
+      smith.effort,
+      "--permission-mode",
+      "acceptEdits",
+      "--allowedTools",
+      tools.CLAUDE_ALLOWED_TOOLS.join(","),
+    ];
+    const before = supervisor.liveChildCount();
+    let prepareCalls = 0;
+    let privateExecutable = false;
+    let preparedInput = false;
+    let genericRefusal = false;
+    try {
+      await adapter.claudeAdapter.spawn({
+        beadId: "path-resolution-probe",
+        worktree,
+        workspace: root,
+        smith,
+        prompt: "private path resolution probe",
+        env: { PATH: general },
+        privateCapture: {
+          async prepare(input) {
+            prepareCalls++;
+            privateExecutable =
+              normalize(input.command[0] ?? "") === normalize(privateMarker);
+            preparedInput =
+              input.provider === "claude" &&
+              input.beadId === "path-resolution-probe" &&
+              input.runId === null &&
+              normalize(input.workspace) === normalize(root) &&
+              normalize(input.cwd) === normalize(worktree) &&
+              input.stdin === "private path resolution probe" &&
+              input.timeoutMs === null &&
+              input.smith.name === smith.name &&
+              input.command.length === expectedTail.length + 1 &&
+              input.command
+                .slice(1)
+                .every((part, index) => part === expectedTail[index]);
+            throw new capture.PrivateCaptureError();
+          },
+        },
+      });
+    } catch (error) {
+      genericRefusal =
+        error instanceof capture.PrivateCaptureError &&
+        error.message === capture.PRIVATE_CAPTURE_FAILURE;
+    }
+    const observation = {
+      privateExecutable,
+      preparedInput,
+      genericRefusal,
+      prepareOnce: prepareCalls === 1,
+      noChildEffect: supervisor.liveChildCount() === before,
+    };
+    process.stdout.write(JSON.stringify(observation) + "\\n");
+  `;
+  const childEnv: Record<string, string> = { PATH: general };
+  for (const name of [
+    "COMSPEC",
+    "PATHEXT",
+    "SYSTEMDRIVE",
+    "SYSTEMROOT",
+    "TEMP",
+    "TMP",
+    "WINDIR",
+  ]) {
+    const entry = Object.entries(process.env).find(
+      ([key, value]) => key.toUpperCase() === name && value !== undefined,
+    );
+    if (entry?.[1] !== undefined) childEnv[name] = entry[1];
+  }
+  const child = Bun.spawn(
+    [process.execPath, "--no-env-file", "--no-install", "-e", worker],
+    {
+      cwd: root,
+      env: childEnv,
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+      timeout: 5000,
+      windowsHide: true,
+    },
+  );
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
+  let value: unknown = null;
+  try {
+    value = JSON.parse(stdout);
+  } catch {
+    value = null;
+  }
+  const record =
+    typeof value === "object" && value !== null && !Array.isArray(value)
+      ? (value as Record<string, unknown>)
+      : null;
+  expect(exitCode).toBe(0);
+  expect(stderr.length === 0).toBe(true);
+  expect(
+    record !== null &&
+      Object.keys(record).sort().join(",") ===
+        "genericRefusal,noChildEffect,prepareOnce,preparedInput,privateExecutable" &&
+      Object.values(record).every((item) => typeof item === "boolean"),
+  ).toBe(true);
+  expect(record).toMatchObject({
+    genericRefusal: true,
+    noChildEffect: true,
+    prepareOnce: true,
+    preparedInput: true,
+  });
+  expect(record?.privateExecutable).toBe(true);
 });
 
 describe("claude adapter through forge:exec: the model the stream reports (fake binary)", () => {
