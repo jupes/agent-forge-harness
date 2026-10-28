@@ -518,7 +518,7 @@ test("an initial unaccounted active count reports its existing bounded census fa
   f.setActive(3);
   const diagnosticApi = Object.assign(f.api, {
     onFailurePhase(
-      ...args: [WindowsJobSettlementFailurePhase, unknown?, unknown?],
+      ...args: [WindowsJobSettlementFailurePhase, unknown?, unknown?]
     ) {
       const [phase, generationFailure, unaccountedFailure] = args;
       phases.push(phase);

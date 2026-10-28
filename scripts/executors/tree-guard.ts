@@ -314,10 +314,7 @@ function jobGuard(
     if (!onWindowsSettlementFailure || failureReported) return;
     failureReported = true;
     try {
-      if (
-        generationFailure === undefined &&
-        unaccountedFailure === undefined
-      )
+      if (generationFailure === undefined && unaccountedFailure === undefined)
         onWindowsSettlementFailure(phase);
       else
         onWindowsSettlementFailure(
