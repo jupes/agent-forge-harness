@@ -18,7 +18,9 @@
 import { spawnSync } from "node:child_process";
 import {
   existsSync,
+  lstatSync,
   mkdirSync,
+  opendirSync,
   readdirSync,
   readFileSync,
   realpathSync,
@@ -27,6 +29,7 @@ import {
   statSync,
   writeFileSync,
 } from "node:fs";
+import type { Dir, Dirent, Stats } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import type {
@@ -64,6 +67,11 @@ export type GitRun = (
 /** A read must not hold up whoever is waiting on it: the hearth answers other routes on the same thread. */
 const READ_MS = 5_000;
 const WRITE_MS = 30_000;
+
+// Permit at most 4096 discovered descendants (the root is not counted).
+// The worktree root is directory depth 0; depth 32 is allowed, but 33 is not.
+const MAX_WORKTREE_INSPECTION_ENTRIES = 4_096;
+const MAX_WORKTREE_DIRECTORY_DEPTH = 32;
 
 export const gitRun: GitRun = (args, cwd, timeoutMs = WRITE_MS) => {
   // Under Bun a timed synchronous spawn is otherwise given its limit less the
@@ -121,6 +129,96 @@ function said(result: GitResult): string {
   return result.status === null
     ? "git could not be run, or did not finish in time"
     : `git exited ${result.status}`;
+}
+
+/**
+ * Refuse cleanup if the worktree contains links or cannot be inspected
+ * completely. This is a bounded path-based snapshot check, not an atomic
+ * filesystem transaction: a concurrent path replacement after inspection
+ * remains outside this guard.
+ */
+function worktreeInspectionRefusal(root: string): string | null {
+  const pending: Array<{ path: string; depth: number }> = [
+    { path: root, depth: 0 },
+  ];
+  let entriesSeen = 0;
+
+  while (pending.length > 0) {
+    const current = pending.pop();
+    if (!current) return "the filesystem could not be safely inspected";
+
+    let rootInfo: Stats;
+    try {
+      rootInfo = lstatSync(current.path);
+    } catch {
+      return "the filesystem changed or could not be safely inspected";
+    }
+    if (rootInfo.isSymbolicLink())
+      return "the worktree contains a filesystem link or junction";
+    if (!rootInfo.isDirectory())
+      return "the worktree root or a directory changed during inspection";
+
+    let directory: Dir;
+    try {
+      directory = opendirSync(current.path);
+    } catch {
+      return "the filesystem changed or could not be safely inspected";
+    }
+
+    let refusal: string | null = null;
+    try {
+      while (true) {
+        let entry: Dirent | null;
+        try {
+          entry = directory.readSync();
+        } catch {
+          refusal = "the filesystem could not be safely inspected";
+          break;
+        }
+        if (entry === null) break;
+
+        entriesSeen += 1;
+        if (entriesSeen > MAX_WORKTREE_INSPECTION_ENTRIES) {
+          refusal = "the worktree exceeds the bounded filesystem inspection limit";
+          break;
+        }
+
+        const childPath = join(current.path, entry.name);
+        let childInfo: Stats;
+        try {
+          childInfo = lstatSync(childPath);
+        } catch {
+          refusal = "the filesystem changed or could not be safely inspected";
+          break;
+        }
+        if (childInfo.isSymbolicLink()) {
+          refusal = "the worktree contains a filesystem link or junction";
+          break;
+        }
+        if (childInfo.isDirectory()) {
+          const depth = current.depth + 1;
+          if (depth > MAX_WORKTREE_DIRECTORY_DEPTH) {
+            refusal = "the worktree exceeds the bounded directory-depth limit";
+            break;
+          }
+          pending.push({ path: childPath, depth });
+        } else if (!childInfo.isFile()) {
+          refusal = "the worktree contains an unsupported filesystem entry";
+          break;
+        }
+      }
+    } finally {
+      try {
+        directory.closeSync();
+      } catch {
+        refusal ??= "the filesystem could not be safely inspected";
+      }
+    }
+
+    if (refusal !== null) return refusal;
+  }
+
+  return null;
 }
 
 // ── Paths ───────────────────────────────────────────────────────────────────
@@ -781,6 +879,9 @@ export function removeWorktree(
   const before = listedNow();
   if (!before.ok) return before;
   if (!before.value) return drop();
+  const inspectionRefusal = worktreeInspectionRefusal(record.path);
+  if (inspectionRefusal !== null)
+    return no(`git worktree remove refused: ${inspectionRefusal}`);
   const removed = deps.git(
     [
       "worktree",

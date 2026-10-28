@@ -128,6 +128,24 @@ const windowsSpelling = (path: string): string =>
 /** The repository's own path as git prints it: the key the registry uses. */
 const top = (dir: string): string => git(dir, "rev-parse", "--show-toplevel");
 
+function assertPrivateScratchPath(scratch: string, candidate: string): void {
+  const root = resolve(scratch);
+  const rootRelative = relative(resolve(tmpdir()), root);
+  const candidateRelative = relative(root, resolve(candidate));
+  if (
+    !roots.includes(root) ||
+    !basename(root).startsWith("wt ") ||
+    rootRelative === ".." ||
+    rootRelative.startsWith(`..${sep}`) ||
+    isAbsolute(rootRelative) ||
+    candidateRelative === ".." ||
+    candidateRelative.startsWith(`..${sep}`) ||
+    isAbsolute(candidateRelative)
+  ) {
+    throw new Error("test path is outside its private scratch boundary");
+  }
+}
+
 let ids = 0;
 function deps(more: Partial<RegistryDeps> = {}): Partial<RegistryDeps> {
   return {
@@ -1010,6 +1028,222 @@ describe("removeWorktree", () => {
 
   test("force cannot remove a worktree with a junction to an external target", () => {
     expectJunctionTargetPreserved(true);
+  });
+
+  test("refuses before Git remove when the entry inspection limit is exceeded", () => {
+    const dir = repo();
+    const made = createWorktree(dir, dir, { branch: "feat/entry-limit" }, deps());
+    if (!made.ok) throw new Error(made.error);
+    const path = made.value.path;
+    const scratch = resolve(dirname(dir));
+    assertPrivateScratchPath(scratch, path);
+    for (let index = 0; index <= 4_096; index += 1)
+      writeFileSync(join(path, `inspection-entry-${index}.txt`), "");
+
+    const cache = join(dir, "trees", ".state.json");
+    assertPrivateScratchPath(scratch, cache);
+    const cacheBefore = readFileSync(cache, "utf8");
+    const worktreesBefore = git(dir, "worktree", "list", "--porcelain");
+    let removeCalls = 0;
+    const spyingGit: GitRun = (args, cwd, timeoutMs) => {
+      if (args[0] === "worktree" && args[1] === "remove") removeCalls += 1;
+      return gitRun(args, cwd, timeoutMs);
+    };
+
+    const removed = removeWorktree(
+      dir,
+      made.value.id,
+      { force: true },
+      deps({ git: spyingGit }),
+    );
+    const cacheAfter = readFileSync(cache, "utf8");
+    const worktreeAfter = existsSync(path);
+    const worktreesAfter = git(dir, "worktree", "list", "--porcelain");
+
+    expect({
+      result: removed.ok,
+      reason: removed.ok ? "" : removed.error,
+      removeCalls,
+      worktreeAfter,
+      worktreesAfter,
+      cacheAfter,
+    }).toEqual({
+      result: false,
+      reason: expect.stringContaining("bounded filesystem inspection limit"),
+      removeCalls: 0,
+      worktreeAfter: true,
+      worktreesAfter: worktreesBefore,
+      cacheAfter: cacheBefore,
+    });
+  });
+
+  test("allows exactly 4096 descendant entries before Git remove", () => {
+    const dir = repo();
+    const made = createWorktree(dir, dir, { branch: "feat/entry-limit-boundary" }, deps());
+    if (!made.ok) throw new Error(made.error);
+    const path = made.value.path;
+    const scratch = resolve(dirname(dir));
+    assertPrivateScratchPath(scratch, path);
+    const baselineEntries = readdirSync(path).length;
+    const remainingEntries = 4_096 - baselineEntries;
+    if (remainingEntries < 0) throw new Error("fixture already exceeds the entry boundary");
+    for (let index = 0; index < remainingEntries; index += 1)
+      writeFileSync(join(path, `boundary-entry-${index}.txt`), "");
+
+    let removeCalls = 0;
+    const spyingGit: GitRun = (args, cwd, timeoutMs) => {
+      if (args[0] === "worktree" && args[1] === "remove") removeCalls += 1;
+      return gitRun(args, cwd, timeoutMs);
+    };
+    const removed = removeWorktree(
+      dir,
+      made.value.id,
+      { force: true },
+      deps({ git: spyingGit }),
+    );
+    const worktreeAfter = existsSync(path);
+
+    expect({ result: removed.ok, removeCalls, worktreeAfter }).toEqual({
+      result: true,
+      removeCalls: 1,
+      worktreeAfter: false,
+    });
+  });
+
+  test("refuses before Git remove when directory depth exceeds 32", () => {
+    const dir = repo();
+    const made = createWorktree(dir, dir, { branch: "feat/depth-limit" }, deps());
+    if (!made.ok) throw new Error(made.error);
+    const path = made.value.path;
+    const scratch = resolve(dirname(dir));
+    assertPrivateScratchPath(scratch, path);
+    let nested = path;
+    for (let depth = 1; depth <= 33; depth += 1) {
+      nested = join(nested, "d");
+      mkdirSync(nested);
+    }
+
+    const cache = join(dir, "trees", ".state.json");
+    assertPrivateScratchPath(scratch, cache);
+    const cacheBefore = readFileSync(cache, "utf8");
+    const worktreesBefore = git(dir, "worktree", "list", "--porcelain");
+    let removeCalls = 0;
+    const spyingGit: GitRun = (args, cwd, timeoutMs) => {
+      if (args[0] === "worktree" && args[1] === "remove") removeCalls += 1;
+      return gitRun(args, cwd, timeoutMs);
+    };
+
+    const removed = removeWorktree(
+      dir,
+      made.value.id,
+      { force: true },
+      deps({ git: spyingGit }),
+    );
+    const cacheAfter = readFileSync(cache, "utf8");
+    const worktreeAfter = existsSync(path);
+    const worktreesAfter = git(dir, "worktree", "list", "--porcelain");
+
+    expect({
+      result: removed.ok,
+      reason: removed.ok ? "" : removed.error,
+      removeCalls,
+      worktreeAfter,
+      worktreesAfter,
+      cacheAfter,
+    }).toEqual({
+      result: false,
+      reason: expect.stringContaining("bounded directory-depth limit"),
+      removeCalls: 0,
+      worktreeAfter: true,
+      worktreesAfter: worktreesBefore,
+      cacheAfter: cacheBefore,
+    });
+  });
+
+  test("allows directory depth 32 before Git remove", () => {
+    const dir = repo();
+    const made = createWorktree(dir, dir, { branch: "feat/depth-limit-boundary" }, deps());
+    if (!made.ok) throw new Error(made.error);
+    const path = made.value.path;
+    const scratch = resolve(dirname(dir));
+    assertPrivateScratchPath(scratch, path);
+    let nested = path;
+    for (let depth = 1; depth <= 32; depth += 1) {
+      nested = join(nested, "d");
+      mkdirSync(nested);
+    }
+
+    let removeCalls = 0;
+    const spyingGit: GitRun = (args, cwd, timeoutMs) => {
+      if (args[0] === "worktree" && args[1] === "remove") removeCalls += 1;
+      return gitRun(args, cwd, timeoutMs);
+    };
+    const removed = removeWorktree(
+      dir,
+      made.value.id,
+      { force: true },
+      deps({ git: spyingGit }),
+    );
+    const worktreeAfter = existsSync(path);
+
+    expect({ result: removed.ok, removeCalls, worktreeAfter }).toEqual({
+      result: true,
+      removeCalls: 1,
+      worktreeAfter: false,
+    });
+  });
+
+  test("refuses if a listed worktree disappears before filesystem inspection", () => {
+    const dir = repo();
+    const made = createWorktree(dir, dir, { branch: "feat/inspection-race" }, deps());
+    if (!made.ok) throw new Error(made.error);
+    const path = made.value.path;
+    const scratch = resolve(dirname(dir));
+    assertPrivateScratchPath(scratch, path);
+    const cache = join(dir, "trees", ".state.json");
+    assertPrivateScratchPath(scratch, cache);
+    const cacheBefore = readFileSync(cache, "utf8");
+    const worktreesBefore = git(dir, "worktree", "list", "--porcelain");
+    let injected = false;
+    let removeCalls = 0;
+    const racingGit: GitRun = (args, cwd, timeoutMs) => {
+      const result = gitRun(args, cwd, timeoutMs);
+      if (args[0] === "worktree" && args[1] === "list" && !injected) {
+        injected = true;
+        assertPrivateScratchPath(scratch, path);
+        rmSync(path, { recursive: true, force: true, maxRetries: 5 });
+      }
+      if (args[0] === "worktree" && args[1] === "remove") removeCalls += 1;
+      return result;
+    };
+
+    const removed = removeWorktree(
+      dir,
+      made.value.id,
+      { force: false },
+      deps({ git: racingGit }),
+    );
+    const cacheAfter = readFileSync(cache, "utf8");
+    const worktreeAfter = existsSync(path);
+    const worktreesAfter = git(dir, "worktree", "list", "--porcelain");
+
+    expect({
+      result: removed.ok,
+      reason: removed.ok ? "" : removed.error,
+      injected,
+      removeCalls,
+      worktreeAfter,
+      worktreesAfter,
+      cacheAfter,
+    }).toEqual({
+      result: false,
+      reason: expect.stringContaining("changed or could not be safely inspected"),
+      injected: true,
+      removeCalls: 0,
+      worktreeAfter: false,
+      worktreesAfter: worktreesBefore,
+      cacheAfter: cacheBefore,
+    });
   });
 
   test("only a worktree this tool made can be removed; a record git no longer lists is dropped", () => {
