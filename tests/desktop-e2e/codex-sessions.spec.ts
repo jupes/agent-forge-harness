@@ -4,6 +4,7 @@ import {
   expect,
   type Locator,
   type Page,
+  type Request,
   type Response,
   test,
 } from "@playwright/test";
@@ -19,7 +20,10 @@ import { pageToken } from "../e2e/launch-link";
 import { HEARTH_HOME } from "../e2e/servers";
 import { alpha, beta, seedProjects, workspace } from "./project-fixtures";
 import { captureTextResponsesThroughBrowserFetch } from "./browser-response-capture";
-import { observePreviewIdentityRefresh } from "./session-start-refresh-barrier";
+import {
+  observePreviewIdentityRefresh,
+  observeSiblingPreviewIdentityRefresh,
+} from "./session-start-refresh-barrier";
 
 const sessionStartIdentitySuccessEnvelopeSchema = z
   .object({
@@ -1035,6 +1039,7 @@ test("confirmed reserved retirement reads back the tombstone before a new UUID c
     .filter({ hasText: originalId });
   const originalHash = await identityRow.locator("code").nth(1).textContent();
   expect(originalHash).toMatch(/^[0-9a-f]{64}$/);
+  if (!originalHash) throw Error("Missing reserved Start request hash.");
   const reviewRetirement = dialog.getByRole("button", {
     name: "Review retirement",
     exact: true,
@@ -1057,22 +1062,101 @@ test("confirmed reserved retirement reads back the tombstone before a new UUID c
       exact: true,
     });
   await expect(close).toBeFocused();
-  await page.keyboard.press("Tab");
-  const body = retirement.locator(".af-dialog-body");
-  expect(
-    await retirement.evaluate((dialog) =>
-      dialog.contains(document.activeElement),
-    ),
-  ).toBe(true);
-  if (await body.evaluate((element) => element === document.activeElement))
+  const betaPage = await page.context().newPage();
+  const identityRefresh = await observeSiblingPreviewIdentityRefresh(
+    page,
+    betaPage,
+    alpha.id,
+    beta.id,
+    workspace,
+    { requestId: originalId, requestHash: originalHash },
+  );
+  let betaStartPosts = 0;
+  const onBetaStartRequest = (request: Request) => {
+    if (
+      request.method() === "POST" &&
+      new URL(request.url()).pathname ===
+        `/__agent-forge/projects/${beta.id}/sessions`
+    )
+      betaStartPosts++;
+  };
+  betaPage.on("request", onBetaStartRequest);
+  try {
+    await openSettled(
+      betaPage,
+      `/index.html#/desktop/project/${beta.id}/sessions`,
+    );
+    await betaPage
+      .getByRole("button", { name: "New session", exact: true })
+      .click();
+    const betaDialog = betaPage.getByRole("dialog", {
+      name: "New session · Beta",
+      exact: true,
+    });
+    await betaDialog.getByRole("button", { name: /Cx · Codex/ }).click();
+    await betaDialog
+      .getByRole("textbox", { name: "Session prompt", exact: true })
+      .fill("Read Beta's supported Codex options only");
+    await betaDialog
+      .getByRole("combobox", { name: "Session effort", exact: true })
+      .selectOption("");
+    await betaDialog
+      .getByRole("button", { name: "Check supported options", exact: true })
+      .click();
+    await expect(
+      betaDialog.getByRole("region", {
+        name: "Equivalent session command",
+        exact: true,
+      }),
+    ).toContainText("--sandbox");
+    await expect.poll(() => identityRefresh.isObserved).toBe(true);
+    expect(identityRefresh.observedReads).toBeGreaterThan(0);
+    expect(betaStartPosts).toBe(0);
+    expect(tasks()).toHaveLength(before);
+    const identityRegion = dialog.getByRole("region", {
+      name: "Original Start requests",
+      exact: true,
+    });
+    await expect(identityRegion.getByRole("status")).toContainText(
+      "Checking the server-owned identity page",
+    );
+    await expect(confirm).toBeDisabled();
+
     await page.keyboard.press("Tab");
-  await expect(keep).toBeFocused();
-  await page.keyboard.press("Tab");
-  await expect(confirm).toBeFocused();
-  await page.keyboard.press("Tab");
-  await expect(close).toBeFocused();
-  await page.keyboard.press("Shift+Tab");
-  await expect(confirm).toBeFocused();
+    const body = retirement.locator(".af-dialog-body");
+    expect(
+      await retirement.evaluate((currentDialog) =>
+        currentDialog.contains(document.activeElement),
+      ),
+    ).toBe(true);
+    if (await body.evaluate((element) => element === document.activeElement))
+      await page.keyboard.press("Tab");
+    await expect(keep).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(confirm).toBeFocused();
+    await page.keyboard.press("Tab");
+    await expect(close).toBeFocused();
+    await page.keyboard.press("Shift+Tab");
+    await expect(confirm).toBeFocused();
+  } finally {
+    identityRefresh.release();
+    try {
+      await identityRefresh.settleHeldReads();
+    } catch {
+      // Cleanup must not replace a causal focus assertion failure.
+    }
+    betaPage.off("request", onBetaStartRequest);
+    try {
+      await identityRefresh.dispose();
+    } catch {
+      // Disposing the held-read observer must not replace the test failure.
+    }
+    try {
+      await betaPage.close();
+    } catch {
+      // Closing the sibling preview page must not replace the test failure.
+    }
+  }
   await expect(confirm).toBeInViewport();
   await expect(retirement.getByText(originalId, { exact: true })).toBeVisible();
   const displayedHash = retirement.locator("dd").nth(3);
