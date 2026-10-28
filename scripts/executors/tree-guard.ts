@@ -350,6 +350,7 @@ function jobGuard(
     preserveKillOnClose = true;
     try {
       if (api.CloseHandle(job) !== 0) held = false;
+      else reportFailure("close-job-handle");
     } finally {
       closeRootHandle();
     }
@@ -398,7 +399,6 @@ function jobGuard(
         } catch {
           // Leave the only job handle retained and kill-on-close enabled if close itself fails.
         }
-        reportFailure("close-job-handle");
         throw new Error(
           "Windows owned process cleanup could not be confirmed.",
         );
@@ -473,11 +473,6 @@ export function guardRequiredTree(pid: number): TreeGuard | null {
 }
 
 /** New native processes remain suspended until this mandatory ownership succeeds. */
-export function guardSuspendedWindowsProcess(pid: number): {
-  release(): void;
-  terminate(): void;
-  settleStopped(): Promise<void>;
-} | null;
 export function guardSuspendedWindowsProcess(
   pid: number,
   diagnostics?: {
