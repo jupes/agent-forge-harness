@@ -42,6 +42,20 @@ export function OnboardingEntry({
           to create your first project.
         </p>
       </div>
+      <div class="af-onboarding-actions">
+        <Button
+          href={desktopHref({
+            destination: "providers",
+            projectId: null,
+            selection: null,
+          })}
+        >
+          Review providers &amp; usage
+        </Button>
+        <Button variant="primary" disabled={disabled} onClick={onSkip}>
+          Skip provider setup
+        </Button>
+      </div>
       {!providers ? (
         <p role="status">No readiness report. Provider status is unknown.</p>
       ) : (
@@ -79,20 +93,6 @@ export function OnboardingEntry({
           </ul>
         </section>
       )}
-      <div class="af-onboarding-actions">
-        <Button
-          href={desktopHref({
-            destination: "providers",
-            projectId: null,
-            selection: null,
-          })}
-        >
-          Review providers &amp; usage
-        </Button>
-        <Button variant="primary" disabled={disabled} onClick={onSkip}>
-          Skip provider setup
-        </Button>
-      </div>
       <p class="af-onboarding-brief-note">
         After project creation, Overview lets you request the first Keeper brief
         as a separate action.
