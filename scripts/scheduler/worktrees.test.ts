@@ -8,8 +8,8 @@ import {
   mkdtempSync,
   readdirSync,
   readFileSync,
-  realpathSync,
   readlinkSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   unlinkSync,
@@ -95,7 +95,9 @@ function repo(ignoreTrees = true, tempParent = tmpdir()): string {
       ? canonicalTempParent.toLowerCase() === canonicalTemp.toLowerCase()
       : canonicalTempParent === canonicalTemp;
   if (!sameTempParent)
-    throw new Error("fixture temp parent must resolve to the OS temp directory");
+    throw new Error(
+      "fixture temp parent must resolve to the OS temp directory",
+    );
 
   let source = prepared.get(ignoreTrees);
   if (source === undefined) {
@@ -346,8 +348,7 @@ test("a commit in the repository repo() copies starts no background maintenance,
 describe("comparablePath", () => {
   test("an 8.3 short path, backslashes and drive case all meet git's spelling; a gone path still compares", () => {
     const dir = repo();
-    const shortDir =
-      process.platform === "win32" ? shortWindowsPath(dir) : dir;
+    const shortDir = process.platform === "win32" ? shortWindowsPath(dir) : dir;
     if (process.platform === "win32")
       expect(shortDir.toLowerCase()).not.toBe(dir.toLowerCase());
     // Use an explicit actual alias; mkdtemp roots are canonicalized below.
