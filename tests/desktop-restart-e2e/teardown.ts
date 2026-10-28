@@ -32,5 +32,6 @@ export default function teardown() {
   );
   if (cleaned.status !== 0)
     throw new Error("The isolated desktop owner cleanup did not complete.");
-  baseTeardown();
+  if (process.env["AGENT_FORGE_DESKTOP_RESTART_RETAIN_HOME"] !== "1")
+    baseTeardown();
 }
