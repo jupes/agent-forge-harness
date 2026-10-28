@@ -1,4 +1,5 @@
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
+import { geminiChatPrivateFrameSchema } from "../../sessions/gemini-chat-owned-journal";
 
 const MAX_LOG_BYTES = 256 * 1024;
 const MAX_ROWS = 256;
@@ -57,7 +58,132 @@ type ProtectedTurn = {
   reason: string | null;
 };
 
-/** Project only the exact saved turn's phase and reason presence. */
+export type RuntimeProjection = {
+  processRecord: "observed" | "not-in-page" | "invalid";
+  outcome: "observed" | "not-in-page" | "invalid";
+  phase: "completed" | "failed" | "unknown" | "not-observed";
+  exitCode: "null" | "zero" | "nonzero" | null;
+  stopped: boolean | null;
+  timedOut: boolean | null;
+  nativeError: "observed" | "not-observed" | "invalid";
+  nativeResult: "observed" | "not-observed" | "invalid";
+};
+type GeminiChatNativeEvent = ReturnType<typeof geminiChatPrivateFrameSchema.parse>["event"];
+
+const noRuntimeFacts = (): RuntimeProjection => ({
+  processRecord: "not-in-page",
+  outcome: "not-in-page",
+  phase: "not-observed",
+  exitCode: null,
+  stopped: null,
+  timedOut: null,
+  nativeError: "not-observed",
+  nativeResult: "not-observed",
+});
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function projectRuntimeFacts(
+  frames: readonly { turnId: string; event: unknown }[],
+  requestId: string,
+): RuntimeProjection {
+  const facts = noRuntimeFacts();
+  const matches: Array<{
+    kind: "process" | "outcome" | "error" | "result";
+    event: GeminiChatNativeEvent;
+  }> = [];
+  let invalidProcess = false,
+    invalidOutcome = false,
+    invalidError = false,
+    invalidResult = false;
+
+  for (const frame of frames) {
+    if (frame.turnId !== requestId || !isObject(frame.event)) continue;
+    const wrapper = frame.event;
+    if (wrapper.kind !== "coding-gemini-chat") continue;
+    const native = wrapper.event;
+    if (!isObject(native)) continue;
+    const kind = native.kind;
+    if (
+      kind !== "process" &&
+      kind !== "outcome" &&
+      kind !== "error" &&
+      kind !== "result"
+    )
+      continue;
+    const parsed = geminiChatPrivateFrameSchema.safeParse(wrapper);
+    if (!parsed.success) {
+      if (kind === "process") invalidProcess = true;
+      else if (kind === "outcome") invalidOutcome = true;
+      else if (kind === "error") invalidError = true;
+      else invalidResult = true;
+      continue;
+    }
+    const event = parsed.data.event;
+    if (event.kind === "process" && event.requestId !== requestId) {
+      invalidProcess = true;
+      continue;
+    }
+    if (
+      (event.kind === "error" || event.kind === "result") &&
+      event.requestId !== requestId
+    ) {
+      if (event.kind === "error") invalidError = true;
+      else invalidResult = true;
+      continue;
+    }
+    if (
+      event.kind === "process" ||
+      event.kind === "outcome" ||
+      event.kind === "error" ||
+      event.kind === "result"
+    )
+      matches.push({ kind: event.kind, event });
+  }
+
+  const processes = matches.filter((item) => item.kind === "process");
+  if (invalidProcess || processes.length > 1) facts.processRecord = "invalid";
+  else if (processes.length === 1) facts.processRecord = "observed";
+
+  const outcomes = matches.filter((item) => item.kind === "outcome");
+  if (invalidOutcome || outcomes.length > 1) {
+    facts.outcome = "invalid";
+  } else if (outcomes.length === 1) {
+    const event = outcomes[0]?.event;
+    if (event?.kind === "outcome") {
+      facts.outcome = "observed";
+      facts.phase = event.outcome.phase;
+      facts.exitCode =
+        event.exitCode === null
+          ? "null"
+          : event.exitCode === 0
+            ? "zero"
+            : "nonzero";
+      facts.stopped = event.stopped;
+      facts.timedOut = event.timedOut;
+    }
+  }
+
+  const errors = matches.filter((item) => item.kind === "error");
+  facts.nativeError =
+    invalidError || errors.length > 1
+      ? "invalid"
+      : errors.length === 1
+        ? "observed"
+        : "not-observed";
+  const results = matches.filter((item) => item.kind === "result");
+  facts.nativeResult =
+    invalidResult || results.length > 1
+      ? "invalid"
+      : results.length === 1
+        ? "observed"
+        : "not-observed";
+  return facts;
+}
+
+/** Project safe facts from only the exact saved turn and its correlated frames. */
 export function projectGeminiChatFailureFacts(
   page: {
     request: ProtectedTurn | null;
@@ -80,6 +206,8 @@ export function projectGeminiChatFailureFacts(
             ? ("none" as const)
             : ("present" as const),
     },
+    runtime:
+      turn === null ? noRuntimeFacts() : projectRuntimeFacts(page.frames, requestId),
   };
 }
 

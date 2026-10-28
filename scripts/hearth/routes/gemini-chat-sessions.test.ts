@@ -27,6 +27,7 @@ import {
   emitGeminiChatWitnessFailureFactsAndRethrow,
   projectGeminiChatFailureFacts,
   readGeminiChatWitnessLog,
+  type RuntimeProjection,
 } from "./gemini-chat-witness-diagnostic.test-utils";
 import { fixtureSessionGit } from "./session-fixture";
 
@@ -372,6 +373,16 @@ async function geminiChatWitnessFailureFacts(
     phase: string;
     reason: "none" | "present" | "no-turn" | "invalid";
   } = { read: originalRead.state, phase: "unavailable", reason: "no-turn" };
+  let runtime: RuntimeProjection = {
+    processRecord: "not-in-page",
+    outcome: "not-in-page",
+    phase: "not-observed",
+    exitCode: null,
+    stopped: null,
+    timedOut: null,
+    nativeError: "not-observed" as const,
+    nativeResult: "not-observed" as const,
+  };
   if (originalRead.state === "ok") {
     const parsed = ownedCodingPageSchema.safeParse(originalRead.data);
     if (!parsed.success)
@@ -381,6 +392,7 @@ async function geminiChatWitnessFailureFacts(
         parsed.data,
         f.request.requestId,
       );
+      runtime = projection.runtime;
       original = {
         read: "ok",
         ...projection.original,
@@ -421,7 +433,7 @@ async function geminiChatWitnessFailureFacts(
   return {
     log,
     runtimeCall: f.runtimeRunState(),
-    ownedProcess: "unavailable" as const,
+    runtime,
     identity,
     original,
   };

@@ -114,6 +114,175 @@ test("exact-turn failure projection retains safe Gemini runtime outcome facts on
   });
 });
 
+test("runtime projection distinguishes terminal outcomes and keeps absent or ambiguous facts unknown", () => {
+  const requestId = "33333333-3333-4333-8333-333333333333";
+  const otherRequestId = "44444444-4444-4444-8444-444444444444";
+  const target = { requestId, phase: "failed", reason: null };
+  const other = { requestId: otherRequestId, phase: "failed", reason: null };
+  const runtimeFrame = (turnId: string, event: unknown) => ({
+    turnId,
+    event: geminiChatPrivateFrameSchema.parse({
+      kind: "coding-gemini-chat",
+      provider: "gemini",
+      version: "0.65.0",
+      event,
+    }),
+  });
+  const outcome = (
+    phase: "completed" | "failed" | "unknown",
+    exitCode: number | null,
+    stopped: boolean,
+    timedOut: boolean,
+  ) => ({
+    kind: "outcome",
+    outcome: {
+      phase,
+      reason: "PRIVATE outcome reason",
+      sessionId:
+        phase === "completed"
+          ? "55555555-5555-4555-8555-555555555555"
+          : null,
+      stopReason: phase === "completed" ? "end_turn" : null,
+      usage: null,
+    },
+    exitCode,
+    stopped,
+    timedOut,
+    stderr: { text: "PRIVATE stderr", truncated: false },
+  });
+  const process = {
+    kind: "process",
+    pid: 23456,
+    bootstrapPid: 12345,
+    smith: "private-smith-name",
+    requestId,
+  };
+  const project = (frames: ReturnType<typeof runtimeFrame>[]) =>
+    projectGeminiChatFailureFacts(
+      { request: target, turns: [target, other], frames },
+      requestId,
+    ).runtime;
+
+  expect(
+    project([
+      runtimeFrame(requestId, process),
+      runtimeFrame(requestId, outcome("completed", 0, false, false)),
+      runtimeFrame(requestId, {
+        kind: "result",
+        requestId,
+        stopReason: "end_turn",
+        usage: null,
+      }),
+    ]),
+  ).toMatchObject({
+    processRecord: "observed",
+    outcome: "observed",
+    phase: "completed",
+    exitCode: "zero",
+    stopped: false,
+    timedOut: false,
+    nativeResult: "observed",
+  });
+
+  expect(
+    project([runtimeFrame(requestId, outcome("failed", 7, false, false))]),
+  ).toMatchObject({
+    phase: "failed",
+    exitCode: "nonzero",
+    stopped: false,
+    timedOut: false,
+  });
+  expect(
+    project([runtimeFrame(requestId, outcome("failed", null, false, true))]),
+  ).toMatchObject({
+    phase: "failed",
+    exitCode: "null",
+    stopped: false,
+    timedOut: true,
+  });
+  expect(
+    project([runtimeFrame(requestId, outcome("unknown", null, true, false))]),
+  ).toMatchObject({
+    phase: "unknown",
+    exitCode: "null",
+    stopped: true,
+    timedOut: false,
+  });
+  expect(
+    project([runtimeFrame(requestId, outcome("unknown", null, false, false))]),
+  ).toMatchObject({ phase: "unknown", outcome: "observed" });
+
+  const missing = project([]);
+  expect(missing).toEqual({
+    processRecord: "not-in-page",
+    outcome: "not-in-page",
+    phase: "not-observed",
+    exitCode: null,
+    stopped: null,
+    timedOut: null,
+    nativeError: "not-observed",
+    nativeResult: "not-observed",
+  });
+  expect(
+    project([runtimeFrame(otherRequestId, outcome("failed", 8, false, false))]),
+  ).toEqual(missing);
+
+  const ambiguous = project([
+    runtimeFrame(requestId, outcome("failed", 1, false, false)),
+    runtimeFrame(requestId, outcome("failed", 2, false, false)),
+  ]);
+  expect(ambiguous).toMatchObject({
+    outcome: "invalid",
+    phase: "not-observed",
+    exitCode: null,
+    stopped: null,
+    timedOut: null,
+  });
+
+  const malformed = project([
+    {
+      turnId: requestId,
+      event: {
+        kind: "coding-gemini-chat",
+        provider: "gemini",
+        version: "0.65.0",
+        event: {
+          kind: "outcome",
+          outcome: { phase: "private-phase" },
+        },
+      },
+    },
+  ]);
+  expect(malformed).toMatchObject({
+    outcome: "invalid",
+    phase: "not-observed",
+    exitCode: null,
+  });
+
+  const privateProjection = project([
+      runtimeFrame(requestId, process),
+      runtimeFrame(requestId, outcome("failed", 3, false, false)),
+      runtimeFrame(requestId, {
+        kind: "error",
+        requestId,
+        code: 1,
+        message: { text: "PRIVATE native error", truncated: false },
+      }),
+    ]);
+  expect(privateProjection.nativeError).toBe("observed");
+  const serialized = JSON.stringify(privateProjection);
+  for (const value of [
+    requestId,
+    "23456",
+    "12345",
+    "private-smith-name",
+    "PRIVATE outcome reason",
+    "PRIVATE stderr",
+    "PRIVATE native error",
+  ])
+    expect(serialized).not.toContain(value);
+});
+
 test("bounded Gemini witness summaries expose counts and a marker bit only", () => {
   const privateValues = [
     "PRIVATE-ACP-PROMPT",
