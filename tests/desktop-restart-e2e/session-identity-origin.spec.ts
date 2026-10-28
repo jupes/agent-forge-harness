@@ -284,10 +284,20 @@ test("a fresh trusted desktop origin discovers and inspects an admitted Start wi
 
   const originalStarts: SessionStartRequest[] = [];
   let effectApplied: () => void = () => {};
+  let rejectEffect: (failure: Error) => void = () => {};
+  let handlerEntered: () => void = () => {};
+  let browserStartPostSeen: () => void = () => {};
   let releaseReply: () => void = () => {};
   let replyAborted: () => void = () => {};
-  const effect = new Promise<void>((resolve) => {
+  const effect = new Promise<void>((resolve, reject) => {
       effectApplied = resolve;
+      rejectEffect = reject;
+    }),
+    handlerEntry = new Promise<void>((resolve) => {
+      handlerEntered = resolve;
+    }),
+    browserStartPost = new Promise<void>((resolve) => {
+      browserStartPostSeen = resolve;
     }),
     heldReply = new Promise<void>((resolve) => {
       releaseReply = resolve;
@@ -295,8 +305,10 @@ test("a fresh trusted desktop origin discovers and inspects an admitted Start wi
     aborted = new Promise<void>((resolve) => {
       replyAborted = resolve;
     });
+  void effect.catch(() => undefined);
   let identityReservePosts = 0,
     startPosts = 0,
+    startHandlerEntries = 0,
     newOriginIdentityGets = 0,
     newOriginIdentityWrites = 0,
     newOriginStartPosts = 0,
@@ -347,8 +359,10 @@ test("a fresh trusted desktop origin discovers and inspects an admitted Start wi
         request.method() === "POST" &&
         url.pathname ===
           `/__agent-forge/projects/${identityProject.id}/sessions`
-      )
+      ) {
         startPosts++;
+        browserStartPostSeen();
+      }
     }
   });
   await page.route(
@@ -358,43 +372,105 @@ test("a fresh trusted desktop origin discovers and inspects an admitted Start wi
         await route.continue();
         return;
       }
-      const input = sessionStartSchema.parse(route.request().postDataJSON());
-      originalStarts.push(input);
-      const response = await route.fetch({
-        headers: {
-          ...(await route.request().allHeaders()),
-          Origin: new URL(route.request().url()).origin,
-          "Sec-Fetch-Site": "same-origin",
-        },
-      });
-      if (!response.ok())
-        throw new Error(
-          `The original Start effect returned ${response.status()}.`,
+      startHandlerEntries++;
+      handlerEntered();
+      let failureStage:
+        | "request"
+        | "backend-fetch"
+        | "http-status"
+        | "receipt"
+        | "original-identity" = "request",
+        failureStatus: number | undefined;
+      try {
+        const input = sessionStartSchema.parse(
+          route.request().postDataJSON(),
         );
-      const receipt = sessionStartReceiptSchema.parse(
-        (await response.json()).data,
-      );
-      if (
-        receipt.session.requestId !== input.requestId ||
-        receipt.session.requestHash !==
-          createHash("sha256")
-            .update(canonicalOwnedSessionStart(input))
-            .digest("hex")
-      )
-        throw new Error(
-          "The admitted receipt did not match the original Start.",
+        originalStarts.push(input);
+        failureStage = "backend-fetch";
+        const response = await route.fetch({
+          headers: {
+            ...(await route.request().allHeaders()),
+            Origin: new URL(route.request().url()).origin,
+            "Sec-Fetch-Site": "same-origin",
+          },
+          timeout: 15_000,
+        });
+        failureStage = "http-status";
+        if (!response.ok()) failureStatus = response.status();
+        if (!response.ok()) throw new Error("The backend refused Start.");
+        failureStage = "receipt";
+        const receipt = sessionStartReceiptSchema.parse(
+          (await response.json()).data,
         );
-      originalSessionId = receipt.session.id;
-      effectApplied();
+        failureStage = "original-identity";
+        if (
+          receipt.session.requestId !== input.requestId ||
+          receipt.session.requestHash !==
+            createHash("sha256")
+              .update(canonicalOwnedSessionStart(input))
+              .digest("hex")
+        )
+          throw new Error("The saved Start identity did not match.");
+        originalSessionId = receipt.session.id;
+        effectApplied();
+      } catch {
+        const status =
+          failureStatus !== undefined &&
+          Number.isSafeInteger(failureStatus) &&
+          failureStatus >= 100 &&
+          failureStatus <= 599
+            ? ` (HTTP ${failureStatus})`
+            : "";
+        rejectEffect(
+          new Error(
+            `The intercepted original Start failed during ${failureStage}${status}.`,
+          ),
+        );
+        await route.abort("failed").catch(() => {});
+        replyAborted();
+        return;
+      }
       await heldReply;
       await route.abort("connectionfailed").catch(() => {});
       replyAborted();
     },
   );
 
+  const waitBounded = async <T>(
+    promise: Promise<T>,
+    timeoutMs: number,
+    message: string,
+  ): Promise<T> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      return await Promise.race([
+        promise,
+        new Promise<never>((_resolve, reject) => {
+          timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  };
+
   try {
     await dialog.getByRole("button", { name: "Start", exact: true }).click();
-    await effect;
+    await waitBounded(
+      browserStartPost,
+      8_000,
+      "The browser did not send the original Start POST.",
+    );
+    await waitBounded(
+      handlerEntry,
+      5_000,
+      "The original Start POST handler was not entered.",
+    );
+    await waitBounded(
+      effect,
+      20_000,
+      "The original Start outcome did not settle.",
+    );
     const original = originalStarts[0];
     if (!original)
       throw new Error("The browser did not send the original Start.");
@@ -403,6 +479,7 @@ test("a fresh trusted desktop origin discovers and inspects an admitted Start wi
       .digest("hex");
     expect(identityReservePosts).toBe(1);
     expect(startPosts).toBe(1);
+    expect(startHandlerEntries).toBe(1);
     const operatorToken = await pageToken(page);
     await expect
       .poll(
