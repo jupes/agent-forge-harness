@@ -6,6 +6,7 @@ import type { ProjectsHome as Home } from "../../../types/project-summary";
 import type { ProjectPreferences } from "../../../types/projects";
 import { type FrameProvider, ProviderMonogram } from "./DesktopFrame";
 import { desktopHref } from "./navigation";
+import { OnboardingEntry } from "./OnboardingEntry";
 import { openProject, projectCards } from "./projects-model";
 import "./projects.css";
 import type { ProviderReadinessPage } from "../../../types/provider-readiness";
@@ -86,6 +87,8 @@ export function ProjectsHomeView({
       </EmptyState>
     );
   const cards = projectCards(home, filter, search);
+  const showOnboardingEntry =
+    home.catalog.projects.length === 0 && !loading && !error && !stale;
   const needs = cards.flatMap(({ project, summary }) =>
     (summary?.needsYou ?? []).map((item) => ({ ...item, project })),
   );
@@ -344,6 +347,18 @@ export function ProjectsHomeView({
           state={projectCreate}
           owner={projectCreateOwner}
           canWrite={canCreateProject}
+          renderEntry={
+            showOnboardingEntry
+              ? ({ disabled, onSkip }) => (
+                  <OnboardingEntry
+                    providers={providers ?? null}
+                    providerStale={providerStale ?? false}
+                    disabled={disabled}
+                    onSkip={onSkip}
+                  />
+                )
+              : undefined
+          }
         />
       </section>
       <section aria-label="Subscriptions" class="af-projects-subscriptions">

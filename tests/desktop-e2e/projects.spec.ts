@@ -1743,6 +1743,12 @@ test("first-run, corrupt store and filtered-empty states stay distinct", async (
   await expect(
     page.getByText("No matching projects", { exact: true }),
   ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "New project", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("button", { name: "Skip provider setup", exact: true }),
+  ).toHaveCount(0);
   await page.getByLabel("Find projects").fill("");
   await page.setViewportSize({ width: 1100, height: 700 });
   await page.getByRole("link", { name: "Open Alpha", exact: true }).focus();
@@ -1904,4 +1910,251 @@ test("scoped queue counts do not leak and a failed refresh retains labelled last
     "data-last-known",
     "true",
   );
+});
+
+test("empty Projects can skip optional provider setup into the guarded create dialog", async ({
+  page,
+}) => {
+  writeFileSync(
+    catalogFile,
+    JSON.stringify({ version: 1, revision: 1, projects: [] }),
+  );
+  const effects: string[] = [];
+  const keeperStartsBefore = keeperFixtureStarts();
+  page.on("request", (request) => {
+    if (request.method() !== "POST") return;
+    const path = new URL(request.url()).pathname;
+    if (
+      path.startsWith("/__agent-forge/providers/") ||
+      path.startsWith("/__agent-forge/projects/")
+    )
+      effects.push(path);
+  });
+  await page.setViewportSize({ width: 1100, height: 700 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await openSettled(page, "/index.html#/desktop/projects");
+  await expect(
+    page.getByText("Welcome to Agent Forge", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Checking saved project creations…", { exact: true }),
+  ).toHaveCount(0);
+
+  const skip = page.getByRole("button", {
+    name: "Skip provider setup",
+    exact: true,
+  });
+  await expect(skip).toBeVisible();
+  await expect(skip).toBeEnabled();
+  const skipBox = await skip.boundingBox();
+  expect(skipBox?.height ?? 0).toBeGreaterThanOrEqual(24);
+  await page.screenshot({
+    path: test.info().outputPath("onboarding-first-project.png"),
+    fullPage: true,
+  });
+  expect(
+    await page.evaluate(() =>
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+    ),
+  ).toBe(true);
+
+  let skipReceivedFocus = false;
+  for (let tab = 0; tab < 40 && !skipReceivedFocus; tab++) {
+    await page.keyboard.press("Tab");
+    skipReceivedFocus = await skip.evaluate(
+      (element) => element === document.activeElement,
+    );
+  }
+  expect(skipReceivedFocus).toBe(true);
+  expect(
+    await skip.evaluate((element) => element.matches(":focus-visible")),
+  ).toBe(true);
+  await page.keyboard.press("Enter");
+  const createDialog = page.getByRole("dialog", { name: "Create a project" });
+  await expect(createDialog).toBeVisible();
+  await expect(page.getByRole("dialog")).toHaveCount(1);
+  await page.screenshot({
+    path: test.info().outputPath("onboarding-empty-projects.png"),
+    fullPage: true,
+  });
+  await page
+    .getByRole("button", { name: "Cancel", exact: true })
+    .press("Enter");
+  await expect(createDialog).toBeHidden();
+  await expect(skip).toBeFocused();
+  expect(effects).toEqual([]);
+  expect(keeperFixtureStarts()).toBe(keeperStartsBefore);
+});
+
+test("empty Projects keep provider setup skippable disabled without a trusted workspace", async ({
+  page,
+}) => {
+  writeFileSync(
+    catalogFile,
+    JSON.stringify({ version: 1, revision: 1, projects: [] }),
+  );
+  await page.route("**/providers/readiness", (route) =>
+    route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: false,
+        data: null,
+        error: "Fixture readiness unavailable",
+      }),
+    }),
+  );
+  const effects: string[] = [];
+  const keeperStartsBefore = keeperFixtureStarts();
+  page.on("request", (request) => {
+    if (request.method() !== "POST") return;
+    const path = new URL(request.url()).pathname;
+    if (
+      path.startsWith("/__agent-forge/providers/") ||
+      path.startsWith("/__agent-forge/projects/")
+    )
+      effects.push(path);
+  });
+
+  await openSettled(page, "/index.html#/desktop/projects");
+  await expect(
+    page.getByText("Welcome to Agent Forge", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("No readiness report. Provider status is unknown.", {
+      exact: true,
+    }),
+  ).toBeVisible();
+  const skip = page.getByRole("button", {
+    name: "Skip provider setup",
+    exact: true,
+  });
+  await expect(skip).toBeVisible();
+  await expect(skip).toBeDisabled();
+  expect(effects).toEqual([]);
+  expect(keeperFixtureStarts()).toBe(keeperStartsBefore);
+});
+
+test("empty Projects keep a reserved original reviewable without enabling Skip", async ({
+  page,
+}) => {
+  await openSettled(page, "/index.html#/desktop/projects");
+  const saved = await reserveFromProjectFlow(page, {
+    slug: "held-onboarding-project",
+    name: "Held onboarding project",
+  });
+  const effects: string[] = [];
+  const keeperStartsBefore = keeperFixtureStarts();
+  page.on("request", (request) => {
+    if (request.method() !== "POST") return;
+    const path = new URL(request.url()).pathname;
+    if (
+      path.startsWith("/__agent-forge/projects/create-reservations") ||
+      path.startsWith("/__agent-forge/keeper/") ||
+      path.startsWith("/__agent-forge/providers/")
+    )
+      effects.push(path);
+  });
+  writeFileSync(
+    catalogFile,
+    JSON.stringify({ version: 1, revision: catalog.revision, projects: [] }),
+  );
+
+  await page.getByRole("button", { name: "Refresh projects" }).click();
+  await expect(
+    page.getByText("Welcome to Agent Forge", { exact: true }),
+  ).toBeVisible();
+  const skip = page.getByRole("button", {
+    name: "Skip provider setup",
+    exact: true,
+  });
+  await expect(skip).toBeDisabled();
+  const reviewButton = page.getByRole("button", {
+    name: "Review reserved project",
+    exact: true,
+  });
+  await expect(reviewButton).toBeVisible();
+  await reviewButton.click();
+  const reviewDialog = page.getByRole("dialog", {
+    name: "Review saved project original",
+  });
+  await expect(reviewDialog).toBeVisible();
+  await expect(reviewDialog).toContainText(saved.original.name);
+  await expect(reviewDialog).toContainText(saved.requestId);
+  await expect(reviewDialog).toContainText(saved.requestHash);
+  await page.keyboard.press("Escape");
+  await expect(reviewDialog).not.toBeVisible();
+  expect(effects).toEqual([]);
+  expect(keeperFixtureStarts()).toBe(keeperStartsBefore);
+});
+
+test("empty Projects label a provider snapshot as last-known after readiness refresh fails", async ({
+  page,
+}) => {
+  writeFileSync(
+    catalogFile,
+    JSON.stringify({ version: 1, revision: 1, projects: [] }),
+  );
+  let readinessReads = 0;
+  await page.route("**/providers/readiness", async (route) => {
+    readinessReads++;
+    if (readinessReads === 1) {
+      await route.continue();
+      return;
+    }
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: false,
+        data: null,
+        error: "Fixture readiness unavailable",
+      }),
+    });
+  });
+
+  const firstRead = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname.endsWith("/providers/readiness") &&
+      response.status() === 200,
+  );
+  await openSettled(page, "/index.html#/desktop/projects");
+  expect((await firstRead).status()).toBe(200);
+  await expect(
+    page.getByRole("region", { name: "Provider readiness snapshot" }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Provider report", { exact: false }),
+  ).toBeVisible();
+
+  const failedRefresh = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname.endsWith("/providers/readiness") &&
+      response.status() === 503,
+  );
+  await page.evaluate(() =>
+    document.dispatchEvent(new Event("visibilitychange")),
+  );
+  await failedRefresh;
+  await expect(
+    page.getByText("Last-known provider report", { exact: false }),
+  ).toBeVisible();
+  const providerRows = page
+    .getByRole("region", { name: "Provider readiness snapshot" })
+    .getByRole("listitem");
+  const providerCount = await providerRows.count();
+  expect(providerCount).toBeGreaterThan(0);
+  for (let index = 0; index < providerCount; index++) {
+    await expect(
+      providerRows
+        .nth(index)
+        .getByText(
+          "Last-known observation; recheck before relying on it.",
+          { exact: true },
+        ),
+    ).toBeVisible();
+  }
+  await expect(
+    page.getByRole("button", { name: "Skip provider setup", exact: true }),
+  ).toBeEnabled();
 });
