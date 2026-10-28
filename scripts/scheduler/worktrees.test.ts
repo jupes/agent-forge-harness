@@ -162,7 +162,8 @@ function cleanupFixtureJunction(scratch: string, link: string): Error | null {
       error.code === "ENOENT";
     if (missing) return null;
 
-    assertPrivateScratchPath(scratch, scratch);
+    // This exact root came from repo(); never let an uncertain link reach the
+    // shared recursive afterAll cleanup, even when boundary validation failed.
     const rootIndex = roots.indexOf(resolve(scratch));
     if (rootIndex >= 0) roots.splice(rootIndex, 1);
     return new Error(
