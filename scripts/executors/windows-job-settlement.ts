@@ -40,9 +40,18 @@ export interface WindowsJobSettlementGenerationFailureWitness {
   readonly capturedMemberCount: number;
 }
 
+export interface WindowsJobSettlementUnaccountedFailureWitness {
+  readonly activeCount: number | null;
+  readonly retainedCount: number | null;
+  readonly capturedMemberCount: number | null;
+  readonly initialTotal: number | null;
+  readonly capturedTotal: number | null;
+}
+
 type WindowsJobSettlementFailureObserver = (
   phase: WindowsJobSettlementFailurePhase,
   generationFailure?: WindowsJobSettlementGenerationFailureWitness,
+  unaccountedFailure?: WindowsJobSettlementUnaccountedFailureWitness,
 ) => void;
 
 const MAX_DIAGNOSTIC_UINT32 = 0xffff_ffff;

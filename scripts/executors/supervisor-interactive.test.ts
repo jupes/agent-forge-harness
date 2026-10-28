@@ -6,6 +6,7 @@ import { guardRequiredTree, guardSuspendedWindowsProcess } from "./tree-guard";
 import type {
   WindowsJobSettlementFailurePhase,
   WindowsJobSettlementGenerationFailureWitness,
+  WindowsJobSettlementUnaccountedFailureWitness,
 } from "./windows-job-settlement";
 
 const fake = join(import.meta.dir, "fixtures/interactive-cli.ts");
@@ -150,6 +151,7 @@ function tree(
   onFailurePhase?: (
     phase: WindowsJobSettlementFailurePhase,
     generationFailure?: WindowsJobSettlementGenerationFailureWitness,
+    unaccountedFailure?: WindowsJobSettlementUnaccountedFailureWitness,
   ) => void,
 ) {
   let announce: (line: string) => void = () => undefined;
@@ -174,7 +176,11 @@ function tree(
       ? {
           interactiveGuard: (pid: number) =>
             guardSuspendedWindowsProcess(pid, {
-              onWindowsSettlementFailure(phase, generationFailure) {
+              onWindowsSettlementFailure(
+                phase,
+                generationFailure,
+                unaccountedFailure,
+              ) {
                 console.error(
                   JSON.stringify({
                     kind: "windows-stop-settlement-refusal",
@@ -190,11 +196,31 @@ function tree(
                             capturedMemberCount:
                               generationFailure.capturedMemberCount,
                           },
+                    accountingFailure:
+                      unaccountedFailure === undefined
+                        ? null
+                        : {
+                            activeCount: unaccountedFailure.activeCount,
+                            retainedCount: unaccountedFailure.retainedCount,
+                            capturedMemberCount:
+                              unaccountedFailure.capturedMemberCount,
+                            initialTotal: unaccountedFailure.initialTotal,
+                            capturedTotal: unaccountedFailure.capturedTotal,
+                          },
                   }),
                 );
                 // The optional observer remains a phase collector for this test.
-                if (generationFailure === undefined) onFailurePhase?.(phase);
-                else onFailurePhase?.(phase, generationFailure);
+                if (
+                  generationFailure === undefined &&
+                  unaccountedFailure === undefined
+                )
+                  onFailurePhase?.(phase);
+                else
+                  onFailurePhase?.(
+                    phase,
+                    generationFailure,
+                    unaccountedFailure,
+                  );
               },
             }),
         }

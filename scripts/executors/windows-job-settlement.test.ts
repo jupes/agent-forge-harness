@@ -505,6 +505,42 @@ test("a decreasing captured generation refuses settlement", async () => {
   expect(f.closed.sort()).toEqual([31, 900]);
 });
 
+test("an initial unaccounted active count reports its existing bounded census facts", async () => {
+  const f = fixture(),
+    phases: WindowsJobSettlementFailurePhase[] = [],
+    generationFailures: unknown[] = [],
+    unaccountedFailures: unknown[] = [];
+  f.setActive(3);
+  const diagnosticApi = Object.assign(f.api, {
+    onFailurePhase(
+      phase: WindowsJobSettlementFailurePhase,
+      generationFailure?: unknown,
+      unaccountedFailure?: unknown,
+    ) {
+      phases.push(phase);
+      generationFailures.push(generationFailure);
+      unaccountedFailures.push(unaccountedFailure);
+    },
+  });
+
+  await expect(
+    settleWindowsJob(diagnosticApi, {}, f.rootIdentity),
+  ).rejects.toThrow("Windows owned process cleanup could not be confirmed.");
+  expect(phases).toEqual(["verify-census-unaccounted"]);
+  expect(generationFailures).toEqual([undefined]);
+  expect(f.calls).not.toContain("terminate");
+  expect(f.closed).toEqual([900]);
+  expect(unaccountedFailures).toEqual([
+    {
+      activeCount: 3,
+      retainedCount: 1,
+      capturedMemberCount: 0,
+      initialTotal: 1,
+      capturedTotal: 1,
+    },
+  ]);
+});
+
 test("growth after a fully accounted capture refuses settlement", async () => {
   const f = fixture([32]),
     phases: WindowsJobSettlementFailurePhase[] = [];
