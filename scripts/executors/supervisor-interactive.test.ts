@@ -192,6 +192,7 @@ function tree(
                           },
                   }),
                 );
+                // The optional observer remains a phase collector for this test.
                 if (generationFailure === undefined)
                   onFailurePhase?.(phase);
                 else onFailurePhase?.(phase, generationFailure);
@@ -290,12 +291,13 @@ test("Stop settles a backpressured write and EOF while confirming descendant cle
     try {
       await f.handle.stop("explicit Stop");
     } catch (error) {
-      console.error(
-        JSON.stringify({
-          kind: "windows-stop-settlement-refusal",
-          phase: phases[0] ?? "unavailable",
-        }),
-      );
+      if (phases.length === 0)
+        console.error(
+          JSON.stringify({
+            kind: "windows-stop-settlement-refusal",
+            phase: "unavailable",
+          }),
+        );
       throw error;
     }
     expect((await settled).map((entry) => entry.status)).toEqual([

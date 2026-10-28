@@ -33,11 +33,11 @@ export type WindowsJobSettlementGenerationFailureReason =
   | "growth-member-unretained";
 
 export interface WindowsJobSettlementGenerationFailureWitness {
-  reason: WindowsJobSettlementGenerationFailureReason;
-  initialTotal: number | null;
-  capturedTotal: number | null;
-  retainedCount: number | null;
-  capturedMemberCount: number | null;
+  readonly reason: WindowsJobSettlementGenerationFailureReason;
+  readonly initialTotal: number | null;
+  readonly capturedTotal: number | null;
+  readonly retainedCount: number;
+  readonly capturedMemberCount: number;
 }
 
 type WindowsJobSettlementFailureObserver = (
@@ -225,8 +225,8 @@ export async function settleWindowsJob<Job, Process>(
         reason: generationFailureReason,
         initialTotal: diagnosticUint32(initialTotal),
         capturedTotal: diagnosticUint32(capturedTotal),
-        retainedCount: diagnosticUint32(retained.size),
-        capturedMemberCount: diagnosticUint32(capturedMembers.length),
+        retainedCount: retained.size,
+        capturedMemberCount: capturedMembers.length,
       };
       refuse("verify-census-generation");
     }
