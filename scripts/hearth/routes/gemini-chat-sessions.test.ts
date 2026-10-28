@@ -26,8 +26,8 @@ import { writeOwnerOnly } from "../token";
 import {
   emitGeminiChatWitnessFailureFactsAndRethrow,
   projectGeminiChatFailureFacts,
-  readGeminiChatWitnessLog,
   type RuntimeProjection,
+  readGeminiChatWitnessLog,
 } from "./gemini-chat-witness-diagnostic.test-utils";
 import { fixtureSessionGit } from "./session-fixture";
 

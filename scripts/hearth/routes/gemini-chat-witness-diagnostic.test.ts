@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { geminiChatPrivateFrameSchema } from "../../sessions/gemini-chat-owned-journal";
 import {
   emitGeminiChatWitnessFailureFactsAndRethrow,
   projectGeminiChatFailureFacts,
@@ -9,7 +10,6 @@ import {
   summarizeGeminiChatWitnessText,
   unavailableGeminiChatWitnessLog,
 } from "./gemini-chat-witness-diagnostic.test-utils";
-import { geminiChatPrivateFrameSchema } from "../../sessions/gemini-chat-owned-journal";
 
 test("exact-turn failure projection retains safe Gemini runtime outcome facts only", () => {
   const requestId = "11111111-1111-4111-8111-111111111111";
@@ -138,10 +138,7 @@ test("runtime projection distinguishes terminal outcomes and keeps absent or amb
     outcome: {
       phase,
       reason: "PRIVATE outcome reason",
-      sessionId:
-        phase === "completed"
-          ? "55555555-5555-4555-8555-555555555555"
-          : null,
+      sessionId: phase === "completed" ? "55555555-5555-4555-8555-555555555555" : null,
       stopReason: phase === "completed" ? "end_turn" : null,
       usage: null,
     },
@@ -157,7 +154,7 @@ test("runtime projection distinguishes terminal outcomes and keeps absent or amb
     smith: "private-smith-name",
     requestId,
   };
-  const project = (frames: ReturnType<typeof runtimeFrame>[]) =>
+  const project = (frames: Array<{ turnId: string; event: unknown }>) =>
     projectGeminiChatFailureFacts(
       { request: target, turns: [target, other], frames },
       requestId,
@@ -260,15 +257,15 @@ test("runtime projection distinguishes terminal outcomes and keeps absent or amb
   });
 
   const privateProjection = project([
-      runtimeFrame(requestId, process),
-      runtimeFrame(requestId, outcome("failed", 3, false, false)),
-      runtimeFrame(requestId, {
-        kind: "error",
-        requestId,
-        code: 1,
-        message: { text: "PRIVATE native error", truncated: false },
-      }),
-    ]);
+    runtimeFrame(requestId, process),
+    runtimeFrame(requestId, outcome("failed", 3, false, false)),
+    runtimeFrame(requestId, {
+      kind: "error",
+      requestId,
+      code: 1,
+      message: { text: "PRIVATE native error", truncated: false },
+    }),
+  ]);
   expect(privateProjection.nativeError).toBe("observed");
   const serialized = JSON.stringify(privateProjection);
   for (const value of [

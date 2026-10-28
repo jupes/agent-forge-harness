@@ -1,5 +1,6 @@
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import { geminiChatPrivateFrameSchema } from "../../sessions/gemini-chat-owned-journal";
+import type { GeminiChatPrivateFrame } from "../../../types/gemini-owned-chat";
 
 const MAX_LOG_BYTES = 256 * 1024;
 const MAX_ROWS = 256;
@@ -68,7 +69,7 @@ export type RuntimeProjection = {
   nativeError: "observed" | "not-observed" | "invalid";
   nativeResult: "observed" | "not-observed" | "invalid";
 };
-type GeminiChatNativeEvent = ReturnType<typeof geminiChatPrivateFrameSchema.parse>["event"];
+type GeminiChatNativeEvent = GeminiChatPrivateFrame["event"];
 
 const noRuntimeFacts = (): RuntimeProjection => ({
   processRecord: "not-in-page",
@@ -207,7 +208,9 @@ export function projectGeminiChatFailureFacts(
             : ("present" as const),
     },
     runtime:
-      turn === null ? noRuntimeFacts() : projectRuntimeFacts(page.frames, requestId),
+      turn === null
+        ? noRuntimeFacts()
+        : projectRuntimeFacts(page.frames, requestId),
   };
 }
 
