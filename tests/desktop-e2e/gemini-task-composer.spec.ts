@@ -169,7 +169,12 @@ async function openComposer(page: Page, bead = false) {
     .fill("PRIVATE GEMINI COMPOSER QUESTION");
   return dialog;
 }
-async function check(dialog: Locator) {
+async function check(dialog: Locator, page: Page) {
+  const identityRefresh = await observePreviewIdentityRefresh(
+    page,
+    alpha.id,
+    workspace,
+  );
   await dialog
     .getByRole("button", { name: "Check supported options", exact: true })
     .click();
@@ -179,6 +184,22 @@ async function check(dialog: Locator) {
       exact: true,
     }),
   ).toContainText("--output-format");
+  await expect(
+    dialog.getByRole("button", { name: "Start", exact: true }),
+  ).toBeEnabled();
+  await identityRefresh.settledRead;
+  const identityRegion = dialog.getByRole("region", {
+    name: "Original Start requests",
+    exact: true,
+  });
+  await expect(
+    identityRegion
+      .getByRole("status")
+      .filter({ hasText: "Checking the server-owned identity page" }),
+  ).not.toBeVisible();
+  await expect(
+    identityRegion.getByRole("button", { name: "Check server", exact: true }),
+  ).toBeEnabled();
   await expect(
     dialog.getByRole("button", { name: "Start", exact: true }),
   ).toBeEnabled();
@@ -272,7 +293,7 @@ test("Gemini bead composer keeps native defaults omitted, reviews private text a
       response.request().method() === "POST" &&
       response.url().endsWith(`/projects/${alpha.id}/sessions/preview`),
   );
-  await check(dialog);
+  await check(dialog, page);
   const checkedEnvelope = await (await checkedReply).json();
   expect(checkedEnvelope.ok).toBe(true);
   const checked = geminiTaskPreviewReceiptSchema.parse(checkedEnvelope.data);
@@ -446,7 +467,7 @@ test("an edit after Gemini review and before paint cannot dispatch an unreviewed
   await expect(
     dialog.getByRole("button", { name: "Start", exact: true }),
   ).toBeDisabled();
-  await check(dialog);
+  await check(dialog, page);
   await dialog.getByRole("button", { name: "Start", exact: true }).click();
   await expect(
     page.getByText("Native Task outcome: completed", { exact: true }),
@@ -512,7 +533,7 @@ test("Gemini optional overrides are explicit and provider switching preserves co
   await expect(
     dialog.getByRole("combobox", { name: "Session approvals" }),
   ).toHaveValue("plan");
-  await check(dialog);
+  await check(dialog, page);
   const command = dialog.getByRole("region", {
     name: "Equivalent session command",
   });
@@ -541,7 +562,7 @@ test("native help with missing overrides keeps Gemini defaults usable and locks 
   );
   const before = taskCount();
   const dialog = await openComposer(page);
-  await check(dialog);
+  await check(dialog, page);
   await expect(
     dialog.getByRole("textbox", { name: "Session model", exact: true }),
   ).toBeDisabled();
@@ -574,7 +595,7 @@ test("keyboard Stop from the Gemini composer ends the actual provider and helper
   writeFileSync(`${log}.control`, JSON.stringify({ mode: "hang-tree" }));
   const before = taskCount(),
     dialog = await openComposer(page);
-  await check(dialog);
+  await check(dialog, page);
   await dialog.getByRole("button", { name: "Start", exact: true }).click();
   const pane = page.getByRole("region", {
     name: "Session conversation",
@@ -705,7 +726,7 @@ test("Gemini choices and capability failures disable dispatch until a fresh veri
     ),
   ).toBeVisible();
   await page.unroute(path);
-  await check(dialog);
+  await check(dialog, page);
   expect(taskCount()).toBe(before);
 });
 
@@ -743,7 +764,7 @@ test("a Gemini Start held before admission retains its original metadata through
   page,
 }) => {
   const dialog = await openComposer(page);
-  await check(dialog);
+  await check(dialog, page);
   const before = taskCount(),
     posts: string[] = [];
   let identityWrites = 0,

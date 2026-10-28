@@ -3,7 +3,13 @@ import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
 import { smithsViewSchema } from "../../apps/desktop/src/smiths-protocol";
+import { conversationPageSchema } from "../../scripts/conversations/protocol";
 import { OPERATOR_HEADER, SURFACE_HEADER } from "../../scripts/hearth/paths";
+import {
+  briefRefreshSchema,
+  briefsSchema,
+} from "../../scripts/keeper/brief-protocol";
+import { keeperRecoveryPageSchema } from "../../scripts/keeper/recovery-protocol";
 import { resolveCheckout } from "../../scripts/ledger/workspace";
 import {
   projectCreateOptionsSchema,
@@ -14,6 +20,7 @@ import {
   projectCreateIdentitySchema,
 } from "../../scripts/projects/create-protocol";
 import { projectFixture } from "../../scripts/projects/testing";
+import type { EventsPage, LedgerEventOf } from "../../types/hearth";
 import type { ProjectCatalog } from "../../types/projects";
 import { readState, withStateLock, writeState } from "../e2e/bd-stand-in-state";
 import { openSettled, reloadSettled } from "../e2e/fixtures";
@@ -21,6 +28,11 @@ import { pageToken } from "../e2e/launch-link";
 import { BD_STAND_IN_STATE, HEARTH_HOME } from "../e2e/servers";
 
 const catalogFile = join(HEARTH_HOME, "projects", "catalog.json");
+const keeperFixtureModeFile = join(HEARTH_HOME, "keeper-fixture-mode.json");
+const keeperFixtureStartsFile = join(
+  HEARTH_HOME,
+  "keeper-fixture-starts.jsonl",
+);
 const workspace = resolveCheckout(process.cwd()).workspace;
 const onboardingRepository = resolveCheckout(
   join(HEARTH_HOME, "project-create-registry", "repos", "onboarding-fixture"),
@@ -222,6 +234,112 @@ async function reserveFromProjectFlow(
   };
 }
 
+async function commitProjectFromOriginal(
+  page: import("@playwright/test").Page,
+  input: { slug: string; name: string },
+) {
+  await openSettled(page, "/index.html#/desktop/projects");
+  const saved = await reserveFromProjectFlow(page, input);
+  const reviewButton = page.getByRole("button", {
+    name: "Review reserved project",
+    exact: true,
+  });
+  await expect(reviewButton).toBeVisible();
+  await reviewButton.click();
+  const review = page.getByRole("dialog");
+  await expect(
+    review.getByText(saved.requestHash, { exact: true }),
+  ).toBeVisible();
+  const commitResponse = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname ===
+        `/__agent-forge/projects/create-reservations/${saved.requestId}/commit` &&
+      response.request().method() === "POST",
+  );
+  await review
+    .getByRole("button", { name: "Create project from this original" })
+    .click();
+  const response = await commitResponse;
+  expect(response.status()).toBe(200);
+  await expect(page).toHaveURL(
+    /\/project\/project-[0-9a-f-]{36}\/overview$/,
+  );
+  const projectId = /\/project\/(project-[0-9a-f-]{36})\/overview$/.exec(
+    new URL(page.url()).hash,
+  )?.[1];
+  expect(projectId).toBeDefined();
+  const identityRead = await protectedRead(
+    page,
+    `/__agent-forge/projects/create-reservations/${saved.requestId}`,
+  );
+  expect(identityRead.status).toBe(200);
+  expect(identityRead.body).toMatchObject({ ok: true, error: null });
+  const identity = projectCreateIdentitySchema.parse(
+    (identityRead.body as { data: unknown }).data,
+  );
+  expect(identity).toMatchObject({
+    requestId: saved.requestId,
+    requestHash: saved.requestHash,
+    original: saved.original,
+    state: "created",
+    projectId,
+  });
+  await expect(page.locator(".af-desktop-project-name")).toHaveText(
+    saved.original.name,
+  );
+  return {
+    saved,
+    projectId: projectId!,
+    createdRevision: identity.createdRevision!,
+  };
+}
+
+function keeperFixtureStarts(): number {
+  try {
+    return readFileSync(keeperFixtureStartsFile, "utf8")
+      .trim()
+      .split("\n")
+      .filter(Boolean).length;
+  } catch {
+    return 0;
+  }
+}
+
+function setKeeperFixtureMode(mode: "normal" | "brief" | "legacy") {
+  writeFileSync(keeperFixtureModeFile, JSON.stringify(mode));
+}
+
+function expectedProjectCreatePosts(requestId: string): string[] {
+  return [
+    "/__agent-forge/projects/create-reservations",
+    `/__agent-forge/projects/create-reservations/${requestId}/commit`,
+  ];
+}
+
+async function protectedRead(
+  page: import("@playwright/test").Page,
+  path: string,
+) {
+  const token = await pageToken(page);
+  return page.evaluate(
+    async ({ path, token, operatorHeader, surfaceHeader }) => {
+      const response = await fetch(path, {
+        headers: {
+          [operatorHeader]: token,
+          [surfaceHeader]: "ui",
+        },
+      });
+      return { status: response.status, body: await response.json() };
+    },
+    {
+      path,
+      token,
+      operatorHeader: OPERATOR_HEADER,
+      surfaceHeader: SURFACE_HEADER,
+    },
+  );
+}
+
 test("a reviewed project is created from its saved original and opens Overview", async ({
   page,
 }) => {
@@ -305,11 +423,23 @@ test("a reviewed project is created from its saved original and opens Overview",
       .click();
     const commitResponse = await commitReply;
     expect(commitResponse.status()).toBe(200);
-    const committed = projectCreateIdentitySchema.parse(
-      (await commitResponse.json()).data.operation,
+    const receiptRead = await protectedRead(
+      page,
+      `/__agent-forge/projects/create-reservations/${saved.requestId}`,
     );
-    expect(committed.projectId).not.toBeNull();
-    createdProjectId = committed.projectId!;
+    expect(receiptRead.status).toBe(200);
+    expect(receiptRead.body).toMatchObject({ ok: true, error: null });
+    const receipt = projectCreateIdentitySchema.parse(
+      (receiptRead.body as { data: unknown }).data,
+    );
+    expect(receipt).toMatchObject({
+      requestId: saved.requestId,
+      requestHash: saved.requestHash,
+      original: saved.original,
+      state: "created",
+    });
+    expect(receipt.projectId).not.toBeNull();
+    createdProjectId = receipt.projectId!;
     await expect.poll(() => summaryRequests).toBeGreaterThan(0);
     expect(new URL(page.url()).hash).toContain("/desktop/projects");
   } finally {
@@ -370,6 +500,292 @@ test("a reviewed project is created from its saved original and opens Overview",
       slug: saved.original.slug,
     }),
   );
+});
+
+test("a created project gets its first Keeper brief only after explicit Refresh", async ({
+  page,
+}) => {
+  setKeeperFixtureMode("brief");
+  const startsBefore = keeperFixtureStarts();
+  const posts: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "POST")
+      posts.push(new URL(request.url()).pathname);
+  });
+
+  try {
+    const { saved, projectId, createdRevision } =
+      await commitProjectFromOriginal(page, {
+        slug: "first-brief-explicit",
+        name: "First brief explicit",
+      });
+    const panel = page.getByRole("region", {
+      name: "Keeper brief",
+      exact: true,
+    });
+    await expect(panel).toContainText("No confirmed brief yet");
+    await expect(
+      panel.getByRole("button", { name: "Refresh brief" }),
+    ).toBeEnabled();
+    await expect.poll(() => keeperFixtureStarts()).toBe(startsBefore);
+
+    const createPosts = expectedProjectCreatePosts(saved.requestId);
+    expect(posts).toEqual(createPosts);
+    await reloadSettled(page);
+    await expect(page.locator(".af-desktop-project-name")).toHaveText(
+      saved.original.name,
+    );
+    await expect(panel).toContainText("No confirmed brief yet");
+    await expect.poll(() => keeperFixtureStarts()).toBe(startsBefore);
+    expect(posts).toEqual(createPosts);
+
+    const token = await pageToken(page);
+    const headers = {
+      [OPERATOR_HEADER]: token,
+      [SURFACE_HEADER]: "ui",
+    };
+    const initialReads = await page.evaluate(
+      async ({ projectId, headers }) => {
+        const [conversation, briefs, audit] = await Promise.all([
+          fetch(
+            `/__agent-forge/projects/${projectId}/keeper?after=0&limit=100`,
+            { headers },
+          ),
+          fetch(`/__agent-forge/projects/${projectId}/keeper/briefs`, {
+            headers,
+          }),
+          fetch("/__agent-forge/events?kind=operator.action&limit=100", {
+            headers,
+          }),
+        ]);
+        return {
+          conversation: {
+            status: conversation.status,
+            body: await conversation.json(),
+          },
+          briefs: { status: briefs.status, body: await briefs.json() },
+          audit: { status: audit.status, body: await audit.json() },
+        };
+      },
+      { projectId, headers },
+    );
+    const {
+      conversation: conversationRead,
+      briefs: briefsRead,
+      audit: auditRead,
+    } = initialReads;
+    expect(conversationRead.status).toBe(200);
+    expect(briefsRead.status).toBe(200);
+    expect(auditRead.status).toBe(200);
+    expect(conversationRead.body).toMatchObject({
+      ok: true,
+      error: null,
+    });
+    expect(briefsRead.body).toMatchObject({ ok: true, error: null });
+    expect(auditRead.body).toMatchObject({ ok: true, error: null });
+    const conversationPage = conversationPageSchema.parse(
+      (conversationRead.body as { data: unknown }).data,
+    );
+    expect(conversationPage.projectId).toBe(projectId);
+    const emptyBriefs = briefsSchema.parse(
+      (briefsRead.body as { data: unknown }).data,
+    );
+    expect(emptyBriefs).toMatchObject({ projectId, latest: null });
+    const auditBefore = (auditRead.body as { data: EventsPage }).data;
+
+    const refreshResponse = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname ===
+          `/__agent-forge/projects/${projectId}/keeper/briefs` &&
+        response.request().method() === "POST",
+    );
+    await panel.getByRole("button", { name: "Refresh brief" }).click();
+    const response = await refreshResponse;
+    expect(response.status()).toBe(202);
+    const refreshBody = briefRefreshSchema.parse(
+      response.request().postDataJSON(),
+    );
+    expect(refreshBody.expectedRevision).toBe(conversationPage.revision);
+    expect(response.request().postDataJSON()).toMatchObject({
+      requestId: refreshBody.requestId,
+      expectedRevision: conversationPage.revision,
+    });
+    expect(posts).toEqual([
+      ...createPosts,
+      `/__agent-forge/projects/${projectId}/keeper/briefs`,
+    ]);
+
+    const card = panel.getByRole("article", {
+      name: "Keeper brief card",
+      exact: true,
+    });
+    await expect(card).toContainText(saved.original.name);
+    await expect(card).toContainText("Moving");
+    await expect.poll(() => keeperFixtureStarts()).toBe(startsBefore + 1);
+
+    const finalReads = await page.evaluate(
+      async ({ projectId, requestId, after, headers }) => {
+        const [briefs, conversation, audit] = await Promise.all([
+          fetch(`/__agent-forge/projects/${projectId}/keeper/briefs`, {
+            headers,
+          }),
+          fetch(
+            `/__agent-forge/projects/${projectId}/keeper?after=0&limit=100&requestId=${requestId}`,
+            { headers },
+          ),
+          fetch(
+            `/__agent-forge/events?kind=operator.action&after=${after}&limit=100`,
+            { headers },
+          ),
+        ]);
+        return {
+          briefs: { status: briefs.status, body: await briefs.json() },
+          conversation: {
+            status: conversation.status,
+            body: await conversation.json(),
+          },
+          audit: { status: audit.status, body: await audit.json() },
+        };
+      },
+      {
+        projectId,
+        requestId: refreshBody.requestId,
+        after: auditBefore.cursor,
+        headers,
+      },
+    );
+    const {
+      briefs: savedBriefRead,
+      conversation: savedConversationRead,
+      audit: auditAfterRead,
+    } = finalReads;
+    expect(savedBriefRead.status).toBe(200);
+    expect(savedConversationRead.status).toBe(200);
+    expect(auditAfterRead.status).toBe(200);
+    expect(savedBriefRead.body).toMatchObject({ ok: true, error: null });
+    expect(savedConversationRead.body).toMatchObject({
+      ok: true,
+      error: null,
+    });
+    expect(auditAfterRead.body).toMatchObject({ ok: true, error: null });
+    const savedBriefs = briefsSchema.parse(
+      (savedBriefRead.body as { data: unknown }).data,
+    );
+    expect(savedBriefs.projectId).toBe(projectId);
+    expect(savedBriefs.latest?.requestId).toBe(refreshBody.requestId);
+    expect(savedBriefs.latest?.snapshot).toMatchObject({
+      projectId,
+      projectName: saved.original.name,
+      workspace: saved.original.workspaces[0]!.root,
+      catalogRevision: createdRevision,
+      scope: {
+        label: `project:${saved.original.slug}`,
+        epicIds: saved.original.workspaces[0]!.epicIds,
+        epicCount: saved.original.workspaces[0]!.epicIds.length,
+        repositoryCount: saved.original.workspaces[0]!.repositories.length,
+      },
+    });
+    expect(savedBriefs.refresh).toMatchObject({
+      requestId: refreshBody.requestId,
+      phase: "completed",
+    });
+    const savedConversation = conversationPageSchema.parse(
+      (savedConversationRead.body as { data: unknown }).data,
+    );
+    expect(
+      savedConversation.turns.find(
+        (turn) => turn.requestId === refreshBody.requestId,
+      )?.phase,
+    ).toBe("completed");
+    const auditPage = (auditAfterRead.body as { data: EventsPage }).data;
+    const auditEvents = auditPage.events;
+    expect(auditPage.more).toBe(false);
+    expect(auditEvents).toHaveLength(1);
+    const refreshAudits = auditEvents.filter(
+      (event): event is LedgerEventOf<"operator.action"> =>
+        event.kind === "operator.action" &&
+        event.payload.action === "keeper.brief.refresh",
+    );
+    expect(refreshAudits).toHaveLength(1);
+    expect(refreshAudits[0]?.payload).toMatchObject({
+      action: "keeper.brief.refresh",
+      surface: "ui",
+      target: projectId,
+    });
+    expect(posts).toEqual([
+      ...createPosts,
+      `/__agent-forge/projects/${projectId}/keeper/briefs`,
+    ]);
+    expect(keeperFixtureStarts()).toBe(startsBefore + 1);
+  } finally {
+    setKeeperFixtureMode("normal");
+  }
+});
+
+test("a new project's legacy Keeper capability stays unavailable without fallback or a turn", async ({
+  page,
+}) => {
+  setKeeperFixtureMode("legacy");
+  const startsBefore = keeperFixtureStarts();
+  const posts: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "POST")
+      posts.push(new URL(request.url()).pathname);
+  });
+
+  try {
+    const { saved, projectId } = await commitProjectFromOriginal(page, {
+      slug: "legacy-keeper-capability",
+      name: "Legacy Keeper capability",
+    });
+    const createPosts = expectedProjectCreatePosts(saved.requestId);
+    const panel = page.getByRole("region", {
+      name: "Keeper brief",
+      exact: true,
+    });
+    const unavailable = panel.locator(
+      '.af-brief-availability[data-readiness="unavailable"]',
+    );
+    await expect(unavailable).toContainText(
+      "Brief refresh is unavailable.",
+    );
+    await expect(unavailable).toContainText(
+      "The Keeper adapter capability check could not be verified. Recheck before sending.",
+    );
+    await expect(
+      panel.getByRole("button", { name: "Refresh brief" }),
+    ).toBeDisabled();
+    await expect(page.locator(".af-desktop-project-name")).toHaveText(
+      saved.original.name,
+    );
+
+    const recoveryRead = await protectedRead(
+      page,
+      `/__agent-forge/projects/${projectId}/keeper/recovery`,
+    );
+    expect(recoveryRead.status).toBe(200);
+    expect(recoveryRead.body).toMatchObject({ ok: true, error: null });
+    const recovery = keeperRecoveryPageSchema.parse(
+      (recoveryRead.body as { data: unknown }).data,
+    );
+    expect(recovery.projectId).toBe(projectId);
+    expect(recovery.selectedSmith).toBe(saved.original.keeperSmith);
+    const selected = recovery.choices.find(
+      (choice) => choice.smith.name === saved.original.keeperSmith,
+    );
+    expect(selected).toBeDefined();
+    expect(selected?.readiness).toMatchObject({
+      connection: "unknown",
+      allowance: "unreported",
+      canStart: false,
+      reason:
+        "The Keeper adapter capability check could not be verified. Recheck before sending.",
+    });
+    expect(posts).toEqual(createPosts);
+    expect(keeperFixtureStarts()).toBe(startsBefore);
+  } finally {
+    setKeeperFixtureMode("normal");
+  }
 });
 
 test("a lost commit reply reloads the same created original without replay", async ({
