@@ -21,12 +21,25 @@ const flags = {
 } as const;
 const floors = { claude: [2, 1, 293], codex: [0, 163, 0] } as const;
 
+export type ShiftProviderPrepareFailurePhase =
+  | "input-check"
+  | "smith-config-check"
+  | "executable-check"
+  | "codex-policy-check"
+  | "probe-environment"
+  | "version-probe"
+  | "version-parse"
+  | "version-floor"
+  | "help-probe"
+  | "help-flags";
+
 /** Fresh non-generating CLI evidence only. No prompt, authentication query or credential read. */
 export function createShiftProviderPreparer(options: {
   root: string;
   configHome?: string;
   environment?: Record<string, string | undefined>;
   probeTimeoutMs?: number;
+  onFailure?: (phase: ShiftProviderPrepareFailurePhase) => void;
 }) {
   const timeoutMs = options.probeTimeoutMs ?? 5000;
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 5000)
@@ -35,13 +48,16 @@ export function createShiftProviderPreparer(options: {
     input: PrivateExecInput,
     signal: AbortSignal,
   ): Promise<{ version: string }> => {
+    let failurePhase: ShiftProviderPrepareFailurePhase = "input-check";
     try {
+      failurePhase = "input-check";
       if (
         signal.aborted ||
         (input.provider !== "claude" && input.provider !== "codex")
       )
         throw new PrivateCaptureError();
       const provider = input.provider === "claude" ? "claude" : "codex";
+      failurePhase = "smith-config-check";
       const loaded = loadConfig({
         harnessRoot: options.root,
         env: {},
@@ -57,6 +73,7 @@ export function createShiftProviderPreparer(options: {
         smith.effort !== input.smith.effort
       )
         throw new PrivateCaptureError();
+      failurePhase = "executable-check";
       const executable = input.command[0];
       if (
         !executable ||
@@ -65,6 +82,7 @@ export function createShiftProviderPreparer(options: {
         (process.platform === "win32" && !/\.exe$/i.test(executable))
       )
         throw new PrivateCaptureError();
+      failurePhase = "codex-policy-check";
       if (provider === "codex") {
         const policies = input.command.filter((word) =>
           /^approval_policy\s*=/.test(word),
@@ -77,6 +95,7 @@ export function createShiftProviderPreparer(options: {
         )
           throw new PrivateCaptureError();
       }
+      failurePhase = "probe-environment";
       const env = buildChildEnv(
         options.environment ?? process.env,
         loaded.config.execution.envPass,
@@ -129,13 +148,16 @@ export function createShiftProviderPreparer(options: {
           await child.done;
         }
       };
+      failurePhase = "version-probe";
       const output = await probe(["--version"]);
+      failurePhase = "version-parse";
       const version = (
         provider === "claude"
           ? /^(\d+\.\d+\.\d+(?:[-+][a-zA-Z0-9.-]+)?)(?:\s|$)/
           : /^codex-cli\s+(\d+\.\d+\.\d+(?:[-+][a-zA-Z0-9.-]+)?)(?:\s|$)/
       ).exec(output)?.[1];
       if (!version) throw new PrivateCaptureError();
+      failurePhase = "version-floor";
       const numbers = version.split(/[.-]/).slice(0, 3).map(Number),
         floor = floors[provider];
       const comparison = numbers.reduce(
@@ -143,9 +165,11 @@ export function createShiftProviderPreparer(options: {
         0,
       );
       if (comparison < 0) throw new PrivateCaptureError();
+      failurePhase = "help-probe";
       const help = await probe(
         provider === "codex" ? ["exec", "--help"] : ["--help"],
       );
+      failurePhase = "help-flags";
       const available = new Set(
         [...help.matchAll(/(?:^|\s)(--[A-Za-z][A-Za-z0-9-]*)\b/g)].map(
           (match) => match[1],
@@ -155,6 +179,11 @@ export function createShiftProviderPreparer(options: {
         throw new PrivateCaptureError();
       return { version };
     } catch {
+      try {
+        options.onFailure?.(failurePhase);
+      } catch {
+        // Failure observation must not alter the private refusal.
+      }
       throw new PrivateCaptureError();
     }
   };

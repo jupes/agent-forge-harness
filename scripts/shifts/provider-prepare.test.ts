@@ -181,18 +181,42 @@ test("a changed smith reports only its private preparation failure phase", async
   });
   expect(existsSync(record)).toBe(false);
   expect(observations).toEqual([["smith-config-check"]]);
+
+  const throwingObservations: unknown[][] = [];
+  let observerFailure: unknown;
+  try {
+    await createShiftProviderPreparer({
+      ...options,
+      onFailure: (...args: unknown[]) => {
+        throwingObservations.push(args);
+        throw new Error("private observer failure");
+      },
+    })(input, new AbortController().signal);
+  } catch (error) {
+    observerFailure = error;
+  }
+  expect(observerFailure).toBeInstanceOf(PrivateCaptureError);
+  expect(observerFailure).toMatchObject({
+    message:
+      "The private provider transcript could not be verified. The shift must stop before another attempt.",
+  });
+  expect(existsSync(record)).toBe(false);
+  expect(throwingObservations).toEqual([["smith-config-check"]]);
 });
 
 test("preparation verifies the selected smith and current native CLI flags without sending a prompt", async () => {
-  const f = fixture();
+  const f = fixture(),
+    observations: string[] = [];
   const prepare = createShiftProviderPreparer({
     root: f.root,
     environment: { CODING_FIXTURE_RECORD: f.record },
     configHome: f.root,
+    onFailure: (phase) => observations.push(phase),
   });
   expect(await prepare(f.input, new AbortController().signal)).toEqual({
     version: "2.1.296",
   });
+  expect(observations).toEqual([]);
   expect(existsSync(f.record)).toBe(false);
 });
 
@@ -362,6 +386,7 @@ test("Stop during native capability help settles its owned probe before any prom
 
 test("changed smith configuration or unsupported actual flags refuse before a private turn", async () => {
   const f = fixture();
+  const legacyObservations: string[] = [];
   const legacy = createShiftProviderPreparer({
     root: f.root,
     environment: {
@@ -369,10 +394,12 @@ test("changed smith configuration or unsupported actual flags refuse before a pr
       CODING_FIXTURE_RECORD: f.record,
     },
     configHome: f.root,
+    onFailure: (phase) => legacyObservations.push(phase),
   });
   await expect(legacy(f.input, new AbortController().signal)).rejects.toThrow(
     "private provider transcript",
   );
+  expect(legacyObservations).toEqual(["help-flags"]);
   const current = createShiftProviderPreparer({
     root: f.root,
     environment: { CODING_FIXTURE_RECORD: f.record },
