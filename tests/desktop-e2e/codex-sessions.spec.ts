@@ -4,7 +4,6 @@ import {
   expect,
   type Locator,
   type Page,
-  type Request,
   type Response,
   test,
 } from "@playwright/test";
@@ -19,6 +18,7 @@ import { openSettled, reloadSettled } from "../e2e/fixtures";
 import { pageToken } from "../e2e/launch-link";
 import { HEARTH_HOME } from "../e2e/servers";
 import { alpha, beta, seedProjects, workspace } from "./project-fixtures";
+import { captureTextResponsesThroughBrowserFetch } from "./browser-response-capture";
 import { observePreviewIdentityRefresh } from "./session-start-refresh-barrier";
 
 const sessionStartIdentitySuccessEnvelopeSchema = z
@@ -759,7 +759,6 @@ test("a durable pre-dispatch NotSent Start retries only by explicit same-UUID re
     settled: boolean;
     snapshot: AdmittedRead;
   }> = [];
-  const explicitCheckRequests = new WeakSet<Request>();
   const identityPath = `/__agent-forge/projects/${alpha.id}/session-start-identities`;
   const identityOrigin = new URL(page.url()).origin;
   let poisonedCheckResponses = 0;
@@ -783,39 +782,6 @@ test("a durable pre-dispatch NotSent Start retries only by explicit same-UUID re
       });
       poisonedCheckResponses++;
     }
-    if (
-      response.request().method() !== "GET" ||
-      !explicitCheckRequests.has(response.request()) ||
-      url.origin !== identityOrigin ||
-      url.pathname !== identityPath ||
-      url.search !== ""
-    )
-      return;
-    const read = { settled: false, snapshot: null as AdmittedRead };
-    admittedReads.push(read);
-    void response
-      .json()
-      .then((value) => {
-        const parsed =
-          sessionStartIdentitySuccessEnvelopeSchema.safeParse(value);
-        return parsed.success
-          ? { status: response.status(), page: parsed.data.data }
-          : null;
-      })
-      .catch(() => null)
-      .then((snapshot) => {
-        read.snapshot = snapshot;
-        read.settled = true;
-      });
-  };
-  const onIdentityRequest = (request: Request) => {
-    const url = new URL(request.url());
-    if (
-      captureCheckRead &&
-      request.method() === "GET" &&
-      url.pathname === identityPath
-    )
-      explicitCheckRequests.add(request);
   };
   const matchesAdmittedRead = (
     snapshot: AdmittedRead,
@@ -831,8 +797,10 @@ test("a durable pre-dispatch NotSent Start retries only by explicit same-UUID re
         identity.mode === "task" &&
         identity.state === "admitted",
     );
-  page.on("request", onIdentityRequest);
   page.on("response", onIdentityResponse);
+  let identityCapture: Awaited<
+    ReturnType<typeof captureTextResponsesThroughBrowserFetch>
+  > | null = null;
   try {
     await row
       .getByRole("button", { name: "Retry exact original", exact: true })
@@ -853,6 +821,42 @@ test("a durable pre-dispatch NotSent Start retries only by explicit same-UUID re
       .getByRole("dialog", { name: "New session · Alpha", exact: true })
       .getByRole("button", { name: "Check server", exact: true });
     await expect(checkServer).toBeEnabled();
+    const reads = Array.from({ length: 2 }, () => ({
+      settled: false,
+      snapshot: null as AdmittedRead,
+    }));
+    admittedReads.push(...reads);
+    identityCapture = await captureTextResponsesThroughBrowserFetch(
+      page,
+      Array.from({ length: reads.length }, () => ({
+        method: "GET" as const,
+        origin: identityOrigin,
+        path: identityPath,
+      })),
+    );
+    for (const [index, capture] of identityCapture.captures.entries()) {
+      const read = reads[index];
+      if (!read) continue;
+      void capture.response
+        .then(({ status, text }) => {
+          let value: unknown;
+          try {
+            value = JSON.parse(text);
+          } catch {
+            return null;
+          }
+          const parsed =
+            sessionStartIdentitySuccessEnvelopeSchema.safeParse(value);
+          return parsed.success
+            ? { status, page: parsed.data.data }
+            : null;
+        })
+        .catch(() => null)
+        .then((snapshot) => {
+          read.snapshot = snapshot;
+          read.settled = true;
+        });
+    }
     captureCheckRead = true;
     await checkServer.click();
     await expect
@@ -874,10 +878,16 @@ test("a durable pre-dispatch NotSent Start retries only by explicit same-UUID re
         };
       })
       .toEqual({ poisoned: true, admitted: true, noExtraEffects: true });
+    await expect(checkServer).toBeEnabled();
+    await expect(
+      page
+        .getByRole("dialog", { name: "New session · Alpha", exact: true })
+        .getByText("Checking the server-owned identity page", { exact: true }),
+    ).toHaveCount(0);
   } finally {
     captureCheckRead = false;
-    page.off("request", onIdentityRequest);
     page.off("response", onIdentityResponse);
+    await identityCapture?.dispose();
   }
   const admittedSnapshot = admittedReads.find(
     (read) => read.settled && matchesAdmittedRead(read.snapshot),

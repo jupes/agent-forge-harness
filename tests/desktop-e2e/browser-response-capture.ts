@@ -3,6 +3,7 @@ import type { Page } from "@playwright/test";
 const CAPTURE_BINDING = "__agentForgeCaptureForkResponse";
 const CAPTURE_STATE = "__agentForgeForkResponseState";
 const CAPTURE_LIMIT = 1024 * 1024;
+const CLONE_READ_TIMEOUT_MS = 10_000;
 const MAX_GROUP_CAPTURES = 2;
 
 const installations = new WeakMap<Page, Promise<void>>();
@@ -29,6 +30,7 @@ function installBrowserFetchObserver(options: {
   bindingName: string;
   stateName: string;
   maxBytes: number;
+  cloneReadTimeoutMs: number;
 }) {
   type ArmedCapture = {
     id: string;
@@ -40,6 +42,7 @@ function installBrowserFetchObserver(options: {
     originalFetch: typeof window.fetch;
     wrapper: typeof window.fetch;
     armed: ArmedCapture[];
+    active: Map<string, AbortController>;
   };
   const globals = window as unknown as Record<string, unknown>;
   if (globals[options.stateName]) return;
@@ -49,34 +52,80 @@ function installBrowserFetchObserver(options: {
     originalFetch,
     wrapper: originalFetch,
     armed: [],
+    active: new Map(),
   };
-  const readClone = async (response: Response): Promise<string> => {
+  const settleState = () => {
+    if (
+      state.armed.length > 0 ||
+      state.active.size > 0 ||
+      globals[options.stateName] !== state
+    )
+      return;
+    if (window.fetch === state.wrapper) window.fetch = state.originalFetch;
+    delete globals[options.stateName];
+  };
+  const report = (payload: unknown): void => {
+    const binding = globals[options.bindingName];
+    if (typeof binding !== "function") return;
+    try {
+      void Promise.resolve(
+        (binding as (value: unknown) => Promise<void>)(payload),
+      ).catch(() => undefined);
+    } catch {
+      // A capture observer cannot change the browser's original response.
+    }
+  };
+  const readClone = async (
+    response: Response,
+    signal: AbortSignal,
+  ): Promise<string> => {
     const reader = response.body?.getReader();
     if (!reader) return "";
     const chunks: Uint8Array[] = [];
-    let length = 0;
-    while (true) {
-      const next = await reader.read();
-      if (next.done) break;
-      length += next.value.byteLength;
-      if (length > options.maxBytes) {
-        void reader.cancel().catch(() => undefined);
-        try {
-          reader.releaseLock();
-        } catch {
-          // The clone may still be settling while the original response proceeds.
+    let length = 0,
+      cancelled: "disposed" | "size" | "timeout" | null = null;
+    const cancel = (reason: "disposed" | "size" | "timeout") => {
+      if (cancelled !== null) return;
+      cancelled = reason;
+      void reader.cancel().catch(() => undefined);
+    };
+    const dispose = () => cancel("disposed");
+    signal.addEventListener("abort", dispose, { once: true });
+    if (signal.aborted) dispose();
+    const timer = setTimeout(
+      () => cancel("timeout"),
+      options.cloneReadTimeoutMs,
+    );
+    try {
+      while (true) {
+        if (cancelled !== null) throw new Error("response-capture-cancelled");
+        const next = await reader.read();
+        if (cancelled !== null) throw new Error("response-capture-cancelled");
+        if (next.done) break;
+        length += next.value.byteLength;
+        if (length > options.maxBytes) {
+          cancel("size");
+          throw new Error("response-size-limit");
         }
-        throw new Error("response-size-limit");
+        chunks.push(next.value);
       }
-      chunks.push(next.value);
+      const bytes = new Uint8Array(length);
+      let offset = 0;
+      for (const chunk of chunks) {
+        bytes.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      return new TextDecoder().decode(bytes);
+    } finally {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", dispose);
+      if (cancelled !== null) void reader.cancel().catch(() => undefined);
+      try {
+        reader.releaseLock();
+      } catch {
+        // The clone reader is best-effort cleanup and never owns the original response.
+      }
     }
-    const bytes = new Uint8Array(length);
-    let offset = 0;
-    for (const chunk of chunks) {
-      bytes.set(chunk, offset);
-      offset += chunk.byteLength;
-    }
-    return new TextDecoder().decode(bytes);
   };
   const wrapper = async function (
     this: Window,
@@ -106,20 +155,28 @@ function installBrowserFetchObserver(options: {
 
     const [armed] = state.armed.splice(armedIndex, 1);
     if (!armed) return originalFetch.apply(this, args);
+    const controller = new AbortController();
+    state.active.set(armed.id, controller);
+    const forgetCapture = () => {
+      if (state.active.get(armed.id) === controller)
+        state.active.delete(armed.id);
+      settleState();
+    };
     let response: Response;
     try {
       response = await originalFetch.apply(this, args);
     } catch (error) {
-      const binding = globals[options.bindingName];
-      if (typeof binding === "function")
-        await (binding as (payload: unknown) => Promise<void>)({
-          captureId: armed.id,
-          ok: false,
-        }).catch(() => undefined);
+      forgetCapture();
+      report({ captureId: armed.id, ok: false });
       throw error;
     }
 
-    let payload: Record<string, unknown>;
+    if (controller.signal.aborted) {
+      forgetCapture();
+      return response;
+    }
+
+    let clone: Response;
     try {
       const responseUrl = new URL(response.url);
       if (
@@ -128,20 +185,31 @@ function installBrowserFetchObserver(options: {
         responseUrl.search !== ""
       )
         throw new Error("response-url-mismatch");
-      payload = {
-        captureId: armed.id,
-        ok: true,
-        status: response.status,
-        text: await readClone(response.clone()),
-      };
+      // Clone before returning so application code can consume the same original Response.
+      clone = response.clone();
     } catch {
-      payload = { captureId: armed.id, ok: false };
+      forgetCapture();
+      report({ captureId: armed.id, ok: false });
+      return response;
     }
-    const binding = globals[options.bindingName];
-    if (typeof binding === "function")
-      await (binding as (value: unknown) => Promise<void>)(payload).catch(
-        () => undefined,
-      );
+
+    void (async () => {
+      let payload: Record<string, unknown> = {
+        captureId: armed.id,
+        ok: false,
+      };
+      try {
+        const text = await readClone(clone, controller.signal);
+        if (controller.signal.aborted)
+          throw new Error("response-capture-cancelled");
+        payload = { captureId: armed.id, ok: true, status: response.status, text };
+      } catch {
+        // Capture failure is private and does not affect the application Response.
+      } finally {
+        forgetCapture();
+        report(payload);
+      }
+    })().catch(() => undefined);
     return response;
   } as typeof window.fetch;
   state.wrapper = wrapper;
@@ -200,6 +268,7 @@ async function installBrowserCapture(page: Page): Promise<void> {
         bindingName: CAPTURE_BINDING,
         stateName: CAPTURE_STATE,
         maxBytes: CAPTURE_LIMIT,
+        cloneReadTimeoutMs: CLONE_READ_TIMEOUT_MS,
       });
     })();
     installations.set(page, installation);
@@ -209,7 +278,35 @@ async function installBrowserCapture(page: Page): Promise<void> {
     bindingName: CAPTURE_BINDING,
     stateName: CAPTURE_STATE,
     maxBytes: CAPTURE_LIMIT,
+    cloneReadTimeoutMs: CLONE_READ_TIMEOUT_MS,
   });
+}
+
+async function cancelBrowserCaptures(page: Page, ids: string[]): Promise<void> {
+  try {
+    await page.evaluate(
+      ({ stateName, ids }) => {
+        const globals = window as unknown as Record<string, unknown>;
+        const state = globals[stateName] as
+          | {
+              originalFetch: typeof window.fetch;
+              wrapper: typeof window.fetch;
+              armed: Array<{ id: string }>;
+              active: Map<string, AbortController>;
+            }
+          | undefined;
+        if (!state) return;
+        for (const id of ids) state.active.get(id)?.abort();
+        state.armed = state.armed.filter((capture) => !ids.includes(capture.id));
+        if (state.armed.length > 0 || state.active.size > 0) return;
+        if (window.fetch === state.wrapper) window.fetch = state.originalFetch;
+        delete globals[stateName];
+      },
+      { stateName: CAPTURE_STATE, ids },
+    );
+  } catch {
+    // Navigation may have closed the document before cleanup.
+  }
 }
 
 export async function captureTextResponseThroughBrowserFetch(
@@ -271,6 +368,7 @@ export async function captureTextResponsesThroughBrowserFetch(
       if (!pending) return;
       group.delete(id);
       pending.reject(new Error("The browser response capture timed out."));
+      void cancelBrowserCaptures(page, [id]);
     }, 30_000);
     timer.unref?.();
     group.set(id, {
@@ -321,32 +419,9 @@ export async function captureTextResponsesThroughBrowserFetch(
         clearTimeout(pending.timer);
         pending.reject(new Error("The browser response capture was disposed."));
       }
+      const ids = captureSpecs.map(({ id }) => id);
       group.clear();
-      try {
-        await page.evaluate(
-          ({ stateName, ids }) => {
-            const globals = window as unknown as Record<string, unknown>;
-            const state = globals[stateName] as
-              | {
-                  originalFetch: typeof window.fetch;
-                  wrapper: typeof window.fetch;
-                  armed: Array<{ id: string }>;
-                }
-              | undefined;
-            if (!state) return;
-            state.armed = state.armed.filter(
-              (capture) => !ids.includes(capture.id),
-            );
-            if (state.armed.length > 0) return;
-            if (window.fetch === state.wrapper)
-              window.fetch = state.originalFetch;
-            delete globals[stateName];
-          },
-          { stateName: CAPTURE_STATE, ids: captureSpecs.map(({ id }) => id) },
-        );
-      } catch {
-        // Navigation may have closed the document before cleanup.
-      }
+      await cancelBrowserCaptures(page, ids);
     },
   };
 }
