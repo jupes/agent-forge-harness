@@ -245,6 +245,37 @@ test("a changed member generation refuses settlement", async () => {
   ]);
 });
 
+test("a generation refusal reports bounded facts from the rejected census", async () => {
+  const f = fixture([31]);
+  f.processes.set(31, processRow(31));
+  f.setTotals([2, 3]);
+  f.setTotal(3);
+  const phases: string[] = [],
+    witnesses: unknown[] = [];
+  const diagnosticApi = Object.assign(f.api, {
+    onFailurePhase(phase: string, witness?: unknown) {
+      phases.push(phase);
+      witnesses.push(witness);
+    },
+  });
+
+  await expect(
+    settleWindowsJob(diagnosticApi, {}, f.rootIdentity),
+  ).rejects.toThrow("Windows owned process cleanup could not be confirmed.");
+  expect(phases).toEqual(["verify-census-generation"]);
+  expect(witnesses).toEqual([
+    {
+      reason: "growth-count-not-covered",
+      initialTotal: 2,
+      capturedTotal: 3,
+      retainedCount: 2,
+      capturedMemberCount: 1,
+    },
+  ]);
+  expect(f.calls).not.toContain("active");
+  expect(f.closed.sort()).toEqual([31, 900]);
+});
+
 test("fully retained growth still waits for every retained process handle", async () => {
   const f = fixture([21]),
     child = processRow(21, { signaled: false }),
