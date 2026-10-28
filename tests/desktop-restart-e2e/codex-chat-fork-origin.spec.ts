@@ -1183,6 +1183,7 @@ async function observeForkScopeHydration(
     holdProviderReadiness?: boolean;
   },
 ) {
+  const holdProviderReadiness = options.holdProviderReadiness ?? true;
   const witnessId = ++scopeHydrationWitnessSequence;
   const bindingName = `__agentForgeForkScopeHydration_${witnessId}`;
   const stateName = `__agentForgeForkScopeHydrationState_${witnessId}`;
@@ -1289,7 +1290,7 @@ async function observeForkScopeHydration(
         if (readinessCaptured) return;
         readinessCaptured = true;
         readiness.resolve({ documentId, status, valid });
-        if (valid && options.holdProviderReadiness) {
+        if (valid && holdProviderReadiness) {
           readinessHeld = true;
           await release.promise;
         }
@@ -1308,7 +1309,7 @@ async function observeForkScopeHydration(
       identityPath,
       maxBytes: SCOPE_HYDRATION_BODY_LIMIT,
       cloneDeadlineMs: SCOPE_HYDRATION_CLONE_DEADLINE_MS,
-      holdProviderReadiness: options.holdProviderReadiness ?? true,
+      holdProviderReadiness,
     });
   } catch (error) {
     active = false;
