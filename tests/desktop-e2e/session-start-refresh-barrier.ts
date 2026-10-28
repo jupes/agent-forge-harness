@@ -353,9 +353,14 @@ async function installIdentityFetchBarrier(
           });
         };
 
-        const wrapper: typeof window.fetch = function (
+        type BrowserFetchCallable = (
           this: Window,
-          ...args: Parameters<typeof window.fetch>
+          input: RequestInfo | URL,
+          init?: RequestInit,
+        ) => Promise<Response>;
+        const wrapper: BrowserFetchCallable = function (
+          this: Window,
+          ...args: Parameters<BrowserFetchCallable>
         ) {
           let requestUrl = "";
           let method = "";
@@ -520,7 +525,8 @@ async function installIdentityFetchBarrier(
         };
         if (!Reflect.set(window, config.controllerName, controller))
           throw Error("Identity capture controller could not be installed.");
-        window.fetch = wrapper;
+        if (!Reflect.set(window, "fetch", wrapper))
+          throw Error("Identity fetch wrapper could not be installed.");
       },
       {
         captureId,
@@ -601,7 +607,6 @@ async function installIdentityFetchBarrier(
       });
     },
     release() {
-      releaseRequested = true;
       if (!captureSeen)
         failProof("The browser identity observer was released without a verified read.");
       controllerOperation = invokeController("release").catch(() => {});
@@ -616,7 +621,6 @@ async function installIdentityFetchBarrier(
         failProof("The browser identity observer was disposed before settlement.");
       disposed = true;
       active = false;
-      releaseRequested = true;
       page.off("close", onPageClose);
       clearProofTimer();
       try {
