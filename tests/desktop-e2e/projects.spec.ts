@@ -1905,3 +1905,86 @@ test("scoped queue counts do not leak and a failed refresh retains labelled last
     "true",
   );
 });
+
+test("empty Projects can skip optional provider setup into the guarded create dialog", async ({
+  page,
+}) => {
+  writeFileSync(
+    catalogFile,
+    JSON.stringify({ version: 1, revision: 1, projects: [] }),
+  );
+  let readinessReads = 0;
+  const effects: string[] = [];
+  const keeperStartsBefore = keeperFixtureStarts();
+  await page.route("**/__agent-forge/providers/readiness", async (route) => {
+    readinessReads += 1;
+    await route.fulfill({
+      status: 503,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: false,
+        data: null,
+        error: "Fixture readiness unavailable",
+      }),
+    });
+  });
+  page.on("request", (request) => {
+    if (request.method() !== "POST") return;
+    const path = new URL(request.url()).pathname;
+    if (
+      path.startsWith("/__agent-forge/providers/") ||
+      path.startsWith("/__agent-forge/projects/")
+    )
+      effects.push(path);
+  });
+  await page.setViewportSize({ width: 1100, height: 700 });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await openSettled(page, "/index.html#/desktop/projects");
+  await expect(
+    page.getByText("Welcome to Agent Forge", { exact: true }),
+  ).toBeVisible();
+  await expect.poll(() => readinessReads).toBeGreaterThan(0);
+
+  const skip = page.getByRole("button", {
+    name: "Skip provider setup",
+    exact: true,
+  });
+  await expect(skip).toBeVisible();
+  await expect(skip).toBeEnabled();
+  await expect(
+    page.getByText("No readiness report", { exact: true }),
+  ).toBeVisible();
+  const skipBox = await skip.boundingBox();
+  expect(skipBox?.height ?? 0).toBeGreaterThanOrEqual(24);
+  expect(
+    await page.evaluate(() =>
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+    ),
+  ).toBe(true);
+
+  let skipReceivedFocus = false;
+  for (let tab = 0; tab < 40 && !skipReceivedFocus; tab++) {
+    await page.keyboard.press("Tab");
+    skipReceivedFocus = await skip.evaluate(
+      (element) => element === document.activeElement,
+    );
+  }
+  expect(skipReceivedFocus).toBe(true);
+  expect(
+    await skip.evaluate((element) => element.matches(":focus-visible")),
+  ).toBe(true);
+  await page.keyboard.press("Enter");
+  const createDialog = page.getByRole("dialog", { name: "Create a project" });
+  await expect(createDialog).toBeVisible();
+  await expect(page.getByRole("dialog")).toHaveCount(1);
+  await page.screenshot({
+    path: test.info().outputPath("onboarding-empty-projects.png"),
+    fullPage: true,
+  });
+  await page
+    .getByRole("button", { name: "Cancel", exact: true })
+    .press("Enter");
+  await expect(createDialog).toBeHidden();
+  expect(effects).toEqual([]);
+  expect(keeperFixtureStarts()).toBe(keeperStartsBefore);
+});
