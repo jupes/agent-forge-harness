@@ -423,11 +423,23 @@ test("a reviewed project is created from its saved original and opens Overview",
       .click();
     const commitResponse = await commitReply;
     expect(commitResponse.status()).toBe(200);
-    const committed = projectCreateIdentitySchema.parse(
-      (await commitResponse.json()).data.operation,
+    const receiptRead = await protectedRead(
+      page,
+      `/__agent-forge/projects/create-reservations/${saved.requestId}`,
     );
-    expect(committed.projectId).not.toBeNull();
-    createdProjectId = committed.projectId!;
+    expect(receiptRead.status).toBe(200);
+    expect(receiptRead.body).toMatchObject({ ok: true, error: null });
+    const receipt = projectCreateIdentitySchema.parse(
+      (receiptRead.body as { data: unknown }).data,
+    );
+    expect(receipt).toMatchObject({
+      requestId: saved.requestId,
+      requestHash: saved.requestHash,
+      original: saved.original,
+      state: "created",
+    });
+    expect(receipt.projectId).not.toBeNull();
+    createdProjectId = receipt.projectId!;
     await expect.poll(() => summaryRequests).toBeGreaterThan(0);
     expect(new URL(page.url()).hash).toContain("/desktop/projects");
   } finally {
