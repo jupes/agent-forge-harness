@@ -162,7 +162,11 @@ function resolveCommand(
   if (override && override.length > 0) {
     return { command: override, path: override.join(" ") };
   }
-  const path = Bun.which(spec.binary);
+  const currentPath = process.env.PATH;
+  const path =
+    currentPath === undefined
+      ? Bun.which(spec.binary)
+      : Bun.which(spec.binary, { PATH: currentPath });
   if (!path) return { error: `${spec.binary} not found on PATH` };
   return { command: [path], path };
 }

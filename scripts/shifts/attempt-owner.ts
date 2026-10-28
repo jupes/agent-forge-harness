@@ -15,6 +15,20 @@ import {
   shiftAttemptRequestId,
 } from "./attempt-identity";
 
+export type ShiftAttemptFailurePhase =
+  | "active"
+  | "origin"
+  | "request-id"
+  | "reservation-lookup"
+  | "provider-check"
+  | "provider-prepare"
+  | "request-hash"
+  | "registry-reserve"
+  | "source-validation"
+  | "post-reservation-check"
+  | "snapshot"
+  | "owned-turn-open";
+
 /** An abandoned read-only probe must not keep the shared durable admission lock. */
 function untilAbort<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
   return new Promise<T>((resolve, reject) => {
@@ -49,6 +63,7 @@ export async function openShiftAttempt(options: {
     signal: AbortSignal,
   ): Promise<{ version: string }>;
   validate(input: PrivateExecInput, signal: AbortSignal): Promise<void>;
+  onFailure?: (phase: ShiftAttemptFailurePhase) => void;
 }) {
   const intent = structuredClone(options.intent),
     input = structuredClone(options.input),
@@ -56,28 +71,38 @@ export async function openShiftAttempt(options: {
   const active = () => {
     if (options.signal.aborted) throw new PrivateCaptureError();
   };
+  let failurePhase: ShiftAttemptFailurePhase = "active";
   try {
+    failurePhase = "active";
     active();
-    const origin = shiftAttemptOrigin(intent, input, attempt),
-      requestId = shiftAttemptRequestId(intent, input, attempt);
+    failurePhase = "origin";
+    const origin = shiftAttemptOrigin(intent, input, attempt);
+    failurePhase = "request-id";
+    const requestId = shiftAttemptRequestId(intent, input, attempt);
+    failurePhase = "reservation-lookup";
     const index = createSessionRegistry(options.home);
     if (
       index.listAll(intent.projectId).some((row) => row.requestId === requestId)
     )
       throw new PrivateCaptureError();
+    failurePhase = "provider-check";
     if (input.provider !== "claude" && input.provider !== "codex")
       throw new PrivateCaptureError();
+    failurePhase = "provider-prepare";
     const prepared = await untilAbort(
       options.prepare(structuredClone(input), options.signal),
       options.signal,
     );
+    failurePhase = "active";
     active();
+    failurePhase = "request-hash";
     const requestHash = shiftAttemptHash(
       intent,
       input,
       attempt,
       prepared.version,
     );
+    failurePhase = "registry-reserve";
     const metadata = {
       mode: "task",
       provider: input.provider,
@@ -92,12 +117,16 @@ export async function openShiftAttempt(options: {
     };
     let created = false;
     const admit = async () => {
+      failurePhase = "active";
       active();
+      failurePhase = "source-validation";
       await untilAbort(
         options.validate(structuredClone(input), options.signal),
         options.signal,
       );
+      failurePhase = "active";
       active();
+      failurePhase = "registry-reserve";
       created = true;
     };
     const record =
@@ -122,6 +151,7 @@ export async function openShiftAttempt(options: {
           );
     // A concurrent creator or an aborted writer may have left only metadata.
     // Neither case is permission to create or repeat its private provider turn.
+    failurePhase = "post-reservation-check";
     active();
     if (!created) throw new PrivateCaptureError();
     const address: OwnedConversationAddress = {
@@ -129,6 +159,7 @@ export async function openShiftAttempt(options: {
       projectId: intent.projectId,
       sessionId: record.id,
     };
+    failurePhase = "snapshot";
     const snapshot = prepareShiftTurnSnapshot(
       intent,
       input,
@@ -136,6 +167,7 @@ export async function openShiftAttempt(options: {
       prepared.version,
       record.id,
     );
+    failurePhase = "owned-turn-open";
     const owner = await openOwnedConversationTurn({
       home: options.home,
       address,
@@ -153,6 +185,11 @@ export async function openShiftAttempt(options: {
     });
     return { record, address, snapshot, owner };
   } catch {
+    try {
+      options.onFailure?.(failurePhase);
+    } catch {
+      // Failure observation must not alter the private refusal.
+    }
     throw new PrivateCaptureError();
   }
 }

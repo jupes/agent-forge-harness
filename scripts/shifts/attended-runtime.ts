@@ -24,9 +24,11 @@ import {
 import { readShiftRecord, SHIFTS_DIR } from "../scheduler/shift-store";
 import { canonicalSessionInput } from "../sessions/preparation";
 import { createShiftAttemptCapture } from "./attempt-capture";
+import type { ShiftAttemptFailurePhase } from "./attempt-owner";
 import type { ProjectShiftExecutionRuntime } from "./execution";
 import { observeProjectShift } from "./observations";
 import { createShiftPrBodyCheck } from "./pr-check";
+import type { ShiftProviderPrepareFailurePhase } from "./provider-prepare";
 import { createShiftProviderPreparer } from "./provider-prepare";
 import { createProjectShiftRegistry, projectShiftFlags } from "./registry";
 import { createProjectShiftScopeValidator } from "./scope";
@@ -97,7 +99,12 @@ function currentAttempt(
 export interface AttendedProjectShiftCommands {
   codexSyncCommand?: readonly string[];
   interactiveBootstrapCommand?: readonly string[];
+  observePrivateFailure?: (observation: PrivateShiftFailureObservation) => void;
 }
+
+export type PrivateShiftFailureObservation =
+  | { kind: "attempt-owner"; phase: ShiftAttemptFailurePhase }
+  | { kind: "provider-prepare"; phase: ShiftProviderPrepareFailurePhase };
 
 /** Trusted process composition only; no HTTP/CLI input can supply dependencies, programs or paths. */
 export function createAttendedProjectShiftExecutionRuntime(options: {
@@ -152,6 +159,15 @@ export function createAttendedProjectShiftExecutionRuntime(options: {
   const prepareProvider = createShiftProviderPreparer({
     root: options.root,
     environment,
+    ...(options.commands?.observePrivateFailure
+      ? {
+          onFailure: (phase) =>
+            options.commands?.observePrivateFailure?.({
+              kind: "provider-prepare",
+              phase,
+            }),
+        }
+      : {}),
     ...(options.configHome ? { configHome: options.configHome } : {}),
   });
   const syncCommand = options.commands?.codexSyncCommand ?? [
@@ -287,6 +303,15 @@ export function createAttendedProjectShiftExecutionRuntime(options: {
               intent,
               attempt: source.attempt,
               prepare: prepareProvider,
+              ...(options.commands?.observePrivateFailure
+                ? {
+                    onFailure: (phase) =>
+                      options.commands?.observePrivateFailure?.({
+                        kind: "attempt-owner",
+                        phase,
+                      }),
+                  }
+                : {}),
               async validate(actual, signal) {
                 if (
                   signal.aborted ||

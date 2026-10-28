@@ -8,7 +8,10 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { BUILTIN_SMITHS } from "../config/defaults";
-import type { PrivateExecInput } from "../executors/private-capture";
+import {
+  PrivateCaptureError,
+  type PrivateExecInput,
+} from "../executors/private-capture";
 import { restartManagerLockerPids } from "../hearth/windows-cleanup-diagnostic";
 import { scratchDirs } from "../test-scratch";
 import { createShiftProviderPreparer } from "./provider-prepare";
@@ -139,16 +142,81 @@ function fixture(provider: "claude" | "codex" = "claude") {
   return { root, record, input };
 }
 
+test("a changed smith reports only its private preparation failure phase", async () => {
+  const root = scratch.make("shift-private-preparation-");
+  mkdirSync(join(root, ".git"));
+  const smith = BUILTIN_SMITHS["claude-journeyman"];
+  if (!smith) throw Error("Fixture smith missing");
+  const record = join(root, "provider.json"),
+    observations: unknown[][] = [],
+    input: PrivateExecInput = {
+      provider: "claude",
+      beadId: "bounded-task-1",
+      runId: "bounded-run-1",
+      workspace: root,
+      cwd: root,
+      smith: { ...smith, model: "changed-model" },
+      command: [join(root, "missing-provider.exe"), "-p"],
+      stdin: "Never dispatched private input",
+      timeoutMs: 5000,
+    },
+    options = {
+      root,
+      configHome: root,
+      onFailure: (...args: unknown[]) => observations.push(args),
+    };
+  let failure: unknown;
+  try {
+    await createShiftProviderPreparer(options)(
+      input,
+      new AbortController().signal,
+    );
+  } catch (error) {
+    failure = error;
+  }
+  expect(failure).toBeInstanceOf(PrivateCaptureError);
+  expect(failure).toMatchObject({
+    message:
+      "The private provider transcript could not be verified. The shift must stop before another attempt.",
+  });
+  expect(existsSync(record)).toBe(false);
+  expect(observations).toEqual([["smith-config-check"]]);
+
+  const throwingObservations: unknown[][] = [];
+  let observerFailure: unknown;
+  try {
+    await createShiftProviderPreparer({
+      ...options,
+      onFailure: (...args: unknown[]) => {
+        throwingObservations.push(args);
+        throw new Error("private observer failure");
+      },
+    })(input, new AbortController().signal);
+  } catch (error) {
+    observerFailure = error;
+  }
+  expect(observerFailure).toBeInstanceOf(PrivateCaptureError);
+  expect(observerFailure).toMatchObject({
+    message:
+      "The private provider transcript could not be verified. The shift must stop before another attempt.",
+  });
+  expect(existsSync(record)).toBe(false);
+  expect(throwingObservations).toEqual([["smith-config-check"]]);
+});
+
 test("preparation verifies the selected smith and current native CLI flags without sending a prompt", async () => {
-  const f = fixture();
+  const f = fixture(),
+    observations: string[] = [];
   const prepare = createShiftProviderPreparer({
     root: f.root,
     environment: { CODING_FIXTURE_RECORD: f.record },
     configHome: f.root,
+    onFailure: (phase) => observations.push(phase),
   });
   expect(await prepare(f.input, new AbortController().signal)).toEqual({
     version: "2.1.296",
   });
+  expect(observations).toEqual([]);
   expect(existsSync(f.record)).toBe(false);
 });
 
@@ -318,6 +386,7 @@ test("Stop during native capability help settles its owned probe before any prom
 
 test("changed smith configuration or unsupported actual flags refuse before a private turn", async () => {
   const f = fixture();
+  const legacyObservations: string[] = [];
   const legacy = createShiftProviderPreparer({
     root: f.root,
     environment: {
@@ -325,10 +394,12 @@ test("changed smith configuration or unsupported actual flags refuse before a pr
       CODING_FIXTURE_RECORD: f.record,
     },
     configHome: f.root,
+    onFailure: (phase) => legacyObservations.push(phase),
   });
   await expect(legacy(f.input, new AbortController().signal)).rejects.toThrow(
     "private provider transcript",
   );
+  expect(legacyObservations).toEqual(["help-flags"]);
   const current = createShiftProviderPreparer({
     root: f.root,
     environment: { CODING_FIXTURE_RECORD: f.record },

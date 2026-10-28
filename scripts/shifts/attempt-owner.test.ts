@@ -4,7 +4,10 @@ import { join } from "node:path";
 import type { ProjectShiftIntent } from "../../types/project-shifts";
 import { conversationFile } from "../conversations/paths";
 import { createConversationStore } from "../conversations/store";
-import type { PrivateExecInput } from "../executors/private-capture";
+import {
+  PrivateCaptureError,
+  type PrivateExecInput,
+} from "../executors/private-capture";
 import { resolveCheckout } from "../ledger/workspace";
 import {
   createSessionRegistry,
@@ -95,10 +98,69 @@ function fixture() {
   };
 }
 
+test("an invalid Shift origin reports only its failure phase", async () => {
+  const f = fixture(),
+    observations: unknown[][] = [],
+    options = {
+      ...f.options,
+      intent: { ...f.intent, requestHash: "invalid" },
+      onFailure: (...args: unknown[]) => observations.push(args),
+    };
+  let failure: unknown;
+  try {
+    await openShiftAttempt(options);
+  } catch (error) {
+    failure = error;
+  }
+  expect(failure).toBeInstanceOf(PrivateCaptureError);
+  expect(failure).toMatchObject({
+    message:
+      "The private provider transcript could not be verified. The shift must stop before another attempt.",
+  });
+  expect(f.prepared()).toBe(0);
+  expect(f.validated()).toBe(0);
+  expect(existsSync(sessionRegistryFile(f.home))).toBe(false);
+  expect(existsSync(join(f.home, "conversations"))).toBe(false);
+  expect(observations).toEqual([["origin"]]);
+});
+
+test("a throwing Shift refusal observer preserves the original private error", async () => {
+  const f = fixture(),
+    observations: unknown[][] = [];
+  let failure: unknown;
+  try {
+    await openShiftAttempt({
+      ...f.options,
+      intent: { ...f.intent, requestHash: "invalid" },
+      onFailure: (...args: unknown[]) => {
+        observations.push(args);
+        throw new Error("private observer failure");
+      },
+    });
+  } catch (error) {
+    failure = error;
+  }
+  expect(failure).toBeInstanceOf(PrivateCaptureError);
+  expect(failure).toMatchObject({
+    message:
+      "The private provider transcript could not be verified. The shift must stop before another attempt.",
+  });
+  expect(observations).toEqual([["origin"]]);
+  expect(f.prepared()).toBe(0);
+  expect(f.validated()).toBe(0);
+  expect(existsSync(sessionRegistryFile(f.home))).toBe(false);
+  expect(existsSync(join(f.home, "conversations"))).toBe(false);
+});
+
 test("a fresh shift attempt privately correlates its full actual input before returning its owned turn", async () => {
   const f = fixture(),
-    opened = await openShiftAttempt(f.options);
+    observations: string[] = [],
+    opened = await openShiftAttempt({
+      ...f.options,
+      onFailure: (phase) => observations.push(phase),
+    });
   try {
+    expect(observations).toEqual([]);
     const registry = createSessionRegistry(f.home).listAll(f.intent.projectId);
     expect(registry).toHaveLength(1);
     expect(registry[0]).toMatchObject({
@@ -289,15 +351,18 @@ test("Stop releases the shared registry lock even when scope validation never se
 });
 
 test("failed scope validation creates no reservation and another admitted attempt gets independent identity", async () => {
-  const f = fixture();
+  const f = fixture(),
+    observations: string[] = [];
   await expect(
     openShiftAttempt({
       ...f.options,
+      onFailure: (phase) => observations.push(phase),
       validate: async () => {
         throw Error("private scope diagnostic");
       },
     }),
   ).rejects.toThrow("private provider transcript");
+  expect(observations).toEqual(["source-validation"]);
   expect(
     createSessionRegistry(f.home).listAll(f.intent.projectId),
   ).toHaveLength(0);
