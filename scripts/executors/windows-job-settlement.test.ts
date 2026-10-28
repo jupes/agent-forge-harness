@@ -269,11 +269,7 @@ test("fully retained growth still waits for every retained process handle", asyn
     child.signaled = true;
     f.setNow(ms);
   };
-  const settlement = settleWindowsJob(
-    diagnosticApi,
-    {},
-    f.rootIdentity,
-  ).then(
+  const settlement = settleWindowsJob(diagnosticApi, {}, f.rootIdentity).then(
     () => {
       settled = true;
     },
@@ -287,9 +283,7 @@ test("fully retained growth still waits for every retained process handle", asyn
   expect(f.calls).toContain("sleep");
   expect(settled).toBe(false);
   expect(f.closed).toEqual([]);
-  expect(f.calls.indexOf("open:21")).toBeLessThan(
-    f.calls.indexOf("terminate"),
-  );
+  expect(f.calls.indexOf("open:21")).toBeLessThan(f.calls.indexOf("terminate"));
   expect(f.calls.indexOf("belongs:21")).toBeLessThan(
     f.calls.indexOf("terminate"),
   );

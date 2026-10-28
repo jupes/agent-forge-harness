@@ -176,6 +176,9 @@ export async function settleWindowsJob<Job, Process>(
     const capturedMembers = readMembers();
     phase = "verify-census-total-read";
     const capturedTotal = readTotalProcesses();
+    // Accept growth only when the lifetime count is covered by retained identities.
+    // This count fences generations; it never proves exit by itself.
+    // Settlement still requires every retained process handle to signal.
     if (
       capturedTotal < initialTotal ||
       (capturedTotal > initialTotal &&
@@ -213,10 +216,7 @@ export async function settleWindowsJob<Job, Process>(
 
       if (allSignaled) {
         phase = "final-census";
-        if (
-          readTotalProcesses() !== capturedTotal ||
-          hasUnaccountedProcesses()
-        )
+        if (readTotalProcesses() !== capturedTotal || hasUnaccountedProcesses())
           refuse();
         const finalMembers = readMembers();
         // Recheck generation only after every retained process handle is
