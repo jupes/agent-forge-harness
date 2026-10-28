@@ -10,6 +10,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { killTree } from "../executors/supervisor";
+import { guardTree } from "../executors/tree-guard";
 import {
   processAlive,
   readShiftRecord,
@@ -423,6 +424,74 @@ for (;;) {
   }
 }
 `;
+
+describe("an explicitly stopped Shift child", () => {
+  test("generic Shift Stop waits for its retained native tree settlement", async () => {
+    if (process.platform !== "win32") return;
+
+    let releaseSettlement: (() => void) | undefined;
+    const settlement = new Promise<void>((resolve) => {
+      releaseSettlement = resolve;
+    });
+    let signalSettlementStarted: (() => void) | undefined;
+    const settlementStarted = new Promise<void>((resolve) => {
+      signalSettlementStarted = resolve;
+    });
+    const child = superviseShift(
+      {
+        argv: [process.execPath, "-e", "setInterval(() => {}, 1000)"],
+        cwd: scratch(),
+        env: { PATH: process.env["PATH"] ?? "" },
+      },
+      (pid) => {
+        const guard = guardTree(pid);
+        return {
+          release: () => guard.release(),
+          ...(guard.terminate ? { terminate: () => guard.terminate?.() } : {}),
+          settleStopped: async () => {
+            if (!guard.settleStopped)
+              throw new Error("The inert Shift has no native settlement guard.");
+            await guard.settleStopped();
+            signalSettlementStarted?.();
+            await settlement;
+          },
+        };
+      },
+    );
+    let stop: Promise<void> | undefined;
+    try {
+      stop = child.stop();
+      const first = await Promise.race([
+        settlementStarted.then(() => "settlement" as const),
+        stop.then(() => "stopped" as const),
+        Bun.sleep(5_000).then(() => "timeout" as const),
+      ]);
+      expect(first).toBe("settlement");
+
+      let publicDone = false;
+      let stopDone = false;
+      void child.done.then(() => {
+        publicDone = true;
+      });
+      void stop.then(() => {
+        stopDone = true;
+      });
+      await Bun.sleep(25);
+      expect(stopDone).toBe(false);
+      expect(publicDone).toBe(false);
+
+      releaseSettlement?.();
+      await stop;
+      await child.done;
+      expect(publicDone).toBe(true);
+      expect(stopDone).toBe(true);
+    } finally {
+      releaseSettlement?.();
+      if (stop) await stop.catch(() => undefined);
+      await child.done.catch(() => undefined);
+    }
+  });
+});
 
 /** A path as the file system names it, so two spellings of one directory compare equal. */
 function real(path: string): string {
