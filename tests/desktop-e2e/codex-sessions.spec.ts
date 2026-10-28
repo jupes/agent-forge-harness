@@ -1063,7 +1063,7 @@ test("confirmed reserved retirement reads back the tombstone before a new UUID c
     });
   await expect(close).toBeFocused();
   const betaPage = await page.context().newPage();
-  const identityRefresh = await observeSiblingPreviewIdentityRefresh(
+  const siblingIdentityRefresh = await observeSiblingPreviewIdentityRefresh(
     page,
     betaPage,
     alpha.id,
@@ -1109,8 +1109,8 @@ test("confirmed reserved retirement reads back the tombstone before a new UUID c
         exact: true,
       }),
     ).toContainText("--sandbox");
-    await expect.poll(() => identityRefresh.isObserved).toBe(true);
-    expect(identityRefresh.observedReads).toBeGreaterThan(0);
+    await expect.poll(() => siblingIdentityRefresh.isObserved).toBe(true);
+    expect(siblingIdentityRefresh.observedReads).toBeGreaterThan(0);
     expect(betaStartPosts).toBe(0);
     expect(tasks()).toHaveLength(before);
     const identityRegion = dialog.getByRole("region", {
@@ -1139,15 +1139,15 @@ test("confirmed reserved retirement reads back the tombstone before a new UUID c
     await page.keyboard.press("Shift+Tab");
     await expect(confirm).toBeFocused();
   } finally {
-    identityRefresh.release();
+    siblingIdentityRefresh.release();
     try {
-      await identityRefresh.settleHeldReads();
+      await siblingIdentityRefresh.settleHeldReads();
     } catch {
       // Cleanup must not replace a causal focus assertion failure.
     }
     betaPage.off("request", onBetaStartRequest);
     try {
-      await identityRefresh.dispose();
+      await siblingIdentityRefresh.dispose();
     } catch {
       // Disposing the held-read observer must not replace the test failure.
     }
