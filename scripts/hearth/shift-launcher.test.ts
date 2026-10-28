@@ -568,6 +568,7 @@ const orphan = Bun.spawn([process.execPath, "-e", "setTimeout(() => {}, 1200)"],
   stdin: "ignore",
   stdout: "ignore",
   stderr: "ignore",
+  detached: process.platform === "win32",
 });
 writeFileSync(${JSON.stringify(childRecord)}, JSON.stringify({ pid: orphan.pid }));
 process.exit(0);
