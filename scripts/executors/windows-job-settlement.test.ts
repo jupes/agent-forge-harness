@@ -245,6 +245,66 @@ test("a changed member generation refuses settlement", async () => {
   ]);
 });
 
+test("fully retained growth still waits for every retained process handle", async () => {
+  const f = fixture([21]),
+    child = processRow(21, { signaled: false }),
+    phases: WindowsJobSettlementFailurePhase[] = [];
+  f.processes.set(21, child);
+  f.setTotals([1, 2]);
+  f.setTotal(2);
+  const diagnosticApi = Object.assign(f.api, {
+    onFailurePhase(phase: WindowsJobSettlementFailurePhase) {
+      phases.push(phase);
+    },
+  });
+  let releaseChild!: () => void;
+  const childRelease = new Promise<void>((resolve) => {
+    releaseChild = resolve;
+  });
+  let settled = false;
+  let failure: unknown;
+  f.api.sleep = async (ms) => {
+    f.calls.push("sleep");
+    await childRelease;
+    child.signaled = true;
+    f.setNow(ms);
+  };
+  const settlement = settleWindowsJob(
+    diagnosticApi,
+    {},
+    f.rootIdentity,
+  ).then(
+    () => {
+      settled = true;
+    },
+    (error: unknown) => {
+      settled = true;
+      failure = error;
+    },
+  );
+
+  expect(phases).toEqual([]);
+  expect(f.calls).toContain("sleep");
+  expect(settled).toBe(false);
+  expect(f.closed).toEqual([]);
+  expect(f.calls.indexOf("open:21")).toBeLessThan(
+    f.calls.indexOf("terminate"),
+  );
+  expect(f.calls.indexOf("belongs:21")).toBeLessThan(
+    f.calls.indexOf("terminate"),
+  );
+  expect(f.calls.indexOf("creation:21")).toBeLessThan(
+    f.calls.indexOf("terminate"),
+  );
+
+  releaseChild();
+  await settlement;
+  expect(settled).toBe(true);
+  expect(failure).toBeUndefined();
+  expect(f.closed.sort()).toEqual([21, 900]);
+  expect(phases).toEqual([]);
+});
+
 test("verification census failures report bounded read and member phases", async () => {
   const cases: {
     phase: string;
