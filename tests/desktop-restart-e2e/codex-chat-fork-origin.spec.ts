@@ -857,15 +857,19 @@ async function authenticateNewHost(
 }
 
 async function selectSession(page: Page, origin: string, sessionId: string) {
+  const expectedHash = `#/desktop/project/${forkProject.id}/sessions?selectionKind=session&selectionId=${encodeURIComponent(sessionId)}`;
   await page.evaluate(
     (hash) => {
       window.location.hash = hash;
     },
-    `#/desktop/project/${forkProject.id}/sessions?selectionKind=session&selectionId=${encodeURIComponent(sessionId)}`,
+    expectedHash,
   );
   await expect(
     page.getByRole("region", { name: "Session conversation", exact: true }),
   ).toBeVisible();
+  await expect
+    .poll(() => new URL(page.url()).hash)
+    .toBe(expectedHash);
   expect(new URL(page.url()).origin).toBe(origin);
 }
 
@@ -1183,6 +1187,7 @@ async function observeForkScopeHydration(
     holdProviderReadiness?: boolean;
   },
 ) {
+  const holdProviderReadiness = options.holdProviderReadiness ?? true;
   const witnessId = ++scopeHydrationWitnessSequence;
   const bindingName = `__agentForgeForkScopeHydration_${witnessId}`;
   const stateName = `__agentForgeForkScopeHydrationState_${witnessId}`;
@@ -1289,7 +1294,7 @@ async function observeForkScopeHydration(
         if (readinessCaptured) return;
         readinessCaptured = true;
         readiness.resolve({ documentId, status, valid });
-        if (valid && options.holdProviderReadiness) {
+        if (valid && holdProviderReadiness) {
           readinessHeld = true;
           await release.promise;
         }
@@ -1308,7 +1313,7 @@ async function observeForkScopeHydration(
       identityPath,
       maxBytes: SCOPE_HYDRATION_BODY_LIMIT,
       cloneDeadlineMs: SCOPE_HYDRATION_CLONE_DEADLINE_MS,
-      holdProviderReadiness: options.holdProviderReadiness ?? true,
+      holdProviderReadiness,
     });
   } catch (error) {
     active = false;
