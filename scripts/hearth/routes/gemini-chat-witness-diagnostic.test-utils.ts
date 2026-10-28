@@ -1,6 +1,6 @@
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
-import { geminiChatPrivateFrameSchema } from "../../sessions/gemini-chat-owned-journal";
 import type { GeminiChatPrivateFrame } from "../../../types/gemini-owned-chat";
+import { geminiChatPrivateFrameSchema } from "../../sessions/gemini-chat-owned-journal";
 
 const MAX_LOG_BYTES = 256 * 1024;
 const MAX_ROWS = 256;

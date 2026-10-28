@@ -138,7 +138,10 @@ test("runtime projection distinguishes terminal outcomes and keeps absent or amb
     outcome: {
       phase,
       reason: "PRIVATE outcome reason",
-      sessionId: phase === "completed" ? "55555555-5555-4555-8555-555555555555" : null,
+      sessionId:
+        phase === "completed"
+          ? "55555555-5555-4555-8555-555555555555"
+          : null,
       stopReason: phase === "completed" ? "end_turn" : null,
       usage: null,
     },
