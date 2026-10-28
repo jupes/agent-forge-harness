@@ -38,14 +38,12 @@ export function OnboardingEntry({
       <div>
         <h2>Set up Agent Forge</h2>
         <p>
-          Provider checks and sign-in are optional. Review providers now or
-          skip to create your first project.
+          Provider checks and sign-in are optional. Review providers now or skip
+          to create your first project.
         </p>
       </div>
       {!providers ? (
-        <p role="status">
-          No readiness report. Provider status is unknown.
-        </p>
+        <p role="status">No readiness report. Provider status is unknown.</p>
       ) : (
         <section
           class="af-onboarding-providers"
@@ -68,8 +66,8 @@ export function OnboardingEntry({
                 <strong>{provider.name}</strong>
                 <span>{readinessLabel(provider.state)}</span>
                 <span class="af-onboarding-provider-detail">
-                  CLI {provider.installation.found ? "found" : "not found"} ·
-                  {" "}Sign-in {authenticationLabel(provider.authentication.mode)}
+                  CLI {provider.installation.found ? "found" : "not found"} ·{" "}
+                  Sign-in {authenticationLabel(provider.authentication.mode)}
                 </span>
                 {(provider.stale || providerStale) && (
                   <span class="af-onboarding-provider-detail">
@@ -96,8 +94,8 @@ export function OnboardingEntry({
         </Button>
       </div>
       <p class="af-onboarding-brief-note">
-        After project creation, Overview lets you request the first Keeper
-        brief as a separate action.
+        After project creation, Overview lets you request the first Keeper brief
+        as a separate action.
       </p>
     </section>
   );
