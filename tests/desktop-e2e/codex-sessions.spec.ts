@@ -4,7 +4,6 @@ import {
   expect,
   type Locator,
   type Page,
-  type Request,
   type Response,
   test,
 } from "@playwright/test";
@@ -19,6 +18,7 @@ import { openSettled, reloadSettled } from "../e2e/fixtures";
 import { pageToken } from "../e2e/launch-link";
 import { HEARTH_HOME } from "../e2e/servers";
 import { alpha, beta, seedProjects, workspace } from "./project-fixtures";
+import { captureTextResponsesThroughBrowserFetch } from "./browser-response-capture";
 import { observePreviewIdentityRefresh } from "./session-start-refresh-barrier";
 
 const sessionStartIdentitySuccessEnvelopeSchema = z
@@ -751,49 +751,40 @@ test("a durable pre-dispatch NotSent Start retries only by explicit same-UUID re
   await expect(
     row.getByRole("button", { name: "Retry exact original", exact: true }),
   ).toBeEnabled();
-  const admittedReads: Array<
-    Promise<{
-      status: number;
-      page: z.infer<typeof sessionStartIdentityPageSchema>;
-    } | null>
-  > = [];
-  const explicitCheckRequests = new WeakSet<Request>();
+  type AdmittedRead = {
+    status: number;
+    page: z.infer<typeof sessionStartIdentityPageSchema>;
+  } | null;
+  const admittedReads: Array<{
+    settled: boolean;
+    snapshot: AdmittedRead;
+  }> = [];
   const identityPath = `/__agent-forge/projects/${alpha.id}/session-start-identities`;
+  const identityOrigin = new URL(page.url()).origin;
+  let poisonedCheckResponses = 0;
   let captureCheckRead = false;
   const onIdentityResponse = (response: Response) => {
     const url = new URL(response.url());
     if (
-      response.request().method() !== "GET" ||
-      !explicitCheckRequests.has(response.request()) ||
-      url.pathname !== identityPath
-    )
-      return;
-    admittedReads.push(
-      (async () => {
-        try {
-          const parsed = sessionStartIdentitySuccessEnvelopeSchema.safeParse(
-            await response.json(),
-          );
-          return parsed.success
-            ? { status: response.status(), page: parsed.data.data }
-            : null;
-        } catch {
-          return null;
-        }
-      })(),
-    );
-  };
-  const onIdentityRequest = (request: Request) => {
-    const url = new URL(request.url());
-    if (
       captureCheckRead &&
-      request.method() === "GET" &&
-      url.pathname === identityPath
-    )
-      explicitCheckRequests.add(request);
+      response.request().method() === "GET" &&
+      url.origin === identityOrigin &&
+      url.pathname === identityPath &&
+      url.search === ""
+    ) {
+      const poisonedBodyReader = async () => {
+        throw new Error("The Playwright response-body witness was poisoned.");
+      };
+      Object.defineProperties(response, {
+        json: { configurable: true, value: poisonedBodyReader },
+        text: { configurable: true, value: poisonedBodyReader },
+        body: { configurable: true, value: poisonedBodyReader },
+      });
+      poisonedCheckResponses++;
+    }
   };
   const matchesAdmittedRead = (
-    snapshot: Awaited<(typeof admittedReads)[number]>,
+    snapshot: AdmittedRead,
   ) =>
     snapshot?.status === 200 &&
     snapshot.page.scope.projectId === alpha.id &&
@@ -806,8 +797,10 @@ test("a durable pre-dispatch NotSent Start retries only by explicit same-UUID re
         identity.mode === "task" &&
         identity.state === "admitted",
     );
-  page.on("request", onIdentityRequest);
   page.on("response", onIdentityResponse);
+  let identityCapture: Awaited<
+    ReturnType<typeof captureTextResponsesThroughBrowserFetch>
+  > | null = null;
   try {
     await row
       .getByRole("button", { name: "Retry exact original", exact: true })
@@ -815,6 +808,12 @@ test("a durable pre-dispatch NotSent Start retries only by explicit same-UUID re
     await expect(
       page.getByRole("article", { name: "Session reply", exact: true }),
     ).toContainText("Codex Task reply 🌱");
+    expect(starts).toHaveLength(2);
+    expect(startStatuses).toEqual([503, 202]);
+    expect(starts[1]).toEqual(original);
+    expect(starts[1]?.requestId).toBe(original.requestId);
+    expect(identityWrites).toBe(2);
+    await expect.poll(() => tasks().length).toBe(before + 1);
     await page
       .getByRole("button", { name: "New session", exact: true })
       .click();
@@ -822,20 +821,77 @@ test("a durable pre-dispatch NotSent Start retries only by explicit same-UUID re
       .getByRole("dialog", { name: "New session · Alpha", exact: true })
       .getByRole("button", { name: "Check server", exact: true });
     await expect(checkServer).toBeEnabled();
+    const reads = Array.from({ length: 2 }, () => ({
+      settled: false,
+      snapshot: null as AdmittedRead,
+    }));
+    admittedReads.push(...reads);
+    identityCapture = await captureTextResponsesThroughBrowserFetch(
+      page,
+      Array.from({ length: reads.length }, () => ({
+        method: "GET" as const,
+        origin: identityOrigin,
+        path: identityPath,
+      })),
+    );
+    for (const [index, capture] of identityCapture.captures.entries()) {
+      const read = reads[index];
+      if (!read) continue;
+      void capture.response
+        .then(({ status, text }) => {
+          let value: unknown;
+          try {
+            value = JSON.parse(text);
+          } catch {
+            return null;
+          }
+          const parsed =
+            sessionStartIdentitySuccessEnvelopeSchema.safeParse(value);
+          return parsed.success
+            ? { status, page: parsed.data.data }
+            : null;
+        })
+        .catch(() => null)
+        .then((snapshot) => {
+          read.snapshot = snapshot;
+          read.settled = true;
+        });
+    }
     captureCheckRead = true;
     await checkServer.click();
     await expect
-      .poll(async () => {
-        return (await Promise.all(admittedReads)).some(matchesAdmittedRead);
+      .poll(() => {
+        const noExtraEffects =
+          starts.length === 2 &&
+          startStatuses.length === 2 &&
+          startStatuses[0] === 503 &&
+          startStatuses[1] === 202 &&
+          starts[1]?.requestId === original.requestId &&
+          identityWrites === 2 &&
+          tasks().length === before + 1;
+        return {
+          poisoned: poisonedCheckResponses > 0,
+          admitted: admittedReads.some(
+            (read) => read.settled && matchesAdmittedRead(read.snapshot),
+          ),
+          noExtraEffects,
+        };
       })
-      .toBe(true);
+      .toEqual({ poisoned: true, admitted: true, noExtraEffects: true });
+    await expect(checkServer).toBeEnabled();
+    await expect(
+      page
+        .getByRole("dialog", { name: "New session · Alpha", exact: true })
+        .getByText("Checking the server-owned identity page", { exact: true }),
+    ).toHaveCount(0);
   } finally {
-    page.off("request", onIdentityRequest);
+    captureCheckRead = false;
     page.off("response", onIdentityResponse);
+    await identityCapture?.dispose();
   }
-  const admittedSnapshot = (await Promise.all(admittedReads)).find(
-    matchesAdmittedRead,
-  );
+  const admittedSnapshot = admittedReads.find(
+    (read) => read.settled && matchesAdmittedRead(read.snapshot),
+  )?.snapshot;
   if (!admittedSnapshot)
     throw Error("The retried Start admission was not read back.");
   const admittedPage = admittedSnapshot.page;
