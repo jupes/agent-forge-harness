@@ -979,6 +979,16 @@ test("confirmed reserved retirement reads back the tombstone before a new UUID c
     ).toBeDisabled();
   } finally {
     identityRefresh.release();
+    try {
+      await identityRefresh.settledRead;
+    } catch {
+      // A failed browser observation must not replace the original assertion.
+    }
+    try {
+      await identityRefresh.dispose();
+    } catch {
+      // A closed page must not replace the original assertion.
+    }
   }
   await identityRefresh.settledRead;
   await expect(
@@ -1100,6 +1110,7 @@ test("confirmed reserved retirement reads back the tombstone before a new UUID c
     await betaDialog
       .getByRole("combobox", { name: "Session effort", exact: true })
       .selectOption("");
+    await siblingIdentityRefresh.arm();
     await betaDialog
       .getByRole("button", { name: "Check supported options", exact: true })
       .click();
@@ -1110,6 +1121,7 @@ test("confirmed reserved retirement reads back the tombstone before a new UUID c
       }),
     ).toContainText("--sandbox");
     await expect.poll(() => siblingIdentityRefresh.isObserved).toBe(true);
+    await expect.poll(() => siblingIdentityRefresh.isPreviewObserved).toBe(true);
     expect(siblingIdentityRefresh.observedReads).toBeGreaterThan(0);
     expect(betaStartPosts).toBe(0);
     expect(tasks()).toHaveLength(before);
