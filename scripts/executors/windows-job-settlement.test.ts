@@ -118,6 +118,18 @@ function processRow(
   };
 }
 
+function throwAfterCall<Argument, Result>(
+  call: (argument: Argument) => Result,
+  callNumber: number,
+): (argument: Argument) => Result {
+  let count = 0;
+  return (argument) => {
+    const result = call(argument);
+    if (++count === callNumber) throw new Error("private native detail");
+    return result;
+  };
+}
+
 const settle = <Job extends object>(
   f: ReturnType<typeof fixture>,
   job: Job,
@@ -651,6 +663,147 @@ test("growth after a fully accounted capture refuses settlement", async () => {
   ]);
   expect(f.closed).toEqual([900, 32]);
   expect(phases).toEqual(["observe-total-changed"]);
+});
+
+test("observation refusals name the boundary and keep later reads short-circuited", async () => {
+  const cases: {
+    phase: WindowsJobSettlementFailurePhase;
+    reads: string[];
+    prepare(f: ReturnType<typeof fixture>): void;
+  }[] = [
+    {
+      phase: "observe-members-invalid",
+      reads: ["members"],
+      prepare(f) {
+        const members = f.api.members;
+        let count = 0;
+        f.api.members = (job) => {
+          const result = members(job);
+          return ++count === 3 ? null : result;
+        };
+      },
+    },
+    {
+      phase: "observe-members-read",
+      reads: ["members"],
+      prepare(f) {
+        f.api.members = throwAfterCall(f.api.members, 3);
+      },
+    },
+    {
+      phase: "observe-total-invalid",
+      reads: ["members", "total"],
+      prepare(f) {
+        f.setTotals([2, 2, null]);
+      },
+    },
+    {
+      phase: "observe-total-read",
+      reads: ["members", "total"],
+      prepare(f) {
+        f.api.totalProcesses = throwAfterCall(f.api.totalProcesses, 3);
+      },
+    },
+    {
+      phase: "observe-active-invalid",
+      reads: ["members", "total", "active"],
+      prepare(f) {
+        f.setActiveSnapshots([2, null]);
+      },
+    },
+    {
+      phase: "observe-active-read",
+      reads: ["members", "total", "active"],
+      prepare(f) {
+        f.api.activeProcesses = throwAfterCall(f.api.activeProcesses, 2);
+      },
+    },
+    {
+      phase: "observe-unaccounted",
+      reads: ["members", "total", "active"],
+      prepare(f) {
+        f.setActiveSnapshots([2, 3]);
+      },
+    },
+    {
+      phase: "observe-unretained",
+      reads: ["members", "total", "active"],
+      prepare(f) {
+        f.setSnapshots([[32], [32], [32, 33]]);
+      },
+    },
+    {
+      phase: "observe-signal-indeterminate",
+      reads: ["members", "total", "active", "signaled:900"],
+      prepare(f) {
+        f.rootIdentity.handle.signaled = null;
+      },
+    },
+    {
+      phase: "observe-signal-read",
+      reads: ["members", "total", "active", "signaled:900"],
+      prepare(f) {
+        f.api.signaled = throwAfterCall(f.api.signaled, 1);
+      },
+    },
+  ];
+
+  for (const check of cases) {
+    const f = fixture([32]),
+      phases: WindowsJobSettlementFailurePhase[] = [];
+    f.processes.set(32, processRow(32));
+    check.prepare(f);
+    const diagnosticApi = Object.assign(f.api, {
+      onFailurePhase(phase: WindowsJobSettlementFailurePhase) {
+        phases.push(phase);
+      },
+    });
+    await expect(
+      settleWindowsJob(diagnosticApi, {}, f.rootIdentity),
+    ).rejects.toThrow("Windows owned process cleanup could not be confirmed.");
+    const terminated = f.calls.indexOf("terminate");
+    expect(f.calls.slice(terminated + 1, -2)).toEqual(check.reads);
+    expect(f.closed).toEqual([900, 32]);
+    expect(phases).toEqual([check.phase]);
+  }
+});
+
+test("observation clock and wait failures report only their own boundary", async () => {
+  for (const check of [
+    { phase: "observe-clock", clockThrowAt: 3, sleepThrows: false, sleeps: [] },
+    { phase: "observe-clock", clockThrowAt: 4, sleepThrows: false, sleeps: [] },
+    { phase: "observe-wait", clockThrowAt: 0, sleepThrows: true, sleeps: [10] },
+  ] as const) {
+    const f = fixture(),
+      phases: WindowsJobSettlementFailurePhase[] = [],
+      sleeps: number[] = [];
+    f.rootIdentity.handle.signaled = false;
+    let clockCalls = 0;
+    const now = f.api.now,
+      sleep = f.api.sleep;
+    f.api.now = () => {
+      if (++clockCalls === check.clockThrowAt)
+        throw new Error("private clock detail");
+      return now();
+    };
+    f.api.sleep = async (ms) => {
+      sleeps.push(ms);
+      if (check.sleepThrows) throw new Error("private wait detail");
+      await sleep(ms);
+    };
+    const diagnosticApi = Object.assign(f.api, {
+      onFailurePhase(phase: WindowsJobSettlementFailurePhase) {
+        phases.push(phase);
+      },
+    });
+    await expect(
+      settleWindowsJob(diagnosticApi, {}, f.rootIdentity),
+    ).rejects.toThrow("Windows owned process cleanup could not be confirmed.");
+    expect(clockCalls).toBe(check.clockThrowAt || 4);
+    expect(sleeps).toEqual(check.sleeps);
+    expect(f.closed).toEqual([900]);
+    expect(phases).toEqual([check.phase]);
+  }
 });
 
 test("fully retained growth above the identity cap refuses settlement", async () => {
