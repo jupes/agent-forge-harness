@@ -26,6 +26,8 @@ Provider readiness and action availability depend on the installed tools and the
 
 ![Fixture-backed screenshot from the Agent Forge desktop app: an inspected coding session](apps/desktop/docs/screenshots/session-chat.png)
 
+The banner is a generated illustration; the app screenshots use isolated test fixtures. [Artwork notes](docs/images/agent-forge-banner.md).
+
 The desktop also has navigation for Inbox, Reviews, and Settings. Their full workflows are still in progress. Runs and Activity currently focus on inspection.
 
 ## What you need
@@ -65,7 +67,7 @@ Open the authenticated launch link printed by the command. It is short-lived and
 bun run dashboard:open
 ```
 
-The dashboard is a local Vite app connected to the hearth, Agent Forge's local API and event service. It includes Beads views, the Forge run board, and council reviews; it is not a static-only site. Keep the bound address as printed when opening the link.
+The dashboard is a local Vite app connected to the hearth, Agent Forge's local API and event service. It includes Beads views, the Forge run board, and council reviews. Keep the bound address as printed when opening the link.
 
 ### Build the Windows desktop app
 
