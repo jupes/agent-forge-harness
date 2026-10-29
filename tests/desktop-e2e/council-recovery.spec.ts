@@ -41,7 +41,10 @@ declare global {
   interface Window {
     __councilLostCommit?: { status: number; body: unknown };
     __councilLostCommitFailure?: boolean;
-    __validateCouncilCommitReceipt?: (status: number, body: unknown) => Promise<boolean>;
+    __validateCouncilCommitReceipt?: (
+      status: number,
+      body: unknown,
+    ) => Promise<boolean>;
     __restoreCouncilFetch?: () => void;
   }
 }
@@ -364,7 +367,9 @@ test("lost commit delivery stays unknown until the exact saved result is checked
     (status: number, body: unknown) => {
       if (status !== 202) return false;
       try {
-        const result = projectCouncilReceiptSchema.safeParse(responseData(body));
+        const result = projectCouncilReceiptSchema.safeParse(
+          responseData(body),
+        );
         return (
           result.success &&
           result.data.phase !== "reserved" &&
@@ -424,11 +429,10 @@ test("lost commit delivery stays unknown until the exact saved result is checked
             reader.releaseLock();
           }
         };
-        const wrapper = Object.assign(
-          async function (
-            this: unknown,
-            ...args: Parameters<typeof originalFetch>
-          ): Promise<Response> {
+        const wrapper = Object.assign(async function (
+          this: unknown,
+          ...args: Parameters<typeof originalFetch>
+        ): Promise<Response> {
           const input = args[0];
           const rawUrl = input instanceof Request ? input.url : String(input);
           const method =
@@ -487,7 +491,11 @@ test("lost commit delivery stays unknown until the exact saved result is checked
             const validate = window.__validateCouncilCommitReceipt;
             let schemaValid = false;
             const remaining = deadline - performance.now();
-            if (envelopeMatches && typeof validate === "function" && remaining > 0) {
+            if (
+              envelopeMatches &&
+              typeof validate === "function" &&
+              remaining > 0
+            ) {
               let validationTimer = 0;
               const callbackTimeout = new Promise<boolean>((resolve) => {
                 validationTimer = window.setTimeout(
@@ -515,9 +523,7 @@ test("lost commit delivery stays unknown until the exact saved result is checked
             window.__councilLostCommitFailure = true;
             return response;
           }
-          },
-          originalFetch,
-        );
+        }, originalFetch);
         window.fetch = wrapper;
         window.__restoreCouncilFetch = () => {
           if (window.fetch === wrapper) window.fetch = originalFetch;
