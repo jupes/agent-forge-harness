@@ -486,7 +486,8 @@ test("a confirmed Claude rate limit offers an explicit Codex Chat continuation",
     })
     .not.toBeNull();
   if (!record) throw Error("Missing original Claude Chat fixture");
-  expect(record.provider).toBe("claude");
+  const sourceRecord = record;
+  expect(sourceRecord.provider).toBe("claude");
   const outcome = page.locator(".af-session-outcome");
   await expect(
     page
@@ -503,7 +504,7 @@ test("a confirmed Claude rate limit offers an explicit Codex Chat continuation",
   expect(
     sourcePage.frames.some(
       (frame) =>
-        frame.turnId === record.requestId &&
+        frame.turnId === sourceRecord.requestId &&
         frame.event.kind === "coding-outcome" &&
         frame.event.provider === "claude" &&
         frame.event.code === "rate-limited",
@@ -576,6 +577,21 @@ test("a confirmed Claude rate limit offers an explicit Codex Chat continuation",
     .getByRole("textbox", { name: "Handoff summary", exact: true })
     .fill(handoff);
   await confirmedReview.getByRole("checkbox").check();
+  const shotDir = process.env["SHOT_DIR"];
+  if (shotDir) {
+    mkdirSync(shotDir, { recursive: true });
+    await page.setViewportSize({ width: 1280, height: 1000 });
+    try {
+      await confirmedReview.screenshot({
+        path: join(shotDir, "reviewed-codex-continuation.png"),
+        animations: "disabled",
+        mask: [confirmedReview.getByRole("link")],
+        maskColor: "#3f424d",
+      });
+    } finally {
+      await page.setViewportSize({ width: 1100, height: 700 });
+    }
+  }
   await confirmedReview
     .getByRole("button", { name: "Accept and open Codex Chat", exact: true })
     .click();
@@ -665,6 +681,8 @@ test("a confirmed Claude rate limit offers an explicit Codex Chat continuation",
   expect(initialTarget?.event.kind).toBe("user");
   if (initialTarget?.event.kind !== "user")
     throw Error("The saved Codex Chat has no original user frame");
+  if (!("codexChat" in initialTarget.event))
+    throw Error("The saved user frame has no Codex Chat details");
   expect(initialTarget.event.text).toBe(handoff);
   expect(initialTarget.event.about).toEqual([
     { kind: "session", id: record.id },
