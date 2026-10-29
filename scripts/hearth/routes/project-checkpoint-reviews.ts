@@ -5,7 +5,9 @@ import {
   projectCheckpointReviewHashRequestSchema,
   projectCheckpointReviewPrepareRequestSchema,
 } from "../../../types/project-checkpoint-reviews";
+import type { LedgerEventInput } from "../../../types/hearth";
 import { ConversationError } from "../../conversations/error";
+import type { AppendResult } from "../../ledger/append";
 import {
   createProjectCheckpointReviewService,
   type ProjectCheckpointReviewAuthorityResolver,
@@ -16,10 +18,17 @@ import {
 } from "../../forge/project-checkpoint-review-store";
 import { isValidSlug } from "../../forge/runs";
 import { isProjectId, ProjectStoreError } from "../../projects/store";
-import type { ActionRoute, ApiRoute, ReadRoute, RouteReply } from "../api";
+import type {
+  ActionRoute,
+  ApiRoute,
+  ReadRoute,
+  RouteReply,
+  RouteRequest,
+} from "../api";
 import { isBeadId } from "../tracker-write";
 import { fail, type ReadDeps } from "./operator-reads";
 import { RunReadError } from "./project-runs";
+import type { ValidationResult } from "../validate";
 
 const MAX_SHOW_BYTES = 1024 * 1024;
 const showCountRow = z
@@ -56,7 +65,7 @@ async function answer(
 export function createProjectCheckpointReviewRoutes(options: {
   home: string;
   workspace: string;
-  appendEvent: ReadDeps["appendEvent"];
+  appendEvent: (event: LedgerEventInput) => AppendResult;
   queueLock: ProjectCheckpointReviewQueueLock;
   runBd: ReadDeps["runBd"];
   bdTimeoutMs?: number | undefined;
@@ -105,7 +114,14 @@ export function createProjectCheckpointReviewRoutes(options: {
     },
   });
 
-  const location = (request: Parameters<ReadRoute["validate"]>[0]) => {
+  type CheckpointReviewLocation = {
+    projectId: string;
+    runSlug: string;
+    beadId: string;
+  };
+  const location = (
+    request: RouteRequest,
+  ): ValidationResult<CheckpointReviewLocation> => {
     const { params } = request;
     if ([...request.query.keys()].length)
       return fail("Checkpoint review routes take no query parameters.");

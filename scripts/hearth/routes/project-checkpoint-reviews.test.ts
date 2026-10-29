@@ -302,7 +302,9 @@ test("checkpoint review prepare is metadata-only; explicit commit records one ex
     .events(["bead.transitioned"])
     .filter(
       (event) =>
-        "action" in event.payload && event.payload.action === "comment",
+        event.kind === "bead.transitioned" &&
+        "action" in event.payload &&
+        event.payload.action === "comment",
     );
   expect(commentEvents).toHaveLength(1);
   expect(commentEvents[0]).toMatchObject({
@@ -328,7 +330,9 @@ test("checkpoint review prepare is metadata-only; explicit commit records one ex
       .events(["bead.transitioned"])
       .filter(
         (event) =>
-          "action" in event.payload && event.payload.action === "comment",
+          event.kind === "bead.transitioned" &&
+          "action" in event.payload &&
+          event.payload.action === "comment",
       ),
   ).toHaveLength(1);
 
