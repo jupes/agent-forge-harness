@@ -627,14 +627,13 @@ function RunReview({
           ) : null}
           <details>
             <summary>Inspect complete public Council result</summary>
-            <div
+            <textarea
               class="af-council-transcript"
-              role="region"
               aria-label="Complete public Council result transcript"
-              tabIndex={0}
-            >
-              <pre>{showControls(JSON.stringify(run, null, 2))}</pre>
-            </div>
+              readOnly
+              rows={18}
+              value={showControls(JSON.stringify(run, null, 2))}
+            />
           </details>
         </>
       ) : null}
@@ -947,284 +946,277 @@ export function ProjectReviews({
           </section>
         ) : (
           <>
-              {view?.history && view.history.total > 0 ? (
-                <section aria-label="Saved review history">
-                  <h3>Saved reviews</h3>
-                  <p>
-                    {view.history.total} saved review
-                    {view.history.total === 1 ? "" : "s"}
-                    {view.history.omitted
-                      ? `; ${view.history.omitted} older entries omitted`
-                      : ""}
-                    . Select a row to read its private original.
-                  </p>
-                  <Field
-                    label="Filter saved reviews"
+            {view?.history && view.history.total > 0 ? (
+              <section aria-label="Saved review history">
+                <h3>Saved reviews</h3>
+                <p>
+                  {view.history.total} saved review
+                  {view.history.total === 1 ? "" : "s"}
+                  {view.history.omitted
+                    ? `; ${view.history.omitted} older entries omitted`
+                    : ""}
+                  . Select a row to read its private original.
+                </p>
+                <Field label="Filter saved reviews" id="council-history-filter">
+                  <Input
                     id="council-history-filter"
-                  >
-                    <Input
-                      id="council-history-filter"
-                      type="search"
-                      value={filter}
-                      onInput={(event) => setFilter(event.currentTarget.value)}
-                    />
-                  </Field>
-                  {filter ? (
-                    <Button onClick={() => setFilter("")}>Clear filters</Button>
-                  ) : null}
-                  <ul>
-                    {historyItems.map((item) => (
-                      <li key={item.requestId}>
-                        <strong>
-                          {projectCouncilShownLabel(item.sourceName)}
-                        </strong>{" "}
-                        · {projectCouncilShownLabel(item.profileTitle)} ·{" "}
-                        {item.phase} ·{" "}
-                        <time dateTime={item.updatedAt}>
-                          {new Date(item.updatedAt).toLocaleString()}
-                        </time>
-                        <Button
-                          onClick={() => {
-                            if (!owner) return;
-                            if (
-                              item.phase !== "reserved" &&
-                              item.phase !== "retired"
-                            )
-                              void owner.openResult(item.requestId);
-                            else void owner.openSaved(item.requestId);
-                          }}
-                        >
-                          {item.phase !== "reserved" && item.phase !== "retired"
-                            ? "Open result"
-                            : "Read saved original"}
-                        </Button>
-                      </li>
-                    ))}
-                  </ul>
-                  {historyItems.length === 0 ? (
-                    <p>No saved reviews match this filter.</p>
-                  ) : null}
-                </section>
-              ) : null}
-              {!draftOpen && view?.history?.total === 0 ? (
-                <EmptyState
-                  title="No council reviews yet"
-                  hint="Prepare an original and inspect exactly what will be reviewed."
-                >
-                  <Button variant="primary" onClick={() => setDraftOpen(true)}>
-                    New review
-                  </Button>
-                </EmptyState>
-              ) : null}
-              {!draftOpen && view?.history?.total ? (
+                    type="search"
+                    value={filter}
+                    onInput={(event) => setFilter(event.currentTarget.value)}
+                  />
+                </Field>
+                {filter ? (
+                  <Button onClick={() => setFilter("")}>Clear filters</Button>
+                ) : null}
+                <ul>
+                  {historyItems.map((item) => (
+                    <li key={item.requestId}>
+                      <strong>
+                        {projectCouncilShownLabel(item.sourceName)}
+                      </strong>{" "}
+                      · {projectCouncilShownLabel(item.profileTitle)} ·{" "}
+                      {item.phase} ·{" "}
+                      <time dateTime={item.updatedAt}>
+                        {new Date(item.updatedAt).toLocaleString()}
+                      </time>
+                      <Button
+                        onClick={() => {
+                          if (!owner) return;
+                          if (
+                            item.phase !== "reserved" &&
+                            item.phase !== "retired"
+                          )
+                            void owner.openResult(item.requestId);
+                          else void owner.openSaved(item.requestId);
+                        }}
+                      >
+                        {item.phase !== "reserved" && item.phase !== "retired"
+                          ? "Open result"
+                          : "Read saved original"}
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+                {historyItems.length === 0 ? (
+                  <p>No saved reviews match this filter.</p>
+                ) : null}
+              </section>
+            ) : null}
+            {!draftOpen && view?.history?.total === 0 ? (
+              <EmptyState
+                title="No council reviews yet"
+                hint="Prepare an original and inspect exactly what will be reviewed."
+              >
                 <Button variant="primary" onClick={() => setDraftOpen(true)}>
                   New review
                 </Button>
-              ) : null}
-              {draftOpen ? (
-                <form
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    prepare();
-                  }}
+              </EmptyState>
+            ) : null}
+            {!draftOpen && view?.history?.total ? (
+              <Button variant="primary" onClick={() => setDraftOpen(true)}>
+                New review
+              </Button>
+            ) : null}
+            {draftOpen ? (
+              <form
+                onSubmit={(event) => {
+                  event.preventDefault();
+                  prepare();
+                }}
+              >
+                <Field label="Source type" id="council-source-type">
+                  <Select
+                    id="council-source-type"
+                    value={draft.sourceType}
+                    onChange={(event) => {
+                      const sourceType = parseSourceType(
+                        event.currentTarget.value,
+                      );
+                      if (sourceType) update({ sourceType });
+                    }}
+                  >
+                    <option value="bead">Beads issue</option>
+                    <option value="pr">GitHub pull request</option>
+                    <option value="plan">Local Markdown plan</option>
+                    <option value="file">Local research or text file</option>
+                    <option value="text">Paste text</option>
+                  </Select>
+                </Field>
+                <Field
+                  label={
+                    draft.sourceType === "text"
+                      ? "Document or question"
+                      : draft.sourceType === "pr"
+                        ? "Pull request number or URL"
+                        : draft.sourceType === "bead"
+                          ? "Beads issue ID"
+                          : "Workspace-relative file"
+                  }
+                  id="council-source"
                 >
-                  <Field label="Source type" id="council-source-type">
-                    <Select
-                      id="council-source-type"
-                      value={draft.sourceType}
-                      onChange={(event) => {
-                        const sourceType = parseSourceType(
-                          event.currentTarget.value,
-                        );
-                        if (sourceType) update({ sourceType });
-                      }}
-                    >
-                      <option value="bead">Beads issue</option>
-                      <option value="pr">GitHub pull request</option>
-                      <option value="plan">Local Markdown plan</option>
-                      <option value="file">Local research or text file</option>
-                      <option value="text">Paste text</option>
-                    </Select>
-                  </Field>
-                  <Field
-                    label={
-                      draft.sourceType === "text"
-                        ? "Document or question"
-                        : draft.sourceType === "pr"
-                          ? "Pull request number or URL"
-                          : draft.sourceType === "bead"
-                            ? "Beads issue ID"
-                            : "Workspace-relative file"
+                  {draft.sourceType === "text" ? (
+                    <Textarea
+                      id="council-source"
+                      rows={9}
+                      value={draft.source}
+                      onInput={(event) =>
+                        update({ source: event.currentTarget.value })
+                      }
+                      placeholder="Paste the document or question to review…"
+                    />
+                  ) : (
+                    <Input
+                      id="council-source"
+                      value={draft.source}
+                      onInput={(event) =>
+                        update({ source: event.currentTarget.value })
+                      }
+                    />
+                  )}
+                </Field>
+                {sourceError ? <p role="alert">{sourceError}</p> : null}
+                <Field label="Council profile" id="council-profile">
+                  <Select
+                    id="council-profile"
+                    value={profile?.path ?? ""}
+                    onChange={(event) =>
+                      update({ profileChoice: event.currentTarget.value })
                     }
-                    id="council-source"
+                    disabled={!view?.profiles.length}
                   >
-                    {draft.sourceType === "text" ? (
-                      <Textarea
-                        id="council-source"
-                        rows={9}
-                        value={draft.source}
-                        onInput={(event) =>
-                          update({ source: event.currentTarget.value })
-                        }
-                        placeholder="Paste the document or question to review…"
-                      />
-                    ) : (
-                      <Input
-                        id="council-source"
-                        value={draft.source}
-                        onInput={(event) =>
-                          update({ source: event.currentTarget.value })
-                        }
-                      />
-                    )}
-                  </Field>
-                  {sourceError ? <p role="alert">{sourceError}</p> : null}
-                  <Field label="Council profile" id="council-profile">
-                    <Select
-                      id="council-profile"
-                      value={profile?.path ?? ""}
-                      onChange={(event) =>
-                        update({ profileChoice: event.currentTarget.value })
-                      }
-                      disabled={!view?.profiles.length}
-                    >
-                      {view?.profiles.map((choice) => (
-                        <option key={choice.path} value={choice.path}>
-                          {projectCouncilShownLabel(choice.title)} ·{" "}
-                          {choice.depth}
-                        </option>
+                    {view?.profiles.map((choice) => (
+                      <option key={choice.path} value={choice.path}>
+                        {projectCouncilShownLabel(choice.title)} ·{" "}
+                        {choice.depth}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+                {profile ? (
+                  <section aria-label="Selected profile">
+                    <h3>
+                      {projectCouncilShownLabel(profile.title)} ·{" "}
+                      {profile.depth} · estimated ceiling $
+                      {profile.maxEstimatedUsd.toFixed(2)}
+                    </h3>
+                    <ul>
+                      {[...profile.seats, profile.chair].map((seat) => (
+                        <li key={seat.id}>
+                          {projectCouncilShownLabel(seat.role)} —{" "}
+                          {projectCouncilShownLabel(seat.provider)} /{" "}
+                          {projectCouncilShownLabel(seat.model)}
+                          {seat.openRouter?.only?.length
+                            ? ` · routed to ${seat.openRouter.only.map(projectCouncilShownLabel).join(", ")}`
+                            : ""}
+                        </li>
                       ))}
-                    </Select>
-                  </Field>
-                  {profile ? (
-                    <section aria-label="Selected profile">
-                      <h3>
-                        {projectCouncilShownLabel(profile.title)} ·{" "}
-                        {profile.depth} · estimated ceiling $
-                        {profile.maxEstimatedUsd.toFixed(2)}
-                      </h3>
-                      <ul>
-                        {[...profile.seats, profile.chair].map((seat) => (
-                          <li key={seat.id}>
-                            {projectCouncilShownLabel(seat.role)} —{" "}
-                            {projectCouncilShownLabel(seat.provider)} /{" "}
-                            {projectCouncilShownLabel(seat.model)}
-                            {seat.openRouter?.only?.length
-                              ? ` · routed to ${seat.openRouter.only.map(projectCouncilShownLabel).join(", ")}`
-                              : ""}
-                          </li>
-                        ))}
-                      </ul>
-                      <ul>
-                        {selectedReady.map((item) => (
-                          <li key={item.provider}>
-                            {projectCouncilShownLabel(item.provider)}:{" "}
-                            {item.configured
-                              ? "configured"
-                              : `not configured${item.missing.length ? `; missing ${item.missing.map(projectCouncilShownLabel).join(", ")}` : ""}`}
-                          </li>
-                        ))}
-                      </ul>
-                      {selectedReady.some((item) => item.routing?.length) ? (
-                        <details>
-                          <summary>Gateway routing policy</summary>
-                          {selectedReady.flatMap((item) =>
-                            (item.routing ?? []).map((route) => (
-                              <p key={`${item.provider}:${route.seatId}`}>
-                                {projectCouncilShownLabel(route.seatId)}:{" "}
-                                {route.only
-                                  ?.map(projectCouncilShownLabel)
-                                  .join(", ") ?? "any eligible endpoint"}{" "}
-                                · fallback{" "}
-                                {route.allow_fallbacks ? "enabled" : "disabled"}{" "}
-                                · data collection {route.data_collection} ·
-                                zero-retention filter {route.zdr ? "on" : "off"}
-                                .
-                              </p>
-                            )),
-                          )}
-                        </details>
-                      ) : null}
-                      {!ready ? (
-                        <p role="alert">
-                          This profile is not configured for a review in this
-                          Hearth.
-                        </p>
-                      ) : null}
-                    </section>
-                  ) : null}
-                  <Field
-                    label="Maximum estimated cost (USD)"
+                    </ul>
+                    <ul>
+                      {selectedReady.map((item) => (
+                        <li key={item.provider}>
+                          {projectCouncilShownLabel(item.provider)}:{" "}
+                          {item.configured
+                            ? "configured"
+                            : `not configured${item.missing.length ? `; missing ${item.missing.map(projectCouncilShownLabel).join(", ")}` : ""}`}
+                        </li>
+                      ))}
+                    </ul>
+                    {selectedReady.some((item) => item.routing?.length) ? (
+                      <details>
+                        <summary>Gateway routing policy</summary>
+                        {selectedReady.flatMap((item) =>
+                          (item.routing ?? []).map((route) => (
+                            <p key={`${item.provider}:${route.seatId}`}>
+                              {projectCouncilShownLabel(route.seatId)}:{" "}
+                              {route.only
+                                ?.map(projectCouncilShownLabel)
+                                .join(", ") ?? "any eligible endpoint"}{" "}
+                              · fallback{" "}
+                              {route.allow_fallbacks ? "enabled" : "disabled"} ·
+                              data collection {route.data_collection} ·
+                              zero-retention filter {route.zdr ? "on" : "off"}.
+                            </p>
+                          )),
+                        )}
+                      </details>
+                    ) : null}
+                    {!ready ? (
+                      <p role="alert">
+                        This profile is not configured for a review in this
+                        Hearth.
+                      </p>
+                    ) : null}
+                  </section>
+                ) : null}
+                <Field label="Maximum estimated cost (USD)" id="council-budget">
+                  <Input
                     id="council-budget"
-                  >
-                    <Input
-                      id="council-budget"
-                      type="number"
-                      min="0"
-                      max="1000000"
-                      step="0.01"
-                      value={draft.maxUsd}
-                      onInput={(event) =>
-                        update({ maxUsd: event.currentTarget.value })
-                      }
-                    />
-                  </Field>
-                  <Field label="Maximum prepared bytes" id="council-max-bytes">
-                    <Input
-                      id="council-max-bytes"
-                      type="number"
-                      min="1"
-                      max="1048576"
-                      step="1"
-                      value={draft.maxBytes}
-                      onInput={(event) =>
-                        update({ maxBytes: event.currentTarget.value })
-                      }
-                    />
-                  </Field>
-                  {amountError ? <p role="alert">{amountError}</p> : null}
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={draft.redactSecrets}
-                      onChange={(event) =>
-                        update({ redactSecrets: event.currentTarget.checked })
-                      }
-                    />{" "}
-                    Redact detected secrets; otherwise source preparation
-                    rejects them
-                  </label>
-                  <label>
-                    <input
-                      type="checkbox"
-                      checked={draft.deepDiscussion}
-                      onChange={(event) =>
-                        update({ deepDiscussion: event.currentTarget.checked })
-                      }
-                    />{" "}
-                    Allow deep discussion when supported by this profile
-                  </label>
-                  <p class="af-muted">
-                    Preparing stores a private original for review. It does not
-                    start a Council run or contact a model provider.
+                    type="number"
+                    min="0"
+                    max="1000000"
+                    step="0.01"
+                    value={draft.maxUsd}
+                    onInput={(event) =>
+                      update({ maxUsd: event.currentTarget.value })
+                    }
+                  />
+                </Field>
+                <Field label="Maximum prepared bytes" id="council-max-bytes">
+                  <Input
+                    id="council-max-bytes"
+                    type="number"
+                    min="1"
+                    max="1048576"
+                    step="1"
+                    value={draft.maxBytes}
+                    onInput={(event) =>
+                      update({ maxBytes: event.currentTarget.value })
+                    }
+                  />
+                </Field>
+                {amountError ? <p role="alert">{amountError}</p> : null}
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={draft.redactSecrets}
+                    onChange={(event) =>
+                      update({ redactSecrets: event.currentTarget.checked })
+                    }
+                  />{" "}
+                  Redact detected secrets; otherwise source preparation rejects
+                  them
+                </label>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={draft.deepDiscussion}
+                    onChange={(event) =>
+                      update({ deepDiscussion: event.currentTarget.checked })
+                    }
+                  />{" "}
+                  Allow deep discussion when supported by this profile
+                </label>
+                <p class="af-muted">
+                  Preparing stores a private original for review. It does not
+                  start a Council run or contact a model provider.
+                </p>
+                <Button
+                  variant="primary"
+                  onClick={prepare}
+                  disabled={!canPrepare}
+                >
+                  {view?.phase === "preparing"
+                    ? "Preparing original…"
+                    : "Prepare original for review"}
+                </Button>
+                {!writesAllowed || archived || !workspace ? (
+                  <p role="status">
+                    A writable, served project workspace is required to prepare
+                    a new original.
                   </p>
-                  <Button
-                    variant="primary"
-                    onClick={prepare}
-                    disabled={!canPrepare}
-                  >
-                    {view?.phase === "preparing"
-                      ? "Preparing original…"
-                      : "Prepare original for review"}
-                  </Button>
-                  {!writesAllowed || archived || !workspace ? (
-                    <p role="status">
-                      A writable, served project workspace is required to
-                      prepare a new original.
-                    </p>
-                  ) : null}
-                </form>
-              ) : null}
+                ) : null}
+              </form>
+            ) : null}
           </>
         )
       ) : null}
