@@ -236,18 +236,15 @@ test("protected repository onboarding recovers exact records and updates checked
   expect(
     (await json(await read(`/projects/repository-selections/${REGISTER_ID}`)))
       .data,
-  ).toMatchObject({
-    requestId: REGISTER_ID,
-    state: "selected",
-    path: external,
-  });
+  ).toEqual(selectedOutcome);
   expect(
     h
       .events(["operator.action"])
       .filter(
         (event) =>
           event.kind === "operator.action" &&
-          event.payload.action === "project.repository.register",
+          event.payload.action === "project.repository.register" &&
+          event.payload.requestId === REGISTER_ID,
       ),
   ).toHaveLength(1);
 
