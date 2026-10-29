@@ -633,9 +633,24 @@ test("growth after a fully accounted capture refuses settlement", async () => {
   await expect(
     settleWindowsJob(diagnosticApi, {}, f.rootIdentity),
   ).rejects.toThrow("Windows owned process cleanup could not be confirmed.");
-  expect(phases).toEqual(["observe-settlement"]);
-  expect(f.calls).toContain("terminate");
-  expect(f.closed.sort()).toEqual([32, 900]);
+  expect(f.calls).toEqual([
+    "creation:900",
+    "total",
+    "members",
+    "open:32",
+    "belongs:32",
+    "creation:32",
+    "members",
+    "total",
+    "active",
+    "terminate",
+    "members",
+    "total",
+    "close:900",
+    "close:32",
+  ]);
+  expect(f.closed).toEqual([900, 32]);
+  expect(phases).toEqual(["observe-total-changed"]);
 });
 
 test("fully retained growth above the identity cap refuses settlement", async () => {
