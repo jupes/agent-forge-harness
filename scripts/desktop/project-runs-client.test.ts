@@ -1,6 +1,8 @@
 import { expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { createProjectRunsClient } from "../../apps/desktop/src/project-runs-client";
 import type {
+  ProjectRunArtifact,
   ProjectRunDetail,
   ProjectRunRow,
   ProjectRunsPage,
@@ -229,4 +231,144 @@ test("disposal settles ignored readers and prevents a late scope from painting; 
   expect(paints).toBe(ended);
   expect(client.get().page).toBeNull();
   expect(timers.size).toBe(0);
+});
+
+test("artifact reads require a completed canonical phase, verify the full body and fence a late response after selection changes", async () => {
+  const text = "# Frozen body\n\n<script>must stay text</script>\n";
+  const trusted = { ...detail() };
+  trusted.run.phases[0] = {
+    id: "research",
+    state: "complete",
+    artifact: "plans/research/alpha-run.md",
+    artifactMissing: false,
+  };
+  let result: ProjectRunArtifact = {
+    version: trusted.version,
+    projectId: trusted.projectId,
+    workspace: trusted.workspace,
+    checkout: trusted.checkout,
+    asOf: trusted.asOf,
+    coverage: trusted.coverage,
+    problems: trusted.problems,
+    slug: "alpha-run",
+    kind: "research",
+    artifact: "plans/research/alpha-run.md",
+    bytes: Buffer.byteLength(text),
+    sha256: createHash("sha256").update(text).digest("hex"),
+    content: text,
+  };
+  let listing = page();
+  let reads = 0;
+  const verified = createProjectRunsClient({
+    projectId,
+    workspace: "/workspace",
+    list: async () => listing,
+    detail: async () => trusted,
+    artifact: async () => {
+      reads++;
+      return result;
+    },
+  });
+  await verified.refresh();
+  verified.select("alpha-run");
+  await settle();
+  await verified.openArtifact("plan");
+  expect(reads).toBe(0);
+  await verified.openArtifact("research");
+  expect(reads).toBe(1);
+  expect(verified.get().artifact?.content).toBe(text);
+  expect(verified.get().artifactError).toBe("");
+
+  const planPending = held<unknown>();
+  const planDetail = detail();
+  planDetail.run.phases[0] = {
+    id: "research",
+    state: "complete",
+    artifact: "plans/research/alpha-run.md",
+    artifactMissing: false,
+  };
+  planDetail.run.phases[1] = {
+    id: "plan",
+    state: "complete",
+    artifact: "plans/drafts/alpha-run.md",
+    artifactMissing: false,
+  };
+  planDetail.run.completedCount = 2;
+  planDetail.run.status = { kind: "phase", phase: "implement" };
+  let currentDetail = trusted;
+  const crossKind = createProjectRunsClient({
+    projectId,
+    workspace: "/workspace",
+    list: async () => page(),
+    detail: async () => currentDetail,
+    artifact: async (_slug, kind) =>
+      kind === "plan" ? planPending.promise : result,
+  });
+  await crossKind.refresh();
+  crossKind.select("alpha-run");
+  await settle();
+  await crossKind.openArtifact("research");
+  expect(crossKind.get().artifact?.content).toBe(text);
+  currentDetail = planDetail;
+  await crossKind.refreshDetail();
+  expect(crossKind.get().artifactStale).toBe(true);
+  const pendingPlan = crossKind.openArtifact("plan");
+  expect(crossKind.get().artifactKind).toBe("plan");
+  expect(crossKind.get().artifact).toBeNull();
+  planPending.resolve({});
+  await pendingPlan;
+  expect(crossKind.get().artifact).toBeNull();
+  expect(crossKind.get().artifactError).not.toBe("");
+  crossKind.dispose();
+
+  result = {
+    ...result,
+    sha256: "0".repeat(64),
+  };
+  await verified.openArtifact("research");
+  expect(verified.get().artifact?.content).toBe(text);
+  expect(verified.get().artifactStale).toBe(true);
+  expect(verified.get().artifactError).toContain("integrity check");
+  result = {
+    ...result,
+    workspace: "/foreign",
+    sha256: createHash("sha256").update(text).digest("hex"),
+  };
+  await verified.openArtifact("research");
+  expect(verified.get().artifact?.content).toBe(text);
+  expect(verified.get().artifactError).toContain("verified project");
+  expect(verified.get().artifactStale).toBe(true);
+  listing = page(["second-run"]);
+  await verified.refresh();
+  expect(verified.get().artifact).toBeNull();
+  verified.dispose();
+
+  const race = held<unknown>();
+  const late = createProjectRunsClient({
+    projectId,
+    workspace: "/workspace",
+    list: async () => page(),
+    detail: async (slug) => {
+      const answer = detail(slug);
+      if (slug === "alpha-run")
+        answer.run.phases[0] = {
+          id: "research",
+          state: "complete",
+          artifact: "plans/research/alpha-run.md",
+          artifactMissing: false,
+        };
+      return answer;
+    },
+    artifact: () => race.promise,
+  });
+  await late.refresh();
+  late.select("alpha-run");
+  await settle();
+  const pending = late.openArtifact("research");
+  late.select("second-run");
+  race.resolve(result);
+  await pending;
+  await settle();
+  expect(late.get().artifact).toBeNull();
+  late.dispose();
 });

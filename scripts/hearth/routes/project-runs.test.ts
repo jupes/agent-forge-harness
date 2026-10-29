@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -158,6 +159,110 @@ test("protected project Runs reads the served checkout without migrating legacy 
   );
   expect(h.events(["operator.action"])).toEqual([]);
   expect(h.bd.calls.every((args) => args[0] === "export")).toBe(true);
+});
+
+test("protected artifact read returns the exact completed canonical research body without an audit write", async () => {
+  const { h, path, state, directory, project } = await fixture();
+  const detailResponse = await fetch(`${path}/alpha-run`, {
+    headers: h.headers(h.hearth.token),
+  });
+  expect(detailResponse.status).toBe(200);
+  const detailEnvelope: unknown = await detailResponse.json();
+  if (
+    !detailEnvelope ||
+    typeof detailEnvelope !== "object" ||
+    Array.isArray(detailEnvelope) ||
+    !("ok" in detailEnvelope) ||
+    detailEnvelope.ok !== true ||
+    !("data" in detailEnvelope)
+  )
+    throw Error("Protected run detail was not verified.");
+  const verifiedDetail = projectRunDetailSchema.parse(detailEnvelope.data);
+  const relativeArtifact = "plans/research/alpha-run.md";
+  const body = "# Alpha research\n\nThe verified original body.\n";
+  mkdirSync(join(h.root, "plans", "research"), { recursive: true });
+  writeFileSync(join(h.root, relativeArtifact), body);
+  writeFileSync(
+    join(directory, "alpha-run.json"),
+    JSON.stringify({
+      ...state,
+      phase: "research",
+      completed: ["research"],
+      artifacts: { research: relativeArtifact },
+    }),
+  );
+
+  const response = await fetch(`${path}/alpha-run/artifacts/research`, {
+    headers: h.headers(h.hearth.token),
+  });
+
+  expect(response.status).toBe(200);
+  const answer: unknown = await response.json();
+  expect(answer).toMatchObject({
+    ok: true,
+    error: null,
+    data: {
+      version: 1,
+      projectId: project.id,
+      workspace: verifiedDetail.workspace,
+      checkout: verifiedDetail.checkout,
+      slug: "alpha-run",
+      kind: "research",
+      artifact: relativeArtifact,
+      bytes: Buffer.byteLength(body),
+      sha256: createHash("sha256").update(body).digest("hex"),
+      content: body,
+    },
+  });
+  expect(h.events(["operator.action"])).toEqual([]);
+  expect(h.bd.calls.every((args) => args[0] === "export")).toBe(true);
+});
+
+test("artifact reads refuse query paths, incomplete or noncanonical references and unsafe complete files", async () => {
+  const { h, path, state, directory, project } = await fixture();
+  const relative = "plans/research/alpha-run.md";
+  const full = join(h.root, relative);
+  mkdirSync(join(h.root, "plans", "research"), { recursive: true });
+  writeFileSync(full, "# Verified\n");
+  const url = `${path}/alpha-run/artifacts/research`;
+  const get = (target = url) =>
+    fetch(target, { headers: h.headers(h.hearth.token) });
+  writeFileSync(
+    join(directory, "alpha-run.json"),
+    JSON.stringify({ ...state, completed: [], artifacts: {} }),
+  );
+  expect((await get()).status).toBe(404);
+  expect((await get(`${url}?path=${encodeURIComponent(full)}`)).status).toBe(
+    400,
+  );
+  expect((await get(`${path}/alpha-run/artifacts/implement`)).status).toBe(400);
+
+  writeFileSync(
+    join(directory, "alpha-run.json"),
+    JSON.stringify({
+      ...state,
+      phase: "research",
+      completed: ["research"],
+      artifacts: { research: "plans/research/other.md" },
+    }),
+  );
+  expect((await get()).status).toBe(404);
+  writeFileSync(
+    join(directory, "alpha-run.json"),
+    JSON.stringify({
+      ...state,
+      phase: "research",
+      completed: ["research"],
+      artifacts: { research: relative },
+    }),
+  );
+  writeFileSync(full, "# unsafe\u0000body");
+  const unsafe = await get();
+  expect(unsafe.status).toBe(503);
+  const answer: unknown = await unsafe.json();
+  expect(JSON.stringify(answer)).not.toContain("unsafe");
+  expect(JSON.stringify(answer)).not.toContain(h.root);
+  expect(h.events(["operator.action"])).toEqual([]);
 });
 
 test("foreign labels, stored checkout and an unserved project workspace never authorize run metadata", async () => {

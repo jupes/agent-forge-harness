@@ -25,6 +25,7 @@ import type { KeeperOperatorPost } from "../../keeper/operator-post";
 import type { KeeperRuntime } from "../../keeper/recovery-runtime";
 import type { AppendResult } from "../../ledger/append";
 import { latestEventId, queryEvents } from "../../ledger/query";
+import { createProjectStore } from "../../projects/store";
 import type { ProviderInspector } from "../../providers/inspect";
 import type { ProviderLoginService } from "../../providers/login";
 import type {
@@ -453,6 +454,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     keeperAboutValidator(deps, projectSnapshot),
     createKeeperBriefPreparer(deps.projectHome, deps, projectSnapshot),
     deps.keeperRuntime,
+    (requestId) => createProjectStore(deps.projectHome).readCreate(requestId),
   );
   const ownedSessions = createOwnedSessionRoutes(
     deps.projectHome,
@@ -551,6 +553,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     activity.detail,
     projectRuns.list,
     projectRuns.detail,
+    projectRuns.artifact,
     projectBeadsRoute(deps, projectSnapshot),
     projectShiftOptionsRoute(
       deps,
@@ -564,6 +567,8 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     keeperReadRoute(deps, projectSnapshot),
     conversations.read,
     conversations.briefs,
+    conversations.intentDiscovery,
+    conversations.intentOriginal,
     conversations.recovery,
     proposals.read,
     keeperSessionStarts.read,
@@ -628,6 +633,8 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       commit,
       retire,
       conversations.send,
+      conversations.intentReserve,
+      conversations.intentRetire,
       conversations.refresh,
       conversations.continuation,
       proposals.approve,

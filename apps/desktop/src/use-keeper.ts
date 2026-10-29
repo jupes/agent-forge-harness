@@ -27,6 +27,11 @@ export function useKeeper(projectId: string | null, writesAllowed: boolean) {
         ...pageReads(),
         fetch: operatorRead,
       }),
+    readBriefIntent: (id, requestId) =>
+      readOperatorRoute(
+        `/projects/${encodeURIComponent(id)}/keeper/brief-intents${requestId ? `/${encodeURIComponent(requestId)}` : ""}`,
+        { ...pageReads(), fetch: operatorRead },
+      ),
     readObjects: (id, query) =>
       readOperatorRoute(
         `/projects/${encodeURIComponent(id)}/keeper/read?${new URLSearchParams(Object.entries(query).map(([key, value]) => [key, String(value)]))}`,

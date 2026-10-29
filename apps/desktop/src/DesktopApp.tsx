@@ -44,6 +44,7 @@ import {
   emptyActivityFilters,
   parseActivityFilters,
 } from "./project-activity-model";
+import type { VerifiedProjectCreate } from "./project-create-owner";
 import { parseRunFilters, runsHref } from "./project-runs-model";
 import { ClaudeSessionComposer, SessionComposer } from "./SessionComposer";
 import { SessionConversation } from "./SessionConversation";
@@ -76,6 +77,9 @@ import { useWorkbench } from "./use-workbench";
 /** Desktop routing stays separate from the ordinary dashboard's legacy URLs and snapshot mode. */
 export function DesktopApp(): JSX.Element {
   const [route, setRoute] = useState(() => desktopRoute(window.location.hash));
+  const [finishBrief, setFinishBrief] = useState<VerifiedProjectCreate | null>(
+    null,
+  );
   const managedSelection = managedShiftSelection(window.location.hash);
   const [inspectorOpen, setInspectorOpen] = useState(
     () => window.matchMedia("(min-width: 1201px)").matches,
@@ -285,9 +289,10 @@ export function DesktopApp(): JSX.Element {
     if (beadId) sessions.editComposer(project.id, { beadId });
     setComposerOpen(true);
   };
-  const continueWithCodexChat = (
+  const continueToChat = (
     handoffSummary: string,
     sourceSessionId: string,
+    target: "codex" | "gemini",
   ) => {
     if (
       !project ||
@@ -334,8 +339,9 @@ export function DesktopApp(): JSX.Element {
       })
     )
       return false;
-    sessions.chooseComposerProvider(project.id, "codex");
-    sessions.chooseCodexMode(project.id, "chat");
+    sessions.chooseComposerProvider(project.id, target);
+    if (target === "gemini") sessions.chooseGeminiMode(project.id, "chat");
+    else sessions.chooseCodexMode(project.id, "chat");
     sessions.editComposer(project.id, {
       prompt: handoffSummary.trim(),
       attachments: [],
@@ -626,6 +632,14 @@ export function DesktopApp(): JSX.Element {
             writesAllowed={recovery?.connection.writesAllowed ?? false}
             reload={projects.reload}
             change={projects.change}
+            onCreated={(created) => {
+              setFinishBrief(created);
+              window.location.hash = desktopHref({
+                projectId: created.projectId,
+                destination: "overview",
+                selection: null,
+              });
+            }}
           />
         ) : route.destination === "providers" ? (
           <Providers
@@ -802,6 +816,16 @@ export function DesktopApp(): JSX.Element {
             key={project.id}
             projectId={project.id}
             keeper={keeper}
+            onboardingRequestId={
+              finishBrief?.projectId === project.id
+                ? finishBrief.requestId
+                : undefined
+            }
+            onFinishFirstBrief={(requestId) =>
+              setFinishBrief((current) =>
+                current?.requestId === requestId ? null : current,
+              )
+            }
           />
         ) : route.destination === "sessions" &&
           project &&
@@ -837,7 +861,7 @@ export function DesktopApp(): JSX.Element {
             archived={project.archived}
             library={sessionLibrary}
             workspace={summary?.workspace ?? null}
-            onContinueWithCodexChat={continueWithCodexChat}
+            onContinueToChat={continueToChat}
           />
         ) : route.destination === "sessions" && project && selectedSession ? (
           <ObservedSessionDetail

@@ -15,6 +15,7 @@ export interface KeeperRuntime {
     project: ProjectRecord,
     root: string,
     resume: ConversationBinding | null,
+    expectedSmith?: Smith,
   ): Promise<KeeperReadiness>;
 }
 
@@ -56,7 +57,7 @@ export function createKeeperRuntime(options: {
       return { defaultSmith: config.workflow.defaultCrew, smiths };
     },
     transport,
-    async readiness(smith, project, root, resume) {
+    async readiness(smith, project, root, resume, expectedSmith) {
       const adapter = transport(smith);
       if (!smith.enabled)
         return keeperReadiness({
@@ -95,6 +96,7 @@ export function createKeeperRuntime(options: {
           root,
           resume: resume?.provider === smith.provider ? resume : null,
           smith: smith.name,
+          ...(expectedSmith ? { expectedSmith } : {}),
         });
         return keeperReadiness({
           adapter: true,

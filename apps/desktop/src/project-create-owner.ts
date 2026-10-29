@@ -37,6 +37,11 @@ export interface ProjectCreateState {
   notice: string;
 }
 
+export interface VerifiedProjectCreate {
+  projectId: string;
+  requestId: string;
+}
+
 const emptyState = (): ProjectCreateState => ({
   phase: "loading",
   options: null,
@@ -750,7 +755,10 @@ export function createProjectCreateOwner(deps: {
         }
       }
     },
-    async commit(requestId: string): Promise<string | null> {
+    async commit(
+      requestId: string,
+      onVerifiedCreated?: (created: VerifiedProjectCreate) => void,
+    ): Promise<string | null> {
       const entry = activeFor(requestId);
       const identity = entry?.identity;
       if (
@@ -835,6 +843,14 @@ export function createProjectCreateOwner(deps: {
           throw Error(
             "The refreshed Projects view did not contain the exact creation.",
           );
+        try {
+          onVerifiedCreated?.({
+            projectId: verified.projectId,
+            requestId: verified.requestId,
+          });
+        } catch {
+          // A view notification cannot change the already verified create receipt.
+        }
         state.entries = state.entries.filter(
           (item) =>
             (item.identity?.requestId ?? item.local?.request.requestId) !==

@@ -27,16 +27,22 @@ import {
   ownedCodingStateSchema,
 } from "../../scripts/sessions/codex-owned-journal";
 import { ownedCodingSessionSchema } from "../../scripts/sessions/codex-owned-wire-protocol";
+import { serializeGeminiChat } from "../../scripts/sessions/gemini-task";
 import { sessionStartIdentityPageSchema } from "../../scripts/sessions/identity-protocol";
 import { sessionTranscriptExportSchema } from "../../scripts/sessions/library-protocol";
 import {
   codexChatForkIdentityMetadataSchema,
   sessionOperationIdentityPageSchema,
 } from "../../scripts/sessions/session-operation-identities-protocol";
+import type { Smith } from "../../types/hearth";
 import { openSettled, reloadSettled } from "../e2e/fixtures";
 import { pageToken } from "../e2e/launch-link";
 import { HEARTH_HOME } from "../e2e/servers";
 import { captureTextResponseThroughBrowserFetch } from "./browser-response-capture";
+import {
+  installCachedGeminiSmithRead,
+  installGeminiContinuationFetchFixture,
+} from "./continuation-fetch-fixture";
 import {
   alpha,
   beta,
@@ -49,6 +55,67 @@ import {
   type VerifiedIdentityReadBarrier,
   verifiedIdentityReadBarrier,
 } from "./session-start-read-barrier";
+
+const geminiChatFixturePath = join(
+    HEARTH_HOME,
+    "gemini-chat-fixture-calls.json",
+  ),
+  geminiChatControlPath = `${geminiChatFixturePath}.control`,
+  geminiChatFixtureCallsLimit = 256 * 1024;
+let previousGeminiChatControl: Buffer | null = null,
+  geminiChatControlCaptured = false;
+const geminiChatFixtureCallSchema = z
+  .object({
+    kind: z.string().min(1).max(80),
+    value: z
+      .object({
+        method: z.string().min(1).max(80).optional(),
+        params: z.record(z.string(), z.unknown()).optional(),
+      })
+      .passthrough()
+      .optional(),
+  })
+  .passthrough();
+const geminiChatFixtureWireSchema = z
+  .object({
+    jsonrpc: z.literal("2.0").optional(),
+    method: z.string().min(1).max(80).optional(),
+    id: z.union([z.string(), z.number()]).optional(),
+    params: z.record(z.string(), z.unknown()).optional(),
+    result: z.unknown().optional(),
+    error: z.unknown().optional(),
+  })
+  .strict();
+function geminiChatFixtureCalls() {
+  if (!existsSync(geminiChatFixturePath)) return [];
+  if (statSync(geminiChatFixturePath).size > geminiChatFixtureCallsLimit)
+    throw Error("The bounded Gemini ACP fixture log exceeded its limit");
+  const text = readFileSync(geminiChatFixturePath, "utf8");
+  if (Buffer.byteLength(text, "utf8") > geminiChatFixtureCallsLimit)
+    throw Error("The bounded Gemini ACP fixture log exceeded its limit");
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    throw Error("The Gemini ACP fixture log was not complete JSON");
+  }
+  const parsed = z.array(geminiChatFixtureCallSchema).safeParse(value);
+  if (!parsed.success) throw Error("The Gemini ACP fixture log was invalid");
+  for (const row of parsed.data) {
+    if (row.kind !== "wire") continue;
+    if (!geminiChatFixtureWireSchema.safeParse(row.value).success)
+      throw Error("The Gemini ACP fixture wire record was invalid");
+  }
+  return parsed.data;
+}
+function geminiChatMethodCount(
+  rows: ReturnType<typeof geminiChatFixtureCalls>,
+  method: string,
+) {
+  return rows.filter(
+    (row) => row.kind === "wire" && row.value?.method === method,
+  ).length;
+}
 
 function records() {
   try {
@@ -516,9 +583,16 @@ test("a confirmed Claude rate limit offers an explicit Codex Chat continuation",
     name: "New session · Alpha",
     exact: true,
   });
-  await initialDraft
-    .getByRole("textbox", { name: "Session prompt", exact: true })
-    .fill("An unrelated draft the operator already wrote");
+  const initialDraftPrompt = initialDraft.getByRole("textbox", {
+    name: "Session prompt",
+    exact: true,
+  });
+  await initialDraftPrompt.fill(
+    "An unrelated draft the operator already wrote",
+  );
+  await expect(initialDraftPrompt).toHaveValue(
+    "An unrelated draft the operator already wrote",
+  );
   await initialDraft
     .getByRole("button", { name: "Cancel", exact: true })
     .click();
@@ -527,15 +601,18 @@ test("a confirmed Claude rate limit offers an explicit Codex Chat continuation",
     (item) => item.method === "thread/start",
   ).length;
   const continueButton = page.getByRole("button", {
-    name: "Continue with Codex Chat",
+    name: "Continue on another provider",
     exact: true,
   });
   await expect(continueButton).toBeVisible();
   await continueButton.click();
   const review = page.getByRole("dialog", {
-    name: "Review a separate Codex Chat",
+    name: "Review a separate Chat",
     exact: true,
   });
+  await review
+    .getByRole("combobox", { name: "Target Chat", exact: true })
+    .selectOption("codex");
   const handoff =
     "The prior assistant reported its usage limit. Continue the reviewed task by inspecting the existing implementation and propose one safe next step.";
   await review
@@ -570,9 +647,12 @@ test("a confirmed Claude rate limit offers an explicit Codex Chat continuation",
 
   await continueButton.click();
   const confirmedReview = page.getByRole("dialog", {
-    name: "Review a separate Codex Chat",
+    name: "Review a separate Chat",
     exact: true,
   });
+  await confirmedReview
+    .getByRole("combobox", { name: "Target Chat", exact: true })
+    .selectOption("codex");
   await confirmedReview
     .getByRole("textbox", { name: "Handoff summary", exact: true })
     .fill(handoff);
@@ -738,6 +818,540 @@ test("a confirmed Claude rate limit offers an explicit Codex Chat continuation",
   );
 });
 
+test("a confirmed Claude rate limit can target Gemini ACP Chat", async ({
+  page,
+}) => {
+  test.setTimeout(60_000);
+  const before = new Set(records().map((item) => item.id));
+  previousGeminiChatControl = existsSync(geminiChatControlPath)
+    ? readFileSync(geminiChatControlPath)
+    : null;
+  geminiChatControlCaptured = true;
+  writeFileSync(
+    geminiChatControlPath,
+    JSON.stringify({
+      mode: "normal",
+      replyText: "The inert Gemini continuation reply.",
+    }),
+  );
+  codingMode("rich-rate-limit");
+  await openSettled(page, `/index.html#/desktop/project/${alpha.id}/sessions`);
+  await page.getByRole("button", { name: "New session", exact: true }).click();
+  const composer = page.getByRole("dialog", {
+    name: "New session · Alpha",
+    exact: true,
+  });
+  await composer
+    .getByRole("textbox", { name: "Session prompt", exact: true })
+    .fill("Original Claude Chat that reached its reported limit");
+  await composer
+    .getByRole("combobox", { name: "Session mode", exact: true })
+    .selectOption("chat");
+  await composer
+    .getByRole("combobox", { name: "Session effort", exact: true })
+    .selectOption("");
+  await composer
+    .getByRole("button", { name: "Check supported options", exact: true })
+    .click();
+  await composer.getByRole("button", { name: "Start", exact: true }).click();
+  let source: ReturnType<typeof records>[number] | undefined;
+  await expect
+    .poll(() => {
+      source = records().find((item) => !before.has(item.id));
+      return source?.id ?? null;
+    })
+    .not.toBeNull();
+  if (!source) throw Error("Missing the original Claude Chat fixture");
+  const sourceRecord = source;
+  expect(sourceRecord.provider).toBe("claude");
+  const outcome = page.locator(".af-session-outcome");
+  await expect(outcome.locator("summary")).toHaveText(
+    "Provider reported a usage limit",
+  );
+  codingMode("normal");
+  await outcome.locator("summary").click();
+  const sourcePage = await conversationPage(page, alpha.id, sourceRecord.id);
+  const geminiSmith = await installCachedGeminiSmithRead(page, {
+    token: await pageToken(page),
+    header: OPERATOR_HEADER,
+    smithName: "gemini-example",
+  });
+  expect(sourcePage.turns.at(-1)?.phase).toBe("failed");
+  expect(
+    sourcePage.frames.some(
+      (frame) =>
+        frame.turnId === sourceRecord.requestId &&
+        frame.event.kind === "coding-outcome" &&
+        frame.event.provider === "claude" &&
+        frame.event.code === "rate-limited",
+    ),
+  ).toBe(true);
+
+  const continueButton = page.getByRole("button", {
+    name: "Continue on another provider",
+    exact: true,
+  });
+  await expect(continueButton).toBeVisible();
+  await page.getByRole("button", { name: "New session", exact: true }).click();
+  const geminiDraft = page.getByRole("dialog", {
+    name: "New session · Alpha",
+    exact: true,
+  });
+  await geminiDraft.getByRole("button", { name: /Gm · Gemini/ }).click();
+  await geminiDraft
+    .getByRole("combobox", { name: "Session mode", exact: true })
+    .selectOption("chat");
+  const geminiSmithSelect = geminiDraft.getByRole("combobox", {
+    name: "Session smith",
+    exact: true,
+  });
+  expect(geminiSmith.provider).toBe("gemini");
+  await expect(geminiSmithSelect).toHaveValue("gemini-example");
+  const geminiModelInput = geminiDraft.getByRole("textbox", {
+    name: "Session model",
+    exact: true,
+  });
+  await expect(geminiModelInput).toHaveValue("");
+  await geminiSmithSelect.selectOption("");
+  await geminiSmithSelect.selectOption(geminiSmith.name);
+  await expect(geminiModelInput).toHaveValue("configured-example");
+  await geminiDraft
+    .getByRole("textbox", { name: "Session prompt", exact: true })
+    .fill("An unrelated draft the operator already wrote");
+  await geminiDraft
+    .getByRole("button", { name: "Cancel", exact: true })
+    .click();
+
+  await continueButton.click();
+  const targetReview = page.getByRole("dialog", {
+    name: "Review a separate Chat",
+    exact: true,
+  });
+  const requiredTarget = targetReview.getByRole("combobox", {
+    name: "Target Chat",
+    exact: true,
+  });
+  await expect(requiredTarget).toHaveValue("");
+  const handoff =
+    "The prior assistant reported its usage limit. Continue the reviewed task in Gemini Chat with this operator-written summary.";
+  await targetReview
+    .getByRole("textbox", { name: "Handoff summary", exact: true })
+    .fill(handoff);
+  const chooseTarget = targetReview.getByRole("button", {
+    name: "Accept and open target Chat",
+    exact: true,
+  });
+  await expect(chooseTarget).toBeDisabled();
+  await requiredTarget.selectOption("gemini");
+  const chooseTargetReplace = targetReview.getByRole("checkbox");
+  await expect(chooseTargetReplace).not.toBeChecked();
+  await expect(
+    targetReview.getByRole("button", {
+      name: "Accept and open Gemini ACP Chat",
+      exact: true,
+    }),
+  ).toBeDisabled();
+  await chooseTargetReplace.check();
+  await expect(
+    targetReview.getByRole("button", {
+      name: "Accept and open Gemini ACP Chat",
+      exact: true,
+    }),
+  ).toBeEnabled();
+  await targetReview
+    .getByRole("button", { name: "Cancel", exact: true })
+    .click();
+  expect(
+    records().filter(
+      (item) => !before.has(item.id) && item.provider === "gemini",
+    ),
+  ).toHaveLength(0);
+
+  await page.getByRole("button", { name: "New session", exact: true }).click();
+  const initialDraft = page.getByRole("dialog", {
+    name: "New session · Alpha",
+    exact: true,
+  });
+  await expect(
+    initialDraft.getByRole("combobox", {
+      name: "Session mode",
+      exact: true,
+    }),
+  ).toHaveValue("chat");
+  await expect(
+    initialDraft.getByRole("combobox", {
+      name: "Session smith",
+      exact: true,
+    }),
+  ).toHaveValue("gemini-example");
+  await expect(
+    initialDraft.getByRole("textbox", {
+      name: "Session model",
+      exact: true,
+    }),
+  ).toHaveValue("configured-example");
+  await initialDraft
+    .getByRole("textbox", { name: "Session prompt", exact: true })
+    .fill("An unrelated draft the operator already wrote");
+  await initialDraft
+    .getByRole("button", { name: "Cancel", exact: true })
+    .click();
+
+  await continueButton.click();
+  const review = page.getByRole("dialog", {
+    name: "Review a separate Chat",
+    exact: true,
+  });
+  const targetChat = review.getByRole("combobox", {
+    name: "Target Chat",
+    exact: true,
+  });
+  await expect(targetChat).toBeVisible();
+  await expect(targetChat).toHaveValue("");
+  await targetChat.selectOption("gemini");
+  await review
+    .getByRole("textbox", { name: "Handoff summary", exact: true })
+    .fill(handoff);
+  const confirmFirstReplace = review.getByRole("checkbox");
+  await expect(confirmFirstReplace).not.toBeChecked();
+  const acceptReview = review.getByRole("button", {
+    name: "Accept and open Gemini ACP Chat",
+    exact: true,
+  });
+  await expect(acceptReview).toBeDisabled();
+  await confirmFirstReplace.check();
+  await expect(acceptReview).toBeEnabled();
+  await review.getByRole("button", { name: "Cancel", exact: true }).click();
+
+  const noTarget = records().filter(
+    (item) => !before.has(item.id) && item.provider === "gemini",
+  );
+  expect(noTarget).toHaveLength(0);
+  await page.getByRole("button", { name: "New session", exact: true }).click();
+  const preserved = page.getByRole("dialog", {
+    name: "New session · Alpha",
+    exact: true,
+  });
+  await expect(
+    preserved.getByRole("textbox", {
+      name: "Session prompt",
+      exact: true,
+    }),
+  ).toHaveValue("An unrelated draft the operator already wrote");
+  await expect(
+    preserved
+      .getByRole("group", { name: "Provider", exact: true })
+      .getByRole("button", { name: /Gm · Gemini/ }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await expect(
+    preserved.getByRole("combobox", {
+      name: "Session mode",
+      exact: true,
+    }),
+  ).toHaveValue("chat");
+  await expect(
+    preserved.getByRole("combobox", {
+      name: "Session smith",
+      exact: true,
+    }),
+  ).toHaveValue("gemini-example");
+  await expect(
+    preserved.getByRole("textbox", {
+      name: "Session model",
+      exact: true,
+    }),
+  ).toHaveValue("configured-example");
+  await preserved.getByRole("button", { name: "Cancel", exact: true }).click();
+
+  await continueButton.click();
+  const confirmedReview = page.getByRole("dialog", {
+    name: "Review a separate Chat",
+    exact: true,
+  });
+  const confirmedTarget = confirmedReview.getByRole("combobox", {
+    name: "Target Chat",
+    exact: true,
+  });
+  await expect(confirmedTarget).toHaveValue("");
+  await confirmedTarget.selectOption("gemini");
+  await confirmedReview
+    .getByRole("textbox", { name: "Handoff summary", exact: true })
+    .fill(handoff);
+  const replaceDraft = confirmedReview.getByRole("checkbox");
+  await expect(replaceDraft).not.toBeChecked();
+  const acceptGemini = confirmedReview.getByRole("button", {
+    name: "Accept and open Gemini ACP Chat",
+    exact: true,
+  });
+  await expect(acceptGemini).toBeDisabled();
+  await replaceDraft.check();
+  await expect(acceptGemini).toBeEnabled();
+  const shotDir = process.env["SHOT_DIR"];
+  if (shotDir) {
+    mkdirSync(shotDir, { recursive: true });
+    await page.setViewportSize({ width: 1280, height: 1000 });
+    try {
+      await confirmedReview.screenshot({
+        path: join(shotDir, "reviewed-gemini-continuation.png"),
+        animations: "disabled",
+        mask: [confirmedReview.getByRole("link")],
+        maskColor: "#3f424d",
+      });
+    } finally {
+      await page.setViewportSize({ width: 1100, height: 700 });
+    }
+  }
+  await acceptGemini.click();
+
+  const geminiComposer = page.getByRole("dialog", {
+    name: "New session · Alpha",
+    exact: true,
+  });
+  await expect(
+    geminiComposer
+      .getByRole("group", { name: "Provider", exact: true })
+      .getByRole("button", { name: /Gm · Gemini/ }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await expect(
+    geminiComposer.getByRole("textbox", {
+      name: "Session prompt",
+      exact: true,
+    }),
+  ).toHaveValue(handoff);
+  await expect(
+    geminiComposer.getByRole("combobox", {
+      name: "Session mode",
+      exact: true,
+    }),
+  ).toHaveValue("chat");
+  await expect(
+    geminiComposer.getByText(`About session ${sourceRecord.id}`),
+  ).toBeVisible();
+  await expect(
+    geminiComposer.getByRole("combobox", {
+      name: "Session smith",
+      exact: true,
+    }),
+  ).toHaveValue("gemini-example");
+  await expect(
+    geminiComposer.getByRole("textbox", {
+      name: "Session model",
+      exact: true,
+    }),
+  ).toHaveValue("configured-example");
+  await expect(
+    geminiComposer.getByRole("combobox", {
+      name: "Session provider route",
+      exact: true,
+    }),
+  ).toHaveValue("gemini-cli");
+  expect(
+    records().filter(
+      (item) => !before.has(item.id) && item.provider === "gemini",
+    ),
+  ).toHaveLength(0);
+
+  await geminiComposer
+    .getByRole("button", { name: "Check supported options", exact: true })
+    .click();
+  const command = geminiComposer.getByRole("region", {
+    name: "Equivalent session command",
+    exact: true,
+  });
+  await expect(command).toContainText("--acp");
+  const start = geminiComposer.getByRole("button", {
+    name: "Start",
+    exact: true,
+  });
+  await expect(start).toBeEnabled();
+
+  const callsBeforeStart = geminiChatFixtureCalls();
+  const newBeforeStart = geminiChatMethodCount(callsBeforeStart, "session/new");
+  const promptBeforeStart = geminiChatMethodCount(
+    callsBeforeStart,
+    "session/prompt",
+  );
+  const fetchFixture = await installGeminiContinuationFetchFixture(page, {
+    origin: new URL(page.url()).origin,
+    projectId: alpha.id,
+    sourceSessionId: sourceRecord.id,
+    handoff,
+  });
+  let startRequestCount = 0;
+  const observeStartRequest = (request: Request) => {
+    const url = new URL(request.url());
+    if (
+      request.method() === "POST" &&
+      url.origin === new URL(page.url()).origin &&
+      url.pathname === `/__agent-forge/projects/${alpha.id}/sessions` &&
+      url.search === ""
+    )
+      startRequestCount++;
+  };
+  page.on("request", observeStartRequest);
+  let acceptedStart: Awaited<
+    ReturnType<typeof fetchFixture.waitForStart>
+  > | null = null;
+  let originalReadback: Awaited<
+    ReturnType<typeof fetchFixture.waitForOriginalReadback>
+  > | null = null;
+  try {
+    await start.click();
+    acceptedStart = await fetchFixture.waitForStart();
+    await expect
+      .poll(
+        () =>
+          records().filter(
+            (item) => !before.has(item.id) && item.provider === "gemini",
+          ).length,
+      )
+      .toBe(1);
+    expect(startRequestCount).toBe(1);
+    originalReadback = await fetchFixture.waitForOriginalReadback();
+    expect(originalReadback.requestId).toBe(acceptedStart.request.requestId);
+    expect(originalReadback.sessionId).toBe(acceptedStart.receipt.session.id);
+    expect(originalReadback.requestHash).toBe(acceptedStart.requestHash);
+    expect(originalReadback.turnHash).toBe(
+      acceptedStart.receipt.receipt.turn.hash,
+    );
+    await expect(
+      geminiComposer.getByText(
+        /^The request did not complete: .+ Check the original session request before trying again\.$/,
+      ),
+    ).toBeVisible();
+    await expect(start).toBeDisabled();
+    fetchFixture.releaseReadback();
+    await fetchFixture.waitForOriginalReadbackDelivery();
+  } finally {
+    fetchFixture.releaseReadback();
+    await fetchFixture.dispose();
+    page.off("request", observeStartRequest);
+  }
+  if (!acceptedStart || !originalReadback)
+    throw Error("The Gemini Start and original readback were not verified.");
+  const startProof = acceptedStart;
+  const targetRecord = records().find(
+    (item) => !before.has(item.id) && item.provider === "gemini",
+  );
+  if (!targetRecord) throw Error("Missing the accepted Gemini Chat identity");
+  expect(targetRecord.id).toBe(startProof.receipt.session.id);
+  expect(targetRecord.requestId).toBe(startProof.request.requestId);
+  expect(targetRecord.requestHash).toBe(startProof.requestHash);
+  expect(targetRecord.mode).toBe("chat");
+  expect(targetRecord.id).not.toBe(sourceRecord.id);
+  await expect
+    .poll(async () => {
+      const pageState = await conversationPage(page, alpha.id, targetRecord.id);
+      return pageState.turns.find(
+        (turn) => turn.requestId === startProof.request.requestId,
+      )?.phase;
+    })
+    .toBe("completed");
+  const targetPage = await conversationPage(page, alpha.id, targetRecord.id);
+  expect(targetPage.binding?.provider).toBe("gemini");
+  const initialTarget = targetPage.frames[0];
+  expect(initialTarget?.event.kind).toBe("user");
+  if (initialTarget?.event.kind !== "user")
+    throw Error("The saved Gemini Chat has no original user frame");
+  if (!("geminiChat" in initialTarget.event))
+    throw Error("The saved user frame has no Gemini Chat launch details");
+  const preparedGeminiChat = initialTarget.event.geminiChat;
+  if (!preparedGeminiChat)
+    throw Error("The saved Gemini Chat frame has no prepared snapshot");
+  expect(initialTarget.event.text).toBe(handoff);
+  expect(initialTarget.event.about).toEqual([
+    { kind: "session", id: sourceRecord.id },
+  ]);
+  expect(initialTarget.event.geminiChat?.launch.attachments ?? []).toEqual([]);
+  expect(startProof.request.launch.prompt).toBe(handoff);
+  expect(startProof.request.launch.model).toBe("configured-example");
+  expect(originalReadback.requestId).toBe(startProof.request.requestId);
+  expect(originalReadback.sessionId).toBe(targetRecord.id);
+  expect(originalReadback.requestHash).toBe(targetRecord.requestHash);
+  await expect
+    .poll(() => geminiChatMethodCount(geminiChatFixtureCalls(), "session/new"))
+    .toBe(newBeforeStart + 1);
+  await expect
+    .poll(() =>
+      geminiChatMethodCount(geminiChatFixtureCalls(), "session/prompt"),
+    )
+    .toBe(promptBeforeStart + 1);
+  const callsAfterStart = geminiChatFixtureCalls();
+  const newFixtureCalls = callsAfterStart.slice(callsBeforeStart.length);
+  const newSessionCalls = newFixtureCalls.filter(
+    (row) => row.kind === "wire" && row.value?.method === "session/new",
+  );
+  const newPromptCalls = newFixtureCalls.filter(
+    (row) => row.kind === "wire" && row.value?.method === "session/prompt",
+  );
+  expect(newSessionCalls).toHaveLength(1);
+  expect(newPromptCalls).toHaveLength(1);
+  const promptCall = newPromptCalls[0];
+  const promptParams = z
+    .object({
+      sessionId: z.string().min(1).max(200),
+      prompt: z
+        .array(
+          z
+            .object({ type: z.literal("text"), text: z.string().max(16_384) })
+            .strict(),
+        )
+        .max(8),
+    })
+    .strict()
+    .safeParse(promptCall?.value?.params);
+  expect(promptParams.success).toBe(true);
+  if (!promptParams.success)
+    throw Error("The Gemini ACP prompt did not match its bounded protocol");
+  expect(promptParams.data.prompt).toEqual([
+    {
+      type: "text",
+      text: serializeGeminiChat(
+        preparedGeminiChat.launch,
+        preparedGeminiChat.capabilities,
+      ).stdin,
+    },
+  ]);
+  const targetIdentity = (
+    await startIdentityPage(page, alpha.id)
+  ).identities.find((item) => item.requestId === targetRecord.requestId);
+  expect(targetIdentity).toMatchObject({
+    requestHash: targetRecord.requestHash,
+    provider: "gemini",
+    mode: "chat",
+    state: "admitted",
+  });
+  const acceptedTarget = targetRecord;
+  await reloadSettled(page);
+  expect(startRequestCount).toBe(1);
+  expect(
+    records().filter(
+      (item) => !before.has(item.id) && item.provider === "gemini",
+    ),
+  ).toHaveLength(1);
+  expect(geminiChatMethodCount(geminiChatFixtureCalls(), "session/new")).toBe(
+    newBeforeStart + 1,
+  );
+  expect(
+    geminiChatMethodCount(geminiChatFixtureCalls(), "session/prompt"),
+  ).toBe(promptBeforeStart + 1);
+  expect(
+    (await startIdentityPage(page, alpha.id)).identities.find(
+      (item) => item.requestId === acceptedTarget.requestId,
+    ),
+  ).toEqual(targetIdentity);
+  expect(records().find((item) => item.id === sourceRecord.id)).toMatchObject({
+    id: sourceRecord.id,
+    requestId: sourceRecord.requestId,
+    requestHash: sourceRecord.requestHash,
+    provider: "claude",
+    mode: "chat",
+  });
+  expect(sourcePage.frames).toEqual(
+    (await conversationPage(page, alpha.id, sourceRecord.id)).frames,
+  );
+});
+
 test.afterEach(async ({ page }) => {
   const info = test.info();
   if (
@@ -881,6 +1495,18 @@ test.afterEach(async ({ page }) => {
     } catch {
       // Keep attempting Stop for other fixture sessions if one journal vanished.
     }
+  }
+  if (
+    info.title === "a confirmed Claude rate limit can target Gemini ACP Chat" &&
+    geminiChatControlCaptured
+  ) {
+    if (previousGeminiChatControl === null) {
+      if (existsSync(geminiChatControlPath)) unlinkSync(geminiChatControlPath);
+    } else {
+      writeFileSync(geminiChatControlPath, previousGeminiChatControl);
+    }
+    previousGeminiChatControl = null;
+    geminiChatControlCaptured = false;
   }
 });
 async function composer(

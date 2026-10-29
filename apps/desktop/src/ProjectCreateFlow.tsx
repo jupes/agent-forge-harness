@@ -346,11 +346,15 @@ function SavedOriginalDialog({
   owner,
   canWrite,
   close,
+  onCreated,
 }: {
   entry: ProjectCreateEntry | null;
   owner: Owner;
   canWrite: boolean;
   close(): void;
+  onCreated?:
+    | ((created: { projectId: string; requestId: string }) => void)
+    | undefined;
 }): JSX.Element {
   const [retiring, setRetiring] = useState(false);
   const [working, setWorking] = useState(false);
@@ -363,9 +367,9 @@ function SavedOriginalDialog({
     if (!requestId) return;
     setWorking(true);
     try {
-      const projectId = await owner.commit(requestId);
+      const projectId = await owner.commit(requestId, onCreated);
       if (projectId) {
-        window.location.hash = openProject(projectId);
+        if (!onCreated) window.location.hash = openProject(projectId);
         return;
       }
       setMessage(owner.get().notice);
@@ -533,12 +537,16 @@ export function ProjectCreateFlow({
   owner,
   canWrite,
   renderEntry,
+  onCreated,
 }: {
   state: ProjectCreateState;
   owner: Owner;
   canWrite: boolean;
   renderEntry?:
     | ((props: { disabled: boolean; onSkip(): void }) => JSX.Element)
+    | undefined;
+  onCreated?:
+    | ((created: { projectId: string; requestId: string }) => void)
     | undefined;
 }): JSX.Element {
   const [createOpen, setCreateOpen] = useState(false);
@@ -616,6 +624,7 @@ export function ProjectCreateFlow({
         owner={owner}
         canWrite={canWrite}
         close={() => setSelectedId(null)}
+        onCreated={onCreated}
       />
     </section>
   );

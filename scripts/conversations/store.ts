@@ -437,12 +437,14 @@ export function createConversationStore(
   const changeWithoutRevision = async <T>(
     projectId: string,
     update: (state: ConversationState) => T,
+    isCurrent?: () => boolean,
   ): Promise<T> => {
     const lock = conversationWriteLockFile(home, projectId, address);
     ensurePrivateHome(home);
     const result = await withQueueLock(
       lock,
       async () => {
+        assertCurrentOwner(isCurrent);
         const state = read(projectId);
         const value = update(state);
         save(state);
@@ -470,6 +472,7 @@ export function createConversationStore(
         about: KeeperBriefIntent["about"];
         snapshot: KeeperBriefSnapshot;
       },
+      isCurrent?: () => boolean,
     ): Promise<KeeperBriefIntent> {
       if (address)
         throw new ConversationError(
@@ -489,95 +492,100 @@ export function createConversationStore(
           400,
           "Expected a bounded brief original bound to this project's trusted scope.",
         );
-      return changeWithoutRevision(projectId, (state) => {
-        const existing: KeeperBriefIntentHistory = state.keeperBriefIntents ?? {
-          version: 1,
-          active: null,
-          history: [],
-        };
-        let active = existing.active;
-        let history = existing.history;
-        if (
-          active &&
-          active.expectedRevision === parsed.data.expectedRevision &&
-          JSON.stringify(active.origin) ===
-            JSON.stringify(parsed.data.origin) &&
-          JSON.stringify(active.selection) ===
-            JSON.stringify(parsed.data.selection)
-        )
-          return active;
-        if (active?.state === "admitted") {
-          const prior = state.turns.find(
-            (turn) => turn.requestId === active?.requestId,
-          );
-          if (terminalBriefPhase(prior?.phase)) {
-            history = withKeeperBriefHistory(
-              { version: 1, active: null, history },
-              active,
-            ).history;
-            active = null;
-          }
-        }
-        if (active) {
-          throw new ConversationError(
-            409,
-            "A different Keeper brief original is already reserved or unresolved. Read it or explicitly retire the reservation first.",
-          );
-        }
-        if (state.revision !== parsed.data.expectedRevision)
-          throw new ConversationError(
-            409,
-            "The conversation changed. Read it again before reserving a brief.",
-          );
-        if (
-          state.turns.some((turn) =>
-            ["accepted", "running", "cancelling", "unknown"].includes(
-              turn.phase,
-            ),
+      return changeWithoutRevision(
+        projectId,
+        (state) => {
+          const existing: KeeperBriefIntentHistory =
+            state.keeperBriefIntents ?? {
+              version: 1,
+              active: null,
+              history: [],
+            };
+          let active = existing.active;
+          let history = existing.history;
+          if (
+            active &&
+            active.expectedRevision === parsed.data.expectedRevision &&
+            JSON.stringify(active.origin) ===
+              JSON.stringify(parsed.data.origin) &&
+            JSON.stringify(active.selection) ===
+              JSON.stringify(parsed.data.selection)
           )
-        )
-          throw new ConversationError(
-            409,
-            "A turn is active or its outcome is unknown. Read its outcome before reserving a brief.",
-          );
-        const requestId = randomUUID();
-        const prepared = parsePreparedConversationSend({
-          requestId,
-          expectedRevision: parsed.data.expectedRevision,
-          text: parsed.data.text,
-          about: parsed.data.about,
-          brief: parsed.data.snapshot,
-        });
-        if (!prepared.brief)
-          throw new ConversationError(
-            400,
-            "Expected the frozen brief snapshot in its prepared input.",
-          );
-        const original = {
-          version: 1 as const,
-          requestId,
-          projectId,
-          conversationId: state.conversationId,
-          expectedRevision: parsed.data.expectedRevision,
-          origin: parsed.data.origin,
-          selection: parsed.data.selection,
-          purpose: "brief" as const,
-          text: prepared.text,
-          about: prepared.about,
-          snapshot: prepared.brief,
-        };
-        const identity = { ...original, createdAt: now().toISOString() };
-        const intent: KeeperBriefIntent = {
-          ...identity,
-          intentHash: keeperBriefIntentHash(identity),
-          state: "reserved",
-          preparedTurnHash: keeperBriefPreparedTurnHash(original),
-        };
-        const intents = { version: 1 as const, active: intent, history };
-        assertKeeperBriefIntentHistoryFits(intents);
-        state.keeperBriefIntents = intents;
-        return intent;
-      });
+            return active;
+          if (active?.state === "admitted") {
+            const prior = state.turns.find(
+              (turn) => turn.requestId === active?.requestId,
+            );
+            if (terminalBriefPhase(prior?.phase)) {
+              history = withKeeperBriefHistory(
+                { version: 1, active: null, history },
+                active,
+              ).history;
+              active = null;
+            }
+          }
+          if (active) {
+            throw new ConversationError(
+              409,
+              "A different Keeper brief original is already reserved or unresolved. Read it or explicitly retire the reservation first.",
+            );
+          }
+          if (state.revision !== parsed.data.expectedRevision)
+            throw new ConversationError(
+              409,
+              "The conversation changed. Read it again before reserving a brief.",
+            );
+          if (
+            state.turns.some((turn) =>
+              ["accepted", "running", "cancelling", "unknown"].includes(
+                turn.phase,
+              ),
+            )
+          )
+            throw new ConversationError(
+              409,
+              "A turn is active or its outcome is unknown. Read its outcome before reserving a brief.",
+            );
+          const requestId = randomUUID();
+          const prepared = parsePreparedConversationSend({
+            requestId,
+            expectedRevision: parsed.data.expectedRevision,
+            text: parsed.data.text,
+            about: parsed.data.about,
+            brief: parsed.data.snapshot,
+          });
+          if (!prepared.brief)
+            throw new ConversationError(
+              400,
+              "Expected the frozen brief snapshot in its prepared input.",
+            );
+          const original = {
+            version: 1 as const,
+            requestId,
+            projectId,
+            conversationId: state.conversationId,
+            expectedRevision: parsed.data.expectedRevision,
+            origin: parsed.data.origin,
+            selection: parsed.data.selection,
+            purpose: "brief" as const,
+            text: prepared.text,
+            about: prepared.about,
+            snapshot: prepared.brief,
+          };
+          const identity = { ...original, createdAt: now().toISOString() };
+          const intent: KeeperBriefIntent = {
+            ...identity,
+            intentHash: keeperBriefIntentHash(identity),
+            state: "reserved",
+            preparedTurnHash: keeperBriefPreparedTurnHash(original),
+          };
+          const intents = { version: 1 as const, active: intent, history };
+          assertKeeperBriefIntentHistoryFits(intents);
+          state.keeperBriefIntents = intents;
+          return intent;
+        },
+        isCurrent,
+      );
     },
     discoverKeeperBrief(projectId: string): KeeperBriefIntent | null {
       if (address)
