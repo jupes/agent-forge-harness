@@ -10,6 +10,8 @@ import {
   projectCouncilReserveRequestSchema,
 } from "../../../types/project-council";
 import { projectCouncilRunReadSchema } from "../../../types/project-council-run-read";
+import { councilOutcome } from "../../council/ledger-events";
+import { workspaceKey } from "../../projects/scope";
 import { createProjectStore, projectCatalogPath } from "../../projects/store";
 import {
   FIXTURE_PROJECT_ID,
@@ -393,9 +395,68 @@ test("project Council reserves the selected deep-discussion profile explicitly",
   expect(h.commands.calls).toEqual([]);
 });
 
-test("a committed inert project Council review reads back its frozen result and replays once", async () => {
+test("a completed project Council Bead review posts its verdict once and replays without another comment", async () => {
   const h = await startTestHearth();
   opened.push(h);
+  const beadId = "demo-task";
+  h.bd.answer = (args) =>
+    args[0] === "export"
+      ? {
+          status: 0,
+          stderr: "",
+          stdout: [
+            {
+              id: "alpha-epic",
+              title: "Alpha epic",
+              issue_type: "epic",
+              status: "open",
+              priority: 1,
+              labels: ["project:alpha"],
+              dependencies: [],
+            },
+            {
+              id: beadId,
+              title: "Teach the kiln to report its temperature",
+              issue_type: "task",
+              status: "in_progress",
+              priority: 2,
+              labels: ["project:alpha"],
+              dependencies: [
+                {
+                  issue_id: beadId,
+                  depends_on_id: "alpha-epic",
+                  type: "parent-child",
+                },
+              ],
+            },
+          ]
+            .map((issue) => JSON.stringify(issue))
+            .join("\n") + "\n",
+        }
+      : undefined;
+  h.commands.answer = async (command) => {
+    const [bd, readonly, verb, id] = command;
+    if (bd !== "bd" || readonly !== "--readonly" || id !== beadId)
+      return { exitCode: 2, stdout: "", stderr: "not arranged" };
+    if (verb === "show")
+      return {
+        exitCode: 0,
+        stdout: JSON.stringify([
+          {
+            id: beadId,
+            title: "Teach the kiln to report its temperature",
+            acceptance_criteria: "[ ] The reading is in Celsius.",
+            status: "in_progress",
+            priority: 2,
+            issue_type: "task",
+          },
+        ]),
+        stderr: "",
+      };
+    if (verb === "comments")
+      return { exitCode: 0, stdout: "[]", stderr: "" };
+    return { exitCode: 2, stdout: "", stderr: "not arranged" };
+  };
   writeOwnerOnly(
     projectCatalogPath(h.home),
     JSON.stringify(projectCatalogFixture(h.workspace)),
@@ -441,9 +502,9 @@ test("a committed inert project Council review reads back its frozen result and 
   if (!profileChoice || typeof profileChoice.path !== "string")
     throw new Error("The advertised inert Council profile is missing.");
 
-  const source = "Commit this exact inert project review once.";
+  const source = beadId;
   const request = {
-    sourceChoice: { sourceType: "text", source },
+    sourceChoice: { sourceType: "bead", source },
     profileChoice: profileChoice.path,
     maxUsd: 0.25,
     maxBytes: 1024,
@@ -504,7 +565,13 @@ test("a committed inert project Council review reads back its frozen result and 
   if (!originalRead.success)
     throw new Error("The protected original failed strict validation.");
   const original = originalRead.data.original;
-  expect(original.context.evidence[0]?.content).toBe(source);
+  expect(original.context.source).toMatchObject({
+    kind: "bead",
+    locator: beadId,
+  });
+  expect(original.context.evidence[0]?.content).toContain(
+    "Teach the kiln to report its temperature",
+  );
   expect(
     createHash("sha256")
       .update(projectCouncilIntentJson(original), "utf8")
@@ -598,6 +665,32 @@ test("a committed inert project Council review reads back its frozen result and 
     run.events.filter((event) => event.type === "run.completed"),
   ).toHaveLength(1);
 
+  const expectedComment = `review: COUNCIL ${run.runId} ${councilOutcome(run).toUpperCase()} — findings ${(["blocker", "high", "medium", "low"] as const).map((severity) => run.aggregatedFindings.filter((finding) => finding.severity === severity).length).join("/")} (blocker/high/medium/low)`;
+  const verdictDeadline = Date.now() + 20_000;
+  let verdict = h.events(["council.verdict.comment"]).find(
+    (event) =>
+      event.kind === "council.verdict.comment" &&
+      event.beadId === beadId &&
+      event.payload.councilRunId === run.runId,
+  );
+  while (!verdict && Date.now() < verdictDeadline) {
+    await new Promise((done) => setTimeout(done, 25));
+    verdict = h.events(["council.verdict.comment"]).find(
+      (event) =>
+        event.kind === "council.verdict.comment" &&
+        event.beadId === beadId &&
+        event.payload.councilRunId === run.runId,
+    );
+  }
+  expect(verdict).toMatchObject({
+    kind: "council.verdict.comment",
+    beadId,
+    payload: { councilRunId: run.runId, status: "posted" },
+  });
+  expect(h.bd.calls.filter((call) => call[0] === "comments" && call[1] === "add")).toEqual([
+    ["comments", "add", "--json", "--", beadId, expectedComment],
+  ]);
+
   const replay = await fetch(commitPath, {
     method: "POST",
     headers: h.headers(h.hearth.token),
@@ -620,6 +713,10 @@ test("a committed inert project Council review reads back its frozen result and 
       "The replayed Council commit changed its completed receipt.",
     );
   expect(replayReceipt.data.metadata).toMatchObject({ requestId, intentHash });
+  expect(
+    h.bd.calls.filter((call) => call[0] === "comments" && call[1] === "add"),
+  ).toEqual([["comments", "add", "--json", "--", beadId, expectedComment]]);
+  expect(h.events(["council.verdict.comment"])).toHaveLength(1);
   const replayedRun = await readRun();
   expect(replayedRun.job?.runId).toBe(completedJob.runId);
   expect(replayedRun.job?.run).toEqual(run);
@@ -649,7 +746,15 @@ test("a committed inert project Council review reads back its frozen result and 
   expect(history.data.items).toMatchObject([
     { requestId, state: "completed", phase: "completed" },
   ]);
-  expect(h.commands.calls).toEqual([]);
+  expect(
+    h.commands.calls.map(({ command, cwd }) => ({
+      command,
+      cwd: workspaceKey(cwd),
+    })),
+  ).toEqual([
+    { command: ["bd", "--readonly", "show", beadId, "--json"], cwd: h.workspace },
+    { command: ["bd", "--readonly", "comments", beadId, "--json"], cwd: h.workspace },
+  ]);
 });
 
 test("project Council commit refuses a scope change before dispatch and keeps the reviewed original", async () => {
