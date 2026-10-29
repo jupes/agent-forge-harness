@@ -10,22 +10,21 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { expect, type Locator, type Page, test } from "@playwright/test";
-import { hashText } from "../../scripts/hash-text";
-import { queryEvents } from "../../scripts/ledger/query";
-import type { ForgeState } from "../../scripts/forge/phases";
-import { writeOwnerOnly } from "../../scripts/hearth/token";
 import { runsHref } from "../../apps/desktop/src/project-runs-model";
-import { captureTextResponseThroughBrowserFetch } from "./browser-response-capture";
+import type { ForgeState } from "../../scripts/forge/phases";
+import { hashText } from "../../scripts/hash-text";
+import { writeOwnerOnly } from "../../scripts/hearth/token";
+import { queryEvents } from "../../scripts/ledger/query";
+import type { LedgerEvent } from "../../types/hearth";
 import {
-  projectCheckpointReviewIntentJson,
   projectCheckpointReviewHashRequestSchema,
-  projectCheckpointReviewMetadataSchema,
+  projectCheckpointReviewIntentJson,
   projectCheckpointReviewMetadataReadSchema,
+  projectCheckpointReviewMetadataSchema,
   projectCheckpointReviewOriginalReadSchema,
   projectCheckpointReviewPrepareRequestSchema,
   projectCheckpointReviewReceiptSchema,
 } from "../../types/project-checkpoint-reviews";
-import type { LedgerEvent } from "../../types/hearth";
 import {
   readComments,
   readState,
@@ -33,10 +32,8 @@ import {
   writeState,
 } from "../e2e/bd-stand-in-state";
 import { openSettled, reloadSettled } from "../e2e/fixtures";
-import {
-  BD_STAND_IN_STATE,
-  HEARTH_HOME,
-} from "../e2e/servers";
+import { BD_STAND_IN_STATE, HEARTH_HOME } from "../e2e/servers";
+import { captureTextResponseThroughBrowserFetch } from "./browser-response-capture";
 import { seedCouncilProject } from "./council-fixtures";
 import { workspace } from "./project-fixtures";
 
@@ -178,7 +175,9 @@ function envelopeData(value: unknown): unknown {
     value.error !== null ||
     !("data" in value)
   )
-    throw Error("The actual checkpoint review response was not a successful envelope.");
+    throw Error(
+      "The actual checkpoint review response was not a successful envelope.",
+    );
   return value.data;
 }
 
@@ -198,19 +197,22 @@ function readCallsForComment(beadId: string): string[][] {
       } catch {
         throw Error("The Beads stand-in call log was invalid JSON.");
       }
-      if (!Array.isArray(value) || value.some((part) => typeof part !== "string"))
+      if (
+        !Array.isArray(value) ||
+        value.some((part) => typeof part !== "string")
+      )
         throw Error("The Beads stand-in call log had an invalid command.");
       return value;
     })
     .filter(
       (args) =>
-        args[0] === "comments" &&
-        args[1] === "add" &&
-        args[4] === beadId,
+        args[0] === "comments" && args[1] === "add" && args[4] === beadId,
     );
 }
 
-function commentEvents(beadId: string): Extract<LedgerEvent, { kind: "bead.transitioned" }>[] {
+function commentEvents(
+  beadId: string,
+): Extract<LedgerEvent, { kind: "bead.transitioned" }>[] {
   return queryEvents(
     { workspace, beadId, beadExact: true, kinds: ["bead.transitioned"] },
     { path: join(HEARTH_HOME, "ledger.db") },
@@ -239,7 +241,9 @@ function expectDispatchesUnchanged(before: Map<string, string | null>) {
 }
 
 function expectRunAndBeadUnchanged(fixture: ReviewFixture): void {
-  expect(readState(BD_STAND_IN_STATE)[fixture.beadId]?.status).toBe("in_progress");
+  expect(readState(BD_STAND_IN_STATE)[fixture.beadId]?.status).toBe(
+    "in_progress",
+  );
   expect(
     readFileSync(
       join(
@@ -272,12 +276,12 @@ function ownFault(beadId: string, requestId: string): string {
     throw Error("The checkpoint fault control exceeded its fixture limit.");
   writeOwnerOnly(faultFile, bytes);
   const stat = lstatSync(faultFile);
-    if (
-      stat.isSymbolicLink() ||
-      !stat.isFile() ||
-      stat.nlink !== 1 ||
-      stat.size > 4 * 1024
-    )
+  if (
+    stat.isSymbolicLink() ||
+    !stat.isFile() ||
+    stat.nlink !== 1 ||
+    stat.size > 4 * 1024
+  )
     throw Error("The checkpoint fault control was not a private regular file.");
   if (readFileSync(faultFile, "utf8") !== bytes)
     throw Error("The checkpoint fault control did not verify after writing.");
@@ -317,23 +321,41 @@ async function installLostCommitHook(
   fixture: ReviewFixture,
   expectedNote: string,
 ) {
-  let metadata: ReturnType<typeof projectCheckpointReviewMetadataSchema.parse> | undefined;
-  let lostReceipt: ReturnType<typeof projectCheckpointReviewReceiptSchema.parse> | undefined;
+  let metadata:
+    | ReturnType<typeof projectCheckpointReviewMetadataSchema.parse>
+    | undefined;
+  let lostReceipt:
+    | ReturnType<typeof projectCheckpointReviewReceiptSchema.parse>
+    | undefined;
   await page.exposeFunction(
     "__checkpointReviewObserve",
     (observation: unknown) => {
       if (typeof observation !== "object" || observation === null)
-        throw Error("The native checkpoint review hook returned no observation.");
-      if (!("kind" in observation) || !("status" in observation) || !("path" in observation))
-        throw Error("The native checkpoint review hook observation was incomplete.");
+        throw Error(
+          "The native checkpoint review hook returned no observation.",
+        );
+      if (
+        !("kind" in observation) ||
+        !("status" in observation) ||
+        !("path" in observation)
+      )
+        throw Error(
+          "The native checkpoint review hook observation was incomplete.",
+        );
       if (observation.kind === "prepare") {
         if (!("requestBody" in observation) || !("envelope" in observation))
-          throw Error("The prepared checkpoint review observation was incomplete.");
-        const request = projectCheckpointReviewPrepareRequestSchema.parse(observation.requestBody);
+          throw Error(
+            "The prepared checkpoint review observation was incomplete.",
+          );
+        const request = projectCheckpointReviewPrepareRequestSchema.parse(
+          observation.requestBody,
+        );
         expect(request.decision).toBe("request-changes");
         expect(request.note).toBe(expectedNote);
         expect(request.expectedEpicId).toBe(fixture.epicId);
-        const prepared = projectCheckpointReviewMetadataSchema.parse(envelopeData(observation.envelope));
+        const prepared = projectCheckpointReviewMetadataSchema.parse(
+          envelopeData(observation.envelope),
+        );
         expect(observation.status).toBe(200);
         expect(observation.path).toBe(seedPath(fixture));
         expect(prepared.requestId).toBe(request.requestId);
@@ -348,17 +370,30 @@ async function installLostCommitHook(
         ownFault(fixture.beadId, request.requestId);
         return;
       }
-      if (observation.kind !== "lost-commit" || !("requestBody" in observation) || !("envelope" in observation))
-        throw Error("The lost checkpoint commit observation had an unexpected kind.");
+      if (
+        observation.kind !== "lost-commit" ||
+        !("requestBody" in observation) ||
+        !("envelope" in observation)
+      )
+        throw Error(
+          "The lost checkpoint commit observation had an unexpected kind.",
+        );
       const prepared = metadata;
-      if (!prepared) throw Error("The commit was reached before the actual prepare response.");
+      if (!prepared)
+        throw Error(
+          "The commit was reached before the actual prepare response.",
+        );
       const request = projectCheckpointReviewHashRequestSchema.parse(
         observation.requestBody,
       );
       expect(observation.status).toBe(200);
-      expect(observation.path).toBe(`${seedPath(fixture)}/${prepared.requestId}/commit`);
+      expect(observation.path).toBe(
+        `${seedPath(fixture)}/${prepared.requestId}/commit`,
+      );
       expect(request.intentHash).toBe(prepared.intentHash);
-      const receipt = projectCheckpointReviewReceiptSchema.parse(envelopeData(observation.envelope));
+      const receipt = projectCheckpointReviewReceiptSchema.parse(
+        envelopeData(observation.envelope),
+      );
       expect(receipt).toMatchObject({
         requestId: prepared.requestId,
         intentHash: prepared.intentHash,
@@ -369,136 +404,142 @@ async function installLostCommitHook(
       lostReceipt = receipt;
     },
   );
-  await page.addInitScript((config: { basePath: string }) => {
-    const originalFetch = window.fetch;
-    let preparedId: string | null = null;
-    let dropped = false;
-    const activeReads = new Set<{ cancel(): void; done: Promise<void> }>();
-    window.__checkpointCancelCloneReads = () => {
-      for (const read of activeReads) read.cancel();
-    };
-    window.__checkpointDrainCloneReads = async () => {
-      await Promise.all([...activeReads].map((read) => read.done));
-    };
-    const cloneJsonBounded = async (response: Response): Promise<unknown> => {
-      const reader = response.clone().body?.getReader();
-      if (!reader) throw Error("The actual checkpoint response had no body.");
-      let finish!: () => void;
-      const done = new Promise<void>((resolve) => (finish = resolve));
-      const activeRead = { cancel: () => {}, done };
-      activeRead.cancel = () => void reader.cancel().catch(() => undefined);
-      activeReads.add(activeRead);
-      let timer = 0;
-      const read = async (): Promise<unknown> => {
-        const decoder = new TextDecoder("utf-8", { fatal: true });
-        let text = "";
-        let size = 0;
-        for (;;) {
-          const part = await reader.read();
-          if (part.done) break;
-          size += part.value.byteLength;
-          if (size > 64 * 1024)
-            throw Error("The actual checkpoint response exceeded its limit.");
-          text += decoder.decode(part.value, { stream: true });
-        }
-        text += decoder.decode();
+  await page.addInitScript(
+    (config: { basePath: string }) => {
+      const originalFetch = window.fetch;
+      let preparedId: string | null = null;
+      let dropped = false;
+      const activeReads = new Set<{ cancel(): void; done: Promise<void> }>();
+      window.__checkpointCancelCloneReads = () => {
+        for (const read of activeReads) read.cancel();
+      };
+      window.__checkpointDrainCloneReads = async () => {
+        await Promise.all([...activeReads].map((read) => read.done));
+      };
+      const cloneJsonBounded = async (response: Response): Promise<unknown> => {
+        const reader = response.clone().body?.getReader();
+        if (!reader) throw Error("The actual checkpoint response had no body.");
+        let finish!: () => void;
+        const done = new Promise<void>((resolve) => (finish = resolve));
+        const activeRead = { cancel: () => {}, done };
+        activeRead.cancel = () => void reader.cancel().catch(() => undefined);
+        activeReads.add(activeRead);
+        let timer = 0;
+        const read = async (): Promise<unknown> => {
+          const decoder = new TextDecoder("utf-8", { fatal: true });
+          let text = "";
+          let size = 0;
+          for (;;) {
+            const part = await reader.read();
+            if (part.done) break;
+            size += part.value.byteLength;
+            if (size > 64 * 1024)
+              throw Error("The actual checkpoint response exceeded its limit.");
+            text += decoder.decode(part.value, { stream: true });
+          }
+          text += decoder.decode();
+          try {
+            const value: unknown = JSON.parse(text);
+            return value;
+          } catch {
+            throw Error("The actual checkpoint response was invalid JSON.");
+          }
+        };
+        const timeout = new Promise<never>((_, reject) => {
+          timer = window.setTimeout(() => {
+            activeRead.cancel();
+            reject(Error("The actual checkpoint response read timed out."));
+          }, 10_000);
+        });
         try {
-          const value: unknown = JSON.parse(text);
-          return value;
-        } catch {
-          throw Error("The actual checkpoint response was invalid JSON.");
+          return await Promise.race([read(), timeout]);
+        } finally {
+          window.clearTimeout(timer);
+          activeRead.cancel();
+          try {
+            reader.releaseLock();
+          } catch {
+            // A canceled pending read can release the clone branch first.
+          }
+          activeReads.delete(activeRead);
+          finish();
         }
       };
-      const timeout = new Promise<never>((_, reject) => {
-        timer = window.setTimeout(() => {
-          activeRead.cancel();
-          reject(Error("The actual checkpoint response read timed out."));
-        }, 10_000);
-      });
-      try {
-        return await Promise.race([read(), timeout]);
-      } finally {
-        window.clearTimeout(timer);
-        activeRead.cancel();
-        try {
-          reader.releaseLock();
-        } catch {
-          // A canceled pending read can release the clone branch first.
-        }
-        activeReads.delete(activeRead);
-        finish();
-      }
-    };
-    let wrapper: typeof window.fetch;
-    window.__restoreCheckpointFetch = async () => {
-      if (window.fetch === wrapper) window.fetch = originalFetch;
-      window.__checkpointCancelCloneReads?.();
-      await window.__checkpointDrainCloneReads?.();
-    };
-    wrapper = async function (input, init) {
-      const request =
-        input instanceof Request && init === undefined
-          ? input.clone()
-          : new Request(input, init);
-      const url = new URL(request.url);
-      const method = request.method.toUpperCase();
-      const bodyText = method === "POST" ? await request.clone().text() : "";
-      const response = await Reflect.apply(originalFetch, this, [input, init]);
-      if (url.origin !== window.location.origin) return response;
-      if (method === "POST" && url.pathname === config.basePath) {
-        const envelope = await cloneJsonBounded(response);
-        let requestBody: unknown;
-        try {
-          requestBody = JSON.parse(bodyText);
-        } catch {
-          throw Error("The actual prepare request was not JSON.");
-        }
-        await window.__checkpointReviewObserve?.({
-          kind: "prepare",
-          status: response.status,
-          path: url.pathname,
-          requestBody,
-          envelope,
-        });
-        if (
-          typeof envelope === "object" &&
-          envelope !== null &&
-          "data" in envelope &&
-          typeof envelope.data === "object" &&
-          envelope.data !== null &&
-          "requestId" in envelope.data &&
-          typeof envelope.data.requestId === "string"
-        )
-          preparedId = envelope.data.requestId;
-      }
-      if (
-        !dropped &&
-        preparedId !== null &&
-        method === "POST" &&
-        url.pathname === `${config.basePath}/${preparedId}/commit`
-      ) {
-        const envelope = await cloneJsonBounded(response);
-        let requestBody: unknown;
-        try {
-          requestBody = JSON.parse(bodyText);
-        } catch {
-          throw Error("The actual commit request was not JSON.");
-        }
-        await window.__checkpointReviewObserve?.({
-          kind: "lost-commit",
-          status: response.status,
-          path: url.pathname,
-          requestBody,
-          envelope,
-        });
-        dropped = true;
+      let wrapper: typeof window.fetch;
+      window.__restoreCheckpointFetch = async () => {
         if (window.fetch === wrapper) window.fetch = originalFetch;
-        throw new TypeError("Failed to fetch");
-      }
-      return response;
-    };
-    window.fetch = wrapper;
-  }, { basePath: seedPath(fixture) });
+        window.__checkpointCancelCloneReads?.();
+        await window.__checkpointDrainCloneReads?.();
+      };
+      wrapper = async function (input, init) {
+        const request =
+          input instanceof Request && init === undefined
+            ? input.clone()
+            : new Request(input, init);
+        const url = new URL(request.url);
+        const method = request.method.toUpperCase();
+        const bodyText = method === "POST" ? await request.clone().text() : "";
+        const response = await Reflect.apply(originalFetch, this, [
+          input,
+          init,
+        ]);
+        if (url.origin !== window.location.origin) return response;
+        if (method === "POST" && url.pathname === config.basePath) {
+          const envelope = await cloneJsonBounded(response);
+          let requestBody: unknown;
+          try {
+            requestBody = JSON.parse(bodyText);
+          } catch {
+            throw Error("The actual prepare request was not JSON.");
+          }
+          await window.__checkpointReviewObserve?.({
+            kind: "prepare",
+            status: response.status,
+            path: url.pathname,
+            requestBody,
+            envelope,
+          });
+          if (
+            typeof envelope === "object" &&
+            envelope !== null &&
+            "data" in envelope &&
+            typeof envelope.data === "object" &&
+            envelope.data !== null &&
+            "requestId" in envelope.data &&
+            typeof envelope.data.requestId === "string"
+          )
+            preparedId = envelope.data.requestId;
+        }
+        if (
+          !dropped &&
+          preparedId !== null &&
+          method === "POST" &&
+          url.pathname === `${config.basePath}/${preparedId}/commit`
+        ) {
+          const envelope = await cloneJsonBounded(response);
+          let requestBody: unknown;
+          try {
+            requestBody = JSON.parse(bodyText);
+          } catch {
+            throw Error("The actual commit request was not JSON.");
+          }
+          await window.__checkpointReviewObserve?.({
+            kind: "lost-commit",
+            status: response.status,
+            path: url.pathname,
+            requestBody,
+            envelope,
+          });
+          dropped = true;
+          if (window.fetch === wrapper) window.fetch = originalFetch;
+          throw new TypeError("Failed to fetch");
+        }
+        return response;
+      };
+      window.fetch = wrapper;
+    },
+    { basePath: seedPath(fixture) },
+  );
   return {
     prepared: () => metadata,
     lost: () => lostReceipt,
@@ -507,7 +548,9 @@ async function installLostCommitHook(
 
 async function installOriginalReadHold(page: Page, fixture: ReviewFixture) {
   let preparedId: string | null = null;
-  let heldOriginal: ReturnType<typeof projectCheckpointReviewOriginalReadSchema.parse> | undefined;
+  let heldOriginal:
+    | ReturnType<typeof projectCheckpointReviewOriginalReadSchema.parse>
+    | undefined;
   await page.exposeFunction(
     "__checkpointReviewObserve",
     (observation: unknown) => {
@@ -519,12 +562,20 @@ async function installOriginalReadHold(page: Page, fixture: ReviewFixture) {
         !("path" in observation) ||
         !("envelope" in observation)
       )
-        throw Error("The native checkpoint read hook observation was incomplete.");
+        throw Error(
+          "The native checkpoint read hook observation was incomplete.",
+        );
       if (observation.kind === "prepare") {
         if (!("requestBody" in observation))
-          throw Error("The prepared checkpoint observation omitted its request.");
-        const request = projectCheckpointReviewPrepareRequestSchema.parse(observation.requestBody);
-        const prepared = projectCheckpointReviewMetadataSchema.parse(envelopeData(observation.envelope));
+          throw Error(
+            "The prepared checkpoint observation omitted its request.",
+          );
+        const request = projectCheckpointReviewPrepareRequestSchema.parse(
+          observation.requestBody,
+        );
+        const prepared = projectCheckpointReviewMetadataSchema.parse(
+          envelopeData(observation.envelope),
+        );
         expect(observation.status).toBe(200);
         expect(observation.path).toBe(seedPath(fixture));
         expect(request.requestId).toBe(prepared.requestId);
@@ -534,9 +585,16 @@ async function installOriginalReadHold(page: Page, fixture: ReviewFixture) {
       }
       if (observation.kind !== "protected-original")
         throw Error("The original-read hook observed an unexpected request.");
-      if (!preparedId || observation.path !== `${seedPath(fixture)}/${preparedId}`)
-        throw Error("The held original read did not match the actual prepared UUID.");
-      heldOriginal = projectCheckpointReviewOriginalReadSchema.parse(envelopeData(observation.envelope));
+      if (
+        !preparedId ||
+        observation.path !== `${seedPath(fixture)}/${preparedId}`
+      )
+        throw Error(
+          "The held original read did not match the actual prepared UUID.",
+        );
+      heldOriginal = projectCheckpointReviewOriginalReadSchema.parse(
+        envelopeData(observation.envelope),
+      );
       expect(observation.status).toBe(200);
       expect(heldOriginal.original.requestId).toBe(preparedId);
       expect(heldOriginal.original.binding).toMatchObject({
@@ -548,150 +606,159 @@ async function installOriginalReadHold(page: Page, fixture: ReviewFixture) {
       });
       expect(
         createHash("sha256")
-          .update(projectCheckpointReviewIntentJson(heldOriginal.original), "utf8")
+          .update(
+            projectCheckpointReviewIntentJson(heldOriginal.original),
+            "utf8",
+          )
           .digest("hex"),
       ).toBe(heldOriginal.original.intentHash);
     },
   );
-  await page.addInitScript((config: { basePath: string }) => {
-    const originalFetch = window.fetch;
-    let preparedId: string | null = null;
-    let hasHeld = false;
-    const activeReads = new Set<{ cancel(): void; done: Promise<void> }>();
-    window.__checkpointCancelCloneReads = () => {
-      for (const read of activeReads) read.cancel();
-    };
-    window.__checkpointDrainCloneReads = async () => {
-      await Promise.all([...activeReads].map((read) => read.done));
-    };
-    const cloneJsonBounded = async (response: Response): Promise<unknown> => {
-      const reader = response.clone().body?.getReader();
-      if (!reader) throw Error("The actual checkpoint response had no body.");
-      let finish!: () => void;
-      const done = new Promise<void>((resolve) => (finish = resolve));
-      const activeRead = { cancel: () => {}, done };
-      activeRead.cancel = () => void reader.cancel().catch(() => undefined);
-      activeReads.add(activeRead);
-      let timer = 0;
-      const read = async (): Promise<unknown> => {
-        const decoder = new TextDecoder("utf-8", { fatal: true });
-        let text = "";
-        let size = 0;
-        for (;;) {
-          const part = await reader.read();
-          if (part.done) break;
-          size += part.value.byteLength;
-          if (size > 64 * 1024)
-            throw Error("The actual checkpoint response exceeded its limit.");
-          text += decoder.decode(part.value, { stream: true });
-        }
-        text += decoder.decode();
+  await page.addInitScript(
+    (config: { basePath: string }) => {
+      const originalFetch = window.fetch;
+      let preparedId: string | null = null;
+      let hasHeld = false;
+      const activeReads = new Set<{ cancel(): void; done: Promise<void> }>();
+      window.__checkpointCancelCloneReads = () => {
+        for (const read of activeReads) read.cancel();
+      };
+      window.__checkpointDrainCloneReads = async () => {
+        await Promise.all([...activeReads].map((read) => read.done));
+      };
+      const cloneJsonBounded = async (response: Response): Promise<unknown> => {
+        const reader = response.clone().body?.getReader();
+        if (!reader) throw Error("The actual checkpoint response had no body.");
+        let finish!: () => void;
+        const done = new Promise<void>((resolve) => (finish = resolve));
+        const activeRead = { cancel: () => {}, done };
+        activeRead.cancel = () => void reader.cancel().catch(() => undefined);
+        activeReads.add(activeRead);
+        let timer = 0;
+        const read = async (): Promise<unknown> => {
+          const decoder = new TextDecoder("utf-8", { fatal: true });
+          let text = "";
+          let size = 0;
+          for (;;) {
+            const part = await reader.read();
+            if (part.done) break;
+            size += part.value.byteLength;
+            if (size > 64 * 1024)
+              throw Error("The actual checkpoint response exceeded its limit.");
+            text += decoder.decode(part.value, { stream: true });
+          }
+          text += decoder.decode();
+          try {
+            const value: unknown = JSON.parse(text);
+            return value;
+          } catch {
+            throw Error("The actual checkpoint response was invalid JSON.");
+          }
+        };
+        const timeout = new Promise<never>((_, reject) => {
+          timer = window.setTimeout(() => {
+            activeRead.cancel();
+            reject(Error("The actual checkpoint response read timed out."));
+          }, 10_000);
+        });
         try {
-          const value: unknown = JSON.parse(text);
-          return value;
-        } catch {
-          throw Error("The actual checkpoint response was invalid JSON.");
+          return await Promise.race([read(), timeout]);
+        } finally {
+          window.clearTimeout(timer);
+          activeRead.cancel();
+          try {
+            reader.releaseLock();
+          } catch {
+            // A canceled pending read can release the clone branch first.
+          }
+          activeReads.delete(activeRead);
+          finish();
         }
       };
-      const timeout = new Promise<never>((_, reject) => {
-        timer = window.setTimeout(() => {
-          activeRead.cancel();
-          reject(Error("The actual checkpoint response read timed out."));
-        }, 10_000);
+      let release!: () => void;
+      let finishHeld!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
       });
-      try {
-        return await Promise.race([read(), timeout]);
-      } finally {
-        window.clearTimeout(timer);
-        activeRead.cancel();
-        try {
-          reader.releaseLock();
-        } catch {
-          // A canceled pending read can release the clone branch first.
-        }
-        activeReads.delete(activeRead);
-        finish();
-      }
-    };
-    let release!: () => void;
-    let finishHeld!: () => void;
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const heldDrained = new Promise<void>((resolve) => {
-      finishHeld = resolve;
-    });
-    window.__checkpointOriginalHeld = false;
-    window.__checkpointOriginalReleased = false;
-    window.__releaseCheckpointOriginal = async () => {
-      release();
-      if (hasHeld) await heldDrained;
-    };
-    let wrapper: typeof window.fetch;
-    window.__restoreCheckpointFetch = async () => {
-      if (window.fetch === wrapper) window.fetch = originalFetch;
-      window.__checkpointCancelCloneReads?.();
-      await window.__checkpointDrainCloneReads?.();
-    };
-    wrapper = async function (input, init) {
-      const request =
-        input instanceof Request && init === undefined
-          ? input.clone()
-          : new Request(input, init);
-      const url = new URL(request.url);
-      const method = request.method.toUpperCase();
-      const response = await Reflect.apply(originalFetch, this, [input, init]);
-      if (url.origin !== window.location.origin) return response;
-      if (method === "POST" && url.pathname === config.basePath) {
-        const envelope = await cloneJsonBounded(response);
-        let requestBody: unknown;
-        try {
-          requestBody = JSON.parse(await request.clone().text());
-        } catch {
-          throw Error("The actual prepare request was not JSON.");
-        }
-        await window.__checkpointReviewObserve?.({
-          kind: "prepare",
-          status: response.status,
-          path: url.pathname,
-          requestBody,
-          envelope,
-        });
-        if (
-          typeof envelope === "object" &&
-          envelope !== null &&
-          "data" in envelope &&
-          typeof envelope.data === "object" &&
-          envelope.data !== null &&
-          "requestId" in envelope.data &&
-          typeof envelope.data.requestId === "string"
-        )
-          preparedId = envelope.data.requestId;
-      }
-      if (
-        !hasHeld &&
-        preparedId !== null &&
-        method === "GET" &&
-        url.pathname === `${config.basePath}/${preparedId}`
-      ) {
-        const envelope = await cloneJsonBounded(response);
-        await window.__checkpointReviewObserve?.({
-          kind: "protected-original",
-          status: response.status,
-          path: url.pathname,
-          envelope,
-        });
-        hasHeld = true;
-        window.__checkpointOriginalHeld = true;
-        await gate;
-        window.__checkpointOriginalReleased = true;
+      const heldDrained = new Promise<void>((resolve) => {
+        finishHeld = resolve;
+      });
+      window.__checkpointOriginalHeld = false;
+      window.__checkpointOriginalReleased = false;
+      window.__releaseCheckpointOriginal = async () => {
+        release();
+        if (hasHeld) await heldDrained;
+      };
+      let wrapper: typeof window.fetch;
+      window.__restoreCheckpointFetch = async () => {
         if (window.fetch === wrapper) window.fetch = originalFetch;
-        finishHeld();
-      }
-      return response;
-    };
-    window.fetch = wrapper;
-  }, { basePath: seedPath(fixture) });
+        window.__checkpointCancelCloneReads?.();
+        await window.__checkpointDrainCloneReads?.();
+      };
+      wrapper = async function (input, init) {
+        const request =
+          input instanceof Request && init === undefined
+            ? input.clone()
+            : new Request(input, init);
+        const url = new URL(request.url);
+        const method = request.method.toUpperCase();
+        const response = await Reflect.apply(originalFetch, this, [
+          input,
+          init,
+        ]);
+        if (url.origin !== window.location.origin) return response;
+        if (method === "POST" && url.pathname === config.basePath) {
+          const envelope = await cloneJsonBounded(response);
+          let requestBody: unknown;
+          try {
+            requestBody = JSON.parse(await request.clone().text());
+          } catch {
+            throw Error("The actual prepare request was not JSON.");
+          }
+          await window.__checkpointReviewObserve?.({
+            kind: "prepare",
+            status: response.status,
+            path: url.pathname,
+            requestBody,
+            envelope,
+          });
+          if (
+            typeof envelope === "object" &&
+            envelope !== null &&
+            "data" in envelope &&
+            typeof envelope.data === "object" &&
+            envelope.data !== null &&
+            "requestId" in envelope.data &&
+            typeof envelope.data.requestId === "string"
+          )
+            preparedId = envelope.data.requestId;
+        }
+        if (
+          !hasHeld &&
+          preparedId !== null &&
+          method === "GET" &&
+          url.pathname === `${config.basePath}/${preparedId}`
+        ) {
+          const envelope = await cloneJsonBounded(response);
+          await window.__checkpointReviewObserve?.({
+            kind: "protected-original",
+            status: response.status,
+            path: url.pathname,
+            envelope,
+          });
+          hasHeld = true;
+          window.__checkpointOriginalHeld = true;
+          await gate;
+          window.__checkpointOriginalReleased = true;
+          if (window.fetch === wrapper) window.fetch = originalFetch;
+          finishHeld();
+        }
+        return response;
+      };
+      window.fetch = wrapper;
+    },
+    { basePath: seedPath(fixture) },
+  );
   return { original: () => heldOriginal };
 }
 
@@ -734,7 +801,9 @@ test.afterEach(async ({ page }) => {
   cleanupOwnedFiles();
 });
 
-test("keyboard request-changes records one exact comment without changing run or checkpoint state", async ({ page }) => {
+test("keyboard request-changes records one exact comment without changing run or checkpoint state", async ({
+  page,
+}) => {
   const fixture = seedReviewFixture();
   const basePath = seedPath(fixture);
   const note = `Private checkpoint review ${randomUUID()}`;
@@ -742,28 +811,36 @@ test("keyboard request-changes records one exact comment without changing run or
   const dispatchesBefore = dispatchSnapshot();
   await page.setViewportSize({ width: 1100, height: 700 });
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await openSettled(page, `/index.html${runsHref(fixture.projectId, fixture.run.slug)}`);
-  const panel = page.getByRole("region", { name: `Checkpoint review ${fixture.beadId}` });
+  await openSettled(
+    page,
+    `/index.html${runsHref(fixture.projectId, fixture.run.slug)}`,
+  );
+  const panel = page.getByRole("region", {
+    name: `Checkpoint review ${fixture.beadId}`,
+  });
   const noteField = panel.getByRole("textbox", { name: "Review note" });
   const changes = panel.getByRole("button", { name: "Request changes" });
   await expect(noteField).toBeVisible();
   await expect(changes).toBeDisabled();
   expect(posts).toEqual([]);
 
-  const preparedResponse = page.waitForResponse((response) =>
-    response.request().method() === "POST" &&
-    new URL(response.url()).pathname === basePath,
+  const preparedResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname === basePath,
   );
-  const originalResponse = page.waitForResponse((response) =>
-    response.request().method() === "GET" &&
-    new URL(response.url()).pathname.startsWith(`${basePath}/`) &&
-    !new URL(response.url()).pathname.endsWith("/commit") &&
-    !new URL(response.url()).pathname.endsWith("/readback") &&
-    !new URL(response.url()).pathname.endsWith("/retire"),
+  const originalResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === "GET" &&
+      new URL(response.url()).pathname.startsWith(`${basePath}/`) &&
+      !new URL(response.url()).pathname.endsWith("/commit") &&
+      !new URL(response.url()).pathname.endsWith("/readback") &&
+      !new URL(response.url()).pathname.endsWith("/retire"),
   );
-  const commitResponse = page.waitForResponse((response) =>
-    response.request().method() === "POST" &&
-    new URL(response.url()).pathname.endsWith("/commit"),
+  const commitResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname.endsWith("/commit"),
   );
   await noteField.fill(note);
   await changes.focus();
@@ -820,7 +897,9 @@ test("keyboard request-changes records one exact comment without changing run or
   ]);
   expect(posts[1]?.body).toEqual({ intentHash: prepared.intentHash });
   await expect(
-    panel.getByRole("status").filter({ hasText: "Review comment recorded and verified." }),
+    panel
+      .getByRole("status")
+      .filter({ hasText: "Review comment recorded and verified." }),
   ).toBeVisible();
   await screenshotIfRequested(page, "checkpoint-review-confirmed.png", [
     panel.getByText(`Recorded note: ${note}`, { exact: true }),
@@ -854,7 +933,9 @@ test("keyboard request-changes records one exact comment without changing run or
   expectDispatchesUnchanged(dispatchesBefore);
 });
 
-test("lost commit reply after comment persistence stays held until explicit exact readback", async ({ page }) => {
+test("lost commit reply after comment persistence stays held until explicit exact readback", async ({
+  page,
+}) => {
   const fixture = seedReviewFixture();
   const basePath = seedPath(fixture);
   const note = `Lost reply checkpoint note ${randomUUID()}`;
@@ -863,16 +944,27 @@ test("lost commit reply after comment persistence stays held until explicit exac
   const hook = await installLostCommitHook(page, fixture, note);
   await page.setViewportSize({ width: 1100, height: 700 });
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await openSettled(page, `/index.html${runsHref(fixture.projectId, fixture.run.slug)}`);
-  const panel = page.getByRole("region", { name: `Checkpoint review ${fixture.beadId}` });
-  await expect(panel.getByRole("textbox", { name: "Review note" })).toBeVisible();
+  await openSettled(
+    page,
+    `/index.html${runsHref(fixture.projectId, fixture.run.slug)}`,
+  );
+  const panel = page.getByRole("region", {
+    name: `Checkpoint review ${fixture.beadId}`,
+  });
+  await expect(
+    panel.getByRole("textbox", { name: "Review note" }),
+  ).toBeVisible();
   await panel.getByRole("textbox", { name: "Review note" }).fill(note);
   await panel.getByRole("button", { name: "Request changes" }).click();
-  await expect(panel.getByRole("button", { name: "Check recorded comment" })).toBeVisible();
+  await expect(
+    panel.getByRole("button", { name: "Check recorded comment" }),
+  ).toBeVisible();
   const prepared = hook.prepared();
   const lost = hook.lost();
   if (!prepared || !lost)
-    throw Error("The real prepare/unknown commit observations were not captured.");
+    throw Error(
+      "The real prepare/unknown commit observations were not captured.",
+    );
   expect(lost.requestId).toBe(prepared.requestId);
   expect(lost.intentHash).toBe(prepared.intentHash);
   expect(lost.state).toBe("unknown");
@@ -888,9 +980,10 @@ test("lost commit reply after comment persistence stays held until explicit exac
   ]);
   await expectNoPersistentNote(page, note);
 
-  const historyResponse = page.waitForResponse((response) =>
-    response.request().method() === "GET" &&
-    new URL(response.url()).pathname === basePath,
+  const historyResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === "GET" &&
+      new URL(response.url()).pathname === basePath,
   );
   await reloadSettled(page);
   const history = projectCheckpointReviewMetadataReadSchema.parse(
@@ -898,14 +991,22 @@ test("lost commit reply after comment persistence stays held until explicit exac
   );
   expect(history).toMatchObject({
     activeRequestId: prepared.requestId,
-    items: [{ requestId: prepared.requestId, intentHash: prepared.intentHash, state: "unknown" }],
+    items: [
+      {
+        requestId: prepared.requestId,
+        intentHash: prepared.intentHash,
+        state: "unknown",
+      },
+    ],
   });
   expect(posts.map((post) => post.path)).toEqual([
     basePath,
     `${basePath}/${prepared.requestId}/commit`,
   ]);
 
-  const restoredPanel = page.getByRole("region", { name: `Checkpoint review ${fixture.beadId}` });
+  const restoredPanel = page.getByRole("region", {
+    name: `Checkpoint review ${fixture.beadId}`,
+  });
   const saved = restoredPanel.locator("details");
   await saved.locator("summary").click();
   const savedOriginalCapture = await captureTextResponseThroughBrowserFetch(
@@ -916,7 +1017,9 @@ test("lost commit reply after comment persistence stays held until explicit exac
       path: `${basePath}/${prepared.requestId}`,
     },
   );
-  let savedOriginal: ReturnType<typeof projectCheckpointReviewOriginalReadSchema.parse> | undefined;
+  let savedOriginal:
+    | ReturnType<typeof projectCheckpointReviewOriginalReadSchema.parse>
+    | undefined;
   try {
     await saved.getByRole("button", { name: "Read saved decision" }).click();
     const captured = await savedOriginalCapture.response;
@@ -966,11 +1069,15 @@ test("lost commit reply after comment persistence stays held until explicit exac
     `Forge checkpoint review ${prepared.requestId}`,
   );
   await expect(restoredPanel.getByText(`Recorded note: ${note}`)).toBeVisible();
-  const readbackResponse = page.waitForResponse((response) =>
-    response.request().method() === "POST" &&
-    new URL(response.url()).pathname === `${basePath}/${prepared.requestId}/readback`,
+  const readbackResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname ===
+        `${basePath}/${prepared.requestId}/readback`,
   );
-  await restoredPanel.getByRole("button", { name: "Check recorded comment" }).click();
+  await restoredPanel
+    .getByRole("button", { name: "Check recorded comment" })
+    .click();
   const confirmed = projectCheckpointReviewReceiptSchema.parse(
     envelopeData(await (await readbackResponse).json()),
   );
@@ -997,7 +1104,9 @@ test("lost commit reply after comment persistence stays held until explicit exac
   expectDispatchesUnchanged(dispatchesBefore);
 });
 
-test("prepared checkpoint review survives a run switch and reload but needs an explicit record action", async ({ page }) => {
+test("prepared checkpoint review survives a run switch and reload but needs an explicit record action", async ({
+  page,
+}) => {
   const fixture = seedReviewFixture(true);
   const secondRun = fixture.secondRun;
   if (!secondRun) throw Error("The second scoped run fixture was not created.");
@@ -1008,47 +1117,82 @@ test("prepared checkpoint review survives a run switch and reload but needs an e
   const hook = await installOriginalReadHold(page, fixture);
   await page.setViewportSize({ width: 1100, height: 700 });
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await openSettled(page, `/index.html${runsHref(fixture.projectId, fixture.run.slug)}`);
-  const firstPanel = page.getByRole("region", { name: `Checkpoint review ${fixture.beadId}` });
+  await openSettled(
+    page,
+    `/index.html${runsHref(fixture.projectId, fixture.run.slug)}`,
+  );
+  const firstPanel = page.getByRole("region", {
+    name: `Checkpoint review ${fixture.beadId}`,
+  });
   await firstPanel.getByRole("textbox", { name: "Review note" }).fill(note);
   await firstPanel.getByRole("button", { name: "Request changes" }).click();
-  await expect.poll(() => page.evaluate(() => window.__checkpointOriginalHeld)).toBe(true);
+  await expect
+    .poll(() => page.evaluate(() => window.__checkpointOriginalHeld))
+    .toBe(true);
   const saved = hook.original();
-  if (!saved || saved.metadata.state !== "prepared" || saved.original.note !== note)
-    throw Error("The held actual original read did not match the prepared note.");
+  if (
+    !saved ||
+    saved.metadata.state !== "prepared" ||
+    saved.original.note !== note
+  )
+    throw Error(
+      "The held actual original read did not match the prepared note.",
+    );
   expect(posts.map((post) => post.path)).toEqual([basePath]);
 
   await page.getByRole("link", { name: "All runs", exact: true }).click();
   await page
     .getByRole("table", { name: "Recorded forge runs" })
-    .getByRole("link", { name: secondRun.feature ?? secondRun.slug, exact: true })
+    .getByRole("link", {
+      name: secondRun.feature ?? secondRun.slug,
+      exact: true,
+    })
     .click();
-  await expect(page.getByRole("heading", { name: secondRun.feature, exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: secondRun.feature, exact: true }),
+  ).toBeVisible();
   await expect(page.locator("body")).not.toContainText(note);
   await page.evaluate(() => window.__releaseCheckpointOriginal?.());
-  await expect.poll(() => page.evaluate(() => window.__checkpointOriginalReleased)).toBe(true);
+  await expect
+    .poll(() => page.evaluate(() => window.__checkpointOriginalReleased))
+    .toBe(true);
   expect(posts.map((post) => post.path)).toEqual([basePath]);
   await reloadSettled(page);
-  await expect(page.getByRole("heading", { name: secondRun.feature, exact: true })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: secondRun.feature, exact: true }),
+  ).toBeVisible();
   await page.getByRole("link", { name: "All runs", exact: true }).click();
   await page
     .getByRole("table", { name: "Recorded forge runs" })
-    .getByRole("link", { name: fixture.run.feature ?? fixture.run.slug, exact: true })
+    .getByRole("link", {
+      name: fixture.run.feature ?? fixture.run.slug,
+      exact: true,
+    })
     .click();
-  const restoredPanel = page.getByRole("region", { name: `Checkpoint review ${fixture.beadId}` });
+  const restoredPanel = page.getByRole("region", {
+    name: `Checkpoint review ${fixture.beadId}`,
+  });
   const savedReviews = restoredPanel.locator("details");
   await savedReviews.locator("summary").click();
-  await savedReviews.getByRole("button", { name: "Read saved decision" }).click();
+  await savedReviews
+    .getByRole("button", { name: "Read saved decision" })
+    .click();
   await expect(restoredPanel.getByText(`Recorded note: ${note}`)).toBeVisible();
-  await screenshotIfRequested(page, "checkpoint-review-prepared-recovered.png", [
-    restoredPanel.getByText(`Recorded note: ${note}`, { exact: true }),
-  ]);
-  expect(posts.map((post) => post.path)).toEqual([basePath]);
-  const commitResponse = page.waitForResponse((response) =>
-    response.request().method() === "POST" &&
-    new URL(response.url()).pathname === `${basePath}/${saved.original.requestId}/commit`,
+  await screenshotIfRequested(
+    page,
+    "checkpoint-review-prepared-recovered.png",
+    [restoredPanel.getByText(`Recorded note: ${note}`, { exact: true })],
   );
-  await restoredPanel.getByRole("button", { name: "Record saved decision" }).click();
+  expect(posts.map((post) => post.path)).toEqual([basePath]);
+  const commitResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname ===
+        `${basePath}/${saved.original.requestId}/commit`,
+  );
+  await restoredPanel
+    .getByRole("button", { name: "Record saved decision" })
+    .click();
   const receipt = projectCheckpointReviewReceiptSchema.parse(
     envelopeData(await (await commitResponse).json()),
   );

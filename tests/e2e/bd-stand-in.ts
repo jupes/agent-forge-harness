@@ -202,7 +202,9 @@ function run(): Printed {
       stat.nlink !== 1 ||
       stat.size > 4 * 1024
     )
-      throw Error("The checkpoint review fault control was not a small regular file.");
+      throw Error(
+        "The checkpoint review fault control was not a small regular file.",
+      );
     let raw: unknown;
     try {
       raw = JSON.parse(readFileSync(CHECKPOINT_REVIEW_FAULT, "utf8"));
@@ -222,16 +224,22 @@ function run(): Printed {
       raw.beadId.length > 200 ||
       !("requestId" in raw) ||
       typeof raw.requestId !== "string" ||
-      !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(raw.requestId)
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+        raw.requestId,
+      )
     )
-      throw Error("The checkpoint review fault control did not match its strict shape.");
+      throw Error(
+        "The checkpoint review fault control did not match its strict shape.",
+      );
     if (raw.beadId !== issueId) return false;
     const marker = `Forge checkpoint review ${raw.requestId}`;
     const lines = text.split(/\r?\n/);
     const occurrences = lines.filter((line) => line === marker).length;
     if (occurrences === 0) return false;
     if (occurrences !== 1 || lines.at(-1) !== marker)
-      throw Error("The checkpoint review fault marker was not one exact final line.");
+      throw Error(
+        "The checkpoint review fault marker was not one exact final line.",
+      );
     return true;
   }
 
