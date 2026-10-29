@@ -60,7 +60,7 @@ After an explicit protected result read, saved-review rows retain compact verifi
 recommendation, severity, recorded cost and duration facts in scoped renderer
 memory. Reopening after renderer restart requires another explicit result read.
 Completed Bead results link to the exact reviewed Bead and separately read the
-posted, refused or unknown verdict-comment outcome; rendering never resends it.
+posted, refused or unknown verdict-comment outcome. The selected completed Bead result also shows the exact protected comment preview as wrapped plain text; a preview does not assert delivery. Rendering never resends it.
 
 Live reviews show the complete verified profile roster, pending seats, recorded
 stage/round progress and completed discussion rounds while a later round is still
@@ -90,3 +90,5 @@ The captures show portions of the actual views, rather than every state.
 ![Packaged WebView2 result, wide viewport](screenshots/council-native-result-wide.png)
 
 ![Packaged WebView2 result, narrow viewport](screenshots/council-native-result-narrow.png)
+
+The completed-Bead comment preview and four affected recovery journeys passed together at `fa61ff78`: five actual browser cases, 41.928 seconds under the bounded owner, all 27 retained processes exited, fixture ports free and source clean. The failure case explicitly checks the saved result after an interrupted read; the observer never treats an aborted body as evidence. Typecheck passed in 23.053 seconds. The full Windows unit run at `b7364b6c` recorded 5,684 passes, 40 skips and two home-isolation timeouts; these remain open in `agent-forge-harness-cla5.78`, with cause unknown. No unchanged full-suite retry or passing-quality claim is implied.
