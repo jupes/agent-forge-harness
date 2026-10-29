@@ -1408,17 +1408,21 @@ test("Add Folder and a reviewed local clone feed a fresh two-repository project 
   await freshDialog
     .getByRole("button", { name: "Review trusted project scope", exact: true })
     .click();
+  const reviewDialog = page.getByRole("dialog", {
+    name: "Review project original",
+    exact: true,
+  });
   await expect(
-    freshDialog.getByText("This exact original is reviewed", { exact: false }),
+    reviewDialog.getByText("This exact original is reviewed", { exact: false }),
   ).toBeVisible();
-  const reviewed = freshDialog.locator("dl.af-project-create-original");
+  const reviewed = reviewDialog.locator("dl.af-project-create-original");
   const repositoriesText = reviewed
     .getByText("Repositories", { exact: true })
     .locator("xpath=following-sibling::dd[1]");
   await expect(repositoriesText).toContainText("selected-folder");
   await expect(repositoriesText).toContainText("cloned-folder");
   if (screenshotDir) {
-    await freshDialog.screenshot({
+    await reviewDialog.screenshot({
       path: join(screenshotDir, "two-repository-project-review.png"),
     });
   }
