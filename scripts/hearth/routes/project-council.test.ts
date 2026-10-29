@@ -665,7 +665,7 @@ test("a completed project Council Bead review posts its verdict once and replays
     run.events.filter((event) => event.type === "run.completed"),
   ).toHaveLength(1);
 
-  const expectedComment = `review: COUNCIL ${run.runId} ${councilOutcome(run).toUpperCase()} — findings ${(["blocker", "high", "medium", "low"] as const).map((severity) => run.aggregatedFindings.filter((finding) => finding.severity === severity).length).join("/")} (blocker/high/medium/low)`;
+  const expectedComment = `review: COUNCIL ${run.runId} ${councilOutcome({ status: run.status, aggregatedFindings: run.aggregatedFindings, ...(run.chair === undefined ? {} : { chair: run.chair }) }).toUpperCase()} — findings ${(["blocker", "high", "medium", "low"] as const).map((severity) => run.aggregatedFindings.filter((finding) => finding.severity === severity).length).join("/")} (blocker/high/medium/low)`;
   const verdictDeadline = Date.now() + 20_000;
   let verdict = h
     .events(["council.verdict.comment"])

@@ -28,7 +28,12 @@ import { createGeminiTaskRuntime } from "../../scripts/sessions/gemini-task-runt
 
 type CouncilFixtureMode = {
   mode: "success" | "hold" | "fail";
-  caseId: "council-cancel" | "council-failure" | "council-unknown" | "idle";
+  caseId:
+    | "council-cancel"
+    | "council-deep-discussion"
+    | "council-failure"
+    | "council-unknown"
+    | "idle";
 };
 
 function councilFixtureMode(home: string): CouncilFixtureMode {
@@ -53,6 +58,7 @@ function councilFixtureMode(home: string): CouncilFixtureMode {
       value.mode !== "fail") ||
     !("caseId" in value) ||
     (value.caseId !== "council-cancel" &&
+      value.caseId !== "council-deep-discussion" &&
       value.caseId !== "council-failure" &&
       value.caseId !== "council-unknown" &&
       value.caseId !== "idle")
@@ -84,7 +90,14 @@ function councilFixtureTransport(
     );
     return (seat) =>
       new FakeCouncilTransport({
-        delayMs: mode === "hold" ? 60_000 : 5,
+        delayMs: (request) =>
+          mode === "hold" &&
+          (caseId === "council-cancel" ||
+            (caseId === "council-deep-discussion" &&
+              request.stage === "revision" &&
+              request.seat.id === failedIndependentSeat))
+            ? 60_000
+            : 5,
         ...(mode === "fail"
           ? {
               fail:
