@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { expect, type Page, test } from "@playwright/test";
+import { expect, type Page, type Request, test } from "@playwright/test";
 import {
   projectCouncilMetadataSchema,
   projectCouncilReceiptSchema,
@@ -170,47 +170,54 @@ function observeRunReads(
       new URL(response.url()).pathname !== path
     )
       return;
-    reads.push(
-      (async (): Promise<RunReadObservation> => {
-        try {
-          const finished = await response.finished();
-          if (!response.ok())
-            return {
-              kind: "invalid",
-              message: `Council result read returned HTTP ${response.status()}.`,
-            };
-          if (response.request().failure()?.errorText === "net::ERR_ABORTED")
-            return { kind: "interrupted", reason: "aborted" };
-          if (finished) return { kind: "invalid", message: finished.message };
-          try {
-            const raw = await response.json();
-            return {
-              kind: "verified",
-              read: projectCouncilRunReadSchema.parse(responseData(raw)),
-            };
-          } catch (error) {
-            const message =
-              error instanceof Error ? error.message : String(error);
-            if (
-              /^(?:response\.json: )?Protocol error \(Network\.getResponseBody\): No data found for (?:the )?resource with given identifier(?:\nResponse body is not available for a response that was navigated away from\. Read response\.body\(\) before triggering any navigation\.)?$/.test(
-                message,
-              )
-            )
-              return { kind: "interrupted", reason: "body-unavailable" };
-            return { kind: "invalid", message };
-          }
-        } catch (error) {
-          if (
-            response.ok() &&
-            response.request().failure()?.errorText === "net::ERR_ABORTED"
+    if (!response.ok()) {
+      reads.push(
+        Promise.resolve({
+          kind: "invalid",
+          message: `Council result read returned HTTP ${response.status()}.`,
+        }),
+      );
+      return;
+    }
+    const request = response.request();
+    let onRequestFailed: ((failed: Request) => void) | undefined;
+    const requestFailure = new Promise<RunReadObservation>((resolve) => {
+      onRequestFailed = (failed) => {
+        if (failed !== request) return;
+        const errorText = failed.failure()?.errorText;
+        resolve(
+          errorText === "net::ERR_ABORTED"
+            ? { kind: "interrupted", reason: "aborted" }
+            : {
+                kind: "invalid",
+                message: errorText ?? "Council result request failed.",
+              },
+        );
+      };
+      page.on("requestfailed", onRequestFailed);
+    });
+    const bodyRead = (async (): Promise<RunReadObservation> => {
+      try {
+        const raw = await response.json();
+        return {
+          kind: "verified",
+          read: projectCouncilRunReadSchema.parse(responseData(raw)),
+        };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (
+          /^(?:response\.json: )?Protocol error \(Network\.getResponseBody\): No data found for (?:the )?resource with given identifier(?:\nResponse body is not available for a response that was navigated away from\. Read response\.body\(\) before triggering any navigation\.)?$/.test(
+            message,
           )
-            return { kind: "interrupted", reason: "aborted" };
-          return {
-            kind: "invalid",
-            message: error instanceof Error ? error.message : String(error),
-          };
-        }
-      })(),
+        )
+          return { kind: "interrupted", reason: "body-unavailable" };
+        return { kind: "invalid", message };
+      }
+    })();
+    reads.push(
+      Promise.race([bodyRead, requestFailure]).finally(() => {
+        if (onRequestFailed) page.off("requestfailed", onRequestFailed);
+      }),
     );
   });
   return reads;
@@ -500,9 +507,23 @@ test("actual failed Council run keeps partial seat records and no recommendation
   await expect(
     page.getByRole("region", { name: "Council recommendation" }),
   ).toHaveCount(0);
-  const runRead = (await verifiedRunReads(runReads)).find(
-    (read) => read.receipt.phase === "failed",
-  );
+  const priorReads = runReads.length;
+  await page.getByRole("button", { name: "Check saved result" }).click();
+  let runRead: ProjectCouncilRunRead | undefined;
+  await expect
+    .poll(async () => {
+      await verifiedRunReads(runReads);
+      runRead = (await verifiedRunReads(runReads.slice(priorReads))).find(
+        (read) =>
+          read.receipt.phase === "failed" &&
+          read.provenance.requestId === original.requestId &&
+          read.provenance.intentHash === original.intentHash &&
+          read.provenance.runId === original.runId &&
+          read.provenance.projectId === alpha.id,
+      );
+      return runRead !== undefined;
+    }, { timeout: 15_000 })
+    .toBe(true);
   if (!runRead) throw Error("The failed Council result was not read back.");
   expect(runRead.provenance).toMatchObject({
     requestId: original.requestId,
