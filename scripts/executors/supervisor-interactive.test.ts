@@ -307,7 +307,10 @@ function tree(
   return { handle, childPid };
 }
 
-async function markerAppears(path: string, timeoutMs: number): Promise<boolean> {
+async function markerAppears(
+  path: string,
+  timeoutMs: number,
+): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (!existsSync(path) && Date.now() < deadline) await Bun.sleep(10);
   return existsSync(path);
@@ -386,9 +389,7 @@ test("Stop settles a backpressured write and EOF while confirming descendant cle
     gate,
   );
   const endedBeforeAnnouncement = () => {
-    throw new Error(
-      "The interactive fixture ended before child announcement.",
-    );
+    throw new Error("The interactive fixture ended before child announcement.");
   };
   const announcement = Promise.race([
     f.childPid(),
