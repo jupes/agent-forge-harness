@@ -347,7 +347,7 @@ export async function installGeminiContinuationFetchFixture(
           responseUrl.origin !== origin ||
           responseUrl.pathname !== startPath ||
           responseUrl.search !== "" ||
-          payload.status !== 200 ||
+          payload.status !== 202 ||
           Buffer.byteLength(payload.requestText, "utf8") >
             START_REQUEST_LIMIT ||
           Buffer.byteLength(payload.responseText, "utf8") > RESPONSE_LIMIT
