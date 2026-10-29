@@ -1,20 +1,52 @@
 import { createHash } from "node:crypto";
-import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  cpSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, delimiter, isAbsolute, join, relative, resolve, sep } from "node:path";
+import {
+  basename,
+  delimiter,
+  isAbsolute,
+  join,
+  relative,
+  resolve,
+  sep,
+} from "node:path";
 import { chromium, type Page } from "@playwright/test";
+import {
+  type ProjectCouncilMetadata,
+  type ProjectCouncilOriginalRead,
+  type ProjectCouncilReceipt,
+  projectCouncilIntentJson,
+  projectCouncilMetadataSchema,
+  projectCouncilOriginalReadSchema,
+  projectCouncilReceiptSchema,
+} from "../../types/project-council";
+import {
+  type ProjectCouncilRunRead,
+  projectCouncilRunReadSchema,
+} from "../../types/project-council-run-read";
 import { loadCouncilProfile } from "../council/workflow";
-import { createProjectStore } from "../projects/store";
 import { isMain } from "../is-main";
-import { projectCouncilIntentJson, projectCouncilMetadataSchema, projectCouncilOriginalReadSchema, projectCouncilReceiptSchema, type ProjectCouncilMetadata, type ProjectCouncilOriginalRead, type ProjectCouncilReceipt } from "../../types/project-council";
-import { projectCouncilRunReadSchema, type ProjectCouncilRunRead } from "../../types/project-council-run-read";
+import { createProjectStore } from "../projects/store";
 
 const root = resolve(import.meta.dir, "../..");
 const stage = join(root, "apps/desktop/build/windows-x64");
-const body = "Council native smoke fixture: the blue lantern rests beside the open notebook.";
+const body =
+  "Council native smoke fixture: the blue lantern rests beside the open notebook.";
 const epicId = "council-smoke-epic";
 const waitMs = 60_000;
-type Identity = { pid: number; parentPid: number; created: string; path: string };
+type Identity = {
+  pid: number;
+  parentPid: number;
+  created: string;
+  path: string;
+};
 type ReplyData = {
   metadata: ProjectCouncilMetadata | null;
   originals: ProjectCouncilOriginalRead[];
@@ -36,32 +68,50 @@ function assertWithin(base: string, path: string): void {
 function delay(ms: number): Promise<void> {
   return new Promise((done) => setTimeout(done, ms));
 }
-async function waitForExit(child: Bun.Subprocess, timeoutMs: number): Promise<number | null> {
+async function waitForExit(
+  child: Bun.Subprocess,
+  timeoutMs: number,
+): Promise<number | null> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
       child.exited,
-      new Promise<null>((done) => { timer = setTimeout(() => done(null), timeoutMs); }),
+      new Promise<null>((done) => {
+        timer = setTimeout(() => done(null), timeoutMs);
+      }),
     ]);
   } finally {
     if (timer) clearTimeout(timer);
   }
 }
-async function killAndReap(child: Bun.Subprocess, label: string): Promise<void> {
+async function killAndReap(
+  child: Bun.Subprocess,
+  label: string,
+): Promise<void> {
   if (child.exitCode !== null) return;
   child.kill();
-  if (await waitForExit(child, 5_000) === null)
-    throw new Error(`${label} did not exit after its retained process handle was stopped.`);
+  if ((await waitForExit(child, 5_000)) === null)
+    throw new Error(
+      `${label} did not exit after its retained process handle was stopped.`,
+    );
 }
 function cleanError(error: unknown): string {
-  return (error instanceof Error ? error.message : "Native Council smoke failed")
+  return (
+    error instanceof Error ? error.message : "Native Council smoke failed"
+  )
     .replaceAll(body, "[fixture body redacted]")
     .slice(0, 500);
 }
 async function compileTool(source: string, output: string): Promise<void> {
   const child = Bun.spawn(
     [process.execPath, "build", "--compile", source, "--outfile", output],
-    { cwd: root, stdin: "ignore", stdout: "ignore", stderr: "ignore", windowsHide: true },
+    {
+      cwd: root,
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "ignore",
+      windowsHide: true,
+    },
   );
   const status = await waitForExit(child, 45_000);
   if (status === null) {
@@ -70,7 +120,10 @@ async function compileTool(source: string, output: string): Promise<void> {
   }
   if (status !== 0) throw new Error("Inert command fixture build failed.");
 }
-async function waitFor<T>(read: () => Promise<T | null>, label: string): Promise<T> {
+async function waitFor<T>(
+  read: () => Promise<T | null>,
+  label: string,
+): Promise<T> {
   const deadline = Date.now() + waitMs;
   while (Date.now() < deadline) {
     const value = await read();
@@ -79,10 +132,24 @@ async function waitFor<T>(read: () => Promise<T | null>, label: string): Promise
   }
   throw new Error(`${label} did not become ready within ${waitMs}ms.`);
 }
-async function runPowerShell(script: string, timeoutMs = 7_000): Promise<string> {
-  const powershell = join(process.env.SystemRoot ?? "C:\\Windows", "System32/WindowsPowerShell/v1.0/powershell.exe");
+async function runPowerShell(
+  script: string,
+  timeoutMs = 7_000,
+): Promise<string> {
+  const powershell = join(
+    process.env.SystemRoot ?? "C:\\Windows",
+    "System32/WindowsPowerShell/v1.0/powershell.exe",
+  );
   const child = Bun.spawn(
-    [powershell, "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script],
+    [
+      powershell,
+      "-NoProfile",
+      "-NonInteractive",
+      "-WindowStyle",
+      "Hidden",
+      "-Command",
+      script,
+    ],
     { stdin: "ignore", stdout: "pipe", stderr: "pipe", windowsHide: true },
   );
   const out = new Response(child.stdout).text();
@@ -93,12 +160,19 @@ async function runPowerShell(script: string, timeoutMs = 7_000): Promise<string>
     throw new Error("Bounded PowerShell helper timed out.");
   }
   const [stdout, stderr] = await Promise.all([out, err]);
-  if (status !== 0) throw new Error(`Native process helper failed: ${stderr.slice(0, 300)}`);
+  if (status !== 0)
+    throw new Error(`Native process helper failed: ${stderr.slice(0, 300)}`);
   return stdout.trim();
 }
-async function captureTree(pid: number, executable: string, expectedCreated?: string): Promise<{ root: Identity; children: Identity[] }> {
+async function captureTree(
+  pid: number,
+  executable: string,
+  expectedCreated?: string,
+): Promise<{ root: Identity; children: Identity[] }> {
   const expected = executable.replaceAll("'", "''");
-  const expectedDate = expectedCreated ? `$root.CreationDate.ToUniversalTime().ToString('o') -cne '${expectedCreated.replaceAll("'", "''")}' -or ` : "";
+  const expectedDate = expectedCreated
+    ? `$root.CreationDate.ToUniversalTime().ToString('o') -cne '${expectedCreated.replaceAll("'", "''")}' -or `
+    : "";
   const script = `
     $all=@(Get-CimInstance Win32_Process)
     $root=@($all | Where-Object { $_.ProcessId -eq ${pid} }) | Select-Object -First 1
@@ -119,21 +193,43 @@ async function captureTree(pid: number, executable: string, expectedCreated?: st
   const rawRoot = record(value?.root);
   if (!rawRoot) throw new Error("Native app identity was not captured.");
   const rootIdentity: Identity = {
-    pid: Number(rawRoot.pid), parentPid: Number(rawRoot.parentPid), created: String(rawRoot.created), path: String(rawRoot.path),
+    pid: Number(rawRoot.pid),
+    parentPid: Number(rawRoot.parentPid),
+    created: String(rawRoot.created),
+    path: String(rawRoot.path),
   };
-  if (rootIdentity.pid !== pid || !rootIdentity.created || resolve(rootIdentity.path).toLowerCase() !== resolve(executable).toLowerCase())
-    throw new Error("Captured native app identity did not match its launched executable.");
-  const children = Array.isArray(value?.children) ? value.children : value?.children ? [value.children] : [];
+  if (
+    rootIdentity.pid !== pid ||
+    !rootIdentity.created ||
+    resolve(rootIdentity.path).toLowerCase() !==
+      resolve(executable).toLowerCase()
+  )
+    throw new Error(
+      "Captured native app identity did not match its launched executable.",
+    );
+  const children = Array.isArray(value?.children)
+    ? value.children
+    : value?.children
+      ? [value.children]
+      : [];
   return {
     root: rootIdentity,
-    children: children.map((child) => record(child)).filter((child): child is Record<string, unknown> => !!child).map((child) => ({
-      pid: Number(child.pid), parentPid: Number(child.parentPid), created: String(child.created), path: String(child.path),
-    })),
+    children: children
+      .map((child) => record(child))
+      .filter((child): child is Record<string, unknown> => !!child)
+      .map((child) => ({
+        pid: Number(child.pid),
+        parentPid: Number(child.parentPid),
+        created: String(child.created),
+        path: String(child.path),
+      })),
   };
 }
 async function liveOwned(identities: Identity[]): Promise<number[]> {
   if (!identities.length) return [];
-  const encoded = Buffer.from(JSON.stringify(identities), "utf8").toString("base64");
+  const encoded = Buffer.from(JSON.stringify(identities), "utf8").toString(
+    "base64",
+  );
   const script = `
     $expected=[Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('${encoded}')) | ConvertFrom-Json
     $all=@(Get-CimInstance Win32_Process)
@@ -145,21 +241,47 @@ async function liveOwned(identities: Identity[]): Promise<number[]> {
     ConvertTo-Json -Compress -InputObject @($live)
   `;
   const value = JSON.parse(await runPowerShell(script));
-  return (Array.isArray(value) ? value : value === null ? [] : [value]).map(Number);
+  return (Array.isArray(value) ? value : value === null ? [] : [value]).map(
+    Number,
+  );
 }
-async function closeNative(child: Bun.Subprocess, executable: string, rootIdentity: Identity | undefined, identities: Identity[]): Promise<string[]> {
+async function closeNative(
+  child: Bun.Subprocess,
+  executable: string,
+  rootIdentity: Identity | undefined,
+  identities: Identity[],
+): Promise<string[]> {
   const errors: string[] = [];
   if (child.exitCode === null) {
     try {
-      if (!rootIdentity) throw new Error("Native app identity was not captured before cleanup.");
-      if (rootIdentity.pid !== child.pid || resolve(rootIdentity.path).toLowerCase() !== resolve(executable).toLowerCase())
+      if (!rootIdentity)
+        throw new Error("Native app identity was not captured before cleanup.");
+      if (
+        rootIdentity.pid !== child.pid ||
+        resolve(rootIdentity.path).toLowerCase() !==
+          resolve(executable).toLowerCase()
+      )
         throw new Error("Native app identity changed before WM_CLOSE.");
-      const current = await captureTree(child.pid, executable, rootIdentity.created);
+      const current = await captureTree(
+        child.pid,
+        executable,
+        rootIdentity.created,
+      );
       for (const item of current.children)
-        if (!identities.some((known) => known.pid === item.pid && known.created === item.created && known.path.toLowerCase() === item.path.toLowerCase())) identities.push(item);
+        if (
+          !identities.some(
+            (known) =>
+              known.pid === item.pid &&
+              known.created === item.created &&
+              known.path.toLowerCase() === item.path.toLowerCase(),
+          )
+        )
+          identities.push(item);
       const expected = executable.replaceAll("'", "''");
       const expectedCreated = rootIdentity.created.replaceAll("'", "''");
-      await runPowerShell(`$p=Get-CimInstance Win32_Process -Filter 'ProcessId = ${child.pid}' -ErrorAction Stop; if($p.ProcessId -ne ${rootIdentity.pid} -or $p.CreationDate.ToUniversalTime().ToString('o') -cne '${expectedCreated}' -or [IO.Path]::GetFullPath($p.ExecutablePath) -ine [IO.Path]::GetFullPath('${expected}')) { throw 'Native app identity changed before WM_CLOSE.' }; $g=Get-Process -Id ${child.pid} -ErrorAction Stop; if(-not $g.CloseMainWindow()) { throw 'WM_CLOSE was not accepted by the native app.' }`);
+      await runPowerShell(
+        `$p=Get-CimInstance Win32_Process -Filter 'ProcessId = ${child.pid}' -ErrorAction Stop; if($p.ProcessId -ne ${rootIdentity.pid} -or $p.CreationDate.ToUniversalTime().ToString('o') -cne '${expectedCreated}' -or [IO.Path]::GetFullPath($p.ExecutablePath) -ine [IO.Path]::GetFullPath('${expected}')) { throw 'Native app identity changed before WM_CLOSE.' }; $g=Get-Process -Id ${child.pid} -ErrorAction Stop; if(-not $g.CloseMainWindow()) { throw 'WM_CLOSE was not accepted by the native app.' }`,
+      );
       const status = await waitForExit(child, 12_000);
       if (status === null) {
         errors.push("Native app did not exit after graceful WM_CLOSE.");
@@ -168,8 +290,14 @@ async function closeNative(child: Bun.Subprocess, executable: string, rootIdenti
     } catch (error) {
       errors.push(cleanError(error));
       if (child.exitCode === null) {
-        try { await killAndReap(child, "Native app after identity or close failure"); }
-        catch (reapError) { errors.push(cleanError(reapError)); }
+        try {
+          await killAndReap(
+            child,
+            "Native app after identity or close failure",
+          );
+        } catch (reapError) {
+          errors.push(cleanError(reapError));
+        }
       }
     }
   }
@@ -178,14 +306,18 @@ async function closeNative(child: Bun.Subprocess, executable: string, rootIdenti
     try {
       const live = await liveOwned(identities);
       if (!live.length) return errors;
-    } catch (error) { errors.push(cleanError(error)); break; }
+    } catch (error) {
+      errors.push(cleanError(error));
+      break;
+    }
     await delay(300);
   }
   const live = await liveOwned(identities).catch((error) => {
     errors.push(cleanError(error));
     return identities.map((item) => item.pid);
   });
-  if (live.length) errors.push(`Owned native sidecars remain: ${live.join(",")}`);
+  if (live.length)
+    errors.push(`Owned native sidecars remain: ${live.join(",")}`);
   return errors;
 }
 
@@ -196,8 +328,10 @@ async function main(): Promise<void> {
   assertWithin(evidenceRoot, proofDir);
   const fixture = mkdtempSync(join(tmpdir(), "agent-forge-council-native-"));
   assertWithin(tmpdir(), fixture);
-  const home = join(fixture, "home"), checkout = join(fixture, "checkout");
-  const fakeBin = join(fixture, "bin"), runner = join(fixture, "application");
+  const home = join(fixture, "home"),
+    checkout = join(fixture, "checkout");
+  const fakeBin = join(fixture, "bin"),
+    runner = join(fixture, "application");
   const app = join(runner, "agent-forge-desktop.exe");
   const paths = {
     app: join(stage, "agent-forge-desktop.exe"),
@@ -206,10 +340,18 @@ async function main(): Promise<void> {
     dashboard: join(stage, "dashboard"),
   };
   const report: Record<string, unknown> = {
-    version: 1, proofDir, fixture, projectId: null, requestId: null,
-    intentHash: null, bodySha256: createHash("sha256").update(body).digest("hex"),
+    version: 1,
+    proofDir,
+    fixture,
+    projectId: null,
+    requestId: null,
+    intentHash: null,
+    bodySha256: createHash("sha256").update(body).digest("hex"),
     schemas: { metadata: false, original: false, receipt: false, run: false },
-    protectedReads: 0, councilPosts: [], screenshots: [], cleanupErrors: [],
+    protectedReads: 0,
+    councilPosts: [],
+    screenshots: [],
+    cleanupErrors: [],
   };
   let errorText = "";
   let appProcess: Bun.Subprocess | undefined;
@@ -218,192 +360,485 @@ async function main(): Promise<void> {
   let appIdentity: Identity | undefined;
   try {
     for (const path of Object.values(paths))
-      if (!existsSync(path)) throw new Error("Packaged Release WebView stage is incomplete.");
-    for (const dir of [home, checkout, fakeBin, runner]) mkdirSync(dir, { recursive: true });
+      if (!existsSync(path))
+        throw new Error("Packaged Release WebView stage is incomplete.");
+    for (const dir of [home, checkout, fakeBin, runner])
+      mkdirSync(dir, { recursive: true });
     mkdirSync(join(checkout, ".git"));
     mkdirSync(join(checkout, "scripts/hearth"), { recursive: true });
     mkdirSync(join(checkout, "councils"), { recursive: true });
-    writeFileSync(join(checkout, "scripts/hearth/server.ts"), "// isolated native Council fixture\n");
-    copyFileSync(join(root, "councils/default.json"), join(checkout, "councils/default.json"));
+    writeFileSync(
+      join(checkout, "scripts/hearth/server.ts"),
+      "// isolated native Council fixture\n",
+    );
+    copyFileSync(
+      join(root, "councils/default.json"),
+      join(checkout, "councils/default.json"),
+    );
     const profile = loadCouncilProfile(join(checkout, "councils/default.json"));
-    if ([...profile.seats, profile.chair].some((seat) => seat.provider !== "fake" || seat.estimatedCostUsd !== 0))
-      throw new Error("The packaged Council smoke profile is not zero-cost fake-provider only.");
+    if (
+      [...profile.seats, profile.chair].some(
+        (seat) => seat.provider !== "fake" || seat.estimatedCostUsd !== 0,
+      )
+    )
+      throw new Error(
+        "The packaged Council smoke profile is not zero-cost fake-provider only.",
+      );
     const store = createProjectStore(home);
-    const catalog = await store.create({
-      slug: "council-native-smoke", name: "Council native smoke", description: "Synthetic isolated fixture", icon: "C",
-      workspaces: [{ root: checkout, repositories: [checkout], epicIds: [epicId] }],
-    }, 0);
+    const catalog = await store.create(
+      {
+        slug: "council-native-smoke",
+        name: "Council native smoke",
+        description: "Synthetic isolated fixture",
+        icon: "C",
+        workspaces: [
+          { root: checkout, repositories: [checkout], epicIds: [epicId] },
+        ],
+      },
+      0,
+    );
     const project = catalog.projects[0];
     if (!project) throw new Error("Typed fixture project was not saved.");
     report.projectId = project.id;
-    const bdCalls = join(fixture, "bd-calls.jsonl"), gitCalls = join(fixture, "git-calls.jsonl");
-    const bdSource = join(fixture, "bd-fixture.ts"), gitSource = join(fixture, "git-fixture.ts");
-    writeFileSync(bdSource, `import{appendFileSync}from'node:fs';const args=process.argv.slice(2);appendFileSync(${JSON.stringify(bdCalls)},JSON.stringify(args)+'\\n');if(args[0]==='export'&&args.includes('--readonly')&&args.includes('--no-memories')){process.stdout.write(JSON.stringify({id:${JSON.stringify(epicId)},title:'Council smoke epic',issue_type:'epic',status:'open',priority:1,labels:['project:council-native-smoke'],created_at:'2026-10-01T00:00:00Z',updated_at:'2026-10-01T00:00:00Z',dependencies:[]})+'\\n');process.exit(0)}process.stderr.write('Refused non-read-only Council smoke tracker command\\n');process.exit(2);`);
-    writeFileSync(gitSource, `import{appendFileSync,realpathSync,statSync}from'node:fs';import{join}from'node:path';const root=${JSON.stringify(checkout)},log=${JSON.stringify(gitCalls)},args=process.argv.slice(2),cwd=realpathSync.native(process.cwd());appendFileSync(log,JSON.stringify({args,cwd})+'\\n');if(cwd.toLowerCase()!==realpathSync.native(root).toLowerCase()||!statSync(join(cwd,'.git')).isDirectory())throw Error('Foreign native fixture Git cwd');const eq=(...v)=>JSON.stringify(args)===JSON.stringify(v),answer=v=>{process.stdout.write(v);process.exit(0)};if(eq('rev-parse','--show-toplevel'))answer(cwd+'\\n');if(eq('rev-parse','--path-format=absolute','--git-common-dir'))answer(join(cwd,'.git')+'\\n');if(eq('worktree','list','--porcelain','-z'))answer('worktree '+cwd+'\\0HEAD '+'0'.repeat(40)+'\\0detached\\0\\0');if(eq('remote','get-url','origin'))process.exit(1);process.stderr.write('Refused unknown fixture Git command\\n');process.exit(2);`);
+    const bdCalls = join(fixture, "bd-calls.jsonl"),
+      gitCalls = join(fixture, "git-calls.jsonl");
+    const bdSource = join(fixture, "bd-fixture.ts"),
+      gitSource = join(fixture, "git-fixture.ts");
+    writeFileSync(
+      bdSource,
+      `import{appendFileSync}from'node:fs';const args=process.argv.slice(2);appendFileSync(${JSON.stringify(bdCalls)},JSON.stringify(args)+'\\n');if(args[0]==='export'&&args.includes('--readonly')&&args.includes('--no-memories')){process.stdout.write(JSON.stringify({id:${JSON.stringify(epicId)},title:'Council smoke epic',issue_type:'epic',status:'open',priority:1,labels:['project:council-native-smoke'],created_at:'2026-10-01T00:00:00Z',updated_at:'2026-10-01T00:00:00Z',dependencies:[]})+'\\n');process.exit(0)}process.stderr.write('Refused non-read-only Council smoke tracker command\\n');process.exit(2);`,
+    );
+    writeFileSync(
+      gitSource,
+      `import{appendFileSync,realpathSync,statSync}from'node:fs';import{join}from'node:path';const root=${JSON.stringify(checkout)},log=${JSON.stringify(gitCalls)},args=process.argv.slice(2),cwd=realpathSync.native(process.cwd());appendFileSync(log,JSON.stringify({args,cwd})+'\\n');if(cwd.toLowerCase()!==realpathSync.native(root).toLowerCase()||!statSync(join(cwd,'.git')).isDirectory())throw Error('Foreign native fixture Git cwd');const eq=(...v)=>JSON.stringify(args)===JSON.stringify(v),answer=v=>{process.stdout.write(v);process.exit(0)};if(eq('rev-parse','--show-toplevel'))answer(cwd+'\\n');if(eq('rev-parse','--path-format=absolute','--git-common-dir'))answer(join(cwd,'.git')+'\\n');if(eq('worktree','list','--porcelain','-z'))answer('worktree '+cwd+'\\0HEAD '+'0'.repeat(40)+'\\0detached\\0\\0');if(eq('remote','get-url','origin'))process.exit(1);process.stderr.write('Refused unknown fixture Git command\\n');process.exit(2);`,
+    );
     await compileTool(bdSource, join(fakeBin, "bd.exe"));
     await compileTool(gitSource, join(fakeBin, "git.exe"));
-    for (const name of ["agent-forge-desktop.exe", "hearth.exe", "desktop-host.exe"])
+    for (const name of [
+      "agent-forge-desktop.exe",
+      "hearth.exe",
+      "desktop-host.exe",
+    ])
       copyFileSync(join(stage, name), join(runner, name));
     cpSync(paths.dashboard, join(runner, "dashboard"), { recursive: true });
     const systemRoot = process.env.SystemRoot ?? "C:\\Windows";
-    const portProbe = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {}, open() {}, close() {}, drain() {}, error() {} } });
+    const portProbe = Bun.listen({
+      hostname: "127.0.0.1",
+      port: 0,
+      socket: { data() {}, open() {}, close() {}, drain() {}, error() {} },
+    });
     const debugPort = portProbe.port;
     portProbe.stop(true);
-    const local = join(home, "AppData/Local"), roaming = join(home, "AppData/Roaming");
-    mkdirSync(local, { recursive: true }); mkdirSync(roaming, { recursive: true });
+    const local = join(home, "AppData/Local"),
+      roaming = join(home, "AppData/Roaming");
+    mkdirSync(local, { recursive: true });
+    mkdirSync(roaming, { recursive: true });
     const env: Record<string, string> = {
-      SystemRoot: systemRoot, WINDIR: systemRoot, TEMP: fixture, TMP: fixture,
-      USERPROFILE: home, HOME: home, LOCALAPPDATA: local, APPDATA: roaming,
+      SystemRoot: systemRoot,
+      WINDIR: systemRoot,
+      TEMP: fixture,
+      TMP: fixture,
+      USERPROFILE: home,
+      HOME: home,
+      LOCALAPPDATA: local,
+      APPDATA: roaming,
       COMSPEC: join(systemRoot, "System32/cmd.exe"),
       PATH: [fakeBin, join(systemRoot, "System32"), systemRoot].join(delimiter),
       AGENT_FORGE_HOME: home,
       WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS: `--remote-debugging-port=${debugPort}`,
       WEBVIEW2_USER_DATA_FOLDER: join(home, "webview-profile"),
-      HTTP_PROXY: "http://127.0.0.1:1", HTTPS_PROXY: "http://127.0.0.1:1",
-      NO_PROXY: "127.0.0.1,localhost", no_proxy: "127.0.0.1,localhost",
+      HTTP_PROXY: "http://127.0.0.1:1",
+      HTTPS_PROXY: "http://127.0.0.1:1",
+      NO_PROXY: "127.0.0.1,localhost",
+      no_proxy: "127.0.0.1,localhost",
     };
-    appProcess = Bun.spawn({ cmd: [app, "--root", checkout], cwd: runner, env, stdin: "ignore", stdout: "ignore", stderr: "ignore" });
+    appProcess = Bun.spawn({
+      cmd: [app, "--root", checkout],
+      cwd: runner,
+      env,
+      stdin: "ignore",
+      stdout: "ignore",
+      stderr: "ignore",
+    });
     const version = await waitFor(async () => {
-      if (appProcess!.exitCode !== null) throw new Error(`Native app exited before WebView startup (${appProcess!.exitCode}).`);
+      if (appProcess!.exitCode !== null)
+        throw new Error(
+          `Native app exited before WebView startup (${appProcess!.exitCode}).`,
+        );
       try {
-        const response = await fetch(`http://127.0.0.1:${debugPort}/json/version`, { signal: AbortSignal.timeout(1000) });
+        const response = await fetch(
+          `http://127.0.0.1:${debugPort}/json/version`,
+          { signal: AbortSignal.timeout(1000) },
+        );
         return response.ok ? await response.json() : null;
-      } catch { return null; }
+      } catch {
+        return null;
+      }
     }, "WebView2 CDP endpoint");
-    if (!record(version)?.webSocketDebuggerUrl) throw new Error("WebView2 did not publish a CDP browser endpoint.");
-    browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`, { timeout: 10_000 });
+    if (!record(version)?.webSocketDebuggerUrl)
+      throw new Error("WebView2 did not publish a CDP browser endpoint.");
+    browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`, {
+      timeout: 10_000,
+    });
     const context = browser.contexts()[0];
     const page = context?.pages()[0];
-    if (!context || !page) throw new Error("Packaged native WebView has no page context.");
+    if (!context || !page)
+      throw new Error("Packaged native WebView has no page context.");
     await page.emulateMedia({ reducedMotion: "reduce" });
-    await page.getByRole("link", { name: "Open Council native smoke" }).waitFor({ timeout: waitMs });
+    await page
+      .getByRole("link", { name: "Open Council native smoke" })
+      .waitFor({ timeout: waitMs });
     const firstTree = await captureTree(appProcess.pid, app);
     appIdentity = firstTree.root;
     closeIdentities = firstTree.children;
-    const names = new Set(closeIdentities.map((item) => basename(item.path).toLowerCase()));
-    if (!names.has("desktop-host.exe") || !names.has("hearth.exe")) throw new Error("The packaged native app did not own both expected sidecars.");
-    const result = await exercise(page, project.id, report, appProcess.pid, app);
+    const names = new Set(
+      closeIdentities.map((item) => basename(item.path).toLowerCase()),
+    );
+    if (!names.has("desktop-host.exe") || !names.has("hearth.exe"))
+      throw new Error(
+        "The packaged native app did not own both expected sidecars.",
+      );
+    const result = await exercise(
+      page,
+      project.id,
+      report,
+      appProcess.pid,
+      app,
+    );
     for (const item of result) closeIdentities.push(...item);
-    const finalTree = await captureTree(appProcess.pid, app, firstTree.root.created);
+    const finalTree = await captureTree(
+      appProcess.pid,
+      app,
+      firstTree.root.created,
+    );
     for (const item of finalTree.children)
-      if (!closeIdentities.some((known) => known.pid === item.pid && known.created === item.created && known.path === item.path)) closeIdentities.push(item);
+      if (
+        !closeIdentities.some(
+          (known) =>
+            known.pid === item.pid &&
+            known.created === item.created &&
+            known.path === item.path,
+        )
+      )
+        closeIdentities.push(item);
     report.cleanupErrors = [];
   } catch (error) {
     errorText = cleanError(error);
   } finally {
-    try { await browser?.close(); } catch (error) { (report.cleanupErrors as string[]).push(cleanError(error)); }
+    try {
+      await browser?.close();
+    } catch (error) {
+      (report.cleanupErrors as string[]).push(cleanError(error));
+    }
     if (appProcess) {
       if (appProcess.exitCode === null) {
         try {
           const tree = await captureTree(appProcess.pid, app);
           appIdentity ??= tree.root;
           for (const item of tree.children)
-            if (!closeIdentities.some((known) => known.pid === item.pid && known.created === item.created && known.path.toLowerCase() === item.path.toLowerCase())) closeIdentities.push(item);
-        } catch (error) { (report.cleanupErrors as string[]).push(cleanError(error)); }
+            if (
+              !closeIdentities.some(
+                (known) =>
+                  known.pid === item.pid &&
+                  known.created === item.created &&
+                  known.path.toLowerCase() === item.path.toLowerCase(),
+              )
+            )
+              closeIdentities.push(item);
+        } catch (error) {
+          (report.cleanupErrors as string[]).push(cleanError(error));
+        }
       }
-      if (!appIdentity) (report.cleanupErrors as string[]).push("Native app identity was not captured for cleanup.");
-      (report.cleanupErrors as string[]).push(...await closeNative(appProcess, app, appIdentity, closeIdentities));
+      if (!appIdentity)
+        (report.cleanupErrors as string[]).push(
+          "Native app identity was not captured for cleanup.",
+        );
+      (report.cleanupErrors as string[]).push(
+        ...(await closeNative(appProcess, app, appIdentity, closeIdentities)),
+      );
     }
   }
   const ok = !errorText && (report.cleanupErrors as string[]).length === 0;
-  const envelope = { ok, data: ok ? report : null, error: ok ? null : errorText || (report.cleanupErrors as string[]).join("; ") };
-  writeFileSync(join(proofDir, "proof.json"), JSON.stringify({ ...envelope, evidence: report }, null, 2));
+  const envelope = {
+    ok,
+    data: ok ? report : null,
+    error: ok
+      ? null
+      : errorText || (report.cleanupErrors as string[]).join("; "),
+  };
+  writeFileSync(
+    join(proofDir, "proof.json"),
+    JSON.stringify({ ...envelope, evidence: report }, null, 2),
+  );
   process.stdout.write(`${JSON.stringify(envelope)}\n`);
   if (!ok) process.exitCode = 1;
 }
 
-async function exercise(page: Page, projectId: string, report: Record<string, unknown>, appPid: number, appPath: string): Promise<Identity[][]> {
+async function exercise(
+  page: Page,
+  projectId: string,
+  report: Record<string, unknown>,
+  appPid: number,
+  appPath: string,
+): Promise<Identity[][]> {
   const posts: string[] = [];
-  const captured: ReplyData = { metadata: null, originals: [], receipts: [], runs: [], errors: [] };
+  const captured: ReplyData = {
+    metadata: null,
+    originals: [],
+    receipts: [],
+    runs: [],
+    errors: [],
+  };
   const tasks: Promise<void>[] = [];
   page.on("request", (request) => {
     const path = new URL(request.url()).pathname;
-    if (request.method() === "POST" && path.includes(`/projects/${projectId}/council/reviews`)) posts.push(path);
+    if (
+      request.method() === "POST" &&
+      path.includes(`/projects/${projectId}/council/reviews`)
+    )
+      posts.push(path);
   });
   page.on("response", (response) => {
-    const path = new URL(response.url()).pathname, base = `/projects/${projectId}/council/reviews`;
+    const path = new URL(response.url()).pathname,
+      base = `/projects/${projectId}/council/reviews`;
     const at = path.indexOf(base);
     if (at < 0) return;
-    const tail = path.slice(at + base.length), method = response.request().method();
-    const kind = method === "POST" && tail === "" ? "reserve" : method === "POST" && tail.endsWith("/commit") ? "receipt" : method === "GET" && /^\/[0-9a-f-]{36}$/.test(tail) ? "original" : method === "GET" && tail.endsWith("/run") ? "run" : null;
+    const tail = path.slice(at + base.length),
+      method = response.request().method();
+    const kind =
+      method === "POST" && tail === ""
+        ? "reserve"
+        : method === "POST" && tail.endsWith("/commit")
+          ? "receipt"
+          : method === "GET" && /^\/[0-9a-f-]{36}$/.test(tail)
+            ? "original"
+            : method === "GET" && tail.endsWith("/run")
+              ? "run"
+              : null;
     if (!kind) return;
-    tasks.push((async () => {
-      if (!response.ok()) throw new Error(`Council protected read/action returned HTTP ${response.status()}.`);
-      const envelope = record(await response.json());
-      if (envelope?.ok !== true) throw new Error("Council response did not use a successful envelope.");
-      const data = envelope.data;
-      if (kind === "reserve") {
-        const metadata = projectCouncilMetadataSchema.safeParse(record(data)?.metadata);
-        if (!metadata.success) throw new Error("Reserve identity failed the shared metadata schema.");
-        captured.metadata = metadata.data;
-      } else if (kind === "receipt") {
-        const receipt = projectCouncilReceiptSchema.safeParse(data);
-        if (!receipt.success) throw new Error("Commit receipt failed the shared receipt schema.");
-        captured.receipts.push(receipt.data);
-      } else if (kind === "original") {
-        const original = projectCouncilOriginalReadSchema.safeParse(data);
-        if (!original.success) throw new Error("Protected original failed the shared original schema.");
-        captured.originals.push(original.data);
-      } else {
-        const run = projectCouncilRunReadSchema.safeParse(data);
-        if (!run.success) throw new Error("Protected result failed the shared run schema.");
-        captured.runs.push(run.data);
-      }
-    })().catch((error) => captured.errors.push(cleanError(error))));
+    tasks.push(
+      (async () => {
+        if (!response.ok())
+          throw new Error(
+            `Council protected read/action returned HTTP ${response.status()}.`,
+          );
+        const envelope = record(await response.json());
+        if (envelope?.ok !== true)
+          throw new Error(
+            "Council response did not use a successful envelope.",
+          );
+        const data = envelope.data;
+        if (kind === "reserve") {
+          const metadata = projectCouncilMetadataSchema.safeParse(
+            record(data)?.metadata,
+          );
+          if (!metadata.success)
+            throw new Error(
+              "Reserve identity failed the shared metadata schema.",
+            );
+          captured.metadata = metadata.data;
+        } else if (kind === "receipt") {
+          const receipt = projectCouncilReceiptSchema.safeParse(data);
+          if (!receipt.success)
+            throw new Error("Commit receipt failed the shared receipt schema.");
+          captured.receipts.push(receipt.data);
+        } else if (kind === "original") {
+          const original = projectCouncilOriginalReadSchema.safeParse(data);
+          if (!original.success)
+            throw new Error(
+              "Protected original failed the shared original schema.",
+            );
+          captured.originals.push(original.data);
+        } else {
+          const run = projectCouncilRunReadSchema.safeParse(data);
+          if (!run.success)
+            throw new Error("Protected result failed the shared run schema.");
+          captured.runs.push(run.data);
+        }
+      })().catch((error) => captured.errors.push(cleanError(error))),
+    );
   });
   const nav = page.getByRole("navigation", { name: "Project destinations" });
   await page.getByRole("link", { name: "Open Council native smoke" }).click();
   await nav.getByRole("link", { name: "Reviews", exact: true }).click();
   await page.getByRole("button", { name: "New review" }).click();
-  const source = page.getByLabel("Document or question"), profile = page.getByLabel("Council profile");
+  const source = page.getByLabel("Document or question"),
+    profile = page.getByLabel("Council profile");
   await source.fill(body);
-  await source.focus(); await page.keyboard.press("Tab");
-  if (!(await profile.evaluate((element) => document.activeElement === element))) throw new Error("Keyboard focus did not reach the Council profile control.");
-  if (!(await page.evaluate(() => matchMedia("(prefers-reduced-motion: reduce)").matches))) throw new Error("Reduced-motion preference did not reach the native WebView.");
-  if (!(await profile.inputValue()).replaceAll("\\", "/").endsWith("councils/default.json")) throw new Error("The served fixture did not select its fake-only default profile.");
+  await source.focus();
+  await page.keyboard.press("Tab");
+  if (
+    !(await profile.evaluate((element) => document.activeElement === element))
+  )
+    throw new Error(
+      "Keyboard focus did not reach the Council profile control.",
+    );
+  if (
+    !(await page.evaluate(
+      () => matchMedia("(prefers-reduced-motion: reduce)").matches,
+    ))
+  )
+    throw new Error(
+      "Reduced-motion preference did not reach the native WebView.",
+    );
+  if (
+    !(await profile.inputValue())
+      .replaceAll("\\", "/")
+      .endsWith("councils/default.json")
+  )
+    throw new Error(
+      "The served fixture did not select its fake-only default profile.",
+    );
   await source.fill(body);
-  await page.getByRole("button", { name: "Prepare original for review" }).click();
-  await page.getByRole("heading", { name: "Exact saved original" }).waitFor({ timeout: waitMs });
+  await page
+    .getByRole("button", { name: "Prepare original for review" })
+    .click();
+  await page
+    .getByRole("heading", { name: "Exact saved original" })
+    .waitFor({ timeout: waitMs });
   await page.getByText(body, { exact: true }).waitFor({ timeout: waitMs });
-  await page.getByRole("button", { name: "Convene this exact original" }).click();
-  await page.getByRole("heading", { name: "Verified result facts" }).waitFor({ timeout: waitMs });
-  await page.getByRole("heading", { name: "Council result" }).waitFor({ timeout: waitMs });
-  const screenshotWide = join(String(report.proofDir), "council-result-wide.png");
-  await page.setViewportSize({ width: 1440, height: 900 }); await page.screenshot({ path: screenshotWide, fullPage: true });
-  const screenshotNarrow = join(String(report.proofDir), "council-result-narrow.png");
-  await page.setViewportSize({ width: 1100, height: 700 }); await page.screenshot({ path: screenshotNarrow, fullPage: true });
+  await page
+    .getByRole("button", { name: "Convene this exact original" })
+    .click();
+  await page
+    .getByRole("heading", { name: "Verified result facts" })
+    .waitFor({ timeout: waitMs });
+  await page
+    .getByRole("heading", { name: "Council result" })
+    .waitFor({ timeout: waitMs });
+  const screenshotWide = join(
+    String(report.proofDir),
+    "council-result-wide.png",
+  );
   await page.setViewportSize({ width: 1440, height: 900 });
-  const urlAndStorage = await page.evaluate(() => [location.href, ...Object.values(localStorage), ...Object.values(sessionStorage)].join("\n"));
-  if (urlAndStorage.includes(body)) throw new Error("Private fixture text appeared in URL or browser storage.");
+  await page.screenshot({ path: screenshotWide, fullPage: true });
+  const screenshotNarrow = join(
+    String(report.proofDir),
+    "council-result-narrow.png",
+  );
+  await page.setViewportSize({ width: 1100, height: 700 });
+  await page.screenshot({ path: screenshotNarrow, fullPage: true });
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const urlAndStorage = await page.evaluate(() =>
+    [
+      location.href,
+      ...Object.values(localStorage),
+      ...Object.values(sessionStorage),
+    ].join("\n"),
+  );
+  if (urlAndStorage.includes(body))
+    throw new Error("Private fixture text appeared in URL or browser storage.");
   await Promise.all(tasks);
   if (captured.errors.length) throw new Error(captured.errors.join("; "));
   const original = captured.originals[0];
-  if (!original || !captured.metadata || captured.receipts.length !== 1) throw new Error("Reserve, exact-original, and one commit receipt were not all observed.");
-  const requestId = captured.metadata.requestId, intentHash = captured.metadata.intentHash;
+  if (!original || !captured.metadata || captured.receipts.length !== 1)
+    throw new Error(
+      "Reserve, exact-original, and one commit receipt were not all observed.",
+    );
+  const requestId = captured.metadata.requestId,
+    intentHash = captured.metadata.intentHash;
   const bodySha256 = createHash("sha256").update(body, "utf8").digest("hex");
-  if (original.original.requestId !== requestId || original.original.intentHash !== intentHash || createHash("sha256").update(projectCouncilIntentJson(original.original), "utf8").digest("hex") !== intentHash || original.original.context.evidence[0]?.content !== body) throw new Error("Protected original did not preserve the exact body, UUID, and intent hash.");
+  if (
+    original.original.requestId !== requestId ||
+    original.original.intentHash !== intentHash ||
+    createHash("sha256")
+      .update(projectCouncilIntentJson(original.original), "utf8")
+      .digest("hex") !== intentHash ||
+    original.original.context.evidence[0]?.content !== body
+  )
+    throw new Error(
+      "Protected original did not preserve the exact body, UUID, and intent hash.",
+    );
   const receipt = captured.receipts[0]!;
-  if (receipt.metadata.requestId !== requestId || receipt.metadata.intentHash !== intentHash) throw new Error("Commit receipt changed the canonical identity.");
-  const run = captured.runs.find((item) => item.receipt.phase === "completed" && item.job?.run?.status === "completed");
-  if (!run || !run.job || !run.job.run || run.provenance.requestId !== requestId || run.provenance.intentHash !== intentHash || run.provenance.runId !== original.original.runId || run.job.run.context.contentHash !== original.original.context.contentHash || run.job.run.context.source.kind !== "stdin" || run.job.run.context.evidence[0]?.content !== body || run.job.run.actualCostUsd !== 0 || [...run.job.run.profile.seats, run.job.run.profile.chair].some((seat) => seat.provider !== "fake")) throw new Error("Protected completed result did not match the fake-only exact original.");
-  if (posts.length !== 2 || posts.filter((path) => path.endsWith("/commit")).length !== 1 || posts.filter((path) => path === `/__agent-forge${`/projects/${projectId}/council/reviews`}` || path.endsWith(`/projects/${projectId}/council/reviews`)).length !== 1) throw new Error(`Expected exactly one reserve and one commit POST; observed ${posts.length}.`);
-  const readsBeforeReload = captured.runs.length, originalsBeforeReload = captured.originals.length;
+  if (
+    receipt.metadata.requestId !== requestId ||
+    receipt.metadata.intentHash !== intentHash
+  )
+    throw new Error("Commit receipt changed the canonical identity.");
+  const run = captured.runs.find(
+    (item) =>
+      item.receipt.phase === "completed" &&
+      item.job?.run?.status === "completed",
+  );
+  if (
+    !run ||
+    !run.job ||
+    !run.job.run ||
+    run.provenance.requestId !== requestId ||
+    run.provenance.intentHash !== intentHash ||
+    run.provenance.runId !== original.original.runId ||
+    run.job.run.context.contentHash !== original.original.context.contentHash ||
+    run.job.run.context.source.kind !== "stdin" ||
+    run.job.run.context.evidence[0]?.content !== body ||
+    run.job.run.actualCostUsd !== 0 ||
+    [...run.job.run.profile.seats, run.job.run.profile.chair].some(
+      (seat) => seat.provider !== "fake",
+    )
+  )
+    throw new Error(
+      "Protected completed result did not match the fake-only exact original.",
+    );
+  if (
+    posts.length !== 2 ||
+    posts.filter((path) => path.endsWith("/commit")).length !== 1 ||
+    posts.filter(
+      (path) =>
+        path === `/__agent-forge${`/projects/${projectId}/council/reviews`}` ||
+        path.endsWith(`/projects/${projectId}/council/reviews`),
+    ).length !== 1
+  )
+    throw new Error(
+      `Expected exactly one reserve and one commit POST; observed ${posts.length}.`,
+    );
+  const readsBeforeReload = captured.runs.length,
+    originalsBeforeReload = captured.originals.length;
   await page.reload({ waitUntil: "domcontentloaded", timeout: 20_000 });
-  await page.getByRole("heading", { name: "Saved reviews" }).waitFor({ timeout: waitMs });
+  await page
+    .getByRole("heading", { name: "Saved reviews" })
+    .waitFor({ timeout: waitMs });
   await page.getByRole("button", { name: "Open result" }).click();
-  await page.getByRole("heading", { name: "Verified result facts" }).waitFor({ timeout: waitMs });
+  await page
+    .getByRole("heading", { name: "Verified result facts" })
+    .waitFor({ timeout: waitMs });
   await Promise.all(tasks);
   if (captured.errors.length) throw new Error(captured.errors.join("; "));
   const reopened = captured.originals.at(-1);
-  const reopenedRun = captured.runs.filter((item) => item.receipt.phase === "completed").at(-1);
-  if (captured.originals.length <= originalsBeforeReload || captured.runs.length <= readsBeforeReload || !reopened || reopened.original.requestId !== requestId || reopened.original.intentHash !== intentHash || !reopenedRun || reopenedRun.provenance.requestId !== requestId || reopenedRun.provenance.intentHash !== intentHash || reopenedRun.provenance.runId !== original.original.runId || posts.length !== 2) throw new Error("Explicit result reopen changed identity or caused an extra POST.");
-  report.requestId = requestId; report.intentHash = intentHash; report.bodySha256 = bodySha256;
+  const reopenedRun = captured.runs
+    .filter((item) => item.receipt.phase === "completed")
+    .at(-1);
+  if (
+    captured.originals.length <= originalsBeforeReload ||
+    captured.runs.length <= readsBeforeReload ||
+    !reopened ||
+    reopened.original.requestId !== requestId ||
+    reopened.original.intentHash !== intentHash ||
+    !reopenedRun ||
+    reopenedRun.provenance.requestId !== requestId ||
+    reopenedRun.provenance.intentHash !== intentHash ||
+    reopenedRun.provenance.runId !== original.original.runId ||
+    posts.length !== 2
+  )
+    throw new Error(
+      "Explicit result reopen changed identity or caused an extra POST.",
+    );
+  report.requestId = requestId;
+  report.intentHash = intentHash;
+  report.bodySha256 = bodySha256;
   report.protectedReads = captured.runs.length + 1;
-  report.schemas = { metadata: true, original: true, receipt: true, run: true, exactBody: true, sameIdentityAfterReload: true };
+  report.schemas = {
+    metadata: true,
+    original: true,
+    receipt: true,
+    run: true,
+    exactBody: true,
+    sameIdentityAfterReload: true,
+  };
   report.councilPosts = posts;
   report.screenshots = [screenshotWide, screenshotNarrow];
-  report.screenshotViewport = "WebView2 viewport emulation at 1440x900 and 1100x700; native OS window geometry was not asserted.";
-  report.reducedMotion = true; report.keyboardFocus = true;
+  report.screenshotViewport =
+    "WebView2 viewport emulation at 1440x900 and 1100x700; native OS window geometry was not asserted.";
+  report.reducedMotion = true;
+  report.keyboardFocus = true;
   return [(await captureTree(appPid, appPath)).children];
 }
 
