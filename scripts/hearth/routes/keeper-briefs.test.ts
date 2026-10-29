@@ -1,8 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import type { Smith } from "../../../types/hearth";
-import { createConversationStore } from "../../conversations/store";
 import { createConversationService } from "../../conversations/service";
+import { createConversationStore } from "../../conversations/store";
+import type { ConversationTransport } from "../../conversations/transport";
 import { keeperReadiness } from "../../keeper/readiness";
 import type { KeeperRuntime } from "../../keeper/recovery-runtime";
 import {
@@ -164,8 +165,8 @@ test("closing waits for brief source preparation and prevents a late reservation
   expect(response.status).toBe(503);
   expect(
     createConversationStore(h.home).read(FIXTURE_PROJECT_ID)
-      .keeperBriefIntents?.active,
-  ).toBeNull();
+      .keeperBriefIntents,
+  ).toBeUndefined();
   expect(starts).toBe(0);
 });
 
@@ -195,11 +196,17 @@ test("concurrent commits for one ticket share a single admission and provider ru
   const runEntered = new Promise<void>((resolve) => {
     signalRun = resolve;
   });
-  const transport = {
+  const transport: ConversationTransport = {
     provider: "claude" as const,
-    async run() {
+    async run(_request, persist) {
       starts++;
       signalRun();
+      await persist({
+        kind: "identity",
+        provider: "claude",
+        sessionId: "concurrent-brief-fixture",
+        version: "fixture",
+      });
       await runGate;
       return { phase: "completed" as const, reason: null };
     },
@@ -567,6 +574,7 @@ test("audited brief review commits the frozen original once and preserves a good
       intentHash: ticket.intentHash,
     });
   const firstTicket = await reserve(0);
+  const store = createConversationStore(h.home);
   const frozenOriginal = store.readKeeperBriefIntent(
     FIXTURE_PROJECT_ID,
     firstTicket.requestId,
@@ -613,7 +621,6 @@ test("audited brief review commits the frozen original once and preserves a good
   await replayService.close();
   expect((await commit(firstTicket)).status).toBe(202);
   expect(checks).toBe(1);
-  const store = createConversationStore(h.home);
   await terminal(store, "completed");
   const original = (await projection()).latest;
   expect(original?.snapshot.observed.beads).toBe(1);
