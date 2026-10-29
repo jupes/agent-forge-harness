@@ -401,7 +401,7 @@ test("controls offer terminal handoff only for an eligible Claude Chat and prese
     },
     {
       changed: { page: running },
-      reason: "current turn has not completed",
+      reason: "Check the current turn and pending changes",
     },
     { changed: { live: false }, reason: "Reconnect the private conversation" },
     {
