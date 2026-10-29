@@ -24,7 +24,21 @@ test("a project Council review reserves against the current project and advertis
 
   const profileResponse = await fetch(`${h.api}/council-api/profiles`);
   expect(profileResponse.status).toBe(200);
-  const rawProfiles: unknown = await profileResponse.json();
+  const envelope: unknown = await profileResponse.json();
+  if (
+    typeof envelope !== "object" ||
+    envelope === null ||
+    Array.isArray(envelope) ||
+    Object.keys(envelope).length !== 3 ||
+    !("ok" in envelope) ||
+    envelope.ok !== true ||
+    !("error" in envelope) ||
+    envelope.error !== null ||
+    !("data" in envelope) ||
+    !Array.isArray(envelope.data)
+  )
+    throw new Error("The advertised Council profile response is invalid.");
+  const rawProfiles = envelope.data;
   if (
     !Array.isArray(rawProfiles) ||
     rawProfiles.length === 0 ||
