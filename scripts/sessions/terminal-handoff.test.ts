@@ -104,71 +104,71 @@ test("an opened terminal is not replayed after service restart and holds app sen
   const f = fixture(launcher),
     requestId = randomUUID();
   try {
-  const first = await f.service.open(f.projectId, f.sessionId, requestId, 4);
-  expect(first.phase).toBe("opened");
-  expect(invoked).toHaveLength(1);
-  expect(invoked[0]?.command).toEqual([
-    "C:\\fixture\\claude.exe",
-    "--resume",
-    f.nativeSessionId,
-    "--model",
-    "claude-sonnet-4-5",
-    "--permission-mode",
-    "plan",
-    "--allowedTools",
-    expect.any(String),
-  ]);
-  expect(JSON.stringify(invoked)).not.toContain("private original input");
-  expect(invoked[0]?.lifetime).toEqual({ kind: "managed" });
-  const handoffRoot = join(f.home, "session-terminal-handoffs"),
-    journal = readFileSync(
-      join(handoffRoot, readdirSync(handoffRoot)[0] ?? "", "attempts.json"),
-      "utf8",
-    );
-  expect(journal).toContain('"auditEventId":4');
-  expect(journal).not.toContain("private original input");
-  expect(journal).not.toContain(f.nativeSessionId);
-  expect(journal).not.toContain("claude.exe");
+    const first = await f.service.open(f.projectId, f.sessionId, requestId, 4);
+    expect(first.phase).toBe("opened");
+    expect(invoked).toHaveLength(1);
+    expect(invoked[0]?.command).toEqual([
+      "C:\\fixture\\claude.exe",
+      "--resume",
+      f.nativeSessionId,
+      "--model",
+      "claude-sonnet-4-5",
+      "--permission-mode",
+      "plan",
+      "--allowedTools",
+      expect.any(String),
+    ]);
+    expect(JSON.stringify(invoked)).not.toContain("private original input");
+    expect(invoked[0]?.lifetime).toEqual({ kind: "managed" });
+    const handoffRoot = join(f.home, "session-terminal-handoffs"),
+      journal = readFileSync(
+        join(handoffRoot, readdirSync(handoffRoot)[0] ?? "", "attempts.json"),
+        "utf8",
+      );
+    expect(journal).toContain('"auditEventId":4');
+    expect(journal).not.toContain("private original input");
+    expect(journal).not.toContain(f.nativeSessionId);
+    expect(journal).not.toContain("claude.exe");
 
-  const recovered = await createSessionTerminalHandoff({
-    home: f.home,
-    root: f.root,
-    async candidate() {
-      throw new Error("Recovery GET must not prepare a provider");
-    },
-    launch: launcher,
-  });
-  services.push(recovered);
-  expect(
-    (await recovered.read(f.projectId, f.sessionId)).attempt,
-  ).toMatchObject({
-    requestId,
-    phase: "unknown",
-  });
-  await expect(
-    recovered.open(f.projectId, f.sessionId, randomUUID(), 5),
-  ).rejects.toThrow("already has an original terminal handoff");
-  await expect(
-    recovered.send(f.projectId, f.sessionId, async () => "sent"),
-  ).rejects.toThrow("app sends are held");
-  await expect(
-    recovered.open(f.projectId, f.sessionId, requestId, 5),
-  ).resolves.toMatchObject({ phase: "unknown", auditEventId: 4 });
-  expect(invoked).toHaveLength(1);
+    const recovered = await createSessionTerminalHandoff({
+      home: f.home,
+      root: f.root,
+      async candidate() {
+        throw new Error("Recovery GET must not prepare a provider");
+      },
+      launch: launcher,
+    });
+    services.push(recovered);
+    expect(
+      (await recovered.read(f.projectId, f.sessionId)).attempt,
+    ).toMatchObject({
+      requestId,
+      phase: "unknown",
+    });
+    await expect(
+      recovered.open(f.projectId, f.sessionId, randomUUID(), 5),
+    ).rejects.toThrow("already has an original terminal handoff");
+    await expect(
+      recovered.send(f.projectId, f.sessionId, async () => "sent"),
+    ).rejects.toThrow("app sends are held");
+    await expect(
+      recovered.open(f.projectId, f.sessionId, requestId, 5),
+    ).resolves.toMatchObject({ phase: "unknown", auditEventId: 4 });
+    expect(invoked).toHaveLength(1);
 
-  completion.resolve(finish());
-  for (let index = 0; index < 50; index++) {
-    if (
-      (await recovered.read(f.projectId, f.sessionId)).attempt?.phase ===
-      "closed"
-    )
-      break;
-    await Bun.sleep(10);
-  }
-  expect((await recovered.read(f.projectId, f.sessionId)).attempt?.phase).toBe(
-    "closed",
-  );
-  expect(stopCalls).toBe(0);
+    completion.resolve(finish());
+    for (let index = 0; index < 50; index++) {
+      if (
+        (await recovered.read(f.projectId, f.sessionId)).attempt?.phase ===
+        "closed"
+      )
+        break;
+      await Bun.sleep(10);
+    }
+    expect(
+      (await recovered.read(f.projectId, f.sessionId)).attempt?.phase,
+    ).toBe("closed");
+    expect(stopCalls).toBe(0);
   } finally {
     completion.resolve(finish());
   }
