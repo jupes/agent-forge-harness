@@ -33,8 +33,8 @@ import type {
   SmithsView,
 } from "../../types/hearth";
 import type { OwnedSessionRecord } from "../../types/owned-session";
-import type { ProjectCatalog } from "../../types/projects";
 import type { ProjectCouncilBinding } from "../../types/project-council";
+import type { ProjectCatalog } from "../../types/projects";
 import { terminalHandoffAttemptSchema } from "../../types/session-terminal-handoff";
 import type { SmithConfigEditRequest } from "../../types/smith-config-edit";
 import type { SmithRoutingEditRequest } from "../../types/smith-routing-edit";
@@ -65,17 +65,17 @@ import {
 } from "../config/transaction";
 import { conversationFile } from "../conversations/paths";
 import { createConversationStore } from "../conversations/store";
-import { buildContextPack, contextListing } from "../council/context";
 import { runCouncilCli } from "../council/cli";
-import { providerEndpointSnapshot } from "../council/providers";
+import { buildContextPack, contextListing } from "../council/context";
+import type { CommandResult, CommandRunner } from "../council/pr-source";
 import {
   createProjectCouncilOriginalStore,
   projectCouncilInputHash,
   projectCouncilProfileHash,
 } from "../council/project-original-store";
-import { parseCouncilProfileJson } from "../council/types";
-import type { CommandResult, CommandRunner } from "../council/pr-source";
+import { providerEndpointSnapshot } from "../council/providers";
 import type { CouncilPreview } from "../council/service";
+import { parseCouncilProfileJson } from "../council/types";
 import { REVIEW_NOTE_LIMIT } from "../dashboard/forge-run-model";
 import { hashText } from "../hash-text";
 import { createRestartIdentityJournal } from "../identities/restart-index";
@@ -638,7 +638,12 @@ const projectCouncilSeeds = new WeakMap<
 function projectCouncilReserveBody(source: string) {
   return {
     sourceChoice: { sourceType: "text", source },
-    profileChoice: resolve(import.meta.dir, "../..", "councils", "default.json"),
+    profileChoice: resolve(
+      import.meta.dir,
+      "../..",
+      "councils",
+      "default.json",
+    ),
     maxUsd: 0.25,
     maxBytes: 1024,
     redactSecrets: false,
