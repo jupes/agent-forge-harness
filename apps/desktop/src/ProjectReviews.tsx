@@ -682,7 +682,14 @@ function RunReview({
   const active = progress.active;
   const events = job?.events ?? [];
   const stageLabel = progress.label;
-  const roster = (profile: typeof originalProfile | undefined) =>
+  const roster = (
+    profile:
+      | {
+          seats: readonly { id: string; role: string }[];
+          chair: { id: string; role: string };
+        }
+      | undefined,
+  ) =>
     profile
       ? [...profile.seats, profile.chair].map(({ id, role }) => ({ id, role }))
       : undefined;
