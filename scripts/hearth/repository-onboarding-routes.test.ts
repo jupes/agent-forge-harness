@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { projectScopePreviewSchema } from "../projects/create-options-protocol";
+import { workspaceKey } from "../projects/scope";
 import { startTestHearth, type TestHearth } from "./testing";
 
 const opened: TestHearth[] = [];
@@ -65,7 +66,7 @@ test("protected repository onboarding recovers exact records and updates checked
         });
         return {
           exitCode: result.exitCode,
-          stdout: result.stdout.toString("utf8"),
+          stdout: result.stdout.toString("utf8").trim(),
         };
       },
     },
@@ -176,10 +177,13 @@ test("protected repository onboarding recovers exact records and updates checked
     requestId: SERVED_ID,
   });
   expect(servedSelection.status).toBe(200);
-  expect((await json(servedSelection)).data).toMatchObject({
-    state: "selected",
-    path: h.workspace,
-  });
+  const servedOutcome = (await json<{ state: string; path: string | null }>(
+    servedSelection,
+  )).data;
+  expect(servedOutcome.state).toBe("selected");
+  if (servedOutcome.path === null)
+    throw new Error("The real served Git root was not selected.");
+  expect(workspaceKey(servedOutcome.path)).toBe(workspaceKey(h.workspace));
   const duplicateServed = await post(
     `/projects/repository-selections/${SERVED_ID}/register`,
     { name: "served-workspace-copy" },
