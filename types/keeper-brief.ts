@@ -1,4 +1,5 @@
 import type { ConversationObject, ConversationPhase } from "./conversation";
+import type { Smith } from "./hearth";
 
 export type KeeperBriefSection = "moving" | "waiting" | "stuck";
 export interface KeeperBriefSnapshot {
@@ -54,4 +55,55 @@ export interface KeeperBriefs {
     phase: ConversationPhase;
     problem: string | null;
   } | null;
+}
+
+/** Trusted source binding frozen into a private Keeper brief review original. */
+export type KeeperBriefOriginBinding =
+  | {
+      kind: "overview";
+      projectId: string;
+      workspace: string;
+      catalogRevision: number;
+    }
+  | {
+      kind: "onboarding";
+      projectId: string;
+      workspace: string;
+      catalogRevision: number;
+      projectCreate: {
+        requestId: string;
+        hash: string;
+        revision: number;
+      };
+    };
+
+/** Trusted effective Keeper choice frozen for a reviewed brief attempt. */
+export type KeeperBriefSelection = Pick<
+  Smith,
+  "name" | "provider" | "model" | "effort" | "enabled" | "tags"
+> & { enabled: true };
+
+/** Exact private original retained before an explicit brief turn is admitted. */
+export interface KeeperBriefIntent {
+  version: 1;
+  requestId: string;
+  projectId: string;
+  conversationId: string;
+  expectedRevision: number;
+  origin: KeeperBriefOriginBinding;
+  selection: KeeperBriefSelection;
+  purpose: "brief";
+  intentHash: string;
+  text: string;
+  about: ConversationObject[];
+  snapshot: KeeperBriefSnapshot;
+  createdAt: string;
+  state: "reserved" | "admitted" | "retired";
+  preparedTurnHash: string;
+}
+
+export interface KeeperBriefIntentHistory {
+  version: 1;
+  active: KeeperBriefIntent | null;
+  history: KeeperBriefIntent[];
 }
