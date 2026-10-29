@@ -171,7 +171,11 @@ async function reserveFromProjectFlow(
     .getByRole("checkbox")
     .nth(repositoryIndex)
     .check();
-  await dialog.locator("fieldset").nth(1).getByRole("checkbox").first().check();
+  await dialog
+    .getByRole("group", { name: "Epics", exact: true })
+    .getByRole("checkbox")
+    .first()
+    .check();
 
   await dialog
     .getByRole("button", { name: "Review trusted project scope" })
@@ -1400,8 +1404,7 @@ test("Add Folder and a reviewed local clone feed a fresh two-repository project 
   await repositories.getByRole("checkbox", { name: /selected-folder/ }).check();
   await repositories.getByRole("checkbox", { name: /cloned-folder/ }).check();
   await freshDialog
-    .locator("fieldset")
-    .nth(2)
+    .getByRole("group", { name: "Epics", exact: true })
     .getByRole("checkbox")
     .first()
     .check();

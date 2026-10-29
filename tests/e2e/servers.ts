@@ -170,18 +170,27 @@ export function refuseAReachableBd(directories: readonly string[]): void {
 export function standInEnvironment(
   besides: readonly string[] = [],
 ): Record<string, string> {
+  return {
+    [PATH_KEY]: [BD_STAND_IN_BIN, ...besides].join(delimiter),
+    BD_STAND_IN_STATE,
+  };
+}
+
+/** Real Git is needed only by the desktop suite's private onboarding fixture. */
+export function repositoryFixtureEnvironment(
+  parentPath = process.env[PATH_KEY] ?? "",
+): Record<string, string> {
   const gitExecutable = process.platform === "win32" ? "git.exe" : "git";
-  const repositoryFixtureGit = (process.env[PATH_KEY] ?? "")
+  const repositoryFixtureGit = parentPath
     .split(delimiter)
+    .filter(Boolean)
     .map((directory) => join(directory, gitExecutable))
     .find((candidate) => existsSync(candidate));
   if (!repositoryFixtureGit)
     throw new Error(
-      "The browser suite needs Git for its private repository onboarding fixture.",
+      "The desktop onboarding fixture needs Git in the runner's PATH.",
     );
   return {
-    [PATH_KEY]: [BD_STAND_IN_BIN, ...besides].join(delimiter),
-    BD_STAND_IN_STATE,
     AGENT_FORGE_E2E_REPOSITORY_GIT: resolve(repositoryFixtureGit),
   };
 }
