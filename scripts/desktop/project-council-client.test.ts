@@ -140,6 +140,53 @@ test("retirement cannot run without a verified source-known reserved original", 
   owner.dispose();
 });
 
+test("a verified retirement stays held when readback is foreign or still active", async () => {
+  const check = async (foreign: boolean) => {
+    const fixture = await councilFixture();
+    const original = fixture.original();
+    const row = {
+      requestId: original.requestId,
+      runId: original.runId,
+      intentHash: original.intentHash,
+      state: "retired" as const,
+      phase: "retired" as const,
+      sourceType: "text" as const,
+      sourceName: "Pasted review text",
+      profileId: original.profile.id,
+      profileTitle: original.profile.title,
+      depth: original.profile.depth,
+      createdAt: original.createdAt,
+      updatedAt: original.updatedAt,
+    };
+    fixture.setRetireHistory(projectCouncilHistorySchema.parse({
+      version: 1,
+      projectId: foreign ? "project-0b4f8e0a-76f1-4c29-972e-4aee9c216d12" : projectId,
+      workspace: original.binding.workspace,
+      activeRequestId: foreign ? null : original.requestId,
+      total: 1,
+      omitted: 0,
+      items: [row],
+    }));
+    await fixture.owner.retire(original.requestId, original.intentHash);
+    expect(fixture.retireCount()).toBe(1);
+    expect(fixture.owner.get().phase).toBe("held");
+    expect(fixture.owner.get().original).toBeNull();
+    await fixture.owner.prepare({
+      sourceChoice: { sourceType: "text", source: "A later review." },
+      profileChoice: original.profileChoice,
+      maxUsd: 1,
+      maxBytes: 1024,
+      redactSecrets: true,
+      deepDiscussion: false,
+    });
+    expect(fixture.reserveCount()).toBe(0);
+    fixture.owner.dispose();
+  };
+
+  await check(true);
+  await check(false);
+});
+
 async function councilFixture() {
   const home = privateTempDir("desktop-council-client-");
   homes.push(home);
@@ -207,6 +254,9 @@ async function councilFixture() {
     }],
   });
   const receipt = (phase: "running" | "cancelled") => projectCouncilReceiptSchema.parse({ metadata: projectCouncilMetadata(original), phase });
+  let historyOverride: Awaited<ReturnType<ProjectCouncilTransportInput["history"]>> | null = null;
+  let retireCalls = 0;
+  let reserveCalls = 0;
   let commitCalls = 0;
   let cancelCalls = 0;
   let runReads = 0;
@@ -217,15 +267,20 @@ async function councilFixture() {
   let reserveOriginal: ProjectCouncilOriginal | null = null;
   const transport: ProjectCouncilTransportInput = {
     profiles: async () => [profileChoice],
-    history: async () => history(),
+    history: async () => historyOverride ?? history(),
     original: async () => read(),
     reserve: async () => {
+      reserveCalls++;
       await reserveGate;
       if (!reserveOriginal) throw Error("reserve original was not prepared");
       originalOverride = reserveOriginal;
       return { metadata: projectCouncilMetadata(reserveOriginal), created: true };
     },
-    retire: async () => { throw Error("unexpected retire"); },
+    retire: async () => {
+      retireCalls++;
+      original = { ...original, state: "retired", updatedAt: new Date().toISOString(), dispatchClaimedAt: null };
+      return projectCouncilReceiptSchema.parse({ metadata: projectCouncilMetadata(original), phase: "retired" });
+    },
     commit: async () => {
       commitCalls++;
       if (loseCommitReply) throw Error("commit reply was lost");
@@ -262,6 +317,9 @@ async function councilFixture() {
     owner,
     original: () => original,
     counts: () => ({ commitCalls, cancelCalls, runReads }),
+    retireCount: () => retireCalls,
+    reserveCount: () => reserveCalls,
+    setRetireHistory(value: Awaited<ReturnType<ProjectCouncilTransportInput["history"]>>) { historyOverride = value; },
     loseCommitReply(value: boolean) { loseCommitReply = value; },
     tamperRunIdentity(value: boolean) { tamperRunIdentity = value; },
     async markCompleteForNewDraft() {

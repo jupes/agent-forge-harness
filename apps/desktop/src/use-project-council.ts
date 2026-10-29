@@ -139,6 +139,15 @@ export function createProjectCouncilOwner(
     for (const listener of listeners) listener();
   };
 
+  const assertHistoryOwner = (history: ProjectCouncilHistory) => {
+    if (history.version !== 1 || history.projectId !== projectId || (workspace !== null && history.workspace !== workspace)) {
+      throw Error("Saved Council history belongs to a different project or workspace.");
+    }
+    if (history.activeRequestId !== null && !history.items.some((item) => item.requestId === history.activeRequestId)) {
+      throw Error("The active saved review is missing from the scoped history response.");
+    }
+  };
+
   const protectedRead = async <T,>(work: (signal: AbortSignal) => Promise<T>): Promise<T> => {
     metadataAbort?.abort();
     const abort = new AbortController();
@@ -160,12 +169,7 @@ export function createProjectCouncilOwner(
         transport.profiles(signal),
         transport.history(projectId, signal),
       ]));
-      if (history.version !== 1 || history.projectId !== projectId || (workspace !== null && history.workspace !== workspace)) {
-        throw Error("Saved Council history belongs to a different project or workspace.");
-      }
-      if (history.activeRequestId !== null && !history.items.some((item) => item.requestId === history.activeRequestId)) {
-        throw Error("The active saved review is missing from the scoped history response.");
-      }
+      assertHistoryOwner(history);
       if (disposed || current !== generation) return;
       paint({ profiles, history, phase: view.phase === "held" ? "held" : "ready", error: "" });
       const activeId = history.activeRequestId;
@@ -250,7 +254,9 @@ export function createProjectCouncilOwner(
       stopRunFollow();
       paint({ history: view.history, original: null, run: null, phase: "held", error: "Retirement is verified. Check saved history before preparing another original." });
       const history = await protectedRead((signal) => transport.history(projectId, signal));
+      assertHistoryOwner(history);
       if (disposed || action !== actionGeneration || selection !== selectionGeneration) return;
+      if (history.activeRequestId !== null) throw Error("Another saved review is active after retirement. Check its exact original before preparing again.");
       paint({ history, original: null, run: null, phase: "ready", error: "" });
     } catch (error) {
       if (disposed || action !== actionGeneration || selection !== selectionGeneration) return;
