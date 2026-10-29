@@ -493,6 +493,7 @@ export function createProjectCouncilOwner(
     if (
       disposed ||
       !(
+        view.original?.original.requestId === requestId ||
         view.history?.activeRequestId === requestId ||
         view.history?.items.some((item) => item.requestId === requestId)
       )

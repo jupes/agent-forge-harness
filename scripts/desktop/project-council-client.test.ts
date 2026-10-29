@@ -472,7 +472,15 @@ async function councilFixture() {
     },
     commit: async () => {
       commitCalls++;
-      if (loseCommitReply) throw Error("commit reply was lost");
+      if (loseCommitReply) {
+        original = {
+          ...original,
+          state: "dispatch-claimed",
+          updatedAt: new Date().toISOString(),
+          dispatchClaimedAt: new Date().toISOString(),
+        };
+        throw Error("commit reply was lost");
+      }
       original = {
         ...original,
         state: "running",
@@ -710,6 +718,36 @@ test("a lost Convene response remains held and never sends a second commit", asy
     fixture.original().intentHash,
   );
   expect(fixture.counts().commitCalls).toBe(1);
+  fixture.owner.dispose();
+});
+
+test("the exact held original can be explicitly re-read after lost commit with empty history", async () => {
+  const fixture = await councilFixture();
+  const before = fixture.owner.get().original!.original;
+  fixture.loseCommitReply(true);
+  await fixture.owner.convene(before.requestId, before.intentHash);
+  fixture.setRetireHistory(emptyHistory);
+  const reads = fixture.originalReads();
+  await fixture.owner.refresh();
+  expect(fixture.owner.get().phase).toBe("held");
+  expect(fixture.originalReads()).toBe(reads);
+  await fixture.owner.openSaved(before.requestId);
+  expect(fixture.originalReads()).toBe(reads + 1);
+  expect(fixture.owner.get().phase).toBe("held");
+  expect(fixture.owner.get().original?.original).toMatchObject({
+    requestId: before.requestId,
+    runId: before.runId,
+    intentHash: before.intentHash,
+    state: "dispatch-claimed",
+    context: before.context,
+    options: before.options,
+  });
+  await fixture.owner.convene(before.requestId, before.intentHash);
+  expect(fixture.counts()).toEqual({
+    commitCalls: 1,
+    cancelCalls: 0,
+    runReads: 0,
+  });
   fixture.owner.dispose();
 });
 
