@@ -3289,6 +3289,7 @@ const READS: Record<string, string> = {
   "GET /projects/:id/session-operation-identities": `/projects/${FIXTURE_PROJECT_ID}/session-operation-identities`,
   "GET /projects/:id/runs": `/projects/${FIXTURE_PROJECT_ID}/runs`,
   "GET /projects/:id/runs/:slug": `/projects/${FIXTURE_PROJECT_ID}/runs/demo`,
+  "GET /projects/:id/runs/:slug/artifacts/:kind": `/projects/${FIXTURE_PROJECT_ID}/runs/demo/artifacts/research`,
   "GET /projects/:id/shifts": `/projects/${FIXTURE_PROJECT_ID}/shifts`,
   "GET /projects/:id/shifts/requests/:requestId": `/projects/${FIXTURE_PROJECT_ID}/shifts/requests/${FIXTURE_SHIFT_START.requestId}`,
   "GET /projects/:id/shifts/requests/:requestId/attempts": `/projects/${FIXTURE_PROJECT_ID}/shifts/requests/${FIXTURE_SHIFT_START.requestId}/attempts`,
@@ -5421,7 +5422,10 @@ describe("Session Start identity actions", () => {
 describe("every read row (iterating the table)", () => {
   test("answers a valid envelope for its fixture path", async () => {
     const h = await start({
-      files: { ".tmp/work/forge-runs/demo.json": RUN_STATE },
+      files: {
+        ".tmp/work/forge-runs/demo.json": RUN_STATE,
+        "plans/research/demo.md": "# Recorded research\n",
+      },
       api: { git: fixtureSessionGit },
     });
     await seedOwnedSession(h);
@@ -5474,7 +5478,10 @@ describe("every read row (iterating the table)", () => {
 
   test("refuses a request that does not declare the hearth's own origin, and appends nothing", async () => {
     const h = await start({
-      files: { ".tmp/work/forge-runs/demo.json": RUN_STATE },
+      files: {
+        ".tmp/work/forge-runs/demo.json": RUN_STATE,
+        "plans/research/demo.md": "# Recorded research\n",
+      },
       api: { git: fixtureSessionGit },
     });
     await seedOwnedSession(h);

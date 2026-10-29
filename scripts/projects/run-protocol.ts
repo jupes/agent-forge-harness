@@ -1,16 +1,19 @@
 import { z } from "zod";
 import type {
   ProjectRunDetail,
+  ProjectRunArtifact,
   ProjectRunRow,
   ProjectRunsPage,
 } from "../../types/project-runs";
-import { FORGE_PHASES } from "../forge/phases";
+import { artifactPath, FORGE_PHASES } from "../forge/phases";
 import { comparableCheckout, isValidSlug } from "../forge/runs";
 import { sessionProjectIdSchema } from "../sessions/identity-protocol";
 
 if (typeof window !== "undefined") z.config({ jitless: true });
 
 export const MAX_PROJECT_RUN_BYTES = 512 * 1024;
+export const MAX_PROJECT_RUN_ARTIFACT_BYTES = 512 * 1024;
+export const MAX_PROJECT_RUN_ARTIFACT_RESPONSE_BYTES = 4 * 1024 * 1024;
 const text = z
   .string()
   .max(2048)
@@ -155,3 +158,25 @@ export const projectRunDetailSchema: z.ZodType<ProjectRunDetail> = z
       ),
   )
   .refine(bounded, "Run metadata exceeds its bounded response size.");
+
+export const projectRunArtifactSchema: z.ZodType<ProjectRunArtifact> = z
+  .object({
+    ...source,
+    slug,
+    kind: z.enum(["research", "plan", "ship"]),
+    artifact: text.max(1024),
+    bytes: z.number().int().min(1).max(MAX_PROJECT_RUN_ARTIFACT_BYTES),
+    sha256: z.string().regex(/^[a-f0-9]{64}$/),
+    content: z.string().min(1).max(MAX_PROJECT_RUN_ARTIFACT_BYTES),
+  })
+  .strict()
+  .refine((value) => {
+    const expected = artifactPath(value.kind, value.slug);
+    return (
+      value.artifact === expected &&
+      new TextEncoder().encode(value.content).byteLength === value.bytes &&
+      !value.content.includes("\u0000") &&
+      new TextEncoder().encode(JSON.stringify(value)).byteLength <=
+        MAX_PROJECT_RUN_ARTIFACT_RESPONSE_BYTES
+    );
+  }, "Run artifact is incomplete or exceeds its bounded response size.");

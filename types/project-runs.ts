@@ -36,6 +36,16 @@ export interface ProjectRunDetail extends ProjectRunSource {
   earlierGateLimit: 10;
 }
 
+/** A complete, verified document from the served checkout, fetched on demand. */
+export interface ProjectRunArtifact extends ProjectRunSource {
+  slug: string;
+  kind: "research" | "plan" | "ship";
+  artifact: string;
+  bytes: number;
+  sha256: string;
+  content: string;
+}
+
 /** Only bounded gate metadata from matching recorded run/checkout evidence. */
 export interface ProjectRunGate
   extends Pick<

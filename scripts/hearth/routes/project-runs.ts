@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto";
 import { LOG_BASE_DIR } from "../../../.claude/hooks/utils/constants";
 import type {
+  ProjectRunArtifact,
   ProjectRunDetail,
   ProjectRunGate,
   ProjectRunRow,
@@ -11,8 +13,10 @@ import {
   RunInspectionError,
   readInspectionGateLogs,
 } from "../../forge/inspection-read";
+import { artifactPath, type ForgePhase } from "../../forge/phases";
 import { comparableCheckout, isValidSlug } from "../../forge/runs";
 import {
+  projectRunArtifactSchema,
   projectRunDetailSchema,
   projectRunsPageSchema,
 } from "../../projects/run-protocol";
@@ -268,6 +272,105 @@ export function createProjectRunRoutes(
       runs: rows,
     } satisfies ProjectRunsPage);
   }
+  async function readArtifact(
+    projectId: string,
+    slug: string,
+    kind: Exclude<ForgePhase, "implement">,
+  ): Promise<ProjectRunArtifact> {
+    const snapshot = await load();
+    const project = createProjectStore(deps.projectHome)
+      .read()
+      .projects.find((row) => row.id === projectId);
+    if (!project)
+      throw new RunReadError(404, "This project is not in the hearth catalog.");
+    const scope = project.workspaces.find(
+      (row) => workspaceKey(row.root) === workspaceKey(deps.workspace),
+    );
+    if (
+      !scope ||
+      workspaceKey(snapshot.source.workspace) !== workspaceKey(deps.workspace)
+    )
+      throw new RunReadError(409, "This hearth does not serve this project's workspace.");
+    if (
+      snapshot.source.issues === null ||
+      scope.epicIds.some(
+        (id) =>
+          !snapshot.source.issues?.some(
+            (issue) => issue.id === id && issue.type === "epic",
+          ),
+      )
+    )
+      throw new RunReadError(
+        503,
+        "Project membership is unavailable or incomplete. Refresh Runs after the tracker can be read.",
+      );
+    const members = new Set(
+      selectProjectBeads(project, deps.workspace, snapshot.source.issues).map(
+        (row) => row.id,
+      ),
+    );
+    const source = captured;
+    if (!source)
+      throw new RunReadError(503, "The served checkout could not be verified.");
+    const checkouts = new Set(
+      [source.checkout, deps.root].map(comparableCheckout),
+    );
+    const found = source.read().find(
+      (state) =>
+        state.slug === slug &&
+        !!state.epic &&
+        members.has(state.epic) &&
+        (!state.beadId || members.has(state.beadId)) &&
+        (!state.checkout || checkouts.has(comparableCheckout(state.checkout))),
+    );
+    const expected = artifactPath(kind, slug);
+    if (
+      !found ||
+      !expected ||
+      !found.completed.includes(kind) ||
+      found.artifacts[kind] !== expected
+    )
+      throw new RunReadError(404, "This completed artifact is unavailable.");
+    const document = source.readArtifact(kind, slug);
+    if (!document)
+      throw new RunReadError(404, "The recorded artifact file is unavailable.");
+    // Recheck mutable authority and run binding after the file read.
+    const latest = createProjectStore(deps.projectHome)
+      .read()
+      .projects.find((row) => row.id === projectId);
+    const latestScope = latest?.workspaces.find(
+      (row) => workspaceKey(row.root) === workspaceKey(deps.workspace),
+    );
+    const currentRun = source.read().find((state) => state.slug === slug);
+    if (
+      !latestScope ||
+      latestScope.epicIds.join("\u0000") !== scope.epicIds.join("\u0000") ||
+      !currentRun ||
+      !currentRun.completed.includes(kind) ||
+      currentRun.artifacts[kind] !== expected ||
+      !currentRun.epic ||
+      !members.has(currentRun.epic) ||
+      (currentRun.beadId && !members.has(currentRun.beadId)) ||
+      (currentRun.checkout &&
+        !checkouts.has(comparableCheckout(currentRun.checkout)))
+    )
+      throw new RunReadError(409, "The project or recorded artifact changed during this read.");
+    return projectRunArtifactSchema.parse({
+      version: 1,
+      projectId,
+      workspace: deps.workspace,
+      checkout: source.checkout,
+      asOf: new Date().toISOString(),
+      coverage: "served-checkout-only",
+      problems: [],
+      slug,
+      kind,
+      artifact: document.artifact,
+      bytes: document.bytes,
+      sha256: createHash("sha256").update(document.content, "utf8").digest("hex"),
+      content: document.content,
+    });
+  }
   async function answer(work: () => Promise<unknown>): Promise<RouteReply> {
     try {
       return { status: 200, data: await work() };
@@ -316,5 +419,30 @@ export function createProjectRunRoutes(
     },
     read: ({ projectId, slug }) => answer(() => read(projectId, slug)),
   };
-  return { list, detail };
+  const artifact: ReadRoute<{
+    projectId: string;
+    slug: string;
+    kind: Exclude<ForgePhase, "implement">;
+  }> = {
+    kind: "read",
+    operatorOnly: true,
+    method: "GET",
+    path: "/projects/:id/runs/:slug/artifacts/:kind",
+    validate(request) {
+      const params = noParameters(request);
+      const projectId = request.params["id"],
+        slug = request.params["slug"],
+        kind = request.params["kind"];
+      return !params.ok
+        ? params
+        : !isProjectId(projectId) || !slug || !isValidSlug(slug)
+          ? fail("Expected a project id and exact run slug.")
+          : kind !== "research" && kind !== "plan" && kind !== "ship"
+            ? fail("Expected a completed research, plan or ship artifact.")
+            : { ok: true, value: { projectId, slug, kind } };
+    },
+    read: ({ projectId, slug, kind }) =>
+      answer(() => readArtifact(projectId, slug, kind)),
+  };
+  return { list, detail, artifact };
 }

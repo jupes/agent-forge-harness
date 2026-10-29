@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import {
+  projectRunArtifactSchema,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -26,6 +27,7 @@ const posts: string[] = [];
 const releases: Array<() => void> = [];
 let beforeDispatches: number[] = [];
 let streams = 0;
+let artifactReads = 0;
 let fixture: ReturnType<typeof seedRuns>;
 type RunsFilterEffectGate = {
   arm(): void;
@@ -110,7 +112,7 @@ function seedRuns() {
     epic: "alpha-epic",
     phase: "plan",
     completed: ["research", "plan"],
-    artifacts: {},
+    artifacts: { research: `plans/research/${primary}.md` },
     mode: "gated",
     checkout,
     updatedAt: "2026-10-23T13:00:00.000Z",
@@ -125,6 +127,11 @@ function seedRuns() {
       },
     ],
   };
+  const research = `# Verified research\n\n<script>must remain text</script>\n\n![inert image](https://example.com/image.png)\n\n[Safe link](https://example.com/research)\n`;
+  const researchPath = join(checkout, `plans/research/${primary}.md`);
+  mkdirSync(dirname(researchPath), { recursive: true });
+  writeFileSync(researchPath, research, { flag: "wx" });
+  owned.set(researchPath, research);
   publish(path(primary), base);
   publish(path(shipped), {
     ...base,
@@ -213,7 +220,7 @@ function seedRuns() {
   mkdirSync(dirname(logPath), { recursive: true });
   writeFileSync(logPath, logs, { flag: "wx" });
   owned.set(logPath, logs);
-  return { primary, shipped, legacy, foreign, path };
+  return { primary, shipped, legacy, foreign, path, research };
 }
 function held() {
   let release!: () => void;
@@ -268,7 +275,10 @@ async function forwardRun(route: Route) {
     !("data" in envelope)
   )
     throw Error("The forwarded run read was not a verified protected answer");
-  if (new URL(route.request().url()).pathname.endsWith("/runs"))
+  const pathname = new URL(route.request().url()).pathname;
+  if (pathname.includes("/artifacts/"))
+    projectRunArtifactSchema.parse(envelope.data);
+  else if (pathname.endsWith("/runs"))
     projectRunsPageSchema.parse(envelope.data);
   else projectRunDetailSchema.parse(envelope.data);
   return response;
@@ -280,10 +290,12 @@ test.beforeEach(({ page }) => {
   seedProjects();
   fixture = seedRuns();
   posts.length = 0;
+  artifactReads = 0;
   streams = 0;
   beforeDispatches = dispatches();
   page.on("request", (request) => {
     if (new URL(request.url()).pathname === "/__agent-forge/stream") streams++;
+    if (new URL(request.url()).pathname.includes("/artifacts/")) artifactReads++;
     if (
       request.method() === "POST" &&
       request.url().includes("/__agent-forge/")
@@ -336,6 +348,17 @@ test("scoped Runs keyboard inspection preserves real phase, review and gate trut
       "data-state",
       state,
     );
+  expect(artifactReads).toBe(0);
+  await detail.getByRole("button", { name: "Read research artifact" }).click();
+  const artifact = page.getByRole("region", { name: "Verified run artifact" });
+  await expect(artifact.getByText("Verified research", { exact: true })).toBeVisible();
+  await expect(artifact.getByText("<script>must remain text</script>", { exact: true })).toBeVisible();
+  await expect(artifact.locator("script, img")).toHaveCount(0);
+  await expect(artifact.getByRole("link", { name: "Safe link" })).toHaveAttribute(
+    "href",
+    "https://example.com/research",
+  );
+  expect(artifactReads).toBe(1);
   await expect(detail.getByText("Gate failed", { exact: true })).toBeVisible();
   const checks = detail.getByRole("table", { name: "Gate checks" }).first();
   await expect(
