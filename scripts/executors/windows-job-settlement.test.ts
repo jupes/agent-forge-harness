@@ -769,10 +769,30 @@ test("observation refusals name the boundary and keep later reads short-circuite
 });
 
 test("observation clock and wait failures report only their own boundary", async () => {
+  const captureCalls =
+    "creation:900 total members members total active terminate".split(" ");
   for (const check of [
-    { phase: "observe-clock", clockThrowAt: 3, sleepThrows: false, sleeps: [] },
-    { phase: "observe-clock", clockThrowAt: 4, sleepThrows: false, sleeps: [] },
-    { phase: "observe-wait", clockThrowAt: 0, sleepThrows: true, sleeps: [10] },
+    {
+      phase: "observe-clock",
+      clockThrowAt: 3,
+      sleepThrows: false,
+      reads: [],
+      sleeps: [],
+    },
+    {
+      phase: "observe-clock",
+      clockThrowAt: 4,
+      sleepThrows: false,
+      reads: ["members", "total", "active", "signaled:900"],
+      sleeps: [],
+    },
+    {
+      phase: "observe-wait",
+      clockThrowAt: 0,
+      sleepThrows: true,
+      reads: ["members", "total", "active", "signaled:900"],
+      sleeps: [10],
+    },
   ] as const) {
     const f = fixture(),
       phases: WindowsJobSettlementFailurePhase[] = [],
@@ -801,6 +821,11 @@ test("observation clock and wait failures report only their own boundary", async
     ).rejects.toThrow("Windows owned process cleanup could not be confirmed.");
     expect(clockCalls).toBe(check.clockThrowAt || 4);
     expect(sleeps).toEqual(check.sleeps);
+    expect(f.calls).toEqual([
+      ...captureCalls,
+      ...check.reads,
+      "close:900",
+    ]);
     expect(f.closed).toEqual([900]);
     expect(phases).toEqual([check.phase]);
   }

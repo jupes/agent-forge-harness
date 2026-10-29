@@ -159,11 +159,14 @@ export async function settleWindowsJob<Job, Process>(
       refuse(invalidPhase);
     return total;
   };
-  const hasUnaccountedProcesses = (census?: {
-    capturedMemberCount: number;
-    initialTotal: number;
-    capturedTotal: number;
-  }, invalidPhase = phase): boolean => {
+  const hasUnaccountedProcesses = (
+    census?: {
+      capturedMemberCount: number;
+      initialTotal: number;
+      capturedTotal: number;
+    },
+    invalidPhase = phase,
+  ): boolean => {
     const active = api.activeProcesses(job);
     if (active === null || !Number.isSafeInteger(active) || active < 0)
       refuse(invalidPhase);
