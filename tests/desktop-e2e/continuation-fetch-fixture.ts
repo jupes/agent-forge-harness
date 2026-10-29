@@ -2,12 +2,12 @@ import { createHash, randomUUID } from "node:crypto";
 import { join } from "node:path";
 import type { Page } from "@playwright/test";
 import { z } from "zod";
-import { canonicalOwnedSessionStart } from "../../scripts/sessions/codex-owned-protocol";
+import { smithsViewSchema } from "../../apps/desktop/src/smiths-protocol";
+import { loadConfig } from "../../scripts/config/load";
 import { ownedCodingPageSchema } from "../../scripts/sessions/codex-owned-journal";
+import { canonicalOwnedSessionStart } from "../../scripts/sessions/codex-owned-protocol";
 import { ownedCodingStartReceiptSchema } from "../../scripts/sessions/codex-owned-wire-protocol";
 import { geminiChatStartSchema } from "../../scripts/sessions/gemini-chat-owned-protocol";
-import { loadConfig } from "../../scripts/config/load";
-import { smithsViewSchema } from "../../apps/desktop/src/smiths-protocol";
 import type { Smith } from "../../types/hearth";
 import { HEARTH_HOME } from "../e2e/servers";
 
@@ -60,7 +60,8 @@ export async function installCachedGeminiSmithRead(
         signal: AbortSignal.timeout(10_000),
       });
       const reader = response.body?.getReader();
-      if (!reader) throw new Error("The live protected smith read had no body.");
+      if (!reader)
+        throw new Error("The live protected smith read had no body.");
       const chunks: Uint8Array[] = [];
       let length = 0,
         timedOut = false;
@@ -78,7 +79,9 @@ export async function installCachedGeminiSmithRead(
           length += next.value.byteLength;
           if (length > 1_048_576) {
             void reader.cancel().catch(() => undefined);
-            throw new Error("The live protected smith read exceeded its bound.");
+            throw new Error(
+              "The live protected smith read exceeded its bound.",
+            );
           }
           chunks.push(next.value);
         }
@@ -148,7 +151,9 @@ export async function installCachedGeminiSmithRead(
     configuredSmith.enabled !== true ||
     configuredSmith.tags.length !== 0
   )
-    throw new Error("The inert Gemini native config did not match its reviewed fixture.");
+    throw new Error(
+      "The inert Gemini native config did not match its reviewed fixture.",
+    );
   const fixtureSmith: Smith = configuredSmith;
   const projectedView = smithsViewSchema.safeParse({
     ...envelope.data.data,
@@ -234,9 +239,12 @@ export async function installGeminiContinuationFetchFixture(
   let disposed = false;
 
   await page.exposeBinding(bindingName, async (source, value: unknown) => {
-    if (disposed) throw new Error("The Gemini continuation capture was disposed.");
+    if (disposed)
+      throw new Error("The Gemini continuation capture was disposed.");
     if (source.frame !== page.mainFrame())
-      throw new Error("The Gemini continuation capture did not come from the main frame.");
+      throw new Error(
+        "The Gemini continuation capture did not come from the main frame.",
+      );
     if (new URL(source.frame.url()).origin !== origin)
       throw new Error("The Gemini continuation capture origin changed.");
 
@@ -287,7 +295,9 @@ export async function installGeminiContinuationFetchFixture(
         payload.requestId !== expected.requestId ||
         payload.sessionId !== expected.sessionId
       )
-        throw new Error("The original Gemini response delivery was not captured.");
+        throw new Error(
+          "The original Gemini response delivery was not captured.",
+        );
       readbackDelivered.resolve();
       return { action: "observed-original-delivery" };
     }
@@ -305,10 +315,13 @@ export async function installGeminiContinuationFetchFixture(
           responseUrl.pathname !== startPath ||
           responseUrl.search !== "" ||
           payload.status !== 200 ||
-          Buffer.byteLength(payload.requestText, "utf8") > START_REQUEST_LIMIT ||
+          Buffer.byteLength(payload.requestText, "utf8") >
+            START_REQUEST_LIMIT ||
           Buffer.byteLength(payload.responseText, "utf8") > RESPONSE_LIMIT
         )
-          throw new Error("The native Start response did not match its target.");
+          throw new Error(
+            "The native Start response did not match its target.",
+          );
         let rawRequest: unknown;
         let rawResponse: unknown;
         try {
@@ -328,7 +341,9 @@ export async function installGeminiContinuationFetchFixture(
               item.kind === "session" && item.id === options.sourceSessionId,
           )
         )
-          throw new Error("The actual Gemini Start body did not match the reviewed request.");
+          throw new Error(
+            "The actual Gemini Start body did not match the reviewed request.",
+          );
         const envelope = z
           .object({
             ok: z.literal(true),
@@ -338,7 +353,9 @@ export async function installGeminiContinuationFetchFixture(
           .strict()
           .safeParse(rawResponse);
         if (!envelope.success)
-          throw new Error("The actual Gemini Start receipt did not match its schema.");
+          throw new Error(
+            "The actual Gemini Start receipt did not match its schema.",
+          );
         const receipt = envelope.data.data;
         if (
           receipt.session.provider !== "gemini" ||
@@ -348,12 +365,16 @@ export async function installGeminiContinuationFetchFixture(
           receipt.session.id !== receipt.receipt.conversationId ||
           receipt.receipt.turn.requestId !== request.data.requestId
         )
-          throw new Error("The actual Gemini Start receipt did not identify this request.");
+          throw new Error(
+            "The actual Gemini Start receipt did not identify this request.",
+          );
         const requestHash = createHash("sha256")
           .update(canonicalOwnedSessionStart(request.data))
           .digest("hex");
         if (receipt.session.requestHash !== requestHash)
-          throw new Error("The actual Gemini Start receipt hash did not match the request.");
+          throw new Error(
+            "The actual Gemini Start receipt hash did not match the request.",
+          );
         const turnHash = receipt.receipt.turn.hash;
         expected = {
           requestId: request.data.requestId,
@@ -385,14 +406,17 @@ export async function installGeminiContinuationFetchFixture(
         if (
           requestUrl.origin !== origin ||
           requestUrl.pathname !== targetPath ||
-          requestUrl.searchParams.get("requestId") !== exactExpected.requestId ||
+          requestUrl.searchParams.get("requestId") !==
+            exactExpected.requestId ||
           responseUrl.origin !== origin ||
           responseUrl.pathname !== targetPath ||
           responseUrl.search !== requestUrl.search ||
           payload.status !== 200 ||
           Buffer.byteLength(payload.responseText, "utf8") > RESPONSE_LIMIT
         )
-          throw new Error("The protected original read did not match the accepted Start.");
+          throw new Error(
+            "The protected original read did not match the accepted Start.",
+          );
         let raw: unknown;
         try {
           raw = JSON.parse(payload.responseText);
@@ -408,7 +432,9 @@ export async function installGeminiContinuationFetchFixture(
           .strict()
           .safeParse(raw);
         if (!envelope.success)
-          throw new Error("The protected original read did not match its schema.");
+          throw new Error(
+            "The protected original read did not match its schema.",
+          );
         const saved = envelope.data.data;
         const turn =
           saved.request?.requestId === exactExpected.requestId
@@ -431,9 +457,13 @@ export async function installGeminiContinuationFetchFixture(
               item.kind === "session" && item.id === options.sourceSessionId,
           )
         )
-          throw new Error("The protected read did not prove the original Gemini request.");
+          throw new Error(
+            "The protected read did not prove the original Gemini request.",
+          );
         if (readbackCaptured)
-          throw new Error("The original Gemini readback was captured more than once.");
+          throw new Error(
+            "The original Gemini readback was captured more than once.",
+          );
         readbackCaptured = true;
         readbackEvidence.resolve({
           requestId: exactExpected.requestId,
@@ -447,7 +477,10 @@ export async function installGeminiContinuationFetchFixture(
             readbackReleased,
             new Promise<never>((_, reject) => {
               timer = setTimeout(
-                () => reject(new Error("The original Gemini readback hold timed out.")),
+                () =>
+                  reject(
+                    new Error("The original Gemini readback hold timed out."),
+                  ),
                 READBACK_HOLD_TIMEOUT_MS,
               );
             }),
@@ -503,15 +536,21 @@ export async function installGeminiContinuationFetchFixture(
       disposed = true;
       readbackRelease();
       try {
-        await page.evaluate(({ stateName }) => {
-          const globals = window as unknown as Record<string, unknown>;
-          const state = globals[stateName] as
-            | { originalFetch: typeof window.fetch; wrapper: typeof window.fetch }
-            | undefined;
-          if (state && window.fetch === state.wrapper)
-            window.fetch = state.originalFetch;
-          delete globals[stateName];
-        }, { stateName });
+        await page.evaluate(
+          ({ stateName }) => {
+            const globals = window as unknown as Record<string, unknown>;
+            const state = globals[stateName] as
+              | {
+                  originalFetch: typeof window.fetch;
+                  wrapper: typeof window.fetch;
+                }
+              | undefined;
+            if (state && window.fetch === state.wrapper)
+              window.fetch = state.originalFetch;
+            delete globals[stateName];
+          },
+          { stateName },
+        );
       } catch {
         // Navigation may have replaced the document before cleanup.
       }
@@ -532,7 +571,9 @@ function installNativeFetchObserver(options: {
 }) {
   const globals = window as unknown as Record<string, unknown>;
   if (globals[options.stateName])
-    throw new Error("A Gemini continuation fetch fixture is already installed.");
+    throw new Error(
+      "A Gemini continuation fetch fixture is already installed.",
+    );
   const originalFetch = window.fetch;
   let target: { requestId: string; sessionId: string } | null = null;
   let startCaptured = false;
@@ -589,7 +630,9 @@ function installNativeFetchObserver(options: {
   const callBinding = (payload: unknown): Promise<unknown> => {
     const binding = globals[options.bindingName];
     if (typeof binding !== "function")
-      return Promise.reject(new Error("The Gemini continuation binding is unavailable."));
+      return Promise.reject(
+        new Error("The Gemini continuation binding is unavailable."),
+      );
     return (binding as (value: unknown) => Promise<unknown>)(payload);
   };
 

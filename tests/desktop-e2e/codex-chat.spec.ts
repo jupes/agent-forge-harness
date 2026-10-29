@@ -1200,7 +1200,9 @@ test("a confirmed Claude rate limit can target Gemini ACP Chat", async ({
     expect(originalReadback.requestId).toBe(acceptedStart.request.requestId);
     expect(originalReadback.sessionId).toBe(acceptedStart.receipt.session.id);
     expect(originalReadback.requestHash).toBe(acceptedStart.requestHash);
-    expect(originalReadback.turnHash).toBe(acceptedStart.receipt.receipt.turn.hash);
+    expect(originalReadback.turnHash).toBe(
+      acceptedStart.receipt.receipt.turn.hash,
+    );
     await expect(
       geminiComposer.getByText(
         /^The request did not complete: .+ Check the original session request before trying again\.$/,
