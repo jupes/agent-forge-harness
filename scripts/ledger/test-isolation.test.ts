@@ -217,7 +217,8 @@ function spawningTestFiles(): string[] {
     session = createImportGraphSession(),
     selected: string[] = [],
     slowRoots: Array<{ file: string; elapsedMs: number }> = [];
-  let roots = 0, graphFiles = 0;
+  let roots = 0,
+    graphFiles = 0;
   for (const file of candidates) {
     if (resolve(file) === SELF) continue;
     const rootStarted = performance.now();
@@ -226,15 +227,26 @@ function spawningTestFiles(): string[] {
     if (graph.files.some(startsProcesses)) selected.push(file);
     if (diagnose) {
       const elapsedMs = Math.round(performance.now() - rootStarted);
-      slowRoots.push({ file: relative(REPO, file).split(sep).join("/"), elapsedMs });
+      slowRoots.push({
+        file: relative(REPO, file).split(sep).join("/"),
+        elapsedMs,
+      });
       slowRoots.sort((a, b) => b.elapsedMs - a.elapsedMs);
       slowRoots.length = Math.min(slowRoots.length, 5);
       roots++;
-      if (roots % 32 === 0) console.error(`[isolation-scan] ${JSON.stringify({ roots, candidates: counts.candidates, elapsedMs: Math.round(performance.now() - scanStarted) })}`);
+      if (roots % 32 === 0)
+        console.error(
+          `[isolation-scan] ${JSON.stringify({ roots, candidates: counts.candidates, elapsedMs: Math.round(performance.now() - scanStarted) })}`,
+        );
     }
   }
-  if (diagnose) console.error(`[isolation-scan] ${JSON.stringify({ event: "complete", directories: counts.directories, candidates: counts.candidates, roots, enumerationMs, elapsedMs: Math.round(performance.now() - scanStarted), graphFiles, ...session.stats(), slowRoots })}`);
-  return selected.map((file) => relative(REPO, file).split(sep).join("/")).sort();
+  if (diagnose)
+    console.error(
+      `[isolation-scan] ${JSON.stringify({ event: "complete", directories: counts.directories, candidates: counts.candidates, roots, enumerationMs, elapsedMs: Math.round(performance.now() - scanStarted), graphFiles, ...session.stats(), slowRoots })}`,
+    );
+  return selected
+    .map((file) => relative(REPO, file).split(sep).join("/"))
+    .sort();
 }
 
 interface Rerun {

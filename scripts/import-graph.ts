@@ -158,7 +158,10 @@ export function createImportGraphSession(): ImportGraphSession {
     if (base === null) edge = { kind: "bare", specifier };
     else {
       const path = resolveEdge(base);
-      edge = path === null ? { kind: "missing", specifier } : { kind: "resolved", path };
+      edge =
+        path === null
+          ? { kind: "missing", specifier }
+          : { kind: "resolved", path };
     }
     source.edges.set(index, edge);
     return edge;
