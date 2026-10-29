@@ -22,6 +22,7 @@ import { OPERATOR_HEADER } from "../../scripts/hearth/paths";
 import { serializeCodexChat } from "../../scripts/sessions/codex-app-server-protocol";
 import { codexChatForkSourcePageSchema } from "../../scripts/sessions/codex-chat-fork-review-protocol";
 import { codexChatApprovalPageSchema } from "../../scripts/sessions/codex-chat-owned-protocol";
+import { serializeGeminiChat } from "../../scripts/sessions/gemini-task";
 import {
   ownedCodingPageSchema,
   ownedCodingStateSchema,
@@ -1253,6 +1254,9 @@ test("a confirmed Claude rate limit can target Gemini ACP Chat", async ({
     throw Error("The saved Gemini Chat has no original user frame");
   if (!("geminiChat" in initialTarget.event))
     throw Error("The saved user frame has no Gemini Chat launch details");
+  const preparedGeminiChat = initialTarget.event.geminiChat;
+  if (!preparedGeminiChat)
+    throw Error("The saved Gemini Chat frame has no prepared snapshot");
   expect(initialTarget.event.text).toBe(handoff);
   expect(initialTarget.event.about).toEqual([
     { kind: "session", id: sourceRecord.id },
@@ -1298,7 +1302,15 @@ test("a confirmed Claude rate limit can target Gemini ACP Chat", async ({
   expect(promptParams.success).toBe(true);
   if (!promptParams.success)
     throw Error("The Gemini ACP prompt did not match its bounded protocol");
-  expect(promptParams.data.prompt).toEqual([{ type: "text", text: handoff }]);
+  expect(promptParams.data.prompt).toEqual([
+    {
+      type: "text",
+      text: serializeGeminiChat(
+        preparedGeminiChat.launch,
+        preparedGeminiChat.capabilities,
+      ).stdin,
+    },
+  ]);
   const targetIdentity = (
     await startIdentityPage(page, alpha.id)
   ).identities.find((item) => item.requestId === targetRecord.requestId);
