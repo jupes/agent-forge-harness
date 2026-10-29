@@ -1,6 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import type { Smith } from "../../../types/hearth";
+import type { KeeperBriefSnapshot } from "../../../types/keeper-brief";
 import { createConversationService } from "../../conversations/service";
 import { createConversationStore } from "../../conversations/store";
 import type { ConversationTransport } from "../../conversations/transport";
@@ -122,11 +123,10 @@ test("closing waits for brief source preparation and prevents a late reservation
     projectCatalogPath(h.home),
     JSON.stringify(projectCatalogFixture(h.workspace)),
   );
-  h.bd.answer = async (args) => {
+  h.bd.answer = (args) => {
     if (args[0] !== "export") return undefined;
     signalExport();
-    await exportGate;
-    return {
+    return exportGate.then(() => ({
       status: 0,
       stdout:
         JSON.stringify({
@@ -137,7 +137,7 @@ test("closing waits for brief source preparation and prevents a late reservation
           labels: ["project:alpha"],
         }) + "\n",
       stderr: "",
-    };
+    }));
   };
 
   const pendingReserve = fetch(
@@ -417,7 +417,7 @@ test("audited brief review commits the frozen original once and preserves a good
   let starts = 0;
   let checks = 0;
   let frozenText: string | null = null;
-  let frozenSnapshot: unknown = null;
+  let frozenSnapshot: KeeperBriefSnapshot | null = null;
   let mode: "normal" | "failed" | "malformed" | "unknown" = "normal";
   const h = await startTestHearth({
     api: {
@@ -438,8 +438,12 @@ test("audited brief review commits the frozen original once and preserves a good
               ),
           ).toBe(true);
           expect(request.input.text).toContain("Snapshot:");
-          expect(request.input.text).toBe(frozenText);
-          expect(request.input.brief).toEqual(frozenSnapshot);
+          const expectedText = frozenText;
+          const expectedSnapshot = frozenSnapshot;
+          if (expectedText === null || expectedSnapshot === null)
+            throw new Error("The exact frozen original was not reviewed");
+          expect(request.input.text).toBe(expectedText);
+          expect(request.input.brief).toEqual(expectedSnapshot);
           expect(request.input.about).toEqual([]);
           if (mode === "unknown")
             throw new Error("Fixture lost the provider outcome");

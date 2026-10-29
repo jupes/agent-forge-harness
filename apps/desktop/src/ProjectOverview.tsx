@@ -35,11 +35,15 @@ export function ProjectOverview({
   keeper,
   providers,
   providerStale,
+  onboardingRequestId,
+  onFinishFirstBrief,
 }: {
   projectId: string;
   keeper?: KeeperClient;
   providers?: ProviderReadinessPage | null;
   providerStale?: boolean;
+  onboardingRequestId?: string | undefined;
+  onFinishFirstBrief?: ((requestId: string) => void) | undefined;
 }): JSX.Element {
   const state = useOperatorRead<Overview>(
     `/projects/${encodeURIComponent(projectId)}/overview`,
@@ -56,6 +60,8 @@ export function ProjectOverview({
       keeper={keeper}
       providers={providers ?? null}
       providerStale={providerStale ?? false}
+      onboardingRequestId={onboardingRequestId}
+      onFinishFirstBrief={onFinishFirstBrief}
     />
   );
 }
@@ -68,6 +74,8 @@ export function ProjectOverviewView({
   keeper,
   providers,
   providerStale,
+  onboardingRequestId,
+  onFinishFirstBrief,
 }: {
   projectId: string;
   data: Overview | null;
@@ -76,6 +84,8 @@ export function ProjectOverviewView({
   keeper?: KeeperClient | undefined;
   providers?: ProviderReadinessPage | null;
   providerStale?: boolean;
+  onboardingRequestId?: string | undefined;
+  onFinishFirstBrief?: ((requestId: string) => void) | undefined;
 }): JSX.Element {
   if (!data)
     return (
@@ -117,7 +127,12 @@ export function ProjectOverviewView({
         </p>
       ))}
       {keeper ? (
-        <KeeperBriefPanel projectId={projectId} client={keeper} />
+        <KeeperBriefPanel
+          projectId={projectId}
+          client={keeper}
+          onboardingRequestId={onboardingRequestId}
+          onFinishFirstBrief={onFinishFirstBrief}
+        />
       ) : (
         <section
           class="af-overview-panel af-overview-brief"
@@ -129,7 +144,7 @@ export function ProjectOverviewView({
             Ask the Keeper
           </Button>
           <Button disabled title="Keeper briefs are not available yet">
-            Refresh brief
+            Review a brief
           </Button>
         </section>
       )}

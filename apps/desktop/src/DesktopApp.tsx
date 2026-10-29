@@ -39,6 +39,7 @@ import { ProjectShifts } from "./ProjectShifts";
 import { ProjectsHome } from "./ProjectsHome";
 import { ProjectWorkbench } from "./ProjectWorkbench";
 import { Providers } from "./Providers";
+import type { VerifiedProjectCreate } from "./project-create-owner";
 import {
   activityHref,
   emptyActivityFilters,
@@ -76,6 +77,8 @@ import { useWorkbench } from "./use-workbench";
 /** Desktop routing stays separate from the ordinary dashboard's legacy URLs and snapshot mode. */
 export function DesktopApp(): JSX.Element {
   const [route, setRoute] = useState(() => desktopRoute(window.location.hash));
+  const [finishBrief, setFinishBrief] =
+    useState<VerifiedProjectCreate | null>(null);
   const managedSelection = managedShiftSelection(window.location.hash);
   const [inspectorOpen, setInspectorOpen] = useState(
     () => window.matchMedia("(min-width: 1201px)").matches,
@@ -626,6 +629,14 @@ export function DesktopApp(): JSX.Element {
             writesAllowed={recovery?.connection.writesAllowed ?? false}
             reload={projects.reload}
             change={projects.change}
+            onCreated={(created) => {
+              setFinishBrief(created);
+              window.location.hash = desktopHref({
+                projectId: created.projectId,
+                destination: "overview",
+                selection: null,
+              });
+            }}
           />
         ) : route.destination === "providers" ? (
           <Providers
@@ -802,6 +813,16 @@ export function DesktopApp(): JSX.Element {
             key={project.id}
             projectId={project.id}
             keeper={keeper}
+            onboardingRequestId={
+              finishBrief?.projectId === project.id
+                ? finishBrief.requestId
+                : undefined
+            }
+            onFinishFirstBrief={(requestId) =>
+              setFinishBrief((current) =>
+                current?.requestId === requestId ? null : current,
+              )
+            }
           />
         ) : route.destination === "sessions" &&
           project &&

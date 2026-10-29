@@ -229,7 +229,7 @@ test("a lost session-list Stop is held and retried against its original turn eve
   expect(starts()).toBe(before + 1);
 });
 
-test("brief Refresh uses the real standing conversation, shares its source with Overview/home and supports earlier briefs and a quoted follow-up", async ({
+test("reviewed brief uses the standing conversation, recovers its original, and supports earlier briefs and a quoted follow-up", async ({
   page,
 }) => {
   const before = starts();
@@ -241,13 +241,62 @@ test("brief Refresh uses the real standing conversation, shares its source with 
   await openSettled(page, `/index.html#/desktop/project/${alpha.id}/overview`);
   const panel = page.getByRole("region", { name: "Keeper brief", exact: true });
   await expect(panel).toContainText("No confirmed brief yet");
-  const refresh = panel.getByRole("button", {
-    name: "Refresh brief",
+  const review = panel.getByRole("button", {
+    name: "Review a brief",
     exact: true,
   });
-  await expect(refresh).toBeEnabled();
-  await refresh.focus();
+  await expect(review).toBeEnabled();
+  const reserveResponse = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname.endsWith(
+        "/keeper/brief-intents/reserve",
+      ) && response.request().method() === "POST",
+  );
+  await review.focus();
   await page.keyboard.press("Enter");
+  const reserved = await reserveResponse;
+  expect(reserved.status()).toBe(202);
+  await expect(
+    panel.getByRole("region", { name: "Exact Keeper brief original" }),
+  ).toBeVisible();
+  const canonicalRequestId = await panel
+    .locator(".af-brief-review dd")
+    .first()
+    .textContent();
+  expect(canonicalRequestId).toMatch(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i,
+  );
+  await expect.poll(starts).toBe(before);
+  await reloadSettled(page);
+  const recoveredPanel = page.getByRole("region", {
+    name: "Keeper brief",
+    exact: true,
+  });
+  await expect(recoveredPanel).toContainText("No confirmed brief yet");
+  await expect(
+    recoveredPanel.getByRole("button", { name: "Review saved brief" }),
+  ).toBeEnabled();
+  await recoveredPanel
+    .getByRole("button", { name: "Review saved brief" })
+    .click();
+  await expect(
+    recoveredPanel.getByRole("region", {
+      name: "Exact Keeper brief original",
+    }),
+  ).toBeVisible();
+  await expect(recoveredPanel.locator(".af-brief-review dd").first()).toHaveText(
+    canonicalRequestId ?? "",
+  );
+  await expect.poll(starts).toBe(before);
+  const firstCommitResponse = page.waitForResponse(
+    (response) =>
+      new URL(response.url()).pathname.endsWith("/keeper/briefs") &&
+      response.request().method() === "POST",
+  );
+  await recoveredPanel
+    .getByRole("button", { name: "Send reviewed brief" })
+    .click();
+  expect((await firstCommitResponse).status()).toBe(202);
   const card = panel.getByRole("article", {
     name: "Keeper brief card",
     exact: true,
@@ -270,7 +319,17 @@ test("brief Refresh uses the real standing conversation, shares its source with 
   await page.screenshot({
     path: "apps/desktop/docs/screenshots/keeper-brief-overview.png",
   });
-  await refresh.click();
+  await recoveredPanel
+    .getByRole("button", { name: "Review another brief" })
+    .click();
+  await expect(
+    recoveredPanel.getByRole("region", {
+      name: "Exact Keeper brief original",
+    }),
+  ).toBeVisible();
+  await recoveredPanel
+    .getByRole("button", { name: "Send reviewed brief" })
+    .click();
   await expect(card).not.toHaveAttribute("data-brief-id", first ?? "");
   await expect(panel.getByLabel("Earlier briefs")).toBeVisible();
   await panel.getByLabel("Earlier briefs").selectOption(first ?? "");
@@ -285,7 +344,12 @@ test("brief Refresh uses the real standing conversation, shares its source with 
     join(HEARTH_HOME, "keeper-fixture-mode.json"),
     JSON.stringify("brief-failed"),
   );
-  await refresh.click();
+  await recoveredPanel
+    .getByRole("button", { name: "Review another brief" })
+    .click();
+  await recoveredPanel
+    .getByRole("button", { name: "Send reviewed brief" })
+    .click();
   await expect(panel).toContainText("previous brief has been kept");
   await expect(card).toHaveAttribute("data-brief-id", latest ?? "");
   writeFileSync(
@@ -297,7 +361,12 @@ test("brief Refresh uses the real standing conversation, shares its source with 
       ? route.abort("failed")
       : route.continue(),
   );
-  await refresh.click();
+  await recoveredPanel
+    .getByRole("button", { name: "Review another brief" })
+    .click();
+  await recoveredPanel
+    .getByRole("button", { name: "Send reviewed brief" })
+    .click();
   await expect(panel).toContainText("brief read could not be verified");
   await expect(card).toHaveAttribute("data-brief-id", latest ?? "");
   await expect
@@ -305,13 +374,12 @@ test("brief Refresh uses the real standing conversation, shares its source with 
     .toBe("completed");
   // Keep the synthetic failure through the terminal stream update and its
   // coalesced read; otherwise that queued read can heal before the retry click.
-  await expect(refresh).toBeEnabled();
-  await expect(panel).toHaveAttribute("aria-busy", "false");
+  await expect(recoveredPanel).toHaveAttribute("aria-busy", "false");
   await expect(
     panel.getByRole("button", { name: "Retry brief read", exact: true }),
   ).toBeVisible();
   await page.unroute("**/keeper/briefs");
-  await panel
+  await recoveredPanel
     .getByRole("button", { name: "Retry brief read", exact: true })
     .click();
   await expect(card).not.toHaveAttribute("data-brief-id", latest ?? "");
@@ -347,7 +415,7 @@ test("brief Refresh uses the real standing conversation, shares its source with 
   expect(starts()).toBe(before + 4);
 });
 
-test("a refused brief Refresh is visible on Overview and an unanswered refresh retries the exact request once", async ({
+test("a refused and lost reviewed commit stays tied to its exact saved original", async ({
   page,
 }) => {
   const before = starts();
@@ -374,24 +442,35 @@ test("a refused brief Refresh is visible on Overview and an unanswered refresh r
   });
   await openSettled(page, `/index.html#/desktop/project/${alpha.id}/overview`);
   const panel = page.getByRole("region", { name: "Keeper brief", exact: true });
-  const refresh = panel.getByRole("button", {
-    name: "Refresh brief",
+  const review = panel.getByRole("button", {
+    name: "Review a brief",
     exact: true,
   });
-  await expect(refresh).toBeEnabled();
-  await refresh.click();
+  await expect(review).toBeEnabled();
+  await review.click();
+  await expect(
+    panel.getByRole("region", { name: "Exact Keeper brief original" }),
+  ).toBeVisible();
+  const send = panel.getByRole("button", { name: "Send reviewed brief" });
+  await send.click();
   await expect(panel).toContainText("Synthetic provider unavailable");
   expect(starts()).toBe(before);
   mode = "lost";
-  await refresh.click();
+  await send.click();
   await expect(
-    panel.getByRole("button", { name: "Retry original refresh", exact: true }),
+    panel.getByRole("button", { name: "Check saved original", exact: true }),
   ).toBeVisible();
-  await expect(refresh).toBeDisabled();
+  await expect(send).toBeHidden();
+  await panel.getByRole("button", { name: "Check saved original" }).click();
+  await expect(
+    panel.getByRole("button", { name: "Review saved brief" }),
+  ).toBeEnabled();
+  await panel.getByRole("button", { name: "Review saved brief" }).click();
+  await expect(
+    panel.getByRole("region", { name: "Exact Keeper brief original" }),
+  ).toBeVisible();
   mode = "success";
-  await panel
-    .getByRole("button", { name: "Retry original refresh", exact: true })
-    .click();
+  await panel.getByRole("button", { name: "Send reviewed brief" }).click();
   await expect(
     panel.getByRole("article", { name: "Keeper brief card", exact: true }),
   ).toContainText("Alpha:");

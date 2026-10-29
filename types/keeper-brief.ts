@@ -108,6 +108,16 @@ export type KeeperBriefOriginRequest =
   | { kind: "overview" }
   | { kind: "onboarding"; projectCreateRequestId: string };
 
+export interface KeeperBriefIntentReserveRequest {
+  expectedRevision: number;
+  origin: KeeperBriefOriginRequest;
+}
+
+export type KeeperBriefIntentReference = Pick<
+  KeeperBriefIntent,
+  "requestId" | "expectedRevision" | "intentHash"
+>;
+
 /** Intent metadata is safe for the protected review workflow; it contains no original prose. */
 export type KeeperBriefIntentMetadata = Pick<
   KeeperBriefIntent,

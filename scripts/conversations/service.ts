@@ -533,6 +533,7 @@ export function createConversationService(options: ConversationOptions) {
             503,
             "Keeper brief source preparation is unavailable. No original was reserved.",
           );
+        const prepareBrief = options.prepareBrief;
         const locked = await withQueueLock(
           leaseFor(projectId),
           async () => {
@@ -573,7 +574,7 @@ export function createConversationService(options: ConversationOptions) {
                 "A different Keeper brief original is already reserved or unresolved. Read it before preparing another.",
               );
 
-            const preparedSnapshot = await options.prepareBrief(projectId);
+            const preparedSnapshot = await prepareBrief(projectId);
             if (closed)
               throw new ConversationError(
                 503,

@@ -5,11 +5,12 @@ import {
   conversationPageSchema,
   conversationReceiptSchema,
 } from "../../../scripts/conversations/protocol";
+import { parseKeeperBrief } from "../../../scripts/keeper/brief-model";
 import {
-  KEEPER_BRIEF_REQUEST,
-  parseKeeperBrief,
-} from "../../../scripts/keeper/brief-model";
-import { briefsSchema } from "../../../scripts/keeper/brief-protocol";
+  briefsSchema,
+  keeperBriefIntentMetadataSchema,
+  keeperBriefIntentOriginalSchema,
+} from "../../../scripts/keeper/brief-protocol";
 import { KEEPER_OBJECT_READS } from "../../../scripts/keeper/objects";
 import type {
   ConversationObject,
@@ -18,7 +19,14 @@ import type {
   ConversationTurn,
 } from "../../../types/conversation";
 import type { KeeperReadQuery } from "../../../types/keeper";
-import type { KeeperBriefs } from "../../../types/keeper-brief";
+import type {
+  KeeperBriefIntent,
+  KeeperBriefIntentMetadata,
+  KeeperBriefIntentReference,
+  KeeperBriefIntentReserveRequest,
+  KeeperBriefOriginRequest,
+  KeeperBriefs,
+} from "../../../types/keeper-brief";
 import type { KeeperContinuationRequest } from "../../../types/keeper-recovery";
 import { type KeeperAbout, keeperObjects } from "./keeper-context";
 import { createKeeperRecoveryClient } from "./keeper-recovery-client";
@@ -32,7 +40,7 @@ export interface KeeperView {
   loaded: boolean;
   live: boolean;
   pending: ConversationSend | null;
-  pendingKind: "turns" | "briefs";
+  pendingKind: "turns";
   posting: boolean;
   stopping: string | null;
   stopPosting: boolean;
@@ -43,6 +51,18 @@ export interface KeeperView {
   briefs: KeeperBriefs | null;
   briefsError: string | null;
   briefsLoading: boolean;
+  briefIntent: KeeperBriefIntentMetadata | null;
+  briefOriginal: KeeperBriefIntent | null;
+  briefIntentState:
+    | "idle"
+    | "loading"
+    | "reserving"
+    | "reserved"
+    | "admitted"
+    | "unknown"
+    | "retired"
+    | "complete";
+  briefIntentError: string | null;
 }
 interface Deps {
   stream(projectId: string): StreamTransport;
@@ -52,15 +72,27 @@ interface Deps {
   ): Promise<unknown>;
   post(
     projectId: string,
-    action: "turns" | "stop" | "briefs" | "continuations",
+    action:
+      | "turns"
+      | "stop"
+      | "briefs"
+      | "continuations"
+      | "brief-intents/reserve"
+      | "brief-intents/retire",
     body:
       | ConversationSend
       | KeeperContinuationRequest
-      | { requestId: string; expectedRevision?: number },
+      | { requestId: string; expectedRevision?: number }
+      | KeeperBriefIntentReference
+      | KeeperBriefIntentReserveRequest
+      | { requestId: string; intentHash: string },
   ): Promise<ActionOutcome>;
   requestId(): string;
   canWrite(): boolean;
   readBriefs?: ((projectId: string) => Promise<unknown>) | undefined;
+  readBriefIntent?:
+    | ((projectId: string, requestId?: string) => Promise<unknown>)
+    | undefined;
   readRecovery?:
     | ((projectId: string, requestId?: string) => Promise<unknown>)
     | undefined;
@@ -74,6 +106,21 @@ const active = (phase: string) =>
   ["accepted", "running", "cancelling"].includes(phase);
 const held = (turn: ConversationTurn) =>
   active(turn.phase) || turn.phase === "unknown";
+const keeperIntentIdentity = (
+  intent: KeeperBriefIntent | KeeperBriefIntentMetadata,
+) => ({
+  version: intent.version,
+  requestId: intent.requestId,
+  projectId: intent.projectId,
+  conversationId: intent.conversationId,
+  expectedRevision: intent.expectedRevision,
+  origin: intent.origin,
+  selection: intent.selection,
+  purpose: intent.purpose,
+  intentHash: intent.intentHash,
+  createdAt: intent.createdAt,
+  preparedTurnHash: intent.preparedTurnHash,
+});
 
 /** One app-root owner: full page and drawer are observers of this same client. */
 export function createKeeperClient(deps: Deps) {
@@ -114,6 +161,10 @@ export function createKeeperClient(deps: Deps) {
         briefs: null,
         briefsError: null,
         briefsLoading: false,
+        briefIntent: null,
+        briefOriginal: null,
+        briefIntentState: "idle",
+        briefIntentError: null,
       };
       entries.set(projectId, entry);
     }
@@ -293,8 +344,22 @@ export function createKeeperClient(deps: Deps) {
     }
     entry.loaded = !more;
     if (fromStream) entry.live = true;
-    for (const turn of [...page.turns, ...(page.request ? [page.request] : [])])
+    const visibleTurns = [...page.turns, ...(page.request ? [page.request] : [])];
+    for (const turn of visibleTurns)
       confirm(entry, turn);
+    if (entry.briefIntent?.state === "admitted") {
+      const briefTurn = visibleTurns.find(
+        (turn) => turn.requestId === entry.briefIntent?.requestId,
+      );
+      if (briefTurn)
+        entry.briefIntentState =
+          briefTurn.hash !== entry.briefIntent.preparedTurnHash ||
+          briefTurn.phase === "unknown"
+            ? "unknown"
+            : active(briefTurn.phase)
+              ? "admitted"
+              : "complete";
+    }
     const briefIds = new Set(
       frames
         .filter((frame) => frame.event.kind === "user" && frame.event.brief)
@@ -384,6 +449,168 @@ export function createKeeperClient(deps: Deps) {
     }
     tell();
   };
+  const intentReference = (
+    metadata: KeeperBriefIntentMetadata,
+  ): KeeperBriefIntentReference => ({
+    requestId: metadata.requestId,
+    expectedRevision: metadata.expectedRevision,
+    intentHash: metadata.intentHash,
+  });
+  const readExactBriefIntent = async (
+    projectId: string,
+    entry: KeeperView,
+    metadata: KeeperBriefIntentMetadata,
+  ): Promise<boolean> => {
+    if (!deps.readBriefIntent) return false;
+    entry.briefIntentState = "loading";
+    entry.briefIntentError = null;
+    tell();
+    try {
+      const raw = await deps.readBriefIntent(projectId, metadata.requestId);
+      if (disposed) return false;
+      const parsed = keeperBriefIntentOriginalSchema.safeParse(raw);
+      if (
+        !parsed.success ||
+        parsed.data.projectId !== projectId ||
+        parsed.data.conversationId !== `keeper-${projectId}` ||
+        parsed.data.requestId !== metadata.requestId ||
+        JSON.stringify(keeperIntentIdentity(parsed.data)) !==
+          JSON.stringify(keeperIntentIdentity(metadata))
+      )
+        throw new Error("The exact saved Keeper original did not match its ticket.");
+      entry.briefIntent = {
+        ...metadata,
+        state: parsed.data.state,
+      };
+      entry.briefOriginal = parsed.data;
+      entry.briefIntentState =
+        parsed.data.state === "reserved"
+          ? "reserved"
+          : parsed.data.state === "retired"
+            ? "retired"
+            : "admitted";
+      tell();
+      return true;
+    } catch {
+      if (!disposed) {
+        entry.briefIntentState = "unknown";
+        entry.briefIntentError =
+          "The exact saved original could not be verified. Its ticket remains held; do not create a replacement.";
+        tell();
+      }
+      return false;
+    }
+  };
+  const discoverBriefIntent = async (
+    projectId: string,
+    entry = get(projectId),
+  ): Promise<KeeperBriefIntentMetadata | null> => {
+    if (!deps.readBriefIntent) return null;
+    if (entry.briefIntentState === "idle") {
+      entry.briefIntentState = "loading";
+      tell();
+    }
+    try {
+      const raw = await deps.readBriefIntent(projectId);
+      if (disposed) return null;
+      if (raw === null) {
+        if (
+          entry.briefIntentState === "unknown" ||
+          entry.briefIntentState === "reserved" ||
+          entry.briefIntentState === "admitted"
+        ) {
+          entry.briefIntentState = "unknown";
+          entry.briefIntentError =
+            "No current ticket could be verified. The prior identity remains held; do not start a replacement.";
+        } else if (entry.briefIntentState !== "complete") {
+          entry.briefIntent = null;
+          entry.briefOriginal = null;
+          entry.briefIntentState = "idle";
+          entry.briefIntentError = null;
+        }
+        tell();
+        return null;
+      }
+      const parsed = keeperBriefIntentMetadataSchema.safeParse(raw);
+      if (
+        !parsed.success ||
+        parsed.data.projectId !== projectId ||
+        parsed.data.conversationId !== `keeper-${projectId}`
+      )
+        throw new Error("Invalid Keeper brief ticket metadata");
+      entry.briefIntent = parsed.data;
+      entry.briefOriginal = null;
+      entry.briefIntentError = null;
+      entry.briefIntentState =
+        parsed.data.state === "reserved"
+          ? "reserved"
+          : parsed.data.state === "retired"
+            ? "retired"
+            : "admitted";
+      const turn = entry.page?.turns.find(
+        (item) => item.requestId === parsed.data.requestId,
+      );
+      if (parsed.data.state === "admitted" && turn) {
+        entry.briefIntentState =
+          turn.hash !== parsed.data.preparedTurnHash ||
+          turn.phase === "unknown"
+            ? "unknown"
+            : active(turn.phase)
+              ? "admitted"
+              : "complete";
+        if (turn.hash !== parsed.data.preparedTurnHash)
+          entry.briefIntentError =
+            "The admitted turn does not match the saved original hash. Its identity remains held.";
+      }
+      tell();
+      return parsed.data;
+    } catch {
+      if (!disposed) {
+        entry.briefIntentState = "unknown";
+        entry.briefIntentError =
+          "The saved Keeper ticket could not be verified. Keep it held and check again; do not reserve a replacement.";
+        tell();
+      }
+      return null;
+    }
+  };
+  const checkBriefIntent = async (projectId: string) => {
+    const entry = get(projectId);
+    const metadata = await discoverBriefIntent(projectId, entry);
+    if (!metadata || metadata.state !== "admitted") return;
+    try {
+      const value = await deps.read(projectId, {
+        after: entry.page?.frames.at(-1)?.seq ?? 0,
+        requestId: metadata.requestId,
+      });
+      if (disposed || !apply(entry, value, false)) return;
+      const turn = [...(entry.page?.turns ?? []), ...(entry.page?.request ? [entry.page.request] : [])]
+        .find((item) => item.requestId === metadata.requestId);
+      entry.briefIntentState =
+        !turn ||
+        turn.hash !== metadata.preparedTurnHash ||
+        turn.phase === "unknown"
+          ? "unknown"
+          : active(turn.phase)
+            ? "admitted"
+            : "complete";
+      entry.briefIntentError = !turn
+        ? "The admitted ticket has no correlated conversation turn. Its identity remains held."
+        : turn.hash !== metadata.preparedTurnHash
+          ? "The admitted turn does not match the saved original hash. Its identity remains held."
+          : turn.phase === "unknown"
+            ? "The admitted turn outcome is unknown. Its identity remains held."
+            : null;
+      if (entry.briefIntentState === "complete") void loadBriefs(projectId, true);
+    } catch {
+      if (!disposed) {
+        entry.briefIntentState = "unknown";
+        entry.briefIntentError =
+          "The conversation outcome could not be correlated. The admitted ticket remains held.";
+      }
+    }
+    tell();
+  };
   const postTurn = async (
     entry: KeeperView,
     input: ConversationSend,
@@ -393,16 +620,7 @@ export function createKeeperClient(deps: Deps) {
     tell();
     let outcome: ActionOutcome;
     try {
-      outcome = await deps.post(
-        entry.projectId,
-        entry.pendingKind,
-        entry.pendingKind === "briefs"
-          ? {
-              requestId: input.requestId,
-              expectedRevision: input.expectedRevision,
-            }
-          : input,
-      );
+      outcome = await deps.post(entry.projectId, "turns", input);
     } catch {
       outcome = {
         state: "unknown",
@@ -441,8 +659,16 @@ export function createKeeperClient(deps: Deps) {
   };
   const canStart = (projectId: string, changing = false): boolean => {
     const entry = get(projectId);
+    const briefHeld = [
+      "loading",
+      "reserving",
+      "reserved",
+      "admitted",
+      "unknown",
+    ].includes(entry.briefIntentState);
     return (
       !disposed &&
+      entry.briefIntentState !== "loading" &&
       deps.canWrite() &&
       entry.live &&
       entry.loaded &&
@@ -453,8 +679,257 @@ export function createKeeperClient(deps: Deps) {
       !entry.stopPosting &&
       !entry.page?.turns.some(held) &&
       !(entry.admitted && held(entry.admitted)) &&
+      !briefHeld &&
       (changing || !recovery || recovery.canStart(projectId))
     );
+  };
+  const canReviewBrief = (projectId: string): boolean => {
+    const entry = get(projectId);
+    const hasTicket =
+      entry.briefIntent !== null ||
+      ["reserved", "admitted", "unknown", "retired"].includes(
+        entry.briefIntentState,
+      );
+    if (hasTicket)
+      return (
+        !disposed &&
+        !entry.posting &&
+        !["loading", "reserving"].includes(entry.briefIntentState)
+      );
+    return (
+      !disposed &&
+      !["loading", "reserving"].includes(entry.briefIntentState) &&
+      deps.canWrite() &&
+      selected === projectId &&
+      entry.live &&
+      entry.loaded &&
+      (entry.page?.revision ?? -1) >= entry.receiptRevision &&
+      !entry.pending &&
+      !entry.posting &&
+      !entry.stopping &&
+      !entry.stopPosting &&
+      !entry.page?.turns.some(held) &&
+      !(entry.admitted && held(entry.admitted))
+    );
+  };
+  const canCommitBrief = (projectId: string): boolean => {
+    const entry = get(projectId);
+    return (
+      !disposed &&
+      deps.canWrite() &&
+      selected === projectId &&
+      entry.live &&
+      entry.loaded &&
+      entry.briefIntentState === "reserved" &&
+      !!entry.briefIntent &&
+      !!entry.briefOriginal &&
+      !entry.posting &&
+      !entry.pending &&
+      !entry.page?.turns.some(held)
+    );
+  };
+  const matchesBriefOrigin = (
+    metadata: KeeperBriefIntentMetadata,
+    origin: KeeperBriefOriginRequest,
+  ): boolean =>
+    origin.kind === "overview"
+      ? metadata.origin.kind === "overview"
+      : metadata.origin.kind === "onboarding" &&
+        metadata.origin.projectCreate.requestId ===
+          origin.projectCreateRequestId;
+  const reserveBriefForReview = async (
+    projectId: string,
+    origin: KeeperBriefOriginRequest,
+  ): Promise<void> => {
+    const entry = get(projectId);
+    if (!canReviewBrief(projectId)) return;
+    if (entry.briefIntentState === "unknown") {
+      await checkBriefIntent(projectId);
+      return;
+    }
+    if (
+      entry.briefIntentState === "complete" ||
+      entry.briefIntentState === "retired"
+    ) {
+      entry.briefIntent = null;
+      entry.briefOriginal = null;
+      entry.briefIntentState = "idle";
+    } else if (entry.briefIntent) {
+      const metadata = entry.briefIntent;
+      const read = await readExactBriefIntent(projectId, entry, metadata);
+      if (read && metadata.state === "admitted")
+        await checkBriefIntent(projectId);
+      return;
+    }
+    if (!deps.canWrite() || entry.briefIntentState !== "idle") return;
+    const expectedRevision = entry.page?.revision ?? 0;
+    entry.briefIntentState = "reserving";
+    entry.briefIntentError = null;
+    tell();
+    let outcome: ActionOutcome;
+    try {
+      const input: KeeperBriefIntentReserveRequest = { expectedRevision, origin };
+      outcome = await deps.post(projectId, "brief-intents/reserve", input);
+    } catch {
+      outcome = {
+        state: "unknown",
+        message: "The reservation reply was lost. Check the saved original; do not create another.",
+      };
+    }
+    if (disposed) return;
+    if (outcome.state === "done") {
+      const metadata = keeperBriefIntentMetadataSchema.safeParse(outcome.data);
+      if (
+        !metadata.success ||
+        metadata.data.projectId !== projectId ||
+        metadata.data.expectedRevision !== expectedRevision ||
+        !matchesBriefOrigin(metadata.data, origin)
+      ) {
+        entry.briefIntentState = "unknown";
+        entry.briefIntentError =
+          "The reservation reply did not match this reviewed scope. Its identity remains held.";
+        tell();
+        await discoverBriefIntent(projectId, entry);
+        return;
+      }
+      entry.briefIntent = metadata.data;
+      entry.briefOriginal = null;
+      entry.briefIntentState = metadata.data.state;
+      tell();
+      await readExactBriefIntent(projectId, entry, metadata.data);
+      return;
+    }
+    if (outcome.state === "unknown") {
+      entry.briefIntentState = "unknown";
+      entry.briefIntentError = outcome.message;
+      tell();
+      const found = await discoverBriefIntent(projectId, entry);
+      if (found && matchesBriefOrigin(found, origin))
+        await readExactBriefIntent(projectId, entry, found);
+      else {
+        entry.briefIntentState = "unknown";
+        entry.briefIntentError =
+          "The reservation outcome remains unknown. No new ticket was created; check again later.";
+        tell();
+      }
+      return;
+    }
+    entry.briefIntentState = "idle";
+    entry.briefIntentError = outcome.message;
+    tell();
+    const found = await discoverBriefIntent(projectId, entry);
+    if (found) await readExactBriefIntent(projectId, entry, found);
+  };
+  const commitReviewedBrief = async (projectId: string): Promise<boolean> => {
+    const entry = get(projectId);
+    const metadata = entry.briefIntent;
+    if (!canCommitBrief(projectId) || !metadata || !entry.briefOriginal)
+      return false;
+    entry.posting = true;
+    entry.briefIntentError = null;
+    tell();
+    let outcome: ActionOutcome;
+    try {
+      outcome = await deps.post(
+        projectId,
+        "briefs",
+        intentReference(metadata),
+      );
+    } catch {
+      outcome = {
+        state: "unknown",
+        message: "The commit reply was lost. Check this exact ticket; it will not be resent automatically.",
+      };
+    }
+    entry.posting = false;
+    if (disposed) return false;
+    if (outcome.state === "done") {
+      const receipt = conversationReceiptSchema.safeParse(outcome.data);
+      if (
+        !receipt.success ||
+        receipt.data.conversationId !== `keeper-${projectId}` ||
+        receipt.data.turn.requestId !== metadata.requestId ||
+        receipt.data.turn.hash !== metadata.preparedTurnHash
+      ) {
+        entry.briefIntentState = "unknown";
+        entry.briefIntentError =
+          "The commit receipt could not be matched to the reviewed ticket. Its identity remains held.";
+        tell();
+        return false;
+      }
+      entry.receiptRevision = Math.max(
+        entry.receiptRevision,
+        receipt.data.revision,
+      );
+      entry.admitted = receipt.data.turn;
+      entry.briefIntent = { ...metadata, state: "admitted" };
+      entry.briefOriginal = { ...entry.briefOriginal, state: "admitted" };
+      entry.briefIntentState = active(receipt.data.turn.phase)
+        ? "admitted"
+        : receipt.data.turn.phase === "unknown"
+          ? "unknown"
+          : "complete";
+      tell();
+      return true;
+    }
+    entry.briefIntentError = outcome.message;
+    if (outcome.state === "unknown") entry.briefIntentState = "unknown";
+    tell();
+    return false;
+  };
+  const retireBriefIntent = async (projectId: string): Promise<boolean> => {
+    const entry = get(projectId);
+    const metadata = entry.briefIntent;
+    if (
+      !deps.canWrite() ||
+      !metadata ||
+      metadata.state !== "reserved" ||
+      entry.briefIntentState !== "reserved" ||
+      entry.posting
+    )
+      return false;
+    entry.posting = true;
+    entry.briefIntentError = null;
+    tell();
+    let outcome: ActionOutcome;
+    try {
+      outcome = await deps.post(projectId, "brief-intents/retire", {
+        requestId: metadata.requestId,
+        intentHash: metadata.intentHash,
+      });
+    } catch {
+      outcome = {
+        state: "unknown",
+        message:
+          "The retirement reply was lost. The saved original remains held; check it before continuing.",
+      };
+    }
+    entry.posting = false;
+    if (disposed) return false;
+    if (outcome.state === "done") {
+      const retired = keeperBriefIntentMetadataSchema.safeParse(outcome.data);
+      if (
+        retired.success &&
+        retired.data.requestId === metadata.requestId &&
+        retired.data.intentHash === metadata.intentHash &&
+        retired.data.state === "retired"
+      ) {
+        entry.briefIntent = retired.data;
+        if (entry.briefOriginal)
+          entry.briefOriginal = { ...entry.briefOriginal, state: "retired" };
+        entry.briefIntentState = "retired";
+        tell();
+        return true;
+      }
+      entry.briefIntentState = "unknown";
+      entry.briefIntentError =
+        "The retirement receipt did not match the reserved ticket. Check the exact original.";
+    } else {
+      entry.briefIntentError = outcome.message;
+      if (outcome.state === "unknown") entry.briefIntentState = "unknown";
+    }
+    tell();
+    return false;
   };
   const canSend = (projectId: string) => {
     const entry = get(projectId);
@@ -470,18 +945,25 @@ export function createKeeperClient(deps: Deps) {
     recovery,
     canSend,
     loadBriefs,
-    canRefreshBrief: canStart,
+    canRefreshBrief: canReviewBrief,
+    canCommitBrief,
     async refreshBrief(projectId: string) {
-      if (!canStart(projectId)) return;
-      const entry = get(projectId);
-      entry.pendingKind = "briefs";
-      entry.pending = {
-        requestId: deps.requestId(),
-        expectedRevision: entry.page?.revision ?? 0,
-        text: KEEPER_BRIEF_REQUEST,
-        about: [],
-      };
-      await postTurn(entry, entry.pending, false);
+      await reserveBriefForReview(projectId, { kind: "overview" });
+    },
+    async reviewBrief(
+      projectId: string,
+      origin: KeeperBriefOriginRequest = { kind: "overview" },
+    ) {
+      await reserveBriefForReview(projectId, origin);
+    },
+    async commitBrief(projectId: string) {
+      return commitReviewedBrief(projectId);
+    },
+    async retireBrief(projectId: string) {
+      return retireBriefIntent(projectId);
+    },
+    async checkBriefIntent(projectId: string) {
+      await checkBriefIntent(projectId);
     },
     check,
     async objects(
@@ -521,6 +1003,7 @@ export function createKeeperClient(deps: Deps) {
       selected = projectId;
       if (projectId) {
         connect(projectId);
+        void discoverBriefIntent(projectId);
       }
       tell();
     },
@@ -534,6 +1017,7 @@ export function createKeeperClient(deps: Deps) {
       entry.live = false;
       entry.notice = "";
       connect(projectId);
+      void discoverBriefIntent(projectId);
       tell();
     },
     draft(projectId: string, text: string) {

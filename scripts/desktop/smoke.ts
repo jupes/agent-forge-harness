@@ -524,8 +524,8 @@ process.stderr.write("Native fixture Git is read-only and has no forwarding path
     await saveConnectionShot(socket, "native-project-overview.png");
     await waitForPage(
       socket,
-      `!!document.querySelector('.af-brief-panel .af-brief-availability[data-readiness="unavailable"] a[href$="/keeper"]') && Array.from(document.querySelectorAll('.af-brief-panel button')).some(b => b.textContent?.trim() === 'Refresh brief' && b.disabled)`,
-      "The no-CLI native fixture did not explain its unavailable attended Refresh control.",
+      `!!document.querySelector('.af-brief-panel .af-brief-availability[data-readiness="unavailable"] a[href$="/keeper"]') && Array.from(document.querySelectorAll('.af-brief-panel button')).some(b => b.textContent?.trim() === 'Review a brief' && !b.disabled)`,
+      "The no-CLI native fixture did not preserve explicit brief review while Keeper send readiness was unavailable.",
     );
     if (
       !(await evaluate(
@@ -533,13 +533,17 @@ process.stderr.write("Native fixture Git is read-only and has no forwarding path
         `(async () => {
       const id=location.hash.split('/')[3];
       const path='/__agent-forge/projects/'+id+'/keeper/briefs';
+      const intentPath='/__agent-forge/projects/'+id+'/keeper/brief-intents';
       const refused=await fetch(path,{signal:AbortSignal.timeout(5000)});
+      const intentRefused=await fetch(intentPath,{signal:AbortSignal.timeout(5000)});
       const tokenResponse=await fetch(${JSON.stringify(tokenPath)},{headers:{${JSON.stringify(sessionKeyHeader)}:localStorage.getItem(${JSON.stringify(sessionKeyName)})},signal:AbortSignal.timeout(5000)});
       const token=await tokenResponse.json();
-      if(!tokenResponse.ok || !token.ok || refused.status!==403) return false;
+      if(!tokenResponse.ok || !token.ok || refused.status!==403 || intentRefused.status!==403) return false;
       const response=await fetch(path,{headers:{${JSON.stringify(OPERATOR_HEADER)}:token.data.token},signal:AbortSignal.timeout(5000)});
+      const intent=await fetch(intentPath,{headers:{${JSON.stringify(OPERATOR_HEADER)}:token.data.token},signal:AbortSignal.timeout(5000)});
       const envelope=await response.json();
-      return response.ok && envelope.ok && envelope.data.projectId===id && envelope.data.latest===null && envelope.data.earlier.length===0 && envelope.data.refresh===null;
+      const intentEnvelope=await intent.json();
+      return response.ok && envelope.ok && envelope.data.projectId===id && envelope.data.latest===null && envelope.data.earlier.length===0 && envelope.data.refresh===null && intent.ok && intentEnvelope.ok && intentEnvelope.data===null;
     })()`,
       ))
     )

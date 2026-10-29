@@ -4,6 +4,8 @@ import type {
   KeeperBriefIntent,
   KeeperBriefIntentHistory,
   KeeperBriefIntentMetadata,
+  KeeperBriefIntentReference,
+  KeeperBriefIntentReserveRequest,
   KeeperBriefOriginBinding,
   KeeperBriefOriginRequest,
   KeeperBriefSelection,
@@ -79,7 +81,7 @@ export const keeperBriefIntentOriginRequestSchema: z.ZodType<KeeperBriefOriginRe
       })
       .strict(),
   ]);
-export const keeperBriefIntentReserveRequestSchema = z
+export const keeperBriefIntentReserveRequestSchema: z.ZodType<KeeperBriefIntentReserveRequest> = z
   .object({
     expectedRevision: count,
     origin: keeperBriefIntentOriginRequestSchema,
@@ -148,7 +150,7 @@ export const keeperBriefIntentReserveSchema = z
     snapshot: briefSnapshotSchema,
   })
   .strict();
-export const keeperBriefIntentReferenceSchema = z
+export const keeperBriefIntentReferenceSchema: z.ZodType<KeeperBriefIntentReference> = z
   .object({
     requestId: z.string().uuid(),
     expectedRevision: count,
