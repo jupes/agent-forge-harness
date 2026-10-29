@@ -18,28 +18,28 @@ import {
   test,
 } from "@playwright/test";
 import { z } from "zod";
+import { smithsViewSchema } from "../../apps/desktop/src/smiths-protocol";
 import { OPERATOR_HEADER } from "../../scripts/hearth/paths";
 import { serializeCodexChat } from "../../scripts/sessions/codex-app-server-protocol";
-import type { Smith } from "../../types/hearth";
 import { codexChatForkSourcePageSchema } from "../../scripts/sessions/codex-chat-fork-review-protocol";
 import { codexChatApprovalPageSchema } from "../../scripts/sessions/codex-chat-owned-protocol";
-import { geminiChatStartSchema } from "../../scripts/sessions/gemini-chat-owned-protocol";
 import {
   ownedCodingPageSchema,
   ownedCodingStateSchema,
 } from "../../scripts/sessions/codex-owned-journal";
 import { ownedCodingSessionSchema } from "../../scripts/sessions/codex-owned-wire-protocol";
+import { geminiChatStartSchema } from "../../scripts/sessions/gemini-chat-owned-protocol";
 import { sessionStartIdentityPageSchema } from "../../scripts/sessions/identity-protocol";
 import { sessionTranscriptExportSchema } from "../../scripts/sessions/library-protocol";
 import {
   codexChatForkIdentityMetadataSchema,
   sessionOperationIdentityPageSchema,
 } from "../../scripts/sessions/session-operation-identities-protocol";
+import type { Smith } from "../../types/hearth";
 import { openSettled, reloadSettled } from "../e2e/fixtures";
 import { pageToken } from "../e2e/launch-link";
 import { HEARTH_HOME } from "../e2e/servers";
 import { captureTextResponseThroughBrowserFetch } from "./browser-response-capture";
-import { smithsViewSchema } from "../../apps/desktop/src/smiths-protocol";
 import {
   alpha,
   beta,
@@ -870,9 +870,7 @@ test("a confirmed Claude rate limit can target Gemini ACP Chat", async ({
     const headers = Object.fromEntries(
       Object.entries(responseHeaders).filter(
         ([name]) =>
-          !["content-length", "content-encoding"].includes(
-            name.toLowerCase(),
-          ),
+          !["content-length", "content-encoding"].includes(name.toLowerCase()),
       ),
     );
     await route.fulfill({
@@ -928,11 +926,7 @@ test("a confirmed Claude rate limit can target Gemini ACP Chat", async ({
   );
   codingMode("normal");
   await outcome.locator("summary").click();
-  const sourcePage = await conversationPage(
-    page,
-    alpha.id,
-    sourceRecord.id,
-  );
+  const sourcePage = await conversationPage(page, alpha.id, sourceRecord.id);
   expect(sourcePage.turns.at(-1)?.phase).toBe("failed");
   expect(
     sourcePage.frames.some(
@@ -954,9 +948,7 @@ test("a confirmed Claude rate limit can target Gemini ACP Chat", async ({
     name: "New session · Alpha",
     exact: true,
   });
-  await geminiDraft
-    .getByRole("button", { name: /Gm · Gemini/ })
-    .click();
+  await geminiDraft.getByRole("button", { name: /Gm · Gemini/ }).click();
   await geminiDraft
     .getByRole("combobox", { name: "Session mode", exact: true })
     .selectOption("chat");
@@ -1277,7 +1269,9 @@ test("a confirmed Claude rate limit can target Gemini ACP Chat", async ({
         try {
           raw = JSON.parse(responseText);
         } catch {
-          throw Error("The original protected Gemini Start readback was invalid");
+          throw Error(
+            "The original protected Gemini Start readback was invalid",
+          );
         }
         const envelope = z
           .object({
@@ -1288,7 +1282,9 @@ test("a confirmed Claude rate limit can target Gemini ACP Chat", async ({
           .strict()
           .safeParse(raw);
         if (!envelope.success)
-          throw Error("The original protected Gemini Start readback was invalid");
+          throw Error(
+            "The original protected Gemini Start readback was invalid",
+          );
         const original = envelope.data.data;
         const acceptedOriginal = records().find(
           (record) => record.requestId === postedRequestId,
@@ -1416,7 +1412,9 @@ test("a confirmed Claude rate limit can target Gemini ACP Chat", async ({
     .poll(() => geminiChatMethodCount(geminiChatFixtureCalls(), "session/new"))
     .toBe(newBeforeStart + 1);
   await expect
-    .poll(() => geminiChatMethodCount(geminiChatFixtureCalls(), "session/prompt"))
+    .poll(() =>
+      geminiChatMethodCount(geminiChatFixtureCalls(), "session/prompt"),
+    )
     .toBe(promptBeforeStart + 1);
   const callsAfterStart = geminiChatFixtureCalls();
   const newFixtureCalls = callsAfterStart.slice(callsBeforeStart.length);
@@ -1466,17 +1464,15 @@ test("a confirmed Claude rate limit can target Gemini ACP Chat", async ({
   expect(geminiChatMethodCount(geminiChatFixtureCalls(), "session/new")).toBe(
     newBeforeStart + 1,
   );
-  expect(geminiChatMethodCount(geminiChatFixtureCalls(), "session/prompt")).toBe(
-    promptBeforeStart + 1,
-  );
+  expect(
+    geminiChatMethodCount(geminiChatFixtureCalls(), "session/prompt"),
+  ).toBe(promptBeforeStart + 1);
   expect(
     (await startIdentityPage(page, alpha.id)).identities.find(
       (item) => item.requestId === acceptedTarget.requestId,
     ),
   ).toEqual(targetIdentity);
-  expect(
-    records().find((item) => item.id === sourceRecord.id),
-  ).toMatchObject({
+  expect(records().find((item) => item.id === sourceRecord.id)).toMatchObject({
     id: sourceRecord.id,
     requestId: sourceRecord.requestId,
     requestHash: sourceRecord.requestHash,
