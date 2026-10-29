@@ -18,6 +18,7 @@ import { buildContextPack, ContextSecurityError, hashText } from "./context";
 import { FakeCouncilTransport, runCouncil } from "./engine";
 import { createProjectCouncilOriginalStore } from "./project-original-store";
 import { createCouncilService } from "./service";
+import { withQueueLock } from "../scheduler/queue-lock";
 import {
   type CouncilProfile,
   estimateCouncilCost,
@@ -61,6 +62,7 @@ test("a project Council commit refuses a changed provider endpoint before dispat
     harnessRoot: root,
     runsRoot: join(root, "runs"),
     reviewHome: join(root, "home"),
+    withQueueLock,
     environment,
     resolveTransport: () => {
       transportResolutions += 1;
@@ -126,9 +128,11 @@ test("concurrent project commits across workspaces cannot overbook the global fo
     harnessRoot: root,
     runsRoot: join(root, "runs"),
     reviewHome: join(root, "home"),
+    withQueueLock,
     environment: {},
     resolveTransport: () => () => new FakeCouncilTransport({ delayMs: 60_000 }),
   });
+  try {
   const legacy = [0, 1, 2].map((index) =>
     service.start({
       sourceType: "text",
@@ -198,7 +202,9 @@ test("concurrent project commits across workspaces cannot overbook the global fo
     );
   expect(fulfilled).toHaveLength(1);
   expect(rejected).toHaveLength(1);
-  await service.close();
+  } finally {
+    await service.close();
+  }
 });
 
 test("a retained unknown original cannot read or cancel a colliding legacy job by run id", async () => {
@@ -223,9 +229,11 @@ test("a retained unknown original cannot read or cancel a colliding legacy job b
     harnessRoot: root,
     runsRoot: join(root, "runs"),
     reviewHome,
+    withQueueLock,
     environment: {},
     resolveTransport: () => () => new FakeCouncilTransport({ delayMs: 60_000 }),
   });
+  try {
   const projectId = "project-2b4f8e0a-76f1-4c29-972e-4aee9c216d12";
   const resolveAuthority = async () => ({
     projectId,
@@ -253,6 +261,7 @@ test("a retained unknown original cannot read or cancel a colliding legacy job b
     home: reviewHome,
     workspace: root,
     projectId,
+    withQueueLock,
   });
   await store.claimDispatch(
     projectId,
@@ -280,7 +289,9 @@ test("a retained unknown original cannot read or cancel a colliding legacy job b
     reserved.metadata.intentHash,
   );
   expect(service.get(legacy.runId).status).toBe("running");
-  await service.close();
+  } finally {
+    await service.close();
+  }
 });
 
 function profile(overrides: Partial<CouncilProfile> = {}): CouncilProfile {

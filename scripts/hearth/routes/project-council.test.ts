@@ -6,8 +6,10 @@ import {
   projectCouncilHistorySchema,
   projectCouncilIntentJson,
   projectCouncilOriginalReadSchema,
+  projectCouncilReceiptSchema,
   projectCouncilReserveRequestSchema,
 } from "../../../types/project-council";
+import { projectCouncilRunReadSchema } from "../../../types/project-council-run-read";
 import { createProjectStore, projectCatalogPath } from "../../projects/store";
 import {
   FIXTURE_PROJECT_ID,
@@ -385,6 +387,241 @@ test("project Council reserves the selected deep-discussion profile explicitly",
     depth: "deep",
     maxDiscussionRounds: 1,
   });
+  expect(h.commands.calls).toEqual([]);
+});
+
+test("a committed inert project Council review reads back its frozen result and replays once", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  writeOwnerOnly(
+    projectCatalogPath(h.home),
+    JSON.stringify(projectCatalogFixture(h.workspace)),
+  );
+  const profileResponse = await fetch(`${h.api}/council-api/profiles`);
+  expect(profileResponse.status).toBe(200);
+  const profileEnvelope: unknown = await profileResponse.json();
+  if (
+    typeof profileEnvelope !== "object" ||
+    profileEnvelope === null ||
+    Array.isArray(profileEnvelope) ||
+    !("data" in profileEnvelope) ||
+    !Array.isArray(profileEnvelope.data)
+  )
+    throw new Error("The advertised Council profiles are invalid.");
+  const profileChoice = profileEnvelope.data.find(
+    (choice: unknown): choice is Record<string, unknown> =>
+      typeof choice === "object" &&
+      choice !== null &&
+      !Array.isArray(choice) &&
+      "id" in choice &&
+      choice.id === "default-review" &&
+      "path" in choice &&
+      typeof choice.path === "string" &&
+      "seats" in choice &&
+      Array.isArray(choice.seats) &&
+      choice.seats.length > 0 &&
+      choice.seats.every(
+        (seat: unknown) =>
+          typeof seat === "object" &&
+          seat !== null &&
+          !Array.isArray(seat) &&
+          "provider" in seat &&
+          seat.provider === "fake",
+      ) &&
+      "chair" in choice &&
+      typeof choice.chair === "object" &&
+      choice.chair !== null &&
+      !Array.isArray(choice.chair) &&
+      "provider" in choice.chair &&
+      choice.chair.provider === "fake",
+  );
+  if (!profileChoice || typeof profileChoice.path !== "string")
+    throw new Error("The advertised inert Council profile is missing.");
+
+  const source = "Commit this exact inert project review once.";
+  const request = {
+    sourceChoice: { sourceType: "text", source },
+    profileChoice: profileChoice.path,
+    maxUsd: 0.25,
+    maxBytes: 1024,
+    redactSecrets: false,
+    deepDiscussion: false,
+  };
+  if (!projectCouncilReserveRequestSchema.safeParse(request).success)
+    throw new Error("The positive reserve fixture is not schema-valid.");
+  const reserveResponse = await fetch(
+    `${h.api}/projects/${FIXTURE_PROJECT_ID}/council/reviews`,
+    {
+      method: "POST",
+      headers: h.headers(h.hearth.token),
+      body: JSON.stringify(request),
+    },
+  );
+  if (reserveResponse.status !== 202)
+    throw new Error(
+      `The inert Council review did not reserve: ${reserveResponse.status} ${JSON.stringify(await reserveResponse.json())}`,
+    );
+  const reserveEnvelope: unknown = await reserveResponse.json();
+  if (
+    typeof reserveEnvelope !== "object" ||
+    reserveEnvelope === null ||
+    Array.isArray(reserveEnvelope) ||
+    !("data" in reserveEnvelope) ||
+    typeof reserveEnvelope.data !== "object" ||
+    reserveEnvelope.data === null ||
+    Array.isArray(reserveEnvelope.data) ||
+    !("metadata" in reserveEnvelope.data) ||
+    typeof reserveEnvelope.data.metadata !== "object" ||
+    reserveEnvelope.data.metadata === null ||
+    Array.isArray(reserveEnvelope.data.metadata) ||
+    !("requestId" in reserveEnvelope.data.metadata) ||
+    typeof reserveEnvelope.data.metadata.requestId !== "string" ||
+    !("intentHash" in reserveEnvelope.data.metadata) ||
+    typeof reserveEnvelope.data.metadata.intentHash !== "string"
+  )
+    throw new Error("The positive reserve response has no strict identity.");
+  const { requestId, intentHash } = reserveEnvelope.data.metadata;
+
+  const exactResponse = await fetch(
+    `${h.api}/projects/${FIXTURE_PROJECT_ID}/council/reviews/${requestId}`,
+    { headers: h.headers(h.hearth.token) },
+  );
+  expect(exactResponse.status).toBe(200);
+  const exactEnvelope: unknown = await exactResponse.json();
+  if (
+    typeof exactEnvelope !== "object" ||
+    exactEnvelope === null ||
+    Array.isArray(exactEnvelope) ||
+    !("data" in exactEnvelope)
+  )
+    throw new Error("The protected original response has no data.");
+  const originalRead = projectCouncilOriginalReadSchema.safeParse(
+    exactEnvelope.data,
+  );
+  if (!originalRead.success)
+    throw new Error("The protected original failed strict validation.");
+  const original = originalRead.data.original;
+  expect(original.context.evidence[0]?.content).toBe(source);
+  expect(
+    createHash("sha256")
+      .update(projectCouncilIntentJson(original), "utf8")
+      .digest("hex"),
+  ).toBe(intentHash);
+
+  const commitPath = `${h.api}/projects/${FIXTURE_PROJECT_ID}/council/reviews/${requestId}/commit`;
+  const commit = await fetch(commitPath, {
+    method: "POST",
+    headers: h.headers(h.hearth.token),
+    body: JSON.stringify({ intentHash }),
+  });
+  if (commit.status !== 202)
+    throw new Error(
+      `The inert Council review did not commit: ${commit.status} ${JSON.stringify(await commit.json())}`,
+    );
+  const commitEnvelope: unknown = await commit.json();
+  if (
+    typeof commitEnvelope !== "object" ||
+    commitEnvelope === null ||
+    Array.isArray(commitEnvelope) ||
+    !("data" in commitEnvelope)
+  )
+    throw new Error("The Council commit response has no receipt.");
+  const initialReceipt = projectCouncilReceiptSchema.safeParse(
+    commitEnvelope.data,
+  );
+  if (!initialReceipt.success)
+    throw new Error("The Council commit receipt is not strict.");
+  expect(initialReceipt.data.metadata).toMatchObject({ requestId, intentHash });
+
+  const readRun = async () => {
+    const response = await fetch(
+      `${h.api}/projects/${FIXTURE_PROJECT_ID}/council/reviews/${requestId}/run`,
+      { headers: h.headers(h.hearth.token) },
+    );
+    if (response.status !== 200)
+      throw new Error(`The protected Council run read returned ${response.status}.`);
+    const envelope: unknown = await response.json();
+    if (
+      typeof envelope !== "object" ||
+      envelope === null ||
+      Array.isArray(envelope) ||
+      !("data" in envelope)
+    )
+      throw new Error("The protected Council run response has no data.");
+    const parsed = projectCouncilRunReadSchema.safeParse(envelope.data);
+    if (!parsed.success)
+      throw new Error(`The protected Council run is invalid: ${parsed.error.message}`);
+    return parsed.data;
+  };
+  const deadline = Date.now() + 20_000;
+  let completed = await readRun();
+  while (
+    (completed.receipt.phase !== "completed" ||
+      completed.job?.run?.status !== "completed") &&
+    Date.now() < deadline
+  ) {
+    await new Promise((done) => setTimeout(done, 25));
+    completed = await readRun();
+  }
+  const completedJob = completed.job;
+  if (
+    completed.receipt.phase !== "completed" ||
+    !completedJob ||
+    !completedJob.run ||
+    completedJob.run.status !== "completed"
+  )
+    throw new Error("The inert Council run did not finish before the deadline.");
+  const run = completedJob.run;
+  expect(completed.provenance).toMatchObject({ requestId, intentHash });
+  expect(run.context).toEqual(original.context);
+  expect(run.profile).toEqual(original.profile);
+  expect(run.events.filter((event) => event.type === "run.started")).toHaveLength(1);
+  expect(run.events.filter((event) => event.type === "run.completed")).toHaveLength(1);
+
+  const replay = await fetch(commitPath, {
+    method: "POST",
+    headers: h.headers(h.hearth.token),
+    body: JSON.stringify({ intentHash }),
+  });
+  expect(replay.status).toBe(202);
+  const replayEnvelope: unknown = await replay.json();
+  if (
+    typeof replayEnvelope !== "object" ||
+    replayEnvelope === null ||
+    Array.isArray(replayEnvelope) ||
+    !("data" in replayEnvelope)
+  )
+    throw new Error("The replayed Council commit response has no receipt.");
+  const replayReceipt = projectCouncilReceiptSchema.safeParse(
+    replayEnvelope.data,
+  );
+  if (!replayReceipt.success || replayReceipt.data.phase !== "completed")
+    throw new Error("The replayed Council commit changed its completed receipt.");
+  expect(replayReceipt.data.metadata).toMatchObject({ requestId, intentHash });
+  const replayedRun = await readRun();
+  expect(replayedRun.job?.runId).toBe(completedJob.runId);
+  expect(replayedRun.job?.run).toEqual(run);
+
+  const historyResponse = await fetch(
+    `${h.api}/projects/${FIXTURE_PROJECT_ID}/council/reviews`,
+    { headers: h.headers(h.hearth.token) },
+  );
+  expect(historyResponse.status).toBe(200);
+  const historyEnvelope: unknown = await historyResponse.json();
+  if (
+    typeof historyEnvelope !== "object" ||
+    historyEnvelope === null ||
+    Array.isArray(historyEnvelope) ||
+    !("data" in historyEnvelope)
+  )
+    throw new Error("The completed Council history has no data.");
+  const history = projectCouncilHistorySchema.safeParse(historyEnvelope.data);
+  if (!history.success)
+    throw new Error("The completed Council history is not strict.");
+  expect(history.data.total).toBe(1);
+  expect(history.data.items).toMatchObject([
+    { requestId, state: "completed", phase: "completed" },
+  ]);
   expect(h.commands.calls).toEqual([]);
 });
 

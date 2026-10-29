@@ -56,6 +56,7 @@ import {
 import type { CommandRunner } from "./pr-source";
 import {
   createProjectCouncilOriginalStore,
+  type ProjectCouncilQueueLock,
   projectCouncilInputHash,
   projectCouncilProfileHash,
 } from "./project-original-store";
@@ -127,6 +128,8 @@ export type CouncilServiceOptions = {
   runsRoot?: string;
   /** Machine-private home for project-bound Council review originals. */
   reviewHome?: string;
+  /** Existing cross-process Hearth lock, injected to keep original storage runtime-neutral. */
+  withQueueLock?: ProjectCouncilQueueLock;
   environment?: Record<string, string | undefined>;
   fetchImpl?: typeof fetch;
   resolveTransport?: (
@@ -314,7 +317,7 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
   let closed = false;
 
   function projectStore(workspace: string, projectId: string) {
-    if (!options.reviewHome)
+    if (!options.reviewHome || !options.withQueueLock)
       throw new Error("project Council reviews are unavailable on this host");
     const storeKey = `${workspace}\0${projectId}`;
     let store = projectStores.get(storeKey);
@@ -323,6 +326,7 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
         home: options.reviewHome,
         workspace,
         projectId,
+        withQueueLock: options.withQueueLock,
       });
       projectStores.set(storeKey, store);
     }
@@ -821,6 +825,23 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
         JSON.stringify(expected.redactions) &&
       JSON.stringify(run.context.evidence) === JSON.stringify(expected.evidence)
     );
+  }
+
+  function projectRunDirectoryExists(runId: string): boolean {
+    assertCouncilRunId(runId);
+    try {
+      resolveRunDirectory(runId, runsRoot);
+      return true;
+    } catch (error) {
+      if (
+        typeof error === "object" &&
+        error !== null &&
+        "code" in error &&
+        error.code === "ENOENT"
+      )
+        return false;
+      throw error;
+    }
   }
 
   function readOwnedProjectFile(
@@ -1351,7 +1372,7 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
                 throw new Error(
                   "The reviewed provider endpoint configuration changed. No provider was called.",
                 );
-              if (existsSync(resolveRunDirectory(candidate.runId, runsRoot)))
+              if (projectRunDirectoryExists(candidate.runId))
                 throw new Error(
                   "The reviewed Council run identity is already owned by another run.",
                 );

@@ -20,7 +20,6 @@ import {
   readHomeFileBounded,
 } from "../hearth/home-guard";
 import { writeOwnerOnly } from "../hearth/token";
-import { withQueueLock } from "../scheduler/queue-lock";
 import { parseCouncilProfileJson } from "./types";
 
 const JOURNAL_VERSION = 1 as const;
@@ -32,6 +31,14 @@ type Journal = {
   version: typeof JOURNAL_VERSION;
   records: ProjectCouncilOriginal[];
 };
+
+export type ProjectCouncilQueueLockResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; reason: "busy" | "unusable"; error: string };
+export type ProjectCouncilQueueLock = <T>(
+  file: string,
+  work: () => Promise<T>,
+) => Promise<ProjectCouncilQueueLockResult<T>>;
 
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
@@ -205,6 +212,7 @@ export function createProjectCouncilOriginalStore(options: {
   home: string;
   workspace: string;
   projectId: string;
+  withQueueLock: ProjectCouncilQueueLock;
 }) {
   if (!options.workspace || options.workspace.length > 1024)
     throw new ConversationError(400, "Expected a trusted Council workspace.");
@@ -364,7 +372,7 @@ export function createProjectCouncilOriginalStore(options: {
   ): Promise<T> {
     const { lock } = checkedPaths(options.home, journalHash);
     ensurePrivateHome(options.home);
-    const result = await withQueueLock(lock, async () => work(readState()));
+    const result = await options.withQueueLock(lock, async () => work(readState()));
     if (!result.ok)
       throw new ConversationError(
         503,
