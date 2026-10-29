@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmSync,
   symlinkSync,
@@ -11,7 +12,6 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, toNamespacedPath } from "node:path";
-import { realpathSync } from "node:fs";
 import { createRepositoryOnboarding } from "./repository-onboarding";
 import { workspaceKey } from "./scope";
 
