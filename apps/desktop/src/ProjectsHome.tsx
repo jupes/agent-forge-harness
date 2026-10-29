@@ -17,8 +17,8 @@ import { ProviderUsageStrip } from "./Providers";
 import type {
   createProjectCreateOwner,
   ProjectCreateState,
+  VerifiedProjectCreate,
 } from "./project-create-owner";
-import type { VerifiedProjectCreate } from "./project-create-owner";
 
 export interface ProjectsHomeProps {
   providers?: ProviderReadinessPage | null;

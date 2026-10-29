@@ -352,7 +352,9 @@ function SavedOriginalDialog({
   owner: Owner;
   canWrite: boolean;
   close(): void;
-  onCreated?: ((created: { projectId: string; requestId: string }) => void) | undefined;
+  onCreated?:
+    | ((created: { projectId: string; requestId: string }) => void)
+    | undefined;
 }): JSX.Element {
   const [retiring, setRetiring] = useState(false);
   const [working, setWorking] = useState(false);
@@ -543,7 +545,9 @@ export function ProjectCreateFlow({
   renderEntry?:
     | ((props: { disabled: boolean; onSkip(): void }) => JSX.Element)
     | undefined;
-  onCreated?: ((created: { projectId: string; requestId: string }) => void) | undefined;
+  onCreated?:
+    | ((created: { projectId: string; requestId: string }) => void)
+    | undefined;
 }): JSX.Element {
   const [createOpen, setCreateOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);

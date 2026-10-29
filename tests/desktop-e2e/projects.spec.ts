@@ -9,8 +9,8 @@ import {
   briefsSchema,
   keeperBriefIntentMetadataSchema,
   keeperBriefIntentOriginalSchema,
-  keeperBriefIntentReserveRequestSchema,
   keeperBriefIntentReferenceSchema,
+  keeperBriefIntentReserveRequestSchema,
 } from "../../scripts/keeper/brief-protocol";
 import { keeperRecoveryPageSchema } from "../../scripts/keeper/recovery-protocol";
 import { resolveCheckout } from "../../scripts/ledger/workspace";
@@ -264,9 +264,7 @@ async function commitProjectFromOriginal(
     .click();
   const response = await commitResponse;
   expect(response.status()).toBe(200);
-  await expect(page).toHaveURL(
-    /\/project\/project-[0-9a-f-]{36}\/overview$/,
-  );
+  await expect(page).toHaveURL(/\/project\/project-[0-9a-f-]{36}\/overview$/);
   const projectId = /\/project\/(project-[0-9a-f-]{36})\/overview$/.exec(
     new URL(page.url()).hash,
   )?.[1];
@@ -698,9 +696,7 @@ test("a created project reviews its exact first Keeper brief before explicit sen
           `/__agent-forge/projects/${projectId}/keeper/briefs` &&
         response.request().method() === "POST",
     );
-    await panel
-      .getByRole("button", { name: "Send reviewed brief" })
-      .click();
+    await panel.getByRole("button", { name: "Send reviewed brief" }).click();
     const committed = await commitResponse;
     expect(committed.status()).toBe(202);
     const commitBody = keeperBriefIntentReferenceSchema.parse(
@@ -727,27 +723,27 @@ test("a created project reviews its exact first Keeper brief before explicit sen
 
     const finalReads = await page.evaluate(
       async ({ projectId, requestId, after, headers }) => {
-        const [briefs, conversation, audit, intent, original] = await Promise.all([
-          fetch(`/__agent-forge/projects/${projectId}/keeper/briefs`, {
-            headers,
-          }),
-          fetch(
-            `/__agent-forge/projects/${projectId}/keeper?after=0&limit=100&requestId=${requestId}`,
-            { headers },
-          ),
-          fetch(
-            `/__agent-forge/events?kind=operator.action&after=${after}&limit=100`,
-            { headers },
-          ),
-          fetch(
-            `/__agent-forge/projects/${projectId}/keeper/brief-intents`,
-            { headers },
-          ),
-          fetch(
-            `/__agent-forge/projects/${projectId}/keeper/brief-intents/${requestId}`,
-            { headers },
-          ),
-        ]);
+        const [briefs, conversation, audit, intent, original] =
+          await Promise.all([
+            fetch(`/__agent-forge/projects/${projectId}/keeper/briefs`, {
+              headers,
+            }),
+            fetch(
+              `/__agent-forge/projects/${projectId}/keeper?after=0&limit=100&requestId=${requestId}`,
+              { headers },
+            ),
+            fetch(
+              `/__agent-forge/events?kind=operator.action&after=${after}&limit=100`,
+              { headers },
+            ),
+            fetch(`/__agent-forge/projects/${projectId}/keeper/brief-intents`, {
+              headers,
+            }),
+            fetch(
+              `/__agent-forge/projects/${projectId}/keeper/brief-intents/${requestId}`,
+              { headers },
+            ),
+          ]);
         return {
           briefs: { status: briefs.status, body: await briefs.json() },
           conversation: {
@@ -898,9 +894,7 @@ test("a new project's legacy Keeper capability stays unavailable without fallbac
     const unavailable = panel.locator(
       '.af-brief-availability[data-readiness="unavailable"]',
     );
-    await expect(unavailable).toContainText(
-      "Keeper cannot send a brief yet.",
-    );
+    await expect(unavailable).toContainText("Keeper cannot send a brief yet.");
     await expect(unavailable).toContainText(
       "The Keeper adapter capability check could not be verified. Recheck before sending.",
     );
@@ -918,14 +912,15 @@ test("a new project's legacy Keeper capability stays unavailable without fallbac
     await expect(
       panel.getByRole("region", { name: "Exact Keeper brief original" }),
     ).toBeVisible();
-    const reservedId = await panel.locator(".af-brief-review dd").first().textContent();
+    const reservedId = await panel
+      .locator(".af-brief-review dd")
+      .first()
+      .textContent();
     await expect.poll(() => keeperFixtureStarts()).toBe(startsBefore);
     await expect(
       panel.getByRole("button", { name: "Finish without a brief" }),
     ).toBeEnabled();
-    await panel
-      .getByRole("button", { name: "Finish without a brief" })
-      .click();
+    await panel.getByRole("button", { name: "Finish without a brief" }).click();
     await expect(
       panel.getByRole("region", { name: "Exact Keeper brief original" }),
     ).toBeVisible();
@@ -1187,12 +1182,14 @@ test("a lost commit reply reloads the same created original without replay", asy
     await page.reload();
     releaseCommitReply();
     await click;
-    await expect.poll(() =>
-      page.evaluate(
-        (key) => (window as unknown as Record<string, unknown>)[key] !== null,
-        recoveryCaptureKey,
-      ),
-    ).toBe(true);
+    await expect
+      .poll(() =>
+        page.evaluate(
+          (key) => (window as unknown as Record<string, unknown>)[key] !== null,
+          recoveryCaptureKey,
+        ),
+      )
+      .toBe(true);
     const recoveredRead = (await page.evaluate((key) => {
       const value = (window as unknown as Record<string, unknown>)[key];
       return typeof value === "object" && value !== null ? value : null;
@@ -2133,8 +2130,8 @@ test("empty Projects can skip optional provider setup into the guarded create di
     fullPage: true,
   });
   expect(
-    await page.evaluate(() =>
-      window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+    await page.evaluate(
+      () => window.matchMedia("(prefers-reduced-motion: reduce)").matches,
     ),
   ).toBe(true);
 
@@ -2328,10 +2325,9 @@ test("empty Projects label a provider snapshot as last-known after readiness ref
     await expect(
       providerRows
         .nth(index)
-        .getByText(
-          "Last-known observation; recheck before relying on it.",
-          { exact: true },
-        ),
+        .getByText("Last-known observation; recheck before relying on it.", {
+          exact: true,
+        }),
     ).toBeVisible();
   }
   await expect(

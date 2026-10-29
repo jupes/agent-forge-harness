@@ -344,9 +344,11 @@ export function createKeeperClient(deps: Deps) {
     }
     entry.loaded = !more;
     if (fromStream) entry.live = true;
-    const visibleTurns = [...page.turns, ...(page.request ? [page.request] : [])];
-    for (const turn of visibleTurns)
-      confirm(entry, turn);
+    const visibleTurns = [
+      ...page.turns,
+      ...(page.request ? [page.request] : []),
+    ];
+    for (const turn of visibleTurns) confirm(entry, turn);
     if (entry.briefIntent?.state === "admitted") {
       const briefTurn = visibleTurns.find(
         (turn) => turn.requestId === entry.briefIntent?.requestId,
@@ -477,7 +479,9 @@ export function createKeeperClient(deps: Deps) {
         JSON.stringify(keeperIntentIdentity(parsed.data)) !==
           JSON.stringify(keeperIntentIdentity(metadata))
       )
-        throw new Error("The exact saved Keeper original did not match its ticket.");
+        throw new Error(
+          "The exact saved Keeper original did not match its ticket.",
+        );
       entry.briefIntent = {
         ...metadata,
         state: parsed.data.state,
@@ -552,8 +556,7 @@ export function createKeeperClient(deps: Deps) {
       );
       if (parsed.data.state === "admitted" && turn) {
         entry.briefIntentState =
-          turn.hash !== parsed.data.preparedTurnHash ||
-          turn.phase === "unknown"
+          turn.hash !== parsed.data.preparedTurnHash || turn.phase === "unknown"
             ? "unknown"
             : active(turn.phase)
               ? "admitted"
@@ -584,8 +587,10 @@ export function createKeeperClient(deps: Deps) {
         requestId: metadata.requestId,
       });
       if (disposed || !apply(entry, value, false)) return;
-      const turn = [...(entry.page?.turns ?? []), ...(entry.page?.request ? [entry.page.request] : [])]
-        .find((item) => item.requestId === metadata.requestId);
+      const turn = [
+        ...(entry.page?.turns ?? []),
+        ...(entry.page?.request ? [entry.page.request] : []),
+      ].find((item) => item.requestId === metadata.requestId);
       entry.briefIntentState =
         !turn ||
         turn.hash !== metadata.preparedTurnHash ||
@@ -601,7 +606,8 @@ export function createKeeperClient(deps: Deps) {
           : turn.phase === "unknown"
             ? "The admitted turn outcome is unknown. Its identity remains held."
             : null;
-      if (entry.briefIntentState === "complete") void loadBriefs(projectId, true);
+      if (entry.briefIntentState === "complete")
+        void loadBriefs(projectId, true);
     } catch {
       if (!disposed) {
         entry.briefIntentState = "unknown";
@@ -768,12 +774,16 @@ export function createKeeperClient(deps: Deps) {
     tell();
     let outcome: ActionOutcome;
     try {
-      const input: KeeperBriefIntentReserveRequest = { expectedRevision, origin };
+      const input: KeeperBriefIntentReserveRequest = {
+        expectedRevision,
+        origin,
+      };
       outcome = await deps.post(projectId, "brief-intents/reserve", input);
     } catch {
       outcome = {
         state: "unknown",
-        message: "The reservation reply was lost. Check the saved original; do not create another.",
+        message:
+          "The reservation reply was lost. Check the saved original; do not create another.",
       };
     }
     if (disposed) return;
@@ -830,15 +840,12 @@ export function createKeeperClient(deps: Deps) {
     tell();
     let outcome: ActionOutcome;
     try {
-      outcome = await deps.post(
-        projectId,
-        "briefs",
-        intentReference(metadata),
-      );
+      outcome = await deps.post(projectId, "briefs", intentReference(metadata));
     } catch {
       outcome = {
         state: "unknown",
-        message: "The commit reply was lost. Check this exact ticket; it will not be resent automatically.",
+        message:
+          "The commit reply was lost. Check this exact ticket; it will not be resent automatically.",
       };
     }
     entry.posting = false;

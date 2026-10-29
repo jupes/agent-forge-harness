@@ -39,12 +39,12 @@ import { ProjectShifts } from "./ProjectShifts";
 import { ProjectsHome } from "./ProjectsHome";
 import { ProjectWorkbench } from "./ProjectWorkbench";
 import { Providers } from "./Providers";
-import type { VerifiedProjectCreate } from "./project-create-owner";
 import {
   activityHref,
   emptyActivityFilters,
   parseActivityFilters,
 } from "./project-activity-model";
+import type { VerifiedProjectCreate } from "./project-create-owner";
 import { parseRunFilters, runsHref } from "./project-runs-model";
 import { ClaudeSessionComposer, SessionComposer } from "./SessionComposer";
 import { SessionConversation } from "./SessionConversation";
@@ -77,8 +77,9 @@ import { useWorkbench } from "./use-workbench";
 /** Desktop routing stays separate from the ordinary dashboard's legacy URLs and snapshot mode. */
 export function DesktopApp(): JSX.Element {
   const [route, setRoute] = useState(() => desktopRoute(window.location.hash));
-  const [finishBrief, setFinishBrief] =
-    useState<VerifiedProjectCreate | null>(null);
+  const [finishBrief, setFinishBrief] = useState<VerifiedProjectCreate | null>(
+    null,
+  );
   const managedSelection = managedShiftSelection(window.location.hash);
   const [inspectorOpen, setInspectorOpen] = useState(
     () => window.matchMedia("(min-width: 1201px)").matches,

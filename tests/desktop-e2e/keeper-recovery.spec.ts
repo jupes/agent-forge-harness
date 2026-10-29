@@ -539,7 +539,9 @@ test("Overview leaves brief review available while Keeper send readiness is unav
   await expect(
     brief.getByRole("button", { name: "Review a brief", exact: true }),
   ).toBeEnabled();
-  await expect(brief.getByText("Keeper cannot send a brief yet.", { exact: false })).toBeVisible();
+  await expect(
+    brief.getByText("Keeper cannot send a brief yet.", { exact: false }),
+  ).toBeVisible();
   await brief.getByRole("link", { name: "Review Keeper readiness" }).click();
   await expect(page).toHaveURL(new RegExp(`/project/${alpha.id}/keeper$`));
   expect(state().turns).toHaveLength(1);

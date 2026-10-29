@@ -81,12 +81,13 @@ export const keeperBriefIntentOriginRequestSchema: z.ZodType<KeeperBriefOriginRe
       })
       .strict(),
   ]);
-export const keeperBriefIntentReserveRequestSchema: z.ZodType<KeeperBriefIntentReserveRequest> = z
-  .object({
-    expectedRevision: count,
-    origin: keeperBriefIntentOriginRequestSchema,
-  })
-  .strict();
+export const keeperBriefIntentReserveRequestSchema: z.ZodType<KeeperBriefIntentReserveRequest> =
+  z
+    .object({
+      expectedRevision: count,
+      origin: keeperBriefIntentOriginRequestSchema,
+    })
+    .strict();
 export const briefSnapshotSchema: z.ZodType<KeeperBriefSnapshot> = z
   .object({
     version: z.literal(1),
@@ -150,13 +151,14 @@ export const keeperBriefIntentReserveSchema = z
     snapshot: briefSnapshotSchema,
   })
   .strict();
-export const keeperBriefIntentReferenceSchema: z.ZodType<KeeperBriefIntentReference> = z
-  .object({
-    requestId: z.string().uuid(),
-    expectedRevision: count,
-    intentHash: z.string().regex(/^[a-f0-9]{64}$/),
-  })
-  .strict();
+export const keeperBriefIntentReferenceSchema: z.ZodType<KeeperBriefIntentReference> =
+  z
+    .object({
+      requestId: z.string().uuid(),
+      expectedRevision: count,
+      intentHash: z.string().regex(/^[a-f0-9]{64}$/),
+    })
+    .strict();
 export const keeperBriefIntentRetireSchema = z
   .object({
     requestId: z.string().uuid(),

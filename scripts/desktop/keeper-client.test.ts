@@ -216,11 +216,13 @@ test("an unanswered brief reservation stays held and never retries or commits un
   f.client.draft(alpha, "A later question");
   await f.client.refreshBrief(alpha);
   await f.client.retryOriginal(alpha);
-  expect(f.posts).toEqual([{
-    projectId: alpha,
-    action: "brief-intents/reserve",
-    body: { expectedRevision: 0, origin: { kind: "overview" } },
-  }]);
+  expect(f.posts).toEqual([
+    {
+      projectId: alpha,
+      action: "brief-intents/reserve",
+      body: { expectedRevision: 0, origin: { kind: "overview" } },
+    },
+  ]);
   expect(f.posts.some((post) => post.action === "briefs")).toBe(false);
   expect(f.client.get(alpha).draft).toBe("A later question");
   expect(f.client.get(alpha).briefIntentState).toBe("unknown");

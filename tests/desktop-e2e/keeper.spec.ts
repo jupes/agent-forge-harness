@@ -284,9 +284,9 @@ test("reviewed brief uses the standing conversation, recovers its original, and 
       name: "Exact Keeper brief original",
     }),
   ).toBeVisible();
-  await expect(recoveredPanel.locator(".af-brief-review dd").first()).toHaveText(
-    canonicalRequestId ?? "",
-  );
+  await expect(
+    recoveredPanel.locator(".af-brief-review dd").first(),
+  ).toHaveText(canonicalRequestId ?? "");
   await expect.poll(starts).toBe(before);
   const firstCommitResponse = page.waitForResponse(
     (response) =>

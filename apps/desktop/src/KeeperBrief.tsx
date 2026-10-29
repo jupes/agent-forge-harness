@@ -260,11 +260,11 @@ export function KeeperBriefPanel({
             disabled={!client.canRefreshBrief(projectId)}
             onClick={openReview}
           >
-            {reviewLabel === "Review a brief" ? "Review first brief" : reviewLabel}
+            {reviewLabel === "Review a brief"
+              ? "Review first brief"
+              : reviewLabel}
           </Button>{" "}
-          <Button
-            onClick={() => onFinishFirstBrief?.(onboardingRequestId)}
-          >
+          <Button onClick={() => onFinishFirstBrief?.(onboardingRequestId)}>
             Finish without a brief
           </Button>
         </section>
@@ -295,7 +295,9 @@ export function KeeperBriefPanel({
         </p>
       )}
       {!data?.latest && !state.briefsLoading && (
-        <p>No confirmed brief yet. Review a brief to prepare one for sending.</p>
+        <p>
+          No confirmed brief yet. Review a brief to prepare one for sending.
+        </p>
       )}
       {state.briefIntentState === "loading" && (
         <p role="status">Checking for a saved Keeper brief original…</p>
@@ -331,7 +333,10 @@ export function KeeperBriefPanel({
         <p role="status">{state.briefIntentError}</p>
       )}
       {state.briefOriginal && state.briefIntent && (
-        <section class="af-brief-review" aria-label="Exact Keeper brief original">
+        <section
+          class="af-brief-review"
+          aria-label="Exact Keeper brief original"
+        >
           <h3>
             {onboardingRequestId
               ? "Review first brief"
@@ -347,7 +352,8 @@ export function KeeperBriefPanel({
             <dt>Keeper selection</dt>
             <dd>
               {state.briefOriginal.selection.name} ·{" "}
-              {state.briefOriginal.selection.provider}/{state.briefOriginal.selection.model} ·{" "}
+              {state.briefOriginal.selection.provider}/
+              {state.briefOriginal.selection.model} ·{" "}
               {state.briefOriginal.selection.effort}
             </dd>
             <dt>Saved scope</dt>
@@ -357,7 +363,9 @@ export function KeeperBriefPanel({
               {state.briefOriginal.snapshot.scope.repositoryCount} repositories
             </dd>
             <dt>Snapshot as of</dt>
-            <dd>{new Date(state.briefOriginal.snapshot.asOf).toLocaleString()}</dd>
+            <dd>
+              {new Date(state.briefOriginal.snapshot.asOf).toLocaleString()}
+            </dd>
           </dl>
           <p>{state.briefOriginal.snapshot.limitations.join(" ")}</p>
           <details>
@@ -366,48 +374,48 @@ export function KeeperBriefPanel({
           </details>
           {state.briefIntentState === "reserved" &&
             state.briefOriginal.state === "reserved" && (
-            <>
-              <Button
-                variant="primary"
-                disabled={!client.canCommitBrief(projectId)}
-                onClick={() => {
-                  void client.commitBrief(projectId).then((committed) => {
-                    if (committed && onboardingRequestId)
-                      onFinishFirstBrief?.(onboardingRequestId);
-                  });
-                }}
-              >
-                {onboardingRequestId
-                  ? "Finish and send reviewed brief"
-                  : "Send reviewed brief"}
-              </Button>{" "}
-              {!confirmRetire ? (
+              <>
                 <Button
-                  disabled={state.posting}
-                  onClick={() => setConfirmRetire(true)}
+                  variant="primary"
+                  disabled={!client.canCommitBrief(projectId)}
+                  onClick={() => {
+                    void client.commitBrief(projectId).then((committed) => {
+                      if (committed && onboardingRequestId)
+                        onFinishFirstBrief?.(onboardingRequestId);
+                    });
+                  }}
                 >
-                  Retire reservation
-                </Button>
-              ) : (
-                <span role="group" aria-label="Confirm brief retirement">
-                  <span>Retire only this reserved original? </span>
-                  <Button onClick={() => setConfirmRetire(false)}>
-                    Keep it
-                  </Button>{" "}
+                  {onboardingRequestId
+                    ? "Finish and send reviewed brief"
+                    : "Send reviewed brief"}
+                </Button>{" "}
+                {!confirmRetire ? (
                   <Button
                     disabled={state.posting}
-                    onClick={() => {
-                      void client.retireBrief(projectId).then((retired) => {
-                        if (retired) setConfirmRetire(false);
-                      });
-                    }}
+                    onClick={() => setConfirmRetire(true)}
                   >
-                    Confirm retirement
+                    Retire reservation
                   </Button>
-                </span>
-              )}
-            </>
-          )}
+                ) : (
+                  <span role="group" aria-label="Confirm brief retirement">
+                    <span>Retire only this reserved original? </span>
+                    <Button onClick={() => setConfirmRetire(false)}>
+                      Keep it
+                    </Button>{" "}
+                    <Button
+                      disabled={state.posting}
+                      onClick={() => {
+                        void client.retireBrief(projectId).then((retired) => {
+                          if (retired) setConfirmRetire(false);
+                        });
+                      }}
+                    >
+                      Confirm retirement
+                    </Button>
+                  </span>
+                )}
+              </>
+            )}
         </section>
       )}
       {data && data.earlier.length > 0 && (
