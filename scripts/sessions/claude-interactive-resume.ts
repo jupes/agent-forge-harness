@@ -40,7 +40,9 @@ export function serializeClaudeInteractiveResume(input: {
     !flags.has("--permission-mode") ||
     !flags.has("--allowedTools")
   )
-    throw new Error("The saved Claude CLI capabilities cannot resume this Chat safely.");
+    throw new Error(
+      "The saved Claude CLI capabilities cannot resume this Chat safely.",
+    );
   if (
     saved.maxBudgetUsd !== undefined ||
     saved.outputSchema !== undefined ||
@@ -52,7 +54,9 @@ export function serializeClaudeInteractiveResume(input: {
     (!flags.has("--effort") ||
       !capabilities.data.modelEfforts?.[saved.model]?.includes(saved.effort))
   )
-    throw new Error("The saved Claude CLI capabilities do not support this Chat effort.");
+    throw new Error(
+      "The saved Claude CLI capabilities do not support this Chat effort.",
+    );
   const argv = [
     input.executable,
     "--resume",

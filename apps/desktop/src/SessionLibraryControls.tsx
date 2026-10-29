@@ -1,8 +1,8 @@
 import { useRef, useState } from "preact/hooks";
 import { Button } from "../../../docs/js/ds/Button";
 import { Dialog } from "../../../docs/js/ds/Dialog";
-import type { OwnedCodingSessionRecord } from "../../../types/codex-owned-task";
 import { CLAUDE_ALLOWED_TOOLS } from "../../../scripts/executors/claude-tools";
+import type { OwnedCodingSessionRecord } from "../../../types/codex-owned-task";
 import type { OwnedSessionView } from "./session-client";
 import { ownedSessionControls } from "./session-controls";
 import type { SessionLibraryClient } from "./session-library-client";
@@ -239,14 +239,14 @@ export function SessionLibraryControls({
               {!terminalHostAvailable
                 ? "Native terminal handoff is available only on Windows x64."
                 : terminalAttempt?.phase === "opened"
-                ? "Managed terminal is open. Claude resumption and terminal activity are not synced to this saved Chat."
-                : terminalAttempt?.phase === "unknown"
-                  ? "Terminal outcome is unknown. Check this original request; another terminal is blocked."
-                  : terminalAttempt?.phase === "closed"
-                    ? "The managed terminal has closed. Its activity is not synced to this saved Chat."
-                    : terminalAttempt?.phase === "refused"
-                      ? "No terminal was created. Review the original input before a new explicit attempt."
-                      : controls.terminal.reason}
+                  ? "Managed terminal is open. Claude resumption and terminal activity are not synced to this saved Chat."
+                  : terminalAttempt?.phase === "unknown"
+                    ? "Terminal outcome is unknown. Check this original request; another terminal is blocked."
+                    : terminalAttempt?.phase === "closed"
+                      ? "The managed terminal has closed. Its activity is not synced to this saved Chat."
+                      : terminalAttempt?.phase === "refused"
+                        ? "No terminal was created. Review the original input before a new explicit attempt."
+                        : controls.terminal.reason}
             </dd>
             <dt>Permissions</dt>
             <dd>{controls.permissions.reason}</dd>
@@ -297,9 +297,9 @@ export function SessionLibraryControls({
       >
         <div class="af-session-library-panel">
           <p>
-            Asks Claude to resume this saved Chat in a managed native
-            terminal. The original app turn stays ended. This terminal closes
-            with Agent Forge. Terminal activity is not synced.
+            Asks Claude to resume this saved Chat in a managed native terminal.
+            The original app turn stays ended. This terminal closes with Agent
+            Forge. Terminal activity is not synced.
           </p>
           <dl>
             <dt>Saved Chat</dt>
@@ -315,7 +315,13 @@ export function SessionLibraryControls({
           </dl>
           <section aria-label="Original source input">
             <p>Original source input</p>
-            {terminalText ? <pre>{terminalText}</pre> : <p>The original source input is unavailable; no terminal will open.</p>}
+            {terminalText ? (
+              <pre>{terminalText}</pre>
+            ) : (
+              <p>
+                The original source input is unavailable; no terminal will open.
+              </p>
+            )}
             {!!terminalSnapshot?.launch.attachments?.length && (
               <div>
                 <p>Original attachments</p>
@@ -343,7 +349,11 @@ export function SessionLibraryControls({
             you. This action does not send a new prompt.
           </p>
           <ul aria-label="Enabled Claude tools">
-            {CLAUDE_ALLOWED_TOOLS.map((tool) => <li key={tool}><code>{tool}</code></li>)}
+            {CLAUDE_ALLOWED_TOOLS.map((tool) => (
+              <li key={tool}>
+                <code>{tool}</code>
+              </li>
+            ))}
           </ul>
           {selected?.terminalAttempt?.phase === "unknown" && (
             <p role="alert">

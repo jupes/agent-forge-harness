@@ -45,15 +45,15 @@ import {
   createProviderInspector,
   type ProviderInspector,
 } from "../providers/inspect";
-import type {
-  NativeConsoleChild,
-  NativeConsoleLaunchOptions,
-} from "../providers/native-console";
 import {
   createProviderLoginService,
   type ProviderLoginService,
 } from "../providers/login";
 import { createNativeLoginPreparation } from "../providers/login-native";
+import type {
+  NativeConsoleChild,
+  NativeConsoleLaunchOptions,
+} from "../providers/native-console";
 import { SHIFTS_DIR } from "../scheduler/shift-store";
 import type { GitRun } from "../scheduler/worktrees";
 import type { SessionRuntime } from "../sessions/admission";

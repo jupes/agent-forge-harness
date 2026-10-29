@@ -26,11 +26,11 @@ import type { KeeperRuntime } from "../../keeper/recovery-runtime";
 import type { AppendResult } from "../../ledger/append";
 import { latestEventId, queryEvents } from "../../ledger/query";
 import type { ProviderInspector } from "../../providers/inspect";
+import type { ProviderLoginService } from "../../providers/login";
 import type {
   NativeConsoleChild,
   NativeConsoleLaunchOptions,
 } from "../../providers/native-console";
-import type { ProviderLoginService } from "../../providers/login";
 import type { SessionRuntime } from "../../sessions/admission";
 import type { createCodexChatRuntime } from "../../sessions/codex-chat-runtime";
 import type { createCodexTaskRuntime } from "../../sessions/codex-task-runtime";

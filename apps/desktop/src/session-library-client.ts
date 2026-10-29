@@ -11,14 +11,14 @@ import type {
   SessionLibraryEntry,
   SessionLibraryRead,
 } from "../../../types/session-library";
+import {
+  type TerminalHandoffAttempt,
+  terminalHandoffPageSchema,
+} from "../../../types/session-terminal-handoff";
 import type {
   SessionArchiveJournal,
   SessionArchiveMarker,
 } from "./session-archive-journal";
-import {
-  terminalHandoffPageSchema,
-  type TerminalHandoffAttempt,
-} from "../../../types/session-terminal-handoff";
 
 export interface SessionLibraryProjectView {
   entries: SessionLibraryEntry[];
@@ -428,14 +428,16 @@ export function createSessionLibraryClient(deps: {
       view.terminalReadGeneration++;
       view.terminalLoading = false;
       view.terminalError = "";
-      view.terminalNotice = "Reviewing the saved Claude Chat before opening a terminal…";
+      view.terminalNotice =
+        "Reviewing the saved Claude Chat before opening a terminal…";
       tell();
       try {
         const result = await deps.postTerminal(view.record, requestId);
         if (!current(view, ticket)) return;
         if (result.state === "done") {
-          const parsed = terminalHandoffPageSchema
-            .shape.attempt.safeParse(result.data);
+          const parsed = terminalHandoffPageSchema.shape.attempt.safeParse(
+            result.data,
+          );
           if (
             !parsed.success ||
             !parsed.data ||
@@ -443,7 +445,9 @@ export function createSessionLibraryClient(deps: {
             parsed.data.projectId !== view.record.projectId ||
             parsed.data.sessionId !== view.record.id
           )
-            throw Error("The terminal receipt did not match the original request.");
+            throw Error(
+              "The terminal receipt did not match the original request.",
+            );
           view.terminalAttempt = parsed.data;
           view.terminalNotice =
             parsed.data.phase === "opened"

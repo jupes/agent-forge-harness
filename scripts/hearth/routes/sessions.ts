@@ -4,10 +4,12 @@ import type { OwnedSessionStartRequest } from "../../../types/codex-owned-task";
 import type { GeminiChatDecisionRequest } from "../../../types/gemini-owned-chat";
 import type { LedgerEventInput } from "../../../types/hearth";
 import type { SessionOperationIdentityPage } from "../../../types/session-operation-identities";
+import { terminalHandoffRequestSchema } from "../../../types/session-terminal-handoff";
 import type { SessionMessage } from "../../../types/session-turn";
 import { ConversationError } from "../../conversations/error";
 import { parseSessionSend } from "../../conversations/protocol";
 import { isConversationRequestId } from "../../conversations/store";
+import { buildChildEnv } from "../../executors/env";
 import type { AppendResult } from "../../ledger/append";
 import { workspaceKey } from "../../projects/scope";
 import {
@@ -15,13 +17,9 @@ import {
   isProjectId,
   ProjectStoreError,
 } from "../../projects/store";
-import type { SessionRuntime } from "../../sessions/admission";
 import type { ProviderInspector } from "../../providers/inspect";
-import { buildChildEnv } from "../../executors/env";
-import { createSessionTerminalHandoff } from "../../sessions/terminal-handoff";
-import { terminalHandoffRequestSchema } from "../../../types/session-terminal-handoff";
-import { launchWindowsConsole } from "../../providers/native-console";
-import { originalSessionLaunchMatches } from "../../sessions/library-protocol";
+import type { launchWindowsConsole } from "../../providers/native-console";
+import type { SessionRuntime } from "../../sessions/admission";
 import { isClaudeSessionId } from "../../sessions/claude-stream";
 import {
   CODEX_CHAT_FORK_PROTOCOL_VERSION,
@@ -45,6 +43,7 @@ import type { createGeminiChatRuntime } from "../../sessions/gemini-chat-runtime
 import { createGeminiTaskPreview } from "../../sessions/gemini-owned-preview";
 import type { createGeminiTaskRuntime } from "../../sessions/gemini-task-runtime";
 import { sessionRequestHashSchema } from "../../sessions/identity-protocol";
+import { originalSessionLaunchMatches } from "../../sessions/library-protocol";
 import {
   createOwnedCodingSessionService,
   unavailableCodexChatRuntime,
@@ -55,6 +54,7 @@ import {
 import { canonicalSessionInput } from "../../sessions/preparation";
 import { createSessionPreview } from "../../sessions/preview";
 import { SessionRegistryError } from "../../sessions/registry";
+import { createSessionTerminalHandoff } from "../../sessions/terminal-handoff";
 import type {
   ActionContext,
   ActionRoute,
@@ -213,9 +213,7 @@ export function createOwnedSessionRoutes(
             frame.event.kind === "user",
         ),
         snapshot =
-          original?.event.kind === "user"
-            ? original.event.session
-            : undefined;
+          original?.event.kind === "user" ? original.event.session : undefined;
       const sourceAbout =
         original?.event.kind === "user" ? original.event.about : [];
       if (
@@ -238,12 +236,7 @@ export function createOwnedSessionRoutes(
           409,
           "The saved Chat is active, uncertain, unbound or no longer matches its original Claude identity.",
         );
-      await validateScope(
-        projectId,
-        record,
-        sourceAbout,
-        snapshot.launch,
-      );
+      await validateScope(projectId, record, sourceAbout, snapshot.launch);
       const inspection = await terminalInspector.inspect("claude", []),
         executable = inspection.installation.path;
       if (
@@ -377,7 +370,8 @@ export function createOwnedSessionRoutes(
     path: "/projects/:id/sessions/:sessionId/terminal-handoff",
     operatorOnly: true,
     validate(request) {
-      const selected = address(request), query = noParameters(request);
+      const selected = address(request),
+        query = noParameters(request);
       return !selected.ok ? selected : !query.ok ? query : selected;
     },
     read: ({ projectId, sessionId }) =>
@@ -393,21 +387,37 @@ export function createOwnedSessionRoutes(
     action: "session.terminal.open",
     maxBodyBytes: 4096,
     validate(request) {
-      const selected = address(request), query = noParameters(request),
+      const selected = address(request),
+        query = noParameters(request),
         body = terminalHandoffRequestSchema.safeParse(request.body);
       if (!selected.ok) return selected;
       if (!query.ok) return query;
       return body.success
-        ? { ok: true, value: { ...selected.value, requestId: body.data.requestId } }
+        ? {
+            ok: true,
+            value: { ...selected.value, requestId: body.data.requestId },
+          }
         : fail("Terminal handoff accepts only a fresh request UUID.");
     },
     subject: ({ sessionId, requestId }) => ({ target: sessionId, requestId }),
     effect: (value, context?: ActionContext) =>
       answer(200, () => {
         readable(value.projectId);
-        if (!context || !Number.isSafeInteger(context.auditEventId) || context.auditEventId <= 0)
-          throw new ConversationError(503, "A confirmed operator audit receipt is required before opening a terminal.");
-        return terminal.open(value.projectId, value.sessionId, value.requestId, context.auditEventId);
+        if (
+          !context ||
+          !Number.isSafeInteger(context.auditEventId) ||
+          context.auditEventId <= 0
+        )
+          throw new ConversationError(
+            503,
+            "A confirmed operator audit receipt is required before opening a terminal.",
+          );
+        return terminal.open(
+          value.projectId,
+          value.sessionId,
+          value.requestId,
+          context.auditEventId,
+        );
       }),
   };
   const identityList: ReadRoute<string> = {

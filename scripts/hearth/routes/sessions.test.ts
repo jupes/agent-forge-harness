@@ -1,6 +1,6 @@
 import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import type {
   ConversationPage,
@@ -8,11 +8,6 @@ import type {
 } from "../../../types/conversation";
 import type { OwnedSessionRecord } from "../../../types/owned-session";
 import type { SessionStartReceipt } from "../../../types/session-requests";
-import type { SessionRuntime } from "../../sessions/admission";
-import {
-  launchWindowsConsole,
-  type NativeConsoleLaunchOptions,
-} from "../../providers/native-console";
 import { createConversationStore } from "../../conversations/store";
 import { projectCatalogPath } from "../../projects/store";
 import {
@@ -20,12 +15,17 @@ import {
   projectCatalogFixture,
 } from "../../projects/testing";
 import {
+  launchWindowsConsole,
+  type NativeConsoleLaunchOptions,
+} from "../../providers/native-console";
+import type { SessionRuntime } from "../../sessions/admission";
+import {
   createSessionRegistry,
   sessionRegistryFile,
 } from "../../sessions/registry";
 import { expectStartIdentityState } from "../../sessions/session-start-identity-test-witness";
-import { startTestHearth, type TestHearth } from "../testing";
 import { scratchDirs } from "../../test-scratch";
+import { startTestHearth, type TestHearth } from "../testing";
 import { writeOwnerOnly } from "../token";
 import {
   FIXTURE_SESSION_REPLY,
@@ -48,7 +48,10 @@ beforeAll(async () => {
     return;
   const directory = terminalBinaries.make("claude-terminal-stand-in-"),
     executable = join(directory, "claude-terminal.exe"),
-    source = join(import.meta.dir, "../../providers/fixtures/claude-terminal-stand-in.ts"),
+    source = join(
+      import.meta.dir,
+      "../../providers/fixtures/claude-terminal-stand-in.ts",
+    ),
     build = Bun.spawn(
       [process.execPath, "build", "--compile", source, "--outfile", executable],
       { stdout: "ignore", stderr: "pipe", windowsHide: true },
@@ -57,7 +60,9 @@ beforeAll(async () => {
   try {
     const stderr = await new Response(build.stderr).text();
     if ((await build.exited) !== 0)
-      throw Error(`The inert terminal fixture did not compile: ${stderr.slice(-2000)}`);
+      throw Error(
+        `The inert terminal fixture did not compile: ${stderr.slice(-2000)}`,
+      );
     terminalFixtureExecutable = executable;
   } finally {
     clearTimeout(timer);
@@ -182,10 +187,7 @@ test.skipIf(
           launch: structuredClone(input.launch),
           capabilities: {
             version: "2.1.296",
-            flags: [
-              ...fixtureSessionFlags,
-              "--permission-mode",
-            ],
+            flags: [...fixtureSessionFlags, "--permission-mode"],
           },
         };
       },
@@ -241,7 +243,10 @@ test.skipIf(
             ...options,
             env: {
               ...options.env,
-              CLAUDE_TERMINAL_FIXTURE_RECORD: join(options.cwd, "terminal-record.json"),
+              CLAUDE_TERMINAL_FIXTURE_RECORD: join(
+                options.cwd,
+                "terminal-record.json",
+              ),
               CLAUDE_TERMINAL_FIXTURE_HOLD: "1",
             },
           });
@@ -286,38 +291,49 @@ test.skipIf(
     expect(providerTurns).toBe(1);
     expect((await open()).status).toBe(200);
     const status: { data: { attempt: { phase: string; requestId: string } } } =
-      await (await fetch(`${h.api}${terminalPath}`, {
-        headers: h.headers(h.hearth.token),
-      })).json();
+      await (
+        await fetch(`${h.api}${terminalPath}`, {
+          headers: h.headers(h.hearth.token),
+        })
+      ).json();
     expect(status.data.attempt.requestId).toBe(requestId);
     expect(["opened", "closed"]).toContain(status.data.attempt.phase);
     expect(launches).toHaveLength(1);
-    const pageResponse = await fetch(`${h.api}${base}/${startedBody.data.session.id}`, {
-      headers: h.headers(h.hearth.token),
-    });
+    const pageResponse = await fetch(
+      `${h.api}${base}/${startedBody.data.session.id}`,
+      {
+        headers: h.headers(h.hearth.token),
+      },
+    );
     const page: ConversationPage = (await pageResponse.json()).data;
-    const send = await fetch(`${h.api}${base}/${startedBody.data.session.id}/turns`, {
-      method: "POST",
-      headers: h.headers(h.hearth.token),
-      body: JSON.stringify({
-        requestId: randomUUID(),
-        expectedRevision: page.revision,
-        text: "This app send must stay held while the terminal is open.",
-        about: [],
-      }),
-    });
+    const send = await fetch(
+      `${h.api}${base}/${startedBody.data.session.id}/turns`,
+      {
+        method: "POST",
+        headers: h.headers(h.hearth.token),
+        body: JSON.stringify({
+          requestId: randomUUID(),
+          expectedRevision: page.revision,
+          text: "This app send must stay held while the terminal is open.",
+          about: [],
+        }),
+      },
+    );
     expect(send.status).toBe(409);
     expect(launches).toHaveLength(1);
     expect(providerTurns).toBe(1);
     const recordPath = join(h.root, "terminal-record.json"),
       deadline = Date.now() + 5000;
-    while (!existsSync(recordPath) && Date.now() < deadline) await Bun.sleep(10);
+    while (!existsSync(recordPath) && Date.now() < deadline)
+      await Bun.sleep(10);
     expect(existsSync(recordPath)).toBe(true);
     let nativeRecord: unknown;
     try {
       nativeRecord = JSON.parse(readFileSync(recordPath, "utf8"));
     } catch {
-      throw new Error("The inert native Claude-resume fixture record is invalid.");
+      throw new Error(
+        "The inert native Claude-resume fixture record is invalid.",
+      );
     }
     if (
       !nativeRecord ||
@@ -327,7 +343,9 @@ test.skipIf(
       !("cwd" in nativeRecord) ||
       typeof nativeRecord.cwd !== "string"
     )
-      throw new Error("The inert native Claude-resume fixture record is incomplete.");
+      throw new Error(
+        "The inert native Claude-resume fixture record is incomplete.",
+      );
     expect(nativeRecord.args).toEqual(launches[0]?.command.slice(1));
     expect(nativeRecord.args).toContain(nativeSessionId);
     expect(nativeRecord.args).not.toContain(FIXTURE_SESSION_PROMPT);
@@ -348,7 +366,10 @@ test.skipIf(
     );
     const journal: { attempts: Array<{ requestId: string; phase: string }> } =
       JSON.parse(readFileSync(join(handoffDir, "attempts.json"), "utf8"));
-    expect(journal.attempts.at(-1)).toMatchObject({ requestId, phase: "closed" });
+    expect(journal.attempts.at(-1)).toMatchObject({
+      requestId,
+      phase: "closed",
+    });
   },
 );
 

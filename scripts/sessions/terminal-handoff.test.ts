@@ -1,16 +1,16 @@
 import { afterEach, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, readdirSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { SessionTurnSnapshot } from "../../types/session-turn";
+import { ConversationError } from "../conversations/error";
 import {
-  NativeConsoleNotStartedError,
+  type launchWindowsConsole,
   type NativeConsoleChild,
   type NativeConsoleExit,
   type NativeConsoleLaunchOptions,
-  launchWindowsConsole,
+  NativeConsoleNotStartedError,
 } from "../providers/native-console";
-import { ConversationError } from "../conversations/error";
 import { scratchDirs } from "../test-scratch";
 import { createSessionTerminalHandoff } from "./terminal-handoff";
 
@@ -47,7 +47,8 @@ function fixture(launch?: typeof launchWindowsConsole) {
     launch: {
       mode: "chat",
       model: "claude-sonnet-4-5",
-      prompt: "private original input must never be persisted in the handoff journal",
+      prompt:
+        "private original input must never be persisted in the handoff journal",
       permissionMode: "plan",
     },
     capabilities: {
@@ -73,7 +74,15 @@ function fixture(launch?: typeof launchWindowsConsole) {
     ...(launch ? { launch } : {}),
   });
   services.push(service);
-  return { root, home, projectId, sessionId, turnRequestId, nativeSessionId, service };
+  return {
+    root,
+    home,
+    projectId,
+    sessionId,
+    turnRequestId,
+    nativeSessionId,
+    service,
+  };
 }
 
 test("an opened terminal is not replayed after service restart and holds app sends", async () => {
@@ -92,7 +101,8 @@ test("an opened terminal is not replayed after service restart and holds app sen
     };
     return child;
   };
-  const f = fixture(launcher), requestId = randomUUID();
+  const f = fixture(launcher),
+    requestId = randomUUID();
   const first = await f.service.open(f.projectId, f.sessionId, requestId, 4);
   expect(first.phase).toBe("opened");
   expect(invoked).toHaveLength(1);
@@ -128,7 +138,9 @@ test("an opened terminal is not replayed after service restart and holds app sen
     launch: launcher,
   });
   services.push(recovered);
-  expect((await recovered.read(f.projectId, f.sessionId)).attempt).toMatchObject({
+  expect(
+    (await recovered.read(f.projectId, f.sessionId)).attempt,
+  ).toMatchObject({
     requestId,
     phase: "unknown",
   });
@@ -145,10 +157,16 @@ test("an opened terminal is not replayed after service restart and holds app sen
 
   completion.resolve(finish());
   for (let index = 0; index < 50; index++) {
-    if ((await recovered.read(f.projectId, f.sessionId)).attempt?.phase === "closed") break;
+    if (
+      (await recovered.read(f.projectId, f.sessionId)).attempt?.phase ===
+      "closed"
+    )
+      break;
     await Bun.sleep(10);
   }
-  expect((await recovered.read(f.projectId, f.sessionId)).attempt?.phase).toBe("closed");
+  expect((await recovered.read(f.projectId, f.sessionId)).attempt?.phase).toBe(
+    "closed",
+  );
   expect(stopCalls).toBe(0);
 });
 
@@ -158,12 +176,17 @@ test("only a source-proven CreateProcess refusal allows a separately reviewed re
     attempts++;
     throw new NativeConsoleNotStartedError();
   };
-  const f = fixture(launcher), firstId = randomUUID();
-  await expect(f.service.open(f.projectId, f.sessionId, firstId, 7)).rejects.toMatchObject({
+  const f = fixture(launcher),
+    firstId = randomUUID();
+  await expect(
+    f.service.open(f.projectId, f.sessionId, firstId, 7),
+  ).rejects.toMatchObject({
     status: 409,
     message: expect.stringContaining("No CLI was started"),
   });
-  expect((await f.service.read(f.projectId, f.sessionId)).attempt).toMatchObject({
+  expect(
+    (await f.service.read(f.projectId, f.sessionId)).attempt,
+  ).toMatchObject({
     requestId: firstId,
     phase: "refused",
     auditEventId: 7,
@@ -180,12 +203,17 @@ test("a launcher error after the native call boundary is unknown and never repla
     attempts++;
     throw new Error("synthetic ambiguous handoff failure");
   };
-  const f = fixture(launcher), requestId = randomUUID();
-  await expect(f.service.open(f.projectId, f.sessionId, requestId, 9)).rejects.toMatchObject({
+  const f = fixture(launcher),
+    requestId = randomUUID();
+  await expect(
+    f.service.open(f.projectId, f.sessionId, requestId, 9),
+  ).rejects.toMatchObject({
     status: 503,
     message: expect.stringContaining("outcome could not be confirmed"),
   });
-  expect((await f.service.read(f.projectId, f.sessionId)).attempt).toMatchObject({
+  expect(
+    (await f.service.read(f.projectId, f.sessionId)).attempt,
+  ).toMatchObject({
     requestId,
     phase: "unknown",
   });

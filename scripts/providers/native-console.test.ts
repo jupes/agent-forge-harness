@@ -243,11 +243,18 @@ test.skipIf(process.platform !== "win32" || process.arch !== "x64")(
     });
     try {
       let settled = false;
-      void child.done.then(() => (settled = true), () => (settled = true));
+      void child.done.then(
+        () => (settled = true),
+        () => (settled = true),
+      );
       await Bun.sleep(250);
       expect(settled).toBe(false);
       const result = await child.stop();
-      expect(result).toEqual({ exitCode: expect.any(Number), stopped: true, timedOut: false });
+      expect(result).toEqual({
+        exitCode: expect.any(Number),
+        stopped: true,
+        timedOut: false,
+      });
       expect(settled).toBe(true);
     } finally {
       await child.stop();

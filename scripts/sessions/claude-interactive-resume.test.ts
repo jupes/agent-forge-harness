@@ -14,7 +14,11 @@ const snapshot = (flags: string[]) => ({
     prompt: "private prompt must never enter terminal argv",
     permissionMode: "plan" as const,
     effort: "high" as const,
-    context: { projectId: "project-fixture", repository: "C:\\repo", worktree: "C:\\repo\\worktree" },
+    context: {
+      projectId: "project-fixture",
+      repository: "C:\\repo",
+      worktree: "C:\\repo\\worktree",
+    },
   },
   capabilities: {
     version: "2.1.42",
@@ -66,7 +70,13 @@ test("interactive resume refuses a missing verified flag instead of changing sav
     serializeClaudeInteractiveResume({
       executable: "C:\\Claude\\claude.exe",
       sessionId: "latest",
-      snapshot: snapshot(["--resume", "--model", "--allowedTools", "--permission-mode", "--effort"]),
+      snapshot: snapshot([
+        "--resume",
+        "--model",
+        "--allowedTools",
+        "--permission-mode",
+        "--effort",
+      ]),
     }),
   ).toThrow("native identity");
 });
@@ -84,7 +94,9 @@ test("interactive resume rejects corrupted modes and headless-only policy", () =
   ).toThrow("native identity");
 
   const forbiddenPermission = snapshot(flags);
-  Object.assign(forbiddenPermission.launch, { permissionMode: "bypassPermissions" });
+  Object.assign(forbiddenPermission.launch, {
+    permissionMode: "bypassPermissions",
+  });
   expect(() =>
     serializeClaudeInteractiveResume({
       executable: "C:\\Claude\\claude.exe",
@@ -114,7 +126,13 @@ test("interactive resume cannot turn a shell-like path or session selector into 
       serializeClaudeInteractiveResume({
         executable,
         sessionId: uuid,
-        snapshot: snapshot(["--resume", "--model", "--allowedTools", "--permission-mode", "--effort"]),
+        snapshot: snapshot([
+          "--resume",
+          "--model",
+          "--allowedTools",
+          "--permission-mode",
+          "--effort",
+        ]),
       }),
     ).toThrow("native identity");
 });

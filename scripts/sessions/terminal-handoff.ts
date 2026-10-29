@@ -2,20 +2,24 @@ import { createHash } from "node:crypto";
 import { lstatSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
+import {
+  type TerminalHandoffAttempt,
+  terminalHandoffAttemptSchema,
+} from "../../types/session-terminal-handoff";
+import { ConversationError } from "../conversations/error";
+import {
+  ensurePrivateHome,
+  readHomeFile,
+  readSessionTranscript,
+} from "../hearth/home-guard";
+import { writeOwnerOnly } from "../hearth/token";
 import type { NativeConsoleChild } from "../providers/native-console";
 import {
   launchWindowsConsole,
   NativeConsoleNotStartedError,
 } from "../providers/native-console";
-import { ConversationError } from "../conversations/error";
-import { ensurePrivateHome, readHomeFile, readSessionTranscript } from "../hearth/home-guard";
-import { writeOwnerOnly } from "../hearth/token";
 import { withQueueLock } from "../scheduler/queue-lock";
 import { serializeClaudeInteractiveResume } from "./claude-interactive-resume";
-import {
-  terminalHandoffAttemptSchema,
-  type TerminalHandoffAttempt,
-} from "../../types/session-terminal-handoff";
 
 const journalSchema = z
   .object({
@@ -54,7 +58,12 @@ function canonicalRoot(root: string) {
   }
   return process.platform === "win32" ? canonical.toLowerCase() : canonical;
 }
-function turnKey(attempt: Pick<TerminalHandoffAttempt, "projectId" | "sessionId" | "turnRequestId">) {
+function turnKey(
+  attempt: Pick<
+    TerminalHandoffAttempt,
+    "projectId" | "sessionId" | "turnRequestId"
+  >,
+) {
   return `${attempt.projectId}\0${attempt.sessionId}\0${attempt.turnRequestId}`;
 }
 
@@ -62,13 +71,19 @@ function turnKey(attempt: Pick<TerminalHandoffAttempt, "projectId" | "sessionId"
 export function createSessionTerminalHandoff(options: {
   home: string;
   root: string;
-  candidate(projectId: string, sessionId: string): Promise<TerminalHandoffCandidate>;
+  candidate(
+    projectId: string,
+    sessionId: string,
+  ): Promise<TerminalHandoffCandidate>;
   launch?: typeof launchWindowsConsole;
 }) {
   const parent = join(options.home, "session-terminal-handoffs"),
     directory = join(
       parent,
-      createHash("sha256").update(canonicalRoot(options.root)).digest("hex").slice(0, 32),
+      createHash("sha256")
+        .update(canonicalRoot(options.root))
+        .digest("hex")
+        .slice(0, 32),
     ),
     file = join(directory, "attempts.json"),
     journalLock = join(directory, "attempts.lock.db");
@@ -135,7 +150,10 @@ export function createSessionTerminalHandoff(options: {
   }
   function write(value: Journal) {
     const text = `${JSON.stringify(value)}\n`;
-    if (!journalSchema.safeParse(value).success || Buffer.byteLength(text) > 262_144)
+    if (
+      !journalSchema.safeParse(value).success ||
+      Buffer.byteLength(text) > 262_144
+    )
       throw unavailable();
     try {
       writeOwnerOnly(file, text);
@@ -164,7 +182,8 @@ export function createSessionTerminalHandoff(options: {
         throw unavailable();
     } catch (error) {
       if (error instanceof ConversationError) throw error;
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw unavailable();
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT")
+        throw unavailable();
     }
     const result = await withQueueLock(lockPath, work, {
       waitMs: 2000,
@@ -177,8 +196,7 @@ export function createSessionTerminalHandoff(options: {
     return result.value;
   }
   function view(row: TerminalHandoffAttempt): TerminalHandoffAttempt {
-    if (unknownRequests.has(row.requestId))
-      return { ...row, phase: "unknown" };
+    if (unknownRequests.has(row.requestId)) return { ...row, phase: "unknown" };
     if (
       (row.phase === "opening" || row.phase === "opened") &&
       !active.has(row.requestId)
@@ -186,10 +204,14 @@ export function createSessionTerminalHandoff(options: {
       return { ...row, phase: "unknown" };
     return { ...row };
   }
-  async function complete(requestId: string, result: Awaited<NativeConsoleChild["done"]> | null) {
+  async function complete(
+    requestId: string,
+    result: Awaited<NativeConsoleChild["done"]> | null,
+  ) {
     try {
       await locked(async () => {
-        const value = state(), row = value.attempts.find((item) => item.requestId === requestId);
+        const value = state(),
+          row = value.attempts.find((item) => item.requestId === requestId);
         if (!row) throw unavailable();
         row.phase = result ? "closed" : "unknown";
         row.endedAt = new Date().toISOString();
@@ -208,7 +230,11 @@ export function createSessionTerminalHandoff(options: {
         locked(async () => {
           const value = state();
           const found = value.attempts
-            .filter((attempt) => attempt.projectId === projectId && attempt.sessionId === sessionId)
+            .filter(
+              (attempt) =>
+                attempt.projectId === projectId &&
+                attempt.sessionId === sessionId,
+            )
             .at(-1);
           return { attempt: found ? view(found) : null };
         }),
@@ -219,17 +245,27 @@ export function createSessionTerminalHandoff(options: {
         (attempt) =>
           attempt.projectId === projectId &&
           attempt.sessionId === sessionId &&
-          ["opening", "opened", "closed", "unknown"].includes(view(attempt).phase),
+          ["opening", "opened", "closed", "unknown"].includes(
+            view(attempt).phase,
+          ),
       );
     },
-    async send(projectId: string, sessionId: string, work: () => Promise<unknown>) {
+    async send(
+      projectId: string,
+      sessionId: string,
+      work: () => Promise<unknown>,
+    ) {
       return withSession(projectId, sessionId, async () => {
-        if (state().attempts.some(
-          (attempt) =>
-            attempt.projectId === projectId &&
-            attempt.sessionId === sessionId &&
-            ["opening", "opened", "closed", "unknown"].includes(view(attempt).phase),
-        ))
+        if (
+          state().attempts.some(
+            (attempt) =>
+              attempt.projectId === projectId &&
+              attempt.sessionId === sessionId &&
+              ["opening", "opened", "closed", "unknown"].includes(
+                view(attempt).phase,
+              ),
+          )
+        )
           throw new ConversationError(
             409,
             "This Chat has a native terminal handoff. Its terminal activity is not synced, so app sends are held.",
@@ -246,34 +282,62 @@ export function createSessionTerminalHandoff(options: {
       if (!z.uuid().safeParse(requestId).success)
         throw new ConversationError(400, "Expected a terminal handoff UUID.");
       if (!Number.isSafeInteger(auditEventId) || auditEventId <= 0)
-        throw new ConversationError(503, "A confirmed operator audit receipt is required before opening a terminal.");
+        throw new ConversationError(
+          503,
+          "A confirmed operator audit receipt is required before opening a terminal.",
+        );
       return withSession(projectId, sessionId, () =>
         locked(async () => {
-          const before = state(), existing = before.attempts.find((row) => row.requestId === requestId);
+          const before = state(),
+            existing = before.attempts.find(
+              (row) => row.requestId === requestId,
+            );
           if (existing) {
-            if (existing.projectId !== projectId || existing.sessionId !== sessionId)
-              throw new ConversationError(409, "This request UUID belongs to another terminal handoff.");
+            if (
+              existing.projectId !== projectId ||
+              existing.sessionId !== sessionId
+            )
+              throw new ConversationError(
+                409,
+                "This request UUID belongs to another terminal handoff.",
+              );
             return view(existing);
           }
           if (closing)
-            throw new ConversationError(503, "The terminal service is closing. No terminal was opened.");
+            throw new ConversationError(
+              503,
+              "The terminal service is closing. No terminal was opened.",
+            );
           const candidate = await options.candidate(projectId, sessionId);
           if (closing)
-            throw new ConversationError(503, "The terminal service is closing. No terminal was opened.");
+            throw new ConversationError(
+              503,
+              "The terminal service is closing. No terminal was opened.",
+            );
           if (
             candidate.projectId !== projectId ||
             candidate.sessionId !== sessionId ||
             !z.uuid().safeParse(candidate.turnRequestId).success ||
             !z.uuid().safeParse(candidate.nativeSessionId).success
           )
-            throw new ConversationError(409, "The saved Claude Chat identity could not be verified.");
-          const held = before.attempts.find((row) => turnKey(row) === turnKey({
-            projectId,
-            sessionId,
-            turnRequestId: candidate.turnRequestId,
-          }));
+            throw new ConversationError(
+              409,
+              "The saved Claude Chat identity could not be verified.",
+            );
+          const held = before.attempts.find(
+            (row) =>
+              turnKey(row) ===
+              turnKey({
+                projectId,
+                sessionId,
+                turnRequestId: candidate.turnRequestId,
+              }),
+          );
           if (held && held.phase !== "refused")
-            throw new ConversationError(409, "This Chat turn already has an original terminal handoff. Check that request; a new terminal was not opened.");
+            throw new ConversationError(
+              409,
+              "This Chat turn already has an original terminal handoff. Check that request; a new terminal was not opened.",
+            );
           if (before.attempts.length >= 512) throw unavailable();
           const command = serializeClaudeInteractiveResume({
             executable: candidate.executable,

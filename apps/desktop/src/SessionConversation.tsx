@@ -641,15 +641,15 @@ function StandardSessionConversation({
           {terminalHeld
             ? "A native terminal handoff is open or uncertain. Terminal activity is not synced, so app sends to this Chat are held."
             : notice ||
-            (running
-              ? chatOutcome
-                ? "The native process ended. Waiting for the final saved conversation status…"
-                : "The provider is answering…"
-              : record?.mode === "task"
-                ? "This Task accepts one turn. Start another session explicitly."
-                : !view.page?.binding
-                  ? "No confirmed provider conversation is available. Check the original Start."
-                  : "Enter a follow-up for this same provider conversation.")}
+              (running
+                ? chatOutcome
+                  ? "The native process ended. Waiting for the final saved conversation status…"
+                  : "The provider is answering…"
+                : record?.mode === "task"
+                  ? "This Task accepts one turn. Start another session explicitly."
+                  : !view.page?.binding
+                    ? "No confirmed provider conversation is available. Check the original Start."
+                    : "Enter a follow-up for this same provider conversation.")}
         </p>
         <label>
           {record?.mode === "task"
@@ -814,9 +814,7 @@ function StandardSessionConversation({
           <Button
             variant="primary"
             disabled={
-              terminalHeld ||
-              attaching ||
-              !client.canSend(projectId, sessionId)
+              terminalHeld || attaching || !client.canSend(projectId, sessionId)
             }
             onClick={() => {
               void client.send(projectId, sessionId);
