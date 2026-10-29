@@ -208,6 +208,7 @@ test("an unanswered brief reservation stays held and never retries or commits un
   const f = fixture();
   f.client.activate(alpha);
   f.deliver(page());
+  await f.client.checkBriefIntent(alpha);
   f.client.draft(alpha, "Keep this human question");
   await f.client.refreshBrief(alpha);
   expect(f.client.get(alpha).draft).toBe("Keep this human question");
@@ -529,6 +530,7 @@ test("a lost send stays held when lookup finds no receipt, and explicit retry pr
   const f = fixture();
   f.client.activate(alpha);
   f.deliver(page());
+  await f.client.checkBriefIntent(alpha);
   f.client.draft(alpha, "Original message");
   await f.client.send(alpha);
   expect(f.posts).toHaveLength(1);
@@ -597,6 +599,7 @@ test("an admitted streamed receipt resolves a lost send while active and unknown
   const f = fixture();
   f.client.activate(alpha);
   f.deliver(page());
+  await f.client.checkBriefIntent(alpha);
   f.client.draft(alpha, "Question");
   await f.client.send(alpha);
   f.deliver({
@@ -648,6 +651,7 @@ test("a late Stop receipt cannot regress a streamed terminal turn to cancelling"
   const f = fixture();
   f.client.activate(alpha);
   f.deliver(page());
+  await f.client.checkBriefIntent(alpha);
   f.client.draft(alpha, "Question");
   f.reply({
     state: "done",
@@ -691,6 +695,7 @@ test("a completed HTTP receipt holds the next send until its revision has reache
   const f = fixture();
   f.client.activate(alpha);
   f.deliver(page());
+  await f.client.checkBriefIntent(alpha);
   f.client.draft(alpha, "Question");
   f.reply({
     state: "done",
