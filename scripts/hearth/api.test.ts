@@ -70,6 +70,10 @@ import type { CouncilPreview } from "../council/service";
 import { REVIEW_NOTE_LIMIT } from "../dashboard/forge-run-model";
 import { hashText } from "../hash-text";
 import { createRestartIdentityJournal } from "../identities/restart-index";
+import {
+  keeperBriefIntentMetadataSchema,
+  keeperBriefIntentOriginalSchema,
+} from "../keeper/brief-protocol";
 import { createKeeperProposalStore } from "../keeper/proposal-store";
 import { keeperSessionStartReceiptSchema } from "../keeper/session-start-protocol";
 import { keeperShiftStartRequestSchema } from "../keeper/shift-start-protocol";
@@ -245,6 +249,33 @@ async function envelope<T = unknown>(
   if (!checked.ok) throw new Error(`not an envelope: ${checked.error}`);
   // justification: the guard above proved the envelope; `T` is the caller's claim about `data`.
   return checked.value as OperatorEnvelope<T>;
+}
+
+async function reserveBriefTicket(h: TestHearth) {
+  const store = createConversationStore(h.home);
+  const response = await post(
+    h,
+    `/projects/${FIXTURE_PROJECT_ID}/keeper/brief-intents/reserve`,
+    {
+      expectedRevision: store.read(FIXTURE_PROJECT_ID).revision,
+      origin: { kind: "overview" },
+    },
+  );
+  expect(response.status).toBe(202);
+  const metadata = keeperBriefIntentMetadataSchema.parse(
+    (await envelope(response)).data,
+  );
+  const originalResponse = await get(
+    h,
+    `/projects/${FIXTURE_PROJECT_ID}/keeper/brief-intents/${metadata.requestId}`,
+    h.headers(h.hearth.token),
+  );
+  expect(originalResponse.status).toBe(200);
+  const original = keeperBriefIntentOriginalSchema.parse(
+    (await envelope(originalResponse)).data,
+  );
+  expect(original.intentHash).toBe(metadata.intentHash);
+  return metadata;
 }
 
 const RUN_STATE = JSON.stringify({
@@ -2475,29 +2506,105 @@ const ACTIONS: Record<string, ActionFixture> = {
   },
   "POST /projects/:id/keeper/proposals/approve": keeperProposalFixture(false),
   "POST /projects/:id/keeper/proposals/dismiss": keeperProposalFixture(true),
+  "POST /projects/:id/keeper/brief-intents/reserve": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/keeper/brief-intents/reserve`,
+      body: { expectedRevision: 0, origin: { kind: "overview" } },
+      status: 202,
+      target: FIXTURE_PROJECT_ID,
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/keeper/brief-intents/reserve`,
+      body: {
+        expectedRevision: 0,
+        origin: { kind: "overview", workspace: "forged" },
+      },
+    },
+    prepare: async (h) => {
+      const fixture =
+        ACTIONS["POST /projects/:id/keeper/brief-intents/reserve"]!;
+      fixture.valid.body = {
+        expectedRevision: createConversationStore(h.home).read(
+          FIXTURE_PROJECT_ID,
+        ).revision,
+        origin: { kind: "overview" },
+      };
+    },
+    happened: async (_h, data) => {
+      const metadata = keeperBriefIntentMetadataSchema.parse(data);
+      expect(metadata.state).toBe("reserved");
+      expect(data).not.toHaveProperty("snapshot");
+      expect(data).not.toHaveProperty("text");
+      expect(data).not.toHaveProperty("about");
+    },
+  },
+  "POST /projects/:id/keeper/brief-intents/retire": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/keeper/brief-intents/retire`,
+      body: {
+        requestId: "9b77d65d-18f9-4a15-ab82-8f48dfab6b02",
+        intentHash: "0".repeat(64),
+      },
+      status: 200,
+      target: FIXTURE_PROJECT_ID,
+      audit: {
+        requestId: "9b77d65d-18f9-4a15-ab82-8f48dfab6b02",
+      },
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/keeper/brief-intents/retire`,
+      body: { requestId: "not-a-request", intentHash: "x" },
+    },
+    prepare: async (h) => {
+      const ticket = await reserveBriefTicket(h);
+      const fixture =
+        ACTIONS["POST /projects/:id/keeper/brief-intents/retire"]!;
+      fixture.valid.body = {
+        requestId: ticket.requestId,
+        intentHash: ticket.intentHash,
+      };
+      fixture.valid.audit = {
+        requestId: ticket.requestId,
+      };
+    },
+    happened: async (_h, data) => {
+      expect(keeperBriefIntentMetadataSchema.parse(data).state).toBe("retired");
+    },
+  },
   "POST /projects/:id/keeper/briefs": {
     valid: {
       path: `/projects/${FIXTURE_PROJECT_ID}/keeper/briefs`,
       body: {
         requestId: "9b77d65d-18f9-4a15-ab82-8f48dfab6b02",
         expectedRevision: 0,
+        intentHash: "0".repeat(64),
       },
       status: 202,
       target: FIXTURE_PROJECT_ID,
+      audit: {
+        requestId: "9b77d65d-18f9-4a15-ab82-8f48dfab6b02",
+      },
     },
     invalid: {
       path: `/projects/${FIXTURE_PROJECT_ID}/keeper/briefs`,
-      body: { requestId: "not-a-request", expectedRevision: 0 },
+      body: {
+        requestId: "not-a-request",
+        expectedRevision: 0,
+        intentHash: "x",
+      },
     },
     prepare: async (h) => {
       const fixture = ACTIONS["POST /projects/:id/keeper/briefs"];
-      if (fixture)
-        fixture.valid.body = {
-          requestId: "9b77d65d-18f9-4a15-ab82-8f48dfab6b02",
-          expectedRevision: createConversationStore(h.home).read(
-            FIXTURE_PROJECT_ID,
-          ).revision,
-        };
+      if (!fixture) return;
+      const ticket = await reserveBriefTicket(h);
+      fixture.valid.body = {
+        requestId: ticket.requestId,
+        expectedRevision: ticket.expectedRevision,
+        intentHash: ticket.intentHash,
+      };
+      fixture.valid.audit = {
+        requestId: ticket.requestId,
+      };
     },
     happened: async (h) => {
       const state = createConversationStore(h.home).read(FIXTURE_PROJECT_ID);
@@ -3324,6 +3431,8 @@ const READS: Record<string, string> = {
     "/projects/project-a5832fa0-7a21-403b-8184-44892f0d8d86/overview",
   "GET /projects/:id/keeper": `/projects/${FIXTURE_PROJECT_ID}/keeper`,
   "GET /projects/:id/keeper/briefs": `/projects/${FIXTURE_PROJECT_ID}/keeper/briefs`,
+  "GET /projects/:id/keeper/brief-intents": `/projects/${FIXTURE_PROJECT_ID}/keeper/brief-intents`,
+  "GET /projects/:id/keeper/brief-intents/:requestId": `/projects/${FIXTURE_PROJECT_ID}/keeper/brief-intents/9b77d65d-18f9-4a15-ab82-8f48dfab6b02`,
   "GET /projects/:id/keeper/recovery": `/projects/${FIXTURE_PROJECT_ID}/keeper/recovery`,
   "GET /projects/:id/keeper/proposals": `/projects/${FIXTURE_PROJECT_ID}/keeper/proposals`,
   "GET /projects/:id/keeper/read": `/projects/${FIXTURE_PROJECT_ID}/keeper/read?kind=beads`,

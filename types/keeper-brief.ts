@@ -73,6 +73,7 @@ export type KeeperBriefOriginBinding =
       projectCreate: {
         requestId: string;
         hash: string;
+        scopeHash?: string | undefined;
         revision: number;
       };
     };
@@ -101,6 +102,38 @@ export interface KeeperBriefIntent {
   state: "reserved" | "admitted" | "retired";
   preparedTurnHash: string;
 }
+
+/** Wire request for a server-derived Keeper brief origin; paths and scopes stay private. */
+export type KeeperBriefOriginRequest =
+  | { kind: "overview" }
+  | { kind: "onboarding"; projectCreateRequestId: string };
+
+export interface KeeperBriefIntentReserveRequest {
+  expectedRevision: number;
+  origin: KeeperBriefOriginRequest;
+}
+
+export type KeeperBriefIntentReference = Pick<
+  KeeperBriefIntent,
+  "requestId" | "expectedRevision" | "intentHash"
+>;
+
+/** Intent metadata is safe for the protected review workflow; it contains no original prose. */
+export type KeeperBriefIntentMetadata = Pick<
+  KeeperBriefIntent,
+  | "version"
+  | "requestId"
+  | "projectId"
+  | "conversationId"
+  | "expectedRevision"
+  | "origin"
+  | "selection"
+  | "purpose"
+  | "intentHash"
+  | "createdAt"
+  | "state"
+  | "preparedTurnHash"
+>;
 
 export interface KeeperBriefIntentHistory {
   version: 1;

@@ -17,6 +17,7 @@ import { ProviderUsageStrip } from "./Providers";
 import type {
   createProjectCreateOwner,
   ProjectCreateState,
+  VerifiedProjectCreate,
 } from "./project-create-owner";
 
 export interface ProjectsHomeProps {
@@ -34,6 +35,7 @@ export interface ProjectsHomeProps {
   canCreateProject: boolean;
   reload(): void;
   change(id: string, patch: ProjectPreferences): Promise<void>;
+  onCreated?: ((created: VerifiedProjectCreate) => void) | undefined;
 }
 
 export function ProjectsHome(props: ProjectsHomeProps): JSX.Element {
@@ -69,6 +71,7 @@ export function ProjectsHomeView({
   onSearch,
   providers,
   providerStale,
+  onCreated,
 }: ProjectsHomeProps & {
   filter: "active" | "archived" | "all";
   search: string;
@@ -347,6 +350,7 @@ export function ProjectsHomeView({
           state={projectCreate}
           owner={projectCreateOwner}
           canWrite={canCreateProject}
+          onCreated={onCreated}
           renderEntry={
             showOnboardingEntry
               ? ({ disabled, onSkip }) => (
