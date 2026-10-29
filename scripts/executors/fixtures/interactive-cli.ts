@@ -80,6 +80,18 @@ if (
       await Bun.sleep(10);
     if (!existsSync(`${readinessGate}.release`))
       throw new Error("The bounded parent announcement gate was not released.");
+    const acknowledged = `${readinessGate}.ack`;
+    let ready = false;
+    while (!ready && child.exitCode === null && Date.now() < deadline) {
+      if (
+        existsSync(acknowledged) &&
+        readFileSync(acknowledged, "utf8") === "ready"
+      )
+        ready = true;
+      else await Bun.sleep(10);
+    }
+    if (!ready || child.exitCode !== null)
+      throw new Error("The bounded child readiness acknowledgement failed.");
   }
   const announcement = `${JSON.stringify({ pid: process.pid, childPid: child.pid })}\n`;
   if (process.env.INTERACTIVE_TREE_LOG) {

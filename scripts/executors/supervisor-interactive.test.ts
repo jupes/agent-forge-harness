@@ -457,7 +457,11 @@ test("Stop settles a backpressured write and EOF while confirming descendant cle
       cleanupFailure ??= error;
     }
   }
-  if (failed) throw failure;
+  if (failed) {
+    if (cleanupFailure)
+      console.error('{"kind":"interactive-readiness-cleanup-refusal"}');
+    throw failure;
+  }
   if (cleanupFailure) throw cleanupFailure;
 });
 
