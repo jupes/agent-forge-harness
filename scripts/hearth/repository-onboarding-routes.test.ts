@@ -314,6 +314,9 @@ test("protected repository onboarding recovers exact records and updates checked
       join(h.home, "project-create-registry", "repos", "cloned-folder"),
     ),
   );
+  const canonicalClonePath = realpathSync.native(
+    join(h.home, "project-create-registry", "repos", "cloned-folder"),
+  );
   expect(cloneCalls).toBe(1);
   expect(
     (
@@ -338,9 +341,7 @@ test("protected repository onboarding recovers exact records and updates checked
       }),
       expect.objectContaining({
         name: "cloned-folder",
-        key: workspaceKey(
-          join(h.home, "project-create-registry", "repos", "cloned-folder"),
-        ),
+        key: workspaceKey(canonicalClonePath),
         served: false,
       }),
     ]),
