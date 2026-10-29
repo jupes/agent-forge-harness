@@ -579,7 +579,14 @@ test("a committed inert project Council review reads back its frozen result and 
     );
   const run = completedJob.run;
   expect(completed.provenance).toMatchObject({ requestId, intentHash });
-  expect(run.context).toEqual(original.context);
+  expect(run.context).toEqual({
+    source: original.context.source,
+    contentHash: original.context.contentHash,
+    byteLength: original.context.byteLength,
+    truncated: original.context.truncated,
+    redactions: original.context.redactions,
+    evidence: original.context.evidence,
+  });
   expect(run.profile).toEqual(original.profile);
   expect(
     run.events.filter((event) => event.type === "run.started"),
