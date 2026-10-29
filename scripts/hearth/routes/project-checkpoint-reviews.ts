@@ -153,9 +153,8 @@ export function createProjectCheckpointReviewRoutes(options: {
     validate: location,
     read: ({ projectId, runSlug, beadId }) =>
       answer(() =>
-        readInCurrentScope(
-          scopeFor(projectId, runSlug, beadId),
-          (scope) => service.metadata(scope),
+        readInCurrentScope(scopeFor(projectId, runSlug, beadId), (scope) =>
+          service.metadata(scope),
         ),
       ),
   };

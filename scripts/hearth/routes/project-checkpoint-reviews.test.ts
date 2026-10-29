@@ -2,7 +2,6 @@ import { afterEach, expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { hashText } from "../../hash-text";
 import {
   type ProjectCheckpointReviewOriginal,
   projectCheckpointReviewCommentText,
@@ -10,6 +9,7 @@ import {
   projectCheckpointReviewOriginalSchema,
 } from "../../../types/project-checkpoint-reviews";
 import { createProjectCheckpointReviewStore } from "../../forge/project-checkpoint-review-store";
+import { hashText } from "../../hash-text";
 import { createProjectStore, projectCatalogPath } from "../../projects/store";
 import { withQueueLock } from "../../scheduler/queue-lock";
 import { startTestHearth, type TestHearth } from "../testing";
@@ -124,7 +124,9 @@ async function fixture(addAnswer: "record" | "uncertain" = "record") {
     if (args[0] === "--readonly" && args[1] === "show")
       return {
         status: 0,
-        stdout: JSON.stringify([{ id: args[2], comment_count: comments.length }]),
+        stdout: JSON.stringify([
+          { id: args[2], comment_count: comments.length },
+        ]),
         stderr: "",
       };
     if (args[0] === "--readonly" && args[1] === "comments")
@@ -219,7 +221,8 @@ test("metadata and protected-original reads refuse a project scope changed durin
         headers: {},
         body: null,
       });
-      if (!checked.ok) throw new Error("The read route fixture did not validate.");
+      if (!checked.ok)
+        throw new Error("The read route fixture did not validate.");
       const reply = await route.read(checked.value);
       expect(reply.status).toBe(409);
       expect(JSON.stringify(reply)).not.toContain(value.note);
@@ -405,9 +408,13 @@ test("commit rechecks the exact current Run stamp and active leaf before claimin
       updatedAt: "2026-10-29T18:02:00.000Z",
     }),
   );
-  const changed = await post(changedRun.h, `${changedRun.path}/${requestId}/commit`, {
-    intentHash: prepared.data.intentHash,
-  });
+  const changed = await post(
+    changedRun.h,
+    `${changedRun.path}/${requestId}/commit`,
+    {
+      intentHash: prepared.data.intentHash,
+    },
+  );
   expect(changed.status).toBe(409);
   expect(
     changedRun.h.bd.calls.some(
