@@ -840,7 +840,7 @@ export function supervise(
     },
   };
   if (!interactive) return handle;
-  const start = `${JSON.stringify({ version: 1, command: [target, ...options.command.slice(1)], cwd: options.cwd, env: options.env, timeoutMs, ...(options.lifetime ? { lifetime: options.lifetime } : {}) })}\n`;
+  const start = `${JSON.stringify({ version: 1, command: [target, ...options.command.slice(1)], cwd: options.cwd, env: options.env, timeoutMs, ...(options.lifetime ? { lifetime: options.lifetime } : {}), ...(options.windowsHide === true ? { windowsHide: true } : {}) })}\n`;
   if (Buffer.byteLength(start) > INTERACTIVE_START_MAX_BYTES) {
     failInput(new Error("The private ownership grant exceeded its bound."));
     kill();

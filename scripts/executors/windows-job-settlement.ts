@@ -18,6 +18,19 @@ export const WINDOWS_JOB_SETTLEMENT_FAILURE_PHASES = [
   "verify-census-unretained",
   "terminate",
   "observe-settlement",
+  "observe-members-read",
+  "observe-members-invalid",
+  "observe-total-read",
+  "observe-total-invalid",
+  "observe-total-changed",
+  "observe-active-read",
+  "observe-active-invalid",
+  "observe-unaccounted",
+  "observe-unretained",
+  "observe-signal-read",
+  "observe-signal-indeterminate",
+  "observe-clock",
+  "observe-wait",
   "final-census",
   "close-process-handles",
   "close-job-handle",
@@ -40,9 +53,18 @@ export interface WindowsJobSettlementGenerationFailureWitness {
   readonly capturedMemberCount: number;
 }
 
+export interface WindowsJobSettlementUnaccountedFailureWitness {
+  readonly activeCount: number | null;
+  readonly retainedCount: number | null;
+  readonly capturedMemberCount: number | null;
+  readonly initialTotal: number | null;
+  readonly capturedTotal: number | null;
+}
+
 type WindowsJobSettlementFailureObserver = (
   phase: WindowsJobSettlementFailurePhase,
   generationFailure?: WindowsJobSettlementGenerationFailureWitness,
+  unaccountedFailure?: WindowsJobSettlementUnaccountedFailureWitness,
 ) => void;
 
 const MAX_DIAGNOSTIC_UINT32 = 0xffff_ffff;
@@ -122,6 +144,8 @@ export async function settleWindowsJob<Job, Process>(
   let phase: WindowsJobSettlementFailurePhase = "capture-root",
     failurePhase: WindowsJobSettlementFailurePhase | null = null,
     generationFailure: WindowsJobSettlementGenerationFailureWitness | null =
+      null,
+    unaccountedFailure: WindowsJobSettlementUnaccountedFailureWitness | null =
       null;
   const refuse: (failedAt?: WindowsJobSettlementFailurePhase) => never = (
     failedAt = phase,
@@ -129,30 +153,49 @@ export async function settleWindowsJob<Job, Process>(
     failurePhase ??= failedAt;
     throw new Error(SETTLEMENT_ERROR);
   };
-  const readTotalProcesses = (): number => {
+  const readTotalProcesses = (invalidPhase = phase): number => {
     const total = api.totalProcesses(job);
-    if (total === null || !Number.isSafeInteger(total) || total < 0) refuse();
+    if (total === null || !Number.isSafeInteger(total) || total < 0)
+      refuse(invalidPhase);
     return total;
   };
-  const hasUnaccountedProcesses = (): boolean => {
+  const hasUnaccountedProcesses = (
+    census?: {
+      capturedMemberCount: number;
+      initialTotal: number;
+      capturedTotal: number;
+    },
+    invalidPhase = phase,
+  ): boolean => {
     const active = api.activeProcesses(job);
     if (active === null || !Number.isSafeInteger(active) || active < 0)
-      refuse();
+      refuse(invalidPhase);
+    const unaccounted = active > retained.size;
+    if (unaccounted && census !== undefined) {
+      unaccountedFailure = {
+        activeCount: diagnosticUint32(active),
+        retainedCount: diagnosticUint32(retained.size),
+        capturedMemberCount: diagnosticUint32(census.capturedMemberCount),
+        initialTotal: diagnosticUint32(census.initialTotal),
+        capturedTotal: diagnosticUint32(census.capturedTotal),
+      };
+    }
     // This can only refuse conservatively. It is never used to assert that
     // retained members have exited or that a lower count proves completion.
-    return active > retained.size;
+    return unaccounted;
   };
-  const readMembers = (): readonly number[] => {
+  const readMembers = (invalidPhase = phase): readonly number[] => {
     const result = api.members(job);
     if (
       result === null ||
       !result.complete ||
       result.processIds.length > MAX_JOB_PROCESSES
     )
-      refuse();
+      refuse(invalidPhase);
     const seen = new Set<number>();
     for (const pid of result.processIds) {
-      if (!Number.isSafeInteger(pid) || pid < 1 || seen.has(pid)) refuse();
+      if (!Number.isSafeInteger(pid) || pid < 1 || seen.has(pid))
+        refuse(invalidPhase);
       seen.add(pid);
     }
     return result.processIds;
@@ -182,6 +225,10 @@ export async function settleWindowsJob<Job, Process>(
       }
       refuse();
     }
+  };
+  const observationNow = (): number => {
+    phase = "observe-clock";
+    return api.now();
   };
 
   let confirmed = false;
@@ -231,29 +278,39 @@ export async function settleWindowsJob<Job, Process>(
       refuse("verify-census-generation");
     }
     phase = "verify-census-active-read";
-    const unaccounted = hasUnaccountedProcesses();
-    if (unaccounted) refuse("verify-census-unaccounted");
+    const unaccounted = hasUnaccountedProcesses({
+      initialTotal,
+      capturedTotal,
+      capturedMemberCount: capturedMembers.length,
+    });
+    if (unaccounted) {
+      failurePhase ??= "verify-census-unaccounted";
+      refuse("verify-census-unaccounted");
+    }
     phase = "verify-census-unretained";
     for (const pid of capturedMembers) if (!retained.has(pid)) refuse();
     if (api.now() >= deadline) refuse("deadline");
     phase = "terminate";
     if (!api.terminate(job)) refuse();
 
-    phase = "observe-settlement";
-    while (api.now() < deadline) {
-      const currentMembers = readMembers();
-      if (
-        // TotalProcesses detects members added since capture; it does not
-        // prove that any member has exited.
-        readTotalProcesses() !== capturedTotal ||
-        hasUnaccountedProcesses() ||
-        currentMembers.some((pid) => !retained.has(pid))
-      )
-        refuse();
+    while (observationNow() < deadline) {
+      phase = "observe-members-read";
+      const currentMembers = readMembers("observe-members-invalid");
+      phase = "observe-total-read";
+      // TotalProcesses detects members added since capture; it does not prove
+      // that any member has exited.
+      if (readTotalProcesses("observe-total-invalid") !== capturedTotal)
+        refuse("observe-total-changed");
+      phase = "observe-active-read";
+      if (hasUnaccountedProcesses(undefined, "observe-active-invalid"))
+        refuse("observe-unaccounted");
+      phase = "observe-unretained";
+      if (currentMembers.some((pid) => !retained.has(pid))) refuse();
       let allSignaled = true;
       for (const process of retained.values()) {
+        phase = "observe-signal-read";
         const state = api.signaled(process.handle);
-        if (state === null) refuse();
+        if (state === null) refuse("observe-signal-indeterminate");
         if (!state) allSignaled = false;
       }
 
@@ -274,8 +331,12 @@ export async function settleWindowsJob<Job, Process>(
           break;
         }
       }
-      phase = "observe-settlement";
-      await api.sleep(Math.min(POLL_MS, Math.max(0, deadline - api.now())));
+      const waitMs = Math.min(
+        POLL_MS,
+        Math.max(0, deadline - observationNow()),
+      );
+      phase = "observe-wait";
+      await api.sleep(waitMs);
     }
   } catch {
     failurePhase ??= phase;
@@ -300,6 +361,11 @@ export async function settleWindowsJob<Job, Process>(
         generationFailure !== null
       )
         api.onFailurePhase?.(failurePhase, generationFailure);
+      else if (
+        failurePhase === "verify-census-unaccounted" &&
+        unaccountedFailure !== null
+      )
+        api.onFailurePhase?.(failurePhase, undefined, unaccountedFailure);
       else api.onFailurePhase?.(failurePhase);
     } catch {
       // Diagnostic observers cannot change the settlement result.

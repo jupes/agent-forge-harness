@@ -1,5 +1,9 @@
 import { copyFileSync, cpSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import {
+  readDistributionNotices,
+  writeDistributionNotices,
+} from "../distribution/notices";
 import { isMain } from "../is-main";
 
 const root = resolve(import.meta.dir, "../..");
@@ -44,6 +48,7 @@ function assertWindowsX64(): void {
 async function main(): Promise<void> {
   assertWindowsX64();
   assertSafeStage();
+  const notices = await readDistributionNotices(root);
   mkdirSync(sidecars, { recursive: true });
   const env = { ...process.env, DASHBOARD_NO_BUILD: "1" };
   await run(
@@ -80,6 +85,7 @@ async function main(): Promise<void> {
     throw new Error("Tauri release executable was not produced");
   rmSync(stage, { recursive: true, force: true });
   mkdirSync(stage, { recursive: true });
+  writeDistributionNotices(stage, notices);
   copyFileSync(exe, join(stage, "agent-forge-desktop.exe"));
   cpSync(join(root, "docs", "dist"), join(stage, "dashboard"), {
     recursive: true,

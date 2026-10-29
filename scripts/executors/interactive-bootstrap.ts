@@ -14,6 +14,7 @@ function startEnvelope(value: unknown): {
   cwd: string;
   env: Record<string, string>;
   timeoutMs: number;
+  windowsHide?: true;
 } {
   if (
     typeof value !== "object" ||
@@ -42,6 +43,7 @@ function startEnvelope(value: unknown): {
     ("lifetime" in value &&
       value.lifetime !== "shift-attempt" &&
       value.lifetime !== "shift-engine") ||
+    ("windowsHide" in value && value.windowsHide !== true) ||
     !("env" in value) ||
     typeof value.env !== "object" ||
     value.env === null ||
@@ -75,6 +77,7 @@ function startEnvelope(value: unknown): {
     cwd: value.cwd,
     env,
     timeoutMs,
+    ...("windowsHide" in value ? { windowsHide: true } : {}),
   };
 }
 
@@ -118,6 +121,7 @@ export async function runInteractiveBootstrap(): Promise<void> {
     child = Bun.spawn(start.command, {
       cwd: start.cwd,
       env: start.env,
+      ...(start.windowsHide === true ? { windowsHide: true } : {}),
       stdin: "pipe",
       stdout: "inherit",
       stderr: "inherit",

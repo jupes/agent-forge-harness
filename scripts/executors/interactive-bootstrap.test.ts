@@ -37,6 +37,7 @@ function compile(source: string, folder: string, name: string) {
     {
       cwd: root,
       env: env(folder),
+      windowsHide: true,
       stdout: "pipe",
       stderr: "pipe",
       timeout: 10_000,
@@ -120,6 +121,64 @@ function pids(line: string): {
   };
 }
 
+test("the private bootstrap forwards only a literal true window option", async () => {
+  const home = scratch.make("interactive-window-option-"),
+    command = [join(home, "missing-inert-target.exe")],
+    observer = join(import.meta.dir, "fixtures/interactive-spawn-options.ts"),
+    observe = async (grant: Record<string, unknown>) => {
+      const lines: string[] = [];
+      const result = await supervise({
+        command: [
+          process.execPath,
+          "--no-env-file",
+          "--no-install",
+          `--config=${join(import.meta.dir, "interactive-bootstrap.bunfig.toml")}`,
+          observer,
+        ],
+        cwd: home,
+        env: env(home),
+        stdin: `${JSON.stringify(grant)}\n`,
+        timeoutMs: 3000,
+        // Keep the observer root hidden without asserting a public option.
+        spawn(rootCommand, rootOptions) {
+          return Bun.spawn(rootCommand, {
+            ...rootOptions,
+            serialization: "json",
+            ipc() {},
+            windowsHide: true,
+          });
+        },
+        onLine: (line) => lines.push(line),
+      }).done;
+      return { lines, result };
+    },
+    base = {
+      version: 1,
+      command,
+      cwd: home,
+      env: {},
+      timeoutMs: 3000,
+    };
+
+  const forwarded = await observe({ ...base, windowsHide: true });
+  expect(forwarded.lines).toEqual([
+    JSON.stringify({ hasOwn: true, value: true }),
+  ]);
+  expect(forwarded.result.exitCode).toBe(1);
+
+  const omitted = await observe(base);
+  expect(omitted.lines).toEqual([
+    JSON.stringify({ hasOwn: false, value: null }),
+  ]);
+  expect(omitted.result.exitCode).toBe(1);
+
+  for (const windowsHide of [false, null, "true", 1]) {
+    const rejected = await observe({ ...base, windowsHide });
+    expect(rejected.lines).toEqual([]);
+    expect(rejected.result.exitCode).toBe(1);
+  }
+});
+
 test("source bootstrap excludes hostile config/preload before its private ownership grant", async () => {
   const home = scratch.make("interactive-config-"),
     marker = join(home, "preload-ran"),
@@ -148,6 +207,7 @@ test("source bootstrap excludes hostile config/preload before its private owners
     command: [process.execPath, "--no-env-file", innocent],
     cwd: home,
     env: env(home),
+    windowsHide: true,
     timeoutMs: 2000,
     onLine: () => undefined,
   });
@@ -161,6 +221,7 @@ test("source bootstrap excludes hostile config/preload before its private owners
     command: [process.execPath, fake],
     cwd: home,
     env: hostile,
+    windowsHide: true,
     stdinMode: "interactive",
     timeoutMs: 3000,
     beforeStart: () => {
@@ -203,6 +264,7 @@ test("abrupt owner death before grant launches no provider; after grant kills im
       {
         cwd: home,
         env: env(home),
+        windowsHide: true,
         stdin: "ignore",
         stdout: "pipe",
         stderr: "pipe",
@@ -259,6 +321,7 @@ test("actual compiled hearth entry provides private bootstrap and preserves the 
     command: [process.execPath, fake],
     cwd: home,
     env: env(home),
+    windowsHide: true,
     bootstrapCommand: [hearth, INTERACTIVE_BOOTSTRAP_FLAG],
     stdinMode: "interactive",
     timeoutMs: 5000,
@@ -289,6 +352,7 @@ test("normal native exit closes inherited helper pipes without losing buffered f
     command: [executable, "exit-inherited-tree"],
     cwd: home,
     env: { ...env(home), INTERACTIVE_TREE_LOG: log },
+    windowsHide: true,
     stdinMode: "interactive",
     timeoutMs: 2000,
     onLine: (line) => lines.push(line),

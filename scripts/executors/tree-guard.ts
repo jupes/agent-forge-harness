@@ -37,6 +37,7 @@ import {
   type WindowsJobSettlementApi,
   type WindowsJobSettlementFailurePhase,
   type WindowsJobSettlementGenerationFailureWitness,
+  type WindowsJobSettlementUnaccountedFailureWitness,
 } from "./windows-job-settlement";
 
 export interface TreeGuard {
@@ -180,6 +181,7 @@ function windowsJobSettlementApi(
   onFailurePhase?: (
     phase: WindowsJobSettlementFailurePhase,
     generationFailure?: WindowsJobSettlementGenerationFailureWitness,
+    unaccountedFailure?: WindowsJobSettlementUnaccountedFailureWitness,
   ) => void,
 ): WindowsJobSettlementApi<KernelHandle, KernelHandle> {
   return {
@@ -300,18 +302,31 @@ function jobGuard(
   onWindowsSettlementFailure?: (
     phase: WindowsJobSettlementFailurePhase,
     generationFailure?: WindowsJobSettlementGenerationFailureWitness,
+    unaccountedFailure?: WindowsJobSettlementUnaccountedFailureWitness,
   ) => void,
 ): TreeGuard {
   let failureReported = false;
   const reportFailure = (
     phase: WindowsJobSettlementFailurePhase,
     generationFailure?: WindowsJobSettlementGenerationFailureWitness,
+    unaccountedFailure?: WindowsJobSettlementUnaccountedFailureWitness,
   ) => {
     if (!onWindowsSettlementFailure || failureReported) return;
     failureReported = true;
     try {
-      if (generationFailure === undefined) onWindowsSettlementFailure(phase);
-      else onWindowsSettlementFailure(phase, generationFailure);
+      if (generationFailure === undefined && unaccountedFailure === undefined)
+        onWindowsSettlementFailure(phase);
+      else if (
+        generationFailure !== undefined &&
+        unaccountedFailure === undefined
+      )
+        onWindowsSettlementFailure(phase, generationFailure);
+      else
+        onWindowsSettlementFailure(
+          phase,
+          generationFailure,
+          unaccountedFailure,
+        );
     } catch {
       // A trusted diagnostic observer cannot alter the ownership result.
     }
@@ -490,6 +505,7 @@ export function guardSuspendedWindowsProcess(
     onWindowsSettlementFailure: (
       phase: WindowsJobSettlementFailurePhase,
       generationFailure?: WindowsJobSettlementGenerationFailureWitness,
+      unaccountedFailure?: WindowsJobSettlementUnaccountedFailureWitness,
     ) => void;
   },
 ): {
