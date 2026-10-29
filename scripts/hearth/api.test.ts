@@ -3486,10 +3486,16 @@ const ACTIONS: Record<string, ActionFixture> = {
         h,
         "API inventory reserved review fixture.",
       );
-      await post(
-        h,
-        `/projects/${FIXTURE_PROJECT_ID}/council/reviews/${seed.requestId}/retire`,
-        { intentHash: seed.intentHash },
+      const store = createProjectCouncilOriginalStore({
+        home: h.home,
+        workspace: h.workspace,
+        projectId: FIXTURE_PROJECT_ID,
+        withQueueLock,
+      });
+      await store.retire(
+        FIXTURE_PROJECT_ID,
+        seed.requestId,
+        seed.intentHash,
       );
     },
     happened: async (h, answer) => {
