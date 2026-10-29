@@ -837,7 +837,12 @@ test("a confirmed Claude rate limit can target Gemini ACP Chat", async ({
   });
   await expect(chooseTarget).toBeDisabled();
   await requiredTarget.selectOption("gemini");
-  await expect(chooseTarget).toBeEnabled();
+  await expect(
+    targetReview.getByRole("button", {
+      name: "Accept and open Gemini ACP Chat",
+      exact: true,
+    }),
+  ).toBeEnabled();
   await targetReview
     .getByRole("button", { name: "Cancel", exact: true })
     .click();
@@ -1013,13 +1018,14 @@ test("a confirmed Claude rate limit can target Gemini ACP Chat", async ({
       } catch {
         postedBody = null;
       }
-      const response = await route.fetch({
-        headers: {
-          ...(await route.request().allHeaders()),
-          Origin: new URL(route.request().url()).origin,
-          "Sec-Fetch-Site": "same-origin",
-        },
-      });
+      const headers = await route.request().allHeaders();
+      const header = (name: string) =>
+        Object.entries(headers).find(
+          ([key]) => key.toLowerCase() === name,
+        )?.[1];
+      expect(header("origin")).toBe(new URL(route.request().url()).origin);
+      expect(header("sec-fetch-site")).toBe("same-origin");
+      const response = await route.fetch({ headers });
       expect(response.status()).toBe(200);
       await route.abort("failed");
     },
