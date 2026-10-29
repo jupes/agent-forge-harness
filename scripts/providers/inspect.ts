@@ -99,7 +99,7 @@ export function createProviderInspector(options: {
           command: [...command],
           cwd: options.root,
           env,
-          stdin: "",
+          stdinMode: "interactive",
           timeoutMs: options.timeoutMs ?? 3000,
           maxLineBytes: 65_536,
           ...launchOptions,
@@ -114,6 +114,7 @@ export function createProviderInspector(options: {
             valid = false;
           },
         });
+        void child.end().catch(() => undefined);
         const result = await child.done;
         return {
           exitCode: result.exitCode ?? -1,
