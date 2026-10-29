@@ -374,7 +374,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 fn main() {
     let args: Vec<_> = env::args_os().skip(1).collect();
-    if args.first().is_some_and(|arg| arg == "--choose-project-repository") {
+    if args
+        .first()
+        .is_some_and(|arg| arg == "--choose-project-repository")
+    {
         if args.len() != 1 {
             let _ = writeln!(
                 std::io::stdout().lock(),

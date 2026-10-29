@@ -45,10 +45,7 @@ pub fn select_root(
 
 #[cfg(windows)]
 pub fn choose_folder() -> Result<Option<PathBuf>, &'static str> {
-    choose_folder_with_title(
-        "Choose an Agent Forge checkout",
-        "Open workspace",
-    )
+    choose_folder_with_title("Choose an Agent Forge checkout", "Open workspace")
 }
 
 #[cfg(not(windows))]
@@ -57,7 +54,8 @@ pub fn choose_folder() -> Result<Option<PathBuf>, &'static str> {
 }
 
 pub fn choose_project_repository() -> Result<Option<PathBuf>, &'static str> {
-    let Some(path) = choose_folder_with_title("Choose a Git repository", "Select repository")? else {
+    let Some(path) = choose_folder_with_title("Choose a Git repository", "Select repository")?
+    else {
         return Ok(None);
     };
     validate_repository(&path).map(Some)
@@ -79,10 +77,7 @@ fn validate_repository(path: &Path) -> Result<PathBuf, &'static str> {
 }
 
 #[cfg(windows)]
-fn choose_folder_with_title(
-    title: &str,
-    button: &str,
-) -> Result<Option<PathBuf>, &'static str> {
+fn choose_folder_with_title(title: &str, button: &str) -> Result<Option<PathBuf>, &'static str> {
     use std::os::windows::ffi::{OsStrExt, OsStringExt};
     use windows::{
         core::{HRESULT, PCWSTR},
@@ -151,10 +146,7 @@ fn choose_folder_with_title(
 }
 
 #[cfg(not(windows))]
-fn choose_folder_with_title(
-    _title: &str,
-    _button: &str,
-) -> Result<Option<PathBuf>, &'static str> {
+fn choose_folder_with_title(_title: &str, _button: &str) -> Result<Option<PathBuf>, &'static str> {
     Err("folder picker unavailable")
 }
 
@@ -276,8 +268,14 @@ mod tests {
         let linked = fixture.checkout(true);
         let ordinary_fixture = Fixture::new();
         let ordinary = ordinary_fixture.checkout(false);
-        assert_eq!(validate_repository(&linked).unwrap(), fs::canonicalize(linked).unwrap());
-        assert_eq!(validate_repository(&ordinary).unwrap(), fs::canonicalize(ordinary).unwrap());
+        assert_eq!(
+            validate_repository(&linked).unwrap(),
+            fs::canonicalize(linked).unwrap()
+        );
+        assert_eq!(
+            validate_repository(&ordinary).unwrap(),
+            fs::canonicalize(ordinary).unwrap()
+        );
         assert!(validate_repository(&fixture.0).is_err());
     }
 
