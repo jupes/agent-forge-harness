@@ -10,10 +10,14 @@ import {
 } from "../e2e/bd-stand-in-state";
 import { openSettled } from "../e2e/fixtures";
 import { BD_STAND_IN_STATE } from "../e2e/servers";
-import { alpha, seedProjects } from "./project-fixtures";
+import type { ProjectRecord } from "../../types/projects";
+import { alpha as fixtureAlpha, seedSessions } from "./project-fixtures";
+import { seedCouncilProject } from "./council-fixtures";
+
+let alpha: ProjectRecord = fixtureAlpha;
 
 test.beforeEach(() => {
-  seedProjects();
+  alpha = seedCouncilProject();
   withStateLock(BD_STAND_IN_STATE, () => {
     writeComments(BD_STAND_IN_STATE, {});
     const state = readState(BD_STAND_IN_STATE);
@@ -28,7 +32,7 @@ test.beforeEach(() => {
         issue_type: "task",
         status: "open",
         priority: 2,
-        labels: ["project:alpha"],
+        labels: [`project:${alpha.slug}`],
         created_at: alpha.createdAt,
         updated_at: alpha.updatedAt,
         dependencies: [
@@ -153,6 +157,59 @@ test("source entry, Keep draft, and Replace source preserve options without prep
   expect(persistedText).not.toContain("Keep this explicit draft body.");
 });
 
+test("session and Keeper summary entries keep the draft blank and focused", async ({
+  page,
+}) => {
+  seedSessions();
+  const posts: string[] = [];
+  page.on("request", (request) => {
+    if (
+      request.method() === "POST" &&
+      new URL(request.url()).pathname.startsWith(
+        `/__agent-forge/projects/${alpha.id}/council/reviews`,
+      )
+    )
+      posts.push(request.url());
+  });
+  await openSettled(
+    page,
+    `/index.html#/desktop/project/${alpha.id}/sessions?selectionKind=session&selectionId=e2e-alpha-parent`,
+  );
+  const inspector = page.getByRole("region", { name: "Selected session" });
+  await expect(inspector.getByText("e2e-alpha-parent")).toBeVisible();
+  await inspector.getByRole("button", { name: "Write a Council summary" }).click();
+  const source = page.getByLabel("Document or question");
+  await expect(source).toHaveValue("");
+  await expect(source).toBeFocused();
+  await source.fill("Handwritten review instructions stay mine.");
+  await page.goBack();
+  await expect(page).toHaveURL(/\/sessions\?selectionKind=session/);
+
+  await page
+    .getByRole("button", { name: "Ask Keeper about this session" })
+    .click();
+  const drawer = page.getByRole("dialog", {
+    name: `Forge Keeper · ${alpha.name}`,
+  });
+  await expect(drawer).toBeVisible();
+  await drawer
+    .getByRole("textbox", { name: "Message the Keeper" })
+    .fill("Private Keeper draft must not enter Council.");
+  await drawer.getByRole("button", { name: "Write a Council summary" }).click();
+  await expect(drawer).not.toBeVisible();
+  const confirmation = page.getByRole("dialog", {
+    name: "Replace Council draft source?",
+  });
+  await expect(confirmation.getByRole("button", { name: "Keep draft" })).toBeVisible();
+  await confirmation.getByRole("button", { name: "Replace source" }).click();
+  await expect(page).toHaveURL(new RegExp(`/desktop/project/${alpha.id}/reviews$`));
+  await expect(source).toHaveValue("");
+  await expect(source).toBeFocused();
+  expect(posts).toEqual([]);
+  const visible = await page.locator("body").innerText();
+  expect(visible).not.toContain("Private Keeper draft must not enter Council.");
+});
+
 test("a completed bead-source review links to its bead and reports the one recorded comment outcome", async ({
   page,
 }) => {
@@ -186,12 +243,26 @@ test("a completed bead-source review links to its bead and reports the one recor
   await expect(
     page.getByRole("heading", { name: "Verified result facts" }),
   ).toBeVisible();
-  await expect(
-    page.getByRole("link", { name: "Open reviewed bead alpha-council-first" }),
-  ).toHaveAttribute(
-    "href",
-    new RegExp(`/desktop/project/${alpha.id}/beads/alpha-council-first`),
+  const beadLink = page.getByRole("link", {
+    name: "Open reviewed bead alpha-council-first",
+  });
+  const beadHref = await beadLink.getAttribute("href");
+  if (beadHref === null) throw Error("The verified bead link has no href.");
+  const beadHash = new URL(beadHref, page.url()).hash.slice(1);
+  const queryIndex = beadHash.indexOf("?");
+  const beadRoute = queryIndex < 0 ? beadHash : beadHash.slice(0, queryIndex);
+  const beadQuery = new URLSearchParams(
+    queryIndex < 0 ? "" : beadHash.slice(queryIndex + 1),
   );
+  expect(beadRoute).toBe(`/desktop/project/${alpha.id}/beads`);
+  expect([...beadQuery.keys()].sort()).toEqual([
+    "selectionId",
+    "selectionKind",
+    "view",
+  ]);
+  expect(beadQuery.get("selectionKind")).toBe("bead");
+  expect(beadQuery.get("selectionId")).toBe("alpha-council-first");
+  expect(beadQuery.get("view")).toBe("full");
   await expect(page.getByTestId("council-verdict-status")).toHaveText(
     "Verdict comment posted to the bead.",
     { timeout: 15_000 },

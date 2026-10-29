@@ -272,7 +272,9 @@ export function projectCouncilProgressView(
         ? "Reviewing"
         : latest.payload?.stage === "peer" || latest.payload?.stage === "revision"
           ? `Discussing round ${latest.payload.round ?? 1}`
-          : "Synthesizing"
+          : latest.payload?.stage === "chair"
+            ? "Synthesizing"
+            : "Checking saved progress"
       : latest?.type === "stage.completed"
         ? "Checking next stage"
         : job.events.some((event) => event.type === "run.started")

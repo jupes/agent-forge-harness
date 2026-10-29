@@ -32,6 +32,7 @@ describe("Project Council progress presentation", () => {
     expect(projectCouncilProgressView("running", job("running", started, stage("peer", 2))).label).toBe("Discussing round 2");
     expect(projectCouncilProgressView("running", job("running", started, stage("revision", 3))).label).toBe("Discussing round 3");
     expect(projectCouncilProgressView("running", job("running", started, stage("chair"))).label).toBe("Synthesizing");
+    expect(projectCouncilProgressView("running", job("running", started, stage("unexpected"))).label).toBe("Checking saved progress");
   });
 
   test("keeps a cancelling job active while disabling repeat Stop", () => {
