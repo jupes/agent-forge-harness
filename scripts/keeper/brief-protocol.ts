@@ -1,12 +1,18 @@
 import { z } from "zod";
 import type {
   KeeperBriefContent,
+  KeeperBriefIntent,
+  KeeperBriefIntentHistory,
+  KeeperBriefOriginBinding,
+  KeeperBriefSelection,
   KeeperBriefSnapshot,
   KeeperBriefs,
 } from "../../types/keeper-brief";
 
 if (typeof window !== "undefined") z.config({ jitless: true });
 export const MAX_BRIEF_SNAPSHOT_BYTES = 10_000;
+export const MAX_KEEPER_BRIEF_INTENT_HISTORY = 32;
+export const MAX_KEEPER_BRIEF_INTENT_BYTES = 300_000;
 const count = z
   .number()
   .int()
@@ -19,6 +25,42 @@ const object = z
   .object({
     kind: z.enum(["bead", "session", "run", "event"]),
     id: z.string().min(1).max(200),
+  })
+  .strict();
+export const keeperBriefOriginBindingSchema: z.ZodType<KeeperBriefOriginBinding> =
+  z.discriminatedUnion("kind", [
+    z
+      .object({
+        kind: z.literal("overview"),
+        projectId: z.string().min(1).max(100),
+        workspace: z.string().min(1).max(4096),
+        catalogRevision: count,
+      })
+      .strict(),
+    z
+      .object({
+        kind: z.literal("onboarding"),
+        projectId: z.string().min(1).max(100),
+        workspace: z.string().min(1).max(4096),
+        catalogRevision: count,
+        projectCreate: z
+          .object({
+            requestId: z.string().uuid(),
+            hash: z.string().regex(/^[a-f0-9]{64}$/),
+            revision: count,
+          })
+          .strict(),
+      })
+      .strict(),
+  ]);
+export const keeperBriefSelectionSchema: z.ZodType<KeeperBriefSelection> = z
+  .object({
+    name: z.string().min(1).max(200),
+    provider: z.string().min(1).max(200),
+    model: z.string().min(1).max(200),
+    effort: z.string().max(100),
+    enabled: z.literal(true),
+    tags: z.array(z.string().max(200)).max(100),
   })
   .strict();
 export const briefSnapshotSchema: z.ZodType<KeeperBriefSnapshot> = z
@@ -70,6 +112,33 @@ export const briefSnapshotSchema: z.ZodType<KeeperBriefSnapshot> = z
         MAX_BRIEF_SNAPSHOT_BYTES &&
       Date.parse(value.since) <= Date.parse(value.asOf),
   );
+export const keeperBriefIntentReserveSchema = z
+  .object({
+    expectedRevision: count,
+    origin: keeperBriefOriginBindingSchema,
+    selection: keeperBriefSelectionSchema,
+    text: z
+      .string()
+      .min(1)
+      .max(16_384)
+      .refine((value) => !!value.trim() && !value.includes("\0")),
+    about: z.array(object).max(16),
+    snapshot: briefSnapshotSchema,
+  })
+  .strict();
+export const keeperBriefIntentReferenceSchema = z
+  .object({
+    requestId: z.string().uuid(),
+    expectedRevision: count,
+    intentHash: z.string().regex(/^[a-f0-9]{64}$/),
+  })
+  .strict();
+export const keeperBriefIntentRetireSchema = z
+  .object({
+    requestId: z.string().uuid(),
+    intentHash: z.string().regex(/^[a-f0-9]{64}$/),
+  })
+  .strict();
 const section = z
   .array(
     z
@@ -88,6 +157,51 @@ export const briefContentSchema: z.ZodType<KeeperBriefContent> = z
     stuck: section,
   })
   .strict();
+const keeperBriefIntentSchema: z.ZodType<KeeperBriefIntent> = z
+  .object({
+    version: z.literal(1),
+    requestId: z.string().uuid(),
+    projectId: z.string().min(1).max(100),
+    conversationId: z.string().min(1).max(200),
+    expectedRevision: count,
+    origin: keeperBriefOriginBindingSchema,
+    selection: keeperBriefSelectionSchema,
+    purpose: z.literal("brief"),
+    intentHash: z.string().regex(/^[a-f0-9]{64}$/),
+    text: z
+      .string()
+      .min(1)
+      .max(16_384)
+      .refine((value) => !!value.trim() && !value.includes("\0")),
+    about: z.array(object).max(16),
+    snapshot: briefSnapshotSchema,
+    createdAt: z.iso.datetime(),
+    state: z.enum(["reserved", "admitted", "retired"]),
+    preparedTurnHash: z.string().regex(/^[a-f0-9]{64}$/),
+  })
+  .strict();
+export const keeperBriefIntentHistorySchema: z.ZodType<KeeperBriefIntentHistory> =
+  z
+    .object({
+      version: z.literal(1),
+      active: keeperBriefIntentSchema.nullable(),
+      history: z
+        .array(keeperBriefIntentSchema)
+        .max(MAX_KEEPER_BRIEF_INTENT_HISTORY),
+    })
+    .strict()
+    .refine(
+      (value) =>
+        (!value.active || value.active.state !== "retired") &&
+        value.history.every((item) => item.state !== "reserved") &&
+        new Set([
+          ...(value.active ? [value.active.requestId] : []),
+          ...value.history.map((item) => item.requestId),
+        ]).size ===
+          value.history.length + (value.active ? 1 : 0) &&
+        new TextEncoder().encode(JSON.stringify(value)).byteLength <=
+          MAX_KEEPER_BRIEF_INTENT_BYTES,
+    );
 const brief = z
   .object({
     requestId: z.string().uuid(),

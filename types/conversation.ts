@@ -14,7 +14,10 @@ import type {
 import type { GeminiTaskPrivateFrame } from "./gemini-owned-task";
 import type { PreparedGeminiTask } from "./gemini-task-runtime";
 import type { KeeperReadKind } from "./keeper";
-import type { KeeperBriefSnapshot } from "./keeper-brief";
+import type {
+  KeeperBriefIntentHistory,
+  KeeperBriefSnapshot,
+} from "./keeper-brief";
 import type { KeeperRecoveryState } from "./keeper-recovery";
 import type {
   ClaudeCodingUsageEvent,
@@ -172,6 +175,8 @@ export interface ConversationState {
   /** Private owned-chat receipt facts; public pages and exports omit this field. */
   codexChatOwnerLifecycle?: CodexChatOwnerLifecycleFact[] | undefined;
   keeperRecovery?: KeeperRecoveryState | undefined;
+  /** Exact private Keeper brief review originals; public pages and feeds omit this field. */
+  keeperBriefIntents?: KeeperBriefIntentHistory | undefined;
 }
 
 export interface ConversationReceipt {
@@ -183,7 +188,7 @@ export interface ConversationReceipt {
 export interface ConversationPage
   extends Omit<
     ConversationState,
-    "keeperRecovery" | "codexChatOwnerLifecycle"
+    "keeperRecovery" | "codexChatOwnerLifecycle" | "keeperBriefIntents"
   > {
   keeperRecovery?: Omit<KeeperRecoveryState, "records"> | undefined;
   more: boolean;
