@@ -33,6 +33,7 @@ import {
 } from "./ProjectActivity";
 import { BeadPanel, beadHref, ProjectBeads } from "./ProjectBeads";
 import { ProjectOverview } from "./ProjectOverview";
+import { ProjectReviews } from "./ProjectReviews";
 import { ProjectRuns } from "./ProjectRuns";
 import { ProjectSessions, SessionInspector } from "./ProjectSessions";
 import { ProjectShifts } from "./ProjectShifts";
@@ -773,6 +774,14 @@ export function DesktopApp(): JSX.Element {
                 selection: { kind: "bead", id },
               }).slice(1);
             }}
+          />
+        ) : route.destination === "reviews" && project ? (
+          <ProjectReviews
+            key={project.id}
+            projectId={project.id}
+            workspace={summary?.workspace ?? null}
+            archived={project.archived}
+            writesAllowed={writesAllowed}
           />
         ) : route.destination === "runs" && project ? (
           <ProjectRuns
