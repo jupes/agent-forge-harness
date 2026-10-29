@@ -28,6 +28,65 @@ async function terminal(
   expect(store.read(FIXTURE_PROJECT_ID).turns.at(-1)?.phase).toBe(phase);
 }
 
+test("the legacy no-ticket brief POST is refused before admitting or dispatching", async () => {
+  let starts = 0;
+  const h = await startTestHearth({
+    api: {
+      conversationTransport: {
+        provider: "claude",
+        async run() {
+          starts++;
+          return { phase: "completed", reason: null };
+        },
+      },
+    },
+  });
+  opened.push(h);
+  writeOwnerOnly(
+    projectCatalogPath(h.home),
+    JSON.stringify(projectCatalogFixture(h.workspace)),
+  );
+  h.bd.answer = (args) =>
+    args[0] === "export"
+      ? {
+          status: 0,
+          stdout:
+            JSON.stringify({
+              id: "alpha-epic",
+              title: "Alpha source evidence",
+              issue_type: "epic",
+              status: "open",
+              labels: ["project:alpha"],
+            }) + "\n",
+          stderr: "",
+        }
+      : undefined;
+
+  const response = await fetch(
+    `${h.api}/projects/${FIXTURE_PROJECT_ID}/keeper/briefs`,
+    {
+      method: "POST",
+      headers: h.headers(h.hearth.token),
+      body: JSON.stringify({ requestId: randomUUID(), expectedRevision: 0 }),
+    },
+  );
+
+  expect(response.status).toBe(400);
+  expect(starts).toBe(0);
+  expect(
+    createConversationStore(h.home).read(FIXTURE_PROJECT_ID).turns,
+  ).toHaveLength(0);
+  expect(
+    h
+      .events(["operator.action"])
+      .some(
+        (event) =>
+          event.kind === "operator.action" &&
+          event.payload.action === "keeper.brief.refresh",
+      ),
+  ).toBe(false);
+});
+
 test("audited brief refresh shares the standing turn, protects private prose and preserves a good brief across failed/malformed refreshes", async () => {
   let starts = 0;
   let mode: "normal" | "failed" | "malformed" = "normal";
