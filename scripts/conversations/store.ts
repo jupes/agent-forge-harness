@@ -437,12 +437,14 @@ export function createConversationStore(
   const changeWithoutRevision = async <T>(
     projectId: string,
     update: (state: ConversationState) => T,
+    isCurrent?: () => boolean,
   ): Promise<T> => {
     const lock = conversationWriteLockFile(home, projectId, address);
     ensurePrivateHome(home);
     const result = await withQueueLock(
       lock,
       async () => {
+        assertCurrentOwner(isCurrent);
         const state = read(projectId);
         const value = update(state);
         save(state);
@@ -470,6 +472,7 @@ export function createConversationStore(
         about: KeeperBriefIntent["about"];
         snapshot: KeeperBriefSnapshot;
       },
+      isCurrent?: () => boolean,
     ): Promise<KeeperBriefIntent> {
       if (address)
         throw new ConversationError(
@@ -577,7 +580,7 @@ export function createConversationStore(
         assertKeeperBriefIntentHistoryFits(intents);
         state.keeperBriefIntents = intents;
         return intent;
-      });
+      }, isCurrent);
     },
     discoverKeeperBrief(projectId: string): KeeperBriefIntent | null {
       if (address)

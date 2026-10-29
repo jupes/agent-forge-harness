@@ -5,6 +5,17 @@ import type {
   PreparedConversationSend,
 } from "../../types/conversation";
 import type { ProjectRecord } from "../../types/projects";
+import type { Smith } from "../../types/hearth";
+
+/** A source-sealed Keeper selection changed before any provider process started. */
+export class KeeperSelectionMismatchError extends Error {
+  constructor() {
+    super(
+      "The Keeper selection changed after this brief was reviewed. Review a new brief before dispatch.",
+    );
+    this.name = "KeeperSelectionMismatchError";
+  }
+}
 
 /** Separate from EventSink: this channel owns private transcript bodies. */
 export interface ConversationTransport {
@@ -16,6 +27,8 @@ export interface ConversationTransport {
     resume: ConversationBinding | null;
     /** Trusted saved Keeper selection, never a model argument or public Send field. */
     smith?: string | undefined;
+    /** Internal pin for an explicitly reviewed Keeper brief, never wire input. */
+    expectedSmith?: Smith | undefined;
   }): Promise<void>;
   /** Settles only after the supervised process tree stops, including on error/abort. */
   run(
@@ -35,6 +48,8 @@ export interface ConversationTransport {
       /** Private app-owned ordinary Chat receipt sink; never sent to the provider. */
       ownerLifecycle?: CodexChatOwnerLifecycleSink | undefined;
       smith?: string | undefined;
+      /** Internal pin for an explicitly reviewed Keeper brief, never wire input. */
+      expectedSmith?: Smith | undefined;
     },
     persist: (
       event: Exclude<ConversationEvent, { kind: "user" }>,

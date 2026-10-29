@@ -37,6 +37,7 @@ import type { createCodexTaskRuntime } from "../../sessions/codex-task-runtime";
 import type { createGeminiChatRuntime } from "../../sessions/gemini-chat-runtime";
 import type { createGeminiTaskRuntime } from "../../sessions/gemini-task-runtime";
 import type { ProjectShiftRuntime } from "../../shifts/service";
+import { createProjectStore } from "../../projects/store";
 import {
   type ActionRoute,
   type ApiRoute,
@@ -451,6 +452,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     keeperAboutValidator(deps, projectSnapshot),
     createKeeperBriefPreparer(deps.projectHome, deps, projectSnapshot),
     deps.keeperRuntime,
+    (requestId) => createProjectStore(deps.projectHome).readCreate(requestId),
   );
   const ownedSessions = createOwnedSessionRoutes(
     deps.projectHome,
@@ -562,6 +564,8 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     keeperReadRoute(deps, projectSnapshot),
     conversations.read,
     conversations.briefs,
+    conversations.intentDiscovery,
+    conversations.intentOriginal,
     conversations.recovery,
     proposals.read,
     keeperSessionStarts.read,
@@ -625,6 +629,8 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       commit,
       retire,
       conversations.send,
+      conversations.intentReserve,
+      conversations.intentRetire,
       conversations.refresh,
       conversations.continuation,
       proposals.approve,

@@ -2,8 +2,12 @@ import { afterEach, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { loadConfig } from "../config/load";
 import { createConversationStore } from "../conversations/store";
-import type { ConversationTransport } from "../conversations/transport";
+import {
+  KeeperSelectionMismatchError,
+  type ConversationTransport,
+} from "../conversations/transport";
 import { liveChildCount } from "../executors/supervisor";
 import { startTestHearth, type TestHearth } from "../hearth/testing";
 import { writeOwnerOnly } from "../hearth/token";
@@ -211,6 +215,47 @@ test("unsupported installed capabilities refuse admission without a provider tur
   const f = await fixture("legacy");
   expect((await f.send()).status).toBe(503);
   expect(f.store.read(FIXTURE_PROJECT_ID).turns).toEqual([]);
+  expect(existsSync(f.recordFile)).toBe(false);
+}, 25_000);
+
+test("a frozen Keeper selection mismatch is typed and refuses before either capability probes or dispatch", async () => {
+  const baseline = liveChildCount();
+  const f = await fixture();
+  const { config } = loadConfig({
+    harnessRoot: f.h.root,
+    home: f.h.configHome,
+    env: {},
+  });
+  const smith = config.smiths[config.workflow.defaultCrew];
+  if (!smith) throw new Error("Missing fixture Keeper smith");
+  const expectedSmith = { ...smith, model: `${smith.model}-reviewed` };
+  const request = {
+    project: projectFixture(f.h.workspace),
+    root: f.h.root,
+    resume: null,
+    smith: smith.name,
+    expectedSmith,
+  };
+  if (!f.provider.check) throw new Error("Missing Claude capability check");
+  await expect(f.provider.check(request)).rejects.toBeInstanceOf(
+    KeeperSelectionMismatchError,
+  );
+  await expect(
+    f.provider.run(
+      {
+        ...request,
+        input: {
+          requestId: randomUUID(),
+          expectedRevision: 0,
+          text: "Reviewed original",
+          about: [],
+        },
+      },
+      async () => {},
+      new AbortController().signal,
+    ),
+  ).rejects.toBeInstanceOf(KeeperSelectionMismatchError);
+  expect(liveChildCount()).toBe(baseline);
   expect(existsSync(f.recordFile)).toBe(false);
 }, 25_000);
 

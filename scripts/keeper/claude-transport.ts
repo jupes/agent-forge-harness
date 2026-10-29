@@ -5,7 +5,10 @@ import type {
 import type { Smith } from "../../types/hearth";
 import { loadConfig } from "../config/load";
 import { ConversationError } from "../conversations/error";
-import type { ConversationTransport } from "../conversations/transport";
+import {
+  KeeperSelectionMismatchError,
+  type ConversationTransport,
+} from "../conversations/transport";
 import { buildChildEnv } from "../executors/env";
 import { type Supervised, supervise } from "../executors/supervisor";
 import {
@@ -71,7 +74,11 @@ function checkResume(binding: ConversationBinding | null) {
 export function createClaudeConversationTransport(
   options: Options,
 ): ConversationTransport {
-  const prepare = async (resume: ConversationBinding | null, name?: string) => {
+  const prepare = async (
+    resume: ConversationBinding | null,
+    name?: string,
+    expectedSmith?: Smith,
+  ) => {
     checkResume(resume);
     let smith: Smith;
     let env: Record<string, string>;
@@ -85,6 +92,27 @@ export function createClaudeConversationTransport(
       const selected = Object.hasOwn(config.smiths, key)
         ? config.smiths[key]
         : undefined;
+      if (
+        expectedSmith &&
+        (!selected ||
+          JSON.stringify({
+            name: selected.name,
+            provider: selected.provider,
+            model: selected.model,
+            effort: selected.effort,
+            enabled: selected.enabled,
+            tags: selected.tags,
+          }) !==
+            JSON.stringify({
+              name: expectedSmith.name,
+              provider: expectedSmith.provider,
+              model: expectedSmith.model,
+              effort: expectedSmith.effort,
+              enabled: expectedSmith.enabled,
+              tags: expectedSmith.tags,
+            }))
+      )
+        throw new KeeperSelectionMismatchError();
       if (!selected?.enabled || selected.provider !== "claude")
         throw unavailable(
           "The configured Keeper smith is not an enabled Claude smith.",
@@ -95,7 +123,11 @@ export function createClaudeConversationTransport(
         config.execution.envPass,
       );
     } catch (error) {
-      if (error instanceof ConversationError) throw error;
+      if (
+        error instanceof ConversationError ||
+        error instanceof KeeperSelectionMismatchError
+      )
+        throw error;
       throw unavailable("The Keeper configuration could not be read.");
     }
     const token = options.operatorToken();
@@ -169,11 +201,15 @@ export function createClaudeConversationTransport(
   };
   return {
     provider: "claude",
-    async check({ resume, smith }) {
-      await prepare(resume, smith);
+    async check({ resume, smith, expectedSmith }) {
+      await prepare(resume, smith ?? expectedSmith?.name, expectedSmith);
     },
     async run(request, persist, signal) {
-      const ready = await prepare(request.resume, request.smith);
+      const ready = await prepare(
+        request.resume,
+        request.smith ?? request.expectedSmith?.name,
+        request.expectedSmith,
+      );
       if (signal.aborted)
         return {
           phase: "failed",
