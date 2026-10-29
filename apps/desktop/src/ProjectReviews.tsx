@@ -243,6 +243,7 @@ type CouncilSeverity = keyof CouncilResultFacts["severities"];
 type VerifiedCouncilResult = {
   facts: CouncilResultFacts;
   job: NonNullable<ProjectCouncilRunRead["job"]>;
+  verdictCommentPreview: string | null;
 };
 
 type CouncilProgressJob = {
@@ -550,8 +551,13 @@ function verifiedCouncilResult(
   const severity = (name: CouncilSeverity) =>
     run.aggregatedFindings.filter((finding) => finding.severity === name)
       .length;
+  const beadId = verdictBead(job);
   return {
     job,
+    verdictCommentPreview:
+      phase === "completed" && beadId && value.verdictCommentPreview !== null
+        ? value.verdictCommentPreview
+        : null,
     facts: {
       requestId: saved.requestId,
       intentHash: saved.intentHash,
@@ -576,7 +582,7 @@ function verifiedCouncilResult(
         finished >= started
           ? Math.floor((finished - started) / 1000)
           : null,
-      beadId: verdictBead(job),
+      beadId,
     },
   };
 }
@@ -586,11 +592,13 @@ function CouncilResultFactsPanel({
   projectId,
   job,
   showCommentStatus,
+  verdictCommentPreview,
 }: {
   facts: CouncilResultFacts;
   projectId: string;
   job?: VerifiedCouncilResult["job"];
   showCommentStatus?: boolean;
+  verdictCommentPreview?: string | null;
 }): JSX.Element {
   return (
     <section aria-label="Verified result facts">
@@ -639,6 +647,20 @@ function CouncilResultFactsPanel({
           <a href={beadHref(projectId, facts.beadId, true)}>
             Open reviewed bead {facts.beadId}
           </a>
+          {showCommentStatus &&
+            facts.phase === "completed" &&
+            job &&
+            facts.beadId === verdictBead(job) &&
+            verdictCommentPreview && (
+              <section aria-label="Bead verdict comment preview">
+                <h5>Bead verdict comment preview</h5>
+                <pre
+                  style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}
+                >
+                  {showControls(verdictCommentPreview)}
+                </pre>
+              </section>
+            )}
           {showCommentStatus && job && (
             <CouncilVerdictStatus
               key={`${job.runId}:${job.startedAt}:${facts.beadId}`}
@@ -736,6 +758,7 @@ function RunReview({
           projectId={projectId}
           job={verifiedResult.job}
           showCommentStatus
+          verdictCommentPreview={verifiedResult.verdictCommentPreview}
         />
       )}
       {job?.error || receipt?.error ? (
