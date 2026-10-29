@@ -408,12 +408,12 @@ test("actual deep discussion exposes peer round zero before Stop cancels its hel
   await expect(roundPicker).toHaveValue(String(peerIndex));
   await expect(roundPicker.locator("option:checked")).toHaveText("peer 0");
   await expect(
-    discussion.getByRole("list").first().getByRole("listitem"),
+    discussion.getByRole("list").first().locator(":scope > li"),
   ).toHaveCount(peer?.records.length ?? 0);
   const progress = page.getByRole("region", { name: "Council progress" });
-  await expect(progress.getByRole("listitem")).toHaveCount(5);
+  await expect(progress.getByRole("list").first().locator(":scope > li")).toHaveCount(5);
   await expect(
-    progress.getByRole("listitem").filter({ hasText: "chair" }),
+    progress.getByRole("list").first().locator(":scope > li").filter({ hasText: "chair" }),
   ).toContainText("Pending");
   const shotDir = process.env["SHOT_DIR"];
   if (shotDir) {
