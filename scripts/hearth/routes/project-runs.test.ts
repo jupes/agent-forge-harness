@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -156,6 +157,48 @@ test("protected project Runs reads the served checkout without migrating legacy 
   expect(existsSync(join(h.root, ".tmp/work/forge-runs/legacy-run.json"))).toBe(
     false,
   );
+  expect(h.events(["operator.action"])).toEqual([]);
+  expect(h.bd.calls.every((args) => args[0] === "export")).toBe(true);
+});
+
+test("protected artifact read returns the exact completed canonical research body without an audit write", async () => {
+  const { h, path, state, directory, project } = await fixture();
+  const relativeArtifact = "plans/research/alpha-run.md";
+  const body = "# Alpha research\n\nThe verified original body.\n";
+  mkdirSync(join(h.root, "plans", "research"), { recursive: true });
+  writeFileSync(join(h.root, relativeArtifact), body);
+  writeFileSync(
+    join(directory, "alpha-run.json"),
+    JSON.stringify({
+      ...state,
+      phase: "research",
+      completed: ["research"],
+      artifacts: { research: relativeArtifact },
+    }),
+  );
+
+  const response = await fetch(`${path}/alpha-run/artifacts/research`, {
+    headers: h.headers(h.hearth.token),
+  });
+
+  expect(response.status).toBe(200);
+  const answer: unknown = await response.json();
+  expect(answer).toMatchObject({
+    ok: true,
+    error: null,
+    data: {
+      version: 1,
+      projectId: project.id,
+      workspace: h.workspace,
+      checkout: h.root,
+      slug: "alpha-run",
+      kind: "research",
+      artifact: relativeArtifact,
+      bytes: Buffer.byteLength(body),
+      sha256: createHash("sha256").update(body).digest("hex"),
+      content: body,
+    },
+  });
   expect(h.events(["operator.action"])).toEqual([]);
   expect(h.bd.calls.every((args) => args[0] === "export")).toBe(true);
 });
