@@ -1,8 +1,14 @@
 /** Inert bidirectional process fixture; never invokes a provider or shell. */
-import { appendFileSync, existsSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { basename } from "node:path";
 
 const mode = process.argv[2];
+const readinessGate = process.env["INTERACTIVE_TREE_READINESS_GATE"];
 if (mode === "exit-one" || mode === "forged-timeout") {
   if (mode === "forged-timeout")
     console.log(
@@ -34,7 +40,22 @@ if (mode === "ipc-probe") {
   );
   process.exit(0);
 }
-if (mode === "child") await new Promise(() => setInterval(() => {}, 1000));
+if (mode === "child") {
+  if (readinessGate) {
+    const release = `${readinessGate}.release`;
+    writeFileSync(`${readinessGate}.started`, "started");
+    const deadline = Date.now() + 5000;
+    while (
+      (!existsSync(release) || readFileSync(release, "utf8") !== "child") &&
+      Date.now() < deadline
+    )
+      await Bun.sleep(10);
+    if (!existsSync(release) || readFileSync(release, "utf8") !== "child")
+      throw new Error("The bounded child readiness gate was not released.");
+    writeFileSync(`${readinessGate}.ack`, "ready");
+  }
+  await new Promise(() => setInterval(() => {}, 1000));
+}
 if (
   mode === "blocked" ||
   mode === "deadline-tree" ||
@@ -52,6 +73,14 @@ if (
     stderr: mode === "exit-inherited-tree" ? "inherit" : "ignore",
     windowsHide: true,
   });
+  if (mode === "blocked" && readinessGate) {
+    // The test opens the parent publication gate while the helper remains gated.
+    const deadline = Date.now() + 5000;
+    while (!existsSync(`${readinessGate}.release`) && Date.now() < deadline)
+      await Bun.sleep(10);
+    if (!existsSync(`${readinessGate}.release`))
+      throw new Error("The bounded parent announcement gate was not released.");
+  }
   const announcement = `${JSON.stringify({ pid: process.pid, childPid: child.pid })}\n`;
   if (process.env.INTERACTIVE_TREE_LOG) {
     if (mode === "partial-tree") {
