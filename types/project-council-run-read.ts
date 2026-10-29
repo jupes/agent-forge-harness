@@ -2,8 +2,8 @@ import { z } from "zod";
 import type { CouncilServiceJob } from "../scripts/council/service";
 import { parseCouncilProfileJson } from "../scripts/council/types";
 import {
-  projectCouncilReceiptSchema,
   type ProjectCouncilReceipt,
+  projectCouncilReceiptSchema,
 } from "./project-council";
 
 if (typeof window !== "undefined") z.config({ jitless: true });
@@ -80,15 +80,27 @@ const profileSchema = z
   .strict()
   .superRefine((profile, context) => {
     if (profile.minQuorum > profile.seats.length)
-      context.addIssue({ code: "custom", message: "profile quorum exceeds seats" });
+      context.addIssue({
+        code: "custom",
+        message: "profile quorum exceeds seats",
+      });
     if (profile.minPeerBallots > profile.seats.length)
-      context.addIssue({ code: "custom", message: "profile peer quorum exceeds seats" });
+      context.addIssue({
+        code: "custom",
+        message: "profile peer quorum exceeds seats",
+      });
     const ids = new Set(profile.seats.map((seat) => seat.id));
     if (ids.size !== profile.seats.length || ids.has(profile.chair.id))
-      context.addIssue({ code: "custom", message: "profile seat ids are not unique" });
+      context.addIssue({
+        code: "custom",
+        message: "profile seat ids are not unique",
+      });
     const parsed = parseCouncilProfileJson(JSON.stringify(profile));
     if (!parsed.ok)
-      context.addIssue({ code: "custom", message: "profile is not a valid canonical Council profile" });
+      context.addIssue({
+        code: "custom",
+        message: "profile is not a valid canonical Council profile",
+      });
   });
 
 const proposedFindingSchema = z
@@ -197,9 +209,9 @@ const discussionRoundSchema = z
     completedAt: date,
     records: z.array(seatRecordSchema).max(1_000),
     findings: z.array(aggregatedFindingSchema).max(4_096),
-    candidateTitles: z.record(z.string().max(256), text).refine(
-      (value) => Object.keys(value).length <= 4_096,
-    ),
+    candidateTitles: z
+      .record(z.string().max(256), text)
+      .refine((value) => Object.keys(value).length <= 4_096),
   })
   .strict();
 
@@ -227,9 +239,7 @@ const evidenceItemSchema = z
     truncated: z.boolean(),
   })
   .strict();
-const redactionSchema = z
-  .object({ kind: nonempty, count: integer })
-  .strict();
+const redactionSchema = z.object({ kind: nonempty, count: integer }).strict();
 const runContextSchema = z
   .object({
     source: contextSourceSchema,
@@ -299,12 +309,26 @@ const eventPayload = {
     .strict(),
 } as const;
 const event = <T extends keyof typeof eventPayload>(type: T) =>
-  z.object({ ...eventFields, type: z.literal(type), payload: eventPayload[type] }).strict();
+  z
+    .object({
+      ...eventFields,
+      type: z.literal(type),
+      payload: eventPayload[type],
+    })
+    .strict();
 const councilEventSchema = z.discriminatedUnion("type", [
-  event("run.started"), event("run.failed"), event("run.cancelled"),
-  event("run.completed"), event("stage.started"), event("stage.completed"),
-  event("seat.started"), event("seat.completed"), event("seat.failed"),
-  event("seat.cancelled"), event("findings.aggregated"), event("verdict.corrected"),
+  event("run.started"),
+  event("run.failed"),
+  event("run.cancelled"),
+  event("run.completed"),
+  event("stage.started"),
+  event("stage.completed"),
+  event("seat.started"),
+  event("seat.completed"),
+  event("seat.failed"),
+  event("seat.cancelled"),
+  event("findings.aggregated"),
+  event("verdict.corrected"),
 ]);
 
 const councilRunSchema = z
@@ -335,7 +359,10 @@ const councilRunSchema = z
   .strict()
   .superRefine((run, context) => {
     if (run.events.some((event) => event.runId !== run.runId))
-      context.addIssue({ code: "custom", message: "run event belongs to another run" });
+      context.addIssue({
+        code: "custom",
+        message: "run event belongs to another run",
+      });
     const terminalEvent =
       run.status === "completed"
         ? "run.completed"
@@ -343,15 +370,27 @@ const councilRunSchema = z
           ? "run.failed"
           : "run.cancelled";
     if (!run.events.some((event) => event.type === terminalEvent))
-      context.addIssue({ code: "custom", message: "run lacks its matching terminal event" });
+      context.addIssue({
+        code: "custom",
+        message: "run lacks its matching terminal event",
+      });
     if ((run.status === "completed") !== (run.chair !== undefined))
-      context.addIssue({ code: "custom", message: "recommendation does not match completed run status" });
+      context.addIssue({
+        code: "custom",
+        message: "recommendation does not match completed run status",
+      });
   });
 
 export const projectCouncilJobReadSchema = z
   .object({
     runId: nonempty,
-    status: z.enum(["running", "cancelling", "completed", "failed", "cancelled"]),
+    status: z.enum([
+      "running",
+      "cancelling",
+      "completed",
+      "failed",
+      "cancelled",
+    ]),
     startedAt: date,
     updatedAt: date,
     events: z.array(councilEventSchema).max(20_000),
@@ -364,18 +403,33 @@ export const projectCouncilJobReadSchema = z
   })
   .strict()
   .superRefine((job, context) => {
-    if (job.run && (job.run.runId !== job.runId || job.run.status !== job.status))
-      context.addIssue({ code: "custom", message: "job and run identity/status disagree" });
+    if (
+      job.run &&
+      (job.run.runId !== job.runId || job.run.status !== job.status)
+    )
+      context.addIssue({
+        code: "custom",
+        message: "job and run identity/status disagree",
+      });
     if (
       job.run &&
       job.profile &&
       JSON.stringify(job.profile) !== JSON.stringify(job.run.profile)
     )
-      context.addIssue({ code: "custom", message: "job profile does not match completed run profile" });
+      context.addIssue({
+        code: "custom",
+        message: "job profile does not match completed run profile",
+      });
     if (job.status === "completed" && job.run === undefined)
-      context.addIssue({ code: "custom", message: "completed job lacks its result" });
+      context.addIssue({
+        code: "custom",
+        message: "completed job lacks its result",
+      });
     if (job.events.some((event) => event.runId !== job.runId))
-      context.addIssue({ code: "custom", message: "job event belongs to another run" });
+      context.addIssue({
+        code: "custom",
+        message: "job event belongs to another run",
+      });
   });
 
 export type ProjectCouncilJobRead = z.infer<typeof projectCouncilJobReadSchema>;
@@ -383,10 +437,17 @@ export type ProjectCouncilJobRead = z.infer<typeof projectCouncilJobReadSchema>;
 const provenanceSchema = z
   .object({
     version: z.literal(1),
-    requestId: z.string().uuid().refine((value) => value === value.toLowerCase()),
+    requestId: z
+      .string()
+      .uuid()
+      .refine((value) => value === value.toLowerCase()),
     intentHash: digest,
     runId: nonempty.max(120),
-    projectId: z.string().regex(/^project-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/),
+    projectId: z
+      .string()
+      .regex(
+        /^project-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+      ),
     workspace: nonempty.max(4096),
     catalogRevision: integer,
     scopeHash: digest,
@@ -410,39 +471,83 @@ export const projectCouncilRunReadSchema = z
       receipt.metadata.runId !== provenance.runId ||
       receipt.metadata.projectId !== provenance.projectId
     )
-      context.addIssue({ code: "custom", message: "receipt does not match run provenance" });
-    if (job && (job.runId !== provenance.runId || job.run?.runId !== undefined && job.run.runId !== provenance.runId))
-      context.addIssue({ code: "custom", message: "job does not match run provenance" });
+      context.addIssue({
+        code: "custom",
+        message: "receipt does not match run provenance",
+      });
+    if (
+      job &&
+      (job.runId !== provenance.runId ||
+        (job.run?.runId !== undefined && job.run.runId !== provenance.runId))
+    )
+      context.addIssue({
+        code: "custom",
+        message: "job does not match run provenance",
+      });
     if (job?.events.some((event) => event.runId !== provenance.runId))
-      context.addIssue({ code: "custom", message: "event does not match run provenance" });
+      context.addIssue({
+        code: "custom",
+        message: "event does not match run provenance",
+      });
     if (receipt.phase === "completed" && job?.run?.status !== "completed")
-      context.addIssue({ code: "custom", message: "completed receipt lacks a completed result" });
+      context.addIssue({
+        code: "custom",
+        message: "completed receipt lacks a completed result",
+      });
     if (job?.run?.status === "completed" && receipt.phase !== "completed")
-      context.addIssue({ code: "custom", message: "completed result lacks a completed receipt" });
+      context.addIssue({
+        code: "custom",
+        message: "completed result lacks a completed receipt",
+      });
     if (["reserved", "retired"].includes(receipt.phase) && job !== null)
-      context.addIssue({ code: "custom", message: "unadmitted receipt cannot carry a job" });
+      context.addIssue({
+        code: "custom",
+        message: "unadmitted receipt cannot carry a job",
+      });
     if (
       receipt.phase === "running" &&
       (!job || (job.status !== "running" && job.status !== "cancelling"))
     )
-      context.addIssue({ code: "custom", message: "running receipt requires a running job" });
+      context.addIssue({
+        code: "custom",
+        message: "running receipt requires a running job",
+      });
     if (
       (receipt.phase === "failed" || receipt.phase === "cancelled") &&
-      job !== null && job.status !== receipt.phase
+      job !== null &&
+      job.status !== receipt.phase
     )
-      context.addIssue({ code: "custom", message: "terminal receipt and job status disagree" });
+      context.addIssue({
+        code: "custom",
+        message: "terminal receipt and job status disagree",
+      });
     if (receipt.phase === "unknown" && job !== null)
-      context.addIssue({ code: "custom", message: "unknown receipt cannot carry an unverified job" });
+      context.addIssue({
+        code: "custom",
+        message: "unknown receipt cannot carry an unverified job",
+      });
     if (
       read.verdictCommentPreview !== null &&
       (receipt.phase !== "completed" || job?.run?.status !== "completed")
     )
-      context.addIssue({ code: "custom", message: "verdict preview requires a completed result" });
+      context.addIssue({
+        code: "custom",
+        message: "verdict preview requires a completed result",
+      });
     try {
-      if (new TextEncoder().encode(JSON.stringify(read)).byteLength > MAX_PROJECT_COUNCIL_RUN_RESPONSE_BYTES)
-        context.addIssue({ code: "custom", message: "Council run response exceeds 8 MiB" });
+      if (
+        new TextEncoder().encode(JSON.stringify(read)).byteLength >
+        MAX_PROJECT_COUNCIL_RUN_RESPONSE_BYTES
+      )
+        context.addIssue({
+          code: "custom",
+          message: "Council run response exceeds 8 MiB",
+        });
     } catch {
-      context.addIssue({ code: "custom", message: "Council run response is not serializable" });
+      context.addIssue({
+        code: "custom",
+        message: "Council run response is not serializable",
+      });
     }
   });
 
@@ -483,4 +588,3 @@ export function projectCouncilRunRead(
     verdictCommentPreview,
   });
 }
-

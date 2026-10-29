@@ -1,16 +1,16 @@
 import { describe, expect, it } from "bun:test";
-import type { CouncilServiceJob } from "./service";
-import {
-  MAX_PROJECT_COUNCIL_RUN_RESPONSE_BYTES,
-  projectCouncilJobReadSchema,
-  projectCouncilRunRead,
-  projectCouncilRunReadSchema,
-  type ProjectCouncilRunProvenance,
-} from "../../types/project-council-run-read";
 import type {
   ProjectCouncilMetadata,
   ProjectCouncilReceipt,
 } from "../../types/project-council";
+import {
+  MAX_PROJECT_COUNCIL_RUN_RESPONSE_BYTES,
+  type ProjectCouncilRunProvenance,
+  projectCouncilJobReadSchema,
+  projectCouncilRunRead,
+  projectCouncilRunReadSchema,
+} from "../../types/project-council-run-read";
+import type { CouncilServiceJob } from "./service";
 import type { CouncilProfile, CouncilRun } from "./types";
 
 const at = "2026-10-29T12:00:00.000Z";
@@ -233,14 +233,18 @@ describe("project Council run read contract", () => {
       strengths: ["The operation is small."],
       unknowns: ["Other callers were not supplied."],
     });
-    expect(read.job?.run?.discussion?.[0]?.findings[0]?.rationales).toHaveLength(1);
+    expect(
+      read.job?.run?.discussion?.[0]?.findings[0]?.rationales,
+    ).toHaveLength(1);
     expect(JSON.stringify(read)).not.toContain("C:\\\\private\\\\council-runs");
     expect(read.job?.run?.actualCostUsd).toBe(0.8);
   });
 
   it("keeps identity mismatches and unknown event payload fields invalid", () => {
     const foreign: CouncilServiceJob = { ...job, runId: "council-foreign" };
-    expect(() => projectCouncilRunRead(provenance, receipt, foreign, null)).toThrow();
+    expect(() =>
+      projectCouncilRunRead(provenance, receipt, foreign, null),
+    ).toThrow();
 
     const malformed: unknown = {
       runId,
@@ -254,30 +258,60 @@ describe("project Council run read contract", () => {
         },
       ],
     };
-    expect(projectCouncilJobReadSchema.safeParse(malformed).success).toBe(false);
+    expect(projectCouncilJobReadSchema.safeParse(malformed).success).toBe(
+      false,
+    );
 
     const crossedRun: CouncilRun = {
       ...run,
       events: [{ ...run.events[0]!, runId: "council-foreign" }],
     };
-    expect(() => projectCouncilRunRead(provenance, receipt, { ...job, run: crossedRun }, null)).toThrow();
+    expect(() =>
+      projectCouncilRunRead(
+        provenance,
+        receipt,
+        { ...job, run: crossedRun },
+        null,
+      ),
+    ).toThrow();
     const { run: _run, artifacts: _artifacts, ...completedWithoutResult } = job;
-    expect(projectCouncilJobReadSchema.safeParse(completedWithoutResult).success).toBe(false);
+    expect(
+      projectCouncilJobReadSchema.safeParse(completedWithoutResult).success,
+    ).toBe(false);
   });
 
   it("keeps unknown dispatch outcomes held without attaching a job", () => {
-    const reservedReceipt: ProjectCouncilReceipt = { metadata: { ...metadata, state: "reserved" }, phase: "reserved" };
-    const runningReceipt: ProjectCouncilReceipt = { metadata: { ...metadata, state: "running" }, phase: "running" };
-    const failedReceipt: ProjectCouncilReceipt = { metadata: { ...metadata, state: "failed" }, phase: "failed" };
-    expect(() => projectCouncilRunRead(provenance, reservedReceipt, job, null)).toThrow();
-    expect(() => projectCouncilRunRead(provenance, runningReceipt, null, null)).toThrow();
-    expect(() => projectCouncilRunRead(provenance, failedReceipt, job, null)).toThrow();
+    const reservedReceipt: ProjectCouncilReceipt = {
+      metadata: { ...metadata, state: "reserved" },
+      phase: "reserved",
+    };
+    const runningReceipt: ProjectCouncilReceipt = {
+      metadata: { ...metadata, state: "running" },
+      phase: "running",
+    };
+    const failedReceipt: ProjectCouncilReceipt = {
+      metadata: { ...metadata, state: "failed" },
+      phase: "failed",
+    };
+    expect(() =>
+      projectCouncilRunRead(provenance, reservedReceipt, job, null),
+    ).toThrow();
+    expect(() =>
+      projectCouncilRunRead(provenance, runningReceipt, null, null),
+    ).toThrow();
+    expect(() =>
+      projectCouncilRunRead(provenance, failedReceipt, job, null),
+    ).toThrow();
     const unknownReceipt: ProjectCouncilReceipt = {
       metadata: { ...metadata, state: "dispatch-claimed" },
       phase: "unknown",
     };
-    expect(projectCouncilRunRead(provenance, unknownReceipt, null, null).job).toBeNull();
-    expect(() => projectCouncilRunRead(provenance, unknownReceipt, job, null)).toThrow();
+    expect(
+      projectCouncilRunRead(provenance, unknownReceipt, null, null).job,
+    ).toBeNull();
+    expect(() =>
+      projectCouncilRunRead(provenance, unknownReceipt, job, null),
+    ).toThrow();
   });
 
   it("rejects oversize complete results instead of truncating them", () => {
@@ -295,9 +329,9 @@ describe("project Council run read contract", () => {
     };
     const largeJob: CouncilServiceJob = { ...job, run: largeRun };
     expect(MAX_PROJECT_COUNCIL_RUN_RESPONSE_BYTES).toBe(8 * 1024 * 1024);
-    expect(() => projectCouncilRunRead(provenance, receipt, largeJob, null)).toThrow(
-      /8 MiB/,
-    );
+    expect(() =>
+      projectCouncilRunRead(provenance, receipt, largeJob, null),
+    ).toThrow(/8 MiB/);
   });
 
   it("preserves an absent job without inventing costs or a recommendation", () => {
