@@ -1,4 +1,13 @@
 import { expect, test } from "bun:test";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmdirSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildChildEnv } from "./env";
 import { killTree, liveChildCount, supervise } from "./supervisor";
@@ -193,6 +202,7 @@ function tree(
     generationFailure?: WindowsJobSettlementGenerationFailureWitness,
     unaccountedFailure?: WindowsJobSettlementUnaccountedFailureWitness,
   ) => void,
+  readinessGate?: string,
 ) {
   let announce: (line: string) => void = () => undefined;
   const ready = new Promise<string>((resolve) => {
@@ -202,7 +212,12 @@ function tree(
     windowsHide: true,
     command: [process.execPath, fake, mode],
     cwd: import.meta.dir,
-    env: buildChildEnv(process.env, []),
+    env: {
+      ...buildChildEnv(process.env, []),
+      ...(readinessGate
+        ? { INTERACTIVE_TREE_READINESS_GATE: readinessGate }
+        : {}),
+    },
     stdinMode: "interactive",
     maxStdinBytes,
     stdinTimeoutMs,
@@ -292,6 +307,15 @@ function tree(
   return { handle, childPid };
 }
 
+async function markerAppears(
+  path: string,
+  timeoutMs: number,
+): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (!existsSync(path) && Date.now() < deadline) await Bun.sleep(10);
+  return existsSync(path);
+}
+
 function alive(pid: number) {
   try {
     process.kill(pid, 0);
@@ -350,14 +374,57 @@ test("a saturated pipe has a deadline even when the host accepts earlier bufferi
 
 test("Stop settles a backpressured write and EOF while confirming descendant cleanup", async () => {
   const phases: WindowsJobSettlementFailurePhase[] = [];
-  const f = tree("blocked", 2000, 8 * 1024 * 1024, undefined, 5000, (phase) =>
-    phases.push(phase),
+  const gateDir = mkdtempSync(join(tmpdir(), "agent-forge-child-ready-"));
+  const gate = join(gateDir, "child");
+  const started = `${gate}.started`;
+  const release = `${gate}.release`;
+  const acknowledged = `${gate}.ack`;
+  const f = tree(
+    "blocked",
+    2000,
+    8 * 1024 * 1024,
+    undefined,
+    5000,
+    (phase) => phases.push(phase),
+    gate,
   );
-  const child = await f.childPid();
-  const writing = f.handle.write("x".repeat(4 * 1024 * 1024));
-  const ending = f.handle.end();
-  const settled = Promise.allSettled([writing, ending]);
+  const endedBeforeAnnouncement = () => {
+    throw new Error("The interactive fixture ended before child announcement.");
+  };
+  const announcement = Promise.race([
+    f.childPid(),
+    f.handle.done.then(endedBeforeAnnouncement, endedBeforeAnnouncement),
+  ]);
+  void announcement.catch(() => undefined);
+  let child = 0;
+  let failed = false;
+  let failure: unknown;
+  let cleanupFailure: unknown;
   try {
+    expect(await markerAppears(started, 5000)).toBe(true);
+    expect(existsSync(acknowledged)).toBe(false);
+    writeFileSync(release, "announce");
+    const beforeChildAck = await Promise.race([
+      announcement.then(() => "announced" as const),
+      Bun.sleep(25).then(() => "held" as const),
+    ]);
+    expect(beforeChildAck).toBe("held");
+
+    writeFileSync(acknowledged, "not-ready");
+    const beforeValidAck = await Promise.race([
+      announcement.then(() => "announced" as const),
+      Bun.sleep(25).then(() => "held" as const),
+    ]);
+    expect(beforeValidAck).toBe("held");
+
+    writeFileSync(release, "child");
+    child = await announcement;
+    expect(readFileSync(acknowledged, "utf8")).toBe("ready");
+    expect(alive(child)).toBe(true);
+
+    const writing = f.handle.write("x".repeat(4 * 1024 * 1024));
+    const ending = f.handle.end();
+    const settled = Promise.allSettled([writing, ending]);
     try {
       await f.handle.stop("explicit Stop");
     } catch (error) {
@@ -376,10 +443,34 @@ test("Stop settles a backpressured write and EOF while confirming descendant cle
     ]);
     expect((await f.handle.done).stopped).toBe(true);
     expect(await gone(child)).toBe(true);
+  } catch (error) {
+    failed = true;
+    failure = error;
   } finally {
-    await f.handle.stop("fixture cleanup");
-    if (alive(child)) killTree(child);
+    try {
+      writeFileSync(release, "child");
+    } catch (error) {
+      cleanupFailure ??= error;
+    }
+    try {
+      await f.handle.stop("fixture cleanup");
+    } catch (error) {
+      cleanupFailure ??= error;
+    }
+    try {
+      for (const marker of [started, release, acknowledged])
+        if (existsSync(marker)) unlinkSync(marker);
+      rmdirSync(gateDir);
+    } catch (error) {
+      cleanupFailure ??= error;
+    }
   }
+  if (failed) {
+    if (cleanupFailure)
+      console.error('{"kind":"interactive-readiness-cleanup-refusal"}');
+    throw failure;
+  }
+  if (cleanupFailure) throw cleanupFailure;
 });
 
 test("interactive normal parent exit closes the ownership job and cleans its helpers", async () => {
