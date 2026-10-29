@@ -291,7 +291,7 @@ test("a completed bead-source review links to its bead and reports the one recor
         timeout: 15_000,
       })
       .toBeGreaterThan(0);
-  const firstReads = await Promise.all([...runReads]);
+    const firstReads = await Promise.all([...runReads]);
     const verifiedReads = await verifiedRunReads(runReads);
     if (verifiedReads.some((read) => !matchesOriginal(read)))
       throw Error("A Council result read did not match its saved original.");
