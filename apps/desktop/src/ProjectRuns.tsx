@@ -643,7 +643,9 @@ export function RunDetail({
       </section>
       <RunCheckpoints
         result={checkpointResult}
-        onCouncilPrefill={onCouncilBeadPrefill}
+        {...(onCouncilBeadPrefill
+          ? { onCouncilPrefill: onCouncilBeadPrefill }
+          : {})}
       />
       <section aria-label="Run gate history">
         <h4>Gate history</h4>
