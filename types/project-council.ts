@@ -308,6 +308,9 @@ export const projectCouncilHistoryRowSchema = z
 
 export const projectCouncilHistorySchema = z
   .object({
+    version: z.literal(1),
+    projectId: projectCouncilBindingSchema.shape.projectId,
+    workspace: projectCouncilBindingSchema.shape.workspace,
     activeRequestId: projectCouncilRequestIdSchema.nullable(),
     total: z.number().int().nonnegative().max(PROJECT_COUNCIL_MAX_ORIGINALS),
     omitted: z.number().int().nonnegative().max(PROJECT_COUNCIL_MAX_ORIGINALS),

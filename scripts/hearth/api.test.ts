@@ -33,7 +33,11 @@ import type {
   SmithsView,
 } from "../../types/hearth";
 import type { OwnedSessionRecord } from "../../types/owned-session";
-import type { ProjectCouncilBinding } from "../../types/project-council";
+import {
+  projectCouncilMetadataSchema,
+  projectCouncilReceiptSchema,
+  type ProjectCouncilBinding,
+} from "../../types/project-council";
 import type { ProjectCatalog } from "../../types/projects";
 import { terminalHandoffAttemptSchema } from "../../types/session-terminal-handoff";
 import type { SmithConfigEditRequest } from "../../types/smith-config-edit";
@@ -3499,13 +3503,22 @@ const ACTIONS: Record<string, ActionFixture> = {
         h,
         "API inventory reserved review fixture.",
       );
-      expect(answer).toMatchObject({
-        metadata: {
-          requestId: seed.requestId,
-          runId: seed.runId,
-          state: "reserved",
-        },
-        created: false,
+      if (
+        typeof answer !== "object" ||
+        answer === null ||
+        Array.isArray(answer) ||
+        !("metadata" in answer) ||
+        !("created" in answer) ||
+        answer.created !== false
+      )
+        throw new Error("The reserve action did not return its replay result.");
+      const metadata = projectCouncilMetadataSchema.safeParse(answer.metadata);
+      if (!metadata.success)
+        throw new Error("The reserve action metadata is not strict.");
+      expect(metadata.data).toMatchObject({
+        requestId: seed.requestId,
+        runId: seed.runId,
+        state: "reserved",
       });
       expect(h.commands.calls).toEqual([]);
       expect(h.events(["council.run.started", "council.run.finished"])).toEqual(
@@ -3549,8 +3562,15 @@ const ACTIONS: Record<string, ActionFixture> = {
         h,
         "API inventory committed review fixture.",
       );
-      expect(answer).toMatchObject({
-        metadata: { requestId: seed.requestId, runId: seed.runId },
+      const initialReceipt = projectCouncilReceiptSchema.safeParse(answer);
+      if (!initialReceipt.success)
+        throw new Error("The commit action did not return a strict receipt.");
+      expect(initialReceipt.data).toMatchObject({
+        metadata: {
+          requestId: seed.requestId,
+          runId: seed.runId,
+          intentHash: seed.intentHash,
+        },
         phase: expect.stringMatching(/^(running|unknown)$/),
       });
       expect(await runStatus(h, seed.runId)).toBe("completed");
@@ -3585,8 +3605,22 @@ const ACTIONS: Record<string, ActionFixture> = {
         { intentHash: seed.intentHash },
       );
       expect(replay.status).toBe(202);
-      expect(await replay.json()).toMatchObject({
-        data: { created: false, receipt: { phase: "completed" } },
+      const replayEnvelope = await envelope<unknown>(replay);
+      if (!replayEnvelope.ok)
+        throw new Error("The replayed commit returned an error envelope.");
+      const replayReceipt = projectCouncilReceiptSchema.safeParse(
+        replayEnvelope.data,
+      );
+      if (!replayReceipt.success)
+        throw new Error("The replayed commit receipt is not strict.");
+      expect(replayReceipt.data).toMatchObject({
+        metadata: {
+          requestId: seed.requestId,
+          runId: seed.runId,
+          intentHash: seed.intentHash,
+          state: "completed",
+        },
+        phase: "completed",
       });
       expect(await runIds(h)).toEqual(runsBeforeReplay);
       expect(h.commands.calls).toHaveLength(callsBeforeReplay);
@@ -3616,9 +3650,21 @@ const ACTIONS: Record<string, ActionFixture> = {
       fixture.valid.target = seed.requestId;
       fixture.valid.audit = { inputHash: seed.intentHash };
     },
-    happened: async (_h, answer) => {
-      expect(answer).toMatchObject({
-        metadata: { state: "retired" },
+    happened: async (h, answer) => {
+      const seed = await seedProjectCouncilOriginal(
+        h,
+        "API inventory retired review fixture.",
+      );
+      const receipt = projectCouncilReceiptSchema.safeParse(answer);
+      if (!receipt.success)
+        throw new Error("The retire action did not return a strict receipt.");
+      expect(receipt.data).toMatchObject({
+        metadata: {
+          requestId: seed.requestId,
+          runId: seed.runId,
+          intentHash: seed.intentHash,
+          state: "retired",
+        },
         phase: "retired",
       });
     },
@@ -3655,11 +3701,22 @@ const ACTIONS: Record<string, ActionFixture> = {
       );
       await councilRunFinished(h, seed.runId);
     },
-    happened: async (_h, answer) => {
-      expect(answer).toMatchObject({
+    happened: async (h, answer) => {
+      const seed = await seedProjectCouncilOriginal(
+        h,
+        "API inventory cancelled review fixture.",
+      );
+      const receipt = projectCouncilReceiptSchema.safeParse(answer);
+      if (!receipt.success)
+        throw new Error("The cancel action did not return a strict receipt.");
+      expect(receipt.data).toMatchObject({
         metadata: {
-          state: expect.stringMatching(/^(running|completed|cancelled)$/),
+          requestId: seed.requestId,
+          runId: seed.runId,
+          intentHash: seed.intentHash,
+          state: expect.stringMatching(/^(completed|cancelled)$/),
         },
+        phase: expect.stringMatching(/^(completed|cancelled)$/),
       });
     },
   },

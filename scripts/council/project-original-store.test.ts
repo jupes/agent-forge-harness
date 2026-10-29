@@ -242,6 +242,11 @@ test("project Council summary labels redact the complete text before truncating"
   const history = projectCouncilHistorySchema.parse(
     store.history(original.binding.projectId),
   );
+  expect(history).toMatchObject({
+    version: 1,
+    projectId: original.binding.projectId,
+    workspace: original.binding.workspace,
+  });
   expect(history.items[0]?.sourceName).toBe(metadata.sourceName);
   expect(history.items[0]?.profileTitle).toBe(metadata.profileTitle);
   expect(history.items[0]?.sourceName).not.toContain("abcZq9Zq8Zq7Zq6Zq5Zq4");
