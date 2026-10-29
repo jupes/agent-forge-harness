@@ -184,10 +184,20 @@ test("concurrent project commits across workspaces cannot overbook the global fo
       ),
     ),
   );
-  expect(outcomes.filter((item) => item.status === "fulfilled")).toHaveLength(
-    1,
+  const fulfilled = outcomes.filter((item) => item.status === "fulfilled");
+  const rejected = outcomes.filter(
+    (item): item is PromiseRejectedResult => item.status === "rejected",
   );
-  expect(outcomes.filter((item) => item.status === "rejected")).toHaveLength(1);
+  if (fulfilled.length !== 1 || rejected.length !== 1)
+    throw new Error(
+      `Expected one admitted project Council commit; fulfilled=${fulfilled.length}; rejected=${rejected
+        .map((item) =>
+          item.reason instanceof Error ? item.reason.message : String(item.reason),
+        )
+        .join(" | ")}`,
+    );
+  expect(fulfilled).toHaveLength(1);
+  expect(rejected).toHaveLength(1);
   await service.close();
 });
 
