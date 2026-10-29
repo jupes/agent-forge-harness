@@ -1,4 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
+import { SupervisorOwnershipRefusalError } from "../../executors/supervisor";
 import { projectCatalogPath } from "../../projects/store";
 import {
   FIXTURE_PROJECT_ID,
@@ -9,7 +10,6 @@ import {
   type ProviderInspector,
 } from "../../providers/inspect";
 import { providerReadinessPageSchema } from "../../providers/protocol";
-import { SupervisorOwnershipRefusalError } from "../../executors/supervisor";
 import { startTestHearth, type TestHearth } from "../testing";
 import { writeOwnerOnly } from "../token";
 import { seedProjectBeadWriteFixture } from "./project-bead-write-fixture";
