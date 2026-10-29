@@ -235,20 +235,42 @@ an exact recorded retry reconciles its receipt even if membership later changes.
 
 ## Briefs
 
-An explicit `POST /projects/:id/keeper/briefs` carries only a request UUID and
-expected conversation revision. It uses the existing audited action runner,
-standing conversation lease, provider identity and Stop lifecycle. Under that
-lease the server prepares a strict snapshot of actual project evidence, capped
-at 10,000 UTF-8 bytes and 40 facts. Public message input cannot supply a snapshot.
-The private user frame retains the original source time, scope, limitations and
-snapshot for exact retries. An uncertain response never creates a new request.
-An unrelated human draft and its About references survive Refresh.
+Preparing a brief is a two-step, explicit review. An audited
+`POST /projects/:id/keeper/brief-intents/reserve` supplies only the expected
+conversation revision and an origin selector that the server resolves. For
+onboarding, its request UUID must match the verified, accepted project-creation
+request; project paths and scope are never accepted from the browser. Under the
+standing conversation lease, the server freezes a bounded project-evidence
+snapshot, the effective prompt and About references, and the selected Keeper
+configuration into a private canonical original with a server-minted request
+UUID. Reservation performs no readiness probe, provider check or model
+dispatch.
+
+Operator-only `GET /projects/:id/keeper/brief-intents` discovers only the
+bounded identity, scope, selection and lifecycle metadata. An explicit review
+uses the protected
+`GET /projects/:id/keeper/brief-intents/:requestId` to read the exact frozen
+original into renderer memory. The canonical original body remains in the
+owner-home journal: it is not stored in browser persistence or copied into
+generic pages, feeds, events or audit records. The audit ledger records action
+metadata only.
+
+Sending the reviewed original is a separate explicit
+`POST /projects/:id/keeper/briefs` containing only its request UUID, expected
+conversation revision and intent hash. Under the same conversation lease, the
+server atomically admits that exact frozen original and user frame. Only a new
+admission (`created: true`) may dispatch one provider turn; a replay returns
+readback and never dispatches again. Lost or unknown outcomes remain held under
+the same identity; they do not trigger an automatic retry or replacement
+request. An unrelated human draft and its About references survive review and
+send.
 
 Only a completed, identity-confirmed turn whose structured output cites existing
 facts in the correct Moving, Waiting on you or Stuck section becomes a brief.
-Failed, unknown, cancelled or malformed refreshes preserve the last confirmed
-brief and its original time. Source titles and model prose are text, with no
-action authority. The metadata ledger contains neither snapshots nor prose.
+Failed, unknown, cancelled or malformed brief attempts preserve the last
+confirmed brief and its original time. Source titles and model prose are text,
+with no action authority. The metadata ledger contains neither snapshots nor
+prose.
 
 Operator-only `GET /projects/:id/keeper/briefs` projects the latest confirmed
 brief and at most ten earlier briefs from that same journal. Keeper, Overview
