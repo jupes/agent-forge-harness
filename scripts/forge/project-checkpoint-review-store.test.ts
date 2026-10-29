@@ -2,8 +2,8 @@ import { afterEach, expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
 import {
   mkdirSync,
-  readFileSync,
   readdirSync,
+  readFileSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -85,7 +85,9 @@ function fixture() {
 }
 
 function journalFiles(directory: string): string[] {
-  return readdirSync(directory).filter((name) => /^[a-f0-9]{64}\.json$/u.test(name));
+  return readdirSync(directory).filter((name) =>
+    /^[a-f0-9]{64}\.json$/u.test(name),
+  );
 }
 
 test("a prepared immutable original is private, exact-retry idempotent, and globally keyed by workspace and bead", async () => {
@@ -179,18 +181,38 @@ test("a restarted store can settle a dispatching claim only from explicit readba
   const claim = await store.claim(scope, saved.requestId, saved.intentHash, 25);
   if (claim.kind !== "claimed") throw new Error("Expected the first claim.");
   const restarted = createProjectCheckpointReviewStore({ home, withQueueLock });
-  const absent = await restarted.recordReadback(scope, saved.requestId, saved.intentHash, { kind: "absent" }, 26);
-  expect(absent.receipt).toMatchObject({ state: "unknown", readback: "absent" });
-  expect((await restarted.metadata(scope)).activeRequestId).toBe(saved.requestId);
-  expect((await restarted.claim(scope, saved.requestId, saved.intentHash, 27)).kind).toBe("held");
+  const absent = await restarted.recordReadback(
+    scope,
+    saved.requestId,
+    saved.intentHash,
+    { kind: "absent" },
+    26,
+  );
+  expect(absent.receipt).toMatchObject({
+    state: "unknown",
+    readback: "absent",
+  });
+  expect((await restarted.metadata(scope)).activeRequestId).toBe(
+    saved.requestId,
+  );
+  expect(
+    (await restarted.claim(scope, saved.requestId, saved.intentHash, 27)).kind,
+  ).toBe("held");
   const confirmed = await restarted.recordReadback(
     scope,
     saved.requestId,
     saved.intentHash,
-    { kind: "found", commentId: "comment-after-restart", body: saved.commentText },
+    {
+      kind: "found",
+      commentId: "comment-after-restart",
+      body: saved.commentText,
+    },
     28,
   );
-  expect(confirmed.receipt).toMatchObject({ state: "confirmed", readback: "found" });
+  expect(confirmed.receipt).toMatchObject({
+    state: "confirmed",
+    readback: "found",
+  });
 });
 
 test("only the current claim permit can finish, and an unknown delivery keeps the global bead held", async () => {
@@ -201,10 +223,14 @@ test("only the current claim permit can finish, and an unknown delivery keeps th
   if (claim.kind !== "claimed") throw new Error("Expected the first claim.");
   const other = createProjectCheckpointReviewStore({ home, withQueueLock });
   await expect(
-    other.finish(claim.permit, {
-      kind: "unknown",
-      reportedCommentId: "comment-17",
-    }, 32),
+    other.finish(
+      claim.permit,
+      {
+        kind: "unknown",
+        reportedCommentId: "comment-17",
+      },
+      32,
+    ),
   ).rejects.toBeInstanceOf(ConversationError);
   const unknown = await store.finish(
     claim.permit,
@@ -237,7 +263,10 @@ test("only the current claim permit can finish, and an unknown delivery keeps th
   expect(await foreignStore.original(foreignScope, saved.requestId)).toBeNull();
   await expect(
     foreignStore.prepare(
-      original({ binding: foreignBinding, requestId: randomUUID().toLowerCase() }),
+      original({
+        binding: foreignBinding,
+        requestId: randomUUID().toLowerCase(),
+      }),
       34,
     ),
   ).rejects.toThrow();
@@ -287,7 +316,10 @@ test("explicit exact comment readback confirms, while missing or incomplete read
     { kind: "absent" },
     43,
   );
-  expect(absent.receipt).toMatchObject({ state: "unknown", readback: "absent" });
+  expect(absent.receipt).toMatchObject({
+    state: "unknown",
+    readback: "absent",
+  });
   const incomplete = await store.recordReadback(
     scope,
     saved.requestId,
@@ -295,15 +327,25 @@ test("explicit exact comment readback confirms, while missing or incomplete read
     { kind: "incomplete" },
     44,
   );
-  expect(incomplete.receipt).toMatchObject({ state: "unknown", readback: "incomplete" });
+  expect(incomplete.receipt).toMatchObject({
+    state: "unknown",
+    readback: "incomplete",
+  });
   const wrongBody = await store.recordReadback(
     scope,
     saved.requestId,
     saved.intentHash,
-    { kind: "found", commentId: "comment-18", body: `${saved.commentText}\nextra` },
+    {
+      kind: "found",
+      commentId: "comment-18",
+      body: `${saved.commentText}\nextra`,
+    },
     45,
   );
-  expect(wrongBody.receipt).toMatchObject({ state: "unknown", readback: "mismatch" });
+  expect(wrongBody.receipt).toMatchObject({
+    state: "unknown",
+    readback: "mismatch",
+  });
   const confirmed = await store.recordReadback(
     scope,
     saved.requestId,
@@ -355,13 +397,22 @@ test("retiring a prepared attempt and claiming it have one CAS winner", async ()
     other.claim(scope, saved.requestId, saved.intentHash, 62),
   ]);
   const retired = results.find(
-    (result) => result.status === "fulfilled" && result.value.metadata.state === "retired",
+    (result) =>
+      result.status === "fulfilled" &&
+      result.value.metadata.state === "retired",
   );
   const claimed = results.find(
-    (result) => result.status === "fulfilled" && "kind" in result.value && result.value.kind === "claimed",
+    (result) =>
+      result.status === "fulfilled" &&
+      "kind" in result.value &&
+      result.value.kind === "claimed",
   );
   expect(Boolean(retired) !== Boolean(claimed)).toBe(true);
-  if (claimed?.status === "fulfilled" && "kind" in claimed.value && claimed.value.kind === "claimed")
+  if (
+    claimed?.status === "fulfilled" &&
+    "kind" in claimed.value &&
+    claimed.value.kind === "claimed"
+  )
     expect(
       (
         await other.finish(
@@ -369,14 +420,17 @@ test("retiring a prepared attempt and claiming it have one CAS winner", async ()
           { kind: "unknown", reportedCommentId: null },
           63,
         )
-      )
-        .receipt.state,
+      ).receipt.state,
     ).toBe("unknown");
 });
 
 test("the journal stops at its record cap without evicting historical tombstones", async () => {
   const { scope, original, store } = fixture();
-  for (let index = 0; index < PROJECT_CHECKPOINT_REVIEW_MAX_JOURNAL_RECORDS; index++) {
+  for (
+    let index = 0;
+    index < PROJECT_CHECKPOINT_REVIEW_MAX_JOURNAL_RECORDS;
+    index++
+  ) {
     const saved = original({ requestId: randomUUID().toLowerCase() });
     await store.prepare(saved, index + 1);
     const retired = await store.retire(
@@ -388,7 +442,9 @@ test("the journal stops at its record cap without evicting historical tombstones
     expect(retired.metadata.state).toBe("retired");
   }
   const before = await store.metadata(scope);
-  expect(before.items).toHaveLength(PROJECT_CHECKPOINT_REVIEW_MAX_JOURNAL_RECORDS);
+  expect(before.items).toHaveLength(
+    PROJECT_CHECKPOINT_REVIEW_MAX_JOURNAL_RECORDS,
+  );
   await expect(
     store.prepare(original({ requestId: randomUUID().toLowerCase() }), 500),
   ).rejects.toBeInstanceOf(ConversationError);
@@ -424,7 +480,11 @@ test("old terminal readback cannot change a newer active attempt", async () => {
   );
   expect(replay).toEqual(confirmed);
   expect((await store.metadata(scope)).activeRequestId).toBe(second.requestId);
-  expect((await store.metadata(scope)).items.find((item) => item.requestId === first.requestId)?.state).toBe("confirmed");
+  expect(
+    (await store.metadata(scope)).items.find(
+      (item) => item.requestId === first.requestId,
+    )?.state,
+  ).toBe("confirmed");
 });
 
 test("invalid journal bytes fail closed without deleting or replacing the file", async () => {
@@ -460,7 +520,11 @@ test("a linked journal directory is refused without writing through it", async (
   homes.push(target);
   const directory = join(home, "checkpoint-reviews");
   mkdirSync(target, { recursive: true });
-  symlinkSync(target, directory, process.platform === "win32" ? "junction" : "dir");
+  symlinkSync(
+    target,
+    directory,
+    process.platform === "win32" ? "junction" : "dir",
+  );
   await expect(store.prepare(original(), 100)).rejects.toBeInstanceOf(
     ConversationError,
   );
@@ -471,12 +535,20 @@ test("Windows case, separator, and trailing-slash aliases share the same global 
   const { home, original, store } = fixture();
   const windowsPath = "C:\\Repos\\Agent\\";
   const canonical = original({
-    binding: { ...original().binding, workspacePath: windowsPath, checkout: windowsPath },
+    binding: {
+      ...original().binding,
+      workspacePath: windowsPath,
+      checkout: windowsPath,
+    },
   });
   await store.prepare(canonical, 105);
   const aliasPath = "c:/repos/agent";
   const alias = original({
-    binding: { ...canonical.binding, workspacePath: aliasPath, checkout: aliasPath },
+    binding: {
+      ...canonical.binding,
+      workspacePath: aliasPath,
+      checkout: aliasPath,
+    },
   });
   const aliasScope = {
     projectId: alias.binding.projectId,
@@ -484,7 +556,10 @@ test("Windows case, separator, and trailing-slash aliases share the same global 
     runSlug: alias.binding.runSlug,
     beadId: alias.binding.beadId,
   };
-  const aliasStore = createProjectCheckpointReviewStore({ home, withQueueLock });
+  const aliasStore = createProjectCheckpointReviewStore({
+    home,
+    withQueueLock,
+  });
   expect(await aliasStore.metadata(aliasScope)).toMatchObject({
     blocked: true,
     activeRequestId: null,
