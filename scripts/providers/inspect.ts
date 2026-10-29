@@ -6,7 +6,10 @@ import type {
 } from "../../types/provider-readiness";
 import { buildChildEnv } from "../executors/env";
 import { ADAPTERS } from "../executors/registry";
-import { supervise } from "../executors/supervisor";
+import {
+  supervise,
+  type InteractiveSuperviseOptions,
+} from "../executors/supervisor";
 import {
   parseClaudeAuthentication,
   parseCodexAuthentication,
@@ -82,6 +85,8 @@ export function createProviderInspector(options: {
   now?: () => number;
   timeoutMs?: number;
   operatorToken?: () => string | null;
+  /** Trusted fixture seam for a pre-grant ownership refusal; never request controlled. */
+  interactiveGuard?: InteractiveSuperviseOptions["interactiveGuard"];
   run?: (
     command: readonly string[],
     env: Record<string, string>,
@@ -102,6 +107,9 @@ export function createProviderInspector(options: {
           stdinMode: "interactive",
           timeoutMs: options.timeoutMs ?? 3000,
           maxLineBytes: 65_536,
+          ...(options.interactiveGuard
+            ? { interactiveGuard: options.interactiveGuard }
+            : {}),
           ...launchOptions,
           onLine(line) {
             if (stdout.length + line.length > 131_072) {

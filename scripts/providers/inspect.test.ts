@@ -2,7 +2,10 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
-import { liveChildCount } from "../executors/supervisor";
+import {
+  liveChildCount,
+  SupervisorOwnershipRefusalError,
+} from "../executors/supervisor";
 import { scratchDirs } from "../test-scratch";
 import { createProviderInspector } from "./inspect";
 
@@ -253,6 +256,59 @@ test("owned readiness helpers settle before the inspection result returns", asyn
         expect(existsSync(join(root, "status.exited"))).toBe(true);
     }
   }
+});
+
+test("typed ownership refusal escapes readiness inspection before probe execution", async () => {
+  const root = scratch.make("provider-refused-readiness-");
+  const record = join(root, "probes.jsonl");
+  const before = liveChildCount();
+  const guardedPids: number[] = [];
+  const inspector = createProviderInspector({
+    root,
+    home: root,
+    environment: {
+      ...process.env,
+      READINESS_FIXTURE_RECORD: record,
+    },
+    commands: {
+      claude: [
+        process.execPath,
+        join(import.meta.dir, "fixtures/status-cli.ts"),
+      ],
+    },
+    interactiveGuard(pid) {
+      guardedPids.push(pid);
+      return null;
+    },
+  });
+  let report: Awaited<ReturnType<typeof inspector.inspect>> | undefined;
+  let refusal: unknown;
+  try {
+    report = await inspector.inspect("claude", ["READINESS_FIXTURE_RECORD"]);
+  } catch (error) {
+    refusal = error;
+  }
+  expect(guardedPids).toHaveLength(1);
+  const pid = guardedPids[0] ?? 0;
+  expect(pid).toBeGreaterThan(0);
+  await expectPidExited(pid);
+  expect(liveChildCount()).toBe(before);
+  expect(existsSync(record)).toBe(false);
+  if (report) {
+    expect(report.installation.found).toBe(true);
+    expect(report.installation.versionOk).toBe(false);
+    expect(report.installation.reason).toBe(
+      "The bounded version check failed. Authentication was not checked.",
+    );
+    expect(report.authentication.mode).toBe("unknown");
+  }
+  expect({
+    typed: refusal instanceof SupervisorOwnershipRefusalError,
+    message: refusal instanceof Error ? refusal.message : undefined,
+  }).toEqual({
+    typed: true,
+    message: "Interactive child ownership could not be established.",
+  });
 });
 
 test("actual inspector probes stay bounded and do not show native console windows", async () => {
