@@ -634,6 +634,12 @@ test("a confirmed Claude rate limit offers an explicit Codex Chat continuation",
   await expect(
     reopenedComposer.getByText(`About session ${record.id}`),
   ).toBeVisible();
+  const targetEffort = codexComposer.getByRole("combobox", {
+    name: "Session effort",
+    exact: true,
+  });
+  await expect(targetEffort).toHaveValue("medium");
+  await targetEffort.selectOption("");
   await codexComposer
     .getByRole("button", { name: "Check supported options", exact: true })
     .click();
