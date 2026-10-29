@@ -220,12 +220,7 @@ const provenance: ProjectCouncilRunProvenance = {
 };
 describe("project Council run read contract", () => {
   it("projects the full public result while omitting artifact paths", () => {
-    const read = projectCouncilRunRead(
-      provenance,
-      receipt,
-      job,
-      null,
-    );
+    const read = projectCouncilRunRead(provenance, receipt, job, null);
     expect(projectCouncilRunReadSchema.safeParse(read).success).toBe(true);
     expect(read.verdictCommentPreview).toBeNull();
     expect(read.job?.run?.context.evidence?.[0]?.content).toContain(
@@ -248,7 +243,12 @@ describe("project Council run read contract", () => {
       ...run,
       context: {
         ...run.context,
-        source: { ...run.context.source, kind: "bead", displayName: beadId, locator: beadId },
+        source: {
+          ...run.context.source,
+          kind: "bead",
+          displayName: beadId,
+          locator: beadId,
+        },
       },
     };
     const beadJob: CouncilServiceJob = { ...job, run: beadRun };
@@ -265,7 +265,9 @@ describe("project Council run read contract", () => {
     );
     expect(read.verdictCommentPreview).toBe(preview);
     expect(projectCouncilRunReadSchema.safeParse(read).success).toBe(true);
-    expect(() => projectCouncilRunRead(provenance, receipt, job, preview)).toThrow();
+    expect(() =>
+      projectCouncilRunRead(provenance, receipt, job, preview),
+    ).toThrow();
   });
 
   it("keeps identity mismatches and unknown event payload fields invalid", () => {
