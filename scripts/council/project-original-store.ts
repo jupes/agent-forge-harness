@@ -117,7 +117,10 @@ function checkedRecord(raw: unknown): ProjectCouncilOriginal | null {
       }
     });
   const evidence = original.context.evidence;
-  const evidenceBytes = evidence.reduce((sum, item) => sum + item.byteLength, 0);
+  const evidenceBytes = evidence.reduce(
+    (sum, item) => sum + item.byteLength,
+    0,
+  );
   const contextHashValid =
     original.context.source.kind === "bead"
       ? digest(
