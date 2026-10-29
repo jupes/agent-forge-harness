@@ -131,7 +131,8 @@ export function launchWindowsConsole(
     !win32.isAbsolute(options.cwd) ||
     options.cwd.includes("\0") ||
     (options.lifetime?.kind !== "managed" &&
-      (!Number.isFinite(options.timeoutMs) ||
+      (typeof options.timeoutMs !== "number" ||
+        !Number.isFinite(options.timeoutMs) ||
         options.timeoutMs < 1 ||
         options.timeoutMs > 900000))
   )
