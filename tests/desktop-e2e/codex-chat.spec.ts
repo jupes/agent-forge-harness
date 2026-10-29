@@ -1379,6 +1379,7 @@ test("a confirmed Claude rate limit can target Gemini ACP Chat", async ({
       if (fetchSite !== undefined) expect(fetchSite).toBe("same-origin");
       const response = await route.fetch({ headers });
       expect(response.status()).toBe(200);
+      expect(new URL(response.url()).origin).toBe(requestUrl.origin);
       lostStartReply = true;
       await route.abort("failed");
     },
