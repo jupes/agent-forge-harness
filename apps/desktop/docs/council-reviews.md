@@ -40,6 +40,13 @@ local configuration check, not a provider call. The exact saved view shows the
 profile, endpoint snapshot, source material, scope, budget, and request hash
 that were actually persisted.
 
-Source-entry prefill from Beads, queue, and session flows remains a separate
-explicit entry point into this draft. Mounting, reloading, or changing
-projects will not start or commit a run.
+Source-entry prefill from Beads, queue, runs, and session flows is not yet
+implemented. Drafts currently live only in this mounted view; preserving them
+across navigation and confirming replacement of a different source remain
+required work. Mounting, reloading, or changing projects will not start or
+commit a run.
+
+This consumer is an integration checkpoint, not completion of the Council
+feature. Additional history summary facts, cancellation/failure browser
+journeys, source entry points, and keyboard/native acceptance remain on
+`agent-forge-harness-cla5.7.2`.

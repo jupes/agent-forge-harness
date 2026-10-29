@@ -70,12 +70,14 @@ test("project Reviews reserves, convenes, completes, and reloads the verified or
   const shotDir = process.env["SHOT_DIR"];
   if (shotDir) {
     mkdirSync(shotDir, { recursive: true });
-    await page
-      .getByRole("region", { name: "Exact saved Council original" })
-      .screenshot({
-        path: join(shotDir, "council-exact-original.png"),
-        animations: "disabled",
-      });
+    const originalHeading = page.getByRole("heading", {
+      name: "Exact saved original",
+    });
+    await originalHeading.scrollIntoViewIfNeeded();
+    await page.screenshot({
+      path: join(shotDir, "council-exact-original.png"),
+      animations: "disabled",
+    });
   }
   expect(councilPosts).toHaveLength(1);
   expect(councilPosts[0]).toMatch(/\/projects\/.*\/council\/reviews$/);
@@ -92,12 +94,14 @@ test("project Reviews reserves, convenes, completes, and reloads the verified or
   ).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText("Verified state: completed")).toBeVisible();
   if (shotDir) {
-    await page
-      .getByRole("region", { name: "Council result and progress" })
-      .screenshot({
-        path: join(shotDir, "council-completed-result.png"),
-        animations: "disabled",
-      });
+    const resultHeading = page.getByRole("heading", {
+      name: "Council result",
+    });
+    await resultHeading.scrollIntoViewIfNeeded();
+    await page.screenshot({
+      path: join(shotDir, "council-completed-result.png"),
+      animations: "disabled",
+    });
   }
   expect(councilPosts).toHaveLength(2);
   expect(councilPosts[1]).toMatch(
@@ -108,13 +112,23 @@ test("project Reviews reserves, convenes, completes, and reloads the verified or
   await expect(
     page.getByRole("heading", { name: "Saved reviews" }),
   ).toBeVisible();
-  await page.getByRole("button", { name: "Read saved original" }).click();
-  await expect(
-    page.getByRole("heading", { name: "Exact saved original" }),
-  ).toBeVisible();
-  await page.getByRole("button", { name: "Check saved result" }).click();
+  await page.getByRole("button", { name: "Open result" }).click();
   await expect(
     page.getByRole("heading", { name: "Council result" }),
   ).toBeVisible();
+  await expect(page.getByText("Verified state: completed")).toBeVisible();
+  await page.getByText("Show exact saved original", { exact: true }).click();
+  await page.getByText("Request identity and scope", { exact: true }).click();
+  await expect(
+    page.getByRole("heading", { name: "Exact saved original" }),
+  ).toBeVisible();
+  await expect(page.getByText(/Intent hash/)).toBeVisible();
+  await expect(
+    page.getByText("Exact review body: preserve this sentence and its identity."),
+  ).toBeVisible();
+  await page.getByText("Inspect complete public Council result", { exact: true }).click();
+  await expect(page.locator(".af-council-transcript")).toHaveValue(
+    /Exact review body: preserve this sentence and its identity\./,
+  );
   expect(councilPosts).toHaveLength(2);
 });
