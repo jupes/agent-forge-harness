@@ -376,14 +376,16 @@ export async function installGeminiContinuationFetchFixture(
     if (base.data.kind === "readback") {
       try {
         const payload = readbackPayloadSchema.parse(value);
-        if (!expected) throw new Error("No verified Gemini Start preceded readback.");
+        const exactExpected = expected;
+        if (!exactExpected)
+          throw new Error("No verified Gemini Start preceded readback.");
         const requestUrl = new URL(payload.requestUrl);
         const responseUrl = new URL(payload.responseUrl);
-        const targetPath = `${startPath}/${encodeURIComponent(expected.sessionId)}`;
+        const targetPath = `${startPath}/${encodeURIComponent(exactExpected.sessionId)}`;
         if (
           requestUrl.origin !== origin ||
           requestUrl.pathname !== targetPath ||
-          requestUrl.searchParams.get("requestId") !== expected.requestId ||
+          requestUrl.searchParams.get("requestId") !== exactExpected.requestId ||
           responseUrl.origin !== origin ||
           responseUrl.pathname !== targetPath ||
           responseUrl.search !== requestUrl.search ||
@@ -409,17 +411,19 @@ export async function installGeminiContinuationFetchFixture(
           throw new Error("The protected original read did not match its schema.");
         const saved = envelope.data.data;
         const turn =
-          saved.request?.requestId === expected.requestId
+          saved.request?.requestId === exactExpected.requestId
             ? saved.request
-            : saved.turns.find((item) => item.requestId === expected.requestId);
+            : saved.turns.find(
+                (item) => item.requestId === exactExpected.requestId,
+              );
         const firstFrame = saved.frames.find((frame) => frame.seq === 1);
         if (
           saved.projectId !== options.projectId ||
-          saved.conversationId !== expected.sessionId ||
+          saved.conversationId !== exactExpected.sessionId ||
           !turn ||
-          turn.hash !== expected.turnHash ||
+          turn.hash !== exactExpected.turnHash ||
           !firstFrame ||
-          firstFrame.turnId !== expected.requestId ||
+          firstFrame.turnId !== exactExpected.requestId ||
           firstFrame.event.kind !== "user" ||
           firstFrame.event.text !== options.handoff ||
           !firstFrame.event.about?.some(
@@ -432,10 +436,10 @@ export async function installGeminiContinuationFetchFixture(
           throw new Error("The original Gemini readback was captured more than once.");
         readbackCaptured = true;
         readbackEvidence.resolve({
-          requestId: expected.requestId,
-          sessionId: expected.sessionId,
-          requestHash: expected.requestHash,
-          turnHash: expected.turnHash,
+          requestId: exactExpected.requestId,
+          sessionId: exactExpected.sessionId,
+          requestHash: exactExpected.requestHash,
+          turnHash: exactExpected.turnHash,
         });
         let timer: ReturnType<typeof setTimeout> | undefined;
         try {
@@ -629,8 +633,12 @@ function installNativeFetchObserver(options: {
       startCaptured = true;
       let requestTextPromise: Promise<string>;
       try {
+        const requestForCapture =
+          input instanceof Request
+            ? new Request(input.clone(), init)
+            : new Request(input, init);
         requestTextPromise = boundedText(
-          new Request(input, init).clone().body,
+          requestForCapture.clone().body,
           options.maxRequestBytes,
         );
       } catch {
