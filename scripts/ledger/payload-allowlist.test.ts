@@ -382,3 +382,32 @@ describe("stripPayload: dedicated Fork child control identity", () => {
     }
   });
 });
+
+test("repository onboarding actions retain only fixed families and UUIDs", () => {
+  const requestId = "d134a802-6d1c-47c4-a001-3f5f83d38d31";
+  for (const [action, family] of [
+    ["project.repository.pick", "project-repository-selection"],
+    ["project.repository.clone", "project-repository-clone"],
+  ]) {
+    expect(
+      stripPayload("operator.action", {
+        action,
+        surface: "api",
+        family,
+        requestId,
+        path: "C:\\private\\repository",
+        url: "https://private.invalid/repo.git",
+        body: "private repository data",
+      }),
+    ).toEqual({ action, surface: "api", family, requestId });
+    expect(
+      stripPayload("operator.action", {
+        action,
+        surface: "api",
+        family: `${family}-private-data`,
+        requestId,
+        body: "private repository data",
+      }),
+    ).toEqual({ action, surface: "api", requestId });
+  }
+});
