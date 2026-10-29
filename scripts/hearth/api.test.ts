@@ -34,6 +34,7 @@ import type {
 } from "../../types/hearth";
 import type { OwnedSessionRecord } from "../../types/owned-session";
 import type { ProjectCatalog } from "../../types/projects";
+import type { ProjectCouncilBinding } from "../../types/project-council";
 import { terminalHandoffAttemptSchema } from "../../types/session-terminal-handoff";
 import type { SmithConfigEditRequest } from "../../types/smith-config-edit";
 import type { SmithRoutingEditRequest } from "../../types/smith-routing-edit";
@@ -64,7 +65,15 @@ import {
 } from "../config/transaction";
 import { conversationFile } from "../conversations/paths";
 import { createConversationStore } from "../conversations/store";
+import { buildContextPack, contextListing } from "../council/context";
 import { runCouncilCli } from "../council/cli";
+import { providerEndpointSnapshot } from "../council/providers";
+import {
+  createProjectCouncilOriginalStore,
+  projectCouncilInputHash,
+  projectCouncilProfileHash,
+} from "../council/project-original-store";
+import { parseCouncilProfileJson } from "../council/types";
 import type { CommandResult, CommandRunner } from "../council/pr-source";
 import type { CouncilPreview } from "../council/service";
 import { REVIEW_NOTE_LIMIT } from "../dashboard/forge-run-model";
@@ -94,6 +103,7 @@ import type {
   NativeConsoleLaunchOptions,
 } from "../providers/native-console";
 import { queueTracker } from "../scheduler/queue-fixture";
+import { withQueueLock } from "../scheduler/queue-lock";
 import {
   readShiftRecord,
   SHIFTS_DIR,
@@ -625,6 +635,17 @@ const projectCouncilSeeds = new WeakMap<
   Map<string, ProjectCouncilSeed>
 >();
 
+function projectCouncilReserveBody(source: string) {
+  return {
+    sourceChoice: { sourceType: "text", source },
+    profileChoice: resolve(import.meta.dir, "../..", "councils", "default.json"),
+    maxUsd: 0.25,
+    maxBytes: 1024,
+    redactSecrets: false,
+    deepDiscussion: false,
+  };
+}
+
 async function seedProjectCouncilOriginal(
   h: TestHearth,
   source = "An API inventory Council fixture.",
@@ -639,22 +660,7 @@ async function seedProjectCouncilOriginal(
   const response = await post(
     h,
     `/projects/${FIXTURE_PROJECT_ID}/council/reviews`,
-    {
-      sourceChoice: {
-        sourceType: "text",
-        source,
-      },
-      profileChoice: resolve(
-        import.meta.dir,
-        "../..",
-        "councils",
-        "default.json",
-      ),
-      maxUsd: 0.25,
-      maxBytes: 1024,
-      redactSecrets: false,
-      deepDiscussion: false,
-    },
+    projectCouncilReserveBody(source),
   );
   const body = await envelope<unknown>(response);
   if (
@@ -685,6 +691,63 @@ async function seedProjectCouncilOriginal(
   };
   bySource.set(source, seed);
   return seed;
+}
+
+async function seedProjectCouncilReadOriginal(
+  h: TestHearth,
+  source = "An API inventory read-only Council fixture.",
+): Promise<ProjectCouncilSeed> {
+  const profileChoice = resolve(
+    import.meta.dir,
+    "../..",
+    "councils",
+    "default.json",
+  );
+  const profileResult = parseCouncilProfileJson(
+    readFileSync(profileChoice, "utf8"),
+  );
+  if (!profileResult.ok)
+    throw new Error("The inert Council read profile fixture is invalid.");
+  const profile = profileResult.value;
+  const projectId = FIXTURE_PROJECT_ID;
+  const binding: ProjectCouncilBinding = {
+    projectId,
+    workspace: h.workspace,
+    catalogRevision: 1,
+    scopeHash: "a".repeat(64),
+    profileHash: projectCouncilProfileHash(profile),
+  };
+  const context = buildContextPack({
+    kind: "stdin",
+    text: source,
+    maxBytes: 1024,
+  });
+  const store = createProjectCouncilOriginalStore({
+    home: h.home,
+    workspace: h.workspace,
+    projectId,
+    withQueueLock,
+  });
+  const reserved = await store.reservePrepared({
+    binding,
+    inputHash: projectCouncilInputHash({ sourceType: "text", source }),
+    profileChoice,
+    profile,
+    providerEndpoints: providerEndpointSnapshot(profile, {}),
+    context,
+    listing: contextListing(context),
+    options: {
+      maxUsd: 0.25,
+      maxBytes: 1024,
+      redactSecrets: false,
+      deepDiscussion: false,
+    },
+  });
+  return {
+    requestId: reserved.original.requestId,
+    intentHash: reserved.original.intentHash,
+    runId: reserved.original.runId,
+  };
 }
 
 function projectCouncilPaths(seed: ProjectCouncilSeed): void {
@@ -3407,10 +3470,10 @@ const ACTIONS: Record<string, ActionFixture> = {
       body: { sourceChoice: { sourceType: "invalid", source: "x" } },
     },
     prepare: async (h) => {
-      const seed = await seedProjectCouncilOriginal(
-        h,
-        "API inventory reserved review fixture.",
-      );
+      const source = "API inventory reserved review fixture.";
+      const seed = await seedProjectCouncilOriginal(h, source);
+      ACTIONS["POST /projects/:id/council/reviews"]!.valid.body =
+        projectCouncilReserveBody(source);
       projectCouncilPaths(seed);
     },
     settled: async (h) => {
@@ -4736,6 +4799,7 @@ describe("a read row or the stream while another connection holds the write lock
       API_PROJECT_CREATE_READ_ID,
       "cold-ledger-project-read",
     );
+    projectCouncilPaths(await seedProjectCouncilReadOriginal(h));
     await seedSmithCreateOriginal(h);
     await seedSmithEditOriginal(h);
     await seedSmithRoutingEditOriginal(h);
@@ -5859,7 +5923,7 @@ describe("every read row (iterating the table)", () => {
       API_PROJECT_CREATE_READ_ID,
       "api-project-read",
     );
-    projectCouncilPaths(await seedProjectCouncilOriginal(h));
+    projectCouncilPaths(await seedProjectCouncilReadOriginal(h));
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");
     for (const row of rows) {
@@ -5916,7 +5980,7 @@ describe("every read row (iterating the table)", () => {
       API_PROJECT_CREATE_READ_ID,
       "api-project-read",
     );
-    projectCouncilPaths(await seedProjectCouncilOriginal(h));
+    projectCouncilPaths(await seedProjectCouncilReadOriginal(h));
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");
     const refused: Array<[string, Record<string, string>]> = [

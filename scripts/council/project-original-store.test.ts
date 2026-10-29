@@ -90,9 +90,9 @@ test("project Council originals are durable, exact-retry idempotent, single-disp
   const first = await firstStore.reservePrepared(input);
   expect(first.created).toBe(true);
   expect(first.original.context.evidence).toHaveLength(1);
-  expect(first.original.context.contentHash).toBe(
-    first.original.context.evidence[0]?.contentHash,
-  );
+  const firstEvidence = first.original.context.evidence[0];
+  if (!firstEvidence) throw new Error("The single-pack evidence is missing.");
+  expect(first.original.context.contentHash).toBe(firstEvidence.contentHash);
   expect(projectCouncilIntentHash(first.original)).toBe(
     first.original.intentHash,
   );
