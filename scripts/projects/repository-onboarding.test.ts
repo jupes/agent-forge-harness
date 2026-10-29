@@ -10,8 +10,10 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, toNamespacedPath } from "node:path";
+import { realpathSync } from "node:fs";
 import { createRepositoryOnboarding } from "./repository-onboarding";
+import { workspaceKey } from "./scope";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -101,6 +103,43 @@ test("folder selection is durably recoverable and registration uses only its sel
     originalRequestId: id,
     source: "folder",
   });
+  expect(service.approvedRepositories()).toEqual([registered]);
+});
+
+test("a Windows-namespaced picker path verifies and registers the same Git checkout", async () => {
+  const paths = fixture();
+  const namespacedPath = toNamespacedPath(paths.external);
+  const service = createRepositoryOnboarding({
+    ...paths,
+    pickerCommand: ["native-helper", "--choose-project-repository"],
+    runPicker: async () => ({
+      exitCode: 0,
+      stdout: JSON.stringify({
+        ok: true,
+        data: { path: namespacedPath },
+        error: null,
+      }),
+    }),
+    runGit: (command) => fixtureGit(command, paths.gitEnv),
+  });
+
+  const selected = await service.selectFolder(id);
+  expect(selected.state).toBe("selected");
+  if (selected.path === null)
+    throw new Error("The namespaced Git root was not selected.");
+  expect(workspaceKey(realpathSync.native(selected.path))).toBe(
+    workspaceKey(realpathSync.native(paths.external)),
+  );
+
+  const registered = await service.registerSelection(id, "namespaced-repo");
+  expect(registered).toMatchObject({
+    name: "namespaced-repo",
+    source: "folder",
+    originalRequestId: id,
+  });
+  expect(workspaceKey(realpathSync.native(registered.path))).toBe(
+    workspaceKey(realpathSync.native(paths.external)),
+  );
   expect(service.approvedRepositories()).toEqual([registered]);
 });
 
