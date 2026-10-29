@@ -11,7 +11,11 @@ import {
 import { ConversationError } from "../conversations/error";
 import { privateTempDir } from "../hearth/testing";
 import { writeOwnerOnly } from "../hearth/token";
-import { buildContextPackFromParts, contextListing } from "./context";
+import {
+  buildContextPack,
+  buildContextPackFromParts,
+  contextListing,
+} from "./context";
 import {
   createProjectCouncilOriginalStore,
   projectCouncilInputHash,
@@ -48,12 +52,10 @@ function fixture() {
     projectId: binding.projectId,
   });
   const prepared = (source: string) => {
-    const context = buildContextPackFromParts({
+    const context = buildContextPack({
       kind: "stdin",
-      displayName: "Pasted review text",
-      locator: "Pasted review text",
+      text: source,
       maxBytes: 1024,
-      parts: [{ label: "review text", chunks: [{ text: source }] }],
     });
     return {
       binding,
@@ -84,6 +86,10 @@ test("project Council originals are durable, exact-retry idempotent, single-disp
   const input = prepared("Review the inert project fixture exactly once.");
   const first = await firstStore.reservePrepared(input);
   expect(first.created).toBe(true);
+  expect(first.original.context.evidence).toHaveLength(1);
+  expect(first.original.context.contentHash).toBe(
+    first.original.context.evidence[0]?.contentHash,
+  );
   expect(projectCouncilIntentHash(first.original)).toBe(
     first.original.intentHash,
   );
@@ -163,6 +169,37 @@ test("project Council originals are durable, exact-retry idempotent, single-disp
     reopened.read(first.original.binding.projectId, first.original.requestId)
       .state,
   ).toBe("completed");
+});
+
+test("project Council store validates the multipart bead evidence hash family", async () => {
+  const { prepared, store } = fixture();
+  const base = prepared("A multipart bead review.");
+  const context = buildContextPackFromParts({
+    kind: "bead",
+    displayName: "issue-123",
+    locator: "issue-123",
+    maxBytes: 1024,
+    parts: [
+      { label: "description", chunks: [{ text: "First evidence chunk." }] },
+      { label: "acceptance", chunks: [{ text: "Second evidence chunk." }] },
+    ],
+  });
+  const input = {
+    ...base,
+    context,
+    listing: contextListing(context),
+    inputHash: projectCouncilInputHash({ source: "issue-123" }),
+  };
+  const reserved = await store.reservePrepared(input);
+  expect(reserved.created).toBe(true);
+  expect(reserved.original.context.evidence.map((item) => item.id)).toEqual([
+    "E1",
+    "E2",
+  ]);
+  expect(
+    store.read(reserved.original.binding.projectId, reserved.original.requestId)
+      .context.contentHash,
+  ).toBe(context.contentHash);
 });
 
 test("project Council summary labels redact the complete text before truncating", async () => {

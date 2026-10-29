@@ -6,6 +6,7 @@ import {
   projectCouncilHistorySchema,
   projectCouncilIntentJson,
   projectCouncilOriginalReadSchema,
+  projectCouncilReserveRequestSchema,
 } from "../../../types/project-council";
 import { createProjectStore, projectCatalogPath } from "../../projects/store";
 import {
@@ -149,6 +150,9 @@ test("a project Council review reserves against the current project and advertis
     redactSecrets: false,
     deepDiscussion: false,
   };
+  const strictRequest = projectCouncilReserveRequestSchema.safeParse(request);
+  if (!strictRequest.success)
+    throw new Error("The project Council reserve fixture is not schema-valid.");
   const post = () =>
     fetch(`${h.api}/projects/${FIXTURE_PROJECT_ID}/council/reviews`, {
       method: "POST",
@@ -156,6 +160,12 @@ test("a project Council review reserves against the current project and advertis
       body: JSON.stringify(request),
     });
   const response = await post();
+  if (response.status !== 202) {
+    const diagnostic: unknown = await response.json();
+    throw new Error(
+      `Project Council reserve returned ${response.status}: ${JSON.stringify(diagnostic)}`,
+    );
+  }
   expect(response.status).toBe(202);
   const reserved: unknown = await response.json();
   if (

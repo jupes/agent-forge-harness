@@ -116,6 +116,15 @@ function checkedRecord(raw: unknown): ProjectCouncilOriginal | null {
         return false;
       }
     });
+  const evidence = original.context.evidence;
+  const evidenceBytes = evidence.reduce((sum, item) => sum + item.byteLength, 0);
+  const contextHashValid =
+    original.context.source.kind === "bead"
+      ? digest(
+          evidence.map((item) => `${item.id}:${item.contentHash}`).join("\n"),
+        ) === original.context.contentHash
+      : evidence.length === 1 &&
+        evidence[0]?.contentHash === original.context.contentHash;
   if (
     !profile.ok ||
     canonical(profile.value) !== canonical(original.profile) ||
@@ -125,16 +134,14 @@ function checkedRecord(raw: unknown): ProjectCouncilOriginal | null {
       original.binding.profileHash ||
     projectCouncilIntentHash(original) !== original.intentHash ||
     original.context.byteLength > original.options.maxBytes ||
-    original.context.evidence.some(
-      (item) =>
+    evidenceBytes !== original.context.byteLength ||
+    evidence.some(
+      (item, index) =>
+        item.id !== `E${index + 1}` ||
         Buffer.byteLength(item.content, "utf8") !== item.byteLength ||
         digest(item.content) !== item.contentHash,
     ) ||
-    digest(
-      original.context.evidence
-        .map((item) => `${item.id}:${item.contentHash}`)
-        .join("\n"),
-    ) !== original.context.contentHash
+    !contextHashValid
   )
     return null;
   return { ...original, profile: profile.value };
