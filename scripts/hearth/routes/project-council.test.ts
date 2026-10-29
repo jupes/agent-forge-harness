@@ -227,6 +227,9 @@ test("a project Council review reserves against the current project and advertis
   if (!history.success)
     throw new Error("The project Council history is not strict.");
   expect(history.data).toMatchObject({
+    version: 1,
+    projectId: FIXTURE_PROJECT_ID,
+    workspace: h.workspace,
     activeRequestId: metadata.requestId,
     total: 1,
     omitted: 0,
@@ -637,6 +640,11 @@ test("a committed inert project Council review reads back its frozen result and 
   const history = projectCouncilHistorySchema.safeParse(historyEnvelope.data);
   if (!history.success)
     throw new Error("The completed Council history is not strict.");
+  expect(history.data).toMatchObject({
+    version: 1,
+    projectId: FIXTURE_PROJECT_ID,
+    workspace: h.workspace,
+  });
   expect(history.data.total).toBe(1);
   expect(history.data.items).toMatchObject([
     { requestId, state: "completed", phase: "completed" },

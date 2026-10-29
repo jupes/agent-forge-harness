@@ -483,7 +483,15 @@ export function createProjectCouncilOriginalStore(options: {
     },
     history(projectId: string, limit = 100) {
       if (projectId !== options.projectId)
-        return { activeRequestId: null, total: 0, omitted: 0, items: [] };
+        return {
+          version: 1 as const,
+          projectId: options.projectId,
+          workspace: options.workspace,
+          activeRequestId: null,
+          total: 0,
+          omitted: 0,
+          items: [],
+        };
       if (!Number.isInteger(limit) || limit < 1 || limit > 100)
         throw new ConversationError(
           400,
@@ -510,6 +518,9 @@ export function createProjectCouncilOriginalStore(options: {
         );
       const total = rows.length;
       return {
+        version: 1 as const,
+        projectId: options.projectId,
+        workspace: options.workspace,
         activeRequestId,
         total,
         omitted: Math.max(0, total - limit),
