@@ -279,7 +279,10 @@ function copyEndpointSnapshot(
       throw new Error("provider endpoint snapshot entry is invalid");
     }
     const ownKeys = Reflect.ownKeys(value);
-    if (ownKeys.length !== 3 || ownKeys.some((key) => typeof key !== "string")) {
+    if (
+      ownKeys.length !== 3 ||
+      ownKeys.some((key) => typeof key !== "string")
+    ) {
       throw new Error("provider endpoint snapshot entry has unexpected fields");
     }
     const keys = (ownKeys as string[]).sort();
@@ -302,7 +305,9 @@ function copyEndpointSnapshot(
     }
     if (config.apiStyle === "fake") {
       if (baseUrl !== null)
-        throw new Error(`fake provider endpoint must not have a URL: ${provider}`);
+        throw new Error(
+          `fake provider endpoint must not have a URL: ${provider}`,
+        );
       copied.set(provider, { provider, transport, baseUrl: null });
       continue;
     }
@@ -782,7 +787,9 @@ export function createProviderResolver(
     const config = PROVIDERS[seat.provider];
     const endpoint = endpoints?.get(seat.provider);
     if (endpoints && !endpoint) {
-      throw new Error(`provider endpoint snapshot is missing: ${seat.provider}`);
+      throw new Error(
+        `provider endpoint snapshot is missing: ${seat.provider}`,
+      );
     }
     if (config.apiStyle === "fake") return new FakeCouncilTransport();
     const secretValues = [

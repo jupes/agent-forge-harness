@@ -1,9 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { buildContextPack } from "./context";
 import {
+  type CouncilProviderEndpoint,
   createProviderResolver,
   providerEndpointSnapshot,
-  type CouncilProviderEndpoint,
 } from "./providers";
 import type { CouncilProfile, CouncilSeat } from "./types";
 
@@ -48,9 +48,17 @@ describe("Council provider endpoint snapshots", () => {
       OPENAI_API_KEY: "must-not-be-captured",
     });
     expect(snapshot).toEqual([
-      { provider: "anthropic", transport: "anthropic", baseUrl: "http://localhost:8080/anthropic" },
+      {
+        provider: "anthropic",
+        transport: "anthropic",
+        baseUrl: "http://localhost:8080/anthropic",
+      },
       { provider: "fake", transport: "fake", baseUrl: null },
-      { provider: "openai", transport: "openai-responses", baseUrl: "https://review.example/v1" },
+      {
+        provider: "openai",
+        transport: "openai-responses",
+        baseUrl: "https://review.example/v1",
+      },
     ]);
     expect(JSON.stringify(snapshot)).not.toContain("must-not-be-captured");
     expect(JSON.stringify(snapshot)).not.toContain("API_KEY");
@@ -59,7 +67,9 @@ describe("Council provider endpoint snapshots", () => {
   test("rejects unknown profile providers and unsafe configured URLs", () => {
     const unknown = profile();
     unknown.seats[0] = seat("unsupported-provider");
-    expect(() => providerEndpointSnapshot(unknown)).toThrow("unsupported council provider");
+    expect(() => providerEndpointSnapshot(unknown)).toThrow(
+      "unsupported council provider",
+    );
     for (const unsafe of [
       "https://user:password@review.example/v1",
       "https://review.example/v1?token=secret",
@@ -74,16 +84,57 @@ describe("Council provider endpoint snapshots", () => {
 
   test("rejects malformed supplied snapshots and missing used providers", () => {
     const valid: CouncilProviderEndpoint[] = [
-      { provider: "openai", transport: "openai-responses", baseUrl: "https://a.example/v1" },
+      {
+        provider: "openai",
+        transport: "openai-responses",
+        baseUrl: "https://a.example/v1",
+      },
     ];
     const invalidSnapshots: unknown[] = [
       [...valid, ...valid],
-      [{ provider: "unknown", transport: "openai-responses", baseUrl: "https://a.example" }],
-      [{ provider: "openai", transport: "openai-chat", baseUrl: "https://a.example" }],
-      [{ provider: "openai", transport: "openai-responses", baseUrl: "https://a.example/" }],
-      [{ provider: "openai", transport: "openai-responses", baseUrl: "https://user:secret@a.example" }],
-      [{ provider: "openai", transport: "openai-responses", baseUrl: "https://a.example", apiKey: "private" }],
-      [{ provider: "openai", transport: "openai-responses", baseUrl: `https://${"a".repeat(4_100)}.example` }],
+      [
+        {
+          provider: "unknown",
+          transport: "openai-responses",
+          baseUrl: "https://a.example",
+        },
+      ],
+      [
+        {
+          provider: "openai",
+          transport: "openai-chat",
+          baseUrl: "https://a.example",
+        },
+      ],
+      [
+        {
+          provider: "openai",
+          transport: "openai-responses",
+          baseUrl: "https://a.example/",
+        },
+      ],
+      [
+        {
+          provider: "openai",
+          transport: "openai-responses",
+          baseUrl: "https://user:secret@a.example",
+        },
+      ],
+      [
+        {
+          provider: "openai",
+          transport: "openai-responses",
+          baseUrl: "https://a.example",
+          apiKey: "private",
+        },
+      ],
+      [
+        {
+          provider: "openai",
+          transport: "openai-responses",
+          baseUrl: `https://${"a".repeat(4_100)}.example`,
+        },
+      ],
       Array.from({ length: 7 }, (_, index) => ({
         provider: "openai",
         transport: "openai-responses",
