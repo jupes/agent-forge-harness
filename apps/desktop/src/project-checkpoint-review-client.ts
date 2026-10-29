@@ -328,7 +328,7 @@ export function createProjectCheckpointReviewOwner(
           error:
             "Saved review state changed. Read this exact original before continuing.",
         });
-      } else if (stickyHold || view.phase === "unknown") {
+      } else if (saved || stickyHold || view.phase === "unknown") {
         paint({ metadata: result });
       } else if (result.activeRequestId !== null || result.blocked) {
         paint({

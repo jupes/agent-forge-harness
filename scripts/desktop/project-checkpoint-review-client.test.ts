@@ -48,13 +48,15 @@ async function records(
     | "unknown"
     | "retired" = "prepared",
   requestId = id,
+  decision: "approve" | "request-changes" = "approve",
+  note = "Ready to proceed",
 ) {
   const draft = {
     schemaVersion: 1 as const,
     requestId,
     binding: { ...target, catalogRevision: 4, scopeHash: "a".repeat(64) },
-    decision: "approve" as const,
-    note: "Ready to proceed",
+    decision,
+    note,
     commentText: "",
     createdAt: at,
   };
@@ -101,6 +103,31 @@ async function records(
   return { read, metadata };
 }
 
+function transitionRecords(
+  value: Awaited<ReturnType<typeof records>>,
+  state: "confirmed" | "refused" | "unknown" | "retired",
+) {
+  const commentId = state === "confirmed" ? "comment-1" : null;
+  const receipt: ProjectCheckpointReviewReceipt = {
+    ...value.read.receipt,
+    state,
+    commentId,
+    reportedCommentId: commentId,
+    readback:
+      state === "confirmed"
+        ? "found"
+        : state === "unknown"
+          ? "absent"
+          : "not-checked",
+    updatedAt: at,
+  };
+  const metadata = { ...value.metadata, state, commentId, updatedAt: at };
+  return {
+    metadata,
+    read: { ...value.read, metadata, receipt },
+  };
+}
+
 function metadataRead(item: ProjectCheckpointReviewMetadata | null = null) {
   return {
     schemaVersion: 1 as const,
@@ -132,24 +159,47 @@ function fakeTransport(
     },
     async prepare(_scope, request) {
       calls.push(`prepare:${request.decision}:${request.note}`);
-      latest = await records("prepared", request.requestId);
+      latest = await records(
+        "prepared",
+        request.requestId,
+        request.decision,
+        request.note,
+      );
       const preparedItem = latest.metadata;
       prepared.push(preparedItem);
       return preparedItem;
     },
     async commit(_scope, requestId, intentHash) {
       calls.push("commit");
-      latest = await records("confirmed", requestId);
+      if (
+        !latest ||
+        latest.metadata.requestId !== requestId ||
+        latest.metadata.intentHash !== intentHash
+      )
+        throw Error("missing prepared original");
+      latest = transitionRecords(latest, "confirmed");
       return { ...latest.read.receipt, intentHash };
     },
     async retire(_scope, requestId, intentHash) {
       calls.push("retire");
-      latest = await records("retired", requestId);
+      if (
+        !latest ||
+        latest.metadata.requestId !== requestId ||
+        latest.metadata.intentHash !== intentHash
+      )
+        throw Error("missing prepared original");
+      latest = transitionRecords(latest, "retired");
       return { ...latest.read.receipt, intentHash };
     },
     async readback(_scope, requestId, intentHash) {
       calls.push("readback");
-      latest = await records("confirmed", requestId);
+      if (
+        !latest ||
+        latest.metadata.requestId !== requestId ||
+        latest.metadata.intentHash !== intentHash
+      )
+        throw Error("missing prepared original");
+      latest = transitionRecords(latest, "confirmed");
       return { ...latest.read.receipt, intentHash };
     },
     ...overrides,
@@ -176,6 +226,7 @@ describe("checkpoint review owner", () => {
     const owner = await readyOwner(fake.transport);
     owner.setNote(" Ready to proceed ");
     await owner.submit("approve");
+    await owner.refresh();
     expect(fake.calls).toEqual([
       "prepare:approve:Ready to proceed",
       "original",
@@ -236,13 +287,23 @@ describe("checkpoint review owner", () => {
 
   test("duplicate gesture while preparing sends only one prepare", async () => {
     let prepareCount = 0;
+    let prepared: Awaited<ReturnType<typeof records>> | null = null;
     const fake = fakeTransport({
       async prepare(_scope, request) {
         prepareCount++;
-        return (await records("prepared", request.requestId)).metadata;
+        const value = await records(
+          "prepared",
+          request.requestId,
+          request.decision,
+          request.note,
+        );
+        prepared = value;
+        return value.metadata;
       },
       async original(_scope, requestId) {
-        return (await records("prepared", requestId)).read;
+        if (!prepared || prepared.read.original.requestId !== requestId)
+          throw Error("missing prepared original");
+        return prepared.read;
       },
     });
     const owner = await readyOwner(fake.transport);
@@ -263,7 +324,12 @@ describe("checkpoint review owner", () => {
         return metadataRead(latest?.metadata ?? null);
       },
       async prepare(_scope, request) {
-        latest = await records("prepared", request.requestId);
+        latest = await records(
+          "prepared",
+          request.requestId,
+          request.decision,
+          request.note,
+        );
         return latest.metadata;
       },
       async original(_scope, requestId) {
@@ -273,13 +339,25 @@ describe("checkpoint review owner", () => {
       },
       async commit(_scope, requestId, intentHash) {
         commitCount++;
-        latest = await records("unknown", requestId);
+        if (
+          !latest ||
+          latest.metadata.requestId !== requestId ||
+          latest.metadata.intentHash !== intentHash
+        )
+          throw Error("missing prepared original");
+        latest = transitionRecords(latest, "unknown");
         return { ...latest.read.receipt, intentHash };
       },
       async readback(_scope, requestId, intentHash) {
         readbackCount++;
-        const receipt = (await records("confirmed", requestId)).read.receipt;
-        return { ...receipt, intentHash };
+        if (
+          !latest ||
+          latest.metadata.requestId !== requestId ||
+          latest.metadata.intentHash !== intentHash
+        )
+          throw Error("missing unknown original");
+        latest = transitionRecords(latest, "confirmed");
+        return { ...latest.read.receipt, intentHash };
       },
     });
     const owner = await readyOwner(fake.transport);
