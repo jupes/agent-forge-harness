@@ -38,8 +38,11 @@ export function conversationPage(
     .filter((frame) => frame.seq > after)
     .slice(0, query.limit ?? 100);
   const nextCursor = frames.at(-1)?.seq ?? after;
-  const { codexChatOwnerLifecycle: _privateOwnerLifecycle, ...publicState } =
-    state;
+  const {
+    codexChatOwnerLifecycle: _privateOwnerLifecycle,
+    keeperBriefIntents: _privateKeeperBriefIntents,
+    ...publicState
+  } = state;
   return {
     ...publicState,
     ...(state.keeperRecovery
