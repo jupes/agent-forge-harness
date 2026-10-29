@@ -255,8 +255,7 @@ function StandardSessionConversation({
     };
   };
   const canContinue =
-    !!onContinueToChat &&
-    canContinueClaudeRateLimit(continuationState());
+    !!onContinueToChat && canContinueClaudeRateLimit(continuationState());
   const closeContinuationReview = () => {
     setContinuationReviewOpen(false);
     setContinuationProblem("");
@@ -966,7 +965,8 @@ function StandardSessionConversation({
                 ? "Gemini ACP"
                 : continuationTarget === "codex"
                   ? "Codex"
-                  : "target"} Chat
+                  : "target"}{" "}
+              Chat
             </Button>
           </>
         }
