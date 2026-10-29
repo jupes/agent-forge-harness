@@ -821,11 +821,7 @@ test("observation clock and wait failures report only their own boundary", async
     ).rejects.toThrow("Windows owned process cleanup could not be confirmed.");
     expect(clockCalls).toBe(check.clockThrowAt || 4);
     expect(sleeps).toEqual(check.sleeps);
-    expect(f.calls).toEqual([
-      ...captureCalls,
-      ...check.reads,
-      "close:900",
-    ]);
+    expect(f.calls).toEqual([...captureCalls, ...check.reads, "close:900"]);
     expect(f.closed).toEqual([900]);
     expect(phases).toEqual([check.phase]);
   }
