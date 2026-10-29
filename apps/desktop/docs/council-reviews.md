@@ -50,3 +50,11 @@ This consumer is an integration checkpoint, not completion of the Council
 feature. Additional history summary facts, cancellation/failure browser
 journeys, source entry points, and keyboard/native acceptance remain on
 `agent-forge-harness-cla5.7.2`.
+
+## Recorded browser checkpoint
+
+The inert-provider journey reserves, reviews, convenes once, reads a completed result, reloads, and reopens the same original/result without another POST. At bde616cd: one browser case passed in 12.6 seconds; bounded owner 13.532 seconds, all 21 retained processes exited, fixture ports free, source clean. These actual viewport captures show part of each view and do not establish full visual or native acceptance.
+
+![Exact saved Council original](screenshots/council-exact-original.png)
+
+![Completed Council result](screenshots/council-completed-result.png)
