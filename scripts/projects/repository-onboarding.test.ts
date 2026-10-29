@@ -93,7 +93,10 @@ test("folder selection is durably recoverable and registration uses only its sel
     },
   });
   const selected = await service.selectFolder(id);
-  expect(selected).toMatchObject({ state: "selected", path: canonicalExternal });
+  expect(selected).toMatchObject({
+    state: "selected",
+    path: canonicalExternal,
+  });
   expect(await service.selectFolder(id)).toEqual(selected);
   expect(pickerCalls).toBe(1);
   expect(service.getSelection(id)).toEqual(selected);
