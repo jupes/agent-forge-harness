@@ -185,7 +185,9 @@ function completeRepositoryOptions(
     try {
       const text = readFileSync(registryPath, "utf8");
       const afterRead = lstatSync(registryPath);
-      if (Buffer.byteLength(text, "utf8") > MAX_PROJECT_REPOSITORY_REGISTRY_BYTES)
+      if (
+        Buffer.byteLength(text, "utf8") > MAX_PROJECT_REPOSITORY_REGISTRY_BYTES
+      )
         throw unavailableProjectOptions();
       if (
         afterRead.isSymbolicLink() ||
@@ -207,12 +209,7 @@ function completeRepositoryOptions(
     )
       throw unavailableProjectOptions();
     entries = parsed["repos"];
-    const allowedFields = new Set([
-      "name",
-      "url",
-      "defaultBranch",
-      "archived",
-    ]);
+    const allowedFields = new Set(["name", "url", "defaultBranch", "archived"]);
     if (
       entries.length + 1 > MAX_PROJECT_CREATE_OPTION_REPOSITORIES ||
       entries.some((entry) => {

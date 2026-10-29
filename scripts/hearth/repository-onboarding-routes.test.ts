@@ -180,9 +180,9 @@ test("protected repository onboarding recovers exact records and updates checked
     requestId: SERVED_ID,
   });
   expect(servedSelection.status).toBe(200);
-  const servedOutcome = (await json<{ state: string; path: string | null }>(
-    servedSelection,
-  )).data;
+  const servedOutcome = (
+    await json<{ state: string; path: string | null }>(servedSelection)
+  ).data;
   expect(servedOutcome.state).toBe("selected");
   if (servedOutcome.path === null)
     throw new Error("The real served Git root was not selected.");
@@ -199,7 +199,9 @@ test("protected repository onboarding recovers exact records and updates checked
   });
   expect(selection.status).toBe(200);
   const selectedOutcome = (
-    await json<{ requestId: string; state: string; path: string | null }>(selection)
+    await json<{ requestId: string; state: string; path: string | null }>(
+      selection,
+    )
   ).data;
   expect(selectedOutcome).toMatchObject({
     requestId: REGISTER_ID,
@@ -218,7 +220,12 @@ test("protected repository onboarding recovers exact records and updates checked
   );
   expect(registration.status).toBe(200);
   const registeredFolder = (
-    await json<{ name: string; path: string; source: string; originalRequestId: string }>(registration)
+    await json<{
+      name: string;
+      path: string;
+      source: string;
+      originalRequestId: string;
+    }>(registration)
   ).data;
   expect(registeredFolder).toMatchObject({
     name: "selected-folder",
@@ -288,16 +295,23 @@ test("protected repository onboarding recovers exact records and updates checked
     `/projects/repository-clone-reservations/${CLONE_ID}`,
   );
   const savedClone = (
-    await json<{ requestId: string; state: string; name: string; path: string }>(saved)
+    await json<{
+      requestId: string;
+      state: string;
+      name: string;
+      path: string;
+    }>(saved)
   ).data;
   expect(savedClone).toMatchObject({
     requestId: CLONE_ID,
     state: "registered",
     name: "cloned-folder",
   });
-  expect(
-    workspaceKey(savedClone.path),
-  ).toBe(workspaceKey(join(h.home, "project-create-registry", "repos", "cloned-folder")));
+  expect(workspaceKey(savedClone.path)).toBe(
+    workspaceKey(
+      join(h.home, "project-create-registry", "repos", "cloned-folder"),
+    ),
+  );
   expect(cloneCalls).toBe(1);
   expect(
     (
@@ -322,7 +336,9 @@ test("protected repository onboarding recovers exact records and updates checked
       }),
       expect.objectContaining({
         name: "cloned-folder",
-        key: workspaceKey(join(h.home, "project-create-registry", "repos", "cloned-folder")),
+        key: workspaceKey(
+          join(h.home, "project-create-registry", "repos", "cloned-folder"),
+        ),
         served: false,
       }),
     ]),
