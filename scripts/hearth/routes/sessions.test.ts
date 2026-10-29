@@ -1,11 +1,18 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
+import { existsSync, readFileSync, readdirSync, realpathSync } from "node:fs";
+import { join } from "node:path";
 import type {
   ConversationPage,
   ConversationReceipt,
 } from "../../../types/conversation";
 import type { OwnedSessionRecord } from "../../../types/owned-session";
 import type { SessionStartReceipt } from "../../../types/session-requests";
+import type { SessionRuntime } from "../../sessions/admission";
+import {
+  launchWindowsConsole,
+  type NativeConsoleLaunchOptions,
+} from "../../providers/native-console";
 import { createConversationStore } from "../../conversations/store";
 import { projectCatalogPath } from "../../projects/store";
 import {
@@ -18,6 +25,7 @@ import {
 } from "../../sessions/registry";
 import { expectStartIdentityState } from "../../sessions/session-start-identity-test-witness";
 import { startTestHearth, type TestHearth } from "../testing";
+import { scratchDirs } from "../../test-scratch";
 import { writeOwnerOnly } from "../token";
 import {
   FIXTURE_SESSION_REPLY,
@@ -28,6 +36,34 @@ import {
 } from "./session-fixture";
 
 const opened: TestHearth[] = [];
+const terminalBinaries = scratchDirs();
+let terminalFixtureExecutable: string | undefined;
+
+beforeAll(async () => {
+  if (
+    process.platform !== "win32" ||
+    process.arch !== "x64" ||
+    process.env["AGENT_FORGE_RUN_VISIBLE_TERMINAL_FIXTURE"] !== "1"
+  )
+    return;
+  const directory = terminalBinaries.make("claude-terminal-stand-in-"),
+    executable = join(directory, "claude-terminal.exe"),
+    source = join(import.meta.dir, "../../providers/fixtures/claude-terminal-stand-in.ts"),
+    build = Bun.spawn(
+      [process.execPath, "build", "--compile", source, "--outfile", executable],
+      { stdout: "ignore", stderr: "pipe", windowsHide: true },
+    ),
+    timer = setTimeout(() => build.kill(), 60_000);
+  try {
+    const stderr = await new Response(build.stderr).text();
+    if ((await build.exited) !== 0)
+      throw Error(`The inert terminal fixture did not compile: ${stderr.slice(-2000)}`);
+    terminalFixtureExecutable = executable;
+  } finally {
+    clearTimeout(timer);
+  }
+}, 65_000);
+afterAll(() => terminalBinaries.cleanup());
 
 test("a same-project session from another workspace stays private and cannot be sent to or stopped through this hearth", async () => {
   const fake = fakeSessionRuntime(),
@@ -123,6 +159,198 @@ test("a same-project session from another workspace stays private and cannot be 
 afterEach(async () => {
   for (const h of opened.splice(0)) await h.close();
 });
+
+test.skipIf(
+  process.platform !== "win32" ||
+    process.arch !== "x64" ||
+    process.env["AGENT_FORGE_RUN_VISIBLE_TERMINAL_FIXTURE"] !== "1",
+)(
+  "a reviewed Claude terminal opens visibly, resumes the exact identity and settles on hearth close",
+  async () => {
+    const nativeSessionId = randomUUID(),
+      launches: NativeConsoleLaunchOptions[] = [];
+    let child: ReturnType<typeof launchWindowsConsole> | undefined;
+    let providerTurns = 0;
+    const runtime: SessionRuntime = {
+      provider: "claude",
+      async prepare(input) {
+        return {
+          version: 1,
+          provider: "claude",
+          smith: input.smith,
+          cwd: input.cwd,
+          launch: structuredClone(input.launch),
+          capabilities: {
+            version: "2.1.296",
+            flags: [
+              ...fixtureSessionFlags,
+              "--permission-mode",
+            ],
+          },
+        };
+      },
+      async run(_request, persist) {
+        providerTurns++;
+        await persist({
+          kind: "identity",
+          provider: "claude",
+          sessionId: nativeSessionId,
+          version: "2.1.296",
+        });
+        await persist({ kind: "text", text: FIXTURE_SESSION_REPLY });
+        return { phase: "completed", reason: null };
+      },
+    };
+    const h = await startTestHearth({
+      api: {
+        sessionRuntime: runtime,
+        git: fixtureSessionGit,
+        sessionTerminalEnvironment: {
+          SystemRoot: process.env["SystemRoot"] ?? "C:\\Windows",
+          TEMP: process.env["TEMP"],
+          TMP: process.env["TMP"],
+        },
+        providerInspector: {
+          async inspect(provider) {
+            return {
+              provider,
+              name: "Claude fixture",
+              installation: {
+                found: true,
+                versionOk: true,
+                version: "2.1.296",
+                path: terminalFixtureExecutable ?? null,
+                checkedAt: new Date().toISOString(),
+                compatibility: "supported",
+                reason: null,
+              },
+              authentication: {
+                mode: "unknown",
+                source: "unavailable",
+                observedAt: null,
+                reason: null,
+              },
+              adapter: { supported: true, reason: null },
+              signIn: { command: null, reason: null, nativeAvailable: true },
+            };
+          },
+        },
+        sessionTerminalLauncher(options) {
+          launches.push(options);
+          child = launchWindowsConsole({
+            ...options,
+            env: {
+              ...options.env,
+              CLAUDE_TERMINAL_FIXTURE_RECORD: join(options.cwd, "terminal-record.json"),
+              CLAUDE_TERMINAL_FIXTURE_HOLD: "1",
+            },
+          });
+          return child;
+        },
+      },
+    });
+    opened.push(h);
+    writeOwnerOnly(
+      projectCatalogPath(h.home),
+      JSON.stringify(projectCatalogFixture(h.workspace)),
+    );
+    const base = `/projects/${FIXTURE_PROJECT_ID}/sessions`,
+      startRequest = sessionStartFixture(h, randomUUID()),
+      started = await fetch(`${h.api}${base}`, {
+        method: "POST",
+        headers: h.headers(h.hearth.token),
+        body: JSON.stringify(startRequest),
+      });
+    expect(started.status).toBe(202);
+    const startedBody: { data: SessionStartReceipt } = await started.json();
+    await waitOwnedTurn(h, startedBody.data.session, startRequest.requestId);
+    const terminalPath = `${base}/${startedBody.data.session.id}/terminal-handoff`,
+      requestId = randomUUID(),
+      open = () =>
+        fetch(`${h.api}${terminalPath}`, {
+          method: "POST",
+          headers: h.headers(h.hearth.token),
+          body: JSON.stringify({ requestId }),
+        });
+    const openResponse = await open();
+    expect(openResponse.status).toBe(200);
+    const openReceipt: { data: { phase: string; requestId: string } } =
+      await openResponse.json();
+    expect(openReceipt.data).toMatchObject({ requestId, phase: "opened" });
+    expect(launches).toHaveLength(1);
+    expect(launches[0]?.command[0]).toBe(terminalFixtureExecutable);
+    expect(launches[0]?.command).toContain(nativeSessionId);
+    expect(launches[0]?.command).not.toContain(FIXTURE_SESSION_PROMPT);
+    expect(launches[0]?.lifetime).toEqual({ kind: "managed" });
+    expect(Object.hasOwn(launches[0] ?? {}, "stdin")).toBe(false);
+    expect(providerTurns).toBe(1);
+    expect((await open()).status).toBe(200);
+    const status: { data: { attempt: { phase: string; requestId: string } } } =
+      await (await fetch(`${h.api}${terminalPath}`, {
+        headers: h.headers(h.hearth.token),
+      })).json();
+    expect(status.data.attempt.requestId).toBe(requestId);
+    expect(["opened", "closed"]).toContain(status.data.attempt.phase);
+    expect(launches).toHaveLength(1);
+    const pageResponse = await fetch(`${h.api}${base}/${startedBody.data.session.id}`, {
+      headers: h.headers(h.hearth.token),
+    });
+    const page: ConversationPage = (await pageResponse.json()).data;
+    const send = await fetch(`${h.api}${base}/${startedBody.data.session.id}/turns`, {
+      method: "POST",
+      headers: h.headers(h.hearth.token),
+      body: JSON.stringify({
+        requestId: randomUUID(),
+        expectedRevision: page.revision,
+        text: "This app send must stay held while the terminal is open.",
+        about: [],
+      }),
+    });
+    expect(send.status).toBe(409);
+    expect(launches).toHaveLength(1);
+    expect(providerTurns).toBe(1);
+    const recordPath = join(h.root, "terminal-record.json"),
+      deadline = Date.now() + 5000;
+    while (!existsSync(recordPath) && Date.now() < deadline) await Bun.sleep(10);
+    expect(existsSync(recordPath)).toBe(true);
+    let nativeRecord: unknown;
+    try {
+      nativeRecord = JSON.parse(readFileSync(recordPath, "utf8"));
+    } catch {
+      throw new Error("The inert native Claude-resume fixture record is invalid.");
+    }
+    if (
+      !nativeRecord ||
+      typeof nativeRecord !== "object" ||
+      !("args" in nativeRecord) ||
+      !Array.isArray(nativeRecord.args) ||
+      !("cwd" in nativeRecord) ||
+      typeof nativeRecord.cwd !== "string"
+    )
+      throw new Error("The inert native Claude-resume fixture record is incomplete.");
+    expect(nativeRecord.args).toEqual(launches[0]?.command.slice(1));
+    expect(nativeRecord.args).toContain(nativeSessionId);
+    expect(nativeRecord.args).not.toContain(FIXTURE_SESSION_PROMPT);
+    expect(realpathSync.native(nativeRecord.cwd).toLowerCase()).toBe(
+      realpathSync.native(h.workspace).toLowerCase(),
+    );
+    expect(nativeRecord).toMatchObject({ hasConsole: true });
+    expect(child).toBeDefined();
+    expect(child && process.kill(child.pid, 0)).toBe(true);
+    const index = opened.indexOf(h);
+    if (index >= 0) opened.splice(index, 1);
+    await h.close();
+    expect(await child?.done).toMatchObject({ stopped: true, timedOut: false });
+    const handoffDir = join(
+      h.home,
+      "session-terminal-handoffs",
+      readdirSync(join(h.home, "session-terminal-handoffs"))[0] ?? "",
+    );
+    const journal: { attempts: Array<{ requestId: string; phase: string }> } =
+      JSON.parse(readFileSync(join(handoffDir, "attempts.json"), "utf8"));
+    expect(journal.attempts.at(-1)).toMatchObject({ requestId, phase: "closed" });
+  },
+);
 
 test("owned session routes require operator authority, preserve exact Start retries and keep private bodies out of list/activity", async () => {
   const fake = fakeSessionRuntime();

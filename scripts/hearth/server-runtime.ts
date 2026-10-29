@@ -45,6 +45,10 @@ import {
   createProviderInspector,
   type ProviderInspector,
 } from "../providers/inspect";
+import type {
+  NativeConsoleChild,
+  NativeConsoleLaunchOptions,
+} from "../providers/native-console";
 import {
   createProviderLoginService,
   type ProviderLoginService,
@@ -193,6 +197,12 @@ export interface OperatorApiOverrides {
   /** Fixed status probes only; tests supply a fixture and never inspect real accounts. */
   providerInspector?: ProviderInspector;
   providerLogin?: ProviderLoginService;
+  /** Trusted fixture launcher for native terminal handoff; never request supplied. */
+  sessionTerminalLauncher?: (
+    options: NativeConsoleLaunchOptions,
+  ) => NativeConsoleChild;
+  /** Minimal explicit environment for inert terminal fixtures; never request supplied. */
+  sessionTerminalEnvironment?: Record<string, string | undefined>;
   /** Trusted coding runtime seam; hermetic tests never launch a real provider. */
   sessionRuntime?: SessionRuntime;
   /** Trusted native Task runtime only; never selected by a caller-supplied command. */
@@ -522,6 +532,11 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
     smithEditService,
     smithRoutingEditService,
     providerInspector,
+    sessionTerminalEnvironment:
+      options.api?.sessionTerminalEnvironment ??
+      options.environment ??
+      process.env,
+    sessionTerminalLauncher: options.api?.sessionTerminalLauncher,
     providerLogin:
       options.api?.providerLogin ??
       createProviderLoginService({

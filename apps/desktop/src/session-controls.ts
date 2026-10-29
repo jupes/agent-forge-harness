@@ -127,6 +127,14 @@ export function ownedSessionControls(input: {
                   : current.phase !== "completed"
                     ? "The current turn has not completed. Check its outcome before continuing this Chat."
                     : null;
+  const terminalReason =
+    input.record.provider !== "claude"
+      ? "Native terminal handoff is currently supported only for a verified Claude Chat on Windows x64."
+      : input.record.mode !== "chat"
+        ? "Only a completed Claude Chat can open in a terminal."
+        : resumeReason !== null
+          ? resumeReason
+          : null;
   return {
     commandPreview,
     resume: {
@@ -158,8 +166,10 @@ export function ownedSessionControls(input: {
       reason: "Forking this conversation is unavailable here.",
     },
     terminal: {
-      available: false,
-      reason: "Opening this conversation in a terminal is unavailable here.",
+      available: terminalReason === null,
+      reason:
+        terminalReason ??
+        "Review the saved source input and exact Claude Chat identity before opening the managed terminal.",
     },
     permissions: {
       inline: nativeChat,

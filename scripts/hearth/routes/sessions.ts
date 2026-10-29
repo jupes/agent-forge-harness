@@ -16,6 +16,13 @@ import {
   ProjectStoreError,
 } from "../../projects/store";
 import type { SessionRuntime } from "../../sessions/admission";
+import type { ProviderInspector } from "../../providers/inspect";
+import { buildChildEnv } from "../../executors/env";
+import { createSessionTerminalHandoff } from "../../sessions/terminal-handoff";
+import { terminalHandoffRequestSchema } from "../../../types/session-terminal-handoff";
+import { launchWindowsConsole } from "../../providers/native-console";
+import { originalSessionLaunchMatches } from "../../sessions/library-protocol";
+import { isClaudeSessionId } from "../../sessions/claude-stream";
 import {
   CODEX_CHAT_FORK_PROTOCOL_VERSION,
   codexChatForkIntentSchema,
@@ -109,6 +116,9 @@ export function createOwnedSessionRoutes(
     codexChatRuntime?: ReturnType<typeof createCodexChatRuntime> | undefined;
     geminiTaskRuntime?: ReturnType<typeof createGeminiTaskRuntime> | undefined;
     geminiChatRuntime?: ReturnType<typeof createGeminiChatRuntime> | undefined;
+    terminalInspector?: ProviderInspector | undefined;
+    terminalEnvironment?: Record<string, string | undefined> | undefined;
+    terminalLauncher?: typeof launchWindowsConsole | undefined;
   } = {},
 ) {
   const {
@@ -116,6 +126,9 @@ export function createOwnedSessionRoutes(
     codexChatRuntime,
     geminiTaskRuntime,
     geminiChatRuntime,
+    terminalInspector,
+    terminalEnvironment,
+    terminalLauncher,
   } = providerRuntimes;
   const feed = createConversationFeed();
   const recordMetadata = createOwnedSessionLedger(home, deps);
@@ -158,6 +171,109 @@ export function createOwnedSessionRoutes(
     onChange: (session, update) => {
       feed.changed(session.id);
       recordMetadata(session, update);
+    },
+  });
+  const terminal = createSessionTerminalHandoff({
+    home,
+    root: deps.root,
+    ...(terminalLauncher ? { launch: terminalLauncher } : {}),
+    async candidate(projectId, sessionId) {
+      if (process.platform !== "win32" || process.arch !== "x64")
+        throw new ConversationError(
+          409,
+          "Native terminal handoff is available only on Windows x64.",
+        );
+      if (!terminalInspector)
+        throw new ConversationError(
+          503,
+          "The current Claude executable and version could not be verified.",
+        );
+      const record = service
+        .list(projectId)
+        .find((item) => item.id === sessionId);
+      if (
+        !record ||
+        record.provider !== "claude" ||
+        record.mode !== "chat" ||
+        record.origin
+      )
+        throw new ConversationError(
+          409,
+          "Only an ordinary owned Claude Chat can open in a terminal.",
+        );
+      const page = await service.read(projectId, sessionId, {
+        after: 0,
+        limit: 100,
+      });
+      const latest = page.turns.at(-1),
+        original = page.frames.find(
+          (frame) =>
+            frame.seq === 1 &&
+            frame.turnId === record.requestId &&
+            frame.event.kind === "user",
+        ),
+        snapshot =
+          original?.event.kind === "user"
+            ? original.event.session
+            : undefined;
+      const sourceAbout =
+        original?.event.kind === "user" ? original.event.about : [];
+      if (
+        page.projectId !== projectId ||
+        page.conversationId !== sessionId ||
+        page.request !== null ||
+        page.controllable ||
+        !latest ||
+        latest.phase !== "completed" ||
+        !snapshot ||
+        snapshot.version !== 1 ||
+        snapshot.provider !== "claude" ||
+        snapshot.launch.mode !== "chat" ||
+        !originalSessionLaunchMatches(record, page) ||
+        page.binding?.provider !== "claude" ||
+        !isClaudeSessionId(page.binding.sessionId) ||
+        page.binding.version !== snapshot.capabilities.version
+      )
+        throw new ConversationError(
+          409,
+          "The saved Chat is active, uncertain, unbound or no longer matches its original Claude identity.",
+        );
+      await validateScope(
+        projectId,
+        record,
+        sourceAbout,
+        snapshot.launch,
+      );
+      const inspection = await terminalInspector.inspect("claude", []),
+        executable = inspection.installation.path;
+      if (
+        !inspection.installation.versionOk ||
+        inspection.installation.version !== snapshot.capabilities.version ||
+        inspection.installation.compatibility !== "supported" ||
+        !inspection.signIn.nativeAvailable ||
+        !executable ||
+        !/\.exe$/i.test(executable)
+      )
+        throw new ConversationError(
+          409,
+          "The current Claude executable does not match this Chat's verified native version.",
+        );
+      const env = buildChildEnv(terminalEnvironment ?? process.env, []);
+      for (const name of Object.keys(env))
+        if (/^AGENT_FORGE_/i.test(name) || name.toLowerCase() === "forge_slug")
+          delete env[name];
+      env["AGENT_FORGE_ADAPTER"] = "1";
+      env["AGENT_FORGE_HOME"] = home;
+      return {
+        projectId,
+        sessionId,
+        turnRequestId: latest.requestId,
+        nativeSessionId: page.binding.sessionId,
+        executable,
+        cwd: snapshot.cwd,
+        snapshot,
+        env,
+      };
     },
   });
   const project = (request: RouteRequest): ValidationResult<string> => {
@@ -253,6 +369,45 @@ export function createOwnedSessionRoutes(
       answer(200, () => {
         readable(projectId);
         return service.list(projectId);
+      }),
+  };
+  const terminalRead: ReadRoute<Address> = {
+    kind: "read",
+    method: "GET",
+    path: "/projects/:id/sessions/:sessionId/terminal-handoff",
+    operatorOnly: true,
+    validate(request) {
+      const selected = address(request), query = noParameters(request);
+      return !selected.ok ? selected : !query.ok ? query : selected;
+    },
+    read: ({ projectId, sessionId }) =>
+      answer(200, () => {
+        readable(projectId);
+        return terminal.read(projectId, sessionId);
+      }),
+  };
+  const terminalOpen: ActionRoute<Address & { requestId: string }> = {
+    kind: "action",
+    method: "POST",
+    path: terminalRead.path,
+    action: "session.terminal.open",
+    maxBodyBytes: 4096,
+    validate(request) {
+      const selected = address(request), query = noParameters(request),
+        body = terminalHandoffRequestSchema.safeParse(request.body);
+      if (!selected.ok) return selected;
+      if (!query.ok) return query;
+      return body.success
+        ? { ok: true, value: { ...selected.value, requestId: body.data.requestId } }
+        : fail("Terminal handoff accepts only a fresh request UUID.");
+    },
+    subject: ({ sessionId, requestId }) => ({ target: sessionId, requestId }),
+    effect: (value, context?: ActionContext) =>
+      answer(200, () => {
+        readable(value.projectId);
+        if (!context || !Number.isSafeInteger(context.auditEventId) || context.auditEventId <= 0)
+          throw new ConversationError(503, "A confirmed operator audit receipt is required before opening a terminal.");
+        return terminal.open(value.projectId, value.sessionId, value.requestId, context.auditEventId);
       }),
   };
   const identityList: ReadRoute<string> = {
@@ -869,7 +1024,11 @@ export function createOwnedSessionRoutes(
     },
     subject: ({ sessionId }) => ({ target: sessionId }),
     effect: ({ projectId, sessionId, input }) =>
-      answer(202, () => service.send(projectId, sessionId, input)),
+      answer(202, () =>
+        terminal.send(projectId, sessionId, () =>
+          service.send(projectId, sessionId, input),
+        ),
+      ),
   };
   const forkTurn: ActionRoute<Address & { input: SessionMessage }> = {
     kind: "action",
@@ -1164,6 +1323,8 @@ export function createOwnedSessionRoutes(
     service,
     prepare: preparePreview,
     list,
+    terminalRead,
+    terminalOpen,
     identityList,
     identityOperations,
     forkOriginal,
@@ -1191,7 +1352,7 @@ export function createOwnedSessionRoutes(
     library,
     close: async () => {
       feed.close();
-      await service.close();
+      await Promise.all([service.close(), terminal.close()]);
     },
   };
 }

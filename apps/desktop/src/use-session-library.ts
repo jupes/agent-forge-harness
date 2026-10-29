@@ -78,9 +78,23 @@ export function useSessionLibrary(
           { ...pageReads(), fetch: operatorRead },
         ),
       download: downloadSessionTranscript,
+      readTerminal: (selected) =>
+        readOperatorRoute(`${path(selected)}/terminal-handoff`, {
+          ...pageReads(),
+          fetch: operatorRead,
+        }),
+      postTerminal: (selected, requestId) =>
+        actionOutcome(
+          () =>
+            operatorPost(`/__agent-forge${path(selected)}/terminal-handoff`, {
+              requestId,
+            }),
+          "Check the original terminal handoff before trying again.",
+        ),
     });
   }
   const client = held.current;
+  const terminalPhase = client.current()?.terminalAttempt?.phase;
   useEffect(
     () => client.subscribe(() => paint((value) => value + 1)),
     [client],
@@ -106,9 +120,15 @@ export function useSessionLibrary(
     () =>
       appStream().watch(["operator.action", "session.started"], () => {
         void client.refresh();
+        client.refreshTerminal();
       }),
     [client],
   );
+  useEffect(() => {
+    if (terminalPhase !== "opened") return;
+    const timer = window.setInterval(() => client.refreshTerminal(), 2000);
+    return () => window.clearInterval(timer);
+  }, [client, terminalPhase]);
   useEffect(() => () => client.dispose(), [client]);
   return client;
 }

@@ -80,6 +80,12 @@ function StandardSessionConversation({
       .records.find((item) => item.id === sessionId),
     rows = keeperTurns(view.page),
     current = view.page?.turns.at(-1);
+  const handoff = library?.current();
+  const terminalHeld =
+    handoff?.record.id === sessionId &&
+    (handoff.terminalLocalHold ||
+      (!!handoff.terminalAttempt &&
+        handoff.terminalAttempt.phase !== "refused"));
   const running =
     current && ["accepted", "running", "cancelling"].includes(current.phase);
   const providerName =
@@ -632,7 +638,9 @@ function StandardSessionConversation({
       )}
       <footer class="af-owned-session-composer">
         <p role="status">
-          {notice ||
+          {terminalHeld
+            ? "A native terminal handoff is open or uncertain. Terminal activity is not synced, so app sends to this Chat are held."
+            : notice ||
             (running
               ? chatOutcome
                 ? "The native process ended. Waiting for the final saved conversation status…"
@@ -653,7 +661,7 @@ function StandardSessionConversation({
             rows={2}
             maxLength={16_384}
             value={view.draft}
-            disabled={record?.mode === "task"}
+            disabled={record?.mode === "task" || terminalHeld}
             onInput={(event) => {
               client.draft(projectId, sessionId, event.currentTarget.value);
               setCaret(event.currentTarget.selectionStart);
@@ -691,7 +699,7 @@ function StandardSessionConversation({
                 !event.isComposing
               ) {
                 event.preventDefault();
-                void client.send(projectId, sessionId);
+                if (!terminalHeld) void client.send(projectId, sessionId);
               }
             }}
           />
@@ -724,7 +732,7 @@ function StandardSessionConversation({
                     ? ".txt,.md,.json,.csv,.yaml,.yml,.ts,.js,.tsx,.jsx,.py,.rs"
                     : ".txt,.md,.json,.csv,.yaml,.yml,.ts,.js,.tsx,.jsx,.py,.rs,image/png,image/jpeg,image/gif,image/webp"
                 }
-                disabled={attaching || !!view.pending}
+                disabled={attaching || !!view.pending || terminalHeld}
                 onChange={(event) => {
                   const files = [...(event.currentTarget.files ?? [])];
                   event.currentTarget.value = "";
@@ -805,7 +813,11 @@ function StandardSessionConversation({
           )}
           <Button
             variant="primary"
-            disabled={attaching || !client.canSend(projectId, sessionId)}
+            disabled={
+              terminalHeld ||
+              attaching ||
+              !client.canSend(projectId, sessionId)
+            }
             onClick={() => {
               void client.send(projectId, sessionId);
             }}
