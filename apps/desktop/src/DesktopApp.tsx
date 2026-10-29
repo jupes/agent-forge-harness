@@ -47,6 +47,12 @@ import {
 } from "./project-activity-model";
 import type { VerifiedProjectCreate } from "./project-create-owner";
 import { parseRunFilters, runsHref } from "./project-runs-model";
+import {
+  createProjectCouncilDraftCache,
+  type PendingProjectCouncilSourceReplacement,
+  type ProjectCouncilDraftScope,
+  type ProjectCouncilSourcePrefill,
+} from "./project-council-draft";
 import { ClaudeSessionComposer, SessionComposer } from "./SessionComposer";
 import { SessionConversation } from "./SessionConversation";
 import { Smiths } from "./Smiths";
@@ -81,6 +87,17 @@ export function DesktopApp(): JSX.Element {
   const [finishBrief, setFinishBrief] = useState<VerifiedProjectCreate | null>(
     null,
   );
+  const councilDraftCache = useRef<ReturnType<typeof createProjectCouncilDraftCache> | null>(null);
+  if (!councilDraftCache.current)
+    councilDraftCache.current = createProjectCouncilDraftCache();
+  const [councilSourceReplacement, setCouncilSourceReplacement] = useState<{
+    scope: ProjectCouncilDraftScope;
+    pending: PendingProjectCouncilSourceReplacement;
+    error: string;
+  } | null>(null);
+  const [councilDraftGeneration, setCouncilDraftGeneration] = useState(0);
+  const [focusCouncilSource, setFocusCouncilSource] = useState(false);
+  const [councilDraftNotice, setCouncilDraftNotice] = useState("");
   const managedSelection = managedShiftSelection(window.location.hash);
   const [inspectorOpen, setInspectorOpen] = useState(
     () => window.matchMedia("(min-width: 1201px)").matches,
@@ -103,6 +120,120 @@ export function DesktopApp(): JSX.Element {
   const summary = projects.data?.summaries.find(
     (item) => item.projectId === project?.id,
   );
+  useEffect(() => {
+    if (
+      councilSourceReplacement &&
+      (councilSourceReplacement.scope.projectId !== project?.id ||
+        councilSourceReplacement.scope.workspace !== summary?.workspace)
+    ) {
+      setCouncilSourceReplacement(null);
+      setCouncilDraftNotice(
+        "The project workspace changed. The existing Council draft was kept; choose its source again from the current workspace.",
+      );
+    }
+  }, [councilSourceReplacement, project?.id, summary?.workspace]);
+  const openCouncilSource = (
+    source: ProjectCouncilSourcePrefill,
+    sourceWorkspace: string,
+    focusSource = false,
+  ) => {
+    if (!project || !summary?.workspace || sourceWorkspace !== summary.workspace) {
+      setCouncilDraftNotice(
+        "This source is not from the current served project workspace. The existing Council draft was kept.",
+      );
+      return;
+    }
+    const scope = { projectId: project.id, workspace: summary.workspace };
+    const result = councilDraftCache.current?.prefill(scope, source);
+    if (result?.kind === "confirmation-required") {
+      setCouncilSourceReplacement({
+        scope,
+        pending: result.pending,
+        error: "",
+      });
+      return;
+    }
+    if (result?.kind !== "applied") {
+      setCouncilDraftNotice(
+        result?.reason === "capacity"
+          ? "The 32-draft limit is reached. Existing Council drafts were kept."
+          : result?.reason === "source-too-large"
+            ? "This source is too large for the private Council draft cache. The existing draft was kept."
+            : "A current served project workspace is required. The existing draft was kept.",
+      );
+      return;
+    }
+    setCouncilDraftNotice("");
+    setCouncilDraftGeneration((current) => current + 1);
+    setFocusCouncilSource(focusSource);
+    window.location.hash = desktopHref({
+      projectId: project.id,
+      destination: "reviews",
+    }).slice(1);
+  };
+  const keepCouncilDraft = () => {
+    if (!councilSourceReplacement) return;
+    if (
+      project?.id !== councilSourceReplacement.scope.projectId ||
+      summary?.workspace !== councilSourceReplacement.scope.workspace
+    ) {
+      setCouncilSourceReplacement(null);
+      setCouncilDraftNotice(
+        "The project workspace changed. The existing Council draft was kept.",
+      );
+      return;
+    }
+    setCouncilSourceReplacement(null);
+    setCouncilDraftGeneration((current) => current + 1);
+    setFocusCouncilSource(false);
+    window.location.hash = desktopHref({
+      projectId: councilSourceReplacement.scope.projectId,
+      destination: "reviews",
+    }).slice(1);
+  };
+  const replaceCouncilDraftSource = () => {
+    if (!councilSourceReplacement) return;
+    if (
+      project?.id !== councilSourceReplacement.scope.projectId ||
+      summary?.workspace !== councilSourceReplacement.scope.workspace
+    ) {
+      setCouncilSourceReplacement(null);
+      setCouncilDraftNotice(
+        "The project workspace changed. The existing Council draft was kept.",
+      );
+      return;
+    }
+    const result = councilDraftCache.current?.confirm(
+      councilSourceReplacement.scope,
+      councilSourceReplacement.pending,
+    );
+    if (result?.kind === "stale") {
+      setCouncilSourceReplacement((current) =>
+        current ? { ...current, error: "The draft changed while this confirmation was open. Keep the current draft and review it again." } : current,
+      );
+      return;
+    }
+    if (result?.kind !== "applied") {
+      setCouncilDraftNotice(
+        result?.reason === "capacity"
+          ? "The 32-draft limit is reached. Existing Council drafts were kept."
+          : result?.reason === "source-too-large"
+            ? "This source is too large for the private Council draft cache. The existing draft was kept."
+            : "A current served project workspace is required. The existing draft was kept.",
+      );
+      setCouncilSourceReplacement(null);
+      return;
+    }
+    setCouncilDraftNotice("");
+    const projectId = councilSourceReplacement.scope.projectId;
+    setCouncilSourceReplacement(null);
+    setCouncilDraftGeneration((current) => current + 1);
+    setFocusCouncilSource(false);
+    window.location.hash = desktopHref({
+      projectId,
+      destination: "reviews",
+    }).slice(1);
+  };
   const activityFilters =
     route.destination === "activity"
       ? parseActivityFilters(window.location.hash)
@@ -468,6 +599,33 @@ export function DesktopApp(): JSX.Element {
     "Projects";
   return (
     <>
+      <Dialog
+        open={!!councilSourceReplacement}
+        title="Replace Council draft source?"
+        titleId="af-council-source-replacement-title"
+        onClose={() => setCouncilSourceReplacement(null)}
+        class="af-session-dialog"
+      >
+        {councilSourceReplacement && (
+          <>
+            <p>
+              This project and workspace already have a Council draft with a
+              source. Keep the current draft or replace only its source?
+            </p>
+            <p>Profile and review options stay with the draft.</p>
+            {councilSourceReplacement.error && (
+              <p role="alert">{councilSourceReplacement.error}</p>
+            )}
+            <div class="af-button-row">
+              <Button onClick={keepCouncilDraft}>Keep draft</Button>
+              <Button variant="primary" onClick={replaceCouncilDraftSource}>
+                Replace source
+              </Button>
+            </div>
+          </>
+        )}
+      </Dialog>
+      {councilDraftNotice && <p role="alert">{councilDraftNotice}</p>}
       <DesktopFrame
         providers={providers.data}
         providerStale={providers.stale}
@@ -523,6 +681,13 @@ export function DesktopApp(): JSX.Element {
               page={beads.data}
               sessions={summary?.sessions ?? []}
               sessionsComplete={summary?.sessionsComplete ?? false}
+              onCouncilPrefill={(id) =>
+                beads.data?.workspace &&
+                openCouncilSource(
+                  { sourceType: "bead", source: id },
+                  beads.data.workspace,
+                )
+              }
               onAskKeeper={openKeeper}
               writes={beadWrites}
               onStart={
@@ -536,6 +701,14 @@ export function DesktopApp(): JSX.Element {
               session={summary?.sessions.find(
                 (session) => session.sessionId === route.selection?.id,
               )}
+              onCouncilSummary={() =>
+                summary?.workspace &&
+                openCouncilSource(
+                  { sourceType: "text", source: "" },
+                  summary.workspace,
+                  true,
+                )
+              }
               onAskKeeper={openKeeper}
             />
           ) : route.destination === "keeper" && project ? (
@@ -691,6 +864,13 @@ export function DesktopApp(): JSX.Element {
                 page={beads.data}
                 sessions={summary?.sessions ?? []}
                 sessionsComplete={summary?.sessionsComplete ?? false}
+                onCouncilPrefill={(id) =>
+                  beads.data?.workspace &&
+                  openCouncilSource(
+                    { sourceType: "bead", source: id },
+                    beads.data.workspace,
+                  )
+                }
                 onAskKeeper={openKeeper}
                 writes={beadWrites}
                 onStart={
@@ -766,6 +946,9 @@ export function DesktopApp(): JSX.Element {
             selectedId={
               route.selection?.kind === "bead" ? route.selection.id : null
             }
+            onCouncilPrefill={(id, workspace) =>
+              openCouncilSource({ sourceType: "bead", source: id }, workspace)
+            }
             onSelect={(id) => {
               setInspectorOpen(true);
               window.location.hash = desktopHref({
@@ -777,17 +960,21 @@ export function DesktopApp(): JSX.Element {
           />
         ) : route.destination === "reviews" && project ? (
           <ProjectReviews
-            key={project.id}
+            key={`${project.id}:${summary?.workspace ?? ""}`}
             projectId={project.id}
             workspace={summary?.workspace ?? null}
             archived={project.archived}
             writesAllowed={writesAllowed}
+            draftCache={councilDraftCache.current}
+            draftGeneration={councilDraftGeneration}
+            focusSource={focusCouncilSource}
           />
         ) : route.destination === "runs" && project ? (
           <ProjectRuns
             key={project.id}
             projectId={project.id}
             controller={runs}
+            onCouncilArtifactPrefill={openCouncilSource}
             filters={runFilters.filters}
             filterError={runFilters.error}
             onFilter={(filters) => {

@@ -1,5 +1,5 @@
 import type { JSX } from "preact";
-import { useState } from "preact/hooks";
+import { useEffect, useState } from "preact/hooks";
 import { Button } from "../../../docs/js/ds/Button";
 import { EmptyState } from "../../../docs/js/ds/EmptyState";
 import { Field, Input, Select, Textarea } from "../../../docs/js/ds/Field";
@@ -11,6 +11,12 @@ import {
   projectCouncilSourceChoiceSchema,
 } from "../../../types/project-council";
 import { KeeperMarkdown } from "./KeeperMarkdown";
+import {
+  createProjectCouncilDraftCache,
+  blankProjectCouncilDraft,
+  type ProjectCouncilDraftScope,
+  type ProjectCouncilDraft as Draft,
+} from "./project-council-draft";
 import { useProjectCouncil } from "./use-project-council";
 
 type SourceType = ProjectCouncilReserveRequest["sourceChoice"]["sourceType"];
@@ -23,25 +29,6 @@ function parseSourceType(value: string): SourceType | null {
     ? value
     : null;
 }
-type Draft = {
-  sourceType: SourceType;
-  source: string;
-  profileChoice: string;
-  maxUsd: string;
-  maxBytes: string;
-  redactSecrets: boolean;
-  deepDiscussion: boolean;
-};
-const blankDraft = (): Draft => ({
-  sourceType: "text",
-  source: "",
-  profileChoice: "",
-  maxUsd: "3",
-  maxBytes: "262144",
-  redactSecrets: true,
-  deepDiscussion: false,
-});
-
 export function showCouncilControls(value: string): string {
   const characters = [...value];
   return characters
@@ -704,16 +691,45 @@ export function ProjectReviews({
   workspace,
   archived,
   writesAllowed,
+  draftCache,
+  draftGeneration,
+  focusSource,
 }: {
   projectId: string;
   workspace: string | null;
   archived: boolean;
   writesAllowed: boolean;
+  draftCache: ReturnType<typeof createProjectCouncilDraftCache> | null;
+  draftGeneration: number;
+  focusSource: boolean;
 }): JSX.Element {
   const { owner, view } = useProjectCouncil(projectId, workspace);
-  const [draft, setDraft] = useState(blankDraft);
+  const scope: ProjectCouncilDraftScope | null = workspace
+    ? { projectId, workspace }
+    : null;
+  const [draft, setDraft] = useState<Draft>(() =>
+    scope
+      ? (draftCache?.read(scope)?.draft ?? blankProjectCouncilDraft())
+      : blankProjectCouncilDraft(),
+  );
   const [draftOpen, setDraftOpen] = useState(false);
+  const [draftCacheError, setDraftCacheError] = useState("");
   const [filter, setFilter] = useState("");
+  useEffect(() => {
+    if (!workspace || !draftCache) return;
+    const current = draftCache.read({ projectId, workspace });
+    if (current) {
+      setDraft(current.draft);
+      setDraftOpen(true);
+    } else if (draftGeneration > 0) {
+      setDraft(blankProjectCouncilDraft());
+      setDraftOpen(true);
+    }
+  }, [draftGeneration, draftCache, projectId, workspace]);
+  useEffect(() => {
+    if (focusSource && draftOpen)
+      document.getElementById("council-source")?.focus();
+  }, [draftGeneration, focusSource, draftOpen]);
   const profile =
     view?.profiles.find((choice) => choice.path === draft.profileChoice) ??
     view?.profiles[0];
@@ -748,8 +764,28 @@ export function ProjectReviews({
     ready &&
     source.success &&
     amountsValid;
-  const update = (patch: Partial<Draft>) =>
-    setDraft((current) => ({ ...current, ...patch }));
+  const update = (patch: Partial<Draft>) => {
+    const updated = { ...draft, ...patch };
+    if (!scope || !draftCache) {
+      setDraftCacheError(
+        "A current served project workspace is required before editing a private Council draft.",
+      );
+      return;
+    }
+    const saved = draftCache.write(scope, updated);
+    if (saved.kind !== "saved") {
+      setDraftCacheError(
+        saved.reason === "capacity"
+          ? "The 32-draft limit is reached. Existing drafts are preserved."
+          : saved.reason === "source-too-large"
+            ? "This source is too large for the private in-memory draft cache."
+            : "This project workspace is no longer available for the draft.",
+      );
+      return;
+    }
+    setDraft(saved.draft);
+    setDraftCacheError("");
+  };
   const prepare = () => {
     if (!owner || !profile || !canPrepare || !source.success) return;
     const request: ProjectCouncilReserveRequest = {
@@ -1072,6 +1108,7 @@ export function ProjectReviews({
                     />
                   )}
                 </Field>
+                {draftCacheError && <p role="alert">{draftCacheError}</p>}
                 {sourceError ? <p role="alert">{sourceError}</p> : null}
                 <Field label="Council profile" id="council-profile">
                   <Select

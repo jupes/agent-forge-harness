@@ -2,9 +2,110 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
 import { openSettled } from "../e2e/fixtures";
+import {
+  readState,
+  withStateLock,
+  writeState,
+} from "../e2e/bd-stand-in-state";
+import { BD_STAND_IN_STATE } from "../e2e/servers";
 import { alpha, seedProjects } from "./project-fixtures";
 
-test.beforeEach(seedProjects);
+test.beforeEach(() => {
+  seedProjects();
+  withStateLock(BD_STAND_IN_STATE, () => {
+    const state = readState(BD_STAND_IN_STATE);
+    for (const id of ["alpha-council-first", "alpha-council-second", "alpha-council-third"]) {
+      state[id] = {
+        id,
+        title: `Title ${id}`,
+        issue_type: "task",
+        status: "open",
+        priority: 2,
+        labels: ["project:alpha"],
+        created_at: alpha.createdAt,
+        updated_at: alpha.updatedAt,
+        dependencies: [
+          { issue_id: id, depends_on_id: "alpha-epic", type: "parent-child" },
+        ],
+      };
+    }
+    writeState(BD_STAND_IN_STATE, state);
+  });
+});
+
+test("source entry, Keep draft, and Replace source preserve options without preparing anything", async ({
+  page,
+}) => {
+  const posts: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "POST") posts.push(new URL(request.url()).pathname);
+  });
+  await page.emulateMedia({ reducedMotion: "reduce" });
+  await openSettled(page, `/index.html#/desktop/project/${alpha.id}/beads`);
+  await page.getByRole("button", {
+    name: "Inspect alpha-council-first: Title alpha-council-first",
+  }).click();
+  await page.getByRole("button", { name: "Review bead in Council" }).click();
+  await expect(page).toHaveURL(new RegExp(`/desktop/project/${alpha.id}/reviews$`));
+
+  const sourceType = page.getByLabel("Source type");
+  const source = page.getByLabel("Beads issue ID");
+  await expect(sourceType).toHaveValue("bead");
+  await expect(source).toHaveValue("alpha-council-first");
+  const profile = page.getByLabel("Council profile");
+  await expect(profile).toHaveValue(/.+/);
+  const profileBefore = await profile.inputValue();
+  await page.getByLabel("Maximum estimated cost (USD)").fill("12.50");
+  await page.getByLabel("Maximum prepared bytes").fill("123456");
+  await page
+    .getByLabel("Redact detected secrets; otherwise source preparation rejects them")
+    .uncheck();
+  await page.getByLabel("Allow deep discussion when supported by this profile").check();
+  await sourceType.selectOption("text");
+  await page.getByLabel("Document or question").fill("Keep this explicit draft body.");
+
+  await page.getByRole("link", { name: "Beads", exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`/desktop/project/${alpha.id}/beads$`));
+  await page.getByRole("button", {
+    name: "Inspect alpha-council-second: Title alpha-council-second",
+  }).click();
+  await page.getByRole("button", { name: "Review bead in Council" }).click();
+  const replacementDialog = page.getByRole("dialog", {
+    name: "Replace Council draft source?",
+  });
+  const keep = replacementDialog.getByRole("button", { name: "Keep draft" });
+  const replace = replacementDialog.getByRole("button", { name: "Replace source" });
+  await keep.focus();
+  await page.keyboard.press("Tab");
+  await expect(replace).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(new RegExp(`/desktop/project/${alpha.id}/reviews$`));
+  await expect(page.getByLabel("Source type")).toHaveValue("text");
+  await expect(page.getByLabel("Document or question")).toHaveValue("Keep this explicit draft body.");
+
+  await page.getByRole("link", { name: "Beads", exact: true }).click();
+  await page.getByRole("button", {
+    name: "Inspect alpha-council-third: Title alpha-council-third",
+  }).click();
+  await page.getByRole("button", { name: "Review bead in Council" }).click();
+  await page.getByRole("button", { name: "Replace source" }).click();
+  await expect(page).toHaveURL(new RegExp(`/desktop/project/${alpha.id}/reviews$`));
+  await expect(page.getByLabel("Source type")).toHaveValue("bead");
+  await expect(page.getByLabel("Beads issue ID")).toHaveValue("alpha-council-third");
+  await expect(profile).toHaveValue(profileBefore);
+  await expect(page.getByLabel("Maximum estimated cost (USD)")).toHaveValue("12.50");
+  await expect(page.getByLabel("Maximum prepared bytes")).toHaveValue("123456");
+  await expect(page.getByLabel("Redact detected secrets; otherwise source preparation rejects them")).not.toBeChecked();
+  await expect(page.getByLabel("Allow deep discussion when supported by this profile")).toBeChecked();
+  expect(posts).toEqual([]);
+  expect(new URL(page.url()).search).toBe("");
+  expect(new URL(page.url()).hash).not.toContain("alpha-council-third");
+  const persistedText = await page.evaluate(() =>
+    [window.location.href, ...Object.values(localStorage), ...Object.values(sessionStorage)].join("\n"),
+  );
+  expect(persistedText).not.toContain("Keep this explicit draft body.");
+});
 
 test("project Reviews reserves, convenes, completes, and reloads the verified original and result", async ({
   page,

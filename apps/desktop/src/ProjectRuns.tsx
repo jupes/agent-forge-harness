@@ -4,6 +4,7 @@ import type {
   ProjectRunDetail,
   ProjectRunGate,
 } from "../../../types/project-runs";
+import type { ProjectCouncilSourcePrefill } from "./project-council-draft";
 import { KeeperMarkdown } from "./KeeperMarkdown";
 import { activityHref, emptyActivityFilters } from "./project-activity-model";
 import type { ProjectRunsView } from "./project-runs-client";
@@ -62,12 +63,17 @@ export function RunReadStatus({ view }: { view: ProjectRunsView | null }) {
 export function ProjectRuns({
   projectId,
   controller,
+  onCouncilArtifactPrefill,
   filters,
   filterError,
   onFilter,
 }: {
   projectId: string;
   controller: ProjectRunsController;
+  onCouncilArtifactPrefill?: (
+    source: ProjectCouncilSourcePrefill,
+    workspace: string,
+  ) => void;
   filters: RunFilters | null;
   filterError: string;
   onFilter(filters: RunFilters): void;
@@ -145,9 +151,21 @@ export function ProjectRuns({
                   !view.loading &&
                   !view.error &&
                   !view.detailLoading &&
-                  !view.detailStale
+                  !view.detailStale &&
+                  view.detail.workspace === view.page?.workspace
                 }
                 onOpenArtifact={(kind) => client?.openArtifact(kind)}
+                onCouncilArtifactPrefill={(kind, source) => {
+                  const workspace = view.detail?.workspace;
+                  if (
+                    workspace &&
+                    view.page?.workspace === workspace &&
+                    !view.detailStale &&
+                    !view.detailLoading &&
+                    !view.error
+                  )
+                    onCouncilArtifactPrefill?.(source, workspace);
+                }}
               />
               {view.artifactKind && (
                 <section
@@ -377,11 +395,16 @@ export function RunDetail({
   detail,
   canOpenArtifacts = true,
   onOpenArtifact,
+  onCouncilArtifactPrefill,
 }: {
   projectId: string;
   detail: ProjectRunDetail;
   canOpenArtifacts?: boolean;
   onOpenArtifact?(kind: "research" | "plan" | "ship"): void;
+  onCouncilArtifactPrefill?(
+    kind: "research" | "plan" | "ship",
+    source: ProjectCouncilSourcePrefill,
+  ): void;
 }) {
   const run = detail.run;
   const latest = detail.gateHistory[0] ?? null;
@@ -474,6 +497,42 @@ export function RunDetail({
                     complete.
                   </small>
                 ))}
+              {phase.state === "complete" &&
+                !phase.artifactMissing &&
+                phase.artifact &&
+                (phase.id === "research" ||
+                  phase.id === "plan" ||
+                  phase.id === "ship") &&
+                (() => {
+                  const expected =
+                    phase.id === "research"
+                      ? `plans/research/${run.slug}.md`
+                      : phase.id === "plan"
+                        ? `plans/drafts/${run.slug}.md`
+                        : `reports/${run.slug}-ship.md`;
+                  if (phase.artifact !== expected) return null;
+                  const sourceType = phase.id === "plan" ? "plan" : "file";
+                  const label = phaseName(phase.id).toLowerCase();
+                  return (
+                    <>
+                      <Button
+                        disabled={!canOpenArtifacts}
+                        onClick={() =>
+                          onCouncilArtifactPrefill?.(phase.id, {
+                            sourceType,
+                            source: expected,
+                          })
+                        }
+                      >
+                        Review {label} artifact in Council
+                      </Button>
+                      <small>
+                        This opens a draft from the recorded artifact; it does
+                        not complete or change a checkpoint.
+                      </small>
+                    </>
+                  );
+                })()}
             </li>
           ))}
         </ol>

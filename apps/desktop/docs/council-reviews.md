@@ -40,15 +40,25 @@ local configuration check, not a provider call. The exact saved view shows the
 profile, endpoint snapshot, source material, scope, budget, and request hash
 that were actually persisted.
 
-Source-entry prefill from Beads, queue, runs, and session flows is not yet
-implemented. Drafts currently live only in this mounted view; preserving them
-across navigation and confirming replacement of a different source remain
-required work. Mounting, reloading, or changing projects will not start or
-commit a run.
+Bead details and queue cards can prefill a canonical bead ID in the Council
+draft. Session inspection opens a blank summary for the user to write; it never
+copies private session frames, commands, tools, or transcript text. Run
+inspection can prefill only a verified, completed, present research, plan, or
+ship artifact whose recorded path matches the run. A run artifact action does
+not complete or change a checkpoint. These actions only update a local draft;
+they do not reserve an original, start a review, or contact a provider.
+
+The desktop keeps up to 32 drafts in renderer memory, keyed by the exact project
+and served workspace. Each source is limited to 256 KiB. Drafts are cleared on
+renderer restart and are not stored in a URL, browser storage, or the network.
+Changing a source preserves the profile, cost and byte limits, redaction, and
+deep-discussion options. Replacing a different nonempty source requires an
+explicit confirmation; a stale confirmation leaves the current draft unchanged.
+Capacity and source-size refusals preserve existing drafts.
 
 This consumer is an integration checkpoint, not completion of the Council
-feature. Additional history summary facts, cancellation/failure browser
-journeys, source entry points, and keyboard/native acceptance remain on
+feature. Additional verified history summary facts, cancellation/failure browser
+journeys, and keyboard/native acceptance remain on
 `agent-forge-harness-cla5.7.2`.
 
 ## Recorded browser checkpoint
