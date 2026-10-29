@@ -1,6 +1,7 @@
 import { z } from "zod";
 import type { CouncilServiceJob } from "../scripts/council/service";
 import { parseCouncilProfileJson } from "../scripts/council/types";
+import { parseBeadsIssueId } from "../scripts/run-correlation";
 import {
   type ProjectCouncilReceipt,
   projectCouncilReceiptSchema,
@@ -528,11 +529,16 @@ export const projectCouncilRunReadSchema = z
       });
     if (
       read.verdictCommentPreview !== null &&
-      (receipt.phase !== "completed" || job?.run?.status !== "completed")
+      (receipt.phase !== "completed" ||
+        job?.run?.status !== "completed" ||
+        receipt.metadata.sourceType !== "bead" ||
+        job.run.context.source.kind !== "bead" ||
+        parseBeadsIssueId(job.run.context.source.locator) !==
+          job.run.context.source.locator)
     )
       context.addIssue({
         code: "custom",
-        message: "verdict preview requires a completed result",
+        message: "verdict preview requires a completed Bead result",
       });
     try {
       if (

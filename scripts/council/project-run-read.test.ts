@@ -224,9 +224,10 @@ describe("project Council run read contract", () => {
       provenance,
       receipt,
       job,
-      "review: COUNCIL needs_changes — add boundary validation",
+      null,
     );
     expect(projectCouncilRunReadSchema.safeParse(read).success).toBe(true);
+    expect(read.verdictCommentPreview).toBeNull();
     expect(read.job?.run?.context.evidence?.[0]?.content).toContain(
       "unchecked value",
     );
@@ -239,6 +240,32 @@ describe("project Council run read contract", () => {
     ).toHaveLength(1);
     expect(JSON.stringify(read)).not.toContain("C:\\\\private\\\\council-runs");
     expect(read.job?.run?.actualCostUsd).toBe(0.8);
+  });
+
+  it("publishes a verdict preview only for a completed run bound to a canonical Bead", () => {
+    const beadId = "demo-task";
+    const beadRun: CouncilRun = {
+      ...run,
+      context: {
+        ...run.context,
+        source: { ...run.context.source, kind: "bead", displayName: beadId, locator: beadId },
+      },
+    };
+    const beadJob: CouncilServiceJob = { ...job, run: beadRun };
+    const beadReceipt: ProjectCouncilReceipt = {
+      ...receipt,
+      metadata: { ...metadata, sourceType: "bead", sourceName: beadId },
+    };
+    const preview = `review: COUNCIL ${runId} FAIL — findings 0/1/0/0 (blocker/high/medium/low)`;
+    const read = projectCouncilRunRead(
+      provenance,
+      beadReceipt,
+      beadJob,
+      preview,
+    );
+    expect(read.verdictCommentPreview).toBe(preview);
+    expect(projectCouncilRunReadSchema.safeParse(read).success).toBe(true);
+    expect(() => projectCouncilRunRead(provenance, receipt, job, preview)).toThrow();
   });
 
   it("keeps identity mismatches and unknown event payload fields invalid", () => {

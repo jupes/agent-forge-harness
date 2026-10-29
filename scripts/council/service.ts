@@ -1442,8 +1442,15 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
 
   function councilVerdictCommentPreview(job: CouncilServiceJob): string | null {
     const run = job.run;
-    if (job.status !== "completed" || !run || run.status !== "completed")
+    if (
+      job.status !== "completed" ||
+      !run ||
+      run.status !== "completed" ||
+      run.context.source.kind !== "bead"
+    )
       return null;
+    const beadId = parseBeadsIssueId(run.context.source.locator);
+    if (beadId === null || beadId !== run.context.source.locator) return null;
     const severities = ["blocker", "high", "medium", "low"] as const;
     const counts = severities.map(
       (severity) =>
