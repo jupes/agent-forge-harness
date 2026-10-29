@@ -465,13 +465,12 @@ async function installLostCommitHook(
           finish();
         }
       };
-      let wrapper: typeof window.fetch;
-      window.__restoreCheckpointFetch = async () => {
-        if (window.fetch === wrapper) window.fetch = originalFetch;
-        window.__checkpointCancelCloneReads?.();
-        await window.__checkpointDrainCloneReads?.();
-      };
-      wrapper = async function (input, init) {
+      const wrapper = Object.assign(
+        async function (
+          this: Window,
+          ...args: Parameters<typeof originalFetch>
+        ) {
+          const [input, init] = args;
         const request =
           input instanceof Request && init === undefined
             ? input.clone()
@@ -535,6 +534,13 @@ async function installLostCommitHook(
           throw new TypeError("Failed to fetch");
         }
         return response;
+      },
+        originalFetch,
+      );
+      window.__restoreCheckpointFetch = async () => {
+        if (window.fetch === wrapper) window.fetch = originalFetch;
+        window.__checkpointCancelCloneReads?.();
+        await window.__checkpointDrainCloneReads?.();
       };
       window.fetch = wrapper;
     },
@@ -689,13 +695,12 @@ async function installOriginalReadHold(page: Page, fixture: ReviewFixture) {
         release();
         if (hasHeld) await heldDrained;
       };
-      let wrapper: typeof window.fetch;
-      window.__restoreCheckpointFetch = async () => {
-        if (window.fetch === wrapper) window.fetch = originalFetch;
-        window.__checkpointCancelCloneReads?.();
-        await window.__checkpointDrainCloneReads?.();
-      };
-      wrapper = async function (input, init) {
+      const wrapper = Object.assign(
+        async function (
+          this: Window,
+          ...args: Parameters<typeof originalFetch>
+        ) {
+          const [input, init] = args;
         const request =
           input instanceof Request && init === undefined
             ? input.clone()
@@ -754,6 +759,13 @@ async function installOriginalReadHold(page: Page, fixture: ReviewFixture) {
           finishHeld();
         }
         return response;
+      },
+        originalFetch,
+      );
+      window.__restoreCheckpointFetch = async () => {
+        if (window.fetch === wrapper) window.fetch = originalFetch;
+        window.__checkpointCancelCloneReads?.();
+        await window.__checkpointDrainCloneReads?.();
       };
       window.fetch = wrapper;
     },
@@ -1149,7 +1161,10 @@ test("prepared checkpoint review survives a run switch and reload but needs an e
     })
     .click();
   await expect(
-    page.getByRole("heading", { name: secondRun.feature, exact: true }),
+    page.getByRole("heading", {
+      name: secondRun.feature ?? secondRun.slug,
+      exact: true,
+    }),
   ).toBeVisible();
   await expect(page.locator("body")).not.toContainText(note);
   await page.evaluate(() => window.__releaseCheckpointOriginal?.());
@@ -1159,7 +1174,10 @@ test("prepared checkpoint review survives a run switch and reload but needs an e
   expect(posts.map((post) => post.path)).toEqual([basePath]);
   await reloadSettled(page);
   await expect(
-    page.getByRole("heading", { name: secondRun.feature, exact: true }),
+    page.getByRole("heading", {
+      name: secondRun.feature ?? secondRun.slug,
+      exact: true,
+    }),
   ).toBeVisible();
   await page.getByRole("link", { name: "All runs", exact: true }).click();
   await page
