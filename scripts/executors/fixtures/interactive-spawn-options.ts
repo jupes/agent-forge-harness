@@ -9,7 +9,7 @@ const observer = (_command: string[], options: { windowsHide?: boolean }) => {
 };
 if (
   !Reflect.set(Bun, "spawn", observer) ||
-  Reflect.get(Bun, "spawn") !== observer
+  !Object.is(Reflect.get(Bun, "spawn"), observer)
 )
   throw new Error("The spawn observer could not be installed.");
 
