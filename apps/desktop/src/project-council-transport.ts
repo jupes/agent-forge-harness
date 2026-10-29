@@ -207,7 +207,7 @@ export function createProjectCouncilTransport(): ProjectCouncilTransport {
     async profiles(signal) {
       const response = await operatorRead(
         "/__agent-forge/council-api/profiles",
-        { signal },
+        signal ? { signal } : {},
         { maxBodyBytes: 512 * 1024 },
       );
       return jsonResponse(
@@ -219,7 +219,7 @@ export function createProjectCouncilTransport(): ProjectCouncilTransport {
     async history(projectId, signal) {
       const response = await operatorRead(
         `/__agent-forge${projectPath(projectId)}`,
-        { signal },
+        signal ? { signal } : {},
         { maxBodyBytes: PROJECT_COUNCIL_MAX_METADATA_BYTES },
       );
       return jsonResponse(
@@ -233,7 +233,7 @@ export function createProjectCouncilTransport(): ProjectCouncilTransport {
         throw Error("The saved original ID is invalid.");
       const response = await operatorRead(
         `/__agent-forge${projectPath(projectId)}/${encodeURIComponent(requestId)}`,
-        { signal },
+        signal ? { signal } : {},
         { maxBodyBytes: PROJECT_COUNCIL_MAX_ORIGINAL_READ_BYTES },
       );
       return jsonResponse(
@@ -317,7 +317,7 @@ export function createProjectCouncilTransport(): ProjectCouncilTransport {
         throw Error("The saved original ID is invalid.");
       const response = await operatorRead(
         `/__agent-forge${projectPath(projectId)}/${encodeURIComponent(requestId)}/run`,
-        { signal },
+        signal ? { signal } : {},
         { maxBodyBytes: MAX_PROJECT_COUNCIL_RUN_RESPONSE_BYTES },
       );
       return jsonResponse(

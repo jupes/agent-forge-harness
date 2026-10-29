@@ -318,7 +318,7 @@ function RunReview({
       ) : null}
       {run ? (
         <>
-          {run.chair && receipt.phase === "completed" ? (
+          {run.chair && receipt?.phase === "completed" ? (
             <section
               aria-label="Council recommendation"
               class="af-council-recommendation"
@@ -619,7 +619,7 @@ function RunReview({
               ) : null}
             </section>
           ) : null}
-          {receipt.phase !== "completed" ? (
+          {receipt?.phase !== "completed" ? (
             <p role="status">
               Partial records are shown below. No final recommendation is
               inferred for a failed or cancelled run.
@@ -859,9 +859,7 @@ export function ProjectReviews({
                   if (owner && requestId && intentHash)
                     void owner.retire(requestId, intentHash);
                 }}
-                disabled={
-                  !writesAllowed || archived || view.phase === "retiring"
-                }
+                disabled={!writesAllowed || archived}
               >
                 Retire saved original
               </Button>
@@ -1149,8 +1147,9 @@ export function ProjectReviews({
                   </section>
                 ) : null}
                 <Field label="Maximum estimated cost (USD)" id="council-budget">
-                  <Input
+                  <input
                     id="council-budget"
+                    class="af-input"
                     type="number"
                     min="0"
                     max="1000000"
@@ -1162,8 +1161,9 @@ export function ProjectReviews({
                   />
                 </Field>
                 <Field label="Maximum prepared bytes" id="council-max-bytes">
-                  <Input
+                  <input
                     id="council-max-bytes"
+                    class="af-input"
                     type="number"
                     min="1"
                     max="1048576"

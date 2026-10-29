@@ -28,6 +28,7 @@ import {
 import { providerEndpointSnapshot } from "../council/providers";
 import { parseCouncilProfileJson } from "../council/types";
 import { privateTempDir } from "../hearth/testing";
+import { withQueueLock } from "../scheduler/queue-lock";
 
 const projectId = "project-2b4f8e0a-76f1-4c29-972e-4aee9c216d12";
 const defaultWorkspace = "C:\\workspace";
@@ -322,6 +323,7 @@ async function councilFixture() {
     home,
     workspace,
     projectId: project,
+    withQueueLock,
   });
   const reserved = await store.reservePrepared({
     binding,
