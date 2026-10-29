@@ -20,7 +20,12 @@ let alpha = alphaTemplate;
 let reviewsPath = `/__agent-forge/projects/${alpha.id}/council/reviews`;
 
 type Mode = "success" | "hold" | "fail";
-type CaseId = "council-cancel" | "council-failure" | "council-unknown" | "idle";
+type CaseId =
+  | "council-cancel"
+  | "council-deep-discussion"
+  | "council-failure"
+  | "council-unknown"
+  | "idle";
 type CouncilCall =
   | { kind: "admission"; caseId: CaseId; mode: Mode; profileId: string }
   | {
@@ -77,6 +82,7 @@ function calls(): CouncilCall[] {
           value.mode !== "fail") ||
         !("caseId" in value) ||
         (value.caseId !== "council-cancel" &&
+          value.caseId !== "council-deep-discussion" &&
           value.caseId !== "council-failure" &&
           value.caseId !== "council-unknown" &&
           value.caseId !== "idle")
@@ -170,7 +176,7 @@ function observeRunReads(
   return reads;
 }
 
-async function prepareReview(page: Page) {
+async function prepareReview(page: Page, deepDiscussion = false) {
   await openSettled(page, `/index.html#/desktop/project/${alpha.id}/overview`);
   await page.getByRole("link", { name: "Reviews", exact: true }).click();
   await expect(page).toHaveURL(
@@ -180,6 +186,14 @@ async function prepareReview(page: Page) {
   await page
     .getByLabel("Document or question")
     .fill("A real browser Council recovery witness.");
+  const budget = page.getByLabel("Maximum estimated cost (USD)");
+  const budgetBefore = await budget.inputValue();
+  if (deepDiscussion) {
+    await page
+      .getByLabel("Allow deep discussion when supported by this profile")
+      .check();
+    expect(await budget.inputValue()).toBe(budgetBefore);
+  }
   const reservedResponse = page.waitForResponse((response) => {
     const request = response.request();
     return (
@@ -197,6 +211,7 @@ async function prepareReview(page: Page) {
   if (typeof data !== "object" || data === null || !("metadata" in data))
     throw Error("The actual Council reservation omitted metadata.");
   const metadata = projectCouncilMetadataSchema.parse(data.metadata);
+  if (deepDiscussion) expect(metadata.maxUsd).toBe(Number(budgetBefore));
   await expect(
     page.getByRole("heading", { name: "Exact saved original" }),
   ).toBeVisible();
@@ -267,6 +282,103 @@ test("actual Stop cancels the held Council transport and keeps the same original
     {
       kind: "admission",
       caseId: "council-cancel",
+      mode: "hold",
+      profileId: original.profileId,
+    },
+  ]);
+});
+
+test("actual deep discussion exposes peer round zero before Stop cancels its held revision", async ({
+  page,
+}) => {
+  selectMode("hold", "council-deep-discussion");
+  const posts = observeCouncilPosts(page);
+  const original = await prepareReview(page, true);
+  const runReads = observeRunReads(
+    page,
+    `${reviewsPath}/${original.requestId}/run`,
+  );
+  await page
+    .getByRole("button", { name: "Convene this exact original" })
+    .click();
+  await expect(
+    page.getByRole("status").filter({ hasText: "Verified state: running" }),
+  ).toContainText("Discussing round 1", { timeout: 15_000 });
+
+  let liveRead: ProjectCouncilRunRead | undefined;
+  await expect
+    .poll(async () => {
+      liveRead = (await Promise.all(runReads)).reverse().find((read) =>
+        read.receipt.phase === "running" &&
+        read.job?.events.some((e) => e.type === "stage.started" && e.payload.stage === "revision" && e.payload.round === 1) &&
+        read.job?.discussion?.some((r) => r.stage === "peer" && r.round === 0),
+      );
+      return liveRead !== undefined;
+    })
+    .toBe(true);
+  if (!liveRead?.job?.profile)
+    throw Error("The live deep-discussion profile was not read back.");
+  expect(liveRead.receipt.metadata.maxUsd).toBe(original.maxUsd);
+  expect([...liveRead.job.profile.seats, liveRead.job.profile.chair].map((s) => s.timeoutMs)).toEqual([5000, 5000, 5000, 5000, 5000]);
+  const peer = liveRead.job.discussion?.find(
+    (round) => round.stage === "peer" && round.round === 0,
+  );
+  expect(peer?.records.map((r) => r.seatId).sort()).toEqual(liveRead.job.profile.seats.map((s) => s.id).sort());
+  expect(peer?.records.every((r) => r.status === "completed")).toBe(true);
+  const discussion = page.getByRole("region", { name: "Council discussion" });
+  const roundPicker = discussion.getByLabel("Round");
+  const peerIndex = liveRead.job.discussion?.findIndex(
+    (round) => round.stage === "peer" && round.round === 0,
+  );
+  expect(peerIndex).toBeGreaterThanOrEqual(0);
+  await expect(roundPicker).toBeVisible();
+  await roundPicker.press("Home");
+  for (let index = 0; index < (peerIndex ?? 0); index++)
+    await roundPicker.press("ArrowDown");
+  await expect(roundPicker).toHaveValue(String(peerIndex));
+  await expect(roundPicker.locator("option:checked")).toHaveText("peer 0");
+  await expect(
+    discussion.getByRole("list").first().getByRole("listitem"),
+  ).toHaveCount(peer?.records.length ?? 0);
+  const progress = page.getByRole("region", { name: "Council progress" });
+  await expect(progress.getByRole("listitem")).toHaveCount(5);
+  await expect(
+    progress.getByRole("listitem").filter({ hasText: "chair" }),
+  ).toContainText("Pending");
+
+  await page.getByRole("button", { name: "Stop review", exact: true }).click();
+  await expect(page.getByText("Verified state: cancelled")).toBeVisible({
+    timeout: 15_000,
+  });
+  const cancelled = (await Promise.all(runReads)).find(
+    (read) => read.receipt.phase === "cancelled",
+  );
+  if (!cancelled?.job?.run)
+    throw Error("The stopped revision did not produce a cancelled result.");
+  expect(cancelled.provenance).toMatchObject({ requestId: original.requestId, intentHash: original.intentHash, runId: original.runId, projectId: alpha.id });
+  expect(cancelled.job.run.chair).toBeUndefined();
+  const revisions = cancelled.job.run.records.filter(
+    (record) => record.stage === "revision",
+  );
+  expect(revisions).toHaveLength(liveRead.job.profile.seats.length);
+  const delayedSeat = liveRead.job.profile.seats[0]!.id;
+  expect(revisions.find((r) => r.seatId === delayedSeat)?.status).toBe("cancelled");
+  expect(revisions.filter((r) => r.seatId !== delayedSeat).every((r) => r.status === "completed")).toBe(true);
+  expect(posts.filter((post) => post.path.endsWith("/commit"))).toHaveLength(1);
+  expect(posts.filter((post) => post.path.endsWith("/cancel"))).toHaveLength(1);
+  const requests = callsFor("council-deep-discussion").filter(
+    (call) => call.kind === "request",
+  );
+  expect(requests.every((call) => call.runId === original.runId)).toBe(true);
+  expect(requests.filter((c) => c.stage === "revision" && c.seatId === delayedSeat)).toHaveLength(1);
+  expect(
+    callsFor("council-deep-discussion").filter(
+      (call) => call.kind === "admission",
+    ),
+  ).toEqual([
+    {
+      kind: "admission",
+      caseId: "council-deep-discussion",
       mode: "hold",
       profileId: original.profileId,
     },
