@@ -745,7 +745,16 @@ test("a completed project Council Bead review posts its verdict once and replays
   expect(history.data.items).toMatchObject([
     { requestId, state: "completed", phase: "completed" },
   ]);
-  expect(h.commands.calls).toEqual([]);
+  expect(h.commands.calls).toEqual([
+    {
+      command: ["bd", "--readonly", "show", beadId, "--json"],
+      cwd: h.workspace,
+    },
+    {
+      command: ["bd", "--readonly", "comments", beadId, "--json"],
+      cwd: h.workspace,
+    },
+  ]);
 });
 
 test("project Council commit refuses a scope change before dispatch and keeps the reviewed original", async () => {
