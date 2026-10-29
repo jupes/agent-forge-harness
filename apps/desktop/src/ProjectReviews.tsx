@@ -245,6 +245,42 @@ type VerifiedCouncilResult = {
   job: NonNullable<ProjectCouncilRunRead["job"]>;
 };
 
+type CouncilProgressJob = {
+  status: string;
+  events: readonly { type: string; payload?: { stage?: string; round?: number } }[];
+};
+export function projectCouncilProgressView(
+  receiptPhase: string | null | undefined,
+  job: CouncilProgressJob | null | undefined,
+): { active: boolean; label: string | null; stopPending: boolean } {
+  const active =
+    receiptPhase === "running" &&
+    (job?.status === "running" || job?.status === "cancelling");
+  if (!active || !job) return { active: false, label: null, stopPending: false };
+  if (job.status === "cancelling")
+    return {
+      active: true,
+      label: "Stop requested; waiting for a verified saved result",
+      stopPending: true,
+    };
+  const latest = [...job.events]
+    .reverse()
+    .find((event) => event.type === "stage.started" || event.type === "stage.completed");
+  const label =
+    latest?.type === "stage.started"
+      ? latest.payload?.stage === "independent"
+        ? "Reviewing"
+        : latest.payload?.stage === "peer" || latest.payload?.stage === "revision"
+          ? `Discussing round ${latest.payload.round ?? 1}`
+          : "Synthesizing"
+      : latest?.type === "stage.completed"
+        ? "Checking next stage"
+        : job.events.some((event) => event.type === "run.started")
+          ? "Queued"
+          : "Checking saved progress";
+  return { active, label, stopPending: false };
+}
+
 function verifiedCouncilResult(
   original: ProjectCouncilOriginalRead | null,
   value: ProjectCouncilRunRead | null,
@@ -422,28 +458,10 @@ function RunReview({
   const receipt = value?.receipt;
   const job = value?.job;
   const run = job?.run;
-  const active =
-    receipt?.phase === "running" &&
-    (job?.status === "running" || job?.status === "cancelling");
+  const progress = projectCouncilProgressView(receipt?.phase, job);
+  const active = progress.active;
   const events = job?.events ?? [];
-  const latestStage = [...events]
-    .reverse()
-    .find(
-      (event) =>
-        event.type === "stage.started" || event.type === "stage.completed",
-    );
-  const stageLabel = !active
-    ? null
-    : latestStage?.type === "stage.started"
-      ? latestStage.payload.stage === "independent"
-        ? "Reviewing"
-        : latestStage.payload.stage === "peer" ||
-            latestStage.payload.stage === "revision"
-          ? `Discussing round ${latestStage.payload.round ?? 1}`
-          : "Synthesizing"
-      : latestStage?.type === "stage.completed"
-        ? "Checking next stage"
-        : "Checking saved progress";
+  const stageLabel = progress.label;
   const rounds = run?.discussion ?? [];
   const discussion = rounds[selectedRound];
   const terminal =
@@ -857,12 +875,14 @@ function RunReview({
         {active ? (
           <Button
             onClick={() => onCancel(requestId, intentHash)}
-            disabled={loading || !canCancel}
+            disabled={loading || !canCancel || progress.stopPending}
           >
-            Stop review
+            {progress.stopPending ? "Stop requested" : "Stop review"}
           </Button>
         ) : null}
-        {active && !canCancel ? (
+        {active && progress.stopPending ? (
+          <span>Waiting for a verified saved result before reporting cancellation.</span>
+        ) : active && !canCancel ? (
           <span>
             Read the saved result to confirm the current state before requesting
             another action.
@@ -871,9 +891,9 @@ function RunReview({
       </div>
       {active ? (
         <p role="status">
-          Progress refreshes while this view is open. Stop requests
-          cancellation; the saved result is checked before cancellation is
-          reported.
+          {progress.stopPending
+            ? progress.label
+            : "Progress refreshes while this view is open. Stop requests cancellation; the saved result is checked before cancellation is reported."}
         </p>
       ) : null}
     </section>
