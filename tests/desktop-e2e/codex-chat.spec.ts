@@ -777,19 +777,24 @@ test("a confirmed Claude rate limit can target Gemini ACP Chat", async ({
     })
     .not.toBeNull();
   if (!source) throw Error("Missing the original Claude Chat fixture");
-  expect(source.provider).toBe("claude");
+  const sourceRecord = source;
+  expect(sourceRecord.provider).toBe("claude");
   const outcome = page.locator(".af-session-outcome");
   await expect(outcome.locator("summary")).toHaveText(
     "Provider reported a usage limit",
   );
   codingMode("normal");
   await outcome.locator("summary").click();
-  const sourcePage = await conversationPage(page, alpha.id, source.id);
+  const sourcePage = await conversationPage(
+    page,
+    alpha.id,
+    sourceRecord.id,
+  );
   expect(sourcePage.turns.at(-1)?.phase).toBe("failed");
   expect(
     sourcePage.frames.some(
       (frame) =>
-        frame.turnId === source.requestId &&
+        frame.turnId === sourceRecord.requestId &&
         frame.event.kind === "coding-outcome" &&
         frame.event.provider === "claude" &&
         frame.event.code === "rate-limited",
@@ -959,7 +964,7 @@ test("a confirmed Claude rate limit can target Gemini ACP Chat", async ({
     }),
   ).toHaveValue("chat");
   await expect(
-    geminiComposer.getByText(`About session ${source.id}`),
+    geminiComposer.getByText(`About session ${sourceRecord.id}`),
   ).toBeVisible();
   await expect(
     geminiComposer.getByRole("combobox", {
@@ -1034,7 +1039,7 @@ test("a confirmed Claude rate limit can target Gemini ACP Chat", async ({
   );
   if (!targetRecord) throw Error("Missing the accepted Gemini Chat identity");
   expect(targetRecord.mode).toBe("chat");
-  expect(targetRecord.id).not.toBe(source.id);
+  expect(targetRecord.id).not.toBe(sourceRecord.id);
   const targetPage = await conversationPage(page, alpha.id, targetRecord.id);
   expect(targetPage.binding?.provider).toBe("gemini");
   const initialTarget = targetPage.frames[0];
@@ -1045,7 +1050,7 @@ test("a confirmed Claude rate limit can target Gemini ACP Chat", async ({
     throw Error("The saved user frame has no Gemini Chat launch details");
   expect(initialTarget.event.text).toBe(handoff);
   expect(initialTarget.event.about).toEqual([
-    { kind: "session", id: source.id },
+    { kind: "session", id: sourceRecord.id },
   ]);
   expect(initialTarget.event.geminiChat?.launch.attachments ?? []).toEqual([]);
   const posted = z
@@ -1078,15 +1083,17 @@ test("a confirmed Claude rate limit can target Gemini ACP Chat", async ({
       (item) => item.requestId === acceptedTarget.requestId,
     ),
   ).toEqual(targetIdentity);
-  expect(records().find((item) => item.id === source.id)).toMatchObject({
-    id: source.id,
-    requestId: source.requestId,
-    requestHash: source.requestHash,
+  expect(
+    records().find((item) => item.id === sourceRecord.id),
+  ).toMatchObject({
+    id: sourceRecord.id,
+    requestId: sourceRecord.requestId,
+    requestHash: sourceRecord.requestHash,
     provider: "claude",
     mode: "chat",
   });
   expect(sourcePage.frames).toEqual(
-    (await conversationPage(page, alpha.id, source.id)).frames,
+    (await conversationPage(page, alpha.id, sourceRecord.id)).frames,
   );
 });
 
