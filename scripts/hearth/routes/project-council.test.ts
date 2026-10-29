@@ -539,7 +539,9 @@ test("a committed inert project Council review reads back its frozen result and 
       { headers: h.headers(h.hearth.token) },
     );
     if (response.status !== 200)
-      throw new Error(`The protected Council run read returned ${response.status}.`);
+      throw new Error(
+        `The protected Council run read returned ${response.status}.`,
+      );
     const envelope: unknown = await response.json();
     if (
       typeof envelope !== "object" ||
@@ -550,7 +552,9 @@ test("a committed inert project Council review reads back its frozen result and 
       throw new Error("The protected Council run response has no data.");
     const parsed = projectCouncilRunReadSchema.safeParse(envelope.data);
     if (!parsed.success)
-      throw new Error(`The protected Council run is invalid: ${parsed.error.message}`);
+      throw new Error(
+        `The protected Council run is invalid: ${parsed.error.message}`,
+      );
     return parsed.data;
   };
   const deadline = Date.now() + 20_000;
@@ -570,13 +574,19 @@ test("a committed inert project Council review reads back its frozen result and 
     !completedJob.run ||
     completedJob.run.status !== "completed"
   )
-    throw new Error("The inert Council run did not finish before the deadline.");
+    throw new Error(
+      "The inert Council run did not finish before the deadline.",
+    );
   const run = completedJob.run;
   expect(completed.provenance).toMatchObject({ requestId, intentHash });
   expect(run.context).toEqual(original.context);
   expect(run.profile).toEqual(original.profile);
-  expect(run.events.filter((event) => event.type === "run.started")).toHaveLength(1);
-  expect(run.events.filter((event) => event.type === "run.completed")).toHaveLength(1);
+  expect(
+    run.events.filter((event) => event.type === "run.started"),
+  ).toHaveLength(1);
+  expect(
+    run.events.filter((event) => event.type === "run.completed"),
+  ).toHaveLength(1);
 
   const replay = await fetch(commitPath, {
     method: "POST",
@@ -596,7 +606,9 @@ test("a committed inert project Council review reads back its frozen result and 
     replayEnvelope.data,
   );
   if (!replayReceipt.success || replayReceipt.data.phase !== "completed")
-    throw new Error("The replayed Council commit changed its completed receipt.");
+    throw new Error(
+      "The replayed Council commit changed its completed receipt.",
+    );
   expect(replayReceipt.data.metadata).toMatchObject({ requestId, intentHash });
   const replayedRun = await readRun();
   expect(replayedRun.job?.runId).toBe(completedJob.runId);

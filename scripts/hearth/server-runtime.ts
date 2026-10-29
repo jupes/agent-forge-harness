@@ -54,8 +54,8 @@ import type {
   NativeConsoleChild,
   NativeConsoleLaunchOptions,
 } from "../providers/native-console";
-import { SHIFTS_DIR } from "../scheduler/shift-store";
 import { withQueueLock } from "../scheduler/queue-lock";
+import { SHIFTS_DIR } from "../scheduler/shift-store";
 import type { GitRun } from "../scheduler/worktrees";
 import type { SessionRuntime } from "../sessions/admission";
 import { createClaudeSessionTransport } from "../sessions/claude-transport";

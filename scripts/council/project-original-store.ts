@@ -372,7 +372,9 @@ export function createProjectCouncilOriginalStore(options: {
   ): Promise<T> {
     const { lock } = checkedPaths(options.home, journalHash);
     ensurePrivateHome(options.home);
-    const result = await options.withQueueLock(lock, async () => work(readState()));
+    const result = await options.withQueueLock(lock, async () =>
+      work(readState()),
+    );
     if (!result.ok)
       throw new ConversationError(
         503,
