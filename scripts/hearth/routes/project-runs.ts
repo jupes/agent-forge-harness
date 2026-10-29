@@ -290,7 +290,10 @@ export function createProjectRunRoutes(
       !scope ||
       workspaceKey(snapshot.source.workspace) !== workspaceKey(deps.workspace)
     )
-      throw new RunReadError(409, "This hearth does not serve this project's workspace.");
+      throw new RunReadError(
+        409,
+        "This hearth does not serve this project's workspace.",
+      );
     if (
       snapshot.source.issues === null ||
       scope.epicIds.some(
@@ -315,14 +318,17 @@ export function createProjectRunRoutes(
     const checkouts = new Set(
       [source.checkout, deps.root].map(comparableCheckout),
     );
-    const found = source.read().find(
-      (state) =>
-        state.slug === slug &&
-        !!state.epic &&
-        members.has(state.epic) &&
-        (!state.beadId || members.has(state.beadId)) &&
-        (!state.checkout || checkouts.has(comparableCheckout(state.checkout))),
-    );
+    const found = source
+      .read()
+      .find(
+        (state) =>
+          state.slug === slug &&
+          !!state.epic &&
+          members.has(state.epic) &&
+          (!state.beadId || members.has(state.beadId)) &&
+          (!state.checkout ||
+            checkouts.has(comparableCheckout(state.checkout))),
+      );
     const expected = artifactPath(kind, slug);
     if (
       !found ||
@@ -354,7 +360,10 @@ export function createProjectRunRoutes(
       (currentRun.checkout &&
         !checkouts.has(comparableCheckout(currentRun.checkout)))
     )
-      throw new RunReadError(409, "The project or recorded artifact changed during this read.");
+      throw new RunReadError(
+        409,
+        "The project or recorded artifact changed during this read.",
+      );
     return projectRunArtifactSchema.parse({
       version: 1,
       projectId,
@@ -367,7 +376,9 @@ export function createProjectRunRoutes(
       kind,
       artifact: document.artifact,
       bytes: document.bytes,
-      sha256: createHash("sha256").update(document.content, "utf8").digest("hex"),
+      sha256: createHash("sha256")
+        .update(document.content, "utf8")
+        .digest("hex"),
       content: document.content,
     });
   }

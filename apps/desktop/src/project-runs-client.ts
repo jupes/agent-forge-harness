@@ -40,7 +40,11 @@ export function createProjectRunsClient(deps: {
   workspace: string | null;
   list(signal: AbortSignal): Promise<unknown>;
   detail(slug: string, signal: AbortSignal): Promise<unknown>;
-  artifact?(slug: string, kind: "research" | "plan" | "ship", signal: AbortSignal): Promise<unknown>;
+  artifact?(
+    slug: string,
+    kind: "research" | "plan" | "ship",
+    signal: AbortSignal,
+  ): Promise<unknown>;
   timers?: Timers;
   refetch?: Omit<RefetcherOptions, "run">;
 }) {
@@ -267,7 +271,9 @@ export function createProjectRunsClient(deps: {
         parsed.data.kind !== kind ||
         parsed.data.artifact !== expected
       )
-        throw Error("This artifact does not match the verified project, run and phase.");
+        throw Error(
+          "This artifact does not match the verified project, run and phase.",
+        );
       const digest = await crypto.subtle.digest(
         "SHA-256",
         new TextEncoder().encode(parsed.data.content),

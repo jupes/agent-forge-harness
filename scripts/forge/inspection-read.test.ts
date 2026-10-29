@@ -108,22 +108,16 @@ test("artifact reading derives the canonical path, returns complete UTF-8 and re
   });
   const unsafe = "# unsafe\u0000text";
   writeFileSync(join(root, artifact), unsafe);
-  expect(() => reader.readArtifact("research", "alpha")).toThrow(
-    "Run source",
-  );
+  expect(() => reader.readArtifact("research", "alpha")).toThrow("Run source");
   expect(readFileSync(join(root, artifact), "utf8")).toBe(unsafe);
   writeFileSync(
     join(root, artifact),
     Buffer.alloc(RUN_INSPECTION_LIMITS.fileBytes + 1, 0x61),
   );
-  expect(() => reader.readArtifact("research", "alpha")).toThrow(
-    "Run source",
-  );
+  expect(() => reader.readArtifact("research", "alpha")).toThrow("Run source");
   writeFileSync(join(root, artifact), body);
   linkSync(join(root, artifact), join(root, "plans", "research", "linked.md"));
-  expect(() => reader.readArtifact("research", "alpha")).toThrow(
-    "Run source",
-  );
+  expect(() => reader.readArtifact("research", "alpha")).toThrow("Run source");
 });
 
 test("a captured served checkout cannot be retargeted between construction and reading", () => {

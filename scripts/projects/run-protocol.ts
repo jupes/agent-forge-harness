@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type {
-  ProjectRunDetail,
   ProjectRunArtifact,
+  ProjectRunDetail,
   ProjectRunRow,
   ProjectRunsPage,
 } from "../../types/project-runs";

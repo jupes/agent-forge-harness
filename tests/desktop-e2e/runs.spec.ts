@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import {
-  projectRunArtifactSchema,
   existsSync,
   mkdirSync,
+  projectRunArtifactSchema,
   readFileSync,
   realpathSync,
   unlinkSync,
@@ -295,7 +295,8 @@ test.beforeEach(({ page }) => {
   beforeDispatches = dispatches();
   page.on("request", (request) => {
     if (new URL(request.url()).pathname === "/__agent-forge/stream") streams++;
-    if (new URL(request.url()).pathname.includes("/artifacts/")) artifactReads++;
+    if (new URL(request.url()).pathname.includes("/artifacts/"))
+      artifactReads++;
     if (
       request.method() === "POST" &&
       request.url().includes("/__agent-forge/")
@@ -356,13 +357,16 @@ test("scoped Runs keyboard inspection preserves real phase, review and gate trut
   await expect(readArtifact).toHaveCSS("outline-width", "2px");
   await page.keyboard.press("Enter");
   const artifact = page.getByRole("region", { name: "Verified run artifact" });
-  await expect(artifact.getByText("Verified research", { exact: true })).toBeVisible();
-  await expect(artifact.getByText("<script>must remain text</script>", { exact: true })).toBeVisible();
+  await expect(
+    artifact.getByText("Verified research", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    artifact.getByText("<script>must remain text</script>", { exact: true }),
+  ).toBeVisible();
   await expect(artifact.locator("script, img")).toHaveCount(0);
-  await expect(artifact.getByRole("link", { name: "Safe link" })).toHaveAttribute(
-    "href",
-    "https://example.com/research",
-  );
+  await expect(
+    artifact.getByRole("link", { name: "Safe link" }),
+  ).toHaveAttribute("href", "https://example.com/research");
   expect(artifactReads).toBe(1);
   const shotDir = process.env["SHOT_DIR"];
   if (shotDir) {

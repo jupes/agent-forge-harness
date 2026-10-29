@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
 import { afterEach, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
@@ -235,9 +235,7 @@ test("artifact reads refuse query paths, incomplete or noncanonical references a
   expect((await get(`${url}?path=${encodeURIComponent(full)}`)).status).toBe(
     400,
   );
-  expect((await get(`${path}/alpha-run/artifacts/implement`)).status).toBe(
-    400,
-  );
+  expect((await get(`${path}/alpha-run/artifacts/implement`)).status).toBe(400);
 
   writeFileSync(
     join(directory, "alpha-run.json"),

@@ -1,10 +1,10 @@
 import { useLayoutEffect, useState } from "preact/hooks";
 import { Button } from "../../../docs/js/ds/Button";
-import { KeeperMarkdown } from "./KeeperMarkdown";
 import type {
   ProjectRunDetail,
   ProjectRunGate,
 } from "../../../types/project-runs";
+import { KeeperMarkdown } from "./KeeperMarkdown";
 import { activityHref, emptyActivityFilters } from "./project-activity-model";
 import type { ProjectRunsView } from "./project-runs-client";
 import {
@@ -107,8 +107,8 @@ export function ProjectRuns({
         </div>
       </header>
       <p class="af-runs-note">
-        Inspection only. Run launch, checkpoint actions and correlated
-        sessions are not available here.
+        Inspection only. Run launch, checkpoint actions and correlated sessions
+        are not available here.
       </p>
       <RunReadStatus view={view} />
       {view?.page?.problems.map((problem, index) => (
@@ -463,7 +463,8 @@ export function RunDetail({
                   </>
                 ) : (
                   <small>
-                    Artifact contents are available after this phase is complete.
+                    Artifact contents are available after this phase is
+                    complete.
                   </small>
                 ))}
             </li>
