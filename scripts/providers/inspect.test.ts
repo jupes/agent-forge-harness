@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import { liveChildCount } from "../executors/supervisor";
@@ -29,6 +29,15 @@ async function expectPidExited(pid: number): Promise<void> {
   throw Error(
     `Provider fixture process ${pid} remained alive after inspection.`,
   );
+}
+
+function pidIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 test("fixed version and authentication probes request hidden child windows", async () => {
@@ -169,6 +178,80 @@ test("actual supervised status fixture bounds output and time, strips private fi
     );
     expect(JSON.stringify(report)).not.toContain("private@example.test");
     expect(liveChildCount()).toBe(before);
+  }
+});
+
+test("owned readiness helpers settle before the inspection result returns", async () => {
+  const root = scratch.make("provider-owned-readiness-");
+  const record = join(root, "probes.jsonl");
+  const before = liveChildCount();
+  const inspector = createProviderInspector({
+    root,
+    home: root,
+    environment: {
+      ...process.env,
+      READINESS_FIXTURE: "owned-helper",
+      READINESS_FIXTURE_HELPER_DIR: root,
+      READINESS_FIXTURE_REQUIRE_EOF: "1",
+      READINESS_FIXTURE_RECORD: record,
+    },
+    commands: {
+      claude: [
+        process.execPath,
+        join(import.meta.dir, "fixtures/status-cli.ts"),
+      ],
+    },
+  });
+  try {
+    const report = await inspector.inspect("claude", [
+      "READINESS_FIXTURE",
+      "READINESS_FIXTURE_HELPER_DIR",
+      "READINESS_FIXTURE_REQUIRE_EOF",
+      "READINESS_FIXTURE_RECORD",
+    ]);
+    const ready = join(root, "status.ready");
+    const helperPid = existsSync(ready)
+      ? Number(readFileSync(ready, "utf8"))
+      : 0;
+    const helperAliveAtReturn =
+      Number.isSafeInteger(helperPid) && helperPid > 0
+        ? pidIsAlive(helperPid)
+        : null;
+    expect(report.installation.versionOk).toBe(true);
+    expect(report.installation.version).toBe("2.1.293");
+    expect(report.authentication.mode).toBe("api-key");
+    const probes = readFileSync(record, "utf8")
+      .trim()
+      .split("\n")
+      .map((line) => {
+        try {
+          return visibilityObservation.parse(JSON.parse(line));
+        } catch {
+          throw Error("The readiness fixture wrote an invalid probe record.");
+        }
+      });
+    expect(probes.map(({ args }) => args)).toEqual([
+      ["--version"],
+      ["auth", "status"],
+    ]);
+    expect(existsSync(ready)).toBe(true);
+    expect(Number.isSafeInteger(helperPid) && helperPid > 0).toBe(true);
+    expect(liveChildCount()).toBe(before);
+    expect(helperAliveAtReturn).toBe(false);
+  } finally {
+    const ready = join(root, "status.ready");
+    let pid = 0,
+      releaseNeeded = false;
+    if (existsSync(ready)) {
+      pid = Number(readFileSync(ready, "utf8"));
+      releaseNeeded = Number.isSafeInteger(pid) && pid > 0 && pidIsAlive(pid);
+    }
+    writeFileSync(join(root, "status.release"), "release");
+    if (Number.isSafeInteger(pid) && pid > 0) {
+      await expectPidExited(pid);
+      if (releaseNeeded)
+        expect(existsSync(join(root, "status.exited"))).toBe(true);
+    }
   }
 });
 
