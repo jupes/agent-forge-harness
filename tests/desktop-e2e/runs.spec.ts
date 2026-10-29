@@ -349,7 +349,12 @@ test("scoped Runs keyboard inspection preserves real phase, review and gate trut
       state,
     );
   expect(artifactReads).toBe(0);
-  await detail.getByRole("button", { name: "Read research artifact" }).click();
+  const readArtifact = detail.getByRole("button", {
+    name: "Read research artifact",
+  });
+  await readArtifact.focus();
+  await expect(readArtifact).toHaveCSS("outline-width", "2px");
+  await page.keyboard.press("Enter");
   const artifact = page.getByRole("region", { name: "Verified run artifact" });
   await expect(artifact.getByText("Verified research", { exact: true })).toBeVisible();
   await expect(artifact.getByText("<script>must remain text</script>", { exact: true })).toBeVisible();
@@ -359,6 +364,14 @@ test("scoped Runs keyboard inspection preserves real phase, review and gate trut
     "https://example.com/research",
   );
   expect(artifactReads).toBe(1);
+  const shotDir = process.env["SHOT_DIR"];
+  if (shotDir) {
+    mkdirSync(shotDir, { recursive: true });
+    await artifact.screenshot({
+      path: join(shotDir, "runs-artifact.png"),
+      animations: "disabled",
+    });
+  }
   await expect(detail.getByText("Gate failed", { exact: true })).toBeVisible();
   const checks = detail.getByRole("table", { name: "Gate checks" }).first();
   await expect(
