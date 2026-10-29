@@ -298,7 +298,9 @@ export function createProjectCheckpointReviewOwner(
     const savedTarget = { ...target };
     const deadline = setTimeout(() => abort.abort(), 6_000);
     const ownsMetadataRead = () =>
-      metadataAbort === abort && !abort.signal.aborted && current(generation, operation);
+      metadataAbort === abort &&
+      !abort.signal.aborted &&
+      current(generation, operation);
     try {
       const result = projectCheckpointReviewMetadataReadSchema.parse(
         await transport.metadata(scopeOf(savedTarget), abort.signal),

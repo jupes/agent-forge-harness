@@ -361,12 +361,16 @@ describe("checkpoint review owner", () => {
     let resolveOld!: (value: ReturnType<typeof metadataRead>) => void;
     let resolveNew!: (value: ReturnType<typeof metadataRead>) => void;
     let calls = 0;
-    const oldResult = new Promise<ReturnType<typeof metadataRead>>((resolve) => {
-      resolveOld = resolve;
-    });
-    const newResult = new Promise<ReturnType<typeof metadataRead>>((resolve) => {
-      resolveNew = resolve;
-    });
+    const oldResult = new Promise<ReturnType<typeof metadataRead>>(
+      (resolve) => {
+        resolveOld = resolve;
+      },
+    );
+    const newResult = new Promise<ReturnType<typeof metadataRead>>(
+      (resolve) => {
+        resolveNew = resolve;
+      },
+    );
     const fake = fakeTransport({
       metadata() {
         calls++;
