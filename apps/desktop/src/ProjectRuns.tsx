@@ -4,9 +4,9 @@ import type {
   ProjectRunDetail,
   ProjectRunGate,
 } from "../../../types/project-runs";
-import type { ProjectCouncilSourcePrefill } from "./project-council-draft";
 import { KeeperMarkdown } from "./KeeperMarkdown";
 import { activityHref, emptyActivityFilters } from "./project-activity-model";
+import type { ProjectCouncilSourcePrefill } from "./project-council-draft";
 import type { ProjectRunsView } from "./project-runs-client";
 import {
   emptyRunFilters,
@@ -155,7 +155,7 @@ export function ProjectRuns({
                   view.detail.workspace === view.page?.workspace
                 }
                 onOpenArtifact={(kind) => client?.openArtifact(kind)}
-                onCouncilArtifactPrefill={(kind, source) => {
+                onCouncilArtifactPrefill={(_kind, source) => {
                   const workspace = view.detail?.workspace;
                   if (
                     workspace &&

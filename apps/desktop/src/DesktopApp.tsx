@@ -45,14 +45,14 @@ import {
   emptyActivityFilters,
   parseActivityFilters,
 } from "./project-activity-model";
-import type { VerifiedProjectCreate } from "./project-create-owner";
-import { parseRunFilters, runsHref } from "./project-runs-model";
 import {
   createProjectCouncilDraftCache,
   type PendingProjectCouncilSourceReplacement,
   type ProjectCouncilDraftScope,
   type ProjectCouncilSourcePrefill,
 } from "./project-council-draft";
+import type { VerifiedProjectCreate } from "./project-create-owner";
+import { parseRunFilters, runsHref } from "./project-runs-model";
 import { ClaudeSessionComposer, SessionComposer } from "./SessionComposer";
 import { SessionConversation } from "./SessionConversation";
 import { Smiths } from "./Smiths";
@@ -87,7 +87,9 @@ export function DesktopApp(): JSX.Element {
   const [finishBrief, setFinishBrief] = useState<VerifiedProjectCreate | null>(
     null,
   );
-  const councilDraftCache = useRef<ReturnType<typeof createProjectCouncilDraftCache> | null>(null);
+  const councilDraftCache = useRef<ReturnType<
+    typeof createProjectCouncilDraftCache
+  > | null>(null);
   if (!councilDraftCache.current)
     councilDraftCache.current = createProjectCouncilDraftCache();
   const [councilSourceReplacement, setCouncilSourceReplacement] = useState<{
@@ -137,7 +139,11 @@ export function DesktopApp(): JSX.Element {
     sourceWorkspace: string,
     focusSource = false,
   ) => {
-    if (!project || !summary?.workspace || sourceWorkspace !== summary.workspace) {
+    if (
+      !project ||
+      !summary?.workspace ||
+      sourceWorkspace !== summary.workspace
+    ) {
       setCouncilDraftNotice(
         "This source is not from the current served project workspace. The existing Council draft was kept.",
       );
@@ -209,7 +215,13 @@ export function DesktopApp(): JSX.Element {
     );
     if (result?.kind === "stale") {
       setCouncilSourceReplacement((current) =>
-        current ? { ...current, error: "The draft changed while this confirmation was open. Keep the current draft and review it again." } : current,
+        current
+          ? {
+              ...current,
+              error:
+                "The draft changed while this confirmation was open. Keep the current draft and review it again.",
+            }
+          : current,
       );
       return;
     }

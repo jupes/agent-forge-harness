@@ -491,7 +491,9 @@ export function BeadPanel({
         <Button href={beadHref(projectId, id, true)}>Open full-width</Button>
         <Button
           onClick={() => onCouncilPrefill?.(bead.id)}
-          disabled={!onCouncilPrefill || !!error || loading || !bead.detailsLoaded}
+          disabled={
+            !onCouncilPrefill || !!error || loading || !bead.detailsLoaded
+          }
         >
           Review bead in Council
         </Button>

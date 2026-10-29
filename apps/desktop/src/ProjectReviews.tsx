@@ -12,10 +12,10 @@ import {
 } from "../../../types/project-council";
 import { KeeperMarkdown } from "./KeeperMarkdown";
 import {
-  createProjectCouncilDraftCache,
   blankProjectCouncilDraft,
-  type ProjectCouncilDraftScope,
+  type createProjectCouncilDraftCache,
   type ProjectCouncilDraft as Draft,
+  type ProjectCouncilDraftScope,
 } from "./project-council-draft";
 import { useProjectCouncil } from "./use-project-council";
 
