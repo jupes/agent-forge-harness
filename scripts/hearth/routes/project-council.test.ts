@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, realpathSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import {
   projectCouncilHistorySchema,
@@ -753,16 +753,16 @@ test("a completed project Council Bead review posts its verdict once and replays
   expect(
     h.commands.calls.map(({ command, cwd }) => ({
       command,
-      cwd: workspaceKey(cwd),
+      cwd: workspaceKey(realpathSync.native(cwd)),
     })),
   ).toEqual([
     {
       command: ["bd", "--readonly", "show", beadId, "--json"],
-      cwd: h.workspace,
+      cwd: workspaceKey(realpathSync.native(h.workspace)),
     },
     {
       command: ["bd", "--readonly", "comments", beadId, "--json"],
-      cwd: h.workspace,
+      cwd: workspaceKey(realpathSync.native(h.workspace)),
     },
   ]);
 });
