@@ -285,9 +285,10 @@ export function DesktopApp(): JSX.Element {
     if (beadId) sessions.editComposer(project.id, { beadId });
     setComposerOpen(true);
   };
-  const continueWithCodexChat = (
+  const continueToChat = (
     handoffSummary: string,
     sourceSessionId: string,
+    target: "codex" | "gemini",
   ) => {
     if (
       !project ||
@@ -334,8 +335,9 @@ export function DesktopApp(): JSX.Element {
       })
     )
       return false;
-    sessions.chooseComposerProvider(project.id, "codex");
-    sessions.chooseCodexMode(project.id, "chat");
+    sessions.chooseComposerProvider(project.id, target);
+    if (target === "gemini") sessions.chooseGeminiMode(project.id, "chat");
+    else sessions.chooseCodexMode(project.id, "chat");
     sessions.editComposer(project.id, {
       prompt: handoffSummary.trim(),
       attachments: [],
@@ -837,7 +839,7 @@ export function DesktopApp(): JSX.Element {
             archived={project.archived}
             library={sessionLibrary}
             workspace={summary?.workspace ?? null}
-            onContinueWithCodexChat={continueWithCodexChat}
+            onContinueToChat={continueToChat}
           />
         ) : route.destination === "sessions" && project && selectedSession ? (
           <ObservedSessionDetail
