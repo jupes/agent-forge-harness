@@ -655,7 +655,9 @@ async function exercise(
             throw new Error("Protected result failed the shared run schema.");
           captured.runs.push(run.data);
         }
-      })().catch((error) => captured.errors.push(cleanError(error))),
+      })().catch((error) => {
+        captured.errors.push(cleanError(error));
+      }),
     );
   });
   const nav = page.getByRole("navigation", { name: "Project destinations" });
@@ -769,7 +771,7 @@ async function exercise(
     run.provenance.runId !== original.original.runId ||
     run.job.run.context.contentHash !== original.original.context.contentHash ||
     run.job.run.context.source.kind !== "stdin" ||
-    run.job.run.context.evidence[0]?.content !== body ||
+    run.job.run.context.evidence?.[0]?.content !== body ||
     run.job.run.actualCostUsd !== 0 ||
     [...run.job.run.profile.seats, run.job.run.profile.chair].some(
       (seat) => seat.provider !== "fake",
