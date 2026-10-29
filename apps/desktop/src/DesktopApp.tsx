@@ -297,6 +297,7 @@ export function DesktopApp(): JSX.Element {
   );
   const beads = useBeads(
     route.destination === "beads" ||
+      route.destination === "runs" ||
       (route.destination === "workbench" && route.selection?.kind === "bead")
       ? (project?.id ?? null)
       : null,
@@ -999,8 +1000,15 @@ export function DesktopApp(): JSX.Element {
           <ProjectRuns
             key={project.id}
             projectId={project.id}
+            workspace={summary?.workspace ?? null}
             controller={runs}
+            beads={{
+              page: beads.data,
+              loading: beads.loading,
+              error: beads.error,
+            }}
             onCouncilArtifactPrefill={openCouncilSource}
+            onCouncilBeadPrefill={openCouncilSource}
             filters={runFilters.filters}
             filterError={runFilters.error}
             onFilter={(filters) => {

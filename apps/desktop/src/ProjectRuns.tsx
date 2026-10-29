@@ -1,11 +1,17 @@
 import { useLayoutEffect, useState } from "preact/hooks";
 import { Button } from "../../../docs/js/ds/Button";
+import type { IssueStatus } from "../../../types/beads";
 import type {
   ProjectRunDetail,
   ProjectRunGate,
 } from "../../../types/project-runs";
+import type { ProjectBeadsPage } from "../../../types/project-beads";
 import { KeeperMarkdown } from "./KeeperMarkdown";
 import { activityHref, emptyActivityFilters } from "./project-activity-model";
+import {
+  deriveProjectRunCheckpoints,
+  type ProjectRunCheckpointResult,
+} from "./project-run-checkpoints";
 import type { ProjectCouncilSourcePrefill } from "./project-council-draft";
 import type { ProjectRunsView } from "./project-runs-client";
 import {
@@ -62,15 +68,24 @@ export function RunReadStatus({ view }: { view: ProjectRunsView | null }) {
 
 export function ProjectRuns({
   projectId,
+  workspace,
   controller,
+  beads,
   onCouncilArtifactPrefill,
+  onCouncilBeadPrefill,
   filters,
   filterError,
   onFilter,
 }: {
   projectId: string;
+  workspace: string | null;
   controller: ProjectRunsController;
+  beads: { page: ProjectBeadsPage | null; loading: boolean; error: string | null };
   onCouncilArtifactPrefill?: (
+    source: ProjectCouncilSourcePrefill,
+    workspace: string,
+  ) => void;
+  onCouncilBeadPrefill?: (
     source: ProjectCouncilSourcePrefill,
     workspace: string,
   ) => void;
@@ -79,6 +94,12 @@ export function ProjectRuns({
   onFilter(filters: RunFilters): void;
 }) {
   const { view, client } = controller;
+  const checkpointResult = deriveProjectRunCheckpoints({
+    projectId,
+    workspace,
+    runs: view,
+    beads,
+  });
   const filterKey = JSON.stringify(filters);
   const [draft, setDraft] = useState(filters ?? emptyRunFilters());
   useLayoutEffect(() => {
@@ -113,7 +134,7 @@ export function ProjectRuns({
         </div>
       </header>
       <p class="af-runs-note">
-        Inspection only. Run launch, checkpoint actions and correlated sessions
+        Inspection only. Run launch, checkpoint decisions and correlated sessions
         are not available here.
       </p>
       <RunReadStatus view={view} />
@@ -147,6 +168,17 @@ export function ProjectRuns({
               <RunDetail
                 projectId={projectId}
                 detail={view.detail}
+                checkpointResult={checkpointResult}
+                onCouncilBeadPrefill={(id) => {
+                  if (
+                    checkpointResult.kind === "ready" &&
+                    checkpointResult.summary.inProgressIds.includes(id)
+                  )
+                    onCouncilBeadPrefill?.(
+                      { sourceType: "bead", source: id },
+                      checkpointResult.workspace,
+                    );
+                }}
                 canOpenArtifacts={
                   !view.loading &&
                   !view.error &&
@@ -390,15 +422,81 @@ export function RunGateChecks({ gate }: { gate: ProjectRunGate | null }) {
   );
 }
 
+const checkpointStatus = (status: IssueStatus) =>
+  status === "in_progress"
+    ? "In progress"
+    : status === "closed"
+      ? "Closed"
+      : status === "blocked"
+        ? "Blocked"
+        : "Open";
+
+function RunCheckpoints({
+  result,
+  onCouncilPrefill,
+}: {
+  result: ProjectRunCheckpointResult;
+  onCouncilPrefill?(id: string): void;
+}) {
+  return (
+    <section aria-label="Run checkpoints">
+      <h4>Checkpoints</h4>
+      {result.kind === "loading" ? (
+        <p role="status">Loading the current project checkpoints…</p>
+      ) : result.kind === "unavailable" ? (
+        <p role="alert">Checkpoints are unavailable: {result.reason}</p>
+      ) : result.kind === "no-epic" ? (
+        <p>This run has no Beads epic recorded.</p>
+      ) : result.summary.state === "empty" ? (
+        <p>No checkpoint tasks are recorded under {result.epicId}.</p>
+      ) : (
+        <>
+          <ol class="af-checkpoints">
+            {result.summary.checkpoints.map((checkpoint) => (
+              <li key={checkpoint.id} data-checkpoint-id={checkpoint.id}>
+                <strong>{checkpoint.title}</strong> · <code>{checkpoint.id}</code>
+                {checkpoint.groupTitle ? ` · ${checkpoint.groupTitle}` : ""}
+                <span> · {checkpointStatus(checkpoint.status)}</span>
+                {checkpoint.blockedBy.length > 0 && (
+                  <span> · waiting on {checkpoint.blockedBy.join(", ")}</span>
+                )}
+                {result.summary.inProgressIds.includes(checkpoint.id) && (
+                  <p>
+                    <Button onClick={() => onCouncilPrefill?.(checkpoint.id)}>
+                      Send {checkpoint.id} to Council
+                    </Button>
+                    <small>
+                      Opens a source draft only; it does not convene Council or
+                      change checkpoint status.
+                    </small>
+                  </p>
+                )}
+              </li>
+            ))}
+          </ol>
+          {result.summary.state === "waiting" &&
+            result.summary.waitingOn.length > 0 && (
+              <p>Waiting on {result.summary.waitingOn.join(", ")}.</p>
+            )}
+        </>
+      )}
+    </section>
+  );
+}
+
 export function RunDetail({
   projectId,
   detail,
+  checkpointResult = { kind: "loading" },
+  onCouncilBeadPrefill,
   canOpenArtifacts = true,
   onOpenArtifact,
   onCouncilArtifactPrefill,
 }: {
   projectId: string;
   detail: ProjectRunDetail;
+  checkpointResult?: ProjectRunCheckpointResult;
+  onCouncilBeadPrefill?(id: string): void;
   canOpenArtifacts?: boolean;
   onOpenArtifact?(kind: "research" | "plan" | "ship"): void;
   onCouncilArtifactPrefill?(
@@ -538,6 +636,10 @@ export function RunDetail({
           ))}
         </ol>
       </section>
+      <RunCheckpoints
+        result={checkpointResult}
+        onCouncilPrefill={onCouncilBeadPrefill}
+      />
       <section aria-label="Run gate history">
         <h4>Gate history</h4>
         <p class="af-runs-note">
