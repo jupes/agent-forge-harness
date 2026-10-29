@@ -85,12 +85,19 @@ else if (
 ) {
   console.log('{"authMethod":"none","loggedIn":false}');
   process.exitCode = 1;
-} else
-  console.log(
-    JSON.stringify({
+} else {
+  const report = JSON.stringify({
       authMethod: "api_key",
       loggedIn: true,
       apiKey: "fixture-secret-never-forward",
       email: "private@example.test",
-    }),
-  );
+  });
+  if (
+    process.env["READINESS_FIXTURE"] === "owned-helper" &&
+    helperKey === "status"
+  ) {
+    await Bun.stdout.write(`${report}\n`);
+    process.exit(0);
+  }
+  console.log(report);
+}
