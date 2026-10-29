@@ -1,18 +1,18 @@
 import { useLayoutEffect, useState } from "preact/hooks";
 import { Button } from "../../../docs/js/ds/Button";
 import type { IssueStatus } from "../../../types/beads";
+import type { ProjectBeadsPage } from "../../../types/project-beads";
 import type {
   ProjectRunDetail,
   ProjectRunGate,
 } from "../../../types/project-runs";
-import type { ProjectBeadsPage } from "../../../types/project-beads";
 import { KeeperMarkdown } from "./KeeperMarkdown";
 import { activityHref, emptyActivityFilters } from "./project-activity-model";
+import type { ProjectCouncilSourcePrefill } from "./project-council-draft";
 import {
   deriveProjectRunCheckpoints,
   type ProjectRunCheckpointResult,
 } from "./project-run-checkpoints";
-import type { ProjectCouncilSourcePrefill } from "./project-council-draft";
 import type { ProjectRunsView } from "./project-runs-client";
 import {
   emptyRunFilters,
@@ -80,7 +80,11 @@ export function ProjectRuns({
   projectId: string;
   workspace: string | null;
   controller: ProjectRunsController;
-  beads: { page: ProjectBeadsPage | null; loading: boolean; error: string | null };
+  beads: {
+    page: ProjectBeadsPage | null;
+    loading: boolean;
+    error: string | null;
+  };
   onCouncilArtifactPrefill?: (
     source: ProjectCouncilSourcePrefill,
     workspace: string,
@@ -134,8 +138,8 @@ export function ProjectRuns({
         </div>
       </header>
       <p class="af-runs-note">
-        Inspection only. Run launch, checkpoint decisions and correlated sessions
-        are not available here.
+        Inspection only. Run launch, checkpoint decisions and correlated
+        sessions are not available here.
       </p>
       <RunReadStatus view={view} />
       {view?.page?.problems.map((problem, index) => (
@@ -454,7 +458,8 @@ function RunCheckpoints({
           <ol class="af-checkpoints">
             {result.summary.checkpoints.map((checkpoint) => (
               <li key={checkpoint.id} data-checkpoint-id={checkpoint.id}>
-                <strong>{checkpoint.title}</strong> · <code>{checkpoint.id}</code>
+                <strong>{checkpoint.title}</strong> ·{" "}
+                <code>{checkpoint.id}</code>
                 {checkpoint.groupTitle ? ` · ${checkpoint.groupTitle}` : ""}
                 <span> · {checkpointStatus(checkpoint.status)}</span>
                 {checkpoint.blockedBy.length > 0 && (

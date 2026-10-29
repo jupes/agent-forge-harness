@@ -13,15 +13,11 @@ import { runsHref } from "../../apps/desktop/src/project-runs-model";
 import type { ForgeState } from "../../scripts/forge/phases";
 import { OPERATOR_HEADER } from "../../scripts/hearth/paths";
 import {
-  readState,
-  withStateLock,
-  writeState,
-} from "../e2e/bd-stand-in-state";
-import {
   projectRunArtifactSchema,
   projectRunDetailSchema,
   projectRunsPageSchema,
 } from "../../scripts/projects/run-protocol";
+import { readState, withStateLock, writeState } from "../e2e/bd-stand-in-state";
 import { openSettled, reloadSettled } from "../e2e/fixtures";
 import { pageToken } from "../e2e/launch-link";
 import { BD_STAND_IN_STATE, HEARTH_HOME } from "../e2e/servers";
@@ -335,7 +331,9 @@ function checkpoint(
     labels: ["project:alpha"],
     dependencies: [
       { issue_id: id, depends_on_id: parent, type: "parent-child" },
-      ...(blocker ? [{ issue_id: id, depends_on_id: blocker, type: "blocks" }] : []),
+      ...(blocker
+        ? [{ issue_id: id, depends_on_id: blocker, type: "blocks" }]
+        : []),
     ],
   };
 }
@@ -346,10 +344,31 @@ test("selected run shows its scoped checkpoints and prefills only the current be
   withStateLock(BD_STAND_IN_STATE, () => {
     const state = readState(BD_STAND_IN_STATE);
     Object.assign(state, {
-      "alpha-feature": checkpoint("alpha-feature", "feature", "open", "alpha-epic"),
-      "alpha-active": checkpoint("alpha-active", "task", "in_progress", "alpha-feature"),
-      "alpha-second": checkpoint("alpha-second", "task", "in_progress", "alpha-feature"),
-      "alpha-next": checkpoint("alpha-next", "task", "open", "alpha-feature", "alpha-active"),
+      "alpha-feature": checkpoint(
+        "alpha-feature",
+        "feature",
+        "open",
+        "alpha-epic",
+      ),
+      "alpha-active": checkpoint(
+        "alpha-active",
+        "task",
+        "in_progress",
+        "alpha-feature",
+      ),
+      "alpha-second": checkpoint(
+        "alpha-second",
+        "task",
+        "in_progress",
+        "alpha-feature",
+      ),
+      "alpha-next": checkpoint(
+        "alpha-next",
+        "task",
+        "open",
+        "alpha-feature",
+        "alpha-active",
+      ),
     });
     writeState(BD_STAND_IN_STATE, state);
   });
@@ -366,7 +385,9 @@ test("selected run shows its scoped checkpoints and prefills only the current be
   await expect(
     waiting.getByRole("button", { name: "Send alpha-next to Council" }),
   ).toHaveCount(0);
-  await active.getByRole("button", { name: "Send alpha-active to Council" }).click();
+  await active
+    .getByRole("button", { name: "Send alpha-active to Council" })
+    .click();
   await expect(page).toHaveURL(/\/reviews$/);
   await expect(page.getByLabel("Source type")).toHaveValue("bead");
   await expect(page.getByLabel("Beads issue ID")).toHaveValue("alpha-active");
@@ -377,7 +398,9 @@ test("selected run shows its scoped checkpoints and prefills only the current be
   });
   await expect(secondAction).toBeEnabled();
   await secondAction.click();
-  const replace = page.getByRole("dialog", { name: "Replace Council draft source?" });
+  const replace = page.getByRole("dialog", {
+    name: "Replace Council draft source?",
+  });
   await expect(replace).toBeVisible();
   await replace.getByRole("button", { name: "Replace source" }).click();
   await expect(page).toHaveURL(/\/reviews$/);
