@@ -32,15 +32,19 @@ import {
 import { freshLaunchLink, NoLaunchLink } from "./dashboard-open";
 import { lockPath, sessionsPath, tokenPath } from "./home";
 import {
+  MAX_BOUNDED_HOME_FILE_BYTES,
   ADMINISTRATORS_SID,
   checkHomeInBun,
   ensurePrivateHome,
   homeWriteProblem,
   posixWriteFinding,
+  readHomeFile,
+  readHomeFileBounded,
   windowsWriteFinding,
 } from "./home-guard";
 import { createSessionStore, requestLaunch } from "./launch";
 import { type HearthLock, readLock } from "./lock";
+import { writeOwnerOnly } from "./token";
 import type { Exchange } from "./loopback";
 import { createHearthMcpServer } from "./mcp";
 import { HEALTH_ROUTE, OPERATOR_HEADER } from "./paths";
@@ -77,6 +81,23 @@ afterEach(async () => {
     await new Promise<void>((done) => server.close(() => done()));
   for (const dir of temps.splice(0))
     rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
+});
+
+test("bounded private home reads honor an explicit 32 MiB ceiling without widening ordinary home reads", () => {
+  const home = temp("bounded-home-read");
+  const file = join(home, "council-originals.json");
+  const body = "x".repeat(65_537);
+  writeOwnerOnly(file, body);
+
+  expect(readHomeFile(home, file).problem).not.toBeNull();
+  expect(readHomeFileBounded(home, file, MAX_BOUNDED_HOME_FILE_BYTES)).toEqual({
+    problem: null,
+    text: body,
+  });
+  expect(
+    readHomeFileBounded(home, file, MAX_BOUNDED_HOME_FILE_BYTES + 1).problem,
+  ).not.toBeNull();
+  expect(readHomeFileBounded(home, file, 0).problem).not.toBeNull();
 });
 
 // ── What the check counts (pure; runs on every platform) ───────────────────

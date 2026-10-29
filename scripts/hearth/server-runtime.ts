@@ -333,6 +333,7 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
 
   const service = createCouncilService({
     workspaceRoot: root,
+    reviewHome: home,
     harnessRoot: options.harnessRoot ?? root,
     environment:
       options.environment ??

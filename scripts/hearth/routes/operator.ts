@@ -75,6 +75,7 @@ import { projectBeadWriteRoutes } from "./project-bead-writes";
 import { projectBeadsRoute } from "./project-beads";
 import { projectOverviewRoute } from "./project-overview";
 import { createProjectRunRoutes } from "./project-runs";
+import { createProjectCouncilRoutes } from "./project-council";
 import { projectShiftOptionsRoute, projectShiftRoutes } from "./project-shifts";
 import {
   projectSnapshotReader,
@@ -438,6 +439,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     deps,
     projectSnapshotReader(deps.projectHome, deps, { membershipOnly: true }),
   );
+  const projectCouncil = createProjectCouncilRoutes(deps, createProjectSnapshot);
   const scopedShifts = projectShiftRoutes(deps, projectSnapshot);
   const keeperShiftStarts = createKeeperShiftStartRoutes(
     deps.projectHome,
@@ -611,6 +613,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
   return {
     routes: [
       ...reads,
+      ...projectCouncil.routes,
       stream,
       conversations.events,
       ownedSessions.events,
