@@ -361,7 +361,10 @@ test.skipIf(
     expect(child && process.kill(child.pid, 0)).toBe(true);
     try {
       await h.hearth.close();
-      expect(await child?.done).toMatchObject({ stopped: true, timedOut: false });
+      expect(await child?.done).toMatchObject({
+        stopped: true,
+        timedOut: false,
+      });
       const handoffDir = join(
         h.home,
         "session-terminal-handoffs",

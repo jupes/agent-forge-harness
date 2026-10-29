@@ -701,10 +701,7 @@ test.describe("Windows terminal handoff UI", () => {
       await review.screenshot({
         path: join(shotDir, "terminal-handoff-review.png"),
         animations: "disabled",
-        mask: [
-          review.locator("dl dd").nth(0),
-          review.locator("dl dd").nth(1),
-        ],
+        mask: [review.locator("dl dd").nth(0), review.locator("dl dd").nth(1)],
       });
     }
     await openTerminal.click();
