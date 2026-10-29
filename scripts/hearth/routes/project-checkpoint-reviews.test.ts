@@ -1,10 +1,20 @@
 import { afterEach, expect, test } from "bun:test";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { hashText } from "../../hash-text";
+import {
+  type ProjectCheckpointReviewOriginal,
+  projectCheckpointReviewCommentText,
+  projectCheckpointReviewIntentJson,
+  projectCheckpointReviewOriginalSchema,
+} from "../../../types/project-checkpoint-reviews";
+import { createProjectCheckpointReviewStore } from "../../forge/project-checkpoint-review-store";
 import { createProjectStore, projectCatalogPath } from "../../projects/store";
+import { withQueueLock } from "../../scheduler/queue-lock";
 import { startTestHearth, type TestHearth } from "../testing";
 import { writeOwnerOnly } from "../token";
+import { createProjectCheckpointReviewRoutes } from "./project-checkpoint-reviews";
 
 const open: TestHearth[] = [];
 afterEach(async () => {
@@ -127,6 +137,7 @@ async function fixture(addAnswer: "record" | "uncertain" = "record") {
     h,
     path,
     readPath,
+    projectId: project.id,
     beadId,
     comments,
     run,
@@ -146,6 +157,77 @@ async function post(h: TestHearth, path: string, body: unknown) {
     body: JSON.stringify(body),
   });
 }
+
+test("metadata and protected-original reads refuse a project scope changed during storage", async () => {
+  const { h, projectId, beadId, run } = await fixture();
+  const scope = {
+    projectId,
+    workspacePath: h.workspace,
+    runSlug: "alpha-run",
+    beadId,
+  };
+  const requestId = randomUUID().toLowerCase();
+  const value: ProjectCheckpointReviewOriginal = {
+    schemaVersion: 1,
+    requestId,
+    binding: {
+      ...scope,
+      checkout: h.root,
+      epicId: "alpha-epic",
+      runUpdatedAt: run.updatedAt,
+      catalogRevision: 1,
+      scopeHash: "a".repeat(64),
+    },
+    decision: "request-changes",
+    note: "Private scope-fence sentinel.",
+    createdAt: run.updatedAt,
+    commentText: "",
+    intentHash: "0".repeat(64),
+  };
+  value.commentText = projectCheckpointReviewCommentText(value);
+  value.intentHash = createHash("sha256")
+    .update(projectCheckpointReviewIntentJson(value), "utf8")
+    .digest("hex");
+  const original = projectCheckpointReviewOriginalSchema.parse(value);
+  const store = createProjectCheckpointReviewStore({
+    home: h.home,
+    withQueueLock,
+  });
+  await store.prepare(original, 901);
+
+  let scopeReads = 0;
+  const routes = createProjectCheckpointReviewRoutes({
+    home: h.home,
+    workspace: h.workspace,
+    appendEvent: () => ({ ok: true, id: 902, ulid: "fixture-read-event" }),
+    queueLock: withQueueLock,
+    runBd: async () => ({ status: 1, stdout: "", stderr: "unused" }),
+    resolveAuthority: async () => original.binding,
+    readScope: () => {
+      scopeReads++;
+      return scopeReads % 2 === 1
+        ? scope
+        : { ...scope, workspacePath: `${scope.workspacePath}-changed` };
+    },
+  });
+  try {
+    for (const route of routes.reads) {
+      scopeReads = 0;
+      const checked = route.validate({
+        params: { id: projectId, slug: scope.runSlug, beadId },
+        query: new URLSearchParams(),
+        headers: {},
+        body: null,
+      });
+      if (!checked.ok) throw new Error("The read route fixture did not validate.");
+      const reply = await route.read(checked.value);
+      expect(reply.status).toBe(409);
+      expect(JSON.stringify(reply)).not.toContain(value.note);
+    }
+  } finally {
+    await routes.close();
+  }
+});
 
 test("checkpoint review prepare is metadata-only; explicit commit records one exact comment and readback", async () => {
   const { h, path, readPath, beadId, comments, run } = await fixture();

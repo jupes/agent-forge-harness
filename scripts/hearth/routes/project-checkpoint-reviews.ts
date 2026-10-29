@@ -123,6 +123,24 @@ export function createProjectCheckpointReviewRoutes(options: {
   };
   const scopeFor = (projectId: string, runSlug: string, beadId: string) =>
     options.readScope(projectId, runSlug, beadId);
+  async function readInCurrentScope<T>(
+    scope: ProjectCheckpointReviewScope,
+    work: (scope: ProjectCheckpointReviewScope) => Promise<T>,
+  ): Promise<T> {
+    const result = await work(scope);
+    const current = scopeFor(scope.projectId, scope.runSlug, scope.beadId);
+    if (
+      current.projectId !== scope.projectId ||
+      current.workspacePath !== scope.workspacePath ||
+      current.runSlug !== scope.runSlug ||
+      current.beadId !== scope.beadId
+    )
+      throw new ConversationError(
+        409,
+        "The project workspace changed while checkpoint review data was being read. Refresh and try again.",
+      );
+    return result;
+  }
   const metadata: ReadRoute<{
     projectId: string;
     runSlug: string;
@@ -134,7 +152,12 @@ export function createProjectCheckpointReviewRoutes(options: {
     path: "/projects/:id/runs/:slug/checkpoints/:beadId/reviews",
     validate: location,
     read: ({ projectId, runSlug, beadId }) =>
-      answer(() => service.metadata(scopeFor(projectId, runSlug, beadId))),
+      answer(() =>
+        readInCurrentScope(
+          scopeFor(projectId, runSlug, beadId),
+          (scope) => service.metadata(scope),
+        ),
+      ),
   };
   const original: ReadRoute<{
     projectId: string;
@@ -159,9 +182,9 @@ export function createProjectCheckpointReviewRoutes(options: {
     },
     read: ({ projectId, runSlug, beadId, requestId }) =>
       answer(async () => {
-        const saved = await service.original(
+        const saved = await readInCurrentScope(
           scopeFor(projectId, runSlug, beadId),
-          requestId,
+          (scope) => service.original(scope, requestId),
         );
         if (!saved)
           throw new ConversationError(
