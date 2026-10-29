@@ -410,6 +410,7 @@ if (mode === "stubborn") {
     stdin: "ignore",
     stdout: "ignore",
     stderr: "ignore",
+    windowsHide: true,
     detached: process.platform === "win32",
   });
   writeFileSync(join(process.cwd(), "grandchild-" + id + ".json"), JSON.stringify({ pid: run.pid }));
@@ -424,6 +425,68 @@ for (;;) {
   }
 }
 `;
+
+test("superviseShift requests a hidden owned target", () => {
+  const cwd = scratch(),
+    spec: ShiftLaunchSpec = {
+      argv: [join(cwd, "missing-inert-shift.exe")],
+      cwd,
+      env: { PATH: process.env["PATH"] ?? "" },
+    },
+    originalSpawn = Bun.spawn,
+    sentinel = new Error("Observed the owned Shift launch."),
+    observed: unknown[][] = [];
+  let guardCalls = 0,
+    caught: unknown;
+  const observer = (...args: unknown[]) => {
+    observed.push(args);
+    throw sentinel;
+  };
+
+  try {
+    if (
+      !Reflect.set(Bun, "spawn", observer) ||
+      !Object.is(Reflect.get(Bun, "spawn"), observer)
+    )
+      throw new Error("The Shift spawn observer could not be installed.");
+    try {
+      superviseShift(spec, () => {
+        guardCalls += 1;
+        return { release: () => undefined };
+      });
+    } catch (error) {
+      caught = error;
+    }
+  } finally {
+    if (
+      !Reflect.set(Bun, "spawn", originalSpawn) ||
+      !Object.is(Reflect.get(Bun, "spawn"), originalSpawn)
+    )
+      throw new Error("The Shift spawn observer could not be restored.");
+  }
+
+  expect(caught).toBe(sentinel);
+  expect(guardCalls).toBe(0);
+  expect(observed).toHaveLength(1);
+  expect(observed[0]).toHaveLength(2);
+  expect(observed[0]?.[0]).toBe(spec.argv);
+  const options = observed[0]?.[1];
+  expect(options).toMatchObject({
+    cwd: spec.cwd,
+    env: spec.env,
+    stdin: "ignore",
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const option = (name: string): unknown =>
+    typeof options === "object" && options !== null && Reflect.has(options, name)
+      ? Reflect.get(options, name)
+      : undefined;
+  expect(option("detached")).toBe(
+    process.platform === "win32" ? undefined : true,
+  );
+  expect(option("windowsHide")).toBe(true);
+});
 
 describe("an explicitly stopped Shift child", () => {
   test("generic Shift Stop waits for its retained native tree settlement", async () => {
@@ -572,6 +635,7 @@ const orphan = Bun.spawn([process.execPath, "-e", "setTimeout(() => {}, 1200)"],
   stdin: "ignore",
   stdout: "ignore",
   stderr: "ignore",
+  windowsHide: true,
   detached: process.platform === "win32",
 });
 writeFileSync(${JSON.stringify(childRecord)}, JSON.stringify({ pid: orphan.pid }));
@@ -823,6 +887,7 @@ const h = await startTestHearth({
 closeOnSignal(h.hearth);
 const supervised = extra === "supervised"
   ? supervise({
+      windowsHide: true,
       command: [process.execPath, ${JSON.stringify(join(import.meta.dir, "..", "executors", "fixtures", "fake-cli.ts"))}, "--fake-mode", "hang"],
       cwd: h.root,
       env: { PATH: process.env.PATH ?? "" },
@@ -878,6 +943,7 @@ async function hearthProcess(
   writeFileSync(standIn, STAND_IN);
   writeFileSync(main, HEARTH_MAIN(standIn));
   const proc = Bun.spawn([process.execPath, main, signal, guard, extra], {
+    windowsHide: true,
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
@@ -1049,6 +1115,7 @@ describe("a hearth that ends without closing", () => {
       const shift = await hearth.startShift("stubborn");
       if (process.platform === "win32")
         Bun.spawnSync(["taskkill", "/F", "/PID", String(hearth.proc.pid)], {
+          windowsHide: true,
           stdout: "ignore",
           stderr: "ignore",
         });
