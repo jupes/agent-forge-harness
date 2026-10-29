@@ -6,6 +6,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -2676,7 +2677,7 @@ const ACTIONS: Record<string, ActionFixture> = {
     happened: async (h, answer) => {
       expect(answer).toMatchObject({
         name: "fixture-folder",
-        path: h.configHome,
+        path: realpathSync.native(h.configHome),
         source: "folder",
       });
       expect(

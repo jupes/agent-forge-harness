@@ -75,6 +75,7 @@ test("missing readback does not create repository operation storage", () => {
 
 test("folder selection is durably recoverable and registration uses only its selected identity", async () => {
   const paths = fixture();
+  const canonicalExternal = realpathSync.native(paths.external);
   let pickerCalls = 0;
   const service = createRepositoryOnboarding({
     ...paths,
@@ -92,14 +93,14 @@ test("folder selection is durably recoverable and registration uses only its sel
     },
   });
   const selected = await service.selectFolder(id);
-  expect(selected).toMatchObject({ state: "selected", path: paths.external });
+  expect(selected).toMatchObject({ state: "selected", path: canonicalExternal });
   expect(await service.selectFolder(id)).toEqual(selected);
   expect(pickerCalls).toBe(1);
   expect(service.getSelection(id)).toEqual(selected);
   const registered = await service.registerSelection(id, "external-repo");
   expect(registered).toMatchObject({
     name: "external-repo",
-    path: paths.external,
+    path: canonicalExternal,
     originalRequestId: id,
     source: "folder",
   });

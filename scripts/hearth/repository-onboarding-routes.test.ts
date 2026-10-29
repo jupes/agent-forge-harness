@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   projectCreateOptionsSchema,
@@ -91,6 +91,7 @@ test("protected repository onboarding recovers exact records and updates checked
   initGit(h.workspace, fixtureGitEnv);
   initGit(external, fixtureGitEnv);
   initGit(bareRepository, fixtureGitEnv, true);
+  const canonicalExternal = realpathSync.native(external);
   mkdirSync(join(emptyMarker, ".git"), { recursive: true });
   h.bd.issues.set(EPIC_ID, {
     id: EPIC_ID,
@@ -209,7 +210,9 @@ test("protected repository onboarding recovers exact records and updates checked
   });
   if (selectedOutcome.path === null)
     throw new Error("The selected folder path was not saved.");
-  expect(workspaceKey(selectedOutcome.path)).toBe(workspaceKey(external));
+  expect(workspaceKey(selectedOutcome.path)).toBe(
+    workspaceKey(canonicalExternal),
+  );
   expect(
     (await json(await read(`/projects/repository-selections/${REGISTER_ID}`)))
       .data,
@@ -232,7 +235,9 @@ test("protected repository onboarding recovers exact records and updates checked
     source: "folder",
     originalRequestId: REGISTER_ID,
   });
-  expect(workspaceKey(registeredFolder.path)).toBe(workspaceKey(external));
+  expect(workspaceKey(registeredFolder.path)).toBe(
+    workspaceKey(canonicalExternal),
+  );
   expect(
     (await json(await read(`/projects/repository-selections/${REGISTER_ID}`)))
       .data,
@@ -256,7 +261,7 @@ test("protected repository onboarding recovers exact records and updates checked
     expect.arrayContaining([
       expect.objectContaining({
         name: "selected-folder",
-        key: workspaceKey(external),
+        key: workspaceKey(canonicalExternal),
         served: false,
       }),
     ]),
@@ -328,7 +333,7 @@ test("protected repository onboarding recovers exact records and updates checked
     expect.arrayContaining([
       expect.objectContaining({
         name: "selected-folder",
-        key: workspaceKey(external),
+        key: workspaceKey(canonicalExternal),
         served: false,
       }),
       expect.objectContaining({
