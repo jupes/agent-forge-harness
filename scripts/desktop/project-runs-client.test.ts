@@ -293,6 +293,8 @@ test("artifact reads require a completed canonical phase, verify the full body a
     artifact: "plans/drafts/alpha-run.md",
     artifactMissing: false,
   };
+  planDetail.run.completedCount = 2;
+  planDetail.run.status = { kind: "phase", phase: "implement" };
   let currentDetail = trusted;
   const crossKind = createProjectRunsClient({
     projectId,
