@@ -3,6 +3,7 @@ import { ownedSessionControls } from "../../apps/desktop/src/session-controls";
 import type { PreparedCodexChat } from "../../types/codex-chat";
 import type { CodexChatOwnedRecord } from "../../types/codex-owned-chat";
 import type { ConversationPage } from "../../types/conversation";
+import type { GeminiChatOwnedRecord } from "../../types/gemini-owned-chat";
 import type { GeminiOwnedSessionRecord } from "../../types/gemini-owned-task";
 import type { PreparedGeminiTask } from "../../types/gemini-task-runtime";
 import { createConversationStore } from "../conversations/store";
@@ -353,6 +354,37 @@ test("controls offer terminal handoff only for an eligible Claude Chat and prese
     controllable: true,
     turns: page.turns.map((turn) => ({ ...turn, phase: "running" as const })),
   };
+  const codexChatRecord: CodexChatOwnedRecord = {
+    id: record.id,
+    requestId: record.requestId,
+    projectId: record.projectId,
+    requestHash: record.requestHash,
+    createdAt: record.createdAt,
+    provider: "codex",
+    mode: "chat",
+    smith: record.smith,
+    requestedModel: record.requestedModel,
+    requestedEffort: record.requestedEffort,
+    repository: record.repository,
+    workspace: record.workspace,
+    worktree: record.worktree,
+  };
+  const geminiChatRecord: GeminiChatOwnedRecord = {
+    id: record.id,
+    requestId: record.requestId,
+    projectId: record.projectId,
+    requestHash: record.requestHash,
+    createdAt: record.createdAt,
+    provider: "gemini",
+    route: "gemini-cli",
+    mode: "chat",
+    smith: record.smith,
+    requestedModel: null,
+    requestedEffort: null,
+    repository: record.repository,
+    workspace: record.workspace,
+    worktree: record.worktree,
+  };
   const refusals: Array<{
     changed: Partial<Parameters<typeof ownedSessionControls>[0]>;
     reason: string;
@@ -362,11 +394,11 @@ test("controls offer terminal handoff only for an eligible Claude Chat and prese
       reason: "Only a completed Claude Chat",
     },
     {
-      changed: { record: { ...record, provider: "codex" as const } },
+      changed: { record: codexChatRecord },
       reason: "only for a verified Claude Chat",
     },
     {
-      changed: { record: { ...record, provider: "gemini" as const } },
+      changed: { record: geminiChatRecord },
       reason: "only for a verified Claude Chat",
     },
     {
