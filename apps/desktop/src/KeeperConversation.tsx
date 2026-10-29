@@ -1,5 +1,5 @@
 import type { JSX } from "preact";
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { Button } from "../../../docs/js/ds/Button";
 import { Icon } from "../../../docs/js/ds/Icon";
 import { parseKeeperProposalMessage } from "../../../scripts/keeper/proposal-protocol";
@@ -226,6 +226,11 @@ export function KeeperConversation({
   const feed = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLTextAreaElement>(null);
   const pickerRegion = useRef<HTMLDivElement>(null);
+  const [completionCaret, setCompletionCaret] = useState<{
+    projectId: string;
+    draft: string;
+    position: number;
+  } | null>(null);
   const [caret, setCaret] = useState(0);
   const [editing, setEditing] = useState(false);
   const [pickerDismissed, setPickerDismissed] = useState(false);
@@ -233,29 +238,44 @@ export function KeeperConversation({
   const choose = (value: string, object?: ConversationObject) => {
     const picker = keeperPicker(state.draft, caret);
     if (!picker) return;
-    if (object) void client.attach(project.id, object);
     // Kind buttons change the active mention token; actual choices finish it.
     const switchingKind = value.endsWith(":");
     const next = insertKeeperSuggestion(state.draft, picker, value);
-    client.draft(
-      project.id,
-      switchingKind
-        ? next.text.slice(0, next.caret - 1) + next.text.slice(next.caret)
-        : next.text,
-    );
-    setCaret(switchingKind ? next.caret - 1 : next.caret);
-    setPickerDismissed(!switchingKind);
-    requestAnimationFrame(() => {
-      input.current?.focus();
-      const position = switchingKind ? next.caret - 1 : next.caret;
-      input.current?.setSelectionRange(position, position);
+    const nextDraft = switchingKind
+      ? next.text.slice(0, next.caret - 1) + next.text.slice(next.caret)
+      : next.text;
+    const nextCaret = switchingKind ? next.caret - 1 : next.caret;
+    setCompletionCaret({
+      projectId: project.id,
+      draft: nextDraft,
+      position: nextCaret,
     });
+    setCaret(nextCaret);
+    setPickerDismissed(!switchingKind);
+    if (object) void client.attach(project.id, object);
+    client.draft(project.id, nextDraft);
   };
   const follow = useRef(true);
   const [away, setAway] = useState(false);
   const [copyNotice, setCopyNotice] = useState("");
   const [showRecovery, setShowRecovery] = useState(false);
   const lastSeq = state.page?.frames.at(-1)?.seq ?? 0;
+  useLayoutEffect(() => {
+    const intent = completionCaret;
+    if (!intent) return;
+    setCompletionCaret(null);
+    const textarea = input.current;
+    if (
+      intent.projectId !== project.id ||
+      intent.draft !== state.draft ||
+      !active ||
+      !textarea ||
+      textarea.value !== intent.draft
+    )
+      return;
+    textarea.focus();
+    textarea.setSelectionRange(intent.position, intent.position);
+  }, [active, completionCaret, project.id, state.draft]);
   useEffect(() => {
     if (!compact) return;
     // The parent dialog enters the top layer after mounting its content.

@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import { OPERATOR_HEADER } from "../../scripts/hearth/paths";
 import { openSettled } from "../e2e/fixtures";
 import { HEARTH_HOME } from "../e2e/servers";
@@ -668,22 +668,34 @@ test("a late mention index cannot replace a newer object kind's suggestions", as
   ).toHaveCount(0);
 });
 
-test("mentions and harness commands edit the shared draft with keyboard suggestions, empty results and no automatic starts", async ({
-  page,
-}) => {
+async function exerciseKeeperMentionCommandDraft(
+  page: Page,
+  surface: "full" | "drawer",
+) {
+  const inDrawer = surface === "drawer";
   const before = starts();
-  await openSettled(page, `/index.html#/desktop/project/${alpha.id}/overview`);
-  await page.getByRole("button", { name: "Ask Keeper", exact: true }).click();
-  const drawer = page.getByRole("dialog", {
-    name: "Forge Keeper · Alpha",
-    exact: true,
+  await openSettled(
+    page,
+    `/index.html#/desktop/project/${alpha.id}/${inDrawer ? "overview" : "keeper"}`,
+  );
+  if (inDrawer)
+    await page.getByRole("button", { name: "Ask Keeper", exact: true }).click();
+  const conversation = inDrawer
+    ? page.getByRole("dialog", { name: "Forge Keeper · Alpha", exact: true })
+    : page.getByRole("region", {
+        name: "Keeper conversation for Alpha",
+        exact: true,
+      });
+  const input = conversation.getByRole("textbox", {
+    name: "Message the Keeper",
   });
-  const input = drawer.getByRole("textbox", { name: "Message the Keeper" });
   await expect(
-    drawer.getByRole("group", { name: "About context for Alpha" }),
+    conversation.getByRole("group", { name: "About context for Alpha" }),
   ).toHaveCount(0);
   await input.fill("Explain @bead:alpha");
-  const mentions = drawer.getByRole("group", { name: "Mention suggestions" });
+  const mentions = conversation.getByRole("group", {
+    name: "Mention suggestions",
+  });
   await expect(
     mentions.getByRole("button", {
       name: "bead alpha-epic Alpha epic",
@@ -705,8 +717,8 @@ test("mentions and harness commands edit the shared draft with keyboard suggesti
   let probeInstalled = false;
   try {
     try {
-  await mentionOption.evaluate((button) => {
-    const textarea = document.getElementById("keeper-message-drawer");
+    await mentionOption.evaluate((button, surface) => {
+    const textarea = document.getElementById(`keeper-message-${surface}`);
     if (!(textarea instanceof HTMLTextAreaElement))
       throw new Error("Keeper textarea was not available for the caret probe.");
     const target = window as KeeperCaretProbeWindow;
@@ -852,12 +864,12 @@ test("mentions and harness commands edit the shared draft with keyboard suggesti
       }
       throw error;
     }
-  });
+  }, surface);
       probeInstalled = true;
       await page.keyboard.press("Enter");
       await expect(input).toHaveValue("Explain @bead:alpha-epic ");
       await expect(
-        drawer
+        conversation
           .getByRole("group", { name: "About context for Alpha" })
           .getByRole("link", { name: "bead alpha-epic", exact: true }),
       ).toBeVisible();
@@ -952,7 +964,9 @@ test("mentions and harness commands edit the shared draft with keyboard suggesti
     cancelAnimationFrame: true,
     probe: true,
   });
-  const commands = drawer.getByRole("group", { name: "Harness commands" });
+  const commands = conversation.getByRole("group", {
+    name: "Harness commands",
+  });
   await commands
     .getByRole("button", { name: "/forge-plan", exact: false })
     .click();
@@ -964,11 +978,20 @@ test("mentions and harness commands edit the shared draft with keyboard suggesti
   );
   await input.press("Escape");
   await expect(mentions).not.toBeVisible();
-  await expect(drawer).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(drawer).not.toBeVisible();
+  await expect(conversation).toBeVisible();
+  if (inDrawer) {
+    await page.keyboard.press("Escape");
+    await expect(conversation).not.toBeVisible();
+  }
   expect(starts()).toBe(before);
-});
+}
+
+for (const surface of ["full", "drawer"] as const) {
+  test(
+    `mentions and harness commands edit the shared draft with keyboard suggestions, empty results and no automatic starts (${surface})`,
+    async ({ page }) => exerciseKeeperMentionCommandDraft(page, surface),
+  );
+}
 
 test("a foreign selected bead holds Send until removed, while the session inspector attaches its actual scoped session", async ({
   page,
