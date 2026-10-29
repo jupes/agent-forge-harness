@@ -192,7 +192,7 @@ function observeRunReads(
             const message =
               error instanceof Error ? error.message : String(error);
             if (
-              /^(?:response\.json: )?Protocol error \(Network\.getResponseBody\): No data found for (?:the )?resource with given identifier$/.test(
+              /^(?:response\.json: )?Protocol error \(Network\.getResponseBody\): No data found for (?:the )?resource with given identifier(?:\nResponse body is not available for a response that was navigated away from\. Read response\.body\(\) before triggering any navigation\.)?$/.test(
                 message,
               )
             )
