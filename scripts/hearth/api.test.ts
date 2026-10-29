@@ -3492,11 +3492,7 @@ const ACTIONS: Record<string, ActionFixture> = {
         projectId: FIXTURE_PROJECT_ID,
         withQueueLock,
       });
-      await store.retire(
-        FIXTURE_PROJECT_ID,
-        seed.requestId,
-        seed.intentHash,
-      );
+      await store.retire(FIXTURE_PROJECT_ID, seed.requestId, seed.intentHash);
     },
     happened: async (h, answer) => {
       const seed = await seedProjectCouncilOriginal(
