@@ -42,9 +42,7 @@ const commentIdSchema = z
   .string()
   .min(1)
   .max(256)
-  .refine(
-    (value) => value === value.trim() && !hasControlCharacters(value),
-  );
+  .refine((value) => value === value.trim() && !hasControlCharacters(value));
 const timestampSchema = z.iso.datetime();
 const decisionSchema = z.enum(["approve", "request-changes"]);
 const normalizedNoteSchema = z
