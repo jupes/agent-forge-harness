@@ -1,5 +1,5 @@
 import type { JSX } from "preact";
-import { useEffect, useMemo, useState } from "preact/hooks";
+import { useEffect, useMemo, useRef, useState } from "preact/hooks";
 import { Button } from "../../../docs/js/ds/Button";
 import { EmptyState } from "../../../docs/js/ds/EmptyState";
 import { Field, Input, Select, Textarea } from "../../../docs/js/ds/Field";
@@ -935,6 +935,7 @@ export function ProjectReviews({
   focusSource: boolean;
 }): JSX.Element {
   const { owner, view } = useProjectCouncil(projectId, workspace);
+  const focusedDraftGeneration = useRef<number | null>(null);
   const scope: ProjectCouncilDraftScope | null = workspace
     ? { projectId, workspace }
     : null;
@@ -963,9 +964,20 @@ export function ProjectReviews({
     }
   }, [draftGeneration, draftCache, projectId, workspace]);
   useEffect(() => {
-    if (focusSource && draftOpen)
-      document.getElementById("council-source")?.focus();
-  }, [draftGeneration, focusSource, draftOpen]);
+    if (
+      !focusSource ||
+      !draftOpen ||
+      !view ||
+      view.phase === "loading" ||
+      focusedDraftGeneration.current === draftGeneration
+    )
+      return;
+    const sourceInput = document.getElementById("council-source");
+    if (sourceInput) {
+      sourceInput.focus();
+      focusedDraftGeneration.current = draftGeneration;
+    }
+  }, [draftGeneration, focusSource, draftOpen, view?.phase]);
   const profile =
     view?.profiles.find((choice) => choice.path === draft.profileChoice) ??
     view?.profiles[0];

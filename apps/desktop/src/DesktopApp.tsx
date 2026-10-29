@@ -95,6 +95,7 @@ export function DesktopApp(): JSX.Element {
   const [councilSourceReplacement, setCouncilSourceReplacement] = useState<{
     scope: ProjectCouncilDraftScope;
     pending: PendingProjectCouncilSourceReplacement;
+    focusSource: boolean;
     error: string;
   } | null>(null);
   const [councilDraftGeneration, setCouncilDraftGeneration] = useState(0);
@@ -155,6 +156,7 @@ export function DesktopApp(): JSX.Element {
       setCouncilSourceReplacement({
         scope,
         pending: result.pending,
+        focusSource,
         error: "",
       });
       return;
@@ -242,7 +244,7 @@ export function DesktopApp(): JSX.Element {
     const projectId = councilSourceReplacement.scope.projectId;
     setCouncilSourceReplacement(null);
     setCouncilDraftGeneration((current) => current + 1);
-    setFocusCouncilSource(false);
+    setFocusCouncilSource(councilSourceReplacement.focusSource);
     window.location.hash = desktopHref({
       projectId,
       destination: "reviews",
@@ -853,14 +855,15 @@ export function DesktopApp(): JSX.Element {
             active={!keeperOpen}
             onReviewSession={openSessionReview}
             onReviewShift={openShiftReview}
-            onCouncilSummary={() =>
-              summary?.workspace &&
-              openCouncilSource(
-                { sourceType: "text", source: "" },
-                summary.workspace,
-                true,
-              )
-            }
+            onCouncilSummary={() => {
+              setKeeperOpen(false);
+              if (summary?.workspace)
+                openCouncilSource(
+                  { sourceType: "text", source: "" },
+                  summary.workspace,
+                  true,
+                );
+            }}
           />
         ) : route.destination === "beads" && project ? (
           fullBead && route.selection?.kind === "bead" ? (
@@ -1231,14 +1234,15 @@ export function DesktopApp(): JSX.Element {
               onNavigate={() => setKeeperOpen(false)}
               onReviewSession={openSessionReview}
               onReviewShift={openShiftReview}
-              onCouncilSummary={() =>
-                summary?.workspace &&
-                openCouncilSource(
-                  { sourceType: "text", source: "" },
-                  summary.workspace,
-                  true,
-                )
-              }
+              onCouncilSummary={() => {
+                setKeeperOpen(false);
+                if (summary?.workspace)
+                  openCouncilSource(
+                    { sourceType: "text", source: "" },
+                    summary.workspace,
+                    true,
+                  );
+              }}
             />
           </>
         )}
