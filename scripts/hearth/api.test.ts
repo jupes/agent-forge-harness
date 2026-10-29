@@ -39,6 +39,13 @@ import {
   projectCouncilReceiptSchema,
 } from "../../types/project-council";
 import type { ProjectCatalog } from "../../types/projects";
+import {
+  type ProjectCheckpointReviewBinding,
+  type ProjectCheckpointReviewOriginal,
+  projectCheckpointReviewCommentText,
+  projectCheckpointReviewIntentJson,
+  projectCheckpointReviewOriginalSchema,
+} from "../../types/project-checkpoint-reviews";
 import { terminalHandoffAttemptSchema } from "../../types/session-terminal-handoff";
 import type { SmithConfigEditRequest } from "../../types/smith-config-edit";
 import type { SmithRoutingEditRequest } from "../../types/smith-routing-edit";
@@ -108,6 +115,7 @@ import type {
 } from "../providers/native-console";
 import { queueTracker } from "../scheduler/queue-fixture";
 import { withQueueLock } from "../scheduler/queue-lock";
+import { createProjectCheckpointReviewStore } from "../forge/project-checkpoint-review-store";
 import {
   readShiftRecord,
   SHIFTS_DIR,
@@ -833,6 +841,7 @@ interface ActionFixture {
     body: unknown;
     status: number;
     target?: string;
+    beadId?: string;
     audit?: Record<string, string>;
     ok?: boolean;
     error?: string | null;
@@ -867,6 +876,11 @@ const API_PROJECT_CREATE_RESERVE_ID = "3eed32cc-a41d-49b7-b895-9236743781fd";
 const API_PROJECT_CREATE_COMMIT_ID = "a506e878-f16f-492f-8e2b-d2d35e2cf11f";
 const API_PROJECT_CREATE_RETIRE_ID = "61a2f73e-a0fd-4d9f-928d-38e5cf398c1b";
 const API_PROJECT_CREATE_READ_ID = "8de54683-b2d1-45a4-907e-6a1bfcb40221";
+const API_CHECKPOINT_REVIEW_ID = "960cd714-5279-4238-b2dc-ecab29435610";
+const API_CHECKPOINT_REVIEW_COMMIT_ID = "960cd714-5279-4238-b2dc-ecab29435611";
+const API_CHECKPOINT_REVIEW_RETIRE_ID = "960cd714-5279-4238-b2dc-ecab29435612";
+const API_CHECKPOINT_REVIEW_READBACK_ID = "960cd714-5279-4238-b2dc-ecab29435613";
+const API_CHECKPOINT_REVIEW_BEAD = "alpha-epic.1";
 function apiProjectCreateOriginal(slug: string, root = "") {
   return {
     slug,
@@ -1641,8 +1655,116 @@ function makeTerminalHandoffFixture() {
 }
 const terminalHandoffFixture = makeTerminalHandoffFixture();
 
+const checkpointReviewPath = (projectId: string, requestId?: string) => {
+  const path = `/projects/${projectId}/runs/demo/checkpoints/${API_CHECKPOINT_REVIEW_BEAD}/reviews`;
+  return requestId === undefined ? path : `${path}/${requestId}`;
+};
+
+async function seedCheckpointReviewRead(h: TestHearth): Promise<void> {
+  const binding: ProjectCheckpointReviewBinding = {
+    projectId: FIXTURE_PROJECT_ID,
+    workspacePath: h.workspace,
+    checkout: h.root,
+    runSlug: "demo",
+    epicId: "alpha-epic",
+    beadId: API_CHECKPOINT_REVIEW_BEAD,
+    runUpdatedAt: "2026-10-01T00:00:00.000Z",
+    catalogRevision: 1,
+    scopeHash: "d".repeat(64),
+  };
+  const value = {
+    schemaVersion: 1 as const,
+    requestId: API_CHECKPOINT_REVIEW_ID,
+    binding,
+    decision: "approve" as const,
+    note: "Private API inventory sentinel.",
+    createdAt: "2026-10-29T18:00:00.000Z",
+    commentText: "",
+    intentHash: "0".repeat(64),
+  };
+  value.commentText = projectCheckpointReviewCommentText(value);
+  value.intentHash = createHash("sha256")
+    .update(projectCheckpointReviewIntentJson(value), "utf8")
+    .digest("hex");
+  const original: ProjectCheckpointReviewOriginal = projectCheckpointReviewOriginalSchema.parse(value);
+  const store = createProjectCheckpointReviewStore({ home: h.home, withQueueLock });
+  await store.prepare(original, 901);
+  READS["GET /projects/:id/runs/:slug/checkpoints/:beadId/reviews"] = checkpointReviewPath(FIXTURE_PROJECT_ID);
+  READS["GET /projects/:id/runs/:slug/checkpoints/:beadId/reviews/:requestId"] = checkpointReviewPath(FIXTURE_PROJECT_ID, API_CHECKPOINT_REVIEW_ID);
+}
+
 /** One entry per action row of the table; a row with none fails the suite. */
 const ACTIONS: Record<string, ActionFixture> = {
+  "POST /projects/:id/runs/:slug/checkpoints/:beadId/reviews": {
+    valid: {
+      path: checkpointReviewPath(FIXTURE_PROJECT_ID),
+      body: {
+        requestId: API_CHECKPOINT_REVIEW_ID,
+        expectedEpicId: "alpha-epic",
+        expectedRunUpdatedAt: "2026-10-01T00:00:00.000Z",
+        decision: "approve",
+        note: "",
+      },
+      status: 503,
+      ok: false,
+      error: "Project membership is unavailable or incomplete. Refresh Runs after the tracker can be read.",
+      target: API_CHECKPOINT_REVIEW_BEAD,
+      beadId: API_CHECKPOINT_REVIEW_BEAD,
+      audit: { requestId: API_CHECKPOINT_REVIEW_ID },
+    },
+    invalid: { path: checkpointReviewPath(FIXTURE_PROJECT_ID), body: { requestId: "invalid" } },
+    happened: async (h) => {
+      expect(h.bd.calls.some((args) => args[0] === "comments" && args[1] === "add")).toBe(false);
+    },
+  },
+  "POST /projects/:id/runs/:slug/checkpoints/:beadId/reviews/:requestId/commit": {
+    valid: {
+      path: `${checkpointReviewPath(FIXTURE_PROJECT_ID)}/${API_CHECKPOINT_REVIEW_COMMIT_ID}/commit`,
+      body: { intentHash: "e".repeat(64) },
+      status: 404,
+      ok: false,
+      error: "This checkpoint review original is not retained.",
+      target: API_CHECKPOINT_REVIEW_BEAD,
+      beadId: API_CHECKPOINT_REVIEW_BEAD,
+      audit: { requestId: API_CHECKPOINT_REVIEW_COMMIT_ID, inputHash: "e".repeat(64) },
+    },
+    invalid: { path: `${checkpointReviewPath(FIXTURE_PROJECT_ID)}/${API_CHECKPOINT_REVIEW_COMMIT_ID}/commit`, body: { intentHash: "invalid" } },
+    happened: async (h) => {
+      expect(h.bd.calls.some((args) => args[0] === "comments" && args[1] === "add")).toBe(false);
+    },
+  },
+  "POST /projects/:id/runs/:slug/checkpoints/:beadId/reviews/:requestId/retire": {
+    valid: {
+      path: `${checkpointReviewPath(FIXTURE_PROJECT_ID)}/${API_CHECKPOINT_REVIEW_RETIRE_ID}/retire`,
+      body: { intentHash: "f".repeat(64) },
+      status: 404,
+      ok: false,
+      error: "This checkpoint review original is not retained.",
+      target: API_CHECKPOINT_REVIEW_BEAD,
+      beadId: API_CHECKPOINT_REVIEW_BEAD,
+      audit: { requestId: API_CHECKPOINT_REVIEW_RETIRE_ID, inputHash: "f".repeat(64) },
+    },
+    invalid: { path: `${checkpointReviewPath(FIXTURE_PROJECT_ID)}/${API_CHECKPOINT_REVIEW_RETIRE_ID}/retire`, body: { intentHash: "invalid" } },
+    happened: async (h) => {
+      expect(h.bd.calls.some((args) => args[0] === "comments" && args[1] === "add")).toBe(false);
+    },
+  },
+  "POST /projects/:id/runs/:slug/checkpoints/:beadId/reviews/:requestId/readback": {
+    valid: {
+      path: `${checkpointReviewPath(FIXTURE_PROJECT_ID)}/${API_CHECKPOINT_REVIEW_READBACK_ID}/readback`,
+      body: { intentHash: "a".repeat(64) },
+      status: 404,
+      ok: false,
+      error: "This checkpoint review original is not retained.",
+      target: API_CHECKPOINT_REVIEW_BEAD,
+      beadId: API_CHECKPOINT_REVIEW_BEAD,
+      audit: { requestId: API_CHECKPOINT_REVIEW_READBACK_ID, inputHash: "a".repeat(64) },
+    },
+    invalid: { path: `${checkpointReviewPath(FIXTURE_PROJECT_ID)}/${API_CHECKPOINT_REVIEW_READBACK_ID}/readback`, body: { intentHash: "invalid" } },
+    happened: async (h) => {
+      expect(h.bd.calls.some((args) => args[0] === "comments" && args[1] === "add")).toBe(false);
+    },
+  },
   "POST /config/smiths/preview": {
     valid: {
       path: "/config/smiths/preview",
@@ -3807,6 +3929,8 @@ const ACTIONS: Record<string, ActionFixture> = {
 
 /** A concrete path per read row; a row with none fails the suite. */
 const READS: Record<string, string> = {
+  "GET /projects/:id/runs/:slug/checkpoints/:beadId/reviews": checkpointReviewPath(FIXTURE_PROJECT_ID),
+  "GET /projects/:id/runs/:slug/checkpoints/:beadId/reviews/:requestId": checkpointReviewPath(FIXTURE_PROJECT_ID, API_CHECKPOINT_REVIEW_ID),
   "GET /projects/:id/council/reviews": `/projects/${FIXTURE_PROJECT_ID}/council/reviews`,
   "GET /projects/:id/council/reviews/:requestId": `/projects/${FIXTURE_PROJECT_ID}/council/reviews/${API_PROJECT_CREATE_READ_ID}`,
   "GET /projects/:id/council/reviews/:requestId/run": `/projects/${FIXTURE_PROJECT_ID}/council/reviews/${API_PROJECT_CREATE_READ_ID}/run`,
@@ -4340,6 +4464,8 @@ describe("every action row (iterating the table)", () => {
             (event) => ({ row: key(row), ...event }),
           ),
         ]);
+        if (valid.beadId !== undefined)
+          expect(added[0]?.beadId).toBe(valid.beadId);
 
         // The effect ran once, and that row was already stored when it started.
         const calls = probes.slice(seen);
@@ -5988,6 +6114,7 @@ describe("every read row (iterating the table)", () => {
       "api-project-read",
     );
     projectCouncilPaths(await seedProjectCouncilReadOriginal(h));
+    await seedCheckpointReviewRead(h);
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");
     for (const row of rows) {
