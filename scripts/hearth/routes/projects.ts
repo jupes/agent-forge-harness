@@ -27,7 +27,10 @@ import {
   createRepositoryOnboarding,
   type RepositoryOnboardingOptions,
 } from "../../projects/repository-onboarding";
-import { approvedRepositorySchema, type ApprovedRepository } from "../../projects/repository-onboarding-protocol";
+import {
+  type ApprovedRepository,
+  approvedRepositorySchema,
+} from "../../projects/repository-onboarding-protocol";
 import { selectProjectBeads, workspaceKey } from "../../projects/scope";
 import {
   createProjectStore,
@@ -263,7 +266,11 @@ function completeRepositoryOptions(
   }
   for (const entry of approved) {
     const checked = approvedRepositorySchema.safeParse(entry);
-    if (!checked.success || options.length >= MAX_PROJECT_CREATE_OPTION_REPOSITORIES) throw unavailableProjectOptions();
+    if (
+      !checked.success ||
+      options.length >= MAX_PROJECT_CREATE_OPTION_REPOSITORIES
+    )
+      throw unavailableProjectOptions();
     const approvedEntry = checked.data;
     let canonical: string;
     try {
@@ -275,11 +282,19 @@ function completeRepositoryOptions(
     if (
       key !== approvedEntry.key ||
       keys.has(key) ||
-      options.some((option) => option.name.toLowerCase() === approvedEntry.name.toLowerCase())
+      options.some(
+        (option) =>
+          option.name.toLowerCase() === approvedEntry.name.toLowerCase(),
+      )
     )
       throw unavailableProjectOptions();
     keys.add(key);
-    options.push({ path: canonical, key, name: approvedEntry.name, served: false });
+    options.push({
+      path: canonical,
+      key,
+      name: approvedEntry.name,
+      served: false,
+    });
   }
   return options;
 }
@@ -596,7 +611,8 @@ export function projectRoutes(
         createOptions.repositoryManifestRoot ??
         join(home, "project-create-registry"),
       legacyRegistryRoot:
-        createOptions.projectRepositoryRegistryRoot ?? localStateRoot(createOptions.root),
+        createOptions.projectRepositoryRegistryRoot ??
+        localStateRoot(createOptions.root),
       ...(createOptions.repositoryPickerCommand === undefined
         ? {}
         : { pickerCommand: createOptions.repositoryPickerCommand }),
@@ -616,94 +632,234 @@ export function projectRoutes(
   const pickerInput = (
     request: RouteRequest,
   ): ValidationResult<{ requestId: string }> => {
-    const parsed = z.object({ requestId: z.string().uuid() }).strict().safeParse(request.body);
-    return parsed.success ? { ok: true, value: parsed.data } : fail("Expected a repository selection id.");
+    const parsed = z
+      .object({ requestId: z.string().uuid() })
+      .strict()
+      .safeParse(request.body);
+    return parsed.success
+      ? { ok: true, value: parsed.data }
+      : fail("Expected a repository selection id.");
   };
   const nameInput = (
     request: RouteRequest,
   ): ValidationResult<{ name: string }> => {
-    const parsed = z.object({ name: z.string().min(1).max(80).regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/) }).strict().safeParse(request.body);
-    return parsed.success ? { ok: true, value: parsed.data } : fail("Expected a safe repository name.");
+    const parsed = z
+      .object({
+        name: z
+          .string()
+          .min(1)
+          .max(80)
+          .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/),
+      })
+      .strict()
+      .safeParse(request.body);
+    return parsed.success
+      ? { ok: true, value: parsed.data }
+      : fail("Expected a safe repository name.");
   };
   const cloneReservationInput = (
     request: RouteRequest,
   ): ValidationResult<{ requestId: string; name: string; url: string }> => {
-    const parsed = z.object({ requestId: z.string().uuid(), name: z.string().min(1).max(80), url: z.string().min(1).max(2048) }).strict().safeParse(request.body);
-    return parsed.success ? { ok: true, value: parsed.data } : fail("Expected a repository clone review.");
+    const parsed = z
+      .object({
+        requestId: z.string().uuid(),
+        name: z.string().min(1).max(80),
+        url: z.string().min(1).max(2048),
+      })
+      .strict()
+      .safeParse(request.body);
+    return parsed.success
+      ? { ok: true, value: parsed.data }
+      : fail("Expected a repository clone review.");
   };
   const repositorySelectionRead: ReadRoute<{ requestId: string }> = {
-    kind: "read", method: "GET", path: "/projects/repository-selections/:requestId", operatorOnly: true,
+    kind: "read",
+    method: "GET",
+    path: "/projects/repository-selections/:requestId",
+    operatorOnly: true,
     validate: readIdentity,
-    read: ({ requestId }) => reply(() => {
-      const selection = repositoryOnboarding.getSelection(requestId);
-      if (!selection) throw new ProjectStoreError(404, "The exact repository selection was not found.");
-      return selection;
-    }),
+    read: ({ requestId }) =>
+      reply(() => {
+        const selection = repositoryOnboarding.getSelection(requestId);
+        if (!selection)
+          throw new ProjectStoreError(
+            404,
+            "The exact repository selection was not found.",
+          );
+        return selection;
+      }),
   };
   const repositoryCloneRead: ReadRoute<{ requestId: string }> = {
-    kind: "read", method: "GET", path: "/projects/repository-clone-reservations/:requestId", operatorOnly: true,
+    kind: "read",
+    method: "GET",
+    path: "/projects/repository-clone-reservations/:requestId",
+    operatorOnly: true,
     validate: readIdentity,
-    read: ({ requestId }) => reply(() => {
-      const operation = repositoryOnboarding.getClone(requestId);
-      if (!operation) throw new ProjectStoreError(404, "The exact repository clone review was not found.");
-      return operation;
-    }),
+    read: ({ requestId }) =>
+      reply(() => {
+        const operation = repositoryOnboarding.getClone(requestId);
+        if (!operation)
+          throw new ProjectStoreError(
+            404,
+            "The exact repository clone review was not found.",
+          );
+        return operation;
+      }),
   };
   const pickRepository: ActionRoute<{ requestId: string }> = {
-    kind: "action", method: "POST", path: "/projects/repository-selections", action: "project.repository.pick",
-    maxBodyBytes: 4096, validate: pickerInput,
-    subject: ({ requestId }) => ({ family: "project-repository-selection", requestId }),
-    effect: async ({ requestId }, context) => reply(async () => {
-      if (!context?.auditEventId) throw new ProjectStoreError(503, "The repository selection was not audited.");
-      try { return await repositoryOnboarding.selectFolder(requestId); }
-      catch { throw new ProjectStoreError(409, "The saved folder selection is unavailable; it was not repeated."); }
+    kind: "action",
+    method: "POST",
+    path: "/projects/repository-selections",
+    action: "project.repository.pick",
+    maxBodyBytes: 4096,
+    validate: pickerInput,
+    subject: ({ requestId }) => ({
+      family: "project-repository-selection",
+      requestId,
     }),
+    effect: async ({ requestId }, context) =>
+      reply(async () => {
+        if (!context?.auditEventId)
+          throw new ProjectStoreError(
+            503,
+            "The repository selection was not audited.",
+          );
+        try {
+          return await repositoryOnboarding.selectFolder(requestId);
+        } catch {
+          throw new ProjectStoreError(
+            409,
+            "The saved folder selection is unavailable; it was not repeated.",
+          );
+        }
+      }),
   };
   const registerRepository: ActionRoute<{ requestId: string; name: string }> = {
-    kind: "action", method: "POST", path: "/projects/repository-selections/:requestId/register", action: "project.repository.register",
+    kind: "action",
+    method: "POST",
+    path: "/projects/repository-selections/:requestId/register",
+    action: "project.repository.register",
     maxBodyBytes: 4096,
     validate: (request) => {
       const id = readIdentity(request);
       if (!id.ok) return id;
       const name = nameInput(request);
-      return name.ok ? { ok: true, value: { ...id.value, ...name.value } } : name;
+      return name.ok
+        ? { ok: true, value: { ...id.value, ...name.value } }
+        : name;
     },
-    subject: ({ requestId }) => ({ family: "project-repository-selection", requestId }),
-    effect: async ({ requestId, name }, context) => reply(async () => {
-      if (!context?.auditEventId) throw new ProjectStoreError(503, "Repository registration was not audited.");
-      try { return await repositoryOnboarding.registerSelection(requestId, name); }
-      catch { throw new ProjectStoreError(409, "The reviewed folder could not be registered. Check the saved selection and trusted repository choices."); }
+    subject: ({ requestId }) => ({
+      family: "project-repository-selection",
+      requestId,
     }),
+    effect: async ({ requestId, name }, context) =>
+      reply(async () => {
+        if (!context?.auditEventId)
+          throw new ProjectStoreError(
+            503,
+            "Repository registration was not audited.",
+          );
+        try {
+          return await repositoryOnboarding.registerSelection(requestId, name);
+        } catch {
+          throw new ProjectStoreError(
+            409,
+            "The reviewed folder could not be registered. Check the saved selection and trusted repository choices.",
+          );
+        }
+      }),
   };
-  const reserveRepositoryClone: ActionRoute<{ requestId: string; name: string; url: string }> = {
-    kind: "action", method: "POST", path: "/projects/repository-clone-reservations", action: "project.repository.clone.reserve",
-    maxBodyBytes: 8192, validate: cloneReservationInput,
-    subject: ({ requestId }) => ({ family: "project-repository-clone", requestId }),
-    effect: async (input, context) => reply(async () => {
-      if (!context?.auditEventId) throw new ProjectStoreError(503, "The repository clone review was not audited.");
-      try { return await repositoryOnboarding.reserveClone(input.requestId, input.name, input.url); }
-      catch { throw new ProjectStoreError(400, "The clone review could not be saved. Check the URL, name, and existing request status."); }
+  const reserveRepositoryClone: ActionRoute<{
+    requestId: string;
+    name: string;
+    url: string;
+  }> = {
+    kind: "action",
+    method: "POST",
+    path: "/projects/repository-clone-reservations",
+    action: "project.repository.clone.reserve",
+    maxBodyBytes: 8192,
+    validate: cloneReservationInput,
+    subject: ({ requestId }) => ({
+      family: "project-repository-clone",
+      requestId,
     }),
+    effect: async (input, context) =>
+      reply(async () => {
+        if (!context?.auditEventId)
+          throw new ProjectStoreError(
+            503,
+            "The repository clone review was not audited.",
+          );
+        try {
+          return await repositoryOnboarding.reserveClone(
+            input.requestId,
+            input.name,
+            input.url,
+          );
+        } catch {
+          throw new ProjectStoreError(
+            400,
+            "The clone review could not be saved. Check the URL, name, and existing request status.",
+          );
+        }
+      }),
   };
   const cloneRepository: ActionRoute<{ requestId: string }> = {
-    kind: "action", method: "POST", path: "/projects/repository-clone-reservations/:requestId/clone", action: "project.repository.clone",
-    maxBodyBytes: 4096, validate: readIdentity,
-    subject: ({ requestId }) => ({ family: "project-repository-clone", requestId }),
-    effect: async ({ requestId }, context) => reply(async () => {
-      if (!context?.auditEventId) throw new ProjectStoreError(503, "The repository clone was not audited.");
-      try { return await repositoryOnboarding.clone(requestId); }
-      catch { throw new ProjectStoreError(409, "The saved clone request is unavailable; no repeat was started."); }
+    kind: "action",
+    method: "POST",
+    path: "/projects/repository-clone-reservations/:requestId/clone",
+    action: "project.repository.clone",
+    maxBodyBytes: 4096,
+    validate: readIdentity,
+    subject: ({ requestId }) => ({
+      family: "project-repository-clone",
+      requestId,
     }),
+    effect: async ({ requestId }, context) =>
+      reply(async () => {
+        if (!context?.auditEventId)
+          throw new ProjectStoreError(
+            503,
+            "The repository clone was not audited.",
+          );
+        try {
+          return await repositoryOnboarding.clone(requestId);
+        } catch {
+          throw new ProjectStoreError(
+            409,
+            "The saved clone request is unavailable; no repeat was started.",
+          );
+        }
+      }),
   };
   const registerClonedRepository: ActionRoute<{ requestId: string }> = {
-    kind: "action", method: "POST", path: "/projects/repository-clone-reservations/:requestId/register", action: "project.repository.clone.register",
-    maxBodyBytes: 4096, validate: readIdentity,
-    subject: ({ requestId }) => ({ family: "project-repository-clone", requestId }),
-    effect: async ({ requestId }, context) => reply(async () => {
-      if (!context?.auditEventId) throw new ProjectStoreError(503, "The clone registration was not audited.");
-      try { return await repositoryOnboarding.registerClone(requestId); }
-      catch { throw new ProjectStoreError(409, "Only the exact confirmed clone can be registered. Review its saved status."); }
+    kind: "action",
+    method: "POST",
+    path: "/projects/repository-clone-reservations/:requestId/register",
+    action: "project.repository.clone.register",
+    maxBodyBytes: 4096,
+    validate: readIdentity,
+    subject: ({ requestId }) => ({
+      family: "project-repository-clone",
+      requestId,
     }),
+    effect: async ({ requestId }, context) =>
+      reply(async () => {
+        if (!context?.auditEventId)
+          throw new ProjectStoreError(
+            503,
+            "The clone registration was not audited.",
+          );
+        try {
+          return await repositoryOnboarding.registerClone(requestId);
+        } catch {
+          throw new ProjectStoreError(
+            409,
+            "Only the exact confirmed clone can be registered. Review its saved status.",
+          );
+        }
+      }),
   };
   const projects: ReadRoute<null> = {
     kind: "read",

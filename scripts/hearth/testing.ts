@@ -523,7 +523,10 @@ export async function startTestHearth(
     home,
     ...(options.projectRepositoryPickerCommand === undefined
       ? {}
-      : { projectRepositoryPickerCommand: options.projectRepositoryPickerCommand }),
+      : {
+          projectRepositoryPickerCommand:
+            options.projectRepositoryPickerCommand,
+        }),
     harnessRoot: REPO,
     environment: { COUNCIL_RUNS_DIR: join(root, "council-runs") },
     ...(options.councilRuns

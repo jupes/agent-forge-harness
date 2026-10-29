@@ -176,7 +176,9 @@ export function standInEnvironment(
     .map((directory) => join(directory, gitExecutable))
     .find((candidate) => existsSync(candidate));
   if (!repositoryFixtureGit)
-    throw new Error("The browser suite needs Git for its private repository onboarding fixture.");
+    throw new Error(
+      "The browser suite needs Git for its private repository onboarding fixture.",
+    );
   return {
     [PATH_KEY]: [BD_STAND_IN_BIN, ...besides].join(delimiter),
     BD_STAND_IN_STATE,

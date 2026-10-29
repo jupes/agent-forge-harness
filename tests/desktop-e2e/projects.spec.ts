@@ -1,5 +1,11 @@
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
 import { smithsViewSchema } from "../../apps/desktop/src/smiths-protocol";
@@ -33,9 +39,18 @@ const keeperFixtureStartsFile = join(
   HEARTH_HOME,
   "keeper-fixture-starts.jsonl",
 );
-const repositoryOnboardingFixtures = join(HEARTH_HOME, "repository-onboarding-fixtures");
-const repositoryPickerControl = join(repositoryOnboardingFixtures, "picker-selection.json");
-const repositoryCloneCalls = join(repositoryOnboardingFixtures, "clone-calls.jsonl");
+const repositoryOnboardingFixtures = join(
+  HEARTH_HOME,
+  "repository-onboarding-fixtures",
+);
+const repositoryPickerControl = join(
+  repositoryOnboardingFixtures,
+  "picker-selection.json",
+);
+const repositoryCloneCalls = join(
+  repositoryOnboardingFixtures,
+  "clone-calls.jsonl",
+);
 const selectedFolder = join(repositoryOnboardingFixtures, "selected-folder");
 const emptyGitMarker = join(repositoryOnboardingFixtures, "empty-git-marker");
 const fixtureCloneUrl = "https://fixture.invalid/repository.git";
@@ -60,7 +75,9 @@ const catalog: ProjectCatalog = {
 
 test.beforeEach(() => {
   for (const path of [repositoryPickerControl, repositoryCloneCalls]) {
-    try { rmSync(path); } catch (error) {
+    try {
+      rmSync(path);
+    } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     }
   }
@@ -251,7 +268,10 @@ function setRepositoryPickerPath(path: string | null): void {
 
 function localCloneCount(): number {
   if (!existsSync(repositoryCloneCalls)) return 0;
-  return readFileSync(repositoryCloneCalls, "utf8").trim().split(/\r?\n/).filter(Boolean).length;
+  return readFileSync(repositoryCloneCalls, "utf8")
+    .trim()
+    .split(/\r?\n/)
+    .filter(Boolean).length;
 }
 
 async function commitProjectFromOriginal(
@@ -281,9 +301,7 @@ async function commitProjectFromOriginal(
     .click();
   const response = await commitResponse;
   expect(response.status()).toBe(200);
-  await expect(page).toHaveURL(
-    /\/project\/project-[0-9a-f-]{36}\/overview$/,
-  );
+  await expect(page).toHaveURL(/\/project\/project-[0-9a-f-]{36}\/overview$/);
   const projectId = /\/project\/(project-[0-9a-f-]{36})\/overview$/.exec(
     new URL(page.url()).hash,
   )?.[1];
@@ -766,9 +784,7 @@ test("a new project's legacy Keeper capability stays unavailable without fallbac
     const unavailable = panel.locator(
       '.af-brief-availability[data-readiness="unavailable"]',
     );
-    await expect(unavailable).toContainText(
-      "Brief refresh is unavailable.",
-    );
+    await expect(unavailable).toContainText("Brief refresh is unavailable.");
     await expect(unavailable).toContainText(
       "The Keeper adapter capability check could not be verified. Recheck before sending.",
     );
@@ -1027,12 +1043,14 @@ test("a lost commit reply reloads the same created original without replay", asy
     await page.reload();
     releaseCommitReply();
     await click;
-    await expect.poll(() =>
-      page.evaluate(
-        (key) => (window as unknown as Record<string, unknown>)[key] !== null,
-        recoveryCaptureKey,
-      ),
-    ).toBe(true);
+    await expect
+      .poll(() =>
+        page.evaluate(
+          (key) => (window as unknown as Record<string, unknown>)[key] !== null,
+          recoveryCaptureKey,
+        ),
+      )
+      .toBe(true);
     const recoveredRead = (await page.evaluate((key) => {
       const value = (window as unknown as Record<string, unknown>)[key];
       return typeof value === "object" && value !== null ? value : null;
@@ -1162,11 +1180,16 @@ test("retirement is explicit and a tombstone readback unlocks a fresh review", a
   ]);
 });
 
-test("Add Folder keeps cancellation inert and permits a new picker after an invalid Git root", async ({ page }) => {
+test("Add Folder keeps cancellation inert and permits a new picker after an invalid Git root", async ({
+  page,
+}) => {
   const folderRegistrations: string[] = [];
   page.on("request", (request) => {
     const pathname = new URL(request.url()).pathname;
-    if (request.method() === "POST" && /\/repository-selections\/[^/]+\/register$/.test(pathname))
+    if (
+      request.method() === "POST" &&
+      /\/repository-selections\/[^/]+\/register$/.test(pathname)
+    )
       folderRegistrations.push(pathname);
   });
   await openSettled(page, "/index.html#/desktop/projects");
@@ -1174,17 +1197,36 @@ test("Add Folder keeps cancellation inert and permits a new picker after an inva
   const dialog = page.getByRole("dialog", { name: "Create a project" });
   await expect(dialog).toBeVisible();
 
-  await dialog.getByRole("button", { name: "Add a folder…", exact: true }).click();
-  await expect(dialog.getByText("Folder selection cancelled. Nothing was registered.", { exact: true })).toBeVisible();
+  await dialog
+    .getByRole("button", { name: "Add a folder…", exact: true })
+    .click();
+  await expect(
+    dialog.getByText("Folder selection cancelled. Nothing was registered.", {
+      exact: true,
+    }),
+  ).toBeVisible();
 
   setRepositoryPickerPath(emptyGitMarker);
-  await dialog.getByRole("button", { name: "Add a folder…", exact: true }).click();
-  await expect(dialog.getByText("The selected folder was not confirmed as a Git repository root. You may choose another folder.", { exact: true })).toBeVisible();
-  await expect(dialog.getByRole("button", { name: "Choose another folder…", exact: true })).toBeEnabled();
+  await dialog
+    .getByRole("button", { name: "Add a folder…", exact: true })
+    .click();
+  await expect(
+    dialog.getByText(
+      "The selected folder was not confirmed as a Git repository root. You may choose another folder.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await expect(
+    dialog.getByRole("button", { name: "Choose another folder…", exact: true }),
+  ).toBeEnabled();
 
   setRepositoryPickerPath(selectedFolder);
-  await dialog.getByRole("button", { name: "Choose another folder…", exact: true }).click();
-  await expect(dialog.getByRole("textbox", { name: "Folder repository name" })).toHaveValue("selected-folder");
+  await dialog
+    .getByRole("button", { name: "Choose another folder…", exact: true })
+    .click();
+  await expect(
+    dialog.getByRole("textbox", { name: "Folder repository name" }),
+  ).toHaveValue("selected-folder");
   await expect(dialog.getByText(selectedFolder, { exact: true })).toBeVisible();
   const token = await pageToken(page);
   const headers = {
@@ -1192,19 +1234,26 @@ test("Add Folder keeps cancellation inert and permits a new picker after an inva
     [OPERATOR_HEADER]: token,
     [SURFACE_HEADER]: "ui",
   };
-  const options = await page.evaluate(async ({ headers }) => {
-    const response = await fetch("/__agent-forge/projects/create-options", {
-      headers,
-    });
-    return { status: response.status, body: await response.json() };
-  }, { headers });
+  const options = await page.evaluate(
+    async ({ headers }) => {
+      const response = await fetch("/__agent-forge/projects/create-options", {
+        headers,
+      });
+      return { status: response.status, body: await response.json() };
+    },
+    { headers },
+  );
   expect(options.status).toBe(200);
   const optionsData = projectCreateOptionsSchema.parse(options.body.data);
-  expect(optionsData.repositories.some((row) => row.name === "selected-folder")).toBe(false);
+  expect(
+    optionsData.repositories.some((row) => row.name === "selected-folder"),
+  ).toBe(false);
   expect(folderRegistrations).toEqual([]);
 });
 
-test("Add Folder and a reviewed local clone feed a fresh two-repository project scope after a lost clone reply", async ({ page }) => {
+test("Add Folder and a reviewed local clone feed a fresh two-repository project scope after a lost clone reply", async ({
+  page,
+}) => {
   setRepositoryPickerPath(selectedFolder);
   let lostCloneReplies = 0;
   const folderRegistrations: string[] = [];
@@ -1212,11 +1261,20 @@ test("Add Folder and a reviewed local clone feed a fresh two-repository project 
   const projectReservations: string[] = [];
   page.on("request", (request) => {
     const pathname = new URL(request.url()).pathname;
-    if (request.method() === "POST" && /\/repository-selections\/[^/]+\/register$/.test(pathname))
+    if (
+      request.method() === "POST" &&
+      /\/repository-selections\/[^/]+\/register$/.test(pathname)
+    )
       folderRegistrations.push(pathname);
-    if (request.method() === "POST" && /\/repository-clone-reservations\/[^/]+\/clone$/.test(pathname))
+    if (
+      request.method() === "POST" &&
+      /\/repository-clone-reservations\/[^/]+\/clone$/.test(pathname)
+    )
       clonePosts.push(pathname);
-    if (request.method() === "POST" && pathname.endsWith("/projects/create-reservations"))
+    if (
+      request.method() === "POST" &&
+      pathname.endsWith("/projects/create-reservations")
+    )
       projectReservations.push(pathname);
   });
   await openSettled(page, "/index.html#/desktop/projects");
@@ -1224,28 +1282,61 @@ test("Add Folder and a reviewed local clone feed a fresh two-repository project 
   const dialog = page.getByRole("dialog", { name: "Create a project" });
   await expect(dialog).toBeVisible();
 
-  await dialog.getByRole("button", { name: "Add a folder…", exact: true }).click();
-  await dialog.getByRole("textbox", { name: "Folder repository name" }).fill("selected-folder");
-  await dialog.getByRole("button", { name: "Review folder registration", exact: true }).click();
-  await dialog.getByRole("button", { name: "Register reviewed folder", exact: true }).click();
-  await expect(dialog.getByText("Repository registered. Choose it in the reviewed project scope.", { exact: true })).toBeVisible();
-  await expect(dialog.getByRole("checkbox", { name: /selected-folder/ })).toBeVisible();
+  await dialog
+    .getByRole("button", { name: "Add a folder…", exact: true })
+    .click();
+  await dialog
+    .getByRole("textbox", { name: "Folder repository name" })
+    .fill("selected-folder");
+  await dialog
+    .getByRole("button", { name: "Review folder registration", exact: true })
+    .click();
+  await dialog
+    .getByRole("button", { name: "Register reviewed folder", exact: true })
+    .click();
+  await expect(
+    dialog.getByText(
+      "Repository registered. Choose it in the reviewed project scope.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await expect(
+    dialog.getByRole("checkbox", { name: /selected-folder/ }),
+  ).toBeVisible();
   expect(folderRegistrations).toHaveLength(1);
 
-  await dialog.getByRole("textbox", { name: "Repository clone URL" }).fill(fixtureCloneUrl);
-  await dialog.getByRole("textbox", { name: "Clone repository name" }).fill("cloned-folder");
-  await dialog.getByRole("button", { name: "Review clone destination", exact: true }).click();
+  await dialog
+    .getByRole("textbox", { name: "Repository clone URL" })
+    .fill(fixtureCloneUrl);
+  await dialog
+    .getByRole("textbox", { name: "Clone repository name" })
+    .fill("cloned-folder");
+  await dialog
+    .getByRole("button", { name: "Review clone destination", exact: true })
+    .click();
   await expect(dialog.getByText("Clone status", { exact: true })).toBeVisible();
   expect(localCloneCount()).toBe(0);
-  await page.route("**/repository-clone-reservations/*/clone", async (route) => {
-    const response = await route.fetch();
-    expect(response.status()).toBe(200);
-    lostCloneReplies++;
-    await route.abort("failed");
-  });
-  await dialog.getByRole("button", { name: "Clone reviewed repository", exact: true }).click();
-  await expect(dialog.getByText("Clone completed and the trusted repository choices were refreshed.", { exact: true })).toBeVisible();
-  await expect(dialog.getByRole("button", { name: "Review another clone", exact: true })).toBeVisible();
+  await page.route(
+    "**/repository-clone-reservations/*/clone",
+    async (route) => {
+      const response = await route.fetch();
+      expect(response.status()).toBe(200);
+      lostCloneReplies++;
+      await route.abort("failed");
+    },
+  );
+  await dialog
+    .getByRole("button", { name: "Clone reviewed repository", exact: true })
+    .click();
+  await expect(
+    dialog.getByText(
+      "Clone completed and the trusted repository choices were refreshed.",
+      { exact: true },
+    ),
+  ).toBeVisible();
+  await expect(
+    dialog.getByRole("button", { name: "Review another clone", exact: true }),
+  ).toBeVisible();
   expect(lostCloneReplies).toBe(1);
   expect(folderRegistrations).toHaveLength(1);
   expect(clonePosts).toHaveLength(1);
@@ -1255,11 +1346,21 @@ test("Add Folder and a reviewed local clone feed a fresh two-repository project 
   await reloadSettled(page);
   await page.getByRole("button", { name: "New project", exact: true }).click();
   const freshDialog = page.getByRole("dialog", { name: "Create a project" });
-  await expect(freshDialog.getByRole("checkbox", { name: /selected-folder/ })).toBeVisible();
-  await expect(freshDialog.getByRole("checkbox", { name: /cloned-folder/ })).toBeVisible();
-  await freshDialog.getByRole("textbox", { name: "Project name" }).fill("Two repository project");
-  await freshDialog.getByRole("textbox", { name: "Project slug" }).fill("two-repository-project");
-  await freshDialog.getByRole("textbox", { name: "Project description" }).fill("Reviewed external repository scope.");
+  await expect(
+    freshDialog.getByRole("checkbox", { name: /selected-folder/ }),
+  ).toBeVisible();
+  await expect(
+    freshDialog.getByRole("checkbox", { name: /cloned-folder/ }),
+  ).toBeVisible();
+  await freshDialog
+    .getByRole("textbox", { name: "Project name" })
+    .fill("Two repository project");
+  await freshDialog
+    .getByRole("textbox", { name: "Project slug" })
+    .fill("two-repository-project");
+  await freshDialog
+    .getByRole("textbox", { name: "Project description" })
+    .fill("Reviewed external repository scope.");
   await freshDialog.getByRole("textbox", { name: "Project icon" }).fill("T");
   const freshToken = await pageToken(page);
   const freshHeaders = {
@@ -1267,25 +1368,45 @@ test("Add Folder and a reviewed local clone feed a fresh two-repository project 
     [OPERATOR_HEADER]: freshToken,
     [SURFACE_HEADER]: "ui",
   };
-  const keeperResponse = await page.evaluate(async ({ headers }) => {
-    const response = await fetch("/__agent-forge/smiths", {
-      headers,
-    });
-    return { status: response.status, body: await response.json() };
-  }, { headers: freshHeaders });
+  const keeperResponse = await page.evaluate(
+    async ({ headers }) => {
+      const response = await fetch("/__agent-forge/smiths", {
+        headers,
+      });
+      return { status: response.status, body: await response.json() };
+    },
+    { headers: freshHeaders },
+  );
   expect(keeperResponse.status).toBe(200);
-  const keeper = smithsViewSchema.parse(keeperResponse.body.data).smiths.find((row) => row.enabled);
+  const keeper = smithsViewSchema
+    .parse(keeperResponse.body.data)
+    .smiths.find((row) => row.enabled);
   expect(keeper).toBeDefined();
-  await freshDialog.getByRole("combobox", { name: "Project Keeper" }).selectOption(keeper.name);
-  await freshDialog.getByRole("combobox", { name: "Project color" }).selectOption("green");
+  await freshDialog
+    .getByRole("combobox", { name: "Project Keeper" })
+    .selectOption(keeper.name);
+  await freshDialog
+    .getByRole("combobox", { name: "Project color" })
+    .selectOption("green");
   const repositories = freshDialog.locator("fieldset").first();
   await repositories.getByRole("checkbox", { name: /selected-folder/ }).check();
   await repositories.getByRole("checkbox", { name: /cloned-folder/ }).check();
-  await freshDialog.locator("fieldset").nth(2).getByRole("checkbox").first().check();
-  await freshDialog.getByRole("button", { name: "Review trusted project scope", exact: true }).click();
-  await expect(freshDialog.getByText("This exact original is reviewed", { exact: false })).toBeVisible();
+  await freshDialog
+    .locator("fieldset")
+    .nth(2)
+    .getByRole("checkbox")
+    .first()
+    .check();
+  await freshDialog
+    .getByRole("button", { name: "Review trusted project scope", exact: true })
+    .click();
+  await expect(
+    freshDialog.getByText("This exact original is reviewed", { exact: false }),
+  ).toBeVisible();
   const reviewed = freshDialog.locator("dl.af-project-create-original");
-  const repositoriesText = reviewed.getByText("Repositories", { exact: true }).locator("xpath=following-sibling::dd[1]");
+  const repositoriesText = reviewed
+    .getByText("Repositories", { exact: true })
+    .locator("xpath=following-sibling::dd[1]");
   await expect(repositoriesText).toContainText("selected-folder");
   await expect(repositoriesText).toContainText("cloned-folder");
   expect(localCloneCount()).toBe(1);
@@ -2104,8 +2225,8 @@ test("empty Projects can skip optional provider setup into the guarded create di
     fullPage: true,
   });
   expect(
-    await page.evaluate(() =>
-      window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+    await page.evaluate(
+      () => window.matchMedia("(prefers-reduced-motion: reduce)").matches,
     ),
   ).toBe(true);
 
@@ -2299,10 +2420,9 @@ test("empty Projects label a provider snapshot as last-known after readiness ref
     await expect(
       providerRows
         .nth(index)
-        .getByText(
-          "Last-known observation; recheck before relying on it.",
-          { exact: true },
-        ),
+        .getByText("Last-known observation; recheck before relying on it.", {
+          exact: true,
+        }),
     ).toBeVisible();
   }
   await expect(

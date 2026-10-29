@@ -42,6 +42,10 @@ import {
 import { type AppendResult, appendEvent } from "../ledger/append";
 import { resolveCheckout } from "../ledger/workspace";
 import {
+  createRepositoryOnboarding,
+  type RepositoryOnboardingOptions,
+} from "../projects/repository-onboarding";
+import {
   createProviderInspector,
   type ProviderInspector,
 } from "../providers/inspect";
@@ -61,10 +65,6 @@ import { createGeminiTaskRuntime } from "../sessions/gemini-task-runtime";
 import { createAttendedProjectShiftLauncher } from "../shifts/launch-runtime";
 import { createOwnedProjectShiftLauncher } from "../shifts/owned-launcher";
 import type { ProjectShiftRuntime } from "../shifts/service";
-import {
-  createRepositoryOnboarding,
-  type RepositoryOnboardingOptions,
-} from "../projects/repository-onboarding";
 import { type ApiRoute, createOperatorApi } from "./api";
 import {
   frontDoorOrigin,
@@ -883,7 +883,9 @@ async function main(
 ): Promise<void> {
   const root = argValue(argv, "--root") ?? process.cwd();
   const pickerIndex = argv.indexOf("--native-project-picker");
-  const pickerFlags = argv.filter((argument) => argument === "--native-project-picker").length;
+  const pickerFlags = argv.filter(
+    (argument) => argument === "--native-project-picker",
+  ).length;
   let projectRepositoryPickerCommand = commands.projectRepositoryPickerCommand;
   if (pickerFlags > 0) {
     const rawPicker = argv[pickerIndex + 1];

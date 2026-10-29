@@ -11,16 +11,19 @@ import type {
 } from "../../../scripts/projects/repository-onboarding-protocol";
 import { projectRepositoryNameSchema } from "../../../scripts/projects/repository-onboarding-protocol";
 import { PROJECT_COLOR_IDS } from "../../../types/projects";
+import { createProjectCreateApi } from "./project-create-api";
 import type {
   createProjectCreateOwner,
   ProjectCreateEntry,
   ProjectCreateState,
 } from "./project-create-owner";
 import { openProject } from "./projects-model";
-import { createProjectCreateApi } from "./project-create-api";
 
 type Owner = ReturnType<typeof createProjectCreateOwner>;
-const repositoryApi = createProjectCreateApi({ read: operatorRead, post: operatorPost });
+const repositoryApi = createProjectCreateApi({
+  read: operatorRead,
+  post: operatorPost,
+});
 const SELECTION_STORAGE = "agent-forge.project-repository-selection.v1";
 const CLONE_STORAGE = "agent-forge.project-repository-clone.v1";
 type Draft = {
@@ -102,7 +105,10 @@ function CreateProjectDialog({
       try {
         id = window.localStorage.getItem(key);
       } catch {
-        if (active) setRepositoryNotice("Saved repository requests are unavailable in this browser.");
+        if (active)
+          setRepositoryNotice(
+            "Saved repository requests are unavailable in this browser.",
+          );
       }
       if (!id) return;
       if (key === SELECTION_STORAGE && active) setSelectionId(id);
@@ -112,19 +118,26 @@ function CreateProjectDialog({
           const saved = await repositoryApi.repositorySelection(id);
           if (active) {
             setSelection(saved);
-            setFolderName(saved.path?.split(/[\\/]/).filter(Boolean).at(-1) ?? "");
+            setFolderName(
+              saved.path?.split(/[\\/]/).filter(Boolean).at(-1) ?? "",
+            );
           }
         } else {
           const saved = await repositoryApi.repositoryClone(id);
           if (active) setCloneReview(saved);
         }
       } catch {
-        if (active) setRepositoryNotice("The saved repository request could not be recovered. It was not retried.");
+        if (active)
+          setRepositoryNotice(
+            "The saved repository request could not be recovered. It was not retried.",
+          );
       }
     };
     void recover(SELECTION_STORAGE);
     void recover(CLONE_STORAGE);
-    return () => { active = false; };
+    return () => {
+      active = false;
+    };
   }, []);
   const remember = (key: string, id: string | null) => {
     try {
@@ -132,7 +145,9 @@ function CreateProjectDialog({
       else window.localStorage.removeItem(key);
       return true;
     } catch {
-      setRepositoryError("Browser storage is unavailable, so the request cannot be safely recovered.");
+      setRepositoryError(
+        "Browser storage is unavailable, so the request cannot be safely recovered.",
+      );
       return false;
     }
   };
@@ -141,11 +156,14 @@ function CreateProjectDialog({
       const saved = await repositoryApi.repositorySelection(id);
       setSelection(saved);
       setSelectionId(id);
-      if (saved.path) setFolderName(saved.path.split(/[\\/]/).filter(Boolean).at(-1) ?? "");
+      if (saved.path)
+        setFolderName(saved.path.split(/[\\/]/).filter(Boolean).at(-1) ?? "");
       setSelectionReviewed(false);
       return saved;
     } catch {
-      setRepositoryNotice("The exact folder selection is not yet readable. Keep this request id and do not start another picker.");
+      setRepositoryNotice(
+        "The exact folder selection is not yet readable. Keep this request id and do not start another picker.",
+      );
       return null;
     }
   };
@@ -168,32 +186,53 @@ function CreateProjectDialog({
       const result = await repositoryApi.pickRepository(id);
       if (result.state === "confirmed") {
         setSelection(result.value);
-        if (result.value.path) setFolderName(result.value.path.split(/[\\/]/).filter(Boolean).at(-1) ?? "");
+        if (result.value.path)
+          setFolderName(
+            result.value.path.split(/[\\/]/).filter(Boolean).at(-1) ?? "",
+          );
         setSelectionReviewed(false);
         if (result.value.state === "unknown") await recoverSelection(id);
-        else if (result.value.state === "rejected") setRepositoryNotice("That folder was not confirmed as a Git repository root. Choose another folder to continue.");
+        else if (result.value.state === "rejected")
+          setRepositoryNotice(
+            "That folder was not confirmed as a Git repository root. Choose another folder to continue.",
+          );
       } else if (result.state === "unknown") {
         await recoverSelection(id);
       } else {
         setRepositoryNotice(result.message);
       }
     } catch {
-      setRepositoryError("The folder selection request failed. Recover its saved UUID before starting another picker.");
+      setRepositoryError(
+        "The folder selection request failed. Recover its saved UUID before starting another picker.",
+      );
       await recoverSelection(id);
     } finally {
       setRepositoryWorking(false);
     }
   };
   const registerSelectedFolder = async () => {
-    if (!selection || selection.state !== "selected" || !selection.path || !selectionReviewed || !projectRepositoryNameSchema.safeParse(folderName).success || repositoryWorking) return;
+    if (
+      !selection ||
+      selection.state !== "selected" ||
+      !selection.path ||
+      !selectionReviewed ||
+      !projectRepositoryNameSchema.safeParse(folderName).success ||
+      repositoryWorking
+    )
+      return;
     setRepositoryWorking(true);
     setRepositoryError("");
     setRepositoryNotice("");
     try {
-      const result = await repositoryApi.registerRepository(selection, folderName);
+      const result = await repositoryApi.registerRepository(
+        selection,
+        folderName,
+      );
       if (result.state === "confirmed") {
         await owner.recover();
-        setRepositoryNotice("Repository registered. Choose it in the reviewed project scope.");
+        setRepositoryNotice(
+          "Repository registered. Choose it in the reviewed project scope.",
+        );
         setSelection(null);
         setSelectionId(null);
         setSelectionReviewed(false);
@@ -202,17 +241,25 @@ function CreateProjectDialog({
         setRepositoryNotice(result.message);
         if (result.state === "unknown") {
           await owner.recover();
-          setRepositoryNotice("Registration outcome is not confirmed. The exact selection remains saved; repeat only this registration or recover it from trusted choices.");
+          setRepositoryNotice(
+            "Registration outcome is not confirmed. The exact selection remains saved; repeat only this registration or recover it from trusted choices.",
+          );
         }
       }
     } catch {
-      setRepositoryError("Registration could not be confirmed. Read the refreshed repository choices before trying the same saved selection again.");
+      setRepositoryError(
+        "Registration could not be confirmed. Read the refreshed repository choices before trying the same saved selection again.",
+      );
     } finally {
       setRepositoryWorking(false);
     }
   };
   const reserveRepositoryClone = async () => {
-    if (repositoryWorking || !projectRepositoryNameSchema.safeParse(cloneName).success) return;
+    if (
+      repositoryWorking ||
+      !projectRepositoryNameSchema.safeParse(cloneName).success
+    )
+      return;
     const id = cloneId ?? crypto.randomUUID();
     if (!remember(CLONE_STORAGE, id)) return;
     setCloneId(id);
@@ -220,7 +267,11 @@ function CreateProjectDialog({
     setRepositoryError("");
     setRepositoryNotice("");
     try {
-      const result = await repositoryApi.reserveRepositoryClone(id, cloneName, cloneUrl);
+      const result = await repositoryApi.reserveRepositoryClone(
+        id,
+        cloneName,
+        cloneUrl,
+      );
       if (result.state === "confirmed") setCloneReview(result.value);
       else {
         setRepositoryNotice(result.message);
@@ -234,19 +285,28 @@ function CreateProjectDialog({
               remember(CLONE_STORAGE, null);
             }
             if (saved.name !== cloneName || saved.url !== submittedUrl) {
-              setRepositoryNotice("This UUID already holds a different saved clone review. Its exact details are shown; they were not replaced.");
+              setRepositoryNotice(
+                "This UUID already holds a different saved clone review. Its exact details are shown; they were not replaced.",
+              );
             }
-          } catch { setRepositoryNotice("The clone review outcome is unknown. Do not create another request until this UUID is recovered."); }
+          } catch {
+            setRepositoryNotice(
+              "The clone review outcome is unknown. Do not create another request until this UUID is recovered.",
+            );
+          }
         }
       }
     } catch {
-      setRepositoryError("The clone review could not be confirmed. Recover the saved UUID before creating another review.");
+      setRepositoryError(
+        "The clone review could not be confirmed. Recover the saved UUID before creating another review.",
+      );
     } finally {
       setRepositoryWorking(false);
     }
   };
   const executeRepositoryClone = async () => {
-    if (!cloneReview || cloneReview.state !== "reserved" || repositoryWorking) return;
+    if (!cloneReview || cloneReview.state !== "reserved" || repositoryWorking)
+      return;
     setRepositoryWorking(true);
     setRepositoryError("");
     setRepositoryNotice("");
@@ -254,58 +314,101 @@ function CreateProjectDialog({
       const result = await repositoryApi.cloneRepository(cloneReview);
       let outcome = result.state === "confirmed" ? result.value : null;
       if (!outcome && result.state === "unknown") {
-        try { outcome = await repositoryApi.repositoryClone(cloneReview.requestId, cloneReview); }
-        catch { setRepositoryNotice("Clone outcome is unknown. The same clone was not retried."); }
+        try {
+          outcome = await repositoryApi.repositoryClone(
+            cloneReview.requestId,
+            cloneReview,
+          );
+        } catch {
+          setRepositoryNotice(
+            "Clone outcome is unknown. The same clone was not retried.",
+          );
+        }
       }
       if (outcome) {
         setCloneReview(outcome);
         if (outcome.state === "registered") {
           await owner.recover();
-          setRepositoryNotice("Clone completed and the trusted repository choices were refreshed.");
+          setRepositoryNotice(
+            "Clone completed and the trusted repository choices were refreshed.",
+          );
           remember(CLONE_STORAGE, null);
         } else if (outcome.state === "clone-complete") {
-          setRepositoryNotice("Clone completed. Confirm its repository registration to add it to trusted project choices.");
+          setRepositoryNotice(
+            "Clone completed. Confirm its repository registration to add it to trusted project choices.",
+          );
         } else if (outcome.state === "failed") {
-          setRepositoryNotice("Clone failed. Any partial destination was left untouched; choose another name or add the folder after reviewing it.");
+          setRepositoryNotice(
+            "Clone failed. Any partial destination was left untouched; choose another name or add the folder after reviewing it.",
+          );
         } else if (outcome.state === "unknown" || outcome.state === "running") {
-          setRepositoryNotice("Clone outcome is not confirmed. Review this saved request; it was not retried.");
+          setRepositoryNotice(
+            "Clone outcome is not confirmed. Review this saved request; it was not retried.",
+          );
         }
       }
     } catch {
-      setRepositoryError("The clone request could not be confirmed. Its saved UUID was not retried.");
+      setRepositoryError(
+        "The clone request could not be confirmed. Its saved UUID was not retried.",
+      );
     } finally {
       setRepositoryWorking(false);
     }
   };
   const recoverRepositoryClone = async () => {
-    if (!cloneReview || !["running", "unknown"].includes(cloneReview.state) || repositoryWorking) return;
+    if (
+      !cloneReview ||
+      !["running", "unknown"].includes(cloneReview.state) ||
+      repositoryWorking
+    )
+      return;
     setRepositoryWorking(true);
     setRepositoryError("");
     setRepositoryNotice("");
     try {
-      const saved = await repositoryApi.repositoryClone(cloneReview.requestId, cloneReview);
+      const saved = await repositoryApi.repositoryClone(
+        cloneReview.requestId,
+        cloneReview,
+      );
       setCloneReview(saved);
       if (saved.state === "registered") {
         await owner.recover();
-        setRepositoryNotice("Clone registration was read back and trusted repository choices were refreshed.");
+        setRepositoryNotice(
+          "Clone registration was read back and trusted repository choices were refreshed.",
+        );
         remember(CLONE_STORAGE, null);
       } else if (saved.state === "clone-complete") {
-        setRepositoryNotice("Clone completion was read back. Review its registration before adding it to project choices.");
+        setRepositoryNotice(
+          "Clone completion was read back. Review its registration before adding it to project choices.",
+        );
       } else if (saved.state === "failed") {
-        setRepositoryNotice("The clone failed. Any partial destination remains untouched; review it before choosing another name.");
+        setRepositoryNotice(
+          "The clone failed. Any partial destination remains untouched; review it before choosing another name.",
+        );
       } else if (saved.state === "reserved") {
-        setRepositoryNotice("The saved review is still reserved. Confirm the clone action when ready.");
+        setRepositoryNotice(
+          "The saved review is still reserved. Confirm the clone action when ready.",
+        );
       } else {
-        setRepositoryNotice("The exact clone request is still unresolved. It was not retried.");
+        setRepositoryNotice(
+          "The exact clone request is still unresolved. It was not retried.",
+        );
       }
     } catch {
-      setRepositoryNotice("The exact clone outcome is not readable yet. Keep this saved request; it was not retried.");
+      setRepositoryNotice(
+        "The exact clone outcome is not readable yet. Keep this saved request; it was not retried.",
+      );
     } finally {
       setRepositoryWorking(false);
     }
   };
   const registerCompletedClone = async () => {
-    if (!cloneReview || cloneReview.state !== "clone-complete" || repositoryWorking) return;
+    if (
+      !cloneReview ||
+      cloneReview.state !== "clone-complete" ||
+      repositoryWorking
+    )
+      return;
     setRepositoryWorking(true);
     setRepositoryError("");
     setRepositoryNotice("");
@@ -314,23 +417,32 @@ function CreateProjectDialog({
       if (result.state === "confirmed") {
         await owner.recover();
         setCloneReview(result.value);
-        setRepositoryNotice("Clone registered. Choose it in the reviewed project scope.");
+        setRepositoryNotice(
+          "Clone registered. Choose it in the reviewed project scope.",
+        );
         remember(CLONE_STORAGE, null);
       } else {
         setRepositoryNotice(result.message);
         try {
-          const saved = await repositoryApi.repositoryClone(cloneReview.requestId, cloneReview);
+          const saved = await repositoryApi.repositoryClone(
+            cloneReview.requestId,
+            cloneReview,
+          );
           setCloneReview(saved);
           if (saved.state === "registered") {
             await owner.recover();
             remember(CLONE_STORAGE, null);
           }
         } catch {
-          setRepositoryError("Registration outcome is unknown. Recover this same saved request; it will not be cloned again.");
+          setRepositoryError(
+            "Registration outcome is unknown. Recover this same saved request; it will not be cloned again.",
+          );
         }
       }
     } catch {
-      setRepositoryError("The confirmed clone could not be registered from its saved record.");
+      setRepositoryError(
+        "The confirmed clone could not be registered from its saved record.",
+      );
     } finally {
       setRepositoryWorking(false);
     }
@@ -578,35 +690,97 @@ function CreateProjectDialog({
           </fieldset>
           <fieldset>
             <legend>Add a repository</legend>
-            <p>Adding a repository does not change this project until you select it above and review the scope.</p>
-            <Button disabled={repositoryWorking || selection?.state === "selected"} onClick={() => void pickRepositoryFolder()}>
-              {selection?.state === "unknown" ? "Recover folder selection" : selection?.state === "rejected" ? "Choose another folder…" : repositoryWorking && !selection ? "Opening folder picker…" : "Add a folder…"}
+            <p>
+              Adding a repository does not change this project until you select
+              it above and review the scope.
+            </p>
+            <Button
+              disabled={repositoryWorking || selection?.state === "selected"}
+              onClick={() => void pickRepositoryFolder()}
+            >
+              {selection?.state === "unknown"
+                ? "Recover folder selection"
+                : selection?.state === "rejected"
+                  ? "Choose another folder…"
+                  : repositoryWorking && !selection
+                    ? "Opening folder picker…"
+                    : "Add a folder…"}
             </Button>
-            {selection?.state === "cancelled" && <p role="status">Folder selection cancelled. Nothing was registered.</p>}
-            {selection?.state === "unknown" && <p role="status">Folder selection outcome is unknown. Recover this saved request before choosing again.</p>}
-            {selection?.state === "rejected" && <p role="status">The selected folder was not confirmed as a Git repository root. You may choose another folder.</p>}
+            {selection?.state === "cancelled" && (
+              <p role="status">
+                Folder selection cancelled. Nothing was registered.
+              </p>
+            )}
+            {selection?.state === "unknown" && (
+              <p role="status">
+                Folder selection outcome is unknown. Recover this saved request
+                before choosing again.
+              </p>
+            )}
+            {selection?.state === "rejected" && (
+              <p role="status">
+                The selected folder was not confirmed as a Git repository root.
+                You may choose another folder.
+              </p>
+            )}
             {selection?.state === "selected" && selection.path && (
               <>
                 {!selectionReviewed ? (
                   <>
                     <label>
                       Repository name
-                      <input aria-label="Folder repository name" maxLength={80} value={folderName} onInput={(event) => { setFolderName(event.currentTarget.value); setSelectionReviewed(false); }} />
+                      <input
+                        aria-label="Folder repository name"
+                        maxLength={80}
+                        value={folderName}
+                        onInput={(event) => {
+                          setFolderName(event.currentTarget.value);
+                          setSelectionReviewed(false);
+                        }}
+                      />
                     </label>
-                    <p>Selected folder: <code>{selection.path}</code></p>
-                    <Button disabled={repositoryWorking || !projectRepositoryNameSchema.safeParse(folderName).success} onClick={() => { setRepositoryError(""); setSelectionReviewed(true); }}>
+                    <p>
+                      Selected folder: <code>{selection.path}</code>
+                    </p>
+                    <Button
+                      disabled={
+                        repositoryWorking ||
+                        !projectRepositoryNameSchema.safeParse(folderName)
+                          .success
+                      }
+                      onClick={() => {
+                        setRepositoryError("");
+                        setSelectionReviewed(true);
+                      }}
+                    >
                       Review folder registration
                     </Button>
                   </>
                 ) : (
                   <>
                     <dl>
-                      <dt>Repository name</dt><dd>{folderName}</dd>
-                      <dt>Canonical folder</dt><dd><code>{selection.path}</code></dd>
+                      <dt>Repository name</dt>
+                      <dd>{folderName}</dd>
+                      <dt>Canonical folder</dt>
+                      <dd>
+                        <code>{selection.path}</code>
+                      </dd>
                     </dl>
-                    <p>Only this reviewed folder and name will be added. The folder will not be copied or changed.</p>
-                    <Button disabled={repositoryWorking} onClick={() => setSelectionReviewed(false)}>Edit folder review</Button>
-                    <Button variant="primary" disabled={repositoryWorking} onClick={() => void registerSelectedFolder()}>
+                    <p>
+                      Only this reviewed folder and name will be added. The
+                      folder will not be copied or changed.
+                    </p>
+                    <Button
+                      disabled={repositoryWorking}
+                      onClick={() => setSelectionReviewed(false)}
+                    >
+                      Edit folder review
+                    </Button>
+                    <Button
+                      variant="primary"
+                      disabled={repositoryWorking}
+                      onClick={() => void registerSelectedFolder()}
+                    >
                       Register reviewed folder
                     </Button>
                   </>
@@ -618,41 +792,95 @@ function CreateProjectDialog({
               <>
                 <label>
                   Clone URL
-                  <input aria-label="Repository clone URL" type="url" maxLength={2048} value={cloneUrl} onInput={(event) => setCloneUrl(event.currentTarget.value)} />
+                  <input
+                    aria-label="Repository clone URL"
+                    type="url"
+                    maxLength={2048}
+                    value={cloneUrl}
+                    onInput={(event) => setCloneUrl(event.currentTarget.value)}
+                  />
                 </label>
                 <label>
                   Repository name
-                  <input aria-label="Clone repository name" maxLength={80} value={cloneName} onInput={(event) => setCloneName(event.currentTarget.value)} />
+                  <input
+                    aria-label="Clone repository name"
+                    maxLength={80}
+                    value={cloneName}
+                    onInput={(event) => setCloneName(event.currentTarget.value)}
+                  />
                 </label>
-                <p>Only HTTPS URLs without embedded credentials or query data are accepted. Reviewing a URL does not clone it.</p>
-                <Button disabled={repositoryWorking || !projectRepositoryNameSchema.safeParse(cloneName).success || !cloneUrl.trim()} onClick={() => void reserveRepositoryClone()}>
+                <p>
+                  Only HTTPS URLs without embedded credentials or query data are
+                  accepted. Reviewing a URL does not clone it.
+                </p>
+                <Button
+                  disabled={
+                    repositoryWorking ||
+                    !projectRepositoryNameSchema.safeParse(cloneName).success ||
+                    !cloneUrl.trim()
+                  }
+                  onClick={() => void reserveRepositoryClone()}
+                >
                   Review clone destination
                 </Button>
               </>
             ) : (
               <>
                 <dl>
-                  <dt>Clone status</dt><dd>{cloneReview.state}</dd>
-                  <dt>Repository name</dt><dd>{cloneReview.name}</dd>
-                  <dt>Source URL</dt><dd><code>{cloneReview.url}</code></dd>
-                  <dt>Destination</dt><dd><code>{cloneReview.path}</code></dd>
+                  <dt>Clone status</dt>
+                  <dd>{cloneReview.state}</dd>
+                  <dt>Repository name</dt>
+                  <dd>{cloneReview.name}</dd>
+                  <dt>Source URL</dt>
+                  <dd>
+                    <code>{cloneReview.url}</code>
+                  </dd>
+                  <dt>Destination</dt>
+                  <dd>
+                    <code>{cloneReview.path}</code>
+                  </dd>
                 </dl>
-                <p>Clone runs only after this explicit confirmation. An existing destination will never be overwritten or removed.</p>
-                <Button disabled={repositoryWorking || cloneReview.state !== "reserved"} onClick={() => void executeRepositoryClone()}>
+                <p>
+                  Clone runs only after this explicit confirmation. An existing
+                  destination will never be overwritten or removed.
+                </p>
+                <Button
+                  disabled={
+                    repositoryWorking || cloneReview.state !== "reserved"
+                  }
+                  onClick={() => void executeRepositoryClone()}
+                >
                   {repositoryWorking ? "Cloning…" : "Clone reviewed repository"}
                 </Button>
                 {["running", "unknown"].includes(cloneReview.state) && (
-                  <Button disabled={repositoryWorking} onClick={() => void recoverRepositoryClone()}>
+                  <Button
+                    disabled={repositoryWorking}
+                    onClick={() => void recoverRepositoryClone()}
+                  >
                     Read saved clone status
                   </Button>
                 )}
                 {cloneReview.state === "clone-complete" && (
-                  <Button variant="primary" disabled={repositoryWorking} onClick={() => void registerCompletedClone()}>
+                  <Button
+                    variant="primary"
+                    disabled={repositoryWorking}
+                    onClick={() => void registerCompletedClone()}
+                  >
                     Register completed clone
                   </Button>
                 )}
-                {(cloneReview.state === "failed" || cloneReview.state === "registered") && (
-                  <Button disabled={repositoryWorking} onClick={() => { setCloneReview(null); setCloneId(null); setCloneName(""); setCloneUrl(""); remember(CLONE_STORAGE, null); }}>
+                {(cloneReview.state === "failed" ||
+                  cloneReview.state === "registered") && (
+                  <Button
+                    disabled={repositoryWorking}
+                    onClick={() => {
+                      setCloneReview(null);
+                      setCloneId(null);
+                      setCloneName("");
+                      setCloneUrl("");
+                      remember(CLONE_STORAGE, null);
+                    }}
+                  >
                     Review another clone
                   </Button>
                 )}

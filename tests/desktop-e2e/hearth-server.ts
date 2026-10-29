@@ -34,7 +34,9 @@ async function main() {
     throw Error("The desktop fixture requires its explicit repository.");
   const repositoryFixtureGit = process.env["AGENT_FORGE_E2E_REPOSITORY_GIT"];
   if (!repositoryFixtureGit || !isAbsolute(repositoryFixtureGit))
-    throw Error("The desktop fixture requires its trusted isolated-repository Git executable.");
+    throw Error(
+      "The desktop fixture requires its trusted isolated-repository Git executable.",
+    );
   const projectRepositoryRegistryRoot = join(home, "project-create-registry");
   const projectRepositoryName = "onboarding-fixture";
   const projectRepositoryPath = join(
@@ -60,10 +62,17 @@ async function main() {
   };
   const initializeRepository = (cwd: string, bare = false) => {
     mkdirSync(cwd, { recursive: true });
-    const initialized = Bun.spawnSync([repositoryFixtureGit, "init", ...(bare ? ["--bare"] : []), "--quiet"], {
-      cwd, stdout: "ignore", stderr: "pipe", env: fixtureGitEnv,
-    });
-    if (initialized.exitCode !== 0) throw Error("Could not prepare a private onboarding Git fixture.");
+    const initialized = Bun.spawnSync(
+      [repositoryFixtureGit, "init", ...(bare ? ["--bare"] : []), "--quiet"],
+      {
+        cwd,
+        stdout: "ignore",
+        stderr: "pipe",
+        env: fixtureGitEnv,
+      },
+    );
+    if (initialized.exitCode !== 0)
+      throw Error("Could not prepare a private onboarding Git fixture.");
   };
   initializeRepository(selectedFolder);
   initializeRepository(cloneSource, true);
@@ -172,33 +181,67 @@ async function main() {
       projectRepositoryRunPicker: async () => {
         let selected: string | null = null;
         if (existsSync(pickerControl)) {
-          const value: unknown = JSON.parse(readFileSync(pickerControl, "utf8"));
-          if (typeof value !== "object" || value === null || Array.isArray(value) || !("path" in value))
+          const value: unknown = JSON.parse(
+            readFileSync(pickerControl, "utf8"),
+          );
+          if (
+            typeof value !== "object" ||
+            value === null ||
+            Array.isArray(value) ||
+            !("path" in value)
+          )
             throw Error("Invalid private repository-picker fixture");
           const path = value.path;
-          if (path !== null && typeof path !== "string") throw Error("Invalid private repository-picker fixture");
+          if (path !== null && typeof path !== "string")
+            throw Error("Invalid private repository-picker fixture");
           if (path !== null) {
             const canonical = realpathSync.native(path);
-            const fromFixtureRoot = relative(realpathSync.native(onboardingFixtures), canonical);
-            if (fromFixtureRoot === ".." || fromFixtureRoot.startsWith(`..${sep}`) || isAbsolute(fromFixtureRoot))
+            const fromFixtureRoot = relative(
+              realpathSync.native(onboardingFixtures),
+              canonical,
+            );
+            if (
+              fromFixtureRoot === ".." ||
+              fromFixtureRoot.startsWith(`..${sep}`) ||
+              isAbsolute(fromFixtureRoot)
+            )
               throw Error("Private repository-picker fixture escaped its home");
             selected = canonical;
           }
         }
-        return { exitCode: 0, stdout: JSON.stringify({ ok: true, data: { path: selected }, error: null }) };
+        return {
+          exitCode: 0,
+          stdout: JSON.stringify({
+            ok: true,
+            data: { path: selected },
+            error: null,
+          }),
+        };
       },
       projectRepositoryRunGit: async (commandArgs, cwd) => {
         const actual = [...commandArgs];
-        if (actual[0] !== "git") throw Error("Unexpected repository onboarding executable");
+        if (actual[0] !== "git")
+          throw Error("Unexpected repository onboarding executable");
         actual[0] = repositoryFixtureGit;
         if (actual.includes("clone")) {
           if (actual.at(-2) !== "https://fixture.invalid/repository.git")
             throw Error("Unexpected repository onboarding clone URL");
           actual[actual.length - 2] = cloneSource;
-          appendFileSync(cloneCalls, `${JSON.stringify({ operation: "clone" })}\n`);
+          appendFileSync(
+            cloneCalls,
+            `${JSON.stringify({ operation: "clone" })}\n`,
+          );
         }
-        const result = Bun.spawnSync(actual, { cwd, stdout: "pipe", stderr: "ignore", env: fixtureGitEnv });
-        return { exitCode: result.exitCode, stdout: result.stdout.toString("utf8").trimEnd() };
+        const result = Bun.spawnSync(actual, {
+          cwd,
+          stdout: "pipe",
+          stderr: "ignore",
+          env: fixtureGitEnv,
+        });
+        return {
+          exitCode: result.exitCode,
+          stdout: result.stdout.toString("utf8").trimEnd(),
+        };
       },
       // Run inspection never reads this machine's hook log during the fixture suite.
       forgeGateLogRoot: join(home, "run-gate-logs"),

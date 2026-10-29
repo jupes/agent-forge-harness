@@ -74,16 +74,16 @@ import { keeperSessionStartReceiptSchema } from "../keeper/session-start-protoco
 import { keeperShiftStartRequestSchema } from "../keeper/shift-start-protocol";
 import { type AppendResult, appendEvent } from "../ledger/append";
 import { setSessionModel } from "../ledger/session-models";
+import {
+  repositoryCloneSchema,
+  repositorySelectionSchema,
+} from "../projects/repository-onboarding-protocol";
 import { workspaceKey } from "../projects/scope";
 import {
   createProjectStore,
   hashProjectCreateRequest,
   projectCatalogPath,
 } from "../projects/store";
-import {
-  repositoryCloneSchema,
-  repositorySelectionSchema,
-} from "../projects/repository-onboarding-protocol";
 import { FIXTURE_PROJECT_ID, projectCatalogFixture } from "../projects/testing";
 import { providerLoginFile } from "../providers/login";
 import { queueTracker } from "../scheduler/queue-fixture";
@@ -234,28 +234,37 @@ async function start(options: TestHearthOptions = {}): Promise<TestHearth> {
   mkdirSync(join(onboarding, "clones"), { recursive: true });
   writeOwnerOnly(
     join(onboarding, "selections", `${API_REPOSITORY_PICK_ID}.json`),
-    JSON.stringify(repositorySelectionSchema.parse({
-      version: 1,
-      workspaceKey: hearth.workspace,
-      requestId: API_REPOSITORY_PICK_ID,
-      state: "unknown",
-      path: null,
-      createdAt: "2026-10-28T00:00:00.000Z",
-    })),
+    JSON.stringify(
+      repositorySelectionSchema.parse({
+        version: 1,
+        workspaceKey: hearth.workspace,
+        requestId: API_REPOSITORY_PICK_ID,
+        state: "unknown",
+        path: null,
+        createdAt: "2026-10-28T00:00:00.000Z",
+      }),
+    ),
   );
   writeOwnerOnly(
     join(onboarding, "clones", `${API_REPOSITORY_CLONE_READ_ID}.json`),
-    JSON.stringify(repositoryCloneSchema.parse({
-      version: 1,
-      workspaceKey: hearth.workspace,
-      requestId: API_REPOSITORY_CLONE_READ_ID,
-      name: "fixture-clone",
-      url: "https://example.com/fixture.git",
-      state: "unknown",
-      path: join(hearth.home, "project-create-registry", "repos", "fixture-clone"),
-      createdAt: "2026-10-28T00:00:00.000Z",
-      updatedAt: "2026-10-28T00:00:00.000Z",
-    })),
+    JSON.stringify(
+      repositoryCloneSchema.parse({
+        version: 1,
+        workspaceKey: hearth.workspace,
+        requestId: API_REPOSITORY_CLONE_READ_ID,
+        name: "fixture-clone",
+        url: "https://example.com/fixture.git",
+        state: "unknown",
+        path: join(
+          hearth.home,
+          "project-create-registry",
+          "repos",
+          "fixture-clone",
+        ),
+        createdAt: "2026-10-28T00:00:00.000Z",
+        updatedAt: "2026-10-28T00:00:00.000Z",
+      }),
+    ),
   );
   return hearth;
 }
@@ -2596,13 +2605,31 @@ const ACTIONS: Record<string, ActionFixture> = {
       path: "/projects/repository-selections",
       body: { requestId: API_REPOSITORY_PICK_ID },
       status: 200,
-      audit: { family: "project-repository-selection", requestId: API_REPOSITORY_PICK_ID },
+      audit: {
+        family: "project-repository-selection",
+        requestId: API_REPOSITORY_PICK_ID,
+      },
     },
-    invalid: { path: "/projects/repository-selections", body: { requestId: "invalid" } },
+    invalid: {
+      path: "/projects/repository-selections",
+      body: { requestId: "invalid" },
+    },
     happened: async (h) => {
-      expect(repositorySelectionSchema.parse(JSON.parse(readFileSync(join(
-        h.home, "project-repository-onboarding", "selections", `${API_REPOSITORY_PICK_ID}.json`,
-      ), "utf8"))).state).toBe("unknown");
+      expect(
+        repositorySelectionSchema.parse(
+          JSON.parse(
+            readFileSync(
+              join(
+                h.home,
+                "project-repository-onboarding",
+                "selections",
+                `${API_REPOSITORY_PICK_ID}.json`,
+              ),
+              "utf8",
+            ),
+          ),
+        ).state,
+      ).toBe("unknown");
     },
   },
   "POST /projects/repository-selections/:requestId/register": {
@@ -2610,41 +2637,98 @@ const ACTIONS: Record<string, ActionFixture> = {
       path: `/projects/repository-selections/${API_REPOSITORY_REGISTER_ID}/register`,
       body: { name: "fixture-folder" },
       status: 200,
-      audit: { family: "project-repository-selection", requestId: API_REPOSITORY_REGISTER_ID },
-    },
-    invalid: { path: "/projects/repository-selections/not-a-uuid/register", body: { name: "bad" } },
-    prepare: async (h) => {
-      const init = Bun.spawnSync(["git", "init", "--quiet", h.configHome], { stdout: "ignore", stderr: "pipe" });
-      if (init.exitCode !== 0) throw new Error("Could not prepare the inert Git fixture.");
-      const directory = join(h.home, "project-repository-onboarding", "selections");
-      mkdirSync(directory, { recursive: true });
-      writeOwnerOnly(join(directory, `${API_REPOSITORY_REGISTER_ID}.json`), JSON.stringify(repositorySelectionSchema.parse({
-        version: 1,
-        workspaceKey: h.workspace,
+      audit: {
+        family: "project-repository-selection",
         requestId: API_REPOSITORY_REGISTER_ID,
-        state: "selected",
-        path: h.configHome,
-        createdAt: "2026-10-28T00:00:00.000Z",
-      })));
+      },
+    },
+    invalid: {
+      path: "/projects/repository-selections/not-a-uuid/register",
+      body: { name: "bad" },
+    },
+    prepare: async (h) => {
+      const init = Bun.spawnSync(["git", "init", "--quiet", h.configHome], {
+        stdout: "ignore",
+        stderr: "pipe",
+      });
+      if (init.exitCode !== 0)
+        throw new Error("Could not prepare the inert Git fixture.");
+      const directory = join(
+        h.home,
+        "project-repository-onboarding",
+        "selections",
+      );
+      mkdirSync(directory, { recursive: true });
+      writeOwnerOnly(
+        join(directory, `${API_REPOSITORY_REGISTER_ID}.json`),
+        JSON.stringify(
+          repositorySelectionSchema.parse({
+            version: 1,
+            workspaceKey: h.workspace,
+            requestId: API_REPOSITORY_REGISTER_ID,
+            state: "selected",
+            path: h.configHome,
+            createdAt: "2026-10-28T00:00:00.000Z",
+          }),
+        ),
+      );
     },
     happened: async (h, answer) => {
-      expect(answer).toMatchObject({ name: "fixture-folder", path: h.configHome, source: "folder" });
-      expect(JSON.parse(readFileSync(join(h.home, "project-create-registry", "approved-repositories.json"), "utf8")))
-        .toMatchObject({ repositories: [{ originalRequestId: API_REPOSITORY_REGISTER_ID }] });
+      expect(answer).toMatchObject({
+        name: "fixture-folder",
+        path: h.configHome,
+        source: "folder",
+      });
+      expect(
+        JSON.parse(
+          readFileSync(
+            join(
+              h.home,
+              "project-create-registry",
+              "approved-repositories.json",
+            ),
+            "utf8",
+          ),
+        ),
+      ).toMatchObject({
+        repositories: [{ originalRequestId: API_REPOSITORY_REGISTER_ID }],
+      });
     },
   },
   "POST /projects/repository-clone-reservations": {
     valid: {
       path: "/projects/repository-clone-reservations",
-      body: { requestId: API_REPOSITORY_CLONE_RESERVE_ID, name: "reviewed-clone", url: "https://example.com/repository.git" },
+      body: {
+        requestId: API_REPOSITORY_CLONE_RESERVE_ID,
+        name: "reviewed-clone",
+        url: "https://example.com/repository.git",
+      },
       status: 200,
-      audit: { family: "project-repository-clone", requestId: API_REPOSITORY_CLONE_RESERVE_ID },
+      audit: {
+        family: "project-repository-clone",
+        requestId: API_REPOSITORY_CLONE_RESERVE_ID,
+      },
     },
-    invalid: { path: "/projects/repository-clone-reservations", body: { requestId: "invalid", name: "bad", url: "https://example.com/repository.git" } },
+    invalid: {
+      path: "/projects/repository-clone-reservations",
+      body: {
+        requestId: "invalid",
+        name: "bad",
+        url: "https://example.com/repository.git",
+      },
+    },
     happened: async (h) => {
-      const record = JSON.parse(readFileSync(join(
-        h.home, "project-repository-onboarding", "clones", `${API_REPOSITORY_CLONE_RESERVE_ID}.json`,
-      ), "utf8")) as { state: string };
+      const record = JSON.parse(
+        readFileSync(
+          join(
+            h.home,
+            "project-repository-onboarding",
+            "clones",
+            `${API_REPOSITORY_CLONE_RESERVE_ID}.json`,
+          ),
+          "utf8",
+        ),
+      ) as { state: string };
       expect(record.state).toBe("reserved");
     },
   },
@@ -2653,54 +2737,89 @@ const ACTIONS: Record<string, ActionFixture> = {
       path: `/projects/repository-clone-reservations/${API_REPOSITORY_CLONE_EFFECT_ID}/clone`,
       body: {},
       status: 200,
-      audit: { family: "project-repository-clone", requestId: API_REPOSITORY_CLONE_EFFECT_ID },
+      audit: {
+        family: "project-repository-clone",
+        requestId: API_REPOSITORY_CLONE_EFFECT_ID,
+      },
     },
-    invalid: { path: "/projects/repository-clone-reservations/not-a-uuid/clone", body: {} },
+    invalid: {
+      path: "/projects/repository-clone-reservations/not-a-uuid/clone",
+      body: {},
+    },
     prepare: async (h) => {
       const directory = join(h.home, "project-repository-onboarding", "clones");
       mkdirSync(directory, { recursive: true });
-      writeOwnerOnly(join(directory, `${API_REPOSITORY_CLONE_EFFECT_ID}.json`), JSON.stringify(repositoryCloneSchema.parse({
-        version: 1,
-        workspaceKey: h.workspace,
-        requestId: API_REPOSITORY_CLONE_EFFECT_ID,
-        name: "held-clone",
-        url: "https://example.com/held.git",
-        state: "unknown",
-        path: join(h.home, "project-create-registry", "repos", "held-clone"),
-        createdAt: "2026-10-28T00:00:00.000Z",
-        updatedAt: "2026-10-28T00:00:00.000Z",
-      })));
+      writeOwnerOnly(
+        join(directory, `${API_REPOSITORY_CLONE_EFFECT_ID}.json`),
+        JSON.stringify(
+          repositoryCloneSchema.parse({
+            version: 1,
+            workspaceKey: h.workspace,
+            requestId: API_REPOSITORY_CLONE_EFFECT_ID,
+            name: "held-clone",
+            url: "https://example.com/held.git",
+            state: "unknown",
+            path: join(
+              h.home,
+              "project-create-registry",
+              "repos",
+              "held-clone",
+            ),
+            createdAt: "2026-10-28T00:00:00.000Z",
+            updatedAt: "2026-10-28T00:00:00.000Z",
+          }),
+        ),
+      );
     },
-    happened: async (_h, answer) => expect(answer).toMatchObject({ state: "unknown" }),
+    happened: async (_h, answer) =>
+      expect(answer).toMatchObject({ state: "unknown" }),
   },
   "POST /projects/repository-clone-reservations/:requestId/register": {
     valid: {
       path: `/projects/repository-clone-reservations/${API_REPOSITORY_CLONE_REGISTER_ID}/register`,
       body: {},
       status: 200,
-      audit: { family: "project-repository-clone", requestId: API_REPOSITORY_CLONE_REGISTER_ID },
+      audit: {
+        family: "project-repository-clone",
+        requestId: API_REPOSITORY_CLONE_REGISTER_ID,
+      },
     },
-    invalid: { path: "/projects/repository-clone-reservations/not-a-uuid/register", body: {} },
+    invalid: {
+      path: "/projects/repository-clone-reservations/not-a-uuid/register",
+      body: {},
+    },
     prepare: async (h) => {
       const clonePath = join(h.configHome, "completed clone");
-      const init = Bun.spawnSync(["git", "init", "--quiet", clonePath], { stdout: "ignore", stderr: "pipe" });
-      if (init.exitCode !== 0) throw new Error("Could not prepare the inert Git fixture.");
+      const init = Bun.spawnSync(["git", "init", "--quiet", clonePath], {
+        stdout: "ignore",
+        stderr: "pipe",
+      });
+      if (init.exitCode !== 0)
+        throw new Error("Could not prepare the inert Git fixture.");
       const directory = join(h.home, "project-repository-onboarding", "clones");
       mkdirSync(directory, { recursive: true });
-      writeOwnerOnly(join(directory, `${API_REPOSITORY_CLONE_REGISTER_ID}.json`), JSON.stringify(repositoryCloneSchema.parse({
-        version: 1,
-        workspaceKey: h.workspace,
-        requestId: API_REPOSITORY_CLONE_REGISTER_ID,
-        name: "completed-clone",
-        url: "https://example.com/completed.git",
-        state: "clone-complete",
-        path: clonePath,
-        createdAt: "2026-10-28T00:00:00.000Z",
-        updatedAt: "2026-10-28T00:00:00.000Z",
-      })));
+      writeOwnerOnly(
+        join(directory, `${API_REPOSITORY_CLONE_REGISTER_ID}.json`),
+        JSON.stringify(
+          repositoryCloneSchema.parse({
+            version: 1,
+            workspaceKey: h.workspace,
+            requestId: API_REPOSITORY_CLONE_REGISTER_ID,
+            name: "completed-clone",
+            url: "https://example.com/completed.git",
+            state: "clone-complete",
+            path: clonePath,
+            createdAt: "2026-10-28T00:00:00.000Z",
+            updatedAt: "2026-10-28T00:00:00.000Z",
+          }),
+        ),
+      );
     },
     happened: async (h, answer) => {
-      expect(answer).toMatchObject({ state: "registered", path: join(h.configHome, "completed clone") });
+      expect(answer).toMatchObject({
+        state: "registered",
+        path: join(h.configHome, "completed clone"),
+      });
     },
   },
   // A child that inherited its parent's label: in no state, so propose takes it in.

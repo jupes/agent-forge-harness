@@ -25,6 +25,7 @@ import type { KeeperOperatorPost } from "../../keeper/operator-post";
 import type { KeeperRuntime } from "../../keeper/recovery-runtime";
 import type { AppendResult } from "../../ledger/append";
 import { latestEventId, queryEvents } from "../../ledger/query";
+import type { createRepositoryOnboarding } from "../../projects/repository-onboarding";
 import type { ProviderInspector } from "../../providers/inspect";
 import type { ProviderLoginService } from "../../providers/login";
 import type { SessionRuntime } from "../../sessions/admission";
@@ -33,7 +34,6 @@ import type { createCodexTaskRuntime } from "../../sessions/codex-task-runtime";
 import type { createGeminiChatRuntime } from "../../sessions/gemini-chat-runtime";
 import type { createGeminiTaskRuntime } from "../../sessions/gemini-task-runtime";
 import type { ProjectShiftRuntime } from "../../shifts/service";
-import type { createRepositoryOnboarding } from "../../projects/repository-onboarding";
 import {
   type ActionRoute,
   type ApiRoute,

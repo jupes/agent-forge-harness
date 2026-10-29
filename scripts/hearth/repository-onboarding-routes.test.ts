@@ -21,7 +21,8 @@ function initGit(path: string, env: NodeJS.ProcessEnv, bare = false): void {
   mkdirSync(path, { recursive: true });
   const args = ["git", "init", ...(bare ? ["--bare"] : []), "--quiet", path];
   const result = Bun.spawnSync(args, { stdout: "ignore", stderr: "pipe", env });
-  if (result.exitCode !== 0) throw new Error("Could not prepare the private Git fixture.");
+  if (result.exitCode !== 0)
+    throw new Error("Could not prepare the private Git fixture.");
 }
 
 async function json<T = unknown>(response: Response): Promise<{ data: T }> {
@@ -41,18 +42,31 @@ test("protected repository onboarding recovers exact records and updates checked
       allowLocalRepositoryFixtureUrls: true,
       projectRepositoryRunPicker: async () => ({
         exitCode: 0,
-        stdout: JSON.stringify({ ok: true, data: { path: selectedPath }, error: null }),
+        stdout: JSON.stringify({
+          ok: true,
+          data: { path: selectedPath },
+          error: null,
+        }),
       }),
       projectRepositoryRunGit: async (command, cwd) => {
         const actual = [...command];
         if (actual.includes("clone")) {
           cloneCalls++;
           const sourceIndex = actual.length - 2;
-          if (actual[sourceIndex] !== FIXTURE_URL) throw new Error("Unexpected fixture clone source.");
+          if (actual[sourceIndex] !== FIXTURE_URL)
+            throw new Error("Unexpected fixture clone source.");
           actual[sourceIndex] = bareRepository;
         }
-        const result = Bun.spawnSync(actual, { cwd, stdout: "pipe", stderr: "ignore", env: fixtureGitEnv });
-        return { exitCode: result.exitCode, stdout: result.stdout.toString("utf8") };
+        const result = Bun.spawnSync(actual, {
+          cwd,
+          stdout: "pipe",
+          stderr: "ignore",
+          env: fixtureGitEnv,
+        });
+        return {
+          exitCode: result.exitCode,
+          stdout: result.stdout.toString("utf8"),
+        };
       },
     },
   });
@@ -63,7 +77,12 @@ test("protected repository onboarding recovers exact records and updates checked
   bareRepository = join(fixtures, "clone-source.git");
   const gitConfig = join(fixtures, "gitconfig");
   writeFileSync(gitConfig, "");
-  fixtureGitEnv = { ...process.env, GIT_CONFIG_GLOBAL: gitConfig, GIT_CONFIG_NOSYSTEM: "1", GIT_TERMINAL_PROMPT: "0" };
+  fixtureGitEnv = {
+    ...process.env,
+    GIT_CONFIG_GLOBAL: gitConfig,
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_TERMINAL_PROMPT: "0",
+  };
   initGit(h.workspace, fixtureGitEnv);
   initGit(external, fixtureGitEnv);
   initGit(bareRepository, fixtureGitEnv, true);
@@ -78,100 +97,222 @@ test("protected repository onboarding recovers exact records and updates checked
     created_at: "2026-10-26T00:00:00.000Z",
     updated_at: "2026-10-26T00:00:00.000Z",
   });
-  h.bd.answer = (args) => args[0] === "export"
-    ? { status: 0, stdout: [...h.bd.issues.values()].map((issue) => JSON.stringify(issue)).join("\n"), stderr: "" }
-    : undefined;
+  h.bd.answer = (args) =>
+    args[0] === "export"
+      ? {
+          status: 0,
+          stdout: [...h.bd.issues.values()]
+            .map((issue) => JSON.stringify(issue))
+            .join("\n"),
+          stderr: "",
+        }
+      : undefined;
   const headers = h.headers(h.hearth.token);
-  const post = (path: string, body: unknown) => fetch(`${h.api}${path}`, {
-    method: "POST", headers, body: JSON.stringify(body),
-  });
-  const read = (path: string, authorized = true) => fetch(`${h.api}${path}`, {
-    headers: authorized ? headers : h.headers(),
-  });
+  const post = (path: string, body: unknown) =>
+    fetch(`${h.api}${path}`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+    });
+  const read = (path: string, authorized = true) =>
+    fetch(`${h.api}${path}`, {
+      headers: authorized ? headers : h.headers(),
+    });
 
   selectedPath = null;
-  const cancelled = await post("/projects/repository-selections", { requestId: PICK_ID });
+  const cancelled = await post("/projects/repository-selections", {
+    requestId: PICK_ID,
+  });
   expect(cancelled.status).toBe(200);
-  expect((await json(cancelled)).data).toMatchObject({ requestId: PICK_ID, state: "cancelled", path: null });
-  expect((await json(await read(`/projects/repository-selections/${PICK_ID}`))).data).toMatchObject({
-    requestId: PICK_ID, state: "cancelled", path: null,
+  expect((await json(cancelled)).data).toMatchObject({
+    requestId: PICK_ID,
+    state: "cancelled",
+    path: null,
+  });
+  expect(
+    (await json(await read(`/projects/repository-selections/${PICK_ID}`))).data,
+  ).toMatchObject({
+    requestId: PICK_ID,
+    state: "cancelled",
+    path: null,
   });
   const auditedPicks = h.events(["operator.action"]).length;
-  expect((await read(`/projects/repository-selections/${PICK_ID}`, false)).status).toBe(403);
+  expect(
+    (await read(`/projects/repository-selections/${PICK_ID}`, false)).status,
+  ).toBe(403);
   expect(h.events(["operator.action"])).toHaveLength(auditedPicks);
   expect(h.events(["operator.action"]).at(-1)?.payload).toMatchObject({
-    action: "project.repository.pick", target: PICK_ID,
+    action: "project.repository.pick",
+    target: PICK_ID,
   });
 
   selectedPath = emptyMarker;
-  const rejected = await post("/projects/repository-selections", { requestId: INVALID_ID });
-  expect(rejected.status).toBe(200);
-  expect((await json(rejected)).data).toMatchObject({ requestId: INVALID_ID, state: "rejected", path: null });
-  expect((await json(await read(`/projects/repository-selections/${INVALID_ID}`))).data).toMatchObject({
-    requestId: INVALID_ID, state: "rejected", path: null,
+  const rejected = await post("/projects/repository-selections", {
+    requestId: INVALID_ID,
   });
-  const rejectedRegistration = await post(`/projects/repository-selections/${INVALID_ID}/register`, { name: "bad-folder" });
+  expect(rejected.status).toBe(200);
+  expect((await json(rejected)).data).toMatchObject({
+    requestId: INVALID_ID,
+    state: "rejected",
+    path: null,
+  });
+  expect(
+    (await json(await read(`/projects/repository-selections/${INVALID_ID}`)))
+      .data,
+  ).toMatchObject({
+    requestId: INVALID_ID,
+    state: "rejected",
+    path: null,
+  });
+  const rejectedRegistration = await post(
+    `/projects/repository-selections/${INVALID_ID}/register`,
+    { name: "bad-folder" },
+  );
   expect(rejectedRegistration.status).toBe(409);
 
   selectedPath = h.workspace;
-  const servedSelection = await post("/projects/repository-selections", { requestId: SERVED_ID });
+  const servedSelection = await post("/projects/repository-selections", {
+    requestId: SERVED_ID,
+  });
   expect(servedSelection.status).toBe(200);
-  expect((await json(servedSelection)).data).toMatchObject({ state: "selected", path: h.workspace });
-  const duplicateServed = await post(`/projects/repository-selections/${SERVED_ID}/register`, { name: "served-workspace-copy" });
+  expect((await json(servedSelection)).data).toMatchObject({
+    state: "selected",
+    path: h.workspace,
+  });
+  const duplicateServed = await post(
+    `/projects/repository-selections/${SERVED_ID}/register`,
+    { name: "served-workspace-copy" },
+  );
   expect(duplicateServed.status).toBe(409);
 
   selectedPath = external;
-  const selection = await post("/projects/repository-selections", { requestId: REGISTER_ID });
-  expect(selection.status).toBe(200);
-  expect((await json(selection)).data).toMatchObject({ requestId: REGISTER_ID, state: "selected", path: external });
-  expect((await json(await read(`/projects/repository-selections/${REGISTER_ID}`))).data).toMatchObject({
-    requestId: REGISTER_ID, state: "selected", path: external,
+  const selection = await post("/projects/repository-selections", {
+    requestId: REGISTER_ID,
   });
-  const registration = await post(`/projects/repository-selections/${REGISTER_ID}/register`, { name: "selected-folder" });
+  expect(selection.status).toBe(200);
+  expect((await json(selection)).data).toMatchObject({
+    requestId: REGISTER_ID,
+    state: "selected",
+    path: external,
+  });
+  expect(
+    (await json(await read(`/projects/repository-selections/${REGISTER_ID}`)))
+      .data,
+  ).toMatchObject({
+    requestId: REGISTER_ID,
+    state: "selected",
+    path: external,
+  });
+  const registration = await post(
+    `/projects/repository-selections/${REGISTER_ID}/register`,
+    { name: "selected-folder" },
+  );
   expect(registration.status).toBe(200);
   expect((await json(registration)).data).toMatchObject({
-    name: "selected-folder", path: external, source: "folder", originalRequestId: REGISTER_ID,
+    name: "selected-folder",
+    path: external,
+    source: "folder",
+    originalRequestId: REGISTER_ID,
   });
-  expect((await json(await read(`/projects/repository-selections/${REGISTER_ID}`))).data).toMatchObject({
-    requestId: REGISTER_ID, state: "registered", name: "selected-folder", path: external,
+  expect(
+    (await json(await read(`/projects/repository-selections/${REGISTER_ID}`)))
+      .data,
+  ).toMatchObject({
+    requestId: REGISTER_ID,
+    state: "registered",
+    name: "selected-folder",
+    path: external,
   });
-  expect(h.events(["operator.action"]).filter((event) =>
-    event.kind === "operator.action" && event.payload.action === "project.repository.register",
-  )).toHaveLength(1);
+  expect(
+    h
+      .events(["operator.action"])
+      .filter(
+        (event) =>
+          event.kind === "operator.action" &&
+          event.payload.action === "project.repository.register",
+      ),
+  ).toHaveLength(1);
 
   const beforeClone = await read("/projects/create-options");
   const beforeCloneData = (await json(beforeClone)).data;
   expect(beforeCloneData).toMatchObject({
-    repositories: expect.arrayContaining([expect.objectContaining({ name: "selected-folder", path: external })]),
+    repositories: expect.arrayContaining([
+      expect.objectContaining({ name: "selected-folder", path: external }),
+    ]),
   });
   expect(beforeCloneData).not.toMatchObject({
-    repositories: expect.arrayContaining([expect.objectContaining({ name: "served-workspace-copy" })]),
+    repositories: expect.arrayContaining([
+      expect.objectContaining({ name: "served-workspace-copy" }),
+    ]),
   });
   const reserved = await post("/projects/repository-clone-reservations", {
-    requestId: CLONE_ID, name: "cloned-folder", url: FIXTURE_URL,
+    requestId: CLONE_ID,
+    name: "cloned-folder",
+    url: FIXTURE_URL,
   });
   expect(reserved.status).toBe(200);
-  expect((await json(reserved)).data).toMatchObject({ requestId: CLONE_ID, state: "reserved", name: "cloned-folder" });
+  expect((await json(reserved)).data).toMatchObject({
+    requestId: CLONE_ID,
+    state: "reserved",
+    name: "cloned-folder",
+  });
   expect(cloneCalls).toBe(0);
 
   // Discarding this reply models a reload after the one explicit clone effect.
-  expect((await post(`/projects/repository-clone-reservations/${CLONE_ID}/clone`, {})).status).toBe(200);
-  const saved = await read(`/projects/repository-clone-reservations/${CLONE_ID}`);
-  expect((await json(saved)).data).toMatchObject({ requestId: CLONE_ID, state: "registered", name: "cloned-folder" });
+  expect(
+    (
+      await post(
+        `/projects/repository-clone-reservations/${CLONE_ID}/clone`,
+        {},
+      )
+    ).status,
+  ).toBe(200);
+  const saved = await read(
+    `/projects/repository-clone-reservations/${CLONE_ID}`,
+  );
+  expect((await json(saved)).data).toMatchObject({
+    requestId: CLONE_ID,
+    state: "registered",
+    name: "cloned-folder",
+  });
   expect(cloneCalls).toBe(1);
-  expect((await post(`/projects/repository-clone-reservations/${CLONE_ID}/clone`, {})).status).toBe(200);
+  expect(
+    (
+      await post(
+        `/projects/repository-clone-reservations/${CLONE_ID}/clone`,
+        {},
+      )
+    ).status,
+  ).toBe(200);
   expect(cloneCalls).toBe(1);
 
   const optionsResponse = await read("/projects/create-options");
-  const options = (await json(optionsResponse)).data as { workspace: { path: string }; repositories: Array<{ name: string; path: string }> };
-  expect(options.repositories).toEqual(expect.arrayContaining([
-    expect.objectContaining({ name: "selected-folder", path: external }),
-    expect.objectContaining({ name: "cloned-folder", path: join(h.home, "project-create-registry", "repos", "cloned-folder") }),
-  ]));
-  const query = new URLSearchParams({ slug: "onboarding-alpha", epicId: EPIC_ID });
+  const options = (await json(optionsResponse)).data as {
+    workspace: { path: string };
+    repositories: Array<{ name: string; path: string }>;
+  };
+  expect(options.repositories).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ name: "selected-folder", path: external }),
+      expect.objectContaining({
+        name: "cloned-folder",
+        path: join(h.home, "project-create-registry", "repos", "cloned-folder"),
+      }),
+    ]),
+  );
+  const query = new URLSearchParams({
+    slug: "onboarding-alpha",
+    epicId: EPIC_ID,
+  });
   const previewResponse = await read(`/projects/create-scope-preview?${query}`);
-  const preview = projectScopePreviewSchema.parse((await json(previewResponse)).data);
-  expect(preview).toMatchObject({ complete: true, slug: "onboarding-alpha", epicIds: [EPIC_ID] });
+  const preview = projectScopePreviewSchema.parse(
+    (await json(previewResponse)).data,
+  );
+  expect(preview).toMatchObject({
+    complete: true,
+    slug: "onboarding-alpha",
+    epicIds: [EPIC_ID],
+  });
   const acceptedScope = await post("/projects/create-reservations", {
     requestId: "d134a802-6d1c-47c4-a001-3f5f83d38d36",
     expectedCatalogRevision: 0,
@@ -182,7 +323,17 @@ test("protected repository onboarding recovers exact records and updates checked
       icon: "A",
       keeperSmith: "fixture-keeper",
       color: "green",
-      workspaces: [{ root: options.workspace.path, repositories: [options.workspace.path, external, join(h.home, "project-create-registry", "repos", "cloned-folder")], epicIds: [EPIC_ID] }],
+      workspaces: [
+        {
+          root: options.workspace.path,
+          repositories: [
+            options.workspace.path,
+            external,
+            join(h.home, "project-create-registry", "repos", "cloned-folder"),
+          ],
+          epicIds: [EPIC_ID],
+        },
+      ],
     },
   });
   expect(acceptedScope.status).toBe(201);
@@ -196,7 +347,13 @@ test("protected repository onboarding recovers exact records and updates checked
       icon: "A",
       keeperSmith: "fixture-keeper",
       color: "green",
-      workspaces: [{ root: options.workspace.path, repositories: [options.workspace.path, emptyMarker], epicIds: [EPIC_ID] }],
+      workspaces: [
+        {
+          root: options.workspace.path,
+          repositories: [options.workspace.path, emptyMarker],
+          epicIds: [EPIC_ID],
+        },
+      ],
     },
   });
   expect(refusedScope.status).toBe(400);
