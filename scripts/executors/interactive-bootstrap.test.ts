@@ -123,12 +123,18 @@ function pids(line: string): {
 
 test("the private bootstrap forwards only a literal true window option", async () => {
   const home = scratch.make("interactive-window-option-"),
-    command = [process.execPath],
+    command = [join(home, "missing-inert-target.exe")],
     observer = join(import.meta.dir, "fixtures/interactive-spawn-options.ts"),
     observe = async (grant: Record<string, unknown>) => {
       const lines: string[] = [];
       const result = await supervise({
-        command: [process.execPath, observer],
+        command: [
+          process.execPath,
+          "--no-env-file",
+          "--no-install",
+          `--config=${join(import.meta.dir, "interactive-bootstrap.bunfig.toml")}`,
+          observer,
+        ],
         cwd: home,
         env: env(home),
         stdin: `${JSON.stringify(grant)}\n`,
@@ -137,6 +143,8 @@ test("the private bootstrap forwards only a literal true window option", async (
         spawn(rootCommand, rootOptions) {
           return Bun.spawn(rootCommand, {
             ...rootOptions,
+            serialization: "json",
+            ipc() {},
             windowsHide: true,
           });
         },
@@ -153,11 +161,15 @@ test("the private bootstrap forwards only a literal true window option", async (
     };
 
   const forwarded = await observe({ ...base, windowsHide: true });
-  expect(forwarded.lines).toEqual([JSON.stringify({ hasOwn: true, value: true })]);
+  expect(forwarded.lines).toEqual([
+    JSON.stringify({ hasOwn: true, value: true }),
+  ]);
   expect(forwarded.result.exitCode).toBe(1);
 
   const omitted = await observe(base);
-  expect(omitted.lines).toEqual([JSON.stringify({ hasOwn: false, value: null })]);
+  expect(omitted.lines).toEqual([
+    JSON.stringify({ hasOwn: false, value: null }),
+  ]);
   expect(omitted.result.exitCode).toBe(1);
 
   for (const windowsHide of [false, null, "true", 1]) {
