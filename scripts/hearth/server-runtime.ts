@@ -650,6 +650,7 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
     appendEvent: append,
     // Under the home, with the ledger: a shift given the same home takes the same lock.
     queueLockFile: join(home, QUEUE_LOCK_FILE),
+    checkpointReviewQueueLock: withQueueLock,
     shiftsDir,
     shiftStarts,
     projectShiftRuntime:

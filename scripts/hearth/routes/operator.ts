@@ -21,6 +21,7 @@ import {
   safeCouncilError,
 } from "../../council/service";
 import { reviewCommentFor } from "../../dashboard/forge-run-model";
+import type { ProjectCheckpointReviewQueueLock } from "../../forge/project-checkpoint-review-store";
 import type { KeeperOperatorPost } from "../../keeper/operator-post";
 import type { KeeperRuntime } from "../../keeper/recovery-runtime";
 import type { AppendResult } from "../../ledger/append";
@@ -74,6 +75,7 @@ import {
 import { createProjectActivityRoutes } from "./project-activity";
 import { projectBeadWriteRoutes } from "./project-bead-writes";
 import { projectBeadsRoute } from "./project-beads";
+import { createProjectCheckpointReviewRoutes } from "./project-checkpoint-reviews";
 import { createProjectCouncilRoutes } from "./project-council";
 import { projectOverviewRoute } from "./project-overview";
 import { createProjectRunRoutes } from "./project-runs";
@@ -128,6 +130,8 @@ export interface OperatorDeps extends ReadDeps {
   appendEvent(event: LedgerEventInput): AppendResult;
   /** The queue lock's file: one for every process that moves beads of this tracker. */
   queueLockFile: string;
+  /** Shared process-level queue lock for durable checkpoint review writes. */
+  checkpointReviewQueueLock: ProjectCheckpointReviewQueueLock;
   /** Where shifts given this hearth's home keep their records and stop requests. */
   shiftsDir: string;
   /** The shifts this hearth starts (`POST /shifts`); the hearth closes them. */
@@ -440,6 +444,18 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     deps,
     projectSnapshotReader(deps.projectHome, deps, { membershipOnly: true }),
   );
+  const checkpointReviews = createProjectCheckpointReviewRoutes({
+    home: deps.projectHome,
+    workspace: deps.workspace,
+    appendEvent: deps.appendEvent,
+    queueLock: deps.checkpointReviewQueueLock,
+    runBd: deps.runBd,
+    ...(deps.bdTimeoutMs !== undefined
+      ? { bdTimeoutMs: deps.bdTimeoutMs }
+      : {}),
+    resolveAuthority: projectRuns.checkpointAuthority,
+    readScope: projectRuns.checkpointReadScope,
+  });
   const projectCouncil = createProjectCouncilRoutes(
     deps,
     createProjectSnapshot,
@@ -557,6 +573,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     projectRuns.list,
     projectRuns.detail,
     projectRuns.artifact,
+    ...checkpointReviews.reads,
     projectBeadsRoute(deps, projectSnapshot),
     projectShiftOptionsRoute(
       deps,
@@ -622,6 +639,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     routes: [
       ...reads,
       ...projectCouncil.routes,
+      ...checkpointReviews.actions,
       stream,
       conversations.events,
       ownedSessions.events,
@@ -686,6 +704,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       await ownedSessions.close();
       await proposals.close();
       await conversations.close();
+      await checkpointReviews.close();
     },
   };
 }
