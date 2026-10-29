@@ -9,6 +9,11 @@ import type {
   PreparedConversationSend,
 } from "../../types/conversation";
 import type { KeeperContinuationRequest } from "../../types/keeper-recovery";
+import type {
+  KeeperBriefIntent,
+  KeeperBriefOriginBinding,
+  KeeperBriefSnapshot,
+} from "../../types/keeper-brief";
 import {
   ensurePrivateHome,
   MAX_SESSION_TRANSCRIPT_BYTES,
@@ -256,6 +261,35 @@ export function createConversationStore(
   };
   return {
     read,
+    /** Typed API scaffold for the authorized test-first reservation checkpoint. */
+    async reserveKeeperBrief(
+      _projectId: string,
+      _input: {
+        expectedRevision: number;
+        origin: KeeperBriefOriginBinding;
+        snapshot: KeeperBriefSnapshot;
+      },
+    ): Promise<KeeperBriefIntent> {
+      throw new ConversationError(
+        501,
+        "Canonical Keeper brief reservation is not implemented.",
+      );
+    },
+    discoverKeeperBrief(_projectId: string): KeeperBriefIntent | null {
+      throw new ConversationError(
+        501,
+        "Canonical Keeper brief discovery is not implemented.",
+      );
+    },
+    readKeeperBriefIntent(
+      _projectId: string,
+      _requestId: string,
+    ): KeeperBriefIntent | null {
+      throw new ConversationError(
+        501,
+        "Canonical Keeper brief original reads are not implemented.",
+      );
+    },
     /** Publish only the exact empty, native-bound child journal without replacing an existing path. */
     async bootstrapCodexForkChild(
       projectId: string,

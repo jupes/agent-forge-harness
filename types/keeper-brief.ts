@@ -55,3 +55,39 @@ export interface KeeperBriefs {
     problem: string | null;
   } | null;
 }
+
+/** Trusted source binding frozen into a private Keeper brief review original. */
+export type KeeperBriefOriginBinding =
+  | {
+      kind: "overview";
+      projectId: string;
+      workspace: string;
+      catalogRevision: number;
+    }
+  | {
+      kind: "onboarding";
+      projectId: string;
+      workspace: string;
+      catalogRevision: number;
+      projectCreate: {
+        requestId: string;
+        hash: string;
+        revision: number;
+      };
+    };
+
+/** Exact private original retained before an explicit brief turn is admitted. */
+export interface KeeperBriefIntent {
+  version: 1;
+  requestId: string;
+  projectId: string;
+  conversationId: string;
+  expectedRevision: number;
+  origin: KeeperBriefOriginBinding;
+  purpose: "brief";
+  intentHash: string;
+  snapshot: KeeperBriefSnapshot;
+  createdAt: string;
+  state: "reserved" | "admitted" | "retired";
+  preparedTurnHash?: string;
+}
