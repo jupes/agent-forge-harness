@@ -11,6 +11,7 @@ import {
 } from "../../../types/project-council";
 import { projectCouncilRunReadSchema } from "../../../types/project-council-run-read";
 import { councilOutcome } from "../../council/ledger-events";
+import { workspaceKey } from "../../projects/scope";
 import { createProjectStore, projectCatalogPath } from "../../projects/store";
 import {
   FIXTURE_PROJECT_ID,
@@ -745,15 +746,14 @@ test("a completed project Council Bead review posts its verdict once and replays
   expect(history.data.items).toMatchObject([
     { requestId, state: "completed", phase: "completed" },
   ]);
-  expect(h.commands.calls).toEqual([
-    {
-      command: ["bd", "--readonly", "show", beadId, "--json"],
-      cwd: h.workspace,
-    },
-    {
-      command: ["bd", "--readonly", "comments", beadId, "--json"],
-      cwd: h.workspace,
-    },
+  expect(
+    h.commands.calls.map(({ command, cwd }) => ({
+      command,
+      cwd: workspaceKey(cwd),
+    })),
+  ).toEqual([
+    { command: ["bd", "--readonly", "show", beadId, "--json"], cwd: h.workspace },
+    { command: ["bd", "--readonly", "comments", beadId, "--json"], cwd: h.workspace },
   ]);
 });
 
