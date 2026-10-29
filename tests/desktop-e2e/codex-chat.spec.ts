@@ -1237,6 +1237,14 @@ test("a confirmed Claude rate limit can target Gemini ACP Chat", async ({
   expect(targetRecord.requestHash).toBe(startProof.requestHash);
   expect(targetRecord.mode).toBe("chat");
   expect(targetRecord.id).not.toBe(sourceRecord.id);
+  await expect
+    .poll(async () => {
+      const pageState = await conversationPage(page, alpha.id, targetRecord.id);
+      return pageState.turns.find(
+        (turn) => turn.requestId === startProof.request.requestId,
+      )?.phase;
+    })
+    .toBe("completed");
   const targetPage = await conversationPage(page, alpha.id, targetRecord.id);
   expect(targetPage.binding?.provider).toBe("gemini");
   const initialTarget = targetPage.frames[0];
