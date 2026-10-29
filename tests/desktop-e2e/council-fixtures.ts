@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { writeFileSync } from "node:fs";
-import type { ProjectCatalog, ProjectRecord } from "../../types/projects";
 import { projectFixture } from "../../scripts/projects/testing";
+import type { ProjectCatalog, ProjectRecord } from "../../types/projects";
 import { beta, catalogFile, seedProjects, workspace } from "./project-fixtures";
 
 export function seedCouncilProject(): ProjectRecord {

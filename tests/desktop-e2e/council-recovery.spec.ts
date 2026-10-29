@@ -11,8 +11,8 @@ import {
 } from "../../types/project-council-run-read";
 import { openSettled } from "../e2e/fixtures";
 import { HEARTH_HOME } from "../e2e/servers";
-import { alpha as alphaTemplate } from "./project-fixtures";
 import { seedCouncilProject } from "./council-fixtures";
+import { alpha as alphaTemplate } from "./project-fixtures";
 
 const controlFile = join(HEARTH_HOME, "council-fixture-control.json");
 const callsFile = join(HEARTH_HOME, "council-fixture-calls.jsonl");

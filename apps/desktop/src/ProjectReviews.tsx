@@ -247,7 +247,10 @@ type VerifiedCouncilResult = {
 
 type CouncilProgressJob = {
   status: string;
-  events: readonly { type: string; payload?: { stage?: string; round?: number } }[];
+  events: readonly {
+    type: string;
+    payload?: { stage?: string; round?: number };
+  }[];
 };
 export function projectCouncilProgressView(
   receiptPhase: string | null | undefined,
@@ -256,7 +259,8 @@ export function projectCouncilProgressView(
   const active =
     receiptPhase === "running" &&
     (job?.status === "running" || job?.status === "cancelling");
-  if (!active || !job) return { active: false, label: null, stopPending: false };
+  if (!active || !job)
+    return { active: false, label: null, stopPending: false };
   if (job.status === "cancelling")
     return {
       active: true,
@@ -265,12 +269,16 @@ export function projectCouncilProgressView(
     };
   const latest = [...job.events]
     .reverse()
-    .find((event) => event.type === "stage.started" || event.type === "stage.completed");
+    .find(
+      (event) =>
+        event.type === "stage.started" || event.type === "stage.completed",
+    );
   const label =
     latest?.type === "stage.started"
       ? latest.payload?.stage === "independent"
         ? "Reviewing"
-        : latest.payload?.stage === "peer" || latest.payload?.stage === "revision"
+        : latest.payload?.stage === "peer" ||
+            latest.payload?.stage === "revision"
           ? `Discussing round ${latest.payload.round ?? 1}`
           : latest.payload?.stage === "chair"
             ? "Synthesizing"
@@ -883,7 +891,9 @@ function RunReview({
           </Button>
         ) : null}
         {active && progress.stopPending ? (
-          <span>Waiting for a verified saved result before reporting cancellation.</span>
+          <span>
+            Waiting for a verified saved result before reporting cancellation.
+          </span>
         ) : active && !canCancel ? (
           <span>
             Read the saved result to confirm the current state before requesting

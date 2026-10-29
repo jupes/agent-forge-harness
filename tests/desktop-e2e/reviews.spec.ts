@@ -1,6 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
+import type { ProjectRecord } from "../../types/projects";
 import {
   readComments,
   readState,
@@ -10,9 +11,8 @@ import {
 } from "../e2e/bd-stand-in-state";
 import { openSettled } from "../e2e/fixtures";
 import { BD_STAND_IN_STATE } from "../e2e/servers";
-import type { ProjectRecord } from "../../types/projects";
-import { alpha as fixtureAlpha, seedSessions } from "./project-fixtures";
 import { seedCouncilProject } from "./council-fixtures";
+import { alpha as fixtureAlpha, seedSessions } from "./project-fixtures";
 
 let alpha: ProjectRecord = fixtureAlpha;
 
@@ -177,7 +177,9 @@ test("session and Keeper summary entries keep the draft blank and focused", asyn
   );
   const inspector = page.getByRole("region", { name: "Selected session" });
   await expect(inspector.getByText("e2e-alpha-parent")).toBeVisible();
-  await inspector.getByRole("button", { name: "Write a Council summary" }).click();
+  await inspector
+    .getByRole("button", { name: "Write a Council summary" })
+    .click();
   const source = page.getByLabel("Document or question");
   await expect(source).toHaveValue("");
   await expect(source).toBeFocused();
@@ -200,9 +202,13 @@ test("session and Keeper summary entries keep the draft blank and focused", asyn
   const confirmation = page.getByRole("dialog", {
     name: "Replace Council draft source?",
   });
-  await expect(confirmation.getByRole("button", { name: "Keep draft" })).toBeVisible();
+  await expect(
+    confirmation.getByRole("button", { name: "Keep draft" }),
+  ).toBeVisible();
   await confirmation.getByRole("button", { name: "Replace source" }).click();
-  await expect(page).toHaveURL(new RegExp(`/desktop/project/${alpha.id}/reviews$`));
+  await expect(page).toHaveURL(
+    new RegExp(`/desktop/project/${alpha.id}/reviews$`),
+  );
   await expect(source).toHaveValue("");
   await expect(source).toBeFocused();
   expect(posts).toEqual([]);
