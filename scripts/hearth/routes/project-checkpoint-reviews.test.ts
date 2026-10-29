@@ -295,7 +295,9 @@ test("checkpoint review prepare is metadata-only; explicit commit records one ex
     ],
   ]);
   expect(
-    h.events(["operator.action"]).map((event) => event.payload.action),
+    h.events(["operator.action"]).map((event) =>
+      "action" in event.payload ? event.payload.action : null,
+    ),
   ).toEqual(["checkpoint.review.prepare", "checkpoint.review.commit"]);
   expect(JSON.stringify(h.events(["operator.action"]))).not.toContain(note);
   const commentEvents = h
