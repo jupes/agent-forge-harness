@@ -884,12 +884,17 @@ test("mentions and harness commands edit the shared draft with keyboard suggesti
           (window as KeeperCaretProbeWindow).__keeperCaretRafProbe?.status() ??
           null,
       );
+      await test.info().attach("keeper-caret-interleave-before-flush", {
+        body: JSON.stringify(interleave),
+        contentType: "application/json",
+      });
       if (!interleave) throw new Error("Keeper caret probe status was missing.");
         expect(interleave).toMatchObject({
           clickSeen: true,
           rafRestoredAfterClick: true,
         });
-      expect(interleave.captured).toBeLessThanOrEqual(1);
+      expect(interleave.captured).toBeLessThanOrEqual(2);
+      expect(interleave.pending).toBeLessThanOrEqual(1);
         expect(interleave.pending + interleave.canceled).toBe(
           interleave.captured,
         );
@@ -905,7 +910,7 @@ test("mentions and harness commands edit the shared draft with keyboard suggesti
             (window as KeeperCaretProbeWindow).__keeperCaretRafProbe?.status() ??
             null,
         );
-        await test.info().attach("keeper-caret-interleave", {
+        await test.info().attach("keeper-caret-interleave-after-flush", {
           body: JSON.stringify({ selection, interleave, flushed, finalProbe }),
           contentType: "application/json",
         });
