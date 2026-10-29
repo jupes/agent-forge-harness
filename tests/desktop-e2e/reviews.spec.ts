@@ -158,19 +158,28 @@ test("a completed bead-source review links to its bead and reports the one recor
 }) => {
   const posts: string[] = [];
   page.on("request", (request) => {
-    if (request.method() === "POST") posts.push(new URL(request.url()).pathname);
+    if (request.method() === "POST")
+      posts.push(new URL(request.url()).pathname);
   });
   await openSettled(page, `/index.html#/desktop/project/${alpha.id}/beads`);
-  await page.getByRole("button", {
-    name: "Inspect alpha-council-first: Title alpha-council-first",
-  }).click();
+  await page
+    .getByRole("button", {
+      name: "Inspect alpha-council-first: Title alpha-council-first",
+    })
+    .click();
   await page.getByRole("button", { name: "Review bead in Council" }).click();
-  await expect(page.getByLabel("Beads issue ID")).toHaveValue("alpha-council-first");
-  await page.getByRole("button", { name: "Prepare original for review" }).click();
+  await expect(page.getByLabel("Beads issue ID")).toHaveValue(
+    "alpha-council-first",
+  );
+  await page
+    .getByRole("button", { name: "Prepare original for review" })
+    .click();
   await expect(
     page.getByRole("heading", { name: "Exact saved original" }),
   ).toBeVisible();
-  await page.getByRole("button", { name: "Convene this exact original" }).click();
+  await page
+    .getByRole("button", { name: "Convene this exact original" })
+    .click();
   await expect(
     page.getByRole("heading", { name: "Council result" }),
   ).toBeVisible({ timeout: 15_000 });
@@ -197,15 +206,23 @@ test("a completed bead-source review links to its bead and reports the one recor
   const savedRow = page
     .getByRole("listitem")
     .filter({ hasText: "alpha-council-first" });
-  await expect(savedRow.getByRole("heading", { name: /Verified result facts/ })).toBeVisible();
+  await expect(
+    savedRow.getByRole("heading", { name: /Verified result facts/ }),
+  ).toBeVisible();
   await expect(savedRow).toContainText("Actual cost");
   await expect(savedRow).toContainText("Findings by severity");
-  await expect(savedRow).not.toContainText("Verdict comment posted to the bead.");
+  await expect(savedRow).not.toContainText(
+    "Verdict comment posted to the bead.",
+  );
 
   await page.reload();
-  await expect(page.getByRole("heading", { name: "Saved reviews" })).toBeVisible();
   await expect(
-    page.getByText("Open this result to read verified facts and Bead comment status."),
+    page.getByRole("heading", { name: "Saved reviews" }),
+  ).toBeVisible();
+  await expect(
+    page.getByText(
+      "Open this result to read verified facts and Bead comment status.",
+    ),
   ).toBeVisible();
   await page.getByRole("button", { name: "Open result" }).click();
   await expect(

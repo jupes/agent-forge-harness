@@ -3,7 +3,10 @@ import { useEffect, useMemo, useState } from "preact/hooks";
 import { Button } from "../../../docs/js/ds/Button";
 import { EmptyState } from "../../../docs/js/ds/EmptyState";
 import { Field, Input, Select, Textarea } from "../../../docs/js/ds/Field";
-import { CouncilVerdictStatus, verdictBead } from "../../../docs/js/islands/CouncilVerdictStatus";
+import {
+  CouncilVerdictStatus,
+  verdictBead,
+} from "../../../docs/js/islands/CouncilVerdictStatus";
 import { estimateCouncilCost } from "../../../scripts/council/types";
 import {
   type ProjectCouncilOriginalRead,
@@ -290,7 +293,8 @@ function verifiedCouncilResult(
   const started = Date.parse(run.startedAt);
   const finished = Date.parse(run.finishedAt);
   const severity = (name: CouncilSeverity) =>
-    run.aggregatedFindings.filter((finding) => finding.severity === name).length;
+    run.aggregatedFindings.filter((finding) => finding.severity === name)
+      .length;
   return {
     job,
     facts: {
@@ -312,7 +316,9 @@ function verifiedCouncilResult(
       accountedCostUsd: run.accountedCostUsd,
       costIsEstimate: run.costIsEstimate,
       durationSeconds:
-        Number.isFinite(started) && Number.isFinite(finished) && finished >= started
+        Number.isFinite(started) &&
+        Number.isFinite(finished) &&
+        finished >= started
           ? Math.floor((finished - started) / 1000)
           : null,
       beadId: verdictBead(job),
@@ -402,9 +408,7 @@ function RunReview({
   onRead,
   onCancel,
 }: {
-  value:
-    | ProjectCouncilRunRead
-    | null;
+  value: ProjectCouncilRunRead | null;
   verifiedResult: VerifiedCouncilResult | null;
   projectId: string;
   loading: boolean;
@@ -905,10 +909,11 @@ export function ProjectReviews({
   const [draftOpen, setDraftOpen] = useState(false);
   const [draftCacheError, setDraftCacheError] = useState("");
   const [filter, setFilter] = useState("");
-  const [historyFacts, setHistoryFacts] = useState<Map<string, CouncilResultFacts>>(
-    () => new Map(),
-  );
-  const [historyFactsLimitReached, setHistoryFactsLimitReached] = useState(false);
+  const [historyFacts, setHistoryFacts] = useState<
+    Map<string, CouncilResultFacts>
+  >(() => new Map());
+  const [historyFactsLimitReached, setHistoryFactsLimitReached] =
+    useState(false);
   useEffect(() => {
     if (!workspace || !draftCache) return;
     const current = draftCache.read({ projectId, workspace });
@@ -1328,8 +1333,7 @@ export function ProjectReviews({
                             else void owner.openSaved(item.requestId);
                           }}
                         >
-                          {item.phase !== "reserved" &&
-                          item.phase !== "retired"
+                          {item.phase !== "reserved" && item.phase !== "retired"
                             ? "Open result"
                             : "Read saved original"}
                         </Button>
