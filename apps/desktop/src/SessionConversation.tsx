@@ -58,7 +58,11 @@ export interface SessionConversationProps {
   forkClient?: CodexChatForkClient;
   archived?: boolean;
   workspace?: string | null;
-  onContinueWithCodexChat?(summary: string, sourceSessionId: string): boolean;
+  onContinueToChat?(
+    summary: string,
+    sourceSessionId: string,
+    target: "codex" | "gemini",
+  ): boolean;
 }
 export function SessionConversation(props: SessionConversationProps) {
   const record = props.client
@@ -84,7 +88,7 @@ function StandardSessionConversation({
   forkClient,
   archived = false,
   workspace = null,
-  onContinueWithCodexChat,
+  onContinueToChat,
 }: SessionConversationProps) {
   const view = client.session(projectId, sessionId),
     record = client
@@ -204,6 +208,9 @@ function StandardSessionConversation({
     [notice, setNotice] = useState("");
   const [continuationReviewOpen, setContinuationReviewOpen] = useState(false),
     [continuationSummary, setContinuationSummary] = useState(""),
+    [continuationTarget, setContinuationTarget] = useState<
+      "codex" | "gemini" | ""
+    >(""),
     [confirmedDraftFingerprint, setConfirmedDraftFingerprint] = useState<
       string | null
     >(null),
@@ -248,7 +255,7 @@ function StandardSessionConversation({
     };
   };
   const canContinue =
-    !!onContinueWithCodexChat &&
+    !!onContinueToChat &&
     canContinueClaudeRateLimit(continuationState());
   const closeContinuationReview = () => {
     setContinuationReviewOpen(false);
@@ -261,10 +268,15 @@ function StandardSessionConversation({
       fingerprint = continuationDraftFingerprint(draft);
     if (
       !validContinuationSummary(continuationSummary) ||
+      !continuationTarget ||
       (dirty && confirmedDraftFingerprint !== fingerprint) ||
-      !onContinueWithCodexChat ||
+      !onContinueToChat ||
       !canContinueClaudeRateLimit(state) ||
-      !onContinueWithCodexChat(continuationSummary.trim(), sessionId)
+      !onContinueToChat(
+        continuationSummary.trim(),
+        sessionId,
+        continuationTarget,
+      )
     ) {
       setContinuationProblem(
         "The source or target changed. Review the saved Chat and target identity before continuing.",
@@ -677,7 +689,7 @@ function StandardSessionConversation({
                   {row.id === current?.requestId && canContinue && (
                     <div class="af-session-note">
                       <p>
-                        Start a separate Codex Chat with a summary you write.
+                        Continue on another provider with a summary you write.
                         Only that summary and a link to this Chat are carried;
                         its transcript and provider activity are not copied.
                       </p>
@@ -685,12 +697,13 @@ function StandardSessionConversation({
                         onClick={(event) => {
                           continuationOpener.current = event.currentTarget;
                           setContinuationSummary("");
+                          setContinuationTarget("");
                           setConfirmedDraftFingerprint(null);
                           setContinuationProblem("");
                           setContinuationReviewOpen(true);
                         }}
                       >
-                        Continue with Codex Chat
+                        Continue on another provider
                       </Button>
                     </div>
                   )}
@@ -929,7 +942,7 @@ function StandardSessionConversation({
       </footer>
       <Dialog
         open={continuationReviewOpen}
-        title="Review a separate Codex Chat"
+        title="Review a separate Chat"
         titleId="session-continuation-review-title"
         onClose={closeContinuationReview}
         returnFocusRef={continuationOpener}
@@ -942,12 +955,18 @@ function StandardSessionConversation({
               variant="primary"
               disabled={
                 !validContinuationSummary(continuationSummary) ||
+                !continuationTarget ||
                 (continuationDraftDirty &&
                   confirmedDraftFingerprint !== currentDraftFingerprint)
               }
               onClick={acceptContinuation}
             >
-              Accept and open Codex Chat
+              Accept and open{" "}
+              {continuationTarget === "gemini"
+                ? "Gemini ACP"
+                : continuationTarget === "codex"
+                  ? "Codex"
+                  : "target"} Chat
             </Button>
           </>
         }
@@ -958,10 +977,37 @@ function StandardSessionConversation({
           aria-label="Continuation review"
         >
           <p>
-            This starts a new Codex Chat. Write the context you want to carry;
-            the original Claude transcript, tools, files, and settings stay in
-            the original Chat.
+            Choose a target Chat and write the context you want to carry. The
+            original Claude transcript, tools, files, and settings stay in the
+            original Chat.
           </p>
+          <label>
+            Target Chat
+            <select
+              aria-label="Target Chat"
+              value={continuationTarget}
+              onChange={(event) => {
+                const value = event.currentTarget.value;
+                setContinuationTarget(
+                  value === "codex" || value === "gemini" ? value : "",
+                );
+                setContinuationProblem("");
+              }}
+            >
+              <option value="">Choose a target</option>
+              <option value="codex">Codex Chat</option>
+              <option value="gemini">Gemini ACP Chat</option>
+            </select>
+          </label>
+          {continuationTarget && (
+            <p>
+              This starts a separate{" "}
+              {continuationTarget === "gemini" ? "Gemini ACP" : "Codex"} Chat.
+              Only your reviewed summary and a link to this source are carried;
+              the source transcript and provider activity stay in the original
+              Chat.
+            </p>
+          )}
           <p>
             Source:{" "}
             <a
