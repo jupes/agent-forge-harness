@@ -276,63 +276,70 @@ test("a completed bead-source review links to its bead and reports the one recor
     read.provenance.intentHash === original.intentHash &&
     read.provenance.runId === original.runId;
   try {
-  await page
-    .getByRole("button", { name: "Convene this exact original" })
-    .click();
-  await expect(
-    page.getByRole("heading", { name: "Council result" }),
-  ).toBeVisible({ timeout: 15_000 });
-  await expect(
-    page.getByRole("heading", { name: "Verified result facts" }),
-  ).toBeVisible();
-  await expect
-    .poll(() => runReads.length, {
-      message: "The exact Council result read was not observed.",
-      timeout: 15_000,
-    })
-    .toBeGreaterThan(0);
-  const firstReads = await Promise.all(runReads);
-  const verifiedReads = await verifiedRunReads(runReads);
-  if (verifiedReads.some((read) => !matchesOriginal(read)))
-    throw Error("A Council result read did not match its saved original.");
-  verifiedRun = verifiedReads.find(
-    (read) =>
-      read.receipt.phase === "completed" &&
-      read.verdictCommentPreview !== null,
-  );
-  if (!verifiedRun && firstReads.some((read) => read.kind === "interrupted")) {
-    const beforeCheck = runReads.length;
-    await page.getByRole("button", { name: "Check saved result" }).click();
+    await page
+      .getByRole("button", { name: "Convene this exact original" })
+      .click();
+    await expect(
+      page.getByRole("heading", { name: "Council result" }),
+    ).toBeVisible({ timeout: 15_000 });
+    await expect(
+      page.getByRole("heading", { name: "Verified result facts" }),
+    ).toBeVisible();
     await expect
-      .poll(() => runReads.length > beforeCheck, {
-        message: "The explicit saved-result read was not observed.",
+      .poll(() => runReads.length, {
+        message: "The exact Council result read was not observed.",
         timeout: 15_000,
       })
-      .toBe(true);
-    const freshObservation = runReads[beforeCheck];
-    if (!freshObservation)
-      throw Error("The explicit saved-result read had no observation.");
-    const fresh = await freshObservation;
-    const allVerifiedReads = await verifiedRunReads(runReads);
-    if (allVerifiedReads.some((read) => !matchesOriginal(read)))
+      .toBeGreaterThan(0);
+    const firstReads = await Promise.all(runReads);
+    const verifiedReads = await verifiedRunReads(runReads);
+    if (verifiedReads.some((read) => !matchesOriginal(read)))
       throw Error("A Council result read did not match its saved original.");
+    verifiedRun = verifiedReads.find(
+      (read) =>
+        read.receipt.phase === "completed" &&
+        read.verdictCommentPreview !== null,
+    );
     if (
-      fresh.kind !== "verified" ||
-      !matchesOriginal(fresh.read) ||
-      fresh.read.receipt.phase !== "completed" ||
-      fresh.read.verdictCommentPreview === null
+      !verifiedRun &&
+      firstReads.some((read) => read.kind === "interrupted")
+    ) {
+      const beforeCheck = runReads.length;
+      await page.getByRole("button", { name: "Check saved result" }).click();
+      await expect
+        .poll(() => runReads.length > beforeCheck, {
+          message: "The explicit saved-result read was not observed.",
+          timeout: 15_000,
+        })
+        .toBe(true);
+      const freshObservation = runReads[beforeCheck];
+      if (!freshObservation)
+        throw Error("The explicit saved-result read had no observation.");
+      const fresh = await freshObservation;
+      const allVerifiedReads = await verifiedRunReads(runReads);
+      if (allVerifiedReads.some((read) => !matchesOriginal(read)))
+        throw Error("A Council result read did not match its saved original.");
+      if (
+        fresh.kind !== "verified" ||
+        !matchesOriginal(fresh.read) ||
+        fresh.read.receipt.phase !== "completed" ||
+        fresh.read.verdictCommentPreview === null
+      )
+        throw Error(
+          "The explicit saved-result read did not verify this result.",
+        );
+      verifiedRun = fresh.read;
+    }
+    if (
+      !verifiedRun ||
+      verifiedRun.provenance.projectId !== alpha.id ||
+      verifiedRun.provenance.requestId !== original.requestId ||
+      verifiedRun.provenance.intentHash !== original.intentHash ||
+      verifiedRun.provenance.runId !== original.runId
     )
-      throw Error("The explicit saved-result read did not verify this result.");
-    verifiedRun = fresh.read;
-  }
-  if (
-    !verifiedRun ||
-    verifiedRun.provenance.projectId !== alpha.id ||
-    verifiedRun.provenance.requestId !== original.requestId ||
-    verifiedRun.provenance.intentHash !== original.intentHash ||
-    verifiedRun.provenance.runId !== original.runId
-  )
-    throw Error("The completed Council result did not match its saved original.");
+      throw Error(
+        "The completed Council result did not match its saved original.",
+      );
   } finally {
     runReads.dispose();
   }

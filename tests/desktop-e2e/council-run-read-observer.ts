@@ -1,7 +1,7 @@
-import {
-  type Page,
-  type Request,
-  type Response as PlaywrightResponse,
+import type {
+  Page,
+  Response as PlaywrightResponse,
+  Request,
 } from "@playwright/test";
 import {
   type ProjectCouncilRunRead,
@@ -118,7 +118,9 @@ export async function verifiedRunReads(
   const results = await Promise.all(observations);
   const invalid = results.find((result) => result.kind === "invalid");
   if (invalid?.kind === "invalid")
-    throw Error(`The actual Council result read was invalid: ${invalid.message}`);
+    throw Error(
+      `The actual Council result read was invalid: ${invalid.message}`,
+    );
   return results.flatMap((result) =>
     result.kind === "verified" ? [result.read] : [],
   );
