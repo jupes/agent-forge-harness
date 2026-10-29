@@ -124,9 +124,13 @@ test("project Reviews reserves, convenes, completes, and reloads the verified or
   ).toBeVisible();
   await expect(page.getByText(/Intent hash/)).toBeVisible();
   await expect(
-    page.getByText("Exact review body: preserve this sentence and its identity."),
+    page.getByText(
+      "Exact review body: preserve this sentence and its identity.",
+    ),
   ).toBeVisible();
-  await page.getByText("Inspect complete public Council result", { exact: true }).click();
+  await page
+    .getByText("Inspect complete public Council result", { exact: true })
+    .click();
   await expect(page.locator(".af-council-transcript")).toHaveValue(
     /Exact review body: preserve this sentence and its identity\./,
   );
