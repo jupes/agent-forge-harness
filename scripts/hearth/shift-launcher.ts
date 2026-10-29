@@ -34,6 +34,10 @@
 import { resolve } from "node:path";
 import type { ProjectShiftIntent } from "../../types/project-shifts";
 import { buildChildEnv } from "../executors/env";
+import {
+  observeOwnedProcessGroup,
+  waitForOwnedProcessGroup,
+} from "../executors/process-group";
 import { killTree, STDERR_TAIL_CHARS } from "../executors/supervisor";
 import { guardTree, type TreeGuard } from "../executors/tree-guard";
 import {
@@ -187,26 +191,122 @@ export function superviseShift(
   const guard = guardChild(proc.pid);
   const stdout = tail(proc.stdout, STDOUT_TAIL_CHARS);
   const stderr = tail(proc.stderr, STDERR_TAIL_CHARS);
-  const done = (async (): Promise<ShiftChildExit> => {
-    try {
-      const code = await proc.exited;
-      return {
-        exitCode: proc.signalCode !== null ? null : code,
-        stdout: await stdout,
-        stderr: await stderr,
-      };
-    } finally {
-      guard.release();
-      liveShifts.delete(proc.pid);
-    }
+  let rootExited = false;
+  let naturalCompletion = false;
+  let stopping: Promise<void> | null = null;
+  const rootDone = (async (): Promise<ShiftChildExit> => {
+    const code = await proc.exited;
+    rootExited = true;
+    liveShifts.delete(proc.pid);
+    return {
+      exitCode: proc.signalCode !== null ? null : code,
+      stdout: await stdout,
+      stderr: await stderr,
+    };
   })();
+  const done = rootDone.then(
+    async (exit) => {
+      if (stopping !== null) {
+        try {
+          await stopping;
+        } catch (error) {
+          // Once the root is gone, never use its numeric pid as later authority.
+          liveShifts.delete(proc.pid);
+          throw error;
+        }
+      } else {
+        naturalCompletion = true;
+        guard.release();
+        liveShifts.delete(proc.pid);
+      }
+      return exit;
+    },
+    (error: unknown) => {
+      if (stopping === null) {
+        naturalCompletion = true;
+        guard.release();
+      }
+      liveShifts.delete(proc.pid);
+      throw error;
+    },
+  );
+  void done.catch(() => undefined);
+  const stop = (): Promise<void> => {
+    if (stopping !== null) return stopping;
+    if (naturalCompletion) {
+      stopping = Promise.reject(
+        new Error(
+          "The Shift exited before its owned process tree could be settled.",
+        ),
+      );
+      void stopping.catch(() => undefined);
+      return stopping;
+    }
+
+    let resolveStop!: () => void;
+    let rejectStop!: (error: unknown) => void;
+    stopping = new Promise<void>((resolve, reject) => {
+      resolveStop = resolve;
+      rejectStop = reject;
+    });
+    void stopping.catch(() => undefined);
+
+    let settlement: Promise<void>;
+    if (process.platform === "win32") {
+      if (guard.settleStopped === undefined) {
+        rejectStop(
+          new Error("Windows owned process cleanup could not be confirmed."),
+        );
+        return stopping;
+      }
+      try {
+        // This synchronously captures the job generation before requesting termination.
+        settlement = guard.settleStopped();
+      } catch (error) {
+        rejectStop(error);
+        return stopping;
+      }
+    } else {
+      if (!rootExited) {
+        try {
+          // The detached Shift leads its own group. Never fall back to its numeric pid.
+          process.kill(-proc.pid, "SIGKILL");
+        } catch (error) {
+          if (
+            !(
+              error instanceof Error &&
+              "code" in error &&
+              error.code === "ESRCH"
+            )
+          ) {
+            rejectStop(
+              new Error("Owned process group cleanup could not be confirmed."),
+            );
+            return stopping;
+          }
+        }
+      }
+      settlement = waitForOwnedProcessGroup((signal) =>
+        observeOwnedProcessGroup(proc.pid, signal),
+      );
+    }
+
+    void settlement.then(async () => {
+      try {
+        await rootDone;
+        guard.release();
+        liveShifts.delete(proc.pid);
+        resolveStop();
+      } catch (error) {
+        rejectStop(error);
+      }
+    }, rejectStop);
+    return stopping;
+  };
   return {
     pid: proc.pid,
     done,
-    stop: async () => {
-      killTree(proc.pid);
-      await done;
-    },
+    stop,
   };
 }
 

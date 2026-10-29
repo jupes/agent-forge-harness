@@ -136,8 +136,21 @@ Plan artifacts should use the root `plans/` contract: write active drafts to `pl
 
 ## License
 
-MIT — [LICENSE](LICENSE)
+Starting with this revision, Agent Forge Harness is licensed under the
+[PolyForm Perimeter License 1.0.1](LICENSE). This source-available license
+allows internal business use, including paid work, and allows modifying,
+distributing, and selling noncompeting offerings. Providing a product or
+service that competes with Agent Forge Harness, including a free substitute,
+requires separate permission from [jupes](https://github.com/jupes). The
+license terms or their URL, and the [required copyright notice](NOTICE), must
+accompany distributed copies. This is source-available software, not
+OSI-approved open source.
+
+Versions and copies distributed before this change remain under their original
+MIT terms; see the [MIT license at the prior revision](https://github.com/jupes/agent-forge-harness/blob/d08b54cd82adc52561814c4f841e91c2c4f85074/LICENSE).
 
 Several skills under `.claude/skills/` are derived from [mattpocock/skills](https://github.com/mattpocock/skills) (MIT, © Matt Pocock). See [.claude/skills/ATTRIBUTION.md](.claude/skills/ATTRIBUTION.md).
+
+Third-party materials retain their own licenses and attributions. See [NOTICE](NOTICE), [.claude/skills/ATTRIBUTION.md](.claude/skills/ATTRIBUTION.md), and [the Inter font license](docs/fonts/LICENSE-Inter.txt).
 
 The command-center direction of this harness is inspired by Orbit and by Gas Town / Gas City.

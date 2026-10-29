@@ -40,9 +40,18 @@ export interface WindowsJobSettlementGenerationFailureWitness {
   readonly capturedMemberCount: number;
 }
 
+export interface WindowsJobSettlementUnaccountedFailureWitness {
+  readonly activeCount: number | null;
+  readonly retainedCount: number | null;
+  readonly capturedMemberCount: number | null;
+  readonly initialTotal: number | null;
+  readonly capturedTotal: number | null;
+}
+
 type WindowsJobSettlementFailureObserver = (
   phase: WindowsJobSettlementFailurePhase,
   generationFailure?: WindowsJobSettlementGenerationFailureWitness,
+  unaccountedFailure?: WindowsJobSettlementUnaccountedFailureWitness,
 ) => void;
 
 const MAX_DIAGNOSTIC_UINT32 = 0xffff_ffff;
@@ -122,6 +131,8 @@ export async function settleWindowsJob<Job, Process>(
   let phase: WindowsJobSettlementFailurePhase = "capture-root",
     failurePhase: WindowsJobSettlementFailurePhase | null = null,
     generationFailure: WindowsJobSettlementGenerationFailureWitness | null =
+      null,
+    unaccountedFailure: WindowsJobSettlementUnaccountedFailureWitness | null =
       null;
   const refuse: (failedAt?: WindowsJobSettlementFailurePhase) => never = (
     failedAt = phase,
@@ -134,13 +145,27 @@ export async function settleWindowsJob<Job, Process>(
     if (total === null || !Number.isSafeInteger(total) || total < 0) refuse();
     return total;
   };
-  const hasUnaccountedProcesses = (): boolean => {
+  const hasUnaccountedProcesses = (census?: {
+    capturedMemberCount: number;
+    initialTotal: number;
+    capturedTotal: number;
+  }): boolean => {
     const active = api.activeProcesses(job);
     if (active === null || !Number.isSafeInteger(active) || active < 0)
       refuse();
+    const unaccounted = active > retained.size;
+    if (unaccounted && census !== undefined) {
+      unaccountedFailure = {
+        activeCount: diagnosticUint32(active),
+        retainedCount: diagnosticUint32(retained.size),
+        capturedMemberCount: diagnosticUint32(census.capturedMemberCount),
+        initialTotal: diagnosticUint32(census.initialTotal),
+        capturedTotal: diagnosticUint32(census.capturedTotal),
+      };
+    }
     // This can only refuse conservatively. It is never used to assert that
     // retained members have exited or that a lower count proves completion.
-    return active > retained.size;
+    return unaccounted;
   };
   const readMembers = (): readonly number[] => {
     const result = api.members(job);
@@ -231,8 +256,15 @@ export async function settleWindowsJob<Job, Process>(
       refuse("verify-census-generation");
     }
     phase = "verify-census-active-read";
-    const unaccounted = hasUnaccountedProcesses();
-    if (unaccounted) refuse("verify-census-unaccounted");
+    const unaccounted = hasUnaccountedProcesses({
+      initialTotal,
+      capturedTotal,
+      capturedMemberCount: capturedMembers.length,
+    });
+    if (unaccounted) {
+      failurePhase ??= "verify-census-unaccounted";
+      refuse("verify-census-unaccounted");
+    }
     phase = "verify-census-unretained";
     for (const pid of capturedMembers) if (!retained.has(pid)) refuse();
     if (api.now() >= deadline) refuse("deadline");
@@ -300,6 +332,11 @@ export async function settleWindowsJob<Job, Process>(
         generationFailure !== null
       )
         api.onFailurePhase?.(failurePhase, generationFailure);
+      else if (
+        failurePhase === "verify-census-unaccounted" &&
+        unaccountedFailure !== null
+      )
+        api.onFailurePhase?.(failurePhase, undefined, unaccountedFailure);
       else api.onFailurePhase?.(failurePhase);
     } catch {
       // Diagnostic observers cannot change the settlement result.
