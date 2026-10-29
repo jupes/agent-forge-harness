@@ -167,67 +167,73 @@ function completeRepositoryOptions(
     if (errorCode(error) !== "ENOENT") throw unavailableProjectOptions();
   }
   const registryPath = join(local, REPOS_FILE);
-  let registryStat: ReturnType<typeof lstatSync>;
+  let registryStat: ReturnType<typeof lstatSync> | null = null;
   try {
     registryStat = lstatSync(registryPath);
   } catch (error) {
-    if (errorCode(error) === "ENOENT") return [servedOption];
-    throw unavailableProjectOptions();
+    if (errorCode(error) !== "ENOENT") throw unavailableProjectOptions();
   }
-  if (
-    registryStat.isSymbolicLink() ||
-    !registryStat.isFile() ||
-    registryStat.size > MAX_PROJECT_REPOSITORY_REGISTRY_BYTES
-  )
-    throw unavailableProjectOptions();
-
-  let parsed: unknown;
-  try {
-    const text = readFileSync(registryPath, "utf8");
-    const afterRead = lstatSync(registryPath);
-    if (Buffer.byteLength(text, "utf8") > MAX_PROJECT_REPOSITORY_REGISTRY_BYTES)
-      throw unavailableProjectOptions();
+  let entries: unknown[] = [];
+  if (registryStat !== null) {
     if (
-      afterRead.isSymbolicLink() ||
-      !afterRead.isFile() ||
-      afterRead.dev !== registryStat.dev ||
-      afterRead.ino !== registryStat.ino ||
-      afterRead.size !== registryStat.size ||
-      afterRead.mtimeMs !== registryStat.mtimeMs
+      registryStat.isSymbolicLink() ||
+      !registryStat.isFile() ||
+      registryStat.size > MAX_PROJECT_REPOSITORY_REGISTRY_BYTES
     )
       throw unavailableProjectOptions();
-    parsed = JSON.parse(text);
-  } catch {
-    throw unavailableProjectOptions();
+    let parsed: unknown;
+    try {
+      const text = readFileSync(registryPath, "utf8");
+      const afterRead = lstatSync(registryPath);
+      if (Buffer.byteLength(text, "utf8") > MAX_PROJECT_REPOSITORY_REGISTRY_BYTES)
+        throw unavailableProjectOptions();
+      if (
+        afterRead.isSymbolicLink() ||
+        !afterRead.isFile() ||
+        afterRead.dev !== registryStat.dev ||
+        afterRead.ino !== registryStat.ino ||
+        afterRead.size !== registryStat.size ||
+        afterRead.mtimeMs !== registryStat.mtimeMs
+      )
+        throw unavailableProjectOptions();
+      parsed = JSON.parse(text);
+    } catch {
+      throw unavailableProjectOptions();
+    }
+    if (
+      !isRecord(parsed) ||
+      Object.keys(parsed).length !== 1 ||
+      !Array.isArray(parsed["repos"])
+    )
+      throw unavailableProjectOptions();
+    entries = parsed["repos"];
+    const allowedFields = new Set([
+      "name",
+      "url",
+      "defaultBranch",
+      "archived",
+    ]);
+    if (
+      entries.length + 1 > MAX_PROJECT_CREATE_OPTION_REPOSITORIES ||
+      entries.some((entry) => {
+        if (!isRecord(entry)) return true;
+        if (Object.keys(entry).some((key) => !allowedFields.has(key)))
+          return true;
+        return (
+          typeof entry["name"] !== "string" ||
+          !/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(entry["name"]) ||
+          entry["name"] === "." ||
+          entry["name"] === ".." ||
+          (entry["url"] !== undefined && typeof entry["url"] !== "string") ||
+          (entry["defaultBranch"] !== undefined &&
+            typeof entry["defaultBranch"] !== "string") ||
+          (entry["archived"] !== undefined &&
+            typeof entry["archived"] !== "boolean")
+        );
+      })
+    )
+      throw unavailableProjectOptions();
   }
-  if (
-    !isRecord(parsed) ||
-    Object.keys(parsed).length !== 1 ||
-    !Array.isArray(parsed["repos"])
-  )
-    throw unavailableProjectOptions();
-  const entries: unknown[] = parsed["repos"];
-  const allowedFields = new Set(["name", "url", "defaultBranch", "archived"]);
-  if (
-    entries.length + 1 > MAX_PROJECT_CREATE_OPTION_REPOSITORIES ||
-    entries.some((entry) => {
-      if (!isRecord(entry)) return true;
-      if (Object.keys(entry).some((key) => !allowedFields.has(key)))
-        return true;
-      return (
-        typeof entry["name"] !== "string" ||
-        !/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(entry["name"]) ||
-        entry["name"] === "." ||
-        entry["name"] === ".." ||
-        (entry["url"] !== undefined && typeof entry["url"] !== "string") ||
-        (entry["defaultBranch"] !== undefined &&
-          typeof entry["defaultBranch"] !== "string") ||
-        (entry["archived"] !== undefined &&
-          typeof entry["archived"] !== "boolean")
-      );
-    })
-  )
-    throw unavailableProjectOptions();
 
   const options = [servedOption];
   const names = new Set([servedOption.name.toLowerCase()]);

@@ -1,7 +1,10 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { projectScopePreviewSchema } from "../projects/create-options-protocol";
+import {
+  projectCreateOptionsSchema,
+  projectScopePreviewSchema,
+} from "../projects/create-options-protocol";
 import { workspaceKey } from "../projects/scope";
 import { startTestHearth, type TestHearth } from "./testing";
 
@@ -195,37 +198,40 @@ test("protected repository onboarding recovers exact records and updates checked
     requestId: REGISTER_ID,
   });
   expect(selection.status).toBe(200);
-  expect((await json(selection)).data).toMatchObject({
+  const selectedOutcome = (
+    await json<{ requestId: string; state: string; path: string | null }>(selection)
+  ).data;
+  expect(selectedOutcome).toMatchObject({
     requestId: REGISTER_ID,
     state: "selected",
-    path: external,
   });
+  if (selectedOutcome.path === null)
+    throw new Error("The selected folder path was not saved.");
+  expect(workspaceKey(selectedOutcome.path)).toBe(workspaceKey(external));
   expect(
     (await json(await read(`/projects/repository-selections/${REGISTER_ID}`)))
       .data,
-  ).toMatchObject({
-    requestId: REGISTER_ID,
-    state: "selected",
-    path: external,
-  });
+  ).toEqual(selectedOutcome);
   const registration = await post(
     `/projects/repository-selections/${REGISTER_ID}/register`,
     { name: "selected-folder" },
   );
   expect(registration.status).toBe(200);
-  expect((await json(registration)).data).toMatchObject({
+  const registeredFolder = (
+    await json<{ name: string; path: string; source: string; originalRequestId: string }>(registration)
+  ).data;
+  expect(registeredFolder).toMatchObject({
     name: "selected-folder",
-    path: external,
     source: "folder",
     originalRequestId: REGISTER_ID,
   });
+  expect(workspaceKey(registeredFolder.path)).toBe(workspaceKey(external));
   expect(
     (await json(await read(`/projects/repository-selections/${REGISTER_ID}`)))
       .data,
   ).toMatchObject({
     requestId: REGISTER_ID,
-    state: "registered",
-    name: "selected-folder",
+    state: "selected",
     path: external,
   });
   expect(
@@ -239,12 +245,18 @@ test("protected repository onboarding recovers exact records and updates checked
   ).toHaveLength(1);
 
   const beforeClone = await read("/projects/create-options");
-  const beforeCloneData = (await json(beforeClone)).data;
-  expect(beforeCloneData).toMatchObject({
-    repositories: expect.arrayContaining([
-      expect.objectContaining({ name: "selected-folder", path: external }),
+  const beforeCloneData = projectCreateOptionsSchema.parse(
+    (await json(beforeClone)).data,
+  );
+  expect(beforeCloneData.repositories).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        name: "selected-folder",
+        key: workspaceKey(external),
+        served: false,
+      }),
     ]),
-  });
+  );
   expect(beforeCloneData).not.toMatchObject({
     repositories: expect.arrayContaining([
       expect.objectContaining({ name: "served-workspace-copy" }),
@@ -275,11 +287,17 @@ test("protected repository onboarding recovers exact records and updates checked
   const saved = await read(
     `/projects/repository-clone-reservations/${CLONE_ID}`,
   );
-  expect((await json(saved)).data).toMatchObject({
+  const savedClone = (
+    await json<{ requestId: string; state: string; name: string; path: string }>(saved)
+  ).data;
+  expect(savedClone).toMatchObject({
     requestId: CLONE_ID,
     state: "registered",
     name: "cloned-folder",
   });
+  expect(
+    workspaceKey(savedClone.path),
+  ).toBe(workspaceKey(join(h.home, "project-create-registry", "repos", "cloned-folder")));
   expect(cloneCalls).toBe(1);
   expect(
     (
@@ -292,16 +310,20 @@ test("protected repository onboarding recovers exact records and updates checked
   expect(cloneCalls).toBe(1);
 
   const optionsResponse = await read("/projects/create-options");
-  const options = (await json(optionsResponse)).data as {
-    workspace: { path: string };
-    repositories: Array<{ name: string; path: string }>;
-  };
+  const options = projectCreateOptionsSchema.parse(
+    (await json(optionsResponse)).data,
+  );
   expect(options.repositories).toEqual(
     expect.arrayContaining([
-      expect.objectContaining({ name: "selected-folder", path: external }),
+      expect.objectContaining({
+        name: "selected-folder",
+        key: workspaceKey(external),
+        served: false,
+      }),
       expect.objectContaining({
         name: "cloned-folder",
-        path: join(h.home, "project-create-registry", "repos", "cloned-folder"),
+        key: workspaceKey(join(h.home, "project-create-registry", "repos", "cloned-folder")),
+        served: false,
       }),
     ]),
   );
