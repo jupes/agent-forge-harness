@@ -278,7 +278,10 @@ export async function installGeminiContinuationFetchFixture(
     requestHash: string;
     turnHash: string;
   } | null = null;
+  let candidateReadbackCaptured = false;
+  let acceptedReadbackCaptured = false;
   let readbackCaptured = false;
+  let invalidReadback: unknown = null;
   let readbackRelease = () => {};
   let readbackReleased = new Promise<void>((resolve) => {
     readbackRelease = resolve;
@@ -311,6 +314,7 @@ export async function installGeminiContinuationFetchFixture(
       .object({
         captureId: z.literal(captureId),
         kind: z.literal("readback"),
+        candidate: z.boolean(),
         method: z.literal("GET"),
         requestUrl: z.string().url().max(2048),
         status: z.number().int().min(0).max(599),
@@ -339,6 +343,7 @@ export async function installGeminiContinuationFetchFixture(
       if (
         !expected ||
         !readbackCaptured ||
+        invalidReadback !== null ||
         payload.requestId !== expected.requestId ||
         payload.sessionId !== expected.sessionId
       )
@@ -447,6 +452,15 @@ export async function installGeminiContinuationFetchFixture(
         const exactExpected = expected;
         if (!exactExpected)
           throw new Error("No verified Gemini Start preceded readback.");
+        if (payload.candidate) {
+          if (candidateReadbackCaptured)
+            throw new Error("The Gemini readback candidate was observed twice.");
+          candidateReadbackCaptured = true;
+        } else {
+          if (acceptedReadbackCaptured)
+            throw new Error("The accepted Gemini readback was observed twice.");
+          acceptedReadbackCaptured = true;
+        }
         const requestUrl = new URL(payload.requestUrl);
         const responseUrl = new URL(payload.responseUrl);
         const targetPath = `${startPath}/${encodeURIComponent(exactExpected.sessionId)}`;
@@ -482,6 +496,21 @@ export async function installGeminiContinuationFetchFixture(
             "The protected original read did not match its schema.",
           );
         const saved = envelope.data.data;
+        if (
+          payload.candidate &&
+          saved.projectId === options.projectId &&
+          saved.conversationId === exactExpected.sessionId &&
+          saved.revision === 0 &&
+          saved.binding === null &&
+          saved.turns.length === 0 &&
+          saved.frames.length === 0 &&
+          saved.more === false &&
+          saved.nextCursor === 0 &&
+          saved.lastSequence === 0 &&
+          saved.request === null &&
+          saved.controllable === false
+        )
+          return { action: "defer-empty-candidate" };
         const turn =
           saved.request?.requestId === exactExpected.requestId
             ? saved.request
@@ -506,17 +535,15 @@ export async function installGeminiContinuationFetchFixture(
           throw new Error(
             "The protected read did not prove the original Gemini request.",
           );
-        if (readbackCaptured)
-          throw new Error(
-            "The original Gemini readback was captured more than once.",
-          );
-        readbackCaptured = true;
-        readbackEvidence.resolve({
-          requestId: exactExpected.requestId,
-          sessionId: exactExpected.sessionId,
-          requestHash: exactExpected.requestHash,
-          turnHash: exactExpected.turnHash,
-        });
+        if (!readbackCaptured) {
+          readbackCaptured = true;
+          readbackEvidence.resolve({
+            requestId: exactExpected.requestId,
+            sessionId: exactExpected.sessionId,
+            requestHash: exactExpected.requestHash,
+            turnHash: exactExpected.turnHash,
+          });
+        }
         let timer: ReturnType<typeof setTimeout> | undefined;
         try {
           await Promise.race([
@@ -536,7 +563,9 @@ export async function installGeminiContinuationFetchFixture(
         }
         return { action: "deliver-original-response" };
       } catch (error) {
+        invalidReadback = error;
         readbackEvidence.reject(error);
+        readbackDelivered.reject(error);
         throw error;
       }
     }
@@ -579,29 +608,46 @@ export async function installGeminiContinuationFetchFixture(
     },
     async dispose() {
       if (disposed) return;
-      disposed = true;
       readbackRelease();
+      let drainError: unknown = null;
       try {
-        await page.evaluate(
-          ({ stateName }) => {
+        await page.evaluate(async ({ stateName, drainTimeoutMs }) => {
             const globals = window as unknown as Record<string, unknown>;
             const state = globals[stateName] as
               | {
                   originalFetch: typeof window.fetch;
                   wrapper: typeof window.fetch;
                   settleStartDecision?: () => void;
+                  stopNewCaptures?: () => void;
+                  drainReadbacks?: (timeoutMs: number) => Promise<void>;
                 }
               | undefined;
-            state?.settleStartDecision?.();
-            if (state && window.fetch === state.wrapper)
-              window.fetch = state.originalFetch;
-            delete globals[stateName];
-          },
-          { stateName },
-        );
+            let failure: unknown = null;
+            try {
+              state?.stopNewCaptures?.();
+              state?.settleStartDecision?.();
+              await state?.drainReadbacks?.(drainTimeoutMs);
+            } catch (error) {
+              failure = error;
+            } finally {
+              if (state && window.fetch === state.wrapper)
+                window.fetch = state.originalFetch;
+              delete globals[stateName];
+            }
+            if (failure !== null)
+              throw new Error("The Gemini readback observer did not drain.", {
+                cause: failure,
+              });
+          }, { stateName, drainTimeoutMs: CLONE_TIMEOUT_MS });
       } catch {
-        // Navigation may have replaced the document before cleanup.
+        drainError = new Error("The Gemini readback observer cleanup failed.");
       }
+      disposed = true;
+      if (invalidReadback !== null)
+        throw new Error("The Gemini readback observation was invalid.", {
+          cause: invalidReadback,
+        });
+      if (drainError !== null) throw drainError;
     },
   };
 }
@@ -625,7 +671,11 @@ function installNativeFetchObserver(options: {
   const originalFetch = window.fetch;
   let target: { requestId: string; sessionId: string } | null = null;
   let startCaptured = false;
-  let originalReadbackCaptured = false;
+  let candidateReadbackCaptured = false;
+  let acceptedReadbackCaptured = false;
+  let acceptingCaptures = true;
+  let observerFailure: unknown = null;
+  const pendingReadbacks = new Set<Promise<Response>>();
   let tentativeRequestId: string | null = null;
   let startDecisionResolved = false;
   let resolveStartDecision!: (accepted: boolean) => void;
@@ -740,6 +790,8 @@ function installNativeFetchObserver(options: {
     ...args: Parameters<typeof fetch>
   ): Promise<Response> {
     const [input, init] = args;
+    if (!acceptingCaptures)
+      return Reflect.apply(originalFetch, this, args);
     let url: URL;
     let method: string;
     try {
@@ -764,7 +816,7 @@ function installNativeFetchObserver(options: {
       method === "GET" &&
       target === null &&
       startCaptured &&
-      !originalReadbackCaptured &&
+      !candidateReadbackCaptured &&
       !startDecisionResolved &&
       tentativeRequestId !== null &&
       candidateSessionId !== null &&
@@ -773,7 +825,7 @@ function installNativeFetchObserver(options: {
     const isReadback =
       method === "GET" &&
       target !== null &&
-      !originalReadbackCaptured &&
+      !acceptedReadbackCaptured &&
       url.origin === options.origin &&
       candidateSessionId === target.sessionId &&
       exactReadbackQuery(url, target.requestId);
@@ -865,65 +917,119 @@ function installNativeFetchObserver(options: {
       return response;
     }
 
-    originalReadbackCaptured = true;
-    const response = await Reflect.apply(originalFetch, this, args);
-    try {
-      const responseTextPromise = boundedText(
-        response.clone().body,
-        options.maxResponseBytes,
-      ).then(
-        (text) => ({ text }),
-        (error: unknown) => ({ error }),
-      );
-      if (candidateReadback) {
-        const accepted = await waitForStartDecision();
+    if (candidateReadback) candidateReadbackCaptured = true;
+    else acceptedReadbackCaptured = true;
+    const observation = Promise.resolve().then(async (): Promise<Response> => {
+      const response = await Reflect.apply(originalFetch, this, args);
+      try {
+        const responseTextPromise = boundedText(
+          response.clone().body,
+          options.maxResponseBytes,
+        ).then(
+          (text) => ({ text }),
+          (error: unknown) => ({ error }),
+        );
+        if (candidateReadback) {
+          const accepted = await waitForStartDecision();
+          if (
+            !accepted ||
+            !target ||
+            target.requestId !== tentativeRequestId ||
+            target.sessionId !== candidateSessionId
+          )
+            return response;
+        }
+        const cloned = await responseTextPromise;
+        if (!("text" in cloned)) {
+          await callBinding({
+            captureId: options.captureId,
+            kind: "readback",
+            candidate: candidateReadback,
+            method,
+            requestUrl: url.href,
+            status: response.status,
+            responseUrl: response.url,
+            responseText: "",
+          });
+          return response;
+        }
+        const decision = await callBinding({
+          captureId: options.captureId,
+          kind: "readback",
+          candidate: candidateReadback,
+          method,
+          requestUrl: url.href,
+          status: response.status,
+          responseUrl: response.url,
+          responseText: cloned.text,
+        });
         if (
-          !accepted ||
-          !target ||
-          target.requestId !== tentativeRequestId ||
-          target.sessionId !== candidateSessionId
+          typeof decision !== "object" ||
+          decision === null ||
+          ((decision as Record<string, unknown>)["action"] !==
+            "deliver-original-response" &&
+            (decision as Record<string, unknown>)["action"] !==
+              "defer-empty-candidate")
         )
           return response;
+        if (
+          (decision as Record<string, unknown>)["action"] ===
+          "defer-empty-candidate"
+        )
+          return response;
+        const delivered = await callBinding({
+          captureId: options.captureId,
+          kind: "delivered",
+          requestId: target?.requestId,
+          sessionId: target?.sessionId,
+        });
+        if (
+          typeof delivered !== "object" ||
+          delivered === null ||
+          (delivered as Record<string, unknown>)["action"] !==
+            "observed-original-delivery"
+        )
+          return response;
+      } catch (error) {
+        observerFailure = error;
+        return response;
       }
-      const cloned = await responseTextPromise;
-      if (!("text" in cloned)) return response;
-      const decision = await callBinding({
-        captureId: options.captureId,
-        kind: "readback",
-        method,
-        requestUrl: url.href,
-        status: response.status,
-        responseUrl: response.url,
-        responseText: cloned.text,
-      });
-      if (
-        typeof decision !== "object" ||
-        decision === null ||
-        (decision as Record<string, unknown>)["action"] !==
-          "deliver-original-response"
-      )
-        return response;
-      const delivered = await callBinding({
-        captureId: options.captureId,
-        kind: "delivered",
-        requestId: target?.requestId,
-        sessionId: target?.sessionId,
-      });
-      if (
-        typeof delivered !== "object" ||
-        delivered === null ||
-        (delivered as Record<string, unknown>)["action"] !==
-          "observed-original-delivery"
-      )
-        return response;
-    } catch {
       return response;
+    });
+    pendingReadbacks.add(observation);
+    try {
+      return await observation;
+    } finally {
+      pendingReadbacks.delete(observation);
     }
-    return response;
   } as typeof window.fetch;
   const state = {
     originalFetch,
     wrapper,
+    stopNewCaptures: () => {
+      acceptingCaptures = false;
+    },
+    drainReadbacks: async (timeoutMs: number) => {
+      const pending = [...pendingReadbacks];
+      if (pending.length === 0) return;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const results = await Promise.race([
+          Promise.allSettled(pending),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(
+              () => reject(new Error("Readback observer drain timed out.")),
+              timeoutMs,
+            );
+          }),
+        ]);
+        const failed = results.find((result) => result.status === "rejected");
+        if (failed?.status === "rejected") throw failed.reason;
+        if (observerFailure !== null) throw observerFailure;
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+      }
+    },
     settleStartDecision: () => finishStartDecision(false),
   };
   globals[options.stateName] = state;
