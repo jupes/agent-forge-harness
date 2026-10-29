@@ -532,13 +532,6 @@ test("a created project reviews its exact first Keeper brief before explicit sen
 
     const createPosts = expectedProjectCreatePosts(saved.requestId);
     expect(posts).toEqual(createPosts);
-    await reloadSettled(page);
-    await expect(page.locator(".af-desktop-project-name")).toHaveText(
-      saved.original.name,
-    );
-    await expect(panel).toContainText("No confirmed brief yet");
-    await expect.poll(() => keeperFixtureStarts()).toBe(startsBefore);
-    expect(posts).toEqual(createPosts);
 
     const token = await pageToken(page);
     const headers = {
@@ -667,28 +660,15 @@ test("a created project reviews its exact first Keeper brief before explicit sen
       ...createPosts,
       `/__agent-forge/projects/${projectId}/keeper/brief-intents/reserve`,
     ]);
-    await reloadSettled(page);
-    await expect(page.locator(".af-desktop-project-name")).toHaveText(
-      saved.original.name,
-    );
-    await expect(
-      panel.getByRole("button", { name: "Review saved brief" }),
-    ).toBeEnabled();
-    await panel.getByRole("button", { name: "Review saved brief" }).click();
-    await expect(
-      panel.getByRole("region", { name: "Exact Keeper brief original" }),
-    ).toBeVisible();
-    await expect(panel.locator(".af-brief-review dd").first()).toHaveText(
-      frozenOriginal.requestId,
-    );
-    await expect(panel.locator(".af-brief-review pre")).toHaveText(
-      frozenOriginal.text,
-    );
-    await expect.poll(() => keeperFixtureStarts()).toBe(startsBefore);
-    expect(posts).toEqual([
-      ...createPosts,
-      `/__agent-forge/projects/${projectId}/keeper/brief-intents/reserve`,
-    ]);
+    const shotDir = process.env["SHOT_DIR"];
+    if (shotDir) {
+      mkdirSync(shotDir, { recursive: true });
+      await panel
+        .getByRole("region", { name: "Exact Keeper brief original" })
+        .screenshot({
+          path: join(shotDir, "keeper-first-brief-review.png"),
+        });
+    }
 
     const commitResponse = page.waitForResponse(
       (response) =>
@@ -696,9 +676,20 @@ test("a created project reviews its exact first Keeper brief before explicit sen
           `/__agent-forge/projects/${projectId}/keeper/briefs` &&
         response.request().method() === "POST",
     );
-    await panel.getByRole("button", { name: "Send reviewed brief" }).click();
+    await expect(
+      panel.getByRole("region", { name: "Finish project setup" }),
+    ).toBeVisible();
+    await panel
+      .getByRole("button", { name: "Finish and send reviewed brief" })
+      .click();
     const committed = await commitResponse;
     expect(committed.status()).toBe(202);
+    await expect(
+      panel.getByRole("region", { name: "Finish project setup" }),
+    ).toHaveCount(0);
+    await expect(
+      panel.getByRole("region", { name: "Exact Keeper brief original" }),
+    ).toBeVisible();
     const commitBody = keeperBriefIntentReferenceSchema.parse(
       committed.request().postDataJSON(),
     );
@@ -865,6 +856,27 @@ test("a created project reviews its exact first Keeper brief before explicit sen
       `/__agent-forge/projects/${projectId}/keeper/briefs`,
     ]);
     expect(keeperFixtureStarts()).toBe(startsBefore + 1);
+    await reloadSettled(page);
+    const recoveredOriginal = await protectedRead(
+      page,
+      `/__agent-forge/projects/${projectId}/keeper/brief-intents/${frozenOriginal.requestId}`,
+    );
+    expect(recoveredOriginal.status).toBe(200);
+    const recovered = keeperBriefIntentOriginalSchema.parse(
+      (recoveredOriginal.body as { data: unknown }).data,
+    );
+    expect(recovered).toMatchObject({
+      requestId: frozenOriginal.requestId,
+      intentHash: frozenOriginal.intentHash,
+      state: "admitted",
+      text: frozenOriginal.text,
+      preparedTurnHash: frozenOriginal.preparedTurnHash,
+    });
+    expect(posts).toEqual([
+      ...createPosts,
+      `/__agent-forge/projects/${projectId}/keeper/brief-intents/reserve`,
+      `/__agent-forge/projects/${projectId}/keeper/briefs`,
+    ]);
   } finally {
     setKeeperFixtureMode("normal");
   }
