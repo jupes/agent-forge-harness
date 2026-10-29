@@ -779,7 +779,10 @@ export function createConversationService(options: ConversationOptions) {
               const replay = await store.acceptKeeperBrief(
                 projectId,
                 reference,
-                () => !closed && jobs.get(projectId)?.abort === abort,
+                () =>
+                  !closed &&
+                  !abort.signal.aborted &&
+                  keeperBriefAdmissions.get(projectId)?.abort === abort,
               );
               admitted = true;
               accept(replay.receipt);

@@ -268,6 +268,23 @@ test("concurrent commits for one ticket share a single admission and provider ru
 
   const first = commit();
   await readinessEntered;
+  const replayService = createConversationService({
+    home: h.home,
+    root: h.root,
+    transport,
+    keeperRuntime: runtime,
+  });
+  let replaySettled = false;
+  const inLeaseReplay = replayService
+    .commitKeeperBrief(FIXTURE_PROJECT_ID, {
+      requestId: ticket.requestId,
+      expectedRevision: ticket.expectedRevision,
+      intentHash: ticket.intentHash,
+    })
+    .then((receipt) => {
+      replaySettled = true;
+      return receipt;
+    });
   let secondFinished = false;
   const second = commit().then((response) => {
     secondFinished = true;
@@ -275,6 +292,7 @@ test("concurrent commits for one ticket share a single admission and provider ru
   });
   await Bun.sleep(10);
   expect(secondFinished).toBe(false);
+  expect(replaySettled).toBe(false);
   expect(starts).toBe(0);
   releaseReadiness();
   const [firstResponse, secondResponse] = await Promise.all([first, second]);
@@ -282,9 +300,14 @@ test("concurrent commits for one ticket share a single admission and provider ru
   expect(secondResponse.status).toBe(202);
   await runEntered;
   expect(starts).toBe(1);
+  expect(replaySettled).toBe(false);
   releaseRun();
   await terminal(createConversationStore(h.home), "completed");
+  const replayed = await inLeaseReplay;
+  expect(replaySettled).toBe(true);
+  expect(replayed.turn.requestId).toBe(ticket.requestId);
   expect(starts).toBe(1);
+  await replayService.close();
 });
 
 test("a project change during explicit readiness keeps the reviewed original unadmitted", async () => {
@@ -499,6 +522,8 @@ test("audited brief review commits the frozen original once and preserves a good
   expect((await post(input)).status).toBe(400);
   expect(starts).toBe(0);
   const reserve = async (expectedRevision: number) => {
+    const startsBefore = starts;
+    const checksBefore = checks;
     const reserved = await fetch(`${intentsPath}/reserve`, {
       method: "POST",
       headers: h.headers(h.hearth.token),
@@ -521,7 +546,7 @@ test("audited brief review commits the frozen original once and preserves a good
     expect(metadataEnvelope.data).not.toHaveProperty("text");
     expect(metadataEnvelope.data).not.toHaveProperty("about");
     expect(metadataEnvelope.data).not.toHaveProperty("snapshot");
-    expect(starts).toBe(0);
+    expect(starts).toBe(startsBefore);
     expect(
       (
         await fetch(`${intentsPath}/${metadata.requestId}`, {
@@ -563,8 +588,8 @@ test("audited brief review commits the frozen original once and preserves a good
     expect(
       keeperBriefIntentMetadataSchema.parse(discoveryEnvelope.data),
     ).toEqual(metadata);
-    expect(starts).toBe(0);
-    expect(checks).toBe(0);
+    expect(starts).toBe(startsBefore);
+    expect(checks).toBe(checksBefore);
     return metadata;
   };
   const commit = (ticket: ReturnType<typeof keeperBriefIntentMetadataSchema.parse>) =>
@@ -574,6 +599,8 @@ test("audited brief review commits the frozen original once and preserves a good
       intentHash: ticket.intentHash,
     });
   const firstTicket = await reserve(0);
+  const startsBeforeFirstCommit = starts;
+  const checksBeforeFirstCommit = checks;
   const store = createConversationStore(h.home);
   const frozenOriginal = store.readKeeperBriefIntent(
     FIXTURE_PROJECT_ID,
@@ -618,8 +645,12 @@ test("audited brief review commits the frozen original once and preserves a good
     ),
   ).toEqual(frozenOriginal);
   expect(replayPreparations).toBe(0);
+  expect(starts).toBe(0);
+  expect(checks).toBe(0);
   await replayService.close();
   expect((await commit(firstTicket)).status).toBe(202);
+  expect(starts).toBe(startsBeforeFirstCommit + 1);
+  expect(checks).toBe(checksBeforeFirstCommit + 1);
   expect(checks).toBe(1);
   await terminal(store, "completed");
   const original = (await projection()).latest;
@@ -631,9 +662,13 @@ test("audited brief review commits the frozen original once and preserves a good
   for (const next of ["failed", "malformed", "unknown"] as const) {
     mode = next;
     const ticket = await reserve(store.read(FIXTURE_PROJECT_ID).revision);
+    const startsBeforeCommit = starts;
+    const checksBeforeCommit = checks;
     expect(
       (await commit(ticket)).status,
     ).toBe(202);
+    expect(starts).toBe(startsBeforeCommit + 1);
+    expect(checks).toBe(checksBeforeCommit + 1);
     await terminal(
       store,
       next === "failed" || next === "unknown" ? next : "completed",
@@ -642,8 +677,11 @@ test("audited brief review commits the frozen original once and preserves a good
     expect(after.latest).toEqual(original);
     expect(after.refresh?.problem).toContain("previous brief has been kept");
     if (next === "unknown") {
+      const startsBeforeReplay = starts;
+      const checksBeforeReplay = checks;
       expect((await commit(ticket)).status).toBe(202);
-      expect(starts).toBe(4);
+      expect(starts).toBe(startsBeforeReplay);
+      expect(checks).toBe(checksBeforeReplay);
       expect(store.read(FIXTURE_PROJECT_ID).turns.at(-1)?.phase).toBe("unknown");
     }
   }
