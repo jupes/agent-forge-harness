@@ -639,10 +639,7 @@ function installNativeFetchObserver(options: {
   };
   const waitForStartDecision = () =>
     new Promise<boolean>((resolve) => {
-      const timer = setTimeout(
-        () => resolve(false),
-        options.cloneTimeoutMs,
-      );
+      const timer = setTimeout(() => resolve(false), options.cloneTimeoutMs);
       void startDecision.then((accepted) => {
         clearTimeout(timer);
         resolve(accepted);
@@ -802,7 +799,9 @@ function installNativeFetchObserver(options: {
             const value = (raw as Record<string, unknown>)["requestId"];
             if (
               typeof value === "string" &&
-              /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(value)
+              /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+                value,
+              )
             ) {
               requestIdFromBody = value;
               tentativeRequestId = value;
