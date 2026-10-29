@@ -308,22 +308,38 @@ test("actual deep discussion exposes peer round zero before Stop cancels its hel
   let liveRead: ProjectCouncilRunRead | undefined;
   await expect
     .poll(async () => {
-      liveRead = (await Promise.all(runReads)).reverse().find((read) =>
-        read.receipt.phase === "running" &&
-        read.job?.events.some((e) => e.type === "stage.started" && e.payload.stage === "revision" && e.payload.round === 1) &&
-        read.job?.discussion?.some((r) => r.stage === "peer" && r.round === 0),
-      );
+      liveRead = (await Promise.all(runReads))
+        .reverse()
+        .find(
+          (read) =>
+            read.receipt.phase === "running" &&
+            read.job?.events.some(
+              (e) =>
+                e.type === "stage.started" &&
+                e.payload.stage === "revision" &&
+                e.payload.round === 1,
+            ) &&
+            read.job?.discussion?.some(
+              (r) => r.stage === "peer" && r.round === 0,
+            ),
+        );
       return liveRead !== undefined;
     })
     .toBe(true);
   if (!liveRead?.job?.profile)
     throw Error("The live deep-discussion profile was not read back.");
   expect(liveRead.receipt.metadata.maxUsd).toBe(original.maxUsd);
-  expect([...liveRead.job.profile.seats, liveRead.job.profile.chair].map((s) => s.timeoutMs)).toEqual([5000, 5000, 5000, 5000, 5000]);
+  expect(
+    [...liveRead.job.profile.seats, liveRead.job.profile.chair].map(
+      (s) => s.timeoutMs,
+    ),
+  ).toEqual([5000, 5000, 5000, 5000, 5000]);
   const peer = liveRead.job.discussion?.find(
     (round) => round.stage === "peer" && round.round === 0,
   );
-  expect(peer?.records.map((r) => r.seatId).sort()).toEqual(liveRead.job.profile.seats.map((s) => s.id).sort());
+  expect(peer?.records.map((r) => r.seatId).sort()).toEqual(
+    liveRead.job.profile.seats.map((s) => s.id).sort(),
+  );
   expect(peer?.records.every((r) => r.status === "completed")).toBe(true);
   const discussion = page.getByRole("region", { name: "Council discussion" });
   const roundPicker = discussion.getByLabel("Round");
@@ -355,22 +371,35 @@ test("actual deep discussion exposes peer round zero before Stop cancels its hel
   );
   if (!cancelled?.job?.run)
     throw Error("The stopped revision did not produce a cancelled result.");
-  expect(cancelled.provenance).toMatchObject({ requestId: original.requestId, intentHash: original.intentHash, runId: original.runId, projectId: alpha.id });
+  expect(cancelled.provenance).toMatchObject({
+    requestId: original.requestId,
+    intentHash: original.intentHash,
+    runId: original.runId,
+    projectId: alpha.id,
+  });
   expect(cancelled.job.run.chair).toBeUndefined();
   const revisions = cancelled.job.run.records.filter(
     (record) => record.stage === "revision",
   );
   expect(revisions).toHaveLength(liveRead.job.profile.seats.length);
   const delayedSeat = liveRead.job.profile.seats[0]!.id;
-  expect(revisions.find((r) => r.seatId === delayedSeat)?.status).toBe("cancelled");
-  expect(revisions.filter((r) => r.seatId !== delayedSeat).every((r) => r.status === "completed")).toBe(true);
+  expect(revisions.find((r) => r.seatId === delayedSeat)?.status).toBe(
+    "cancelled",
+  );
+  expect(
+    revisions
+      .filter((r) => r.seatId !== delayedSeat)
+      .every((r) => r.status === "completed"),
+  ).toBe(true);
   expect(posts.filter((post) => post.path.endsWith("/commit"))).toHaveLength(1);
   expect(posts.filter((post) => post.path.endsWith("/cancel"))).toHaveLength(1);
   const requests = callsFor("council-deep-discussion").filter(
     (call) => call.kind === "request",
   );
   expect(requests.every((call) => call.runId === original.runId)).toBe(true);
-  expect(requests.filter((c) => c.stage === "revision" && c.seatId === delayedSeat)).toHaveLength(1);
+  expect(
+    requests.filter((c) => c.stage === "revision" && c.seatId === delayedSeat),
+  ).toHaveLength(1);
   expect(
     callsFor("council-deep-discussion").filter(
       (call) => call.kind === "admission",
