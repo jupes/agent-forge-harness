@@ -178,6 +178,12 @@ function mode(value: string) {
     JSON.stringify(value),
   );
 }
+function codingMode(value: string) {
+  writeFileSync(
+    join(HEARTH_HOME, "coding-fixture-mode.json"),
+    JSON.stringify(value),
+  );
+}
 async function attachForkChildApprovalDiagnostic(info: TestInfo) {
   const allowedId = (value: unknown) =>
     typeof value === "string" && /^[0-9a-f-]{1,64}$/i.test(value)
@@ -384,6 +390,64 @@ test.beforeEach(() => {
   forkJourneyHttpFacts = [];
   mode("approval-command");
 });
+
+test("a confirmed Claude rate limit offers an explicit Codex Chat continuation", async ({
+  page,
+}) => {
+  const previous = new Set(records().map((record) => record.id));
+  mode("approval-command");
+  codingMode("rich-rate-limit");
+  await openSettled(page, `/index.html#/desktop/project/${alpha.id}/sessions`);
+  await page.getByRole("button", { name: "New session", exact: true }).click();
+  const dialog = page.getByRole("dialog", {
+    name: "New session · Alpha",
+    exact: true,
+  });
+  await dialog
+    .getByRole("textbox", { name: "Session prompt", exact: true })
+    .fill("Original Claude Chat that reached its reported limit");
+  await dialog
+    .getByRole("combobox", { name: "Session mode", exact: true })
+    .selectOption("chat");
+  await dialog
+    .getByRole("combobox", { name: "Session effort", exact: true })
+    .selectOption("");
+  await dialog
+    .getByRole("button", { name: "Check supported options", exact: true })
+    .click();
+  await expect(
+    dialog.getByRole("button", { name: "Start", exact: true }),
+  ).toBeEnabled();
+  await dialog.getByRole("button", { name: "Start", exact: true }).click();
+  let record: ReturnType<typeof records>[number] | undefined;
+  await expect
+    .poll(() => {
+      record = records().find((item) => !previous.has(item.id));
+      return record?.id ?? null;
+    })
+    .not.toBeNull();
+  if (!record) throw Error("Missing original Claude Chat fixture");
+  await expect.poll(() => saved(record.id).turns.at(-1)?.phase).toBe("failed");
+  codingMode("normal");
+  expect(saved(record.id).frames).toContainEqual(
+    expect.objectContaining({
+      event: expect.objectContaining({
+        kind: "coding-outcome",
+        provider: "claude",
+        code: "rate-limited",
+      }),
+    }),
+  );
+  const outcome = page.locator(".af-session-outcome");
+  await outcome.locator("summary").click();
+  await expect(
+    outcome.getByRole("button", {
+      name: "Continue with Codex Chat",
+      exact: true,
+    }),
+  ).toBeVisible();
+});
+
 test.afterEach(async ({ page }) => {
   const info = test.info();
   if (
