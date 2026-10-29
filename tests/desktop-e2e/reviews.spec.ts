@@ -1,6 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { expect, test } from "@playwright/test";
+import { expect, test, type Response } from "@playwright/test";
 import { projectCouncilMetadataSchema } from "../../types/project-council";
 import type { ProjectCouncilRunRead } from "../../types/project-council-run-read";
 import type { ProjectRecord } from "../../types/projects";
@@ -242,17 +242,105 @@ test("a completed bead-source review links to its bead and reports the one recor
   await expect(page.getByLabel("Beads issue ID")).toHaveValue(
     "alpha-council-first",
   );
-  const reservationResponse = page.waitForResponse(
-    (response) =>
-      response.request().method() === "POST" &&
-      new URL(response.url()).pathname === reviewsPath,
-  );
-  await page
-    .getByRole("button", { name: "Prepare original for review" })
-    .click();
-  const reserved = await reservationResponse;
+  const reservationOrigin = new URL(page.url()).origin;
+  let capturedReservation:
+    | {
+        response: Response;
+        body: Promise<
+          | { ok: true; bytes: Uint8Array }
+          | { ok: false; error: unknown }
+        >;
+      }
+    | undefined;
+  let captureError: Error | undefined;
+  let resolveReservation!: (
+    value: NonNullable<typeof capturedReservation>,
+  ) => void;
+  const reservationCapture = new Promise<
+    NonNullable<typeof capturedReservation>
+  >((resolve) => {
+    resolveReservation = resolve;
+  });
+  const captureReservation = (response: Response) => {
+    const request = response.request();
+    let url: URL;
+    try {
+      url = new URL(response.url());
+    } catch {
+      return;
+    }
+    if (
+      request.method() !== "POST" ||
+      request.frame() !== page.mainFrame() ||
+      url.origin !== reservationOrigin ||
+      url.pathname !== reviewsPath
+    )
+      return;
+    if (capturedReservation) {
+      captureError = new Error("Multiple Council reservation responses were observed.");
+      return;
+    }
+    let body: NonNullable<typeof capturedReservation>["body"];
+    try {
+      body = response.body().then(
+        (bytes) => ({ ok: true as const, bytes }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+    } catch (error) {
+      body = Promise.resolve({ ok: false as const, error });
+    }
+    capturedReservation = { response, body };
+    resolveReservation(capturedReservation);
+  };
+  page.on("response", captureReservation);
+  let captureTimer: ReturnType<typeof setTimeout> | undefined;
+  let captureTimedOut = false;
+  const captureDeadline = new Promise<{ timedOut: true }>((resolve) => {
+    captureTimer = setTimeout(
+      () => {
+        captureTimedOut = true;
+        resolve({ timedOut: true });
+      },
+      10_000,
+    );
+  });
+  let reserved: Response;
+  let reservationBody: Uint8Array;
+  try {
+    await page
+      .getByRole("button", { name: "Prepare original for review" })
+      .click();
+    if (captureTimedOut)
+      throw new Error("The Council reservation response was not captured in time.");
+    const captured = await Promise.race([reservationCapture, captureDeadline]);
+    if ("timedOut" in captured)
+      throw new Error("The Council reservation response was not captured in time.");
+    const bodyResult = await Promise.race([captured.body, captureDeadline]);
+    if ("timedOut" in bodyResult)
+      throw new Error("The Council reservation body exceeded its time bound.");
+    if (captureError) throw captureError;
+    if (!bodyResult.ok)
+      throw new Error(`The Council reservation body was unavailable: ${String(bodyResult.error)}`);
+    if (bodyResult.bytes.byteLength > 512 * 1024)
+      throw new Error("The Council reservation body exceeded its bounded size.");
+    reserved = captured.response;
+    reservationBody = bodyResult.bytes;
+  } finally {
+    page.off("response", captureReservation);
+    if (captureTimer !== undefined) clearTimeout(captureTimer);
+  }
+  if (captureError) throw captureError;
   expect(reserved.status()).toBe(202);
-  const reservedData = responseData(await reserved.json());
+  const reservationText = new TextDecoder("utf-8", { fatal: true }).decode(
+    reservationBody,
+  );
+  let reservationEnvelope: unknown;
+  try {
+    reservationEnvelope = JSON.parse(reservationText);
+  } catch {
+    throw Error("The actual Council reservation body was not valid JSON.");
+  }
+  const reservedData = responseData(reservationEnvelope);
   if (
     typeof reservedData !== "object" ||
     reservedData === null ||
