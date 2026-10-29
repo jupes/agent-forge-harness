@@ -4,8 +4,8 @@ import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
   type ProjectCouncilBinding,
-  projectCouncilMetadata,
   projectCouncilHistorySchema,
+  projectCouncilMetadata,
   projectCouncilOriginalReadSchema,
 } from "../../types/project-council";
 import { ConversationError } from "../conversations/error";
@@ -203,12 +203,8 @@ test("project Council summary labels redact the complete text before truncating"
   );
   expect(history.items[0]?.sourceName).toBe(metadata.sourceName);
   expect(history.items[0]?.profileTitle).toBe(metadata.profileTitle);
-  expect(history.items[0]?.sourceName).not.toContain(
-    "abcZq9Zq8Zq7Zq6Zq5Zq4",
-  );
-  expect(history.items[0]?.profileTitle).not.toContain(
-    "abcZq9Zq8Zq7Zq6Zq5Zq4",
-  );
+  expect(history.items[0]?.sourceName).not.toContain("abcZq9Zq8Zq7Zq6Zq5Zq4");
+  expect(history.items[0]?.profileTitle).not.toContain("abcZq9Zq8Zq7Zq6Zq5Zq4");
 });
 
 test("a changed saved original is refused rather than repaired or replaced", async () => {

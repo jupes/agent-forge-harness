@@ -503,9 +503,7 @@ export function createProjectCouncilOriginalStore(options: {
             item.context.source.kind === "stdin"
               ? "text"
               : item.context.source.kind,
-          sourceName: projectCouncilShownLabel(
-            item.context.source.displayName,
-          ),
+          sourceName: projectCouncilShownLabel(item.context.source.displayName),
           profileId: item.profile.id,
           profileTitle: projectCouncilShownLabel(item.profile.title),
           depth: item.profile.depth,
