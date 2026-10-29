@@ -1388,7 +1388,8 @@ test("Add Folder and a reviewed local clone feed a fresh two-repository project 
   const keeper = smithsViewSchema
     .parse(keeperResponse.body.data)
     .smiths.find((row) => row.enabled);
-  if (!keeper) throw new Error("No enabled Keeper is available for the review.");
+  if (!keeper)
+    throw new Error("No enabled Keeper is available for the review.");
   await freshDialog
     .getByRole("combobox", { name: "Project Keeper" })
     .selectOption(keeper.name);
