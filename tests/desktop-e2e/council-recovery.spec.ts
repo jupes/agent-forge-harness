@@ -181,8 +181,7 @@ function observeRunReads(
             };
           if (response.request().failure()?.errorText === "net::ERR_ABORTED")
             return { kind: "interrupted", reason: "aborted" };
-          if (finished)
-            return { kind: "invalid", message: finished.message };
+          if (finished) return { kind: "invalid", message: finished.message };
           try {
             const raw = await response.json();
             return {
@@ -190,7 +189,8 @@ function observeRunReads(
               read: projectCouncilRunReadSchema.parse(responseData(raw)),
             };
           } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
+            const message =
+              error instanceof Error ? error.message : String(error);
             if (
               /^(?:response\.json: )?Protocol error \(Network\.getResponseBody\): No data found for (?:the )?resource with given identifier$/.test(
                 message,
@@ -222,7 +222,9 @@ async function verifiedRunReads(
   const results = await Promise.all(observations);
   const invalid = results.find((result) => result.kind === "invalid");
   if (invalid?.kind === "invalid")
-    throw Error(`The actual Council result read was invalid: ${invalid.message}`);
+    throw Error(
+      `The actual Council result read was invalid: ${invalid.message}`,
+    );
   return results.flatMap((result) =>
     result.kind === "verified" ? [result.read] : [],
   );
@@ -416,7 +418,9 @@ test("actual deep discussion exposes peer round zero before Stop cancels its hel
   const shotDir = process.env["SHOT_DIR"];
   if (shotDir) {
     mkdirSync(shotDir, { recursive: true });
-    await page.screenshot({ path: join(shotDir, "council-live-discussion.png") });
+    await page.screenshot({
+      path: join(shotDir, "council-live-discussion.png"),
+    });
   }
 
   await page.getByRole("button", { name: "Stop review", exact: true }).click();

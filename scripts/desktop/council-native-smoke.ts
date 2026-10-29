@@ -18,7 +18,6 @@ import {
   sep,
 } from "node:path";
 import { chromium, type Page } from "@playwright/test";
-import { makeOwnerOnly } from "../hearth/acl-windows";
 import {
   type ProjectCouncilMetadata,
   type ProjectCouncilOriginalRead,
@@ -33,6 +32,7 @@ import {
   projectCouncilRunReadSchema,
 } from "../../types/project-council-run-read";
 import { loadCouncilProfile } from "../council/workflow";
+import { makeOwnerOnly } from "../hearth/acl-windows";
 import { isMain } from "../is-main";
 import { createProjectStore } from "../projects/store";
 
