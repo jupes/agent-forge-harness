@@ -8,6 +8,7 @@ import {
 } from "fs";
 import { tmpdir } from "os";
 import { join, resolve } from "path";
+import { withQueueLock } from "../scheduler/queue-lock";
 import {
   readCouncilRun,
   renderCouncilReport,
@@ -61,6 +62,7 @@ test("a project Council commit refuses a changed provider endpoint before dispat
     harnessRoot: root,
     runsRoot: join(root, "runs"),
     reviewHome: join(root, "home"),
+    withQueueLock,
     environment,
     resolveTransport: () => {
       transportResolutions += 1;
@@ -126,79 +128,85 @@ test("concurrent project commits across workspaces cannot overbook the global fo
     harnessRoot: root,
     runsRoot: join(root, "runs"),
     reviewHome: join(root, "home"),
+    withQueueLock,
     environment: {},
     resolveTransport: () => () => new FakeCouncilTransport({ delayMs: 60_000 }),
   });
-  const legacy = [0, 1, 2].map((index) =>
-    service.start({
-      sourceType: "text",
-      source: `Hold legacy slot ${index}.`,
-      profile: profilePath,
-      runId: `legacy-slot-${index}`,
-    }),
-  );
-  expect(legacy.every((job) => job.status === "running")).toBe(true);
-  const ids = [
-    "project-2b4f8e0a-76f1-4c29-972e-4aee9c216d12",
-    "project-3c5f9a1b-85b3-4d71-8e3a-6c9140275f20",
-  ];
-  const entries = ids.map((id, index) => ({
-    id,
-    workspace: join(root, `workspace-${index}`),
-    resolveAuthority: async () => ({
-      projectId: id,
-      workspace: join(root, `workspace-${index}`),
-      workspaceRoot: root,
-      catalogRevision: 1,
-      scopeHash: String(index + 1).repeat(64),
-    }),
-  }));
-  const reservations = await Promise.all(
-    entries.map(async (entry, index) => ({
-      entry,
-      reservation: await service.reserveProjectReview(
-        entry.id,
-        {
-          sourceChoice: {
-            sourceType: "text",
-            source: `Held project slot ${index}.`,
-          },
-          profileChoice: profilePath,
-          maxUsd: 0.25,
-          maxBytes: 1024,
-          redactSecrets: false,
-          deepDiscussion: false,
-        },
-        entry.resolveAuthority,
-      ),
-    })),
-  );
-  const outcomes = await Promise.allSettled(
-    reservations.map(({ entry, reservation }) =>
-      service.commitProjectReview(
-        entry.id,
-        entry.workspace,
-        reservation.metadata.requestId,
-        reservation.metadata.intentHash,
-        entry.resolveAuthority,
-      ),
-    ),
-  );
-  const fulfilled = outcomes.filter((item) => item.status === "fulfilled");
-  const rejected = outcomes.filter(
-    (item): item is PromiseRejectedResult => item.status === "rejected",
-  );
-  if (fulfilled.length !== 1 || rejected.length !== 1)
-    throw new Error(
-      `Expected one admitted project Council commit; fulfilled=${fulfilled.length}; rejected=${rejected
-        .map((item) =>
-          item.reason instanceof Error ? item.reason.message : String(item.reason),
-        )
-        .join(" | ")}`,
+  try {
+    const legacy = [0, 1, 2].map((index) =>
+      service.start({
+        sourceType: "text",
+        source: `Hold legacy slot ${index}.`,
+        profile: profilePath,
+        runId: `legacy-slot-${index}`,
+      }),
     );
-  expect(fulfilled).toHaveLength(1);
-  expect(rejected).toHaveLength(1);
-  await service.close();
+    expect(legacy.every((job) => job.status === "running")).toBe(true);
+    const ids = [
+      "project-2b4f8e0a-76f1-4c29-972e-4aee9c216d12",
+      "project-3c5f9a1b-85b3-4d71-8e3a-6c9140275f20",
+    ];
+    const entries = ids.map((id, index) => ({
+      id,
+      workspace: join(root, `workspace-${index}`),
+      resolveAuthority: async () => ({
+        projectId: id,
+        workspace: join(root, `workspace-${index}`),
+        workspaceRoot: root,
+        catalogRevision: 1,
+        scopeHash: String(index + 1).repeat(64),
+      }),
+    }));
+    const reservations = await Promise.all(
+      entries.map(async (entry, index) => ({
+        entry,
+        reservation: await service.reserveProjectReview(
+          entry.id,
+          {
+            sourceChoice: {
+              sourceType: "text",
+              source: `Held project slot ${index}.`,
+            },
+            profileChoice: profilePath,
+            maxUsd: 0.25,
+            maxBytes: 1024,
+            redactSecrets: false,
+            deepDiscussion: false,
+          },
+          entry.resolveAuthority,
+        ),
+      })),
+    );
+    const outcomes = await Promise.allSettled(
+      reservations.map(({ entry, reservation }) =>
+        service.commitProjectReview(
+          entry.id,
+          entry.workspace,
+          reservation.metadata.requestId,
+          reservation.metadata.intentHash,
+          entry.resolveAuthority,
+        ),
+      ),
+    );
+    const fulfilled = outcomes.filter((item) => item.status === "fulfilled");
+    const rejected = outcomes.filter(
+      (item): item is PromiseRejectedResult => item.status === "rejected",
+    );
+    if (fulfilled.length !== 1 || rejected.length !== 1)
+      throw new Error(
+        `Expected one admitted project Council commit; fulfilled=${fulfilled.length}; rejected=${rejected
+          .map((item) =>
+            item.reason instanceof Error
+              ? item.reason.message
+              : String(item.reason),
+          )
+          .join(" | ")}`,
+      );
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+  } finally {
+    await service.close();
+  }
 });
 
 test("a retained unknown original cannot read or cancel a colliding legacy job by run id", async () => {
@@ -223,64 +231,72 @@ test("a retained unknown original cannot read or cancel a colliding legacy job b
     harnessRoot: root,
     runsRoot: join(root, "runs"),
     reviewHome,
+    withQueueLock,
     environment: {},
     resolveTransport: () => () => new FakeCouncilTransport({ delayMs: 60_000 }),
   });
-  const projectId = "project-2b4f8e0a-76f1-4c29-972e-4aee9c216d12";
-  const resolveAuthority = async () => ({
-    projectId,
-    workspace: root,
-    workspaceRoot: root,
-    catalogRevision: 1,
-    scopeHash: "a".repeat(64),
-  });
-  const reserved = await service.reserveProjectReview(
-    projectId,
-    {
-      sourceChoice: {
-        sourceType: "text",
-        source: "A retained unknown review.",
+  try {
+    const projectId = "project-2b4f8e0a-76f1-4c29-972e-4aee9c216d12";
+    const resolveAuthority = async () => ({
+      projectId,
+      workspace: root,
+      workspaceRoot: root,
+      catalogRevision: 1,
+      scopeHash: "a".repeat(64),
+    });
+    const reserved = await service.reserveProjectReview(
+      projectId,
+      {
+        sourceChoice: {
+          sourceType: "text",
+          source: "A retained unknown review.",
+        },
+        profileChoice: profilePath,
+        maxUsd: 0.25,
+        maxBytes: 1024,
+        redactSecrets: false,
+        deepDiscussion: false,
       },
-      profileChoice: profilePath,
-      maxUsd: 0.25,
-      maxBytes: 1024,
-      redactSecrets: false,
-      deepDiscussion: false,
-    },
-    resolveAuthority,
-  );
-  const store = createProjectCouncilOriginalStore({
-    home: reviewHome,
-    workspace: root,
-    projectId,
-  });
-  await store.claimDispatch(
-    projectId,
-    reserved.metadata.requestId,
-    reserved.metadata.intentHash,
-    async () => {},
-  );
-  const legacy = service.start({
-    sourceType: "text",
-    source: "An unrelated legacy run with a colliding caller-provided ID.",
-    profile: profilePath,
-    runId: reserved.metadata.runId,
-  });
-  const observed = service.readProjectRun(
-    projectId,
-    root,
-    reserved.metadata.requestId,
-    reserved.metadata.intentHash,
-  );
-  expect(observed).toMatchObject({ receipt: { phase: "unknown" }, job: null });
-  await service.cancelProjectReview(
-    projectId,
-    root,
-    reserved.metadata.requestId,
-    reserved.metadata.intentHash,
-  );
-  expect(service.get(legacy.runId).status).toBe("running");
-  await service.close();
+      resolveAuthority,
+    );
+    const store = createProjectCouncilOriginalStore({
+      home: reviewHome,
+      workspace: root,
+      projectId,
+      withQueueLock,
+    });
+    await store.claimDispatch(
+      projectId,
+      reserved.metadata.requestId,
+      reserved.metadata.intentHash,
+      async () => {},
+    );
+    const legacy = service.start({
+      sourceType: "text",
+      source: "An unrelated legacy run with a colliding caller-provided ID.",
+      profile: profilePath,
+      runId: reserved.metadata.runId,
+    });
+    const observed = service.readProjectRun(
+      projectId,
+      root,
+      reserved.metadata.requestId,
+      reserved.metadata.intentHash,
+    );
+    expect(observed).toMatchObject({
+      receipt: { phase: "unknown" },
+      job: null,
+    });
+    await service.cancelProjectReview(
+      projectId,
+      root,
+      reserved.metadata.requestId,
+      reserved.metadata.intentHash,
+    );
+    expect(service.get(legacy.runId).status).toBe("running");
+  } finally {
+    await service.close();
+  }
 });
 
 function profile(overrides: Partial<CouncilProfile> = {}): CouncilProfile {

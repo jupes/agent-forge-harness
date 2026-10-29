@@ -11,6 +11,7 @@ import {
 import { ConversationError } from "../conversations/error";
 import { privateTempDir } from "../hearth/testing";
 import { writeOwnerOnly } from "../hearth/token";
+import { withQueueLock } from "../scheduler/queue-lock";
 import {
   buildContextPack,
   buildContextPackFromParts,
@@ -50,6 +51,7 @@ function fixture() {
     home,
     workspace,
     projectId: binding.projectId,
+    withQueueLock,
   });
   const prepared = (source: string) => {
     const context = buildContextPack({
@@ -82,6 +84,7 @@ test("project Council originals are durable, exact-retry idempotent, single-disp
     home,
     workspace,
     projectId: binding.projectId,
+    withQueueLock,
   });
   const input = prepared("Review the inert project fixture exactly once.");
   const first = await firstStore.reservePrepared(input);
@@ -110,6 +113,7 @@ test("project Council originals are durable, exact-retry idempotent, single-disp
     home,
     workspace,
     projectId: input.binding.projectId,
+    withQueueLock,
   });
   const retry = await reopened.reservePrepared(input);
   expect(retry.created).toBe(false);
@@ -291,6 +295,7 @@ test("different projects in one workspace have independent retained journals", a
     home,
     workspace,
     projectId: binding.projectId,
+    withQueueLock,
   });
   const firstInput = prepared("Same workspace, first project.");
   const first = await firstStore.reservePrepared(firstInput);
@@ -300,6 +305,7 @@ test("different projects in one workspace have independent retained journals", a
     home,
     workspace,
     projectId: secondProjectId,
+    withQueueLock,
   });
   const secondInput = {
     ...prepared("Same workspace, first project."),

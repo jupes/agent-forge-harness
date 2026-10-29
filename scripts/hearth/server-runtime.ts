@@ -54,6 +54,7 @@ import type {
   NativeConsoleChild,
   NativeConsoleLaunchOptions,
 } from "../providers/native-console";
+import { withQueueLock } from "../scheduler/queue-lock";
 import { SHIFTS_DIR } from "../scheduler/shift-store";
 import type { GitRun } from "../scheduler/worktrees";
 import type { SessionRuntime } from "../sessions/admission";
@@ -334,6 +335,7 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
   const service = createCouncilService({
     workspaceRoot: root,
     reviewHome: home,
+    withQueueLock,
     harnessRoot: options.harnessRoot ?? root,
     environment:
       options.environment ??
