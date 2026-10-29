@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import type {
   ProjectCouncilAuthority,
   ProjectCouncilReserveRequest,
@@ -373,13 +374,30 @@ export function createProjectCouncilRoutes(
                 completedJob.status !== "completed" ||
                 !completedJob.run ||
                 !job.run ||
-                JSON.stringify(completedJob.run) !== JSON.stringify(job.run) ||
-                JSON.stringify(completedJob.profile) !==
-                  JSON.stringify(original.original.profile) ||
-                JSON.stringify(job.profile) !==
-                  JSON.stringify(original.original.profile) ||
-                JSON.stringify(job.run.context) !==
-                  JSON.stringify(original.original.context)
+                !isDeepStrictEqual(completedJob.run, job.run) ||
+                !isDeepStrictEqual(
+                  completedJob.profile,
+                  original.original.profile,
+                ) ||
+                !isDeepStrictEqual(job.profile, original.original.profile) ||
+                !isDeepStrictEqual(
+                  {
+                    source: job.run.context.source,
+                    contentHash: job.run.context.contentHash,
+                    byteLength: job.run.context.byteLength,
+                    truncated: job.run.context.truncated,
+                    redactions: job.run.context.redactions,
+                    evidence: job.run.context.evidence,
+                  },
+                  {
+                    source: original.original.context.source,
+                    contentHash: original.original.context.contentHash,
+                    byteLength: original.original.context.byteLength,
+                    truncated: original.original.context.truncated,
+                    redactions: original.original.context.redactions,
+                    evidence: original.original.context.evidence,
+                  },
+                )
               )
                 throw new Error(
                   "The Council verdict did not match its reviewed original.",
