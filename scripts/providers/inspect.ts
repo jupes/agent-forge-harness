@@ -7,6 +7,7 @@ import type {
 import { buildChildEnv } from "../executors/env";
 import { ADAPTERS } from "../executors/registry";
 import {
+  SupervisorOwnershipRefusalError,
   supervise,
   type InteractiveSuperviseOptions,
 } from "../executors/supervisor";
@@ -129,7 +130,8 @@ export function createProviderInspector(options: {
           stdout: valid ? stdout : "",
           valid: valid && !result.timedOut && !result.stopped,
         };
-      } catch {
+      } catch (error) {
+        if (error instanceof SupervisorOwnershipRefusalError) throw error;
         return { exitCode: -1, stdout: "", valid: false };
       }
     });
