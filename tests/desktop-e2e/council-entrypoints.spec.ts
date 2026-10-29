@@ -168,6 +168,12 @@ test("verified recorded research artifact opens a Council source draft without p
   ).toContainText(
     "Recorded research artifact for the Council source-entry fixture.",
   );
+  await expect(
+    page.getByText(
+      "This opens a draft from the recorded artifact; it does not complete or change a checkpoint.",
+      { exact: true },
+    ),
+  ).toBeVisible();
   await detail
     .getByRole("button", {
       name: "Review research artifact in Council",
@@ -181,11 +187,5 @@ test("verified recorded research artifact opens a Council source draft without p
   await expect(page.getByLabel("Workspace-relative file")).toHaveValue(
     `plans/research/${run.slug}.md`,
   );
-  await expect(
-    page.getByText(
-      "This opens a draft from the recorded artifact; it does not complete or change a checkpoint.",
-      { exact: true },
-    ),
-  ).toBeVisible();
   expect(councilPosts).toEqual([]);
 });
