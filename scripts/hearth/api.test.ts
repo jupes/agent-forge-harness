@@ -4416,7 +4416,10 @@ describe("a read row or the stream while another connection holds the write lock
       return { status: 1, stdout: "", stderr: "" };
     };
     const h = await start({
-      files: { ".tmp/work/forge-runs/demo.json": RUN_STATE },
+      files: {
+        ".tmp/work/forge-runs/demo.json": RUN_STATE,
+        "plans/research/demo.md": "# Recorded research\n",
+      },
       api: { git },
     });
     workspace = h.workspace;
