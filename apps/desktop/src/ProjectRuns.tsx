@@ -511,14 +511,15 @@ export function RunDetail({
                         ? `plans/drafts/${run.slug}.md`
                         : `reports/${run.slug}-ship.md`;
                   if (phase.artifact !== expected) return null;
-                  const sourceType = phase.id === "plan" ? "plan" : "file";
-                  const label = phaseName(phase.id).toLowerCase();
+                  const kind = phase.id;
+                  const sourceType = kind === "plan" ? "plan" : "file";
+                  const label = phaseName(kind).toLowerCase();
                   return (
                     <>
                       <Button
                         disabled={!canOpenArtifacts}
                         onClick={() =>
-                          onCouncilArtifactPrefill?.(phase.id, {
+                          onCouncilArtifactPrefill?.(kind, {
                             sourceType,
                             source: expected,
                           })

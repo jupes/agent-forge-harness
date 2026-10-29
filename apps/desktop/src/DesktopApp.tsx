@@ -175,6 +175,7 @@ export function DesktopApp(): JSX.Element {
     window.location.hash = desktopHref({
       projectId: project.id,
       destination: "reviews",
+      selection: null,
     }).slice(1);
   };
   const keepCouncilDraft = () => {
@@ -195,6 +196,7 @@ export function DesktopApp(): JSX.Element {
     window.location.hash = desktopHref({
       projectId: councilSourceReplacement.scope.projectId,
       destination: "reviews",
+      selection: null,
     }).slice(1);
   };
   const replaceCouncilDraftSource = () => {
@@ -244,6 +246,7 @@ export function DesktopApp(): JSX.Element {
     window.location.hash = desktopHref({
       projectId,
       destination: "reviews",
+      selection: null,
     }).slice(1);
   };
   const activityFilters =
