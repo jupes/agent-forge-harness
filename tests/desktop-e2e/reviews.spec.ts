@@ -1,6 +1,6 @@
-import { expect, test } from "@playwright/test";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { expect, test } from "@playwright/test";
 import { openSettled } from "../e2e/fixtures";
 import { alpha, seedProjects } from "./project-fixtures";
 
