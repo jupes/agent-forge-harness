@@ -1,10 +1,21 @@
 /** Production hearth with an explicit native Codex fixture and inert sync seam. */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
+import { FakeCouncilTransport } from "../../scripts/council/fake-transport";
 import { operatorCouncilLedger } from "../../scripts/council/ledger-wiring";
+import type { CouncilProfile, CouncilSeat } from "../../scripts/council/types";
 import { supervise } from "../../scripts/executors/supervisor";
-import { ensurePrivateHome } from "../../scripts/hearth/home-guard";
+import {
+  ensurePrivateHome,
+  readHomeFileBounded,
+} from "../../scripts/hearth/home-guard";
 import { closeOnSignal, createHearth } from "../../scripts/hearth/server";
 import { isMain } from "../../scripts/is-main";
 import { createProviderLoginService } from "../../scripts/providers/login";
@@ -14,6 +25,84 @@ import { createCodexTaskRuntime } from "../../scripts/sessions/codex-task-runtim
 import { observeCodexChatPersist } from "../../scripts/sessions/fixtures/codex-chat-persist-diagnostic";
 import { createGeminiChatRuntime } from "../../scripts/sessions/gemini-chat-runtime";
 import { createGeminiTaskRuntime } from "../../scripts/sessions/gemini-task-runtime";
+
+type CouncilFixtureMode = {
+  mode: "success" | "hold" | "fail";
+  caseId: "council-cancel" | "council-failure" | "council-unknown" | "idle";
+};
+
+function councilFixtureMode(home: string): CouncilFixtureMode {
+  const path = join(home, "council-fixture-control.json");
+  const read = readHomeFileBounded(home, path, 512);
+  if (read.problem) throw Error("Council fixture control could not be trusted");
+  if (read.text === null) return { mode: "success", caseId: "idle" };
+  let value: unknown;
+  try {
+    value = JSON.parse(read.text);
+  } catch {
+    throw Error("Council fixture control is invalid JSON");
+  }
+  if (
+    typeof value !== "object" ||
+    value === null ||
+    Array.isArray(value) ||
+    Object.keys(value).length !== 2 ||
+    !("mode" in value) ||
+    (value.mode !== "success" &&
+      value.mode !== "hold" &&
+      value.mode !== "fail") ||
+    !("caseId" in value) ||
+    (value.caseId !== "council-cancel" &&
+      value.caseId !== "council-failure" &&
+      value.caseId !== "council-unknown" &&
+      value.caseId !== "idle")
+  )
+    throw Error(
+      "Council fixture control must select a bounded Council case mode",
+    );
+  return { mode: value.mode, caseId: value.caseId };
+}
+
+function councilFixtureTransport(
+  home: string,
+): (profile: CouncilProfile) => (seat: CouncilSeat) => FakeCouncilTransport {
+  return (profile: CouncilProfile) => {
+    if (
+      profile.seats.some((seat) => seat.provider !== "fake") ||
+      profile.chair.provider !== "fake"
+    )
+      throw Error(
+        "The desktop Council fixture accepts fake-provider profiles only",
+      );
+    const { mode, caseId } = councilFixtureMode(home);
+    const calls = join(home, "council-fixture-calls.jsonl");
+    const failedIndependentSeat = profile.seats[0]!.id;
+    const chairSeat = profile.chair.id;
+    appendFileSync(
+      calls,
+      `${JSON.stringify({ kind: "admission", caseId, mode, profileId: profile.id })}\n`,
+    );
+    return (seat) =>
+      new FakeCouncilTransport({
+        delayMs: mode === "hold" ? 60_000 : 5,
+        ...(mode === "fail"
+          ? {
+              fail:
+                seat.id === failedIndependentSeat
+                  ? [{ stage: "independent", seatId: failedIndependentSeat }]
+                  : seat.id === chairSeat
+                    ? [{ stage: "chair", seatId: chairSeat }]
+                    : [],
+            }
+          : {}),
+        onRequest: (request) =>
+          appendFileSync(
+            calls,
+            `${JSON.stringify({ kind: "request", caseId, mode, runId: request.runId, stage: request.stage, seatId: request.seat.id })}\n`,
+          ),
+      });
+  };
+}
 
 async function main() {
   const home = process.env["AGENT_FORGE_HOME"];
@@ -128,6 +217,7 @@ async function main() {
     root,
     home,
     councilLedger: operatorCouncilLedger(),
+    councilResolveTransport: councilFixtureTransport(home),
     port: Number(process.env["HEARTH_PORT"] ?? 0),
     api: {
       ...{ projectRepositoryRegistryRoot },
