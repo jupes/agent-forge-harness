@@ -1,6 +1,7 @@
 import { z } from "zod";
+import { redactShown } from "../scripts/secret-patterns";
 import type { CouncilProviderEndpoint } from "../scripts/council/providers";
-import type { ContextPack, CouncilProfile } from "../scripts/council/types";
+import type { ContextPack, ContextSource, CouncilProfile } from "../scripts/council/types";
 import { parseCouncilProfileJson } from "../scripts/council/types";
 
 export const PROJECT_COUNCIL_MAX_SELECTOR_BYTES = 262_144;
@@ -16,6 +17,7 @@ export const projectCouncilRequestIdSchema = z
   .refine((value) => value === value.toLowerCase());
 const digestSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const textSchema = z.string().min(1).max(1024);
+const shownLabel = (value: string): string => redactShown(value).text.slice(0, 256);
 
 export const projectCouncilSourceChoiceSchema = z
   .object({
@@ -64,14 +66,17 @@ const sourceMetadataSchema = z
         message: "source metadata is too large",
       });
   });
-const contextSourceSchema = z
+const contextSourceSchema: z.ZodType<ContextSource> = z
   .object({
     kind: z.enum(["file", "plan", "pr", "stdin", "bead"]),
     displayName: textSchema.max(4096),
     locator: textSchema.max(4096),
     metadata: sourceMetadataSchema.optional(),
   })
-  .strict();
+  .strict()
+  .transform(({ metadata, ...source }) =>
+    metadata === undefined ? source : { ...source, metadata },
+  );
 const contextPackSchema: z.ZodType<ContextPack> = z
   .object({
     schemaVersion: z.literal(1),
@@ -476,7 +481,7 @@ export const projectCouncilMetadataSchema: z.ZodType<ProjectCouncilMetadata> = z
     projectId: projectCouncilBindingSchema.shape.projectId,
     state: projectCouncilStateSchema,
     sourceType: z.enum(["text", "bead", "file", "plan", "pr"]),
-    sourceName: textSchema.max(4096),
+    sourceName: z.string().min(1).max(256),
     listing: z.array(textSchema.max(4096)).max(512),
     byteLength: z
       .number()
@@ -495,7 +500,7 @@ export const projectCouncilMetadataSchema: z.ZodType<ProjectCouncilMetadata> = z
       )
       .max(128),
     profileId: textSchema.max(128),
-    profileTitle: textSchema.max(4096),
+    profileTitle: z.string().min(1).max(256),
     maxUsd: z.number().finite().nonnegative().max(1_000_000),
     maxBytes: z.number().int().min(1).max(PROJECT_COUNCIL_MAX_PREPARED_BYTES),
     redactSecrets: z.boolean(),
@@ -530,8 +535,8 @@ export const projectCouncilOriginalReadSchema: z.ZodType<ProjectCouncilOriginalR
             ? "text"
             : original.context.source.kind) ||
         metadata.profileId !== original.profile.id ||
-        metadata.profileTitle !== original.profile.title ||
-        metadata.sourceName !== original.context.source.displayName ||
+        metadata.profileTitle !== shownLabel(original.profile.title) ||
+        metadata.sourceName !== shownLabel(original.context.source.displayName) ||
         metadata.byteLength !== original.context.byteLength ||
         metadata.truncated !== original.context.truncated ||
         JSON.stringify(metadata.redactions) !==
@@ -574,6 +579,9 @@ export const projectCouncilReceiptSchema: z.ZodType<ProjectCouncilReceipt> = z
     error: z.string().max(2048).optional(),
   })
   .strict()
+  .transform(({ metadata, phase, error }) =>
+    error === undefined ? { metadata, phase } : { metadata, phase, error },
+  )
   .refine(
     (value) =>
       new TextEncoder().encode(JSON.stringify(value)).byteLength <=
@@ -593,13 +601,13 @@ export function projectCouncilMetadata(
       original.context.source.kind === "stdin"
         ? "text"
         : original.context.source.kind,
-    sourceName: original.context.source.displayName,
+    sourceName: shownLabel(original.context.source.displayName),
     listing: [...original.listing],
     byteLength: original.context.byteLength,
     truncated: original.context.truncated,
     redactions: original.context.redactions.map((item) => ({ ...item })),
     profileId: original.profile.id,
-    profileTitle: original.profile.title,
+    profileTitle: shownLabel(original.profile.title),
     maxUsd: original.options.maxUsd,
     maxBytes: original.options.maxBytes,
     redactSecrets: original.options.redactSecrets,

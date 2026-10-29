@@ -2,7 +2,11 @@ import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
-import type { ProjectCouncilBinding } from "../../types/project-council";
+import {
+  projectCouncilMetadata,
+  projectCouncilOriginalReadSchema,
+  type ProjectCouncilBinding,
+} from "../../types/project-council";
 import { ConversationError } from "../conversations/error";
 import { privateTempDir } from "../hearth/testing";
 import { writeOwnerOnly } from "../hearth/token";
@@ -158,6 +162,36 @@ test("project Council originals are durable, exact-retry idempotent, single-disp
     reopened.read(first.original.binding.projectId, first.original.requestId)
       .state,
   ).toBe("completed");
+});
+
+test("project Council summary labels redact the complete text before truncating", async () => {
+  const { prepared, store } = fixture();
+  const reserved = await store.reservePrepared(
+    prepared("A protected original for label projection."),
+  );
+  const label = `${"a".repeat(250)}\u200bOPENAI_API_KEY=abcZq9Zq8Zq7Zq6Zq5Zq4`;
+  const original = {
+    ...reserved.original,
+    context: {
+      ...reserved.original.context,
+      source: {
+        ...reserved.original.context.source,
+        displayName: label,
+      },
+    },
+    profile: { ...reserved.original.profile, title: label },
+  };
+  const metadata = projectCouncilMetadata(original);
+  expect(projectCouncilOriginalReadSchema.parse({ metadata, original })).toEqual({
+    metadata,
+    original,
+  });
+  expect(metadata.sourceName).toHaveLength(256);
+  expect(metadata.profileTitle).toHaveLength(256);
+  expect(metadata.sourceName).not.toContain("\u200b");
+  expect(metadata.profileTitle).not.toContain("\u200b");
+  expect(metadata.sourceName).not.toContain("abcZq9Zq8Zq7Zq6Zq5Zq4");
+  expect(metadata.profileTitle).not.toContain("abcZq9Zq8Zq7Zq6Zq5Zq4");
 });
 
 test("a changed saved original is refused rather than repaired or replaced", async () => {

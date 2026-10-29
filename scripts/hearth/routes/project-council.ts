@@ -21,7 +21,7 @@ import type { ActionRoute, ApiRoute, ReadRoute, RouteReply } from "../api";
 import type { ValidationResult } from "../validate";
 import { postCouncilVerdict } from "./council-verdict";
 import type { OperatorDeps } from "./operator";
-import { fail, type ReadDeps } from "./operator-reads";
+import { fail } from "./operator-reads";
 import type { ProjectSnapshot } from "./project-summaries";
 
 type Council = OperatorDeps["council"];
@@ -53,7 +53,7 @@ function reply(work: () => unknown | Promise<unknown>): Promise<RouteReply> {
 
 /** Project authority is always re-read by this Hearth adapter, never from a renderer path. */
 export function createProjectCouncilRoutes(
-  deps: ReadDeps & { projectHome: string; council: Council },
+  deps: OperatorDeps & { projectHome: string },
   load: () => Promise<ProjectSnapshot>,
 ) {
   const currentProject = async (projectId: string, allowArchived: boolean) => {
@@ -335,21 +335,64 @@ export function createProjectCouncilRoutes(
           result.created &&
           original.original.context.source.kind === "bead"
         ) {
+          const ownedRun = () =>
+            deps.council.readProjectRun(
+              projectId,
+              deps.workspace,
+              requestId,
+              intentHash,
+            );
+          const verifiedCouncil: Council = {
+            ...deps.council,
+            wait: async (runId) => {
+              if (runId !== original.original.runId)
+                throw new Error("The Council verdict run identity changed.");
+              const before = ownedRun();
+              if (
+                before.provenance.requestId !== requestId ||
+                before.provenance.intentHash !== intentHash ||
+                before.provenance.runId !== runId ||
+                before.provenance.projectId !== projectId ||
+                before.job?.runId !== runId
+              )
+                throw new Error("The Council verdict run is not owned by this original.");
+              const job = await deps.council.wait(runId);
+              const after = ownedRun();
+              const completedJob = after.job;
+              if (
+                after.receipt.phase !== "completed" ||
+                after.provenance.requestId !== requestId ||
+                after.provenance.intentHash !== intentHash ||
+                after.provenance.runId !== runId ||
+                after.provenance.projectId !== projectId ||
+                !completedJob ||
+                completedJob.runId !== runId ||
+                completedJob.status !== job.status ||
+                completedJob.status !== "completed" ||
+                !completedJob.run ||
+                !job.run ||
+                JSON.stringify(completedJob.run) !== JSON.stringify(job.run) ||
+                JSON.stringify(completedJob.profile) !==
+                  JSON.stringify(original.original.profile) ||
+                JSON.stringify(job.profile) !==
+                  JSON.stringify(original.original.profile) ||
+                JSON.stringify(job.run.context) !==
+                  JSON.stringify(original.original.context)
+              )
+                throw new Error("The Council verdict did not match its reviewed original.");
+              return job;
+            },
+          };
           void postCouncilVerdict(
             {
               workspace: deps.workspace,
               runBd: deps.runBd,
               appendEvent: deps.appendEvent,
-              council: deps.council,
+              council: verifiedCouncil,
             },
             {
               sourceType: "bead",
-              source: original.original.context.source.locator,
               beadId: original.original.context.source.locator,
-              profile: original.original.profileChoice,
-              maxUsd: original.original.options.maxUsd,
-              maxBytes: original.original.options.maxBytes,
-              redactSecrets: original.original.options.redactSecrets,
             },
             original.original.runId,
           );

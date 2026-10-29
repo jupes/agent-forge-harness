@@ -832,10 +832,13 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
     try {
       const rootReal = realpathSync(runsRoot);
       const directoryReal = realpathSync(directory);
+      const directoryStat = lstatSync(directory);
       const pathStat = lstatSync(file);
       if (
         !inside(rootReal, directoryReal) ||
         dirname(directoryReal) !== rootReal ||
+        directoryStat.isSymbolicLink() ||
+        !directoryStat.isDirectory() ||
         pathStat.isSymbolicLink() ||
         !pathStat.isFile() ||
         pathStat.nlink !== 1 ||
@@ -854,6 +857,9 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
         opened.size > maxBytes ||
         opened.dev !== pathStat.dev ||
         opened.ino !== pathStat.ino ||
+        opened.size !== pathStat.size ||
+        opened.mtimeMs !== pathStat.mtimeMs ||
+        opened.ctimeMs !== pathStat.ctimeMs ||
         realpathSync(directory) !== directoryReal ||
         realpathSync(file) !== resolve(file)
       )
@@ -873,6 +879,34 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
       }
       if (length > maxBytes || length !== opened.size)
         throw new Error("project Council result exceeded its read ceiling");
+      const finished = fstatSync(descriptor);
+      const afterPath = lstatSync(file);
+      const afterDirectory = lstatSync(directory);
+      if (
+        !finished.isFile() ||
+        finished.nlink !== 1 ||
+        finished.dev !== opened.dev ||
+        finished.ino !== opened.ino ||
+        finished.size !== opened.size ||
+        finished.mtimeMs !== opened.mtimeMs ||
+        finished.ctimeMs !== opened.ctimeMs ||
+        afterPath.isSymbolicLink() ||
+        !afterPath.isFile() ||
+        afterPath.nlink !== 1 ||
+        afterPath.dev !== opened.dev ||
+        afterPath.ino !== opened.ino ||
+        afterPath.size !== opened.size ||
+        afterPath.mtimeMs !== opened.mtimeMs ||
+        afterPath.ctimeMs !== opened.ctimeMs ||
+        afterDirectory.isSymbolicLink() ||
+        !afterDirectory.isDirectory() ||
+        afterDirectory.dev !== directoryStat.dev ||
+        afterDirectory.ino !== directoryStat.ino ||
+        realpathSync(runsRoot) !== rootReal ||
+        realpathSync(directory) !== directoryReal ||
+        realpathSync(file) !== resolve(file)
+      )
+        throw new Error("project Council result changed during its read");
       return new TextDecoder("utf-8", { fatal: true }).decode(
         bytes.subarray(0, length),
       );

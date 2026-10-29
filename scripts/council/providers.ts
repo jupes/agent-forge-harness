@@ -308,7 +308,7 @@ function copyEndpointSnapshot(
         throw new Error(
           `fake provider endpoint must not have a URL: ${provider}`,
         );
-      copied.set(provider, { provider, transport, baseUrl: null });
+      copied.set(provider, { provider, transport: config.apiStyle, baseUrl: null });
       continue;
     }
     if (
@@ -318,7 +318,7 @@ function copyEndpointSnapshot(
     ) {
       throw new Error(`provider endpoint URL is not canonical: ${provider}`);
     }
-    copied.set(provider, { provider, transport, baseUrl });
+    copied.set(provider, { provider, transport: config.apiStyle, baseUrl });
   }
   return copied;
 }

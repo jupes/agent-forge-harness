@@ -10,8 +10,8 @@ import { createProjectStore, projectCatalogPath } from "../../projects/store";
 import {
   FIXTURE_PROJECT_ID,
   projectCatalogFixture,
-  projectCouncilHistorySchema,
 } from "../../projects/testing";
+import { projectCouncilHistorySchema } from "../../../types/project-council";
 import { startTestHearth, type TestHearth } from "../testing";
 import { writeOwnerOnly } from "../token";
 
@@ -34,11 +34,10 @@ test("project Council reads catalog authority after the awaited tracker snapshot
   writeOwnerOnly(projectCatalogPath(h.home), JSON.stringify(originalCatalog));
   const entered = deferred<void>();
   const release = deferred<void>();
-  h.bd.answer = async (args) => {
+  h.bd.answer = (args) => {
     if (args[0] !== "export") return undefined;
     entered.resolve();
-    await release.promise;
-    return { status: 0, stdout: "", stderr: "" };
+    return release.promise.then(() => ({ status: 0, stdout: "", stderr: "" }));
   };
   const responsePromise = fetch(
     `${h.api}/projects/${FIXTURE_PROJECT_ID}/council/reviews`,

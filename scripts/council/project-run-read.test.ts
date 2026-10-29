@@ -175,7 +175,7 @@ const job: CouncilServiceJob = {
   startedAt: at,
   updatedAt: at,
   events: run.events,
-  discussion: run.discussion,
+  ...(run.discussion === undefined ? {} : { discussion: run.discussion }),
   profile,
   run,
   persistenceStatus: "saved",
