@@ -20,8 +20,10 @@ import {
 import { z } from "zod";
 import { OPERATOR_HEADER } from "../../scripts/hearth/paths";
 import { serializeCodexChat } from "../../scripts/sessions/codex-app-server-protocol";
+import type { Smith } from "../../types/hearth";
 import { codexChatForkSourcePageSchema } from "../../scripts/sessions/codex-chat-fork-review-protocol";
 import { codexChatApprovalPageSchema } from "../../scripts/sessions/codex-chat-owned-protocol";
+import { geminiChatStartSchema } from "../../scripts/sessions/gemini-chat-owned-protocol";
 import {
   ownedCodingPageSchema,
   ownedCodingStateSchema,
@@ -37,6 +39,7 @@ import { openSettled, reloadSettled } from "../e2e/fixtures";
 import { pageToken } from "../e2e/launch-link";
 import { HEARTH_HOME } from "../e2e/servers";
 import { captureTextResponseThroughBrowserFetch } from "./browser-response-capture";
+import { smithsViewSchema } from "../../apps/desktop/src/smiths-protocol";
 import {
   alpha,
   beta,
@@ -49,6 +52,68 @@ import {
   type VerifiedIdentityReadBarrier,
   verifiedIdentityReadBarrier,
 } from "./session-start-read-barrier";
+
+const geminiChatFixturePath = join(
+    HEARTH_HOME,
+    "gemini-chat-fixture-calls.json",
+  ),
+  geminiChatControlPath = `${geminiChatFixturePath}.control`,
+  geminiChatFixtureCallsLimit = 256 * 1024;
+let previousGeminiChatControl: Buffer | null = null,
+  geminiChatControlCaptured = false,
+  geminiReadbackRelease: (() => void) | null = null;
+const geminiChatFixtureCallSchema = z
+  .object({
+    kind: z.string().min(1).max(80),
+    value: z
+      .object({
+        method: z.string().min(1).max(80).optional(),
+        params: z.record(z.string(), z.unknown()).optional(),
+      })
+      .passthrough()
+      .optional(),
+  })
+  .passthrough();
+const geminiChatFixtureWireSchema = z
+  .object({
+    jsonrpc: z.literal("2.0").optional(),
+    method: z.string().min(1).max(80).optional(),
+    id: z.union([z.string(), z.number()]).optional(),
+    params: z.record(z.string(), z.unknown()).optional(),
+    result: z.unknown().optional(),
+    error: z.unknown().optional(),
+  })
+  .strict();
+function geminiChatFixtureCalls() {
+  if (!existsSync(geminiChatFixturePath)) return [];
+  if (statSync(geminiChatFixturePath).size > geminiChatFixtureCallsLimit)
+    throw Error("The bounded Gemini ACP fixture log exceeded its limit");
+  const text = readFileSync(geminiChatFixturePath, "utf8");
+  if (Buffer.byteLength(text, "utf8") > geminiChatFixtureCallsLimit)
+    throw Error("The bounded Gemini ACP fixture log exceeded its limit");
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    throw Error("The Gemini ACP fixture log was not complete JSON");
+  }
+  const parsed = z.array(geminiChatFixtureCallSchema).safeParse(value);
+  if (!parsed.success) throw Error("The Gemini ACP fixture log was invalid");
+  for (const row of parsed.data) {
+    if (row.kind !== "wire") continue;
+    if (!geminiChatFixtureWireSchema.safeParse(row.value).success)
+      throw Error("The Gemini ACP fixture wire record was invalid");
+  }
+  return parsed.data;
+}
+function geminiChatMethodCount(
+  rows: ReturnType<typeof geminiChatFixtureCalls>,
+  method: string,
+) {
+  return rows.filter(
+    (row) => row.kind === "wire" && row.value?.method === method,
+  ).length;
+}
 
 function records() {
   try {
@@ -516,6 +581,12 @@ test("a confirmed Claude rate limit offers an explicit Codex Chat continuation",
     name: "New session · Alpha",
     exact: true,
   });
+  await expect(
+    initialDraft.getByRole("textbox", {
+      name: "Session prompt",
+      exact: true,
+    }),
+  ).toHaveValue("An unrelated draft the operator already wrote");
   await initialDraft
     .getByRole("textbox", { name: "Session prompt", exact: true })
     .fill("An unrelated draft the operator already wrote");
@@ -749,6 +820,78 @@ test("a confirmed Claude rate limit can target Gemini ACP Chat", async ({
 }) => {
   test.setTimeout(60_000);
   const before = new Set(records().map((item) => item.id));
+  const geminiSmith = {
+    name: "gemini-example",
+    provider: "gemini",
+    model: "configured-example",
+    effort: "default",
+    enabled: true,
+    tags: [],
+  } satisfies Smith;
+  await page.route("**/__agent-forge/smiths", async (route) => {
+    const requestHeaders = await route.request().allHeaders();
+    const requestUrl = new URL(route.request().url());
+    const documentOrigin = new URL(page.url()).origin;
+    const requestHeader = (name: string) =>
+      Object.entries(requestHeaders).find(
+        ([key]) => key.toLowerCase() === name,
+      )?.[1];
+    expect(requestUrl.origin).toBe(documentOrigin);
+    const requestOrigin = requestHeader("origin");
+    if (requestOrigin !== undefined)
+      expect(requestOrigin).toBe(requestUrl.origin);
+    expect(requestHeader("sec-fetch-site")).toBe("same-origin");
+    const response = await route.fetch({ headers: requestHeaders });
+    expect(response.status()).toBe(200);
+    expect(new URL(response.url()).origin).toBe(requestUrl.origin);
+    const envelope = z
+      .object({
+        ok: z.literal(true),
+        data: smithsViewSchema,
+        error: z.null(),
+      })
+      .passthrough()
+      .safeParse(await response.json());
+    if (!envelope.success)
+      throw Error("The protected fixture smith index was not verified");
+    const modifiedBody = {
+      ...envelope.data,
+      data: {
+        ...envelope.data.data,
+        smiths: [
+          ...envelope.data.data.smiths.filter(
+            (smith) => smith.name !== geminiSmith.name,
+          ),
+          geminiSmith,
+        ],
+      },
+    };
+    const responseHeaders = await response.allHeaders();
+    const headers = Object.fromEntries(
+      Object.entries(responseHeaders).filter(
+        ([name]) =>
+          !["content-length", "content-encoding"].includes(
+            name.toLowerCase(),
+          ),
+      ),
+    );
+    await route.fulfill({
+      status: response.status(),
+      headers,
+      body: JSON.stringify(modifiedBody),
+    });
+  });
+  previousGeminiChatControl = existsSync(geminiChatControlPath)
+    ? readFileSync(geminiChatControlPath)
+    : null;
+  geminiChatControlCaptured = true;
+  writeFileSync(
+    geminiChatControlPath,
+    JSON.stringify({
+      mode: "normal",
+      replyText: "The inert Gemini continuation reply.",
+    }),
+  );
   codingMode("rich-rate-limit");
   await openSettled(page, `/index.html#/desktop/project/${alpha.id}/sessions`);
   await page.getByRole("button", { name: "New session", exact: true }).click();
@@ -807,14 +950,35 @@ test("a confirmed Claude rate limit can target Gemini ACP Chat", async ({
   });
   await expect(continueButton).toBeVisible();
   await page.getByRole("button", { name: "New session", exact: true }).click();
-  const cleanDraft = page.getByRole("dialog", {
+  const geminiDraft = page.getByRole("dialog", {
     name: "New session · Alpha",
     exact: true,
   });
-  await cleanDraft
+  await geminiDraft
+    .getByRole("button", { name: /Gm · Gemini/ })
+    .click();
+  await geminiDraft
+    .getByRole("combobox", { name: "Session mode", exact: true })
+    .selectOption("chat");
+  const geminiSmithSelect = geminiDraft.getByRole("combobox", {
+    name: "Session smith",
+    exact: true,
+  });
+  await expect(geminiSmithSelect).toHaveValue("gemini-example");
+  const geminiModelInput = geminiDraft.getByRole("textbox", {
+    name: "Session model",
+    exact: true,
+  });
+  await expect(geminiModelInput).toHaveValue("");
+  await geminiSmithSelect.selectOption("");
+  await geminiSmithSelect.selectOption("gemini-example");
+  await expect(geminiModelInput).toHaveValue("configured-example");
+  await geminiDraft
     .getByRole("textbox", { name: "Session prompt", exact: true })
-    .fill("");
-  await cleanDraft.getByRole("button", { name: "Cancel", exact: true }).click();
+    .fill("An unrelated draft the operator already wrote");
+  await geminiDraft
+    .getByRole("button", { name: "Cancel", exact: true })
+    .click();
 
   await continueButton.click();
   const targetReview = page.getByRole("dialog", {
@@ -857,6 +1021,24 @@ test("a confirmed Claude rate limit can target Gemini ACP Chat", async ({
     name: "New session · Alpha",
     exact: true,
   });
+  await expect(
+    initialDraft.getByRole("combobox", {
+      name: "Session mode",
+      exact: true,
+    }),
+  ).toHaveValue("chat");
+  await expect(
+    initialDraft.getByRole("combobox", {
+      name: "Session smith",
+      exact: true,
+    }),
+  ).toHaveValue("gemini-example");
+  await expect(
+    initialDraft.getByRole("textbox", {
+      name: "Session model",
+      exact: true,
+    }),
+  ).toHaveValue("configured-example");
   await initialDraft
     .getByRole("textbox", { name: "Session prompt", exact: true })
     .fill("An unrelated draft the operator already wrote");
@@ -905,6 +1087,29 @@ test("a confirmed Claude rate limit can target Gemini ACP Chat", async ({
       exact: true,
     }),
   ).toHaveValue("An unrelated draft the operator already wrote");
+  await expect(
+    preserved
+      .getByRole("group", { name: "Provider", exact: true })
+      .getByRole("button", { name: /Gm · Gemini/ }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await expect(
+    preserved.getByRole("combobox", {
+      name: "Session mode",
+      exact: true,
+    }),
+  ).toHaveValue("chat");
+  await expect(
+    preserved.getByRole("combobox", {
+      name: "Session smith",
+      exact: true,
+    }),
+  ).toHaveValue("gemini-example");
+  await expect(
+    preserved.getByRole("textbox", {
+      name: "Session model",
+      exact: true,
+    }),
+  ).toHaveValue("configured-example");
   await preserved.getByRole("button", { name: "Cancel", exact: true }).click();
 
   await continueButton.click();
@@ -978,6 +1183,12 @@ test("a confirmed Claude rate limit can target Gemini ACP Chat", async ({
     }),
   ).toHaveValue("gemini-example");
   await expect(
+    geminiComposer.getByRole("textbox", {
+      name: "Session model",
+      exact: true,
+    }),
+  ).toHaveValue("configured-example");
+  await expect(
     geminiComposer.getByRole("combobox", {
       name: "Session provider route",
       exact: true,
@@ -1004,7 +1215,124 @@ test("a confirmed Claude rate limit can target Gemini ACP Chat", async ({
   await expect(start).toBeEnabled();
 
   let startPosts = 0,
-    postedBody: unknown = null;
+    postedBody: unknown = null,
+    lostStartReply = false,
+    postedRequestId: string | null = null;
+  const callsBeforeStart = geminiChatFixtureCalls();
+  const newBeforeStart = geminiChatMethodCount(callsBeforeStart, "session/new");
+  const promptBeforeStart = geminiChatMethodCount(
+    callsBeforeStart,
+    "session/prompt",
+  );
+  let releaseReadback = () => {
+    throw Error("The protected readback release was not initialized");
+  };
+  let readbackCaptured = false,
+    readbackIsHeld = false,
+    readbackIsFinished = false,
+    matchingReadbacks = 0;
+  const readbackReleased = new Promise<void>((resolve) => {
+    releaseReadback = resolve;
+  });
+  geminiReadbackRelease = releaseReadback;
+  let readbackError: unknown = null;
+  await page.route(
+    `**/__agent-forge/projects/${alpha.id}/sessions/*`,
+    async (route) => {
+      const request = route.request();
+      const requestUrl = new URL(request.url());
+      if (
+        !lostStartReply ||
+        request.method() !== "GET" ||
+        !postedRequestId ||
+        !new RegExp(
+          `^/__agent-forge/projects/${alpha.id}/sessions/[^/]+$`,
+        ).test(requestUrl.pathname) ||
+        requestUrl.searchParams.get("requestId") !== postedRequestId
+      ) {
+        await route.continue();
+        return;
+      }
+      matchingReadbacks++;
+      if (readbackCaptured) {
+        await route.continue();
+        return;
+      }
+      readbackCaptured = true;
+      try {
+        expect(requestUrl.origin).toBe(new URL(page.url()).origin);
+        const requestHeaders = await request.allHeaders();
+        const header = (name: string) =>
+          Object.entries(requestHeaders).find(
+            ([key]) => key.toLowerCase() === name,
+          )?.[1];
+        const origin = header("origin");
+        if (origin !== undefined) expect(origin).toBe(requestUrl.origin);
+        expect(header("sec-fetch-site")).toBe("same-origin");
+        const response = await route.fetch({ headers: requestHeaders });
+        expect(response.status()).toBe(200);
+        expect(new URL(response.url()).origin).toBe(requestUrl.origin);
+        const responseText = await response.text();
+        let raw: unknown;
+        try {
+          raw = JSON.parse(responseText);
+        } catch {
+          throw Error("The original protected Gemini Start readback was invalid");
+        }
+        const envelope = z
+          .object({
+            ok: z.literal(true),
+            data: ownedCodingPageSchema,
+            error: z.null(),
+          })
+          .strict()
+          .safeParse(raw);
+        if (!envelope.success)
+          throw Error("The original protected Gemini Start readback was invalid");
+        const original = envelope.data.data;
+        const acceptedOriginal = records().find(
+          (record) => record.requestId === postedRequestId,
+        );
+        if (!acceptedOriginal)
+          throw Error("The accepted Gemini Start identity was not recorded");
+        expect(original.projectId).toBe(alpha.id);
+        expect(original.conversationId).toBe(acceptedOriginal.id);
+        expect(
+          original.frames.some(
+            (frame) =>
+              frame.event.kind === "user" &&
+              frame.event.text === handoff &&
+              frame.event.about?.some(
+                (item) =>
+                  item.kind === "session" && item.id === sourceRecord.id,
+              ),
+          ),
+        ).toBe(true);
+        readbackIsHeld = true;
+        await readbackReleased;
+        const responseHeaders = await response.allHeaders();
+        const responseHeadersForBrowser = Object.fromEntries(
+          Object.entries(responseHeaders).filter(
+            ([name]) =>
+              !["content-length", "content-encoding"].includes(
+                name.toLowerCase(),
+              ),
+          ),
+        );
+        await route.fulfill({
+          status: response.status(),
+          headers: responseHeadersForBrowser,
+          body: responseText,
+        });
+      } catch (error) {
+        readbackError = error;
+        readbackIsHeld = true;
+        await route.abort().catch(() => {});
+      } finally {
+        readbackIsFinished = true;
+      }
+    },
+  );
   await page.route(
     `**/__agent-forge/projects/${alpha.id}/sessions`,
     async (route) => {
@@ -1018,6 +1346,10 @@ test("a confirmed Claude rate limit can target Gemini ACP Chat", async ({
       } catch {
         postedBody = null;
       }
+      const parsed = geminiChatStartSchema.safeParse(postedBody);
+      if (!parsed.success)
+        throw Error("The reviewed Gemini Start body did not match its schema");
+      postedRequestId = parsed.data.requestId;
       const headers = await route.request().allHeaders();
       const header = (name: string) =>
         Object.entries(headers).find(
@@ -1027,6 +1359,7 @@ test("a confirmed Claude rate limit can target Gemini ACP Chat", async ({
       expect(header("sec-fetch-site")).toBe("same-origin");
       const response = await route.fetch({ headers });
       expect(response.status()).toBe(200);
+      lostStartReply = true;
       await route.abort("failed");
     },
   );
@@ -1040,6 +1373,19 @@ test("a confirmed Claude rate limit can target Gemini ACP Chat", async ({
     )
     .toBe(1);
   expect(startPosts).toBe(1);
+  await expect.poll(() => readbackIsHeld, { timeout: 10_000 }).toBe(true);
+  if (readbackError) throw readbackError;
+  await expect(
+    geminiComposer.getByText(
+      /^The request did not complete: .+ Check the original session request before trying again\.$/,
+    ),
+  ).toBeVisible();
+  await expect(start).toBeDisabled();
+  expect(matchingReadbacks).toBe(1);
+  releaseReadback();
+  geminiReadbackRelease = null;
+  await expect.poll(() => readbackIsFinished, { timeout: 10_000 }).toBe(true);
+  if (readbackError) throw readbackError;
   const targetRecord = records().find(
     (item) => !before.has(item.id) && item.provider === "gemini",
   );
@@ -1059,14 +1405,47 @@ test("a confirmed Claude rate limit can target Gemini ACP Chat", async ({
     { kind: "session", id: sourceRecord.id },
   ]);
   expect(initialTarget.event.geminiChat?.launch.attachments ?? []).toEqual([]);
-  const posted = z
-    .object({ requestId: z.string().uuid(), provider: z.literal("gemini") })
-    .passthrough()
-    .safeParse(postedBody);
+  const posted = geminiChatStartSchema.safeParse(postedBody);
   expect(posted.success).toBe(true);
   if (!posted.success)
     throw Error("The reviewed Gemini target Start was not captured");
+  expect(posted.data.launch.prompt).toBe(handoff);
+  expect(posted.data.launch.model).toBe("configured-example");
   expect(targetRecord.requestId).toBe(posted.data.requestId);
+  await expect
+    .poll(() => geminiChatMethodCount(geminiChatFixtureCalls(), "session/new"))
+    .toBe(newBeforeStart + 1);
+  await expect
+    .poll(() => geminiChatMethodCount(geminiChatFixtureCalls(), "session/prompt"))
+    .toBe(promptBeforeStart + 1);
+  const callsAfterStart = geminiChatFixtureCalls();
+  const newFixtureCalls = callsAfterStart.slice(callsBeforeStart.length);
+  const newSessionCalls = newFixtureCalls.filter(
+    (row) => row.kind === "wire" && row.value?.method === "session/new",
+  );
+  const newPromptCalls = newFixtureCalls.filter(
+    (row) => row.kind === "wire" && row.value?.method === "session/prompt",
+  );
+  expect(newSessionCalls).toHaveLength(1);
+  expect(newPromptCalls).toHaveLength(1);
+  const promptCall = newPromptCalls[0];
+  const promptParams = z
+    .object({
+      sessionId: z.string().min(1).max(200),
+      prompt: z
+        .array(
+          z
+            .object({ type: z.literal("text"), text: z.string().max(16_384) })
+            .strict(),
+        )
+        .max(8),
+    })
+    .strict()
+    .safeParse(promptCall?.value?.params);
+  expect(promptParams.success).toBe(true);
+  if (!promptParams.success)
+    throw Error("The Gemini ACP prompt did not match its bounded protocol");
+  expect(promptParams.data.prompt).toEqual([{ type: "text", text: handoff }]);
   const targetIdentity = (
     await startIdentityPage(page, alpha.id)
   ).identities.find((item) => item.requestId === targetRecord.requestId);
@@ -1084,6 +1463,12 @@ test("a confirmed Claude rate limit can target Gemini ACP Chat", async ({
       (item) => !before.has(item.id) && item.provider === "gemini",
     ),
   ).toHaveLength(1);
+  expect(geminiChatMethodCount(geminiChatFixtureCalls(), "session/new")).toBe(
+    newBeforeStart + 1,
+  );
+  expect(geminiChatMethodCount(geminiChatFixtureCalls(), "session/prompt")).toBe(
+    promptBeforeStart + 1,
+  );
   expect(
     (await startIdentityPage(page, alpha.id)).identities.find(
       (item) => item.requestId === acceptedTarget.requestId,
@@ -1209,6 +1594,8 @@ test.afterEach(async ({ page }) => {
       // Diagnostic collection and attachment must not alter the primary result.
     }
   }
+  geminiReadbackRelease?.();
+  geminiReadbackRelease = null;
   await page.unrouteAll({ behavior: "ignoreErrors" });
   for (const record of records().filter((item) => !previous.has(item.id))) {
     try {
@@ -1246,6 +1633,18 @@ test.afterEach(async ({ page }) => {
     } catch {
       // Keep attempting Stop for other fixture sessions if one journal vanished.
     }
+  }
+  if (
+    info.title === "a confirmed Claude rate limit can target Gemini ACP Chat" &&
+    geminiChatControlCaptured
+  ) {
+    if (previousGeminiChatControl === null) {
+      if (existsSync(geminiChatControlPath)) unlinkSync(geminiChatControlPath);
+    } else {
+      writeFileSync(geminiChatControlPath, previousGeminiChatControl);
+    }
+    previousGeminiChatControl = null;
+    geminiChatControlCaptured = false;
   }
 });
 async function composer(
