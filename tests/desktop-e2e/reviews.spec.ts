@@ -269,13 +269,19 @@ test("a completed bead-source review links to its bead and reports the one recor
   expect(beadQuery.get("selectionKind")).toBe("bead");
   expect(beadQuery.get("selectionId")).toBe("alpha-council-first");
   expect(beadQuery.get("view")).toBe("full");
+  await expect
+    .poll(
+      () => readComments(BD_STAND_IN_STATE)["alpha-council-first"]?.length,
+      {
+        message: "The completed Council verdict comment was not recorded.",
+        timeout: 15_000,
+      },
+    )
+    .toBe(1);
   await expect(page.getByTestId("council-verdict-status")).toHaveText(
     "Verdict comment posted to the bead.",
     { timeout: 15_000 },
   );
-  await expect
-    .poll(() => readComments(BD_STAND_IN_STATE)["alpha-council-first"]?.length)
-    .toBe(1);
   expect(posts).toHaveLength(2);
   expect(posts[0]).toMatch(/\/projects\/.*\/council\/reviews$/);
   expect(posts[1]).toMatch(/\/projects\/.*\/council\/reviews\/[^/]+\/commit$/);
