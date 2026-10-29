@@ -427,18 +427,17 @@ test("a confirmed Claude rate limit offers an explicit Codex Chat continuation",
     })
     .not.toBeNull();
   if (!record) throw Error("Missing original Claude Chat fixture");
-  await expect.poll(() => saved(record.id).turns.at(-1)?.phase).toBe("failed");
-  codingMode("normal");
-  expect(saved(record.id).frames).toContainEqual(
-    expect.objectContaining({
-      event: expect.objectContaining({
-        kind: "coding-outcome",
-        provider: "claude",
-        code: "rate-limited",
-      }),
-    }),
-  );
+  expect(record.provider).toBe("claude");
   const outcome = page.locator(".af-session-outcome");
+  await expect(
+    page
+      .getByRole("status")
+      .filter({ hasText: "The session could not finish." }),
+  ).toBeVisible();
+  await expect(outcome.locator("summary")).toHaveText(
+    "Provider reported a usage limit",
+  );
+  codingMode("normal");
   await outcome.locator("summary").click();
   await expect(
     outcome.getByRole("button", {
