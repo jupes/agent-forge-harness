@@ -268,6 +268,7 @@ async function reserveBriefTicket(h: TestHearth) {
   const originalResponse = await get(
     h,
     `/projects/${FIXTURE_PROJECT_ID}/keeper/brief-intents/${metadata.requestId}`,
+    h.headers(h.hearth.token),
   );
   expect(originalResponse.status).toBe(200);
   const original = keeperBriefIntentOriginalSchema.parse(
