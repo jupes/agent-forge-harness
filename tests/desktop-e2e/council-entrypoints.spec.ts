@@ -12,16 +12,17 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { expect, test } from "@playwright/test";
 import { runsHref } from "../../apps/desktop/src/project-runs-model";
 import type { ForgeState } from "../../scripts/forge/phases";
+import { readState, withStateLock, writeState } from "../e2e/bd-stand-in-state";
 import { openSettled } from "../e2e/fixtures";
 import { BD_STAND_IN_STATE } from "../e2e/servers";
-import { readState, withStateLock, writeState } from "../e2e/bd-stand-in-state";
-import { alpha as fixtureAlpha } from "./project-fixtures";
 import { seedCouncilProject } from "./council-fixtures";
+import { alpha as fixtureAlpha } from "./project-fixtures";
 
 const originals: Array<{ path: string; root: string; bytes: Buffer }> = [];
 let project: ReturnType<typeof seedCouncilProject>;
 let councilPosts: string[] = [];
-const hash = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
+const hash = (bytes: Buffer) =>
+  createHash("sha256").update(bytes).digest("hex");
 function assertInside(root: string, path: string) {
   const rel = relative(root, path);
   if (!rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel))
@@ -67,7 +68,8 @@ function seedRecordedResearch() {
     updatedAt: "2026-10-29T12:00:00.000Z",
     reviews: [],
   };
-  const artifact = "Recorded research artifact for the Council source-entry fixture.\n";
+  const artifact =
+    "Recorded research artifact for the Council source-entry fixture.\n";
   const stateBytes = writeOriginal(runRoot, statePath, JSON.stringify(state));
   const artifactBytes = writeOriginal(artifactRoot, artifactPath, artifact);
   archiveRunFixture(slug, stateBytes, artifactBytes);
@@ -127,13 +129,22 @@ test.afterEach(async ({ page }) => {
 test("approved Workbench bead opens the exact Council source without posting", async ({
   page,
 }) => {
-  await openSettled(page, `/index.html#/desktop/project/${project.id}/workbench`);
+  await openSettled(
+    page,
+    `/index.html#/desktop/project/${project.id}/workbench`,
+  );
   const card = page.locator('[data-bead="alpha-council-first"]');
   await expect(card).toBeVisible();
-  await card.getByRole("button", { name: "Review bead in Council", exact: true }).click();
-  await expect(page).toHaveURL(new RegExp(`/desktop/project/${project.id}/reviews$`));
+  await card
+    .getByRole("button", { name: "Review bead in Council", exact: true })
+    .click();
+  await expect(page).toHaveURL(
+    new RegExp(`/desktop/project/${project.id}/reviews$`),
+  );
   await expect(page.getByLabel("Source type")).toHaveValue("bead");
-  await expect(page.getByLabel("Beads issue ID")).toHaveValue("alpha-council-first");
+  await expect(page.getByLabel("Beads issue ID")).toHaveValue(
+    "alpha-council-first",
+  );
   expect(councilPosts).toEqual([]);
 });
 
@@ -143,13 +154,38 @@ test("verified recorded research artifact opens a Council source draft without p
   const run = seedRecordedResearch();
   await openSettled(page, `/index.html${runsHref(project.id, run.slug)}`);
   const detail = page.getByRole("article", { name: "Selected forge run" });
-  await expect(detail.getByRole("heading", { name: "Recorded Council entrypoint research", exact: true })).toBeVisible();
-  await detail.getByRole("button", { name: "Read research artifact", exact: true }).click();
-  await expect(page.getByRole("region", { name: "Verified run artifact" })).toContainText("Recorded research artifact for the Council source-entry fixture.");
-  await detail.getByRole("button", { name: "Review research artifact in Council", exact: true }).click();
-  await expect(page).toHaveURL(new RegExp(`/desktop/project/${project.id}/reviews$`));
+  await expect(
+    detail.getByRole("heading", {
+      name: "Recorded Council entrypoint research",
+      exact: true,
+    }),
+  ).toBeVisible();
+  await detail
+    .getByRole("button", { name: "Read research artifact", exact: true })
+    .click();
+  await expect(
+    page.getByRole("region", { name: "Verified run artifact" }),
+  ).toContainText(
+    "Recorded research artifact for the Council source-entry fixture.",
+  );
+  await detail
+    .getByRole("button", {
+      name: "Review research artifact in Council",
+      exact: true,
+    })
+    .click();
+  await expect(page).toHaveURL(
+    new RegExp(`/desktop/project/${project.id}/reviews$`),
+  );
   await expect(page.getByLabel("Source type")).toHaveValue("file");
-  await expect(page.getByLabel("Workspace-relative file")).toHaveValue(`plans/research/${run.slug}.md`);
-  await expect(page.getByText("This opens a draft from the recorded artifact; it does not complete or change a checkpoint.", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Workspace-relative file")).toHaveValue(
+    `plans/research/${run.slug}.md`,
+  );
+  await expect(
+    page.getByText(
+      "This opens a draft from the recorded artifact; it does not complete or change a checkpoint.",
+      { exact: true },
+    ),
+  ).toBeVisible();
   expect(councilPosts).toEqual([]);
 });
