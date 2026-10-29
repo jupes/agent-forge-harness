@@ -620,6 +620,7 @@ export function RunDetail({
                   return (
                     <>
                       <Button
+                        aria-label={`Review ${label} artifact in Council`}
                         disabled={!canOpenArtifacts}
                         onClick={() =>
                           onCouncilArtifactPrefill?.(kind, {
@@ -628,7 +629,7 @@ export function RunDetail({
                           })
                         }
                       >
-                        Review {label} artifact in Council
+                        Review in Council
                       </Button>
                       <small>
                         This opens a draft from the recorded artifact; it does
