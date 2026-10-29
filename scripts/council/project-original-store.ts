@@ -10,6 +10,7 @@ import {
   type ProjectCouncilState,
   projectCouncilIntentJson,
   projectCouncilOriginalSchema,
+  projectCouncilShownLabel,
 } from "../../types/project-council";
 import { ConversationError } from "../conversations/error";
 import {
@@ -502,9 +503,11 @@ export function createProjectCouncilOriginalStore(options: {
             item.context.source.kind === "stdin"
               ? "text"
               : item.context.source.kind,
-          sourceName: item.context.source.displayName.slice(0, 256),
+          sourceName: projectCouncilShownLabel(
+            item.context.source.displayName,
+          ),
           profileId: item.profile.id,
-          profileTitle: item.profile.title.slice(0, 256),
+          profileTitle: projectCouncilShownLabel(item.profile.title),
           depth: item.profile.depth,
           createdAt: item.createdAt,
           updatedAt: item.updatedAt,

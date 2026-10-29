@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import {
   type ProjectCouncilBinding,
   projectCouncilMetadata,
+  projectCouncilHistorySchema,
   projectCouncilOriginalReadSchema,
 } from "../../types/project-council";
 import { ConversationError } from "../conversations/error";
@@ -166,21 +167,24 @@ test("project Council originals are durable, exact-retry idempotent, single-disp
 
 test("project Council summary labels redact the complete text before truncating", async () => {
   const { prepared, store } = fixture();
-  const reserved = await store.reservePrepared(
-    prepared("A protected original for label projection."),
-  );
   const label = `${"a".repeat(250)}\u200bOPENAI_API_KEY=abcZq9Zq8Zq7Zq6Zq5Zq4`;
-  const original = {
-    ...reserved.original,
-    context: {
-      ...reserved.original.context,
-      source: {
-        ...reserved.original.context.source,
-        displayName: label,
-      },
-    },
-    profile: { ...reserved.original.profile, title: label },
+  const base = prepared("A protected original for label projection.");
+  const context = {
+    ...base.context,
+    source: { ...base.context.source, displayName: label },
   };
+  const profile = { ...base.profile, title: label };
+  const reserved = await store.reservePrepared({
+    ...base,
+    binding: {
+      ...base.binding,
+      profileHash: projectCouncilProfileHash(profile),
+    },
+    context,
+    listing: contextListing(context),
+    profile,
+  });
+  const original = reserved.original;
   const metadata = projectCouncilMetadata(original);
   expect(
     projectCouncilOriginalReadSchema.parse({ metadata, original }),
@@ -194,6 +198,17 @@ test("project Council summary labels redact the complete text before truncating"
   expect(metadata.profileTitle).not.toContain("\u200b");
   expect(metadata.sourceName).not.toContain("abcZq9Zq8Zq7Zq6Zq5Zq4");
   expect(metadata.profileTitle).not.toContain("abcZq9Zq8Zq7Zq6Zq5Zq4");
+  const history = projectCouncilHistorySchema.parse(
+    store.history(original.binding.projectId),
+  );
+  expect(history.items[0]?.sourceName).toBe(metadata.sourceName);
+  expect(history.items[0]?.profileTitle).toBe(metadata.profileTitle);
+  expect(history.items[0]?.sourceName).not.toContain(
+    "abcZq9Zq8Zq7Zq6Zq5Zq4",
+  );
+  expect(history.items[0]?.profileTitle).not.toContain(
+    "abcZq9Zq8Zq7Zq6Zq5Zq4",
+  );
 });
 
 test("a changed saved original is refused rather than repaired or replaced", async () => {

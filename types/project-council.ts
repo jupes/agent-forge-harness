@@ -21,7 +21,7 @@ export const projectCouncilRequestIdSchema = z
   .refine((value) => value === value.toLowerCase());
 const digestSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const textSchema = z.string().min(1).max(1024);
-const shownLabel = (value: string): string =>
+export const projectCouncilShownLabel = (value: string): string =>
   redactShown(value).text.slice(0, 256);
 
 export const projectCouncilSourceChoiceSchema = z
@@ -294,7 +294,17 @@ export const projectCouncilHistoryRowSchema = z
     createdAt: z.iso.datetime(),
     updatedAt: z.iso.datetime(),
   })
-  .strict();
+  .strict()
+  .superRefine((row, context) => {
+    if (
+      row.sourceName !== projectCouncilShownLabel(row.sourceName) ||
+      row.profileTitle !== projectCouncilShownLabel(row.profileTitle)
+    )
+      context.addIssue({
+        code: "custom",
+        message: "Council history labels are not safe for display",
+      });
+  });
 
 export const projectCouncilHistorySchema = z
   .object({
@@ -540,9 +550,10 @@ export const projectCouncilOriginalReadSchema: z.ZodType<ProjectCouncilOriginalR
             ? "text"
             : original.context.source.kind) ||
         metadata.profileId !== original.profile.id ||
-        metadata.profileTitle !== shownLabel(original.profile.title) ||
+        metadata.profileTitle !==
+          projectCouncilShownLabel(original.profile.title) ||
         metadata.sourceName !==
-          shownLabel(original.context.source.displayName) ||
+          projectCouncilShownLabel(original.context.source.displayName) ||
         metadata.byteLength !== original.context.byteLength ||
         metadata.truncated !== original.context.truncated ||
         JSON.stringify(metadata.redactions) !==
@@ -607,13 +618,13 @@ export function projectCouncilMetadata(
       original.context.source.kind === "stdin"
         ? "text"
         : original.context.source.kind,
-    sourceName: shownLabel(original.context.source.displayName),
+    sourceName: projectCouncilShownLabel(original.context.source.displayName),
     listing: [...original.listing],
     byteLength: original.context.byteLength,
     truncated: original.context.truncated,
     redactions: original.context.redactions.map((item) => ({ ...item })),
     profileId: original.profile.id,
-    profileTitle: shownLabel(original.profile.title),
+    profileTitle: projectCouncilShownLabel(original.profile.title),
     maxUsd: original.options.maxUsd,
     maxBytes: original.options.maxBytes,
     redactSecrets: original.options.redactSecrets,
