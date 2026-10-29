@@ -19,10 +19,10 @@ import {
 } from "../../types/project-checkpoint-reviews";
 import { ConversationError } from "../conversations/error";
 import { hashText } from "../hash-text";
-import { neverStarted, storeEvent } from "../hearth/tracker-write";
 import type { BdRunner } from "../hearth/routes/dev-api";
+import { neverStarted, storeEvent } from "../hearth/tracker-write";
 import type { AppendResult } from "../ledger/append";
-import { createProjectCheckpointReviewStore } from "./project-checkpoint-review-store";
+import type { createProjectCheckpointReviewStore } from "./project-checkpoint-review-store";
 
 const MAX_COMMENT_ROWS = 4096;
 const MAX_COMMENT_OUTPUT_BYTES = 16 * 1024 * 1024;
@@ -60,7 +60,11 @@ const commentSchema = z
     issue_id: z.string().min(1).max(200),
     author: z.string().max(1024),
     text: z.string().max(64 * 1024),
-    created_at: z.string().min(1).max(100).refine((value) => Number.isFinite(Date.parse(value))),
+    created_at: z
+      .string()
+      .min(1)
+      .max(100)
+      .refine((value) => Number.isFinite(Date.parse(value))),
   })
   .strict();
 const commentsSchema = z.array(commentSchema).max(MAX_COMMENT_ROWS);
@@ -87,7 +91,9 @@ function same(a: unknown, b: unknown): boolean {
   return canonical(a) === canonical(b);
 }
 
-function scopeFor(binding: ProjectCheckpointReviewBinding): ProjectCheckpointReviewScope {
+function scopeFor(
+  binding: ProjectCheckpointReviewBinding,
+): ProjectCheckpointReviewScope {
   return {
     projectId: binding.projectId,
     workspacePath: binding.workspacePath,
@@ -149,19 +155,28 @@ function immutableOriginal(
   base.intentHash = digest(projectCheckpointReviewIntentJson(base));
   const parsed = projectCheckpointReviewOriginalSchema.parse(base);
   if (
-    Buffer.byteLength(JSON.stringify(parsed), "utf8") > PROJECT_CHECKPOINT_REVIEW_MAX_ORIGINAL_BYTES ||
-    Buffer.byteLength(parsed.commentText, "utf8") > PROJECT_CHECKPOINT_REVIEW_MAX_BODY_BYTES
+    Buffer.byteLength(JSON.stringify(parsed), "utf8") >
+      PROJECT_CHECKPOINT_REVIEW_MAX_ORIGINAL_BYTES ||
+    Buffer.byteLength(parsed.commentText, "utf8") >
+      PROJECT_CHECKPOINT_REVIEW_MAX_BODY_BYTES
   )
-    throw new ConversationError(413, "The checkpoint review original is too large.");
+    throw new ConversationError(
+      413,
+      "The checkpoint review original is too large.",
+    );
   return parsed;
 }
 
 function validCommentId(value: string): boolean {
-  return value.length > 0 && value.length <= 256 && value === value.trim() &&
+  return (
+    value.length > 0 &&
+    value.length <= 256 &&
+    value === value.trim() &&
     ![...value].some((character) => {
       const code = character.charCodeAt(0);
       return code < 32 || code === 127;
-    });
+    })
+  );
 }
 
 function reportedCommentId(stdout: string, beadId: string): string | null {
@@ -179,7 +194,11 @@ function reportedCommentId(stdout: string, beadId: string): string | null {
 
 function markerCount(body: string, marker: string): number {
   let count = 0;
-  for (let at = body.indexOf(marker); at >= 0; at = body.indexOf(marker, at + marker.length))
+  for (
+    let at = body.indexOf(marker);
+    at >= 0;
+    at = body.indexOf(marker, at + marker.length)
+  )
     count++;
   return count;
 }
@@ -212,7 +231,8 @@ function commentsEvidence(
     !checked.success ||
     checked.data.length !== expectedCount ||
     checked.data.some((comment) => comment.issue_id !== beadId) ||
-    new Set(checked.data.map((comment) => comment.id)).size !== checked.data.length ||
+    new Set(checked.data.map((comment) => comment.id)).size !==
+      checked.data.length ||
     checked.data.some((comment) => !validCommentId(comment.id))
   )
     return { kind: "incomplete" };
@@ -223,9 +243,10 @@ function commentsEvidence(
   );
   if (occurrences === 0) return { kind: "absent" };
   if (occurrences !== 1) return { kind: "mismatch" };
-  const matching = checked.data.find((comment) => comment.text.includes(marker));
-  if (!matching || matching.text !== body)
-    return { kind: "mismatch" };
+  const matching = checked.data.find((comment) =>
+    comment.text.includes(marker),
+  );
+  if (!matching || matching.text !== body) return { kind: "mismatch" };
   return { kind: "found", commentId: matching.id, body: matching.text };
 }
 
@@ -245,7 +266,9 @@ export function createProjectCheckpointReviewService(options: {
 
   function admit<T>(work: () => Promise<T>): Promise<T> {
     if (closing)
-      return Promise.reject(new ConversationError(503, "Checkpoint review service is closing."));
+      return Promise.reject(
+        new ConversationError(503, "Checkpoint review service is closing."),
+      );
     const task = Promise.resolve().then(work);
     pending.add(task);
     return task.finally(() => pending.delete(task));
@@ -258,11 +281,22 @@ export function createProjectCheckpointReviewService(options: {
   ): Promise<ProjectCheckpointReviewOriginalRead> {
     return options.store.original(scope, requestId).then((saved) => {
       if (!saved)
-        throw new ConversationError(404, "This checkpoint review original is not retained.");
+        throw new ConversationError(
+          404,
+          "This checkpoint review original is not retained.",
+        );
       if (saved.original.intentHash !== intentHash)
-        throw new ConversationError(409, "The checkpoint review hash does not match its saved original.");
-      if (digest(projectCheckpointReviewIntentJson(saved.original)) !== intentHash)
-        throw new ConversationError(503, "The saved checkpoint review original failed verification.");
+        throw new ConversationError(
+          409,
+          "The checkpoint review hash does not match its saved original.",
+        );
+      if (
+        digest(projectCheckpointReviewIntentJson(saved.original)) !== intentHash
+      )
+        throw new ConversationError(
+          503,
+          "The saved checkpoint review original failed verification.",
+        );
       return saved;
     });
   }
@@ -338,21 +372,30 @@ export function createProjectCheckpointReviewService(options: {
   }
 
   return {
-    async prepare(input: {
-      projectId: string;
-      runSlug: string;
-      beadId: string;
-      request: ProjectCheckpointReviewPrepareRequest;
-    }, auditEventId: number): Promise<ProjectCheckpointReviewMetadata> {
+    async prepare(
+      input: {
+        projectId: string;
+        runSlug: string;
+        beadId: string;
+        request: ProjectCheckpointReviewPrepareRequest;
+      },
+      auditEventId: number,
+    ): Promise<ProjectCheckpointReviewMetadata> {
       return admit(async () => {
         const request = authorityRequest(
           input,
           input.request.expectedEpicId,
           input.request.expectedRunUpdatedAt,
         );
-        const binding = verifyBinding(await options.resolveAuthority(request), request);
+        const binding = verifyBinding(
+          await options.resolveAuthority(request),
+          request,
+        );
         const scope = scopeFor(binding);
-        const prior = await options.store.original(scope, input.request.requestId);
+        const prior = await options.store.original(
+          scope,
+          input.request.requestId,
+        );
         const exact = immutableOriginal(
           input.request.requestId,
           input.request,
@@ -360,27 +403,57 @@ export function createProjectCheckpointReviewService(options: {
           prior?.original.createdAt ?? now().toISOString(),
         );
         if (prior && !same(prior.original, exact))
-          throw new ConversationError(409, "This UUID is already bound to a different checkpoint review.");
+          throw new ConversationError(
+            409,
+            "This UUID is already bound to a different checkpoint review.",
+          );
         const ensureCurrent = async () => {
-          const current = verifyBinding(await options.resolveAuthority(request), request);
+          const current = verifyBinding(
+            await options.resolveAuthority(request),
+            request,
+          );
           if (!same(current, binding))
-            throw new ConversationError(409, "The live project or run changed while preparing this review.");
+            throw new ConversationError(
+              409,
+              "The live project or run changed while preparing this review.",
+            );
         };
-        let prepared: Awaited<ReturnType<ProjectCheckpointReviewStore["prepare"]>>;
+        let prepared: Awaited<
+          ReturnType<ProjectCheckpointReviewStore["prepare"]>
+        >;
         try {
-          prepared = await options.store.prepare(prior?.original ?? exact, auditEventId);
+          prepared = await options.store.prepare(
+            prior?.original ?? exact,
+            auditEventId,
+          );
         } catch (error) {
-          if (!(error instanceof ConversationError) || error.status !== 409 || prior)
+          if (
+            !(error instanceof ConversationError) ||
+            error.status !== 409 ||
+            prior
+          )
             throw error;
-          const raced = await options.store.original(scope, input.request.requestId);
-          if (!raced || !same(raced.original, immutableOriginal(
+          const raced = await options.store.original(
+            scope,
             input.request.requestId,
-            input.request,
-            binding,
-            raced.original.createdAt,
-          )))
+          );
+          if (
+            !raced ||
+            !same(
+              raced.original,
+              immutableOriginal(
+                input.request.requestId,
+                input.request,
+                binding,
+                raced.original.createdAt,
+              ),
+            )
+          )
             throw error;
-          const prepared = await options.store.prepare(raced.original, auditEventId);
+          const prepared = await options.store.prepare(
+            raced.original,
+            auditEventId,
+          );
           await ensureCurrent();
           return prepared.metadata;
         }
@@ -389,15 +462,23 @@ export function createProjectCheckpointReviewService(options: {
       });
     },
 
-    metadata(scope: ProjectCheckpointReviewScope): Promise<ProjectCheckpointReviewMetadataRead> {
+    metadata(
+      scope: ProjectCheckpointReviewScope,
+    ): Promise<ProjectCheckpointReviewMetadataRead> {
       return admit(() => options.store.metadata(scope));
     },
 
-    original(scope: ProjectCheckpointReviewScope, requestId: string): Promise<ProjectCheckpointReviewOriginalRead | null> {
+    original(
+      scope: ProjectCheckpointReviewScope,
+      requestId: string,
+    ): Promise<ProjectCheckpointReviewOriginalRead | null> {
       return admit(() => options.store.original(scope, requestId));
     },
 
-    commit(input: CommitInput, auditEventId: number): Promise<ProjectCheckpointReviewReceipt> {
+    commit(
+      input: CommitInput,
+      auditEventId: number,
+    ): Promise<ProjectCheckpointReviewReceipt> {
       return admit(async () => {
         // Locate the original by its routed scope. Workspace routing is resolved by the caller.
         const scope: ProjectCheckpointReviewScope = {
@@ -407,8 +488,16 @@ export function createProjectCheckpointReviewService(options: {
           beadId: input.beadId,
         };
         const routed = await options.store.original(scope, input.requestId);
-        if (!routed) throw new ConversationError(404, "This checkpoint review original is not retained.");
-        const saved = await readOriginal(scopeFor(routed.original.binding), input.requestId, input.intentHash);
+        if (!routed)
+          throw new ConversationError(
+            404,
+            "This checkpoint review original is not retained.",
+          );
+        const saved = await readOriginal(
+          scopeFor(routed.original.binding),
+          input.requestId,
+          input.intentHash,
+        );
         // A durable non-prepared record cannot dispatch again. Its receipt is safe to replay
         // even if the live Run has since moved or disappeared.
         if (saved.receipt.state !== "prepared") return saved.receipt;
@@ -417,9 +506,15 @@ export function createProjectCheckpointReviewService(options: {
           saved.original.binding.epicId,
           saved.original.binding.runUpdatedAt,
         );
-        const before = verifyBinding(await options.resolveAuthority(expected), expected);
+        const before = verifyBinding(
+          await options.resolveAuthority(expected),
+          expected,
+        );
         if (!same(before, saved.original.binding))
-          throw new ConversationError(409, "The live run or checkpoint no longer matches this saved review.");
+          throw new ConversationError(
+            409,
+            "The live run or checkpoint no longer matches this saved review.",
+          );
         const claim = await options.store.claim(
           scopeFor(saved.original.binding),
           input.requestId,
@@ -429,61 +524,113 @@ export function createProjectCheckpointReviewService(options: {
         if (claim.kind !== "claimed") return claim.receipt;
         let runnerCalled = false;
         try {
-          const after = verifyBinding(await options.resolveAuthority(expected), expected);
+          const after = verifyBinding(
+            await options.resolveAuthority(expected),
+            expected,
+          );
           if (!same(after, saved.original.binding)) {
-            return (await options.store.finish(
-              claim.permit,
-              { kind: "refused-before-dispatch" },
-              auditEventId,
-            )).receipt;
+            return (
+              await options.store.finish(
+                claim.permit,
+                { kind: "refused-before-dispatch" },
+                auditEventId,
+              )
+            ).receipt;
           }
           runnerCalled = true;
           const result = await options.runBd(
-            ["comments", "add", "--json", "--", saved.original.binding.beadId, saved.original.commentText],
+            [
+              "comments",
+              "add",
+              "--json",
+              "--",
+              saved.original.binding.beadId,
+              saved.original.commentText,
+            ],
             { timeoutMs: options.bdTimeoutMs ?? 30_000 },
           );
           if (result.status === null && neverStarted(result))
-            return (await options.store.finish(
-              claim.permit,
-              { kind: "refused-before-dispatch" },
-              auditEventId,
-            )).receipt;
-          const outcome = { kind: "unknown" as const, reportedCommentId: result.status === 0
-            ? reportedCommentId(result.stdout, saved.original.binding.beadId)
-            : null };
+            return (
+              await options.store.finish(
+                claim.permit,
+                { kind: "refused-before-dispatch" },
+                auditEventId,
+              )
+            ).receipt;
+          const outcome = {
+            kind: "unknown" as const,
+            reportedCommentId:
+              result.status === 0
+                ? reportedCommentId(
+                    result.stdout,
+                    saved.original.binding.beadId,
+                  )
+                : null,
+          };
           await options.store.finish(claim.permit, outcome, auditEventId);
           if (result.status === 0) {
             const receipt = await exactReadback(saved, auditEventId);
             return receipt;
           }
-          return (await options.store.original(scopeFor(saved.original.binding), input.requestId))?.receipt ?? claim.receipt;
+          return (
+            (
+              await options.store.original(
+                scopeFor(saved.original.binding),
+                input.requestId,
+              )
+            )?.receipt ?? claim.receipt
+          );
         } catch {
           if (!runnerCalled)
-            return (await options.store.finish(
-              claim.permit,
-              { kind: "refused-before-dispatch" },
-              auditEventId,
-            )).receipt;
+            return (
+              await options.store.finish(
+                claim.permit,
+                { kind: "refused-before-dispatch" },
+                auditEventId,
+              )
+            ).receipt;
           // The persisted dispatching/unknown record is the durable hold.
-          return (await options.store.original(scopeFor(saved.original.binding), input.requestId))?.receipt ?? claim.receipt;
+          return (
+            (
+              await options.store.original(
+                scopeFor(saved.original.binding),
+                input.requestId,
+              )
+            )?.receipt ?? claim.receipt
+          );
         }
       });
     },
 
-    retire(scope: ProjectCheckpointReviewScope, requestId: string, intentHash: string, auditEventId: number): Promise<ProjectCheckpointReviewReceipt> {
+    retire(
+      scope: ProjectCheckpointReviewScope,
+      requestId: string,
+      intentHash: string,
+      auditEventId: number,
+    ): Promise<ProjectCheckpointReviewReceipt> {
       return admit(async () => {
         await readOriginal(scope, requestId, intentHash);
-        return (await options.store.retire(scope, requestId, intentHash, auditEventId)).receipt;
+        return (
+          await options.store.retire(scope, requestId, intentHash, auditEventId)
+        ).receipt;
       });
     },
 
-    readback(scope: ProjectCheckpointReviewScope, requestId: string, intentHash: string, auditEventId: number): Promise<ProjectCheckpointReviewReceipt> {
+    readback(
+      scope: ProjectCheckpointReviewScope,
+      requestId: string,
+      intentHash: string,
+      auditEventId: number,
+    ): Promise<ProjectCheckpointReviewReceipt> {
       return admit(async () => {
         const saved = await readOriginal(scope, requestId, intentHash);
         if (["confirmed", "refused", "retired"].includes(saved.receipt.state))
           return saved.receipt;
         if (saved.receipt.state !== "unknown")
-          throw new ConversationError(409, "Only an uncertain checkpoint review can be checked for its comment.");
+          throw new ConversationError(
+            409,
+            "Only an uncertain checkpoint review can be checked for its comment.",
+          );
         return exactReadback(saved, auditEventId);
       });
     },

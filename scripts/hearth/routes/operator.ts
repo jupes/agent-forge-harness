@@ -21,6 +21,7 @@ import {
   safeCouncilError,
 } from "../../council/service";
 import { reviewCommentFor } from "../../dashboard/forge-run-model";
+import type { ProjectCheckpointReviewQueueLock } from "../../forge/project-checkpoint-review-store";
 import type { KeeperOperatorPost } from "../../keeper/operator-post";
 import type { KeeperRuntime } from "../../keeper/recovery-runtime";
 import type { AppendResult } from "../../ledger/append";
@@ -74,8 +75,8 @@ import {
 import { createProjectActivityRoutes } from "./project-activity";
 import { projectBeadWriteRoutes } from "./project-bead-writes";
 import { projectBeadsRoute } from "./project-beads";
-import { createProjectCouncilRoutes } from "./project-council";
 import { createProjectCheckpointReviewRoutes } from "./project-checkpoint-reviews";
+import { createProjectCouncilRoutes } from "./project-council";
 import { projectOverviewRoute } from "./project-overview";
 import { createProjectRunRoutes } from "./project-runs";
 import { projectShiftOptionsRoute, projectShiftRoutes } from "./project-shifts";
@@ -84,7 +85,6 @@ import {
   projectSummaryRoute,
 } from "./project-summaries";
 import { projectWorkbenchRoute } from "./project-workbench";
-import type { ProjectCheckpointReviewQueueLock } from "../../forge/project-checkpoint-review-store";
 import { projectRoutes } from "./projects";
 import { createProviderLoginRoutes } from "./provider-logins";
 import { createProviderReadinessRoutes } from "./providers";
@@ -450,7 +450,9 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     appendEvent: deps.appendEvent,
     queueLock: deps.checkpointReviewQueueLock,
     runBd: deps.runBd,
-    ...(deps.bdTimeoutMs !== undefined ? { bdTimeoutMs: deps.bdTimeoutMs } : {}),
+    ...(deps.bdTimeoutMs !== undefined
+      ? { bdTimeoutMs: deps.bdTimeoutMs }
+      : {}),
     resolveAuthority: projectRuns.checkpointAuthority,
     readScope: projectRuns.checkpointReadScope,
   });

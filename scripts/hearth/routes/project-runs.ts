@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { LOG_BASE_DIR } from "../../../.claude/hooks/utils/constants";
 import { checkpointsForEpic } from "../../../docs/js/forge-checkpoints";
-import type { ProjectCheckpointReviewAuthorityRequest } from "../../forge/project-checkpoint-review-service";
 import type {
   ProjectRunArtifact,
   ProjectRunDetail,
@@ -9,14 +8,19 @@ import type {
   ProjectRunRow,
   ProjectRunsPage,
 } from "../../../types/project-runs";
+import type { ProjectRecord, ProjectWorkspace } from "../../../types/projects";
 import { boardRows, forgeRunSnapshot } from "../../dashboard/forge-run-model";
 import {
   createRunInspectionReader,
   RunInspectionError,
   readInspectionGateLogs,
 } from "../../forge/inspection-read";
-import { artifactPath, type ForgePhase } from "../../forge/phases";
-import { type ForgeState } from "../../forge/phases";
+import {
+  artifactPath,
+  type ForgePhase,
+  type ForgeState,
+} from "../../forge/phases";
+import type { ProjectCheckpointReviewAuthorityRequest } from "../../forge/project-checkpoint-review-service";
 import { comparableCheckout, isValidSlug } from "../../forge/runs";
 import { hashText } from "../../hash-text";
 import {
@@ -30,7 +34,6 @@ import {
   isProjectId,
   ProjectStoreError,
 } from "../../projects/store";
-import type { ProjectRecord, ProjectWorkspace } from "../../../types/projects";
 import type { ReadRoute, RouteReply } from "../api";
 import { fail, noParameters, type ReadDeps } from "./operator-reads";
 import type { ProjectSnapshot } from "./project-summaries";
@@ -69,7 +72,10 @@ function projectRunAuthorityReader(
     }
   })();
 
-  async function resolveRun(projectId: string, slug?: string): Promise<ResolvedProjectRun> {
+  async function resolveRun(
+    projectId: string,
+    slug?: string,
+  ): Promise<ResolvedProjectRun> {
     const snapshot = await load();
     // Catalog membership can change while the tracker await is outstanding.
     const catalog = createProjectStore(deps.projectHome).read();
@@ -83,34 +89,68 @@ function projectRunAuthorityReader(
       !scope ||
       workspaceKey(snapshot.source.workspace) !== workspaceKey(deps.workspace)
     )
-      throw new RunReadError(409, "This hearth does not serve this project's workspace.");
+      throw new RunReadError(
+        409,
+        "This hearth does not serve this project's workspace.",
+      );
     if (
       snapshot.source.issues === null ||
       scope.epicIds.some(
-        (id) => !snapshot.source.issues?.some((issue) => issue.id === id && issue.type === "epic"),
+        (id) =>
+          !snapshot.source.issues?.some(
+            (issue) => issue.id === id && issue.type === "epic",
+          ),
       )
     )
-      throw new RunReadError(503, "Project membership is unavailable or incomplete. Refresh Runs after the tracker can be read.");
+      throw new RunReadError(
+        503,
+        "Project membership is unavailable or incomplete. Refresh Runs after the tracker can be read.",
+      );
     const members = new Set(
-      selectProjectBeads(project, deps.workspace, snapshot.source.issues).map((row) => row.id),
+      selectProjectBeads(project, deps.workspace, snapshot.source.issues).map(
+        (row) => row.id,
+      ),
     );
     const source = captured;
     if (!source)
-      throw new RunReadError(503, "The served checkout's run source identity could not be verified.");
+      throw new RunReadError(
+        503,
+        "The served checkout's run source identity could not be verified.",
+      );
     // Both addresses are server-owned spellings of the served checkout.
     // A linked worktree's ledger workspace belongs to its main checkout, not here.
-    const checkouts = new Set([source.checkout, deps.root].map(comparableCheckout));
-    const states = source.read().filter(
-      (state) =>
-        state.epic &&
-        members.has(state.epic) &&
-        (!state.beadId || members.has(state.beadId)) &&
-        (!state.checkout || checkouts.has(comparableCheckout(state.checkout))),
+    const checkouts = new Set(
+      [source.checkout, deps.root].map(comparableCheckout),
     );
-    const found = slug ? states.find((state) => state.slug === slug) ?? null : null;
+    const states = source
+      .read()
+      .filter(
+        (state) =>
+          state.epic &&
+          members.has(state.epic) &&
+          (!state.beadId || members.has(state.beadId)) &&
+          (!state.checkout ||
+            checkouts.has(comparableCheckout(state.checkout))),
+      );
+    const found = slug
+      ? (states.find((state) => state.slug === slug) ?? null)
+      : null;
     if (slug && !found)
-      throw new RunReadError(404, "This run is not in the current project's served checkout.");
-    return { snapshot, project, scope, catalogRevision: catalog.revision, members, source, states, checkouts, found };
+      throw new RunReadError(
+        404,
+        "This run is not in the current project's served checkout.",
+      );
+    return {
+      snapshot,
+      project,
+      scope,
+      catalogRevision: catalog.revision,
+      members,
+      source,
+      states,
+      checkouts,
+      found,
+    };
   }
 
   async function checkpointBinding(
@@ -119,20 +159,40 @@ function projectRunAuthorityReader(
     const current = await resolveRun(request.projectId, request.runSlug);
     const run = current.found;
     if (current.project.archived)
-      throw new RunReadError(409, "This project is archived. New checkpoint reviews are unavailable.");
+      throw new RunReadError(
+        409,
+        "This project is archived. New checkpoint reviews are unavailable.",
+      );
     if (!run?.epic)
-      throw new RunReadError(409, "The selected run has no current project epic authority.");
+      throw new RunReadError(
+        409,
+        "The selected run has no current project epic authority.",
+      );
     if (
       current.snapshot.source.issues === null ||
       !current.snapshot.source.dependencies ||
       current.snapshot.source.problems.length > 0
     )
-      throw new RunReadError(503, "Project membership or dependencies are unavailable or incomplete.");
-    if (run.updatedAt !== request.expectedRunUpdatedAt || run.epic !== request.expectedEpicId)
-      throw new RunReadError(409, "The live run changed. Refresh before recording a checkpoint review.");
-    const epic = current.snapshot.source.issues?.find((issue) => issue.id === run.epic);
+      throw new RunReadError(
+        503,
+        "Project membership or dependencies are unavailable or incomplete.",
+      );
+    if (
+      run.updatedAt !== request.expectedRunUpdatedAt ||
+      run.epic !== request.expectedEpicId
+    )
+      throw new RunReadError(
+        409,
+        "The live run changed. Refresh before recording a checkpoint review.",
+      );
+    const epic = current.snapshot.source.issues?.find(
+      (issue) => issue.id === run.epic,
+    );
     if (!epic || epic.type !== "epic" || !current.members.has(epic.id))
-      throw new RunReadError(409, "The run's recorded epic is no longer in the current project scope.");
+      throw new RunReadError(
+        409,
+        "The run's recorded epic is no longer in the current project scope.",
+      );
     const issues = selectProjectBeads(
       current.project,
       deps.workspace,
@@ -150,28 +210,52 @@ function projectRunAuthorityReader(
       },
       run.epic,
     );
-    const checkpoint = checkpoints.checkpoints.find((item) => item.id === request.beadId);
+    const checkpoint = checkpoints.checkpoints.find(
+      (item) => item.id === request.beadId,
+    );
     if (!checkpoint || !checkpoints.inProgressIds.includes(request.beadId))
-      throw new RunReadError(409, "Only a current in-progress leaf checkpoint can be reviewed.");
-    const bead = current.snapshot.source.issues?.find((issue) => issue.id === request.beadId);
+      throw new RunReadError(
+        409,
+        "Only a current in-progress leaf checkpoint can be reviewed.",
+      );
+    const bead = current.snapshot.source.issues?.find(
+      (issue) => issue.id === request.beadId,
+    );
     if (!bead || !current.members.has(bead.id))
-      throw new RunReadError(409, "The checkpoint is no longer in the current project scope.");
-    const scopeHash = hashText(JSON.stringify({
-      projectId: current.project.id,
-      projectSlug: current.project.slug,
-      workspace: current.scope,
-      catalogRevision: current.catalogRevision,
-      checkout: current.source.checkout,
-      run: {
-        slug: run.slug,
-        epic: run.epic,
-        beadId: run.beadId ?? null,
-        checkout: run.checkout ?? null,
-        updatedAt: run.updatedAt,
-      },
-      checkpoints: checkpoints.checkpoints.map(({ id, status, groupId, blockedBy }) => ({ id, status, groupId, blockedBy })),
-      selected: { id: bead.id, type: bead.type, parent: bead.parent ?? null, status: bead.status },
-    }));
+      throw new RunReadError(
+        409,
+        "The checkpoint is no longer in the current project scope.",
+      );
+    const scopeHash = hashText(
+      JSON.stringify({
+        projectId: current.project.id,
+        projectSlug: current.project.slug,
+        workspace: current.scope,
+        catalogRevision: current.catalogRevision,
+        checkout: current.source.checkout,
+        run: {
+          slug: run.slug,
+          epic: run.epic,
+          beadId: run.beadId ?? null,
+          checkout: run.checkout ?? null,
+          updatedAt: run.updatedAt,
+        },
+        checkpoints: checkpoints.checkpoints.map(
+          ({ id, status, groupId, blockedBy }) => ({
+            id,
+            status,
+            groupId,
+            blockedBy,
+          }),
+        ),
+        selected: {
+          id: bead.id,
+          type: bead.type,
+          parent: bead.parent ?? null,
+          status: bead.status,
+        },
+      }),
+    );
     return {
       projectId: current.project.id,
       workspacePath: current.scope.root,
@@ -185,7 +269,11 @@ function projectRunAuthorityReader(
     };
   }
 
-  function checkpointReadScope(projectId: string, runSlug: string, beadId: string) {
+  function checkpointReadScope(
+    projectId: string,
+    runSlug: string,
+    beadId: string,
+  ) {
     const project = createProjectStore(deps.projectHome)
       .read()
       .projects.find((row) => row.id === projectId);
@@ -195,7 +283,10 @@ function projectRunAuthorityReader(
       (row) => workspaceKey(row.root) === workspaceKey(deps.workspace),
     );
     if (!scope)
-      throw new RunReadError(409, "This hearth does not serve this project's workspace.");
+      throw new RunReadError(
+        409,
+        "This hearth does not serve this project's workspace.",
+      );
     return {
       projectId,
       workspacePath: scope.root,
@@ -204,7 +295,12 @@ function projectRunAuthorityReader(
     };
   }
 
-  return { resolveRun, checkpointBinding, checkpointReadScope, source: captured };
+  return {
+    resolveRun,
+    checkpointBinding,
+    checkpointReadScope,
+    source: captured,
+  };
 }
 
 /** A finite scan of the existing append-only log; partial/future entries cannot become gate facts. */
@@ -293,7 +389,8 @@ export function createProjectRunRoutes(
   const authority = projectRunAuthorityReader(deps, load);
   const captured = authority.source;
   async function read(projectId: string, slug?: string) {
-    const { snapshot, source, members, checkouts, states, found } = await authority.resolveRun(projectId, slug);
+    const { snapshot, source, members, checkouts, states, found } =
+      await authority.resolveRun(projectId, slug);
     const gates = scopedGateLogs(
       states.length
         ? readInspectionGateLogs(deps.forgeGateLogRoot ?? LOG_BASE_DIR)
