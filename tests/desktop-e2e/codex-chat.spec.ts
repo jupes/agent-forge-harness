@@ -866,7 +866,7 @@ test("a confirmed Claude rate limit can target Gemini ACP Chat", async ({
         ],
       },
     };
-    const responseHeaders = await response.allHeaders();
+    const responseHeaders = response.headers();
     const headers = Object.fromEntries(
       Object.entries(responseHeaders).filter(
         ([name]) =>
@@ -1216,7 +1216,7 @@ test("a confirmed Claude rate limit can target Gemini ACP Chat", async ({
     callsBeforeStart,
     "session/prompt",
   );
-  let releaseReadback = () => {
+  let releaseReadback: () => void = () => {
     throw Error("The protected readback release was not initialized");
   };
   let readbackCaptured = false,
@@ -1306,7 +1306,7 @@ test("a confirmed Claude rate limit can target Gemini ACP Chat", async ({
         ).toBe(true);
         readbackIsHeld = true;
         await readbackReleased;
-        const responseHeaders = await response.allHeaders();
+        const responseHeaders = response.headers();
         const responseHeadersForBrowser = Object.fromEntries(
           Object.entries(responseHeaders).filter(
             ([name]) =>
