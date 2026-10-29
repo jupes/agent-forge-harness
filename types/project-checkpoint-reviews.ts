@@ -17,26 +17,32 @@ const digestSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const requestIdSchema = z
   .uuid()
   .refine((value) => value === value.toLowerCase());
-const projectIdSchema = z.string().regex(
-  /^project-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
-);
+const projectIdSchema = z
+  .string()
+  .regex(
+    /^project-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+  );
 const runSlugSchema = z.string().refine(isValidSlug);
 const beadIdSchema = z
   .string()
   .refine((value) => parseBeadsIssueId(value) === value);
+function hasControlCharacters(value: string): boolean {
+  for (let index = 0; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    if (code < 32 || code === 127) return true;
+  }
+  return false;
+}
 const boundedPathSchema = z
   .string()
   .min(1)
   .max(4096)
-  .refine((value) => !/[\u0000-\u001f\u007f]/u.test(value));
+  .refine((value) => !hasControlCharacters(value));
 const commentIdSchema = z
   .string()
   .min(1)
   .max(256)
-  .refine(
-    (value) =>
-      value === value.trim() && !/[\u0000-\u001f\u007f]/u.test(value),
-  );
+  .refine((value) => value === value.trim() && !hasControlCharacters(value));
 const timestampSchema = z.iso.datetime();
 const decisionSchema = z.enum(["approve", "request-changes"]);
 const normalizedNoteSchema = z
@@ -232,10 +238,7 @@ function canonicalJson(value: unknown): string {
   if (isJsonObject(value))
     return `{${Object.keys(value)
       .sort()
-      .map(
-        (key) =>
-          `${JSON.stringify(key)}:${canonicalJson(value[key])}`,
-      )
+      .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
       .join(",")}}`;
   const encoded = JSON.stringify(value);
   if (encoded === undefined)
@@ -323,7 +326,8 @@ export const projectCheckpointReviewReceiptSchema = z
     )
       context.addIssue({
         code: "custom",
-        message: "Only an unknown or confirmed review can carry readback evidence",
+        message:
+          "Only an unknown or confirmed review can carry readback evidence",
       });
   });
 
@@ -337,9 +341,9 @@ export const projectCheckpointReviewMetadataReadSchema = z
     scope: projectCheckpointReviewScopeSchema,
     activeRequestId: requestIdSchema.nullable(),
     blocked: z.boolean(),
-    items: z.array(projectCheckpointReviewMetadataSchema).max(
-      PROJECT_CHECKPOINT_REVIEW_MAX_JOURNAL_RECORDS,
-    ),
+    items: z
+      .array(projectCheckpointReviewMetadataSchema)
+      .max(PROJECT_CHECKPOINT_REVIEW_MAX_JOURNAL_RECORDS),
   })
   .strict()
   .superRefine((read, context) => {
@@ -393,11 +397,11 @@ export const projectCheckpointReviewOriginalReadSchema = z
     )
       context.addIssue({
         code: "custom",
-        message: "The saved checkpoint review metadata does not match its original and receipt",
+        message:
+          "The saved checkpoint review metadata does not match its original and receipt",
       });
   });
 
 export type ProjectCheckpointReviewOriginalRead = z.infer<
   typeof projectCheckpointReviewOriginalReadSchema
 >;
-
