@@ -30,7 +30,10 @@ import type {
   CouncilAttachResolver,
 } from "../council/ledger-events";
 import { type CommandRunner, runLocalCommand } from "../council/pr-source";
-import { createCouncilService } from "../council/service";
+import {
+  createCouncilService,
+  type CouncilServiceOptions,
+} from "../council/service";
 import { loadDashboardServerEnvironment } from "../dashboard/server-environment";
 import { ownInterrupts } from "../executors/supervisor";
 import { createClaudeConversationTransport } from "../keeper/claude-transport";
@@ -158,6 +161,8 @@ export interface HearthOptions extends HearthInternalCommands {
    * where the hearth's own `bd` runs (`hearthCouncilRunner`).
    */
   councilRunCommand?: CommandRunner;
+  /** Trusted test/embedder-only Council transport composition; never request supplied. */
+  councilResolveTransport?: CouncilServiceOptions["resolveTransport"];
   /** What the operator API reads and writes, when not the defaults. Tests inject these. */
   api?: OperatorApiOverrides;
   /**
@@ -347,6 +352,9 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
         }
       : {}),
     runCommand: hearthCouncilRunner(root, options.councilRunCommand),
+    ...(options.councilResolveTransport
+      ? { resolveTransport: options.councilResolveTransport }
+      : {}),
   });
   const tokenFile = tokenPath(home, root);
   let token = "";
