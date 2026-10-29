@@ -275,7 +275,7 @@ export function projectCouncilProgressView(
     );
   const round = latest?.payload?.round;
   const discussionLabel =
-    typeof round === "number" && Number.isSafeInteger(round) && round > 0
+    typeof round === "number" && Number.isSafeInteger(round) && round >= 0
       ? `Discussing round ${round}`
       : "Discussing (number not recorded)";
   const label =
@@ -294,6 +294,196 @@ export function projectCouncilProgressView(
           ? "Queued"
           : "Checking saved progress";
   return { active, label, stopPending: false };
+}
+
+type CouncilProgressEvent = {
+  type: string;
+  payload?: Record<string, unknown>;
+};
+type CouncilRosterSeat = { id: string; role: string };
+export function projectCouncilLiveReviewView<T>(
+  liveRounds: readonly T[] | undefined,
+  savedRounds: readonly T[] | undefined,
+  jobRoster: readonly CouncilRosterSeat[] | undefined,
+  originalRoster: readonly CouncilRosterSeat[] | undefined,
+  events: readonly CouncilProgressEvent[],
+): {
+  rounds: readonly T[];
+  rosterKnown: boolean;
+  seats: readonly { seatId: string; role: string; state: string }[];
+} {
+  const roster = jobRoster ?? originalRoster;
+  const states = new Map(
+    (roster ?? []).map((seat) => [seat.id, { role: seat.role, state: "Pending" }]),
+  );
+  let stage: { name: string; round?: unknown } | null = null;
+  for (const event of events) {
+    if (event.type === "stage.started") {
+      const name = event.payload?.stage;
+      stage = typeof name === "string" ? { name, round: event.payload?.round } : null;
+      for (const [seatId, seat] of states)
+        if (seat.state !== "Failed" && seat.state !== "Cancelled")
+          states.set(seatId, { ...seat, state: "Pending" });
+      continue;
+    }
+    if (event.type === "stage.completed") {
+      stage = null;
+      continue;
+    }
+    const seatId = event.payload?.seatId;
+    if (typeof seatId !== "string" || !states.has(seatId)) continue;
+    const seat = states.get(seatId);
+    if (!seat) continue;
+    let state = seat.state;
+    if (event.type === "seat.failed") state = "Failed";
+    else if (event.type === "seat.cancelled") state = "Cancelled";
+    else if (event.type === "seat.completed") state = "Complete";
+    else if (event.type === "seat.started") {
+      const name = event.payload?.stage;
+      state =
+        name === "independent"
+          ? "Reviewing"
+          : name === "chair"
+            ? "Synthesizing"
+            : name === "peer" || name === "revision"
+              ? stage?.name === name &&
+                typeof stage.round === "number" &&
+                Number.isSafeInteger(stage.round) &&
+                stage.round >= 0
+                ? `Discussing round ${stage.round}`
+                : "Discussing (number not recorded)"
+              : "Checking saved progress";
+    }
+    states.set(seatId, { ...seat, state });
+  }
+  return {
+    rounds: liveRounds ?? savedRounds ?? [],
+    rosterKnown: roster !== undefined,
+    seats: [...states].map(([seatId, seat]) => ({ seatId, ...seat })),
+  };
+}
+
+type CouncilJobRead = NonNullable<ProjectCouncilRunRead["job"]>;
+type CouncilDiscussionRound = NonNullable<
+  NonNullable<CouncilJobRead["run"]>["discussion"]
+>[number];
+
+function CouncilDiscussionView({
+  rounds,
+}: {
+  rounds: readonly CouncilDiscussionRound[];
+}): JSX.Element {
+  const [selectedRound, setSelectedRound] = useState(0);
+  const discussion = rounds[selectedRound];
+  return (
+    <section aria-label="Council discussion">
+      <h4>Discussion</h4>
+      <label>
+        Round{" "}
+        <select
+          value={selectedRound}
+          onChange={(event) =>
+            setSelectedRound(Number(event.currentTarget.value))
+          }
+        >
+          {rounds.map((round, index) => (
+            <option key={`${round.stage}:${round.round ?? index}`} value={index}>
+              {round.stage}
+              {round.round === undefined ? "" : ` ${round.round}`}
+            </option>
+          ))}
+        </select>
+      </label>
+      {discussion ? (
+        <>
+          <ul>
+            {discussion.records.map((record, index) => (
+              <li key={`${record.seatId}:${index}`}>
+                <strong>
+                  {showControls(record.seatId)} · {record.status}
+                </strong>
+                {record.error ? <p>{showControls(record.error)}</p> : null}
+                {record.output && "findings" in record.output ? (
+                  <section>
+                    <p>Verdict: {record.output.verdict}</p>
+                    {record.output.findings.map((item, itemIndex) => (
+                      <article key={`${record.seatId}:finding:${itemIndex}`}>
+                        <h5>
+                          {showControls(item.title)} · {item.severity}
+                        </h5>
+                        <KeeperMarkdown text={showControls(item.claim)} />
+                        <p>{showControls(item.consequence)}</p>
+                      </article>
+                    ))}
+                    <ul>
+                      {record.output.strengths.map((item, itemIndex) => (
+                        <li key={`${record.seatId}:strength:${itemIndex}`}>
+                          <KeeperMarkdown text={showControls(item)} />
+                        </li>
+                      ))}
+                    </ul>
+                    <ul>
+                      {record.output.unknowns.map((item, itemIndex) => (
+                        <li key={`${record.seatId}:unknown:${itemIndex}`}>
+                          <KeeperMarkdown text={showControls(item)} />
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
+                ) : null}
+                {record.output && "ballots" in record.output ? (
+                  <ul>
+                    {record.output.ballots.map((ballot, ballotIndex) => (
+                      <li key={`${record.seatId}:ballot:${ballotIndex}`}>
+                        <strong>
+                          {ballot.stance} · {showControls(ballot.candidateId)}
+                        </strong>
+                        : <KeeperMarkdown text={showControls(ballot.reason)} />
+                      </li>
+                    ))}
+                    {record.output.missingFindings.map((item, itemIndex) => (
+                      <li key={`${record.seatId}:missing:${itemIndex}`}>
+                        <strong>
+                          Additional finding · {item.severity}: {showControls(item.title)}
+                        </strong>
+                        <KeeperMarkdown text={showControls(item.claim)} />
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+                {record.output && "summary" in record.output ? (
+                  <>
+                    <KeeperMarkdown text={showControls(record.output.summary)} />
+                    <ul>
+                      {record.output.recommendations.map((item, itemIndex) => (
+                        <li key={`${record.seatId}:recommendation:${itemIndex}`}>
+                          <KeeperMarkdown text={showControls(item)} />
+                        </li>
+                      ))}
+                    </ul>
+                  </>
+                ) : null}
+                {record.output ? (
+                  <details>
+                    <summary>Inspect structured seat response</summary>
+                    <pre>{showControls(JSON.stringify(record.output, null, 2))}</pre>
+                  </details>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+          {discussion.findings.map((finding) => (
+            <article key={finding.key}>
+              <h5>
+                {showControls(finding.title)} · {finding.resolution}
+              </h5>
+              <KeeperMarkdown text={showControls(finding.claim)} />
+            </article>
+          ))}
+        </>
+      ) : null}
+    </section>
+  );
 }
 
 function verifiedCouncilResult(
@@ -451,6 +641,7 @@ function CouncilResultFactsPanel({
 function RunReview({
   value,
   verifiedResult,
+  originalProfile,
   projectId,
   loading,
   canCancel,
@@ -461,6 +652,7 @@ function RunReview({
 }: {
   value: ProjectCouncilRunRead | null;
   verifiedResult: VerifiedCouncilResult | null;
+  originalProfile: ProjectCouncilOriginalRead["original"]["profile"];
   projectId: string;
   loading: boolean;
   canCancel: boolean;
@@ -469,7 +661,6 @@ function RunReview({
   onRead(): void;
   onCancel(requestId: string, intentHash: string): void;
 }): JSX.Element {
-  const [selectedRound, setSelectedRound] = useState(0);
   const receipt = value?.receipt;
   const job = value?.job;
   const run = job?.run;
@@ -477,23 +668,22 @@ function RunReview({
   const active = progress.active;
   const events = job?.events ?? [];
   const stageLabel = progress.label;
-  const rounds = run?.discussion ?? [];
-  const discussion = rounds[selectedRound];
+  const roster = (profile: typeof originalProfile | undefined) =>
+    profile
+      ? [...profile.seats, profile.chair].map(({ id, role }) => ({ id, role }))
+      : undefined;
+  const liveReview = projectCouncilLiveReviewView(
+    job?.discussion,
+    run?.discussion,
+    roster(job?.profile),
+    roster(originalProfile),
+    events,
+  );
+  const rounds = run ? (run.discussion ?? []) : liveReview.rounds;
   const terminal =
     receipt?.phase === "completed" ||
     receipt?.phase === "failed" ||
     receipt?.phase === "cancelled";
-  const seatStates = new Map<string, string>();
-  for (const event of events) {
-    if (event.type === "seat.started")
-      seatStates.set(event.payload.seatId, `${event.payload.stage}: reviewing`);
-    else if (event.type === "seat.completed")
-      seatStates.set(event.payload.seatId, `${event.payload.stage}: complete`);
-    else if (event.type === "seat.failed")
-      seatStates.set(event.payload.seatId, `${event.payload.stage}: failed`);
-    else if (event.type === "seat.cancelled")
-      seatStates.set(event.payload.seatId, `${event.payload.stage}: cancelled`);
-  }
   return (
     <section aria-label="Council result and progress">
       <h3>
@@ -684,155 +874,7 @@ function RunReview({
               )}
             </section>
           ) : null}
-          {rounds.length ? (
-            <section aria-label="Council discussion">
-              <h4>Discussion</h4>
-              <label>
-                Round{" "}
-                <select
-                  value={selectedRound}
-                  onChange={(event) =>
-                    setSelectedRound(Number(event.currentTarget.value))
-                  }
-                >
-                  {rounds.map((round, index) => (
-                    <option
-                      key={`${round.stage}:${round.round ?? index}`}
-                      value={index}
-                    >
-                      {round.stage}
-                      {round.round === undefined ? "" : ` ${round.round}`}
-                    </option>
-                  ))}
-                </select>
-              </label>
-              {discussion ? (
-                <>
-                  <ul>
-                    {discussion.records.map((record, index) => (
-                      <li key={`${record.seatId}:${index}`}>
-                        <strong>
-                          {showControls(record.seatId)} · {record.status}
-                        </strong>
-                        {record.error ? (
-                          <p>{showControls(record.error)}</p>
-                        ) : null}
-                        {record.output && "findings" in record.output ? (
-                          <section>
-                            <p>Verdict: {record.output.verdict}</p>
-                            {record.output.findings.map((item, itemIndex) => (
-                              <article
-                                key={`${record.seatId}:finding:${itemIndex}`}
-                              >
-                                <h5>
-                                  {showControls(item.title)} · {item.severity}
-                                </h5>
-                                <KeeperMarkdown
-                                  text={showControls(item.claim)}
-                                />
-                                <p>{showControls(item.consequence)}</p>
-                              </article>
-                            ))}
-                            <ul>
-                              {record.output.strengths.map(
-                                (item, itemIndex) => (
-                                  <li
-                                    key={`${record.seatId}:strength:${itemIndex}`}
-                                  >
-                                    <KeeperMarkdown text={showControls(item)} />
-                                  </li>
-                                ),
-                              )}
-                            </ul>
-                            <ul>
-                              {record.output.unknowns.map((item, itemIndex) => (
-                                <li
-                                  key={`${record.seatId}:unknown:${itemIndex}`}
-                                >
-                                  <KeeperMarkdown text={showControls(item)} />
-                                </li>
-                              ))}
-                            </ul>
-                          </section>
-                        ) : null}
-                        {record.output && "ballots" in record.output ? (
-                          <ul>
-                            {record.output.ballots.map(
-                              (ballot, ballotIndex) => (
-                                <li
-                                  key={`${record.seatId}:ballot:${ballotIndex}`}
-                                >
-                                  <strong>
-                                    {ballot.stance} ·{" "}
-                                    {showControls(ballot.candidateId)}
-                                  </strong>
-                                  :{" "}
-                                  <KeeperMarkdown
-                                    text={showControls(ballot.reason)}
-                                  />
-                                </li>
-                              ),
-                            )}
-                            {record.output.missingFindings.map(
-                              (item, itemIndex) => (
-                                <li
-                                  key={`${record.seatId}:missing:${itemIndex}`}
-                                >
-                                  <strong>
-                                    Additional finding · {item.severity}:{" "}
-                                    {showControls(item.title)}
-                                  </strong>
-                                  <KeeperMarkdown
-                                    text={showControls(item.claim)}
-                                  />
-                                </li>
-                              ),
-                            )}
-                          </ul>
-                        ) : null}
-                        {record.output && "summary" in record.output ? (
-                          <>
-                            <KeeperMarkdown
-                              text={showControls(record.output.summary)}
-                            />
-                            <ul>
-                              {record.output.recommendations.map(
-                                (item, itemIndex) => (
-                                  <li
-                                    key={`${record.seatId}:recommendation:${itemIndex}`}
-                                  >
-                                    <KeeperMarkdown text={showControls(item)} />
-                                  </li>
-                                ),
-                              )}
-                            </ul>
-                          </>
-                        ) : null}
-                        {record.output ? (
-                          <details>
-                            <summary>Inspect structured seat response</summary>
-                            <pre>
-                              {showControls(
-                                JSON.stringify(record.output, null, 2),
-                              )}
-                            </pre>
-                          </details>
-                        ) : null}
-                      </li>
-                    ))}
-                  </ul>
-                  {discussion.findings.map((finding) => (
-                    <article key={finding.key}>
-                      <h5>
-                        {showControls(finding.title)} · {finding.resolution}
-                      </h5>
-                      <KeeperMarkdown text={showControls(finding.claim)} />
-                    </article>
-                  ))}
-                </>
-              ) : null}
-            </section>
-          ) : null}
+          {rounds.length ? <CouncilDiscussionView rounds={rounds} /> : null}
           {receipt?.phase !== "completed" ? (
             <p role="status">
               Partial records are shown below. No final recommendation is
@@ -852,30 +894,39 @@ function RunReview({
         </>
       ) : null}
       {job && !run ? (
-        <section aria-label="Council progress">
-          <h4>{stageLabel ?? "Checking saved progress"}</h4>
-          <ul>
-            {[...seatStates.entries()].map(([seatId, state]) => (
-              <li key={seatId}>
-                {showControls(seatId)} · {state}
-              </li>
-            ))}
-          </ul>
-          <details>
-            <summary>Inspect verified progress events</summary>
-            <ol>
-              {events.slice(-40).map((event, index) => (
-                <li key={`${event.type}:${index}`}>
-                  <time dateTime={event.at}>
-                    {new Date(event.at).toLocaleTimeString()}
-                  </time>{" "}
-                  · {event.type} ·{" "}
-                  <code>{showControls(JSON.stringify(event.payload))}</code>
-                </li>
-              ))}
-            </ol>
-          </details>
-        </section>
+        <>
+          {liveReview.rounds.length ? (
+            <CouncilDiscussionView rounds={liveReview.rounds} />
+          ) : null}
+          <section aria-label="Council progress">
+            <h4>{stageLabel ?? "Checking saved progress"}</h4>
+            {liveReview.rosterKnown ? (
+              <ul>
+                {liveReview.seats.map((seat) => (
+                  <li key={seat.seatId}>
+                    {showControls(seat.role)} · {showControls(seat.seatId)} · {seat.state}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <p>Seat roster and individual pending states are unknown.</p>
+            )}
+            <details>
+              <summary>Inspect verified progress events</summary>
+              <ol>
+                {events.slice(-40).map((event, index) => (
+                  <li key={`${event.type}:${index}`}>
+                    <time dateTime={event.at}>
+                      {new Date(event.at).toLocaleTimeString()}
+                    </time>{" "}
+                    · {event.type} ·{" "}
+                    <code>{showControls(JSON.stringify(event.payload))}</code>
+                  </li>
+                ))}
+              </ol>
+            </details>
+          </section>
+        </>
       ) : null}
       {terminal ? (
         <p class="af-muted">
@@ -1250,6 +1301,7 @@ export function ProjectReviews({
                 <RunReview
                   value={view.run}
                   verifiedResult={selectedResult}
+                  originalProfile={view.original.original.profile}
                   projectId={projectId}
                   loading={view.runLoading}
                   canCancel={
