@@ -1,7 +1,7 @@
 import { writeSync } from "node:fs";
 
 const observer = (_command: string[], options: { windowsHide?: boolean }) => {
-  const hasOwn = Object.prototype.hasOwnProperty.call(options, "windowsHide"),
+  const hasOwn = Object.hasOwn(options, "windowsHide"),
     value =
       typeof options.windowsHide === "boolean" ? options.windowsHide : null;
   writeSync(1, `${JSON.stringify({ hasOwn, value })}\n`);
