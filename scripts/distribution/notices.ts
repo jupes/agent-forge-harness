@@ -7,10 +7,7 @@ const noticeSources = [
   ["NOTICE", "NOTICE"],
   [".claude/skills/ATTRIBUTION.md", ".claude/skills/ATTRIBUTION.md"],
   ["docs/fonts/LICENSE-Inter.txt", "docs/fonts/LICENSE-Inter.txt"],
-  [
-    "scripts/distribution/THIRD-PARTY-NOTICES.txt",
-    "THIRD-PARTY-NOTICES.txt",
-  ],
+  ["scripts/distribution/THIRD-PARTY-NOTICES.txt", "THIRD-PARTY-NOTICES.txt"],
 ] as const;
 type NoticeSource = (typeof noticeSources)[number][0];
 export type DistributionNoticeSnapshot = ReadonlyMap<NoticeSource, Uint8Array>;

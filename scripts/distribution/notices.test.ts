@@ -22,10 +22,7 @@ const noticeFiles = [
   ["NOTICE", "NOTICE"],
   [".claude/skills/ATTRIBUTION.md", ".claude/skills/ATTRIBUTION.md"],
   ["docs/fonts/LICENSE-Inter.txt", "docs/fonts/LICENSE-Inter.txt"],
-  [
-    "scripts/distribution/THIRD-PARTY-NOTICES.txt",
-    "THIRD-PARTY-NOTICES.txt",
-  ],
+  ["scripts/distribution/THIRD-PARTY-NOTICES.txt", "THIRD-PARTY-NOTICES.txt"],
 ] as const;
 const thirdPartyPackages = [
   { name: "preact", version: "10.29.1", license: "LICENSE" },
@@ -39,7 +36,11 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function readBoundedText(path: string, maxBytes: number, label: string): string {
+function readBoundedText(
+  path: string,
+  maxBytes: number,
+  label: string,
+): string {
   try {
     const stats = lstatSync(path);
     if (!stats.isFile() || stats.size > maxBytes) throw new Error();
@@ -58,7 +59,11 @@ function readInstalledPackageManifest(
   let manifest: unknown;
   try {
     manifest = JSON.parse(
-      readBoundedText(manifestPath, maxPackageManifestBytes, "package manifest"),
+      readBoundedText(
+        manifestPath,
+        maxPackageManifestBytes,
+        "package manifest",
+      ),
     );
   } catch {
     throw new Error(`Invalid installed package manifest: ${packageName}`);
@@ -86,7 +91,9 @@ function findInstalledPackageRoot(packageName: string): string {
     if (parent === current) break;
     current = parent;
   }
-  throw new Error(`Could not locate installed package metadata: ${packageName}`);
+  throw new Error(
+    `Could not locate installed package metadata: ${packageName}`,
+  );
 }
 
 function expectArtifactMap(stageRoot: string): void {
@@ -149,7 +156,9 @@ test("selected browser package versions and full MIT texts match the notice", ()
     );
     expect(manifest.version).toBe(packageInfo.version);
     expect(manifest.license).toBe("MIT");
-    expect(notice).toContain(`Package: ${packageInfo.name} ${packageInfo.version}`);
+    expect(notice).toContain(
+      `Package: ${packageInfo.name} ${packageInfo.version}`,
+    );
     expect(normalizeNewlines(notice)).toContain(
       normalizeNewlines(
         readBoundedText(
