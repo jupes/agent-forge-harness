@@ -181,6 +181,7 @@ export function superviseShift(
   const proc = Bun.spawn(spec.argv, {
     cwd: spec.cwd,
     env: spec.env,
+    windowsHide: true,
     stdin: "ignore",
     stdout: "pipe",
     stderr: "pipe",
