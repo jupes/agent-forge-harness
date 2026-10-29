@@ -9,9 +9,11 @@ import { buildContextPackFromParts, contextListing } from "./context";
 import {
   createProjectCouncilOriginalStore,
   projectCouncilInputHash,
+  projectCouncilIntentHash,
   projectCouncilProfileHash,
 } from "./project-original-store";
 import { parseCouncilProfileJson } from "./types";
+import { providerEndpointSnapshot } from "./providers";
 import type { ProjectCouncilBinding } from "../../types/project-council";
 
 const homes: string[] = [];
@@ -34,7 +36,7 @@ function fixture() {
     scopeHash: "a".repeat(64),
     profileHash: projectCouncilProfileHash(parsed.value),
   };
-  const store = createProjectCouncilOriginalStore({ home, workspace });
+  const store = createProjectCouncilOriginalStore({ home, workspace, projectId: binding.projectId });
   const prepared = (source: string) => {
     const context = buildContextPackFromParts({
       kind: "stdin",
@@ -48,22 +50,30 @@ function fixture() {
       inputHash: projectCouncilInputHash({ source }),
       profileChoice: profilePath,
       profile: parsed.value,
+      providerEndpoints: providerEndpointSnapshot(parsed.value, {}),
       context,
       listing: contextListing(context),
-      options: { maxUsd: 0.25, maxBytes: 1024, redactSecrets: false },
+      options: { maxUsd: 0.25, maxBytes: 1024, redactSecrets: false, deepDiscussion: false },
     };
   };
   return { home, workspace, binding, profilePath, store, prepared };
 }
 
 test("project Council originals are durable, exact-retry idempotent, single-dispatch, and non-evicting", async () => {
-  const { home, workspace, prepared } = fixture();
-  const firstStore = createProjectCouncilOriginalStore({ home, workspace });
+  const { home, workspace, binding, prepared } = fixture();
+  const firstStore = createProjectCouncilOriginalStore({ home, workspace, projectId: binding.projectId });
   const input = prepared("Review the inert project fixture exactly once.");
   const first = await firstStore.reservePrepared(input);
   expect(first.created).toBe(true);
+  expect(projectCouncilIntentHash(first.original)).toBe(first.original.intentHash);
+  expect(projectCouncilIntentHash({
+    ...first.original,
+    state: "running",
+    updatedAt: new Date(Date.parse(first.original.updatedAt) + 1000).toISOString(),
+    dispatchClaimedAt: new Date(Date.parse(first.original.updatedAt) + 1000).toISOString(),
+  })).toBe(first.original.intentHash);
 
-  const reopened = createProjectCouncilOriginalStore({ home, workspace });
+  const reopened = createProjectCouncilOriginalStore({ home, workspace, projectId: input.binding.projectId });
   const retry = await reopened.reservePrepared(input);
   expect(retry.created).toBe(false);
   expect(retry.original.requestId).toBe(first.original.requestId);
@@ -130,7 +140,7 @@ test("a changed saved original is refused rather than repaired or replaced", asy
   const file = resolve(
     home,
     "council-reviews",
-    `${createHash("sha256").update(workspace, "utf8").digest("hex")}.json`,
+    `${createHash("sha256").update(`${workspace}\0${binding.projectId}`, "utf8").digest("hex")}.json`,
   );
   const changed: unknown = JSON.parse(readFileSync(file, "utf8"));
   if (
@@ -154,4 +164,24 @@ test("a changed saved original is refused rather than repaired or replaced", asy
     ConversationError,
   );
   expect(() => store.discover(binding.projectId)).toThrow(ConversationError);
+});
+
+test("different projects in one workspace have independent retained journals", async () => {
+  const { home, workspace, binding, prepared } = fixture();
+  const firstStore = createProjectCouncilOriginalStore({ home, workspace, projectId: binding.projectId });
+  const firstInput = prepared("Same workspace, first project.");
+  const first = await firstStore.reservePrepared(firstInput);
+  const secondProjectId = "project-3c5f9a1b-85b3-4d71-8e3a-6c9140275f20";
+  const secondBinding = { ...binding, projectId: secondProjectId };
+  const secondStore = createProjectCouncilOriginalStore({ home, workspace, projectId: secondProjectId });
+  const secondInput = {
+    ...prepared("Same workspace, first project."),
+    binding: secondBinding,
+    inputHash: projectCouncilInputHash({ projectId: secondProjectId, source: "Same workspace, first project." }),
+  };
+  const second = await secondStore.reservePrepared(secondInput);
+  expect(second.created).toBe(true);
+  expect(second.original.requestId).not.toBe(first.original.requestId);
+  expect(firstStore.read(binding.projectId, first.original.requestId)).toEqual(first.original);
+  expect(secondStore.read(secondProjectId, second.original.requestId)).toEqual(second.original);
 });

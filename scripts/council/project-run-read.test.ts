@@ -203,6 +203,7 @@ const metadata: ProjectCouncilMetadata = {
   maxUsd: 4,
   maxBytes: 42,
   redactSecrets: true,
+  deepDiscussion: false,
   createdAt: at,
   updatedAt: at,
 };

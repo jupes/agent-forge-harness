@@ -3,12 +3,16 @@ import type {
   ContextPack,
   CouncilProfile,
 } from "../scripts/council/types";
+import type { CouncilProviderEndpoint } from "../scripts/council/providers";
+import { parseCouncilProfileJson } from "../scripts/council/types";
 
 export const PROJECT_COUNCIL_MAX_SELECTOR_BYTES = 262_144;
 export const PROJECT_COUNCIL_MAX_PREPARED_BYTES = 1_048_576;
 export const PROJECT_COUNCIL_MAX_ORIGINAL_BYTES = 2_097_152;
 export const PROJECT_COUNCIL_MAX_JOURNAL_BYTES = 33_554_432;
 export const PROJECT_COUNCIL_MAX_ORIGINALS = 1000;
+export const PROJECT_COUNCIL_MAX_METADATA_BYTES = 512 * 1024;
+export const PROJECT_COUNCIL_MAX_ORIGINAL_READ_BYTES = 3 * 1024 * 1024;
 
 export const projectCouncilRequestIdSchema = z
   .uuid()
@@ -42,6 +46,7 @@ export const projectCouncilReserveRequestSchema = z
       .min(1)
       .max(PROJECT_COUNCIL_MAX_PREPARED_BYTES),
     redactSecrets: z.boolean(),
+    deepDiscussion: z.boolean(),
   })
   .strict();
 
@@ -126,6 +131,7 @@ export type ProjectCouncilOptions = {
   maxUsd: number;
   maxBytes: number;
   redactSecrets: boolean;
+  deepDiscussion: boolean;
 };
 export type ProjectCouncilBinding = z.infer<typeof projectCouncilBindingSchema>;
 export type ProjectCouncilReserveRequest = z.infer<
@@ -141,6 +147,7 @@ export interface ProjectCouncilOriginal {
   binding: ProjectCouncilBinding;
   profileChoice: string;
   profile: CouncilProfile;
+  providerEndpoints: CouncilProviderEndpoint[];
   context: ContextPack;
   listing: string[];
   options: ProjectCouncilOptions;
@@ -183,15 +190,36 @@ export interface ProjectCouncilMetadata {
   maxUsd: number;
   maxBytes: number;
   redactSecrets: boolean;
+  deepDiscussion: boolean;
   createdAt: string;
   updatedAt: string;
 }
 
 export interface ProjectCouncilOriginalRead {
   metadata: ProjectCouncilMetadata;
-  context: ContextPack;
-  profile: CouncilProfile;
-  options: ProjectCouncilOptions;
+  original: ProjectCouncilOriginal;
+}
+
+function canonicalIntentValue(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalIntentValue).join(",")}]`;
+  if (typeof value === "object" && value !== null)
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonicalIntentValue((value as Record<string, unknown>)[key])}`).join(",")}}`;
+  return JSON.stringify(value) ?? "null";
+}
+
+export function projectCouncilIntentJson(original: ProjectCouncilOriginal): string {
+  return canonicalIntentValue({
+    requestId: original.requestId,
+    runId: original.runId,
+    inputHash: original.inputHash,
+    binding: original.binding,
+    profileChoice: original.profileChoice,
+    profile: original.profile,
+    providerEndpoints: original.providerEndpoints,
+    context: original.context,
+    listing: original.listing,
+    options: original.options,
+  });
 }
 
 export interface ProjectCouncilReceipt {
@@ -199,6 +227,34 @@ export interface ProjectCouncilReceipt {
   phase: "reserved" | "unknown" | "running" | "completed" | "failed" | "cancelled" | "retired";
   error?: string;
 }
+
+export const projectCouncilHistoryRowSchema = z
+  .object({
+    requestId: projectCouncilRequestIdSchema,
+    runId: z.string().min(1).max(120),
+    intentHash: digestSchema,
+    state: projectCouncilStateSchema,
+    phase: z.enum(["reserved", "unknown", "running", "completed", "failed", "cancelled", "retired"]),
+    sourceType: z.enum(["text", "bead", "file", "plan", "pr"]),
+    sourceName: z.string().min(1).max(256),
+    profileId: z.string().min(1).max(128),
+    profileTitle: z.string().min(1).max(256),
+    depth: z.enum(["quick", "balanced", "deep"]),
+    createdAt: z.iso.datetime(),
+    updatedAt: z.iso.datetime(),
+  })
+  .strict();
+
+export const projectCouncilHistorySchema = z
+  .object({
+    activeRequestId: projectCouncilRequestIdSchema.nullable(),
+    total: z.number().int().nonnegative().max(PROJECT_COUNCIL_MAX_ORIGINALS),
+    omitted: z.number().int().nonnegative().max(PROJECT_COUNCIL_MAX_ORIGINALS),
+    items: z.array(projectCouncilHistoryRowSchema).max(100),
+  })
+  .strict()
+  .refine((value) => value.omitted === Math.max(0, value.total - value.items.length))
+  .refine((value) => new TextEncoder().encode(JSON.stringify(value)).byteLength <= PROJECT_COUNCIL_MAX_METADATA_BYTES);
 
 export const projectCouncilOriginalSchema: z.ZodType<ProjectCouncilOriginal> =
   z
@@ -209,11 +265,24 @@ export const projectCouncilOriginalSchema: z.ZodType<ProjectCouncilOriginal> =
       intentHash: digestSchema,
       binding: projectCouncilBindingSchema,
       profileChoice: z.string().min(1).max(4096),
-      profile: z.custom<CouncilProfile>((value) => {
-        if (typeof value !== "object" || value === null || Array.isArray(value))
-          return false;
-        return Object.keys(value).length <= 64;
+      profile: z.custom<CouncilProfile>((value) =>
+        typeof value === "object" && value !== null && !Array.isArray(value) && Object.keys(value).length <= 64,
+      ).superRefine((value, context) => {
+        let parsed: ReturnType<typeof parseCouncilProfileJson>;
+        try {
+          parsed = parseCouncilProfileJson(JSON.stringify(value));
+        } catch {
+          context.addIssue({ code: "custom", message: "original profile is not canonical" });
+          return;
+        }
+        if (!parsed.ok || canonicalIntentValue(parsed.value) !== canonicalIntentValue(value))
+          context.addIssue({ code: "custom", message: "original profile is not canonical" });
       }),
+      providerEndpoints: z.array(z.object({
+        provider: z.string().min(1).max(64),
+        transport: z.enum(["anthropic", "fake", "openai-chat", "openai-responses", "openrouter-chat"]),
+        baseUrl: z.string().url().max(2048).nullable(),
+      }).strict()).max(6),
       context: contextPackSchema,
       listing: z.array(textSchema.max(4096)).max(512),
       options: z
@@ -221,6 +290,7 @@ export const projectCouncilOriginalSchema: z.ZodType<ProjectCouncilOriginal> =
           maxUsd: z.number().finite().nonnegative().max(1_000_000),
           maxBytes: z.number().int().min(1).max(PROJECT_COUNCIL_MAX_PREPARED_BYTES),
           redactSecrets: z.boolean(),
+          deepDiscussion: z.boolean(),
         })
         .strict(),
       state: projectCouncilStateSchema,
@@ -235,7 +305,52 @@ export const projectCouncilOriginalSchema: z.ZodType<ProjectCouncilOriginal> =
       )
         ? value.dispatchClaimedAt !== null
         : value.dispatchClaimedAt === null,
-    );
+    )
+    .superRefine((value, context) => {
+      if (
+        typeof value.profile !== "object" || value.profile === null ||
+        !Array.isArray(value.profile.seats) ||
+        typeof value.profile.chair !== "object" || value.profile.chair === null ||
+        !Array.isArray(value.providerEndpoints)
+      ) {
+        context.addIssue({ code: "custom", message: "provider endpoint snapshot cannot be checked" });
+        return;
+      }
+      const providers = [...new Set([
+        ...value.profile.seats.map((seat) => seat.provider),
+        value.profile.chair.provider,
+      ])].sort();
+      if (
+        providers.length !== value.providerEndpoints.length ||
+        value.providerEndpoints.some((endpoint, index) => endpoint.provider !== providers[index])
+      ) {
+        context.addIssue({ code: "custom", message: "provider endpoint snapshot does not match the reviewed profile" });
+        return;
+      }
+      for (const endpoint of value.providerEndpoints) {
+        if (endpoint.provider === "fake") {
+          if (endpoint.transport !== "fake" || endpoint.baseUrl !== null)
+            context.addIssue({ code: "custom", message: "fake provider endpoint snapshot is invalid" });
+          continue;
+        }
+        if (endpoint.transport === "fake" || endpoint.baseUrl === null) {
+          context.addIssue({ code: "custom", message: "provider endpoint snapshot is incomplete" });
+          continue;
+        }
+        try {
+          const url = new URL(endpoint.baseUrl);
+          const localHttp = url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+          if (
+            url.username || url.password || url.search || url.hash ||
+            (url.protocol !== "https:" && !localHttp) ||
+            endpoint.baseUrl !== url.toString().replace(/\/+$/, "")
+          ) context.addIssue({ code: "custom", message: "provider endpoint URL is not a normalized non-secret URL" });
+        } catch {
+          context.addIssue({ code: "custom", message: "provider endpoint URL is invalid" });
+        }
+      }
+    })
+    .refine((value) => new TextEncoder().encode(JSON.stringify(value)).byteLength <= PROJECT_COUNCIL_MAX_ORIGINAL_BYTES);
 
 export const projectCouncilMetadataSchema: z.ZodType<ProjectCouncilMetadata> =
   z
@@ -256,10 +371,54 @@ export const projectCouncilMetadataSchema: z.ZodType<ProjectCouncilMetadata> =
       maxUsd: z.number().finite().nonnegative().max(1_000_000),
       maxBytes: z.number().int().min(1).max(PROJECT_COUNCIL_MAX_PREPARED_BYTES),
       redactSecrets: z.boolean(),
+      deepDiscussion: z.boolean(),
       createdAt: z.iso.datetime(),
       updatedAt: z.iso.datetime(),
     })
-    .strict();
+    .strict()
+    .refine((value) => new TextEncoder().encode(JSON.stringify(value)).byteLength <= PROJECT_COUNCIL_MAX_METADATA_BYTES - 4096);
+
+export const projectCouncilOriginalReadSchema: z.ZodType<ProjectCouncilOriginalRead> = z
+  .object({
+    metadata: projectCouncilMetadataSchema,
+    original: projectCouncilOriginalSchema,
+  })
+  .strict()
+  .superRefine((read, context) => {
+    const { metadata, original } = read;
+    if (
+      metadata.requestId !== original.requestId ||
+      metadata.runId !== original.runId ||
+      metadata.intentHash !== original.intentHash ||
+      metadata.projectId !== original.binding.projectId ||
+      metadata.state !== original.state ||
+      metadata.sourceType !== (original.context.source.kind === "stdin" ? "text" : original.context.source.kind) ||
+      metadata.profileId !== original.profile.id ||
+      metadata.profileTitle !== original.profile.title ||
+      metadata.sourceName !== original.context.source.displayName ||
+      metadata.byteLength !== original.context.byteLength ||
+      metadata.truncated !== original.context.truncated ||
+      JSON.stringify(metadata.redactions) !== JSON.stringify(original.context.redactions) ||
+      metadata.maxUsd !== original.options.maxUsd ||
+      metadata.maxBytes !== original.options.maxBytes ||
+      metadata.redactSecrets !== original.options.redactSecrets ||
+      metadata.deepDiscussion !== original.options.deepDiscussion ||
+      metadata.listing.some((line, index) => line !== original.listing[index]) ||
+      metadata.listing.length !== original.listing.length
+    )
+      context.addIssue({ code: "custom", message: "original metadata does not match the protected body" });
+    if (new TextEncoder().encode(JSON.stringify(read)).byteLength > PROJECT_COUNCIL_MAX_ORIGINAL_READ_BYTES)
+      context.addIssue({ code: "custom", message: "protected original response exceeds 3 MiB" });
+  });
+
+export const projectCouncilReceiptSchema: z.ZodType<ProjectCouncilReceipt> = z
+  .object({
+    metadata: projectCouncilMetadataSchema,
+    phase: z.enum(["reserved", "unknown", "running", "completed", "failed", "cancelled", "retired"]),
+    error: z.string().max(2048).optional(),
+  })
+  .strict()
+  .refine((value) => new TextEncoder().encode(JSON.stringify(value)).byteLength <= PROJECT_COUNCIL_MAX_METADATA_BYTES);
 
 export function projectCouncilMetadata(
   original: ProjectCouncilOriginal,
@@ -281,6 +440,7 @@ export function projectCouncilMetadata(
     maxUsd: original.options.maxUsd,
     maxBytes: original.options.maxBytes,
     redactSecrets: original.options.redactSecrets,
+    deepDiscussion: original.options.deepDiscussion,
     createdAt: original.createdAt,
     updatedAt: original.updatedAt,
   });

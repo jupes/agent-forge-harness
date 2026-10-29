@@ -645,6 +645,7 @@ async function seedProjectCouncilOriginal(
       maxUsd: 0.25,
       maxBytes: 1024,
       redactSecrets: false,
+      deepDiscussion: false,
     },
   );
   const body = await envelope<unknown>(response);
@@ -3474,7 +3475,7 @@ const ACTIONS: Record<string, ActionFixture> = {
         h.headers(h.hearth.token),
       );
       expect(exact.status).toBe(200);
-      expect(await exact.json()).toMatchObject({ data: { receipt: { phase: "completed" }, job: { runId: seed.runId, status: "completed" } } });
+      expect(await exact.json()).toMatchObject({ data: { version: 1, receipt: { phase: "completed" }, job: { runId: seed.runId, status: "completed", run: { context: { contentHash: expect.any(String), evidence: expect.any(Array) } } }, verdictCommentPreview: null } });
       const runsBeforeReplay = await runIds(h);
       const callsBeforeReplay = h.commands.calls.length;
       const replay = await post(

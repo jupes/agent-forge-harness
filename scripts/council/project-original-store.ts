@@ -15,6 +15,7 @@ import {
   PROJECT_COUNCIL_MAX_JOURNAL_BYTES,
   PROJECT_COUNCIL_MAX_ORIGINAL_BYTES,
   PROJECT_COUNCIL_MAX_ORIGINALS,
+  projectCouncilIntentJson,
   projectCouncilOriginalSchema,
   type ProjectCouncilBinding,
   type ProjectCouncilOriginal,
@@ -57,24 +58,10 @@ export function projectCouncilRunId(requestId: string): string {
   return `council-review-${requestId}`;
 }
 
-function intentValue(original: ProjectCouncilOriginal): unknown {
-  return {
-    requestId: original.requestId,
-    runId: original.runId,
-    inputHash: original.inputHash,
-    binding: original.binding,
-    profileChoice: original.profileChoice,
-    profile: original.profile,
-    context: original.context,
-    listing: original.listing,
-    options: original.options,
-  };
-}
-
 export function projectCouncilIntentHash(
   original: ProjectCouncilOriginal,
 ): string {
-  return digest(canonical(intentValue(original)));
+  return digest(projectCouncilIntentJson(original));
 }
 
 function checkedRecord(raw: unknown): ProjectCouncilOriginal | null {
@@ -88,9 +75,31 @@ function checkedRecord(raw: unknown): ProjectCouncilOriginal | null {
     return null;
   }
   const profile = parseCouncilProfileJson(profileJson);
+  const usedProviders = [...new Set([
+    ...original.profile.seats.map((seat) => seat.provider),
+    original.profile.chair.provider,
+  ])].sort();
+  const endpointsValid =
+    original.providerEndpoints.length === usedProviders.length &&
+    original.providerEndpoints.every((endpoint, index) => {
+      if (endpoint.provider !== usedProviders[index]) return false;
+      if (endpoint.provider === "fake")
+        return endpoint.transport === "fake" && endpoint.baseUrl === null;
+      if (endpoint.baseUrl === null) return false;
+      try {
+        const url = new URL(endpoint.baseUrl);
+        const localHttp = url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+        return !url.username && !url.password && !url.search && !url.hash &&
+          (url.protocol === "https:" || localHttp) &&
+          endpoint.baseUrl === url.toString().replace(/\/+$/, "");
+      } catch {
+        return false;
+      }
+    });
   if (
     !profile.ok ||
     canonical(profile.value) !== canonical(original.profile) ||
+    !endpointsValid ||
     projectCouncilRunId(original.requestId) !== original.runId ||
     projectCouncilProfileHash(original.profile) !== original.binding.profileHash ||
     projectCouncilIntentHash(original) !== original.intentHash ||
@@ -110,10 +119,10 @@ function checkedRecord(raw: unknown): ProjectCouncilOriginal | null {
   return { ...original, profile: profile.value };
 }
 
-function checkedPaths(home: string, workspaceHash: string) {
+function checkedPaths(home: string, journalHash: string) {
   const directory = join(home, directoryName),
-    file = join(directory, `${workspaceHash}.json`),
-    lock = join(directory, `${workspaceHash}.lock.db`);
+    file = join(directory, `${journalHash}.json`),
+    lock = join(directory, `${journalHash}.lock.db`);
   for (const [path, folder] of [
     [directory, true],
     [file, false],
@@ -155,19 +164,22 @@ function sameBinding(a: ProjectCouncilBinding, b: ProjectCouncilBinding): boolea
 }
 
 /**
- * One workspace-owned, versioned journal. It retains every identity and body;
+ * One project/workspace-owned, versioned journal. It retains every identity and body;
  * capacity exhaustion refuses before replacement and never evicts uncertainty.
  */
 export function createProjectCouncilOriginalStore(options: {
   home: string;
   workspace: string;
+  projectId: string;
 }) {
   if (!options.workspace || options.workspace.length > 1024)
     throw new ConversationError(400, "Expected a trusted Council workspace.");
-  const workspaceHash = digest(options.workspace);
+  if (!/^project-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(options.projectId))
+    throw new ConversationError(400, "Expected a trusted Council project.");
+  const journalHash = digest(`${options.workspace}\0${options.projectId}`);
 
   function readState(): Journal {
-    const { file } = checkedPaths(options.home, workspaceHash);
+    const { file } = checkedPaths(options.home, journalHash);
     const found = readHomeFileBounded(
       options.home,
       file,
@@ -212,7 +224,7 @@ export function createProjectCouncilOriginalStore(options: {
     if (
       verifiedRecords.length !== records.length ||
       new Set(verifiedRecords.map((record) => record.requestId)).size !== records.length ||
-      verifiedRecords.some((record) => record.binding.workspace !== options.workspace) ||
+      verifiedRecords.some((record) => record.binding.workspace !== options.workspace || record.binding.projectId !== options.projectId) ||
       new Set(
         verifiedRecords
           .filter(active)
@@ -243,7 +255,7 @@ export function createProjectCouncilOriginalStore(options: {
       state.version !== JOURNAL_VERSION ||
       state.records.length > PROJECT_COUNCIL_MAX_ORIGINALS ||
       verifiedRecords.length !== records.length ||
-      verifiedRecords.some((record) => record.binding.workspace !== options.workspace) ||
+      verifiedRecords.some((record) => record.binding.workspace !== options.workspace || record.binding.projectId !== options.projectId) ||
       new Set(verifiedRecords.map((record) => record.requestId)).size !== records.length ||
       new Set(
         verifiedRecords.filter(active).map((record) => `${record.binding.projectId}\0${record.binding.workspace}`),
@@ -266,7 +278,7 @@ export function createProjectCouncilOriginalStore(options: {
         "The private Council original journal reached its verified size limit. No original was changed.",
       );
     ensurePrivateHome(options.home);
-    const { directory, file } = checkedPaths(options.home, workspaceHash);
+    const { directory, file } = checkedPaths(options.home, journalHash);
     mkdirSync(directory, { recursive: true });
     ensurePrivateHome(directory);
     try {
@@ -286,7 +298,7 @@ export function createProjectCouncilOriginalStore(options: {
   }
 
   async function locked<T>(work: (state: Journal) => Promise<T> | T): Promise<T> {
-    const { lock } = checkedPaths(options.home, workspaceHash);
+    const { lock } = checkedPaths(options.home, journalHash);
     ensurePrivateHome(options.home);
     const result = await withQueueLock(lock, async () => work(readState()));
     if (!result.ok)
@@ -333,6 +345,7 @@ export function createProjectCouncilOriginalStore(options: {
       inputHash: string;
       profileChoice: string;
       profile: ProjectCouncilOriginal["profile"];
+      providerEndpoints: ProjectCouncilOriginal["providerEndpoints"];
       context: ProjectCouncilOriginal["context"];
       listing: string[];
       options: ProjectCouncilOriginal["options"];
@@ -360,6 +373,7 @@ export function createProjectCouncilOriginalStore(options: {
           binding: { ...input.binding },
           profileChoice: input.profileChoice,
           profile: structuredClone(input.profile),
+          providerEndpoints: structuredClone(input.providerEndpoints),
           context: structuredClone(input.context),
           listing: [...input.listing],
           options: { ...input.options },
@@ -380,6 +394,7 @@ export function createProjectCouncilOriginalStore(options: {
       });
     },
     discover(projectId: string): ProjectCouncilOriginal | null {
+      if (projectId !== options.projectId) return null;
       const state = readState();
       return (
         state.records.find(
@@ -389,6 +404,38 @@ export function createProjectCouncilOriginalStore(options: {
             active(item),
         ) ?? null
       );
+    },
+    history(projectId: string, limit = 100) {
+      if (projectId !== options.projectId) return { activeRequestId: null, total: 0, omitted: 0, items: [] };
+      if (!Number.isInteger(limit) || limit < 1 || limit > 100)
+        throw new ConversationError(400, "Expected a bounded Council history limit.");
+      const state = readState();
+      const activeRequestId = state.records.find(
+        (item) => item.binding.projectId === projectId && item.binding.workspace === options.workspace && active(item),
+      )?.requestId ?? null;
+      const rows = state.records
+        .filter((item) => item.binding.projectId === projectId && item.binding.workspace === options.workspace)
+        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || b.createdAt.localeCompare(a.createdAt));
+      const total = rows.length;
+      return {
+        activeRequestId,
+        total,
+        omitted: Math.max(0, total - limit),
+        items: rows.slice(0, limit).map((item) => ({
+          requestId: item.requestId,
+          runId: item.runId,
+          intentHash: item.intentHash,
+          state: item.state,
+          phase: item.state === "dispatch-claimed" ? "unknown" : item.state,
+          sourceType: item.context.source.kind === "stdin" ? "text" : item.context.source.kind,
+          sourceName: item.context.source.displayName.slice(0, 256),
+          profileId: item.profile.id,
+          profileTitle: item.profile.title.slice(0, 256),
+          depth: item.profile.depth,
+          createdAt: item.createdAt,
+          updatedAt: item.updatedAt,
+        })),
+      };
     },
     read(projectId: string, requestId: string): ProjectCouncilOriginal {
       if (!idPattern.test(requestId))

@@ -8,6 +8,7 @@ import type {
 } from "../../../types/project-council";
 import {
   projectCouncilRequestIdSchema,
+  projectCouncilHistorySchema,
   projectCouncilReserveRequestSchema,
 } from "../../../types/project-council";
 import { ConversationError } from "../../conversations/error";
@@ -48,10 +49,8 @@ export function createProjectCouncilRoutes(
   load: () => Promise<ProjectSnapshot>,
 ) {
   const currentProject = async (projectId: string, allowArchived: boolean) => {
-    const [snapshot, catalog] = await Promise.all([
-      load(),
-      Promise.resolve(createProjectStore(deps.projectHome).read()),
-    ]);
+    const snapshot = await load();
+    const catalog = createProjectStore(deps.projectHome).read();
     const project = catalog.projects.find((item) => item.id === projectId);
     if (!project)
       throw new ConversationError(404, "This project is not in the Hearth catalog.");
@@ -158,7 +157,9 @@ export function createProjectCouncilRoutes(
         const { project } = await currentProject(projectId, true);
         if (!project.workspaces.some((item) => workspaceKey(item.root) === workspaceKey(deps.workspace)))
           throw new ConversationError(404, "This project has no original in this Hearth workspace.");
-        return deps.council.discoverProjectReview(projectId, deps.workspace);
+        return projectCouncilHistorySchema.parse(
+          deps.council.historyProjectReviews(projectId, deps.workspace),
+        );
       }),
   };
 
@@ -244,7 +245,7 @@ export function createProjectCouncilRoutes(
           resolveAuthority,
         );
         const original = deps.council.readProjectOriginal(projectId, deps.workspace, requestId);
-        if (result.created && original.context.source.kind === "bead") {
+        if (result.created && original.original.context.source.kind === "bead") {
           void postCouncilVerdict(
             {
               workspace: deps.workspace,
@@ -254,14 +255,14 @@ export function createProjectCouncilRoutes(
             },
             {
               sourceType: "bead",
-              source: original.context.source.locator,
-              beadId: original.context.source.locator,
-              profile: original.profileChoice,
-              maxUsd: original.options.maxUsd,
-              maxBytes: original.options.maxBytes,
-              redactSecrets: original.options.redactSecrets,
+              source: original.original.context.source.locator,
+              beadId: original.original.context.source.locator,
+              profile: original.original.profileChoice,
+              maxUsd: original.original.options.maxUsd,
+              maxBytes: original.original.options.maxBytes,
+              redactSecrets: original.original.options.redactSecrets,
             },
-            original.metadata.runId,
+            original.original.runId,
           );
         }
         return { status: 202, data: result.receipt };
