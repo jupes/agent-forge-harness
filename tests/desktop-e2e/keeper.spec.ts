@@ -460,7 +460,7 @@ test("a refused and lost reviewed commit stays tied to its exact saved original"
   await expect(
     panel.getByRole("button", { name: "Check saved original", exact: true }),
   ).toBeVisible();
-  await expect(send).toBeHidden();
+  await expect(send).toBeDisabled();
   await panel.getByRole("button", { name: "Check saved original" }).click();
   await expect(
     panel.getByRole("button", { name: "Review saved brief" }),

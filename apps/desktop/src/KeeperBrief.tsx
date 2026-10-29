@@ -240,7 +240,7 @@ export function KeeperBriefPanel({
     >
       <div class="af-brief-toolbar">
         <h2>Keeper brief</h2>
-        {!onboardingRequestId && (
+        {!onboardingRequestId && state.briefIntentState !== "unknown" && (
           <Button
             disabled={!client.canRefreshBrief(projectId)}
             onClick={openReview}
@@ -256,14 +256,16 @@ export function KeeperBriefPanel({
             Review the first Keeper brief before sending it. Reserving and
             reviewing the original does not start a provider turn.
           </p>
-          <Button
-            disabled={!client.canRefreshBrief(projectId)}
-            onClick={openReview}
-          >
-            {reviewLabel === "Review a brief"
-              ? "Review first brief"
-              : reviewLabel}
-          </Button>{" "}
+          {state.briefIntentState !== "unknown" && (
+            <Button
+              disabled={!client.canRefreshBrief(projectId)}
+              onClick={openReview}
+            >
+              {reviewLabel === "Review a brief"
+                ? "Review first brief"
+                : reviewLabel}
+            </Button>
+          )}{" "}
           <Button onClick={() => onFinishFirstBrief?.(onboardingRequestId)}>
             Finish without a brief
           </Button>
@@ -372,27 +374,29 @@ export function KeeperBriefPanel({
             <summary>Exact prepared prompt</summary>
             <pre>{state.briefOriginal.text}</pre>
           </details>
-          {state.briefIntentState === "reserved" &&
-            state.briefOriginal.state === "reserved" && (
-              <>
-                <Button
-                  variant="primary"
-                  disabled={!client.canCommitBrief(projectId)}
-                  onClick={() => {
-                    void client.commitBrief(projectId).then((committed) => {
-                      if (committed && onboardingRequestId)
-                        onFinishFirstBrief?.(onboardingRequestId);
-                    });
-                  }}
-                >
-                  {onboardingRequestId
-                    ? "Finish and send reviewed brief"
-                    : "Send reviewed brief"}
-                </Button>{" "}
-                {!confirmRetire ? (
+          {state.briefOriginal.state === "reserved" && (
+            <>
+              <Button
+                variant="primary"
+                disabled={!client.canCommitBrief(projectId)}
+                onClick={() => {
+                  void client.commitBrief(projectId).then((committed) => {
+                    if (committed && onboardingRequestId)
+                      onFinishFirstBrief?.(onboardingRequestId);
+                  });
+                }}
+              >
+                {onboardingRequestId
+                  ? "Finish and send reviewed brief"
+                  : "Send reviewed brief"}
+              </Button>{" "}
+              {state.briefIntentState === "reserved" &&
+                (!confirmRetire ? (
                   <Button
                     disabled={state.posting}
-                    onClick={() => setConfirmRetire(true)}
+                    onClick={() => {
+                      setConfirmRetire(true);
+                    }}
                   >
                     Retire reservation
                   </Button>
@@ -413,9 +417,9 @@ export function KeeperBriefPanel({
                       Confirm retirement
                     </Button>
                   </span>
-                )}
-              </>
-            )}
+                ))}
+            </>
+          )}
         </section>
       )}
       {data && data.earlier.length > 0 && (
