@@ -34,9 +34,9 @@ import type {
 } from "../../types/hearth";
 import type { OwnedSessionRecord } from "../../types/owned-session";
 import {
+  type ProjectCouncilBinding,
   projectCouncilMetadataSchema,
   projectCouncilReceiptSchema,
-  type ProjectCouncilBinding,
 } from "../../types/project-council";
 import type { ProjectCatalog } from "../../types/projects";
 import { terminalHandoffAttemptSchema } from "../../types/session-terminal-handoff";
