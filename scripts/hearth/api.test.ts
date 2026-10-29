@@ -3309,6 +3309,7 @@ const READS: Record<string, string> = {
   "GET /projects/:id/activity": `/projects/${FIXTURE_PROJECT_ID}/activity`,
   "GET /projects/:id/activity/:eventId": `/projects/${FIXTURE_PROJECT_ID}/activity/1`,
   "GET /projects/:id/sessions/:sessionId": `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_OWNED_SESSION_ID}`,
+  "GET /projects/:id/sessions/:sessionId/terminal-handoff": `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_TERMINAL_HANDOFF_SESSION}/terminal-handoff`,
   "GET /projects/:id/sessions/:sessionId/owner-release": `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_CHAT_SESSION}/owner-release`,
   "GET /projects/:id/sessions/:sessionId/fork-turns": `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_CODEX_CHAT_FORK_CONTROL_CHILD_ID}/fork-turns`,
   "GET /projects/:id/sessions/:sessionId/fork-review": `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_CODEX_CHAT_FORK_SOURCE.sessionId}/fork-review?throughTurnRequestId=${API_CODEX_CHAT_FORK_SOURCE.turnRequestId}`,
@@ -4310,6 +4311,7 @@ describe("a read row or the stream while another connection holds the write lock
     });
     workspace = h.workspace;
     await seedOwnedSession(h);
+    await seedTerminalHandoffSession(h);
     await seedChatDecision(h);
     await seedProjectShift(h);
     await seedProjectShiftAttempt(h);
