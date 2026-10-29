@@ -853,6 +853,14 @@ export function DesktopApp(): JSX.Element {
             active={!keeperOpen}
             onReviewSession={openSessionReview}
             onReviewShift={openShiftReview}
+            onCouncilSummary={() =>
+              summary?.workspace &&
+              openCouncilSource(
+                { sourceType: "text", source: "" },
+                summary.workspace,
+                true,
+              )
+            }
           />
         ) : route.destination === "beads" && project ? (
           fullBead && route.selection?.kind === "bead" ? (
@@ -1223,6 +1231,14 @@ export function DesktopApp(): JSX.Element {
               onNavigate={() => setKeeperOpen(false)}
               onReviewSession={openSessionReview}
               onReviewShift={openShiftReview}
+              onCouncilSummary={() =>
+                summary?.workspace &&
+                openCouncilSource(
+                  { sourceType: "text", source: "" },
+                  summary.workspace,
+                  true,
+                )
+              }
             />
           </>
         )}

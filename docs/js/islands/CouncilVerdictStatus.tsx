@@ -32,7 +32,12 @@ export function verdictStatus(
 ): Status {
   const bead = verdictBead(job);
   const start = Date.parse(job.startedAt);
-  if (!bead || !Number.isFinite(start) || !Array.isArray(page?.events))
+  if (
+    !bead ||
+    !Number.isFinite(start) ||
+    !Array.isArray(page?.events) ||
+    page.more
+  )
     return "unknown";
   const found = new Set<Status>();
   for (const event of page.events) {

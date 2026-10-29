@@ -1,16 +1,20 @@
 import type { JSX } from "preact";
-import { useEffect, useState } from "preact/hooks";
+import { useEffect, useMemo, useState } from "preact/hooks";
 import { Button } from "../../../docs/js/ds/Button";
 import { EmptyState } from "../../../docs/js/ds/EmptyState";
 import { Field, Input, Select, Textarea } from "../../../docs/js/ds/Field";
+import { CouncilVerdictStatus, verdictBead } from "../../../docs/js/islands/CouncilVerdictStatus";
 import { estimateCouncilCost } from "../../../scripts/council/types";
 import {
   type ProjectCouncilOriginalRead,
   type ProjectCouncilReserveRequest,
+  type ProjectCouncilState,
   projectCouncilShownLabel,
   projectCouncilSourceChoiceSchema,
 } from "../../../types/project-council";
+import type { ProjectCouncilRunRead } from "../../../types/project-council-run-read";
 import { KeeperMarkdown } from "./KeeperMarkdown";
+import { beadHref } from "./ProjectBeads";
 import {
   blankProjectCouncilDraft,
   type createProjectCouncilDraftCache,
@@ -213,8 +217,184 @@ function OriginalReview({
   );
 }
 
+type CouncilResultPhase = Extract<
+  ProjectCouncilState,
+  "completed" | "failed" | "cancelled"
+>;
+type CouncilResultFacts = {
+  requestId: string;
+  intentHash: string;
+  runId: string;
+  projectId: string;
+  workspace: string;
+  phase: CouncilResultPhase;
+  recommendation: "pass" | "needs_changes" | "insufficient_evidence" | null;
+  severities: Record<"blocker" | "high" | "medium" | "low", number>;
+  actualCostUsd: number | null;
+  accountedCostUsd: number;
+  costIsEstimate: boolean;
+  durationSeconds: number | null;
+  beadId: string | null;
+};
+type CouncilSeverity = keyof CouncilResultFacts["severities"];
+type VerifiedCouncilResult = {
+  facts: CouncilResultFacts;
+  job: NonNullable<ProjectCouncilRunRead["job"]>;
+};
+
+function verifiedCouncilResult(
+  original: ProjectCouncilOriginalRead | null,
+  value: ProjectCouncilRunRead | null,
+  projectId: string,
+  workspace: string | null,
+  phase: string,
+): VerifiedCouncilResult | null {
+  if (
+    !original ||
+    !value ||
+    !workspace ||
+    (phase !== "completed" && phase !== "failed" && phase !== "cancelled")
+  )
+    return null;
+  const saved = original.original;
+  const { provenance, receipt, job } = value;
+  const run = job?.run;
+  if (
+    !job ||
+    !run ||
+    receipt.phase !== phase ||
+    saved.state !== phase ||
+    original.metadata.projectId !== projectId ||
+    original.metadata.requestId !== saved.requestId ||
+    original.metadata.intentHash !== saved.intentHash ||
+    saved.binding.projectId !== projectId ||
+    saved.binding.workspace !== workspace ||
+    provenance.projectId !== projectId ||
+    provenance.workspace !== workspace ||
+    provenance.requestId !== saved.requestId ||
+    provenance.intentHash !== saved.intentHash ||
+    provenance.runId !== saved.runId ||
+    provenance.catalogRevision !== saved.binding.catalogRevision ||
+    provenance.scopeHash !== saved.binding.scopeHash ||
+    receipt.metadata.requestId !== saved.requestId ||
+    receipt.metadata.intentHash !== saved.intentHash ||
+    receipt.metadata.runId !== saved.runId ||
+    receipt.metadata.projectId !== projectId ||
+    receipt.metadata.state !== saved.state ||
+    job.runId !== saved.runId ||
+    job.status !== phase ||
+    run.runId !== saved.runId ||
+    run.status !== phase
+  )
+    return null;
+  const started = Date.parse(run.startedAt);
+  const finished = Date.parse(run.finishedAt);
+  const severity = (name: CouncilSeverity) =>
+    run.aggregatedFindings.filter((finding) => finding.severity === name).length;
+  return {
+    job,
+    facts: {
+      requestId: saved.requestId,
+      intentHash: saved.intentHash,
+      runId: saved.runId,
+      projectId,
+      workspace,
+      phase,
+      recommendation:
+        phase === "completed" ? (run.chair?.verdict ?? null) : null,
+      severities: {
+        blocker: severity("blocker"),
+        high: severity("high"),
+        medium: severity("medium"),
+        low: severity("low"),
+      },
+      actualCostUsd: run.actualCostUsd,
+      accountedCostUsd: run.accountedCostUsd,
+      costIsEstimate: run.costIsEstimate,
+      durationSeconds:
+        Number.isFinite(started) && Number.isFinite(finished) && finished >= started
+          ? Math.floor((finished - started) / 1000)
+          : null,
+      beadId: verdictBead(job),
+    },
+  };
+}
+
+function CouncilResultFactsPanel({
+  facts,
+  projectId,
+  job,
+  showCommentStatus,
+}: {
+  facts: CouncilResultFacts;
+  projectId: string;
+  job?: VerifiedCouncilResult["job"];
+  showCommentStatus?: boolean;
+}): JSX.Element {
+  return (
+    <section aria-label="Verified result facts">
+      <h4>Verified result facts · {facts.phase}</h4>
+      <dl>
+        {facts.recommendation && (
+          <>
+            <dt>Recommendation</dt>
+            <dd>
+              {facts.recommendation === "pass"
+                ? "Pass"
+                : facts.recommendation === "needs_changes"
+                  ? "Changes needed"
+                  : "Insufficient evidence"}
+            </dd>
+          </>
+        )}
+        <dt>Findings by severity</dt>
+        <dd>
+          {(["blocker", "high", "medium", "low"] as const)
+            .map((severity) => `${severity}: ${facts.severities[severity]}`)
+            .join(" · ")}
+        </dd>
+        <dt>Actual cost</dt>
+        <dd>
+          {facts.actualCostUsd === null
+            ? "Not recorded"
+            : `$${facts.actualCostUsd.toFixed(4)}`}
+        </dd>
+        <dt>Accounted cost</dt>
+        <dd>
+          ${facts.accountedCostUsd.toFixed(4)}
+          {facts.costIsEstimate ? " (estimate)" : ""}
+        </dd>
+        <dt>Duration</dt>
+        <dd>
+          {facts.durationSeconds === null
+            ? "Not recorded"
+            : facts.durationSeconds < 60
+              ? `${facts.durationSeconds} seconds`
+              : `${Math.floor(facts.durationSeconds / 60)} minutes`}
+        </dd>
+      </dl>
+      {facts.beadId && (
+        <>
+          <a href={beadHref(projectId, facts.beadId, true)}>
+            Open reviewed bead {facts.beadId}
+          </a>
+          {showCommentStatus && job && (
+            <CouncilVerdictStatus
+              key={`${job.runId}:${job.startedAt}:${facts.beadId}`}
+              job={job}
+              bead={facts.beadId}
+            />
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+
 function RunReview({
   value,
+  verifiedResult,
+  projectId,
   loading,
   canCancel,
   requestId,
@@ -223,8 +403,10 @@ function RunReview({
   onCancel,
 }: {
   value:
-    | import("../../../types/project-council-run-read").ProjectCouncilRunRead
+    | ProjectCouncilRunRead
     | null;
+  verifiedResult: VerifiedCouncilResult | null;
+  projectId: string;
   loading: boolean;
   canCancel: boolean;
   requestId: string;
@@ -299,6 +481,14 @@ function RunReview({
         </p>
       ) : (
         <p>Run status has not been read.</p>
+      )}
+      {verifiedResult && (
+        <CouncilResultFactsPanel
+          facts={verifiedResult.facts}
+          projectId={projectId}
+          job={verifiedResult.job}
+          showCommentStatus
+        />
       )}
       {job?.error || receipt?.error ? (
         <p role="alert">{showControls(job?.error ?? receipt?.error ?? "")}</p>
@@ -715,6 +905,10 @@ export function ProjectReviews({
   const [draftOpen, setDraftOpen] = useState(false);
   const [draftCacheError, setDraftCacheError] = useState("");
   const [filter, setFilter] = useState("");
+  const [historyFacts, setHistoryFacts] = useState<Map<string, CouncilResultFacts>>(
+    () => new Map(),
+  );
+  const [historyFactsLimitReached, setHistoryFactsLimitReached] = useState(false);
   useEffect(() => {
     if (!workspace || !draftCache) return;
     const current = draftCache.read({ projectId, workspace });
@@ -811,6 +1005,77 @@ export function ProjectReviews({
         )
       );
     }) ?? [];
+  const selectedResult = useMemo(
+    () =>
+      verifiedCouncilResult(
+        view?.original ?? null,
+        view?.run ?? null,
+        projectId,
+        workspace,
+        view?.phase ?? "loading",
+      ),
+    [view?.original, view?.run, view?.phase, projectId, workspace],
+  );
+  useEffect(() => {
+    const history = view?.history;
+    if (
+      !workspace ||
+      !history ||
+      history.projectId !== projectId ||
+      history.workspace !== workspace
+    ) {
+      if (historyFactsLimitReached) setHistoryFactsLimitReached(false);
+      return;
+    }
+    const matches = (facts: CouncilResultFacts) =>
+      facts.projectId === projectId &&
+      facts.workspace === workspace &&
+      history.items.some(
+        (item) =>
+          item.requestId === facts.requestId &&
+          item.intentHash === facts.intentHash &&
+          item.runId === facts.runId &&
+          item.phase === facts.phase,
+      );
+    const next = new Map(
+      [...historyFacts].filter(([, facts]) => matches(facts)),
+    );
+    if (next.size < 100 && historyFactsLimitReached)
+      setHistoryFactsLimitReached(false);
+    const facts = selectedResult?.facts;
+    const rowMatches =
+      facts !== undefined &&
+      history.items.some(
+        (item) =>
+          item.requestId === facts.requestId &&
+          item.intentHash === facts.intentHash &&
+          item.runId === facts.runId &&
+          item.phase === facts.phase,
+      );
+    if (facts && rowMatches) {
+      if (!next.has(facts.requestId) && next.size >= 100) {
+        setHistoryFactsLimitReached(true);
+      } else {
+        next.set(facts.requestId, facts);
+        setHistoryFactsLimitReached(false);
+      }
+    }
+    const changed =
+      next.size !== historyFacts.size ||
+      [...next].some(
+        ([requestId, summary]) =>
+          JSON.stringify(historyFacts.get(requestId)) !==
+          JSON.stringify(summary),
+      );
+    if (changed) setHistoryFacts(next);
+  }, [
+    historyFacts,
+    historyFactsLimitReached,
+    projectId,
+    selectedResult,
+    view?.history,
+    workspace,
+  ]);
   return (
     <section class="af-project-reviews" aria-label="Council reviews">
       <header>
@@ -930,6 +1195,8 @@ export function ProjectReviews({
               {view.original.original.state !== "retired" ? (
                 <RunReview
                   value={view.run}
+                  verifiedResult={selectedResult}
+                  projectId={projectId}
                   loading={view.runLoading}
                   canCancel={
                     view.phase === "running" &&
@@ -947,6 +1214,23 @@ export function ProjectReviews({
                   }}
                 />
               ) : null}
+              {view.history &&
+                view.history.total > 0 &&
+                view.history.activeRequestId !==
+                  view.original.original.requestId &&
+                (view.original.original.state === "completed" ||
+                  view.original.original.state === "failed" ||
+                  view.original.original.state === "cancelled" ||
+                  view.original.original.state === "retired") && (
+                  <Button
+                    onClick={() => {
+                      owner?.newDraft();
+                      setDraftOpen(false);
+                    }}
+                  >
+                    Back to saved reviews
+                  </Button>
+                )}
               {view.history?.activeRequestId !==
                 view.original.original.requestId &&
               view.original.original.state !== "reserved" ? (
@@ -989,7 +1273,9 @@ export function ProjectReviews({
                   {view.history.omitted
                     ? `; ${view.history.omitted} older entries omitted`
                     : ""}
-                  . Select a row to read its private original.
+                  . Open a row to read its private original. Verified result
+                  facts and Bead comment status appear only after the exact
+                  protected result is read.
                 </p>
                 <Field label="Filter saved reviews" id="council-history-filter">
                   <Input
@@ -1002,34 +1288,67 @@ export function ProjectReviews({
                 {filter ? (
                   <Button onClick={() => setFilter("")}>Clear filters</Button>
                 ) : null}
+                {historyFactsLimitReached && (
+                  <p role="status">
+                    The 100-row summary cache is full. Open a result again to
+                    see its verified facts.
+                  </p>
+                )}
                 <ul>
-                  {historyItems.map((item) => (
-                    <li key={item.requestId}>
-                      <strong>
-                        {projectCouncilShownLabel(item.sourceName)}
-                      </strong>{" "}
-                      · {projectCouncilShownLabel(item.profileTitle)} ·{" "}
-                      {item.phase} ·{" "}
-                      <time dateTime={item.updatedAt}>
-                        {new Date(item.updatedAt).toLocaleString()}
-                      </time>
-                      <Button
-                        onClick={() => {
-                          if (!owner) return;
-                          if (
-                            item.phase !== "reserved" &&
-                            item.phase !== "retired"
-                          )
-                            void owner.openResult(item.requestId);
-                          else void owner.openSaved(item.requestId);
-                        }}
-                      >
-                        {item.phase !== "reserved" && item.phase !== "retired"
-                          ? "Open result"
-                          : "Read saved original"}
-                      </Button>
-                    </li>
-                  ))}
+                  {historyItems.map((item) => {
+                    const cached = historyFacts.get(item.requestId);
+                    const facts =
+                      cached &&
+                      cached.projectId === projectId &&
+                      cached.workspace === workspace &&
+                      cached.requestId === item.requestId &&
+                      cached.intentHash === item.intentHash &&
+                      cached.runId === item.runId &&
+                      cached.phase === item.phase
+                        ? cached
+                        : null;
+                    return (
+                      <li key={item.requestId}>
+                        <strong>
+                          {projectCouncilShownLabel(item.sourceName)}
+                        </strong>{" "}
+                        · {projectCouncilShownLabel(item.profileTitle)} ·{" "}
+                        {item.phase} ·{" "}
+                        <time dateTime={item.updatedAt}>
+                          {new Date(item.updatedAt).toLocaleString()}
+                        </time>
+                        <Button
+                          onClick={() => {
+                            if (!owner) return;
+                            if (
+                              item.phase !== "reserved" &&
+                              item.phase !== "retired"
+                            )
+                              void owner.openResult(item.requestId);
+                            else void owner.openSaved(item.requestId);
+                          }}
+                        >
+                          {item.phase !== "reserved" &&
+                          item.phase !== "retired"
+                            ? "Open result"
+                            : "Read saved original"}
+                        </Button>
+                        {facts ? (
+                          <CouncilResultFactsPanel
+                            facts={facts}
+                            projectId={projectId}
+                          />
+                        ) : item.phase === "completed" ||
+                          item.phase === "failed" ||
+                          item.phase === "cancelled" ? (
+                          <p>
+                            Open this result to read verified facts and Bead
+                            comment status.
+                          </p>
+                        ) : null}
+                      </li>
+                    );
+                  })}
                 </ul>
                 {historyItems.length === 0 ? (
                   <p>No saved reviews match this filter.</p>

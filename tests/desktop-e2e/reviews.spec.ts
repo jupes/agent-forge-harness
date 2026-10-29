@@ -1,7 +1,13 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
-import { readState, withStateLock, writeState } from "../e2e/bd-stand-in-state";
+import {
+  readComments,
+  readState,
+  withStateLock,
+  writeComments,
+  writeState,
+} from "../e2e/bd-stand-in-state";
 import { openSettled } from "../e2e/fixtures";
 import { BD_STAND_IN_STATE } from "../e2e/servers";
 import { alpha, seedProjects } from "./project-fixtures";
@@ -9,6 +15,7 @@ import { alpha, seedProjects } from "./project-fixtures";
 test.beforeEach(() => {
   seedProjects();
   withStateLock(BD_STAND_IN_STATE, () => {
+    writeComments(BD_STAND_IN_STATE, {});
     const state = readState(BD_STAND_IN_STATE);
     for (const id of [
       "alpha-council-first",
@@ -144,6 +151,74 @@ test("source entry, Keep draft, and Replace source preserve options without prep
     ].join("\n"),
   );
   expect(persistedText).not.toContain("Keep this explicit draft body.");
+});
+
+test("a completed bead-source review links to its bead and reports the one recorded comment outcome", async ({
+  page,
+}) => {
+  const posts: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "POST") posts.push(new URL(request.url()).pathname);
+  });
+  await openSettled(page, `/index.html#/desktop/project/${alpha.id}/beads`);
+  await page.getByRole("button", {
+    name: "Inspect alpha-council-first: Title alpha-council-first",
+  }).click();
+  await page.getByRole("button", { name: "Review bead in Council" }).click();
+  await expect(page.getByLabel("Beads issue ID")).toHaveValue("alpha-council-first");
+  await page.getByRole("button", { name: "Prepare original for review" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Exact saved original" }),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Convene this exact original" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Council result" }),
+  ).toBeVisible({ timeout: 15_000 });
+  await expect(
+    page.getByRole("heading", { name: "Verified result facts" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("link", { name: "Open reviewed bead alpha-council-first" }),
+  ).toHaveAttribute(
+    "href",
+    new RegExp(`/desktop/project/${alpha.id}/beads/alpha-council-first`),
+  );
+  await expect(page.getByTestId("council-verdict-status")).toHaveText(
+    "Verdict comment posted to the bead.",
+    { timeout: 15_000 },
+  );
+  await expect
+    .poll(() => readComments(BD_STAND_IN_STATE)["alpha-council-first"]?.length)
+    .toBe(1);
+  expect(posts).toHaveLength(2);
+  expect(posts[0]).toMatch(/\/projects\/.*\/council\/reviews$/);
+  expect(posts[1]).toMatch(/\/projects\/.*\/council\/reviews\/[^/]+\/commit$/);
+  await page.getByRole("button", { name: "Back to saved reviews" }).click();
+  const savedRow = page
+    .getByRole("listitem")
+    .filter({ hasText: "alpha-council-first" });
+  await expect(savedRow.getByRole("heading", { name: /Verified result facts/ })).toBeVisible();
+  await expect(savedRow).toContainText("Actual cost");
+  await expect(savedRow).toContainText("Findings by severity");
+  await expect(savedRow).not.toContainText("Verdict comment posted to the bead.");
+
+  await page.reload();
+  await expect(page.getByRole("heading", { name: "Saved reviews" })).toBeVisible();
+  await expect(
+    page.getByText("Open this result to read verified facts and Bead comment status."),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Open result" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Verified result facts" }),
+  ).toBeVisible();
+  await expect(page.getByTestId("council-verdict-status")).toHaveText(
+    "Verdict comment posted to the bead.",
+    { timeout: 15_000 },
+  );
+  expect(posts).toHaveLength(2);
+  await expect
+    .poll(() => readComments(BD_STAND_IN_STATE)["alpha-council-first"]?.length)
+    .toBe(1);
 });
 
 test("project Reviews reserves, convenes, completes, and reloads the verified original and result", async ({
