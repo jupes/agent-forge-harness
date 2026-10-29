@@ -2,7 +2,7 @@ import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
 import { OPERATOR_HEADER } from "../../scripts/hearth/paths";
-import { openSettled } from "../e2e/fixtures";
+import { openSettled, reloadSettled } from "../e2e/fixtures";
 import { HEARTH_HOME } from "../e2e/servers";
 import {
   alpha,
