@@ -400,20 +400,24 @@ test("controls offer terminal handoff only for an eligible Claude Chat and prese
           })),
         },
       },
-      reason: "Check the current turn and pending changes before sending another follow-up.",
+      reason:
+        "Check the current turn and pending changes before sending another follow-up.",
     },
     {
       changed: { page: running },
-      reason: "Check the current turn and pending changes before sending another follow-up.",
+      reason:
+        "Check the current turn and pending changes before sending another follow-up.",
     },
     { changed: { live: false }, reason: "Reconnect the private conversation" },
     {
       changed: { pending: true },
-      reason: "Check the current turn and pending changes before sending another follow-up.",
+      reason:
+        "Check the current turn and pending changes before sending another follow-up.",
     },
     {
       changed: { stopping: true },
-      reason: "Check the current turn and pending changes before sending another follow-up.",
+      reason:
+        "Check the current turn and pending changes before sending another follow-up.",
     },
     {
       changed: { feedInterrupted: true },
