@@ -18,6 +18,7 @@ import {
   sep,
 } from "node:path";
 import { chromium, type Page } from "@playwright/test";
+import { makeOwnerOnly } from "../hearth/acl-windows";
 import {
   type ProjectCouncilMetadata,
   type ProjectCouncilOriginalRead,
@@ -359,6 +360,7 @@ async function main(): Promise<void> {
   let closeIdentities: Identity[] = [];
   let appIdentity: Identity | undefined;
   try {
+    if (process.platform === "win32") makeOwnerOnly(fixture, "directory");
     for (const path of Object.values(paths))
       if (!existsSync(path))
         throw new Error("Packaged Release WebView stage is incomplete.");
