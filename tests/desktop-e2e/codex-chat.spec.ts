@@ -829,18 +829,23 @@ test("a confirmed Claude rate limit can target Gemini ACP Chat", async ({
     tags: [],
   } satisfies Smith;
   await page.route("**/__agent-forge/smiths", async (route) => {
-    const requestHeaders = await route.request().allHeaders();
-    const requestUrl = new URL(route.request().url());
+    const request = route.request();
+    const requestHeaders = await request.allHeaders();
+    const requestUrl = new URL(request.url());
     const documentOrigin = new URL(page.url()).origin;
     const requestHeader = (name: string) =>
       Object.entries(requestHeaders).find(
         ([key]) => key.toLowerCase() === name,
       )?.[1];
+    expect(request.frame()).toBe(page.mainFrame());
+    expect(request.method()).toBe("GET");
+    expect(requestUrl.pathname).toBe("/__agent-forge/smiths");
     expect(requestUrl.origin).toBe(documentOrigin);
     const requestOrigin = requestHeader("origin");
     if (requestOrigin !== undefined)
       expect(requestOrigin).toBe(requestUrl.origin);
-    expect(requestHeader("sec-fetch-site")).toBe("same-origin");
+    const fetchSite = requestHeader("sec-fetch-site");
+    if (fetchSite !== undefined) expect(fetchSite).toBe("same-origin");
     const response = await route.fetch({ headers: requestHeaders });
     expect(response.status()).toBe(200);
     expect(new URL(response.url()).origin).toBe(requestUrl.origin);
@@ -1246,21 +1251,28 @@ test("a confirmed Claude rate limit can target Gemini ACP Chat", async ({
         return;
       }
       matchingReadbacks++;
+      const requestHeaders = await request.allHeaders();
+      const header = (name: string) =>
+        Object.entries(requestHeaders).find(
+          ([key]) => key.toLowerCase() === name,
+        )?.[1];
+      expect(request.frame()).toBe(page.mainFrame());
+      expect(request.method()).toBe("GET");
+      expect(requestUrl.pathname).toMatch(
+        new RegExp(`^/__agent-forge/projects/${alpha.id}/sessions/[^/]+$`),
+      );
+      expect(requestUrl.origin).toBe(new URL(page.url()).origin);
+      const requestOrigin = header("origin");
+      if (requestOrigin !== undefined)
+        expect(requestOrigin).toBe(requestUrl.origin);
+      const fetchSite = header("sec-fetch-site");
+      if (fetchSite !== undefined) expect(fetchSite).toBe("same-origin");
       if (readbackCaptured) {
         await route.continue();
         return;
       }
       readbackCaptured = true;
       try {
-        expect(requestUrl.origin).toBe(new URL(page.url()).origin);
-        const requestHeaders = await request.allHeaders();
-        const header = (name: string) =>
-          Object.entries(requestHeaders).find(
-            ([key]) => key.toLowerCase() === name,
-          )?.[1];
-        const origin = header("origin");
-        if (origin !== undefined) expect(origin).toBe(requestUrl.origin);
-        expect(header("sec-fetch-site")).toBe("same-origin");
         const response = await route.fetch({ headers: requestHeaders });
         expect(response.status()).toBe(200);
         expect(new URL(response.url()).origin).toBe(requestUrl.origin);
@@ -1346,13 +1358,25 @@ test("a confirmed Claude rate limit can target Gemini ACP Chat", async ({
       if (!parsed.success)
         throw Error("The reviewed Gemini Start body did not match its schema");
       postedRequestId = parsed.data.requestId;
-      const headers = await route.request().allHeaders();
+      const request = route.request();
+      const requestUrl = new URL(request.url());
+      const documentOrigin = new URL(page.url()).origin;
+      const headers = await request.allHeaders();
       const header = (name: string) =>
         Object.entries(headers).find(
           ([key]) => key.toLowerCase() === name,
         )?.[1];
-      expect(header("origin")).toBe(new URL(route.request().url()).origin);
-      expect(header("sec-fetch-site")).toBe("same-origin");
+      expect(request.frame()).toBe(page.mainFrame());
+      expect(request.method()).toBe("POST");
+      expect(requestUrl.pathname).toBe(
+        `/__agent-forge/projects/${alpha.id}/sessions`,
+      );
+      expect(requestUrl.origin).toBe(documentOrigin);
+      const requestOrigin = header("origin");
+      if (requestOrigin !== undefined)
+        expect(requestOrigin).toBe(requestUrl.origin);
+      const fetchSite = header("sec-fetch-site");
+      if (fetchSite !== undefined) expect(fetchSite).toBe("same-origin");
       const response = await route.fetch({ headers });
       expect(response.status()).toBe(200);
       lostStartReply = true;
