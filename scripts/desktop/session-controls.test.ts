@@ -343,10 +343,10 @@ test("controls offer terminal handoff only for an eligible Claude Chat and prese
   expect(idle.commandPreview).not.toContain("Historical private fixture");
   expect(idle.terminal.available).toBe(true);
   expect(idle.terminal.reason).toContain("Review the saved source input");
-  expect([
-    idle.fork.available,
-    idle.permissions.available,
-  ]).toEqual([false, false]);
+  expect([idle.fork.available, idle.permissions.available]).toEqual([
+    false,
+    false,
+  ]);
 
   const running = {
     ...page,
