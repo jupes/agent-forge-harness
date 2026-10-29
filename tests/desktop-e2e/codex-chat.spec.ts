@@ -738,6 +738,67 @@ test("a confirmed Claude rate limit offers an explicit Codex Chat continuation",
   );
 });
 
+test("a confirmed Claude rate limit can target Gemini ACP Chat", async ({
+  page,
+}) => {
+  const before = new Set(records().map((item) => item.id));
+  codingMode("rich-rate-limit");
+  await openSettled(page, `/index.html#/desktop/project/${alpha.id}/sessions`);
+  await page.getByRole("button", { name: "New session", exact: true }).click();
+  const composer = page.getByRole("dialog", {
+    name: "New session · Alpha",
+    exact: true,
+  });
+  await composer
+    .getByRole("textbox", { name: "Session prompt", exact: true })
+    .fill("Original Claude Chat that reached its reported limit");
+  await composer
+    .getByRole("combobox", { name: "Session mode", exact: true })
+    .selectOption("chat");
+  await composer
+    .getByRole("combobox", { name: "Session effort", exact: true })
+    .selectOption("");
+  await composer
+    .getByRole("button", { name: "Check supported options", exact: true })
+    .click();
+  await composer.getByRole("button", { name: "Start", exact: true }).click();
+  let source: ReturnType<typeof records>[number] | undefined;
+  await expect
+    .poll(() => {
+      source = records().find((item) => !before.has(item.id));
+      return source?.id ?? null;
+    })
+    .not.toBeNull();
+  if (!source) throw Error("Missing the original Claude Chat fixture");
+  expect(source.provider).toBe("claude");
+  const outcome = page.locator(".af-session-outcome");
+  await expect(outcome.locator("summary")).toHaveText(
+    "Provider reported a usage limit",
+  );
+  codingMode("normal");
+  await outcome.locator("summary").click();
+
+  // Keep the current entry point for the RED checkpoint. The missing selector
+  // is the sole new behavior this first assertion is meant to expose.
+  const continueButton = page.getByRole("button", {
+    name: "Continue with Codex Chat",
+    exact: true,
+  });
+  await expect(continueButton).toBeVisible();
+  await continueButton.click();
+  const review = page.getByRole("dialog", {
+    name: "Review a separate Codex Chat",
+    exact: true,
+  });
+  const targetChat = review.getByRole("combobox", {
+    name: "Target Chat",
+    exact: true,
+  });
+  await expect(targetChat).toBeVisible();
+  await targetChat.selectOption("gemini");
+  await expect(targetChat).toHaveValue("gemini");
+});
+
 test.afterEach(async ({ page }) => {
   const info = test.info();
   if (
