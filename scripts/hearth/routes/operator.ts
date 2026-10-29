@@ -551,6 +551,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     activity.detail,
     projectRuns.list,
     projectRuns.detail,
+    projectRuns.artifact,
     projectBeadsRoute(deps, projectSnapshot),
     projectShiftOptionsRoute(
       deps,

@@ -4,6 +4,7 @@ import type {
   ProjectRunDetail,
   ProjectRunGate,
 } from "../../../types/project-runs";
+import { KeeperMarkdown } from "./KeeperMarkdown";
 import { activityHref, emptyActivityFilters } from "./project-activity-model";
 import type { ProjectRunsView } from "./project-runs-client";
 import {
@@ -106,8 +107,8 @@ export function ProjectRuns({
         </div>
       </header>
       <p class="af-runs-note">
-        Inspection only. Run launch, checkpoint actions, artifact contents and
-        correlated sessions are not available here.
+        Inspection only. Run launch, checkpoint actions and correlated sessions
+        are not available here.
       </p>
       <RunReadStatus view={view} />
       {view?.page?.problems.map((problem, index) => (
@@ -136,7 +137,46 @@ export function ProjectRuns({
             </p>
           )}
           {view?.detail && (
-            <RunDetail projectId={projectId} detail={view.detail} />
+            <>
+              <RunDetail
+                projectId={projectId}
+                detail={view.detail}
+                canOpenArtifacts={
+                  !view.loading &&
+                  !view.error &&
+                  !view.detailLoading &&
+                  !view.detailStale
+                }
+                onOpenArtifact={(kind) => client?.openArtifact(kind)}
+              />
+              {view.artifactKind && (
+                <section
+                  aria-label="Verified run artifact"
+                  class="af-run-artifact-view"
+                >
+                  <h3>{phaseName(view.artifactKind)} artifact</h3>
+                  {view.artifactLoading && (
+                    <p role="status">Reading the recorded artifact…</p>
+                  )}
+                  {view.artifactError && (
+                    <p role="alert" class="af-runs-error">
+                      {view.artifactError}
+                      {view.artifact &&
+                        " The last verified contents remain visible and may be out of date."}
+                    </p>
+                  )}
+                  {view.artifactStale && view.artifact && (
+                    <p role="status">
+                      These are the last verified contents; read the artifact
+                      again to verify the current file.
+                    </p>
+                  )}
+                  {view.artifact && (
+                    <KeeperMarkdown text={view.artifact.content} />
+                  )}
+                </section>
+              )}
+            </>
           )}
         </>
       ) : (
@@ -335,9 +375,13 @@ export function RunGateChecks({ gate }: { gate: ProjectRunGate | null }) {
 export function RunDetail({
   projectId,
   detail,
+  canOpenArtifacts = true,
+  onOpenArtifact,
 }: {
   projectId: string;
   detail: ProjectRunDetail;
+  canOpenArtifacts?: boolean;
+  onOpenArtifact?(kind: "research" | "plan" | "ship"): void;
 }) {
   const run = detail.run;
   const latest = detail.gateHistory[0] ?? null;
@@ -401,11 +445,35 @@ export function RunDetail({
                   )}
                 </p>
               )}
-              {phase.artifact && (
-                <small>
-                  Path metadata only; contents are unavailable here.
-                </small>
-              )}
+              {phase.artifact &&
+                (phase.state === "complete" &&
+                (phase.id === "research" ||
+                  phase.id === "plan" ||
+                  phase.id === "ship") ? (
+                  <>
+                    <Button
+                      disabled={!canOpenArtifacts}
+                      onClick={() => {
+                        if (
+                          phase.id === "research" ||
+                          phase.id === "plan" ||
+                          phase.id === "ship"
+                        )
+                          onOpenArtifact?.(phase.id);
+                      }}
+                    >
+                      Read {phaseName(phase.id).toLowerCase()} artifact
+                    </Button>
+                    <small>
+                      Artifact contents are unavailable until explicitly opened.
+                    </small>
+                  </>
+                ) : (
+                  <small>
+                    Artifact contents are available after this phase is
+                    complete.
+                  </small>
+                ))}
             </li>
           ))}
         </ol>

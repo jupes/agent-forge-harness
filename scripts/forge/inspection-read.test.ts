@@ -86,6 +86,40 @@ test("hard-linked state and a linked run directory cannot enter a protected read
   );
 });
 
+test("artifact reading derives the canonical path, returns complete UTF-8 and refuses NUL or oversized content", () => {
+  const { root, directory, state } = fixture();
+  const artifact = "plans/research/alpha.md";
+  const body = "# Exact research\n";
+  mkdirSync(join(root, "plans", "research"), { recursive: true });
+  writeFileSync(join(root, artifact), body);
+  writeFileSync(
+    join(directory, "alpha.json"),
+    JSON.stringify({
+      ...state,
+      completed: ["research"],
+      artifacts: { research: artifact },
+    }),
+  );
+  const reader = createRunInspectionReader(root);
+  expect(reader.readArtifact("research", "alpha")).toEqual({
+    artifact,
+    content: body,
+    bytes: Buffer.byteLength(body),
+  });
+  const unsafe = "# unsafe\u0000text";
+  writeFileSync(join(root, artifact), unsafe);
+  expect(() => reader.readArtifact("research", "alpha")).toThrow("Run source");
+  expect(readFileSync(join(root, artifact), "utf8")).toBe(unsafe);
+  writeFileSync(
+    join(root, artifact),
+    Buffer.alloc(RUN_INSPECTION_LIMITS.fileBytes + 1, 0x61),
+  );
+  expect(() => reader.readArtifact("research", "alpha")).toThrow("Run source");
+  writeFileSync(join(root, artifact), body);
+  linkSync(join(root, artifact), join(root, "plans", "research", "linked.md"));
+  expect(() => reader.readArtifact("research", "alpha")).toThrow("Run source");
+});
+
 test("a captured served checkout cannot be retargeted between construction and reading", () => {
   const container = scratch.make("run-retarget-");
   const root = join(container, "checkout");
