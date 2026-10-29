@@ -512,7 +512,14 @@ export function createProjectCouncilOwner(
     const finish = beginOwnedActivity();
     const current = ++generation;
     stopRunFollow();
-    paint({ phase: "held", error: "", original: null, run: null });
+    const retainOriginal = view.original?.original.requestId === requestId;
+    paint({
+      phase: "held",
+      error: "",
+      ...(!retainOriginal ? { original: null } : {}),
+      run: null,
+      runLoading: false,
+    });
     try {
       const verified = await verifyOriginal(
         await protectedRead((signal) =>

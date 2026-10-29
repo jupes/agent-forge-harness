@@ -11,11 +11,13 @@ import {
 } from "../../types/project-council-run-read";
 import { openSettled } from "../e2e/fixtures";
 import { HEARTH_HOME } from "../e2e/servers";
-import { alpha, seedProjects } from "./project-fixtures";
+import { alpha as alphaTemplate } from "./project-fixtures";
+import { seedCouncilProject } from "./council-fixtures";
 
 const controlFile = join(HEARTH_HOME, "council-fixture-control.json");
 const callsFile = join(HEARTH_HOME, "council-fixture-calls.jsonl");
-const reviewsPath = `/__agent-forge/projects/${alpha.id}/council/reviews`;
+let alpha = alphaTemplate;
+let reviewsPath = `/__agent-forge/projects/${alpha.id}/council/reviews`;
 
 type Mode = "success" | "hold" | "fail";
 type CaseId = "council-cancel" | "council-failure" | "council-unknown" | "idle";
@@ -201,7 +203,10 @@ async function prepareReview(page: Page) {
   return metadata;
 }
 
-test.beforeEach(seedProjects);
+test.beforeEach(async () => {
+  alpha = await seedCouncilProject();
+  reviewsPath = `/__agent-forge/projects/${alpha.id}/council/reviews`;
+});
 test.afterEach(() => selectMode("success", "idle"));
 
 test("actual Stop cancels the held Council transport and keeps the same original", async ({

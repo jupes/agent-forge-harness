@@ -350,6 +350,7 @@ async function councilFixture() {
   let originalReads = 0;
   let historyReads = 0;
   let originalReadAborted = false;
+  let failNextOriginalRead = false;
   const read = () => {
     const current = originalOverride ?? original;
     return projectCouncilOriginalReadSchema.parse({
@@ -436,6 +437,10 @@ async function councilFixture() {
     },
     original: async (_projectId, _requestId, signal) => {
       originalReads++;
+      if (failNextOriginalRead) {
+        failNextOriginalRead = false;
+        throw Error("saved original read failed");
+      }
       if (heldOriginalRead) {
         const gate = heldOriginalRead;
         heldOriginalRead = null;
@@ -564,6 +569,9 @@ async function councilFixture() {
       const wait = new Promise<void>((resolve) => (release = resolve));
       heldOriginalRead = { entered, wait, release };
       return { reached, release };
+    },
+    failNextOriginal() {
+      failNextOriginalRead = true;
     },
     markDispatchClaimed() {
       original = {
@@ -731,9 +739,18 @@ test("the exact held original can be explicitly re-read after lost commit with e
   await fixture.owner.refresh();
   expect(fixture.owner.get().phase).toBe("held");
   expect(fixture.originalReads()).toBe(reads);
+  fixture.failNextOriginal();
   await fixture.owner.openSaved(before.requestId);
   expect(fixture.originalReads()).toBe(reads + 1);
   expect(fixture.owner.get().phase).toBe("held");
+  expect(fixture.owner.get().run).toBeNull();
+  expect(fixture.owner.get().original?.original).toMatchObject({
+    requestId: before.requestId,
+    intentHash: before.intentHash,
+    context: before.context,
+  });
+  await fixture.owner.openSaved(before.requestId);
+  expect(fixture.originalReads()).toBe(reads + 2);
   expect(fixture.owner.get().original?.original).toMatchObject({
     requestId: before.requestId,
     runId: before.runId,
