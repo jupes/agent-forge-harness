@@ -31,6 +31,8 @@ const starts = () =>
         .split("\n")
         .filter(Boolean).length
     : 0;
+type KeeperCaretRafProbe = { status(): { clickSeen: boolean; captured: number; canceled: number; flushed: number; focusSeams: number; rafRestoredAfterClick: boolean }; restore(): { requestAnimationFrame: boolean; cancelAnimationFrame: boolean; focus: boolean; probe: boolean } };
+type KeeperCaretProbeWindow = Window & { __keeperCaretRafProbe?: KeeperCaretRafProbe };
 test.beforeEach(() => {
   seedProjects();
   writeFileSync(
@@ -688,18 +690,228 @@ test("mentions and harness commands edit the shared draft with keyboard suggesti
       exact: true,
     }),
   ).toBeVisible();
+  const mentionOption = mentions.getByRole("button", {
+    name: "bead alpha-epic Alpha epic",
+    exact: true,
+  });
   await input.press("ArrowDown");
   await page.screenshot({
     path: "apps/desktop/docs/screenshots/keeper-mentions.png",
   });
-  await page.keyboard.press("Enter");
-  await expect(input).toHaveValue("Explain @bead:alpha-epic ");
-  await expect(
-    drawer
-      .getByRole("group", { name: "About context for Alpha" })
-      .getByRole("link", { name: "bead alpha-epic", exact: true }),
-  ).toBeVisible();
-  await input.fill("/forge");
+  let primaryFailed = false;
+  let primaryFailure: unknown;
+  let cleanupFailure: unknown;
+  let restored: { requestAnimationFrame: boolean; cancelAnimationFrame: boolean; focus: boolean; probe: boolean } | null = null;
+  let probeInstalled = false;
+  try {
+    try {
+  await mentionOption.evaluate((button) => {
+    const textarea = document.getElementById("keeper-message-drawer");
+    if (!(textarea instanceof HTMLTextAreaElement))
+      throw new Error("Keeper textarea was not available for the caret probe.");
+    const target = window as KeeperCaretProbeWindow;
+    if (target.__keeperCaretRafProbe)
+      throw new Error("Keeper caret probe was already installed.");
+
+    const rafDescriptor = Object.getOwnPropertyDescriptor(
+      window,
+      "requestAnimationFrame",
+    );
+    const cancelDescriptor = Object.getOwnPropertyDescriptor(
+      window,
+      "cancelAnimationFrame",
+    );
+    const focusDescriptor = Object.getOwnPropertyDescriptor(textarea, "focus");
+    const nativeRaf = window.requestAnimationFrame.bind(window);
+    const nativeCancel = window.cancelAnimationFrame.bind(window);
+    const nativeFocus = textarea.focus.bind(textarea);
+    const pending = new Map<number, FrameRequestCallback>();
+    let clickSeen = false;
+    let captured = 0;
+    let canceled = 0;
+    let flushed = 0;
+    let focusSeams = 0;
+    let focusFlushQueued = false;
+    let focusCallbackFlushed = false;
+    let rafRestoredAfterClick = false;
+
+    const restoreProperty = (object: object, property: PropertyKey, descriptor: PropertyDescriptor | undefined) => {
+      if (descriptor) Object.defineProperty(object, property, descriptor);
+      else Reflect.deleteProperty(object, property);
+    };
+    const descriptorMatches = (object: object, property: PropertyKey, expected: PropertyDescriptor | undefined) => {
+      const actual = Object.getOwnPropertyDescriptor(object, property);
+      return (
+        (!actual && !expected) ||
+        (!!actual &&
+          !!expected &&
+          actual.value === expected.value &&
+          actual.get === expected.get &&
+          actual.set === expected.set &&
+          actual.writable === expected.writable &&
+          actual.enumerable === expected.enumerable &&
+          actual.configurable === expected.configurable)
+      );
+    };
+    const onOptionClick = () => {
+      clickSeen = true;
+      window.requestAnimationFrame = (callback) => {
+        captured += 1;
+        const handle = nativeRaf(() => {});
+        nativeCancel(handle);
+        pending.set(handle, callback);
+        return handle;
+      };
+      window.cancelAnimationFrame = (handle) => {
+        if (pending.delete(handle)) {
+          canceled += 1;
+          nativeCancel(handle);
+          return;
+        }
+        nativeCancel(handle);
+      };
+      queueMicrotask(() => {
+        restoreProperty(window, "requestAnimationFrame", rafDescriptor);
+        rafRestoredAfterClick = descriptorMatches(
+          window,
+          "requestAnimationFrame",
+          rafDescriptor,
+        );
+      });
+    };
+    const probe: KeeperCaretRafProbe = {
+      status: () => ({ clickSeen, captured, canceled, flushed, focusSeams, rafRestoredAfterClick }),
+      restore: () => {
+        button.removeEventListener("click", onOptionClick, true);
+        for (const handle of pending.keys()) nativeCancel(handle);
+        pending.clear();
+        restoreProperty(window, "requestAnimationFrame", rafDescriptor);
+        restoreProperty(window, "cancelAnimationFrame", cancelDescriptor);
+        restoreProperty(textarea, "focus", focusDescriptor);
+        const restored = {
+          requestAnimationFrame: descriptorMatches(
+            window,
+            "requestAnimationFrame",
+            rafDescriptor,
+          ),
+          cancelAnimationFrame: descriptorMatches(
+            window,
+            "cancelAnimationFrame",
+            cancelDescriptor,
+          ),
+          focus: descriptorMatches(textarea, "focus", focusDescriptor),
+        };
+        const probeDeleted = Reflect.deleteProperty(
+          target,
+          "__keeperCaretRafProbe",
+        );
+        return {
+          ...restored,
+          probe: probeDeleted && !Object.hasOwn(target, "__keeperCaretRafProbe"),
+        };
+      },
+    };
+    target.__keeperCaretRafProbe = probe;
+    try {
+      button.addEventListener("click", onOptionClick, {
+        capture: true,
+        once: true,
+      });
+      Object.defineProperty(textarea, "focus", {
+        configurable: true,
+        enumerable: focusDescriptor?.enumerable ?? false,
+        writable: true,
+        value: (options?: FocusOptions) => {
+          nativeFocus(options);
+          if (textarea.selectionStart === 0 && textarea.selectionEnd === textarea.value.length && !focusFlushQueued && !focusCallbackFlushed) {
+            focusSeams += 1;
+            focusFlushQueued = true;
+            queueMicrotask(() => {
+              focusFlushQueued = false;
+              if (pending.size !== 1) return;
+              const [callback] = pending.values();
+              pending.clear();
+              focusCallbackFlushed = true;
+              if (callback) {
+                flushed += 1;
+                callback(performance.now());
+              }
+            });
+          }
+        },
+      });
+    } catch (error) {
+      try {
+        const restored = probe.restore();
+        if (Object.values(restored).some((wasRestored) => !wasRestored))
+          throw new Error("Keeper caret probe setup did not restore its properties.");
+      } catch (cleanupError) {
+        throw new AggregateError(
+          [error, cleanupError],
+          "Keeper caret probe setup and rollback both failed.",
+        );
+      }
+      throw error;
+    }
+  });
+      probeInstalled = true;
+      await page.keyboard.press("Enter");
+      await expect(input).toHaveValue("Explain @bead:alpha-epic ");
+      await expect(
+        drawer
+          .getByRole("group", { name: "About context for Alpha" })
+          .getByRole("link", { name: "bead alpha-epic", exact: true }),
+      ).toBeVisible();
+      await input.fill("/forge");
+      const interleave = await page.evaluate(
+        () =>
+          (window as KeeperCaretProbeWindow).__keeperCaretRafProbe?.status() ??
+          null,
+      );
+      await test.info().attach("keeper-caret-interleave", {
+        body: JSON.stringify(interleave), contentType: "application/json",
+      });
+      if (!interleave) throw new Error("Keeper caret probe status was missing.");
+      expect(interleave).toMatchObject({ clickSeen: true, focusSeams: 1, rafRestoredAfterClick: true });
+      expect(interleave.captured).toBeLessThanOrEqual(1);
+      expect(interleave.flushed + interleave.canceled).toBe(interleave.captured);
+      expect(starts()).toBe(before);
+      await expect(input).toHaveValue("/forge");
+    } catch (error) {
+      primaryFailed = true;
+      primaryFailure = error;
+    }
+  } finally {
+    try {
+      restored = await page.evaluate(
+        () =>
+          (window as KeeperCaretProbeWindow).__keeperCaretRafProbe?.restore() ??
+          null,
+      );
+    } catch (error) {
+      cleanupFailure = error;
+    }
+  }
+  if (
+    probeInstalled &&
+    (!restored || Object.values(restored).some((wasRestored) => !wasRestored))
+  )
+    cleanupFailure ??= new Error("Keeper caret probe properties were not restored.");
+  if (primaryFailed) {
+    if (cleanupFailure !== undefined)
+      throw new AggregateError(
+        [primaryFailure, cleanupFailure],
+        "Keeper caret probe assertion and cleanup both failed.",
+      );
+    throw primaryFailure;
+  }
+  if (cleanupFailure !== undefined) throw cleanupFailure;
+  expect(restored).toEqual({
+    requestAnimationFrame: true,
+    cancelAnimationFrame: true,
+    focus: true,
+    probe: true,
+  });
   const commands = drawer.getByRole("group", { name: "Harness commands" });
   await commands
     .getByRole("button", { name: "/forge-plan", exact: false })
