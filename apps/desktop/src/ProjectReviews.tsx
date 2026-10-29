@@ -314,13 +314,17 @@ export function projectCouncilLiveReviewView<T>(
 } {
   const roster = jobRoster ?? originalRoster;
   const states = new Map(
-    (roster ?? []).map((seat) => [seat.id, { role: seat.role, state: "Pending" }]),
+    (roster ?? []).map((seat) => [
+      seat.id,
+      { role: seat.role, state: "Pending" },
+    ]),
   );
   let stage: { name: string; round?: unknown } | null = null;
   for (const event of events) {
     if (event.type === "stage.started") {
       const name = event.payload?.stage;
-      stage = typeof name === "string" ? { name, round: event.payload?.round } : null;
+      stage =
+        typeof name === "string" ? { name, round: event.payload?.round } : null;
       for (const [seatId, seat] of states)
         if (seat.state !== "Failed" && seat.state !== "Cancelled")
           states.set(seatId, { ...seat, state: "Pending" });
@@ -387,7 +391,10 @@ function CouncilDiscussionView({
           }
         >
           {rounds.map((round, index) => (
-            <option key={`${round.stage}:${round.round ?? index}`} value={index}>
+            <option
+              key={`${round.stage}:${round.round ?? index}`}
+              value={index}
+            >
               {round.stage}
               {round.round === undefined ? "" : ` ${round.round}`}
             </option>
@@ -444,7 +451,8 @@ function CouncilDiscussionView({
                     {record.output.missingFindings.map((item, itemIndex) => (
                       <li key={`${record.seatId}:missing:${itemIndex}`}>
                         <strong>
-                          Additional finding · {item.severity}: {showControls(item.title)}
+                          Additional finding · {item.severity}:{" "}
+                          {showControls(item.title)}
                         </strong>
                         <KeeperMarkdown text={showControls(item.claim)} />
                       </li>
@@ -453,10 +461,14 @@ function CouncilDiscussionView({
                 ) : null}
                 {record.output && "summary" in record.output ? (
                   <>
-                    <KeeperMarkdown text={showControls(record.output.summary)} />
+                    <KeeperMarkdown
+                      text={showControls(record.output.summary)}
+                    />
                     <ul>
                       {record.output.recommendations.map((item, itemIndex) => (
-                        <li key={`${record.seatId}:recommendation:${itemIndex}`}>
+                        <li
+                          key={`${record.seatId}:recommendation:${itemIndex}`}
+                        >
                           <KeeperMarkdown text={showControls(item)} />
                         </li>
                       ))}
@@ -466,7 +478,9 @@ function CouncilDiscussionView({
                 {record.output ? (
                   <details>
                     <summary>Inspect structured seat response</summary>
-                    <pre>{showControls(JSON.stringify(record.output, null, 2))}</pre>
+                    <pre>
+                      {showControls(JSON.stringify(record.output, null, 2))}
+                    </pre>
                   </details>
                 ) : null}
               </li>
@@ -904,7 +918,8 @@ function RunReview({
               <ul>
                 {liveReview.seats.map((seat) => (
                   <li key={seat.seatId}>
-                    {showControls(seat.role)} · {showControls(seat.seatId)} · {seat.state}
+                    {showControls(seat.role)} · {showControls(seat.seatId)} ·{" "}
+                    {seat.state}
                   </li>
                 ))}
               </ul>

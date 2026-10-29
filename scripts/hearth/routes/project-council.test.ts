@@ -404,34 +404,35 @@ test("a completed project Council Bead review posts its verdict once and replays
       ? {
           status: 0,
           stderr: "",
-          stdout: [
-            {
-              id: "alpha-epic",
-              title: "Alpha epic",
-              issue_type: "epic",
-              status: "open",
-              priority: 1,
-              labels: ["project:alpha"],
-              dependencies: [],
-            },
-            {
-              id: beadId,
-              title: "Teach the kiln to report its temperature",
-              issue_type: "task",
-              status: "in_progress",
-              priority: 2,
-              labels: ["project:alpha"],
-              dependencies: [
-                {
-                  issue_id: beadId,
-                  depends_on_id: "alpha-epic",
-                  type: "parent-child",
-                },
-              ],
-            },
-          ]
-            .map((issue) => JSON.stringify(issue))
-            .join("\n") + "\n",
+          stdout:
+            [
+              {
+                id: "alpha-epic",
+                title: "Alpha epic",
+                issue_type: "epic",
+                status: "open",
+                priority: 1,
+                labels: ["project:alpha"],
+                dependencies: [],
+              },
+              {
+                id: beadId,
+                title: "Teach the kiln to report its temperature",
+                issue_type: "task",
+                status: "in_progress",
+                priority: 2,
+                labels: ["project:alpha"],
+                dependencies: [
+                  {
+                    issue_id: beadId,
+                    depends_on_id: "alpha-epic",
+                    type: "parent-child",
+                  },
+                ],
+              },
+            ]
+              .map((issue) => JSON.stringify(issue))
+              .join("\n") + "\n",
         }
       : undefined;
   h.commands.answer = async (command) => {
@@ -453,8 +454,7 @@ test("a completed project Council Bead review posts its verdict once and replays
         ]),
         stderr: "",
       };
-    if (verb === "comments")
-      return { exitCode: 0, stdout: "[]", stderr: "" };
+    if (verb === "comments") return { exitCode: 0, stdout: "[]", stderr: "" };
     return { exitCode: 2, stdout: "", stderr: "not arranged" };
   };
   writeOwnerOnly(
@@ -667,29 +667,33 @@ test("a completed project Council Bead review posts its verdict once and replays
 
   const expectedComment = `review: COUNCIL ${run.runId} ${councilOutcome(run).toUpperCase()} — findings ${(["blocker", "high", "medium", "low"] as const).map((severity) => run.aggregatedFindings.filter((finding) => finding.severity === severity).length).join("/")} (blocker/high/medium/low)`;
   const verdictDeadline = Date.now() + 20_000;
-  let verdict = h.events(["council.verdict.comment"]).find(
-    (event) =>
-      event.kind === "council.verdict.comment" &&
-      event.beadId === beadId &&
-      event.payload.councilRunId === run.runId,
-  );
-  while (!verdict && Date.now() < verdictDeadline) {
-    await new Promise((done) => setTimeout(done, 25));
-    verdict = h.events(["council.verdict.comment"]).find(
+  let verdict = h
+    .events(["council.verdict.comment"])
+    .find(
       (event) =>
         event.kind === "council.verdict.comment" &&
         event.beadId === beadId &&
         event.payload.councilRunId === run.runId,
     );
+  while (!verdict && Date.now() < verdictDeadline) {
+    await new Promise((done) => setTimeout(done, 25));
+    verdict = h
+      .events(["council.verdict.comment"])
+      .find(
+        (event) =>
+          event.kind === "council.verdict.comment" &&
+          event.beadId === beadId &&
+          event.payload.councilRunId === run.runId,
+      );
   }
   expect(verdict).toMatchObject({
     kind: "council.verdict.comment",
     beadId,
     payload: { councilRunId: run.runId, status: "posted" },
   });
-  expect(h.bd.calls.filter((call) => call[0] === "comments" && call[1] === "add")).toEqual([
-    ["comments", "add", "--json", "--", beadId, expectedComment],
-  ]);
+  expect(
+    h.bd.calls.filter((call) => call[0] === "comments" && call[1] === "add"),
+  ).toEqual([["comments", "add", "--json", "--", beadId, expectedComment]]);
 
   const replay = await fetch(commitPath, {
     method: "POST",
@@ -752,8 +756,14 @@ test("a completed project Council Bead review posts its verdict once and replays
       cwd: workspaceKey(cwd),
     })),
   ).toEqual([
-    { command: ["bd", "--readonly", "show", beadId, "--json"], cwd: h.workspace },
-    { command: ["bd", "--readonly", "comments", beadId, "--json"], cwd: h.workspace },
+    {
+      command: ["bd", "--readonly", "show", beadId, "--json"],
+      cwd: h.workspace,
+    },
+    {
+      command: ["bd", "--readonly", "comments", beadId, "--json"],
+      cwd: h.workspace,
+    },
   ]);
 });
 

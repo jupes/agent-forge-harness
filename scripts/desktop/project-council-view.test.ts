@@ -110,23 +110,35 @@ describe("Project Council live review presentation", () => {
     const liveRounds = [{ stage: "peer", round: 0 }];
     const savedRounds = [{ stage: "revision", round: 1 }];
     const events = [
-        { type: "stage.started", payload: { stage: "independent" } },
-        { type: "seat.started", payload: { stage: "independent", seatId: "independent" } },
-        { type: "seat.completed", payload: { stage: "independent", seatId: "independent" } },
-        { type: "stage.completed", payload: { stage: "independent" } },
-        { type: "stage.started", payload: { stage: "peer", round: 0 } },
-        { type: "seat.started", payload: { stage: "peer", seatId: "peer" } },
-        { type: "stage.completed", payload: { stage: "peer", round: 0 } },
-        { type: "stage.started", payload: { stage: "revision", round: 1 } },
-        { type: "seat.started", payload: { stage: "revision", seatId: "revision" } },
-        { type: "seat.failed", payload: { stage: "revision", seatId: "failed" } },
-        { type: "seat.failed", payload: { stage: "revision", seatId: "retry" } },
-        { type: "seat.started", payload: { stage: "revision", seatId: "retry" } },
-        { type: "seat.cancelled", payload: { stage: "revision", seatId: "cancelled" } },
-        { type: "stage.started", payload: { stage: "chair" } },
-        { type: "seat.started", payload: { stage: "chair", seatId: "chair" } },
-        { type: "seat.started", payload: { stage: "peer", seatId: "unlisted" } },
-      ];
+      { type: "stage.started", payload: { stage: "independent" } },
+      {
+        type: "seat.started",
+        payload: { stage: "independent", seatId: "independent" },
+      },
+      {
+        type: "seat.completed",
+        payload: { stage: "independent", seatId: "independent" },
+      },
+      { type: "stage.completed", payload: { stage: "independent" } },
+      { type: "stage.started", payload: { stage: "peer", round: 0 } },
+      { type: "seat.started", payload: { stage: "peer", seatId: "peer" } },
+      { type: "stage.completed", payload: { stage: "peer", round: 0 } },
+      { type: "stage.started", payload: { stage: "revision", round: 1 } },
+      {
+        type: "seat.started",
+        payload: { stage: "revision", seatId: "revision" },
+      },
+      { type: "seat.failed", payload: { stage: "revision", seatId: "failed" } },
+      { type: "seat.failed", payload: { stage: "revision", seatId: "retry" } },
+      { type: "seat.started", payload: { stage: "revision", seatId: "retry" } },
+      {
+        type: "seat.cancelled",
+        payload: { stage: "revision", seatId: "cancelled" },
+      },
+      { type: "stage.started", payload: { stage: "chair" } },
+      { type: "seat.started", payload: { stage: "chair", seatId: "chair" } },
+      { type: "seat.started", payload: { stage: "peer", seatId: "unlisted" } },
+    ];
     const view = projectCouncilLiveReviewView(
       liveRounds,
       savedRounds,
@@ -142,9 +154,15 @@ describe("Project Council live review presentation", () => {
       events.slice(0, 12),
     );
     expect(view.rounds).toBe(liveRounds);
-    expect(revisionView.seats.find((seat) => seat.seatId === "peer")?.state).toBe("Pending");
-    expect(revisionView.seats.find((seat) => seat.seatId === "revision")?.state).toBe("Discussing round 1");
-    expect(revisionView.seats.find((seat) => seat.seatId === "retry")?.state).toBe("Discussing round 1");
+    expect(
+      revisionView.seats.find((seat) => seat.seatId === "peer")?.state,
+    ).toBe("Pending");
+    expect(
+      revisionView.seats.find((seat) => seat.seatId === "revision")?.state,
+    ).toBe("Discussing round 1");
+    expect(
+      revisionView.seats.find((seat) => seat.seatId === "retry")?.state,
+    ).toBe("Discussing round 1");
     expect(view.seats).toEqual([
       { seatId: "independent", role: "Independent reviewer", state: "Pending" },
       { seatId: "peer", role: "Peer reviewer", state: "Pending" },
@@ -163,14 +181,29 @@ describe("Project Council live review presentation", () => {
       savedRounds,
       undefined,
       [{ id: "peer", role: "Peer reviewer" }],
-      [{ type: "stage.started", payload: { stage: "revision" } },
-        { type: "seat.started", payload: { stage: "revision", seatId: "peer" } }],
+      [
+        { type: "stage.started", payload: { stage: "revision" } },
+        {
+          type: "seat.started",
+          payload: { stage: "revision", seatId: "peer" },
+        },
+      ],
     );
     expect(fallback.rounds).toBe(savedRounds);
     expect(fallback.seats).toEqual([
-      { seatId: "peer", role: "Peer reviewer", state: "Discussing (number not recorded)" },
+      {
+        seatId: "peer",
+        role: "Peer reviewer",
+        state: "Discussing (number not recorded)",
+      },
     ]);
-    const unknown = projectCouncilLiveReviewView(undefined, undefined, undefined, undefined, []);
+    const unknown = projectCouncilLiveReviewView(
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      [],
+    );
     expect(unknown).toEqual({ rounds: [], rosterKnown: false, seats: [] });
   });
 });
