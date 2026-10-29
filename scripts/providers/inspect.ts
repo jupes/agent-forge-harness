@@ -6,7 +6,11 @@ import type {
 } from "../../types/provider-readiness";
 import { buildChildEnv } from "../executors/env";
 import { ADAPTERS } from "../executors/registry";
-import { supervise } from "../executors/supervisor";
+import {
+  type InteractiveSuperviseOptions,
+  SupervisorOwnershipRefusalError,
+  supervise,
+} from "../executors/supervisor";
 import {
   parseClaudeAuthentication,
   parseCodexAuthentication,
@@ -82,6 +86,8 @@ export function createProviderInspector(options: {
   now?: () => number;
   timeoutMs?: number;
   operatorToken?: () => string | null;
+  /** Trusted fixture seam for a pre-grant ownership refusal; never request controlled. */
+  interactiveGuard?: InteractiveSuperviseOptions["interactiveGuard"];
   run?: (
     command: readonly string[],
     env: Record<string, string>,
@@ -99,9 +105,12 @@ export function createProviderInspector(options: {
           command: [...command],
           cwd: options.root,
           env,
-          stdin: "",
+          stdinMode: "interactive",
           timeoutMs: options.timeoutMs ?? 3000,
           maxLineBytes: 65_536,
+          ...(options.interactiveGuard
+            ? { interactiveGuard: options.interactiveGuard }
+            : {}),
           ...launchOptions,
           onLine(line) {
             if (stdout.length + line.length > 131_072) {
@@ -114,13 +123,15 @@ export function createProviderInspector(options: {
             valid = false;
           },
         });
+        void child.end().catch(() => undefined);
         const result = await child.done;
         return {
           exitCode: result.exitCode ?? -1,
           stdout: valid ? stdout : "",
           valid: valid && !result.timedOut && !result.stopped,
         };
-      } catch {
+      } catch (error) {
+        if (error instanceof SupervisorOwnershipRefusalError) throw error;
         return { exitCode: -1, stdout: "", valid: false };
       }
     });
