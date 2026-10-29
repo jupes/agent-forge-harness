@@ -30,7 +30,11 @@ type Refusal = {
   kind: "refused";
   reason: "capacity" | "source-too-large" | "invalid-scope";
 };
-type Applied = { kind: "applied"; draft: ProjectCouncilDraft; revision: number };
+type Applied = {
+  kind: "applied";
+  draft: ProjectCouncilDraft;
+  revision: number;
+};
 
 const MAX_DRAFTS = 32;
 const MAX_SOURCE_BYTES = 256 * 1024;
@@ -78,20 +82,26 @@ export function createProjectCouncilDraftCache(): {
   write(
     scope: ProjectCouncilDraftScope,
     draft: ProjectCouncilDraft,
-  ): DraftSnapshot & { kind: "saved" } | Refusal;
+  ): (DraftSnapshot & { kind: "saved" }) | Refusal;
   prefill(
     scope: ProjectCouncilDraftScope,
     source: ProjectCouncilSourcePrefill,
-  ): Applied | {
-    kind: "confirmation-required";
-    draft: ProjectCouncilDraft;
-    pending: PendingProjectCouncilSourceReplacement;
-    revision: number;
-  } | Refusal;
+  ):
+    | Applied
+    | {
+        kind: "confirmation-required";
+        draft: ProjectCouncilDraft;
+        pending: PendingProjectCouncilSourceReplacement;
+        revision: number;
+      }
+    | Refusal;
   confirm(
     scope: ProjectCouncilDraftScope,
     pending: PendingProjectCouncilSourceReplacement,
-  ): Applied | { kind: "stale"; draft: ProjectCouncilDraft; revision: number } | Refusal;
+  ):
+    | Applied
+    | { kind: "stale"; draft: ProjectCouncilDraft; revision: number }
+    | Refusal;
 } {
   const entries = new Map<string, DraftSnapshot>();
   let nextRevision = 1;
@@ -146,7 +156,8 @@ export function createProjectCouncilDraftCache(): {
       const draft = current?.draft ?? blankProjectCouncilDraft();
       if (
         draft.source.length > 0 &&
-        (draft.source !== source.source || draft.sourceType !== source.sourceType)
+        (draft.source !== source.source ||
+          draft.sourceType !== source.sourceType)
       ) {
         const pending = Object.freeze({
           scope: Object.freeze({ ...scope }),
@@ -175,7 +186,9 @@ export function createProjectCouncilDraftCache(): {
       if (!current || current.revision !== pending.expectedRevision)
         return {
           kind: "stale",
-          draft: current ? copyDraft(current.draft) : blankProjectCouncilDraft(),
+          draft: current
+            ? copyDraft(current.draft)
+            : blankProjectCouncilDraft(),
           revision: current?.revision ?? 0,
         };
       const snapshot = save(key, withSource(current.draft, pending));

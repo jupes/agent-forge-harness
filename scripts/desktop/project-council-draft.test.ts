@@ -139,7 +139,9 @@ describe("Project Council draft memory", () => {
     if (!read) throw new Error("expected saved draft");
     read.draft.source = "mutated output";
     expect(cache.read(alpha)?.draft.source).toBe("saved");
-    expect(cache.write({ ...alpha, projectId: "" }, blankProjectCouncilDraft())).toEqual({
+    expect(
+      cache.write({ ...alpha, projectId: "" }, blankProjectCouncilDraft()),
+    ).toEqual({
       kind: "refused",
       reason: "invalid-scope",
     });

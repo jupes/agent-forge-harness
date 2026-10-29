@@ -31,8 +31,8 @@ import type {
 } from "../council/ledger-events";
 import { type CommandRunner, runLocalCommand } from "../council/pr-source";
 import {
-  createCouncilService,
   type CouncilServiceOptions,
+  createCouncilService,
 } from "../council/service";
 import { loadDashboardServerEnvironment } from "../dashboard/server-environment";
 import { ownInterrupts } from "../executors/supervisor";

@@ -9,8 +9,8 @@ import {
 } from "node:fs";
 import { join } from "node:path";
 import { FakeCouncilTransport } from "../../scripts/council/fake-transport";
-import type { CouncilProfile, CouncilSeat } from "../../scripts/council/types";
 import { operatorCouncilLedger } from "../../scripts/council/ledger-wiring";
+import type { CouncilProfile, CouncilSeat } from "../../scripts/council/types";
 import { supervise } from "../../scripts/executors/supervisor";
 import {
   ensurePrivateHome,
@@ -48,14 +48,18 @@ function councilFixtureMode(home: string): CouncilFixtureMode {
     Array.isArray(value) ||
     Object.keys(value).length !== 2 ||
     !("mode" in value) ||
-    (value.mode !== "success" && value.mode !== "hold" && value.mode !== "fail") ||
+    (value.mode !== "success" &&
+      value.mode !== "hold" &&
+      value.mode !== "fail") ||
     !("caseId" in value) ||
     (value.caseId !== "council-cancel" &&
       value.caseId !== "council-failure" &&
       value.caseId !== "council-unknown" &&
       value.caseId !== "idle")
   )
-    throw Error("Council fixture control must select a bounded Council case mode");
+    throw Error(
+      "Council fixture control must select a bounded Council case mode",
+    );
   return { mode: value.mode, caseId: value.caseId };
 }
 
@@ -67,7 +71,9 @@ function councilFixtureTransport(
       profile.seats.some((seat) => seat.provider !== "fake") ||
       profile.chair.provider !== "fake"
     )
-      throw Error("The desktop Council fixture accepts fake-provider profiles only");
+      throw Error(
+        "The desktop Council fixture accepts fake-provider profiles only",
+      );
     const { mode, caseId } = councilFixtureMode(home);
     const calls = join(home, "council-fixture-calls.jsonl");
     const failedIndependentSeat = profile.seats[0]!.id;
