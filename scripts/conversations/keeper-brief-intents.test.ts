@@ -1,28 +1,20 @@
 import { afterEach, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import {
-  mkdtempSync,
-  readFileSync,
-  rmSync,
-  symlinkSync,
-} from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { ConversationState } from "../../types/conversation";
 import type {
   KeeperBriefIntent,
   KeeperBriefOriginBinding,
   KeeperBriefSelection,
   KeeperBriefSnapshot,
 } from "../../types/keeper-brief";
-import type { ConversationState } from "../../types/conversation";
-import { ownedCodingStateSchema } from "../sessions/codex-owned-journal";
 import { writeOwnerOnly } from "../hearth/token";
-import { conversationPage } from "./page";
-import {
-  conversationPageSchema,
-  stateSchema,
-} from "./protocol";
 import { MAX_KEEPER_BRIEF_INTENT_HISTORY } from "../keeper/brief-protocol";
+import { ownedCodingStateSchema } from "../sessions/codex-owned-journal";
+import { conversationPage } from "./page";
+import { conversationPageSchema, stateSchema } from "./protocol";
 import { createConversationStore } from "./store";
 
 const homes: string[] = [];
@@ -99,8 +91,7 @@ function reserveInput(
     selection: updates.selection ?? selectedSmith,
     text: updates.text ?? "Build the reviewed brief using this exact prompt.",
     about: [],
-    snapshot:
-      updates.snapshot ?? snapshot(projectId, asOf),
+    snapshot: updates.snapshot ?? snapshot(projectId, asOf),
   };
 }
 
@@ -123,7 +114,8 @@ test("canonical brief reservation survives a lost reply and store recreation wit
   const reopenedStore = createConversationStore(home);
   const recovered = reopenedStore.discoverKeeperBrief(projectId);
   expect(recovered).not.toBeNull();
-  if (!recovered) throw new Error("The canonical reservation was not recovered.");
+  if (!recovered)
+    throw new Error("The canonical reservation was not recovered.");
   expect(
     reopenedStore.readKeeperBriefIntent(projectId, recovered.requestId),
   ).toEqual(recovered);
@@ -268,7 +260,9 @@ test("only the exact canonical ticket admits its frozen frame and replay never c
   await store.start(projectId, intent.requestId, owner);
   await store.recover(projectId);
   expect(store.read(projectId).turns[0]?.phase).toBe("unknown");
-  expect((await store.acceptKeeperBrief(projectId, ticket)).created).toBe(false);
+  expect((await store.acceptKeeperBrief(projectId, ticket)).created).toBe(
+    false,
+  );
   await expect(
     store.retireKeeperBrief(projectId, {
       requestId: intent.requestId,
@@ -405,8 +399,7 @@ test("private canonical originals are excluded from public and owned pages and t
     throw new Error("The saved conversation did not match its strict schema.");
   }
   const active = saved.keeperBriefIntents?.active;
-  if (!active)
-    throw new Error("The canonical original was not persisted.");
+  if (!active) throw new Error("The canonical original was not persisted.");
   active.snapshot.scope.label = "tampered";
   writeOwnerOnly(file, JSON.stringify(saved));
   expect(() => store.read(projectId)).toThrow("saved conversation is invalid");
@@ -459,9 +452,9 @@ test("private brief original bytes and linked conversation storage stay bounded 
     join(linkedHome, "conversations"),
     process.platform === "win32" ? "junction" : "dir",
   );
-  expect(() =>
-    createConversationStore(linkedHome).read(linkedProject),
-  ).toThrow("linked");
+  expect(() => createConversationStore(linkedHome).read(linkedProject)).toThrow(
+    "linked",
+  );
 });
 
 test("full private history refuses retirement without losing canonical UUID fences", async () => {
@@ -496,9 +489,9 @@ test("full private history refuses retirement without losing canonical UUID fenc
   ).rejects.toThrow("history is full");
   expect(store.discoverKeeperBrief(projectId)).toEqual(active);
   for (const original of saved)
-    expect(
-      store.readKeeperBriefIntent(projectId, original.requestId),
-    ).toEqual(original);
+    expect(store.readKeeperBriefIntent(projectId, original.requestId)).toEqual(
+      original,
+    );
   const firstSaved = saved[0];
   if (!firstSaved) throw new Error("The first canonical original was lost.");
   await expect(

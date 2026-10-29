@@ -14,8 +14,10 @@ import type {
 import type { GeminiTaskPrivateFrame } from "./gemini-owned-task";
 import type { PreparedGeminiTask } from "./gemini-task-runtime";
 import type { KeeperReadKind } from "./keeper";
-import type { KeeperBriefSnapshot } from "./keeper-brief";
-import type { KeeperBriefIntentHistory } from "./keeper-brief";
+import type {
+  KeeperBriefIntentHistory,
+  KeeperBriefSnapshot,
+} from "./keeper-brief";
 import type { KeeperRecoveryState } from "./keeper-recovery";
 import type {
   ClaudeCodingUsageEvent,

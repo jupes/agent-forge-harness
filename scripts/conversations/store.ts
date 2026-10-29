@@ -8,7 +8,6 @@ import type {
   OwnedConversationAddress,
   PreparedConversationSend,
 } from "../../types/conversation";
-import type { KeeperContinuationRequest } from "../../types/keeper-recovery";
 import type {
   KeeperBriefIntent,
   KeeperBriefIntentHistory,
@@ -16,13 +15,13 @@ import type {
   KeeperBriefSelection,
   KeeperBriefSnapshot,
 } from "../../types/keeper-brief";
+import type { KeeperContinuationRequest } from "../../types/keeper-recovery";
 import {
   ensurePrivateHome,
   MAX_SESSION_TRANSCRIPT_BYTES,
   readSessionTranscript,
 } from "../hearth/home-guard";
 import { writeOwnerOnly } from "../hearth/token";
-import { keeperContinuationSchema } from "../keeper/recovery-protocol";
 import {
   keeperBriefIntentHistorySchema,
   keeperBriefIntentReferenceSchema,
@@ -31,6 +30,7 @@ import {
   MAX_KEEPER_BRIEF_INTENT_BYTES,
   MAX_KEEPER_BRIEF_INTENT_HISTORY,
 } from "../keeper/brief-protocol";
+import { keeperContinuationSchema } from "../keeper/recovery-protocol";
 import { withQueueLock } from "../scheduler/queue-lock";
 import {
   ownedCodingEventSchema,
@@ -233,8 +233,7 @@ function validKeeperBriefIntent(
 
   const turn = state.turns.find((row) => row.requestId === intent.requestId);
   const userFrames = state.frames.filter(
-    (frame) =>
-      frame.turnId === intent.requestId && frame.event.kind === "user",
+    (frame) => frame.turnId === intent.requestId && frame.event.kind === "user",
   );
   if (intent.state === "retired") return !turn && userFrames.length === 0;
   if (intent.state === "reserved") return !turn && userFrames.length === 0;
@@ -265,11 +264,14 @@ function validKeeperBriefIntents(state: ConversationState): boolean {
   const parsed = keeperBriefIntentHistorySchema.safeParse(intents);
   if (!parsed.success) return false;
   const rows = [
-    ...(intents.active ? [{ row: intents.active, location: "active" as const }] : []),
+    ...(intents.active
+      ? [{ row: intents.active, location: "active" as const }]
+      : []),
     ...intents.history.map((row) => ({ row, location: "history" as const })),
   ];
   return (
-    Buffer.byteLength(JSON.stringify(intents)) <= MAX_KEEPER_BRIEF_INTENT_BYTES &&
+    Buffer.byteLength(JSON.stringify(intents)) <=
+      MAX_KEEPER_BRIEF_INTENT_BYTES &&
     rows.every(({ row, location }) =>
       validKeeperBriefIntent(state, row, location),
     )
@@ -488,18 +490,18 @@ export function createConversationStore(
           "Expected a bounded brief original bound to this project's trusted scope.",
         );
       return changeWithoutRevision(projectId, (state) => {
-        const existing: KeeperBriefIntentHistory =
-          state.keeperBriefIntents ?? {
-            version: 1,
-            active: null,
-            history: [],
-          };
+        const existing: KeeperBriefIntentHistory = state.keeperBriefIntents ?? {
+          version: 1,
+          active: null,
+          history: [],
+        };
         let active = existing.active;
         let history = existing.history;
         if (
           active &&
           active.expectedRevision === parsed.data.expectedRevision &&
-          JSON.stringify(active.origin) === JSON.stringify(parsed.data.origin) &&
+          JSON.stringify(active.origin) ===
+            JSON.stringify(parsed.data.origin) &&
           JSON.stringify(active.selection) ===
             JSON.stringify(parsed.data.selection)
         )
@@ -598,7 +600,9 @@ export function createConversationStore(
         throw new ConversationError(400, "Expected a Keeper brief ticket id.");
       const intents = read(projectId).keeperBriefIntents;
       if (intents?.active?.requestId === requestId) return intents.active;
-      return intents?.history.find((item) => item.requestId === requestId) ?? null;
+      return (
+        intents?.history.find((item) => item.requestId === requestId) ?? null
+      );
     },
     async retireKeeperBrief(
       projectId: string,
@@ -611,7 +615,10 @@ export function createConversationStore(
         );
       const checked = keeperBriefIntentRetireSchema.safeParse(input);
       if (!checked.success)
-        throw new ConversationError(400, "Expected an exact Keeper brief ticket.");
+        throw new ConversationError(
+          400,
+          "Expected an exact Keeper brief ticket.",
+        );
       const request = checked.data;
       return changeWithoutRevision(projectId, (state) => {
         const intents = state.keeperBriefIntents;
@@ -650,7 +657,10 @@ export function createConversationStore(
         );
       const checked = keeperBriefIntentReferenceSchema.safeParse(input);
       if (!checked.success)
-        throw new ConversationError(400, "Expected an exact Keeper brief ticket.");
+        throw new ConversationError(
+          400,
+          "Expected an exact Keeper brief ticket.",
+        );
       const request = checked.data;
       const lock = conversationWriteLockFile(home, projectId, address);
       ensurePrivateHome(home);
@@ -1392,8 +1402,7 @@ export function createConversationStore(
           const state = read(projectId);
           assertCurrentOwner(isCurrent);
           if (
-            state.keeperBriefIntents?.active?.requestId ===
-              request.requestId ||
+            state.keeperBriefIntents?.active?.requestId === request.requestId ||
             state.keeperBriefIntents?.history.some(
               (item) => item.requestId === request.requestId,
             )
@@ -1426,11 +1435,7 @@ export function createConversationStore(
               turn: previous,
             };
           }
-          if (
-            request.brief &&
-            state.keeperBriefIntents?.active &&
-            !previous
-          )
+          if (request.brief && state.keeperBriefIntents?.active && !previous)
             throw new ConversationError(
               409,
               "An active canonical Keeper brief reservation must be admitted by its exact ticket.",

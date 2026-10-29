@@ -27,9 +27,8 @@ const object = z
     id: z.string().min(1).max(200),
   })
   .strict();
-export const keeperBriefOriginBindingSchema: z.ZodType<KeeperBriefOriginBinding> = z.discriminatedUnion(
-  "kind",
-  [
+export const keeperBriefOriginBindingSchema: z.ZodType<KeeperBriefOriginBinding> =
+  z.discriminatedUnion("kind", [
     z
       .object({
         kind: z.literal("overview"),
@@ -53,8 +52,7 @@ export const keeperBriefOriginBindingSchema: z.ZodType<KeeperBriefOriginBinding>
           .strict(),
       })
       .strict(),
-  ],
-);
+  ]);
 export const keeperBriefSelectionSchema: z.ZodType<KeeperBriefSelection> = z
   .object({
     name: z.string().min(1).max(200),
@@ -199,7 +197,8 @@ export const keeperBriefIntentHistorySchema: z.ZodType<KeeperBriefIntentHistory>
         new Set([
           ...(value.active ? [value.active.requestId] : []),
           ...value.history.map((item) => item.requestId),
-        ]).size === value.history.length + (value.active ? 1 : 0) &&
+        ]).size ===
+          value.history.length + (value.active ? 1 : 0) &&
         new TextEncoder().encode(JSON.stringify(value)).byteLength <=
           MAX_KEEPER_BRIEF_INTENT_BYTES,
     );
