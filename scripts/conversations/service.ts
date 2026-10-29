@@ -17,8 +17,8 @@ import type { PreparedGeminiTask } from "../../types/gemini-task-runtime";
 import type {
   KeeperBriefIntent,
   KeeperBriefIntentMetadata,
-  KeeperBriefOriginRequest,
   KeeperBriefOriginBinding,
+  KeeperBriefOriginRequest,
   KeeperBriefSelection,
   KeeperBriefSnapshot,
 } from "../../types/keeper-brief";
@@ -49,10 +49,7 @@ import {
   keeperBriefSelectionSchema,
 } from "../keeper/brief-protocol";
 import { keeperContinuationSchema } from "../keeper/recovery-protocol";
-import {
-  type KeeperRuntime,
-  prepareKeeper,
-} from "../keeper/recovery-runtime";
+import { type KeeperRuntime, prepareKeeper } from "../keeper/recovery-runtime";
 import { resolveCheckout } from "../ledger/workspace";
 import { workspaceKey } from "../projects/scope";
 import {
@@ -178,7 +175,9 @@ const savedKeeperSmith = (state: ConversationState) => {
   );
 };
 
-const intentMetadata = (intent: KeeperBriefIntent): KeeperBriefIntentMetadata => {
+const intentMetadata = (
+  intent: KeeperBriefIntent,
+): KeeperBriefIntentMetadata => {
   const {
     version,
     requestId,
@@ -520,9 +519,9 @@ export function createConversationService(options: ConversationOptions) {
       },
     ): Promise<KeeperBriefIntentMetadata> {
       return trackBriefReservation(async () => {
-        if (closed)
-          throw new ConversationError(503, "This hearth is closing.");
-        const checked = keeperBriefIntentReserveRequestSchema.safeParse(request);
+        if (closed) throw new ConversationError(503, "This hearth is closing.");
+        const checked =
+          keeperBriefIntentReserveRequestSchema.safeParse(request);
         if (!checked.success || options.address)
           throw new ConversationError(
             400,
@@ -567,9 +566,7 @@ export function createConversationService(options: ConversationOptions) {
             const terminalActive =
               active?.state === "admitted" &&
               activeTurn !== undefined &&
-              ["completed", "failed", "cancelled"].includes(
-                activeTurn.phase,
-              );
+              ["completed", "failed", "cancelled"].includes(activeTurn.phase);
             if (active && !terminalActive)
               throw new ConversationError(
                 409,
@@ -606,8 +603,7 @@ export function createConversationService(options: ConversationOptions) {
               store.read(projectId),
             );
             if (
-              store.read(projectId).revision !==
-                reservation.expectedRevision ||
+              store.read(projectId).revision !== reservation.expectedRevision ||
               JSON.stringify(afterOrigin) !== JSON.stringify(origin) ||
               !sameSelection(afterSelection, selection)
             )
@@ -696,7 +692,10 @@ export function createConversationService(options: ConversationOptions) {
     ): Promise<ConversationReceipt> {
       const checked = keeperBriefIntentReferenceSchema.safeParse(input);
       if (!checked.success || options.address)
-        throw new ConversationError(400, "Expected an exact Keeper brief ticket.");
+        throw new ConversationError(
+          400,
+          "Expected an exact Keeper brief ticket.",
+        );
       const reference = checked.data;
       const original = assertServedBriefIntent(
         projectId,
@@ -716,7 +715,10 @@ export function createConversationService(options: ConversationOptions) {
           await store.acceptKeeperBrief(projectId, reference, () => !closed)
         ).receipt;
       if (original.state === "retired")
-        throw new ConversationError(409, "This Keeper brief reservation was retired.");
+        throw new ConversationError(
+          409,
+          "This Keeper brief reservation was retired.",
+        );
       const currentJob = jobs.get(projectId);
       if (currentJob) {
         if (currentJob.requestId !== reference.requestId)
@@ -774,7 +776,10 @@ export function createConversationService(options: ConversationOptions) {
               retained.intentHash !== reference.intentHash ||
               retained.expectedRevision !== reference.expectedRevision
             )
-              throw new ConversationError(409, "The saved brief ticket changed.");
+              throw new ConversationError(
+                409,
+                "The saved brief ticket changed.",
+              );
             if (retained.state === "admitted") {
               const replay = await store.acceptKeeperBrief(
                 projectId,
@@ -789,7 +794,10 @@ export function createConversationService(options: ConversationOptions) {
               return;
             }
             if (retained.state !== "reserved")
-              throw new ConversationError(409, "This Keeper brief reservation was retired.");
+              throw new ConversationError(
+                409,
+                "This Keeper brief reservation was retired.",
+              );
             const current = projectCatalogFor(projectId);
             const requestOrigin: KeeperBriefOriginRequest =
               retained.origin.kind === "overview"

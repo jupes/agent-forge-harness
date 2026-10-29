@@ -6,8 +6,8 @@ import type { Smith } from "../../types/hearth";
 import { loadConfig } from "../config/load";
 import { ConversationError } from "../conversations/error";
 import {
-  KeeperSelectionMismatchError,
   type ConversationTransport,
+  KeeperSelectionMismatchError,
 } from "../conversations/transport";
 import { buildChildEnv } from "../executors/env";
 import { type Supervised, supervise } from "../executors/supervisor";

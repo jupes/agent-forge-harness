@@ -70,11 +70,11 @@ import type { CouncilPreview } from "../council/service";
 import { REVIEW_NOTE_LIMIT } from "../dashboard/forge-run-model";
 import { hashText } from "../hash-text";
 import { createRestartIdentityJournal } from "../identities/restart-index";
-import { createKeeperProposalStore } from "../keeper/proposal-store";
 import {
   keeperBriefIntentMetadataSchema,
   keeperBriefIntentOriginalSchema,
 } from "../keeper/brief-protocol";
+import { createKeeperProposalStore } from "../keeper/proposal-store";
 import { keeperSessionStartReceiptSchema } from "../keeper/session-start-protocol";
 import { keeperShiftStartRequestSchema } from "../keeper/shift-start-protocol";
 import { type AppendResult, appendEvent } from "../ledger/append";
@@ -2514,10 +2514,14 @@ const ACTIONS: Record<string, ActionFixture> = {
     },
     invalid: {
       path: `/projects/${FIXTURE_PROJECT_ID}/keeper/brief-intents/reserve`,
-      body: { expectedRevision: 0, origin: { kind: "overview", workspace: "forged" } },
+      body: {
+        expectedRevision: 0,
+        origin: { kind: "overview", workspace: "forged" },
+      },
     },
     prepare: async (h) => {
-      const fixture = ACTIONS["POST /projects/:id/keeper/brief-intents/reserve"]!;
+      const fixture =
+        ACTIONS["POST /projects/:id/keeper/brief-intents/reserve"]!;
       fixture.valid.body = {
         expectedRevision: createConversationStore(h.home).read(
           FIXTURE_PROJECT_ID,
@@ -2536,7 +2540,10 @@ const ACTIONS: Record<string, ActionFixture> = {
   "POST /projects/:id/keeper/brief-intents/retire": {
     valid: {
       path: `/projects/${FIXTURE_PROJECT_ID}/keeper/brief-intents/retire`,
-      body: { requestId: "9b77d65d-18f9-4a15-ab82-8f48dfab6b02", intentHash: "0".repeat(64) },
+      body: {
+        requestId: "9b77d65d-18f9-4a15-ab82-8f48dfab6b02",
+        intentHash: "0".repeat(64),
+      },
       status: 200,
       target: FIXTURE_PROJECT_ID,
       audit: {
@@ -2549,7 +2556,8 @@ const ACTIONS: Record<string, ActionFixture> = {
     },
     prepare: async (h) => {
       const ticket = await reserveBriefTicket(h);
-      const fixture = ACTIONS["POST /projects/:id/keeper/brief-intents/retire"]!;
+      const fixture =
+        ACTIONS["POST /projects/:id/keeper/brief-intents/retire"]!;
       fixture.valid.body = {
         requestId: ticket.requestId,
         intentHash: ticket.intentHash,
@@ -2605,7 +2613,7 @@ const ACTIONS: Record<string, ActionFixture> = {
             frame.event.kind === "user" &&
             frame.event.brief?.projectId === FIXTURE_PROJECT_ID,
         ),
-        ).toBe(true);
+      ).toBe(true);
     },
   },
   "POST /projects/:id/keeper/turns": {

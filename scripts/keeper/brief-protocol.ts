@@ -4,8 +4,8 @@ import type {
   KeeperBriefIntent,
   KeeperBriefIntentHistory,
   KeeperBriefIntentMetadata,
-  KeeperBriefOriginRequest,
   KeeperBriefOriginBinding,
+  KeeperBriefOriginRequest,
   KeeperBriefSelection,
   KeeperBriefSnapshot,
   KeeperBriefs,
@@ -49,7 +49,10 @@ export const keeperBriefOriginBindingSchema: z.ZodType<KeeperBriefOriginBinding>
           .object({
             requestId: z.string().uuid(),
             hash: z.string().regex(/^[a-f0-9]{64}$/),
-            scopeHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+            scopeHash: z
+              .string()
+              .regex(/^[a-f0-9]{64}$/)
+              .optional(),
             revision: count,
           })
           .strict(),
@@ -222,7 +225,7 @@ export const keeperBriefIntentHistorySchema: z.ZodType<KeeperBriefIntentHistory>
       version: z.literal(1),
       active: keeperBriefIntentOriginalSchema.nullable(),
       history: z
-      .array(keeperBriefIntentOriginalSchema)
+        .array(keeperBriefIntentOriginalSchema)
         .max(MAX_KEEPER_BRIEF_INTENT_HISTORY),
     })
     .strict()

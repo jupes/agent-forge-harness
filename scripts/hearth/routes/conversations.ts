@@ -1,6 +1,8 @@
 import type { ConversationSend } from "../../../types/conversation";
-import type { KeeperBriefSnapshot } from "../../../types/keeper-brief";
-import type { KeeperBriefOriginRequest } from "../../../types/keeper-brief";
+import type {
+  KeeperBriefOriginRequest,
+  KeeperBriefSnapshot,
+} from "../../../types/keeper-brief";
 import type { KeeperContinuationRequest } from "../../../types/keeper-recovery";
 import type { ProjectCreateOperation } from "../../../types/projects";
 import {
@@ -277,7 +279,9 @@ export function conversationRoutes(
       requestId,
     }),
     effect: ({ id, requestId, intentHash }) =>
-      answer(200, () => service.retireKeeperBrief(id, { requestId, intentHash })),
+      answer(200, () =>
+        service.retireKeeperBrief(id, { requestId, intentHash }),
+      ),
   };
   const refresh: ActionRoute<{
     id: string;
@@ -306,7 +310,11 @@ export function conversationRoutes(
     }),
     effect: ({ id, requestId, expectedRevision, intentHash }) =>
       answer(202, () =>
-        service.commitKeeperBrief(id, { requestId, expectedRevision, intentHash }),
+        service.commitKeeperBrief(id, {
+          requestId,
+          expectedRevision,
+          intentHash,
+        }),
       ),
   };
   const send: ActionRoute<{ id: string; input: ConversationSend }> = {

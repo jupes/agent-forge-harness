@@ -4,13 +4,13 @@ import type { Smith } from "../../../types/hearth";
 import { createConversationService } from "../../conversations/service";
 import { createConversationStore } from "../../conversations/store";
 import type { ConversationTransport } from "../../conversations/transport";
-import { keeperReadiness } from "../../keeper/readiness";
-import type { KeeperRuntime } from "../../keeper/recovery-runtime";
 import {
   briefsSchema,
   keeperBriefIntentMetadataSchema,
   keeperBriefIntentOriginalSchema,
 } from "../../keeper/brief-protocol";
+import { keeperReadiness } from "../../keeper/readiness";
+import type { KeeperRuntime } from "../../keeper/recovery-runtime";
 import { projectCatalogPath } from "../../projects/store";
 import {
   FIXTURE_PROJECT_ID,
@@ -164,8 +164,7 @@ test("closing waits for brief source preparation and prevents a late reservation
   const response = await pendingReserve;
   expect(response.status).toBe(503);
   expect(
-    createConversationStore(h.home).read(FIXTURE_PROJECT_ID)
-      .keeperBriefIntents,
+    createConversationStore(h.home).read(FIXTURE_PROJECT_ID).keeperBriefIntents,
   ).toBeUndefined();
   expect(starts).toBe(0);
 });
@@ -403,9 +402,9 @@ test("a project change during explicit readiness keeps the reviewed original una
   releaseReadiness();
   expect((await pendingCommit).status).toBe(409);
   expect(starts).toBe(0);
-  expect(createConversationStore(h.home).read(FIXTURE_PROJECT_ID).turns).toEqual(
-    [],
-  );
+  expect(
+    createConversationStore(h.home).read(FIXTURE_PROJECT_ID).turns,
+  ).toEqual([]);
   expect(
     createConversationStore(h.home).readKeeperBriefIntent(
       FIXTURE_PROJECT_ID,
@@ -430,17 +429,20 @@ test("audited brief review commits the frozen original once and preserves a good
         async run(request, sink) {
           starts++;
           expect(
-            h.events(["operator.action"]).some(
-              (event) =>
-                event.kind === "operator.action" &&
-                event.payload.action === "keeper.brief.refresh",
-            ),
+            h
+              .events(["operator.action"])
+              .some(
+                (event) =>
+                  event.kind === "operator.action" &&
+                  event.payload.action === "keeper.brief.refresh",
+              ),
           ).toBe(true);
           expect(request.input.text).toContain("Snapshot:");
           expect(request.input.text).toBe(frozenText);
           expect(request.input.brief).toEqual(frozenSnapshot);
           expect(request.input.about).toEqual([]);
-          if (mode === "unknown") throw new Error("Fixture lost the provider outcome");
+          if (mode === "unknown")
+            throw new Error("Fixture lost the provider outcome");
           await sink({
             kind: "identity",
             provider: "claude",
@@ -554,10 +556,9 @@ test("audited brief review commits the frozen original once and preserves a good
         })
       ).status,
     ).toBe(403);
-    const read = await fetch(
-      `${intentsPath}/${metadata.requestId}`,
-      { headers: h.headers(h.hearth.token) },
-    );
+    const read = await fetch(`${intentsPath}/${metadata.requestId}`, {
+      headers: h.headers(h.hearth.token),
+    });
     expect(read.status).toBe(200);
     const originalEnvelope: unknown = await read.json();
     if (
@@ -592,7 +593,9 @@ test("audited brief review commits the frozen original once and preserves a good
     expect(checks).toBe(checksBefore);
     return metadata;
   };
-  const commit = (ticket: ReturnType<typeof keeperBriefIntentMetadataSchema.parse>) =>
+  const commit = (
+    ticket: ReturnType<typeof keeperBriefIntentMetadataSchema.parse>,
+  ) =>
     post({
       requestId: ticket.requestId,
       expectedRevision: ticket.expectedRevision,
@@ -664,9 +667,7 @@ test("audited brief review commits the frozen original once and preserves a good
     const ticket = await reserve(store.read(FIXTURE_PROJECT_ID).revision);
     const startsBeforeCommit = starts;
     const checksBeforeCommit = checks;
-    expect(
-      (await commit(ticket)).status,
-    ).toBe(202);
+    expect((await commit(ticket)).status).toBe(202);
     expect(starts).toBe(startsBeforeCommit + 1);
     expect(checks).toBe(checksBeforeCommit + 1);
     await terminal(
@@ -682,7 +683,9 @@ test("audited brief review commits the frozen original once and preserves a good
       expect((await commit(ticket)).status).toBe(202);
       expect(starts).toBe(startsBeforeReplay);
       expect(checks).toBe(checksBeforeReplay);
-      expect(store.read(FIXTURE_PROJECT_ID).turns.at(-1)?.phase).toBe("unknown");
+      expect(store.read(FIXTURE_PROJECT_ID).turns.at(-1)?.phase).toBe(
+        "unknown",
+      );
     }
   }
   expect(JSON.stringify(h.events())).not.toContain("Alpha source evidence");

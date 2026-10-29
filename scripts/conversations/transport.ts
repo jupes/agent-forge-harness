@@ -4,8 +4,8 @@ import type {
   ConversationPhase,
   PreparedConversationSend,
 } from "../../types/conversation";
-import type { ProjectRecord } from "../../types/projects";
 import type { Smith } from "../../types/hearth";
+import type { ProjectRecord } from "../../types/projects";
 
 /** A source-sealed Keeper selection changed before any provider process started. */
 export class KeeperSelectionMismatchError extends Error {
