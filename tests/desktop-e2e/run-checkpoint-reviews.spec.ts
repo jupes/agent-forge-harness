@@ -465,12 +465,11 @@ async function installLostCommitHook(
           finish();
         }
       };
-      const wrapper = Object.assign(
-        async function (
-          this: Window,
-          ...args: Parameters<typeof originalFetch>
-        ) {
-          const [input, init] = args;
+      const wrapper = Object.assign(async function (
+        this: Window,
+        ...args: Parameters<typeof originalFetch>
+      ) {
+        const [input, init] = args;
         const request =
           input instanceof Request && init === undefined
             ? input.clone()
@@ -534,9 +533,7 @@ async function installLostCommitHook(
           throw new TypeError("Failed to fetch");
         }
         return response;
-      },
-        originalFetch,
-      );
+      }, originalFetch);
       window.__restoreCheckpointFetch = async () => {
         if (window.fetch === wrapper) window.fetch = originalFetch;
         window.__checkpointCancelCloneReads?.();
@@ -695,12 +692,11 @@ async function installOriginalReadHold(page: Page, fixture: ReviewFixture) {
         release();
         if (hasHeld) await heldDrained;
       };
-      const wrapper = Object.assign(
-        async function (
-          this: Window,
-          ...args: Parameters<typeof originalFetch>
-        ) {
-          const [input, init] = args;
+      const wrapper = Object.assign(async function (
+        this: Window,
+        ...args: Parameters<typeof originalFetch>
+      ) {
+        const [input, init] = args;
         const request =
           input instanceof Request && init === undefined
             ? input.clone()
@@ -759,9 +755,7 @@ async function installOriginalReadHold(page: Page, fixture: ReviewFixture) {
           finishHeld();
         }
         return response;
-      },
-        originalFetch,
-      );
+      }, originalFetch);
       window.__restoreCheckpointFetch = async () => {
         if (window.fetch === wrapper) window.fetch = originalFetch;
         window.__checkpointCancelCloneReads?.();
