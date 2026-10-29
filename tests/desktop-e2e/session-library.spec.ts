@@ -338,7 +338,7 @@ test("actual >100-frame private export includes attachments and all reports; com
   ).toBeDisabled();
   await expect(
     dialog.getByRole("button", {
-      name: "Open session in terminal",
+      name: "Open Claude Chat in terminal",
       exact: true,
     }),
   ).toBeDisabled();
@@ -708,9 +708,10 @@ test.describe("Windows terminal handoff UI", () => {
     await expect(review).toContainText("no automatic retry was sent");
     await expect(review).toContainText("original request is held");
     expect(posts).toBe(1);
-    expect(reads).toBeGreaterThanOrEqual(2);
+    expect(reads).toBeGreaterThanOrEqual(1);
     expect(starts()).toBe(before + 1);
     expect(bytes(record.id)).toEqual(beforeState);
+    const readsBeforeReload = reads;
     await page.keyboard.press("Escape");
     await reloadSettled(page);
     dialog = await actions(page);
@@ -721,6 +722,7 @@ test.describe("Windows terminal handoff UI", () => {
       }),
     ).toBeDisabled();
     await expect(dialog).toContainText("another terminal is blocked");
+    expect(reads).toBeGreaterThan(readsBeforeReload);
     await expect(
       page.getByRole("textbox", { name: "Session reply prompt", exact: true }),
     ).toBeDisabled();
