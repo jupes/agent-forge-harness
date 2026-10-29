@@ -33,7 +33,14 @@
  */
 
 import { randomUUID } from "node:crypto";
-import { appendFileSync, mkdirSync } from "node:fs";
+import {
+  appendFileSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  unlinkSync,
+} from "node:fs";
 import { join } from "node:path";
 import {
   type BdIssue,
@@ -73,6 +80,7 @@ appendFileSync(join(state, "calls.jsonl"), `${JSON.stringify(args)}\n`);
 
 /** The validated state directory, shared by the transaction below. */
 const home: string = state;
+const CHECKPOINT_REVIEW_FAULT = join(home, "checkpoint-review-fault.json");
 function run(): Printed {
   const issues = readState(home);
   const save = (issue: BdIssue): BdIssue => {
@@ -176,7 +184,55 @@ function run(): Printed {
     if (verb === "comments")
       return bdAnswers.listedComments(readComments(home)[id] ?? []);
     const { blockedBy: _blockedBy, ...printed } = issue;
-    return { status: 0, stdout: `${JSON.stringify([printed])}\n`, stderr: "" };
+    return {
+      status: 0,
+      stdout: `${JSON.stringify([
+        { ...printed, comment_count: readComments(home)[id]?.length ?? 0 },
+      ])}\n`,
+      stderr: "",
+    };
+  }
+
+  function checkpointReviewFault(issueId: string, text: string): boolean {
+    if (!existsSync(CHECKPOINT_REVIEW_FAULT)) return false;
+    const stat = lstatSync(CHECKPOINT_REVIEW_FAULT);
+    if (
+      stat.isSymbolicLink() ||
+      !stat.isFile() ||
+      stat.nlink !== 1 ||
+      stat.size > 4 * 1024
+    )
+      throw Error("The checkpoint review fault control was not a small regular file.");
+    let raw: unknown;
+    try {
+      raw = JSON.parse(readFileSync(CHECKPOINT_REVIEW_FAULT, "utf8"));
+    } catch {
+      throw Error("The checkpoint review fault control was invalid JSON.");
+    }
+    if (
+      typeof raw !== "object" ||
+      raw === null ||
+      Array.isArray(raw) ||
+      Object.keys(raw).sort().join(",") !== "beadId,mode,requestId" ||
+      !("mode" in raw) ||
+      raw.mode !== "comment-persist-unknown" ||
+      !("beadId" in raw) ||
+      typeof raw.beadId !== "string" ||
+      raw.beadId.length === 0 ||
+      raw.beadId.length > 200 ||
+      !("requestId" in raw) ||
+      typeof raw.requestId !== "string" ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(raw.requestId)
+    )
+      throw Error("The checkpoint review fault control did not match its strict shape.");
+    if (raw.beadId !== issueId) return false;
+    const marker = `Forge checkpoint review ${raw.requestId}`;
+    const lines = text.split(/\r?\n/);
+    const occurrences = lines.filter((line) => line === marker).length;
+    if (occurrences === 0) return false;
+    if (occurrences !== 1 || lines.at(-1) !== marker)
+      throw Error("The checkpoint review fault marker was not one exact final line.");
+    return true;
   }
 
   function answer(): Printed {
@@ -283,9 +339,17 @@ function run(): Printed {
         text: write.text,
         createdAt: new Date().toISOString(),
       };
+      const faultAfterPersist = checkpointReviewFault(issue.id, comment.text);
       const comments = readComments(home);
       comments[issue.id] = [...(comments[issue.id] ?? []), comment];
       writeComments(home, comments);
+      if (faultAfterPersist) unlinkSync(CHECKPOINT_REVIEW_FAULT);
+      if (faultAfterPersist)
+        return {
+          status: 1,
+          stdout: "",
+          stderr: "fixture lost the comment write reply\n",
+        };
       return bdAnswers.commented(comment);
     }
     // Closing a closed issue changes nothing: bd prints it as it is and exits 0.
