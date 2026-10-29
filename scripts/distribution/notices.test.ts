@@ -19,6 +19,10 @@ const noticeFiles = [
   ["NOTICE", "NOTICE"],
   [".claude/skills/ATTRIBUTION.md", ".claude/skills/ATTRIBUTION.md"],
   ["docs/fonts/LICENSE-Inter.txt", "docs/fonts/LICENSE-Inter.txt"],
+  [
+    "scripts/distribution/THIRD-PARTY-NOTICES.txt",
+    "THIRD-PARTY-NOTICES.txt",
+  ],
 ] as const;
 
 function expectArtifactMap(stageRoot: string): void {
@@ -35,25 +39,27 @@ function expectArtifactMap(stageRoot: string): void {
   expect(map).toContain("no skill code is bundled");
 }
 
-test("dashboard build emits the project and source attribution notices", async () => {
+test("desktop and production dashboard builds emit distribution notices", async () => {
   const outputRoot = mkdtempSync(join(tmpdir(), "agent-forge-notices-"));
   const previousNoBuild = process.env.DASHBOARD_NO_BUILD;
   process.env.DASHBOARD_NO_BUILD = "1";
   try {
-    await build({
-      configFile: resolve(repositoryRoot, "vite.dashboard.config.ts"),
-      mode: "desktop",
-      logLevel: "silent",
-      build: { outDir: outputRoot, emptyOutDir: true },
-    });
-    for (const [sourcePath, artifactPath] of noticeFiles) {
-      const artifact = join(outputRoot, artifactPath);
-      expect(existsSync(artifact)).toBe(true);
-      expect(readFileSync(artifact)).toEqual(
-        readFileSync(join(repositoryRoot, sourcePath)),
-      );
+    for (const mode of ["desktop", "production"] as const) {
+      await build({
+        configFile: resolve(repositoryRoot, "vite.dashboard.config.ts"),
+        mode,
+        logLevel: "silent",
+        build: { outDir: outputRoot, emptyOutDir: true },
+      });
+      for (const [sourcePath, artifactPath] of noticeFiles) {
+        const artifact = join(outputRoot, artifactPath);
+        expect(existsSync(artifact)).toBe(true);
+        expect(readFileSync(artifact)).toEqual(
+          readFileSync(join(repositoryRoot, sourcePath)),
+        );
+      }
+      expectArtifactMap(outputRoot);
     }
-    expectArtifactMap(outputRoot);
   } finally {
     if (previousNoBuild === undefined) delete process.env.DASHBOARD_NO_BUILD;
     else process.env.DASHBOARD_NO_BUILD = previousNoBuild;
