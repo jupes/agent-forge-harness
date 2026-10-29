@@ -151,6 +151,10 @@ export function createProjectCouncilOwner(
   let selectionGeneration = 0;
   let actionGeneration = 0;
   let metadataAbort: AbortController | null = null;
+  let metadataRefreshes = 0;
+  const privateAborts = new Set<AbortController>();
+  let ownedActivity = 0;
+  let refreshPending = false;
   let runGeneration = 0;
   let runAbort: AbortController | null = null;
   let runTimer: ReturnType<typeof setTimeout> | null = null;
@@ -192,6 +196,20 @@ export function createProjectCouncilOwner(
   const protectedRead = async <T>(
     work: (signal: AbortSignal) => Promise<T>,
   ): Promise<T> => {
+    const abort = new AbortController();
+    privateAborts.add(abort);
+    const deadline = setTimeout(() => abort.abort(), 6_000);
+    try {
+      return await work(abort.signal);
+    } finally {
+      clearTimeout(deadline);
+      privateAborts.delete(abort);
+    }
+  };
+
+  const metadataRead = async <T>(
+    work: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> => {
     metadataAbort?.abort();
     const abort = new AbortController();
     metadataAbort = abort;
@@ -205,6 +223,10 @@ export function createProjectCouncilOwner(
   };
 
   const refresh = async () => {
+    if (ownedActivity > 0) {
+      refreshPending = true;
+      return;
+    }
     if (
       disposed ||
       view.phase === "preparing" ||
@@ -213,8 +235,9 @@ export function createProjectCouncilOwner(
     )
       return;
     const current = ++generation;
+    metadataRefreshes++;
     try {
-      const [profiles, history] = await protectedRead((signal) =>
+      const [profiles, history] = await metadataRead((signal) =>
         Promise.all([
           transport.profiles(signal),
           transport.history(projectId, signal),
@@ -222,58 +245,66 @@ export function createProjectCouncilOwner(
       );
       assertHistoryOwner(history);
       if (disposed || current !== generation) return;
-      paint({
-        profiles,
-        history,
-        phase: view.phase === "held" ? "held" : "ready",
-        error: "",
-      });
+      paint({ profiles, history });
       const activeId = history.activeRequestId;
       if (activeId !== null) {
         if (!projectCouncilRequestIdSchema.safeParse(activeId).success)
           throw Error("The active saved review ID is invalid.");
-        const historyState = history.items.find(
-          (item) => item.requestId === activeId,
-        )?.state;
+        const row = history.items.find((item) => item.requestId === activeId);
+        const historyState = row?.state;
         if (disposed || current !== generation) return;
+        const saved = view.original?.original;
         const alreadyReviewed =
-          view.original?.original.requestId === activeId &&
-          view.original.original.state === historyState;
+          saved !== undefined &&
+          row !== undefined &&
+          saved.requestId === activeId &&
+          row.runId === saved.runId &&
+          row.intentHash === saved.intentHash &&
+          saved.state === historyState;
         if (alreadyReviewed) {
-          const phase =
-            view.run?.provenance.requestId === activeId &&
-            view.run.receipt.phase === "running"
-              ? "running"
-              : historyState === "reserved"
-                ? "reserved"
-                : "held";
-          paint({ history, phase, error: "" });
+          paint({ history });
+        } else if (view.original) {
+          paint({
+            history,
+            run: null,
+            runLoading: false,
+            phase: "held",
+            error:
+              "Saved review metadata changed. Read this exact saved original before continuing.",
+          });
         } else {
           paint({
             history,
-            original: null,
-            run: null,
             phase: historyState === "reserved" ? "reserved" : "held",
             error:
               "Read the saved original to verify its current contents and state.",
           });
         }
-      } else if (view.original === null && view.phase !== "held") {
-        paint({ history, phase: "ready", error: "" });
       } else if (view.original) {
         const row = history.items.find(
           (item) => item.requestId === view.original?.original.requestId,
         );
-        if (row && row.state !== view.original.original.state) {
+        const saved = view.original.original;
+        if (
+          !row ||
+          row.runId !== saved.runId ||
+          row.intentHash !== saved.intentHash ||
+          row.state !== saved.state ||
+          ["reserved", "dispatch-claimed", "running"].includes(saved.state)
+        ) {
           paint({
             history,
-            original: null,
             run: null,
-            phase: "ready",
+            runLoading: false,
+            phase: "held",
             error:
-              "Saved review state changed. Read the saved original again before continuing.",
+              "Saved review state changed. Read this exact saved original before continuing.",
           });
-        }
+        } else paint({ history });
+      } else if (view.phase !== "held") {
+        paint({ history, phase: "ready", error: "" });
+      } else {
+        paint({ history });
       }
       // An empty history is never proof that a previously sent reserve was absent.
     } catch (error) {
@@ -286,7 +317,28 @@ export function createProjectCouncilOwner(
             : view.phase,
         error: message(error),
       });
+    } finally {
+      metadataRefreshes--;
     }
+  };
+
+  const beginOwnedActivity = () => {
+    ownedActivity++;
+    generation++;
+    if (metadataRefreshes > 0) {
+      refreshPending = true;
+      metadataAbort?.abort();
+    }
+    let active = true;
+    return () => {
+      if (!active) return;
+      active = false;
+      ownedActivity--;
+      if (ownedActivity === 0 && refreshPending) {
+        refreshPending = false;
+        void refresh();
+      }
+    };
   };
 
   const prepare = async (request: ProjectCouncilReserveRequest) => {
@@ -314,11 +366,14 @@ export function createProjectCouncilOwner(
     }
     const action = ++actionGeneration;
     const selection = selectionGeneration;
+    const finish = beginOwnedActivity();
     paint({ phase: "preparing", error: "", original: null });
     try {
       const reserved = await transport.reserve(projectId, parsedRequest.data);
       const verified = await verifyOriginal(
-        await transport.original(projectId, reserved.metadata.requestId),
+        await protectedRead((signal) =>
+          transport.original(projectId, reserved.metadata.requestId, signal),
+        ),
         projectId,
         workspace,
         reserved.metadata.requestId,
@@ -351,6 +406,8 @@ export function createProjectCouncilOwner(
         error: `${message(error)} Check saved review before trying again.`,
       });
       void refresh();
+    } finally {
+      finish();
     }
   };
 
@@ -368,6 +425,7 @@ export function createProjectCouncilOwner(
       return;
     const action = ++actionGeneration;
     const selection = selectionGeneration;
+    const finish = beginOwnedActivity();
     paint({ phase: "retiring", error: "" });
     try {
       const receipt = await transport.retire(
@@ -426,6 +484,8 @@ export function createProjectCouncilOwner(
         phase: "held",
         error: `${message(error)} Check saved review before trying again.`,
       });
+    } finally {
+      finish();
     }
   };
 
@@ -440,7 +500,6 @@ export function createProjectCouncilOwner(
       return;
     selectionGeneration++;
     actionGeneration++;
-    const current = ++generation;
     if (workspace === null) {
       paint({
         phase: "held",
@@ -449,6 +508,8 @@ export function createProjectCouncilOwner(
       });
       return;
     }
+    const finish = beginOwnedActivity();
+    const current = ++generation;
     stopRunFollow();
     paint({ phase: "held", error: "", original: null, run: null });
     try {
@@ -469,6 +530,8 @@ export function createProjectCouncilOwner(
     } catch (error) {
       if (disposed || current !== generation) return;
       paint({ phase: "held", error: message(error) });
+    } finally {
+      finish();
     }
   };
 
@@ -491,6 +554,7 @@ export function createProjectCouncilOwner(
       runAbort
     )
       return;
+    const finish = beginOwnedActivity();
     const current = ++runGeneration;
     const abort = new AbortController();
     runAbort = abort;
@@ -597,19 +661,25 @@ export function createProjectCouncilOwner(
       if (runAbort === abort) runAbort = null;
       if (retryDelay !== null) scheduleRunRead(retryDelay);
       else if (continueFollowing) scheduleRunRead();
+      finish();
     }
   };
 
   const openResult = async (requestId: string) => {
-    await openSaved(requestId);
-    const saved = view.original;
-    if (
-      !disposed &&
-      saved?.original.requestId === requestId &&
-      saved.original.state !== "reserved" &&
-      saved.original.state !== "retired"
-    )
-      await readRun();
+    const finish = beginOwnedActivity();
+    try {
+      await openSaved(requestId);
+      const saved = view.original;
+      if (
+        !disposed &&
+        saved?.original.requestId === requestId &&
+        saved.original.state !== "reserved" &&
+        saved.original.state !== "retired"
+      )
+        await readRun();
+    } finally {
+      finish();
+    }
   };
 
   const convene = async (requestId: string, intentHash: string) => {
@@ -626,6 +696,7 @@ export function createProjectCouncilOwner(
       return;
     const action = ++actionGeneration;
     const selection = selectionGeneration;
+    const finish = beginOwnedActivity();
     paint({ phase: "committing", error: "", run: null });
     try {
       const receipt = await transport.commit(
@@ -679,6 +750,8 @@ export function createProjectCouncilOwner(
         phase: "held",
         error: `${message(error)} Check the saved original and result; do not submit Convene again.`,
       });
+    } finally {
+      finish();
     }
   };
 
@@ -697,6 +770,7 @@ export function createProjectCouncilOwner(
       return;
     const action = ++actionGeneration;
     const selection = selectionGeneration;
+    const finish = beginOwnedActivity();
     stopRunFollow();
     paint({
       phase: "held",
@@ -739,15 +813,21 @@ export function createProjectCouncilOwner(
         phase: "held",
         error: `${message(error)} Cancellation is not confirmed; check the saved result.`,
       });
+    } finally {
+      finish();
     }
   };
 
   const newDraft = () => {
     const saved = view.original;
+    const terminal = saved &&
+      ["completed", "failed", "cancelled", "retired"].includes(
+        saved.original.state,
+      );
     if (
       !saved ||
-      view.history?.activeRequestId === saved.original.requestId ||
-      saved.original.state === "reserved"
+      !terminal ||
+      view.history?.activeRequestId !== null
     )
       return;
     selectionGeneration++;
@@ -776,6 +856,7 @@ export function createProjectCouncilOwner(
       disposed = true;
       generation++;
       metadataAbort?.abort();
+      for (const abort of privateAborts) abort.abort();
       stopRunFollow();
       listeners.clear();
     },

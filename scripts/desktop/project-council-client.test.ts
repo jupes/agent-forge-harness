@@ -342,6 +342,14 @@ async function councilFixture() {
   });
   let original: ProjectCouncilOriginal = reserved.original;
   let originalOverride: ProjectCouncilOriginal | null = null;
+  let heldOriginalRead: {
+    entered(): void;
+    wait: Promise<void>;
+    release(): void;
+  } | null = null;
+  let originalReads = 0;
+  let historyReads = 0;
+  let originalReadAborted = false;
   const read = () => {
     const current = originalOverride ?? original;
     return projectCouncilOriginalReadSchema.parse({
@@ -422,8 +430,23 @@ async function councilFixture() {
   let reserveOriginal: ProjectCouncilOriginal | null = null;
   const transport: ProjectCouncilTransportInput = {
     profiles: async () => [profileChoice],
-    history: async () => historyOverride ?? history(),
-    original: async () => read(),
+    history: async () => {
+      historyReads++;
+      return historyOverride ?? history();
+    },
+    original: async (_projectId, _requestId, signal) => {
+      originalReads++;
+      if (heldOriginalRead) {
+        const gate = heldOriginalRead;
+        heldOriginalRead = null;
+        signal?.addEventListener("abort", () => {
+          originalReadAborted = true;
+        });
+        gate.entered();
+        await gate.wait;
+      }
+      return read();
+    },
     reserve: async () => {
       reserveCalls++;
       await reserveGate;
@@ -515,6 +538,9 @@ async function councilFixture() {
   return {
     owner,
     original: () => original,
+    historyReads: () => historyReads,
+    originalReads: () => originalReads,
+    originalReadAborted: () => originalReadAborted,
     counts: () => ({ commitCalls, cancelCalls, runReads }),
     retireCount: () => retireCalls,
     reserveCount: () => reserveCalls,
@@ -522,6 +548,22 @@ async function councilFixture() {
       value: Awaited<ReturnType<ProjectCouncilTransportInput["history"]>>,
     ) {
       historyOverride = value;
+    },
+    holdNextOriginalRead() {
+      let entered!: () => void;
+      let release!: () => void;
+      const reached = new Promise<void>((resolve) => (entered = resolve));
+      const wait = new Promise<void>((resolve) => (release = resolve));
+      heldOriginalRead = { entered, wait, release };
+      return { reached, release };
+    },
+    markDispatchClaimed() {
+      original = {
+        ...original,
+        state: "dispatch-claimed",
+        updatedAt: new Date().toISOString(),
+        dispatchClaimedAt: new Date().toISOString(),
+      };
     },
     loseCommitReply(value: boolean) {
       loseCommitReply = value;
@@ -537,6 +579,8 @@ async function councilFixture() {
         dispatchClaimedAt: new Date().toISOString(),
       };
       await owner.refresh();
+      await owner.openSaved(original.requestId);
+      owner.newDraft();
     },
     releaseLateReserve() {
       reserveOriginal = {
@@ -575,6 +619,76 @@ test("one explicit Convene follows the owned run and cancellation remains readba
   expect(fixture.owner.get().phase).toBe("cancelled");
   expect(fixture.owner.get().run?.receipt.phase).toBe("cancelled");
   expect(fixture.original().state).toBe("cancelled");
+  fixture.owner.dispose();
+});
+
+test("metadata refresh waits for cancellation readback and keeps its verified terminal original", async () => {
+  const fixture = await councilFixture();
+  await fixture.owner.convene(
+    fixture.original().requestId,
+    fixture.original().intentHash,
+  );
+  const before = fixture.owner.get().original!.original;
+  const historyReads = fixture.historyReads();
+  const gate = fixture.holdNextOriginalRead();
+  const cancelling = fixture.owner.cancel(before.requestId, before.intentHash);
+  await gate.reached;
+  await fixture.owner.refresh();
+  expect(fixture.historyReads()).toBe(historyReads);
+  gate.release();
+  await cancelling;
+  expect(fixture.historyReads()).toBe(historyReads + 1);
+  expect(fixture.originalReadAborted()).toBe(false);
+  expect(fixture.owner.get().phase).toBe("cancelled");
+  expect(fixture.owner.get().original?.original).toMatchObject({
+    requestId: before.requestId,
+    runId: before.runId,
+    intentHash: before.intentHash,
+    context: before.context,
+    options: before.options,
+  });
+  expect(fixture.owner.get().run?.receipt.phase).toBe("cancelled");
+  fixture.owner.dispose();
+});
+
+test("metadata cannot release a held admitted original when its active row is absent", async () => {
+  const fixture = await councilFixture();
+  const requestId = fixture.original().requestId;
+  const intentHash = fixture.original().intentHash;
+  await fixture.owner.convene(requestId, intentHash);
+  fixture.tamperRunIdentity(true);
+  await fixture.owner.readRun();
+  fixture.tamperRunIdentity(false);
+  expect(fixture.owner.get().phase).toBe("held");
+  expect(fixture.owner.get().run?.receipt.phase).toBe("running");
+  await fixture.owner.refresh();
+  expect(fixture.owner.get().phase).toBe("held");
+  fixture.markDispatchClaimed();
+  await fixture.owner.openSaved(requestId);
+  const before = fixture.owner.get().original!.original;
+  expect(before.state).toBe("dispatch-claimed");
+  const reads = fixture.originalReads();
+  await fixture.owner.refresh();
+  expect(fixture.owner.get().phase).toBe("held");
+  expect(fixture.owner.get().original?.original).toEqual(before);
+  fixture.owner.newDraft();
+  await fixture.owner.prepare({
+    sourceChoice: { sourceType: "text", source: "A new draft." },
+    profileChoice: before.profileChoice,
+    maxUsd: 1,
+    maxBytes: 1024,
+    redactSecrets: true,
+    deepDiscussion: false,
+  });
+  fixture.setRetireHistory(emptyHistory);
+  await fixture.owner.refresh();
+  fixture.owner.newDraft();
+  await fixture.owner.convene(requestId, intentHash);
+  expect(fixture.originalReads()).toBe(reads);
+  expect(fixture.owner.get().phase).toBe("held");
+  expect(fixture.owner.get().original?.original).toEqual(before);
+  expect(fixture.reserveCount()).toBe(0);
+  expect(fixture.counts().commitCalls).toBe(1);
   fixture.owner.dispose();
 });
 
