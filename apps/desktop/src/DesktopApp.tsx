@@ -35,6 +35,11 @@ import { BeadPanel, beadHref, ProjectBeads } from "./ProjectBeads";
 import { ProjectOverview } from "./ProjectOverview";
 import { ProjectReviews } from "./ProjectReviews";
 import { ProjectRuns } from "./ProjectRuns";
+import {
+  createProjectCheckpointReviewOwner,
+  type ProjectCheckpointReviewOwner,
+  type ProjectCheckpointReviewTarget,
+} from "./project-checkpoint-review-client";
 import { ProjectSessions, SessionInspector } from "./ProjectSessions";
 import { ProjectShifts } from "./ProjectShifts";
 import { ProjectsHome } from "./ProjectsHome";
@@ -92,6 +97,11 @@ export function DesktopApp(): JSX.Element {
   > | null>(null);
   if (!councilDraftCache.current)
     councilDraftCache.current = createProjectCouncilDraftCache();
+  const checkpointReviewOwners = useRef(new Map<string, ProjectCheckpointReviewOwner>());
+  useEffect(() => () => {
+    for (const owner of checkpointReviewOwners.current.values()) owner.dispose();
+    checkpointReviewOwners.current.clear();
+  }, []);
   const [councilSourceReplacement, setCouncilSourceReplacement] = useState<{
     scope: ProjectCouncilDraftScope;
     pending: PendingProjectCouncilSourceReplacement;
@@ -272,6 +282,15 @@ export function DesktopApp(): JSX.Element {
     selectedActivityId,
   );
   const writesAllowed = recovery?.connection.writesAllowed ?? false;
+  const checkpointReviewOwner = (target: ProjectCheckpointReviewTarget) => {
+    const key = JSON.stringify([target.projectId, target.workspacePath, target.runSlug, target.beadId]);
+    let owner = checkpointReviewOwners.current.get(key);
+    if (!owner) {
+      owner = createProjectCheckpointReviewOwner(target);
+      checkpointReviewOwners.current.set(key, owner);
+    }
+    return owner;
+  };
   const smithCreates = useSmithCreate(
     writesAllowed,
     providers.data?.workspace ?? null,
@@ -1009,6 +1028,8 @@ export function DesktopApp(): JSX.Element {
             }}
             onCouncilArtifactPrefill={openCouncilSource}
             onCouncilBeadPrefill={openCouncilSource}
+            checkpointReviewOwner={checkpointReviewOwner}
+            checkpointReviewsWritable={writesAllowed && !project.archived}
             filters={runFilters.filters}
             filterError={runFilters.error}
             onFilter={(filters) => {
