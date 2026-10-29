@@ -28,11 +28,11 @@ import { scratchDirs } from "../../test-scratch";
 import { startTestHearth, type TestHearth } from "../testing";
 import { writeOwnerOnly } from "../token";
 import {
-  FIXTURE_SESSION_REPLY,
   FIXTURE_SESSION_PROMPT,
+  FIXTURE_SESSION_REPLY,
   fakeSessionRuntime,
-  fixtureSessionGit,
   fixtureSessionFlags,
+  fixtureSessionGit,
   sessionStartFixture,
   waitOwnedTurn,
 } from "./session-fixture";
