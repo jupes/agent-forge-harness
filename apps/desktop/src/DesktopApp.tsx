@@ -47,11 +47,11 @@ import {
 import { parseRunFilters, runsHref } from "./project-runs-model";
 import { ClaudeSessionComposer, SessionComposer } from "./SessionComposer";
 import { SessionConversation } from "./SessionConversation";
+import { Smiths } from "./Smiths";
 import {
   canContinueClaudeRateLimit,
   validContinuationSummary,
 } from "./session-continuation";
-import { Smiths } from "./Smiths";
 import { useBeadWrites } from "./use-bead-writes";
 import { useBeads } from "./use-beads";
 import { useKeeper } from "./use-keeper";
@@ -306,8 +306,9 @@ export function DesktopApp(): JSX.Element {
         writable: writesAllowed,
         archived: project.archived,
         record:
-          currentProject.records.find((record) => record.id === sourceSessionId) ??
-          null,
+          currentProject.records.find(
+            (record) => record.id === sourceSessionId,
+          ) ?? null,
         page: currentView.page,
         loaded: currentView.loaded,
         live: currentView.live,

@@ -26,16 +26,16 @@ import {
 } from "./session-activity";
 import type { SessionsClient } from "./session-client";
 import {
-  canContinueClaudeRateLimit,
-  continuationDraftFingerprint,
-  continuationDraftIsDirty,
-  CONTINUATION_SUMMARY_LIMIT,
-  validContinuationSummary,
-} from "./session-continuation";
-import {
   sessionAttachments,
   validateSessionAttachments,
 } from "./session-composer";
+import {
+  CONTINUATION_SUMMARY_LIMIT,
+  canContinueClaudeRateLimit,
+  continuationDraftFingerprint,
+  continuationDraftIsDirty,
+  validContinuationSummary,
+} from "./session-continuation";
 import "./session.css";
 import { CodexChatApprovals } from "./CodexChatApprovals";
 import { CodexChatForkPanel } from "./CodexChatForkPanel";
@@ -963,11 +963,16 @@ function StandardSessionConversation({
             the original Chat.
           </p>
           <p>
-            Source: <a href={desktopHref({
-              projectId,
-              destination: "sessions",
-              selection: { kind: "session", id: sessionId },
-            })}>Claude Chat {sessionId}</a>
+            Source:{" "}
+            <a
+              href={desktopHref({
+                projectId,
+                destination: "sessions",
+                selection: { kind: "session", id: sessionId },
+              })}
+            >
+              Claude Chat {sessionId}
+            </a>
           </p>
           <label>
             Handoff summary
@@ -984,7 +989,8 @@ function StandardSessionConversation({
             />
           </label>
           <small>
-            {continuationSummary.trim().length}/{CONTINUATION_SUMMARY_LIMIT} characters
+            {continuationSummary.trim().length}/{CONTINUATION_SUMMARY_LIMIT}{" "}
+            characters
           </small>
           {continuationDraftDirty && (
             <label>

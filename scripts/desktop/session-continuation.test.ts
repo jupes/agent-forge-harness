@@ -1,15 +1,15 @@
 import { describe, expect, test } from "bun:test";
-import type { OwnedCodingSessionRecord } from "../../types/codex-owned-task";
-import type { ConversationPage } from "../../types/conversation";
-import type { SessionStartIdentityPage } from "../../types/session-start-identities";
 import {
+  type ClaudeContinuationSourceState,
+  CONTINUATION_SUMMARY_LIMIT,
   canContinueClaudeRateLimit,
   continuationDraftFingerprint,
   continuationDraftIsDirty,
-  CONTINUATION_SUMMARY_LIMIT,
   validContinuationSummary,
-  type ClaudeContinuationSourceState,
 } from "../../apps/desktop/src/session-continuation";
+import type { OwnedCodingSessionRecord } from "../../types/codex-owned-task";
+import type { ConversationPage } from "../../types/conversation";
+import type { SessionStartIdentityPage } from "../../types/session-start-identities";
 
 const projectId = "project-alpha",
   sessionId = "session-claude-1",
@@ -175,7 +175,9 @@ describe("reviewed provider continuation eligibility", () => {
     ).toBe(false);
     expect(
       canContinueClaudeRateLimit(
-        source({ page: { ...page, turns: [{ ...page.turns[0]!, phase: "unknown" }] } }),
+        source({
+          page: { ...page, turns: [{ ...page.turns[0]!, phase: "unknown" }] },
+        }),
       ),
     ).toBe(false);
     expect(
@@ -218,15 +220,19 @@ describe("reviewed provider continuation eligibility", () => {
     expect(canContinueClaudeRateLimit(source({ feedInterrupted: true }))).toBe(
       false,
     );
-    expect(canContinueClaudeRateLimit(source({ readError: "unavailable" }))).toBe(
-      false,
-    );
+    expect(
+      canContinueClaudeRateLimit(source({ readError: "unavailable" })),
+    ).toBe(false);
     expect(canContinueClaudeRateLimit(source({ archived: true }))).toBe(false);
     expect(canContinueClaudeRateLimit(source({ writable: false }))).toBe(false);
   });
 
   test("requires a current target identity page with no unresolved Start", () => {
-    expect(canContinueClaudeRateLimit(source({ identity: { ...source().identity, loading: true } }))).toBe(false);
+    expect(
+      canContinueClaudeRateLimit(
+        source({ identity: { ...source().identity, loading: true } }),
+      ),
+    ).toBe(false);
     expect(
       canContinueClaudeRateLimit(
         source({
@@ -239,7 +245,10 @@ describe("reviewed provider continuation eligibility", () => {
         source({
           identity: {
             ...source().identity,
-            page: { ...identityPage, scope: { ...identityPage.scope, workspace: "C:/elsewhere" } },
+            page: {
+              ...identityPage,
+              scope: { ...identityPage.scope, workspace: "C:/elsewhere" },
+            },
           },
         }),
       ),
@@ -273,16 +282,19 @@ describe("continuation summary and draft replacement", () => {
   test("bounds the operator-authored summary and recognizes dirty common drafts", () => {
     expect(validContinuationSummary("  A short handoff.  ")).toBe(true);
     expect(validContinuationSummary(" \n ")).toBe(false);
-    expect(validContinuationSummary("x".repeat(CONTINUATION_SUMMARY_LIMIT + 1))).toBe(
-      false,
-    );
+    expect(
+      validContinuationSummary("x".repeat(CONTINUATION_SUMMARY_LIMIT + 1)),
+    ).toBe(false);
     const clean = { prompt: "", attachments: [], about: [] };
     expect(continuationDraftIsDirty(clean)).toBe(false);
     expect(
       continuationDraftIsDirty({ ...clean, prompt: "existing draft" }),
     ).toBe(true);
     expect(
-      continuationDraftIsDirty({ ...clean, about: [{ kind: "session", id: sessionId }] }),
+      continuationDraftIsDirty({
+        ...clean,
+        about: [{ kind: "session", id: sessionId }],
+      }),
     ).toBe(true);
     expect(continuationDraftFingerprint(clean)).not.toBe(
       continuationDraftFingerprint({ ...clean, prompt: "existing draft" }),

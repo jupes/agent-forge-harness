@@ -1,8 +1,11 @@
+import { originalSessionLaunchMatches } from "../../../scripts/sessions/library-protocol";
 import type { OwnedCodingSessionRecord } from "../../../types/codex-owned-task";
-import type { ConversationPage, ConversationState } from "../../../types/conversation";
+import type {
+  ConversationPage,
+  ConversationState,
+} from "../../../types/conversation";
 import type { SessionStartIdentityPage } from "../../../types/session-start-identities";
 import type { SessionComposerDraft } from "./session-composer";
-import { originalSessionLaunchMatches } from "../../../scripts/sessions/library-protocol";
 
 export const CONTINUATION_SUMMARY_LIMIT = 4_000;
 
@@ -113,7 +116,7 @@ export function canContinueClaudeRateLimit(
     !source.loaded ||
     !source.live ||
     source.feedInterrupted ||
-    !!source.readError ||
+    source.readError ||
     source.stopping ||
     source.stopPosting ||
     source.stopUnknown ||
@@ -165,11 +168,17 @@ export function canContinueClaudeRateLimit(
 export function continuationDraftIsDirty(
   draft: Pick<SessionComposerDraft, "prompt" | "attachments" | "about">,
 ): boolean {
-  return !!draft.prompt.trim() || draft.attachments.length > 0 || draft.about.length > 0;
+  return (
+    !!draft.prompt.trim() ||
+    draft.attachments.length > 0 ||
+    draft.about.length > 0
+  );
 }
 
 export function validContinuationSummary(value: string): boolean {
-  return value.trim().length > 0 && value.trim().length <= CONTINUATION_SUMMARY_LIMIT;
+  return (
+    value.trim().length > 0 && value.trim().length <= CONTINUATION_SUMMARY_LIMIT
+  );
 }
 
 export function continuationDraftFingerprint(

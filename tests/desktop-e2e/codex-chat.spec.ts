@@ -27,12 +27,12 @@ import {
   ownedCodingStateSchema,
 } from "../../scripts/sessions/codex-owned-journal";
 import { ownedCodingSessionSchema } from "../../scripts/sessions/codex-owned-wire-protocol";
+import { sessionStartIdentityPageSchema } from "../../scripts/sessions/identity-protocol";
 import { sessionTranscriptExportSchema } from "../../scripts/sessions/library-protocol";
 import {
   codexChatForkIdentityMetadataSchema,
   sessionOperationIdentityPageSchema,
 } from "../../scripts/sessions/session-operation-identities-protocol";
-import { sessionStartIdentityPageSchema } from "../../scripts/sessions/identity-protocol";
 import { openSettled, reloadSettled } from "../e2e/fixtures";
 import { pageToken } from "../e2e/launch-link";
 import { HEARTH_HOME } from "../e2e/servers";
@@ -89,7 +89,11 @@ async function conversationPage(page: Page, projectId: string, id: string) {
       { project: projectId, session: id, token, header: OPERATOR_HEADER },
     ),
     envelope = z
-      .object({ ok: z.literal(true), data: ownedCodingPageSchema, error: z.null() })
+      .object({
+        ok: z.literal(true),
+        data: ownedCodingPageSchema,
+        error: z.null(),
+      })
       .safeParse(response.body);
   if (response.status !== 200 || !envelope.success)
     throw Error("Could not read the protected saved session page");
@@ -514,7 +518,9 @@ test("a confirmed Claude rate limit offers an explicit Codex Chat continuation",
   await initialDraft
     .getByRole("textbox", { name: "Session prompt", exact: true })
     .fill("An unrelated draft the operator already wrote");
-  await initialDraft.getByRole("button", { name: "Cancel", exact: true }).click();
+  await initialDraft
+    .getByRole("button", { name: "Cancel", exact: true })
+    .click();
 
   const threadStartsBefore = calls().filter(
     (item) => item.method === "thread/start",
@@ -579,7 +585,8 @@ test("a confirmed Claude rate limit offers an explicit Codex Chat continuation",
     exact: true,
   });
   await expect(
-    codexComposer.getByRole("group", { name: "Provider", exact: true })
+    codexComposer
+      .getByRole("group", { name: "Provider", exact: true })
       .getByRole("button", { name: /Cx · Codex/ }),
   ).toHaveAttribute("aria-pressed", "true");
   await expect(
@@ -588,11 +595,15 @@ test("a confirmed Claude rate limit offers an explicit Codex Chat continuation",
   await expect(
     codexComposer.getByRole("combobox", { name: "Session mode", exact: true }),
   ).toHaveValue("chat");
-  await expect(codexComposer.getByText(`About session ${record.id}`)).toBeVisible();
+  await expect(
+    codexComposer.getByText(`About session ${record.id}`),
+  ).toBeVisible();
   expect(calls().filter((item) => item.method === "thread/start")).toHaveLength(
     threadStartsBefore,
   );
-  await codexComposer.getByRole("button", { name: "Cancel", exact: true }).click();
+  await codexComposer
+    .getByRole("button", { name: "Cancel", exact: true })
+    .click();
   await page.getByRole("button", { name: "New session", exact: true }).click();
   const reopenedComposer = page.getByRole("dialog", {
     name: "New session · Alpha",
@@ -604,7 +615,9 @@ test("a confirmed Claude rate limit offers an explicit Codex Chat continuation",
       exact: true,
     }),
   ).toHaveValue(handoff);
-  await expect(reopenedComposer.getByText(`About session ${record.id}`)).toBeVisible();
+  await expect(
+    reopenedComposer.getByText(`About session ${record.id}`),
+  ).toBeVisible();
   await codexComposer
     .getByRole("button", { name: "Check supported options", exact: true })
     .click();
@@ -634,7 +647,9 @@ test("a confirmed Claude rate limit offers an explicit Codex Chat continuation",
       await route.abort("failed");
     },
   );
-  await codexComposer.getByRole("button", { name: "Start", exact: true }).click();
+  await codexComposer
+    .getByRole("button", { name: "Start", exact: true })
+    .click();
   await expect
     .poll(() => calls().filter((item) => item.method === "thread/start").length)
     .toBe(threadStartsBefore + 1);
@@ -651,7 +666,9 @@ test("a confirmed Claude rate limit offers an explicit Codex Chat continuation",
   if (initialTarget?.event.kind !== "user")
     throw Error("The saved Codex Chat has no original user frame");
   expect(initialTarget.event.text).toBe(handoff);
-  expect(initialTarget.event.about).toEqual([{ kind: "session", id: record.id }]);
+  expect(initialTarget.event.about).toEqual([
+    { kind: "session", id: record.id },
+  ]);
   expect(initialTarget.event.codexChat?.launch.attachments ?? []).toEqual([]);
   expect(sourcePage.frames).toEqual(
     (await conversationPage(page, alpha.id, record.id)).frames,
@@ -662,7 +679,8 @@ test("a confirmed Claude rate limit offers an explicit Codex Chat continuation",
     .passthrough()
     .safeParse(postedBody);
   expect(posted.success).toBe(true);
-  if (!posted.success) throw Error("The reviewed target Start was not captured");
+  if (!posted.success)
+    throw Error("The reviewed target Start was not captured");
   expect(targetRecord.requestId).toBe(posted.data.requestId);
   const targetIdentity = (
     await startIdentityPage(page, alpha.id)
@@ -683,7 +701,9 @@ test("a confirmed Claude rate limit offers an explicit Codex Chat continuation",
   await reloadSettled(page);
   expect(startPosts).toBe(1);
   for (const [method, count] of acceptedMethodCounts)
-    expect(calls().filter((item) => item.method === method)).toHaveLength(count);
+    expect(calls().filter((item) => item.method === method)).toHaveLength(
+      count,
+    );
   expect(
     (await startIdentityPage(page, alpha.id)).identities.find(
       (item) => item.requestId === targetRecord.requestId,
