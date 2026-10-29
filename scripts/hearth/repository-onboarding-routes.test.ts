@@ -361,7 +361,6 @@ test("protected repository onboarding recovers exact records and updates checked
       name: "Onboarding Alpha",
       description: "Only the registered repositories are accepted.",
       icon: "A",
-      keeperSmith: "fixture-keeper",
       color: "green",
       workspaces: [
         {
@@ -376,7 +375,10 @@ test("protected repository onboarding recovers exact records and updates checked
       ],
     },
   });
-  expect(acceptedScope.status).toBe(201);
+  if (acceptedScope.status !== 201)
+    throw new Error(
+      `Expected accepted repository scope, got ${acceptedScope.status}: ${(await acceptedScope.text()).slice(0, 500)}`,
+    );
   const refusedScope = await post("/projects/create-reservations", {
     requestId: "d134a802-6d1c-47c4-a001-3f5f83d38d37",
     expectedCatalogRevision: 0,
@@ -385,7 +387,6 @@ test("protected repository onboarding recovers exact records and updates checked
       name: "Untrusted repository",
       description: "An unregistered repository must not pass checked scope.",
       icon: "A",
-      keeperSmith: "fixture-keeper",
       color: "green",
       workspaces: [
         {
@@ -396,5 +397,9 @@ test("protected repository onboarding recovers exact records and updates checked
       ],
     },
   });
+  const refusedBody = await refusedScope.text();
   expect(refusedScope.status).toBe(400);
+  expect(refusedBody).toContain(
+    "Choose only the served checkout or a registered repository.",
+  );
 });
