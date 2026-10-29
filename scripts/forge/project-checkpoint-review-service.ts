@@ -334,7 +334,6 @@ export function createProjectCheckpointReviewService(options: {
           saved.original.commentText,
         );
     }
-    const priorState = saved.receipt.state;
     const recorded = await options.store.recordReadback(
       scopeFor(saved.original.binding),
       saved.original.requestId,
@@ -343,11 +342,10 @@ export function createProjectCheckpointReviewService(options: {
       auditEventId,
     );
     const receipt = recorded.receipt;
-    // The store changes the receipt's auditEventId only for the one locked
+    // The store assigns this action's auditEventId only to the one locked
     // unknown -> confirmed transition. Concurrent/replayed readbacks receive
     // the winning receipt and therefore cannot append a second event.
     if (
-      priorState === "unknown" &&
       receipt.state === "confirmed" &&
       receipt.readback === "found" &&
       receipt.auditEventId === auditEventId

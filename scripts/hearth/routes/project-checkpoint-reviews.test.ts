@@ -114,7 +114,7 @@ async function fixture(addAnswer: "record" | "uncertain" = "record") {
     if (args[0] === "--readonly" && args[1] === "show")
       return {
         status: 0,
-        stdout: JSON.stringify({ id: args[2], comment_count: comments.length }),
+        stdout: JSON.stringify([{ id: args[2], comment_count: comments.length }]),
         stderr: "",
       };
     if (args[0] === "--readonly" && args[1] === "comments")
@@ -180,7 +180,7 @@ test("checkpoint review prepare is metadata-only; explicit commit records one ex
     `Forge checkpoint review ${requestId}`,
   );
 
-  const commitResponse = await post(`${path}/${requestId}/commit`, {
+  const commitResponse = await post(h, `${path}/${requestId}/commit`, {
     intentHash: prepared.data.intentHash,
   });
   expect(commitResponse.status).toBe(200);
@@ -225,7 +225,7 @@ test("checkpoint review prepare is metadata-only; explicit commit records one ex
     },
   });
   expect(JSON.stringify(commentEvents)).not.toContain(note);
-  const replay = await post(`${path}/${requestId}/commit`, {
+  const replay = await post(h, `${path}/${requestId}/commit`, {
     intentHash: prepared.data.intentHash,
   });
   expect((await replay.json()).data).toMatchObject({
@@ -270,14 +270,14 @@ test("an uncertain comment attempt remains held until a later explicit exact rea
   });
   const prepared = await prepare.json();
   const body = `${path}/${requestId}`;
-  const first = await post(`${body}/commit`, {
+  const first = await post(h, `${body}/commit`, {
     intentHash: prepared.data.intentHash,
   });
   expect((await first.json()).data).toMatchObject({
     state: "unknown",
     readback: "not-checked",
   });
-  const retry = await post(`${body}/commit`, {
+  const retry = await post(h, `${body}/commit`, {
     intentHash: prepared.data.intentHash,
   });
   expect((await retry.json()).data).toMatchObject({ state: "unknown" });
@@ -285,7 +285,7 @@ test("an uncertain comment attempt remains held until a later explicit exact rea
     h.bd.calls.filter((args) => args[0] === "comments" && args[1] === "add"),
   ).toHaveLength(1);
   expect(comments).toHaveLength(1);
-  const readback = await post(`${body}/readback`, {
+  const readback = await post(h, `${body}/readback`, {
     intentHash: prepared.data.intentHash,
   });
   expect((await readback.json()).data).toMatchObject({
@@ -323,7 +323,7 @@ test("commit rechecks the exact current Run stamp and active leaf before claimin
       updatedAt: "2026-10-29T18:02:00.000Z",
     }),
   );
-  const changed = await post(`${changedRun.path}/${requestId}/commit`, {
+  const changed = await post(changedRun.h, `${changedRun.path}/${requestId}/commit`, {
     intentHash: prepared.data.intentHash,
   });
   expect(changed.status).toBe(409);
@@ -345,6 +345,7 @@ test("commit rechecks the exact current Run stamp and active leaf before claimin
   const inactiveMeta = await inactivePrepared.json();
   inactive.setCheckpointStatus("open");
   const inactiveCommit = await post(
+    inactive.h,
     `${inactive.path}/${inactiveRequestId}/commit`,
     {
       intentHash: inactiveMeta.data.intentHash,
