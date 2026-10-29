@@ -31,7 +31,7 @@ const starts = () =>
         .split("\n")
         .filter(Boolean).length
     : 0;
-type KeeperCaretRafProbe = { status(): { clickSeen: boolean; captured: number; canceled: number; flushed: number; focusSeams: number; rafRestoredAfterClick: boolean }; restore(): { requestAnimationFrame: boolean; cancelAnimationFrame: boolean; focus: boolean; probe: boolean } };
+type KeeperCaretRafProbe = { status(): { clickSeen: boolean; captured: number; canceled: number; flushed: number; pending: number; rafRestoredAfterClick: boolean }; flush(): Promise<boolean>; restore(): { requestAnimationFrame: boolean; cancelAnimationFrame: boolean; probe: boolean } };
 type KeeperCaretProbeWindow = Window & { __keeperCaretRafProbe?: KeeperCaretRafProbe };
 test.beforeEach(() => {
   seedProjects();
@@ -701,7 +701,7 @@ test("mentions and harness commands edit the shared draft with keyboard suggesti
   let primaryFailed = false;
   let primaryFailure: unknown;
   let cleanupFailure: unknown;
-  let restored: { requestAnimationFrame: boolean; cancelAnimationFrame: boolean; focus: boolean; probe: boolean } | null = null;
+  let restored: { requestAnimationFrame: boolean; cancelAnimationFrame: boolean; probe: boolean } | null = null;
   let probeInstalled = false;
   try {
     try {
@@ -721,18 +721,13 @@ test("mentions and harness commands edit the shared draft with keyboard suggesti
       window,
       "cancelAnimationFrame",
     );
-    const focusDescriptor = Object.getOwnPropertyDescriptor(textarea, "focus");
     const nativeRaf = window.requestAnimationFrame.bind(window);
     const nativeCancel = window.cancelAnimationFrame.bind(window);
-    const nativeFocus = textarea.focus.bind(textarea);
     const pending = new Map<number, FrameRequestCallback>();
     let clickSeen = false;
     let captured = 0;
     let canceled = 0;
     let flushed = 0;
-    let focusSeams = 0;
-    let focusFlushQueued = false;
-    let focusCallbackFlushed = false;
     let rafRestoredAfterClick = false;
 
     const restoreProperty = (object: object, property: PropertyKey, descriptor: PropertyDescriptor | undefined) => {
@@ -770,24 +765,51 @@ test("mentions and harness commands edit the shared draft with keyboard suggesti
         }
         nativeCancel(handle);
       };
-      queueMicrotask(() => {
-        restoreProperty(window, "requestAnimationFrame", rafDescriptor);
-        rafRestoredAfterClick = descriptorMatches(
-          window,
-          "requestAnimationFrame",
-          rafDescriptor,
-        );
-      });
+    };
+    const restoreRafAfterDispatch = () => {
+      restoreProperty(window, "requestAnimationFrame", rafDescriptor);
+      rafRestoredAfterClick = descriptorMatches(
+        window,
+        "requestAnimationFrame",
+        rafDescriptor,
+      );
     };
     const probe: KeeperCaretRafProbe = {
-      status: () => ({ clickSeen, captured, canceled, flushed, focusSeams, rafRestoredAfterClick }),
+      status: () => ({
+        clickSeen,
+        captured,
+        canceled,
+        flushed,
+        pending: pending.size,
+        rafRestoredAfterClick,
+      }),
+      flush: () => {
+        if (!pending.size) return Promise.resolve(false);
+        if (pending.size !== 1)
+          return Promise.reject(new Error("Keeper caret probe captured multiple frames."));
+        const entry = pending.entries().next().value;
+        if (!entry) return Promise.resolve(false);
+        const [handle, callback] = entry;
+        pending.delete(handle);
+        return new Promise<boolean>((resolve, reject) => {
+          nativeRaf((time) => {
+            try {
+              callback(time);
+              flushed += 1;
+              resolve(true);
+            } catch (error) {
+              reject(error);
+            }
+          });
+        });
+      },
       restore: () => {
         button.removeEventListener("click", onOptionClick, true);
+        button.removeEventListener("click", restoreRafAfterDispatch);
         for (const handle of pending.keys()) nativeCancel(handle);
         pending.clear();
         restoreProperty(window, "requestAnimationFrame", rafDescriptor);
         restoreProperty(window, "cancelAnimationFrame", cancelDescriptor);
-        restoreProperty(textarea, "focus", focusDescriptor);
         const restored = {
           requestAnimationFrame: descriptorMatches(
             window,
@@ -799,7 +821,6 @@ test("mentions and harness commands edit the shared draft with keyboard suggesti
             "cancelAnimationFrame",
             cancelDescriptor,
           ),
-          focus: descriptorMatches(textarea, "focus", focusDescriptor),
         };
         const probeDeleted = Reflect.deleteProperty(
           target,
@@ -817,29 +838,7 @@ test("mentions and harness commands edit the shared draft with keyboard suggesti
         capture: true,
         once: true,
       });
-      Object.defineProperty(textarea, "focus", {
-        configurable: true,
-        enumerable: focusDescriptor?.enumerable ?? false,
-        writable: true,
-        value: (options?: FocusOptions) => {
-          nativeFocus(options);
-          if (textarea.selectionStart === 0 && textarea.selectionEnd === textarea.value.length && !focusFlushQueued && !focusCallbackFlushed) {
-            focusSeams += 1;
-            focusFlushQueued = true;
-            queueMicrotask(() => {
-              focusFlushQueued = false;
-              if (pending.size !== 1) return;
-              const [callback] = pending.values();
-              pending.clear();
-              focusCallbackFlushed = true;
-              if (callback) {
-                flushed += 1;
-                callback(performance.now());
-              }
-            });
-          }
-        },
-      });
+      button.addEventListener("click", restoreRafAfterDispatch, { once: true });
     } catch (error) {
       try {
         const restored = probe.restore();
@@ -862,19 +861,56 @@ test("mentions and harness commands edit the shared draft with keyboard suggesti
           .getByRole("group", { name: "About context for Alpha" })
           .getByRole("link", { name: "bead alpha-epic", exact: true }),
       ).toBeVisible();
-      await input.fill("/forge");
+        await input.focus();
+        await input.press("ControlOrMeta+A");
+        const selection = await input.evaluate((element) => {
+          if (!(element instanceof HTMLTextAreaElement))
+            throw new Error("Keeper input was not a textarea.");
+          return {
+            focused: document.activeElement === element,
+            start: element.selectionStart,
+            end: element.selectionEnd,
+            valueLength: element.value.length,
+          };
+        });
+        expect(selection).toEqual({
+          focused: true,
+          start: 0,
+          end: selection.valueLength,
+          valueLength: selection.valueLength,
+        });
       const interleave = await page.evaluate(
         () =>
           (window as KeeperCaretProbeWindow).__keeperCaretRafProbe?.status() ??
           null,
       );
-      await test.info().attach("keeper-caret-interleave", {
-        body: JSON.stringify(interleave), contentType: "application/json",
-      });
       if (!interleave) throw new Error("Keeper caret probe status was missing.");
-      expect(interleave).toMatchObject({ clickSeen: true, focusSeams: 1, rafRestoredAfterClick: true });
+        expect(interleave).toMatchObject({
+          clickSeen: true,
+          rafRestoredAfterClick: true,
+        });
       expect(interleave.captured).toBeLessThanOrEqual(1);
-      expect(interleave.flushed + interleave.canceled).toBe(interleave.captured);
+        expect(interleave.pending + interleave.canceled).toBe(
+          interleave.captured,
+        );
+        const flushed = await page.evaluate(async () => {
+          const probe = (window as KeeperCaretProbeWindow)
+            .__keeperCaretRafProbe;
+          if (!probe) throw new Error("Keeper caret probe was not available.");
+          return probe.flush();
+        });
+        await page.keyboard.insertText("/forge");
+        const finalProbe = await page.evaluate(
+          () =>
+            (window as KeeperCaretProbeWindow).__keeperCaretRafProbe?.status() ??
+            null,
+        );
+        await test.info().attach("keeper-caret-interleave", {
+          body: JSON.stringify({ selection, interleave, flushed, finalProbe }),
+          contentType: "application/json",
+        });
+        expect(finalProbe?.flushed).toBe(flushed ? 1 : 0);
+        expect(finalProbe?.pending).toBe(0);
       expect(starts()).toBe(before);
       await expect(input).toHaveValue("/forge");
     } catch (error) {
@@ -909,7 +945,6 @@ test("mentions and harness commands edit the shared draft with keyboard suggesti
   expect(restored).toEqual({
     requestAnimationFrame: true,
     cancelAnimationFrame: true,
-    focus: true,
     probe: true,
   });
   const commands = drawer.getByRole("group", { name: "Harness commands" });
