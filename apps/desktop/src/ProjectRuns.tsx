@@ -185,7 +185,9 @@ export function ProjectRuns({
                 projectId={projectId}
                 detail={view.detail}
                 checkpointResult={checkpointResult}
-                checkpointReviewOwner={checkpointReviewOwner}
+                {...(checkpointReviewOwner
+                  ? { checkpointReviewOwner }
+                  : {})}
                 checkpointReviewsWritable={checkpointReviewsWritable}
                 checkpointReviewAvailable={
                   !!view.page &&
@@ -698,24 +700,24 @@ export function RunDetail({
       </section>
       <RunCheckpoints
         result={checkpointResult}
-        reviewTarget={
-          checkpointReviewAvailable &&
-          checkpointResult.kind === "ready" &&
-          typeof runUpdatedAt === "string" &&
-          projectCheckpointReviewBindingSchema.shape.runUpdatedAt.safeParse(
-            runUpdatedAt,
-          ).success
-            ? {
+        {...(checkpointReviewAvailable &&
+        checkpointResult.kind === "ready" &&
+        typeof runUpdatedAt === "string" &&
+        projectCheckpointReviewBindingSchema.shape.runUpdatedAt.safeParse(
+          runUpdatedAt,
+        ).success
+          ? {
+              reviewTarget: {
                 projectId,
                 workspacePath: detail.workspace,
                 checkout: detail.checkout,
                 runSlug: run.slug,
                 epicId: checkpointResult.epicId,
                 runUpdatedAt,
-              }
-            : undefined
-        }
-        reviewOwner={checkpointReviewOwner}
+              },
+            }
+          : {})}
+        {...(checkpointReviewOwner ? { reviewOwner: checkpointReviewOwner } : {})}
         reviewsWritable={checkpointReviewsWritable}
         {...(onCouncilBeadPrefill
           ? { onCouncilPrefill: onCouncilBeadPrefill }
