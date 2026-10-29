@@ -34,7 +34,7 @@ The desktop also has navigation for Inbox, Reviews, and Settings. Their full wor
 
 - **Bun 1.4.2** and **Git** for the harness scripts, dashboard, and desktop build.
 - **Claude Code** to use the repository's slash commands, agents, and hooks.
-- **Provider CLIs** are installed and authenticated separately through their own setup. Which provider routes are available depends on the installed CLI and its reported capabilities.
+- **Provider CLIs** are installed separately. Sign-in uses the vendor's own flow, launched from the app where available. Which provider routes are available depends on the installed CLI and its reported capabilities.
 - **GitHub CLI (`gh`)** for workflows that open or manage pull requests.
 - **Beads (`bd`)** for the live issue graph and its dashboard views. Follow `bd doctor` for local initialization. If `bd` is unavailable, an existing `.beads/issues.jsonl` export can supply snapshot data; without either source, Beads data is unavailable.
 - For the desktop, use a Windows x64 machine with the build tools listed below. The harness and dashboard remain usable without building the desktop app.
@@ -112,14 +112,14 @@ Beads is local-only in this repository. Follow `bd doctor` for setup; do not con
 
 Planned work includes:
 
-- Folder and Clone onboarding with a reviewed first brief.
-- Run launches and distinct Council checkpoint actions, including Approve and Request changes.
+- Reviewed Add Folder and Clone onboarding, and the first Keeper brief.
+- Desktop run launches, Council review workflows, and checkpoint approval or requests for changes.
 - Inbox, command palette, and project and app settings.
-- More provider routes, usage-limit continuation, and native terminal handoff.
-- Verified Gemini acceptance and clearer capability, permission, and effort reporting; Grok Build is planned.
+- Reviewed usage-limit continuation and native terminal handoff.
+- Gemini route acceptance, capability-aware permission and effort controls, and Grok Build.
 - Tray notifications, pop-out windows, light and system appearance, and deep links.
 
-Release readiness is assessed separately from these feature plans. OpenRouter is deferred.
+Release checks also cover restart recovery, packaged Windows behavior, and the five complete user journeys. OpenRouter is deferred.
 
 ## Useful commands
 
