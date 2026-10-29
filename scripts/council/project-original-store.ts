@@ -1,6 +1,16 @@
 import { createHash, randomUUID } from "node:crypto";
 import { lstatSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import {
+  PROJECT_COUNCIL_MAX_JOURNAL_BYTES,
+  PROJECT_COUNCIL_MAX_ORIGINAL_BYTES,
+  PROJECT_COUNCIL_MAX_ORIGINALS,
+  type ProjectCouncilBinding,
+  type ProjectCouncilOriginal,
+  type ProjectCouncilState,
+  projectCouncilIntentJson,
+  projectCouncilOriginalSchema,
+} from "../../types/project-council";
 import { ConversationError } from "../conversations/error";
 import {
   ensurePrivateHome,
@@ -11,29 +21,26 @@ import {
 import { writeOwnerOnly } from "../hearth/token";
 import { withQueueLock } from "../scheduler/queue-lock";
 import { parseCouncilProfileJson } from "./types";
-import {
-  PROJECT_COUNCIL_MAX_JOURNAL_BYTES,
-  PROJECT_COUNCIL_MAX_ORIGINAL_BYTES,
-  PROJECT_COUNCIL_MAX_ORIGINALS,
-  projectCouncilIntentJson,
-  projectCouncilOriginalSchema,
-  type ProjectCouncilBinding,
-  type ProjectCouncilOriginal,
-  type ProjectCouncilState,
-} from "../../types/project-council";
 
 const JOURNAL_VERSION = 1 as const;
 const directoryName = "council-reviews";
-const idPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const idPattern =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const digestPattern = /^[a-f0-9]{64}$/;
-type Journal = { version: typeof JOURNAL_VERSION; records: ProjectCouncilOriginal[] };
+type Journal = {
+  version: typeof JOURNAL_VERSION;
+  records: ProjectCouncilOriginal[];
+};
 
 function canonical(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
   if (typeof value === "object" && value !== null)
     return `{${Object.keys(value)
       .sort()
-      .map((key) => `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`)
+      .map(
+        (key) =>
+          `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`,
+      )
       .join(",")}}`;
   return JSON.stringify(value) ?? "null";
 }
@@ -54,7 +61,10 @@ export function projectCouncilProfileHash(
 
 export function projectCouncilRunId(requestId: string): string {
   if (!idPattern.test(requestId))
-    throw new ConversationError(400, "Expected a project Council request UUID.");
+    throw new ConversationError(
+      400,
+      "Expected a project Council request UUID.",
+    );
   return `council-review-${requestId}`;
 }
 
@@ -75,10 +85,12 @@ function checkedRecord(raw: unknown): ProjectCouncilOriginal | null {
     return null;
   }
   const profile = parseCouncilProfileJson(profileJson);
-  const usedProviders = [...new Set([
-    ...original.profile.seats.map((seat) => seat.provider),
-    original.profile.chair.provider,
-  ])].sort();
+  const usedProviders = [
+    ...new Set([
+      ...original.profile.seats.map((seat) => seat.provider),
+      original.profile.chair.provider,
+    ]),
+  ].sort();
   const endpointsValid =
     original.providerEndpoints.length === usedProviders.length &&
     original.providerEndpoints.every((endpoint, index) => {
@@ -88,10 +100,17 @@ function checkedRecord(raw: unknown): ProjectCouncilOriginal | null {
       if (endpoint.baseUrl === null) return false;
       try {
         const url = new URL(endpoint.baseUrl);
-        const localHttp = url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
-        return !url.username && !url.password && !url.search && !url.hash &&
+        const localHttp =
+          url.protocol === "http:" &&
+          ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname);
+        return (
+          !url.username &&
+          !url.password &&
+          !url.search &&
+          !url.hash &&
           (url.protocol === "https:" || localHttp) &&
-          endpoint.baseUrl === url.toString().replace(/\/+$/, "");
+          endpoint.baseUrl === url.toString().replace(/\/+$/, "")
+        );
       } catch {
         return false;
       }
@@ -101,7 +120,8 @@ function checkedRecord(raw: unknown): ProjectCouncilOriginal | null {
     canonical(profile.value) !== canonical(original.profile) ||
     !endpointsValid ||
     projectCouncilRunId(original.requestId) !== original.runId ||
-    projectCouncilProfileHash(original.profile) !== original.binding.profileHash ||
+    projectCouncilProfileHash(original.profile) !==
+      original.binding.profileHash ||
     projectCouncilIntentHash(original) !== original.intentHash ||
     original.context.byteLength > original.options.maxBytes ||
     original.context.evidence.some(
@@ -159,7 +179,10 @@ function active(original: ProjectCouncilOriginal): boolean {
   return ["reserved", "dispatch-claimed", "running"].includes(original.state);
 }
 
-function sameBinding(a: ProjectCouncilBinding, b: ProjectCouncilBinding): boolean {
+function sameBinding(
+  a: ProjectCouncilBinding,
+  b: ProjectCouncilBinding,
+): boolean {
   return canonical(a) === canonical(b);
 }
 
@@ -174,7 +197,11 @@ export function createProjectCouncilOriginalStore(options: {
 }) {
   if (!options.workspace || options.workspace.length > 1024)
     throw new ConversationError(400, "Expected a trusted Council workspace.");
-  if (!/^project-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(options.projectId))
+  if (
+    !/^project-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+      options.projectId,
+    )
+  )
     throw new ConversationError(400, "Expected a trusted Council project.");
   const journalHash = digest(`${options.workspace}\0${options.projectId}`);
 
@@ -193,7 +220,10 @@ export function createProjectCouncilOriginalStore(options: {
     if (found.text === null) return { version: JOURNAL_VERSION, records: [] };
     let raw: unknown;
     try {
-      if (Buffer.byteLength(found.text, "utf8") > PROJECT_COUNCIL_MAX_JOURNAL_BYTES)
+      if (
+        Buffer.byteLength(found.text, "utf8") >
+        PROJECT_COUNCIL_MAX_JOURNAL_BYTES
+      )
         throw new Error("Council journal exceeds its byte limit");
       raw = JSON.parse(found.text);
     } catch {
@@ -206,7 +236,7 @@ export function createProjectCouncilOriginalStore(options: {
       typeof raw !== "object" ||
       raw === null ||
       Array.isArray(raw) ||
-    Object.keys(raw).length !== 2 ||
+      Object.keys(raw).length !== 2 ||
       !("version" in raw) ||
       raw.version !== JOURNAL_VERSION ||
       !("records" in raw) ||
@@ -223,18 +253,28 @@ export function createProjectCouncilOriginalStore(options: {
     );
     if (
       verifiedRecords.length !== records.length ||
-      new Set(verifiedRecords.map((record) => record.requestId)).size !== records.length ||
-      verifiedRecords.some((record) => record.binding.workspace !== options.workspace || record.binding.projectId !== options.projectId) ||
+      new Set(verifiedRecords.map((record) => record.requestId)).size !==
+        records.length ||
+      verifiedRecords.some(
+        (record) =>
+          record.binding.workspace !== options.workspace ||
+          record.binding.projectId !== options.projectId,
+      ) ||
       new Set(
         verifiedRecords
           .filter(active)
-          .map((record) => `${record.binding.projectId}\0${record.binding.workspace}`),
+          .map(
+            (record) =>
+              `${record.binding.projectId}\0${record.binding.workspace}`,
+          ),
       ).size !== verifiedRecords.filter(active).length ||
       verifiedRecords.some(
         (record) =>
-          Buffer.byteLength(JSON.stringify(record), "utf8") > PROJECT_COUNCIL_MAX_ORIGINAL_BYTES,
+          Buffer.byteLength(JSON.stringify(record), "utf8") >
+          PROJECT_COUNCIL_MAX_ORIGINAL_BYTES,
       ) ||
-      Buffer.byteLength(JSON.stringify(raw), "utf8") > PROJECT_COUNCIL_MAX_JOURNAL_BYTES
+      Buffer.byteLength(JSON.stringify(raw), "utf8") >
+        PROJECT_COUNCIL_MAX_JOURNAL_BYTES
     )
       throw new ConversationError(
         503,
@@ -255,10 +295,20 @@ export function createProjectCouncilOriginalStore(options: {
       state.version !== JOURNAL_VERSION ||
       state.records.length > PROJECT_COUNCIL_MAX_ORIGINALS ||
       verifiedRecords.length !== records.length ||
-      verifiedRecords.some((record) => record.binding.workspace !== options.workspace || record.binding.projectId !== options.projectId) ||
-      new Set(verifiedRecords.map((record) => record.requestId)).size !== records.length ||
+      verifiedRecords.some(
+        (record) =>
+          record.binding.workspace !== options.workspace ||
+          record.binding.projectId !== options.projectId,
+      ) ||
+      new Set(verifiedRecords.map((record) => record.requestId)).size !==
+        records.length ||
       new Set(
-        verifiedRecords.filter(active).map((record) => `${record.binding.projectId}\0${record.binding.workspace}`),
+        verifiedRecords
+          .filter(active)
+          .map(
+            (record) =>
+              `${record.binding.projectId}\0${record.binding.workspace}`,
+          ),
       ).size !== verifiedRecords.filter(active).length
     )
       throw new ConversationError(
@@ -268,9 +318,10 @@ export function createProjectCouncilOriginalStore(options: {
     const text = JSON.stringify(state);
     if (
       Buffer.byteLength(text, "utf8") > PROJECT_COUNCIL_MAX_JOURNAL_BYTES ||
-      verifiedRecords.some((record) =>
-        Buffer.byteLength(JSON.stringify(record), "utf8") >
-        PROJECT_COUNCIL_MAX_ORIGINAL_BYTES,
+      verifiedRecords.some(
+        (record) =>
+          Buffer.byteLength(JSON.stringify(record), "utf8") >
+          PROJECT_COUNCIL_MAX_ORIGINAL_BYTES,
       )
     )
       throw new ConversationError(
@@ -297,7 +348,9 @@ export function createProjectCouncilOriginalStore(options: {
       );
   }
 
-  async function locked<T>(work: (state: Journal) => Promise<T> | T): Promise<T> {
+  async function locked<T>(
+    work: (state: Journal) => Promise<T> | T,
+  ): Promise<T> {
     const { lock } = checkedPaths(options.home, journalHash);
     ensurePrivateHome(options.home);
     const result = await withQueueLock(lock, async () => work(readState()));
@@ -338,7 +391,9 @@ export function createProjectCouncilOriginalStore(options: {
       binding: ProjectCouncilBinding,
       inputHash: string,
     ) {
-      return locked((state) => matchingActive(state, projectId, binding, inputHash));
+      return locked((state) =>
+        matchingActive(state, projectId, binding, inputHash),
+      );
     },
     reservePrepared(input: {
       binding: ProjectCouncilBinding;
@@ -406,16 +461,32 @@ export function createProjectCouncilOriginalStore(options: {
       );
     },
     history(projectId: string, limit = 100) {
-      if (projectId !== options.projectId) return { activeRequestId: null, total: 0, omitted: 0, items: [] };
+      if (projectId !== options.projectId)
+        return { activeRequestId: null, total: 0, omitted: 0, items: [] };
       if (!Number.isInteger(limit) || limit < 1 || limit > 100)
-        throw new ConversationError(400, "Expected a bounded Council history limit.");
+        throw new ConversationError(
+          400,
+          "Expected a bounded Council history limit.",
+        );
       const state = readState();
-      const activeRequestId = state.records.find(
-        (item) => item.binding.projectId === projectId && item.binding.workspace === options.workspace && active(item),
-      )?.requestId ?? null;
+      const activeRequestId =
+        state.records.find(
+          (item) =>
+            item.binding.projectId === projectId &&
+            item.binding.workspace === options.workspace &&
+            active(item),
+        )?.requestId ?? null;
       const rows = state.records
-        .filter((item) => item.binding.projectId === projectId && item.binding.workspace === options.workspace)
-        .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || b.createdAt.localeCompare(a.createdAt));
+        .filter(
+          (item) =>
+            item.binding.projectId === projectId &&
+            item.binding.workspace === options.workspace,
+        )
+        .sort(
+          (a, b) =>
+            b.updatedAt.localeCompare(a.updatedAt) ||
+            b.createdAt.localeCompare(a.createdAt),
+        );
       const total = rows.length;
       return {
         activeRequestId,
@@ -427,7 +498,10 @@ export function createProjectCouncilOriginalStore(options: {
           intentHash: item.intentHash,
           state: item.state,
           phase: item.state === "dispatch-claimed" ? "unknown" : item.state,
-          sourceType: item.context.source.kind === "stdin" ? "text" : item.context.source.kind,
+          sourceType:
+            item.context.source.kind === "stdin"
+              ? "text"
+              : item.context.source.kind,
           sourceName: item.context.source.displayName.slice(0, 256),
           profileId: item.profile.id,
           profileTitle: item.profile.title.slice(0, 256),
@@ -439,31 +513,56 @@ export function createProjectCouncilOriginalStore(options: {
     },
     read(projectId: string, requestId: string): ProjectCouncilOriginal {
       if (!idPattern.test(requestId))
-        throw new ConversationError(400, "Expected a project Council request UUID.");
-      const found = readState().records.find((item) => item.requestId === requestId);
+        throw new ConversationError(
+          400,
+          "Expected a project Council request UUID.",
+        );
+      const found = readState().records.find(
+        (item) => item.requestId === requestId,
+      );
       if (!found)
-        throw new ConversationError(404, "This Council original is not retained.");
+        throw new ConversationError(
+          404,
+          "This Council original is not retained.",
+        );
       if (
         found.binding.projectId !== projectId ||
         found.binding.workspace !== options.workspace
       )
-        throw new ConversationError(404, "This Council original is not in this project.");
+        throw new ConversationError(
+          404,
+          "This Council original is not in this project.",
+        );
       return found;
     },
     retire(projectId: string, requestId: string, intentHash: string) {
       return locked((state) => {
-        const original = state.records.find((item) => item.requestId === requestId);
+        const original = state.records.find(
+          (item) => item.requestId === requestId,
+        );
         if (!original)
-          throw new ConversationError(404, "This Council original is not retained.");
+          throw new ConversationError(
+            404,
+            "This Council original is not retained.",
+          );
         if (
           original.binding.projectId !== projectId ||
           original.binding.workspace !== options.workspace
         )
-          throw new ConversationError(404, "This Council original is not in this project.");
+          throw new ConversationError(
+            404,
+            "This Council original is not in this project.",
+          );
         if (original.intentHash !== intentHash)
-          throw new ConversationError(409, "The Council original hash does not match.");
+          throw new ConversationError(
+            409,
+            "The Council original hash does not match.",
+          );
         if (original.state !== "reserved")
-          throw new ConversationError(409, "Only an uncommitted Council original can be retired.");
+          throw new ConversationError(
+            409,
+            "Only an uncommitted Council original can be retired.",
+          );
         original.state = "retired";
         original.updatedAt = new Date().toISOString();
         saveState(state);
@@ -477,16 +576,27 @@ export function createProjectCouncilOriginalStore(options: {
       validate: (original: ProjectCouncilOriginal) => Promise<void>,
     ) {
       return locked(async (state) => {
-        const original = state.records.find((item) => item.requestId === requestId);
+        const original = state.records.find(
+          (item) => item.requestId === requestId,
+        );
         if (!original)
-          throw new ConversationError(404, "This Council original is not retained.");
+          throw new ConversationError(
+            404,
+            "This Council original is not retained.",
+          );
         if (
           original.binding.projectId !== projectId ||
           original.binding.workspace !== options.workspace
         )
-          throw new ConversationError(404, "This Council original is not in this project.");
+          throw new ConversationError(
+            404,
+            "This Council original is not in this project.",
+          );
         if (original.intentHash !== intentHash)
-          throw new ConversationError(409, "The Council original hash does not match.");
+          throw new ConversationError(
+            409,
+            "The Council original hash does not match.",
+          );
         if (original.state !== "reserved")
           return { original: structuredClone(original), created: false };
         await validate(original);
@@ -501,19 +611,33 @@ export function createProjectCouncilOriginalStore(options: {
       projectId: string,
       requestId: string,
       intentHash: string,
-      stateName: Extract<ProjectCouncilState, "completed" | "failed" | "cancelled">,
+      stateName: Extract<
+        ProjectCouncilState,
+        "completed" | "failed" | "cancelled"
+      >,
     ) {
       return locked((state) => {
-        const original = state.records.find((item) => item.requestId === requestId);
+        const original = state.records.find(
+          (item) => item.requestId === requestId,
+        );
         if (!original)
-          throw new ConversationError(404, "This Council original is not retained.");
+          throw new ConversationError(
+            404,
+            "This Council original is not retained.",
+          );
         if (
           original.binding.projectId !== projectId ||
           original.binding.workspace !== options.workspace ||
           original.intentHash !== intentHash
         )
-          throw new ConversationError(409, "The original Council identity changed.");
-        if (original.state !== "dispatch-claimed" && original.state !== "running")
+          throw new ConversationError(
+            409,
+            "The original Council identity changed.",
+          );
+        if (
+          original.state !== "dispatch-claimed" &&
+          original.state !== "running"
+        )
           return structuredClone(original);
         original.state = stateName;
         original.updatedAt = new Date().toISOString();
@@ -523,11 +647,19 @@ export function createProjectCouncilOriginalStore(options: {
     },
     markRunning(projectId: string, requestId: string, intentHash: string) {
       return locked((state) => {
-        const original = state.records.find((item) => item.requestId === requestId);
+        const original = state.records.find(
+          (item) => item.requestId === requestId,
+        );
         if (!original || original.binding.projectId !== projectId)
-          throw new ConversationError(404, "This Council original is not retained.");
+          throw new ConversationError(
+            404,
+            "This Council original is not retained.",
+          );
         if (original.intentHash !== intentHash)
-          throw new ConversationError(409, "The Council original hash does not match.");
+          throw new ConversationError(
+            409,
+            "The Council original hash does not match.",
+          );
         if (original.state === "dispatch-claimed") {
           original.state = "running";
           original.updatedAt = new Date().toISOString();

@@ -1,23 +1,27 @@
-import { hashText } from "../../hash-text";
-import { safeCouncilError } from "../../council/service";
-import { selectProjectBeads, workspaceKey } from "../../projects/scope";
-import { createProjectStore, isProjectId, ProjectStoreError } from "../../projects/store";
 import type {
   ProjectCouncilAuthority,
+  ProjectCouncilReserveRequest,
   ProjectCouncilSourceRef,
 } from "../../../types/project-council";
 import {
-  projectCouncilRequestIdSchema,
   projectCouncilHistorySchema,
+  projectCouncilRequestIdSchema,
   projectCouncilReserveRequestSchema,
 } from "../../../types/project-council";
 import { ConversationError } from "../../conversations/error";
-import type { ProjectCouncilReserveRequest } from "../../../types/project-council";
+import { safeCouncilError } from "../../council/service";
+import { hashText } from "../../hash-text";
+import { selectProjectBeads, workspaceKey } from "../../projects/scope";
+import {
+  createProjectStore,
+  isProjectId,
+  ProjectStoreError,
+} from "../../projects/store";
 import type { ActionRoute, ApiRoute, ReadRoute, RouteReply } from "../api";
 import type { ValidationResult } from "../validate";
+import { postCouncilVerdict } from "./council-verdict";
 import type { OperatorDeps } from "./operator";
 import { fail, type ReadDeps } from "./operator-reads";
-import { postCouncilVerdict } from "./council-verdict";
 import type { ProjectSnapshot } from "./project-summaries";
 
 type Council = OperatorDeps["council"];
@@ -34,11 +38,15 @@ function reply(work: () => unknown | Promise<unknown>): Promise<RouteReply> {
     .then(work)
     .then((data) => ({ status: 200, data }))
     .catch((error: unknown) => {
-      if (error instanceof ConversationError || error instanceof ProjectStoreError)
+      if (
+        error instanceof ConversationError ||
+        error instanceof ProjectStoreError
+      )
         return { status: error.status, error: error.message };
       return {
         status: 503,
-        error: "The original project Council request could not be verified. Read the original before trying again.",
+        error:
+          "The original project Council request could not be verified. Read the original before trying again.",
       };
     });
 }
@@ -53,16 +61,27 @@ export function createProjectCouncilRoutes(
     const catalog = createProjectStore(deps.projectHome).read();
     const project = catalog.projects.find((item) => item.id === projectId);
     if (!project)
-      throw new ConversationError(404, "This project is not in the Hearth catalog.");
+      throw new ConversationError(
+        404,
+        "This project is not in the Hearth catalog.",
+      );
     if (!allowArchived && project.archived)
-      throw new ConversationError(409, "This project is archived. Existing Council originals remain readable.");
+      throw new ConversationError(
+        409,
+        "This project is archived. Existing Council originals remain readable.",
+      );
     if (
-      workspaceKey(snapshot.source.workspace) !== workspaceKey(deps.workspace) ||
+      workspaceKey(snapshot.source.workspace) !==
+        workspaceKey(deps.workspace) ||
       !project.workspaces.some(
-        (workspace) => workspaceKey(workspace.root) === workspaceKey(deps.workspace),
+        (workspace) =>
+          workspaceKey(workspace.root) === workspaceKey(deps.workspace),
       )
     )
-      throw new ConversationError(409, "This Hearth does not serve the selected project workspace.");
+      throw new ConversationError(
+        409,
+        "This Hearth does not serve the selected project workspace.",
+      );
     return { project, catalog, snapshot };
   };
 
@@ -70,23 +89,35 @@ export function createProjectCouncilRoutes(
     projectId: string,
     source: ProjectCouncilSourceRef,
   ): Promise<ProjectCouncilAuthority> => {
-    const { project, catalog, snapshot } = await currentProject(projectId, false);
+    const { project, catalog, snapshot } = await currentProject(
+      projectId,
+      false,
+    );
     const scope = project.workspaces.find(
       (item) => workspaceKey(item.root) === workspaceKey(deps.workspace),
     );
     if (!scope)
-      throw new ConversationError(409, "This Hearth does not serve the selected project workspace.");
+      throw new ConversationError(
+        409,
+        "This Hearth does not serve the selected project workspace.",
+      );
     let beadScope: unknown = null;
     if (source.sourceType === "bead") {
       if (!snapshot.source.issues)
-        throw new ConversationError(503, "Current project membership is unavailable. Refresh before reviewing this bead.");
+        throw new ConversationError(
+          503,
+          "Current project membership is unavailable. Refresh before reviewing this bead.",
+        );
       const member = selectProjectBeads(
         project,
         deps.workspace,
         snapshot.source.issues,
       ).find((issue) => issue.id === source.source);
       if (!member)
-        throw new ConversationError(409, "This bead is not in the current project scope.");
+        throw new ConversationError(
+          409,
+          "This bead is not in the current project scope.",
+        );
       beadScope = {
         id: member.id,
         type: member.type,
@@ -113,9 +144,13 @@ export function createProjectCouncilRoutes(
     };
   };
 
-  const projectId = (request: Parameters<ReadRoute["validate"]>[0]): ValidationResult<ProjectId> => {
+  const projectId = (
+    request: Parameters<ReadRoute["validate"]>[0],
+  ): ValidationResult<ProjectId> => {
     if ([...request.query.keys()].length)
-      return fail("Project Council reads and actions take no query parameters.");
+      return fail(
+        "Project Council reads and actions take no query parameters.",
+      );
     const value = request.params["id"];
     return isProjectId(value)
       ? { ok: true, value: { projectId: value } }
@@ -127,7 +162,9 @@ export function createProjectCouncilRoutes(
   ): ValidationResult<ReviewRef> => {
     const project = projectId(request);
     if (!project.ok) return project;
-    const parsed = projectCouncilRequestIdSchema.safeParse(request.params["requestId"]);
+    const parsed = projectCouncilRequestIdSchema.safeParse(
+      request.params["requestId"],
+    );
     return parsed.success
       ? { ok: true, value: { ...project.value, requestId: parsed.data } }
       : fail("Expected a project Council original UUID.");
@@ -138,7 +175,12 @@ export function createProjectCouncilRoutes(
   ): ValidationResult<ReviewAction> => {
     const ref = reviewRef(request);
     if (!ref.ok) return ref;
-    if (!record(request.body) || Object.keys(request.body).length !== 1 || typeof request.body["intentHash"] !== "string" || !/^[a-f0-9]{64}$/.test(request.body["intentHash"]))
+    if (
+      !record(request.body) ||
+      Object.keys(request.body).length !== 1 ||
+      typeof request.body["intentHash"] !== "string" ||
+      !/^[a-f0-9]{64}$/.test(request.body["intentHash"])
+    )
       return fail("Expected the exact reviewed Council intent hash.");
     return {
       ok: true,
@@ -155,8 +197,15 @@ export function createProjectCouncilRoutes(
     read: ({ projectId }) =>
       reply(async () => {
         const { project } = await currentProject(projectId, true);
-        if (!project.workspaces.some((item) => workspaceKey(item.root) === workspaceKey(deps.workspace)))
-          throw new ConversationError(404, "This project has no original in this Hearth workspace.");
+        if (
+          !project.workspaces.some(
+            (item) => workspaceKey(item.root) === workspaceKey(deps.workspace),
+          )
+        )
+          throw new ConversationError(
+            404,
+            "This project has no original in this Hearth workspace.",
+          );
         return projectCouncilHistorySchema.parse(
           deps.council.historyProjectReviews(projectId, deps.workspace),
         );
@@ -172,9 +221,20 @@ export function createProjectCouncilRoutes(
     read: ({ projectId, requestId }) =>
       reply(async () => {
         const { project } = await currentProject(projectId, true);
-        if (!project.workspaces.some((item) => workspaceKey(item.root) === workspaceKey(deps.workspace)))
-          throw new ConversationError(404, "This project has no original in this Hearth workspace.");
-        return deps.council.readProjectOriginal(projectId, deps.workspace, requestId);
+        if (
+          !project.workspaces.some(
+            (item) => workspaceKey(item.root) === workspaceKey(deps.workspace),
+          )
+        )
+          throw new ConversationError(
+            404,
+            "This project has no original in this Hearth workspace.",
+          );
+        return deps.council.readProjectOriginal(
+          projectId,
+          deps.workspace,
+          requestId,
+        );
       }),
   };
 
@@ -187,10 +247,26 @@ export function createProjectCouncilRoutes(
     read: ({ projectId, requestId }) =>
       reply(async () => {
         const { project } = await currentProject(projectId, true);
-        if (!project.workspaces.some((item) => workspaceKey(item.root) === workspaceKey(deps.workspace)))
-          throw new ConversationError(404, "This project has no original in this Hearth workspace.");
-        const original = deps.council.readProjectOriginal(projectId, deps.workspace, requestId);
-        return deps.council.readProjectRun(projectId, deps.workspace, requestId, original.metadata.intentHash);
+        if (
+          !project.workspaces.some(
+            (item) => workspaceKey(item.root) === workspaceKey(deps.workspace),
+          )
+        )
+          throw new ConversationError(
+            404,
+            "This project has no original in this Hearth workspace.",
+          );
+        const original = deps.council.readProjectOriginal(
+          projectId,
+          deps.workspace,
+          requestId,
+        );
+        return deps.council.readProjectRun(
+          projectId,
+          deps.workspace,
+          requestId,
+          original.metadata.intentHash,
+        );
       }),
   };
 
@@ -216,13 +292,16 @@ export function createProjectCouncilRoutes(
       try {
         return {
           status: 202,
-          data: await deps.council.reserveProjectReview(projectId, request, resolveAuthority),
+          data: await deps.council.reserveProjectReview(
+            projectId,
+            request,
+            resolveAuthority,
+          ),
         };
       } catch (error) {
         return {
           status: error instanceof ConversationError ? error.status : 409,
-          error:
-            safeCouncilError(error),
+          error: safeCouncilError(error),
         };
       }
     },
@@ -234,7 +313,10 @@ export function createProjectCouncilRoutes(
     path: "/projects/:id/council/reviews/:requestId/commit",
     action: "council.review.commit",
     validate: actionRef,
-    subject: ({ requestId, intentHash }) => ({ target: requestId, inputHash: intentHash }),
+    subject: ({ requestId, intentHash }) => ({
+      target: requestId,
+      inputHash: intentHash,
+    }),
     effect: async ({ projectId, requestId, intentHash }) => {
       try {
         const result = await deps.council.commitProjectReview(
@@ -244,8 +326,15 @@ export function createProjectCouncilRoutes(
           intentHash,
           resolveAuthority,
         );
-        const original = deps.council.readProjectOriginal(projectId, deps.workspace, requestId);
-        if (result.created && original.original.context.source.kind === "bead") {
+        const original = deps.council.readProjectOriginal(
+          projectId,
+          deps.workspace,
+          requestId,
+        );
+        if (
+          result.created &&
+          original.original.context.source.kind === "bead"
+        ) {
           void postCouncilVerdict(
             {
               workspace: deps.workspace,
@@ -281,9 +370,19 @@ export function createProjectCouncilRoutes(
     path: "/projects/:id/council/reviews/:requestId/retire",
     action: "council.review.retire",
     validate: actionRef,
-    subject: ({ requestId, intentHash }) => ({ target: requestId, inputHash: intentHash }),
+    subject: ({ requestId, intentHash }) => ({
+      target: requestId,
+      inputHash: intentHash,
+    }),
     effect: async ({ projectId, requestId, intentHash }) =>
-      reply(() => deps.council.retireProjectReview(projectId, deps.workspace, requestId, intentHash)),
+      reply(() =>
+        deps.council.retireProjectReview(
+          projectId,
+          deps.workspace,
+          requestId,
+          intentHash,
+        ),
+      ),
   };
 
   const cancel: ActionRoute<ReviewAction> = {
@@ -292,12 +391,30 @@ export function createProjectCouncilRoutes(
     path: "/projects/:id/council/reviews/:requestId/cancel",
     action: "council.review.cancel",
     validate: actionRef,
-    subject: ({ requestId, intentHash }) => ({ target: requestId, inputHash: intentHash }),
+    subject: ({ requestId, intentHash }) => ({
+      target: requestId,
+      inputHash: intentHash,
+    }),
     effect: async ({ projectId, requestId, intentHash }) =>
-      reply(() => deps.council.cancelProjectReview(projectId, deps.workspace, requestId, intentHash)),
+      reply(() =>
+        deps.council.cancelProjectReview(
+          projectId,
+          deps.workspace,
+          requestId,
+          intentHash,
+        ),
+      ),
   };
 
   return {
-    routes: [discover, original, run, reserve, commit, retire, cancel] as ApiRoute[],
+    routes: [
+      discover,
+      original,
+      run,
+      reserve,
+      commit,
+      retire,
+      cancel,
+    ] as ApiRoute[],
   };
 }

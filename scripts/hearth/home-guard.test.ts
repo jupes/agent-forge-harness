@@ -32,11 +32,11 @@ import {
 import { freshLaunchLink, NoLaunchLink } from "./dashboard-open";
 import { lockPath, sessionsPath, tokenPath } from "./home";
 import {
-  MAX_BOUNDED_HOME_FILE_BYTES,
   ADMINISTRATORS_SID,
   checkHomeInBun,
   ensurePrivateHome,
   homeWriteProblem,
+  MAX_BOUNDED_HOME_FILE_BYTES,
   posixWriteFinding,
   readHomeFile,
   readHomeFileBounded,
@@ -44,7 +44,6 @@ import {
 } from "./home-guard";
 import { createSessionStore, requestLaunch } from "./launch";
 import { type HearthLock, readLock } from "./lock";
-import { writeOwnerOnly } from "./token";
 import type { Exchange } from "./loopback";
 import { createHearthMcpServer } from "./mcp";
 import { HEALTH_ROUTE, OPERATOR_HEADER } from "./paths";
@@ -58,6 +57,7 @@ import {
   system32,
   whoamiSid,
 } from "./testing";
+import { writeOwnerOnly } from "./token";
 
 const REPO = resolve(import.meta.dir, "..", "..");
 const ON_WINDOWS = process.platform === "win32";

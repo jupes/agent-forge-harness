@@ -24,8 +24,8 @@ import {
 import { type CommandRunner, compilePullRequest } from "./pr-source";
 import {
   assertProvidersReady,
-  createProviderResolver,
   type CouncilProviderEndpoint,
+  createProviderResolver,
   type ProviderResolverOptions,
 } from "./providers";
 import {
@@ -153,7 +153,8 @@ export async function executeCouncilReview(options: CouncilReviewOptions) {
   const providerOptions: ProviderResolverOptions = {};
   if (environment !== undefined) providerOptions.environment = environment;
   if (fetchImpl !== undefined) providerOptions.fetchImpl = fetchImpl;
-  if (providerEndpoints !== undefined) providerOptions.endpoints = providerEndpoints;
+  if (providerEndpoints !== undefined)
+    providerOptions.endpoints = providerEndpoints;
   const record = (event: CouncilLedgerEvent): void => {
     if (!appendEvent || !attach) return;
     try {

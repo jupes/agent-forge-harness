@@ -620,7 +620,10 @@ type ProjectCouncilSeed = {
   intentHash: string;
   runId: string;
 };
-const projectCouncilSeeds = new WeakMap<TestHearth, Map<string, ProjectCouncilSeed>>();
+const projectCouncilSeeds = new WeakMap<
+  TestHearth,
+  Map<string, ProjectCouncilSeed>
+>();
 
 async function seedProjectCouncilOriginal(
   h: TestHearth,
@@ -667,7 +670,9 @@ async function seedProjectCouncilOriginal(
     !("runId" in body.data.metadata) ||
     typeof body.data.metadata.runId !== "string"
   )
-    throw new Error(`Could not seed a project Council original (${response.status}).`);
+    throw new Error(
+      `Could not seed a project Council original (${response.status}).`,
+    );
   const seed = {
     requestId: body.data.metadata.requestId,
     intentHash: body.data.metadata.intentHash,
@@ -696,7 +701,9 @@ async function commitProjectCouncilOriginal(
     { intentHash: seed.intentHash },
   );
   if (response.status !== 202)
-    throw new Error(`Could not commit project Council fixture (${response.status}).`);
+    throw new Error(
+      `Could not commit project Council fixture (${response.status}).`,
+    );
   await response.body?.cancel();
 }
 
@@ -3426,7 +3433,9 @@ const ACTIONS: Record<string, ActionFixture> = {
         created: false,
       });
       expect(h.commands.calls).toEqual([]);
-      expect(h.events(["council.run.started", "council.run.finished"])).toEqual([]);
+      expect(h.events(["council.run.started", "council.run.finished"])).toEqual(
+        [],
+      );
     },
   },
   "POST /projects/:id/council/reviews/:requestId/commit": {
@@ -3446,7 +3455,8 @@ const ACTIONS: Record<string, ActionFixture> = {
         h,
         "API inventory committed review fixture.",
       );
-      const fixture = ACTIONS["POST /projects/:id/council/reviews/:requestId/commit"]!;
+      const fixture =
+        ACTIONS["POST /projects/:id/council/reviews/:requestId/commit"]!;
       fixture.valid.path = `/projects/${FIXTURE_PROJECT_ID}/council/reviews/${seed.requestId}/commit`;
       fixture.valid.body = { intentHash: seed.intentHash };
       fixture.valid.target = seed.requestId;
@@ -3475,7 +3485,23 @@ const ACTIONS: Record<string, ActionFixture> = {
         h.headers(h.hearth.token),
       );
       expect(exact.status).toBe(200);
-      expect(await exact.json()).toMatchObject({ data: { version: 1, receipt: { phase: "completed" }, job: { runId: seed.runId, status: "completed", run: { context: { contentHash: expect.any(String), evidence: expect.any(Array) } } }, verdictCommentPreview: null } });
+      expect(await exact.json()).toMatchObject({
+        data: {
+          version: 1,
+          receipt: { phase: "completed" },
+          job: {
+            runId: seed.runId,
+            status: "completed",
+            run: {
+              context: {
+                contentHash: expect.any(String),
+                evidence: expect.any(Array),
+              },
+            },
+          },
+          verdictCommentPreview: null,
+        },
+      });
       const runsBeforeReplay = await runIds(h);
       const callsBeforeReplay = h.commands.calls.length;
       const replay = await post(
@@ -3508,14 +3534,18 @@ const ACTIONS: Record<string, ActionFixture> = {
         h,
         "API inventory retired review fixture.",
       );
-      const fixture = ACTIONS["POST /projects/:id/council/reviews/:requestId/retire"]!;
+      const fixture =
+        ACTIONS["POST /projects/:id/council/reviews/:requestId/retire"]!;
       fixture.valid.path = `/projects/${FIXTURE_PROJECT_ID}/council/reviews/${seed.requestId}/retire`;
       fixture.valid.body = { intentHash: seed.intentHash };
       fixture.valid.target = seed.requestId;
       fixture.valid.audit = { inputHash: seed.intentHash };
     },
     happened: async (_h, answer) => {
-      expect(answer).toMatchObject({ metadata: { state: "retired" }, phase: "retired" });
+      expect(answer).toMatchObject({
+        metadata: { state: "retired" },
+        phase: "retired",
+      });
     },
   },
   "POST /projects/:id/council/reviews/:requestId/cancel": {
@@ -3536,7 +3566,8 @@ const ACTIONS: Record<string, ActionFixture> = {
         "API inventory cancelled review fixture.",
       );
       await commitProjectCouncilOriginal(h, seed);
-      const fixture = ACTIONS["POST /projects/:id/council/reviews/:requestId/cancel"]!;
+      const fixture =
+        ACTIONS["POST /projects/:id/council/reviews/:requestId/cancel"]!;
       fixture.valid.path = `/projects/${FIXTURE_PROJECT_ID}/council/reviews/${seed.requestId}/cancel`;
       fixture.valid.body = { intentHash: seed.intentHash };
       fixture.valid.target = seed.requestId;
@@ -3550,7 +3581,11 @@ const ACTIONS: Record<string, ActionFixture> = {
       await councilRunFinished(h, seed.runId);
     },
     happened: async (_h, answer) => {
-      expect(answer).toMatchObject({ metadata: { state: expect.stringMatching(/^(running|completed|cancelled)$/) } });
+      expect(answer).toMatchObject({
+        metadata: {
+          state: expect.stringMatching(/^(running|completed|cancelled)$/),
+        },
+      });
     },
   },
   "POST /council/preview": {

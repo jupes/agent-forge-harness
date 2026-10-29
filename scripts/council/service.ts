@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import {
-  existsSync,
   closeSync,
   constants,
+  existsSync,
   fstatSync,
   lstatSync,
   openSync,
@@ -19,24 +19,24 @@ import type {
   ProjectCouncilAuthorityResolver,
   ProjectCouncilOriginal,
   ProjectCouncilOriginalRead,
-  ProjectCouncilReserveRequest,
   ProjectCouncilReceipt,
+  ProjectCouncilReserveRequest,
 } from "../../types/project-council";
 import {
-  projectCouncilMetadata,
   projectCouncilHistorySchema,
-  projectCouncilReceiptSchema,
+  projectCouncilMetadata,
   projectCouncilMetadataSchema,
   projectCouncilOriginalReadSchema,
+  projectCouncilReceiptSchema,
   projectCouncilReserveRequestSchema,
 } from "../../types/project-council";
 import {
   MAX_PROJECT_COUNCIL_RUN_RESPONSE_BYTES,
-  projectCouncilRunRead,
   type ProjectCouncilRunProvenance,
+  projectCouncilRunRead,
 } from "../../types/project-council-run-read";
-import { parseBeadsIssueId } from "../run-correlation";
 import { writeOwnerOnly } from "../hearth/token";
+import { parseBeadsIssueId } from "../run-correlation";
 import {
   assertCouncilRunId,
   type CouncilArtifactPaths,
@@ -48,8 +48,17 @@ import {
   writeCouncilJobFailure,
 } from "./artifacts";
 import { contextListing, sanitizeContent } from "./context";
-import { councilOutcome, type CouncilAppend, type CouncilAttachResolver } from "./ledger-events";
+import {
+  type CouncilAppend,
+  type CouncilAttachResolver,
+  councilOutcome,
+} from "./ledger-events";
 import type { CommandRunner } from "./pr-source";
+import {
+  createProjectCouncilOriginalStore,
+  projectCouncilInputHash,
+  projectCouncilProfileHash,
+} from "./project-original-store";
 import {
   assertProvidersReady,
   providerEndpointSnapshot,
@@ -72,11 +81,6 @@ import {
   loadCouncilProfile,
   prepareCouncilContext,
 } from "./workflow";
-import {
-  createProjectCouncilOriginalStore,
-  projectCouncilInputHash,
-  projectCouncilProfileHash,
-} from "./project-original-store";
 
 export type CouncilServiceInput = {
   sourceType: "file" | "plan" | "pr" | "text" | "bead";
@@ -300,7 +304,10 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
       projectProvenance?: ReturnType<typeof projectRunProvenance>;
     }
   >();
-  const projectStores = new Map<string, ReturnType<typeof createProjectCouncilOriginalStore>>();
+  const projectStores = new Map<
+    string,
+    ReturnType<typeof createProjectCouncilOriginalStore>
+  >();
   const projectOperations = new Set<Promise<unknown>>();
   let projectAdmissionReservations = 0;
   let projectAdmissionTail: Promise<void> = Promise.resolve();
@@ -334,7 +341,10 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
 
   function withProjectAdmission<T>(work: () => Promise<T>): Promise<T> {
     const operation = projectAdmissionTail.then(work);
-    projectAdmissionTail = operation.then(() => undefined, () => undefined);
+    projectAdmissionTail = operation.then(
+      () => undefined,
+      () => undefined,
+    );
     return operation;
   }
 
@@ -679,7 +689,9 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
       authority.catalogRevision < 0 ||
       !/^[a-f0-9]{64}$/.test(authority.scopeHash)
     )
-      throw new Error("The current project Council scope could not be verified.");
+      throw new Error(
+        "The current project Council scope could not be verified.",
+      );
     return {
       projectId,
       workspace: authority.workspace,
@@ -695,18 +707,32 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
     return profile(path);
   }
 
-  function projectProfileChoice(path: string, deepDiscussion: boolean): CouncilProfile {
+  function projectProfileChoice(
+    path: string,
+    deepDiscussion: boolean,
+  ): CouncilProfile {
     const selected = selectedProjectProfile(path);
     if (deepDiscussion && selected.minPeerBallots < 1)
-      throw new Error("This profile cannot support deep discussion because it has no peer ballots.");
+      throw new Error(
+        "This profile cannot support deep discussion because it has no peer ballots.",
+      );
     const raw: Record<string, unknown> = {
       ...selected,
-      depth: deepDiscussion ? "deep" : selected.depth === "quick" ? "quick" : "balanced",
+      depth: deepDiscussion
+        ? "deep"
+        : selected.depth === "quick"
+          ? "quick"
+          : "balanced",
     };
-    if (deepDiscussion) raw.maxDiscussionRounds = selected.depth === "deep" ? selected.maxDiscussionRounds ?? 1 : 1;
+    if (deepDiscussion)
+      raw.maxDiscussionRounds =
+        selected.depth === "deep" ? (selected.maxDiscussionRounds ?? 1) : 1;
     else delete raw.maxDiscussionRounds;
     const parsed = parseCouncilProfileJson(JSON.stringify(raw));
-    if (!parsed.ok) throw new Error(`This profile does not support the selected discussion depth: ${parsed.error}`);
+    if (!parsed.ok)
+      throw new Error(
+        `This profile does not support the selected discussion depth: ${parsed.error}`,
+      );
     return parsed.value;
   }
 
@@ -720,9 +746,12 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
     };
   }
 
-  function projectReceipt(original: ProjectCouncilOriginal): ProjectCouncilReceipt {
+  function projectReceipt(
+    original: ProjectCouncilOriginal,
+  ): ProjectCouncilReceipt {
     const entry = active.get(original.runId);
-    const job = entry && sameProjectRun(entry, original) ? entry.job : undefined;
+    const job =
+      entry && sameProjectRun(entry, original) ? entry.job : undefined;
     const phase: ProjectCouncilReceipt["phase"] =
       original.state === "reserved"
         ? "reserved"
@@ -744,7 +773,9 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
     };
   }
 
-  function projectRunProvenance(original: ProjectCouncilOriginal): ProjectCouncilRunProvenance {
+  function projectRunProvenance(
+    original: ProjectCouncilOriginal,
+  ): ProjectCouncilRunProvenance {
     return {
       version: 1,
       requestId: original.requestId,
@@ -772,22 +803,31 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
   ): boolean {
     if (
       job.runId !== original.runId ||
-      (job.profile !== undefined && JSON.stringify(job.profile) !== JSON.stringify(original.profile))
-    ) return false;
+      (job.profile !== undefined &&
+        JSON.stringify(job.profile) !== JSON.stringify(original.profile))
+    )
+      return false;
     const run = job.run;
     if (!run) return true;
     const expected = original.context;
-    return run.runId === original.runId &&
+    return (
+      run.runId === original.runId &&
       JSON.stringify(run.profile) === JSON.stringify(original.profile) &&
       run.context.contentHash === expected.contentHash &&
       run.context.byteLength === expected.byteLength &&
       run.context.truncated === expected.truncated &&
       JSON.stringify(run.context.source) === JSON.stringify(expected.source) &&
-      JSON.stringify(run.context.redactions) === JSON.stringify(expected.redactions) &&
-      JSON.stringify(run.context.evidence) === JSON.stringify(expected.evidence);
+      JSON.stringify(run.context.redactions) ===
+        JSON.stringify(expected.redactions) &&
+      JSON.stringify(run.context.evidence) === JSON.stringify(expected.evidence)
+    );
   }
 
-  function readOwnedProjectFile(directory: string, file: string, maxBytes: number): string {
+  function readOwnedProjectFile(
+    directory: string,
+    file: string,
+    maxBytes: number,
+  ): string {
     let descriptor: number | null = null;
     try {
       const rootReal = realpathSync(runsRoot);
@@ -801,25 +841,41 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
         pathStat.nlink !== 1 ||
         pathStat.size > maxBytes ||
         realpathSync(file) !== resolve(file)
-      ) throw new Error("unsafe or oversized project Council result");
-      descriptor = openSync(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+      )
+        throw new Error("unsafe or oversized project Council result");
+      descriptor = openSync(
+        file,
+        constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+      );
       const opened = fstatSync(descriptor);
       if (
-        !opened.isFile() || opened.nlink !== 1 || opened.size > maxBytes ||
-        opened.dev !== pathStat.dev || opened.ino !== pathStat.ino ||
+        !opened.isFile() ||
+        opened.nlink !== 1 ||
+        opened.size > maxBytes ||
+        opened.dev !== pathStat.dev ||
+        opened.ino !== pathStat.ino ||
         realpathSync(directory) !== directoryReal ||
         realpathSync(file) !== resolve(file)
-      ) throw new Error("project Council result identity changed");
+      )
+        throw new Error("project Council result identity changed");
       const bytes = Buffer.alloc(maxBytes + 1);
       let length = 0;
       while (length < bytes.length) {
-        const read = readSync(descriptor, bytes, length, bytes.length - length, length);
+        const read = readSync(
+          descriptor,
+          bytes,
+          length,
+          bytes.length - length,
+          length,
+        );
         if (read === 0) break;
         length += read;
       }
       if (length > maxBytes || length !== opened.size)
         throw new Error("project Council result exceeded its read ceiling");
-      return new TextDecoder("utf-8", { fatal: true }).decode(bytes.subarray(0, length));
+      return new TextDecoder("utf-8", { fatal: true }).decode(
+        bytes.subarray(0, length),
+      );
     } finally {
       if (descriptor !== null) closeSync(descriptor);
     }
@@ -830,7 +886,11 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
     const manifest = join(directory, "manifest.json");
     const terminal = join(directory, "terminal.json");
     const statePath = existsSync(manifest) ? manifest : terminal;
-    const text = readOwnedProjectFile(directory, statePath, MAX_PROJECT_COUNCIL_RUN_RESPONSE_BYTES);
+    const text = readOwnedProjectFile(
+      directory,
+      statePath,
+      MAX_PROJECT_COUNCIL_RUN_RESPONSE_BYTES,
+    );
     if (statePath === manifest) {
       const run = parseStoredRun(text);
       if (run.runId !== original.runId)
@@ -858,13 +918,19 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
         runId: run.runId,
         status: run.status,
         startedAt: run.startedAt,
-        updatedAt: typeof state.updatedAt === "string" ? state.updatedAt : run.finishedAt,
+        updatedAt:
+          typeof state.updatedAt === "string"
+            ? state.updatedAt
+            : run.finishedAt,
         events: run.events,
         discussion: run.discussion ?? [],
         profile: run.profile,
         run,
         persistenceStatus: "failed",
-        persistenceError: typeof state.persistenceError === "string" ? safeCouncilError(state.persistenceError) : "The completed result could not be saved as normal run artifacts.",
+        persistenceError:
+          typeof state.persistenceError === "string"
+            ? safeCouncilError(state.persistenceError)
+            : "The completed result could not be saved as normal run artifacts.",
       };
     }
     if (
@@ -878,9 +944,12 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
       runId: original.runId,
       status: state.status,
       startedAt: state.startedAt,
-      updatedAt: typeof state.updatedAt === "string" ? state.updatedAt : state.startedAt,
+      updatedAt:
+        typeof state.updatedAt === "string" ? state.updatedAt : state.startedAt,
       events: [],
-      ...(typeof state.error === "string" ? { error: safeCouncilError(state.error) } : {}),
+      ...(typeof state.error === "string"
+        ? { error: safeCouncilError(state.error) }
+        : {}),
     };
   }
 
@@ -896,7 +965,10 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
     );
     writeFileSync(
       join(reservation.paths.directory, "job.json"),
-      JSON.stringify({ runId: original.runId, startedAt: new Date().toISOString() }),
+      JSON.stringify({
+        runId: original.runId,
+        startedAt: new Date().toISOString(),
+      }),
       { flag: "wx", mode: 0o600 },
     );
     await store.markRunning(
@@ -955,7 +1027,9 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
         engineOptions.maxUsd = original.options.maxUsd;
         if (options.fetchImpl) engineOptions.fetchImpl = options.fetchImpl;
         if (options.resolveTransport)
-          engineOptions.resolveTransport = options.resolveTransport(original.profile);
+          engineOptions.resolveTransport = options.resolveTransport(
+            original.profile,
+          );
         const beadId =
           original.context.source.kind === "bead"
             ? original.context.source.locator
@@ -1044,11 +1118,15 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
     return trackProjectOperation(async () => {
       if (closed) throw new Error("council service is closed");
       const parsed = projectCouncilReserveRequestSchema.safeParse(rawRequest);
-      if (!parsed.success) throw new Error("Expected a strict project Council review choice.");
+      if (!parsed.success)
+        throw new Error("Expected a strict project Council review choice.");
       const request = parsed.data;
       const inputHash = projectCouncilInputHash({ projectId, ...request });
       const authority = await resolveAuthority(projectId, request.sourceChoice);
-      const selected = projectProfileChoice(request.profileChoice, request.deepDiscussion);
+      const selected = projectProfileChoice(
+        request.profileChoice,
+        request.deepDiscussion,
+      );
       const binding = projectAuthority(
         projectId,
         authority,
@@ -1061,9 +1139,10 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
       assertProvidersReady(selected, environment);
       const providerEndpoints = providerEndpointSnapshot(selected, environment);
       const packed = await prepareCouncilContext({
-        kind: request.sourceChoice.sourceType === "text"
-          ? "stdin"
-          : request.sourceChoice.sourceType,
+        kind:
+          request.sourceChoice.sourceType === "text"
+            ? "stdin"
+            : request.sourceChoice.sourceType,
         source: request.sourceChoice.source,
         workspaceRoot,
         secretPolicy: request.redactSecrets ? "redact" : "reject",
@@ -1078,7 +1157,10 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
           packed.source.kind === "stdin" ? "text" : packed.source.kind,
         source: packed.source.locator,
       });
-      const currentProfile = projectProfileChoice(request.profileChoice, request.deepDiscussion);
+      const currentProfile = projectProfileChoice(
+        request.profileChoice,
+        request.deepDiscussion,
+      );
       const currentBinding = projectAuthority(
         projectId,
         currentAuthority,
@@ -1088,9 +1170,12 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
         JSON.stringify(currentBinding) !== JSON.stringify(binding) ||
         JSON.stringify(currentProfile) !== JSON.stringify(selected)
       )
-        throw new Error("The project scope or Council profile changed during review preparation. Prepare the current choice again.");
+        throw new Error(
+          "The project scope or Council profile changed during review preparation. Prepare the current choice again.",
+        );
       assertProvidersReady(currentProfile, environment);
-      if (closed) throw new Error("council service is closing; no review was reserved");
+      if (closed)
+        throw new Error("council service is closing; no review was reserved");
       const listing = contextListing(packed);
       const probeId = "00000000-0000-4000-8000-000000000000";
       const now = new Date().toISOString();
@@ -1100,7 +1185,8 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
         intentHash: "0".repeat(64),
         projectId,
         state: "reserved",
-        sourceType: packed.source.kind === "stdin" ? "text" : packed.source.kind,
+        sourceType:
+          packed.source.kind === "stdin" ? "text" : packed.source.kind,
         sourceName: packed.source.displayName,
         listing,
         byteLength: packed.byteLength,
@@ -1153,7 +1239,10 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
     workspace: string,
     requestId: string,
   ): ProjectCouncilOriginalRead {
-    const original = projectStore(workspace, projectId).read(projectId, requestId);
+    const original = projectStore(workspace, projectId).read(
+      projectId,
+      requestId,
+    );
     return projectCouncilOriginalReadSchema.parse({
       metadata: projectCouncilMetadata(original),
       original: structuredClone(original),
@@ -1181,55 +1270,78 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
     intentHash: string,
     resolveAuthority: ProjectCouncilAuthorityResolver,
   ) {
-    return trackProjectOperation(() => withProjectAdmission(async () => {
-      if (closed) throw new Error("council service is closed");
-      const store = projectStore(workspace, projectId);
-      const original = store.read(projectId, requestId);
-      if (original.intentHash !== intentHash)
-        throw new Error("The Council original hash does not match.");
-      const alreadyClaimed = original.state !== "reserved";
-      if (!alreadyClaimed && active.size + projectAdmissionReservations >= 4)
-        throw new Error("At most 4 council runs may execute concurrently");
-      if (!alreadyClaimed) projectAdmissionReservations += 1;
-      try {
-        const claimed = await store.claimDispatch(
-          projectId,
-          requestId,
-          intentHash,
-          async (candidate) => {
-            const sourceRef = originalSourceRef(candidate);
-            const authority = await resolveAuthority(projectId, sourceRef);
-            const selected = projectProfileChoice(candidate.profileChoice, candidate.options.deepDiscussion);
-            const binding = projectAuthority(
-              projectId,
-              authority,
-              projectCouncilProfileHash(selected),
-            );
-            if (
-              JSON.stringify(binding) !== JSON.stringify(candidate.binding) ||
-              JSON.stringify(selected) !== JSON.stringify(candidate.profile)
-            )
-              throw new Error("The reviewed project scope or profile changed. No provider was called.");
-            assertProvidersReady(selected, environment);
-            const currentEndpoints = providerEndpointSnapshot(selected, environment);
-            if (JSON.stringify(currentEndpoints) !== JSON.stringify(candidate.providerEndpoints))
-              throw new Error("The reviewed provider endpoint configuration changed. No provider was called.");
-            if (existsSync(resolveRunDirectory(candidate.runId, runsRoot)))
-              throw new Error("The reviewed Council run identity is already owned by another run.");
-          },
-        );
-        if (!claimed.created)
-          return { receipt: projectReceipt(claimed.original), created: false };
+    return trackProjectOperation(() =>
+      withProjectAdmission(async () => {
+        if (closed) throw new Error("council service is closed");
+        const store = projectStore(workspace, projectId);
+        const original = store.read(projectId, requestId);
+        if (original.intentHash !== intentHash)
+          throw new Error("The Council original hash does not match.");
+        const alreadyClaimed = original.state !== "reserved";
+        if (!alreadyClaimed && active.size + projectAdmissionReservations >= 4)
+          throw new Error("At most 4 council runs may execute concurrently");
+        if (!alreadyClaimed) projectAdmissionReservations += 1;
         try {
-          await queueProjectReview(claimed.original, store);
-        } catch {
-          // The durable dispatch claim is authoritative; a lost launch outcome is not retried.
+          const claimed = await store.claimDispatch(
+            projectId,
+            requestId,
+            intentHash,
+            async (candidate) => {
+              const sourceRef = originalSourceRef(candidate);
+              const authority = await resolveAuthority(projectId, sourceRef);
+              const selected = projectProfileChoice(
+                candidate.profileChoice,
+                candidate.options.deepDiscussion,
+              );
+              const binding = projectAuthority(
+                projectId,
+                authority,
+                projectCouncilProfileHash(selected),
+              );
+              if (
+                JSON.stringify(binding) !== JSON.stringify(candidate.binding) ||
+                JSON.stringify(selected) !== JSON.stringify(candidate.profile)
+              )
+                throw new Error(
+                  "The reviewed project scope or profile changed. No provider was called.",
+                );
+              assertProvidersReady(selected, environment);
+              const currentEndpoints = providerEndpointSnapshot(
+                selected,
+                environment,
+              );
+              if (
+                JSON.stringify(currentEndpoints) !==
+                JSON.stringify(candidate.providerEndpoints)
+              )
+                throw new Error(
+                  "The reviewed provider endpoint configuration changed. No provider was called.",
+                );
+              if (existsSync(resolveRunDirectory(candidate.runId, runsRoot)))
+                throw new Error(
+                  "The reviewed Council run identity is already owned by another run.",
+                );
+            },
+          );
+          if (!claimed.created)
+            return {
+              receipt: projectReceipt(claimed.original),
+              created: false,
+            };
+          try {
+            await queueProjectReview(claimed.original, store);
+          } catch {
+            // The durable dispatch claim is authoritative; a lost launch outcome is not retried.
+          }
+          return {
+            receipt: projectReceipt(store.read(projectId, requestId)),
+            created: true,
+          };
+        } finally {
+          if (!alreadyClaimed) projectAdmissionReservations -= 1;
         }
-        return { receipt: projectReceipt(store.read(projectId, requestId)), created: true };
-      } finally {
-        if (!alreadyClaimed) projectAdmissionReservations -= 1;
-      }
-    }));
+      }),
+    );
   }
 
   async function cancelProjectReview(
@@ -1275,10 +1387,14 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
 
   function councilVerdictCommentPreview(job: CouncilServiceJob): string | null {
     const run = job.run;
-    if (job.status !== "completed" || !run || run.status !== "completed") return null;
+    if (job.status !== "completed" || !run || run.status !== "completed")
+      return null;
     const severities = ["blocker", "high", "medium", "low"] as const;
-    const counts = severities.map((severity) =>
-      run.aggregatedFindings.filter((finding) => finding.severity === severity).length,
+    const counts = severities.map(
+      (severity) =>
+        run.aggregatedFindings.filter(
+          (finding) => finding.severity === severity,
+        ).length,
     );
     return `review: COUNCIL ${job.runId} ${councilOutcome(run).toUpperCase()} — findings ${counts.join("/")} (${severities.join("/")})`;
   }
@@ -1289,10 +1405,15 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
     requestId: string,
     intentHash: string,
   ) {
-    const original = projectStore(workspace, projectId).read(projectId, requestId);
+    const original = projectStore(workspace, projectId).read(
+      projectId,
+      requestId,
+    );
     if (original.intentHash !== intentHash)
       throw new Error("The Council original hash does not match.");
-    const provenance = projectRunProvenance(original) satisfies ProjectCouncilRunProvenance;
+    const provenance = projectRunProvenance(
+      original,
+    ) satisfies ProjectCouncilRunProvenance;
     const unknown = () => {
       const receipt = projectCouncilReceiptSchema.parse({
         ...projectReceipt(original),
@@ -1306,9 +1427,10 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
     const running = active.get(original.runId);
     if (running && sameProjectRun(running, original)) {
       const job = snapshot(running.job);
-      if (!projectJobMatchesOriginal(job, original))
-        return unknown();
-      const receipt = projectCouncilReceiptSchema.parse(projectReceipt(original));
+      if (!projectJobMatchesOriginal(job, original)) return unknown();
+      const receipt = projectCouncilReceiptSchema.parse(
+        projectReceipt(original),
+      );
       return projectCouncilRunRead(
         provenance,
         receipt,
@@ -1321,9 +1443,10 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
       ownsProjectRun(original)
     ) {
       const job = readProjectJob(original);
-      if (!projectJobMatchesOriginal(job, original))
-        return unknown();
-      const receipt = projectCouncilReceiptSchema.parse(projectReceipt(original));
+      if (!projectJobMatchesOriginal(job, original)) return unknown();
+      const receipt = projectCouncilReceiptSchema.parse(
+        projectReceipt(original),
+      );
       return projectCouncilRunRead(
         provenance,
         receipt,

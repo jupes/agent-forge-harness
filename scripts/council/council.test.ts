@@ -1,5 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "fs";
 import { tmpdir } from "os";
 import { join, resolve } from "path";
 import {
@@ -10,8 +16,8 @@ import {
 import { parseCouncilCliArgs, runCouncilCli } from "./cli";
 import { buildContextPack, ContextSecurityError, hashText } from "./context";
 import { FakeCouncilTransport, runCouncil } from "./engine";
-import { createCouncilService } from "./service";
 import { createProjectCouncilOriginalStore } from "./project-original-store";
+import { createCouncilService } from "./service";
 import {
   type CouncilProfile,
   estimateCouncilCost,
@@ -69,24 +75,33 @@ test("a project Council commit refuses a changed provider endpoint before dispat
     catalogRevision: 1,
     scopeHash: "a".repeat(64),
   });
-  const reserved = await service.reserveProjectReview(projectId, {
-    sourceChoice: { sourceType: "text", source: "Endpoint binding fixture." },
-    profileChoice: profilePath,
-    maxUsd: 0.25,
-    maxBytes: 1024,
-    redactSecrets: false,
-    deepDiscussion: false,
-  }, resolveAuthority);
-  environment.OPENAI_BASE_URL = "https://second.example/v1";
-  await expect(service.commitProjectReview(
+  const reserved = await service.reserveProjectReview(
     projectId,
-    root,
-    reserved.metadata.requestId,
-    reserved.metadata.intentHash,
+    {
+      sourceChoice: { sourceType: "text", source: "Endpoint binding fixture." },
+      profileChoice: profilePath,
+      maxUsd: 0.25,
+      maxBytes: 1024,
+      redactSecrets: false,
+      deepDiscussion: false,
+    },
     resolveAuthority,
-  )).rejects.toThrow("provider endpoint configuration changed");
+  );
+  environment.OPENAI_BASE_URL = "https://second.example/v1";
+  await expect(
+    service.commitProjectReview(
+      projectId,
+      root,
+      reserved.metadata.requestId,
+      reserved.metadata.intentHash,
+      resolveAuthority,
+    ),
+  ).rejects.toThrow("provider endpoint configuration changed");
   expect(transportResolutions).toBe(0);
-  expect(service.readProjectOriginal(projectId, root, reserved.metadata.requestId).metadata.state).toBe("reserved");
+  expect(
+    service.readProjectOriginal(projectId, root, reserved.metadata.requestId)
+      .metadata.state,
+  ).toBe("reserved");
   await service.close();
 });
 
@@ -97,7 +112,11 @@ test("concurrent project commits across workspaces cannot overbook the global fo
   const selected = profile({
     id: "admission-review",
     title: "Admission review",
-    seats: profile().seats.map((seat) => ({ ...seat, provider: "fake", timeoutMs: 600_000 })),
+    seats: profile().seats.map((seat) => ({
+      ...seat,
+      provider: "fake",
+      timeoutMs: 600_000,
+    })),
     chair: { ...profile().chair, provider: "fake", timeoutMs: 600_000 },
   });
   const profilePath = join(profileDirectory, "admission-review.json");
@@ -110,12 +129,14 @@ test("concurrent project commits across workspaces cannot overbook the global fo
     environment: {},
     resolveTransport: () => () => new FakeCouncilTransport({ delayMs: 60_000 }),
   });
-  const legacy = [0, 1, 2].map((index) => service.start({
-    sourceType: "text",
-    source: `Hold legacy slot ${index}.`,
-    profile: profilePath,
-    runId: `legacy-slot-${index}`,
-  }));
+  const legacy = [0, 1, 2].map((index) =>
+    service.start({
+      sourceType: "text",
+      source: `Hold legacy slot ${index}.`,
+      profile: profilePath,
+      runId: `legacy-slot-${index}`,
+    }),
+  );
   expect(legacy.every((job) => job.status === "running")).toBe(true);
   const ids = [
     "project-2b4f8e0a-76f1-4c29-972e-4aee9c216d12",
@@ -132,27 +153,40 @@ test("concurrent project commits across workspaces cannot overbook the global fo
       scopeHash: String(index + 1).repeat(64),
     }),
   }));
-  const reservations = await Promise.all(entries.map(async (entry, index) => ({
-    entry,
-    reservation: await service.reserveProjectReview(entry.id, {
-      sourceChoice: { sourceType: "text", source: `Held project slot ${index}.` },
-      profileChoice: profilePath,
-      maxUsd: 0.25,
-      maxBytes: 1024,
-      redactSecrets: false,
-      deepDiscussion: false,
-    }, entry.resolveAuthority),
-  })));
-  const outcomes = await Promise.allSettled(reservations.map(({ entry, reservation }) =>
-    service.commitProjectReview(
-      entry.id,
-      entry.workspace,
-      reservation.metadata.requestId,
-      reservation.metadata.intentHash,
-      entry.resolveAuthority,
+  const reservations = await Promise.all(
+    entries.map(async (entry, index) => ({
+      entry,
+      reservation: await service.reserveProjectReview(
+        entry.id,
+        {
+          sourceChoice: {
+            sourceType: "text",
+            source: `Held project slot ${index}.`,
+          },
+          profileChoice: profilePath,
+          maxUsd: 0.25,
+          maxBytes: 1024,
+          redactSecrets: false,
+          deepDiscussion: false,
+        },
+        entry.resolveAuthority,
+      ),
+    })),
+  );
+  const outcomes = await Promise.allSettled(
+    reservations.map(({ entry, reservation }) =>
+      service.commitProjectReview(
+        entry.id,
+        entry.workspace,
+        reservation.metadata.requestId,
+        reservation.metadata.intentHash,
+        entry.resolveAuthority,
+      ),
     ),
-  ));
-  expect(outcomes.filter((item) => item.status === "fulfilled")).toHaveLength(1);
+  );
+  expect(outcomes.filter((item) => item.status === "fulfilled")).toHaveLength(
+    1,
+  );
   expect(outcomes.filter((item) => item.status === "rejected")).toHaveLength(1);
   await service.close();
 });
@@ -165,7 +199,11 @@ test("a retained unknown original cannot read or cancel a colliding legacy job b
   const selected = profile({
     id: "identity-review",
     title: "Identity review",
-    seats: profile().seats.map((seat) => ({ ...seat, provider: "fake", timeoutMs: 600_000 })),
+    seats: profile().seats.map((seat) => ({
+      ...seat,
+      provider: "fake",
+      timeoutMs: 600_000,
+    })),
     chair: { ...profile().chair, provider: "fake", timeoutMs: 600_000 },
   });
   const profilePath = join(profileDirectory, "identity-review.json");
@@ -186,25 +224,51 @@ test("a retained unknown original cannot read or cancel a colliding legacy job b
     catalogRevision: 1,
     scopeHash: "a".repeat(64),
   });
-  const reserved = await service.reserveProjectReview(projectId, {
-    sourceChoice: { sourceType: "text", source: "A retained unknown review." },
-    profileChoice: profilePath,
-    maxUsd: 0.25,
-    maxBytes: 1024,
-    redactSecrets: false,
-    deepDiscussion: false,
-  }, resolveAuthority);
-  const store = createProjectCouncilOriginalStore({ home: reviewHome, workspace: root, projectId });
-  await store.claimDispatch(projectId, reserved.metadata.requestId, reserved.metadata.intentHash, async () => {});
+  const reserved = await service.reserveProjectReview(
+    projectId,
+    {
+      sourceChoice: {
+        sourceType: "text",
+        source: "A retained unknown review.",
+      },
+      profileChoice: profilePath,
+      maxUsd: 0.25,
+      maxBytes: 1024,
+      redactSecrets: false,
+      deepDiscussion: false,
+    },
+    resolveAuthority,
+  );
+  const store = createProjectCouncilOriginalStore({
+    home: reviewHome,
+    workspace: root,
+    projectId,
+  });
+  await store.claimDispatch(
+    projectId,
+    reserved.metadata.requestId,
+    reserved.metadata.intentHash,
+    async () => {},
+  );
   const legacy = service.start({
     sourceType: "text",
     source: "An unrelated legacy run with a colliding caller-provided ID.",
     profile: profilePath,
     runId: reserved.metadata.runId,
   });
-  const observed = service.readProjectRun(projectId, root, reserved.metadata.requestId, reserved.metadata.intentHash);
+  const observed = service.readProjectRun(
+    projectId,
+    root,
+    reserved.metadata.requestId,
+    reserved.metadata.intentHash,
+  );
   expect(observed).toMatchObject({ receipt: { phase: "unknown" }, job: null });
-  await service.cancelProjectReview(projectId, root, reserved.metadata.requestId, reserved.metadata.intentHash);
+  await service.cancelProjectReview(
+    projectId,
+    root,
+    reserved.metadata.requestId,
+    reserved.metadata.intentHash,
+  );
   expect(service.get(legacy.runId).status).toBe("running");
   await service.close();
 });
