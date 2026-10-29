@@ -29,8 +29,10 @@ import { startTestHearth, type TestHearth } from "../testing";
 import { writeOwnerOnly } from "../token";
 import {
   FIXTURE_SESSION_REPLY,
+  FIXTURE_SESSION_PROMPT,
   fakeSessionRuntime,
   fixtureSessionGit,
+  fixtureSessionFlags,
   sessionStartFixture,
   waitOwnedTurn,
 } from "./session-fixture";
@@ -283,11 +285,13 @@ test.skipIf(
       await openResponse.json();
     expect(openReceipt.data).toMatchObject({ requestId, phase: "opened" });
     expect(launches).toHaveLength(1);
-    expect(launches[0]?.command[0]).toBe(terminalFixtureExecutable);
-    expect(launches[0]?.command).toContain(nativeSessionId);
-    expect(launches[0]?.command).not.toContain(FIXTURE_SESSION_PROMPT);
-    expect(launches[0]?.lifetime).toEqual({ kind: "managed" });
-    expect(Object.hasOwn(launches[0] ?? {}, "stdin")).toBe(false);
+    const launch = launches[0];
+    if (!launch) throw new Error("The reviewed terminal was not launched.");
+    expect(launch.command[0]).toBe(terminalFixtureExecutable);
+    expect(launch.command).toContain(nativeSessionId);
+    expect(launch.command).not.toContain(FIXTURE_SESSION_PROMPT);
+    expect(launch.lifetime).toEqual({ kind: "managed" });
+    expect(Object.hasOwn(launch, "stdin")).toBe(false);
     expect(providerTurns).toBe(1);
     expect((await open()).status).toBe(200);
     const status: { data: { attempt: { phase: string; requestId: string } } } =
@@ -346,7 +350,7 @@ test.skipIf(
       throw new Error(
         "The inert native Claude-resume fixture record is incomplete.",
       );
-    expect(nativeRecord.args).toEqual(launches[0]?.command.slice(1));
+    expect(nativeRecord.args).toEqual(launch.command.slice(1));
     expect(nativeRecord.args).toContain(nativeSessionId);
     expect(nativeRecord.args).not.toContain(FIXTURE_SESSION_PROMPT);
     expect(realpathSync.native(nativeRecord.cwd).toLowerCase()).toBe(

@@ -227,7 +227,10 @@ export function createOwnedSessionRoutes(
         snapshot.version !== 1 ||
         snapshot.provider !== "claude" ||
         snapshot.launch.mode !== "chat" ||
-        !originalSessionLaunchMatches(record, page) ||
+        !originalSessionLaunchMatches(record, {
+          ...page,
+          keeperRecovery: undefined,
+        }) ||
         page.binding?.provider !== "claude" ||
         !isClaudeSessionId(page.binding.sessionId) ||
         page.binding.version !== snapshot.capabilities.version

@@ -536,7 +536,9 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
       options.api?.sessionTerminalEnvironment ??
       options.environment ??
       process.env,
-    sessionTerminalLauncher: options.api?.sessionTerminalLauncher,
+    ...(options.api?.sessionTerminalLauncher
+      ? { sessionTerminalLauncher: options.api.sessionTerminalLauncher }
+      : {}),
     providerLogin:
       options.api?.providerLogin ??
       createProviderLoginService({

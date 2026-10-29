@@ -1,9 +1,10 @@
 import { expect, test } from "bun:test";
 import { CLAUDE_ALLOWED_TOOLS } from "../executors/claude-tools";
+import type { SessionTurnSnapshot } from "../../types/session-turn";
 import { serializeClaudeInteractiveResume } from "./claude-interactive-resume";
 
 const uuid = "8fd8ce1a-a0ad-4f89-a756-93f414b1640a";
-const snapshot = (flags: string[]) => ({
+const snapshot = (flags: string[]): SessionTurnSnapshot => ({
   version: 1 as const,
   provider: "claude" as const,
   smith: "fixture",
