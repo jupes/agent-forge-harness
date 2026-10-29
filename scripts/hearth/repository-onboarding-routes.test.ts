@@ -332,6 +332,17 @@ test("protected repository onboarding recovers exact records and updates checked
   const options = projectCreateOptionsSchema.parse(
     (await json(optionsResponse)).data,
   );
+  const servedRepository = options.repositories.find(
+    (repository) => repository.served,
+  );
+  const selectedRepository = options.repositories.find(
+    (repository) => repository.name === "selected-folder",
+  );
+  const clonedRepository = options.repositories.find(
+    (repository) => repository.name === "cloned-folder",
+  );
+  if (!servedRepository || !selectedRepository || !clonedRepository)
+    throw new Error("The registered create-options paths were not served.");
   expect(options.repositories).toEqual(
     expect.arrayContaining([
       expect.objectContaining({
@@ -372,9 +383,9 @@ test("protected repository onboarding recovers exact records and updates checked
         {
           root: options.workspace.path,
           repositories: [
-            options.workspace.path,
-            external,
-            join(h.home, "project-create-registry", "repos", "cloned-folder"),
+            servedRepository.path,
+            selectedRepository.path,
+            clonedRepository.path,
           ],
           epicIds: [EPIC_ID],
         },
