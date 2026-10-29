@@ -647,10 +647,16 @@ function CouncilResultFactsPanel({
           <a href={beadHref(projectId, facts.beadId, true)}>
             Open reviewed bead {facts.beadId}
           </a>
-          {showCommentStatus && facts.phase === "completed" && job && facts.beadId === verdictBead(job) && verdictCommentPreview && (
+          {showCommentStatus &&
+            facts.phase === "completed" &&
+            job &&
+            facts.beadId === verdictBead(job) &&
+            verdictCommentPreview && (
               <section aria-label="Bead verdict comment preview">
                 <h5>Bead verdict comment preview</h5>
-                <pre style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
+                <pre
+                  style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}
+                >
                   {showControls(verdictCommentPreview)}
                 </pre>
               </section>

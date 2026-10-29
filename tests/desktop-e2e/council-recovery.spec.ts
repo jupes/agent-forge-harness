@@ -511,18 +511,21 @@ test("actual failed Council run keeps partial seat records and no recommendation
   await page.getByRole("button", { name: "Check saved result" }).click();
   let runRead: ProjectCouncilRunRead | undefined;
   await expect
-    .poll(async () => {
-      await verifiedRunReads(runReads);
-      runRead = (await verifiedRunReads(runReads.slice(priorReads))).find(
-        (read) =>
-          read.receipt.phase === "failed" &&
-          read.provenance.requestId === original.requestId &&
-          read.provenance.intentHash === original.intentHash &&
-          read.provenance.runId === original.runId &&
-          read.provenance.projectId === alpha.id,
-      );
-      return runRead !== undefined;
-    }, { timeout: 15_000 })
+    .poll(
+      async () => {
+        await verifiedRunReads(runReads);
+        runRead = (await verifiedRunReads(runReads.slice(priorReads))).find(
+          (read) =>
+            read.receipt.phase === "failed" &&
+            read.provenance.requestId === original.requestId &&
+            read.provenance.intentHash === original.intentHash &&
+            read.provenance.runId === original.runId &&
+            read.provenance.projectId === alpha.id,
+        );
+        return runRead !== undefined;
+      },
+      { timeout: 15_000 },
+    )
     .toBe(true);
   if (!runRead) throw Error("The failed Council result was not read back.");
   expect(runRead.provenance).toMatchObject({

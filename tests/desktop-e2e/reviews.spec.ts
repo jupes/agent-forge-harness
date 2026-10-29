@@ -1,11 +1,11 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
-import type { ProjectRecord } from "../../types/projects";
 import {
   type ProjectCouncilRunRead,
   projectCouncilRunReadSchema,
 } from "../../types/project-council-run-read";
+import type { ProjectRecord } from "../../types/projects";
 import {
   readComments,
   readState,
@@ -228,12 +228,31 @@ test("a completed bead-source review links to its bead and reports the one recor
   let verifiedRun: ProjectCouncilRunRead | undefined;
   const resultRead = page.waitForResponse(async (response) => {
     const path = new URL(response.url()).pathname;
-    if (response.request().method() !== "GET" || !path.startsWith(runPath) || !path.endsWith("/run")) return false;
-    if (!response.ok()) throw Error(`Council result returned HTTP ${response.status()}.`);
+    if (
+      response.request().method() !== "GET" ||
+      !path.startsWith(runPath) ||
+      !path.endsWith("/run")
+    )
+      return false;
+    if (!response.ok())
+      throw Error(`Council result returned HTTP ${response.status()}.`);
     const body: unknown = await response.json();
-    if (typeof body !== "object" || body === null || !("ok" in body) || body.ok !== true || !("error" in body) || body.error !== null || !("data" in body)) throw Error("Invalid Council result envelope.");
+    if (
+      typeof body !== "object" ||
+      body === null ||
+      !("ok" in body) ||
+      body.ok !== true ||
+      !("error" in body) ||
+      body.error !== null ||
+      !("data" in body)
+    )
+      throw Error("Invalid Council result envelope.");
     const read = projectCouncilRunReadSchema.parse(body.data);
-    if (read.receipt.phase !== "completed" || read.verdictCommentPreview === null) return false;
+    if (
+      read.receipt.phase !== "completed" ||
+      read.verdictCommentPreview === null
+    )
+      return false;
     verifiedRun = read;
     return true;
   });
@@ -268,15 +287,30 @@ test("a completed bead-source review links to its bead and reports the one recor
     page.getByRole("heading", { name: "Verified result facts" }),
   ).toBeVisible();
   await resultRead;
-  if (!verifiedRun?.job?.run) throw Error("The completed Bead result was not read back.");
+  if (!verifiedRun?.job?.run)
+    throw Error("The completed Bead result was not read back.");
   const run = verifiedRun.job.run;
-  expect(verifiedRun.provenance).toMatchObject({ projectId: alpha.id, runId: run.runId });
-  expect(run.context.source).toMatchObject({ kind: "bead", locator: "alpha-council-first" });
+  expect(verifiedRun.provenance).toMatchObject({
+    projectId: alpha.id,
+    runId: run.runId,
+  });
+  expect(run.context.source).toMatchObject({
+    kind: "bead",
+    locator: "alpha-council-first",
+  });
   expect(run.chair?.verdict).toBe("needs_changes");
-  const counts = (["blocker", "high", "medium", "low"] as const).map((severity) => run.aggregatedFindings.filter((finding) => finding.severity === severity).length);
+  const counts = (["blocker", "high", "medium", "low"] as const).map(
+    (severity) =>
+      run.aggregatedFindings.filter((finding) => finding.severity === severity)
+        .length,
+  );
   const expectedPreview = `review: COUNCIL ${run.runId} FAIL — findings ${counts.join("/")} (blocker/high/medium/low)`;
   expect(verifiedRun.verdictCommentPreview).toBe(expectedPreview);
-  await expect(page.getByRole("region", { name: "Bead verdict comment preview" }).locator("pre")).toHaveText(expectedPreview);
+  await expect(
+    page
+      .getByRole("region", { name: "Bead verdict comment preview" })
+      .locator("pre"),
+  ).toHaveText(expectedPreview);
   const beadLink = page.getByRole("link", {
     name: "Open reviewed bead alpha-council-first",
   });
@@ -306,7 +340,9 @@ test("a completed bead-source review links to its bead and reports the one recor
       },
     )
     .toBe(1);
-  expect(readComments(BD_STAND_IN_STATE)["alpha-council-first"]?.[0]?.text).toBe(expectedPreview);
+  expect(
+    readComments(BD_STAND_IN_STATE)["alpha-council-first"]?.[0]?.text,
+  ).toBe(expectedPreview);
   await expect(page.getByTestId("council-verdict-status")).toHaveText(
     "Verdict comment posted to the bead.",
     { timeout: 15_000 },
