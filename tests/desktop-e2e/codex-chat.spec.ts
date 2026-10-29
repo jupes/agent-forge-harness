@@ -941,6 +941,15 @@ test("a confirmed Claude rate limit can target Gemini ACP Chat", async ({
   });
   await expect(chooseTarget).toBeDisabled();
   await requiredTarget.selectOption("gemini");
+  const chooseTargetReplace = targetReview.getByRole("checkbox");
+  await expect(chooseTargetReplace).not.toBeChecked();
+  await expect(
+    targetReview.getByRole("button", {
+      name: "Accept and open Gemini ACP Chat",
+      exact: true,
+    }),
+  ).toBeDisabled();
+  await chooseTargetReplace.check();
   await expect(
     targetReview.getByRole("button", {
       name: "Accept and open Gemini ACP Chat",
