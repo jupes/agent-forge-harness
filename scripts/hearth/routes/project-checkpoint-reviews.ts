@@ -1,13 +1,12 @@
 import { z } from "zod";
+import type { LedgerEventInput } from "../../../types/hearth";
 import {
   PROJECT_CHECKPOINT_REVIEW_MAX_BODY_BYTES,
   type ProjectCheckpointReviewScope,
   projectCheckpointReviewHashRequestSchema,
   projectCheckpointReviewPrepareRequestSchema,
 } from "../../../types/project-checkpoint-reviews";
-import type { LedgerEventInput } from "../../../types/hearth";
 import { ConversationError } from "../../conversations/error";
-import type { AppendResult } from "../../ledger/append";
 import {
   createProjectCheckpointReviewService,
   type ProjectCheckpointReviewAuthorityResolver,
@@ -17,6 +16,7 @@ import {
   type ProjectCheckpointReviewQueueLock,
 } from "../../forge/project-checkpoint-review-store";
 import { isValidSlug } from "../../forge/runs";
+import type { AppendResult } from "../../ledger/append";
 import { isProjectId, ProjectStoreError } from "../../projects/store";
 import type {
   ActionRoute,
@@ -26,9 +26,9 @@ import type {
   RouteRequest,
 } from "../api";
 import { isBeadId } from "../tracker-write";
+import type { ValidationResult } from "../validate";
 import { fail, type ReadDeps } from "./operator-reads";
 import { RunReadError } from "./project-runs";
-import type { ValidationResult } from "../validate";
 
 const MAX_SHOW_BYTES = 1024 * 1024;
 const showCountRow = z

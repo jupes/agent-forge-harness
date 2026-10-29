@@ -185,9 +185,7 @@ export function ProjectRuns({
                 projectId={projectId}
                 detail={view.detail}
                 checkpointResult={checkpointResult}
-                {...(checkpointReviewOwner
-                  ? { checkpointReviewOwner }
-                  : {})}
+                {...(checkpointReviewOwner ? { checkpointReviewOwner } : {})}
                 checkpointReviewsWritable={checkpointReviewsWritable}
                 checkpointReviewAvailable={
                   !!view.page &&
@@ -717,7 +715,9 @@ export function RunDetail({
               },
             }
           : {})}
-        {...(checkpointReviewOwner ? { reviewOwner: checkpointReviewOwner } : {})}
+        {...(checkpointReviewOwner
+          ? { reviewOwner: checkpointReviewOwner }
+          : {})}
         reviewsWritable={checkpointReviewsWritable}
         {...(onCouncilBeadPrefill
           ? { onCouncilPrefill: onCouncilBeadPrefill }
