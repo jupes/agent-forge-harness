@@ -30,11 +30,18 @@ type CouncilCall =
       seatId: string;
     };
 type CouncilPost = { path: string; body: unknown };
+type ExpectedReceipt = {
+  requestId: string;
+  intentHash: string;
+  runId: string;
+  projectId: string;
+};
 
 declare global {
   interface Window {
     __councilLostCommit?: { status: number; body: unknown };
     __councilLostCommitFailure?: boolean;
+    __validateCouncilCommitReceipt?: (status: number, body: unknown) => Promise<boolean>;
     __restoreCouncilFetch?: () => void;
   }
 }
@@ -346,9 +353,35 @@ test("lost commit delivery stays unknown until the exact saved result is checked
   });
   const commitPath = `${reviewsPath}/${original.requestId}/commit`;
   const commitUrl = new URL(commitPath, page.url()).href;
+  const expectedReceipt: ExpectedReceipt = {
+    requestId: original.requestId,
+    intentHash: original.intentHash,
+    runId: original.runId,
+    projectId: alpha.id,
+  };
+  const receiptValidator = await page.exposeFunction(
+    "__validateCouncilCommitReceipt",
+    (status: number, body: unknown) => {
+      if (status !== 202) return false;
+      try {
+        const result = projectCouncilReceiptSchema.safeParse(responseData(body));
+        return (
+          result.success &&
+          result.data.phase !== "reserved" &&
+          result.data.phase !== "retired" &&
+          result.data.metadata.requestId === expectedReceipt.requestId &&
+          result.data.metadata.intentHash === expectedReceipt.intentHash &&
+          result.data.metadata.runId === expectedReceipt.runId &&
+          result.data.metadata.projectId === expectedReceipt.projectId
+        );
+      } catch {
+        return false;
+      }
+    },
+  );
   try {
     await page.evaluate(
-      ({ commitUrl, requestId, intentHash, runId, projectId }) => {
+      ({ commitUrl, expectedIntentHash }) => {
         const originalFetch = window.fetch;
         let claimed = false;
         const readBounded = async (
@@ -391,7 +424,11 @@ test("lost commit delivery stays unknown until the exact saved result is checked
             reader.releaseLock();
           }
         };
-        const wrapper: typeof fetch = async function (...args) {
+        const wrapper = Object.assign(
+          async function (
+            this: unknown,
+            ...args: Parameters<typeof originalFetch>
+          ): Promise<Response> {
           const input = args[0];
           const rawUrl = input instanceof Request ? input.url : String(input);
           const method =
@@ -407,7 +444,7 @@ test("lost commit delivery stays unknown until the exact saved result is checked
                 requestBody !== null &&
                 Object.keys(requestBody).length === 1 &&
                 "intentHash" in requestBody &&
-                requestBody.intentHash === intentHash;
+                requestBody.intentHash === expectedIntentHash;
             } catch {
               bodyMatches = false;
             }
@@ -423,19 +460,12 @@ test("lost commit delivery stays unknown until the exact saved result is checked
           const response = await Reflect.apply(originalFetch, this, args);
           let receiptDropped = false;
           try {
-            const body = await readBounded(response.clone(), 512 * 1024, 5000);
-            const data =
-              typeof body === "object" && body !== null && "data" in body
-                ? body.data
-                : null;
-            const metadata =
-              typeof data === "object" && data !== null && "metadata" in data
-                ? data.metadata
-                : null;
-            const phase =
-              typeof data === "object" && data !== null && "phase" in data
-                ? data.phase
-                : null;
+            const deadline = performance.now() + 5000;
+            const body = await readBounded(
+              response.clone(),
+              512 * 1024,
+              Math.max(1, deadline - performance.now()),
+            );
             const strictEnvelope =
               typeof body === "object" &&
               body !== null &&
@@ -443,15 +473,7 @@ test("lost commit delivery stays unknown until the exact saved result is checked
               "ok" in body &&
               "data" in body &&
               "error" in body;
-            const strictReceipt =
-              typeof data === "object" &&
-              data !== null &&
-              (Object.keys(data).length === 2 ||
-                Object.keys(data).length === 3) &&
-              "metadata" in data &&
-              "phase" in data &&
-              (Object.keys(data).length === 2 || "error" in data);
-            const receiptMatches =
+            const envelopeMatches =
               response.ok &&
               response.status === 202 &&
               response.url === commitUrl &&
@@ -461,24 +483,24 @@ test("lost commit delivery stays unknown until the exact saved result is checked
               "ok" in body &&
               body.ok === true &&
               "error" in body &&
-              body.error === null &&
-              typeof metadata === "object" &&
-              metadata !== null &&
-              strictReceipt &&
-              "requestId" in metadata &&
-              metadata.requestId === requestId &&
-              "intentHash" in metadata &&
-              metadata.intentHash === intentHash &&
-              "runId" in metadata &&
-              metadata.runId === runId &&
-              "projectId" in metadata &&
-              metadata.projectId === projectId &&
-              (phase === "unknown" ||
-                phase === "running" ||
-                phase === "completed" ||
-                phase === "failed" ||
-                phase === "cancelled");
-            if (!receiptMatches) {
+              body.error === null;
+            const validate = window.__validateCouncilCommitReceipt;
+            let schemaValid = false;
+            const remaining = deadline - performance.now();
+            if (envelopeMatches && typeof validate === "function" && remaining > 0) {
+              let validationTimer = 0;
+              const callbackTimeout = new Promise<boolean>((resolve) => {
+                validationTimer = window.setTimeout(
+                  () => resolve(false),
+                  remaining,
+                );
+              });
+              schemaValid = await Promise.race([
+                validate(response.status, body),
+                callbackTimeout,
+              ]).finally(() => window.clearTimeout(validationTimer));
+            }
+            if (!schemaValid) {
               window.__councilLostCommitFailure = true;
               return response;
             }
@@ -493,7 +515,9 @@ test("lost commit delivery stays unknown until the exact saved result is checked
             window.__councilLostCommitFailure = true;
             return response;
           }
-        };
+          },
+          originalFetch,
+        );
         window.fetch = wrapper;
         window.__restoreCouncilFetch = () => {
           if (window.fetch === wrapper) window.fetch = originalFetch;
@@ -502,10 +526,7 @@ test("lost commit delivery stays unknown until the exact saved result is checked
       },
       {
         commitUrl,
-        requestId: original.requestId,
-        intentHash: original.intentHash,
-        runId: original.runId,
-        projectId: alpha.id,
+        expectedIntentHash: expectedReceipt.intentHash,
       },
     );
 
@@ -599,6 +620,10 @@ test("lost commit delivery stays unknown until the exact saved result is checked
         .every((call) => call.runId === actualReceipt.metadata.runId),
     ).toBe(true);
   } finally {
-    await page.evaluate(() => window.__restoreCouncilFetch?.());
+    try {
+      await page.evaluate(() => window.__restoreCouncilFetch?.());
+    } finally {
+      await receiptValidator.dispose();
+    }
   }
 });
