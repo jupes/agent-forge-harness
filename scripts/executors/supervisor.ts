@@ -34,6 +34,18 @@ import {
 } from "./tree-guard";
 import type { ChildExit } from "./types";
 
+export type SupervisorOwnershipRefusalMessage =
+  | "Interactive child ownership could not be established."
+  | "Windows owned process cleanup could not be confirmed."
+  | "Owned process group cleanup could not be confirmed."
+  | "The private interactive terminal could not be confirmed.";
+
+export class SupervisorOwnershipRefusalError extends Error {
+  constructor(message: SupervisorOwnershipRefusalMessage) {
+    super(message);
+  }
+}
+
 /** How much of a child's stderr is kept: the end, where a failure says why. */
 export const STDERR_TAIL_CHARS = 4000;
 

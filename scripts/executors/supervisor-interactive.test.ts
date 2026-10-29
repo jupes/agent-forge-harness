@@ -1,7 +1,12 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
 import { buildChildEnv } from "./env";
-import { killTree, liveChildCount, supervise } from "./supervisor";
+import {
+  killTree,
+  liveChildCount,
+  supervise,
+  SupervisorOwnershipRefusalError,
+} from "./supervisor";
 import { guardRequiredTree, guardSuspendedWindowsProcess } from "./tree-guard";
 import type {
   WindowsJobSettlementFailurePhase,
@@ -659,8 +664,10 @@ test("interactive queue bounds reject before buffering oversized input and prese
 test("a failed mandatory ownership guard refuses before any protocol stdin", async () => {
   let pid = 0;
   const before = liveChildCount();
-  expect(() =>
-    supervise({
+  let refusal: unknown;
+  let unexpectedlyStarted: ReturnType<typeof supervise> | undefined;
+  try {
+    unexpectedlyStarted = supervise({
       windowsHide: true,
       command: [process.execPath, fake],
       cwd: import.meta.dir,
@@ -676,11 +683,20 @@ test("a failed mandatory ownership guard refuses before any protocol stdin", asy
           "No failed-ownership child may deliver a protocol frame.",
         );
       },
-    }),
-  ).toThrow("ownership");
+    });
+  } catch (error) {
+    refusal = error;
+  }
+  if (unexpectedlyStarted)
+    await unexpectedlyStarted.stop("unexpected ownership acceptance");
+  expect(refusal).toBeInstanceOf(Error);
+  expect(refusal instanceof Error ? refusal.message : null).toBe(
+    "Interactive child ownership could not be established.",
+  );
   expect(pid).toBeGreaterThan(0);
   expect(await gone(pid)).toBe(true);
   expect(liveChildCount()).toBe(before);
+  expect(refusal).toBeInstanceOf(SupervisorOwnershipRefusalError);
 });
 
 test("private PID controls reject malformed or duplicate messages independently of provider stdout", async () => {
