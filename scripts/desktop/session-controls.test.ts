@@ -3,6 +3,7 @@ import { ownedSessionControls } from "../../apps/desktop/src/session-controls";
 import type { PreparedCodexChat } from "../../types/codex-chat";
 import type { CodexChatOwnedRecord } from "../../types/codex-owned-chat";
 import type { ConversationPage } from "../../types/conversation";
+import type { GeminiChatOwnedRecord } from "../../types/gemini-owned-chat";
 import type { GeminiOwnedSessionRecord } from "../../types/gemini-owned-task";
 import type { PreparedGeminiTask } from "../../types/gemini-task-runtime";
 import { createConversationStore } from "../conversations/store";
@@ -311,7 +312,7 @@ test("Gemini uses its exact native Task preview and cannot borrow Chat continuat
   expect(controls.permissions.available).toBe(false);
 });
 
-test("controls distinguish exact Claude Chat continuation from owned Stop and never invent fork, terminal or permission producers", async () => {
+test("controls offer terminal handoff only for an eligible Claude Chat and preserve other control guards", async () => {
   const h = await startTestHearth();
   opened.push(h);
   const record = await seedOwnedSession(h);
@@ -341,11 +342,130 @@ test("controls distinguish exact Claude Chat continuation from owned Stop and ne
   expect(idle.stop.available).toBe(false);
   expect(idle.commandPreview).toContain("--print");
   expect(idle.commandPreview).not.toContain("Historical private fixture");
-  expect([
-    idle.fork.available,
-    idle.terminal.available,
-    idle.permissions.available,
-  ]).toEqual([false, false, false]);
+  expect(idle.terminal.available).toBe(true);
+  expect(idle.terminal.reason).toContain("Review the saved source input");
+  expect([idle.fork.available, idle.permissions.available]).toEqual([
+    false,
+    false,
+  ]);
+
+  const running = {
+    ...page,
+    controllable: true,
+    turns: page.turns.map((turn) => ({ ...turn, phase: "running" as const })),
+  };
+  const codexChatRecord: CodexChatOwnedRecord = {
+    id: record.id,
+    requestId: record.requestId,
+    projectId: record.projectId,
+    requestHash: record.requestHash,
+    createdAt: record.createdAt,
+    provider: "codex",
+    mode: "chat",
+    smith: record.smith,
+    requestedModel: record.requestedModel,
+    requestedEffort: record.requestedEffort,
+    repository: record.repository,
+    workspace: record.workspace,
+    worktree: record.worktree,
+  };
+  const geminiChatRecord: GeminiChatOwnedRecord = {
+    id: record.id,
+    requestId: record.requestId,
+    projectId: record.projectId,
+    requestHash: record.requestHash,
+    createdAt: record.createdAt,
+    provider: "gemini",
+    route: "gemini-cli",
+    mode: "chat",
+    smith: record.smith,
+    requestedModel: null,
+    requestedEffort: null,
+    repository: record.repository,
+    workspace: record.workspace,
+    worktree: record.worktree,
+  };
+  const refusals: Array<{
+    changed: Partial<Parameters<typeof ownedSessionControls>[0]>;
+    reason: string;
+  }> = [
+    {
+      changed: { record: { ...record, mode: "task" as const } },
+      reason: "Only a completed Claude Chat",
+    },
+    {
+      changed: { record: codexChatRecord },
+      reason: "only for a verified Claude Chat",
+    },
+    {
+      changed: { record: geminiChatRecord },
+      reason: "only for a verified Claude Chat",
+    },
+    {
+      changed: { page: { ...page, binding: null } },
+      reason: "confirmed Claude conversation id",
+    },
+    {
+      changed: {
+        page: {
+          ...page,
+          binding: { ...page.binding!, provider: "codex" as const },
+        },
+      },
+      reason: "confirmed Claude conversation id and matching CLI version",
+    },
+    {
+      changed: { page: { ...page, projectId: "foreign" } },
+      reason: "does not match an ordinary session",
+    },
+    {
+      changed: { page: { ...page, conversationId: "session-foreign" } },
+      reason: "does not match an ordinary session",
+    },
+    {
+      changed: {
+        page: {
+          ...page,
+          turns: page.turns.map((turn) => ({
+            ...turn,
+            phase: "unknown" as const,
+          })),
+        },
+      },
+      reason:
+        "Check the current turn and pending changes before sending another follow-up.",
+    },
+    {
+      changed: { page: running },
+      reason:
+        "Check the current turn and pending changes before sending another follow-up.",
+    },
+    { changed: { live: false }, reason: "Reconnect the private conversation" },
+    {
+      changed: { pending: true },
+      reason:
+        "Check the current turn and pending changes before sending another follow-up.",
+    },
+    {
+      changed: { stopping: true },
+      reason:
+        "Check the current turn and pending changes before sending another follow-up.",
+    },
+    {
+      changed: { feedInterrupted: true },
+      reason: "Reconnect the private conversation",
+    },
+    {
+      changed: { readError: "unverified" },
+      reason: "Reconnect the private conversation",
+    },
+  ];
+  for (const { changed, reason } of refusals) {
+    const terminal = ownedSessionControls({ ...input, ...changed }).terminal;
+    expect(terminal.available).toBe(false);
+    expect(terminal.reason).toContain(reason);
+  }
+
   expect(ownedSessionControls({ ...input, live: false }).resume.available).toBe(
     false,
   );
@@ -366,11 +486,6 @@ test("controls distinguish exact Claude Chat continuation from owned Stop and ne
       record: { ...record, provider: "codex", mode: "task" },
     }).resume.reason,
   ).toContain("one-turn Tasks");
-  const running = {
-    ...page,
-    controllable: true,
-    turns: page.turns.map((turn) => ({ ...turn, phase: "running" as const })),
-  };
   expect(ownedSessionControls({ ...input, page: running }).stop.available).toBe(
     true,
   );

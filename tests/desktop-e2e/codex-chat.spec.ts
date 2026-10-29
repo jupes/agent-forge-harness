@@ -2493,10 +2493,15 @@ test("Codex Chat reviews native options, allows one actual command and resumes i
   ).toHaveCount(0);
   await expect(
     support.getByRole("button", {
-      name: "Open session in terminal",
+      name: "Open Claude Chat in terminal",
       exact: true,
     }),
   ).toBeDisabled();
+  await expect(
+    support
+      .getByText("Terminal handoff", { exact: true })
+      .locator("xpath=following-sibling::dd[1]"),
+  ).toContainText("Windows x64");
   const review = support.getByRole("button", {
     name: "Review native permissions",
     exact: true,
