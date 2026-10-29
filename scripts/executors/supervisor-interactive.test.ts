@@ -100,10 +100,50 @@ test("a trusted shift lifetime reaches the ownership grant exactly rather than s
   try {
     await handle.done;
     expect(lines).toEqual([
-      JSON.stringify({ timeoutMs: 7_200_000, lifetime: "shift-attempt" }),
+      JSON.stringify({
+        timeoutMs: 7_200_000,
+        lifetime: "shift-attempt",
+        windowsHide: true,
+      }),
     ]);
   } finally {
     await handle.stop("fixture cleanup");
+  }
+});
+
+test("false and omitted caller window options remain absent from the private grant", async () => {
+  for (const windowsHide of [undefined, false]) {
+    const lines: string[] = [];
+    const handle = supervise({
+      ...(windowsHide === undefined ? {} : { windowsHide }),
+      spawn(command, options) {
+        return Bun.spawn(command, { ...options, windowsHide: true });
+      },
+      command: [process.execPath, fake],
+      bootstrapCommand: [
+        process.execPath,
+        join(import.meta.dir, "fixtures/interactive-control.ts"),
+        "lifetime",
+      ],
+      cwd: import.meta.dir,
+      env: buildChildEnv(process.env, []),
+      stdinMode: "interactive",
+      lifetime: "shift-attempt",
+      timeoutMs: 2 * 60 * 60_000,
+      onLine: (line) => lines.push(line),
+    });
+    try {
+      await handle.done;
+      expect(lines).toEqual([
+        JSON.stringify({
+          timeoutMs: 7_200_000,
+          lifetime: "shift-attempt",
+          windowsHide: null,
+        }),
+      ]);
+    } finally {
+      await handle.stop("fixture cleanup");
+    }
   }
 });
 

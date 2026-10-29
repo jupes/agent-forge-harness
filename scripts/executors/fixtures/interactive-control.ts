@@ -49,6 +49,7 @@ if (mode?.startsWith("terminal-invalid-")) {
       stdin: "ignore",
       stdout: "ignore",
       stderr: "ignore",
+      windowsHide: true,
     },
   );
   const start = {
@@ -89,6 +90,7 @@ if (process.argv[2] === "terminal-timeout") {
       stdin: "ignore",
       stdout: "ignore",
       stderr: "ignore",
+      windowsHide: true,
     },
   );
   process.send?.({
@@ -117,6 +119,7 @@ if (process.argv[2] === "lifetime") {
       stdin: "ignore",
       stdout: "ignore",
       stderr: "ignore",
+      windowsHide: true,
     },
   );
   process.send?.({
@@ -128,6 +131,7 @@ if (process.argv[2] === "lifetime") {
     JSON.stringify({
       timeoutMs: value.timeoutMs,
       lifetime: "lifetime" in value ? value.lifetime : null,
+      windowsHide: "windowsHide" in value ? value.windowsHide : null,
     }),
   );
   await terminal(child.pid, false);
@@ -143,6 +147,7 @@ else {
       stdin: "ignore",
       stdout: "ignore",
       stderr: "ignore",
+      windowsHide: true,
     },
   );
   process.send?.({
