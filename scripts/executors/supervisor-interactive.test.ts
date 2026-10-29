@@ -550,6 +550,9 @@ test("Windows interactive refused tree settlement cannot report a released owner
     await expect(f.handle.done).rejects.toThrow(
       "Windows owned process cleanup could not be confirmed.",
     );
+    await expect(f.handle.done).rejects.toBeInstanceOf(
+      SupervisorOwnershipRefusalError,
+    );
     expect(ownership.calls).not.toContain("release");
   } finally {
     await ownership.cleanup();
@@ -612,8 +615,14 @@ test("Windows interactive missing settlement capability retains its real job unt
     await expect(stopping).rejects.toThrow(
       "Windows owned process cleanup could not be confirmed.",
     );
+    await expect(stopping).rejects.toBeInstanceOf(
+      SupervisorOwnershipRefusalError,
+    );
     await expect(handle.done).rejects.toThrow(
       "Windows owned process cleanup could not be confirmed.",
+    );
+    await expect(handle.done).rejects.toBeInstanceOf(
+      SupervisorOwnershipRefusalError,
     );
     expect(terminateCalls).toBeGreaterThan(0);
     expect(releaseCalls).toBe(0);
@@ -699,8 +708,12 @@ test("a failed mandatory ownership guard refuses before any protocol stdin", asy
   expect(refusal).toBeInstanceOf(SupervisorOwnershipRefusalError);
 });
 
-test("private PID controls reject malformed or duplicate messages independently of provider stdout", async () => {
-  for (const mode of ["malformed", "duplicate"]) {
+test("private terminal receipt failures preserve typed ownership uncertainty", async () => {
+  for (const mode of [
+    "malformed",
+    "duplicate",
+    "terminal-invalid-missing",
+  ]) {
     let errors = 0;
     const handle = supervise({
       windowsHide: true,
@@ -722,13 +735,21 @@ test("private PID controls reject malformed or duplicate messages independently 
       },
     });
     try {
-      await expect(handle.done).rejects.toThrow("private interactive terminal");
-      expect(errors).toBe(1);
+      await expect(handle.done).rejects.toThrow(
+        "The private interactive terminal could not be confirmed.",
+      );
+      await expect(handle.done).rejects.toBeInstanceOf(
+        SupervisorOwnershipRefusalError,
+      );
+      expect(errors).toBe(mode === "terminal-invalid-missing" ? 0 : 1);
       await expect(handle.write("late")).rejects.toThrow("closed");
       expect(await gone(handle.pid)).toBe(true);
     } finally {
       await expect(handle.stop("fixture cleanup")).rejects.toThrow(
-        "private interactive terminal",
+        "The private interactive terminal could not be confirmed.",
+      );
+      await expect(handle.stop("fixture cleanup")).rejects.toBeInstanceOf(
+        SupervisorOwnershipRefusalError,
       );
     }
   }
