@@ -34,6 +34,7 @@ import type {
 } from "../../types/hearth";
 import type { OwnedSessionRecord } from "../../types/owned-session";
 import type { ProjectCatalog } from "../../types/projects";
+import { terminalHandoffAttemptSchema } from "../../types/session-terminal-handoff";
 import type { SmithConfigEditRequest } from "../../types/smith-config-edit";
 import type { SmithRoutingEditRequest } from "../../types/smith-routing-edit";
 import { type LoadedConfig, loadConfig } from "../config/load";
@@ -81,7 +82,13 @@ import {
   projectCatalogPath,
 } from "../projects/store";
 import { FIXTURE_PROJECT_ID, projectCatalogFixture } from "../projects/testing";
+import type { ProviderInspector } from "../providers/inspect";
 import { providerLoginFile } from "../providers/login";
+import type {
+  NativeConsoleChild,
+  NativeConsoleExit,
+  NativeConsoleLaunchOptions,
+} from "../providers/native-console";
 import { queueTracker } from "../scheduler/queue-fixture";
 import {
   readShiftRecord,
@@ -174,6 +181,7 @@ import {
   FIXTURE_SESSION_START,
   FIXTURE_SESSION_STOP,
   fakeSessionRuntime,
+  fixtureSessionFlags,
   fixtureSessionGit,
   seedOwnedSession,
   sessionStartFixture,
@@ -1235,6 +1243,204 @@ function ownedSessionFixture(
   };
 }
 
+const API_TERMINAL_HANDOFF_REQUEST = "3c4c44a9-2579-4294-9b47-ae594cdb48a5";
+const API_TERMINAL_HANDOFF_SESSION =
+  "session-82b3eb58-056a-4bc2-b918-b92247db7561";
+const API_TERMINAL_HANDOFF_START = "80f7900a-1eea-4f76-a858-d6049795a4c7";
+async function seedTerminalHandoffSession(h: TestHearth) {
+  const record: OwnedSessionRecord = {
+    projectId: FIXTURE_PROJECT_ID,
+    id: API_TERMINAL_HANDOFF_SESSION,
+    requestId: API_TERMINAL_HANDOFF_START,
+    requestHash: "c".repeat(64),
+    createdAt: "2026-10-28T00:00:00.000Z",
+    mode: "chat",
+    provider: "claude",
+    workspace: h.workspace,
+    repository: h.workspace,
+    worktree: h.workspace,
+    smith: "claude-journeyman",
+    requestedModel: "sonnet",
+    requestedEffort: null,
+  };
+  const registry = createSessionRegistry(h.home);
+  writeOwnerOnly(
+    sessionRegistryFile(h.home),
+    JSON.stringify({
+      version: 1,
+      records: [...registry.list(FIXTURE_PROJECT_ID), record],
+    }),
+  );
+  const store = createConversationStore(h.home, undefined, {
+    kind: "session",
+    projectId: FIXTURE_PROJECT_ID,
+    sessionId: record.id,
+  });
+  await store.accept(FIXTURE_PROJECT_ID, {
+    requestId: record.requestId,
+    expectedRevision: 0,
+    text: FIXTURE_SESSION_PROMPT,
+    about: [],
+    session: {
+      version: 1,
+      provider: "claude",
+      smith: record.smith,
+      cwd: h.workspace,
+      launch: {
+        mode: "chat",
+        model: "sonnet",
+        prompt: FIXTURE_SESSION_PROMPT,
+        context: {
+          projectId: FIXTURE_PROJECT_ID,
+          repository: h.workspace,
+          worktree: h.workspace,
+          about: [],
+        },
+      },
+      capabilities: { version: "2.1.296", flags: fixtureSessionFlags },
+    },
+  });
+  const owner = randomUUID();
+  await store.start(FIXTURE_PROJECT_ID, record.requestId, owner);
+  await store.append(FIXTURE_PROJECT_ID, record.requestId, owner, {
+    kind: "identity",
+    provider: "claude",
+    sessionId: randomUUID(),
+    version: "2.1.296",
+  });
+  await store.finish(
+    FIXTURE_PROJECT_ID,
+    record.requestId,
+    owner,
+    "completed",
+    null,
+  );
+  return record;
+}
+
+function makeTerminalHandoffFixture() {
+  let hearth: TestHearth | null = null;
+  const launches: Array<{
+      options: NativeConsoleLaunchOptions;
+      auditEventId: number | null;
+    }> = [],
+    supported = process.platform === "win32" && process.arch === "x64",
+    inspector: ProviderInspector = {
+      async inspect(provider) {
+        return {
+          provider,
+          name: "Inert API fixture",
+          installation: {
+            found: true,
+            versionOk: true,
+            version: "2.1.296",
+            path: "C:\\fixture\\claude.exe",
+            checkedAt: new Date().toISOString(),
+            compatibility: "supported",
+            reason: null,
+          },
+          authentication: {
+            mode: "unknown",
+            source: "unavailable",
+            observedAt: null,
+            reason: "The API fixture never checks provider accounts.",
+          },
+          adapter: { supported: true, reason: null },
+          signIn: { command: null, reason: null, nativeAvailable: true },
+        };
+      },
+    },
+    api = {
+      providerInspector: inspector,
+      sessionTerminalLauncher(
+        options: NativeConsoleLaunchOptions,
+      ): NativeConsoleChild {
+        const audit = hearth
+          ?.events(["operator.action"])
+          .filter(
+            (event) =>
+              event.kind === "operator.action" &&
+              event.payload.action === "session.terminal.open",
+          )
+          .at(-1);
+        launches.push({ options, auditEventId: audit?.id ?? null });
+        const done: Promise<NativeConsoleExit> = Promise.resolve({
+          exitCode: 0,
+          stopped: false,
+          timedOut: false,
+        });
+        return { pid: 1, done, stop: async () => done };
+      },
+    } satisfies TestHearthOptions["api"];
+
+  return {
+    api,
+    action: {
+      valid: {
+        path: `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_TERMINAL_HANDOFF_SESSION}/terminal-handoff`,
+        body: { requestId: API_TERMINAL_HANDOFF_REQUEST },
+        status: supported ? 200 : 409,
+        target: API_TERMINAL_HANDOFF_SESSION,
+        audit: { requestId: API_TERMINAL_HANDOFF_REQUEST },
+        ...(!supported
+          ? {
+              ok: false,
+              error:
+                "Native terminal handoff is available only on Windows x64.",
+            }
+          : {}),
+      },
+      invalid: {
+        path: `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_TERMINAL_HANDOFF_SESSION}/terminal-handoff`,
+        body: { requestId: "invalid" },
+      },
+      async prepare(selected: TestHearth) {
+        hearth = selected;
+        launches.length = 0;
+        await seedTerminalHandoffSession(selected);
+      },
+      async happened(selected: TestHearth, answer: unknown) {
+        const record = createSessionRegistry(selected.home)
+            .list(FIXTURE_PROJECT_ID)
+            .find((item) => item.id === API_TERMINAL_HANDOFF_SESSION),
+          saved = record
+            ? createConversationStore(selected.home, undefined, {
+                kind: "session",
+                projectId: FIXTURE_PROJECT_ID,
+                sessionId: record.id,
+              }).read(FIXTURE_PROJECT_ID)
+            : null;
+        expect(saved?.turns.at(-1)?.phase).toBe("completed");
+        if (!supported) {
+          expect(launches).toEqual([]);
+          return;
+        }
+        const parsed = terminalHandoffAttemptSchema.parse(answer),
+          launch = launches[0];
+        expect(parsed).toMatchObject({
+          projectId: FIXTURE_PROJECT_ID,
+          sessionId: API_TERMINAL_HANDOFF_SESSION,
+          requestId: API_TERMINAL_HANDOFF_REQUEST,
+          phase: "opened",
+        });
+        expect(launch).toBeDefined();
+        expect(launch?.auditEventId).toBe(parsed.auditEventId);
+        expect(
+          selected
+            .events(["operator.action"])
+            .some(
+              (event) =>
+                event.kind === "operator.action" &&
+                event.id === parsed.auditEventId &&
+                event.payload.action === "session.terminal.open",
+            ),
+        ).toBe(true);
+      },
+    } satisfies ActionFixture,
+  };
+}
+const terminalHandoffFixture = makeTerminalHandoffFixture();
+
 /** One entry per action row of the table; a row with none fails the suite. */
 const ACTIONS: Record<string, ActionFixture> = {
   "POST /config/smiths/preview": {
@@ -2067,6 +2273,8 @@ const ACTIONS: Record<string, ActionFixture> = {
     },
   },
   "POST /projects/:id/sessions/:sessionId/turns": ownedSessionFixture("send"),
+  "POST /projects/:id/sessions/:sessionId/terminal-handoff":
+    terminalHandoffFixture.action,
   "POST /projects/:id/sessions/:sessionId/fork-turns": {
     valid: {
       path: `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_CHAT_SESSION}/fork-turns`,
@@ -3101,6 +3309,7 @@ const READS: Record<string, string> = {
   "GET /projects/:id/activity": `/projects/${FIXTURE_PROJECT_ID}/activity`,
   "GET /projects/:id/activity/:eventId": `/projects/${FIXTURE_PROJECT_ID}/activity/1`,
   "GET /projects/:id/sessions/:sessionId": `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_OWNED_SESSION_ID}`,
+  "GET /projects/:id/sessions/:sessionId/terminal-handoff": `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_TERMINAL_HANDOFF_SESSION}/terminal-handoff`,
   "GET /projects/:id/sessions/:sessionId/owner-release": `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_CHAT_SESSION}/owner-release`,
   "GET /projects/:id/sessions/:sessionId/fork-turns": `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_CODEX_CHAT_FORK_CONTROL_CHILD_ID}/fork-turns`,
   "GET /projects/:id/sessions/:sessionId/fork-review": `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_CODEX_CHAT_FORK_SOURCE.sessionId}/fork-review?throughTurnRequestId=${API_CODEX_CHAT_FORK_SOURCE.turnRequestId}`,
@@ -3522,7 +3731,7 @@ describe("every action row (iterating the table)", () => {
     });
     diagnostics.push(...diagnosticTimers);
     try {
-      const started = await probed();
+      const started = await probed({ api: terminalHandoffFixture.api });
       const h = started.h;
       probes = started.probes;
       const rows = actionRows(h);
@@ -4102,6 +4311,7 @@ describe("a read row or the stream while another connection holds the write lock
     });
     workspace = h.workspace;
     await seedOwnedSession(h);
+    await seedTerminalHandoffSession(h);
     await seedChatDecision(h);
     await seedProjectShift(h);
     await seedProjectShiftAttempt(h);

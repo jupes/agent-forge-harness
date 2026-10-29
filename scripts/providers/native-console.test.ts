@@ -223,6 +223,46 @@ test.skipIf(process.platform !== "win32" || process.arch !== "x64")(
 );
 
 test.skipIf(process.platform !== "win32" || process.arch !== "x64")(
+  "managed native consoles have no login timeout and settle only on explicit close",
+  async () => {
+    const root = scratch.make("native-managed-terminal-"),
+      record = join(root, "managed.json");
+    const child = launchWindowsConsole({
+      command: [
+        process.execPath,
+        join(import.meta.dir, "fixtures/console-cli.ts"),
+        "hang-tree",
+      ],
+      cwd: root,
+      env: {
+        SystemRoot: process.env["SystemRoot"] ?? "C:\\Windows",
+        CONSOLE_FIXTURE_RECORD: record,
+      },
+      lifetime: { kind: "managed" },
+      visible: false,
+    });
+    try {
+      let settled = false;
+      void child.done.then(
+        () => (settled = true),
+        () => (settled = true),
+      );
+      await Bun.sleep(250);
+      expect(settled).toBe(false);
+      const result = await child.stop();
+      expect(result).toEqual({
+        exitCode: expect.any(Number),
+        stopped: true,
+        timedOut: false,
+      });
+      expect(settled).toBe(true);
+    } finally {
+      await child.stop();
+    }
+  },
+);
+
+test.skipIf(process.platform !== "win32" || process.arch !== "x64")(
   "abrupt loss of the native console owner ends the CLI and its descendants without cleanup code",
   async () => {
     const root = scratch.make("native-login-owner-death-"),

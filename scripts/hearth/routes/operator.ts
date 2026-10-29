@@ -27,6 +27,10 @@ import type { AppendResult } from "../../ledger/append";
 import { latestEventId, queryEvents } from "../../ledger/query";
 import type { ProviderInspector } from "../../providers/inspect";
 import type { ProviderLoginService } from "../../providers/login";
+import type {
+  NativeConsoleChild,
+  NativeConsoleLaunchOptions,
+} from "../../providers/native-console";
 import type { SessionRuntime } from "../../sessions/admission";
 import type { createCodexChatRuntime } from "../../sessions/codex-chat-runtime";
 import type { createCodexTaskRuntime } from "../../sessions/codex-task-runtime";
@@ -95,6 +99,10 @@ type CouncilService = ReturnType<typeof createCouncilService>;
 export interface OperatorDeps extends ReadDeps {
   providerInspector: ProviderInspector;
   providerLogin: ProviderLoginService;
+  sessionTerminalEnvironment?: Record<string, string | undefined>;
+  sessionTerminalLauncher?: (
+    options: NativeConsoleLaunchOptions,
+  ) => NativeConsoleChild;
   /** Captured once by server-runtime; never selected from a request. */
   smithCreateService: Parameters<typeof smithConfigCreateRoutes>[0];
   /** Captured once by server-runtime; never selected from a request. */
@@ -454,6 +462,9 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       codexChatRuntime: deps.codexChatRuntime,
       geminiTaskRuntime: deps.geminiTaskRuntime,
       geminiChatRuntime: deps.geminiChatRuntime,
+      terminalInspector: deps.providerInspector,
+      terminalEnvironment: deps.sessionTerminalEnvironment,
+      terminalLauncher: deps.sessionTerminalLauncher,
     },
   );
   const keeperSessionStarts = createKeeperSessionStartRoutes(
@@ -562,6 +573,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     ownedSessions.forkOriginalContext,
     ownedSessions.ownerRelease,
     ownedSessions.list,
+    ownedSessions.terminalRead,
     ownedSessions.read,
     ownedSessions.forkTurnRead,
     ownedSessions.approvals,
@@ -630,6 +642,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       ownedSessions.preview,
       ownedSessions.send,
       ownedSessions.stop,
+      ownedSessions.terminalOpen,
       ownedSessions.decide,
       ownedSessions.forkDecide,
       ownedSessions.forkStop,

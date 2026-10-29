@@ -11,6 +11,10 @@ import type {
   SessionLibraryEntry,
   SessionLibraryRead,
 } from "../../../types/session-library";
+import {
+  type TerminalHandoffAttempt,
+  terminalHandoffPageSchema,
+} from "../../../types/session-terminal-handoff";
 import type {
   SessionArchiveJournal,
   SessionArchiveMarker,
@@ -34,6 +38,13 @@ export interface SessionLibraryView {
   notice: string;
   error: string;
   readGeneration: number;
+  terminalAttempt: TerminalHandoffAttempt | null;
+  terminalLocalHold: boolean;
+  terminalLoading: boolean;
+  terminalPosting: boolean;
+  terminalReadGeneration: number;
+  terminalNotice: string;
+  terminalError: string;
 }
 const message = (error: unknown) =>
   error instanceof Error
@@ -68,6 +79,11 @@ export function createSessionLibraryClient(deps: {
   ): Promise<ActionOutcome>;
   exportTranscript(record: OwnedCodingSessionRecord): Promise<unknown>;
   download(filename: string, text: string): void | Promise<void>;
+  readTerminal?(record: OwnedCodingSessionRecord): Promise<unknown>;
+  postTerminal?(
+    record: OwnedCodingSessionRecord,
+    requestId: string,
+  ): Promise<ActionOutcome>;
 }) {
   const projects = new Map<string, SessionLibraryProjectView>();
   const sessions = new Map<string, SessionLibraryView>();
@@ -149,6 +165,37 @@ export function createSessionLibraryClient(deps: {
         : value.entry.archived
           ? "Session archived. Its history and running work are preserved."
           : "Session restored to the app sessions list.";
+  };
+  const refreshTerminal = async (view: SessionLibraryView, ticket: number) => {
+    if (!deps.readTerminal || !current(view, ticket)) return;
+    const read = ++view.terminalReadGeneration;
+    view.terminalLoading = true;
+    tell();
+    try {
+      const raw = await deps.readTerminal(view.record),
+        parsed = terminalHandoffPageSchema.safeParse(raw);
+      if (
+        !parsed.success ||
+        (parsed.data.attempt &&
+          (parsed.data.attempt.projectId !== view.record.projectId ||
+            parsed.data.attempt.sessionId !== view.record.id))
+      )
+        throw Error("The original terminal handoff could not be verified.");
+      if (current(view, ticket) && view.terminalReadGeneration === read) {
+        view.terminalAttempt = parsed.data.attempt;
+        if (parsed.data.attempt) view.terminalLocalHold = false;
+        view.terminalError = "";
+      }
+    } catch {
+      if (current(view, ticket) && view.terminalReadGeneration === read)
+        view.terminalError =
+          "Terminal handoff status could not be checked. Do not retry until the original request is read.";
+    } finally {
+      if (current(view, ticket) && view.terminalReadGeneration === read) {
+        view.terminalLoading = false;
+        tell();
+      }
+    }
   };
   const refresh = async () => {
     if (!projectId || disposed) return;
@@ -330,6 +377,13 @@ export function createSessionLibraryClient(deps: {
           notice: "",
           error: "",
           readGeneration: 0,
+          terminalAttempt: null,
+          terminalLocalHold: false,
+          terminalLoading: false,
+          terminalPosting: false,
+          terminalReadGeneration: 0,
+          terminalNotice: "",
+          terminalError: "",
         };
         selected.record = structuredClone(record);
         sessions.set(key, selected);
@@ -337,6 +391,7 @@ export function createSessionLibraryClient(deps: {
       tell();
       void refresh();
       void check();
+      if (selected) void refreshTerminal(selected, generation);
     },
     refresh,
     check,
@@ -349,6 +404,80 @@ export function createSessionLibraryClient(deps: {
     refreshIdentities() {
       void check();
       void refresh();
+      if (selected) void refreshTerminal(selected, generation);
+    },
+    refreshTerminal() {
+      if (selected) void refreshTerminal(selected, generation);
+    },
+    async openTerminal() {
+      const view = selected;
+      if (
+        !view ||
+        !deps.postTerminal ||
+        !deps.canWrite() ||
+        view.terminalPosting ||
+        view.terminalLocalHold ||
+        (view.terminalAttempt && view.terminalAttempt.phase !== "refused") ||
+        disposed
+      )
+        return;
+      const ticket = generation,
+        requestId = deps.requestId();
+      view.terminalPosting = true;
+      view.terminalLocalHold = false;
+      view.terminalReadGeneration++;
+      view.terminalLoading = false;
+      view.terminalError = "";
+      view.terminalNotice =
+        "Reviewing the saved Claude Chat before opening a terminal…";
+      tell();
+      try {
+        const result = await deps.postTerminal(view.record, requestId);
+        if (!current(view, ticket)) return;
+        if (result.state === "done") {
+          const parsed = terminalHandoffPageSchema.shape.attempt.safeParse(
+            result.data,
+          );
+          if (
+            !parsed.success ||
+            !parsed.data ||
+            parsed.data.requestId !== requestId ||
+            parsed.data.projectId !== view.record.projectId ||
+            parsed.data.sessionId !== view.record.id
+          )
+            throw Error(
+              "The terminal receipt did not match the original request.",
+            );
+          view.terminalAttempt = parsed.data;
+          view.terminalNotice =
+            parsed.data.phase === "opened"
+              ? "Terminal opened. Conversation resumption is not confirmed; terminal activity is not synced."
+              : parsed.data.phase === "refused"
+                ? "Windows refused to create the terminal. No CLI was started. Review again before another explicit attempt."
+                : "The terminal outcome is held. Check the original request before trying again.";
+        } else if (result.state === "refused") {
+          view.terminalLocalHold = false;
+          view.terminalNotice = result.message;
+          await refreshTerminal(view, ticket);
+        } else {
+          view.terminalLocalHold = true;
+          view.terminalNotice =
+            "Terminal outcome is not confirmed. Checking the original request; no automatic retry was sent.";
+          await refreshTerminal(view, ticket);
+        }
+      } catch (error) {
+        if (!current(view, ticket)) return;
+        view.terminalLocalHold = true;
+        view.terminalError = message(error);
+        view.terminalNotice =
+          "The terminal outcome is not confirmed. Check the original request before another attempt.";
+        await refreshTerminal(view, ticket);
+      } finally {
+        if (current(view, ticket)) {
+          view.terminalPosting = false;
+          tell();
+        }
+      }
     },
     canChange() {
       return (
