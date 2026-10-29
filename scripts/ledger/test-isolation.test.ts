@@ -48,7 +48,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "fs";
 import { availableParallelism, homedir, tmpdir } from "os";
 import { join, relative, resolve, sep } from "path";
-import { importGraph } from "../import-graph";
+import { importGraph, importGraphWithProbe } from "../import-graph";
 import { ISOLATION_HOME } from "./isolation-probe";
 import { settleIsolationReruns } from "./isolation-reruns";
 import { ledgerHome, ledgerPath } from "./paths";
@@ -181,12 +181,18 @@ async function rerunEach(
   return failed.sort((a, b) => a.file.localeCompare(b.file));
 }
 
-function testFiles(dir: string): string[] {
+function testFiles(
+  dir: string,
+  counts?: { directories: number; candidates: number },
+): string[] {
+  if (counts) counts.directories++;
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
     const path = join(dir, entry.name);
     if (entry.isDirectory())
-      return entry.name === "node_modules" ? [] : testFiles(path);
-    return entry.name.endsWith(".test.ts") ? [path] : [];
+      return entry.name === "node_modules" ? [] : testFiles(path, counts);
+    if (!entry.name.endsWith(".test.ts")) return [];
+    if (counts) counts.candidates++;
+    return [path];
   });
 }
 
@@ -202,11 +208,37 @@ function startsProcesses(file: string): boolean {
 }
 
 function spawningTestFiles(): string[] {
-  return testFiles(TEST_ROOT)
-    .filter((file) => resolve(file) !== SELF)
-    .filter((file) => importGraph(file).files.some(startsProcesses))
-    .map((file) => relative(REPO, file).split(sep).join("/"))
-    .sort();
+  const diagnose = process.env["AGENT_FORGE_TEST_PROBE_DIAGNOSTICS"] === "1",
+    scanStarted = performance.now(),
+    counts = { directories: 0, candidates: 0 },
+    enumerationStarted = performance.now(),
+    candidates = testFiles(TEST_ROOT, diagnose ? counts : undefined),
+    enumerationMs = Math.round(performance.now() - enumerationStarted),
+    selected: string[] = [],
+    slowRoots: Array<{ file: string; elapsedMs: number }> = [];
+  let roots = 0,
+    graphFiles = 0,
+    sourceReads = 0,
+    resolutionProbes = 0;
+  for (const file of candidates) {
+    if (resolve(file) === SELF) continue;
+    const rootStarted = performance.now();
+    if (diagnose) {
+      const { graph, probe } = importGraphWithProbe(file);
+      graphFiles += graph.files.length;
+      sourceReads += probe.sourceReads;
+      resolutionProbes += probe.resolutionProbes;
+      if (graph.files.some(startsProcesses)) selected.push(file);
+      const elapsedMs = Math.round(performance.now() - rootStarted);
+      slowRoots.push({ file: relative(REPO, file).split(sep).join("/"), elapsedMs });
+      slowRoots.sort((a, b) => b.elapsedMs - a.elapsedMs);
+      slowRoots.length = Math.min(slowRoots.length, 5);
+      roots++;
+      if (roots % 32 === 0) console.error(`[isolation-scan] ${JSON.stringify({ roots, candidates: counts.candidates, elapsedMs: Math.round(performance.now() - scanStarted) })}`);
+    } else if (importGraph(file).files.some(startsProcesses)) selected.push(file);
+  }
+  if (diagnose) console.error(`[isolation-scan] ${JSON.stringify({ event: "complete", directories: counts.directories, candidates: counts.candidates, roots, enumerationMs, elapsedMs: Math.round(performance.now() - scanStarted), graphFiles, sourceReads, resolutionProbes, slowRoots })}`);
+  return selected.map((file) => relative(REPO, file).split(sep).join("/")).sort();
 }
 
 interface Rerun {

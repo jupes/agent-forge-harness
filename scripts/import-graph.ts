@@ -39,6 +39,11 @@ export interface ImportGraph {
   bare: string[];
 }
 
+export interface ImportGraphProbe {
+  sourceReads: number;
+  resolutionProbes: number;
+}
+
 const STATEMENT =
   /^\s*(?:import|export)\s+(?!type\b)(?:[^"';]*?\sfrom\s+)?["']([^"']+)["']/gm;
 /** `import(…)`, `require(…)` and `import.meta.require(…)` with one literal argument. */
@@ -89,12 +94,13 @@ function aliasTarget(specifier: string): string | null {
   return null;
 }
 
-function isFile(path: string): boolean {
+function isFile(path: string, probe?: ImportGraphProbe): boolean {
+  if (probe) probe.resolutionProbes++;
   return existsSync(path) && statSync(path).isFile();
 }
 
 /** The file a path names, the way the scan follows a relative specifier; null when none. */
-function resolveFile(base: string): string | null {
+function resolveFile(base: string, probe?: ImportGraphProbe): string | null {
   const candidates = [
     base,
     `${base}.ts`,
@@ -103,16 +109,21 @@ function resolveFile(base: string): string | null {
   ];
   if (base.endsWith(".js"))
     candidates.push(`${base.slice(0, -3)}.ts`, `${base.slice(0, -3)}.tsx`);
-  return candidates.find(isFile) ?? null;
+  return candidates.find((candidate) => isFile(candidate, probe)) ?? null;
 }
 
-export function importGraph(...entries: string[]): ImportGraph {
+function buildImportGraph(
+  entries: string[],
+  probe?: ImportGraphProbe,
+): ImportGraph {
   const files = new Set<string>(entries.map((entry) => resolve(entry)));
   const bare = new Set<string>();
   const queue = [...files];
   for (let file = queue.pop(); file !== undefined; file = queue.pop()) {
     if (!READ.test(file)) continue;
-    for (const specifier of runtimeSpecifiers(readFileSync(file, "utf8"))) {
+    const source = readFileSync(file, "utf8");
+    if (probe) probe.sourceReads++;
+    for (const specifier of runtimeSpecifiers(source)) {
       const base = specifier.startsWith(".")
         ? resolve(dirname(file), specifier)
         : aliasTarget(specifier);
@@ -120,7 +131,7 @@ export function importGraph(...entries: string[]): ImportGraph {
         bare.add(specifier);
         continue;
       }
-      const next = resolveFile(base);
+      const next = resolveFile(base, probe);
       if (next === null)
         throw new Error(`${file}: "${specifier}" reaches no file`);
       if (!files.has(next)) {
@@ -133,4 +144,13 @@ export function importGraph(...entries: string[]): ImportGraph {
     files: [...files].map((file) => file.replaceAll("\\", "/")),
     bare: [...bare],
   };
+}
+
+export function importGraph(...entries: string[]): ImportGraph {
+  return buildImportGraph(entries);
+}
+
+export function importGraphWithProbe(...entries: string[]) {
+  const probe: ImportGraphProbe = { sourceReads: 0, resolutionProbes: 0 };
+  return { graph: buildImportGraph(entries, probe), probe };
 }
