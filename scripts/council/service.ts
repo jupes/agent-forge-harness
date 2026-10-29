@@ -1,14 +1,41 @@
 import { randomUUID } from "node:crypto";
 import {
+  closeSync,
+  constants,
   existsSync,
+  fstatSync,
   lstatSync,
+  openSync,
   readdirSync,
   readFileSync,
+  readSync,
   realpathSync,
   writeFileSync,
 } from "node:fs";
-import { isAbsolute, join, relative, resolve, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import type {
+  ProjectCouncilAuthority,
+  ProjectCouncilAuthorityResolver,
+  ProjectCouncilOriginal,
+  ProjectCouncilOriginalRead,
+  ProjectCouncilReceipt,
+  ProjectCouncilReserveRequest,
+} from "../../types/project-council";
+import {
+  projectCouncilHistorySchema,
+  projectCouncilMetadata,
+  projectCouncilMetadataSchema,
+  projectCouncilOriginalReadSchema,
+  projectCouncilReceiptSchema,
+  projectCouncilReserveRequestSchema,
+} from "../../types/project-council";
+import {
+  MAX_PROJECT_COUNCIL_RUN_RESPONSE_BYTES,
+  type ProjectCouncilRunProvenance,
+  projectCouncilRunRead,
+} from "../../types/project-council-run-read";
+import { writeOwnerOnly } from "../hearth/token";
 import { parseBeadsIssueId } from "../run-correlation";
 import {
   assertCouncilRunId,
@@ -21,9 +48,22 @@ import {
   writeCouncilJobFailure,
 } from "./artifacts";
 import { contextListing, sanitizeContent } from "./context";
-import type { CouncilAppend, CouncilAttachResolver } from "./ledger-events";
+import {
+  type CouncilAppend,
+  type CouncilAttachResolver,
+  councilOutcome,
+} from "./ledger-events";
 import type { CommandRunner } from "./pr-source";
-import { assertProvidersReady, providerReadiness } from "./providers";
+import {
+  createProjectCouncilOriginalStore,
+  projectCouncilInputHash,
+  projectCouncilProfileHash,
+} from "./project-original-store";
+import {
+  assertProvidersReady,
+  providerEndpointSnapshot,
+  providerReadiness,
+} from "./providers";
 import type {
   ContextRedaction,
   ContextSource,
@@ -34,6 +74,7 @@ import type {
   CouncilSeat,
   ModelTransport,
 } from "./types";
+import { parseCouncilProfileJson } from "./types";
 import {
   type CouncilReviewOptions,
   executeCouncilReview,
@@ -84,6 +125,8 @@ export type CouncilServiceOptions = {
   workspaceRoot?: string;
   harnessRoot?: string;
   runsRoot?: string;
+  /** Machine-private home for project-bound Council review originals. */
+  reviewHome?: string;
   environment?: Record<string, string | undefined>;
   fetchImpl?: typeof fetch;
   resolveTransport?: (
@@ -258,9 +301,52 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
       controller: AbortController;
       done: Promise<CouncilServiceJob>;
       listeners: Set<(job: CouncilServiceJob) => void>;
+      projectProvenance?: ReturnType<typeof projectRunProvenance>;
     }
   >();
+  const projectStores = new Map<
+    string,
+    ReturnType<typeof createProjectCouncilOriginalStore>
+  >();
+  const projectOperations = new Set<Promise<unknown>>();
+  let projectAdmissionReservations = 0;
+  let projectAdmissionTail: Promise<void> = Promise.resolve();
   let closed = false;
+
+  function projectStore(workspace: string, projectId: string) {
+    if (!options.reviewHome)
+      throw new Error("project Council reviews are unavailable on this host");
+    const storeKey = `${workspace}\0${projectId}`;
+    let store = projectStores.get(storeKey);
+    if (!store) {
+      store = createProjectCouncilOriginalStore({
+        home: options.reviewHome,
+        workspace,
+        projectId,
+      });
+      projectStores.set(storeKey, store);
+    }
+    return store;
+  }
+
+  function trackProjectOperation<T>(work: () => Promise<T>): Promise<T> {
+    const pending = Promise.resolve().then(work);
+    projectOperations.add(pending);
+    void pending.then(
+      () => projectOperations.delete(pending),
+      () => projectOperations.delete(pending),
+    );
+    return pending;
+  }
+
+  function withProjectAdmission<T>(work: () => Promise<T>): Promise<T> {
+    const operation = projectAdmissionTail.then(work);
+    projectAdmissionTail = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    return operation;
+  }
 
   function profilePath(path?: string): string {
     const candidate = realpathSync(
@@ -462,7 +548,7 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
   }
   function begin(input: CouncilServiceInput): CouncilServiceJob {
     assertCouncilInput(input);
-    if (active.size >= 4)
+    if (active.size + projectAdmissionReservations >= 4)
       throw new Error("At most 4 council runs may execute concurrently");
     const selected = profile(input.profile);
     assertProvidersReady(selected, environment);
@@ -582,6 +668,828 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
     active.set(runId, { job, controller, done, listeners });
     return snapshot(job);
   }
+
+  function projectAuthority(
+    projectId: string,
+    authority: ProjectCouncilAuthority,
+    profileHash: string,
+  ) {
+    let root: string;
+    try {
+      root = realpathSync(resolve(authority.workspaceRoot));
+    } catch {
+      throw new Error("The served Council workspace could not be verified.");
+    }
+    if (
+      authority.projectId !== projectId ||
+      root !== workspaceRoot ||
+      !authority.workspace ||
+      authority.workspace.length > 1024 ||
+      !Number.isSafeInteger(authority.catalogRevision) ||
+      authority.catalogRevision < 0 ||
+      !/^[a-f0-9]{64}$/.test(authority.scopeHash)
+    )
+      throw new Error(
+        "The current project Council scope could not be verified.",
+      );
+    return {
+      projectId,
+      workspace: authority.workspace,
+      catalogRevision: authority.catalogRevision,
+      scopeHash: authority.scopeHash,
+      profileHash,
+    };
+  }
+
+  function selectedProjectProfile(path: string): CouncilProfile {
+    if (!profiles().some((choice) => choice.path === path))
+      throw new Error("Choose a currently advertised Council profile.");
+    return profile(path);
+  }
+
+  function projectProfileChoice(
+    path: string,
+    deepDiscussion: boolean,
+  ): CouncilProfile {
+    const selected = selectedProjectProfile(path);
+    if (deepDiscussion && selected.minPeerBallots < 1)
+      throw new Error(
+        "This profile cannot support deep discussion because it has no peer ballots.",
+      );
+    const raw: Record<string, unknown> = {
+      ...selected,
+      depth: deepDiscussion
+        ? "deep"
+        : selected.depth === "quick"
+          ? "quick"
+          : "balanced",
+    };
+    if (deepDiscussion)
+      raw.maxDiscussionRounds =
+        selected.depth === "deep" ? (selected.maxDiscussionRounds ?? 1) : 1;
+    else delete raw.maxDiscussionRounds;
+    const parsed = parseCouncilProfileJson(JSON.stringify(raw));
+    if (!parsed.ok)
+      throw new Error(
+        `This profile does not support the selected discussion depth: ${parsed.error}`,
+      );
+    return parsed.value;
+  }
+
+  function originalSourceRef(original: ProjectCouncilOriginal) {
+    return {
+      sourceType:
+        original.context.source.kind === "stdin"
+          ? ("text" as const)
+          : original.context.source.kind,
+      source: original.context.source.locator,
+    };
+  }
+
+  function projectReceipt(
+    original: ProjectCouncilOriginal,
+  ): ProjectCouncilReceipt {
+    const entry = active.get(original.runId);
+    const job =
+      entry && sameProjectRun(entry, original) ? entry.job : undefined;
+    const phase: ProjectCouncilReceipt["phase"] =
+      original.state === "reserved"
+        ? "reserved"
+        : original.state === "retired"
+          ? "retired"
+          : original.state === "completed" ||
+              original.state === "failed" ||
+              original.state === "cancelled"
+            ? original.state
+            : job && ["running", "cancelling"].includes(job.status)
+              ? "running"
+              : "unknown";
+    return {
+      metadata: projectCouncilMetadata(original),
+      phase,
+      ...(phase === "failed" && job?.error
+        ? { error: safeCouncilError(job.error) }
+        : {}),
+    };
+  }
+
+  function projectRunProvenance(
+    original: ProjectCouncilOriginal,
+  ): ProjectCouncilRunProvenance {
+    return {
+      version: 1,
+      requestId: original.requestId,
+      intentHash: original.intentHash,
+      runId: original.runId,
+      projectId: original.binding.projectId,
+      workspace: original.binding.workspace,
+      catalogRevision: original.binding.catalogRevision,
+      scopeHash: original.binding.scopeHash,
+    };
+  }
+
+  function sameProjectRun(
+    entry: NonNullable<ReturnType<typeof active.get>>,
+    original: ProjectCouncilOriginal,
+  ): boolean {
+    const expected = projectRunProvenance(original);
+    const actual = entry.projectProvenance;
+    return !!actual && JSON.stringify(actual) === JSON.stringify(expected);
+  }
+
+  function projectJobMatchesOriginal(
+    job: CouncilServiceJob,
+    original: ProjectCouncilOriginal,
+  ): boolean {
+    if (
+      job.runId !== original.runId ||
+      (job.profile !== undefined &&
+        JSON.stringify(job.profile) !== JSON.stringify(original.profile))
+    )
+      return false;
+    const run = job.run;
+    if (!run) return true;
+    const expected = original.context;
+    return (
+      run.runId === original.runId &&
+      JSON.stringify(run.profile) === JSON.stringify(original.profile) &&
+      run.context.contentHash === expected.contentHash &&
+      run.context.byteLength === expected.byteLength &&
+      run.context.truncated === expected.truncated &&
+      JSON.stringify(run.context.source) === JSON.stringify(expected.source) &&
+      JSON.stringify(run.context.redactions) ===
+        JSON.stringify(expected.redactions) &&
+      JSON.stringify(run.context.evidence) === JSON.stringify(expected.evidence)
+    );
+  }
+
+  function readOwnedProjectFile(
+    directory: string,
+    file: string,
+    maxBytes: number,
+  ): string {
+    let descriptor: number | null = null;
+    try {
+      const rootReal = realpathSync(runsRoot);
+      const directoryReal = realpathSync(directory);
+      const directoryStat = lstatSync(directory);
+      const pathStat = lstatSync(file);
+      if (
+        !inside(rootReal, directoryReal) ||
+        dirname(directoryReal) !== rootReal ||
+        directoryStat.isSymbolicLink() ||
+        !directoryStat.isDirectory() ||
+        pathStat.isSymbolicLink() ||
+        !pathStat.isFile() ||
+        pathStat.nlink !== 1 ||
+        pathStat.size > maxBytes ||
+        realpathSync(file) !== resolve(file)
+      )
+        throw new Error("unsafe or oversized project Council result");
+      descriptor = openSync(
+        file,
+        constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+      );
+      const opened = fstatSync(descriptor);
+      if (
+        !opened.isFile() ||
+        opened.nlink !== 1 ||
+        opened.size > maxBytes ||
+        opened.dev !== pathStat.dev ||
+        opened.ino !== pathStat.ino ||
+        opened.size !== pathStat.size ||
+        opened.mtimeMs !== pathStat.mtimeMs ||
+        opened.ctimeMs !== pathStat.ctimeMs ||
+        realpathSync(directory) !== directoryReal ||
+        realpathSync(file) !== resolve(file)
+      )
+        throw new Error("project Council result identity changed");
+      const bytes = Buffer.alloc(maxBytes + 1);
+      let length = 0;
+      while (length < bytes.length) {
+        const read = readSync(
+          descriptor,
+          bytes,
+          length,
+          bytes.length - length,
+          length,
+        );
+        if (read === 0) break;
+        length += read;
+      }
+      if (length > maxBytes || length !== opened.size)
+        throw new Error("project Council result exceeded its read ceiling");
+      const finished = fstatSync(descriptor);
+      const afterPath = lstatSync(file);
+      const afterDirectory = lstatSync(directory);
+      if (
+        !finished.isFile() ||
+        finished.nlink !== 1 ||
+        finished.dev !== opened.dev ||
+        finished.ino !== opened.ino ||
+        finished.size !== opened.size ||
+        finished.mtimeMs !== opened.mtimeMs ||
+        finished.ctimeMs !== opened.ctimeMs ||
+        afterPath.isSymbolicLink() ||
+        !afterPath.isFile() ||
+        afterPath.nlink !== 1 ||
+        afterPath.dev !== opened.dev ||
+        afterPath.ino !== opened.ino ||
+        afterPath.size !== opened.size ||
+        afterPath.mtimeMs !== opened.mtimeMs ||
+        afterPath.ctimeMs !== opened.ctimeMs ||
+        afterDirectory.isSymbolicLink() ||
+        !afterDirectory.isDirectory() ||
+        afterDirectory.dev !== directoryStat.dev ||
+        afterDirectory.ino !== directoryStat.ino ||
+        realpathSync(runsRoot) !== rootReal ||
+        realpathSync(directory) !== directoryReal ||
+        realpathSync(file) !== resolve(file)
+      )
+        throw new Error("project Council result changed during its read");
+      return new TextDecoder("utf-8", { fatal: true }).decode(
+        bytes.subarray(0, length),
+      );
+    } finally {
+      if (descriptor !== null) closeSync(descriptor);
+    }
+  }
+
+  function readProjectJob(original: ProjectCouncilOriginal): CouncilServiceJob {
+    const directory = resolveRunDirectory(original.runId, runsRoot);
+    const manifest = join(directory, "manifest.json");
+    const terminal = join(directory, "terminal.json");
+    const statePath = existsSync(manifest) ? manifest : terminal;
+    const text = readOwnedProjectFile(
+      directory,
+      statePath,
+      MAX_PROJECT_COUNCIL_RUN_RESPONSE_BYTES,
+    );
+    if (statePath === manifest) {
+      const run = parseStoredRun(text);
+      if (run.runId !== original.runId)
+        throw new Error("project Council manifest identity changed");
+      return {
+        runId: run.runId,
+        status: run.status,
+        startedAt: run.startedAt,
+        updatedAt: run.finishedAt,
+        events: run.events,
+        discussion: run.discussion ?? [],
+        profile: run.profile,
+        run,
+      };
+    }
+    const raw: unknown = JSON.parse(text);
+    if (typeof raw !== "object" || raw === null || Array.isArray(raw))
+      throw new Error("invalid project Council terminal record");
+    const state = raw as Record<string, unknown>;
+    if (state.run && typeof state.run === "object") {
+      const run = parseStoredRun(JSON.stringify(state.run));
+      if (run.runId !== original.runId || state.status !== run.status)
+        throw new Error("project Council terminal result identity changed");
+      return {
+        runId: run.runId,
+        status: run.status,
+        startedAt: run.startedAt,
+        updatedAt:
+          typeof state.updatedAt === "string"
+            ? state.updatedAt
+            : run.finishedAt,
+        events: run.events,
+        discussion: run.discussion ?? [],
+        profile: run.profile,
+        run,
+        persistenceStatus: "failed",
+        persistenceError:
+          typeof state.persistenceError === "string"
+            ? safeCouncilError(state.persistenceError)
+            : "The completed result could not be saved as normal run artifacts.",
+      };
+    }
+    if (
+      typeof state.startedAt !== "string" ||
+      state.runId !== original.runId ||
+      (state.status !== "failed" && state.status !== "cancelled") ||
+      state.status !== original.state
+    )
+      throw new Error("invalid project Council terminal record");
+    return {
+      runId: original.runId,
+      status: state.status,
+      startedAt: state.startedAt,
+      updatedAt:
+        typeof state.updatedAt === "string" ? state.updatedAt : state.startedAt,
+      events: [],
+      ...(typeof state.error === "string"
+        ? { error: safeCouncilError(state.error) }
+        : {}),
+    };
+  }
+
+  async function queueProjectReview(
+    original: ProjectCouncilOriginal,
+    store: ReturnType<typeof createProjectCouncilOriginalStore>,
+  ): Promise<CouncilServiceJob> {
+    if (closed) throw new Error("council service is closed");
+    const reservation = reserveCouncilRun(original.runId, runsRoot);
+    writeOwnerOnly(
+      join(reservation.paths.directory, "project-review-provenance.json"),
+      JSON.stringify(projectRunProvenance(original)),
+    );
+    writeFileSync(
+      join(reservation.paths.directory, "job.json"),
+      JSON.stringify({
+        runId: original.runId,
+        startedAt: new Date().toISOString(),
+      }),
+      { flag: "wx", mode: 0o600 },
+    );
+    await store.markRunning(
+      original.binding.projectId,
+      original.requestId,
+      original.intentHash,
+    );
+    const startedAt = new Date().toISOString();
+    const job: CouncilServiceJob = {
+      runId: original.runId,
+      status: "running",
+      startedAt,
+      updatedAt: startedAt,
+      events: [],
+      artifacts: reservation.paths,
+      discussion: [],
+      profile: structuredClone(original.profile),
+      persistenceStatus: "pending",
+    };
+    const controller = new AbortController();
+    const listeners = new Set<(job: CouncilServiceJob) => void>();
+    const publish = () => {
+      job.updatedAt = new Date().toISOString();
+      for (const listener of listeners) {
+        try {
+          listener(snapshot(job));
+        } catch {}
+      }
+    };
+    const done = Promise.resolve().then(async () => {
+      try {
+        if (controller.signal.aborted) throw new Error("council run cancelled");
+        const engineOptions: CouncilReviewOptions = {
+          profile: original.profile,
+          context: original.context,
+          runId: original.runId,
+          runsRoot,
+          reservation,
+          environment,
+          providerEndpoints: original.providerEndpoints,
+          signal: controller.signal,
+          onResult: (result) => {
+            job.run = result.run;
+            job.status = result.run.status;
+            if (!result.ok) job.error = result.error;
+          },
+          onEvent: (event) => {
+            job.events.push(event);
+            publish();
+          },
+          onDiscussionRound: (round) => {
+            job.discussion!.push(round);
+            publish();
+          },
+        };
+        engineOptions.maxUsd = original.options.maxUsd;
+        if (options.fetchImpl) engineOptions.fetchImpl = options.fetchImpl;
+        if (options.resolveTransport)
+          engineOptions.resolveTransport = options.resolveTransport(
+            original.profile,
+          );
+        const beadId =
+          original.context.source.kind === "bead"
+            ? original.context.source.locator
+            : undefined;
+        if (options.appendEvent && options.resolveAttach) {
+          try {
+            engineOptions.attach = options.resolveAttach({
+              cwd: workspaceRoot,
+              ...(beadId !== undefined ? { beadId } : {}),
+            });
+            engineOptions.appendEvent = options.appendEvent;
+          } catch {
+            // A review runs whether or not its audit identity resolves.
+          }
+        }
+        const { artifacts } = await executeCouncilReview(engineOptions);
+        job.artifacts = artifacts;
+        job.persistenceStatus = "saved";
+      } catch (error) {
+        const persistenceError = safeCouncilError(error);
+        if (job.run) {
+          job.status = job.run.status;
+          job.persistenceStatus = "failed";
+          job.persistenceError = persistenceError;
+        } else {
+          job.status = controller.signal.aborted ? "cancelled" : "failed";
+          job.error = persistenceError;
+        }
+        try {
+          writeCouncilJobFailure(reservation, {
+            runId: original.runId,
+            status: job.status,
+            startedAt,
+            updatedAt: new Date().toISOString(),
+            ...(job.error ? { error: job.error } : {}),
+            ...(job.persistenceError
+              ? { persistenceError: job.persistenceError }
+              : {}),
+            ...(job.run ? { run: job.run } : {}),
+          });
+        } catch (persistenceError) {
+          const unavailable = `failure record unavailable: ${safeCouncilError(persistenceError)}`;
+          if (job.persistenceError) job.persistenceError += `; ${unavailable}`;
+          else job.error = `${job.error ?? "Review failed"}; ${unavailable}`;
+        }
+      }
+      if (job.run) {
+        const terminal =
+          job.run.status === "completed"
+            ? "completed"
+            : job.run.status === "cancelled"
+              ? "cancelled"
+              : "failed";
+        try {
+          await store.setTerminal(
+            original.binding.projectId,
+            original.requestId,
+            original.intentHash,
+            terminal,
+          );
+        } catch {
+          // Keep the dispatch claim: a missing terminal write is uncertainty, not NotSent.
+        }
+      }
+      publish();
+      const result = snapshot(job);
+      active.delete(original.runId);
+      listeners.clear();
+      return result;
+    });
+    active.set(original.runId, {
+      job,
+      controller,
+      done,
+      listeners,
+      projectProvenance: projectRunProvenance(original),
+    });
+    return snapshot(job);
+  }
+
+  function reserveProjectReview(
+    projectId: string,
+    rawRequest: ProjectCouncilReserveRequest,
+    resolveAuthority: ProjectCouncilAuthorityResolver,
+  ) {
+    return trackProjectOperation(async () => {
+      if (closed) throw new Error("council service is closed");
+      const parsed = projectCouncilReserveRequestSchema.safeParse(rawRequest);
+      if (!parsed.success)
+        throw new Error("Expected a strict project Council review choice.");
+      const request = parsed.data;
+      const inputHash = projectCouncilInputHash({ projectId, ...request });
+      const authority = await resolveAuthority(projectId, request.sourceChoice);
+      const selected = projectProfileChoice(
+        request.profileChoice,
+        request.deepDiscussion,
+      );
+      const binding = projectAuthority(
+        projectId,
+        authority,
+        projectCouncilProfileHash(selected),
+      );
+      const store = projectStore(binding.workspace, projectId);
+      const existing = await store.findActive(projectId, binding, inputHash);
+      if (existing)
+        return { metadata: projectCouncilMetadata(existing), created: false };
+      assertProvidersReady(selected, environment);
+      const providerEndpoints = providerEndpointSnapshot(selected, environment);
+      const packed = await prepareCouncilContext({
+        kind:
+          request.sourceChoice.sourceType === "text"
+            ? "stdin"
+            : request.sourceChoice.sourceType,
+        source: request.sourceChoice.source,
+        workspaceRoot,
+        secretPolicy: request.redactSecrets ? "redact" : "reject",
+        maxBytes: request.maxBytes,
+        ...(request.sourceChoice.sourceType === "text"
+          ? { displayName: "Pasted review text" }
+          : {}),
+        ...(options.runCommand ? { runner: options.runCommand } : {}),
+      });
+      const currentAuthority = await resolveAuthority(projectId, {
+        sourceType:
+          packed.source.kind === "stdin" ? "text" : packed.source.kind,
+        source: packed.source.locator,
+      });
+      const currentProfile = projectProfileChoice(
+        request.profileChoice,
+        request.deepDiscussion,
+      );
+      const currentBinding = projectAuthority(
+        projectId,
+        currentAuthority,
+        projectCouncilProfileHash(currentProfile),
+      );
+      if (
+        JSON.stringify(currentBinding) !== JSON.stringify(binding) ||
+        JSON.stringify(currentProfile) !== JSON.stringify(selected)
+      )
+        throw new Error(
+          "The project scope or Council profile changed during review preparation. Prepare the current choice again.",
+        );
+      assertProvidersReady(currentProfile, environment);
+      if (closed)
+        throw new Error("council service is closing; no review was reserved");
+      const listing = contextListing(packed);
+      const probeId = "00000000-0000-4000-8000-000000000000";
+      const now = new Date().toISOString();
+      projectCouncilMetadataSchema.parse({
+        requestId: probeId,
+        runId: `council-review-${probeId}`,
+        intentHash: "0".repeat(64),
+        projectId,
+        state: "reserved",
+        sourceType:
+          packed.source.kind === "stdin" ? "text" : packed.source.kind,
+        sourceName: packed.source.displayName,
+        listing,
+        byteLength: packed.byteLength,
+        truncated: packed.truncated,
+        redactions: packed.redactions,
+        profileId: currentProfile.id,
+        profileTitle: currentProfile.title,
+        maxUsd: request.maxUsd,
+        maxBytes: request.maxBytes,
+        redactSecrets: request.redactSecrets,
+        deepDiscussion: request.deepDiscussion,
+        createdAt: now,
+        updatedAt: now,
+      });
+      const reserved = await store.reservePrepared({
+        binding,
+        inputHash,
+        profileChoice: request.profileChoice,
+        profile: currentProfile,
+        providerEndpoints,
+        context: packed,
+        listing,
+        options: {
+          maxUsd: request.maxUsd,
+          maxBytes: request.maxBytes,
+          redactSecrets: request.redactSecrets,
+          deepDiscussion: request.deepDiscussion,
+        },
+      });
+      return {
+        metadata: projectCouncilMetadata(reserved.original),
+        created: reserved.created,
+      };
+    });
+  }
+
+  function discoverProjectReview(projectId: string, workspace: string) {
+    const found = projectStore(workspace, projectId).discover(projectId);
+    return found ? projectCouncilMetadata(found) : null;
+  }
+
+  function historyProjectReviews(projectId: string, workspace: string) {
+    return projectCouncilHistorySchema.parse(
+      projectStore(workspace, projectId).history(projectId),
+    );
+  }
+
+  function readProjectOriginal(
+    projectId: string,
+    workspace: string,
+    requestId: string,
+  ): ProjectCouncilOriginalRead {
+    const original = projectStore(workspace, projectId).read(
+      projectId,
+      requestId,
+    );
+    return projectCouncilOriginalReadSchema.parse({
+      metadata: projectCouncilMetadata(original),
+      original: structuredClone(original),
+    });
+  }
+
+  async function retireProjectReview(
+    projectId: string,
+    workspace: string,
+    requestId: string,
+    intentHash: string,
+  ) {
+    const original = await projectStore(workspace, projectId).retire(
+      projectId,
+      requestId,
+      intentHash,
+    );
+    return projectReceipt(original);
+  }
+
+  async function commitProjectReview(
+    projectId: string,
+    workspace: string,
+    requestId: string,
+    intentHash: string,
+    resolveAuthority: ProjectCouncilAuthorityResolver,
+  ) {
+    return trackProjectOperation(() =>
+      withProjectAdmission(async () => {
+        if (closed) throw new Error("council service is closed");
+        const store = projectStore(workspace, projectId);
+        const original = store.read(projectId, requestId);
+        if (original.intentHash !== intentHash)
+          throw new Error("The Council original hash does not match.");
+        const alreadyClaimed = original.state !== "reserved";
+        if (!alreadyClaimed && active.size + projectAdmissionReservations >= 4)
+          throw new Error("At most 4 council runs may execute concurrently");
+        if (!alreadyClaimed) projectAdmissionReservations += 1;
+        try {
+          const claimed = await store.claimDispatch(
+            projectId,
+            requestId,
+            intentHash,
+            async (candidate) => {
+              const sourceRef = originalSourceRef(candidate);
+              const authority = await resolveAuthority(projectId, sourceRef);
+              const selected = projectProfileChoice(
+                candidate.profileChoice,
+                candidate.options.deepDiscussion,
+              );
+              const binding = projectAuthority(
+                projectId,
+                authority,
+                projectCouncilProfileHash(selected),
+              );
+              if (
+                JSON.stringify(binding) !== JSON.stringify(candidate.binding) ||
+                JSON.stringify(selected) !== JSON.stringify(candidate.profile)
+              )
+                throw new Error(
+                  "The reviewed project scope or profile changed. No provider was called.",
+                );
+              assertProvidersReady(selected, environment);
+              const currentEndpoints = providerEndpointSnapshot(
+                selected,
+                environment,
+              );
+              if (
+                JSON.stringify(currentEndpoints) !==
+                JSON.stringify(candidate.providerEndpoints)
+              )
+                throw new Error(
+                  "The reviewed provider endpoint configuration changed. No provider was called.",
+                );
+              if (existsSync(resolveRunDirectory(candidate.runId, runsRoot)))
+                throw new Error(
+                  "The reviewed Council run identity is already owned by another run.",
+                );
+            },
+          );
+          if (!claimed.created)
+            return {
+              receipt: projectReceipt(claimed.original),
+              created: false,
+            };
+          try {
+            await queueProjectReview(claimed.original, store);
+          } catch {
+            // The durable dispatch claim is authoritative; a lost launch outcome is not retried.
+          }
+          return {
+            receipt: projectReceipt(store.read(projectId, requestId)),
+            created: true,
+          };
+        } finally {
+          if (!alreadyClaimed) projectAdmissionReservations -= 1;
+        }
+      }),
+    );
+  }
+
+  async function cancelProjectReview(
+    projectId: string,
+    workspace: string,
+    requestId: string,
+    intentHash: string,
+  ) {
+    const store = projectStore(workspace, projectId);
+    const original = store.read(projectId, requestId);
+    if (original.intentHash !== intentHash)
+      throw new Error("The Council original hash does not match.");
+    const current = active.get(original.runId);
+    if (!current || !sameProjectRun(current, original))
+      return projectReceipt(original);
+    if (!current || !["running", "cancelling"].includes(current.job.status))
+      return projectReceipt(original);
+    if (current.job.status === "running") {
+      current.job.status = "cancelling";
+      current.job.updatedAt = new Date().toISOString();
+      current.controller.abort();
+    }
+    await current.done;
+    return projectReceipt(store.read(projectId, requestId));
+  }
+
+  function ownsProjectRun(original: ProjectCouncilOriginal): boolean {
+    try {
+      const directory = resolveRunDirectory(original.runId, runsRoot),
+        file = join(directory, "project-review-provenance.json");
+      const rawText = readOwnedProjectFile(directory, file, 4096);
+      const raw: unknown = JSON.parse(rawText);
+      return (
+        typeof raw === "object" &&
+        raw !== null &&
+        !Array.isArray(raw) &&
+        JSON.stringify(raw) === JSON.stringify(projectRunProvenance(original))
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  function councilVerdictCommentPreview(job: CouncilServiceJob): string | null {
+    const run = job.run;
+    if (job.status !== "completed" || !run || run.status !== "completed")
+      return null;
+    const severities = ["blocker", "high", "medium", "low"] as const;
+    const counts = severities.map(
+      (severity) =>
+        run.aggregatedFindings.filter(
+          (finding) => finding.severity === severity,
+        ).length,
+    );
+    return `review: COUNCIL ${job.runId} ${councilOutcome(run).toUpperCase()} — findings ${counts.join("/")} (${severities.join("/")})`;
+  }
+
+  function readProjectRun(
+    projectId: string,
+    workspace: string,
+    requestId: string,
+    intentHash: string,
+  ) {
+    const original = projectStore(workspace, projectId).read(
+      projectId,
+      requestId,
+    );
+    if (original.intentHash !== intentHash)
+      throw new Error("The Council original hash does not match.");
+    const provenance = projectRunProvenance(
+      original,
+    ) satisfies ProjectCouncilRunProvenance;
+    const unknown = () => {
+      const receipt = projectCouncilReceiptSchema.parse({
+        ...projectReceipt(original),
+        phase:
+          original.state === "reserved" || original.state === "retired"
+            ? original.state
+            : "unknown",
+      });
+      return projectCouncilRunRead(provenance, receipt, null, null);
+    };
+    const running = active.get(original.runId);
+    if (running && sameProjectRun(running, original)) {
+      const job = snapshot(running.job);
+      if (!projectJobMatchesOriginal(job, original)) return unknown();
+      const receipt = projectCouncilReceiptSchema.parse(
+        projectReceipt(original),
+      );
+      return projectCouncilRunRead(
+        provenance,
+        receipt,
+        job,
+        councilVerdictCommentPreview(job),
+      );
+    }
+    if (
+      ["completed", "failed", "cancelled"].includes(original.state) &&
+      ownsProjectRun(original)
+    ) {
+      const job = readProjectJob(original);
+      if (!projectJobMatchesOriginal(job, original)) return unknown();
+      const receipt = projectCouncilReceiptSchema.parse(
+        projectReceipt(original),
+      );
+      return projectCouncilRunRead(
+        provenance,
+        receipt,
+        job,
+        councilVerdictCommentPreview(job),
+      );
+    }
+    return unknown();
+  }
   function cancel(runId: string): CouncilServiceJob {
     assertCouncilRunId(runId);
     const entry = active.get(runId);
@@ -616,6 +1524,7 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
     for (const entry of active.values())
       if (["running", "cancelling"].includes(entry.job.status))
         entry.controller.abort();
+    await Promise.all([...projectOperations]);
     await Promise.all([...active.values()].map((entry) => entry.done));
   }
   return {
@@ -628,6 +1537,14 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
     cancel,
     subscribe,
     wait,
+    reserveProjectReview,
+    discoverProjectReview,
+    historyProjectReviews,
+    readProjectOriginal,
+    readProjectRun,
+    retireProjectReview,
+    commitProjectReview,
+    cancelProjectReview,
     close,
   };
 }

@@ -24,6 +24,7 @@ import {
 import { type CommandRunner, compilePullRequest } from "./pr-source";
 import {
   assertProvidersReady,
+  type CouncilProviderEndpoint,
   createProviderResolver,
   type ProviderResolverOptions,
 } from "./providers";
@@ -117,6 +118,7 @@ export type CouncilReviewOptions = Omit<
   resolveTransport?: CouncilEngineOptions["resolveTransport"];
   environment?: ProviderResolverOptions["environment"];
   fetchImpl?: ProviderResolverOptions["fetchImpl"];
+  providerEndpoints?: readonly CouncilProviderEndpoint[];
   onResult?: (result: CouncilExecutionResult) => void;
   /**
    * Appends one ledger event. Handed in by a Bun entry point; this module
@@ -137,6 +139,7 @@ export async function executeCouncilReview(options: CouncilReviewOptions) {
     reservation,
     environment,
     fetchImpl,
+    providerEndpoints,
     resolveTransport,
     onResult,
     appendEvent,
@@ -150,6 +153,8 @@ export async function executeCouncilReview(options: CouncilReviewOptions) {
   const providerOptions: ProviderResolverOptions = {};
   if (environment !== undefined) providerOptions.environment = environment;
   if (fetchImpl !== undefined) providerOptions.fetchImpl = fetchImpl;
+  if (providerEndpoints !== undefined)
+    providerOptions.endpoints = providerEndpoints;
   const record = (event: CouncilLedgerEvent): void => {
     if (!appendEvent || !attach) return;
     try {
