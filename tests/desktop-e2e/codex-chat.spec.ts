@@ -22,12 +22,12 @@ import { OPERATOR_HEADER } from "../../scripts/hearth/paths";
 import { serializeCodexChat } from "../../scripts/sessions/codex-app-server-protocol";
 import { codexChatForkSourcePageSchema } from "../../scripts/sessions/codex-chat-fork-review-protocol";
 import { codexChatApprovalPageSchema } from "../../scripts/sessions/codex-chat-owned-protocol";
-import { serializeGeminiChat } from "../../scripts/sessions/gemini-task";
 import {
   ownedCodingPageSchema,
   ownedCodingStateSchema,
 } from "../../scripts/sessions/codex-owned-journal";
 import { ownedCodingSessionSchema } from "../../scripts/sessions/codex-owned-wire-protocol";
+import { serializeGeminiChat } from "../../scripts/sessions/gemini-task";
 import { sessionStartIdentityPageSchema } from "../../scripts/sessions/identity-protocol";
 import { sessionTranscriptExportSchema } from "../../scripts/sessions/library-protocol";
 import {
