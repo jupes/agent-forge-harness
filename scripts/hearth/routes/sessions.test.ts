@@ -359,21 +359,25 @@ test.skipIf(
     expect(nativeRecord).toMatchObject({ hasConsole: true });
     expect(child).toBeDefined();
     expect(child && process.kill(child.pid, 0)).toBe(true);
-    const index = opened.indexOf(h);
-    if (index >= 0) opened.splice(index, 1);
-    await h.close();
-    expect(await child?.done).toMatchObject({ stopped: true, timedOut: false });
-    const handoffDir = join(
-      h.home,
-      "session-terminal-handoffs",
-      readdirSync(join(h.home, "session-terminal-handoffs"))[0] ?? "",
-    );
-    const journal: { attempts: Array<{ requestId: string; phase: string }> } =
-      JSON.parse(readFileSync(join(handoffDir, "attempts.json"), "utf8"));
-    expect(journal.attempts.at(-1)).toMatchObject({
-      requestId,
-      phase: "closed",
-    });
+    try {
+      await h.hearth.close();
+      expect(await child?.done).toMatchObject({ stopped: true, timedOut: false });
+      const handoffDir = join(
+        h.home,
+        "session-terminal-handoffs",
+        readdirSync(join(h.home, "session-terminal-handoffs"))[0] ?? "",
+      );
+      const journal: { attempts: Array<{ requestId: string; phase: string }> } =
+        JSON.parse(readFileSync(join(handoffDir, "attempts.json"), "utf8"));
+      expect(journal.attempts.at(-1)).toMatchObject({
+        requestId,
+        phase: "closed",
+      });
+    } finally {
+      const index = opened.indexOf(h);
+      if (index >= 0) opened.splice(index, 1);
+      await h.close();
+    }
   },
 );
 

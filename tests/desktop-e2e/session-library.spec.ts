@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   type Download,
@@ -695,6 +695,18 @@ test.describe("Windows terminal handoff UI", () => {
     await expect(openTerminal).toBeDisabled();
     await confirm.check();
     await expect(openTerminal).toBeEnabled();
+    const shotDir = process.env["SHOT_DIR"];
+    if (shotDir) {
+      mkdirSync(shotDir, { recursive: true });
+      await review.screenshot({
+        path: join(shotDir, "terminal-handoff-review.png"),
+        animations: "disabled",
+        mask: [
+          review.locator("dl dd").nth(0),
+          review.locator("dl dd").nth(1),
+        ],
+      });
+    }
     await openTerminal.click();
     await expect(review).toContainText("no automatic retry was sent");
     await expect(review).toContainText("original request is held");
