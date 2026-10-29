@@ -2,7 +2,6 @@ import { randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
-  projectRunArtifactSchema,
   readFileSync,
   realpathSync,
   unlinkSync,
@@ -14,6 +13,7 @@ import { runsHref } from "../../apps/desktop/src/project-runs-model";
 import type { ForgeState } from "../../scripts/forge/phases";
 import { OPERATOR_HEADER } from "../../scripts/hearth/paths";
 import {
+  projectRunArtifactSchema,
   projectRunDetailSchema,
   projectRunsPageSchema,
 } from "../../scripts/projects/run-protocol";

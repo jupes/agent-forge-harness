@@ -453,7 +453,14 @@ export function RunDetail({
                   <>
                     <Button
                       disabled={!canOpenArtifacts}
-                      onClick={() => onOpenArtifact?.(phase.id)}
+                      onClick={() => {
+                        if (
+                          phase.id === "research" ||
+                          phase.id === "plan" ||
+                          phase.id === "ship"
+                        )
+                          onOpenArtifact?.(phase.id);
+                      }}
                     >
                       Read {phaseName(phase.id).toLowerCase()} artifact
                     </Button>
