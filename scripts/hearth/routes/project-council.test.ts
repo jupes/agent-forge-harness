@@ -10,7 +10,6 @@ import {
   projectCouncilReserveRequestSchema,
 } from "../../../types/project-council";
 import { projectCouncilRunReadSchema } from "../../../types/project-council-run-read";
-import { councilOutcome } from "../../council/ledger-events";
 import { workspaceKey } from "../../projects/scope";
 import { createProjectStore, projectCatalogPath } from "../../projects/store";
 import {
@@ -665,7 +664,8 @@ test("a completed project Council Bead review posts its verdict once and replays
     run.events.filter((event) => event.type === "run.completed"),
   ).toHaveLength(1);
 
-  const expectedComment = `review: COUNCIL ${run.runId} ${councilOutcome({ status: run.status, aggregatedFindings: run.aggregatedFindings, ...(run.chair === undefined ? {} : { chair: run.chair }) }).toUpperCase()} — findings ${(["blocker", "high", "medium", "low"] as const).map((severity) => run.aggregatedFindings.filter((finding) => finding.severity === severity).length).join("/")} (blocker/high/medium/low)`;
+  expect(run.chair?.verdict).toBe("needs_changes");
+  const expectedComment = `review: COUNCIL ${run.runId} FAIL — findings ${(["blocker", "high", "medium", "low"] as const).map((severity) => run.aggregatedFindings.filter((finding) => finding.severity === severity).length).join("/")} (blocker/high/medium/low)`;
   const verdictDeadline = Date.now() + 20_000;
   let verdict = h
     .events(["council.verdict.comment"])
