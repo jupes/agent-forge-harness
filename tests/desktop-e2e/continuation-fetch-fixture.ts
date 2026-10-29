@@ -454,7 +454,9 @@ export async function installGeminiContinuationFetchFixture(
           throw new Error("No verified Gemini Start preceded readback.");
         if (payload.candidate) {
           if (candidateReadbackCaptured)
-            throw new Error("The Gemini readback candidate was observed twice.");
+            throw new Error(
+              "The Gemini readback candidate was observed twice.",
+            );
           candidateReadbackCaptured = true;
         } else {
           if (acceptedReadbackCaptured)
@@ -611,7 +613,8 @@ export async function installGeminiContinuationFetchFixture(
       readbackRelease();
       let drainError: unknown = null;
       try {
-        await page.evaluate(async ({ stateName, drainTimeoutMs }) => {
+        await page.evaluate(
+          async ({ stateName, drainTimeoutMs }) => {
             const globals = window as unknown as Record<string, unknown>;
             const state = globals[stateName] as
               | {
@@ -638,7 +641,9 @@ export async function installGeminiContinuationFetchFixture(
               throw new Error("The Gemini readback observer did not drain.", {
                 cause: failure,
               });
-          }, { stateName, drainTimeoutMs: CLONE_TIMEOUT_MS });
+          },
+          { stateName, drainTimeoutMs: CLONE_TIMEOUT_MS },
+        );
       } catch {
         drainError = new Error("The Gemini readback observer cleanup failed.");
       }
@@ -790,8 +795,7 @@ function installNativeFetchObserver(options: {
     ...args: Parameters<typeof fetch>
   ): Promise<Response> {
     const [input, init] = args;
-    if (!acceptingCaptures)
-      return Reflect.apply(originalFetch, this, args);
+    if (!acceptingCaptures) return Reflect.apply(originalFetch, this, args);
     let url: URL;
     let method: string;
     try {
