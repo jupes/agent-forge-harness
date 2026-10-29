@@ -249,7 +249,7 @@ type CouncilProgressJob = {
   status: string;
   events: readonly {
     type: string;
-    payload?: { stage?: string; round?: number };
+    payload?: Record<string, unknown>;
   }[];
 };
 export function projectCouncilProgressView(
@@ -273,13 +273,18 @@ export function projectCouncilProgressView(
       (event) =>
         event.type === "stage.started" || event.type === "stage.completed",
     );
+  const round = latest?.payload?.round;
+  const discussionLabel =
+    typeof round === "number" && Number.isSafeInteger(round) && round > 0
+      ? `Discussing round ${round}`
+      : "Discussing (number not recorded)";
   const label =
     latest?.type === "stage.started"
       ? latest.payload?.stage === "independent"
         ? "Reviewing"
         : latest.payload?.stage === "peer" ||
             latest.payload?.stage === "revision"
-          ? `Discussing round ${latest.payload.round ?? 1}`
+          ? discussionLabel
           : latest.payload?.stage === "chair"
             ? "Synthesizing"
             : "Checking saved progress"

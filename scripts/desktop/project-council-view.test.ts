@@ -52,6 +52,12 @@ describe("Project Council progress presentation", () => {
     expect(
       projectCouncilProgressView(
         "running",
+        job("running", started, stage("peer")),
+      ).label,
+    ).toBe("Discussing (number not recorded)");
+    expect(
+      projectCouncilProgressView(
+        "running",
         job("running", started, stage("revision", 3)),
       ).label,
     ).toBe("Discussing round 3");
