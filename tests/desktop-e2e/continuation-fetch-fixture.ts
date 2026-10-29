@@ -1,9 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
+import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import { join } from "node:path";
 import type { Page } from "@playwright/test";
 import { z } from "zod";
 import { smithsViewSchema } from "../../apps/desktop/src/smiths-protocol";
-import { loadConfig } from "../../scripts/config/load";
 import { ownedCodingPageSchema } from "../../scripts/sessions/codex-owned-journal";
 import { canonicalOwnedSessionStart } from "../../scripts/sessions/codex-owned-protocol";
 import { ownedCodingStartReceiptSchema } from "../../scripts/sessions/codex-owned-wire-protocol";
@@ -137,24 +137,51 @@ export async function installCachedGeminiSmithRead(
   if (!envelope.success)
     throw new Error("The live protected smith index did not match its schema.");
   const fixtureRoot = join(HEARTH_HOME, "gemini-native-fixture");
-  const configuredSmith = loadConfig({
-    harnessRoot: fixtureRoot,
-    home: fixtureRoot,
-    env: {},
-  }).config.smiths[options.smithName];
+  const descriptor = openSync(
+    join(fixtureRoot, ".agent-forge", "config.toml"),
+    "r",
+  );
+  let configText: string;
+  try {
+    const stat = fstatSync(descriptor);
+    if (!stat.isFile() || stat.size > 4096)
+      throw new Error("The inert Gemini native config exceeded its fixture bound.");
+    const bytes = Buffer.alloc(4097);
+    const length = readSync(descriptor, bytes, 0, bytes.length, 0);
+    if (length > 4096 || length !== stat.size)
+      throw new Error("The inert Gemini native config changed during its bounded read.");
+    try {
+      configText = new TextDecoder("utf-8", { fatal: true }).decode(
+        bytes.subarray(0, length),
+      );
+    } catch {
+      throw new Error("The inert Gemini native config was not valid UTF-8.");
+    }
+  } finally {
+    closeSync(descriptor);
+  }
+  const config = /^\[smiths\.([A-Za-z0-9][A-Za-z0-9._-]*)\]\r?\nprovider = "([a-z]+)"\r?\nmodel = "([A-Za-z0-9._-]+)"\r?\neffort = "([A-Za-z0-9._-]+)"\r?\nenabled = true\r?\n$/.exec(
+    configText,
+  );
+  const [, name, provider, model, effort] = config ?? [];
   if (
-    !configuredSmith ||
-    configuredSmith.name !== "gemini-example" ||
-    configuredSmith.provider !== "gemini" ||
-    configuredSmith.model !== "configured-example" ||
-    configuredSmith.effort !== "default" ||
-    configuredSmith.enabled !== true ||
-    configuredSmith.tags.length !== 0
+    name !== "gemini-example" ||
+    name !== options.smithName ||
+    provider !== "gemini" ||
+    model !== "configured-example" ||
+    effort !== "default"
   )
     throw new Error(
       "The inert Gemini native config did not match its reviewed fixture.",
     );
-  const fixtureSmith: Smith = configuredSmith;
+  const fixtureSmith: Smith = {
+    name,
+    provider,
+    model,
+    effort,
+    enabled: true,
+    tags: [],
+  };
   const projectedView = smithsViewSchema.safeParse({
     ...envelope.data.data,
     smiths: [
