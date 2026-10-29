@@ -48,7 +48,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "fs";
 import { availableParallelism, homedir, tmpdir } from "os";
 import { join, relative, resolve, sep } from "path";
-import { importGraph, importGraphWithProbe } from "../import-graph";
+import { createImportGraphSession } from "../import-graph";
 import { ISOLATION_HOME } from "./isolation-probe";
 import { settleIsolationReruns } from "./isolation-reruns";
 import { ledgerHome, ledgerPath } from "./paths";
@@ -214,30 +214,26 @@ function spawningTestFiles(): string[] {
     enumerationStarted = performance.now(),
     candidates = testFiles(TEST_ROOT, diagnose ? counts : undefined),
     enumerationMs = Math.round(performance.now() - enumerationStarted),
+    session = createImportGraphSession(),
     selected: string[] = [],
     slowRoots: Array<{ file: string; elapsedMs: number }> = [];
-  let roots = 0,
-    graphFiles = 0,
-    sourceReads = 0,
-    resolutionProbes = 0;
+  let roots = 0, graphFiles = 0;
   for (const file of candidates) {
     if (resolve(file) === SELF) continue;
     const rootStarted = performance.now();
+    const graph = session.importGraph(file);
+    graphFiles += graph.files.length;
+    if (graph.files.some(startsProcesses)) selected.push(file);
     if (diagnose) {
-      const { graph, probe } = importGraphWithProbe(file);
-      graphFiles += graph.files.length;
-      sourceReads += probe.sourceReads;
-      resolutionProbes += probe.resolutionProbes;
-      if (graph.files.some(startsProcesses)) selected.push(file);
       const elapsedMs = Math.round(performance.now() - rootStarted);
       slowRoots.push({ file: relative(REPO, file).split(sep).join("/"), elapsedMs });
       slowRoots.sort((a, b) => b.elapsedMs - a.elapsedMs);
       slowRoots.length = Math.min(slowRoots.length, 5);
       roots++;
       if (roots % 32 === 0) console.error(`[isolation-scan] ${JSON.stringify({ roots, candidates: counts.candidates, elapsedMs: Math.round(performance.now() - scanStarted) })}`);
-    } else if (importGraph(file).files.some(startsProcesses)) selected.push(file);
+    }
   }
-  if (diagnose) console.error(`[isolation-scan] ${JSON.stringify({ event: "complete", directories: counts.directories, candidates: counts.candidates, roots, enumerationMs, elapsedMs: Math.round(performance.now() - scanStarted), graphFiles, sourceReads, resolutionProbes, slowRoots })}`);
+  if (diagnose) console.error(`[isolation-scan] ${JSON.stringify({ event: "complete", directories: counts.directories, candidates: counts.candidates, roots, enumerationMs, elapsedMs: Math.round(performance.now() - scanStarted), graphFiles, ...session.stats(), slowRoots })}`);
   return selected.map((file) => relative(REPO, file).split(sep).join("/")).sort();
 }
 

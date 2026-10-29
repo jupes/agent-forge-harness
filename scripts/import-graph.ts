@@ -44,6 +44,11 @@ export interface ImportGraphProbe {
   resolutionProbes: number;
 }
 
+export interface ImportGraphSession {
+  importGraph(...entries: string[]): ImportGraph;
+  stats(): Readonly<ImportGraphProbe>;
+}
+
 const STATEMENT =
   /^\s*(?:import|export)\s+(?!type\b)(?:[^"';]*?\sfrom\s+)?["']([^"']+)["']/gm;
 /** `import(…)`, `require(…)` and `import.meta.require(…)` with one literal argument. */
@@ -94,13 +99,13 @@ function aliasTarget(specifier: string): string | null {
   return null;
 }
 
-function isFile(path: string, probe?: ImportGraphProbe): boolean {
-  if (probe) probe.resolutionProbes++;
+function isFile(path: string, probe: ImportGraphProbe): boolean {
+  probe.resolutionProbes++;
   return existsSync(path) && statSync(path).isFile();
 }
 
 /** The file a path names, the way the scan follows a relative specifier; null when none. */
-function resolveFile(base: string, probe?: ImportGraphProbe): string | null {
+function resolveFile(base: string, probe: ImportGraphProbe): string | null {
   const candidates = [
     base,
     `${base}.ts`,
@@ -112,45 +117,86 @@ function resolveFile(base: string, probe?: ImportGraphProbe): string | null {
   return candidates.find((candidate) => isFile(candidate, probe)) ?? null;
 }
 
-function buildImportGraph(
-  entries: string[],
-  probe?: ImportGraphProbe,
-): ImportGraph {
-  const files = new Set<string>(entries.map((entry) => resolve(entry)));
-  const bare = new Set<string>();
-  const queue = [...files];
-  for (let file = queue.pop(); file !== undefined; file = queue.pop()) {
-    if (!READ.test(file)) continue;
-    const source = readFileSync(file, "utf8");
-    if (probe) probe.sourceReads++;
-    for (const specifier of runtimeSpecifiers(source)) {
-      const base = specifier.startsWith(".")
-        ? resolve(dirname(file), specifier)
-        : aliasTarget(specifier);
-      if (base === null) {
-        bare.add(specifier);
-        continue;
-      }
-      const next = resolveFile(base, probe);
-      if (next === null)
-        throw new Error(`${file}: "${specifier}" reaches no file`);
-      if (!files.has(next)) {
-        files.add(next);
-        queue.push(next);
-      }
+type DirectEdge =
+  | { kind: "bare"; specifier: string }
+  | { kind: "resolved"; path: string }
+  | { kind: "missing"; specifier: string };
+type CachedSource = { specifiers: string[]; edges: Map<number, DirectEdge> };
+
+export function createImportGraphSession(): ImportGraphSession {
+  const sources = new Map<string, CachedSource>();
+  const resolutions = new Map<string, string | null>();
+  const probe: ImportGraphProbe = { sourceReads: 0, resolutionProbes: 0 };
+  const resolveEdge = (base: string): string | null => {
+    if (resolutions.has(base)) return resolutions.get(base) ?? null;
+    const path = resolveFile(base, probe);
+    resolutions.set(base, path);
+    return path;
+  };
+  const source = (file: string): CachedSource => {
+    const cached = sources.get(file);
+    if (cached) return cached;
+    const text = readFileSync(file, "utf8");
+    probe.sourceReads++;
+    const parsed = { specifiers: runtimeSpecifiers(text), edges: new Map() };
+    sources.set(file, parsed);
+    return parsed;
+  };
+  const edgeFor = (
+    file: string,
+    source: CachedSource,
+    index: number,
+  ): DirectEdge => {
+    const cached = source.edges.get(index);
+    if (cached) return cached;
+    const specifier = source.specifiers[index];
+    if (specifier === undefined) throw new Error("Invalid import edge index");
+    const base = specifier.startsWith(".")
+      ? resolve(dirname(file), specifier)
+      : aliasTarget(specifier);
+    let edge: DirectEdge;
+    if (base === null) edge = { kind: "bare", specifier };
+    else {
+      const path = resolveEdge(base);
+      edge = path === null ? { kind: "missing", specifier } : { kind: "resolved", path };
     }
-  }
+    source.edges.set(index, edge);
+    return edge;
+  };
   return {
-    files: [...files].map((file) => file.replaceAll("\\", "/")),
-    bare: [...bare],
+    importGraph(...entries) {
+      const files = new Set<string>(entries.map((entry) => resolve(entry)));
+      const bare = new Set<string>();
+      const queue = [...files];
+      for (let file = queue.pop(); file !== undefined; file = queue.pop()) {
+        if (!READ.test(file)) continue;
+        const loaded = source(file);
+        for (let index = 0; index < loaded.specifiers.length; index++) {
+          const edge = edgeFor(file, loaded, index);
+          if (edge.kind === "bare") bare.add(edge.specifier);
+          else if (edge.kind === "missing")
+            throw new Error(`${file}: "${edge.specifier}" reaches no file`);
+          else if (!files.has(edge.path)) {
+            files.add(edge.path);
+            queue.push(edge.path);
+          }
+        }
+      }
+      return {
+        files: [...files].map((file) => file.replaceAll("\\", "/")),
+        bare: [...bare],
+      };
+    },
+    stats: () => ({ ...probe }),
   };
 }
 
 export function importGraph(...entries: string[]): ImportGraph {
-  return buildImportGraph(entries);
+  return createImportGraphSession().importGraph(...entries);
 }
 
 export function importGraphWithProbe(...entries: string[]) {
-  const probe: ImportGraphProbe = { sourceReads: 0, resolutionProbes: 0 };
-  return { graph: buildImportGraph(entries, probe), probe };
+  const session = createImportGraphSession();
+  const graph = session.importGraph(...entries);
+  return { graph, probe: session.stats() };
 }
