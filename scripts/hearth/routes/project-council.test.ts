@@ -398,6 +398,41 @@ test("a completed project Council Bead review posts its verdict once and replays
   const h = await startTestHearth();
   opened.push(h);
   const beadId = "demo-task";
+  h.bd.answer = (args) =>
+    args[0] === "export"
+      ? {
+          status: 0,
+          stderr: "",
+          stdout: [
+            {
+              id: "alpha-epic",
+              title: "Alpha epic",
+              issue_type: "epic",
+              status: "open",
+              priority: 1,
+              labels: ["project:alpha"],
+              dependencies: [],
+            },
+            {
+              id: beadId,
+              title: "Teach the kiln to report its temperature",
+              issue_type: "task",
+              status: "in_progress",
+              priority: 2,
+              labels: ["project:alpha"],
+              dependencies: [
+                {
+                  issue_id: beadId,
+                  depends_on_id: "alpha-epic",
+                  type: "parent-child",
+                },
+              ],
+            },
+          ]
+            .map((issue) => JSON.stringify(issue))
+            .join("\n") + "\n",
+        }
+      : undefined;
   h.commands.answer = async (command) => {
     const [bd, readonly, verb, id] = command;
     if (bd !== "bd" || readonly !== "--readonly" || id !== beadId)
