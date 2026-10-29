@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, type Page, test } from "@playwright/test";
 import {
@@ -154,11 +154,16 @@ function responseData(value: unknown): unknown {
   return value.data;
 }
 
+type RunReadObservation =
+  | { kind: "verified"; read: ProjectCouncilRunRead }
+  | { kind: "interrupted"; reason: "aborted" | "body-unavailable" }
+  | { kind: "invalid"; message: string };
+
 function observeRunReads(
   page: Page,
   path: string,
-): Promise<ProjectCouncilRunRead>[] {
-  const reads: Promise<ProjectCouncilRunRead>[] = [];
+): Promise<RunReadObservation>[] {
+  const reads: Promise<RunReadObservation>[] = [];
   page.on("response", (response) => {
     if (
       response.request().method() !== "GET" ||
@@ -166,14 +171,61 @@ function observeRunReads(
     )
       return;
     reads.push(
-      response.json().then((raw: unknown) => {
-        if (!response.ok())
-          throw Error("The actual Council result read failed.");
-        return projectCouncilRunReadSchema.parse(responseData(raw));
-      }),
+      (async (): Promise<RunReadObservation> => {
+        try {
+          const finished = await response.finished();
+          if (!response.ok())
+            return {
+              kind: "invalid",
+              message: `Council result read returned HTTP ${response.status()}.`,
+            };
+          if (response.request().failure()?.errorText === "net::ERR_ABORTED")
+            return { kind: "interrupted", reason: "aborted" };
+          if (finished)
+            return { kind: "invalid", message: finished.message };
+          try {
+            const raw = await response.json();
+            return {
+              kind: "verified",
+              read: projectCouncilRunReadSchema.parse(responseData(raw)),
+            };
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            if (
+              /^(?:response\.json: )?Protocol error \(Network\.getResponseBody\): No data found for (?:the )?resource with given identifier$/.test(
+                message,
+              )
+            )
+              return { kind: "interrupted", reason: "body-unavailable" };
+            return { kind: "invalid", message };
+          }
+        } catch (error) {
+          if (
+            response.ok() &&
+            response.request().failure()?.errorText === "net::ERR_ABORTED"
+          )
+            return { kind: "interrupted", reason: "aborted" };
+          return {
+            kind: "invalid",
+            message: error instanceof Error ? error.message : String(error),
+          };
+        }
+      })(),
     );
   });
   return reads;
+}
+
+async function verifiedRunReads(
+  observations: readonly Promise<RunReadObservation>[],
+): Promise<ProjectCouncilRunRead[]> {
+  const results = await Promise.all(observations);
+  const invalid = results.find((result) => result.kind === "invalid");
+  if (invalid?.kind === "invalid")
+    throw Error(`The actual Council result read was invalid: ${invalid.message}`);
+  return results.flatMap((result) =>
+    result.kind === "verified" ? [result.read] : [],
+  );
 }
 
 async function prepareReview(page: Page, deepDiscussion = false) {
@@ -253,7 +305,7 @@ test("actual Stop cancels the held Council transport and keeps the same original
   await expect(
     page.getByRole("region", { name: "Council recommendation" }),
   ).toHaveCount(0);
-  const runRead = (await Promise.all(runReads)).find(
+  const runRead = (await verifiedRunReads(runReads)).find(
     (read) => read.receipt.phase === "cancelled",
   );
   if (!runRead) throw Error("The cancelled Council result was not read back.");
@@ -308,7 +360,7 @@ test("actual deep discussion exposes peer round zero before Stop cancels its hel
   let liveRead: ProjectCouncilRunRead | undefined;
   await expect
     .poll(async () => {
-      liveRead = (await Promise.all(runReads))
+      liveRead = (await verifiedRunReads(runReads))
         .reverse()
         .find(
           (read) =>
@@ -361,12 +413,17 @@ test("actual deep discussion exposes peer round zero before Stop cancels its hel
   await expect(
     progress.getByRole("listitem").filter({ hasText: "chair" }),
   ).toContainText("Pending");
+  const shotDir = process.env["SHOT_DIR"];
+  if (shotDir) {
+    mkdirSync(shotDir, { recursive: true });
+    await page.screenshot({ path: join(shotDir, "council-live-discussion.png") });
+  }
 
   await page.getByRole("button", { name: "Stop review", exact: true }).click();
   await expect(page.getByText("Verified state: cancelled")).toBeVisible({
     timeout: 15_000,
   });
-  const cancelled = (await Promise.all(runReads)).find(
+  const cancelled = (await verifiedRunReads(runReads)).find(
     (read) => read.receipt.phase === "cancelled",
   );
   if (!cancelled?.job?.run)
@@ -433,7 +490,7 @@ test("actual failed Council run keeps partial seat records and no recommendation
   await expect(
     page.getByRole("region", { name: "Council recommendation" }),
   ).toHaveCount(0);
-  const runRead = (await Promise.all(runReads)).find(
+  const runRead = (await verifiedRunReads(runReads)).find(
     (read) => read.receipt.phase === "failed",
   );
   if (!runRead) throw Error("The failed Council result was not read back.");
@@ -750,7 +807,7 @@ test("lost commit delivery stays unknown until the exact saved result is checked
     await expect(page.getByText("Verified state: completed")).toBeVisible({
       timeout: 15_000,
     });
-    const savedReads = await Promise.all(runReads);
+    const savedReads = await verifiedRunReads(runReads);
     expect(savedReads).toHaveLength(1);
     expect(savedReads[0]?.provenance).toMatchObject({
       requestId: original.requestId,
