@@ -1,6 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { expect, test, type Response } from "@playwright/test";
+import { expect, type Response, test } from "@playwright/test";
 import { projectCouncilMetadataSchema } from "../../types/project-council";
 import type { ProjectCouncilRunRead } from "../../types/project-council-run-read";
 import type { ProjectRecord } from "../../types/projects";
@@ -247,8 +247,7 @@ test("a completed bead-source review links to its bead and reports the one recor
     | {
         response: Response;
         body: Promise<
-          | { ok: true; bytes: Uint8Array }
-          | { ok: false; error: unknown }
+          { ok: true; bytes: Uint8Array } | { ok: false; error: unknown }
         >;
       }
     | undefined;
@@ -277,7 +276,9 @@ test("a completed bead-source review links to its bead and reports the one recor
     )
       return;
     if (capturedReservation) {
-      captureError = new Error("Multiple Council reservation responses were observed.");
+      captureError = new Error(
+        "Multiple Council reservation responses were observed.",
+      );
       return;
     }
     let body: NonNullable<typeof capturedReservation>["body"];
@@ -296,13 +297,10 @@ test("a completed bead-source review links to its bead and reports the one recor
   let captureTimer: ReturnType<typeof setTimeout> | undefined;
   let captureTimedOut = false;
   const captureDeadline = new Promise<{ timedOut: true }>((resolve) => {
-    captureTimer = setTimeout(
-      () => {
-        captureTimedOut = true;
-        resolve({ timedOut: true });
-      },
-      10_000,
-    );
+    captureTimer = setTimeout(() => {
+      captureTimedOut = true;
+      resolve({ timedOut: true });
+    }, 10_000);
   });
   let reserved: Response;
   let reservationBody: Uint8Array;
@@ -311,18 +309,26 @@ test("a completed bead-source review links to its bead and reports the one recor
       .getByRole("button", { name: "Prepare original for review" })
       .click();
     if (captureTimedOut)
-      throw new Error("The Council reservation response was not captured in time.");
+      throw new Error(
+        "The Council reservation response was not captured in time.",
+      );
     const captured = await Promise.race([reservationCapture, captureDeadline]);
     if ("timedOut" in captured)
-      throw new Error("The Council reservation response was not captured in time.");
+      throw new Error(
+        "The Council reservation response was not captured in time.",
+      );
     const bodyResult = await Promise.race([captured.body, captureDeadline]);
     if ("timedOut" in bodyResult)
       throw new Error("The Council reservation body exceeded its time bound.");
     if (captureError) throw captureError;
     if (!bodyResult.ok)
-      throw new Error(`The Council reservation body was unavailable: ${String(bodyResult.error)}`);
+      throw new Error(
+        `The Council reservation body was unavailable: ${String(bodyResult.error)}`,
+      );
     if (bodyResult.bytes.byteLength > 512 * 1024)
-      throw new Error("The Council reservation body exceeded its bounded size.");
+      throw new Error(
+        "The Council reservation body exceeded its bounded size.",
+      );
     reserved = captured.response;
     reservationBody = bodyResult.bytes;
   } finally {
