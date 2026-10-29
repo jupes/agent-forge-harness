@@ -34,6 +34,7 @@ import type {
 } from "../../types/hearth";
 import type { OwnedSessionRecord } from "../../types/owned-session";
 import type { ProjectCatalog } from "../../types/projects";
+import { terminalHandoffAttemptSchema } from "../../types/session-terminal-handoff";
 import type { SmithConfigEditRequest } from "../../types/smith-config-edit";
 import type { SmithRoutingEditRequest } from "../../types/smith-routing-edit";
 import { type LoadedConfig, loadConfig } from "../config/load";
@@ -81,8 +82,8 @@ import {
   projectCatalogPath,
 } from "../projects/store";
 import { FIXTURE_PROJECT_ID, projectCatalogFixture } from "../projects/testing";
-import { providerLoginFile } from "../providers/login";
 import type { ProviderInspector } from "../providers/inspect";
+import { providerLoginFile } from "../providers/login";
 import type {
   NativeConsoleChild,
   NativeConsoleExit,
@@ -111,7 +112,6 @@ import {
   sessionStartIdentityReplySchema,
 } from "../sessions/identity-protocol";
 import { sessionLibraryReadSchema } from "../sessions/library-protocol";
-import { terminalHandoffAttemptSchema } from "../../types/session-terminal-handoff";
 import { unavailableCodexChatRuntime } from "../sessions/owned-coding-service";
 import { canonicalSessionInput } from "../sessions/preparation";
 import { sessionPreviewReceiptSchema } from "../sessions/protocol";
@@ -181,8 +181,8 @@ import {
   FIXTURE_SESSION_START,
   FIXTURE_SESSION_STOP,
   fakeSessionRuntime,
-  fixtureSessionGit,
   fixtureSessionFlags,
+  fixtureSessionGit,
   seedOwnedSession,
   sessionStartFixture,
   waitOwnedTurn,
@@ -1243,12 +1243,10 @@ function ownedSessionFixture(
   };
 }
 
-const API_TERMINAL_HANDOFF_REQUEST =
-  "3c4c44a9-2579-4294-9b47-ae594cdb48a5";
+const API_TERMINAL_HANDOFF_REQUEST = "3c4c44a9-2579-4294-9b47-ae594cdb48a5";
 const API_TERMINAL_HANDOFF_SESSION =
   "session-82b3eb58-056a-4bc2-b918-b92247db7561";
-const API_TERMINAL_HANDOFF_START =
-  "80f7900a-1eea-4f76-a858-d6049795a4c7";
+const API_TERMINAL_HANDOFF_START = "80f7900a-1eea-4f76-a858-d6049795a4c7";
 async function seedTerminalHandoffSession(h: TestHearth) {
   const record: OwnedSessionRecord = {
     projectId: FIXTURE_PROJECT_ID,
@@ -1354,7 +1352,9 @@ function makeTerminalHandoffFixture() {
     },
     api = {
       providerInspector: inspector,
-      sessionTerminalLauncher(options: NativeConsoleLaunchOptions): NativeConsoleChild {
+      sessionTerminalLauncher(
+        options: NativeConsoleLaunchOptions,
+      ): NativeConsoleChild {
         const audit = hearth
           ?.events(["operator.action"])
           .filter(
@@ -1385,7 +1385,8 @@ function makeTerminalHandoffFixture() {
         ...(!supported
           ? {
               ok: false,
-              error: "Native terminal handoff is available only on Windows x64.",
+              error:
+                "Native terminal handoff is available only on Windows x64.",
             }
           : {}),
       },
