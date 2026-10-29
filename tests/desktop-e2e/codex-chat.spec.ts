@@ -583,15 +583,16 @@ test("a confirmed Claude rate limit offers an explicit Codex Chat continuation",
     name: "New session · Alpha",
     exact: true,
   });
-  await expect(
-    initialDraft.getByRole("textbox", {
-      name: "Session prompt",
-      exact: true,
-    }),
-  ).toHaveValue("An unrelated draft the operator already wrote");
-  await initialDraft
-    .getByRole("textbox", { name: "Session prompt", exact: true })
-    .fill("An unrelated draft the operator already wrote");
+  const initialDraftPrompt = initialDraft.getByRole("textbox", {
+    name: "Session prompt",
+    exact: true,
+  });
+  await initialDraftPrompt.fill(
+    "An unrelated draft the operator already wrote",
+  );
+  await expect(initialDraftPrompt).toHaveValue(
+    "An unrelated draft the operator already wrote",
+  );
   await initialDraft
     .getByRole("button", { name: "Cancel", exact: true })
     .click();
