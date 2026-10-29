@@ -820,16 +820,12 @@ export function createProjectCouncilOwner(
 
   const newDraft = () => {
     const saved = view.original;
-    const terminal = saved &&
+    const terminal =
+      saved &&
       ["completed", "failed", "cancelled", "retired"].includes(
         saved.original.state,
       );
-    if (
-      !saved ||
-      !terminal ||
-      view.history?.activeRequestId !== null
-    )
-      return;
+    if (!saved || !terminal || view.history?.activeRequestId !== null) return;
     selectionGeneration++;
     actionGeneration++;
     stopRunFollow();
