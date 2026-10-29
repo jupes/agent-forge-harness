@@ -2145,7 +2145,7 @@ test("Codex Chat reviews native options, allows one actual command and resumes i
   ).toBeDisabled();
   await expect(
     support
-      .getByRole("term", { name: "Terminal handoff", exact: true })
+      .getByText("Terminal handoff", { exact: true })
       .locator("xpath=following-sibling::dd[1]"),
   ).toContainText("Windows x64");
   const review = support.getByRole("button", {

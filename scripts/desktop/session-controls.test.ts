@@ -353,7 +353,10 @@ test("controls offer terminal handoff only for an eligible Claude Chat and prese
     controllable: true,
     turns: page.turns.map((turn) => ({ ...turn, phase: "running" as const })),
   };
-  for (const { changed, reason } of [
+  const refusals: Array<{
+    changed: Partial<Parameters<typeof ownedSessionControls>[0]>;
+    reason: string;
+  }> = [
     {
       changed: { record: { ...record, mode: "task" as const } },
       reason: "Only a completed Claude Chat",
@@ -397,20 +400,20 @@ test("controls offer terminal handoff only for an eligible Claude Chat and prese
           })),
         },
       },
-      reason: "Check the current turn and pending changes",
+      reason: "Check the current turn and pending changes before sending another follow-up.",
     },
     {
       changed: { page: running },
-      reason: "Check the current turn and pending changes",
+      reason: "Check the current turn and pending changes before sending another follow-up.",
     },
     { changed: { live: false }, reason: "Reconnect the private conversation" },
     {
       changed: { pending: true },
-      reason: "Check the current turn and pending changes",
+      reason: "Check the current turn and pending changes before sending another follow-up.",
     },
     {
       changed: { stopping: true },
-      reason: "Check the current turn and pending changes",
+      reason: "Check the current turn and pending changes before sending another follow-up.",
     },
     {
       changed: { feedInterrupted: true },
@@ -420,7 +423,8 @@ test("controls offer terminal handoff only for an eligible Claude Chat and prese
       changed: { readError: "unverified" },
       reason: "Reconnect the private conversation",
     },
-  ]) {
+  ];
+  for (const { changed, reason } of refusals) {
     const terminal = ownedSessionControls({ ...input, ...changed }).terminal;
     expect(terminal.available).toBe(false);
     expect(terminal.reason).toContain(reason);
