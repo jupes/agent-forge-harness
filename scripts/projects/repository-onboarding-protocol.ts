@@ -1,6 +1,6 @@
 import { z } from "zod";
 
-const requestId = z
+export const repositoryRequestIdSchema = z
   .string()
   .regex(
     /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
@@ -21,7 +21,7 @@ export const repositorySelectionSchema = z
   .object({
     version: z.literal(1),
     workspaceKey: z.string().min(1).max(1024),
-    requestId,
+    requestId: repositoryRequestIdSchema,
     state: z.enum(["selected", "cancelled", "rejected", "unknown"]),
     path: z.string().min(1).max(1024).nullable(),
     createdAt: z.string().datetime(),
@@ -31,7 +31,7 @@ export const repositoryCloneSchema = z
   .object({
     version: z.literal(1),
     workspaceKey: z.string().min(1).max(1024),
-    requestId,
+    requestId: repositoryRequestIdSchema,
     name: projectRepositoryNameSchema,
     url: z.string().min(1).max(2048),
     state: z.enum([
@@ -52,7 +52,7 @@ export const approvedRepositorySchema = z
     name: projectRepositoryNameSchema,
     path: z.string().min(1).max(1024),
     key: z.string().min(1).max(1024),
-    originalRequestId: requestId,
+    originalRequestId: repositoryRequestIdSchema,
     source: z.enum(["folder", "clone"]),
   })
   .strict();

@@ -76,6 +76,7 @@ test("protected repository onboarding recovers exact records and updates checked
   const emptyMarker = join(fixtures, "empty-git-marker");
   bareRepository = join(fixtures, "clone-source.git");
   const gitConfig = join(fixtures, "gitconfig");
+  mkdirSync(fixtures, { recursive: true });
   writeFileSync(gitConfig, "");
   fixtureGitEnv = {
     ...process.env,

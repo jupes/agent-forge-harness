@@ -24,6 +24,7 @@ import {
   type RepositoryClone,
   type RepositorySelection,
   repositoryCloneSchema,
+  repositoryRequestIdSchema,
   repositorySelectionSchema,
 } from "./repository-onboarding-protocol";
 import { workspaceKey } from "./scope";
@@ -38,6 +39,7 @@ export {
   approvedRepositorySchema,
   projectRepositoryNameSchema,
   repositoryCloneSchema,
+  repositoryRequestIdSchema,
   repositorySelectionSchema,
 } from "./repository-onboarding-protocol";
 
@@ -72,7 +74,7 @@ const MAX_VERIFY_OUTPUT_BYTES = 4096;
 class InvalidGitRepository extends Error {}
 
 function checkedId(value: string): string {
-  if (!requestId.safeParse(value).success)
+  if (!repositoryRequestIdSchema.safeParse(value).success)
     throw new Error("Invalid repository operation id.");
   return value;
 }
