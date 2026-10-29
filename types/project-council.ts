@@ -1,8 +1,12 @@
 import { z } from "zod";
-import { redactShown } from "../scripts/secret-patterns";
 import type { CouncilProviderEndpoint } from "../scripts/council/providers";
-import type { ContextPack, ContextSource, CouncilProfile } from "../scripts/council/types";
+import type {
+  ContextPack,
+  ContextSource,
+  CouncilProfile,
+} from "../scripts/council/types";
 import { parseCouncilProfileJson } from "../scripts/council/types";
+import { redactShown } from "../scripts/secret-patterns";
 
 export const PROJECT_COUNCIL_MAX_SELECTOR_BYTES = 262_144;
 export const PROJECT_COUNCIL_MAX_PREPARED_BYTES = 1_048_576;
@@ -17,7 +21,8 @@ export const projectCouncilRequestIdSchema = z
   .refine((value) => value === value.toLowerCase());
 const digestSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const textSchema = z.string().min(1).max(1024);
-const shownLabel = (value: string): string => redactShown(value).text.slice(0, 256);
+const shownLabel = (value: string): string =>
+  redactShown(value).text.slice(0, 256);
 
 export const projectCouncilSourceChoiceSchema = z
   .object({
@@ -536,7 +541,8 @@ export const projectCouncilOriginalReadSchema: z.ZodType<ProjectCouncilOriginalR
             : original.context.source.kind) ||
         metadata.profileId !== original.profile.id ||
         metadata.profileTitle !== shownLabel(original.profile.title) ||
-        metadata.sourceName !== shownLabel(original.context.source.displayName) ||
+        metadata.sourceName !==
+          shownLabel(original.context.source.displayName) ||
         metadata.byteLength !== original.context.byteLength ||
         metadata.truncated !== original.context.truncated ||
         JSON.stringify(metadata.redactions) !==

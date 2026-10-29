@@ -355,7 +355,9 @@ export function createProjectCouncilRoutes(
                 before.provenance.projectId !== projectId ||
                 before.job?.runId !== runId
               )
-                throw new Error("The Council verdict run is not owned by this original.");
+                throw new Error(
+                  "The Council verdict run is not owned by this original.",
+                );
               const job = await deps.council.wait(runId);
               const after = ownedRun();
               const completedJob = after.job;
@@ -379,7 +381,9 @@ export function createProjectCouncilRoutes(
                 JSON.stringify(job.run.context) !==
                   JSON.stringify(original.original.context)
               )
-                throw new Error("The Council verdict did not match its reviewed original.");
+                throw new Error(
+                  "The Council verdict did not match its reviewed original.",
+                );
               return job;
             },
           };

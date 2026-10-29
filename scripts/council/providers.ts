@@ -308,7 +308,11 @@ function copyEndpointSnapshot(
         throw new Error(
           `fake provider endpoint must not have a URL: ${provider}`,
         );
-      copied.set(provider, { provider, transport: config.apiStyle, baseUrl: null });
+      copied.set(provider, {
+        provider,
+        transport: config.apiStyle,
+        baseUrl: null,
+      });
       continue;
     }
     if (

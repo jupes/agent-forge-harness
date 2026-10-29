@@ -3,9 +3,9 @@ import { createHash } from "node:crypto";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import {
+  type ProjectCouncilBinding,
   projectCouncilMetadata,
   projectCouncilOriginalReadSchema,
-  type ProjectCouncilBinding,
 } from "../../types/project-council";
 import { ConversationError } from "../conversations/error";
 import { privateTempDir } from "../hearth/testing";
@@ -182,7 +182,9 @@ test("project Council summary labels redact the complete text before truncating"
     profile: { ...reserved.original.profile, title: label },
   };
   const metadata = projectCouncilMetadata(original);
-  expect(projectCouncilOriginalReadSchema.parse({ metadata, original })).toEqual({
+  expect(
+    projectCouncilOriginalReadSchema.parse({ metadata, original }),
+  ).toEqual({
     metadata,
     original,
   });

@@ -644,7 +644,12 @@ async function seedProjectCouncilOriginal(
         sourceType: "text",
         source,
       },
-      profileChoice: resolve(import.meta.dir, "../..", "councils", "default.json"),
+      profileChoice: resolve(
+        import.meta.dir,
+        "../..",
+        "councils",
+        "default.json",
+      ),
       maxUsd: 0.25,
       maxBytes: 1024,
       redactSecrets: false,

@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 import {
+  projectCouncilHistorySchema,
   projectCouncilIntentJson,
   projectCouncilOriginalReadSchema,
 } from "../../../types/project-council";
@@ -11,7 +12,6 @@ import {
   FIXTURE_PROJECT_ID,
   projectCatalogFixture,
 } from "../../projects/testing";
-import { projectCouncilHistorySchema } from "../../../types/project-council";
 import { startTestHearth, type TestHearth } from "../testing";
 import { writeOwnerOnly } from "../token";
 
