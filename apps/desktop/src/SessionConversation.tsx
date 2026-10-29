@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { Button } from "../../../docs/js/ds/Button";
+import { Dialog } from "../../../docs/js/ds/Dialog";
 import { serializeClaudeLaunch } from "../../../scripts/sessions/claude-launch";
 import { serializeCodexChat } from "../../../scripts/sessions/codex-app-server-protocol";
 import { serializeCodexTask } from "../../../scripts/sessions/codex-task";
@@ -25,6 +26,13 @@ import {
 } from "./session-activity";
 import type { SessionsClient } from "./session-client";
 import {
+  canContinueClaudeRateLimit,
+  continuationDraftFingerprint,
+  continuationDraftIsDirty,
+  CONTINUATION_SUMMARY_LIMIT,
+  validContinuationSummary,
+} from "./session-continuation";
+import {
   sessionAttachments,
   validateSessionAttachments,
 } from "./session-composer";
@@ -49,6 +57,8 @@ export interface SessionConversationProps {
   library?: SessionLibraryClient;
   forkClient?: CodexChatForkClient;
   archived?: boolean;
+  workspace?: string | null;
+  onContinueWithCodexChat?(summary: string, sourceSessionId: string): boolean;
 }
 export function SessionConversation(props: SessionConversationProps) {
   const record = props.client
@@ -73,6 +83,8 @@ function StandardSessionConversation({
   library,
   forkClient,
   archived = false,
+  workspace = null,
+  onContinueWithCodexChat,
 }: SessionConversationProps) {
   const view = client.session(projectId, sessionId),
     record = client
@@ -190,6 +202,77 @@ function StandardSessionConversation({
     chatControls = useRef<HTMLDivElement>(null);
   const [away, setAway] = useState(false),
     [notice, setNotice] = useState("");
+  const [continuationReviewOpen, setContinuationReviewOpen] = useState(false),
+    [continuationSummary, setContinuationSummary] = useState(""),
+    [confirmedDraftFingerprint, setConfirmedDraftFingerprint] = useState<
+      string | null
+    >(null),
+    [continuationProblem, setContinuationProblem] = useState("");
+  const continuationOpener = useRef<HTMLElement>(null);
+  const composerProject = client.project(projectId),
+    continuationDraft = composerProject.composer,
+    continuationDraftDirty = continuationDraftIsDirty(continuationDraft),
+    currentDraftFingerprint = continuationDraftFingerprint(continuationDraft);
+  const continuationState = () => {
+    const currentView = client.session(projectId, sessionId),
+      currentProject = client.project(projectId);
+    return {
+      projectId,
+      workspace,
+      writable: writesAllowed,
+      archived,
+      record:
+        currentProject.records.find((item) => item.id === sessionId) ?? null,
+      page: currentView.page,
+      loaded: currentView.loaded,
+      live: currentView.live,
+      feedInterrupted: currentView.feedInterrupted,
+      readError: currentView.readError,
+      stopping: !!currentView.stopping,
+      stopPosting: currentView.stopPosting,
+      stopUnknown: currentView.stopUnknown,
+      pending: !!currentView.pending,
+      posting: currentView.posting,
+      identity: {
+        page: currentProject.identityPage,
+        loading: currentProject.identityLoading,
+        generation: currentProject.identityGeneration,
+        startIdentity: currentProject.startIdentity,
+        pendingStart: !!currentProject.pendingStart,
+        starting: currentProject.starting,
+        startIdentityError: currentProject.startIdentityError,
+        legacyIdentityError: currentProject.legacyIdentityError,
+        legacyIdentityUnavailable: currentProject.legacyIdentityUnavailable,
+        inspection: currentProject.identityInspection,
+      },
+    };
+  };
+  const canContinue =
+    !!onContinueWithCodexChat &&
+    canContinueClaudeRateLimit(continuationState());
+  const closeContinuationReview = () => {
+    setContinuationReviewOpen(false);
+    setContinuationProblem("");
+  };
+  const acceptContinuation = () => {
+    const state = continuationState(),
+      draft = client.project(projectId).composer,
+      dirty = continuationDraftIsDirty(draft),
+      fingerprint = continuationDraftFingerprint(draft);
+    if (
+      !validContinuationSummary(continuationSummary) ||
+      (dirty && confirmedDraftFingerprint !== fingerprint) ||
+      !onContinueWithCodexChat ||
+      !canContinueClaudeRateLimit(state) ||
+      !onContinueWithCodexChat(continuationSummary.trim(), sessionId)
+    ) {
+      setContinuationProblem(
+        "The source or target changed. Review the saved Chat and target identity before continuing.",
+      );
+      return;
+    }
+    closeContinuationReview();
+  };
   const [caret, setCaret] = useState(0),
     [pickerVisible, setPickerVisible] = useState(false),
     [attaching, setAttaching] = useState(false);
@@ -591,6 +674,26 @@ function StandardSessionConversation({
               {record?.provider !== "gemini" && (
                 <>
                   <SessionOutcome value={activity.outcome} />
+                  {row.id === current?.requestId && canContinue && (
+                    <div class="af-session-note">
+                      <p>
+                        Start a separate Codex Chat with a summary you write.
+                        Only that summary and a link to this Chat are carried;
+                        its transcript and provider activity are not copied.
+                      </p>
+                      <Button
+                        onClick={(event) => {
+                          continuationOpener.current = event.currentTarget;
+                          setContinuationSummary("");
+                          setConfirmedDraftFingerprint(null);
+                          setContinuationProblem("");
+                          setContinuationReviewOpen(true);
+                        }}
+                      >
+                        Continue with Codex Chat
+                      </Button>
+                    </div>
+                  )}
                   {isCodexChat && row.turn && (
                     <CodexChatTerminal
                       value={ownedCodexChatOutcome(
@@ -824,6 +927,89 @@ function StandardSessionConversation({
           </Button>
         </div>
       </footer>
+      <Dialog
+        open={continuationReviewOpen}
+        title="Review a separate Codex Chat"
+        titleId="session-continuation-review-title"
+        onClose={closeContinuationReview}
+        returnFocusRef={continuationOpener}
+        class="af-session-library-dialog"
+        initialFocus="content"
+        actions={
+          <>
+            <Button onClick={closeContinuationReview}>Cancel</Button>
+            <Button
+              variant="primary"
+              disabled={
+                !validContinuationSummary(continuationSummary) ||
+                (continuationDraftDirty &&
+                  confirmedDraftFingerprint !== currentDraftFingerprint)
+              }
+              onClick={acceptContinuation}
+            >
+              Accept and open Codex Chat
+            </Button>
+          </>
+        }
+      >
+        <div
+          class="af-session-library-panel"
+          role="region"
+          aria-label="Continuation review"
+        >
+          <p>
+            This starts a new Codex Chat. Write the context you want to carry;
+            the original Claude transcript, tools, files, and settings stay in
+            the original Chat.
+          </p>
+          <p>
+            Source: <a href={desktopHref({
+              projectId,
+              destination: "sessions",
+              selection: { kind: "session", id: sessionId },
+            })}>Claude Chat {sessionId}</a>
+          </p>
+          <label>
+            Handoff summary
+            <textarea
+              aria-label="Handoff summary"
+              rows={6}
+              maxLength={CONTINUATION_SUMMARY_LIMIT}
+              value={continuationSummary}
+              onInput={(event) => {
+                setContinuationSummary(event.currentTarget.value);
+                setContinuationProblem("");
+              }}
+              autofocus
+            />
+          </label>
+          <small>
+            {continuationSummary.trim().length}/{CONTINUATION_SUMMARY_LIMIT} characters
+          </small>
+          {continuationDraftDirty && (
+            <label>
+              <input
+                type="checkbox"
+                checked={confirmedDraftFingerprint === currentDraftFingerprint}
+                onChange={(event) =>
+                  setConfirmedDraftFingerprint(
+                    event.currentTarget.checked
+                      ? currentDraftFingerprint
+                      : null,
+                  )
+                }
+              />
+              Replace the existing session draft, attachments, and context with
+              this reviewed summary and source link.
+            </label>
+          )}
+          {continuationProblem && (
+            <p role="status" class="af-session-warning">
+              {continuationProblem}
+            </p>
+          )}
+        </div>
+      </Dialog>
     </section>
   );
 }

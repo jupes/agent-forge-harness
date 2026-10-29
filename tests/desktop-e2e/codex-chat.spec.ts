@@ -32,6 +32,7 @@ import {
   codexChatForkIdentityMetadataSchema,
   sessionOperationIdentityPageSchema,
 } from "../../scripts/sessions/session-operation-identities-protocol";
+import { sessionStartIdentityPageSchema } from "../../scripts/sessions/identity-protocol";
 import { openSettled, reloadSettled } from "../e2e/fixtures";
 import { pageToken } from "../e2e/launch-link";
 import { HEARTH_HOME } from "../e2e/servers";
@@ -68,6 +69,60 @@ function saved(id: string) {
       readFileSync(join(HEARTH_HOME, "conversations", `${id}.json`), "utf8"),
     ),
   );
+}
+async function conversationPage(page: Page, projectId: string, id: string) {
+  const token = await pageToken(page),
+    response = await page.evaluate(
+      async ({ project, session, token, header }) => {
+        const result = await fetch(
+          `/__agent-forge/projects/${encodeURIComponent(project)}/sessions/${encodeURIComponent(session)}?after=0&limit=100`,
+          { headers: { [header]: token } },
+        );
+        let body: unknown;
+        try {
+          body = await result.json();
+        } catch {
+          body = null;
+        }
+        return { status: result.status, body };
+      },
+      { project: projectId, session: id, token, header: OPERATOR_HEADER },
+    ),
+    envelope = z
+      .object({ ok: z.literal(true), data: ownedCodingPageSchema, error: z.null() })
+      .safeParse(response.body);
+  if (response.status !== 200 || !envelope.success)
+    throw Error("Could not read the protected saved session page");
+  return envelope.data.data;
+}
+async function startIdentityPage(page: Page, projectId: string) {
+  const token = await pageToken(page),
+    response = await page.evaluate(
+      async ({ project, token, header }) => {
+        const result = await fetch(
+          `/__agent-forge/projects/${encodeURIComponent(project)}/session-start-identities`,
+          { headers: { [header]: token } },
+        );
+        let body: unknown;
+        try {
+          body = await result.json();
+        } catch {
+          body = null;
+        }
+        return { status: result.status, body };
+      },
+      { project: projectId, token, header: OPERATOR_HEADER },
+    ),
+    envelope = z
+      .object({
+        ok: z.literal(true),
+        data: sessionStartIdentityPageSchema,
+        error: z.null(),
+      })
+      .safeParse(response.body);
+  if (response.status !== 200 || !envelope.success)
+    throw Error("Could not read the protected Start identity page");
+  return envelope.data.data;
 }
 function calls(): Array<{
   kind: string;
@@ -439,12 +494,204 @@ test("a confirmed Claude rate limit offers an explicit Codex Chat continuation",
   );
   codingMode("normal");
   await outcome.locator("summary").click();
+  const sourcePage = await conversationPage(page, alpha.id, record.id);
+  expect(sourcePage.turns.at(-1)?.phase).toBe("failed");
+  expect(
+    sourcePage.frames.some(
+      (frame) =>
+        frame.turnId === record.requestId &&
+        frame.event.kind === "coding-outcome" &&
+        frame.event.provider === "claude" &&
+        frame.event.code === "rate-limited",
+    ),
+  ).toBe(true);
+
+  await page.getByRole("button", { name: "New session", exact: true }).click();
+  const initialDraft = page.getByRole("dialog", {
+    name: "New session · Alpha",
+    exact: true,
+  });
+  await initialDraft
+    .getByRole("textbox", { name: "Session prompt", exact: true })
+    .fill("An unrelated draft the operator already wrote");
+  await initialDraft.getByRole("button", { name: "Cancel", exact: true }).click();
+
+  const threadStartsBefore = calls().filter(
+    (item) => item.method === "thread/start",
+  ).length;
+  const continueButton = page.getByRole("button", {
+    name: "Continue with Codex Chat",
+    exact: true,
+  });
+  await expect(continueButton).toBeVisible();
+  await continueButton.click();
+  const review = page.getByRole("dialog", {
+    name: "Review a separate Codex Chat",
+    exact: true,
+  });
+  const handoff =
+    "The prior assistant reported its usage limit. Continue the reviewed task by inspecting the existing implementation and propose one safe next step.";
+  await review
+    .getByRole("textbox", { name: "Handoff summary", exact: true })
+    .fill(handoff);
+  const replaceDraft = review.getByRole("checkbox");
+  await expect(replaceDraft).not.toBeChecked();
+  const acceptReview = review.getByRole("button", {
+    name: "Accept and open Codex Chat",
+    exact: true,
+  });
+  await expect(acceptReview).toBeDisabled();
+  await review.getByRole("button", { name: "Cancel", exact: true }).click();
+  expect(calls().filter((item) => item.method === "thread/start")).toHaveLength(
+    threadStartsBefore,
+  );
+
+  await page.getByRole("button", { name: "New session", exact: true }).click();
+  const preservedDraft = page.getByRole("dialog", {
+    name: "New session · Alpha",
+    exact: true,
+  });
   await expect(
-    outcome.getByRole("button", {
-      name: "Continue with Codex Chat",
+    preservedDraft.getByRole("textbox", {
+      name: "Session prompt",
       exact: true,
     }),
+  ).toHaveValue("An unrelated draft the operator already wrote");
+  await preservedDraft
+    .getByRole("button", { name: "Cancel", exact: true })
+    .click();
+
+  await continueButton.click();
+  const confirmedReview = page.getByRole("dialog", {
+    name: "Review a separate Codex Chat",
+    exact: true,
+  });
+  await confirmedReview
+    .getByRole("textbox", { name: "Handoff summary", exact: true })
+    .fill(handoff);
+  await confirmedReview.getByRole("checkbox").check();
+  await confirmedReview
+    .getByRole("button", { name: "Accept and open Codex Chat", exact: true })
+    .click();
+
+  const codexComposer = page.getByRole("dialog", {
+    name: "New session · Alpha",
+    exact: true,
+  });
+  await expect(
+    codexComposer.getByRole("group", { name: "Provider", exact: true })
+      .getByRole("button", { name: /Cx · Codex/ }),
+  ).toHaveAttribute("aria-pressed", "true");
+  await expect(
+    codexComposer.getByRole("textbox", { name: "Session prompt", exact: true }),
+  ).toHaveValue(handoff);
+  await expect(
+    codexComposer.getByRole("combobox", { name: "Session mode", exact: true }),
+  ).toHaveValue("chat");
+  await expect(codexComposer.getByText(`About session ${record.id}`)).toBeVisible();
+  expect(calls().filter((item) => item.method === "thread/start")).toHaveLength(
+    threadStartsBefore,
+  );
+  await codexComposer.getByRole("button", { name: "Cancel", exact: true }).click();
+  await page.getByRole("button", { name: "New session", exact: true }).click();
+  const reopenedComposer = page.getByRole("dialog", {
+    name: "New session · Alpha",
+    exact: true,
+  });
+  await expect(
+    reopenedComposer.getByRole("textbox", {
+      name: "Session prompt",
+      exact: true,
+    }),
+  ).toHaveValue(handoff);
+  await expect(reopenedComposer.getByText(`About session ${record.id}`)).toBeVisible();
+  await codexComposer
+    .getByRole("button", { name: "Check supported options", exact: true })
+    .click();
+  await expect(
+    codexComposer.getByRole("region", { name: "Equivalent session command" }),
   ).toBeVisible();
+  expect(calls().filter((item) => item.method === "thread/start")).toHaveLength(
+    threadStartsBefore,
+  );
+
+  let startPosts = 0,
+    postedBody: unknown = null;
+  await page.route(
+    `**/__agent-forge/projects/${alpha.id}/sessions`,
+    async (route) => {
+      if (route.request().method() !== "POST") {
+        await route.continue();
+        return;
+      }
+      startPosts++;
+      try {
+        postedBody = JSON.parse(route.request().postData() ?? "null");
+      } catch {
+        postedBody = null;
+      }
+      await route.fetch();
+      await route.abort("failed");
+    },
+  );
+  await codexComposer.getByRole("button", { name: "Start", exact: true }).click();
+  await expect
+    .poll(() => calls().filter((item) => item.method === "thread/start").length)
+    .toBe(threadStartsBefore + 1);
+  expect(startPosts).toBe(1);
+  const targetRecord = records().find(
+    (item) => !previous.has(item.id) && item.provider === "codex",
+  );
+  if (!targetRecord) throw Error("Missing the accepted Codex Chat identity");
+  const targetPage = await conversationPage(page, alpha.id, targetRecord.id);
+  const initialTarget = targetPage.frames[0];
+  expect(targetRecord.id).not.toBe(record.id);
+  expect(targetPage.binding?.provider).toBe("codex");
+  expect(initialTarget?.event.kind).toBe("user");
+  if (initialTarget?.event.kind !== "user")
+    throw Error("The saved Codex Chat has no original user frame");
+  expect(initialTarget.event.text).toBe(handoff);
+  expect(initialTarget.event.about).toEqual([{ kind: "session", id: record.id }]);
+  expect(initialTarget.event.codexChat?.launch.attachments ?? []).toEqual([]);
+  expect(sourcePage.frames).toEqual(
+    (await conversationPage(page, alpha.id, record.id)).frames,
+  );
+
+  const posted = z
+    .object({ requestId: z.string().uuid(), provider: z.literal("codex") })
+    .passthrough()
+    .safeParse(postedBody);
+  expect(posted.success).toBe(true);
+  if (!posted.success) throw Error("The reviewed target Start was not captured");
+  expect(targetRecord.requestId).toBe(posted.data.requestId);
+  const targetIdentity = (
+    await startIdentityPage(page, alpha.id)
+  ).identities.find((item) => item.requestId === targetRecord.requestId);
+  expect(targetIdentity).toMatchObject({
+    requestHash: targetRecord.requestHash,
+    provider: "codex",
+    mode: "chat",
+    state: "admitted",
+  });
+  const acceptedMethodCounts = new Map(
+    ["thread/start", "turn/start"].map((method) => [
+      method,
+      calls().filter((item) => item.method === method).length,
+    ]),
+  );
+
+  await reloadSettled(page);
+  expect(startPosts).toBe(1);
+  for (const [method, count] of acceptedMethodCounts)
+    expect(calls().filter((item) => item.method === method)).toHaveLength(count);
+  expect(
+    (await startIdentityPage(page, alpha.id)).identities.find(
+      (item) => item.requestId === targetRecord.requestId,
+    ),
+  ).toEqual(targetIdentity);
+  expect(sourcePage.frames).toEqual(
+    (await conversationPage(page, alpha.id, record.id)).frames,
+  );
 });
 
 test.afterEach(async ({ page }) => {

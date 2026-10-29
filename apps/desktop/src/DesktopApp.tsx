@@ -47,6 +47,10 @@ import {
 import { parseRunFilters, runsHref } from "./project-runs-model";
 import { ClaudeSessionComposer, SessionComposer } from "./SessionComposer";
 import { SessionConversation } from "./SessionConversation";
+import {
+  canContinueClaudeRateLimit,
+  validContinuationSummary,
+} from "./session-continuation";
 import { Smiths } from "./Smiths";
 import { useBeadWrites } from "./use-bead-writes";
 import { useBeads } from "./use-beads";
@@ -280,6 +284,68 @@ export function DesktopApp(): JSX.Element {
         : null;
     if (beadId) sessions.editComposer(project.id, { beadId });
     setComposerOpen(true);
+  };
+  const continueWithCodexChat = (
+    handoffSummary: string,
+    sourceSessionId: string,
+  ) => {
+    if (
+      !project ||
+      project.archived ||
+      !writesAllowed ||
+      selectedOwnedSession !== sourceSessionId ||
+      !validContinuationSummary(handoffSummary)
+    )
+      return false;
+    const currentProject = sessions.project(project.id),
+      currentView = sessions.session(project.id, sourceSessionId);
+    if (
+      !canContinueClaudeRateLimit({
+        projectId: project.id,
+        workspace: summary?.workspace ?? null,
+        writable: writesAllowed,
+        archived: project.archived,
+        record:
+          currentProject.records.find((record) => record.id === sourceSessionId) ??
+          null,
+        page: currentView.page,
+        loaded: currentView.loaded,
+        live: currentView.live,
+        feedInterrupted: currentView.feedInterrupted,
+        readError: currentView.readError,
+        stopping: !!currentView.stopping,
+        stopPosting: currentView.stopPosting,
+        stopUnknown: currentView.stopUnknown,
+        pending: !!currentView.pending,
+        posting: currentView.posting,
+        identity: {
+          page: currentProject.identityPage,
+          loading: currentProject.identityLoading,
+          generation: currentProject.identityGeneration,
+          startIdentity: currentProject.startIdentity,
+          pendingStart: !!currentProject.pendingStart,
+          starting: currentProject.starting,
+          startIdentityError: currentProject.startIdentityError,
+          legacyIdentityError: currentProject.legacyIdentityError,
+          legacyIdentityUnavailable: currentProject.legacyIdentityUnavailable,
+          inspection: currentProject.identityInspection,
+        },
+      })
+    )
+      return false;
+    sessions.chooseComposerProvider(project.id, "codex");
+    sessions.chooseCodexMode(project.id, "chat");
+    sessions.editComposer(project.id, {
+      prompt: handoffSummary.trim(),
+      attachments: [],
+      about: [{ kind: "session", id: sourceSessionId }],
+    });
+    composerOpener.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    setComposerOpen(true);
+    return true;
   };
   const keeper = useKeeper(project?.id ?? null, writesAllowed);
   const proposals = useKeeperProposals(
@@ -769,6 +835,8 @@ export function DesktopApp(): JSX.Element {
             writesAllowed={writesAllowed}
             archived={project.archived}
             library={sessionLibrary}
+            workspace={summary?.workspace ?? null}
+            onContinueWithCodexChat={continueWithCodexChat}
           />
         ) : route.destination === "sessions" && project && selectedSession ? (
           <ObservedSessionDetail
