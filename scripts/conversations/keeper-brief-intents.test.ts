@@ -14,6 +14,7 @@ import { writeOwnerOnly } from "../hearth/token";
 import { MAX_KEEPER_BRIEF_INTENT_HISTORY } from "../keeper/brief-protocol";
 import { ownedCodingStateSchema } from "../sessions/codex-owned-journal";
 import { conversationPage } from "./page";
+import { conversationFile } from "./paths";
 import { conversationPageSchema, stateSchema } from "./protocol";
 import { createConversationStore } from "./store";
 
@@ -134,6 +135,69 @@ test("canonical brief reservation survives a lost reply and store recreation wit
   expect(reopenedStore.read(projectId).revision).toBe(0);
   expect(reopenedStore.read(projectId).turns).toEqual([]);
   expect(reopenedStore.read(projectId).frames).toEqual([]);
+});
+
+test("onboarding originals retain legacy scope bindings and fail closed if a new scope hash is tampered", async () => {
+  const oldHome = homeForTest();
+  const oldProject = `project-${randomUUID()}`;
+  const oldStore = createConversationStore(oldHome);
+  const oldOrigin = {
+    kind: "onboarding",
+    projectId: oldProject,
+    workspace: "/served",
+    catalogRevision: 4,
+    projectCreate: {
+      requestId: randomUUID(),
+      hash: "a".repeat(64),
+      revision: 3,
+    },
+  } satisfies KeeperBriefOriginBinding;
+  await oldStore.reserveKeeperBrief(
+    oldProject,
+    reserveInput(oldProject, "2026-10-29T12:00:00.000Z", {
+      origin: oldOrigin,
+    }),
+  );
+  const oldIntent = oldStore.discoverKeeperBrief(oldProject);
+  if (!oldIntent) throw new Error("Missing legacy onboarding brief original");
+  expect(
+    createConversationStore(oldHome).readKeeperBriefIntent(
+      oldProject,
+      oldIntent.requestId,
+    )?.origin,
+  ).toEqual(oldOrigin);
+
+  const home = homeForTest();
+  const projectId = `project-${randomUUID()}`;
+  const store = createConversationStore(home);
+  await store.reserveKeeperBrief(
+    projectId,
+    reserveInput(projectId, "2026-10-29T12:00:00.000Z", {
+      origin: {
+        ...oldOrigin,
+        projectId,
+        projectCreate: {
+          ...oldOrigin.projectCreate,
+          requestId: randomUUID(),
+          scopeHash: "b".repeat(64),
+        },
+      },
+    }),
+  );
+  const path = conversationFile(home, projectId);
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    throw new Error("Malformed persisted onboarding original fixture");
+  }
+  const state = stateSchema.parse(decoded);
+  const original = state.keeperBriefIntents?.active;
+  if (!original || original.origin.kind !== "onboarding")
+    throw new Error("Missing onboarding brief original");
+  original.origin.projectCreate.scopeHash = "c".repeat(64);
+  writeOwnerOnly(path, JSON.stringify(state));
+  expect(() => createConversationStore(home).read(projectId)).toThrow();
 });
 
 test("matching reservations converge while changed scope, selection, stale revision and foreign snapshots conflict", async () => {

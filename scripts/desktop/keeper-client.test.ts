@@ -6,7 +6,11 @@ import type {
   ConversationPage,
   ConversationSend,
 } from "../../types/conversation";
-import type { KeeperBriefs } from "../../types/keeper-brief";
+import type {
+  KeeperBriefIntent,
+  KeeperBriefIntentMetadata,
+  KeeperBriefs,
+} from "../../types/keeper-brief";
 
 const alpha = "project-a5832fa0-7a21-403b-8184-44892f0d8d86";
 const beta = "project-b5832fa0-7a21-403b-8184-44892f0d8d86";
@@ -50,13 +54,16 @@ function fixture(
   const posts: Array<{
     projectId: string;
     action: string;
-    body: ConversationSend | { requestId: string };
+    body: unknown;
   }> = [];
   let reply: ActionOutcome | Promise<ActionOutcome> = {
     state: "unknown",
     message: "Reply lost",
   };
+  let postFailure: Error | null = null;
   let read: unknown = page();
+  let briefIntentRead: unknown = null;
+  let briefOriginalRead: unknown = null;
   const client = createKeeperClient({
     readObjects,
     canWrite: () => true,
@@ -71,7 +78,10 @@ function fixture(
       };
     },
     read: async () => read,
+    readBriefIntent: async (_projectId, requestedId) =>
+      requestedId ? briefOriginalRead : briefIntentRead,
     post: async (projectId, action, body) => {
+      if (postFailure) throw postFailure;
       posts.push({ projectId, action, body });
       return reply;
     },
@@ -93,33 +103,211 @@ function fixture(
     read(value: unknown) {
       read = value;
     },
+    readBriefIntent(value: unknown) {
+      briefIntentRead = value;
+    },
+    readBriefOriginal(value: unknown) {
+      briefOriginalRead = value;
+    },
+    failPost() {
+      postFailure = new Error("synthetic lost response");
+    },
   };
 }
 
-test("an unanswered brief refresh retains its action and UUID across draft edits and preserves the human draft", async () => {
+function keeperBriefOriginal(projectId = alpha): KeeperBriefIntent {
+  return {
+    version: 1,
+    requestId,
+    projectId,
+    conversationId: `keeper-${projectId}`,
+    expectedRevision: 0,
+    origin: {
+      kind: "overview",
+      projectId,
+      workspace: "C:/workspace",
+      catalogRevision: 1,
+    },
+    selection: {
+      name: "Keeper",
+      provider: "anthropic",
+      model: "claude-fixture",
+      effort: "high",
+      enabled: true,
+      tags: [],
+    },
+    purpose: "brief",
+    intentHash: "a".repeat(64),
+    text: "The exact prepared prompt.",
+    about: [],
+    snapshot: {
+      version: 1,
+      projectId,
+      projectName: "Alpha",
+      workspace: "C:/workspace",
+      catalogRevision: 1,
+      asOf: at,
+      since: at,
+      scope: {
+        label: "project:alpha",
+        epicIds: [],
+        epicCount: 0,
+        repositoryCount: 0,
+      },
+      observed: {
+        beads: 0,
+        queue: 0,
+        sessions: 0,
+        runs: 0,
+        activity: 0,
+      },
+      complete: true,
+      limitations: [],
+      facts: [],
+    },
+    createdAt: at,
+    state: "reserved",
+    preparedTurnHash: "b".repeat(64),
+  };
+}
+
+function keeperBriefMetadata(
+  original: KeeperBriefIntent,
+): KeeperBriefIntentMetadata {
+  const {
+    version,
+    requestId: id,
+    projectId,
+    conversationId,
+    expectedRevision,
+    origin,
+    selection,
+    purpose,
+    intentHash,
+    createdAt,
+    state,
+    preparedTurnHash,
+  } = original;
+  return {
+    version,
+    requestId: id,
+    projectId,
+    conversationId,
+    expectedRevision,
+    origin,
+    selection,
+    purpose,
+    intentHash,
+    createdAt,
+    state,
+    preparedTurnHash,
+  };
+}
+
+test("an unanswered brief reservation stays held and never retries or commits under a new identity", async () => {
   const f = fixture();
   f.client.activate(alpha);
   f.deliver(page());
+  await f.client.checkBriefIntent(alpha);
   f.client.draft(alpha, "Keep this human question");
   await f.client.refreshBrief(alpha);
   expect(f.client.get(alpha).draft).toBe("Keep this human question");
-  expect(f.client.canRefreshBrief(alpha)).toBe(false);
+  expect(f.client.get(alpha).briefIntentState).toBe("unknown");
+  expect(f.client.canSend(alpha)).toBe(false);
   f.client.draft(alpha, "A later question");
+  await f.client.refreshBrief(alpha);
   await f.client.retryOriginal(alpha);
   expect(f.posts).toEqual([
     {
       projectId: alpha,
-      action: "briefs",
-      body: { requestId, expectedRevision: 0 },
-    },
-    {
-      projectId: alpha,
-      action: "briefs",
-      body: { requestId, expectedRevision: 0 },
+      action: "brief-intents/reserve",
+      body: { expectedRevision: 0, origin: { kind: "overview" } },
     },
   ]);
-  f.deliver({ ...page(), revision: 1, turns: [turn], request: turn });
+  expect(f.posts.some((post) => post.action === "briefs")).toBe(false);
   expect(f.client.get(alpha).draft).toBe("A later question");
+  expect(f.client.get(alpha).briefIntentState).toBe("unknown");
+  f.client.dispose();
+});
+
+test("an exact-original read rejects changed frozen selection or origin fields", async () => {
+  const original = keeperBriefOriginal();
+  const metadata = keeperBriefMetadata(original);
+  const f = fixture();
+  f.readBriefIntent(metadata);
+  f.readBriefOriginal({
+    ...original,
+    selection: { ...original.selection, model: "changed-model" },
+  });
+  f.client.activate(alpha);
+  await Promise.resolve();
+  f.deliver(page());
+  await f.client.reviewBrief(alpha);
+  expect(f.client.get(alpha).briefIntentState).toBe("unknown");
+  expect(f.client.get(alpha).briefOriginal).toBeNull();
+  expect(f.client.canCommitBrief(alpha)).toBe(false);
+  expect(f.posts).toEqual([]);
+  f.client.dispose();
+});
+
+test("discovery rejects a ticket associated with another conversation", async () => {
+  const original = keeperBriefOriginal();
+  const f = fixture();
+  f.readBriefIntent({
+    ...keeperBriefMetadata(original),
+    conversationId: `keeper-${beta}`,
+  });
+  f.readBriefOriginal(original);
+  f.client.activate(alpha);
+  await Promise.resolve();
+  expect(f.client.get(alpha).briefIntentState).toBe("unknown");
+  expect(f.client.get(alpha).briefIntent).toBeNull();
+  expect(f.client.get(alpha).briefOriginal).toBeNull();
+  f.client.dispose();
+});
+
+test("a commit receipt with the right request id but wrong frozen frame hash stays held", async () => {
+  const original = keeperBriefOriginal();
+  const f = fixture();
+  f.readBriefIntent(keeperBriefMetadata(original));
+  f.readBriefOriginal(original);
+  f.client.activate(alpha);
+  await Promise.resolve();
+  f.deliver(page());
+  await f.client.reviewBrief(alpha);
+  f.reply({
+    state: "done",
+    data: {
+      conversationId: `keeper-${alpha}`,
+      revision: 1,
+      turn: { ...turn, hash: "c".repeat(64) },
+    },
+  });
+  expect(await f.client.commitBrief(alpha)).toBe(false);
+  expect(f.client.get(alpha).briefIntentState).toBe("unknown");
+  expect(f.client.get(alpha).briefIntentError).toContain(
+    "could not be matched",
+  );
+  expect(f.client.get(alpha).admitted).toBeNull();
+  expect(f.posts.map((post) => post.action)).toEqual(["briefs"]);
+  f.client.dispose();
+});
+
+test("a lost retirement reply clears posting but keeps the saved original held", async () => {
+  const original = keeperBriefOriginal();
+  const f = fixture();
+  f.readBriefIntent(keeperBriefMetadata(original));
+  f.readBriefOriginal(original);
+  f.client.activate(alpha);
+  await Promise.resolve();
+  f.deliver(page());
+  await f.client.reviewBrief(alpha);
+  f.failPost();
+  expect(await f.client.retireBrief(alpha)).toBe(false);
+  expect(f.client.get(alpha).posting).toBe(false);
+  expect(f.client.get(alpha).briefIntentState).toBe("unknown");
+  expect(f.client.get(alpha).briefOriginal).toEqual(original);
+  expect(f.client.canSend(alpha)).toBe(false);
   f.client.dispose();
 });
 
@@ -342,6 +530,7 @@ test("a lost send stays held when lookup finds no receipt, and explicit retry pr
   const f = fixture();
   f.client.activate(alpha);
   f.deliver(page());
+  await f.client.checkBriefIntent(alpha);
   f.client.draft(alpha, "Original message");
   await f.client.send(alpha);
   expect(f.posts).toHaveLength(1);
@@ -410,6 +599,7 @@ test("an admitted streamed receipt resolves a lost send while active and unknown
   const f = fixture();
   f.client.activate(alpha);
   f.deliver(page());
+  await f.client.checkBriefIntent(alpha);
   f.client.draft(alpha, "Question");
   await f.client.send(alpha);
   f.deliver({
@@ -461,6 +651,7 @@ test("a late Stop receipt cannot regress a streamed terminal turn to cancelling"
   const f = fixture();
   f.client.activate(alpha);
   f.deliver(page());
+  await f.client.checkBriefIntent(alpha);
   f.client.draft(alpha, "Question");
   f.reply({
     state: "done",
@@ -504,6 +695,7 @@ test("a completed HTTP receipt holds the next send until its revision has reache
   const f = fixture();
   f.client.activate(alpha);
   f.deliver(page());
+  await f.client.checkBriefIntent(alpha);
   f.client.draft(alpha, "Question");
   f.reply({
     state: "done",
