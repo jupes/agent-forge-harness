@@ -216,7 +216,12 @@ test("metadata and protected-original reads refuse a project scope changed durin
     for (const route of routes.reads) {
       scopeReads = 0;
       const checked = route.validate({
-        params: { id: projectId, slug: scope.runSlug, beadId },
+        params: {
+          id: projectId,
+          slug: scope.runSlug,
+          beadId,
+          ...(route.path.endsWith("/:requestId") ? { requestId } : {}),
+        },
         query: new URLSearchParams(),
         headers: {},
         body: null,
