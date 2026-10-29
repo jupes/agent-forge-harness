@@ -1,10 +1,12 @@
 import { expect, test } from "@playwright/test";
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { openSettled } from "../e2e/fixtures";
 import { alpha, seedProjects } from "./project-fixtures";
 
 test.beforeEach(seedProjects);
 
-test("project Reviews reserves and displays the verified exact original without starting a run", async ({
+test("project Reviews reserves, convenes, completes, and reloads the verified original and result", async ({
   page,
 }) => {
   const councilPosts: string[] = [];
@@ -59,7 +61,22 @@ test("project Reviews reserves and displays the verified exact original without 
       "Exact review body: preserve this sentence and its identity.",
     ),
   ).toBeVisible();
+  const identitySummary = page.getByText("Request identity and scope", {
+    exact: true,
+  });
+  await identitySummary.focus();
+  await page.keyboard.press("Enter");
   await expect(page.getByText(/Intent hash/)).toBeVisible();
+  const shotDir = process.env["SHOT_DIR"];
+  if (shotDir) {
+    mkdirSync(shotDir, { recursive: true });
+    await page
+      .getByRole("region", { name: "Exact saved Council original" })
+      .screenshot({
+        path: join(shotDir, "council-exact-original.png"),
+        animations: "disabled",
+      });
+  }
   expect(councilPosts).toHaveLength(1);
   expect(councilPosts[0]).toMatch(/\/projects\/.*\/council\/reviews$/);
   expect(councilPosts.some((path) => path.endsWith("/commit"))).toBe(false);
@@ -74,6 +91,14 @@ test("project Reviews reserves and displays the verified exact original without 
     page.getByRole("heading", { name: "Council result" }),
   ).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText("Verified state: completed")).toBeVisible();
+  if (shotDir) {
+    await page
+      .getByRole("region", { name: "Council result and progress" })
+      .screenshot({
+        path: join(shotDir, "council-completed-result.png"),
+        animations: "disabled",
+      });
+  }
   expect(councilPosts).toHaveLength(2);
   expect(councilPosts[1]).toMatch(
     /\/projects\/.*\/council\/reviews\/[^/]+\/commit$/,
