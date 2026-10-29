@@ -4,8 +4,8 @@ import { buildChildEnv } from "./env";
 import {
   killTree,
   liveChildCount,
-  supervise,
   SupervisorOwnershipRefusalError,
+  supervise,
 } from "./supervisor";
 import { guardRequiredTree, guardSuspendedWindowsProcess } from "./tree-guard";
 import type {
@@ -709,11 +709,7 @@ test("a failed mandatory ownership guard refuses before any protocol stdin", asy
 });
 
 test("private terminal receipt failures preserve typed ownership uncertainty", async () => {
-  for (const mode of [
-    "malformed",
-    "duplicate",
-    "terminal-invalid-missing",
-  ]) {
+  for (const mode of ["malformed", "duplicate", "terminal-invalid-missing"]) {
     let errors = 0;
     const handle = supervise({
       windowsHide: true,
