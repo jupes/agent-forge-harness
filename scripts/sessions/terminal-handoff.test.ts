@@ -103,6 +103,7 @@ test("an opened terminal is not replayed after service restart and holds app sen
   };
   const f = fixture(launcher),
     requestId = randomUUID();
+  try {
   const first = await f.service.open(f.projectId, f.sessionId, requestId, 4);
   expect(first.phase).toBe("opened");
   expect(invoked).toHaveLength(1);
@@ -168,6 +169,9 @@ test("an opened terminal is not replayed after service restart and holds app sen
     "closed",
   );
   expect(stopCalls).toBe(0);
+  } finally {
+    completion.resolve(finish());
+  }
 });
 
 test("only a source-proven CreateProcess refusal allows a separately reviewed request", async () => {

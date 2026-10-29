@@ -58,15 +58,6 @@ function canonicalRoot(root: string) {
   }
   return process.platform === "win32" ? canonical.toLowerCase() : canonical;
 }
-function turnKey(
-  attempt: Pick<
-    TerminalHandoffAttempt,
-    "projectId" | "sessionId" | "turnRequestId"
-  >,
-) {
-  return `${attempt.projectId}\0${attempt.sessionId}\0${attempt.turnRequestId}`;
-}
-
 /** Durable, one-at-a-time native handoffs. The journal never contains command or transcript bytes. */
 export function createSessionTerminalHandoff(options: {
   home: string;
@@ -308,6 +299,17 @@ export function createSessionTerminalHandoff(options: {
               503,
               "The terminal service is closing. No terminal was opened.",
             );
+          const held = before.attempts.find(
+            (row) =>
+              row.projectId === projectId &&
+              row.sessionId === sessionId &&
+              view(row).phase !== "refused",
+          );
+          if (held)
+            throw new ConversationError(
+              409,
+              "This Chat already has an original terminal handoff. Check that request; a new terminal was not opened.",
+            );
           const candidate = await options.candidate(projectId, sessionId);
           if (closing)
             throw new ConversationError(
@@ -323,20 +325,6 @@ export function createSessionTerminalHandoff(options: {
             throw new ConversationError(
               409,
               "The saved Claude Chat identity could not be verified.",
-            );
-          const held = before.attempts.find(
-            (row) =>
-              turnKey(row) ===
-              turnKey({
-                projectId,
-                sessionId,
-                turnRequestId: candidate.turnRequestId,
-              }),
-          );
-          if (held && held.phase !== "refused")
-            throw new ConversationError(
-              409,
-              "This Chat turn already has an original terminal handoff. Check that request; a new terminal was not opened.",
             );
           if (before.attempts.length >= 512) throw unavailable();
           const command = serializeClaudeInteractiveResume({
