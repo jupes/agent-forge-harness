@@ -23,6 +23,11 @@ import {
   projectCreateReserveSchema,
   projectCreateRetireSchema,
 } from "../../projects/create-protocol";
+import {
+  createRepositoryOnboarding,
+  type RepositoryOnboardingOptions,
+} from "../../projects/repository-onboarding";
+import { approvedRepositorySchema, type ApprovedRepository } from "../../projects/repository-onboarding-protocol";
 import { selectProjectBeads, workspaceKey } from "../../projects/scope";
 import {
   createProjectStore,
@@ -56,6 +61,12 @@ export interface ProjectCreateRouteOptions {
   configHome?: string;
   /** Trusted internal registry source; defaults to the checkout's local state root. */
   projectRepositoryRegistryRoot?: string;
+  repositoryOnboarding?: ReturnType<typeof createRepositoryOnboarding>;
+  repositoryPickerCommand?: readonly string[];
+  repositoryRunGit?: RepositoryOnboardingOptions["runGit"];
+  repositoryRunPicker?: RepositoryOnboardingOptions["runPicker"];
+  allowLocalRepositoryFixtureUrls?: boolean;
+  repositoryManifestRoot?: string;
   loadScope(): Promise<ProjectSnapshot>;
 }
 
@@ -129,6 +140,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 function completeRepositoryOptions(
   root: string,
   registryRoot?: string,
+  approved: readonly ApprovedRepository[] = [],
 ): ProjectRepositoryOption[] {
   const served = resolveCheckout(root).workspace;
   const servedOption: ProjectRepositoryOption = {
@@ -214,14 +226,14 @@ function completeRepositoryOptions(
     throw unavailableProjectOptions();
 
   const options = [servedOption];
-  const names = new Set<string>();
+  const names = new Set([servedOption.name.toLowerCase()]);
   const keys = new Set([servedOption.key]);
   for (const entry of entries) {
     if (!isRecord(entry) || typeof entry["name"] !== "string")
       throw unavailableProjectOptions();
     const name = entry["name"];
-    if (names.has(name)) throw unavailableProjectOptions();
-    names.add(name);
+    if (names.has(name.toLowerCase())) throw unavailableProjectOptions();
+    names.add(name.toLowerCase());
     const path = join(local, "repos", name);
     let repositoryStat: ReturnType<typeof lstatSync>;
     let gitStat: ReturnType<typeof lstatSync>;
@@ -249,7 +261,44 @@ function completeRepositoryOptions(
     keys.add(key);
     options.push({ path: canonical, key, name, served: false });
   }
+  for (const entry of approved) {
+    const checked = approvedRepositorySchema.safeParse(entry);
+    if (!checked.success || options.length >= MAX_PROJECT_CREATE_OPTION_REPOSITORIES) throw unavailableProjectOptions();
+    const approvedEntry = checked.data;
+    let canonical: string;
+    try {
+      canonical = canonicalRepositoryPath(approvedEntry.path);
+    } catch {
+      throw unavailableProjectOptions();
+    }
+    const key = workspaceKey(canonical);
+    if (
+      key !== approvedEntry.key ||
+      keys.has(key) ||
+      options.some((option) => option.name.toLowerCase() === approvedEntry.name.toLowerCase())
+    )
+      throw unavailableProjectOptions();
+    keys.add(key);
+    options.push({ path: canonical, key, name: approvedEntry.name, served: false });
+  }
   return options;
+}
+
+function canonicalRepositoryPath(path: string): string {
+  const directory = lstatSync(path);
+  const git = lstatSync(join(path, ".git"));
+  if (
+    directory.isSymbolicLink() ||
+    !directory.isDirectory() ||
+    git.isSymbolicLink() ||
+    (!git.isDirectory() && !git.isFile())
+  )
+    throw new Error("Repository path is not a Git checkout.");
+  const canonical = resolveCheckout(path).worktree;
+  const root = resolve(path);
+  if (workspaceKey(canonical) !== workspaceKey(root))
+    throw new Error("Repository path is not canonical.");
+  return canonical;
 }
 
 function projectCreateOptionsData(
@@ -275,6 +324,7 @@ function projectCreateOptionsData(
   const repositoryOptions = completeRepositoryOptions(
     options.root,
     options.projectRepositoryRegistryRoot,
+    options.repositoryOnboarding?.approvedRepositories(),
   );
   if (epics.length > MAX_PROJECT_CREATE_OPTION_EPICS)
     throw unavailableProjectOptions();
@@ -363,9 +413,12 @@ function checkedScope(
       409,
       "This hearth does not serve the selected project workspace.",
     );
-  const allowedRepositories = registeredRepositoryOptions(
-    options.root,
-    options.projectRepositoryRegistryRoot,
+  const allowedRepositories = new Set(
+    completeRepositoryOptions(
+      options.root,
+      options.projectRepositoryRegistryRoot,
+      options.repositoryOnboarding?.approvedRepositories(),
+    ).map((repository) => repository.key),
   );
   if (
     scope.repositories.some(
@@ -534,6 +587,124 @@ export function projectRoutes(
   createOptions: ProjectCreateRouteOptions,
 ) {
   const store = createProjectStore(home);
+  const repositoryOnboarding =
+    createOptions.repositoryOnboarding ??
+    createRepositoryOnboarding({
+      home,
+      workspace: createOptions.workspace,
+      registryRoot:
+        createOptions.repositoryManifestRoot ??
+        join(home, "project-create-registry"),
+      legacyRegistryRoot:
+        createOptions.projectRepositoryRegistryRoot ?? localStateRoot(createOptions.root),
+      ...(createOptions.repositoryPickerCommand === undefined
+        ? {}
+        : { pickerCommand: createOptions.repositoryPickerCommand }),
+      ...(createOptions.repositoryRunGit === undefined
+        ? {}
+        : { runGit: createOptions.repositoryRunGit }),
+      ...(createOptions.repositoryRunPicker === undefined
+        ? {}
+        : { runPicker: createOptions.repositoryRunPicker }),
+      ...(createOptions.allowLocalRepositoryFixtureUrls === undefined
+        ? {}
+        : {
+            allowLocalFixtureUrls:
+              createOptions.allowLocalRepositoryFixtureUrls,
+          }),
+    });
+  const pickerInput = (
+    request: RouteRequest,
+  ): ValidationResult<{ requestId: string }> => {
+    const parsed = z.object({ requestId: z.string().uuid() }).strict().safeParse(request.body);
+    return parsed.success ? { ok: true, value: parsed.data } : fail("Expected a repository selection id.");
+  };
+  const nameInput = (
+    request: RouteRequest,
+  ): ValidationResult<{ name: string }> => {
+    const parsed = z.object({ name: z.string().min(1).max(80).regex(/^[A-Za-z0-9][A-Za-z0-9._-]*$/) }).strict().safeParse(request.body);
+    return parsed.success ? { ok: true, value: parsed.data } : fail("Expected a safe repository name.");
+  };
+  const cloneReservationInput = (
+    request: RouteRequest,
+  ): ValidationResult<{ requestId: string; name: string; url: string }> => {
+    const parsed = z.object({ requestId: z.string().uuid(), name: z.string().min(1).max(80), url: z.string().min(1).max(2048) }).strict().safeParse(request.body);
+    return parsed.success ? { ok: true, value: parsed.data } : fail("Expected a repository clone review.");
+  };
+  const repositorySelectionRead: ReadRoute<{ requestId: string }> = {
+    kind: "read", method: "GET", path: "/projects/repository-selections/:requestId", operatorOnly: true,
+    validate: readIdentity,
+    read: ({ requestId }) => reply(() => {
+      const selection = repositoryOnboarding.getSelection(requestId);
+      if (!selection) throw new ProjectStoreError(404, "The exact repository selection was not found.");
+      return selection;
+    }),
+  };
+  const repositoryCloneRead: ReadRoute<{ requestId: string }> = {
+    kind: "read", method: "GET", path: "/projects/repository-clone-reservations/:requestId", operatorOnly: true,
+    validate: readIdentity,
+    read: ({ requestId }) => reply(() => {
+      const operation = repositoryOnboarding.getClone(requestId);
+      if (!operation) throw new ProjectStoreError(404, "The exact repository clone review was not found.");
+      return operation;
+    }),
+  };
+  const pickRepository: ActionRoute<{ requestId: string }> = {
+    kind: "action", method: "POST", path: "/projects/repository-selections", action: "project.repository.pick",
+    maxBodyBytes: 4096, validate: pickerInput,
+    subject: ({ requestId }) => ({ family: "project-repository-selection", requestId }),
+    effect: async ({ requestId }, context) => reply(async () => {
+      if (!context?.auditEventId) throw new ProjectStoreError(503, "The repository selection was not audited.");
+      try { return await repositoryOnboarding.selectFolder(requestId); }
+      catch { throw new ProjectStoreError(409, "The saved folder selection is unavailable; it was not repeated."); }
+    }),
+  };
+  const registerRepository: ActionRoute<{ requestId: string; name: string }> = {
+    kind: "action", method: "POST", path: "/projects/repository-selections/:requestId/register", action: "project.repository.register",
+    maxBodyBytes: 4096,
+    validate: (request) => {
+      const id = readIdentity(request);
+      if (!id.ok) return id;
+      const name = nameInput(request);
+      return name.ok ? { ok: true, value: { ...id.value, ...name.value } } : name;
+    },
+    subject: ({ requestId }) => ({ family: "project-repository-selection", requestId }),
+    effect: async ({ requestId, name }, context) => reply(async () => {
+      if (!context?.auditEventId) throw new ProjectStoreError(503, "Repository registration was not audited.");
+      try { return await repositoryOnboarding.registerSelection(requestId, name); }
+      catch { throw new ProjectStoreError(409, "The reviewed folder could not be registered. Check the saved selection and trusted repository choices."); }
+    }),
+  };
+  const reserveRepositoryClone: ActionRoute<{ requestId: string; name: string; url: string }> = {
+    kind: "action", method: "POST", path: "/projects/repository-clone-reservations", action: "project.repository.clone.reserve",
+    maxBodyBytes: 8192, validate: cloneReservationInput,
+    subject: ({ requestId }) => ({ family: "project-repository-clone", requestId }),
+    effect: async (input, context) => reply(async () => {
+      if (!context?.auditEventId) throw new ProjectStoreError(503, "The repository clone review was not audited.");
+      try { return await repositoryOnboarding.reserveClone(input.requestId, input.name, input.url); }
+      catch { throw new ProjectStoreError(400, "The clone review could not be saved. Check the URL, name, and existing request status."); }
+    }),
+  };
+  const cloneRepository: ActionRoute<{ requestId: string }> = {
+    kind: "action", method: "POST", path: "/projects/repository-clone-reservations/:requestId/clone", action: "project.repository.clone",
+    maxBodyBytes: 4096, validate: readIdentity,
+    subject: ({ requestId }) => ({ family: "project-repository-clone", requestId }),
+    effect: async ({ requestId }, context) => reply(async () => {
+      if (!context?.auditEventId) throw new ProjectStoreError(503, "The repository clone was not audited.");
+      try { return await repositoryOnboarding.clone(requestId); }
+      catch { throw new ProjectStoreError(409, "The saved clone request is unavailable; no repeat was started."); }
+    }),
+  };
+  const registerClonedRepository: ActionRoute<{ requestId: string }> = {
+    kind: "action", method: "POST", path: "/projects/repository-clone-reservations/:requestId/register", action: "project.repository.clone.register",
+    maxBodyBytes: 4096, validate: readIdentity,
+    subject: ({ requestId }) => ({ family: "project-repository-clone", requestId }),
+    effect: async ({ requestId }, context) => reply(async () => {
+      if (!context?.auditEventId) throw new ProjectStoreError(503, "The clone registration was not audited.");
+      try { return await repositoryOnboarding.registerClone(requestId); }
+      catch { throw new ProjectStoreError(409, "Only the exact confirmed clone can be registered. Review its saved status."); }
+    }),
+  };
   const projects: ReadRoute<null> = {
     kind: "read",
     method: "GET",
@@ -814,8 +985,15 @@ export function projectRoutes(
     preferences,
     createList,
     createOriginal,
+    repositorySelectionRead,
+    repositoryCloneRead,
     reserve,
     commit,
     retire,
+    pickRepository,
+    registerRepository,
+    reserveRepositoryClone,
+    cloneRepository,
+    registerClonedRepository,
   };
 }

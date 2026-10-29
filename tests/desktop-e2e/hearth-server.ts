@@ -1,7 +1,14 @@
 /** Production hearth with an explicit native Codex fixture and inert sync seam. */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import {
+  appendFileSync,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
+import { isAbsolute, join, relative, sep } from "node:path";
 import { operatorCouncilLedger } from "../../scripts/council/ledger-wiring";
 import { supervise } from "../../scripts/executors/supervisor";
 import { ensurePrivateHome } from "../../scripts/hearth/home-guard";
@@ -25,6 +32,9 @@ async function main() {
   const root = index >= 0 ? args[index + 1] : process.cwd();
   if (!root)
     throw Error("The desktop fixture requires its explicit repository.");
+  const repositoryFixtureGit = process.env["AGENT_FORGE_E2E_REPOSITORY_GIT"];
+  if (!repositoryFixtureGit || !isAbsolute(repositoryFixtureGit))
+    throw Error("The desktop fixture requires its trusted isolated-repository Git executable.");
   const projectRepositoryRegistryRoot = join(home, "project-create-registry");
   const projectRepositoryName = "onboarding-fixture";
   const projectRepositoryPath = join(
@@ -32,7 +42,33 @@ async function main() {
     "repos",
     projectRepositoryName,
   );
-  mkdirSync(join(projectRepositoryPath, ".git"), { recursive: true });
+  const onboardingFixtures = join(home, "repository-onboarding-fixtures");
+  const selectedFolder = join(onboardingFixtures, "selected-folder");
+  const emptyGitMarker = join(onboardingFixtures, "empty-git-marker");
+  const cloneSource = join(onboardingFixtures, "clone-source.git");
+  const pickerControl = join(onboardingFixtures, "picker-selection.json");
+  const cloneCalls = join(onboardingFixtures, "clone-calls.jsonl");
+  const isolatedGitConfig = join(onboardingFixtures, "gitconfig");
+  mkdirSync(onboardingFixtures, { recursive: true });
+  writeFileSync(isolatedGitConfig, "");
+  const fixtureGitEnv = {
+    ...process.env,
+    GIT_CONFIG_GLOBAL: isolatedGitConfig,
+    GIT_CONFIG_NOSYSTEM: "1",
+    GIT_TERMINAL_PROMPT: "0",
+    GCM_INTERACTIVE: "Never",
+  };
+  const initializeRepository = (cwd: string, bare = false) => {
+    mkdirSync(cwd, { recursive: true });
+    const initialized = Bun.spawnSync([repositoryFixtureGit, "init", ...(bare ? ["--bare"] : []), "--quiet"], {
+      cwd, stdout: "ignore", stderr: "pipe", env: fixtureGitEnv,
+    });
+    if (initialized.exitCode !== 0) throw Error("Could not prepare a private onboarding Git fixture.");
+  };
+  initializeRepository(selectedFolder);
+  initializeRepository(cloneSource, true);
+  initializeRepository(projectRepositoryPath);
+  mkdirSync(join(emptyGitMarker, ".git"), { recursive: true });
   mkdirSync(join(projectRepositoryRegistryRoot, "repos"), {
     recursive: true,
   });
@@ -127,10 +163,43 @@ async function main() {
   const hearth = await createHearth({
     root,
     home,
+    projectRepositoryPickerCommand: ["fixed-fixture-picker"],
     councilLedger: operatorCouncilLedger(),
     port: Number(process.env["HEARTH_PORT"] ?? 0),
     api: {
       ...{ projectRepositoryRegistryRoot },
+      allowLocalRepositoryFixtureUrls: true,
+      projectRepositoryRunPicker: async () => {
+        let selected: string | null = null;
+        if (existsSync(pickerControl)) {
+          const value: unknown = JSON.parse(readFileSync(pickerControl, "utf8"));
+          if (typeof value !== "object" || value === null || Array.isArray(value) || !("path" in value))
+            throw Error("Invalid private repository-picker fixture");
+          const path = value.path;
+          if (path !== null && typeof path !== "string") throw Error("Invalid private repository-picker fixture");
+          if (path !== null) {
+            const canonical = realpathSync.native(path);
+            const fromFixtureRoot = relative(realpathSync.native(onboardingFixtures), canonical);
+            if (fromFixtureRoot === ".." || fromFixtureRoot.startsWith(`..${sep}`) || isAbsolute(fromFixtureRoot))
+              throw Error("Private repository-picker fixture escaped its home");
+            selected = canonical;
+          }
+        }
+        return { exitCode: 0, stdout: JSON.stringify({ ok: true, data: { path: selected }, error: null }) };
+      },
+      projectRepositoryRunGit: async (commandArgs, cwd) => {
+        const actual = [...commandArgs];
+        if (actual[0] !== "git") throw Error("Unexpected repository onboarding executable");
+        actual[0] = repositoryFixtureGit;
+        if (actual.includes("clone")) {
+          if (actual.at(-2) !== "https://fixture.invalid/repository.git")
+            throw Error("Unexpected repository onboarding clone URL");
+          actual[actual.length - 2] = cloneSource;
+          appendFileSync(cloneCalls, `${JSON.stringify({ operation: "clone" })}\n`);
+        }
+        const result = Bun.spawnSync(actual, { cwd, stdout: "pipe", stderr: "ignore", env: fixtureGitEnv });
+        return { exitCode: result.exitCode, stdout: result.stdout.toString("utf8").trimEnd() };
+      },
       // Run inspection never reads this machine's hook log during the fixture suite.
       forgeGateLogRoot: join(home, "run-gate-logs"),
       geminiChatRuntime: {

@@ -374,6 +374,8 @@ export interface TestHearth {
 
 export interface TestHearthOptions {
   api?: OperatorApiOverrides;
+  /** Fixed repository folder-picker command; tests supply a private inert result seam. */
+  projectRepositoryPickerCommand?: readonly string[];
   /** Trusted test-only repository registry root; omitted keeps the real default. */
   projectRepositoryRegistryRoot?: (home: string) => string;
   /** Hand the hearth a council ledger (this hearth's own), as `main()` does. Off by default. */
@@ -519,6 +521,9 @@ export async function startTestHearth(
   const hearth = await createHearth({
     root,
     home,
+    ...(options.projectRepositoryPickerCommand === undefined
+      ? {}
+      : { projectRepositoryPickerCommand: options.projectRepositoryPickerCommand }),
     harnessRoot: REPO,
     environment: { COUNCIL_RUNS_DIR: join(root, "council-runs") },
     ...(options.councilRuns

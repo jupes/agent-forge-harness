@@ -9,7 +9,7 @@ use serde::Deserialize;
 use std::os::windows::process::CommandExt;
 use std::{
     env,
-    io::{BufRead, BufReader, Read},
+    io::{BufRead, BufReader, Read, Write},
     path::Path,
     process::{Child, Command, Stdio},
     sync::{mpsc, Arc, Mutex},
@@ -112,6 +112,7 @@ fn launch_host(
 ) -> Result<(OwnedHost, Url), Box<dyn std::error::Error>> {
     let hearth: Command = app.shell().sidecar("hearth")?.into();
     let hearth = hearth.get_program().to_owned();
+    let native_picker = env::current_exe()?;
     let assets = app.path().resource_dir()?.join("dashboard");
     let mut host: Command = app.shell().sidecar("desktop-host")?.into();
     let command = host
@@ -123,6 +124,8 @@ fn launch_host(
         .arg(assets)
         .arg("--hearth")
         .arg(hearth)
+        .arg("--native-picker")
+        .arg(native_picker)
         .env("NO_PROXY", proxy_bypass_env())
         .env("no_proxy", proxy_bypass_env())
         .stdin(Stdio::piped())
@@ -370,6 +373,32 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn main() {
+    let args: Vec<_> = env::args_os().skip(1).collect();
+    if args.first().is_some_and(|arg| arg == "--choose-project-repository") {
+        if args.len() != 1 {
+            let _ = writeln!(
+                std::io::stdout().lock(),
+                "{{\"ok\":false,\"data\":null,\"error\":\"Invalid repository picker arguments\"}}"
+            );
+            std::process::exit(1);
+        }
+        let result = workspace::choose_project_repository();
+        let (code, data, error) = match result {
+            Ok(Some(path)) => (
+                0,
+                Some(serde_json::json!({"path": path.to_string_lossy()})),
+                None,
+            ),
+            Ok(None) => (0, Some(serde_json::json!({"path": null})), None),
+            Err(_) => (1, None, Some("Repository folder selection failed")),
+        };
+        let output = serde_json::json!({"ok": code == 0, "data": data, "error": error});
+        let mut stdout = std::io::stdout().lock();
+        if writeln!(stdout, "{output}").is_err() {
+            std::process::exit(1);
+        }
+        std::process::exit(code);
+    }
     if run().is_err() {
         recovery::launch_error();
         #[cfg(debug_assertions)]

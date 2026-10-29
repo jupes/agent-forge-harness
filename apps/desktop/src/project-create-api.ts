@@ -20,6 +20,14 @@ import {
   projectCreateReserveSchema,
   projectCreateRetireSchema,
 } from "../../../scripts/projects/create-protocol";
+import {
+  approvedRepositorySchema,
+  projectRepositoryNameSchema,
+  repositoryCloneSchema,
+  repositorySelectionSchema,
+  type RepositoryClone,
+  type RepositorySelection,
+} from "../../../scripts/projects/repository-onboarding-protocol";
 import type { SmithsView } from "../../../types/hearth";
 import { PROJECT_COLOR_IDS } from "../../../types/projects";
 import { canonicalProjectCreateJson } from "./project-create-identities";
@@ -245,6 +253,119 @@ export function createProjectCreateApi(deps: {
             : null;
         },
         "The project reservation retirement may have reached the hearth.",
+      );
+    },
+    pickRepository(requestId: string) {
+      const id = z.string().uuid().parse(requestId);
+      return write(
+        "/__agent-forge/projects/repository-selections",
+        { requestId: id },
+        [200],
+        (data) => {
+          const checked = repositorySelectionSchema.safeParse(data);
+          return checked.success && checked.data.requestId === id &&
+            (checked.data.state !== "selected" || (checked.data.path !== null && checked.data.workspaceKey.length > 0))
+            ? checked.data
+            : null;
+        },
+        "The folder selection outcome is unknown; recover the saved request before trying again.",
+      );
+    },
+    async repositorySelection(requestId: string) {
+      const saved = await checkedData<RepositorySelection>(
+        read,
+        `/__agent-forge/projects/repository-selections/${encodeURIComponent(requestId)}`,
+        identityBytes,
+        repositorySelectionSchema,
+      );
+      if (saved.requestId !== requestId) throw Error("Saved folder selection did not match the requested UUID.");
+      return saved;
+    },
+    registerRepository(selection: RepositorySelection, name: string) {
+      const id = z.string().uuid().parse(selection.requestId);
+      const body = z.object({ name: projectRepositoryNameSchema }).strict().parse({ name });
+      return write(
+        `/__agent-forge/projects/repository-selections/${encodeURIComponent(id)}/register`,
+        body,
+        [200],
+        (data) => {
+          const checked = approvedRepositorySchema.safeParse(data);
+          return checked.success && checked.data.name === name &&
+            checked.data.path === selection.path && checked.data.source === "folder" &&
+            checked.data.originalRequestId === id
+            ? checked.data : null;
+        },
+        "Repository registration may have reached the control plane; recover by reading the saved project choices.",
+      );
+    },
+    reserveRepositoryClone(requestId: string, name: string, url: string) {
+      const id = z.string().uuid().parse(requestId);
+      const canonicalUrl = new URL(url).href;
+      const body = z.object({
+        requestId: z.string().uuid(),
+        name: projectRepositoryNameSchema,
+        url: z.string().min(1).max(2048),
+      }).strict().parse({ requestId: id, name, url: canonicalUrl });
+      return write(
+        "/__agent-forge/projects/repository-clone-reservations",
+        body,
+        [200],
+        (data) => {
+          const checked = repositoryCloneSchema.safeParse(data);
+          return checked.success && checked.data.requestId === id && checked.data.state === "reserved" &&
+            checked.data.name === name && checked.data.url === canonicalUrl && checked.data.path.length > 0
+            ? checked.data
+            : null;
+        },
+        "The clone review may have been saved; recover the same request before continuing.",
+      );
+    },
+    async repositoryClone(requestId: string, expected?: Pick<RepositoryClone, "requestId" | "name" | "url"> & Partial<Pick<RepositoryClone, "path" | "workspaceKey">>) {
+      const checked = await checkedData<RepositoryClone>(
+        read,
+        `/__agent-forge/projects/repository-clone-reservations/${encodeURIComponent(requestId)}`,
+        identityBytes,
+        repositoryCloneSchema,
+      );
+      const canonicalExpectedUrl = expected === undefined ? undefined : new URL(expected.url).href;
+      if (checked.requestId !== requestId || (expected !== undefined &&
+        (checked.requestId !== expected.requestId || checked.name !== expected.name || checked.url !== canonicalExpectedUrl ||
+          (expected.path !== undefined && checked.path !== expected.path) ||
+          (expected.workspaceKey !== undefined && checked.workspaceKey !== expected.workspaceKey))))
+        throw Error("Saved clone request did not match the reviewed destination.");
+      return checked;
+    },
+    cloneRepository(review: RepositoryClone) {
+      const id = z.string().uuid().parse(review.requestId);
+      return write(
+        `/__agent-forge/projects/repository-clone-reservations/${encodeURIComponent(id)}/clone`,
+        {},
+        [200],
+        (data) => {
+          const checked = repositoryCloneSchema.safeParse(data);
+          return checked.success && checked.data.requestId === id &&
+            checked.data.workspaceKey === review.workspaceKey && checked.data.name === review.name &&
+            checked.data.url === review.url && checked.data.path === review.path &&
+            ["registered", "clone-complete", "failed", "unknown"].includes(checked.data.state)
+            ? checked.data
+            : null;
+        },
+        "The clone may have started; read the saved request and do not start it again.",
+      );
+    },
+    registerClone(review: RepositoryClone) {
+      const id = z.string().uuid().parse(review.requestId);
+      return write(
+        `/__agent-forge/projects/repository-clone-reservations/${encodeURIComponent(id)}/register`,
+        {},
+        [200],
+        (data) => {
+          const checked = repositoryCloneSchema.safeParse(data);
+          return checked.success && checked.data.requestId === id && checked.data.workspaceKey === review.workspaceKey &&
+            checked.data.name === review.name && checked.data.url === review.url && checked.data.path === review.path &&
+            checked.data.state === "registered" ? checked.data : null;
+        },
+        "The completed clone registration may have reached the control plane; recover the same saved request.",
       );
     },
   };
