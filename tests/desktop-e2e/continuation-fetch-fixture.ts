@@ -145,11 +145,15 @@ export async function installCachedGeminiSmithRead(
   try {
     const stat = fstatSync(descriptor);
     if (!stat.isFile() || stat.size > 4096)
-      throw new Error("The inert Gemini native config exceeded its fixture bound.");
+      throw new Error(
+        "The inert Gemini native config exceeded its fixture bound.",
+      );
     const bytes = Buffer.alloc(4097);
     const length = readSync(descriptor, bytes, 0, bytes.length, 0);
     if (length > 4096 || length !== stat.size)
-      throw new Error("The inert Gemini native config changed during its bounded read.");
+      throw new Error(
+        "The inert Gemini native config changed during its bounded read.",
+      );
     try {
       configText = new TextDecoder("utf-8", { fatal: true }).decode(
         bytes.subarray(0, length),
@@ -160,11 +164,13 @@ export async function installCachedGeminiSmithRead(
   } finally {
     closeSync(descriptor);
   }
-  const config = /^\[smiths\.([A-Za-z0-9][A-Za-z0-9._-]*)\]\r?\nprovider = "([a-z]+)"\r?\nmodel = "([A-Za-z0-9._-]+)"\r?\neffort = "([A-Za-z0-9._-]+)"\r?\nenabled = true\r?\n$/.exec(
-    configText,
-  );
+  const config =
+    /^\[smiths\.([A-Za-z0-9][A-Za-z0-9._-]*)\]\r?\nprovider = "([a-z]+)"\r?\nmodel = "([A-Za-z0-9._-]+)"\r?\neffort = "([A-Za-z0-9._-]+)"\r?\nenabled = true\r?\n$/.exec(
+      configText,
+    );
   const [, name, provider, model, effort] = config ?? [];
   if (
+    config?.[0] !== configText ||
     name !== "gemini-example" ||
     name !== options.smithName ||
     provider !== "gemini" ||
