@@ -36,9 +36,8 @@ if (process.env["READINESS_FIXTURE_REQUIRE_EOF"] === "1") {
   }
 }
 const record = process.env["READINESS_FIXTURE_RECORD"];
-const helperKey = process.argv.slice(-2).join(" ") === "auth status"
-  ? "status"
-  : null;
+const helperKey =
+  process.argv.slice(-2).join(" ") === "auth status" ? "status" : null;
 if (
   helperDirectory &&
   process.env["READINESS_FIXTURE"] === "owned-helper" &&
@@ -87,10 +86,10 @@ else if (
   process.exitCode = 1;
 } else {
   const report = JSON.stringify({
-      authMethod: "api_key",
-      loggedIn: true,
-      apiKey: "fixture-secret-never-forward",
-      email: "private@example.test",
+    authMethod: "api_key",
+    loggedIn: true,
+    apiKey: "fixture-secret-never-forward",
+    email: "private@example.test",
   });
   if (
     process.env["READINESS_FIXTURE"] === "owned-helper" &&

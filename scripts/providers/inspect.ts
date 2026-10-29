@@ -7,9 +7,9 @@ import type {
 import { buildChildEnv } from "../executors/env";
 import { ADAPTERS } from "../executors/registry";
 import {
+  type InteractiveSuperviseOptions,
   SupervisorOwnershipRefusalError,
   supervise,
-  type InteractiveSuperviseOptions,
 } from "../executors/supervisor";
 import {
   parseClaudeAuthentication,
