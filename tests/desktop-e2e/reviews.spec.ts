@@ -25,7 +25,9 @@ test("project Reviews reserves and displays the verified exact original without 
   await page.getByRole("button", { name: "New review", exact: true }).click();
   await expect(page.getByLabel("Source type")).toHaveValue("text");
   await expect(page.getByLabel("Document or question")).toBeVisible();
-  const prepare = page.getByRole("button", { name: "Prepare original for review" });
+  const prepare = page.getByRole("button", {
+    name: "Prepare original for review",
+  });
   await expect(prepare).toBeDisabled();
   expect(councilPosts).toEqual([]);
 
@@ -34,32 +36,60 @@ test("project Reviews reserves and displays the verified exact original without 
     "Exact review body: preserve this sentence and its identity.",
   );
   await expect(prepare).toBeEnabled();
-  await page.getByLabel("Redact detected secrets; otherwise source preparation rejects them").uncheck();
-  await expect(source).toHaveValue("Exact review body: preserve this sentence and its identity.");
+  await page
+    .getByLabel(
+      "Redact detected secrets; otherwise source preparation rejects them",
+    )
+    .uncheck();
+  await expect(source).toHaveValue(
+    "Exact review body: preserve this sentence and its identity.",
+  );
   await expect(prepare).toBeEnabled();
-  await page.getByLabel("Redact detected secrets; otherwise source preparation rejects them").check();
+  await page
+    .getByLabel(
+      "Redact detected secrets; otherwise source preparation rejects them",
+    )
+    .check();
   await prepare.click();
   await expect(
     page.getByRole("heading", { name: "Exact saved original" }),
   ).toBeVisible();
-  await expect(page.getByText("Exact review body: preserve this sentence and its identity.")).toBeVisible();
+  await expect(
+    page.getByText(
+      "Exact review body: preserve this sentence and its identity.",
+    ),
+  ).toBeVisible();
   await expect(page.getByText(/Intent hash/)).toBeVisible();
   expect(councilPosts).toHaveLength(1);
   expect(councilPosts[0]).toMatch(/\/projects\/.*\/council\/reviews$/);
   expect(councilPosts.some((path) => path.endsWith("/commit"))).toBe(false);
-  expect(councilPosts.some((path) => path.includes("/council-api/runs"))).toBe(false);
+  expect(councilPosts.some((path) => path.includes("/council-api/runs"))).toBe(
+    false,
+  );
 
-  await page.getByRole("button", { name: "Convene this exact original" }).click();
-  await expect(page.getByRole("heading", { name: "Council result" })).toBeVisible({ timeout: 15_000 });
+  await page
+    .getByRole("button", { name: "Convene this exact original" })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "Council result" }),
+  ).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText("Verified state: completed")).toBeVisible();
   expect(councilPosts).toHaveLength(2);
-  expect(councilPosts[1]).toMatch(/\/projects\/.*\/council\/reviews\/[^/]+\/commit$/);
+  expect(councilPosts[1]).toMatch(
+    /\/projects\/.*\/council\/reviews\/[^/]+\/commit$/,
+  );
 
   await page.reload();
-  await expect(page.getByRole("heading", { name: "Saved reviews" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Saved reviews" }),
+  ).toBeVisible();
   await page.getByRole("button", { name: "Read saved original" }).click();
-  await expect(page.getByRole("heading", { name: "Exact saved original" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Exact saved original" }),
+  ).toBeVisible();
   await page.getByRole("button", { name: "Check saved result" }).click();
-  await expect(page.getByRole("heading", { name: "Council result" })).toBeVisible();
+  await expect(
+    page.getByRole("heading", { name: "Council result" }),
+  ).toBeVisible();
   expect(councilPosts).toHaveLength(2);
 });

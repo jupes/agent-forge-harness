@@ -1,16 +1,16 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { appStream } from "../../../docs/js/use-stream";
 import {
+  type ProjectCouncilOriginalRead,
+  type ProjectCouncilReserveRequest,
   projectCouncilIntentJson,
   projectCouncilOriginalReadSchema,
   projectCouncilRequestIdSchema,
   projectCouncilReserveRequestSchema,
-  type ProjectCouncilOriginalRead,
-  type ProjectCouncilReserveRequest,
 } from "../../../types/project-council";
 import {
-  projectCouncilRunReadSchema,
   type ProjectCouncilRunRead,
+  projectCouncilRunReadSchema,
 } from "../../../types/project-council-run-read";
 import {
   createProjectCouncilTransport,
@@ -19,7 +19,18 @@ import {
   type ProjectCouncilTransport,
 } from "./project-council-transport";
 
-export type ProjectCouncilPhase = "loading" | "ready" | "preparing" | "reserved" | "committing" | "running" | "completed" | "failed" | "cancelled" | "held" | "retiring";
+export type ProjectCouncilPhase =
+  | "loading"
+  | "ready"
+  | "preparing"
+  | "reserved"
+  | "committing"
+  | "running"
+  | "completed"
+  | "failed"
+  | "cancelled"
+  | "held"
+  | "retiring";
 export interface ProjectCouncilView {
   projectId: string;
   workspace: string | null;
@@ -50,11 +61,15 @@ export interface ProjectCouncilOwner {
 export interface ProjectCouncilTransportInput extends ProjectCouncilTransport {}
 
 function message(error: unknown): string {
-  return error instanceof Error ? error.message : "The saved review could not be verified.";
+  return error instanceof Error
+    ? error.message
+    : "The saved review could not be verified.";
 }
 
 function publishedContextMatches(
-  published: NonNullable<NonNullable<ProjectCouncilRunRead["job"]>["run"]>["context"],
+  published: NonNullable<
+    NonNullable<ProjectCouncilRunRead["job"]>["run"]
+  >["context"],
   original: ProjectCouncilOriginalRead["original"]["context"],
 ): boolean {
   const expected = {
@@ -68,7 +83,13 @@ function publishedContextMatches(
   const canonical = (value: unknown): string => {
     if (Array.isArray(value)) return `[${value.map(canonical).join(",")}]`;
     if (typeof value === "object" && value !== null) {
-      return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`).join(",")}}`;
+      return `{${Object.keys(value)
+        .sort()
+        .map(
+          (key) =>
+            `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`,
+        )
+        .join(",")}}`;
     }
     return JSON.stringify(value) ?? "null";
   };
@@ -86,17 +107,26 @@ async function verifyOriginal(
   if (
     metadata.projectId !== projectId ||
     original.binding.projectId !== projectId ||
-    workspace === null || original.binding.workspace !== workspace ||
+    workspace === null ||
+    original.binding.workspace !== workspace ||
     (requestId !== undefined && original.requestId !== requestId) ||
     metadata.requestId !== original.requestId ||
     metadata.intentHash !== original.intentHash
-  ) throw Error("The saved original belongs to a different project or workspace.");
+  )
+    throw Error(
+      "The saved original belongs to a different project or workspace.",
+    );
   const expected = await crypto.subtle.digest(
     "SHA-256",
     new TextEncoder().encode(projectCouncilIntentJson(original)),
   );
-  const hash = [...new Uint8Array(expected)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
-  if (hash !== original.intentHash) throw Error("The saved original hash does not match its reviewed contents.");
+  const hash = [...new Uint8Array(expected)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+  if (hash !== original.intentHash)
+    throw Error(
+      "The saved original hash does not match its reviewed contents.",
+    );
   return result;
 }
 
@@ -140,15 +170,28 @@ export function createProjectCouncilOwner(
   };
 
   const assertHistoryOwner = (history: ProjectCouncilHistory) => {
-    if (history.version !== 1 || history.projectId !== projectId || (workspace !== null && history.workspace !== workspace)) {
-      throw Error("Saved Council history belongs to a different project or workspace.");
+    if (
+      history.version !== 1 ||
+      history.projectId !== projectId ||
+      (workspace !== null && history.workspace !== workspace)
+    ) {
+      throw Error(
+        "Saved Council history belongs to a different project or workspace.",
+      );
     }
-    if (history.activeRequestId !== null && !history.items.some((item) => item.requestId === history.activeRequestId)) {
-      throw Error("The active saved review is missing from the scoped history response.");
+    if (
+      history.activeRequestId !== null &&
+      !history.items.some((item) => item.requestId === history.activeRequestId)
+    ) {
+      throw Error(
+        "The active saved review is missing from the scoped history response.",
+      );
     }
   };
 
-  const protectedRead = async <T,>(work: (signal: AbortSignal) => Promise<T>): Promise<T> => {
+  const protectedRead = async <T>(
+    work: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> => {
     metadataAbort?.abort();
     const abort = new AbortController();
     metadataAbort = abort;
@@ -162,51 +205,111 @@ export function createProjectCouncilOwner(
   };
 
   const refresh = async () => {
-    if (disposed || view.phase === "preparing" || view.phase === "committing" || view.phase === "retiring") return;
+    if (
+      disposed ||
+      view.phase === "preparing" ||
+      view.phase === "committing" ||
+      view.phase === "retiring"
+    )
+      return;
     const current = ++generation;
     try {
-      const [profiles, history] = await protectedRead((signal) => Promise.all([
-        transport.profiles(signal),
-        transport.history(projectId, signal),
-      ]));
+      const [profiles, history] = await protectedRead((signal) =>
+        Promise.all([
+          transport.profiles(signal),
+          transport.history(projectId, signal),
+        ]),
+      );
       assertHistoryOwner(history);
       if (disposed || current !== generation) return;
-      paint({ profiles, history, phase: view.phase === "held" ? "held" : "ready", error: "" });
+      paint({
+        profiles,
+        history,
+        phase: view.phase === "held" ? "held" : "ready",
+        error: "",
+      });
       const activeId = history.activeRequestId;
       if (activeId !== null) {
-        if (!projectCouncilRequestIdSchema.safeParse(activeId).success) throw Error("The active saved review ID is invalid.");
-        const historyState = history.items.find((item) => item.requestId === activeId)?.state;
+        if (!projectCouncilRequestIdSchema.safeParse(activeId).success)
+          throw Error("The active saved review ID is invalid.");
+        const historyState = history.items.find(
+          (item) => item.requestId === activeId,
+        )?.state;
         if (disposed || current !== generation) return;
-        const alreadyReviewed = view.original?.original.requestId === activeId && view.original.original.state === historyState;
+        const alreadyReviewed =
+          view.original?.original.requestId === activeId &&
+          view.original.original.state === historyState;
         if (alreadyReviewed) {
-          const phase = view.run?.provenance.requestId === activeId && view.run.receipt.phase === "running"
-            ? "running"
-            : historyState === "reserved" ? "reserved" : "held";
+          const phase =
+            view.run?.provenance.requestId === activeId &&
+            view.run.receipt.phase === "running"
+              ? "running"
+              : historyState === "reserved"
+                ? "reserved"
+                : "held";
           paint({ history, phase, error: "" });
         } else {
-          paint({ history, original: null, run: null, phase: historyState === "reserved" ? "reserved" : "held", error: "Read the saved original to verify its current contents and state." });
+          paint({
+            history,
+            original: null,
+            run: null,
+            phase: historyState === "reserved" ? "reserved" : "held",
+            error:
+              "Read the saved original to verify its current contents and state.",
+          });
         }
       } else if (view.original === null && view.phase !== "held") {
         paint({ history, phase: "ready", error: "" });
       } else if (view.original) {
-        const row = history.items.find((item) => item.requestId === view.original?.original.requestId);
+        const row = history.items.find(
+          (item) => item.requestId === view.original?.original.requestId,
+        );
         if (row && row.state !== view.original.original.state) {
-          paint({ history, original: null, run: null, phase: "ready", error: "Saved review state changed. Read the saved original again before continuing." });
+          paint({
+            history,
+            original: null,
+            run: null,
+            phase: "ready",
+            error:
+              "Saved review state changed. Read the saved original again before continuing.",
+          });
         }
       }
       // An empty history is never proof that a previously sent reserve was absent.
     } catch (error) {
       if (disposed || current !== generation) return;
-      paint({ phase: view.history?.activeRequestId ? "held" : view.phase === "loading" ? "held" : view.phase, error: message(error) });
+      paint({
+        phase: view.history?.activeRequestId
+          ? "held"
+          : view.phase === "loading"
+            ? "held"
+            : view.phase,
+        error: message(error),
+      });
     }
   };
 
   const prepare = async (request: ProjectCouncilReserveRequest) => {
-    if (disposed || workspace === null || view.phase !== "ready" || view.history?.activeRequestId) return;
+    if (
+      disposed ||
+      workspace === null ||
+      view.phase !== "ready" ||
+      view.history?.activeRequestId
+    )
+      return;
     const parsedRequest = projectCouncilReserveRequestSchema.safeParse(request);
-    const selectedProfile = view.profiles.find((profile) => profile.path === request.profileChoice);
-    if (!parsedRequest.success || !selectedProfile || !selectedProfile.readiness.every((item) => item.configured)) {
-      paint({ error: "Choose a valid, locally configured Council profile before preparing an original." });
+    const selectedProfile = view.profiles.find(
+      (profile) => profile.path === request.profileChoice,
+    );
+    if (
+      !parsedRequest.success ||
+      !selectedProfile ||
+      !selectedProfile.readiness.every((item) => item.configured)
+    ) {
+      paint({
+        error:
+          "Choose a valid, locally configured Council profile before preparing an original.",
+      });
       return;
     }
     const action = ++actionGeneration;
@@ -224,61 +327,145 @@ export function createProjectCouncilOwner(
         reserved.metadata.projectId !== projectId ||
         verified.metadata.intentHash !== reserved.metadata.intentHash ||
         verified.original.state !== "reserved"
-      ) throw Error("The prepared original did not match the reservation response.");
-      if (disposed || action !== actionGeneration || selection !== selectionGeneration) return;
+      )
+        throw Error(
+          "The prepared original did not match the reservation response.",
+        );
+      if (
+        disposed ||
+        action !== actionGeneration ||
+        selection !== selectionGeneration
+      )
+        return;
       paint({ original: verified, phase: "reserved", error: "" });
       void refresh();
     } catch (error) {
-      if (disposed || action !== actionGeneration || selection !== selectionGeneration) return;
-      paint({ phase: "held", error: `${message(error)} Check saved review before trying again.` });
+      if (
+        disposed ||
+        action !== actionGeneration ||
+        selection !== selectionGeneration
+      )
+        return;
+      paint({
+        phase: "held",
+        error: `${message(error)} Check saved review before trying again.`,
+      });
       void refresh();
     }
   };
 
   const retire = async (requestId: string, intentHash: string) => {
     const saved = view.original;
-    if (disposed || workspace === null || view.phase !== "reserved" || !saved || saved.original.state !== "reserved" || saved.original.requestId !== requestId || saved.original.intentHash !== intentHash) return;
+    if (
+      disposed ||
+      workspace === null ||
+      view.phase !== "reserved" ||
+      !saved ||
+      saved.original.state !== "reserved" ||
+      saved.original.requestId !== requestId ||
+      saved.original.intentHash !== intentHash
+    )
+      return;
     const action = ++actionGeneration;
     const selection = selectionGeneration;
     paint({ phase: "retiring", error: "" });
     try {
-      const receipt = await transport.retire(projectId, saved.original.requestId, saved.original.intentHash);
+      const receipt = await transport.retire(
+        projectId,
+        saved.original.requestId,
+        saved.original.intentHash,
+      );
       if (
         receipt.metadata.requestId !== saved.original.requestId ||
         receipt.metadata.intentHash !== saved.original.intentHash ||
         receipt.metadata.projectId !== projectId ||
         receipt.metadata.runId !== saved.original.runId ||
         receipt.phase !== "retired"
-      ) throw Error("The retirement receipt did not match the saved review.");
-      if (disposed || action !== actionGeneration || selection !== selectionGeneration || view.original?.original.requestId !== requestId || view.original.original.intentHash !== intentHash) return;
+      )
+        throw Error("The retirement receipt did not match the saved review.");
+      if (
+        disposed ||
+        action !== actionGeneration ||
+        selection !== selectionGeneration ||
+        view.original?.original.requestId !== requestId ||
+        view.original.original.intentHash !== intentHash
+      )
+        return;
       stopRunFollow();
-      paint({ history: view.history, original: null, run: null, phase: "held", error: "Retirement is verified. Check saved history before preparing another original." });
-      const history = await protectedRead((signal) => transport.history(projectId, signal));
+      paint({
+        history: view.history,
+        original: null,
+        run: null,
+        phase: "held",
+        error:
+          "Retirement is verified. Check saved history before preparing another original.",
+      });
+      const history = await protectedRead((signal) =>
+        transport.history(projectId, signal),
+      );
       assertHistoryOwner(history);
-      if (disposed || action !== actionGeneration || selection !== selectionGeneration) return;
-      if (history.activeRequestId !== null) throw Error("Another saved review is active after retirement. Check its exact original before preparing again.");
+      if (
+        disposed ||
+        action !== actionGeneration ||
+        selection !== selectionGeneration
+      )
+        return;
+      if (history.activeRequestId !== null)
+        throw Error(
+          "Another saved review is active after retirement. Check its exact original before preparing again.",
+        );
       paint({ history, original: null, run: null, phase: "ready", error: "" });
     } catch (error) {
-      if (disposed || action !== actionGeneration || selection !== selectionGeneration) return;
-      paint({ phase: "held", error: `${message(error)} Check saved review before trying again.` });
+      if (
+        disposed ||
+        action !== actionGeneration ||
+        selection !== selectionGeneration
+      )
+        return;
+      paint({
+        phase: "held",
+        error: `${message(error)} Check saved review before trying again.`,
+      });
     }
   };
 
   const openSaved = async (requestId: string) => {
-    if (disposed || !(view.history?.activeRequestId === requestId || view.history?.items.some((item) => item.requestId === requestId))) return;
+    if (
+      disposed ||
+      !(
+        view.history?.activeRequestId === requestId ||
+        view.history?.items.some((item) => item.requestId === requestId)
+      )
+    )
+      return;
     selectionGeneration++;
     actionGeneration++;
     const current = ++generation;
     if (workspace === null) {
-      paint({ phase: "held", error: "The current served project workspace is not available. Check the project before reading its original." });
+      paint({
+        phase: "held",
+        error:
+          "The current served project workspace is not available. Check the project before reading its original.",
+      });
       return;
     }
     stopRunFollow();
     paint({ phase: "held", error: "", original: null, run: null });
     try {
-      const verified = await verifyOriginal(await protectedRead((signal) => transport.original(projectId, requestId, signal)), projectId, workspace, requestId);
+      const verified = await verifyOriginal(
+        await protectedRead((signal) =>
+          transport.original(projectId, requestId, signal),
+        ),
+        projectId,
+        workspace,
+        requestId,
+      );
       if (disposed || current !== generation) return;
-      paint({ original: verified, phase: verified.original.state === "reserved" ? "reserved" : "held", error: "" });
+      paint({
+        original: verified,
+        phase: verified.original.state === "reserved" ? "reserved" : "held",
+        error: "",
+      });
     } catch (error) {
       if (disposed || current !== generation) return;
       paint({ phase: "held", error: message(error) });
@@ -295,7 +482,15 @@ export function createProjectCouncilOwner(
 
   const readRun = async (background = false) => {
     const saved = view.original;
-    if (disposed || workspace === null || !saved || saved.original.state === "reserved" || saved.original.state === "retired" || runAbort) return;
+    if (
+      disposed ||
+      workspace === null ||
+      !saved ||
+      saved.original.state === "reserved" ||
+      saved.original.state === "retired" ||
+      runAbort
+    )
+      return;
     const current = ++runGeneration;
     const abort = new AbortController();
     runAbort = abort;
@@ -304,35 +499,95 @@ export function createProjectCouncilOwner(
     let continueFollowing = false;
     paint({ runLoading: !background, error: "" });
     try {
-      const result = projectCouncilRunReadSchema.parse(await transport.run(projectId, saved.original.requestId, abort.signal));
+      const result = projectCouncilRunReadSchema.parse(
+        await transport.run(projectId, saved.original.requestId, abort.signal),
+      );
       if (
         result.provenance.requestId !== saved.original.requestId ||
         result.provenance.intentHash !== saved.original.intentHash ||
         result.provenance.runId !== saved.original.runId ||
         result.provenance.projectId !== projectId ||
         result.provenance.workspace !== saved.original.binding.workspace ||
-        result.provenance.catalogRevision !== saved.original.binding.catalogRevision ||
+        result.provenance.catalogRevision !==
+          saved.original.binding.catalogRevision ||
         result.provenance.scopeHash !== saved.original.binding.scopeHash
-      ) throw Error("The Council result belongs to a different saved original or project scope.");
-      if (result.job?.profile && JSON.stringify(result.job.profile) !== JSON.stringify(saved.original.profile)) throw Error("The Council result profile does not match the reviewed original.");
-      if (result.job?.run && !publishedContextMatches(result.job.run.context, saved.original.context)) throw Error("The Council result context does not match the reviewed original.");
+      )
+        throw Error(
+          "The Council result belongs to a different saved original or project scope.",
+        );
+      if (
+        result.job?.profile &&
+        JSON.stringify(result.job.profile) !==
+          JSON.stringify(saved.original.profile)
+      )
+        throw Error(
+          "The Council result profile does not match the reviewed original.",
+        );
+      if (
+        result.job?.run &&
+        !publishedContextMatches(result.job.run.context, saved.original.context)
+      )
+        throw Error(
+          "The Council result context does not match the reviewed original.",
+        );
       if (disposed || current !== runGeneration) return;
-      const phase = result.receipt.phase === "running" ? "running" : result.receipt.phase === "completed" ? "completed" : result.receipt.phase === "failed" ? "failed" : result.receipt.phase === "cancelled" ? "cancelled" : "held";
+      const phase =
+        result.receipt.phase === "running"
+          ? "running"
+          : result.receipt.phase === "completed"
+            ? "completed"
+            : result.receipt.phase === "failed"
+              ? "failed"
+              : result.receipt.phase === "cancelled"
+                ? "cancelled"
+                : "held";
       let latestOriginal = saved;
-      if (["completed", "failed", "cancelled"].includes(phase) && result.receipt.metadata.state !== saved.original.state) {
-        latestOriginal = await verifyOriginal(await protectedRead((signal) => transport.original(projectId, saved.original.requestId, signal)), projectId, workspace, saved.original.requestId);
-        if (latestOriginal.original.intentHash !== result.provenance.intentHash || latestOriginal.original.state !== result.receipt.metadata.state) throw Error("The terminal receipt did not match the saved original state.");
+      if (
+        ["completed", "failed", "cancelled"].includes(phase) &&
+        result.receipt.metadata.state !== saved.original.state
+      ) {
+        latestOriginal = await verifyOriginal(
+          await protectedRead((signal) =>
+            transport.original(projectId, saved.original.requestId, signal),
+          ),
+          projectId,
+          workspace,
+          saved.original.requestId,
+        );
+        if (
+          latestOriginal.original.intentHash !== result.provenance.intentHash ||
+          latestOriginal.original.state !== result.receipt.metadata.state
+        )
+          throw Error(
+            "The terminal receipt did not match the saved original state.",
+          );
       }
       if (disposed || current !== runGeneration) return;
       runDelay = 2_000;
-      paint({ run: result, original: latestOriginal, runLoading: false, phase, error: "" });
-      if (phase === "completed" || phase === "failed" || phase === "cancelled") void refresh();
-      continueFollowing = phase === "running" && (result.job?.status === "running" || result.job?.status === "cancelling");
+      paint({
+        run: result,
+        original: latestOriginal,
+        runLoading: false,
+        phase,
+        error: "",
+      });
+      if (phase === "completed" || phase === "failed" || phase === "cancelled")
+        void refresh();
+      continueFollowing =
+        phase === "running" &&
+        (result.job?.status === "running" ||
+          result.job?.status === "cancelling");
     } catch (error) {
       if (disposed || current !== runGeneration) return;
-      if (background && (view.phase === "running" || view.run?.receipt.phase === "running")) {
+      if (
+        background &&
+        (view.phase === "running" || view.run?.receipt.phase === "running")
+      ) {
         runDelay = Math.min(10_000, runDelay * 2);
-        paint({ runLoading: false, error: `${message(error)} The last verified progress remains visible.` });
+        paint({
+          runLoading: false,
+          error: `${message(error)} The last verified progress remains visible.`,
+        });
         retryDelay = runDelay;
       } else {
         paint({ phase: "held", runLoading: false, error: message(error) });
@@ -348,51 +603,153 @@ export function createProjectCouncilOwner(
   const openResult = async (requestId: string) => {
     await openSaved(requestId);
     const saved = view.original;
-    if (!disposed && saved?.original.requestId === requestId && saved.original.state !== "reserved" && saved.original.state !== "retired") await readRun();
+    if (
+      !disposed &&
+      saved?.original.requestId === requestId &&
+      saved.original.state !== "reserved" &&
+      saved.original.state !== "retired"
+    )
+      await readRun();
   };
 
   const convene = async (requestId: string, intentHash: string) => {
     const saved = view.original;
-    if (disposed || workspace === null || view.phase !== "reserved" || !saved || saved.original.state !== "reserved" || saved.original.requestId !== requestId || saved.original.intentHash !== intentHash) return;
+    if (
+      disposed ||
+      workspace === null ||
+      view.phase !== "reserved" ||
+      !saved ||
+      saved.original.state !== "reserved" ||
+      saved.original.requestId !== requestId ||
+      saved.original.intentHash !== intentHash
+    )
+      return;
     const action = ++actionGeneration;
     const selection = selectionGeneration;
     paint({ phase: "committing", error: "", run: null });
     try {
-      const receipt = await transport.commit(projectId, saved.original.requestId, saved.original.intentHash);
-      if (receipt.metadata.requestId !== saved.original.requestId || receipt.metadata.intentHash !== saved.original.intentHash || receipt.metadata.projectId !== projectId || receipt.metadata.runId !== saved.original.runId || receipt.phase === "reserved" || receipt.phase === "retired") throw Error("The Council admission receipt did not match the reviewed original.");
-      const currentOriginal = await verifyOriginal(await protectedRead((signal) => transport.original(projectId, saved.original.requestId, signal)), projectId, workspace, saved.original.requestId);
-      if (currentOriginal.original.state === "reserved" || currentOriginal.original.intentHash !== receipt.metadata.intentHash) throw Error("The saved original did not confirm Council admission.");
-      if (disposed || action !== actionGeneration || selection !== selectionGeneration || view.original?.original.requestId !== requestId || view.original.original.intentHash !== intentHash) return;
+      const receipt = await transport.commit(
+        projectId,
+        saved.original.requestId,
+        saved.original.intentHash,
+      );
+      if (
+        receipt.metadata.requestId !== saved.original.requestId ||
+        receipt.metadata.intentHash !== saved.original.intentHash ||
+        receipt.metadata.projectId !== projectId ||
+        receipt.metadata.runId !== saved.original.runId ||
+        receipt.phase === "reserved" ||
+        receipt.phase === "retired"
+      )
+        throw Error(
+          "The Council admission receipt did not match the reviewed original.",
+        );
+      const currentOriginal = await verifyOriginal(
+        await protectedRead((signal) =>
+          transport.original(projectId, saved.original.requestId, signal),
+        ),
+        projectId,
+        workspace,
+        saved.original.requestId,
+      );
+      if (
+        currentOriginal.original.state === "reserved" ||
+        currentOriginal.original.intentHash !== receipt.metadata.intentHash
+      )
+        throw Error("The saved original did not confirm Council admission.");
+      if (
+        disposed ||
+        action !== actionGeneration ||
+        selection !== selectionGeneration ||
+        view.original?.original.requestId !== requestId ||
+        view.original.original.intentHash !== intentHash
+      )
+        return;
       paint({ phase: "held", error: "", original: currentOriginal });
       await readRun();
     } catch (error) {
-      if (disposed || action !== actionGeneration || selection !== selectionGeneration) return;
+      if (
+        disposed ||
+        action !== actionGeneration ||
+        selection !== selectionGeneration
+      )
+        return;
       stopRunFollow();
-      paint({ phase: "held", error: `${message(error)} Check the saved original and result; do not submit Convene again.` });
+      paint({
+        phase: "held",
+        error: `${message(error)} Check the saved original and result; do not submit Convene again.`,
+      });
     }
   };
 
   const cancel = async (requestId: string, intentHash: string) => {
     const saved = view.original;
-    if (disposed || workspace === null || !saved || saved.original.requestId !== requestId || saved.original.intentHash !== intentHash || saved.original.state === "reserved" || saved.original.state === "retired" || view.phase !== "running") return;
+    if (
+      disposed ||
+      workspace === null ||
+      !saved ||
+      saved.original.requestId !== requestId ||
+      saved.original.intentHash !== intentHash ||
+      saved.original.state === "reserved" ||
+      saved.original.state === "retired" ||
+      view.phase !== "running"
+    )
+      return;
     const action = ++actionGeneration;
     const selection = selectionGeneration;
     stopRunFollow();
-    paint({ phase: "held", error: "Requesting cancellation; checking the saved result…" });
+    paint({
+      phase: "held",
+      error: "Requesting cancellation; checking the saved result…",
+    });
     try {
-      const receipt = await transport.cancel(projectId, saved.original.requestId, saved.original.intentHash);
-      if (receipt.metadata.requestId !== saved.original.requestId || receipt.metadata.intentHash !== saved.original.intentHash || receipt.metadata.runId !== saved.original.runId || receipt.metadata.projectId !== projectId || receipt.phase === "reserved" || receipt.phase === "retired") throw Error("The cancellation receipt did not match the saved original.");
-      if (disposed || action !== actionGeneration || selection !== selectionGeneration || view.original?.original.requestId !== requestId || view.original.original.intentHash !== intentHash) return;
+      const receipt = await transport.cancel(
+        projectId,
+        saved.original.requestId,
+        saved.original.intentHash,
+      );
+      if (
+        receipt.metadata.requestId !== saved.original.requestId ||
+        receipt.metadata.intentHash !== saved.original.intentHash ||
+        receipt.metadata.runId !== saved.original.runId ||
+        receipt.metadata.projectId !== projectId ||
+        receipt.phase === "reserved" ||
+        receipt.phase === "retired"
+      )
+        throw Error(
+          "The cancellation receipt did not match the saved original.",
+        );
+      if (
+        disposed ||
+        action !== actionGeneration ||
+        selection !== selectionGeneration ||
+        view.original?.original.requestId !== requestId ||
+        view.original.original.intentHash !== intentHash
+      )
+        return;
       await readRun();
     } catch (error) {
-      if (disposed || action !== actionGeneration || selection !== selectionGeneration) return;
-      paint({ phase: "held", error: `${message(error)} Cancellation is not confirmed; check the saved result.` });
+      if (
+        disposed ||
+        action !== actionGeneration ||
+        selection !== selectionGeneration
+      )
+        return;
+      paint({
+        phase: "held",
+        error: `${message(error)} Cancellation is not confirmed; check the saved result.`,
+      });
     }
   };
 
   const newDraft = () => {
     const saved = view.original;
-    if (!saved || view.history?.activeRequestId === saved.original.requestId || saved.original.state === "reserved") return;
+    if (
+      !saved ||
+      view.history?.activeRequestId === saved.original.requestId ||
+      saved.original.state === "reserved"
+    )
+      return;
     selectionGeneration++;
     actionGeneration++;
     stopRunFollow();
@@ -425,10 +782,18 @@ export function createProjectCouncilOwner(
   };
 }
 
-export function useProjectCouncil(projectId: string | null, workspace: string | null) {
+export function useProjectCouncil(
+  projectId: string | null,
+  workspace: string | null,
+) {
   const key = JSON.stringify([projectId, workspace]);
-  const ownerRef = useRef<{ key: string; owner: ProjectCouncilOwner } | null>(null);
-  const [snapshot, setSnapshot] = useState<{ key: string; view: ProjectCouncilView } | null>(null);
+  const ownerRef = useRef<{ key: string; owner: ProjectCouncilOwner } | null>(
+    null,
+  );
+  const [snapshot, setSnapshot] = useState<{
+    key: string;
+    view: ProjectCouncilView;
+  } | null>(null);
   useEffect(() => {
     if (!projectId) return;
     const owner = createProjectCouncilOwner(projectId, workspace);
@@ -436,7 +801,12 @@ export function useProjectCouncil(projectId: string | null, workspace: string | 
     const changed = () => setSnapshot({ key, view: { ...owner.get() } });
     const unsubscribe = owner.subscribe(changed);
     const unwatch = appStream().watch(
-      ["operator.action", "review.recorded", "run.phase.entered", "run.phase.completed"],
+      [
+        "operator.action",
+        "review.recorded",
+        "run.phase.entered",
+        "run.phase.completed",
+      ],
       () => {
         if (document.visibilityState === "visible") void owner.refresh();
       },
