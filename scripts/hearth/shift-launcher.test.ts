@@ -442,6 +442,7 @@ test("superviseShift requests a hidden owned target", () => {
     observed.push(args);
     throw sentinel;
   };
+  let restored = false;
 
   try {
     if (
@@ -458,12 +459,12 @@ test("superviseShift requests a hidden owned target", () => {
       caught = error;
     }
   } finally {
-    if (
-      !Reflect.set(Bun, "spawn", originalSpawn) ||
-      !Object.is(Reflect.get(Bun, "spawn"), originalSpawn)
-    )
-      throw new Error("The Shift spawn observer could not be restored.");
+    restored =
+      Reflect.set(Bun, "spawn", originalSpawn) &&
+      Object.is(Reflect.get(Bun, "spawn"), originalSpawn);
   }
+  if (!restored)
+    throw new Error("The Shift spawn observer could not be restored.");
 
   expect(caught).toBe(sentinel);
   expect(guardCalls).toBe(0);
@@ -479,7 +480,9 @@ test("superviseShift requests a hidden owned target", () => {
     stderr: "pipe",
   });
   const option = (name: string): unknown =>
-    typeof options === "object" && options !== null && Reflect.has(options, name)
+    typeof options === "object" &&
+    options !== null &&
+    Reflect.has(options, name)
       ? Reflect.get(options, name)
       : undefined;
   expect(option("detached")).toBe(
