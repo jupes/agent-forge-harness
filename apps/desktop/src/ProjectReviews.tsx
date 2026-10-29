@@ -1270,8 +1270,7 @@ export function ProjectReviews({
               ) : null}
               {view.history &&
                 view.history.total > 0 &&
-                view.history.activeRequestId !==
-                  view.original.original.requestId &&
+                view.history.activeRequestId === null &&
                 (view.original.original.state === "completed" ||
                   view.original.original.state === "failed" ||
                   view.original.original.state === "cancelled" ||
@@ -1285,9 +1284,11 @@ export function ProjectReviews({
                     Back to saved reviews
                   </Button>
                 )}
-              {view.history?.activeRequestId !==
-                view.original.original.requestId &&
-              view.original.original.state !== "reserved" ? (
+              {view.history?.activeRequestId === null &&
+              (view.original.original.state === "completed" ||
+                view.original.original.state === "failed" ||
+                view.original.original.state === "cancelled" ||
+                view.original.original.state === "retired") ? (
                 <Button
                   onClick={() => {
                     owner?.newDraft();
