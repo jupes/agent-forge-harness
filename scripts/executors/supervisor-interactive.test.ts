@@ -409,6 +409,13 @@ test("Stop settles a backpressured write and EOF while confirming descendant cle
     ]);
     expect(beforeChildAck).toBe("held");
 
+    writeFileSync(acknowledged, "not-ready");
+    const beforeValidAck = await Promise.race([
+      announcement.then(() => "announced" as const),
+      Bun.sleep(25).then(() => "held" as const),
+    ]);
+    expect(beforeValidAck).toBe("held");
+
     writeFileSync(release, "child");
     child = await announcement;
     expect(readFileSync(acknowledged, "utf8")).toBe("ready");
