@@ -33,6 +33,11 @@ import type {
   SmithsView,
 } from "../../types/hearth";
 import type { OwnedSessionRecord } from "../../types/owned-session";
+import {
+  type ProjectCouncilBinding,
+  projectCouncilMetadataSchema,
+  projectCouncilReceiptSchema,
+} from "../../types/project-council";
 import type { ProjectCatalog } from "../../types/projects";
 import { terminalHandoffAttemptSchema } from "../../types/session-terminal-handoff";
 import type { SmithConfigEditRequest } from "../../types/smith-config-edit";
@@ -65,8 +70,16 @@ import {
 import { conversationFile } from "../conversations/paths";
 import { createConversationStore } from "../conversations/store";
 import { runCouncilCli } from "../council/cli";
+import { buildContextPack, contextListing } from "../council/context";
 import type { CommandResult, CommandRunner } from "../council/pr-source";
+import {
+  createProjectCouncilOriginalStore,
+  projectCouncilInputHash,
+  projectCouncilProfileHash,
+} from "../council/project-original-store";
+import { providerEndpointSnapshot } from "../council/providers";
 import type { CouncilPreview } from "../council/service";
+import { parseCouncilProfileJson } from "../council/types";
 import { REVIEW_NOTE_LIMIT } from "../dashboard/forge-run-model";
 import { hashText } from "../hash-text";
 import { createRestartIdentityJournal } from "../identities/restart-index";
@@ -94,6 +107,7 @@ import type {
   NativeConsoleLaunchOptions,
 } from "../providers/native-console";
 import { queueTracker } from "../scheduler/queue-fixture";
+import { withQueueLock } from "../scheduler/queue-lock";
 import {
   readShiftRecord,
   SHIFTS_DIR,
@@ -613,6 +627,161 @@ function post(
     headers,
     body: typeof body === "string" ? body : JSON.stringify(body),
   });
+}
+
+type ProjectCouncilSeed = {
+  requestId: string;
+  intentHash: string;
+  runId: string;
+};
+const projectCouncilSeeds = new WeakMap<
+  TestHearth,
+  Map<string, ProjectCouncilSeed>
+>();
+
+function projectCouncilReserveBody(source: string) {
+  return {
+    sourceChoice: { sourceType: "text", source },
+    profileChoice: resolve(
+      import.meta.dir,
+      "../..",
+      "councils",
+      "default.json",
+    ),
+    maxUsd: 0.25,
+    maxBytes: 1024,
+    redactSecrets: false,
+    deepDiscussion: false,
+  };
+}
+
+async function seedProjectCouncilOriginal(
+  h: TestHearth,
+  source = "An API inventory Council fixture.",
+): Promise<ProjectCouncilSeed> {
+  let bySource = projectCouncilSeeds.get(h);
+  if (!bySource) {
+    bySource = new Map();
+    projectCouncilSeeds.set(h, bySource);
+  }
+  const found = bySource.get(source);
+  if (found) return found;
+  const response = await post(
+    h,
+    `/projects/${FIXTURE_PROJECT_ID}/council/reviews`,
+    projectCouncilReserveBody(source),
+  );
+  const body = await envelope<unknown>(response);
+  if (
+    response.status !== 202 ||
+    !body.ok ||
+    typeof body.data !== "object" ||
+    body.data === null ||
+    Array.isArray(body.data) ||
+    !("metadata" in body.data) ||
+    typeof body.data.metadata !== "object" ||
+    body.data.metadata === null ||
+    !("requestId" in body.data.metadata) ||
+    typeof body.data.metadata.requestId !== "string" ||
+    !/^[0-9a-f-]{36}$/.test(body.data.metadata.requestId) ||
+    !("intentHash" in body.data.metadata) ||
+    typeof body.data.metadata.intentHash !== "string" ||
+    !/^[a-f0-9]{64}$/.test(body.data.metadata.intentHash) ||
+    !("runId" in body.data.metadata) ||
+    typeof body.data.metadata.runId !== "string"
+  )
+    throw new Error(
+      `Could not seed a project Council original (${response.status}).`,
+    );
+  const seed = {
+    requestId: body.data.metadata.requestId,
+    intentHash: body.data.metadata.intentHash,
+    runId: body.data.metadata.runId,
+  };
+  bySource.set(source, seed);
+  return seed;
+}
+
+async function seedProjectCouncilReadOriginal(
+  h: TestHearth,
+  source = "An API inventory read-only Council fixture.",
+): Promise<ProjectCouncilSeed> {
+  const profileChoice = resolve(
+    import.meta.dir,
+    "../..",
+    "councils",
+    "default.json",
+  );
+  const profileResult = parseCouncilProfileJson(
+    readFileSync(profileChoice, "utf8"),
+  );
+  if (!profileResult.ok)
+    throw new Error("The inert Council read profile fixture is invalid.");
+  const profile = profileResult.value;
+  const projectId = FIXTURE_PROJECT_ID;
+  const binding: ProjectCouncilBinding = {
+    projectId,
+    workspace: h.workspace,
+    catalogRevision: 1,
+    scopeHash: "a".repeat(64),
+    profileHash: projectCouncilProfileHash(profile),
+  };
+  const context = buildContextPack({
+    kind: "stdin",
+    text: source,
+    maxBytes: 1024,
+  });
+  const store = createProjectCouncilOriginalStore({
+    home: h.home,
+    workspace: h.workspace,
+    projectId,
+    withQueueLock,
+  });
+  const reserved = await store.reservePrepared({
+    binding,
+    inputHash: projectCouncilInputHash({ sourceType: "text", source }),
+    profileChoice,
+    profile,
+    providerEndpoints: providerEndpointSnapshot(profile, {}),
+    context,
+    listing: contextListing(context),
+    options: {
+      maxUsd: 0.25,
+      maxBytes: 1024,
+      redactSecrets: false,
+      deepDiscussion: false,
+    },
+  });
+  return {
+    requestId: reserved.original.requestId,
+    intentHash: reserved.original.intentHash,
+    runId: reserved.original.runId,
+  };
+}
+
+function projectCouncilPaths(seed: ProjectCouncilSeed): void {
+  READS["GET /projects/:id/council/reviews"] =
+    `/projects/${FIXTURE_PROJECT_ID}/council/reviews`;
+  READS["GET /projects/:id/council/reviews/:requestId"] =
+    `/projects/${FIXTURE_PROJECT_ID}/council/reviews/${seed.requestId}`;
+  READS["GET /projects/:id/council/reviews/:requestId/run"] =
+    `/projects/${FIXTURE_PROJECT_ID}/council/reviews/${seed.requestId}/run`;
+}
+
+async function commitProjectCouncilOriginal(
+  h: TestHearth,
+  seed: ProjectCouncilSeed,
+): Promise<void> {
+  const response = await post(
+    h,
+    `/projects/${FIXTURE_PROJECT_ID}/council/reviews/${seed.requestId}/commit`,
+    { intentHash: seed.intentHash },
+  );
+  if (response.status !== 202)
+    throw new Error(
+      `Could not commit project Council fixture (${response.status}).`,
+    );
+  await response.body?.cancel();
 }
 
 /**
@@ -3298,6 +3467,259 @@ const ACTIONS: Record<string, ActionFixture> = {
     },
     happened: started("fixture-a"),
   },
+  "POST /projects/:id/council/reviews": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/council/reviews`,
+      body: {},
+      status: 202,
+      target: FIXTURE_PROJECT_ID,
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/council/reviews`,
+      body: { sourceChoice: { sourceType: "invalid", source: "x" } },
+    },
+    prepare: async (h) => {
+      const source = "API inventory reserved review fixture.";
+      const seed = await seedProjectCouncilOriginal(h, source);
+      ACTIONS["POST /projects/:id/council/reviews"]!.valid.body =
+        projectCouncilReserveBody(source);
+      projectCouncilPaths(seed);
+    },
+    settled: async (h) => {
+      const seed = await seedProjectCouncilOriginal(
+        h,
+        "API inventory reserved review fixture.",
+      );
+      const store = createProjectCouncilOriginalStore({
+        home: h.home,
+        workspace: h.workspace,
+        projectId: FIXTURE_PROJECT_ID,
+        withQueueLock,
+      });
+      await store.retire(FIXTURE_PROJECT_ID, seed.requestId, seed.intentHash);
+    },
+    happened: async (h, answer) => {
+      const seed = await seedProjectCouncilOriginal(
+        h,
+        "API inventory reserved review fixture.",
+      );
+      if (
+        typeof answer !== "object" ||
+        answer === null ||
+        Array.isArray(answer) ||
+        !("metadata" in answer) ||
+        !("created" in answer) ||
+        answer.created !== false
+      )
+        throw new Error("The reserve action did not return its replay result.");
+      const metadata = projectCouncilMetadataSchema.safeParse(answer.metadata);
+      if (!metadata.success)
+        throw new Error("The reserve action metadata is not strict.");
+      expect(metadata.data).toMatchObject({
+        requestId: seed.requestId,
+        runId: seed.runId,
+        state: "reserved",
+      });
+      expect(h.commands.calls).toEqual([]);
+      expect(h.events(["council.run.started", "council.run.finished"])).toEqual(
+        [],
+      );
+    },
+  },
+  "POST /projects/:id/council/reviews/:requestId/commit": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/council/reviews/not-seeded/commit`,
+      body: { intentHash: "0".repeat(64) },
+      status: 202,
+      target: "not-seeded",
+      audit: { inputHash: "0".repeat(64) },
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/council/reviews/not-a-uuid/commit`,
+      body: { intentHash: "0".repeat(64) },
+    },
+    prepare: async (h) => {
+      const seed = await seedProjectCouncilOriginal(
+        h,
+        "API inventory committed review fixture.",
+      );
+      const fixture =
+        ACTIONS["POST /projects/:id/council/reviews/:requestId/commit"]!;
+      fixture.valid.path = `/projects/${FIXTURE_PROJECT_ID}/council/reviews/${seed.requestId}/commit`;
+      fixture.valid.body = { intentHash: seed.intentHash };
+      fixture.valid.target = seed.requestId;
+      fixture.valid.audit = { inputHash: seed.intentHash };
+    },
+    settled: async (h) => {
+      const seed = await seedProjectCouncilOriginal(
+        h,
+        "API inventory committed review fixture.",
+      );
+      await councilRunFinished(h, seed.runId);
+    },
+    happened: async (h, answer) => {
+      const seed = await seedProjectCouncilOriginal(
+        h,
+        "API inventory committed review fixture.",
+      );
+      const initialReceipt = projectCouncilReceiptSchema.safeParse(answer);
+      if (!initialReceipt.success)
+        throw new Error("The commit action did not return a strict receipt.");
+      expect(initialReceipt.data).toMatchObject({
+        metadata: {
+          requestId: seed.requestId,
+          runId: seed.runId,
+          intentHash: seed.intentHash,
+        },
+        phase: expect.stringMatching(/^(running|unknown)$/),
+      });
+      expect(await runStatus(h, seed.runId)).toBe("completed");
+      const exact = await get(
+        h,
+        `/projects/${FIXTURE_PROJECT_ID}/council/reviews/${seed.requestId}/run`,
+        h.headers(h.hearth.token),
+      );
+      expect(exact.status).toBe(200);
+      expect(await exact.json()).toMatchObject({
+        data: {
+          version: 1,
+          receipt: { phase: "completed" },
+          job: {
+            runId: seed.runId,
+            status: "completed",
+            run: {
+              context: {
+                contentHash: expect.any(String),
+                evidence: expect.any(Array),
+              },
+            },
+          },
+          verdictCommentPreview: null,
+        },
+      });
+      const runsBeforeReplay = await runIds(h);
+      const callsBeforeReplay = h.commands.calls.length;
+      const replay = await post(
+        h,
+        `/projects/${FIXTURE_PROJECT_ID}/council/reviews/${seed.requestId}/commit`,
+        { intentHash: seed.intentHash },
+      );
+      expect(replay.status).toBe(202);
+      const replayEnvelope = await envelope<unknown>(replay);
+      if (!replayEnvelope.ok)
+        throw new Error("The replayed commit returned an error envelope.");
+      const replayReceipt = projectCouncilReceiptSchema.safeParse(
+        replayEnvelope.data,
+      );
+      if (!replayReceipt.success)
+        throw new Error("The replayed commit receipt is not strict.");
+      expect(replayReceipt.data).toMatchObject({
+        metadata: {
+          requestId: seed.requestId,
+          runId: seed.runId,
+          intentHash: seed.intentHash,
+          state: "completed",
+        },
+        phase: "completed",
+      });
+      expect(await runIds(h)).toEqual(runsBeforeReplay);
+      expect(h.commands.calls).toHaveLength(callsBeforeReplay);
+    },
+  },
+  "POST /projects/:id/council/reviews/:requestId/retire": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/council/reviews/not-seeded/retire`,
+      body: { intentHash: "0".repeat(64) },
+      status: 200,
+      target: "not-seeded",
+      audit: { inputHash: "0".repeat(64) },
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/council/reviews/not-a-uuid/retire`,
+      body: { intentHash: "0".repeat(64) },
+    },
+    prepare: async (h) => {
+      const seed = await seedProjectCouncilOriginal(
+        h,
+        "API inventory retired review fixture.",
+      );
+      const fixture =
+        ACTIONS["POST /projects/:id/council/reviews/:requestId/retire"]!;
+      fixture.valid.path = `/projects/${FIXTURE_PROJECT_ID}/council/reviews/${seed.requestId}/retire`;
+      fixture.valid.body = { intentHash: seed.intentHash };
+      fixture.valid.target = seed.requestId;
+      fixture.valid.audit = { inputHash: seed.intentHash };
+    },
+    happened: async (h, answer) => {
+      const seed = await seedProjectCouncilOriginal(
+        h,
+        "API inventory retired review fixture.",
+      );
+      const receipt = projectCouncilReceiptSchema.safeParse(answer);
+      if (!receipt.success)
+        throw new Error("The retire action did not return a strict receipt.");
+      expect(receipt.data).toMatchObject({
+        metadata: {
+          requestId: seed.requestId,
+          runId: seed.runId,
+          intentHash: seed.intentHash,
+          state: "retired",
+        },
+        phase: "retired",
+      });
+    },
+  },
+  "POST /projects/:id/council/reviews/:requestId/cancel": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/council/reviews/not-seeded/cancel`,
+      body: { intentHash: "0".repeat(64) },
+      status: 200,
+      target: "not-seeded",
+      audit: { inputHash: "0".repeat(64) },
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/council/reviews/not-a-uuid/cancel`,
+      body: { intentHash: "0".repeat(64) },
+    },
+    prepare: async (h) => {
+      const seed = await seedProjectCouncilOriginal(
+        h,
+        "API inventory cancelled review fixture.",
+      );
+      await commitProjectCouncilOriginal(h, seed);
+      const fixture =
+        ACTIONS["POST /projects/:id/council/reviews/:requestId/cancel"]!;
+      fixture.valid.path = `/projects/${FIXTURE_PROJECT_ID}/council/reviews/${seed.requestId}/cancel`;
+      fixture.valid.body = { intentHash: seed.intentHash };
+      fixture.valid.target = seed.requestId;
+      fixture.valid.audit = { inputHash: seed.intentHash };
+    },
+    settled: async (h) => {
+      const seed = await seedProjectCouncilOriginal(
+        h,
+        "API inventory cancelled review fixture.",
+      );
+      await councilRunFinished(h, seed.runId);
+    },
+    happened: async (h, answer) => {
+      const seed = await seedProjectCouncilOriginal(
+        h,
+        "API inventory cancelled review fixture.",
+      );
+      const receipt = projectCouncilReceiptSchema.safeParse(answer);
+      if (!receipt.success)
+        throw new Error("The cancel action did not return a strict receipt.");
+      expect(receipt.data).toMatchObject({
+        metadata: {
+          requestId: seed.requestId,
+          runId: seed.runId,
+          intentHash: seed.intentHash,
+          state: expect.stringMatching(/^(completed|cancelled)$/),
+        },
+        phase: expect.stringMatching(/^(completed|cancelled)$/),
+      });
+    },
+  },
   "POST /council/preview": {
     valid: {
       path: "/council/preview",
@@ -3385,6 +3807,9 @@ const ACTIONS: Record<string, ActionFixture> = {
 
 /** A concrete path per read row; a row with none fails the suite. */
 const READS: Record<string, string> = {
+  "GET /projects/:id/council/reviews": `/projects/${FIXTURE_PROJECT_ID}/council/reviews`,
+  "GET /projects/:id/council/reviews/:requestId": `/projects/${FIXTURE_PROJECT_ID}/council/reviews/${API_PROJECT_CREATE_READ_ID}`,
+  "GET /projects/:id/council/reviews/:requestId/run": `/projects/${FIXTURE_PROJECT_ID}/council/reviews/${API_PROJECT_CREATE_READ_ID}/run`,
   "GET /projects/create-options": "/projects/create-options",
   "GET /projects/create-scope-preview":
     "/projects/create-scope-preview?slug=alpha&epicId=alpha-epic",
@@ -4438,6 +4863,7 @@ describe("a read row or the stream while another connection holds the write lock
       API_PROJECT_CREATE_READ_ID,
       "cold-ledger-project-read",
     );
+    projectCouncilPaths(await seedProjectCouncilReadOriginal(h));
     await seedSmithCreateOriginal(h);
     await seedSmithEditOriginal(h);
     await seedSmithRoutingEditOriginal(h);
@@ -5561,6 +5987,7 @@ describe("every read row (iterating the table)", () => {
       API_PROJECT_CREATE_READ_ID,
       "api-project-read",
     );
+    projectCouncilPaths(await seedProjectCouncilReadOriginal(h));
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");
     for (const row of rows) {
@@ -5617,6 +6044,7 @@ describe("every read row (iterating the table)", () => {
       API_PROJECT_CREATE_READ_ID,
       "api-project-read",
     );
+    projectCouncilPaths(await seedProjectCouncilReadOriginal(h));
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");
     const refused: Array<[string, Record<string, string>]> = [
