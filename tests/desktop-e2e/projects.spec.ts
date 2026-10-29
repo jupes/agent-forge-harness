@@ -1291,6 +1291,13 @@ test("Add Folder and a reviewed local clone feed a fresh two-repository project 
   await dialog
     .getByRole("button", { name: "Review folder registration", exact: true })
     .click();
+  const screenshotDir = process.env["SHOT_DIR"];
+  if (screenshotDir) {
+    mkdirSync(screenshotDir, { recursive: true });
+    await dialog.screenshot({
+      path: join(screenshotDir, "repository-folder-review.png"),
+    });
+  }
   await dialog
     .getByRole("button", { name: "Register reviewed folder", exact: true })
     .click();
@@ -1381,7 +1388,7 @@ test("Add Folder and a reviewed local clone feed a fresh two-repository project 
   const keeper = smithsViewSchema
     .parse(keeperResponse.body.data)
     .smiths.find((row) => row.enabled);
-  expect(keeper).toBeDefined();
+  if (!keeper) throw new Error("No enabled Keeper is available for the review.");
   await freshDialog
     .getByRole("combobox", { name: "Project Keeper" })
     .selectOption(keeper.name);
@@ -1409,6 +1416,11 @@ test("Add Folder and a reviewed local clone feed a fresh two-repository project 
     .locator("xpath=following-sibling::dd[1]");
   await expect(repositoriesText).toContainText("selected-folder");
   await expect(repositoriesText).toContainText("cloned-folder");
+  if (screenshotDir) {
+    await freshDialog.screenshot({
+      path: join(screenshotDir, "two-repository-project-review.png"),
+    });
+  }
   expect(localCloneCount()).toBe(1);
   expect(clonePosts).toHaveLength(1);
   expect(projectReservations).toEqual([]);

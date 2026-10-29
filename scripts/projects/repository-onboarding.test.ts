@@ -41,7 +41,7 @@ function initGit(path: string, bare = false, env?: NodeJS.ProcessEnv): void {
   mkdirSync(path, { recursive: true });
   const result = Bun.spawnSync(
     ["git", "init", ...(bare ? ["--bare"] : []), "--quiet", path],
-    { stdout: "pipe", stderr: "pipe", env },
+    { stdout: "pipe", stderr: "pipe", ...(env === undefined ? {} : { env }) },
   );
   if (result.exitCode !== 0)
     throw new Error("Could not prepare the inert Git fixture.");

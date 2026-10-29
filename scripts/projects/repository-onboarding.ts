@@ -190,6 +190,8 @@ async function runCommand(
       );
     if (oversized)
       throw new Error("Repository command output exceeded its limit.");
+    if (result.exitCode === null)
+      throw new Error("Repository process exit status was unavailable.");
     return { exitCode: result.exitCode, stdout: lines.join("\n") };
   } catch {
     await handle.stop("repository operation cleanup").catch(() => undefined);
