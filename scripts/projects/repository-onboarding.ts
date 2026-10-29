@@ -124,7 +124,7 @@ function canonicalGitRoot(path: string): string {
   )
     throw new Error("Choose the root folder of a Git repository.");
   const checkout = resolveCheckout(canonical);
-  if (resolve(checkout.worktree) !== resolve(canonical))
+  if (workspaceKey(checkout.worktree) !== workspaceKey(canonical))
     throw new Error("Choose the canonical root of a Git repository.");
   return canonical;
 }

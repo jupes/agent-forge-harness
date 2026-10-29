@@ -144,7 +144,7 @@ test("protected repository onboarding recovers exact records and updates checked
   expect(h.events(["operator.action"])).toHaveLength(auditedPicks);
   expect(h.events(["operator.action"]).at(-1)?.payload).toMatchObject({
     action: "project.repository.pick",
-    target: PICK_ID,
+    requestId: PICK_ID,
   });
 
   selectedPath = emptyMarker;
