@@ -110,6 +110,30 @@ test("inspection runs only fixed version/status commands with filtered environme
   expect(JSON.stringify(found)).not.toContain("private-key");
 });
 
+test("Grok does not identify unrelated semver text and runs only its version probe", async () => {
+  const calls: string[][] = [];
+  const inspector = createProviderInspector({
+    root: "/fixture",
+    home: "/private-fixture",
+    environment: {},
+    which: (binary) => (binary === "grok" ? "/fixture/grok" : null),
+    run: async (command) => {
+      calls.push([...command]);
+      return {
+        exitCode: 0,
+        stdout: "grok unrelated-cli 9.9.9 (0123456789ab)\n",
+        valid: true,
+      };
+    },
+  });
+
+  const inspected = await inspector.inspect("grok", []);
+
+  expect(calls).toEqual([["/fixture/grok", "--version"]]);
+  expect(inspected.installation.versionOk).toBe(false);
+  expect(inspected.installation.version).toBeNull();
+});
+
 test("not found, old/unsupported and failed status stay separate; deferred OpenRouter never gains an invented adapter", async () => {
   const calls: string[][] = [];
   const inspector = createProviderInspector({
