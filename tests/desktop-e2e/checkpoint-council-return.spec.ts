@@ -671,7 +671,9 @@ test("completed Council verdict returns to the exact checkpoint for a separate h
     .getByRole("button", { name: "Convene this exact original" })
     .click();
   await expect(
-    page.getByText("Verified state: completed", { exact: true }),
+    page
+      .getByRole("region", { name: "Council result and progress" })
+      .getByText(/^Verified state: completed · completed(?:$| ·)/),
   ).toBeVisible({
     timeout: 20_000,
   });

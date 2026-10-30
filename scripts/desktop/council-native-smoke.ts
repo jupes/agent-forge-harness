@@ -786,6 +786,8 @@ async function exerciseCheckpoint(
       "Council did not receive the exact canonical checkpoint source.",
     );
   const profile = page.getByLabel("Council profile");
+  const reservePath =
+    "/__agent-forge/projects/" + projectId + "/council/reviews";
   if (
     !(await profile.inputValue())
       .replaceAll("\\", "/")
@@ -820,6 +822,16 @@ async function exerciseCheckpoint(
     throw new Error(
       "The exact saved Council original identity was not visible.",
     );
+  const preparedSource = record(record(posts[0]?.body)?.sourceChoice);
+  if (
+    postCount() !== 1 ||
+    posts[0]?.path !== reservePath ||
+    preparedSource?.sourceType !== "bead" ||
+    preparedSource.source !== checkpointId
+  )
+    throw new Error(
+      "Preparing the Council original did not make exactly one canonical Bead reservation.",
+    );
   await page
     .getByRole("button", { name: "Convene this exact original" })
     .click();
@@ -843,9 +855,10 @@ async function exerciseCheckpoint(
     throw new Error("The visible completed Council result was invalid JSON.");
   }
   const publicRun = record(publicRunValue);
-  const verifiedState = page.getByText("Verified state: completed", {
-    exact: true,
-  });
+  const verifiedState = page
+    .getByRole("region", { name: "Council result and progress" })
+    .getByRole("status")
+    .filter({ hasText: /^Verified state: completed · completed(?:$| ·)/ });
   await verifiedState.waitFor({ timeout: waitMs });
   if (
     !publicRun ||
@@ -877,8 +890,6 @@ async function exerciseCheckpoint(
   const firstPosts = posts.filter((post) =>
     post.path.includes("/projects/" + projectId + "/council/reviews"),
   );
-  const reservePath =
-    "/__agent-forge/projects/" + projectId + "/council/reviews";
   const reservePost = firstPosts.find((post) => post.path === reservePath);
   const commitPath = reservePath + "/" + councilRequestId + "/commit";
   const commitPost = firstPosts.find((post) => post.path === commitPath);
