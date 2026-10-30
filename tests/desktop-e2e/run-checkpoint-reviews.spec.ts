@@ -39,8 +39,7 @@ import { workspace } from "./project-fixtures";
 
 const ownedRuns = new Map<string, string>();
 const ownedFaults = new Map<string, string>();
-const privateStandInState = realpathSync.native(BD_STAND_IN_STATE);
-const faultFile = join(privateStandInState, "checkpoint-review-fault.json");
+const faultFile = join(BD_STAND_IN_STATE, "checkpoint-review-fault.json");
 const callsFile = join(BD_STAND_IN_STATE, "calls.jsonl");
 const dispatchFiles = [
   "codex-fixture-calls.jsonl",
@@ -440,6 +439,7 @@ function ownFault(beadId: string, requestId: string): string {
   });
   if (Buffer.byteLength(bytes, "utf8") > 4 * 1024)
     throw Error("The checkpoint fault control exceeded its fixture limit.");
+  const privateStandInState = realpathSync.native(BD_STAND_IN_STATE);
   if (realpathSync.native(dirname(faultFile)) !== privateStandInState)
     throw Error(
       "The checkpoint fault control escaped its private fixture home.",

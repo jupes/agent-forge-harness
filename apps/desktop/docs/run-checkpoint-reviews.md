@@ -27,4 +27,14 @@ Actions use the existing audit-before-effect framework. The outcome event is the
 
 The lead's serialized Windows gates have passed 17 durable journal cases, eight service cases, five HTTP/scope cases, ten client ownership cases and seven existing Run/artifact regressions across retained source checkpoints. The action inventory ran 11 selected cases with 2,139 assertions and no test failures; its original owner result failed because the invocation incorrectly expected five cases. A separate SHA-bound count correction preserves that distinction without rerunning the unchanged tests.
 
-The combined stack typechecked at `fde91cfa` and passed full lint at `cf11e526`. Actual checkpoint browser journeys are being added for keyboard review, a persisted comment with lost/uncertain delivery, and prepared-original recovery after reload. Those journeys, exact-head CI and wider release/human acceptance remain required; this document is not a completion claim for them.
+At `58c307a0`, all three actual browser journeys passed in 25.6 seconds (26.943-second retained owner): keyboard request changes with one exact comment/event; a persisted comment with unknown/lost delivery, reload, explicit original verification and exact readback; and a held prepared original across Run switch/reload with explicit Record. All 22 owned processes exited, fixture ports were free, and source remained clean. Combined typecheck passed in 23.107 seconds, with all four owned processes exited.
+
+The acceptance run first exposed a real self-invalidation race: a checkpoint action's audit event made Runs refresh and unmount the review panel. Runs now watches recorded run/gate/review/verdict state changes instead of generic audit envelopes, while genuine target/owner/active/write-authority fences remain. Metadata alone never promotes a privately read prepared original to unknown; recovery requires the explicit protected read. Test-only corrections keep Playwright Node imports free of Bun SQLite, read actual ledger events through the protected API, create only a bounded metadata fault file in the private fixture home, and distinguish strict read-only version/login probes from any task dispatch.
+
+The 1100x700 captures below were inspected after the actual reduced-motion/keyboard run; private-note fields are masked in some views. They show synthetic fixtures, not real provider or tracker data. Exact-head CI and wider release/native/human acceptance remain separate requirements.
+
+![Confirmed checkpoint comment](screenshots/checkpoint-review-confirmed.png)
+
+![Unknown delivery held for explicit verification](screenshots/checkpoint-review-unknown-held.png)
+
+![Prepared original recovered before explicit Record](screenshots/checkpoint-review-prepared-recovered.png)
