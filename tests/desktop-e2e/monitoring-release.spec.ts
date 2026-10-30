@@ -422,8 +422,11 @@ test("foreground monitoring keeps Alpha and Beta scope, source limits and record
   await expect(detail).toContainText("Start time is not recorded");
   const gateHistory = detail.getByRole("region", { name: "Run gate history" });
   await expect(gateHistory).toContainText("No matching gate was recorded");
-  await expect(runs).toContainText(
-    "correlated sessions are not available here",
+  const recordedSessions = detail.getByRole("region", {
+    name: "Recorded sessions for this run",
+  });
+  await expect(recordedSessions).toContainText(
+    "No session starts are recorded for this run in the served workspace.",
   );
   await detail.getByRole("button", { name: "Read research artifact" }).click();
   await expect(
