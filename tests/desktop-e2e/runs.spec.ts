@@ -504,6 +504,23 @@ test("scoped Runs keyboard inspection preserves real phase, review and gate trut
   await expect(
     detail.getByRole("heading", { name: "Scoped forge delivery", exact: true }),
   ).toBeVisible();
+  const showInspector = page.getByRole("button", {
+    name: "Show inspector",
+    exact: true,
+  });
+  if (await showInspector.isVisible()) await showInspector.click();
+  const inspector = page.getByRole("complementary", {
+    name: "Inspector",
+    exact: true,
+  });
+  await expect(inspector).toBeVisible();
+  const runMetadata = inspector.getByRole("region", {
+    name: "Run metadata",
+    exact: true,
+  });
+  await expect(runMetadata).toBeVisible();
+  await expect(runMetadata).toContainText("Scoped forge delivery");
+  await expect(runMetadata).toContainText(fixture.primary);
   for (const [phase, state] of [
     ["research", "complete"],
     ["plan", "complete"],
