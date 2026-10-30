@@ -46,6 +46,11 @@ import {
   parseActivityFilters,
 } from "./project-activity-model";
 import {
+  createProjectCheckpointReviewOwner,
+  type ProjectCheckpointReviewOwner,
+  type ProjectCheckpointReviewTarget,
+} from "./project-checkpoint-review-client";
+import {
   createProjectCouncilDraftCache,
   type PendingProjectCouncilSourceReplacement,
   type ProjectCouncilDraftScope,
@@ -92,6 +97,17 @@ export function DesktopApp(): JSX.Element {
   > | null>(null);
   if (!councilDraftCache.current)
     councilDraftCache.current = createProjectCouncilDraftCache();
+  const checkpointReviewOwners = useRef(
+    new Map<string, ProjectCheckpointReviewOwner>(),
+  );
+  useEffect(
+    () => () => {
+      for (const owner of checkpointReviewOwners.current.values())
+        owner.dispose();
+      checkpointReviewOwners.current.clear();
+    },
+    [],
+  );
   const [councilSourceReplacement, setCouncilSourceReplacement] = useState<{
     scope: ProjectCouncilDraftScope;
     pending: PendingProjectCouncilSourceReplacement;
@@ -272,6 +288,20 @@ export function DesktopApp(): JSX.Element {
     selectedActivityId,
   );
   const writesAllowed = recovery?.connection.writesAllowed ?? false;
+  const checkpointReviewOwner = (target: ProjectCheckpointReviewTarget) => {
+    const key = JSON.stringify([
+      target.projectId,
+      target.workspacePath,
+      target.runSlug,
+      target.beadId,
+    ]);
+    let owner = checkpointReviewOwners.current.get(key);
+    if (!owner) {
+      owner = createProjectCheckpointReviewOwner(target);
+      checkpointReviewOwners.current.set(key, owner);
+    }
+    return owner;
+  };
   const smithCreates = useSmithCreate(
     writesAllowed,
     providers.data?.workspace ?? null,
@@ -297,6 +327,7 @@ export function DesktopApp(): JSX.Element {
   );
   const beads = useBeads(
     route.destination === "beads" ||
+      route.destination === "runs" ||
       (route.destination === "workbench" && route.selection?.kind === "bead")
       ? (project?.id ?? null)
       : null,
@@ -999,8 +1030,17 @@ export function DesktopApp(): JSX.Element {
           <ProjectRuns
             key={project.id}
             projectId={project.id}
+            workspace={summary?.workspace ?? null}
             controller={runs}
+            beads={{
+              page: beads.data,
+              loading: beads.loading,
+              error: beads.error,
+            }}
             onCouncilArtifactPrefill={openCouncilSource}
+            onCouncilBeadPrefill={openCouncilSource}
+            checkpointReviewOwner={checkpointReviewOwner}
+            checkpointReviewsWritable={writesAllowed && !project.archived}
             filters={runFilters.filters}
             filterError={runFilters.error}
             onFilter={(filters) => {

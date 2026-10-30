@@ -17,9 +17,10 @@ import {
   projectRunDetailSchema,
   projectRunsPageSchema,
 } from "../../scripts/projects/run-protocol";
+import { readState, withStateLock, writeState } from "../e2e/bd-stand-in-state";
 import { openSettled, reloadSettled } from "../e2e/fixtures";
 import { pageToken } from "../e2e/launch-link";
-import { HEARTH_HOME } from "../e2e/servers";
+import { BD_STAND_IN_STATE, HEARTH_HOME } from "../e2e/servers";
 import { alpha, beta, seedProjects } from "./project-fixtures";
 
 const owned = new Map<string, string>();
@@ -310,6 +311,101 @@ test.afterEach(async ({ page }) => {
   for (const path of [...owned.keys()]) remove(path);
   expect(posts).toEqual([]);
   expect(dispatches()).toEqual(beforeDispatches);
+});
+
+function checkpoint(
+  id: string,
+  issueType: "feature" | "task",
+  status: "open" | "in_progress",
+  parent: string,
+  blocker?: string,
+) {
+  return {
+    id,
+    title: id,
+    issue_type: issueType,
+    status,
+    priority: 2,
+    created_at: "2026-10-29T00:00:00.000Z",
+    updated_at: "2026-10-29T00:00:00.000Z",
+    labels: ["project:alpha"],
+    dependencies: [
+      { issue_id: id, depends_on_id: parent, type: "parent-child" },
+      ...(blocker
+        ? [{ issue_id: id, depends_on_id: blocker, type: "blocks" }]
+        : []),
+    ],
+  };
+}
+
+test("selected run shows its scoped checkpoints and prefills only the current bead in Council", async ({
+  page,
+}) => {
+  withStateLock(BD_STAND_IN_STATE, () => {
+    const state = readState(BD_STAND_IN_STATE);
+    Object.assign(state, {
+      "alpha-feature": checkpoint(
+        "alpha-feature",
+        "feature",
+        "open",
+        "alpha-epic",
+      ),
+      "alpha-active": checkpoint(
+        "alpha-active",
+        "task",
+        "in_progress",
+        "alpha-feature",
+      ),
+      "alpha-second": checkpoint(
+        "alpha-second",
+        "task",
+        "in_progress",
+        "alpha-feature",
+      ),
+      "alpha-next": checkpoint(
+        "alpha-next",
+        "task",
+        "open",
+        "alpha-feature",
+        "alpha-active",
+      ),
+    });
+    writeState(BD_STAND_IN_STATE, state);
+  });
+  await openSettled(page, href(alpha.id, fixture.primary));
+  const detail = page.getByRole("article", { name: "Selected forge run" });
+  const checkpoints = detail.getByRole("region", { name: "Run checkpoints" });
+  const active = checkpoints.locator('[data-checkpoint-id="alpha-active"]');
+  const second = checkpoints.locator('[data-checkpoint-id="alpha-second"]');
+  const waiting = checkpoints.locator('[data-checkpoint-id="alpha-next"]');
+  await expect(active).toContainText("In progress");
+  await expect(second).toContainText("In progress");
+  await expect(waiting).toContainText("Open");
+  await expect(waiting).toContainText("waiting on alpha-active");
+  await expect(
+    waiting.getByRole("button", { name: "Send alpha-next to Council" }),
+  ).toHaveCount(0);
+  await active
+    .getByRole("button", { name: "Send alpha-active to Council" })
+    .click();
+  await expect(page).toHaveURL(/\/reviews$/);
+  await expect(page.getByLabel("Source type")).toHaveValue("bead");
+  await expect(page.getByLabel("Beads issue ID")).toHaveValue("alpha-active");
+  await page.goBack();
+  await expect(detail).toBeVisible();
+  const secondAction = second.getByRole("button", {
+    name: "Send alpha-second to Council",
+  });
+  await expect(secondAction).toBeEnabled();
+  await secondAction.click();
+  const replace = page.getByRole("dialog", {
+    name: "Replace Council draft source?",
+  });
+  await expect(replace).toBeVisible();
+  await replace.getByRole("button", { name: "Replace source" }).click();
+  await expect(page).toHaveURL(/\/reviews$/);
+  await expect(page.getByLabel("Beads issue ID")).toHaveValue("alpha-second");
+  expect(posts).toEqual([]);
 });
 
 test("scoped Runs keyboard inspection preserves real phase, review and gate truth through Activity, Back and reload without writes", async ({

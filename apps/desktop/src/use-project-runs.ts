@@ -44,7 +44,6 @@ export function useProjectRuns(
         "gate.ran",
         "review.recorded",
         "verdict.bound",
-        "operator.action",
       ],
       refresh,
     );
