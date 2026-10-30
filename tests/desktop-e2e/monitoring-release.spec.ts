@@ -431,9 +431,34 @@ test("foreground monitoring keeps Alpha and Beta scope, source limits and record
   ).toContainText("Recorded fixture artifact.");
 
   await projectNav.getByRole("link", { name: "Activity", exact: true }).click();
-  const activity = page.getByRole("listbox", { name: "Project activity" });
-  await expect(activity).toContainText("Alpha monitoring event");
+  const alphaActivity = page.getByRole("region", { name: "Project Activity" });
+  await alphaActivity.getByLabel("Session filter").fill(activitySessionId);
+  await alphaActivity.getByRole("button", { name: "Apply filters" }).click();
+  const activity = alphaActivity.getByRole("listbox", {
+    name: "Project activity",
+  });
+  await expect(alphaActivity.getByText("25 events", { exact: true })).toBeVisible();
+  await expect(activity).not.toContainText("Alpha monitoring event");
+  expect(await activity.locator(".af-activity-row").count()).toBeLessThan(25);
+  await activity.focus();
+  await page.keyboard.press("End");
+  await expect(
+    activity.getByRole("option", { name: /Alpha monitoring event/ }),
+  ).toBeVisible();
   await expect(activity).not.toContainText("Beta monitoring event");
+
+  await page.getByRole("link", { name: "Projects", exact: true }).click();
+  await page.getByRole("link", { name: "Open Beta", exact: true }).click();
+  await betaProjectNav.getByRole("link", { name: "Activity", exact: true }).click();
+  const betaActivity = page.getByRole("region", { name: "Project Activity" });
+  await betaActivity.getByLabel("Session filter").fill(activitySessionId);
+  await betaActivity.getByRole("button", { name: "Apply filters" }).click();
+  const betaFeed = betaActivity.getByRole("listbox", {
+    name: "Project activity",
+  });
+  await expect(betaActivity.getByText("1 event", { exact: true })).toBeVisible();
+  await expect(betaFeed).toContainText("Beta monitoring event");
+  await expect(betaFeed).not.toContainText("Alpha monitoring event");
   expect(protectedPosts).toEqual([]);
 });
 
