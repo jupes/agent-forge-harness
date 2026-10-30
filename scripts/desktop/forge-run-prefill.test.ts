@@ -1,5 +1,4 @@
 import { expect, test } from "bun:test";
-import { createSessionsClient } from "../../apps/desktop/src/session-client";
 import {
   captureForgeRunDraft,
   forgeRunComposerPatch,
@@ -8,6 +7,7 @@ import {
   forgeRunPrefill,
   forgeRunPreparationHold,
 } from "../../apps/desktop/src/forge-run-prefill";
+import { createSessionsClient } from "../../apps/desktop/src/session-client";
 
 function project() {
   const client = createSessionsClient({
@@ -126,9 +126,9 @@ test("the volatile snapshot notices hidden provider edits and the shared identit
   ).toMatch(/identity scope is not verified/i);
   view.identityGeneration = 5;
   expect(forgeRunDraftMatches(snapshot, view)).toBe(false);
-  expect(forgeRunPreparationHold(view, { ...currentScope, generation: 5 })).toBe(
-    null,
-  );
+  expect(
+    forgeRunPreparationHold(view, { ...currentScope, generation: 5 }),
+  ).toBe(null);
   view.identityGeneration = 4;
   view.codexComposer.model = "changed while reviewing";
   expect(forgeRunDraftMatches(snapshot, view)).toBe(false);
@@ -149,20 +149,20 @@ test("the volatile snapshot notices hidden provider edits and the shared identit
         state,
       },
     ];
-    expect(
-      forgeRunPreparationHold(view, currentScope),
-    ).toMatch(/original session request is unresolved/i);
+    expect(forgeRunPreparationHold(view, currentScope)).toMatch(
+      /original session request is unresolved/i,
+    );
   }
   view.identityPage.identities = [];
   view.identityLoading = true;
-  expect(
-    forgeRunPreparationHold(view, currentScope),
-  ).toMatch(/identity read to finish/i);
+  expect(forgeRunPreparationHold(view, currentScope)).toMatch(
+    /identity read to finish/i,
+  );
   view.identityLoading = false;
   view.starting = true;
-  expect(
-    forgeRunPreparationHold(view, currentScope),
-  ).toMatch(/original session request is unresolved/i);
+  expect(forgeRunPreparationHold(view, currentScope)).toMatch(
+    /original session request is unresolved/i,
+  );
 });
 
 test("the snapshot covers every visible and hidden provider draft field", () => {

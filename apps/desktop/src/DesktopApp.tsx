@@ -8,6 +8,15 @@ import { BeadWriteNotices, NewBeadForm } from "./BeadWrites";
 import { ConnectionBanner, useDesktopRecovery } from "./ConnectionBanner";
 import type { FrameSession } from "./DesktopFrame";
 import { DesktopFrame } from "./DesktopFrame";
+import {
+  captureForgeRunDraft,
+  type ForgeRunDraftSnapshot,
+  type ForgeRunPrefill,
+  forgeRunComposerPatch,
+  forgeRunDraftIsPristine,
+  forgeRunDraftMatches,
+  forgeRunPreparationHold,
+} from "./forge-run-prefill";
 import { KeeperConversation, KeeperScope } from "./KeeperConversation";
 import { KeeperShiftReviewDialog } from "./KeeperShiftReviewDialog";
 import type { KeeperSessionReview } from "./keeper-session-review";
@@ -17,6 +26,7 @@ import {
   managedShiftHref,
   managedShiftSelection,
 } from "./managed-shift-navigation";
+import { NewForgeRun } from "./NewForgeRun";
 import {
   desktopHref,
   desktopRoute,
@@ -35,7 +45,6 @@ import { BeadPanel, beadHref, ProjectBeads } from "./ProjectBeads";
 import { ProjectOverview } from "./ProjectOverview";
 import { ProjectReviews } from "./ProjectReviews";
 import { ProjectRuns } from "./ProjectRuns";
-import { NewForgeRun } from "./NewForgeRun";
 import { ProjectSessions, SessionInspector } from "./ProjectSessions";
 import { ProjectShifts } from "./ProjectShifts";
 import { ProjectsHome } from "./ProjectsHome";
@@ -65,15 +74,6 @@ import {
 } from "./project-council-return";
 import type { VerifiedProjectCreate } from "./project-create-owner";
 import { parseRunFilters, runsHref } from "./project-runs-model";
-import {
-  captureForgeRunDraft,
-  forgeRunDraftIsPristine,
-  forgeRunDraftMatches,
-  forgeRunComposerPatch,
-  forgeRunPreparationHold,
-  type ForgeRunDraftSnapshot,
-  type ForgeRunPrefill,
-} from "./forge-run-prefill";
 import { ClaudeSessionComposer, SessionComposer } from "./SessionComposer";
 import { SessionConversation } from "./SessionConversation";
 import { Smiths } from "./Smiths";
@@ -81,6 +81,7 @@ import {
   canContinueClaudeRateLimit,
   validContinuationSummary,
 } from "./session-continuation";
+import type { VerifiedSessionIdentityScope } from "./session-start-identity-server";
 import { useBeadWrites } from "./use-bead-writes";
 import { useBeads } from "./use-beads";
 import { useKeeper } from "./use-keeper";
@@ -96,7 +97,6 @@ import { useProviders } from "./use-providers";
 import { useSessionLibrary } from "./use-session-library";
 import { useSessionObservations } from "./use-session-observations";
 import { useSessions } from "./use-sessions";
-import type { VerifiedSessionIdentityScope } from "./session-start-identity-server";
 import { useSmithCreate } from "./use-smith-create";
 import { useSmithEdit } from "./use-smith-edit";
 import { useSmithRoutingEdit } from "./use-smith-routing-edit";
@@ -875,7 +875,8 @@ export function DesktopApp(): JSX.Element {
     const checked = validateForgeRunReview(forgeRunReview);
     if (checked.error) return checked.error;
     const current = forgeRunCurrent.current;
-    if (!current) return "The current Runs scope is unavailable. Reopen preparation.";
+    if (!current)
+      return "The current Runs scope is unavailable. Reopen preparation.";
     const beadError = validateForgeRunBead(current, prefill, forgeRunReview);
     if (beadError) return beadError;
     current.sessions.chooseComposerProvider(forgeRunReview.projectId, "claude");
@@ -889,11 +890,13 @@ export function DesktopApp(): JSX.Element {
     return null;
   };
   const continueForgeRunToComposer = (prefill: ForgeRunPrefill) => {
-    if (!forgeRunReview) return "Reopen preparation from the current Runs page.";
+    if (!forgeRunReview)
+      return "Reopen preparation from the current Runs page.";
     const checked = validateForgeRunReview(forgeRunReview);
     if (checked.error) return checked.error;
     const current = forgeRunCurrent.current;
-    if (!current) return "The current Runs scope is unavailable. Reopen preparation.";
+    if (!current)
+      return "The current Runs scope is unavailable. Reopen preparation.";
     const beadError = validateForgeRunBead(current, prefill, forgeRunReview);
     if (beadError) return beadError;
     return forgeRunDraftIsPristine(forgeRunReview.draft)
@@ -901,7 +904,8 @@ export function DesktopApp(): JSX.Element {
       : "confirm";
   };
   const keepForgeRunDraft = () => {
-    if (!forgeRunReview) return "Reopen preparation from the current Runs page.";
+    if (!forgeRunReview)
+      return "Reopen preparation from the current Runs page.";
     const checked = validateForgeRunReview(forgeRunReview);
     if (checked.error) return checked.error;
     composerOpener.current = forgeRunOpener.current;

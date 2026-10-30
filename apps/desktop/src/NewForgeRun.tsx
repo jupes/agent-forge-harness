@@ -4,10 +4,10 @@ import { Button } from "../../../docs/js/ds/Button";
 import { Field, Textarea } from "../../../docs/js/ds/Field";
 import type { ProjectBeadsPage } from "../../../types/project-beads";
 import {
-  forgeRunPrefill,
   type ForgeRunMode,
   type ForgeRunPrefill,
   type ForgeRunSource,
+  forgeRunPrefill,
 } from "./forge-run-prefill";
 
 export interface NewForgeRunProps {
@@ -66,7 +66,9 @@ export function NewForgeRun({
                 title: selectedBead.title,
               }
             : null;
-      return source ? { value: forgeRunPrefill(mode, source), error: "" } : null;
+      return source
+        ? { value: forgeRunPrefill(mode, source), error: "" }
+        : null;
     } catch (error) {
       return {
         value: null,
@@ -140,10 +142,10 @@ export function NewForgeRun({
           <fieldset>
             <legend>Execution</legend>
             <label>
-            <input type="radio" checked disabled /> Gated (attended)
+              <input type="radio" checked disabled /> Gated (attended)
             </label>
             <label title="Unattended runs wait for local model execution.">
-            <input type="radio" disabled /> Unattended
+              <input type="radio" disabled /> Unattended
             </label>
             <p class="af-field-hint">
               Unattended runs are unavailable in v1; they wait for local model
@@ -234,9 +236,7 @@ export function NewForgeRun({
           <pre class="af-new-forge-run-prompt">
             <code>{prefill?.prompt ?? ""}</code>
           </pre>
-          {prefill?.beadId ? (
-            <p>Scoped bead: {prefill.beadId}</p>
-          ) : null}
+          {prefill?.beadId ? <p>Scoped bead: {prefill.beadId}</p> : null}
         </>
       )}
       {problem ? <p role="alert">{problem}</p> : null}

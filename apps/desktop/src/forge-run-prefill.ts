@@ -1,12 +1,12 @@
 import type { ConversationObject } from "../../../types/conversation";
-import type { SessionProjectView } from "./session-client";
-import type { VerifiedSessionIdentityScope } from "./session-start-identity-server";
-import type { SessionComposerDraft } from "./session-composer";
-import { newCodexTaskDraft } from "./codex-session-composer";
 import { newCodexChatDraft } from "./codex-chat-composer";
-import { newGeminiTaskDraft } from "./gemini-task-composer";
+import { newCodexTaskDraft } from "./codex-session-composer";
 import { newGeminiChatDraft } from "./gemini-chat-composer";
+import { newGeminiTaskDraft } from "./gemini-task-composer";
+import type { SessionProjectView } from "./session-client";
+import type { SessionComposerDraft } from "./session-composer";
 import { newSessionDraft } from "./session-composer";
+import type { VerifiedSessionIdentityScope } from "./session-start-identity-server";
 
 export type ForgeRunMode = "full" | "mini";
 export type ForgeRunSource =
@@ -44,8 +44,7 @@ export function forgeRunPrefill(
   return {
     prompt: `/forgemaster --${mode} ${input}`,
     beadId: source.kind === "bead" ? source.id : "",
-    about:
-      source.kind === "bead" ? [{ kind: "bead", id: source.id }] : [],
+    about: source.kind === "bead" ? [{ kind: "bead", id: source.id }] : [],
   };
 }
 

@@ -1,9 +1,9 @@
-import { expect, test } from "@playwright/test";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { expect, test } from "@playwright/test";
+import { runsHref } from "../../apps/desktop/src/project-runs-model";
 import type { ConversationState } from "../../types/conversation";
 import type { OwnedSessionRecord } from "../../types/owned-session";
-import { runsHref } from "../../apps/desktop/src/project-runs-model";
 import { openSettled } from "../e2e/fixtures";
 import { HEARTH_HOME } from "../e2e/servers";
 import { alpha, beta, seedProjects } from "./project-fixtures";
@@ -58,10 +58,7 @@ test.beforeEach(({ page }) => {
   releaseIdentityRead = undefined;
   page.on("request", (request) => {
     const pathname = new URL(request.url()).pathname;
-    if (
-      request.method() === "POST" &&
-      pathname.startsWith("/__agent-forge/")
-    )
+    if (request.method() === "POST" && pathname.startsWith("/__agent-forge/"))
       protectedPosts.push(pathname);
   });
 });
@@ -205,7 +202,9 @@ test("dirty composer drafts require Keep or Replace and are not changed by Keep"
   await navigateToRuns(page);
   await launchPreparation(page);
   let preparation = page.getByRole("dialog");
-  await preparation.getByLabel("Feature description").fill("A separate request");
+  await preparation
+    .getByLabel("Feature description")
+    .fill("A separate request");
   await preparation
     .getByRole("button", { name: "Review generated prompt" })
     .click();
@@ -230,7 +229,9 @@ test("dirty composer drafts require Keep or Replace and are not changed by Keep"
   await preparation
     .getByRole("button", { name: "Continue to Claude composer" })
     .click();
-  await preparation.getByRole("button", { name: "Replace current draft" }).click();
+  await preparation
+    .getByRole("button", { name: "Replace current draft" })
+    .click();
   await expect(page.getByLabel("Session prompt")).toHaveValue(
     "/forgemaster --full Replace with this",
   );
@@ -284,16 +285,24 @@ test("Replace changes only feature fields and preserves provider modes", async (
     .getByLabel("Where the session runs")
     .inputValue();
   const selectedSmith = await composer.getByLabel("Session smith").inputValue();
-  const selectedEffort = await composer.getByLabel("Session effort").inputValue();
+  const selectedEffort = await composer
+    .getByLabel("Session effort")
+    .inputValue();
 
   await provider.getByRole("button", { name: /Codex/ }).click();
   await composer.getByLabel("Session mode").selectOption("chat");
-  await expect(composer.getByLabel("Session prompt")).toHaveValue(existingPrompt);
+  await expect(composer.getByLabel("Session prompt")).toHaveValue(
+    existingPrompt,
+  );
   await provider.getByRole("button", { name: /Gemini/ }).click();
   await composer.getByLabel("Session mode").selectOption("chat");
-  await expect(composer.getByLabel("Session prompt")).toHaveValue(existingPrompt);
+  await expect(composer.getByLabel("Session prompt")).toHaveValue(
+    existingPrompt,
+  );
   await provider.getByRole("button", { name: /Claude/ }).click();
-  await expect(composer.getByLabel("Session prompt")).toHaveValue(existingPrompt);
+  await expect(composer.getByLabel("Session prompt")).toHaveValue(
+    existingPrompt,
+  );
   await composer.getByRole("button", { name: "Cancel", exact: true }).click();
 
   await navigateToRuns(page);
@@ -321,8 +330,12 @@ test("Replace changes only feature fields and preserves provider modes", async (
   await expect(kept.getByLabel("Session bead")).toHaveValue("alpha-epic");
   await expect(kept.getByLabel("Session mode")).toHaveValue("task");
   await expect(kept.getByLabel("Session effort")).toHaveValue(selectedEffort);
-  await expect(kept.getByText("text · existing.txt", { exact: false })).toBeVisible();
-  await expect(kept.getByText("About bead alpha-epic", { exact: false })).toBeVisible();
+  await expect(
+    kept.getByText("text · existing.txt", { exact: false }),
+  ).toBeVisible();
+  await expect(
+    kept.getByText("About bead alpha-epic", { exact: false }),
+  ).toBeVisible();
   const keptProvider = kept.getByRole("group", { name: "Provider" });
   await keptProvider.getByRole("button", { name: /Codex/ }).click();
   await expect(kept.getByLabel("Session mode")).toHaveValue("chat");
@@ -343,7 +356,9 @@ test("Replace changes only feature fields and preserves provider modes", async (
   await preparation
     .getByRole("button", { name: "Continue to Claude composer" })
     .click();
-  await preparation.getByRole("button", { name: "Replace current draft" }).click();
+  await preparation
+    .getByRole("button", { name: "Replace current draft" })
+    .click();
 
   const replaced = page.getByRole("dialog", { name: "New session · Alpha" });
   await expect(replaced.getByLabel("Session prompt")).toHaveValue(
@@ -357,7 +372,9 @@ test("Replace changes only feature fields and preserves provider modes", async (
   );
   await expect(replaced.getByLabel("Session smith")).toHaveValue(selectedSmith);
   await expect(replaced.getByLabel("Session mode")).toHaveValue("task");
-  await expect(replaced.getByLabel("Session effort")).toHaveValue(selectedEffort);
+  await expect(replaced.getByLabel("Session effort")).toHaveValue(
+    selectedEffort,
+  );
   await expect(replaced.getByLabel("Session bead")).toHaveValue("");
   await expect(
     replaced.getByText("text · existing.txt", { exact: false }),
@@ -398,9 +415,12 @@ test("A-to-B-to-A navigation invalidates an open Run review", async ({
     .getByRole("button", { name: "Review generated prompt" })
     .click();
 
-  await page.evaluate((hash) => {
-    window.location.hash = hash;
-  }, runsHref(beta.id, null));
+  await page.evaluate(
+    (hash) => {
+      window.location.hash = hash;
+    },
+    runsHref(beta.id, null),
+  );
   await expect(page).toHaveURL(new RegExp(beta.id));
   await expect(
     page.getByRole("heading", {
@@ -421,7 +441,9 @@ test("A-to-B-to-A navigation invalidates an open Run review", async ({
   await expect(page).toHaveURL(new RegExp(`${alpha.id}/sessions`));
   await page.getByRole("button", { name: "New session", exact: true }).click();
   const unchanged = page.getByRole("dialog", { name: "New session · Alpha" });
-  await expect(unchanged.getByLabel("Session prompt")).toHaveValue(originalPrompt);
+  await expect(unchanged.getByLabel("Session prompt")).toHaveValue(
+    originalPrompt,
+  );
   await unchanged.getByRole("button", { name: "Cancel", exact: true }).click();
   await navigateToRuns(page);
   await launchPreparation(page);
@@ -432,9 +454,9 @@ test("A-to-B-to-A navigation invalidates an open Run review", async ({
   await freshPreparation
     .getByRole("button", { name: "Review generated prompt" })
     .click();
-  await expect(
-    freshPreparation.locator(".af-new-forge-run-prompt"),
-  ).toHaveText("/forgemaster --full Fresh review after navigation");
+  await expect(freshPreparation.locator(".af-new-forge-run-prompt")).toHaveText(
+    "/forgemaster --full Fresh review after navigation",
+  );
   await freshPreparation.getByRole("button", { name: "Cancel" }).click();
   expect(protectedPosts).toEqual([]);
 });
@@ -513,7 +535,8 @@ test("an attended prompt uses ordinary Preview and one identity-bound Start afte
   expect(starts()).toBe(beforeStarts + 1);
   expect(records()).toHaveLength(beforeRecords + 1);
   const original = records().at(-1);
-  if (!original) throw new Error("The fixture Start did not retain its original");
+  if (!original)
+    throw new Error("The fixture Start did not retain its original");
 
   await navigateToRuns(page);
   await launchPreparation(page);
@@ -540,9 +563,9 @@ test("an attended prompt uses ordinary Preview and one identity-bound Start afte
   if (!created) throw new Error("The fixture Start did not retain its session");
   expect(created.id).toBe(original.id);
   expect(created.requestId).toBe(original.requestId);
-  await expect.poll(() => journal(created.id).turns.at(-1)?.phase).toBe(
-    "completed",
-  );
+  await expect
+    .poll(() => journal(created.id).turns.at(-1)?.phase)
+    .toBe("completed");
   expect(created.projectId).toBe(alpha.id);
   expect(created.requestId).toBe(journal(created.id).turns[0]?.requestId);
   expect(journal(created.id).turns).toHaveLength(1);
@@ -572,9 +595,12 @@ async function launchPreparation(page: import("@playwright/test").Page) {
 }
 
 async function navigateToRuns(page: import("@playwright/test").Page) {
-  await page.evaluate((hash) => {
-    window.location.hash = hash;
-  }, runsHref(alpha.id, null));
+  await page.evaluate(
+    (hash) => {
+      window.location.hash = hash;
+    },
+    runsHref(alpha.id, null),
+  );
   await expect(
     page.getByRole("heading", {
       name: "No forge runs in this served checkout",
