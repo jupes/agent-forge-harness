@@ -26,6 +26,13 @@ test("transaction fixture failure facts expose only bounded fixed categories", (
   expect(Buffer.byteLength(text, "utf8")).toBeLessThan(512);
   expect(
     summarizeTransactionFixtureFailure({
+      stage: "config-loaded",
+      child: "running",
+      stderr: "unavailable",
+    }),
+  ).toEqual({ stage: "config-loaded", child: "running", stderr: "unavailable" });
+  expect(
+    summarizeTransactionFixtureFailure({
       stage: privateValues[0] as never,
       child: privateValues[1] as never,
       stderr: privateValues[2] as never,
