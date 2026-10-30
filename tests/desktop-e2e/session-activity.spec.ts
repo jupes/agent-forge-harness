@@ -423,16 +423,43 @@ for (const [fixtureMode, outcome, title] of [
     await expect(result).not.toContainText("Stop confirmed");
     if (outcome === "cli-exit")
       await expect(result).toContainText("Private fixture crash tail");
-    if (outcome === "rate-limited")
-      await expect(result).toContainText(
+    if (outcome === "rate-limited") {
+      await expect(result).toContainText("Reset value: 123");
+      await expect(result).toContainText("claude.rate_limit_event");
+      await expect(result).toContainText("unit not reported");
+      await expect(result).not.toContainText(
         "Not reported. Check Providers for current allowance.",
       );
+      await expect(result.locator("time")).toHaveCount(0);
+    }
     await expect(
       page.getByRole("article", { name: "Session reply", exact: true }),
     ).toContainText("Coding reply");
     await reloadSettled(page);
     await expect(result.locator("summary")).toHaveText(title);
-    expect(journal(record.id).turns).toHaveLength(1);
+    const saved = journal(record.id);
+    expect(saved.turns).toHaveLength(1);
+    if (outcome === "rate-limited") {
+      await result.locator("summary").click();
+      await expect(result).toContainText("Reset value: 123");
+      await expect(result).toContainText("claude.rate_limit_event");
+      await expect(result).toContainText("unit not reported");
+      await expect(result).not.toContainText(
+        "Not reported. Check Providers for current allowance.",
+      );
+      await expect(result.locator("time")).toHaveCount(0);
+      const savedResetReports = saved.frames.filter(
+        (frame) =>
+          frame.turnId === saved.turns[0]?.requestId &&
+          frame.event.kind === "coding-account" &&
+          frame.event.source === "claude.rate_limit_event",
+      );
+      expect(savedResetReports).toHaveLength(1);
+      expect(savedResetReports[0]?.event).toMatchObject({
+        source: "claude.rate_limit_event",
+        report: { resetsAt: 123, resetUnit: "unreported" },
+      });
+    }
   });
 }
 
