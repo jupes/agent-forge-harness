@@ -358,7 +358,9 @@ function expectDispatchesUnchanged(before: Map<string, string | null>) {
       continue;
     }
     if (current === null || (bytes !== null && !current.startsWith(bytes)))
-      throw Error("The Codex fixture call log changed before its saved prefix.");
+      throw Error(
+        "The Codex fixture call log changed before its saved prefix.",
+      );
     const added = current.slice(bytes?.length ?? 0);
     if (added.length > 0 && !added.endsWith("\n"))
       throw Error("The Codex fixture call log ended with a partial row.");
@@ -428,7 +430,9 @@ function ownFault(beadId: string, requestId: string): string {
   if (Buffer.byteLength(bytes, "utf8") > 4 * 1024)
     throw Error("The checkpoint fault control exceeded its fixture limit.");
   if (realpathSync.native(dirname(faultFile)) !== privateStandInState)
-    throw Error("The checkpoint fault control escaped its private fixture home.");
+    throw Error(
+      "The checkpoint fault control escaped its private fixture home.",
+    );
   writeFileSync(faultFile, bytes, { flag: "wx", mode: 0o600 });
   const stat = lstatSync(faultFile);
   if (
