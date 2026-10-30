@@ -86,10 +86,12 @@ function readStartupMilestones(file: string, root: string): unknown {
     )
       return "unavailable";
     const stages: Array<{ stage: string; elapsedMs: number }> = [];
-    let previousIndex = -1, previousTime = -1;
+    let previousIndex = -1,
+      previousTime = -1;
     for (const value of record.stages) {
       if (!isRecord(value)) return "unavailable";
-      const item = value, index = STARTUP_MILESTONES.findIndex((stage) => stage === item.stage);
+      const item = value,
+        index = STARTUP_MILESTONES.findIndex((stage) => stage === item.stage);
       if (
         Object.keys(item).sort().join(",") !== "elapsedMs,stage" ||
         index < 0 ||

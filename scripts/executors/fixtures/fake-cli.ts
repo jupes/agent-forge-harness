@@ -93,7 +93,10 @@ const milestoneStart = performance.now();
 const milestones: Array<{ stage: string; elapsedMs: number }> = [];
 function markMilestone(stage: string): void {
   if (!milestonesFile || milestones.length >= 4) return;
-  milestones.push({ stage, elapsedMs: Math.round(performance.now() - milestoneStart) });
+  milestones.push({
+    stage,
+    elapsedMs: Math.round(performance.now() - milestoneStart),
+  });
   try {
     writeWhole(
       milestonesFile,
