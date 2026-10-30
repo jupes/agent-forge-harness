@@ -243,9 +243,10 @@ export function ProjectRuns({
       ) : null}
       <p class="af-runs-note">
         New forge run prepares an attended prompt in the Claude composer; it
-        does not start a run or record a run/session association. Runs can show
-        session starts already recorded with a run. Checkpoint reviews add a
-        comment and do not change Beads status.
+        does not start a run or create a run/session association. Recorded
+        history lists session starts recorded with a run, not whether they are
+        currently running. Checkpoint reviews add a comment and do not change
+        Beads status.
       </p>
       <RunReadStatus view={view} />
       {view?.page?.problems.map((problem, index) => (

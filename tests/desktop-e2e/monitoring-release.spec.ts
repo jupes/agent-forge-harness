@@ -39,6 +39,14 @@ const providerDispatchFiles = [
 const protectedPosts: string[] = [];
 const ownedFiles: { root: string; path: string; bytes: Buffer }[] = [];
 let dispatchesBefore = new Map<string, string | null>();
+type ActivityFilterEffectGate = {
+  arm(): void;
+  status(): { timerHeld: boolean; frameHeld: boolean; captures: number };
+  release(): Promise<void>;
+};
+type ActivityFilterEffectGateWindow = Window & {
+  __activityFilterEffectGate?: ActivityFilterEffectGate;
+};
 
 function dispatchSnapshot(): Map<string, string | null> {
   return new Map(
@@ -338,6 +346,101 @@ test("foreground monitoring keeps Alpha and Beta scope, source limits and record
   ]);
   await page.setViewportSize({ width: 1100, height: 700 });
   await page.emulateMedia({ reducedMotion: "reduce" });
+  await page.addInitScript(() => {
+    const originalSetTimeout = (
+      window.setTimeout as unknown as (
+        callback: TimerHandler,
+        delay?: number,
+        ...args: unknown[]
+      ) => number
+    ).bind(window);
+    const originalClearTimeout = (
+      window.clearTimeout as unknown as (id?: number) => void
+    ).bind(window);
+    const originalRequestAnimationFrame =
+      window.requestAnimationFrame.bind(window);
+    const originalCancelAnimationFrame =
+      window.cancelAnimationFrame.bind(window);
+    const heldTimerId = -1;
+    const heldFrameId = -2;
+    let armed = false;
+    let heldTimer:
+      | { callback: TimerHandler; delay: number; args: unknown[] }
+      | undefined;
+    let heldFrame: FrameRequestCallback | undefined;
+    let captures = 0;
+
+    window.setTimeout = ((
+      callback: TimerHandler,
+      delay?: number,
+      ...args: unknown[]
+    ) => {
+      if (
+        armed &&
+        delay === 35 &&
+        typeof callback === "function" &&
+        !heldTimer
+      ) {
+        const candidate = { callback, delay, args };
+        heldTimer = candidate;
+        queueMicrotask(() => {
+          if (armed && heldTimer === candidate && !heldFrame) {
+            heldTimer = undefined;
+            originalSetTimeout(callback, delay, ...args);
+          }
+        });
+        return heldTimerId;
+      }
+      return originalSetTimeout(callback, delay, ...args);
+    }) as unknown as typeof window.setTimeout;
+    window.clearTimeout = ((id?: number) => {
+      if (id !== heldTimerId) originalClearTimeout(id);
+    }) as typeof window.clearTimeout;
+    window.requestAnimationFrame = ((callback) => {
+      if (armed && heldTimer && !heldFrame) {
+        heldFrame = callback;
+        captures += 1;
+        return heldFrameId;
+      }
+      return originalRequestAnimationFrame(callback);
+    }) as typeof window.requestAnimationFrame;
+    window.cancelAnimationFrame = ((id) => {
+      if (id !== heldFrameId) originalCancelAnimationFrame(id);
+    }) as typeof window.cancelAnimationFrame;
+
+    (window as ActivityFilterEffectGateWindow).__activityFilterEffectGate = {
+      arm() {
+        heldTimer = undefined;
+        heldFrame = undefined;
+        captures = 0;
+        armed = true;
+      },
+      status() {
+        return {
+          timerHeld: !!heldTimer,
+          frameHeld: !!heldFrame,
+          captures,
+        };
+      },
+      async release() {
+        armed = false;
+        const timer = heldTimer;
+        const frame = heldFrame;
+        heldTimer = undefined;
+        heldFrame = undefined;
+        window.setTimeout =
+          originalSetTimeout as unknown as typeof window.setTimeout;
+        window.clearTimeout =
+          originalClearTimeout as unknown as typeof window.clearTimeout;
+        window.requestAnimationFrame = originalRequestAnimationFrame;
+        window.cancelAnimationFrame = originalCancelAnimationFrame;
+        if (frame) frame(performance.now());
+        else if (timer)
+          originalSetTimeout(timer.callback, timer.delay, ...timer.args);
+        await new Promise<void>((resolve) => originalSetTimeout(resolve, 0));
+      },
+    };
+  });
   await openSettled(page, `/index.html#/desktop/project/${alpha.id}/overview`);
 
   const alphaNeeds = page.getByRole("region", {
@@ -433,10 +536,60 @@ test("foreground monitoring keeps Alpha and Beta scope, source limits and record
     page.getByRole("region", { name: "Verified run artifact" }),
   ).toContainText("Recorded fixture artifact.");
 
-  await projectNav.getByRole("link", { name: "Activity", exact: true }).click();
   const alphaActivity = page.getByRole("region", { name: "Project Activity" });
-  await alphaActivity.getByLabel("Session filter").fill(activitySessionId);
+  await page.evaluate(() => {
+    const gate = (window as ActivityFilterEffectGateWindow)
+      .__activityFilterEffectGate;
+    if (!gate) throw new Error("Activity filter effect gate was not installed");
+    gate.arm();
+  });
+  const alphaSessionFilter = alphaActivity.getByLabel("Session filter");
+  try {
+    await projectNav
+      .getByRole("link", { name: "Activity", exact: true })
+      .click();
+    await expect(alphaSessionFilter).toBeVisible();
+    await alphaSessionFilter.fill(activitySessionId);
+    const heldEffect = await page.evaluate(() => {
+      const gate = (window as ActivityFilterEffectGateWindow)
+        .__activityFilterEffectGate;
+      if (!gate)
+        throw new Error("Activity filter effect gate was not installed");
+      return gate.status();
+    });
+    console.log(`Activity filter effect gate: ${JSON.stringify(heldEffect)}`);
+    expect([
+      { timerHeld: false, frameHeld: false, captures: 0 },
+      { timerHeld: true, frameHeld: true, captures: 1 },
+    ]).toContainEqual(heldEffect);
+    await page.evaluate(async () => {
+      const gate = (window as ActivityFilterEffectGateWindow)
+        .__activityFilterEffectGate;
+      if (!gate)
+        throw new Error("Activity filter effect gate was not installed");
+      await gate.release();
+    });
+    await expect(alphaSessionFilter).toHaveValue(activitySessionId);
+  } finally {
+    await page.evaluate(async () => {
+      const gate = (window as ActivityFilterEffectGateWindow)
+        .__activityFilterEffectGate;
+      if (!gate)
+        throw new Error("Activity filter effect gate was not installed");
+      await gate.release();
+    });
+  }
+  const filteredRead = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return (
+      url.pathname === `/__agent-forge/projects/${alpha.id}/activity` &&
+      url.searchParams.get("session") === activitySessionId
+    );
+  });
   await alphaActivity.getByRole("button", { name: "Apply filters" }).click();
+  const filteredResponse = await filteredRead;
+  expect(filteredResponse.status()).toBe(200);
+  expect(new URL(page.url()).hash).toContain(`session=${activitySessionId}`);
   const activity = alphaActivity.getByRole("listbox", {
     name: "Project activity",
   });
