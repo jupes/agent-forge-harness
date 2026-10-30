@@ -363,7 +363,9 @@ function expectDispatchesUnchanged(before: Map<string, string | null>) {
       continue;
     }
     if (current === null || (bytes !== null && !current.startsWith(bytes)))
-      throw Error("An inert CLI fixture call log changed before its saved prefix.");
+      throw Error(
+        "An inert CLI fixture call log changed before its saved prefix.",
+      );
     const added = current.slice(bytes?.length ?? 0);
     if (added.length > 0 && !added.endsWith("\n"))
       throw Error("The Codex fixture call log ended with a partial row.");
@@ -376,7 +378,9 @@ function expectDispatchesUnchanged(before: Map<string, string | null>) {
         throw Error("An inert CLI fixture call log had invalid JSON.");
       }
       if (name === "gemini-fixture-calls.jsonl") {
-        z.object({ kind: z.literal("version") }).strict().parse(raw);
+        z.object({ kind: z.literal("version") })
+          .strict()
+          .parse(raw);
         continue;
       }
       const probe = z
