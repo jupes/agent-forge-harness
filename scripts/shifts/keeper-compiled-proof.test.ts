@@ -71,6 +71,7 @@ async function seedOwnedAttemptEvidence(
     admissionsFile = join(stateDir, "provider-admissions.jsonl"),
     callsFile = join(stateDir, "calls.jsonl"),
     privateBody = "PRIVATE_ATTEMPT_BODY_SENTINEL",
+    effort = "medium",
     processPid = 987654;
   mkdirSync(home, { recursive: true });
   mkdirSync(join(home, "sessions"), { recursive: true });
@@ -140,7 +141,7 @@ async function seedOwnedAttemptEvidence(
         name: "claude-journeyman",
         provider: "claude",
         model: "claude-sonnet-5-5",
-        effort: "medium",
+        effort,
         enabled: true,
         tags: [],
       },
@@ -189,7 +190,7 @@ async function seedOwnedAttemptEvidence(
           beadId: origin.beadId,
           smith: "claude-journeyman",
           requestedModel: input.smith.model,
-          requestedEffort: input.smith.effort,
+          requestedEffort: effort,
           origin: index === 0 ? origin : canonicalOrigin,
         }),
       ),
