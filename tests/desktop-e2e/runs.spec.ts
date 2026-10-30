@@ -508,7 +508,11 @@ test("scoped Runs keyboard inspection preserves real phase, review and gate trut
     name: "Show inspector",
     exact: true,
   });
-  if (await showInspector.isVisible()) await showInspector.click();
+  if (await showInspector.isVisible()) {
+    await showInspector.focus();
+    await expect(showInspector).toHaveCSS("outline-width", "2px");
+    await page.keyboard.press("Enter");
+  }
   const inspector = page.getByRole("complementary", {
     name: "Inspector",
     exact: true,
