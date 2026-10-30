@@ -26,6 +26,7 @@ import {
 } from "./project-council-draft";
 import type { ProjectCouncilReturnOrigin } from "./project-council-return";
 import { useProjectCouncil } from "./use-project-council";
+import "./project-reviews.css";
 
 type SourceType = ProjectCouncilReserveRequest["sourceChoice"]["sourceType"];
 function parseSourceType(value: string): SourceType | null {

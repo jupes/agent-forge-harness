@@ -868,6 +868,28 @@ async function exerciseCheckpoint(
     throw new Error(
       "The completed Council result changed the saved original run identity.",
     );
+  const transcript = page.getByLabel(
+    "Complete public Council result transcript",
+  );
+  const transcriptLayout = await transcript.evaluate((element) => {
+    const parent = element.parentElement;
+    return {
+      width: element.getBoundingClientRect().width,
+      parentWidth: parent?.getBoundingClientRect().width ?? -1,
+      parentOverflow: parent ? parent.scrollWidth > parent.clientWidth + 1 : true,
+      viewportOverflow:
+        document.documentElement.scrollWidth > window.innerWidth,
+    };
+  });
+  if (
+    transcriptLayout.parentWidth <= 0 ||
+    Math.abs(transcriptLayout.width - transcriptLayout.parentWidth) > 1 ||
+    transcriptLayout.parentOverflow ||
+    transcriptLayout.viewportOverflow
+  )
+    throw new Error(
+      "The public Council transcript did not fit its panel without horizontal overflow.",
+    );
   await page
     .getByTestId("council-verdict-status")
     .getByText("Verdict comment posted to the bead.", { exact: true })
@@ -993,13 +1015,16 @@ async function exerciseCheckpoint(
     String(report.proofDir),
     "checkpoint-council-result.png",
   );
-  await page.screenshot({ path: beforeBack, fullPage: true });
   await page
-    .getByRole("button", {
-      name: "Back to Run " + runB.state.slug + " checkpoint " + checkpointId,
-      exact: true,
-    })
+    .getByText("Inspect complete public Council result", { exact: true })
     .click();
+  const backToRun = page.getByRole("button", {
+    name: "Back to Run " + runB.state.slug + " checkpoint " + checkpointId,
+    exact: true,
+  });
+  await backToRun.scrollIntoViewIfNeeded();
+  await page.screenshot({ path: beforeBack, fullPage: true });
+  await backToRun.click();
   await page
     .getByRole("article", { name: "Selected forge run" })
     .getByRole("heading", { name: runBTitle, exact: true })
