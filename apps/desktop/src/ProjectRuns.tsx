@@ -2,12 +2,18 @@ import { useLayoutEffect, useState } from "preact/hooks";
 import { Button } from "../../../docs/js/ds/Button";
 import type { IssueStatus } from "../../../types/beads";
 import type { ProjectBeadsPage } from "../../../types/project-beads";
+import { projectCheckpointReviewBindingSchema } from "../../../types/project-checkpoint-reviews";
 import type {
   ProjectRunDetail,
   ProjectRunGate,
 } from "../../../types/project-runs";
 import { KeeperMarkdown } from "./KeeperMarkdown";
+import { ProjectCheckpointReview } from "./ProjectCheckpointReview";
 import { activityHref, emptyActivityFilters } from "./project-activity-model";
+import type {
+  ProjectCheckpointReviewOwner,
+  ProjectCheckpointReviewTarget,
+} from "./project-checkpoint-review-client";
 import type { ProjectCouncilSourcePrefill } from "./project-council-draft";
 import {
   deriveProjectRunCheckpoints,
@@ -73,6 +79,8 @@ export function ProjectRuns({
   beads,
   onCouncilArtifactPrefill,
   onCouncilBeadPrefill,
+  checkpointReviewOwner,
+  checkpointReviewsWritable = false,
   filters,
   filterError,
   onFilter,
@@ -93,6 +101,10 @@ export function ProjectRuns({
     source: ProjectCouncilSourcePrefill,
     workspace: string,
   ) => void;
+  checkpointReviewOwner?(
+    target: ProjectCheckpointReviewTarget,
+  ): ProjectCheckpointReviewOwner;
+  checkpointReviewsWritable?: boolean;
   filters: RunFilters | null;
   filterError: string;
   onFilter(filters: RunFilters): void;
@@ -138,8 +150,8 @@ export function ProjectRuns({
         </div>
       </header>
       <p class="af-runs-note">
-        Inspection only. Run launch, checkpoint decisions and correlated
-        sessions are not available here.
+        Run launch and correlated sessions are not available here. Checkpoint
+        reviews add a comment and do not change Beads status.
       </p>
       <RunReadStatus view={view} />
       {view?.page?.problems.map((problem, index) => (
@@ -173,6 +185,18 @@ export function ProjectRuns({
                 projectId={projectId}
                 detail={view.detail}
                 checkpointResult={checkpointResult}
+                {...(checkpointReviewOwner ? { checkpointReviewOwner } : {})}
+                checkpointReviewsWritable={checkpointReviewsWritable}
+                checkpointReviewAvailable={
+                  !!view.page &&
+                  view.page.problems.length === 0 &&
+                  view.detail.problems.length === 0 &&
+                  !view.loading &&
+                  !view.error &&
+                  !view.detailLoading &&
+                  !view.detailError &&
+                  !view.detailStale
+                }
                 onCouncilBeadPrefill={(id) => {
                   if (
                     checkpointResult.kind === "ready" &&
@@ -438,9 +462,17 @@ const checkpointStatus = (status: IssueStatus) =>
 function RunCheckpoints({
   result,
   onCouncilPrefill,
+  reviewTarget,
+  reviewOwner,
+  reviewsWritable,
 }: {
   result: ProjectRunCheckpointResult;
   onCouncilPrefill?(id: string): void;
+  reviewTarget?: Omit<ProjectCheckpointReviewTarget, "beadId">;
+  reviewOwner?(
+    target: ProjectCheckpointReviewTarget,
+  ): ProjectCheckpointReviewOwner;
+  reviewsWritable: boolean;
 }) {
   return (
     <section aria-label="Run checkpoints">
@@ -476,6 +508,19 @@ function RunCheckpoints({
                     </small>
                   </p>
                 )}
+                {reviewTarget && reviewOwner && (
+                  <ProjectCheckpointReview
+                    target={{ ...reviewTarget, beadId: checkpoint.id }}
+                    owner={reviewOwner({
+                      ...reviewTarget,
+                      beadId: checkpoint.id,
+                    })}
+                    writable={reviewsWritable}
+                    active={result.summary.inProgressIds.includes(
+                      checkpoint.id,
+                    )}
+                  />
+                )}
               </li>
             ))}
           </ol>
@@ -493,6 +538,9 @@ export function RunDetail({
   projectId,
   detail,
   checkpointResult = { kind: "loading" },
+  checkpointReviewOwner,
+  checkpointReviewsWritable = false,
+  checkpointReviewAvailable = false,
   onCouncilBeadPrefill,
   canOpenArtifacts = true,
   onOpenArtifact,
@@ -501,6 +549,11 @@ export function RunDetail({
   projectId: string;
   detail: ProjectRunDetail;
   checkpointResult?: ProjectRunCheckpointResult;
+  checkpointReviewOwner?(
+    target: ProjectCheckpointReviewTarget,
+  ): ProjectCheckpointReviewOwner;
+  checkpointReviewsWritable?: boolean;
+  checkpointReviewAvailable?: boolean;
   onCouncilBeadPrefill?(id: string): void;
   canOpenArtifacts?: boolean;
   onOpenArtifact?(kind: "research" | "plan" | "ship"): void;
@@ -510,6 +563,7 @@ export function RunDetail({
   ): void;
 }) {
   const run = detail.run;
+  const runUpdatedAt = run.updatedAt;
   const latest = detail.gateHistory[0] ?? null;
   return (
     <article class="af-run-detail" aria-label="Selected forge run">
@@ -644,6 +698,27 @@ export function RunDetail({
       </section>
       <RunCheckpoints
         result={checkpointResult}
+        {...(checkpointReviewAvailable &&
+        checkpointResult.kind === "ready" &&
+        typeof runUpdatedAt === "string" &&
+        projectCheckpointReviewBindingSchema.shape.runUpdatedAt.safeParse(
+          runUpdatedAt,
+        ).success
+          ? {
+              reviewTarget: {
+                projectId,
+                workspacePath: detail.workspace,
+                checkout: detail.checkout,
+                runSlug: run.slug,
+                epicId: checkpointResult.epicId,
+                runUpdatedAt,
+              },
+            }
+          : {})}
+        {...(checkpointReviewOwner
+          ? { reviewOwner: checkpointReviewOwner }
+          : {})}
+        reviewsWritable={checkpointReviewsWritable}
         {...(onCouncilBeadPrefill
           ? { onCouncilPrefill: onCouncilBeadPrefill }
           : {})}

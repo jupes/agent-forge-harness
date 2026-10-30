@@ -1,10 +1,8 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { expect, test } from "@playwright/test";
-import {
-  type ProjectCouncilRunRead,
-  projectCouncilRunReadSchema,
-} from "../../types/project-council-run-read";
+import { expect, type Response, test } from "@playwright/test";
+import { projectCouncilMetadataSchema } from "../../types/project-council";
+import type { ProjectCouncilRunRead } from "../../types/project-council-run-read";
 import type { ProjectRecord } from "../../types/projects";
 import {
   readComments,
@@ -16,6 +14,11 @@ import {
 import { openSettled } from "../e2e/fixtures";
 import { BD_STAND_IN_STATE } from "../e2e/servers";
 import { seedCouncilProject } from "./council-fixtures";
+import {
+  observeRunReads,
+  responseData,
+  verifiedRunReads,
+} from "./council-run-read-observer";
 import { alpha as fixtureAlpha, seedSessions } from "./project-fixtures";
 
 let alpha: ProjectRecord = fixtureAlpha;
@@ -224,39 +227,7 @@ test("a completed bead-source review links to its bead and reports the one recor
   page,
 }) => {
   const posts: string[] = [];
-  const runPath = `/__agent-forge/projects/${alpha.id}/council/reviews/`;
-  let verifiedRun: ProjectCouncilRunRead | undefined;
-  const resultRead = page.waitForResponse(async (response) => {
-    const path = new URL(response.url()).pathname;
-    if (
-      response.request().method() !== "GET" ||
-      !path.startsWith(runPath) ||
-      !path.endsWith("/run")
-    )
-      return false;
-    if (!response.ok())
-      throw Error(`Council result returned HTTP ${response.status()}.`);
-    const body: unknown = await response.json();
-    if (
-      typeof body !== "object" ||
-      body === null ||
-      !("ok" in body) ||
-      body.ok !== true ||
-      !("error" in body) ||
-      body.error !== null ||
-      !("data" in body)
-    )
-      throw Error("Invalid Council result envelope.");
-    const read = projectCouncilRunReadSchema.parse(body.data);
-    if (
-      read.receipt.phase !== "completed" ||
-      read.verdictCommentPreview === null
-    )
-      return false;
-    verifiedRun = read;
-    return true;
-  });
-  void resultRead.catch(() => {});
+  const reviewsPath = `/__agent-forge/projects/${alpha.id}/council/reviews`;
   page.on("request", (request) => {
     if (request.method() === "POST")
       posts.push(new URL(request.url()).pathname);
@@ -271,22 +242,197 @@ test("a completed bead-source review links to its bead and reports the one recor
   await expect(page.getByLabel("Beads issue ID")).toHaveValue(
     "alpha-council-first",
   );
-  await page
-    .getByRole("button", { name: "Prepare original for review" })
-    .click();
+  const reservationOrigin = new URL(page.url()).origin;
+  type ReservationCapture = {
+    response: Response;
+    body: Promise<
+      { ok: true; bytes: Uint8Array } | { ok: false; error: unknown }
+    >;
+  };
+  let capturedReservation: ReservationCapture | undefined;
+  let captureError: Error | undefined;
+  let resolveReservation!: (value: ReservationCapture) => void;
+  const reservationCapture = new Promise<ReservationCapture>((resolve) => {
+    resolveReservation = resolve;
+  });
+  const captureReservation = (response: Response) => {
+    const request = response.request();
+    let url: URL;
+    try {
+      url = new URL(response.url());
+    } catch {
+      return;
+    }
+    if (
+      request.method() !== "POST" ||
+      request.frame() !== page.mainFrame() ||
+      url.origin !== reservationOrigin ||
+      url.pathname !== reviewsPath
+    )
+      return;
+    if (capturedReservation) {
+      captureError = new Error(
+        "Multiple Council reservation responses were observed.",
+      );
+      return;
+    }
+    let body: ReservationCapture["body"];
+    try {
+      body = response.body().then(
+        (bytes) => ({ ok: true as const, bytes }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+    } catch (error) {
+      body = Promise.resolve({ ok: false as const, error });
+    }
+    capturedReservation = { response, body };
+    resolveReservation(capturedReservation);
+  };
+  page.on("response", captureReservation);
+  let captureTimer: ReturnType<typeof setTimeout> | undefined;
+  let captureTimedOut = false;
+  const captureDeadline = new Promise<{ timedOut: true }>((resolve) => {
+    captureTimer = setTimeout(() => {
+      captureTimedOut = true;
+      resolve({ timedOut: true });
+    }, 10_000);
+  });
+  let reserved: Response;
+  let reservationBody: Uint8Array;
+  try {
+    await page
+      .getByRole("button", { name: "Prepare original for review" })
+      .click();
+    if (captureTimedOut)
+      throw new Error(
+        "The Council reservation response was not captured in time.",
+      );
+    const captured = await Promise.race([reservationCapture, captureDeadline]);
+    if ("timedOut" in captured)
+      throw new Error(
+        "The Council reservation response was not captured in time.",
+      );
+    const bodyResult = await Promise.race([captured.body, captureDeadline]);
+    if ("timedOut" in bodyResult)
+      throw new Error("The Council reservation body exceeded its time bound.");
+    if (captureError) throw captureError;
+    if (!bodyResult.ok)
+      throw new Error(
+        `The Council reservation body was unavailable: ${String(bodyResult.error)}`,
+      );
+    if (bodyResult.bytes.byteLength > 512 * 1024)
+      throw new Error(
+        "The Council reservation body exceeded its bounded size.",
+      );
+    reserved = captured.response;
+    reservationBody = bodyResult.bytes;
+  } finally {
+    page.off("response", captureReservation);
+    if (captureTimer !== undefined) clearTimeout(captureTimer);
+  }
+  if (captureError) throw captureError;
+  expect(reserved.status()).toBe(202);
+  const reservationText = new TextDecoder("utf-8", { fatal: true }).decode(
+    reservationBody,
+  );
+  let reservationEnvelope: unknown;
+  try {
+    reservationEnvelope = JSON.parse(reservationText);
+  } catch {
+    throw Error("The actual Council reservation body was not valid JSON.");
+  }
+  const reservedData = responseData(reservationEnvelope);
+  if (
+    typeof reservedData !== "object" ||
+    reservedData === null ||
+    !("metadata" in reservedData)
+  )
+    throw Error("The actual Council reservation omitted metadata.");
+  const original = projectCouncilMetadataSchema.parse(reservedData.metadata);
+  if (original.projectId !== alpha.id)
+    throw Error("The reserved Council original belonged to another project.");
   await expect(
     page.getByRole("heading", { name: "Exact saved original" }),
   ).toBeVisible();
-  await page
-    .getByRole("button", { name: "Convene this exact original" })
-    .click();
-  await expect(
-    page.getByRole("heading", { name: "Council result" }),
-  ).toBeVisible({ timeout: 15_000 });
-  await expect(
-    page.getByRole("heading", { name: "Verified result facts" }),
-  ).toBeVisible();
-  await resultRead;
+  const runReads = await observeRunReads(
+    page,
+    `${reviewsPath}/${original.requestId}/run`,
+    original,
+  );
+  let verifiedRun: ProjectCouncilRunRead | undefined;
+  const matchesOriginal = (read: ProjectCouncilRunRead) =>
+    read.provenance.projectId === alpha.id &&
+    read.provenance.requestId === original.requestId &&
+    read.provenance.intentHash === original.intentHash &&
+    read.provenance.runId === original.runId;
+  try {
+    await page
+      .getByRole("button", { name: "Convene this exact original" })
+      .click();
+    await expect(
+      page.getByRole("heading", { name: "Council result" }),
+    ).toBeVisible({ timeout: 15_000 });
+    await expect(
+      page.getByRole("heading", { name: "Verified result facts" }),
+    ).toBeVisible();
+    await expect
+      .poll(() => runReads.length, {
+        message: "The exact Council result read was not observed.",
+        timeout: 15_000,
+      })
+      .toBeGreaterThan(0);
+    const firstReads = await Promise.all([...runReads]);
+    const verifiedReads = await verifiedRunReads(runReads);
+    if (verifiedReads.some((read) => !matchesOriginal(read)))
+      throw Error("A Council result read did not match its saved original.");
+    verifiedRun = verifiedReads.find(
+      (read) =>
+        read.receipt.phase === "completed" &&
+        read.verdictCommentPreview !== null,
+    );
+    if (
+      !verifiedRun &&
+      firstReads.some((read) => read.kind === "interrupted")
+    ) {
+      const beforeCheck = runReads.length;
+      await page.getByRole("button", { name: "Check saved result" }).click();
+      await expect
+        .poll(() => runReads.length > beforeCheck, {
+          message: "The explicit saved-result read was not observed.",
+          timeout: 15_000,
+        })
+        .toBe(true);
+      const freshObservation = runReads[beforeCheck];
+      if (!freshObservation)
+        throw Error("The explicit saved-result read had no observation.");
+      const fresh = await freshObservation;
+      const allVerifiedReads = await verifiedRunReads(runReads);
+      if (allVerifiedReads.some((read) => !matchesOriginal(read)))
+        throw Error("A Council result read did not match its saved original.");
+      if (
+        fresh.kind !== "verified" ||
+        !matchesOriginal(fresh.read) ||
+        fresh.read.receipt.phase !== "completed" ||
+        fresh.read.verdictCommentPreview === null
+      )
+        throw Error(
+          "The explicit saved-result read did not verify this result.",
+        );
+      verifiedRun = fresh.read;
+    }
+    if (
+      !verifiedRun ||
+      verifiedRun.provenance.projectId !== alpha.id ||
+      verifiedRun.provenance.requestId !== original.requestId ||
+      verifiedRun.provenance.intentHash !== original.intentHash ||
+      verifiedRun.provenance.runId !== original.runId
+    )
+      throw Error(
+        "The completed Council result did not match its saved original.",
+      );
+  } finally {
+    await runReads.dispose();
+  }
   if (!verifiedRun?.job?.run)
     throw Error("The completed Bead result was not read back.");
   const run = verifiedRun.job.run;

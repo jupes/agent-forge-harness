@@ -5,13 +5,16 @@ import {
   projectCouncilMetadataSchema,
   projectCouncilReceiptSchema,
 } from "../../types/project-council";
-import {
-  type ProjectCouncilRunRead,
-  projectCouncilRunReadSchema,
-} from "../../types/project-council-run-read";
+import type { ProjectCouncilRunRead } from "../../types/project-council-run-read";
 import { openSettled } from "../e2e/fixtures";
 import { HEARTH_HOME } from "../e2e/servers";
 import { seedCouncilProject } from "./council-fixtures";
+import {
+  observeRunReads,
+  type RunReadObservations,
+  responseData,
+  verifiedRunReads,
+} from "./council-run-read-observer";
 import { alpha as alphaTemplate } from "./project-fixtures";
 
 const controlFile = join(HEARTH_HOME, "council-fixture-control.json");
@@ -140,103 +143,6 @@ function observeCouncilPosts(page: Page): CouncilPost[] {
   return posts;
 }
 
-function responseData(value: unknown): unknown {
-  if (
-    typeof value !== "object" ||
-    value === null ||
-    !("ok" in value) ||
-    value.ok !== true ||
-    !("error" in value) ||
-    value.error !== null ||
-    !("data" in value)
-  )
-    throw Error("The actual Council response envelope was not successful.");
-  return value.data;
-}
-
-type RunReadObservation =
-  | { kind: "verified"; read: ProjectCouncilRunRead }
-  | { kind: "interrupted"; reason: "aborted" | "body-unavailable" }
-  | { kind: "invalid"; message: string };
-
-function observeRunReads(
-  page: Page,
-  path: string,
-): Promise<RunReadObservation>[] {
-  const reads: Promise<RunReadObservation>[] = [];
-  page.on("response", (response) => {
-    if (
-      response.request().method() !== "GET" ||
-      new URL(response.url()).pathname !== path
-    )
-      return;
-    if (!response.ok()) {
-      reads.push(
-        Promise.resolve({
-          kind: "invalid",
-          message: `Council result read returned HTTP ${response.status()}.`,
-        }),
-      );
-      return;
-    }
-    const request = response.request();
-    let onRequestFailed: ((failed: Request) => void) | undefined;
-    const requestFailure = new Promise<RunReadObservation>((resolve) => {
-      onRequestFailed = (failed) => {
-        if (failed !== request) return;
-        const errorText = failed.failure()?.errorText;
-        resolve(
-          errorText === "net::ERR_ABORTED"
-            ? { kind: "interrupted", reason: "aborted" }
-            : {
-                kind: "invalid",
-                message: errorText ?? "Council result request failed.",
-              },
-        );
-      };
-      page.on("requestfailed", onRequestFailed);
-    });
-    const bodyRead = (async (): Promise<RunReadObservation> => {
-      try {
-        const raw = await response.json();
-        return {
-          kind: "verified",
-          read: projectCouncilRunReadSchema.parse(responseData(raw)),
-        };
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        if (
-          /^(?:response\.json: )?Protocol error \(Network\.getResponseBody\): No data found for (?:the )?resource with given identifier(?:\nResponse body is not available for a response that was navigated away from\. Read response\.body\(\) before triggering any navigation\.)?$/.test(
-            message,
-          )
-        )
-          return { kind: "interrupted", reason: "body-unavailable" };
-        return { kind: "invalid", message };
-      }
-    })();
-    reads.push(
-      Promise.race([bodyRead, requestFailure]).finally(() => {
-        if (onRequestFailed) page.off("requestfailed", onRequestFailed);
-      }),
-    );
-  });
-  return reads;
-}
-
-async function verifiedRunReads(
-  observations: readonly Promise<RunReadObservation>[],
-): Promise<ProjectCouncilRunRead[]> {
-  const results = await Promise.all(observations);
-  const invalid = results.find((result) => result.kind === "invalid");
-  if (invalid?.kind === "invalid")
-    throw Error(
-      `The actual Council result read was invalid: ${invalid.message}`,
-    );
-  return results.flatMap((result) =>
-    result.kind === "verified" ? [result.read] : [],
-  );
-}
-
 async function prepareReview(page: Page, deepDiscussion = false) {
   await openSettled(page, `/index.html#/desktop/project/${alpha.id}/overview`);
   await page.getByRole("link", { name: "Reviews", exact: true }).click();
@@ -291,62 +197,70 @@ test("actual Stop cancels the held Council transport and keeps the same original
   selectMode("hold", "council-cancel");
   const posts = observeCouncilPosts(page);
   const original = await prepareReview(page);
-  const runReads = observeRunReads(
+  const runReads = await observeRunReads(
     page,
     `${reviewsPath}/${original.requestId}/run`,
+    original,
   );
-  await page
-    .getByRole("button", { name: "Convene this exact original" })
-    .click();
-  await expect(
-    page.getByRole("button", { name: "Stop review", exact: true }),
-  ).toBeVisible({ timeout: 15_000 });
-  await expect
-    .poll(() =>
-      callsFor("council-cancel").some((call) => call.kind === "request"),
-    )
-    .toBe(true);
+  try {
+    await page
+      .getByRole("button", { name: "Convene this exact original" })
+      .click();
+    await expect(
+      page.getByRole("button", { name: "Stop review", exact: true }),
+    ).toBeVisible({ timeout: 15_000 });
+    await expect
+      .poll(() =>
+        callsFor("council-cancel").some((call) => call.kind === "request"),
+      )
+      .toBe(true);
 
-  await page.getByRole("button", { name: "Stop review", exact: true }).click();
-  await expect(page.getByText("Verified state: cancelled")).toBeVisible({
-    timeout: 15_000,
-  });
-  await expect(
-    page.getByRole("region", { name: "Council recommendation" }),
-  ).toHaveCount(0);
-  const runRead = (await verifiedRunReads(runReads)).find(
-    (read) => read.receipt.phase === "cancelled",
-  );
-  if (!runRead) throw Error("The cancelled Council result was not read back.");
-  expect(runRead.provenance).toMatchObject({
-    requestId: original.requestId,
-    intentHash: original.intentHash,
-    runId: original.runId,
-    projectId: alpha.id,
-  });
-  expect(runRead.job?.run?.chair).toBeUndefined();
-  expect(posts.filter((post) => post.path.endsWith("/commit"))).toEqual([
-    {
-      path: `${reviewsPath}/${original.requestId}/commit`,
-      body: { intentHash: original.intentHash },
-    },
-  ]);
-  expect(posts.filter((post) => post.path.endsWith("/cancel"))).toEqual([
-    {
-      path: `${reviewsPath}/${original.requestId}/cancel`,
-      body: { intentHash: original.intentHash },
-    },
-  ]);
-  expect(
-    callsFor("council-cancel").filter((call) => call.kind === "admission"),
-  ).toEqual([
-    {
-      kind: "admission",
-      caseId: "council-cancel",
-      mode: "hold",
-      profileId: original.profileId,
-    },
-  ]);
+    await page
+      .getByRole("button", { name: "Stop review", exact: true })
+      .click();
+    await expect(page.getByText("Verified state: cancelled")).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(
+      page.getByRole("region", { name: "Council recommendation" }),
+    ).toHaveCount(0);
+    const runRead = (await verifiedRunReads(runReads)).find(
+      (read) => read.receipt.phase === "cancelled",
+    );
+    if (!runRead)
+      throw Error("The cancelled Council result was not read back.");
+    expect(runRead.provenance).toMatchObject({
+      requestId: original.requestId,
+      intentHash: original.intentHash,
+      runId: original.runId,
+      projectId: alpha.id,
+    });
+    expect(runRead.job?.run?.chair).toBeUndefined();
+    expect(posts.filter((post) => post.path.endsWith("/commit"))).toEqual([
+      {
+        path: `${reviewsPath}/${original.requestId}/commit`,
+        body: { intentHash: original.intentHash },
+      },
+    ]);
+    expect(posts.filter((post) => post.path.endsWith("/cancel"))).toEqual([
+      {
+        path: `${reviewsPath}/${original.requestId}/cancel`,
+        body: { intentHash: original.intentHash },
+      },
+    ]);
+    expect(
+      callsFor("council-cancel").filter((call) => call.kind === "admission"),
+    ).toEqual([
+      {
+        kind: "admission",
+        caseId: "council-cancel",
+        mode: "hold",
+        profileId: original.profileId,
+      },
+    ]);
+  } finally {
+    await runReads.dispose();
+  }
 });
 
 test("actual deep discussion exposes peer round zero before Stop cancels its held revision", async ({
@@ -355,137 +269,150 @@ test("actual deep discussion exposes peer round zero before Stop cancels its hel
   selectMode("hold", "council-deep-discussion");
   const posts = observeCouncilPosts(page);
   const original = await prepareReview(page, true);
-  const runReads = observeRunReads(
+  const runReads = await observeRunReads(
     page,
     `${reviewsPath}/${original.requestId}/run`,
+    original,
   );
-  await page
-    .getByRole("button", { name: "Convene this exact original" })
-    .click();
-  await expect(
-    page.getByRole("status").filter({ hasText: "Verified state: running" }),
-  ).toContainText("Discussing round 1", { timeout: 15_000 });
+  try {
+    await page
+      .getByRole("button", { name: "Convene this exact original" })
+      .click();
+    await expect(
+      page.getByRole("status").filter({ hasText: "Verified state: running" }),
+    ).toContainText("Discussing round 1", { timeout: 15_000 });
 
-  let liveRead: ProjectCouncilRunRead | undefined;
-  await expect
-    .poll(async () => {
-      liveRead = (await verifiedRunReads(runReads))
-        .reverse()
-        .find(
-          (read) =>
-            read.receipt.phase === "running" &&
-            read.job?.events.some(
-              (e) =>
-                e.type === "stage.started" &&
-                e.payload.stage === "revision" &&
-                e.payload.round === 1,
-            ) &&
-            read.job?.discussion?.some(
-              (r) => r.stage === "peer" && r.round === 0,
-            ),
-        );
-      return liveRead !== undefined;
-    })
-    .toBe(true);
-  if (!liveRead?.job?.profile)
-    throw Error("The live deep-discussion profile was not read back.");
-  expect(liveRead.receipt.metadata.maxUsd).toBe(original.maxUsd);
-  expect(
-    [...liveRead.job.profile.seats, liveRead.job.profile.chair].map(
-      (s) => s.timeoutMs,
-    ),
-  ).toEqual([5000, 5000, 5000, 5000, 5000]);
-  const peer = liveRead.job.discussion?.find(
-    (round) => round.stage === "peer" && round.round === 0,
-  );
-  expect(peer?.records.map((r) => r.seatId).sort()).toEqual(
-    liveRead.job.profile.seats.map((s) => s.id).sort(),
-  );
-  expect(peer?.records.every((r) => r.status === "completed")).toBe(true);
-  const discussion = page.getByRole("region", { name: "Council discussion" });
-  const roundPicker = discussion.getByLabel("Round");
-  const peerIndex = liveRead.job.discussion?.findIndex(
-    (round) => round.stage === "peer" && round.round === 0,
-  );
-  expect(peerIndex).toBeGreaterThanOrEqual(0);
-  await expect(roundPicker).toBeVisible();
-  await roundPicker.press("Home");
-  for (let index = 0; index < (peerIndex ?? 0); index++)
-    await roundPicker.press("ArrowDown");
-  await expect(roundPicker).toHaveValue(String(peerIndex));
-  await expect(roundPicker.locator("option:checked")).toHaveText("peer 0");
-  await expect(
-    discussion.getByRole("list").first().locator(":scope > li"),
-  ).toHaveCount(peer?.records.length ?? 0);
-  const progress = page.getByRole("region", { name: "Council progress" });
-  await expect(
-    progress.getByRole("list").first().locator(":scope > li"),
-  ).toHaveCount(5);
-  await expect(
-    progress
-      .getByRole("list")
-      .first()
-      .locator(":scope > li")
-      .filter({ hasText: "chair" }),
-  ).toContainText("Pending");
-  const shotDir = process.env["SHOT_DIR"];
-  if (shotDir) {
-    mkdirSync(shotDir, { recursive: true });
-    await page.screenshot({
-      path: join(shotDir, "council-live-discussion.png"),
+    let liveRead: ProjectCouncilRunRead | undefined;
+    await expect
+      .poll(async () => {
+        liveRead = (await verifiedRunReads(runReads))
+          .reverse()
+          .find(
+            (read) =>
+              read.receipt.phase === "running" &&
+              read.job?.events.some(
+                (e) =>
+                  e.type === "stage.started" &&
+                  e.payload.stage === "revision" &&
+                  e.payload.round === 1,
+              ) &&
+              read.job?.discussion?.some(
+                (r) => r.stage === "peer" && r.round === 0,
+              ),
+          );
+        return liveRead !== undefined;
+      })
+      .toBe(true);
+    if (!liveRead?.job?.profile)
+      throw Error("The live deep-discussion profile was not read back.");
+    expect(liveRead.receipt.metadata.maxUsd).toBe(original.maxUsd);
+    expect(
+      [...liveRead.job.profile.seats, liveRead.job.profile.chair].map(
+        (s) => s.timeoutMs,
+      ),
+    ).toEqual([5000, 5000, 5000, 5000, 5000]);
+    const peer = liveRead.job.discussion?.find(
+      (round) => round.stage === "peer" && round.round === 0,
+    );
+    expect(peer?.records.map((r) => r.seatId).sort()).toEqual(
+      liveRead.job.profile.seats.map((s) => s.id).sort(),
+    );
+    expect(peer?.records.every((r) => r.status === "completed")).toBe(true);
+    const discussion = page.getByRole("region", { name: "Council discussion" });
+    const roundPicker = discussion.getByLabel("Round");
+    const peerIndex = liveRead.job.discussion?.findIndex(
+      (round) => round.stage === "peer" && round.round === 0,
+    );
+    expect(peerIndex).toBeGreaterThanOrEqual(0);
+    await expect(roundPicker).toBeVisible();
+    await roundPicker.press("Home");
+    for (let index = 0; index < (peerIndex ?? 0); index++)
+      await roundPicker.press("ArrowDown");
+    await expect(roundPicker).toHaveValue(String(peerIndex));
+    await expect(roundPicker.locator("option:checked")).toHaveText("peer 0");
+    await expect(
+      discussion.getByRole("list").first().locator(":scope > li"),
+    ).toHaveCount(peer?.records.length ?? 0);
+    const progress = page.getByRole("region", { name: "Council progress" });
+    await expect(
+      progress.getByRole("list").first().locator(":scope > li"),
+    ).toHaveCount(5);
+    await expect(
+      progress
+        .getByRole("list")
+        .first()
+        .locator(":scope > li")
+        .filter({ hasText: "chair" }),
+    ).toContainText("Pending");
+    const shotDir = process.env["SHOT_DIR"];
+    if (shotDir) {
+      mkdirSync(shotDir, { recursive: true });
+      await page.screenshot({
+        path: join(shotDir, "council-live-discussion.png"),
+      });
+    }
+
+    await page
+      .getByRole("button", { name: "Stop review", exact: true })
+      .click();
+    await expect(page.getByText("Verified state: cancelled")).toBeVisible({
+      timeout: 15_000,
     });
+    const cancelled = (await verifiedRunReads(runReads)).find(
+      (read) => read.receipt.phase === "cancelled",
+    );
+    if (!cancelled?.job?.run)
+      throw Error("The stopped revision did not produce a cancelled result.");
+    expect(cancelled.provenance).toMatchObject({
+      requestId: original.requestId,
+      intentHash: original.intentHash,
+      runId: original.runId,
+      projectId: alpha.id,
+    });
+    expect(cancelled.job.run.chair).toBeUndefined();
+    const revisions = cancelled.job.run.records.filter(
+      (record) => record.stage === "revision",
+    );
+    expect(revisions).toHaveLength(liveRead.job.profile.seats.length);
+    const delayedSeat = liveRead.job.profile.seats[0]!.id;
+    expect(revisions.find((r) => r.seatId === delayedSeat)?.status).toBe(
+      "cancelled",
+    );
+    expect(
+      revisions
+        .filter((r) => r.seatId !== delayedSeat)
+        .every((r) => r.status === "completed"),
+    ).toBe(true);
+    expect(posts.filter((post) => post.path.endsWith("/commit"))).toHaveLength(
+      1,
+    );
+    expect(posts.filter((post) => post.path.endsWith("/cancel"))).toHaveLength(
+      1,
+    );
+    const requests = callsFor("council-deep-discussion").filter(
+      (call) => call.kind === "request",
+    );
+    expect(requests.every((call) => call.runId === original.runId)).toBe(true);
+    expect(
+      requests.filter(
+        (c) => c.stage === "revision" && c.seatId === delayedSeat,
+      ),
+    ).toHaveLength(1);
+    expect(
+      callsFor("council-deep-discussion").filter(
+        (call) => call.kind === "admission",
+      ),
+    ).toEqual([
+      {
+        kind: "admission",
+        caseId: "council-deep-discussion",
+        mode: "hold",
+        profileId: original.profileId,
+      },
+    ]);
+  } finally {
+    await runReads.dispose();
   }
-
-  await page.getByRole("button", { name: "Stop review", exact: true }).click();
-  await expect(page.getByText("Verified state: cancelled")).toBeVisible({
-    timeout: 15_000,
-  });
-  const cancelled = (await verifiedRunReads(runReads)).find(
-    (read) => read.receipt.phase === "cancelled",
-  );
-  if (!cancelled?.job?.run)
-    throw Error("The stopped revision did not produce a cancelled result.");
-  expect(cancelled.provenance).toMatchObject({
-    requestId: original.requestId,
-    intentHash: original.intentHash,
-    runId: original.runId,
-    projectId: alpha.id,
-  });
-  expect(cancelled.job.run.chair).toBeUndefined();
-  const revisions = cancelled.job.run.records.filter(
-    (record) => record.stage === "revision",
-  );
-  expect(revisions).toHaveLength(liveRead.job.profile.seats.length);
-  const delayedSeat = liveRead.job.profile.seats[0]!.id;
-  expect(revisions.find((r) => r.seatId === delayedSeat)?.status).toBe(
-    "cancelled",
-  );
-  expect(
-    revisions
-      .filter((r) => r.seatId !== delayedSeat)
-      .every((r) => r.status === "completed"),
-  ).toBe(true);
-  expect(posts.filter((post) => post.path.endsWith("/commit"))).toHaveLength(1);
-  expect(posts.filter((post) => post.path.endsWith("/cancel"))).toHaveLength(1);
-  const requests = callsFor("council-deep-discussion").filter(
-    (call) => call.kind === "request",
-  );
-  expect(requests.every((call) => call.runId === original.runId)).toBe(true);
-  expect(
-    requests.filter((c) => c.stage === "revision" && c.seatId === delayedSeat),
-  ).toHaveLength(1);
-  expect(
-    callsFor("council-deep-discussion").filter(
-      (call) => call.kind === "admission",
-    ),
-  ).toEqual([
-    {
-      kind: "admission",
-      caseId: "council-deep-discussion",
-      mode: "hold",
-      profileId: original.profileId,
-    },
-  ]);
 });
 
 test("actual failed Council run keeps partial seat records and no recommendation", async ({
@@ -494,85 +421,92 @@ test("actual failed Council run keeps partial seat records and no recommendation
   selectMode("fail", "council-failure");
   const posts = observeCouncilPosts(page);
   const original = await prepareReview(page);
-  const runReads = observeRunReads(
+  const runReads = await observeRunReads(
     page,
     `${reviewsPath}/${original.requestId}/run`,
+    original,
   );
-  await page
-    .getByRole("button", { name: "Convene this exact original" })
-    .click();
-  await expect(page.getByText("Verified state: failed")).toBeVisible({
-    timeout: 15_000,
-  });
-  await expect(
-    page.getByRole("region", { name: "Council recommendation" }),
-  ).toHaveCount(0);
-  const priorReads = runReads.length;
-  await page.getByRole("button", { name: "Check saved result" }).click();
-  let runRead: ProjectCouncilRunRead | undefined;
-  await expect
-    .poll(
-      async () => {
-        await verifiedRunReads(runReads);
-        runRead = (await verifiedRunReads(runReads.slice(priorReads))).find(
-          (read) =>
-            read.receipt.phase === "failed" &&
-            read.provenance.requestId === original.requestId &&
-            read.provenance.intentHash === original.intentHash &&
-            read.provenance.runId === original.runId &&
-            read.provenance.projectId === alpha.id,
-        );
-        return runRead !== undefined;
-      },
-      { timeout: 15_000 },
-    )
-    .toBe(true);
-  if (!runRead) throw Error("The failed Council result was not read back.");
-  expect(runRead.provenance).toMatchObject({
-    requestId: original.requestId,
-    intentHash: original.intentHash,
-    runId: original.runId,
-    projectId: alpha.id,
-  });
-  const records = runRead.job?.run?.records ?? [];
-  const requests = callsFor("council-failure").filter(
-    (call) => call.kind === "request",
-  );
-  const failedSeat = requests.find(
-    (call) => call.stage === "independent",
-  )?.seatId;
-  const chairSeat = requests.find((call) => call.stage === "chair")?.seatId;
-  expect(failedSeat).toBeTruthy();
-  expect(chairSeat).toBeTruthy();
-  expect(
-    records.some(
-      (record) =>
-        record.stage === "independent" &&
-        record.seatId === failedSeat &&
-        record.status === "failed",
-    ),
-  ).toBe(true);
-  expect(
-    records.some(
-      (record) =>
-        record.stage === "chair" &&
-        record.seatId === chairSeat &&
-        record.status === "failed",
-    ),
-  ).toBe(true);
-  expect(
-    records.some(
-      (record) =>
-        record.stage === "independent" &&
-        record.seatId !== failedSeat &&
-        record.status === "completed",
-    ),
-  ).toBe(true);
-  expect(posts.filter((post) => post.path.endsWith("/commit"))).toHaveLength(1);
-  expect(
-    callsFor("council-failure").filter((call) => call.kind === "admission"),
-  ).toHaveLength(1);
-  expect(requests.every((call) => call.runId === original.runId)).toBe(true);
+  try {
+    await page
+      .getByRole("button", { name: "Convene this exact original" })
+      .click();
+    await expect(page.getByText("Verified state: failed")).toBeVisible({
+      timeout: 15_000,
+    });
+    await expect(
+      page.getByRole("region", { name: "Council recommendation" }),
+    ).toHaveCount(0);
+    const priorReads = runReads.length;
+    await page.getByRole("button", { name: "Check saved result" }).click();
+    let runRead: ProjectCouncilRunRead | undefined;
+    await expect
+      .poll(
+        async () => {
+          await verifiedRunReads(runReads);
+          runRead = (await verifiedRunReads(runReads.slice(priorReads))).find(
+            (read) =>
+              read.receipt.phase === "failed" &&
+              read.provenance.requestId === original.requestId &&
+              read.provenance.intentHash === original.intentHash &&
+              read.provenance.runId === original.runId &&
+              read.provenance.projectId === alpha.id,
+          );
+          return runRead !== undefined;
+        },
+        { timeout: 15_000 },
+      )
+      .toBe(true);
+    if (!runRead) throw Error("The failed Council result was not read back.");
+    expect(runRead.provenance).toMatchObject({
+      requestId: original.requestId,
+      intentHash: original.intentHash,
+      runId: original.runId,
+      projectId: alpha.id,
+    });
+    const records = runRead.job?.run?.records ?? [];
+    const requests = callsFor("council-failure").filter(
+      (call) => call.kind === "request",
+    );
+    const failedSeat = requests.find(
+      (call) => call.stage === "independent",
+    )?.seatId;
+    const chairSeat = requests.find((call) => call.stage === "chair")?.seatId;
+    expect(failedSeat).toBeTruthy();
+    expect(chairSeat).toBeTruthy();
+    expect(
+      records.some(
+        (record) =>
+          record.stage === "independent" &&
+          record.seatId === failedSeat &&
+          record.status === "failed",
+      ),
+    ).toBe(true);
+    expect(
+      records.some(
+        (record) =>
+          record.stage === "chair" &&
+          record.seatId === chairSeat &&
+          record.status === "failed",
+      ),
+    ).toBe(true);
+    expect(
+      records.some(
+        (record) =>
+          record.stage === "independent" &&
+          record.seatId !== failedSeat &&
+          record.status === "completed",
+      ),
+    ).toBe(true);
+    expect(posts.filter((post) => post.path.endsWith("/commit"))).toHaveLength(
+      1,
+    );
+    expect(
+      callsFor("council-failure").filter((call) => call.kind === "admission"),
+    ).toHaveLength(1);
+    expect(requests.every((call) => call.runId === original.runId)).toBe(true);
+  } finally {
+    await runReads.dispose();
+  }
 });
 
 test("lost commit delivery stays unknown until the exact saved result is checked", async ({
@@ -582,7 +516,6 @@ test("lost commit delivery stays unknown until the exact saved result is checked
   const posts = observeCouncilPosts(page);
   const original = await prepareReview(page);
   const runPath = `${reviewsPath}/${original.requestId}/run`;
-  const runReads = observeRunReads(page, runPath);
   const runRequests: string[] = [];
   page.on("request", (request) => {
     if (
@@ -621,6 +554,7 @@ test("lost commit delivery stays unknown until the exact saved result is checked
       }
     },
   );
+  let runReads: RunReadObservations | undefined;
   try {
     await page.evaluate(
       ({ commitUrl, expectedIntentHash }) => {
@@ -833,6 +767,8 @@ test("lost commit delivery stays unknown until the exact saved result is checked
     ]);
     expect(runRequests).toHaveLength(0);
 
+    const exactRunReads = await observeRunReads(page, runPath, original);
+    runReads = exactRunReads;
     await page.getByRole("button", { name: "Read saved original" }).click();
     await expect(
       page.getByRole("button", { name: "Check saved result" }),
@@ -841,7 +777,7 @@ test("lost commit delivery stays unknown until the exact saved result is checked
     await expect(page.getByText("Verified state: completed")).toBeVisible({
       timeout: 15_000,
     });
-    const savedReads = await verifiedRunReads(runReads);
+    const savedReads = await verifiedRunReads(exactRunReads);
     expect(savedReads).toHaveLength(1);
     expect(savedReads[0]?.provenance).toMatchObject({
       requestId: original.requestId,
@@ -864,9 +800,13 @@ test("lost commit delivery stays unknown until the exact saved result is checked
     ).toBe(true);
   } finally {
     try {
-      await page.evaluate(() => window.__restoreCouncilFetch?.());
+      if (runReads) await runReads.dispose();
     } finally {
-      await receiptValidator.dispose();
+      try {
+        await page.evaluate(() => window.__restoreCouncilFetch?.());
+      } finally {
+        await receiptValidator.dispose();
+      }
     }
   }
 });

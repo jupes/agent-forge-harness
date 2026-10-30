@@ -39,7 +39,8 @@
   max-width: 100%;
   padding: 6px 8px;
 }
-.af-project-runs :is(a, button, summary, input, select):focus-visible {
+.af-project-runs
+  :is(a, button, summary, input, select, textarea):focus-visible {
   outline: 2px solid var(--color-accent);
   outline-offset: 3px;
 }
@@ -205,6 +206,45 @@
 }
 .af-run-review-summary {
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.af-checkpoint-review {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--color-divider);
+  border-radius: 8px;
+  background: var(--color-surface);
+  overflow-wrap: anywhere;
+}
+.af-checkpoint-review h5 {
+  margin: 0;
+}
+.af-checkpoint-review label {
+  color: var(--color-neutral-400);
+  font-size: 12px;
+}
+.af-checkpoint-review textarea {
+  box-sizing: border-box;
+  display: block;
+  width: 100%;
+  min-width: 0;
+  min-height: 88px;
+  resize: vertical;
+  border: 1px solid var(--color-divider);
+  border-radius: 5px;
+  padding: 8px;
+  color: var(--color-text);
+  background: var(--color-surface);
+  font: inherit;
+  overflow-wrap: anywhere;
+}
+.af-checkpoint-review textarea:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+.af-checkpoint-review li {
   overflow-wrap: anywhere;
 }
 @media (max-width: 1200px) {
