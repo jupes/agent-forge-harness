@@ -4,6 +4,7 @@ import { createProjectRunsClient } from "../../apps/desktop/src/project-runs-cli
 import type {
   ProjectRunArtifact,
   ProjectRunDetail,
+  ProjectRunRecordedSession,
   ProjectRunRow,
   ProjectRunsPage,
 } from "../../types/project-runs";
@@ -11,6 +12,7 @@ import type {
 const projectId = "project-015821b4-4b38-4bf3-9326-71ce9c09ff46";
 const foreign = "project-f05a117f-8d19-4906-80f0-75d72835f3e8";
 const at = "2026-10-23T12:00:00.000Z";
+const membershipKey = "a".repeat(64);
 function row(slug = "alpha-run"): ProjectRunRow {
   return {
     slug,
@@ -67,6 +69,25 @@ function detail(slug = "alpha-run"): ProjectRunDetail {
     earlierGateLimit: 10,
   };
 }
+function historyDetail(
+  after: number,
+  nextAfter: number,
+  more: boolean,
+  sessions: ProjectRunRecordedSession[],
+  slug = "alpha-run",
+): ProjectRunDetail {
+  return {
+    ...detail(slug),
+    sessionHistory: {
+      status: "available",
+      after,
+      nextAfter,
+      more,
+      membershipKey,
+      sessions,
+    },
+  };
+}
 function held<T>() {
   let resolve!: (value: T) => void;
   return {
@@ -110,6 +131,10 @@ test("initial detail waits for protected membership and a selected run change ab
   first.resolve(detail());
   await settle();
   expect(client.get().detail?.run.slug).toBe("second-run");
+  expect(client.get().detail?.sessionHistory).toMatchObject({
+    status: "unavailable",
+    reason: "unsupported-server",
+  });
   client.dispose();
 });
 
@@ -148,6 +173,281 @@ test("a membership refresh fences an old detail, removes a vanished run, and can
       "second-run",
     ]);
   }
+  client.dispose();
+});
+
+test("recorded run session pages advance by cursor, append once, and reject a stale page after selection changes", async () => {
+  const firstSession = {
+    sessionId: "run-session-one",
+    startedAt: at,
+    kind: "headless" as const,
+    detailsAvailable: false,
+  };
+  const secondSession = {
+    sessionId: "run-session-two",
+    startedAt: at,
+    kind: null,
+    detailsAvailable: true,
+  };
+  const later = held<unknown>();
+  const calls: Array<{ slug: string; after: number | undefined }> = [];
+  const client = createProjectRunsClient({
+    projectId,
+    workspace: "/workspace",
+    list: async () => page(["alpha-run", "second-run"]),
+    detail: (slug, _signal, after) => {
+      calls.push({ slug, after });
+      if (slug === "alpha-run" && after === 0)
+        return Promise.resolve(
+          historyDetail(0, 5, true, [firstSession]),
+        );
+      if (slug === "alpha-run" && after === 5)
+        return later.promise;
+      return Promise.resolve(detail(slug));
+    },
+  });
+  client.select("alpha-run");
+  await client.refresh();
+  await settle();
+  expect(client.get().detail?.sessionHistory).toMatchObject({
+    status: "available",
+    after: 0,
+    nextAfter: 5,
+    more: true,
+    sessions: [firstSession],
+  });
+
+  const loading = client.loadMoreSessions();
+  await settle();
+  expect(client.get().sessionHistoryLoading).toBe(true);
+  client.select("second-run");
+  await settle();
+  later.resolve(historyDetail(5, 9, false, [firstSession, secondSession]));
+  await loading;
+  await settle();
+  expect(client.get().detail?.run.slug).toBe("second-run");
+  expect(client.get().detail?.sessionHistory?.status).toBe("unavailable");
+  expect(calls).toEqual([
+    { slug: "alpha-run", after: 0 },
+    { slug: "alpha-run", after: 5 },
+    { slug: "second-run", after: 0 },
+  ]);
+  client.dispose();
+});
+
+test("recorded run session pages append by the verified cursor and deduplicate session IDs", async () => {
+  const firstSession = {
+    sessionId: "run-session-one",
+    startedAt: at,
+    kind: "headless" as const,
+    detailsAvailable: false,
+  };
+  const secondSession = {
+    sessionId: "run-session-two",
+    startedAt: at,
+    kind: null,
+    detailsAvailable: true,
+  };
+  const thirdSession = {
+    sessionId: "run-session-three",
+    startedAt: at,
+    kind: null,
+    detailsAvailable: false,
+  };
+  const cursors: number[] = [];
+  const client = createProjectRunsClient({
+    projectId,
+    workspace: "/workspace",
+    list: async () => page(["alpha-run"]),
+    detail: async (_slug, _signal, after = 0) => {
+      cursors.push(after);
+      return after === 0
+        ? historyDetail(0, 5, true, [firstSession])
+        : after === 5
+          ? historyDetail(5, 9, true, [firstSession, secondSession])
+          : historyDetail(9, 12, false, [secondSession, thirdSession]);
+    },
+  });
+  client.select("alpha-run");
+  await client.refresh();
+  await settle();
+  await client.loadMoreSessions();
+  await client.loadMoreSessions();
+  expect(cursors).toEqual([0, 5, 9]);
+  expect(client.get().detail?.sessionHistory).toMatchObject({
+    status: "available",
+    after: 0,
+    nextAfter: 12,
+    more: false,
+    membershipKey,
+    sessions: [firstSession, secondSession, thirdSession],
+  });
+  client.dispose();
+});
+
+test("a changed membership key retains prior sessions, marks them stale, and blocks further paging", async () => {
+  const recorded = {
+    sessionId: "run-session-one",
+    startedAt: at,
+    kind: "headless" as const,
+    detailsAvailable: true,
+  };
+  const calls: number[] = [];
+  const client = createProjectRunsClient({
+    projectId,
+    workspace: "/workspace",
+    list: async () => page(["alpha-run"]),
+    detail: async (_slug, _signal, after = 0) => {
+      calls.push(after);
+      if (after === 0) return historyDetail(0, 5, true, [recorded]);
+      return {
+        ...detail(),
+        sessionHistory: {
+          status: "available",
+          after: 5,
+          nextAfter: 9,
+          more: true,
+          membershipKey: "b".repeat(64),
+          sessions: [
+            {
+              sessionId: "newly-admitted-session",
+              startedAt: at,
+              kind: null,
+              detailsAvailable: true,
+            },
+          ],
+        },
+      };
+    },
+  });
+  client.select("alpha-run");
+  await client.refresh();
+  await settle();
+  expect(client.get().detail?.sessionHistory).toMatchObject({
+    membershipKey,
+    sessions: [recorded],
+  });
+
+  await client.loadMoreSessions();
+  expect(client.get().detail?.sessionHistory).toMatchObject({
+    membershipKey,
+    sessions: [recorded],
+  });
+  expect(client.get().sessionHistoryStale).toBe(true);
+  expect(client.get().sessionHistoryError).toContain("membership changed");
+  await client.loadMoreSessions();
+  expect(calls).toEqual([0, 5]);
+  client.dispose();
+});
+
+test("an unavailable next session page retains verified rows and marks them stale", async () => {
+  const recorded = {
+    sessionId: "run-session-one",
+    startedAt: at,
+    kind: "headless" as const,
+    detailsAvailable: false,
+  };
+  const client = createProjectRunsClient({
+    projectId,
+    workspace: "/workspace",
+    list: async () => page(["alpha-run"]),
+    detail: async (_slug, _signal, after = 0) =>
+      after === 0
+        ? historyDetail(0, 7, true, [recorded])
+        : {
+            ...detail(),
+            sessionHistory: {
+              status: "unavailable",
+              after,
+              reason: "ledger-unavailable",
+            },
+          },
+  });
+  client.select("alpha-run");
+  await client.refresh();
+  await settle();
+  await client.loadMoreSessions();
+  expect(client.get().detail?.sessionHistory).toMatchObject({
+    status: "available",
+    sessions: [recorded],
+    more: true,
+  });
+  expect(client.get().sessionHistoryError).toContain("unavailable");
+  expect(client.get().sessionHistoryStale).toBe(true);
+  client.dispose();
+});
+
+test("malformed or wrong-cursor initial history is unavailable without losing verified run detail", async () => {
+  let response: unknown = {
+    ...detail(),
+    sessionHistory: {
+      status: "available",
+      after: 0,
+      nextAfter: 1,
+      more: false,
+      membershipKey,
+      sessions: [
+        {
+          sessionId: "recorded-session",
+          startedAt: "not-a-timestamp",
+          kind: null,
+          detailsAvailable: false,
+        },
+      ],
+    },
+  };
+  const client = createProjectRunsClient({
+    projectId,
+    workspace: "/workspace",
+    list: async () => page(["alpha-run"]),
+    detail: async () => response,
+  });
+  client.select("alpha-run");
+  await client.refresh();
+  await settle();
+  expect(client.get().detail?.run.slug).toBe("alpha-run");
+  expect(client.get().detail?.sessionHistory).toEqual({
+    status: "unavailable",
+    after: 0,
+    reason: "ledger-unavailable",
+  });
+
+  response = {
+    ...historyDetail(0, 0, false, []),
+    sessionHistory: {
+      status: "available",
+      after: 0,
+      nextAfter: 0,
+      more: false,
+      membershipKey: "not-a-sha256-key",
+      sessions: [],
+    },
+  };
+  await client.refreshDetail();
+  expect(client.get().detail?.sessionHistory).toEqual({
+    status: "unavailable",
+    after: 0,
+    reason: "ledger-unavailable",
+  });
+
+  response = {
+    ...detail(),
+    sessionHistory: {
+      status: "available",
+      after: 4,
+      nextAfter: 4,
+      more: false,
+      membershipKey,
+      sessions: [],
+    },
+  };
+  await client.refreshDetail();
+  expect(client.get().detail?.run.slug).toBe("alpha-run");
+  expect(client.get().detail?.sessionHistory).toEqual({
+    status: "unavailable",
+    after: 0,
+    reason: "ledger-unavailable",
+  });
   client.dispose();
 });
 

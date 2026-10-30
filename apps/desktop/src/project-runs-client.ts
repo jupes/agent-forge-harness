@@ -10,13 +10,17 @@ import {
 import {
   projectRunArtifactSchema,
   projectRunDetailSchema,
+  projectRunSessionHistorySchema,
   projectRunsPageSchema,
 } from "../../../scripts/projects/run-protocol";
 import type {
   ProjectRunArtifact,
   ProjectRunDetail,
+  ProjectRunSessionHistory,
   ProjectRunsPage,
 } from "../../../types/project-runs";
+
+const MAX_RETAINED_RUN_SESSIONS = 1000;
 
 export interface ProjectRunsView {
   page: ProjectRunsPage | null;
@@ -27,6 +31,10 @@ export interface ProjectRunsView {
   detailLoading: boolean;
   detailError: string;
   detailStale: boolean;
+  sessionHistoryLoading: boolean;
+  sessionHistoryError: string;
+  sessionHistoryStale: boolean;
+  sessionHistoryCapped: boolean;
   artifactKind?: "research" | "plan" | "ship" | null;
   artifact?: ProjectRunArtifact | null;
   artifactLoading?: boolean;
@@ -39,7 +47,12 @@ export function createProjectRunsClient(deps: {
   projectId: string;
   workspace: string | null;
   list(signal: AbortSignal): Promise<unknown>;
-  detail(slug: string, signal: AbortSignal): Promise<unknown>;
+  detail(
+    slug: string,
+    signal: AbortSignal,
+    after?: number,
+    limit?: number,
+  ): Promise<unknown>;
   artifact?(
     slug: string,
     kind: "research" | "plan" | "ship",
@@ -57,6 +70,10 @@ export function createProjectRunsClient(deps: {
     detailLoading: false,
     detailError: "",
     detailStale: false,
+    sessionHistoryLoading: false,
+    sessionHistoryError: "",
+    sessionHistoryStale: false,
+    sessionHistoryCapped: false,
     artifactKind: null,
     artifact: null,
     artifactLoading: false,
@@ -65,10 +82,14 @@ export function createProjectRunsClient(deps: {
   };
   const listeners = new Set<() => void>();
   const timers = deps.timers ?? REAL_TIMERS;
-  const pending = new Map<"list" | "detail" | "artifact", () => void>();
+  const pending = new Map<
+    "list" | "detail" | "sessions" | "artifact",
+    () => void
+  >();
   let closed = false,
     listEpoch = 0,
-    detailEpoch = 0;
+    detailEpoch = 0,
+    sessionEpoch = 0;
   let workspace = deps.workspace,
     checkout: string | null = null;
   const emit = () => {
@@ -79,7 +100,7 @@ export function createProjectRunsClient(deps: {
       ? cause.message.slice(0, 2000)
       : "Run metadata could not be verified. Retry to check again.";
   async function bounded<T>(
-    key: "list" | "detail" | "artifact",
+    key: "list" | "detail" | "sessions" | "artifact",
     read: (signal: AbortSignal) => Promise<T>,
   ): Promise<T> {
     pending.get(key)?.();
@@ -117,9 +138,14 @@ export function createProjectRunsClient(deps: {
   }
   function invalidateDetail() {
     detailEpoch++;
+    sessionEpoch++;
     pending.get("detail")?.();
+    pending.get("sessions")?.();
     state.detailLoading = false;
     state.detailStale = state.detail !== null;
+    state.sessionHistoryLoading = false;
+    state.sessionHistoryStale =
+      state.detail?.sessionHistory?.status === "available";
     invalidateArtifact();
   }
   async function refreshDetail() {
@@ -134,21 +160,46 @@ export function createProjectRunsClient(deps: {
       state.artifactKind = null;
       state.artifactError = "";
       state.artifactStale = false;
+      state.sessionHistoryLoading = false;
+      state.sessionHistoryError = "";
+      state.sessionHistoryCapped = false;
+      state.sessionHistoryStale = false;
       state.detailError =
         "This run is not in this project's current run list. It may be unavailable or outside this scope.";
       emit();
       return;
     }
     invalidateArtifact();
+    sessionEpoch++;
+    pending.get("sessions")?.();
+    state.sessionHistoryLoading = false;
     const epoch = ++detailEpoch,
       membership = listEpoch;
     state.detailLoading = true;
+    state.sessionHistoryLoading = true;
     state.detailError = "";
+    state.sessionHistoryError = "";
     emit();
     try {
-      const parsed = projectRunDetailSchema.safeParse(
-        await bounded("detail", (signal) => deps.detail(slug, signal)),
+      const response = await bounded("detail", (signal) =>
+        deps.detail(slug, signal, 0, 100),
       );
+      const hasHistory =
+        typeof response === "object" &&
+        response !== null &&
+        !Array.isArray(response) &&
+        Object.prototype.hasOwnProperty.call(response, "sessionHistory");
+      const core =
+        typeof response === "object" &&
+        response !== null &&
+        !Array.isArray(response)
+          ? Object.fromEntries(
+              Object.entries(response).filter(
+                ([key]) => key !== "sessionHistory",
+              ),
+            )
+          : response;
+      const parsed = projectRunDetailSchema.safeParse(core);
       if (
         closed ||
         epoch !== detailEpoch ||
@@ -166,16 +217,152 @@ export function createProjectRunsClient(deps: {
         throw Error(
           "This run detail does not match the verified project and served checkout.",
         );
-      state.detail = parsed.data;
+      const rawHistory =
+        typeof response === "object" &&
+        response !== null &&
+        !Array.isArray(response) &&
+        "sessionHistory" in response
+          ? response.sessionHistory
+          : undefined;
+      const checkedHistory = hasHistory
+        ? projectRunSessionHistorySchema.safeParse(rawHistory)
+        : null;
+      let sessionHistory: ProjectRunSessionHistory;
+      if (!checkedHistory) {
+        sessionHistory = {
+          status: "unavailable",
+          after: 0,
+          reason: "unsupported-server",
+        };
+      } else if (
+        !checkedHistory.success ||
+        checkedHistory.data.after !== 0
+      ) {
+        sessionHistory = {
+          status: "unavailable",
+          after: 0,
+          reason: "ledger-unavailable",
+        };
+      } else {
+        sessionHistory = checkedHistory.data;
+      }
+      state.detail = { ...parsed.data, sessionHistory };
       state.detailStale = false;
+      state.sessionHistoryStale = false;
+      state.sessionHistoryCapped = false;
     } catch (cause) {
       if (!closed && epoch === detailEpoch) {
         state.detailError = error(cause);
         state.detailStale = state.detail !== null;
+        state.sessionHistoryStale =
+          state.detail?.sessionHistory?.status === "available";
       }
     } finally {
       if (!closed && epoch === detailEpoch) {
         state.detailLoading = false;
+        state.sessionHistoryLoading = false;
+        emit();
+      }
+    }
+  }
+  async function loadMoreSessions() {
+    const slug = state.selectedSlug;
+    const detail = state.detail;
+    const history = detail?.sessionHistory;
+    if (
+      closed ||
+      !slug ||
+      !detail ||
+      !history ||
+      history.status !== "available" ||
+      !history.more ||
+      state.loading ||
+      state.error ||
+      state.detailLoading ||
+      state.detailStale ||
+      state.sessionHistoryLoading ||
+      state.sessionHistoryStale ||
+      state.sessionHistoryCapped ||
+      !state.page?.runs.some((run) => run.slug === slug)
+    )
+      return;
+    const after = history.nextAfter;
+    if (!Number.isSafeInteger(after) || after < 0) return;
+    const epoch = ++sessionEpoch,
+      detailGeneration = detailEpoch,
+      membership = listEpoch;
+    state.sessionHistoryLoading = true;
+    state.sessionHistoryError = "";
+    emit();
+    try {
+      const parsed = projectRunDetailSchema.safeParse(
+        await bounded("sessions", (signal) =>
+          deps.detail(slug, signal, after, 100),
+        ),
+      );
+      if (
+        closed ||
+        epoch !== sessionEpoch ||
+        detailGeneration !== detailEpoch ||
+        membership !== listEpoch ||
+        state.selectedSlug !== slug ||
+        state.detail !== detail
+      )
+        return;
+      if (
+        !parsed.success ||
+        parsed.data.projectId !== deps.projectId ||
+        parsed.data.workspace !== workspace ||
+        parsed.data.checkout !== checkout ||
+        parsed.data.run.slug !== slug
+      )
+        throw Error("This session page does not match the verified project and run.");
+      const page = parsed.data.sessionHistory;
+      if (!page)
+        throw Error("This server does not provide recorded run sessions.");
+      if (page.status === "unavailable")
+        throw Error("Recorded session history is unavailable. Refresh to retry.");
+      if (page.after !== after)
+        throw Error("This session page does not match its requested cursor.");
+      if (page.membershipKey !== history.membershipKey)
+        throw Error(
+          "Project or session membership changed while reading this run. Refresh Runs before continuing.",
+        );
+      const seen = new Set(history.sessions.map((session) => session.sessionId));
+      const sessions = [...history.sessions];
+      for (const session of page.sessions) {
+        if (seen.has(session.sessionId)) continue;
+        seen.add(session.sessionId);
+        sessions.push(session);
+      }
+      if (sessions.length > MAX_RETAINED_RUN_SESSIONS) {
+        state.sessionHistoryCapped = true;
+        state.sessionHistoryError =
+          "The retained session list reached its limit; this page was not added. Refresh to restart the bounded history read.";
+        state.sessionHistoryStale = false;
+        return;
+      }
+      state.detail = {
+        ...parsed.data,
+        sessionHistory: {
+          status: "available",
+          after: history.after,
+          nextAfter: page.nextAfter,
+          more: page.more,
+          membershipKey: history.membershipKey,
+          sessions,
+        },
+      };
+      state.sessionHistoryStale = false;
+      state.sessionHistoryCapped = false;
+    } catch (cause) {
+      if (!closed && epoch === sessionEpoch) {
+        state.sessionHistoryError = error(cause);
+        state.sessionHistoryStale = true;
+      }
+    } finally {
+      if (!closed && epoch === sessionEpoch) {
+        state.sessionHistoryLoading = false;
         emit();
       }
     }
@@ -314,6 +501,7 @@ export function createProjectRunsClient(deps: {
     },
     refresh,
     refreshDetail,
+    loadMoreSessions,
     openArtifact,
     select(slug: string | null) {
       if (closed || slug === state.selectedSlug) return;
@@ -324,6 +512,10 @@ export function createProjectRunsClient(deps: {
       state.artifactKind = null;
       state.detailError = "";
       state.detailStale = false;
+      state.sessionHistoryLoading = false;
+      state.sessionHistoryError = "";
+      state.sessionHistoryStale = false;
+      state.sessionHistoryCapped = false;
       emit();
       void refreshDetail();
     },
@@ -334,6 +526,7 @@ export function createProjectRunsClient(deps: {
       closed = true;
       listEpoch++;
       detailEpoch++;
+      sessionEpoch++;
       refetcher.dispose();
       for (const cancel of pending.values()) cancel();
       pending.clear();

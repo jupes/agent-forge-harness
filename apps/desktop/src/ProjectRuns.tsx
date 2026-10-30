@@ -8,6 +8,7 @@ import type {
   ProjectRunGate,
 } from "../../../types/project-runs";
 import { KeeperMarkdown } from "./KeeperMarkdown";
+import { desktopHref } from "./navigation";
 import { ProjectCheckpointReview } from "./ProjectCheckpointReview";
 import { activityHref, emptyActivityFilters } from "./project-activity-model";
 import type {
@@ -268,6 +269,11 @@ export function ProjectRuns({
               <RunDetail
                 projectId={projectId}
                 detail={view.detail}
+                sessionHistoryLoading={view.sessionHistoryLoading}
+                sessionHistoryError={view.sessionHistoryError}
+                sessionHistoryStale={view.sessionHistoryStale || view.detailStale}
+                sessionHistoryCapped={view.sessionHistoryCapped}
+                onLoadMoreSessions={() => client?.loadMoreSessions()}
                 checkpointResult={checkpointResult}
                 {...(checkpointReviewOwner ? { checkpointReviewOwner } : {})}
                 checkpointReviewsWritable={checkpointReviewsWritable}
@@ -624,6 +630,11 @@ function RunCheckpoints({
 export function RunDetail({
   projectId,
   detail,
+  sessionHistoryLoading = false,
+  sessionHistoryError = "",
+  sessionHistoryStale = false,
+  sessionHistoryCapped = false,
+  onLoadMoreSessions,
   checkpointResult = { kind: "loading" },
   checkpointReviewOwner,
   checkpointReviewsWritable = false,
@@ -635,6 +646,11 @@ export function RunDetail({
 }: {
   projectId: string;
   detail: ProjectRunDetail;
+  sessionHistoryLoading?: boolean;
+  sessionHistoryError?: string;
+  sessionHistoryStale?: boolean;
+  sessionHistoryCapped?: boolean;
+  onLoadMoreSessions?(): void;
   checkpointResult?: ProjectRunCheckpointResult;
   checkpointReviewOwner?(
     target: ProjectCheckpointReviewTarget,
@@ -782,6 +798,97 @@ export function RunDetail({
             </li>
           ))}
         </ol>
+      </section>
+      <section aria-label="Recorded sessions for this run">
+        <h4>Sessions</h4>
+        <p>
+          These are session starts recorded with this run. They do not report
+          whether a session is currently running.
+        </p>
+        {sessionHistoryLoading && (
+          <p role="status" aria-live="polite">
+            {detail.sessionHistory?.status === "available"
+              ? "Loading more recorded sessions…"
+              : "Reading recorded sessions…"}
+          </p>
+        )}
+        {sessionHistoryError && (
+          <p role="alert" class="af-runs-error">
+            {sessionHistoryError}
+            {detail.sessionHistory?.status === "available" &&
+              " Previously verified sessions are retained."}
+          </p>
+        )}
+        {sessionHistoryStale && (
+          <p role="status">
+            These session records have not been verified against the current
+            project and run. Refresh Runs to check them again.
+          </p>
+        )}
+        {detail.sessionHistory?.status === "unavailable" ? (
+          <p role="status">
+            Recorded session history is unavailable; no empty result is
+            assumed.
+          </p>
+        ) : detail.sessionHistory?.status === "available" ? (
+          <>
+            {detail.sessionHistory.sessions.length === 0 && (
+              <p role="status">
+                {detail.sessionHistory.more
+                  ? "No verified session rows are available on this page; more recorded rows may follow."
+                  : "No session starts are recorded for this run in the served workspace."}
+              </p>
+            )}
+            {detail.sessionHistory.sessions.length > 0 && (
+              <ul>
+                {detail.sessionHistory.sessions.map((session) => (
+                  <li key={session.sessionId}>
+                    <code>{session.sessionId}</code>
+                    <span>
+                      {session.kind ? ` · ${session.kind}` : " · kind not recorded"}
+                    </span>
+                    {time(session.startedAt)}
+                    {session.detailsAvailable && !sessionHistoryStale ? (
+                      <a
+                        href={desktopHref({
+                          projectId,
+                          destination: "sessions",
+                          selection: {
+                            kind: "session",
+                            id: session.sessionId,
+                          },
+                        })}
+                      >
+                        Open session metadata
+                      </a>
+                    ) : (
+                      <span>
+                        {session.detailsAvailable
+                          ? " Session metadata is not current."
+                          : " Session metadata is not independently available."}
+                      </span>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+            {detail.sessionHistory.more && (
+              <Button
+                disabled={
+                  sessionHistoryLoading ||
+                  sessionHistoryStale ||
+                  sessionHistoryCapped ||
+                  !onLoadMoreSessions
+                }
+                onClick={onLoadMoreSessions}
+              >
+                Load more recorded sessions
+              </Button>
+            )}
+          </>
+        ) : (
+          <p role="status">This server does not report recorded session history.</p>
+        )}
       </section>
       <RunCheckpoints
         result={checkpointResult}

@@ -6,8 +6,10 @@ import type {
   ProjectRunDetail,
   ProjectRunGate,
   ProjectRunRow,
+  ProjectRunSessionHistory,
   ProjectRunsPage,
 } from "../../../types/project-runs";
+import { SESSION_KINDS } from "../../../types/hearth";
 import type { ProjectRecord, ProjectWorkspace } from "../../../types/projects";
 import { boardRows, forgeRunSnapshot } from "../../dashboard/forge-run-model";
 import {
@@ -23,11 +25,14 @@ import {
 import type { ProjectCheckpointReviewAuthorityRequest } from "../../forge/project-checkpoint-review-service";
 import { comparableCheckout, isValidSlug } from "../../forge/runs";
 import { hashText } from "../../hash-text";
+import { queryEventPage } from "../../ledger/query";
 import {
   projectRunArtifactSchema,
   projectRunDetailSchema,
+  projectRunSessionHistorySchema,
   projectRunsPageSchema,
 } from "../../projects/run-protocol";
+import { summarizeProject } from "../../projects/summary";
 import { selectProjectBeads, workspaceKey } from "../../projects/scope";
 import {
   createProjectStore,
@@ -35,7 +40,7 @@ import {
   ProjectStoreError,
 } from "../../projects/store";
 import type { ReadRoute, RouteReply } from "../api";
-import { fail, noParameters, type ReadDeps } from "./operator-reads";
+import { fail, hearthLedger, noParameters, type ReadDeps } from "./operator-reads";
 import type { ProjectSnapshot } from "./project-summaries";
 
 export class RunReadError extends Error {
@@ -388,8 +393,12 @@ export function createProjectRunRoutes(
 ) {
   const authority = projectRunAuthorityReader(deps, load);
   const captured = authority.source;
-  async function read(projectId: string, slug?: string) {
-    const { snapshot, source, members, checkouts, states, found } =
+  async function read(
+    projectId: string,
+    slug?: string,
+    sessionPage: { after: number; limit: number } = { after: 0, limit: 100 },
+  ) {
+    const { snapshot, project, scope, source, members, checkouts, states, found } =
       await authority.resolveRun(projectId, slug);
     const gates = scopedGateLogs(
       states.length
@@ -446,6 +455,96 @@ export function createProjectRunRoutes(
             ]
           : [],
       );
+      const projectSummary = summarizeProject(project, snapshot.source);
+      const detailSessions = new Set(
+        projectSummary.sessions.map((session) => session.sessionId),
+      );
+      for (const owned of snapshot.source.ownedSessions ?? []) {
+        if (
+          owned.projectId === projectId &&
+          workspaceKey(owned.workspace) === workspaceKey(deps.workspace) &&
+          scope.repositories.some(
+            (repository) =>
+              workspaceKey(repository) === workspaceKey(owned.repository),
+          )
+        )
+          detailSessions.add(owned.id);
+      }
+      const membershipKey = hashText(
+        JSON.stringify({
+          projectId,
+          workspace: workspaceKey(deps.workspace),
+          checkout: comparableCheckout(source.checkout),
+          run: {
+            slug: found.slug,
+            updatedAt: found.updatedAt ?? null,
+            epic: found.epic ?? null,
+            beadId: found.beadId ?? null,
+            checkout: found.checkout
+              ? comparableCheckout(found.checkout)
+              : null,
+          },
+          members: [...members].sort(),
+          detailSessions: [...detailSessions].sort(),
+        }),
+      );
+      let sessionHistory: ProjectRunSessionHistory;
+      try {
+        const page = queryEventPage(
+          {
+            workspace: deps.workspace,
+            runId: slug,
+            kinds: ["session.started"],
+            afterId: sessionPage.after,
+            limit: sessionPage.limit,
+          },
+          hearthLedger(deps.ledgerPath),
+        );
+        const seen = new Set<string>();
+        const sessions = page.events.flatMap((event) => {
+          const sessionId = event.sessionId;
+          if (
+            event.kind !== "session.started" ||
+            !sessionId ||
+            (event.beadId !== undefined && !members.has(event.beadId)) ||
+            seen.has(sessionId)
+          )
+            return [];
+          seen.add(sessionId);
+          const kind = event.payload.kind;
+          return [
+            {
+              sessionId,
+              startedAt: event.ts,
+              kind: kind && SESSION_KINDS.includes(kind) ? kind : null,
+              detailsAvailable: detailSessions.has(sessionId),
+            },
+          ];
+        });
+        sessionHistory = {
+          status: "available",
+          after: sessionPage.after,
+          nextAfter: page.events.at(-1)?.id ?? sessionPage.after,
+          more: page.more,
+          membershipKey,
+          sessions,
+        };
+      } catch {
+        sessionHistory = {
+          status: "unavailable",
+          after: sessionPage.after,
+          reason: "ledger-unavailable",
+        };
+      }
+      const checkedSessionHistory =
+        projectRunSessionHistorySchema.safeParse(sessionHistory);
+      if (!checkedSessionHistory.success) {
+        sessionHistory = {
+          status: "unavailable",
+          after: sessionPage.after,
+          reason: "ledger-unavailable",
+        };
+      }
       return projectRunDetailSchema.parse({
         ...common,
         run: row,
@@ -462,6 +561,7 @@ export function createProjectRunRoutes(
         gateHistory,
         gateHistoryDays: 30,
         earlierGateLimit: 10,
+        sessionHistory,
       } satisfies ProjectRunDetail);
     }
     return projectRunsPageSchema.parse({
@@ -610,22 +710,44 @@ export function createProjectRunRoutes(
     },
     read: ({ projectId }) => answer(() => read(projectId)),
   };
-  const detail: ReadRoute<{ projectId: string; slug: string }> = {
+  const detail: ReadRoute<{
+    projectId: string;
+    slug: string;
+    after: number;
+    limit: number;
+  }> = {
     kind: "read",
     operatorOnly: true,
     method: "GET",
     path: "/projects/:id/runs/:slug",
     validate(request) {
-      const params = noParameters(request);
+      const params = new Map<string, string>();
+      for (const [name, value] of request.query) {
+        if (name !== "after" && name !== "limit")
+          return fail(`${name}: unknown parameter (expected after, limit)`);
+        if (params.has(name)) return fail(`${name}: given more than once`);
+        params.set(name, value);
+      }
       const projectId = request.params["id"],
         slug = request.params["slug"];
-      return !params.ok
-        ? params
-        : !isProjectId(projectId) || !slug || !isValidSlug(slug)
-          ? fail("Expected a project id and exact run slug.")
-          : { ok: true, value: { projectId, slug } };
+      const afterText = params.get("after") ?? "0";
+      const limitText = params.get("limit") ?? "100";
+      const after = /^(0|[1-9][0-9]*)$/.test(afterText)
+        ? Number(afterText)
+        : NaN;
+      const limit = /^(0|[1-9][0-9]*)$/.test(limitText)
+        ? Number(limitText)
+        : NaN;
+      return !isProjectId(projectId) || !slug || !isValidSlug(slug)
+        ? fail("Expected a project id and exact run slug.")
+        : !Number.isSafeInteger(after) || after < 0
+          ? fail("after: expected a nonnegative safe integer")
+          : !Number.isInteger(limit) || limit < 1 || limit > 100
+            ? fail("limit: expected a whole number from 1 to 100")
+            : { ok: true, value: { projectId, slug, after, limit } };
     },
-    read: ({ projectId, slug }) => answer(() => read(projectId, slug)),
+    read: ({ projectId, slug, after, limit }) =>
+      answer(() => read(projectId, slug, { after, limit })),
   };
   const artifact: ReadRoute<{
     projectId: string;

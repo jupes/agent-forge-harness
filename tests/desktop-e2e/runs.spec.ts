@@ -11,6 +11,8 @@ import { dirname, join } from "node:path";
 import { expect, type Page, type Route, test } from "@playwright/test";
 import { runsHref } from "../../apps/desktop/src/project-runs-model";
 import type { ForgeState } from "../../scripts/forge/phases";
+import { appendEvent } from "../../scripts/ledger/append";
+import { ledgerPath } from "../../scripts/ledger/paths";
 import { OPERATOR_HEADER } from "../../scripts/hearth/paths";
 import {
   projectRunArtifactSchema,
@@ -222,6 +224,33 @@ function seedRuns() {
   writeFileSync(logPath, logs, { flag: "wx" });
   owned.set(logPath, logs);
   return { primary, shipped, legacy, foreign, path, research };
+}
+function recordRunSessions(runId: string, count: number) {
+  const workspace = realpathSync.native(process.cwd());
+  const path = ledgerPath({ AGENT_FORGE_HOME: HEARTH_HOME });
+  const sessionIds: string[] = [];
+  for (let index = 0; index < count; index++) {
+    const sessionId = `run-session-${randomUUID()}`;
+    const result = appendEvent(
+      {
+        kind: "session.started",
+        workspace,
+        beadId: "alpha-epic",
+        runId,
+        sessionId,
+        payload: {
+          source: "headless:claude",
+          kind: "headless",
+          worktree: workspace,
+        },
+      },
+      { path },
+    );
+    if (!result.ok || !("id" in result))
+      throw Error("The inert run session was not recorded in the E2E ledger");
+    sessionIds.push(sessionId);
+  }
+  return sessionIds;
 }
 function held() {
   let release!: () => void;
@@ -579,6 +608,70 @@ test("scoped Runs keyboard inspection preserves real phase, review and gate trut
     "linked",
     "legacy",
   ]);
+});
+
+test("recorded run sessions page in the served project and open only admitted metadata", async ({
+  page,
+}) => {
+  const sessions = recordRunSessions(fixture.primary, 101);
+  await openSettled(page, href(alpha.id, fixture.primary));
+  const history = page.getByRole("region", {
+    name: "Recorded sessions for this run",
+  });
+  await expect(history.getByText(sessions[0]!, { exact: true })).toBeVisible();
+  await expect(history.getByText(sessions[100]!, { exact: true })).toHaveCount(0);
+  await history
+    .getByRole("button", { name: "Load more recorded sessions" })
+    .click();
+  await expect(history.getByText(sessions[100]!, { exact: true })).toBeVisible();
+
+  await history.getByRole("link", { name: "Open session metadata" }).first().click();
+  await expect(
+    page.getByRole("heading", { name: "Session metadata", exact: true }),
+  ).toBeVisible();
+  await expect(page.getByText(sessions[0]!, { exact: true })).toBeVisible();
+  await expect(page.getByText("Session start recorded", { exact: true })).toBeVisible();
+
+  await openSettled(page, href(beta.id, fixture.foreign));
+  const betaHistory = page.getByRole("region", {
+    name: "Recorded sessions for this run",
+  });
+  await expect(betaHistory.getByText(sessions[0]!, { exact: true })).toHaveCount(0);
+  expect(posts).toEqual([]);
+  expect(dispatches()).toEqual(beforeDispatches);
+});
+
+test("a changed run-session admission key keeps the old page stale and disables metadata links and paging", async ({
+  page,
+}) => {
+  const sessions = recordRunSessions(fixture.primary, 101);
+  await openSettled(page, href(alpha.id, fixture.primary));
+  const history = page.getByRole("region", {
+    name: "Recorded sessions for this run",
+  });
+  await expect(history.getByText(sessions[0]!, { exact: true })).toBeVisible();
+  await expect(
+    history.getByRole("link", { name: "Open session metadata" }).first(),
+  ).toBeVisible();
+
+  const newlyAdmitted = recordRunSessions(fixture.primary, 1)[0]!;
+  await history
+    .getByRole("button", { name: "Load more recorded sessions" })
+    .click();
+
+  await expect(history).toContainText(
+    "Project or session membership changed while reading this run",
+  );
+  await expect(history.getByText(sessions[0]!, { exact: true })).toBeVisible();
+  await expect(history.getByText(newlyAdmitted, { exact: true })).toHaveCount(0);
+  await expect(
+    history.getByRole("link", { name: "Open session metadata" }),
+  ).toHaveCount(0);
+  await expect(
+    history.getByRole("button", { name: "Load more recorded sessions" }),
+  ).toBeDisabled();
+  expect(posts).toEqual([]);
+  expect(dispatches()).toEqual(beforeDispatches);
 });
 
 test("Runs filters and verified empty/loading/error states never claim unavailable sources are empty", async ({

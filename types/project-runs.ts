@@ -4,6 +4,7 @@ import type {
   RunBoardRow,
 } from "../scripts/dashboard/forge-run-model";
 import type { ReviewRound } from "../scripts/forge/phases";
+import type { SessionKind } from "./hearth";
 
 /** Existing pure run selectors, with unavailable route/start facts left unreported. */
 export interface ProjectRunRow extends RunBoardRow {
@@ -25,6 +26,30 @@ export interface ProjectRunsPage extends ProjectRunSource {
   runs: ProjectRunRow[];
 }
 
+export interface ProjectRunRecordedSession {
+  sessionId: string;
+  startedAt: string;
+  kind: SessionKind | null;
+  /** Current project metadata independently admits opening the protected session view. */
+  detailsAvailable: boolean;
+}
+
+export type ProjectRunSessionHistory =
+  | {
+      status: "available";
+      after: number;
+      nextAfter: number;
+      more: boolean;
+      /** Opaque digest of the current run and project/session admission facts. */
+      membershipKey: string;
+      sessions: ProjectRunRecordedSession[];
+    }
+  | {
+      status: "unavailable";
+      after: number;
+      reason: "ledger-unavailable" | "unsupported-server";
+    };
+
 export interface ProjectRunDetail extends ProjectRunSource {
   run: ProjectRunRow;
   reviews: (Pick<
@@ -34,6 +59,8 @@ export interface ProjectRunDetail extends ProjectRunSource {
   gateHistory: ProjectRunGate[];
   gateHistoryDays: 30;
   earlierGateLimit: 10;
+  /** Missing only in a legacy server response; the client treats it as unavailable. */
+  sessionHistory?: ProjectRunSessionHistory;
 }
 
 /** A complete, verified document from the served checkout, fetched on demand. */
