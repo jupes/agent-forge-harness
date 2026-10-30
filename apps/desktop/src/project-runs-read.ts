@@ -45,8 +45,11 @@ export function createProjectRunsReads(
     );
   return {
     list: (signal: AbortSignal) => read(path, signal),
-    detail: (slug: string, signal: AbortSignal) =>
-      read(`${path}/${encodeURIComponent(slug)}`, signal),
+    detail: (slug: string, signal: AbortSignal, after = 0, limit = 100) =>
+      read(
+        `${path}/${encodeURIComponent(slug)}?after=${after}&limit=${limit}`,
+        signal,
+      ),
     artifact: (
       slug: string,
       kind: "research" | "plan" | "ship",

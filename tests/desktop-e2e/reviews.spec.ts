@@ -271,52 +271,16 @@ test("a completed bead-source review links to its bead and reports the one recor
     "alpha-council-first",
   );
   const reservationOrigin = new URL(page.url()).origin;
-  type ReservationCapture = {
-    response: Response;
-    body: Promise<
-      { ok: true; bytes: Uint8Array } | { ok: false; error: unknown }
-    >;
-  };
-  let capturedReservation: ReservationCapture | undefined;
+  type ReservationCapture =
+    | { original: ReturnType<typeof projectCouncilMetadataSchema.parse> }
+    | { error: unknown };
+  let reservationClaimed = false;
   let captureError: Error | undefined;
   let resolveReservation!: (value: ReservationCapture) => void;
   const reservationCapture = new Promise<ReservationCapture>((resolve) => {
     resolveReservation = resolve;
   });
-  const captureReservation = (response: Response) => {
-    const request = response.request();
-    let url: URL;
-    try {
-      url = new URL(response.url());
-    } catch {
-      return;
-    }
-    if (
-      request.method() !== "POST" ||
-      request.frame() !== page.mainFrame() ||
-      url.origin !== reservationOrigin ||
-      url.pathname !== reviewsPath
-    )
-      return;
-    if (capturedReservation) {
-      captureError = new Error(
-        "Multiple Council reservation responses were observed.",
-      );
-      return;
-    }
-    let body: ReservationCapture["body"];
-    try {
-      body = response.body().then(
-        (bytes) => ({ ok: true as const, bytes }),
-        (error: unknown) => ({ ok: false as const, error }),
-      );
-    } catch (error) {
-      body = Promise.resolve({ ok: false as const, error });
-    }
-    capturedReservation = { response, body };
-    resolveReservation(capturedReservation);
-  };
-  page.on("response", captureReservation);
+  const reservationUrl = `${reservationOrigin}${reviewsPath}`;
   let captureTimer: ReturnType<typeof setTimeout> | undefined;
   let captureTimedOut = false;
   const captureDeadline = new Promise<{ timedOut: true }>((resolve) => {
@@ -325,8 +289,83 @@ test("a completed bead-source review links to its bead and reports the one recor
       resolve({ timedOut: true });
     }, 10_000);
   });
-  let reserved: Response;
-  let reservationBody: Uint8Array;
+  const validateReservation = (status: number, body: Uint8Array) => {
+    expect(status).toBe(202);
+    const reservationText = new TextDecoder("utf-8", { fatal: true }).decode(
+      body,
+    );
+    let reservationEnvelope: unknown;
+    try {
+      reservationEnvelope = JSON.parse(reservationText);
+    } catch {
+      throw Error("The actual Council reservation body was not valid JSON.");
+    }
+    const reservedData = responseData(reservationEnvelope);
+    if (
+      typeof reservedData !== "object" ||
+      reservedData === null ||
+      !("metadata" in reservedData)
+    )
+      throw Error("The actual Council reservation omitted metadata.");
+    const original = projectCouncilMetadataSchema.parse(reservedData.metadata);
+    if (original.projectId !== alpha.id)
+      throw Error("The reserved Council original belonged to another project.");
+    return original;
+  };
+  const captureReservation = async (route: Route) => {
+    const request = route.request();
+    let url: URL;
+    try {
+      url = new URL(request.url());
+    } catch {
+      await route.continue();
+      return;
+    }
+    if (
+      request.method() !== "POST" ||
+      request.frame() !== page.mainFrame() ||
+      url.origin !== reservationOrigin ||
+      url.pathname !== reviewsPath ||
+      url.search !== "" ||
+      url.hash !== ""
+    ) {
+      await route.continue();
+      return;
+    }
+    if (reservationClaimed) {
+      captureError = new Error(
+        "Multiple Council reservation responses were observed.",
+      );
+      await route.abort().catch(() => undefined);
+      return;
+    }
+    reservationClaimed = true;
+    try {
+      const response = await route.fetch({
+        maxRedirects: 0,
+        maxRetries: 0,
+        timeout: 10_000,
+      });
+      const bodyResult = await Promise.race([response.body(), captureDeadline]);
+      if ("timedOut" in bodyResult)
+        throw new Error(
+          "The Council reservation body exceeded its time bound.",
+        );
+      if (bodyResult.byteLength > 512 * 1024)
+        throw new Error(
+          "The Council reservation body exceeded its bounded size.",
+        );
+      const original = validateReservation(response.status(), bodyResult);
+      await route.fulfill({ response, body: bodyResult });
+      resolveReservation({ original });
+    } catch (error) {
+      captureError = error instanceof Error ? error : new Error(String(error));
+      resolveReservation({ error });
+      await route.abort().catch(() => undefined);
+    }
+  };
+  await page.route(reservationUrl, captureReservation);
+  let original: ReturnType<typeof projectCouncilMetadataSchema.parse>;
   try {
     await page
       .getByRole("button", { name: "Prepare original for review" })
@@ -340,45 +379,17 @@ test("a completed bead-source review links to its bead and reports the one recor
       throw new Error(
         "The Council reservation response was not captured in time.",
       );
-    const bodyResult = await Promise.race([captured.body, captureDeadline]);
-    if ("timedOut" in bodyResult)
-      throw new Error("The Council reservation body exceeded its time bound.");
+    if ("error" in captured)
+      throw new Error(
+        `The Council reservation body was unavailable: ${String(captured.error)}`,
+      );
     if (captureError) throw captureError;
-    if (!bodyResult.ok)
-      throw new Error(
-        `The Council reservation body was unavailable: ${String(bodyResult.error)}`,
-      );
-    if (bodyResult.bytes.byteLength > 512 * 1024)
-      throw new Error(
-        "The Council reservation body exceeded its bounded size.",
-      );
-    reserved = captured.response;
-    reservationBody = bodyResult.bytes;
+    original = captured.original;
   } finally {
-    page.off("response", captureReservation);
+    await page.unroute(reservationUrl, captureReservation);
     if (captureTimer !== undefined) clearTimeout(captureTimer);
   }
   if (captureError) throw captureError;
-  expect(reserved.status()).toBe(202);
-  const reservationText = new TextDecoder("utf-8", { fatal: true }).decode(
-    reservationBody,
-  );
-  let reservationEnvelope: unknown;
-  try {
-    reservationEnvelope = JSON.parse(reservationText);
-  } catch {
-    throw Error("The actual Council reservation body was not valid JSON.");
-  }
-  const reservedData = responseData(reservationEnvelope);
-  if (
-    typeof reservedData !== "object" ||
-    reservedData === null ||
-    !("metadata" in reservedData)
-  )
-    throw Error("The actual Council reservation omitted metadata.");
-  const original = projectCouncilMetadataSchema.parse(reservedData.metadata);
-  if (original.projectId !== alpha.id)
-    throw Error("The reserved Council original belonged to another project.");
   await expect(
     page.getByRole("heading", { name: "Exact saved original" }),
   ).toBeVisible();

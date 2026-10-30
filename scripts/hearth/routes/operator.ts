@@ -442,7 +442,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
   });
   const projectRuns = createProjectRunRoutes(
     deps,
-    projectSnapshotReader(deps.projectHome, deps, { membershipOnly: true }),
+    projectSnapshotReader(deps.projectHome, deps, { omitRuns: true }),
   );
   const checkpointReviews = createProjectCheckpointReviewRoutes({
     home: deps.projectHome,
