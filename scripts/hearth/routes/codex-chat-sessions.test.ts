@@ -1488,10 +1488,7 @@ test("a lost Fork-child turn reply stays unknown after parent activity and never
   const childEffectMarkers = recordsAfterLoss.filter(
     (row) => row.kind === "child-turn-effect",
   );
-  if (
-    FORK_DIAGNOSTICS &&
-    childEffectMarkers.length !== 1
-  )
+  if (FORK_DIAGNOSTICS && childEffectMarkers.length !== 1)
     console.error(
       `[fork-test] ${JSON.stringify({
         mode: "fork-child-lost-turn-reply",
