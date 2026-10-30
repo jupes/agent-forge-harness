@@ -136,6 +136,22 @@ function page(events: ConversationEvent[]): ConversationPage {
   };
 }
 
+function claudeRateLimit(resetsAt?: number): ConversationEvent {
+  return {
+    kind: "coding-account",
+    provider: "claude",
+    version: "fixture",
+    id: "rate-limit",
+    observedAt: "2026-10-23T00:00:00Z",
+    source: "claude.rate_limit_event",
+    report: {
+      status: "rejected",
+      ...(resetsAt === undefined ? {} : { resetsAt }),
+      resetUnit: "unreported",
+    },
+  };
+}
+
 test("native Chat commands keep their streamed prefix and final aggregate separate, scoped and inert without granting decisions", () => {
   const threadId = "0199a213-81c0-7800-8aa1-bbab2a035a53";
   const command: CodexChatCommand = {
@@ -776,4 +792,98 @@ test("typed usage-limit outcomes show only the reported reset, while internal ki
   expect(textOf(interrupted)).toContain("Supervisor stopped the process");
   expect(textOf(interrupted)).not.toContain("Stop confirmed");
   expect(textOf(interrupted)).not.toContain("12:00");
+});
+
+test("Claude usage-limit reset shows only the latest matching turn report and keeps unknown values unguessed", () => {
+  const outcome = {
+    kind: "coding-outcome",
+    provider: "claude",
+    version: "fixture",
+    code: "rate-limited",
+    exitCode: 1,
+    timedOut: false,
+    stopped: false,
+    message: { text: "Provider reported a limit", truncated: false },
+    stderrTail: { text: "", truncated: false },
+  } as const;
+  const current = page([claudeRateLimit(99), outcome, claudeRateLimit(123)]);
+  const reset = ownedSessionTurn(current, turnId).rateLimitReset;
+  expect(reset).toEqual({
+    source: "claude.rate_limit_event",
+    resetsAt: 123,
+    resetUnit: "unreported",
+  });
+  const view = SessionOutcome({ value: outcome, rateLimitReset: reset });
+  expect(textOf(view)).toContain(
+    "Latest Claude rate-limit report in this turn",
+  );
+  expect(textOf(view)).toContain("Reset value: 123");
+  expect(textOf(view)).toContain("unit not reported");
+  expect(textOf(view)).toContain("claude.rate_limit_event");
+  expect(textOf(view)).not.toContain("99");
+  expect(textOf(view)).not.toContain("Check Providers");
+  expect(findAll(view, "time")).toHaveLength(0);
+
+  const latestMissing = page([claudeRateLimit(99), outcome, claudeRateLimit()]);
+  const missingReset = ownedSessionTurn(latestMissing, turnId).rateLimitReset;
+  expect(missingReset).toEqual({
+    source: "claude.rate_limit_event",
+    resetUnit: "unreported",
+  });
+  const missingView = SessionOutcome({
+    value: outcome,
+    rateLimitReset: missingReset,
+  });
+  expect(textOf(missingView)).toContain(
+    "Latest Claude rate-limit report in this turn",
+  );
+  expect(textOf(missingView)).toContain(
+    "Reset value not reported by claude.rate_limit_event",
+  );
+  expect(textOf(missingView)).not.toContain("99");
+  expect(findAll(missingView, "time")).toHaveLength(0);
+
+  const noSavedReport = ownedSessionTurn(page([]), turnId).rateLimitReset;
+  expect(noSavedReport).toBeNull();
+  const absentView = SessionOutcome({
+    value: outcome,
+    rateLimitReset: noSavedReport,
+  });
+  expect(textOf(absentView)).toContain(
+    "No Claude rate-limit reset fact was saved for this turn",
+  );
+  const wrongTurn = page([claudeRateLimit(123)]);
+  wrongTurn.frames[0]!.turnId = "another-turn";
+  expect(ownedSessionTurn(wrongTurn, turnId).rateLimitReset).toBeNull();
+  const otherProvider = page([claudeRateLimit(123)]);
+  otherProvider.binding = {
+    provider: "codex",
+    sessionId: "native",
+    version: "fixture",
+  };
+  expect(ownedSessionTurn(otherProvider, turnId).rateLimitReset).toBeNull();
+  const mismatchedOutcome = page([
+    claudeRateLimit(123),
+    { ...outcome, provider: "codex" },
+  ]);
+  expect(ownedSessionTurn(mismatchedOutcome, turnId).rateLimitReset).toBeNull();
+  const codexFallback = SessionOutcome({
+    value: { ...outcome, provider: "codex" },
+  });
+  expect(textOf(codexFallback)).toContain(
+    "Reset value was not reported by this CLI",
+  );
+  const otherSource = page([
+    {
+      kind: "coding-account",
+      provider: "claude",
+      version: "fixture",
+      id: "auth-source",
+      observedAt: "2026-10-23T00:00:00Z",
+      source: "claude.system.init",
+      report: { apiKeySource: "none" },
+    },
+    outcome,
+  ]);
+  expect(ownedSessionTurn(otherSource, turnId).rateLimitReset).toBeNull();
 });

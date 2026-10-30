@@ -43,6 +43,12 @@ export interface NativeChatCommandReport {
   streamPrefixMissing: boolean;
 }
 
+export interface ClaudeRateLimitResetFact {
+  source: "claude.rate_limit_event";
+  resetsAt?: number;
+  resetUnit: "unreported";
+}
+
 export interface OwnedSessionTurn {
   activities: CodingActivityEvent[];
   nativeCommands: NativeChatCommandReport[];
@@ -53,6 +59,7 @@ export interface OwnedSessionTurn {
   nativePlan: NativeChatTurnPlanReport | null;
   usage: ClaudeCodingUsageEvent | CodexCodingUsageEvent | null;
   outcome: CodingOutcomeEvent | null;
+  rateLimitReset: ClaudeRateLimitResetFact | null;
   observedModel: string | null;
   requestedModel: string | null;
 }
@@ -83,6 +90,7 @@ export function ownedSessionTurn(
         ? (nativeTurns.values().next().value ?? null)
         : null;
   let nativeTurnEnded = false;
+  let latestClaudeRateLimitReset: ClaudeRateLimitResetFact | null = null;
   const result: OwnedSessionTurn = {
     activities: [],
     nativeCommands: [],
@@ -93,6 +101,7 @@ export function ownedSessionTurn(
     nativePlan: nativeChatTurnPlan(page, turnId),
     usage: null,
     outcome: null,
+    rateLimitReset: null,
     observedModel: null,
     requestedModel: null,
   };
@@ -178,6 +187,20 @@ export function ownedSessionTurn(
       });
     } else if (event.kind === "coding-usage") result.usage = event;
     else if (event.kind === "coding-outcome") result.outcome = event;
+    else if (
+      page?.binding?.provider === "claude" &&
+      event.kind === "coding-account" &&
+      event.provider === "claude" &&
+      event.version === page.binding.version &&
+      event.source === "claude.rate_limit_event"
+    )
+      latestClaudeRateLimitReset = {
+        source: event.source,
+        ...(event.report.resetsAt === undefined
+          ? {}
+          : { resetsAt: event.report.resetsAt }),
+        resetUnit: event.report.resetUnit,
+      };
     else if (event.kind === "model") result.observedModel = event.model;
     else if (event.kind === "user")
       result.requestedModel =
@@ -188,6 +211,13 @@ export function ownedSessionTurn(
     else if (event.kind === "process" && result.requestedModel === null)
       result.requestedModel = event.requestedModel;
   }
+  result.rateLimitReset =
+    page?.binding?.provider === "claude" &&
+    result.outcome?.code === "rate-limited" &&
+    result.outcome.provider === "claude" &&
+    result.outcome.version === page.binding.version
+      ? latestClaudeRateLimitReset
+      : null;
   result.activities = [...activities.values()];
   result.nativeCommands = [...commands.values()];
   return result;
