@@ -66,10 +66,11 @@ Live reviews show the complete verified profile roster, pending seats, recorded
 stage/round progress and completed discussion rounds while a later round is still
 active. A stop request remains pending until the saved result confirms cancellation.
 
-The Council consumer is implemented and locally verified. Actual Run checkpoint
-actions remain an upstream dependency: the artifact shortcut does not approve or
-complete a checkpoint. The broader parent and human/release checkpoints remain
-explicitly open.
+Council recommendations are advisory; they do not approve a Run checkpoint.
+The verified Runs detail provides separate explicit human review actions and a
+return path from Council. See [Human checkpoint reviews](run-checkpoint-reviews.md)
+and [Return from Council to the exact Run checkpoint](checkpoint-council-return.md).
+The broader parent and human/release checkpoints remain open.
 
 ## Recorded acceptance
 
