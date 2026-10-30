@@ -8,6 +8,15 @@ import { BeadWriteNotices, NewBeadForm } from "./BeadWrites";
 import { ConnectionBanner, useDesktopRecovery } from "./ConnectionBanner";
 import type { FrameSession } from "./DesktopFrame";
 import { DesktopFrame } from "./DesktopFrame";
+import {
+  captureForgeRunDraft,
+  type ForgeRunDraftSnapshot,
+  type ForgeRunPrefill,
+  forgeRunComposerPatch,
+  forgeRunDraftIsPristine,
+  forgeRunDraftMatches,
+  forgeRunPreparationHold,
+} from "./forge-run-prefill";
 import { KeeperConversation, KeeperScope } from "./KeeperConversation";
 import { KeeperShiftReviewDialog } from "./KeeperShiftReviewDialog";
 import type { KeeperSessionReview } from "./keeper-session-review";
@@ -17,6 +26,7 @@ import {
   managedShiftHref,
   managedShiftSelection,
 } from "./managed-shift-navigation";
+import { NewForgeRun } from "./NewForgeRun";
 import {
   desktopHref,
   desktopRoute,
@@ -71,6 +81,7 @@ import {
   canContinueClaudeRateLimit,
   validContinuationSummary,
 } from "./session-continuation";
+import type { VerifiedSessionIdentityScope } from "./session-start-identity-server";
 import { useBeadWrites } from "./use-bead-writes";
 import { useBeads } from "./use-beads";
 import { useKeeper } from "./use-keeper";
@@ -92,9 +103,41 @@ import { useSmithRoutingEdit } from "./use-smith-routing-edit";
 import { useSmiths } from "./use-smiths";
 import { useWorkbench } from "./use-workbench";
 
+function sameDesktopRoute(
+  left: ReturnType<typeof desktopRoute>,
+  right: ReturnType<typeof desktopRoute>,
+): boolean {
+  return (
+    left.destination === right.destination &&
+    left.projectId === right.projectId &&
+    left.selection?.kind === right.selection?.kind &&
+    left.selection?.id === right.selection?.id
+  );
+}
+
+function sameForgeRunIdentityScope(
+  left: VerifiedSessionIdentityScope | null,
+  right: VerifiedSessionIdentityScope | null,
+): boolean {
+  if (!left || !right) return left === right;
+  return (
+    left.projectId === right.projectId &&
+    left.workspace === right.workspace &&
+    left.generation === right.generation
+  );
+}
+
 /** Desktop routing stays separate from the ordinary dashboard's legacy URLs and snapshot mode. */
 export function DesktopApp(): JSX.Element {
   const [route, setRoute] = useState(() => desktopRoute(window.location.hash));
+  const forgeRouteGeneration = useRef(0);
+  useEffect(() => {
+    const changed = (event: HashChangeEvent) => {
+      if (event.oldURL !== event.newURL) forgeRouteGeneration.current++;
+    };
+    window.addEventListener("hashchange", changed);
+    return () => window.removeEventListener("hashchange", changed);
+  }, []);
   const [finishBrief, setFinishBrief] = useState<VerifiedProjectCreate | null>(
     null,
   );
@@ -588,6 +631,59 @@ export function DesktopApp(): JSX.Element {
     writesAllowed,
     providers.data,
   );
+  const actualRoute = desktopRoute(window.location.hash);
+  const renderedRouteMatchesActual = sameDesktopRoute(route, actualRoute);
+  const selectedRunSlug =
+    route.selection?.kind === "run" ? route.selection.id : null;
+  const currentRunPage = runs.view?.page;
+  const forgeRunCanOpen = Boolean(
+    renderedRouteMatchesActual &&
+      actualRoute.destination === "runs" &&
+      actualRoute.projectId === project?.id &&
+      project &&
+      !project.archived &&
+      writesAllowed &&
+      summary?.workspace &&
+      providers.data?.workspace === summary.workspace &&
+      project.workspaces.some((scope) => scope.root === summary.workspace) &&
+      runs.view &&
+      !runs.view.loading &&
+      !runs.view.error &&
+      runs.view.selectedSlug === selectedRunSlug &&
+      currentRunPage &&
+      currentRunPage.projectId === project.id &&
+      currentRunPage.workspace === summary.workspace &&
+      currentRunPage.coverage === "served-checkout-only" &&
+      currentRunPage.problems.length === 0,
+  );
+  const forgeRunCurrent = useRef<{
+    canOpen: boolean;
+    projectId: string | null;
+    workspace: string | null;
+    routeHash: string;
+    navigationGeneration: number;
+    renderedRoute: typeof route;
+    actualRoute: typeof actualRoute;
+    identityScope: VerifiedSessionIdentityScope | null;
+    beadsPage: typeof beads.data;
+    beadsLoading: boolean;
+    beadsError: string | null;
+    sessions: typeof sessions;
+  } | null>(null);
+  forgeRunCurrent.current = {
+    canOpen: forgeRunCanOpen,
+    projectId: project?.id ?? null,
+    workspace: summary?.workspace ?? null,
+    routeHash: window.location.hash,
+    navigationGeneration: forgeRouteGeneration.current,
+    renderedRoute: route,
+    actualRoute,
+    identityScope: sessions.currentIdentityScope(),
+    beadsPage: beads.data,
+    beadsLoading: beads.loading,
+    beadsError: beads.error,
+    sessions,
+  };
   const observationRows = project
     ? observations.rows(project.id, sessions.project(project.id).records)
     : [];
@@ -622,6 +718,15 @@ export function DesktopApp(): JSX.Element {
     writesAllowed,
   );
   const [composerOpen, setComposerOpen] = useState(false);
+  const [forgeRunReview, setForgeRunReview] = useState<{
+    projectId: string;
+    workspace: string;
+    routeHash: string;
+    navigationGeneration: number;
+    identityScope: VerifiedSessionIdentityScope | null;
+    draft: ForgeRunDraftSnapshot;
+  } | null>(null);
+  const forgeRunOpener = useRef<HTMLElement>(null);
   const reviews = useKeeperSessionReviews(writesAllowed, sessions);
   const shiftReviews = useKeeperShiftReviews(writesAllowed);
   const [sessionReview, setSessionReview] =
@@ -668,6 +773,147 @@ export function DesktopApp(): JSX.Element {
     setShiftReview(null);
   };
   const composerOpener = useRef<HTMLElement>(null);
+  const openNewForgeRun = () => {
+    const current = forgeRunCurrent.current;
+    const liveIdentityScope = current?.sessions.currentIdentityScope() ?? null;
+    const currentIdentityView = current?.projectId
+      ? current.sessions.project(current.projectId)
+      : null;
+    if (
+      !current?.canOpen ||
+      !current.projectId ||
+      !current.workspace ||
+      !sameForgeRunIdentityScope(current.identityScope, liveIdentityScope) ||
+      !currentIdentityView ||
+      current.routeHash !== window.location.hash ||
+      current.navigationGeneration !== forgeRouteGeneration.current ||
+      !sameDesktopRoute(
+        current.renderedRoute,
+        desktopRoute(window.location.hash),
+      ) ||
+      current.actualRoute.destination !== "runs" ||
+      current.actualRoute.projectId !== current.projectId
+    )
+      return;
+    forgeRunOpener.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    setForgeRunReview({
+      projectId: current.projectId,
+      workspace: current.workspace,
+      routeHash: current.routeHash,
+      navigationGeneration: current.navigationGeneration,
+      identityScope: liveIdentityScope,
+      draft: captureForgeRunDraft(currentIdentityView),
+    });
+  };
+  const validateForgeRunReview = (
+    expected: NonNullable<typeof forgeRunReview>,
+  ): { view: ReturnType<typeof sessions.project>; error: string | null } => {
+    const current = forgeRunCurrent.current;
+    const liveIdentityScope = current?.sessions.currentIdentityScope() ?? null;
+    if (
+      !current?.canOpen ||
+      current.projectId !== expected.projectId ||
+      current.workspace !== expected.workspace ||
+      current.routeHash !== expected.routeHash ||
+      window.location.hash !== expected.routeHash ||
+      current.navigationGeneration !== expected.navigationGeneration ||
+      current.navigationGeneration !== forgeRouteGeneration.current ||
+      !sameForgeRunIdentityScope(current.identityScope, liveIdentityScope) ||
+      !sameForgeRunIdentityScope(liveIdentityScope, expected.identityScope) ||
+      !sameDesktopRoute(
+        current.renderedRoute,
+        desktopRoute(window.location.hash),
+      ) ||
+      current.actualRoute.destination !== "runs" ||
+      current.actualRoute.projectId !== expected.projectId
+    )
+      return {
+        view: sessions.project(expected.projectId),
+        error:
+          "The project, workspace, or Runs view changed. Close this preparation and review it again from the current Runs page.",
+      };
+    const view = current.sessions.project(expected.projectId);
+    const hold = forgeRunPreparationHold(view, liveIdentityScope);
+    if (hold) return { view, error: hold };
+    if (!forgeRunDraftMatches(expected.draft, view))
+      return {
+        view,
+        error:
+          "A composer draft or session identity changed while you reviewed this prompt. Reopen preparation to review the current state.",
+      };
+    return { view, error: null };
+  };
+  const validateForgeRunBead = (
+    current: NonNullable<typeof forgeRunCurrent.current>,
+    prefill: ForgeRunPrefill,
+    expected: NonNullable<typeof forgeRunReview>,
+  ): string | null => {
+    if (!prefill.beadId) return null;
+    const page = current.beadsPage;
+    if (
+      !page ||
+      current.beadsLoading ||
+      current.beadsError ||
+      page.projectId !== expected.projectId ||
+      page.workspace !== expected.workspace ||
+      !page.complete ||
+      page.problems.length > 0 ||
+      !page.beads.some(
+        (bead) =>
+          bead.id === prefill.beadId &&
+          (bead.type === "feature" || bead.type === "epic"),
+      )
+    )
+      return "That feature or epic is no longer verified in this project workspace. Review the scoped bead list again.";
+    return null;
+  };
+  const applyForgeRunPrefill = (prefill: ForgeRunPrefill) => {
+    if (!forgeRunReview)
+      return "This forge-run review is no longer current. Reopen preparation from the Runs page.";
+    const checked = validateForgeRunReview(forgeRunReview);
+    if (checked.error) return checked.error;
+    const current = forgeRunCurrent.current;
+    if (!current)
+      return "The current Runs scope is unavailable. Reopen preparation.";
+    const beadError = validateForgeRunBead(current, prefill, forgeRunReview);
+    if (beadError) return beadError;
+    current.sessions.chooseComposerProvider(forgeRunReview.projectId, "claude");
+    current.sessions.editComposer(
+      forgeRunReview.projectId,
+      forgeRunComposerPatch(prefill),
+    );
+    composerOpener.current = forgeRunOpener.current;
+    setForgeRunReview(null);
+    setComposerOpen(true);
+    return null;
+  };
+  const continueForgeRunToComposer = (prefill: ForgeRunPrefill) => {
+    if (!forgeRunReview)
+      return "Reopen preparation from the current Runs page.";
+    const checked = validateForgeRunReview(forgeRunReview);
+    if (checked.error) return checked.error;
+    const current = forgeRunCurrent.current;
+    if (!current)
+      return "The current Runs scope is unavailable. Reopen preparation.";
+    const beadError = validateForgeRunBead(current, prefill, forgeRunReview);
+    if (beadError) return beadError;
+    return forgeRunDraftIsPristine(forgeRunReview.draft)
+      ? (applyForgeRunPrefill(prefill) ?? "applied")
+      : "confirm";
+  };
+  const keepForgeRunDraft = () => {
+    if (!forgeRunReview)
+      return "Reopen preparation from the current Runs page.";
+    const checked = validateForgeRunReview(forgeRunReview);
+    if (checked.error) return checked.error;
+    composerOpener.current = forgeRunOpener.current;
+    setForgeRunReview(null);
+    setComposerOpen(true);
+    return null;
+  };
   const openSession = (beadId?: string) => {
     if (!project || project.archived) return;
     composerOpener.current =
@@ -1256,6 +1502,7 @@ export function DesktopApp(): JSX.Element {
             onCouncilBeadPrefill={(source, sourceWorkspace, origin) =>
               openCouncilSource(source, sourceWorkspace, false, origin)
             }
+            {...(forgeRunCanOpen ? { onNewForgeRun: openNewForgeRun } : {})}
             returnFocus={
               councilReturnFocus &&
               councilReturnFocusRef.current?.generation ===
@@ -1435,6 +1682,42 @@ export function DesktopApp(): JSX.Element {
             writes={beadWrites}
             page={beads.data}
             onCancel={() => setNewBeadOpen(false)}
+          />
+        )}
+      </Dialog>
+      <Dialog
+        open={Boolean(
+          forgeRunReview &&
+            project?.id === forgeRunReview.projectId &&
+            summary?.workspace === forgeRunReview.workspace &&
+            route.destination === "runs" &&
+            window.location.hash === forgeRunReview.routeHash &&
+            forgeRouteGeneration.current ===
+              forgeRunReview.navigationGeneration &&
+            sameForgeRunIdentityScope(
+              sessions.currentIdentityScope(),
+              forgeRunReview.identityScope,
+            ),
+        )}
+        title={`Prepare forge run · ${project?.name ?? ""}`}
+        titleId="af-new-forge-run-title"
+        onClose={() => setForgeRunReview(null)}
+        returnFocusRef={forgeRunOpener}
+        class="af-new-forge-run-dialog"
+        initialFocus="content"
+      >
+        {forgeRunReview && (
+          <NewForgeRun
+            key={`${forgeRunReview.projectId}:${forgeRunReview.workspace}:${forgeRunReview.routeHash}`}
+            projectId={forgeRunReview.projectId}
+            workspace={forgeRunReview.workspace}
+            beadsPage={beads.data}
+            beadsLoading={beads.loading}
+            beadsError={beads.error}
+            onContinue={continueForgeRunToComposer}
+            onReplace={applyForgeRunPrefill}
+            onKeep={keepForgeRunDraft}
+            onCancel={() => setForgeRunReview(null)}
           />
         )}
       </Dialog>
