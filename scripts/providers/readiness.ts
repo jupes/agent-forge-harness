@@ -10,8 +10,7 @@ const nonnegative = (value: number | null): value is number =>
 const validTime = (value: string | null) =>
   value !== null && Number.isFinite(Date.parse(value));
 
-const semver =
-  String.raw`(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?`;
+const semver = String.raw`(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-(?:(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?`;
 const grokVersionOutput = new RegExp(
   `^grok (${semver}) \\(([0-9a-f]{12}|unknown)\\)(?: \\[(?:alpha|stable)\\])?\\n$`,
 );
