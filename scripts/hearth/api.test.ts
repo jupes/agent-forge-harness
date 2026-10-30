@@ -5041,6 +5041,7 @@ describe("a read row or the stream while another connection holds the write lock
     await seedSmithCreateOriginal(h);
     await seedSmithEditOriginal(h);
     await seedSmithRoutingEditOriginal(h);
+    await seedCheckpointReviewRead(h);
     // Seed the private Fork journal without an audited HTTP action, which
     // would open the otherwise-cold ledger before this lock assertion.
     await seedForkReadChild(h);
@@ -6203,6 +6204,7 @@ describe("every read row (iterating the table)", () => {
     await seedProjectShift(h);
     await seedProjectShiftAttempt(h);
     seedProjectBeadWriteFixture(h);
+    await seedCheckpointReviewRead(h);
     const before = seedActivityReadFixture(h);
     await seedKeeperSessionStartHistory(h);
     await seedKeeperShiftStartHistory(h);
