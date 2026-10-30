@@ -626,6 +626,21 @@ test("scoped Runs keyboard inspection preserves real phase, review and gate trut
       requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
     );
   });
+  const researchPhase = detail.locator('[data-phase="research"]');
+  const researchArtifactButton = researchPhase.getByRole("button", {
+    name: "Read research artifact",
+  });
+  await expect(researchArtifactButton).toBeVisible();
+  const phaseBox = await researchPhase.boundingBox();
+  const artifactButtonBox = await researchArtifactButton.boundingBox();
+  expect(phaseBox).not.toBeNull();
+  expect(artifactButtonBox).not.toBeNull();
+  if (!phaseBox || !artifactButtonBox)
+    throw new Error("Research artifact layout could not be measured.");
+  expect(artifactButtonBox.x).toBeGreaterThanOrEqual(phaseBox.x - 1);
+  expect(artifactButtonBox.x + artifactButtonBox.width).toBeLessThanOrEqual(
+    phaseBox.x + phaseBox.width + 1,
+  );
   await page.screenshot({
     path: "apps/desktop/docs/screenshots/runs-inspection.png",
     fullPage: true,
