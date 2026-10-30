@@ -39,7 +39,8 @@
   max-width: 100%;
   padding: 6px 8px;
 }
-.af-project-runs :is(a, button, summary, input, select, textarea):focus-visible {
+.af-project-runs
+  :is(a, button, summary, input, select, textarea):focus-visible {
   outline: 2px solid var(--color-accent);
   outline-offset: 3px;
 }
