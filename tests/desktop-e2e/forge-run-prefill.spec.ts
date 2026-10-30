@@ -592,6 +592,32 @@ test("an attended prompt uses ordinary Preview and one identity-bound Start afte
   const original = records().at(-1);
   if (!original)
     throw new Error("The fixture Start did not retain its original");
+  let providerInput: { argv: string[]; stdin: string };
+  try {
+    const recorded: unknown = JSON.parse(
+      readFileSync(join(HEARTH_HOME, "coding-fixture-record.json"), "utf8"),
+    );
+    if (
+      !recorded ||
+      typeof recorded !== "object" ||
+      Array.isArray(recorded) ||
+      !("argv" in recorded) ||
+      !Array.isArray(recorded.argv) ||
+      !("stdin" in recorded) ||
+      typeof recorded.stdin !== "string"
+    )
+      throw new Error("Invalid provider input recording");
+    const argv = recorded.argv.filter(
+      (value): value is string => typeof value === "string",
+    );
+    if (argv.length !== recorded.argv.length)
+      throw new Error("Invalid provider argv recording");
+    providerInput = { argv, stdin: recorded.stdin };
+  } catch {
+    throw new Error("The inert provider input recording is unavailable");
+  }
+  expect(providerInput.stdin.includes(expectedPrompt)).toBe(true);
+  expect(providerInput.argv.join("\u0000").includes(expectedPrompt)).toBe(false);
 
   await navigateToRuns(page);
   await launchPreparation(page);
