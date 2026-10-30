@@ -3,6 +3,7 @@ const MAX_DIAGNOSTIC_BYTES = 512;
 export type TransactionFixtureStage =
   | "none"
   | "child-started"
+  | "config-loaded"
   | "transaction-prepared"
   | "transaction-entered"
   | "cli-started"
@@ -23,6 +24,7 @@ export interface TransactionFixtureFailureFacts {
 const stages: readonly TransactionFixtureStage[] = [
   "none",
   "child-started",
+  "config-loaded",
   "transaction-prepared",
   "transaction-entered",
   "cli-started",
