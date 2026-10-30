@@ -10,11 +10,12 @@ import {
 } from "node:fs";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { expect, test } from "@playwright/test";
-import { artifactPath } from "../../scripts/forge/phases";
 import type { ForgeState } from "../../scripts/forge/phases";
+import { artifactPath } from "../../scripts/forge/phases";
 import type { ProjectCatalog } from "../../types/projects";
-import { seedObservationEvents } from "./observed-session-fixtures";
 import { openSettled } from "../e2e/fixtures";
+import { HEARTH_HOME } from "../e2e/servers";
+import { seedObservationEvents } from "./observed-session-fixtures";
 import {
   alpha,
   catalog,
@@ -23,7 +24,6 @@ import {
   seedSessions,
   workspace,
 } from "./project-fixtures";
-import { HEARTH_HOME } from "../e2e/servers";
 
 const providerDispatchFiles = [
   "codex-fixture-calls.jsonl",
@@ -210,8 +210,13 @@ test("foreground monitoring keeps Alpha and Beta scope, source limits and record
   await page.emulateMedia({ reducedMotion: "reduce" });
   await openSettled(page, `/index.html#/desktop/project/${alpha.id}/overview`);
 
-  const alphaNeeds = page.getByRole("region", { name: "Needs you", exact: true });
-  await expect(alphaNeeds.getByRole("heading")).toHaveText("Needs you · partial");
+  const alphaNeeds = page.getByRole("region", {
+    name: "Needs you",
+    exact: true,
+  });
+  await expect(alphaNeeds.getByRole("heading")).toHaveText(
+    "Needs you · partial",
+  );
   const alphaAsOf = page.locator(".af-overview-toolbar time");
   await expect(alphaAsOf).toHaveAttribute("datetime", /T/);
   await expect(
@@ -232,7 +237,9 @@ test("foreground monitoring keeps Alpha and Beta scope, source limits and record
   await betaProjectNav.getByRole("link", { name: "Runs", exact: true }).click();
   const betaRuns = page.getByRole("region", { name: "Project forge runs" });
   await expect(betaRuns).toContainText("Beta foreground monitoring record");
-  await expect(betaRuns).not.toContainText("Alpha foreground monitoring record");
+  await expect(betaRuns).not.toContainText(
+    "Alpha foreground monitoring record",
+  );
   await page.getByRole("link", { name: "Projects", exact: true }).click();
   await page.getByRole("link", { name: "Open Alpha", exact: true }).click();
 
@@ -253,16 +260,23 @@ test("foreground monitoring keeps Alpha and Beta scope, source limits and record
   });
   await expect(session).toContainText("The conversation is not captured here");
   await expect(session.getByRole("textbox")).toHaveCount(0);
-  await expect(session.getByRole("button", { name: /Stop|Resume|Send/ })).toHaveCount(0);
+  await expect(
+    session.getByRole("button", { name: /Stop|Resume|Send/ }),
+  ).toHaveCount(0);
   await page.getByRole("link", { name: "All sessions", exact: true }).click();
 
   await projectNav.getByRole("link", { name: "Runs", exact: true }).click();
   const runs = page.getByRole("region", { name: "Project forge runs" });
-  await expect(runs.getByRole("table", { name: "Recorded forge runs" })).toBeVisible();
+  await expect(
+    runs.getByRole("table", { name: "Recorded forge runs" }),
+  ).toBeVisible();
   await expect(runs).toContainText("Alpha foreground monitoring record");
   await expect(runs).not.toContainText("Beta foreground monitoring record");
   await runs
-    .getByRole("link", { name: "Alpha foreground monitoring record", exact: true })
+    .getByRole("link", {
+      name: "Alpha foreground monitoring record",
+      exact: true,
+    })
     .click();
   const detail = page.getByRole("article", { name: "Selected forge run" });
   await expect(detail).toContainText(runSlug);
@@ -278,7 +292,9 @@ test("foreground monitoring keeps Alpha and Beta scope, source limits and record
   await expect(detail).toContainText("Start time is not recorded");
   const gateHistory = detail.getByRole("region", { name: "Run gate history" });
   await expect(gateHistory).toContainText("No matching gate was recorded");
-  await expect(runs).toContainText("correlated sessions are not available here");
+  await expect(runs).toContainText(
+    "correlated sessions are not available here",
+  );
   await detail.getByRole("button", { name: "Read research artifact" }).click();
   await expect(
     page.getByRole("region", { name: "Verified run artifact" }),
@@ -299,21 +315,21 @@ test("a failed Overview refresh keeps its last verified status and a later prote
   await page.route(
     `**/__agent-forge/projects/${alpha.id}/overview`,
     async (route) => {
-    overviewReads++;
-    if (failNext) {
-      failNext = false;
-      await route.fulfill({
-        status: 503,
-        contentType: "application/json",
-        body: JSON.stringify({
-          ok: false,
-          data: null,
-          error: "Scoped Overview fixture read unavailable",
-        }),
-      });
-      return;
-    }
-    await route.continue();
+      overviewReads++;
+      if (failNext) {
+        failNext = false;
+        await route.fulfill({
+          status: 503,
+          contentType: "application/json",
+          body: JSON.stringify({
+            ok: false,
+            data: null,
+            error: "Scoped Overview fixture read unavailable",
+          }),
+        });
+        return;
+      }
+      await route.continue();
     },
   );
   await openSettled(page, `/index.html#/desktop/project/${alpha.id}/overview`);
@@ -338,7 +354,9 @@ test("a failed Overview refresh keeps its last verified status and a later prote
   await refresh.click();
   await failedRead;
   await expect(
-    page.getByRole("status").filter({ hasText: "Scoped Overview fixture read unavailable" }),
+    page
+      .getByRole("status")
+      .filter({ hasText: "Scoped Overview fixture read unavailable" }),
   ).toContainText("Showing last-known overview");
   await expect(epics).toContainText("Alpha epic");
   await expect(page.locator(".af-overview-toolbar time")).toHaveAttribute(
