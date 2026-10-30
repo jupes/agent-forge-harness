@@ -506,9 +506,11 @@ test("a refused private prepare starts no child and does not expose storage diag
 test("private output failure stops and awaits the supervised tree and cannot become provider success", async () => {
   const f = setup("hang-tree");
   const milestonesFile = join(f.root, "startup-milestones.json");
+  const fixtureCommand = f.request.command;
+  if (!fixtureCommand) throw Error("Missing fake provider command fixture.");
   const request = {
     ...f.request,
-    command: [...f.request.command, "--fake-milestones", milestonesFile],
+    command: [...fixtureCommand, "--fake-milestones", milestonesFile],
   };
   let descendant: number | null = null;
   const observedAt = performance.now();
