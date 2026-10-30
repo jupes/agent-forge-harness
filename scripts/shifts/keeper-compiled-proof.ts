@@ -14,6 +14,7 @@ import { z } from "zod";
 import type { KeeperShiftStartRequest } from "../../types/keeper-shift-start";
 import { createConversationStore } from "../conversations/store";
 import { buildChildEnv } from "../executors/env";
+import { PRIVATE_CAPTURE_FAILURE } from "../executors/private-capture";
 import { killTree } from "../executors/supervisor";
 import { tokenPath } from "../hearth/home";
 import { isPidAlive } from "../hearth/lock";
@@ -409,13 +410,57 @@ export function keeperWaitFacts(
   } catch {
     methods = ["unreadable"];
   }
-  const rawReason = row?.reason ?? row?.error;
-  const reason = typeof rawReason === "string" ? rawReason : "none";
+  const reason = typeof row?.reason === "string" ? row.reason : "none";
   const boundedReason = reason
     .replace(/[\r\n\t]/g, " ")
     .replace(/[^\x20-\x7e]/g, "?")
     .slice(0, 160);
-  return `shiftState=${row?.state ?? "missing"}; reason=${boundedReason}; admissionCount=${admissionCount}; nativeMethods=${methods.join(",").slice(0, 512) || "none"}`;
+  const errorClass =
+    row?.error === PRIVATE_CAPTURE_FAILURE
+      ? "private-capture"
+      : typeof row?.error === "string" &&
+          row.error.startsWith("the shift failed:")
+        ? "shift-loop"
+        : row?.error === undefined
+          ? "none"
+          : "other";
+  const admittedValue = row?.admitted;
+  const admitted =
+    typeof admittedValue === "number" &&
+    Number.isSafeInteger(admittedValue) &&
+    admittedValue >= 0 &&
+    admittedValue <= 100
+      ? String(admittedValue)
+      : "unknown";
+  const outcomes = ["running", "review", "released", "halted", "left", "set-aside"];
+  let beadFacts = "unknown";
+  const rowBeads = row?.beads;
+  if (Array.isArray(rowBeads) && rowBeads.length <= 100) {
+    const counts = new Map(outcomes.map((outcome) => [outcome, 0]));
+    let attempts = 0;
+    let valid = true;
+    for (const bead of rowBeads) {
+      if (
+        typeof bead !== "object" ||
+        bead === null ||
+        !("outcome" in bead) ||
+        !("attempts" in bead) ||
+        typeof bead.outcome !== "string" ||
+        !counts.has(bead.outcome) ||
+        !Number.isSafeInteger(bead.attempts) ||
+        bead.attempts < 0 ||
+        bead.attempts > 11
+      ) {
+        valid = false;
+        break;
+      }
+      counts.set(bead.outcome, (counts.get(bead.outcome) ?? 0) + 1);
+      attempts += bead.attempts;
+    }
+    if (valid)
+      beadFacts = `${rowBeads.length};${outcomes.map((outcome) => counts.get(outcome)).join(",")};${attempts}`;
+  }
+  return `shiftState=${row?.state ?? "missing"}; reason=${boundedReason}; errorClass=${errorClass}; recordAdmitted=${admitted}; beadFacts=${beadFacts}; admissionCount=${admissionCount}; nativeMethods=${methods.join(",").slice(0, 400) || "none"}`.slice(0, 800);
 }
 
 async function acquireOperatorSession(
