@@ -123,7 +123,7 @@ test("Full and Mini show exact attended prompts, with Unattended visibly locked"
     .getByRole("button", { name: "Continue to Claude composer" })
     .click();
   const composer = page.getByRole("dialog", { name: "New session · Alpha" });
-  await expect(composer.getByLabel("Session prompt")).toHaveValue(
+  await expect(composer.getByLabel("Session prompt", { exact: true })).toHaveValue(
     `/forgemaster --mini ${exactText}`,
   );
   if (shotDirectory)
@@ -190,9 +190,9 @@ test("dirty composer drafts require Keep or Replace and are not changed by Keep"
     .click();
   const composer = page.getByRole("dialog");
   const existingPrompt = "Keep my carefully edited draft.";
-  await page.getByLabel("Session prompt").fill(existingPrompt);
-  const repository = page.getByLabel("Session repository");
-  const smith = page.getByLabel("Session smith");
+  await composer.getByLabel("Session prompt", { exact: true }).fill(existingPrompt);
+  const repository = composer.getByLabel("Session repository", { exact: true });
+  const smith = composer.getByLabel("Session smith", { exact: true });
   await expect(repository).toBeEnabled();
   await expect(smith).toBeEnabled();
   const selectedRepository = await repository.inputValue();
@@ -213,7 +213,8 @@ test("dirty composer drafts require Keep or Replace and are not changed by Keep"
     .click();
   await expect(preparation).toContainText("already has a draft");
   await preparation.getByRole("button", { name: "Keep current draft" }).click();
-  await expect(page.getByLabel("Session prompt")).toHaveValue(existingPrompt);
+  const keptDraftComposer = page.getByRole("dialog", { name: "New session · Alpha" });
+  await expect(keptDraftComposer.getByLabel("Session prompt", { exact: true })).toHaveValue(existingPrompt);
   await page
     .getByRole("dialog")
     .getByRole("button", { name: "Cancel", exact: true })
@@ -232,13 +233,14 @@ test("dirty composer drafts require Keep or Replace and are not changed by Keep"
   await preparation
     .getByRole("button", { name: "Replace current draft" })
     .click();
-  await expect(page.getByLabel("Session prompt")).toHaveValue(
+  const replacedComposer = page.getByRole("dialog", { name: "New session · Alpha" });
+  await expect(replacedComposer.getByLabel("Session prompt", { exact: true })).toHaveValue(
     "/forgemaster --full Replace with this",
   );
-  await expect(page.getByLabel("Session repository")).toHaveValue(
+  await expect(replacedComposer.getByLabel("Session repository", { exact: true })).toHaveValue(
     selectedRepository,
   );
-  await expect(page.getByLabel("Session smith")).toHaveValue(selectedSmith);
+  await expect(replacedComposer.getByLabel("Session smith", { exact: true })).toHaveValue(selectedSmith);
 });
 
 test("Replace changes only feature fields and preserves provider modes", async ({
@@ -251,7 +253,7 @@ test("Replace changes only feature fields and preserves provider modes", async (
     .click();
   const composer = page.getByRole("dialog", { name: "New session · Alpha" });
   const provider = composer.getByRole("group", { name: "Provider" });
-  const prompt = composer.getByLabel("Session prompt");
+  const prompt = composer.getByLabel("Session prompt", { exact: true });
   await prompt.fill("@bead:alpha-epic");
   await composer
     .getByRole("group", { name: "Mention suggestions" })
@@ -272,35 +274,35 @@ test("Replace changes only feature fields and preserves provider modes", async (
   await expect(
     composer.getByText("text · existing.txt", { exact: false }),
   ).toBeVisible();
-  await composer.getByLabel("Session bead").fill("alpha-epic");
-  await composer.getByLabel("Session mode").selectOption("task");
-  await expect(composer.getByLabel("Session repository")).toBeEnabled();
-  await expect(composer.getByLabel("Session smith")).toBeEnabled();
-  await expect(composer.getByLabel("Session effort")).toBeEnabled();
-  await composer.getByLabel("Session effort").selectOption("high");
+  await composer.getByLabel("Session bead", { exact: true }).fill("alpha-epic");
+  await composer.getByLabel("Session mode", { exact: true }).selectOption("task");
+  await expect(composer.getByLabel("Session repository", { exact: true })).toBeEnabled();
+  await expect(composer.getByLabel("Session smith", { exact: true })).toBeEnabled();
+  await expect(composer.getByLabel("Session effort", { exact: true })).toBeEnabled();
+  await composer.getByLabel("Session effort", { exact: true }).selectOption("high");
   const selectedRepository = await composer
-    .getByLabel("Session repository")
+    .getByLabel("Session repository", { exact: true })
     .inputValue();
   const selectedWorktree = await composer
     .getByLabel("Where the session runs")
     .inputValue();
-  const selectedSmith = await composer.getByLabel("Session smith").inputValue();
+  const selectedSmith = await composer.getByLabel("Session smith", { exact: true }).inputValue();
   const selectedEffort = await composer
-    .getByLabel("Session effort")
+    .getByLabel("Session effort", { exact: true })
     .inputValue();
 
   await provider.getByRole("button", { name: /Codex/ }).click();
-  await composer.getByLabel("Session mode").selectOption("chat");
-  await expect(composer.getByLabel("Session prompt")).toHaveValue(
+  await composer.getByLabel("Session mode", { exact: true }).selectOption("chat");
+  await expect(composer.getByLabel("Session prompt", { exact: true })).toHaveValue(
     existingPrompt,
   );
   await provider.getByRole("button", { name: /Gemini/ }).click();
-  await composer.getByLabel("Session mode").selectOption("chat");
-  await expect(composer.getByLabel("Session prompt")).toHaveValue(
+  await composer.getByLabel("Session mode", { exact: true }).selectOption("chat");
+  await expect(composer.getByLabel("Session prompt", { exact: true })).toHaveValue(
     existingPrompt,
   );
   await provider.getByRole("button", { name: /Claude/ }).click();
-  await expect(composer.getByLabel("Session prompt")).toHaveValue(
+  await expect(composer.getByLabel("Session prompt", { exact: true })).toHaveValue(
     existingPrompt,
   );
   await composer.getByRole("button", { name: "Cancel", exact: true }).click();
@@ -319,17 +321,17 @@ test("Replace changes only feature fields and preserves provider modes", async (
     .click();
   await preparation.getByRole("button", { name: "Keep current draft" }).click();
   const kept = page.getByRole("dialog", { name: "New session · Alpha" });
-  await expect(kept.getByLabel("Session prompt")).toHaveValue(existingPrompt);
-  await expect(kept.getByLabel("Session repository")).toHaveValue(
+  await expect(kept.getByLabel("Session prompt", { exact: true })).toHaveValue(existingPrompt);
+  await expect(kept.getByLabel("Session repository", { exact: true })).toHaveValue(
     selectedRepository,
   );
-  await expect(kept.getByLabel("Where the session runs")).toHaveValue(
+  await expect(kept.getByLabel("Where the session runs", { exact: true })).toHaveValue(
     selectedWorktree,
   );
-  await expect(kept.getByLabel("Session smith")).toHaveValue(selectedSmith);
-  await expect(kept.getByLabel("Session bead")).toHaveValue("alpha-epic");
-  await expect(kept.getByLabel("Session mode")).toHaveValue("task");
-  await expect(kept.getByLabel("Session effort")).toHaveValue(selectedEffort);
+  await expect(kept.getByLabel("Session smith", { exact: true })).toHaveValue(selectedSmith);
+  await expect(kept.getByLabel("Session bead", { exact: true })).toHaveValue("alpha-epic");
+  await expect(kept.getByLabel("Session mode", { exact: true })).toHaveValue("task");
+  await expect(kept.getByLabel("Session effort", { exact: true })).toHaveValue(selectedEffort);
   await expect(
     kept.getByText("text · existing.txt", { exact: false }),
   ).toBeVisible();
@@ -338,9 +340,9 @@ test("Replace changes only feature fields and preserves provider modes", async (
   ).toBeVisible();
   const keptProvider = kept.getByRole("group", { name: "Provider" });
   await keptProvider.getByRole("button", { name: /Codex/ }).click();
-  await expect(kept.getByLabel("Session mode")).toHaveValue("chat");
+  await expect(kept.getByLabel("Session mode", { exact: true })).toHaveValue("chat");
   await keptProvider.getByRole("button", { name: /Gemini/ }).click();
-  await expect(kept.getByLabel("Session mode")).toHaveValue("chat");
+  await expect(kept.getByLabel("Session mode", { exact: true })).toHaveValue("chat");
   await keptProvider.getByRole("button", { name: /Claude/ }).click();
   await kept.getByRole("button", { name: "Cancel", exact: true }).click();
 
@@ -361,21 +363,21 @@ test("Replace changes only feature fields and preserves provider modes", async (
     .click();
 
   const replaced = page.getByRole("dialog", { name: "New session · Alpha" });
-  await expect(replaced.getByLabel("Session prompt")).toHaveValue(
+  await expect(replaced.getByLabel("Session prompt", { exact: true })).toHaveValue(
     "/forgemaster --full Replace only the forge feature fields",
   );
-  await expect(replaced.getByLabel("Session repository")).toHaveValue(
+  await expect(replaced.getByLabel("Session repository", { exact: true })).toHaveValue(
     selectedRepository,
   );
-  await expect(replaced.getByLabel("Where the session runs")).toHaveValue(
+  await expect(replaced.getByLabel("Where the session runs", { exact: true })).toHaveValue(
     selectedWorktree,
   );
-  await expect(replaced.getByLabel("Session smith")).toHaveValue(selectedSmith);
-  await expect(replaced.getByLabel("Session mode")).toHaveValue("task");
-  await expect(replaced.getByLabel("Session effort")).toHaveValue(
+  await expect(replaced.getByLabel("Session smith", { exact: true })).toHaveValue(selectedSmith);
+  await expect(replaced.getByLabel("Session mode", { exact: true })).toHaveValue("task");
+  await expect(replaced.getByLabel("Session effort", { exact: true })).toHaveValue(
     selectedEffort,
   );
-  await expect(replaced.getByLabel("Session bead")).toHaveValue("");
+  await expect(replaced.getByLabel("Session bead", { exact: true })).toHaveValue("");
   await expect(
     replaced.getByText("text · existing.txt", { exact: false }),
   ).toHaveCount(0);
@@ -384,13 +386,13 @@ test("Replace changes only feature fields and preserves provider modes", async (
   ).toHaveCount(0);
   const replacedProvider = replaced.getByRole("group", { name: "Provider" });
   await replacedProvider.getByRole("button", { name: /Codex/ }).click();
-  await expect(replaced.getByLabel("Session mode")).toHaveValue("chat");
-  await expect(replaced.getByLabel("Session prompt")).toHaveValue(
+  await expect(replaced.getByLabel("Session mode", { exact: true })).toHaveValue("chat");
+  await expect(replaced.getByLabel("Session prompt", { exact: true })).toHaveValue(
     "/forgemaster --full Replace only the forge feature fields",
   );
   await replacedProvider.getByRole("button", { name: /Gemini/ }).click();
-  await expect(replaced.getByLabel("Session mode")).toHaveValue("chat");
-  await expect(replaced.getByLabel("Session prompt")).toHaveValue(
+  await expect(replaced.getByLabel("Session mode", { exact: true })).toHaveValue("chat");
+  await expect(replaced.getByLabel("Session prompt", { exact: true })).toHaveValue(
     "/forgemaster --full Replace only the forge feature fields",
   );
 });
@@ -405,7 +407,7 @@ test("A-to-B-to-A navigation invalidates an open Run review", async ({
     .click();
   const composer = page.getByRole("dialog", { name: "New session · Alpha" });
   const originalPrompt = "Keep this session draft after stale navigation";
-  await composer.getByLabel("Session prompt").fill(originalPrompt);
+  await composer.getByLabel("Session prompt", { exact: true }).fill(originalPrompt);
   await composer.getByRole("button", { name: "Cancel", exact: true }).click();
   await navigateToRuns(page);
   await launchPreparation(page);
@@ -441,7 +443,7 @@ test("A-to-B-to-A navigation invalidates an open Run review", async ({
   await expect(page).toHaveURL(new RegExp(`${alpha.id}/sessions`));
   await page.getByRole("button", { name: "New session", exact: true }).click();
   const unchanged = page.getByRole("dialog", { name: "New session · Alpha" });
-  await expect(unchanged.getByLabel("Session prompt")).toHaveValue(
+  await expect(unchanged.getByLabel("Session prompt", { exact: true })).toHaveValue(
     originalPrompt,
   );
   await unchanged.getByRole("button", { name: "Cancel", exact: true }).click();
@@ -485,9 +487,10 @@ test("an attended prompt uses ordinary Preview and one identity-bound Start afte
 
   const composer = page.getByRole("dialog", { name: "New session · Alpha" });
   const expectedPrompt = "/forgemaster --full One reviewed request";
-  await expect(composer.getByLabel("Session prompt")).toHaveValue(
+  await expect(composer.getByLabel("Session prompt", { exact: true })).toHaveValue(
     expectedPrompt,
   );
+  await composer.getByLabel("Session effort", { exact: true }).selectOption("");
   await composer
     .getByRole("button", { name: "Check supported options", exact: true })
     .click();
