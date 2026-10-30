@@ -84,6 +84,7 @@ export function ProjectRuns({
   beads,
   onCouncilArtifactPrefill,
   onCouncilBeadPrefill,
+  onNewForgeRun,
   checkpointReviewOwner,
   checkpointReviewsWritable = false,
   returnFocus = null,
@@ -110,6 +111,7 @@ export function ProjectRuns({
     workspace: string,
     origin: ProjectCouncilReturnOrigin,
   ) => void;
+  onNewForgeRun?: () => void;
   checkpointReviewOwner?(
     target: ProjectCheckpointReviewTarget,
   ): ProjectCheckpointReviewOwner;
@@ -221,8 +223,13 @@ export function ProjectRuns({
             Refresh runs
           </Button>
           <Button
-            disabled
-            title="Starting a forge run is not available in this inspection view."
+            disabled={!onNewForgeRun}
+            title={
+              onNewForgeRun
+                ? "Prepare an attended forge run in the Claude composer."
+                : "A current writable project and verified served Runs read are required."
+            }
+            {...(onNewForgeRun ? { onClick: onNewForgeRun } : {})}
           >
             New forge run
           </Button>
@@ -234,8 +241,9 @@ export function ProjectRuns({
         </p>
       ) : null}
       <p class="af-runs-note">
-        Run launch and correlated sessions are not available here. Checkpoint
-        reviews add a comment and do not change Beads status.
+        New forge run prepares an attended prompt in the Claude composer; it
+        does not start a run, and correlated sessions are not available here.
+        Checkpoint reviews add a comment and do not change Beads status.
       </p>
       <RunReadStatus view={view} />
       {view?.page?.problems.map((problem, index) => (
