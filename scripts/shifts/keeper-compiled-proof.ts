@@ -432,7 +432,14 @@ export function keeperWaitFacts(
     admittedValue <= 100
       ? String(admittedValue)
       : "unknown";
-  const outcomes = ["running", "review", "released", "halted", "left", "set-aside"];
+  const outcomes = [
+    "running",
+    "review",
+    "released",
+    "halted",
+    "left",
+    "set-aside",
+  ];
   let beadFacts = "unknown";
   const rowBeads = row?.beads;
   if (Array.isArray(rowBeads) && rowBeads.length <= 100) {
@@ -460,7 +467,10 @@ export function keeperWaitFacts(
     if (valid)
       beadFacts = `${rowBeads.length};${outcomes.map((outcome) => counts.get(outcome)).join(",")};${attempts}`;
   }
-  return `shiftState=${row?.state ?? "missing"}; reason=${boundedReason}; errorClass=${errorClass}; recordAdmitted=${admitted}; beadFacts=${beadFacts}; admissionCount=${admissionCount}; nativeMethods=${methods.join(",").slice(0, 400) || "none"}`.slice(0, 800);
+  return `shiftState=${row?.state ?? "missing"}; reason=${boundedReason}; errorClass=${errorClass}; recordAdmitted=${admitted}; beadFacts=${beadFacts}; admissionCount=${admissionCount}; nativeMethods=${methods.join(",").slice(0, 400) || "none"}`.slice(
+    0,
+    800,
+  );
 }
 
 async function acquireOperatorSession(
