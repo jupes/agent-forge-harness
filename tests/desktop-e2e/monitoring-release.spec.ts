@@ -550,7 +550,8 @@ test("foreground monitoring keeps Alpha and Beta scope, source limits and record
     const heldEffect = await page.evaluate(() => {
       const gate = (window as ActivityFilterEffectGateWindow)
         .__activityFilterEffectGate;
-      if (!gate) throw new Error("Activity filter effect gate was not installed");
+      if (!gate)
+        throw new Error("Activity filter effect gate was not installed");
       return gate.status();
     });
     console.log(`Activity filter effect gate: ${JSON.stringify(heldEffect)}`);
@@ -561,7 +562,8 @@ test("foreground monitoring keeps Alpha and Beta scope, source limits and record
     await page.evaluate(async () => {
       const gate = (window as ActivityFilterEffectGateWindow)
         .__activityFilterEffectGate;
-      if (!gate) throw new Error("Activity filter effect gate was not installed");
+      if (!gate)
+        throw new Error("Activity filter effect gate was not installed");
       await gate.release();
     });
     await expect(alphaSessionFilter).toHaveValue(activitySessionId);
@@ -569,7 +571,8 @@ test("foreground monitoring keeps Alpha and Beta scope, source limits and record
     await page.evaluate(async () => {
       const gate = (window as ActivityFilterEffectGateWindow)
         .__activityFilterEffectGate;
-      if (!gate) throw new Error("Activity filter effect gate was not installed");
+      if (!gate)
+        throw new Error("Activity filter effect gate was not installed");
       await gate.release();
     });
   }

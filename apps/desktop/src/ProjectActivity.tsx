@@ -1,4 +1,10 @@
-import { useEffect, useId, useLayoutEffect, useRef, useState } from "preact/hooks";
+import {
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "preact/hooks";
 import { Button } from "../../../docs/js/ds/Button";
 import { visibleWindow } from "../../../docs/js/timeline-model";
 import { projectActivityFiltersSchema } from "../../../scripts/projects/activity-protocol";
