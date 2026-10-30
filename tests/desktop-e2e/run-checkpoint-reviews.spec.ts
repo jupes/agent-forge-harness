@@ -15,7 +15,6 @@ import { runsHref } from "../../apps/desktop/src/project-runs-model";
 import type { ForgeState } from "../../scripts/forge/phases";
 import { hashText } from "../../scripts/hash-text";
 import { OPERATOR_HEADER } from "../../scripts/hearth/paths";
-import { writeOwnerOnly } from "../../scripts/hearth/token";
 import {
   projectCheckpointReviewHashRequestSchema,
   projectCheckpointReviewIntentJson,
@@ -40,7 +39,8 @@ import { workspace } from "./project-fixtures";
 
 const ownedRuns = new Map<string, string>();
 const ownedFaults = new Map<string, string>();
-const faultFile = join(BD_STAND_IN_STATE, "checkpoint-review-fault.json");
+const privateStandInState = realpathSync.native(BD_STAND_IN_STATE);
+const faultFile = join(privateStandInState, "checkpoint-review-fault.json");
 const callsFile = join(BD_STAND_IN_STATE, "calls.jsonl");
 const dispatchFiles = [
   "codex-fixture-calls.jsonl",
@@ -352,7 +352,44 @@ function dispatchSnapshot(): Map<string, string | null> {
 function expectDispatchesUnchanged(before: Map<string, string | null>) {
   for (const [name, bytes] of before) {
     const path = join(HEARTH_HOME, name);
-    expect(existsSync(path) ? readFileSync(path, "utf8") : null).toBe(bytes);
+    const current = existsSync(path) ? readFileSync(path, "utf8") : null;
+    if (name !== "codex-fixture-calls.jsonl" || current === bytes) {
+      expect(current).toBe(bytes);
+      continue;
+    }
+    if (current === null || (bytes !== null && !current.startsWith(bytes)))
+      throw Error("The Codex fixture call log changed before its saved prefix.");
+    const added = current.slice(bytes?.length ?? 0);
+    if (added.length > 0 && !added.endsWith("\n"))
+      throw Error("The Codex fixture call log ended with a partial row.");
+    const rows = added.split(/\r?\n/).filter(Boolean);
+    for (const line of rows) {
+      let raw: unknown;
+      try {
+        raw = JSON.parse(line);
+      } catch {
+        throw Error("The Codex fixture call log had invalid JSON.");
+      }
+      const probe = z
+        .object({
+          kind: z.enum(["version", "status"]),
+          argv: z.array(z.string()),
+          stdin: z.literal(""),
+          cwd: z.literal(realpathSync.native(process.cwd())),
+          id: z.uuid(),
+          pid: z.number().int().positive(),
+          childPid: z.null(),
+        })
+        .strict()
+        .parse(raw);
+      if (
+        (probe.kind === "version" &&
+          JSON.stringify(probe.argv) !== JSON.stringify(["--version"])) ||
+        (probe.kind === "status" &&
+          JSON.stringify(probe.argv) !== JSON.stringify(["login", "status"]))
+      )
+        throw Error("The Codex fixture recorded a non-read-only startup call.");
+    }
   }
 }
 
@@ -390,7 +427,9 @@ function ownFault(beadId: string, requestId: string): string {
   });
   if (Buffer.byteLength(bytes, "utf8") > 4 * 1024)
     throw Error("The checkpoint fault control exceeded its fixture limit.");
-  writeOwnerOnly(faultFile, bytes);
+  if (realpathSync.native(dirname(faultFile)) !== privateStandInState)
+    throw Error("The checkpoint fault control escaped its private fixture home.");
+  writeFileSync(faultFile, bytes, { flag: "wx", mode: 0o600 });
   const stat = lstatSync(faultFile);
   if (
     stat.isSymbolicLink() ||
@@ -945,6 +984,21 @@ test("keyboard request-changes records one exact comment without changing run or
   await expect(noteField).toBeVisible();
   await expect(changes).toBeDisabled();
   expect(posts).toEqual([]);
+  await noteField.focus();
+  const notePresentation = await noteField.evaluate((element) => {
+    const style = getComputedStyle(element);
+    return {
+      outlineWidth: style.outlineWidth,
+      outlineStyle: style.outlineStyle,
+      horizontalOverflow:
+        document.documentElement.scrollWidth > window.innerWidth,
+    };
+  });
+  expect(notePresentation).toMatchObject({
+    outlineWidth: "2px",
+    outlineStyle: "solid",
+    horizontalOverflow: false,
+  });
 
   const preparedResponse = page.waitForResponse(
     (response) =>
@@ -1146,7 +1200,12 @@ test("lost commit reply after comment persistence stays held until explicit exac
     await saved.getByRole("button", { name: "Read saved decision" }).click();
     const captured = await savedOriginalCapture.response;
     expect(captured.status).toBe(200);
-    const capturedEnvelope: unknown = JSON.parse(captured.text);
+    let capturedEnvelope: unknown;
+    try {
+      capturedEnvelope = JSON.parse(captured.text);
+    } catch {
+      throw Error("The protected saved-decision response was invalid JSON.");
+    }
     savedOriginal = projectCheckpointReviewOriginalReadSchema.parse(
       envelopeData(capturedEnvelope),
     );
