@@ -684,7 +684,10 @@ function StandardSessionConversation({
                 )}
               {record?.provider !== "gemini" && (
                 <>
-                  <SessionOutcome value={activity.outcome} />
+                  <SessionOutcome
+                    value={activity.outcome}
+                    rateLimitReset={activity.rateLimitReset}
+                  />
                   {row.id === current?.requestId && canContinue && (
                     <div class="af-session-note">
                       <p>
