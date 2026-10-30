@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import {
   existsSync,
   lstatSync,
@@ -8,42 +8,69 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { dirname, isAbsolute, join, relative, sep } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { expect, test } from "@playwright/test";
+import { z } from "zod";
 import type { ForgeState } from "../../scripts/forge/phases";
 import { artifactPath } from "../../scripts/forge/phases";
+import { parseProjectCatalog } from "../../scripts/projects/store";
 import type { ProjectCatalog } from "../../types/projects";
 import { openSettled } from "../e2e/fixtures";
 import { HEARTH_HOME } from "../e2e/servers";
 import { seedObservationEvents } from "./observed-session-fixtures";
-import {
-  alpha,
-  catalog,
-  catalogFile,
-  seedProjects,
-  seedSessions,
-  workspace,
-} from "./project-fixtures";
+import { alpha, catalog, catalogFile, seedProjects, seedSessions, workspace } from "./project-fixtures";
 
-const providerDispatchFiles = [
-  "codex-fixture-calls.jsonl",
-  "gemini-fixture-calls.jsonl",
-  "codex-chat-fixture-calls.jsonl",
-  "gemini-chat-fixture-calls.json",
-  "keeper-fixture-starts.jsonl",
-  "coding-fixture-starts.jsonl",
-] as const;
+const providerDispatchFiles = ["codex-fixture-calls.jsonl", "gemini-fixture-calls.jsonl", "codex-chat-fixture-calls.jsonl", "gemini-chat-fixture-calls.json", "keeper-fixture-starts.jsonl", "coding-fixture-starts.jsonl"] as const;
 const protectedPosts: string[] = [];
 const ownedFiles: { root: string; path: string; bytes: Buffer }[] = [];
-let dispatchesBefore: string[] = [];
+let dispatchesBefore = new Map<string, string | null>();
 
-function dispatchSnapshot(): string[] {
-  return providerDispatchFiles.map((name) => {
+function dispatchSnapshot(): Map<string, string | null> {
+  return new Map(
+    providerDispatchFiles.map((name) => {
+      const path = join(HEARTH_HOME, name);
+      return [name, existsSync(path) ? readFileSync(path, "utf8") : null] as const;
+    }),
+  );
+}
+
+function expectOnlyReadinessProbes(before: Map<string, string | null>): void {
+  for (const [name, prior] of before) {
     const path = join(HEARTH_HOME, name);
-    return existsSync(path)
-      ? `${name}:${createHash("sha256").update(readFileSync(path)).digest("hex")}`
-      : `${name}:absent`;
-  });
+    const current = existsSync(path) ? readFileSync(path, "utf8") : null;
+    if (
+      !["codex-fixture-calls.jsonl", "gemini-fixture-calls.jsonl"].includes(name) ||
+      current === prior
+    ) {
+      expect(current).toBe(prior);
+      continue;
+    }
+    if (current === null || (prior !== null && !current.startsWith(prior)))
+      throw Error("A provider readiness log lost its saved prefix.");
+    const added = current.slice(prior?.length ?? 0);
+    if (added && !added.endsWith("\n"))
+      throw Error("A readiness log ended with a partial row.");
+    for (const line of added.split(/\r?\n/).filter(Boolean)) {
+      let raw: unknown;
+      try {
+        raw = JSON.parse(line);
+      } catch {
+        throw Error("A readiness log contained invalid JSON.");
+      }
+      if (name === "gemini-fixture-calls.jsonl") {
+        z.object({ kind: z.enum(["version", "help"]) }).strict().parse(raw);
+        continue;
+      }
+      const probe = z.object({
+        kind: z.enum(["version", "help", "status"]), argv: z.array(z.string()),
+        stdin: z.literal(""), cwd: z.literal(realpathSync.native(process.cwd())),
+        id: z.uuid(), pid: z.number().int().positive(), childPid: z.null(),
+      }).strict().parse(raw);
+      const expected = { version: ["--version"], help: ["--help"], status: ["login", "status"] }[probe.kind];
+      if (JSON.stringify(probe.argv) !== JSON.stringify(expected))
+        throw Error("A provider fixture recorded a non-read-only startup call.");
+    }
+  }
 }
 
 function inside(root: string, path: string): void {
@@ -142,16 +169,16 @@ function addPartialOverviewScope(): void {
             workspaces: [
               ...project.workspaces,
               {
-                root: `${workspace}-unserved-monitoring-scope`,
-                repositories: [],
-                epicIds: [],
+                root: resolve(workspace, "..", "monitoring-unserved-scope"),
+                repositories: [resolve(workspace, "..", "monitoring-unserved-repo")],
+                epicIds: ["monitoring-unserved-epic"],
               },
             ],
           }
         : project,
     ),
   };
-  writeFileSync(catalogFile, JSON.stringify(partial));
+  writeFileSync(catalogFile, JSON.stringify(parseProjectCatalog(partial)));
 }
 
 test.beforeEach(({ page }) => {
@@ -170,7 +197,7 @@ test.beforeEach(({ page }) => {
 test.afterEach(() => {
   cleanupOwnedFiles();
   expect(protectedPosts).toEqual([]);
-  expect(dispatchSnapshot()).toEqual(dispatchesBefore);
+  expectOnlyReadinessProbes(dispatchesBefore);
 });
 
 test("foreground monitoring keeps Alpha and Beta scope, source limits and recorded run truth", async ({
