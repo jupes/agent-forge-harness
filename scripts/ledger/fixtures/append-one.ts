@@ -3,9 +3,14 @@
  * report what this connection looks like. Spawned by the multi-process tests.
  */
 
-import { ASYNC_HOOK_APPEND_WAIT_MS, appendEvent } from "../append";
+import {
+  ASYNC_HOOK_APPEND_WAIT_MS,
+  appendEvent,
+  type AppendFailureFacts,
+} from "../append";
 import { openLedger } from "../db";
 
+let failureFacts: Readonly<AppendFailureFacts> | undefined;
 const result = appendEvent(
   {
     kind: "tool.called",
@@ -14,8 +19,19 @@ const result = appendEvent(
     payload: { tool: "Bash", argsHash: "sha256:fixture" },
   },
   // These processes append at once, as concurrent async ledger hooks do.
-  { waitMs: ASYNC_HOOK_APPEND_WAIT_MS },
+  {
+    waitMs: ASYNC_HOOK_APPEND_WAIT_MS,
+    onFailure: (facts) => {
+      failureFacts = facts;
+    },
+  },
 );
 const pragma = openLedger().query("PRAGMA synchronous").get();
-console.log(JSON.stringify({ result, pragma }));
+console.log(
+  JSON.stringify({
+    result,
+    pragma,
+    ...(!result.ok && failureFacts ? { failureFacts } : {}),
+  }),
+);
 process.exit(result.ok ? 0 : 1);
