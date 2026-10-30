@@ -862,11 +862,22 @@ async function installCheckpointResponseObserver(
       fail("A checkpoint document repeated an observer nonce.");
     if (seenNonces.size >= maxReads + 1)
       fail("The checkpoint observer document limit was exceeded.");
+    if (
+      !Number.isSafeInteger(acceptedReads) ||
+      acceptedReads < 0 ||
+      acceptedReads > maxReads ||
+      !Number.isSafeInteger(totalBytes) ||
+      totalBytes < 0 ||
+      totalBytes > maxTotalBytes
+    )
+      fail("The checkpoint observer cumulative limits were invalid.");
     seenNonces.add(input.nonce);
     nonce = input.nonce;
     epoch++;
     return {
       epoch,
+      acceptedReads,
+      totalBytes,
       accepted: accepted
         ? { requestId: accepted.requestId, intentHash: accepted.intentHash }
         : null,
@@ -1099,17 +1110,36 @@ async function installCheckpointResponseObserver(
           nonce,
           origin: window.location.origin,
         }).then(
-          (handshake) => {
+          async (handshake) => {
             if (
               typeof handshake !== "object" ||
               handshake === null ||
               !("epoch" in handshake) ||
               typeof handshake.epoch !== "number" ||
               handshake.epoch < 1 ||
+              !Number.isSafeInteger(handshake.epoch) ||
+              !("acceptedReads" in handshake) ||
+              typeof handshake.acceptedReads !== "number" ||
+              !Number.isSafeInteger(handshake.acceptedReads) ||
+              handshake.acceptedReads < 0 ||
+              handshake.acceptedReads > 64 ||
+              !("totalBytes" in handshake) ||
+              typeof handshake.totalBytes !== "number" ||
+              !Number.isSafeInteger(handshake.totalBytes) ||
+              handshake.totalBytes < 0 ||
+              handshake.totalBytes > 8 * 1024 * 1024 ||
               !("accepted" in handshake)
-            )
+            ) {
+              try {
+                await window.__checkpointObserverFailure?.();
+              } catch {
+                /* handshake failure remains fatal in the Node observer */
+              }
               return false;
+            }
             epoch = handshake.epoch;
+            count = handshake.acceptedReads;
+            total = handshake.totalBytes;
             const acceptedRecord = handshake.accepted;
             if (
               typeof acceptedRecord === "object" &&
@@ -1128,7 +1158,14 @@ async function installCheckpointResponseObserver(
             }
             return true;
           },
-          () => false,
+          async () => {
+            try {
+              await window.__checkpointObserverFailure?.();
+            } catch {
+              /* handshake failure remains fatal in the Node observer */
+            }
+            return false;
+          },
         );
         const reportFailure = async () => {
           try {
