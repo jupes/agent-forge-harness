@@ -261,6 +261,8 @@ async function fixture(
     root,
     home,
     log,
+    providerExe,
+    environment,
     request,
     originals,
     runtime,
@@ -422,6 +424,45 @@ test("canonical whole-shift Stop waits for supervised fake delivery to settle an
     [],
   );
   expect(liveChildCount()).toBe(0);
+}, 45000);
+
+test("the compiled coding fixture enters its explicit non-recursive stop-helper smoke mode", async () => {
+  const baseline = liveChildCount();
+  const f = await fixture("claude", "helper-smoke");
+  const result = Bun.spawnSync([f.providerExe], {
+    cwd: f.root,
+    env: f.environment,
+    stdin: "ignore",
+    stdout: "ignore",
+    stderr: "ignore",
+    timeout: 5_000,
+    maxBuffer: 4 * 1024,
+    windowsHide: true,
+  });
+  expect(result.exitedDueToTimeout ?? false).toBe(false);
+  expect(result.exitedDueToMaxBuffer ?? false).toBe(false);
+  expect(result.exitCode).toBe(0);
+
+  const record: unknown = JSON.parse(readFileSync(f.log, "utf8"));
+  expect(record).toMatchObject({
+    helperSmoke: {
+      exitCode: 0,
+      marker: "fixture-stop-helper-smoke",
+    },
+  });
+  const smoke = z
+    .object({
+      pid: z.number(),
+      childPid: z.number(),
+      helperSmoke: z.object({
+        exitCode: z.literal(0),
+        marker: z.literal("fixture-stop-helper-smoke"),
+      }),
+    })
+    .parse(record);
+  expect(smoke.childPid).not.toBe(smoke.pid);
+  expect(processAlive(smoke.childPid)).toBe(false);
+  expect(liveChildCount()).toBe(baseline);
 }, 45000);
 
 test("an actual private protocol failure halts the engine before repair or another claim and releases its owned work", async () => {
