@@ -96,9 +96,7 @@ function installRunReadFetchObserver(options: {
     active: new Map(),
   };
   const callBinding = (payload: Record<string, unknown>) =>
-    Promise.resolve(
-      (binding as (value: unknown) => Promise<unknown>)(payload),
-    );
+    Promise.resolve((binding as (value: unknown) => Promise<unknown>)(payload));
   const ready = callBinding({ kind: "ready", token }).then(
     (value) => value === true,
     () => false,
@@ -125,7 +123,8 @@ function installRunReadFetchObserver(options: {
     try {
       for (;;) {
         const part = await reader.read();
-        if (timedOut) throw Error("The Council result clone exceeded its time bound.");
+        if (timedOut)
+          throw Error("The Council result clone exceeded its time bound.");
         if (part.done) break;
         length += part.value.byteLength;
         state.bytes += part.value.byteLength;
@@ -138,7 +137,8 @@ function installRunReadFetchObserver(options: {
         }
         chunks.push(part.value);
       }
-      if (timedOut) throw Error("The Council result clone exceeded its time bound.");
+      if (timedOut)
+        throw Error("The Council result clone exceeded its time bound.");
       const bytes = new Uint8Array(length);
       let offset = 0;
       for (const chunk of chunks) {
@@ -160,107 +160,106 @@ function installRunReadFetchObserver(options: {
       }
     }
   };
-  const wrapper = Object.assign(
-    async function (
-      this: unknown,
-      ...args: Parameters<typeof originalFetch>
-    ): Promise<Response> {
-      const input = args[0];
-      let url: URL;
-      let method: string;
-      try {
-        url = new URL(
-          input instanceof Request ? input.url : String(input),
-          window.location.href,
-        );
-        method =
-          args[1]?.method ??
-          (input instanceof Request ? input.method : "GET");
-      } catch {
-        return Reflect.apply(originalFetch, this, args);
-      }
-      if (
-        !state.accepting ||
-        method.toUpperCase() !== "GET" ||
-        url.origin !== options.origin ||
-        url.pathname !== options.path ||
-        url.search !== ""
-      )
-        return Reflect.apply(originalFetch, this, args);
+  const wrapper = Object.assign(async function (
+    this: unknown,
+    ...args: Parameters<typeof originalFetch>
+  ): Promise<Response> {
+    const input = args[0];
+    let url: URL;
+    let method: string;
+    try {
+      url = new URL(
+        input instanceof Request ? input.url : String(input),
+        window.location.href,
+      );
+      method =
+        args[1]?.method ?? (input instanceof Request ? input.method : "GET");
+    } catch {
+      return Reflect.apply(originalFetch, this, args);
+    }
+    if (
+      !state.accepting ||
+      method.toUpperCase() !== "GET" ||
+      url.origin !== options.origin ||
+      url.pathname !== options.path ||
+      url.search !== ""
+    )
+      return Reflect.apply(originalFetch, this, args);
 
-      if (state.reads >= options.maxReads) {
-        if (!state.overflowed) {
-          state.overflowed = true;
-          state.accepting = false;
-          await callBinding({ kind: "overflow", token }).catch(() => false);
-        }
-        return Reflect.apply(originalFetch, this, args);
-      }
-      const id = `${token}:${++state.reads}`;
-      let admitted = false;
-      try {
-        admitted = (await ready) &&
-          (await callBinding({ kind: "begin", id, token })) === true;
-      } catch {
-        admitted = false;
-      }
-      if (!admitted) {
+    if (state.reads >= options.maxReads) {
+      if (!state.overflowed) {
+        state.overflowed = true;
         state.accepting = false;
-        return Reflect.apply(originalFetch, this, args);
+        await callBinding({ kind: "overflow", token }).catch(() => false);
       }
+      return Reflect.apply(originalFetch, this, args);
+    }
+    const id = `${token}:${++state.reads}`;
+    let admitted = false;
+    try {
+      admitted =
+        (await ready) &&
+        (await callBinding({ kind: "begin", id, token })) === true;
+    } catch {
+      admitted = false;
+    }
+    if (!admitted) {
+      state.accepting = false;
+      return Reflect.apply(originalFetch, this, args);
+    }
 
-      let response: Response;
-      try {
-        response = await Reflect.apply(originalFetch, this, args);
-      } catch (error) {
-        const name =
-          typeof error === "object" && error !== null && "name" in error
-            ? String(error.name)
-            : "";
-        await callBinding({
-          kind: name === "AbortError" ? "aborted" : "failure",
-          id,
-          token,
-          message: name === "AbortError" ? "AbortError" : "Native fetch failed.",
-        }).catch(() => false);
-        throw error;
-      }
-      let clone: Response;
-      try {
-        const finalUrl = new URL(response.url);
-        if (
-          finalUrl.origin !== options.origin ||
-          finalUrl.pathname !== options.path ||
-          finalUrl.search !== ""
-        )
-          throw Error("The Council result response URL changed scope.");
-        clone = response.clone();
-      } catch (error) {
-        const message =
-          error instanceof Error ? error.message : "The response could not be cloned.";
-        await sendFailure(id, message);
-        return response;
-      }
-
-      try {
-        const text = await readClone(id, clone);
-        await callBinding({
-          kind: "complete",
-          id,
-          token,
-          status: response.status,
-          url: response.url,
-          text,
-        });
-      } catch (error) {
-        const message =
-          error instanceof Error ? error.message : "The response clone failed.";
-        await sendFailure(id, message);
-      }
+    let response: Response;
+    try {
+      response = await Reflect.apply(originalFetch, this, args);
+    } catch (error) {
+      const name =
+        typeof error === "object" && error !== null && "name" in error
+          ? String(error.name)
+          : "";
+      await callBinding({
+        kind: name === "AbortError" ? "aborted" : "failure",
+        id,
+        token,
+        message: name === "AbortError" ? "AbortError" : "Native fetch failed.",
+      }).catch(() => false);
+      throw error;
+    }
+    let clone: Response;
+    try {
+      const finalUrl = new URL(response.url);
+      if (
+        finalUrl.origin !== options.origin ||
+        finalUrl.pathname !== options.path ||
+        finalUrl.search !== ""
+      )
+        throw Error("The Council result response URL changed scope.");
+      clone = response.clone();
+    } catch (error) {
+      const message =
+        error instanceof Error
+          ? error.message
+          : "The response could not be cloned.";
+      await sendFailure(id, message);
       return response;
-    },
-    originalFetch,
-  );
+    }
+
+    try {
+      const text = await readClone(id, clone);
+      await callBinding({
+        kind: "complete",
+        id,
+        token,
+        status: response.status,
+        url: response.url,
+        text,
+      });
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "The response clone failed.";
+      await sendFailure(id, message);
+    }
+    return response;
+  }, originalFetch);
   state.wrapper = wrapper;
   globals[options.stateName] = state;
   window.fetch = wrapper;
@@ -342,7 +341,9 @@ export async function observeRunReads(
         if (typeof token !== "string" || seenDocumentTokens.has(token))
           return false;
         if (seenDocumentTokens.size >= MAX_READS) {
-          recordOverflow("The Council result observer exceeded its document-epoch bound.");
+          recordOverflow(
+            "The Council result observer exceeded its document-epoch bound.",
+          );
           return false;
         }
         if (documentToken && documentToken !== token)
@@ -355,8 +356,7 @@ export async function observeRunReads(
         return true;
       }
       if (kind === "overflow") {
-        if (typeof token !== "string" || token !== documentToken)
-          return false;
+        if (typeof token !== "string" || token !== documentToken) return false;
         return recordOverflow();
       }
       const captureId = payload["id"];
@@ -396,7 +396,8 @@ export async function observeRunReads(
         if (payload["message"] !== "AbortError") {
           settle(captureId, {
             kind: "invalid",
-            message: "The Council result read reported an unknown interruption.",
+            message:
+              "The Council result read reported an unknown interruption.",
           });
           return false;
         }
@@ -438,10 +439,14 @@ export async function observeRunReads(
             status !== 200 ||
             byteLength > MAX_READ_BYTES
           )
-            throw Error("The actual Council result response was out of scope or oversized.");
+            throw Error(
+              "The actual Council result response was out of scope or oversized.",
+            );
           totalBytes += byteLength;
           if (totalBytes > MAX_TOTAL_BYTES)
-            throw Error("Council result observations exceeded their total byte bound.");
+            throw Error(
+              "Council result observations exceeded their total byte bound.",
+            );
           let rawRead: unknown;
           try {
             rawRead = JSON.parse(text);
@@ -455,7 +460,9 @@ export async function observeRunReads(
             read.provenance.intentHash !== expected.intentHash ||
             read.provenance.runId !== expected.runId
           )
-            throw Error("The actual Council result did not match its exact original.");
+            throw Error(
+              "The actual Council result did not match its exact original.",
+            );
           settle(captureId, { kind: "verified", read });
           return true;
         } catch (error) {
@@ -494,7 +501,9 @@ export async function observeRunReads(
     page.off("close", onClose);
     try {
       await page.evaluate((stateKey) => {
-        const state = (window as unknown as Record<string, unknown>)[stateKey] as
+        const state = (window as unknown as Record<string, unknown>)[
+          stateKey
+        ] as
           | { originalFetch: typeof window.fetch; wrapper: typeof window.fetch }
           | undefined;
         if (state && window.fetch === state.wrapper)
@@ -517,7 +526,9 @@ export async function observeRunReads(
     disposedOnce = true;
     try {
       await page.evaluate((stateKey) => {
-        const state = (window as unknown as Record<string, unknown>)[stateKey] as
+        const state = (window as unknown as Record<string, unknown>)[
+          stateKey
+        ] as
           | {
               originalFetch: typeof window.fetch;
               wrapper: typeof window.fetch;
@@ -557,19 +568,14 @@ export async function observeRunReads(
     }
     disposed = true;
     page.off("close", onClose);
-    const invalid = drained.find(
-      (read) => read.kind === "invalid",
-    );
+    const invalid = drained.find((read) => read.kind === "invalid");
     try {
       await initScript?.dispose();
     } finally {
-      try {
-        await binding.dispose();
-      } finally {
-        if (invalid?.kind === "invalid")
-          throw Error(`The Council result observer failed: ${invalid.message}`);
-      }
+      await binding.dispose();
     }
+    if (invalid?.kind === "invalid")
+      throw Error(`The Council result observer failed: ${invalid.message}`);
   };
   return reads;
 }
