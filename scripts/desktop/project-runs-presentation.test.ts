@@ -34,6 +34,10 @@ const empty: ProjectRunsView = {
   detailLoading: false,
   detailError: "",
   detailStale: false,
+  sessionHistoryLoading: false,
+  sessionHistoryError: "",
+  sessionHistoryStale: false,
+  sessionHistoryCapped: false,
 };
 
 test("initial unavailable metadata is announced as loading or failed, never as an empty run history", () => {

@@ -60,7 +60,7 @@ export interface ProjectRunDetail extends ProjectRunSource {
   gateHistoryDays: 30;
   earlierGateLimit: 10;
   /** Missing only in a legacy server response; the client treats it as unavailable. */
-  sessionHistory?: ProjectRunSessionHistory;
+  sessionHistory?: ProjectRunSessionHistory | undefined;
 }
 
 /** A complete, verified document from the served checkout, fetched on demand. */

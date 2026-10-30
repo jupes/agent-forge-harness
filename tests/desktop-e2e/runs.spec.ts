@@ -8,7 +8,13 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { expect, type Page, type Route, test } from "@playwright/test";
+import {
+  expect,
+  type Page,
+  type Response,
+  type Route,
+  test,
+} from "@playwright/test";
 import { runsHref } from "../../apps/desktop/src/project-runs-model";
 import type { ForgeState } from "../../scripts/forge/phases";
 import { OPERATOR_HEADER } from "../../scripts/hearth/paths";
@@ -17,6 +23,7 @@ import {
   projectRunDetailSchema,
   projectRunsPageSchema,
 } from "../../scripts/projects/run-protocol";
+import type { ProjectRunDetail } from "../../types/project-runs";
 import { readState, withStateLock, writeState } from "../e2e/bd-stand-in-state";
 import { openSettled, reloadSettled } from "../e2e/fixtures";
 import { pageToken } from "../e2e/launch-link";
@@ -275,6 +282,46 @@ async function protectedRead(page: Page, path: string) {
     },
     { path, token, header: OPERATOR_HEADER },
   );
+}
+function matchesRunDetailPage(response: Response, after: number) {
+  const url = new URL(response.url());
+  return (
+    url.pathname ===
+      `/__agent-forge/projects/${alpha.id}/runs/${fixture.primary}` &&
+    url.search === `?after=${after}&limit=100`
+  );
+}
+function runDetailFromEnvelope(body: unknown) {
+  if (
+    !body ||
+    typeof body !== "object" ||
+    Array.isArray(body) ||
+    !("ok" in body) ||
+    body.ok !== true ||
+    !("data" in body)
+  )
+    throw Error("Missing protected Run detail response");
+  return projectRunDetailSchema.parse(body.data);
+}
+async function runDetailResponse(response: Response) {
+  expect(response.status()).toBe(200);
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    throw Error("Incomplete protected Run detail response");
+  }
+  return runDetailFromEnvelope(body);
+}
+function availableHistory(detail: ProjectRunDetail, after: number) {
+  const history = detail.sessionHistory;
+  if (
+    !history ||
+    history.status !== "available" ||
+    history.after !== after
+  )
+    throw Error("Recorded-session page did not match its requested cursor");
+  return history;
 }
 /** Playwright's server-side forward must retain the browser's declared same-origin boundary. */
 async function forwardRun(route: Route) {
@@ -623,6 +670,12 @@ test("recorded run sessions page in the served project and open only admitted me
   await expect(
     history.getByText(sessions[100]!, { exact: true }),
   ).toBeVisible();
+  await history
+    .getByRole("heading", { name: "Sessions", exact: true })
+    .scrollIntoViewIfNeeded();
+  await page.screenshot({
+    path: test.info().outputPath("recorded-run-sessions.png"),
+  });
 
   await history
     .getByRole("link", { name: "Open session metadata" })
@@ -631,7 +684,14 @@ test("recorded run sessions page in the served project and open only admitted me
   await expect(
     page.getByRole("heading", { name: "Session metadata", exact: true }),
   ).toBeVisible();
-  await expect(page.getByText(sessions[0]!, { exact: true })).toBeVisible();
+  await expect(
+    page
+      .getByRole("region", {
+        name: "Session metadata details",
+        exact: true,
+      })
+      .getByText(sessions[0]!, { exact: true }),
+  ).toBeVisible();
   await expect(
     page.getByText("Session start recorded", { exact: true }),
   ).toBeVisible();
@@ -651,7 +711,13 @@ test("a changed run-session admission key keeps the old page stale and disables 
   page,
 }) => {
   const sessions = recordRunSessions(fixture.primary, 101);
+  const initialPageResponse = page.waitForResponse((response) =>
+    matchesRunDetailPage(response, 0),
+  );
   await openSettled(page, href(alpha.id, fixture.primary));
+  const initialDetail = await runDetailResponse(await initialPageResponse);
+  const initialHistory = availableHistory(initialDetail, 0);
+  const nextAfter = initialHistory.nextAfter;
   const history = page.getByRole("region", {
     name: "Recorded sessions for this run",
   });
@@ -660,16 +726,46 @@ test("a changed run-session admission key keeps the old page stale and disables 
     history.getByRole("link", { name: "Open session metadata" }).first(),
   ).toBeVisible();
 
-  const newlyAdmitted = recordRunSessions(fixture.primary, 1)[0]!;
+  withStateLock(BD_STAND_IN_STATE, () => {
+    const state = readState(BD_STAND_IN_STATE);
+    Object.assign(state, {
+      "alpha-membership-added": checkpoint(
+        "alpha-membership-added",
+        "feature",
+        "open",
+        "alpha-epic",
+      ),
+    });
+    writeState(BD_STAND_IN_STATE, state);
+  });
+
+  const changedRead = await protectedRead(
+    page,
+    `/projects/${alpha.id}/runs/${fixture.primary}?after=0&limit=100`,
+  );
+  expect(changedRead.status).toBe(200);
+  const changedDetail = runDetailFromEnvelope(changedRead.body);
+  expect(changedDetail.run.slug).toBe(fixture.primary);
+  expect(changedDetail.run.epic).toBe("alpha-epic");
+  const changedHistory = availableHistory(changedDetail, 0);
+  expect(changedHistory.membershipKey).not.toBe(initialHistory.membershipKey);
+
+  const nextPageResponse = page.waitForResponse((response) =>
+    matchesRunDetailPage(response, nextAfter),
+  );
   await history
     .getByRole("button", { name: "Load more recorded sessions" })
     .click();
+  const nextDetail = await runDetailResponse(await nextPageResponse);
+  const nextHistory = availableHistory(nextDetail, nextAfter);
+  expect(nextHistory.membershipKey).toBe(changedHistory.membershipKey);
+  expect(nextHistory.membershipKey).not.toBe(initialHistory.membershipKey);
 
   await expect(history).toContainText(
     "Project or session membership changed while reading this run",
   );
   await expect(history.getByText(sessions[0]!, { exact: true })).toBeVisible();
-  await expect(history.getByText(newlyAdmitted, { exact: true })).toHaveCount(
+  await expect(history.getByText(sessions[100]!, { exact: true })).toHaveCount(
     0,
   );
   await expect(
@@ -678,6 +774,39 @@ test("a changed run-session admission key keeps the old page stale and disables 
   await expect(
     history.getByRole("button", { name: "Load more recorded sessions" }),
   ).toBeDisabled();
+
+  const refreshedPageResponse = page.waitForResponse((response) =>
+    matchesRunDetailPage(response, 0),
+  );
+  await page.getByRole("button", { name: "Refresh runs", exact: true }).click();
+  const refreshedDetail = await runDetailResponse(await refreshedPageResponse);
+  const refreshedHistory = availableHistory(refreshedDetail, 0);
+  expect(refreshedHistory.membershipKey).toBe(changedHistory.membershipKey);
+  await expect(history).not.toContainText(
+    "Project or session membership changed while reading this run",
+  );
+  await expect(
+    history.getByRole("link", { name: "Open session metadata" }).first(),
+  ).toBeVisible();
+  await expect(
+    history.getByRole("button", { name: "Load more recorded sessions" }),
+  ).toBeEnabled();
+
+  const recoveredPageResponse = page.waitForResponse((response) =>
+    matchesRunDetailPage(response, refreshedHistory.nextAfter),
+  );
+  await history
+    .getByRole("button", { name: "Load more recorded sessions" })
+    .click();
+  const recoveredDetail = await runDetailResponse(await recoveredPageResponse);
+  const recoveredHistory = availableHistory(
+    recoveredDetail,
+    refreshedHistory.nextAfter,
+  );
+  expect(recoveredHistory.membershipKey).toBe(changedHistory.membershipKey);
+  await expect(
+    history.getByText(sessions[100]!, { exact: true }),
+  ).toBeVisible();
   expect(posts).toEqual([]);
   expect(dispatches()).toEqual(beforeDispatches);
 });
