@@ -154,6 +154,7 @@ export function createProjectCouncilOwner(
   let metadataRefreshes = 0;
   const privateAborts = new Set<AbortController>();
   let ownedActivity = 0;
+  let initialMetadataOnlyHold = false;
   let refreshPending = false;
   let runGeneration = 0;
   let runAbort: AbortController | null = null;
@@ -245,11 +246,20 @@ export function createProjectCouncilOwner(
       );
       assertHistoryOwner(history);
       if (disposed || current !== generation) return;
-      paint({ profiles, history });
       const activeId = history.activeRequestId;
+      if (
+        activeId !== null &&
+        !projectCouncilRequestIdSchema.safeParse(activeId).success
+      )
+        throw Error("The active saved review ID is invalid.");
+      const releaseInitialMetadataHold =
+        initialMetadataOnlyHold &&
+        !view.original &&
+        history.activeRequestId === null;
+      paint({ profiles, history });
+      if (disposed || current !== generation) return;
+      initialMetadataOnlyHold = false;
       if (activeId !== null) {
-        if (!projectCouncilRequestIdSchema.safeParse(activeId).success)
-          throw Error("The active saved review ID is invalid.");
         const row = history.items.find((item) => item.requestId === activeId);
         const historyState = row?.state;
         if (disposed || current !== generation) return;
@@ -301,7 +311,7 @@ export function createProjectCouncilOwner(
               "Saved review state changed. Read this exact saved original before continuing.",
           });
         } else paint({ history });
-      } else if (view.phase !== "held") {
+      } else if (view.phase !== "held" || releaseInitialMetadataHold) {
         paint({ history, phase: "ready", error: "" });
       } else {
         paint({ history });
@@ -309,6 +319,8 @@ export function createProjectCouncilOwner(
       // An empty history is never proof that a previously sent reserve was absent.
     } catch (error) {
       if (disposed || current !== generation) return;
+      if (view.phase === "loading" && !view.original && ownedActivity === 0)
+        initialMetadataOnlyHold = true;
       paint({
         phase: view.history?.activeRequestId
           ? "held"
@@ -323,6 +335,7 @@ export function createProjectCouncilOwner(
   };
 
   const beginOwnedActivity = () => {
+    initialMetadataOnlyHold = false;
     ownedActivity++;
     generation++;
     if (metadataRefreshes > 0) {

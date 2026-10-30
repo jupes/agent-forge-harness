@@ -84,6 +84,49 @@ function inertTransport(overrides: Partial<ProjectCouncilTransportInput> = {}) {
   } satisfies ProjectCouncilTransportInput;
 }
 
+function initialHistoryFailureFixture(
+  recoveredHistory: Awaited<
+    ReturnType<ProjectCouncilTransportInput["history"]>
+  >,
+  overrides: Partial<ProjectCouncilTransportInput> = {},
+  workspace = defaultWorkspace,
+) {
+  let reads = 0;
+  let releaseInitial!: () => void;
+  const blocked = new Promise<void>((resolve) => (releaseInitial = resolve));
+  const owner = createProjectCouncilOwner(
+    projectId,
+    workspace,
+    inertTransport({
+      ...overrides,
+      history: async () => {
+        reads++;
+        if (reads === 1) {
+          await blocked;
+          throw Error("initial history unavailable");
+        }
+        return recoveredHistory;
+      },
+    }),
+  );
+  owners.add(owner);
+  let unsubscribe = () => {};
+  const failed = new Promise<void>((resolve) => {
+    unsubscribe = owner.subscribe(() => {
+      if (owner.get().error === "initial history unavailable") {
+        unsubscribe();
+        resolve();
+      }
+    });
+  });
+  return {
+    owner,
+    failInitial: releaseInitial,
+    failed,
+    reads: () => reads,
+  };
+}
+
 const inertProfile = {
   path: "default.json",
   title: "Inert test profile",
@@ -194,21 +237,44 @@ test("history from another project or workspace remains held", async () => {
   expect(owner.get().error).toContain("different project or workspace");
 });
 
-test("a lost reserve reply stays held and cannot issue another reservation", async () => {
+test("explicit initial-history recovery clears its error without effects", async () => {
+  let effects = 0;
+  const unexpected = async () => {
+    effects++;
+    throw Error("unexpected Council effect");
+  };
+  const fixture = initialHistoryFailureFixture(emptyHistory, {
+    reserve: unexpected,
+    retire: unexpected,
+    commit: unexpected,
+    cancel: unexpected,
+  });
+  fixture.failInitial();
+  await fixture.failed;
+  expect(fixture.owner.get().phase).toBe("held");
+  await fixture.owner.refresh();
+  expect(fixture.owner.get().phase).toBe("ready");
+  expect(fixture.owner.get().error).toBe("");
+  expect(fixture.reads()).toBe(2);
+  expect(effects).toBe(0);
+});
+
+test("a lost reserve reply after metadata recovery stays held and cannot reserve again", async () => {
   let reserves = 0;
-  const owner = createProjectCouncilOwner(
-    projectId,
-    "C:\\workspace",
-    inertTransport({
-      profiles: async () => [inertProfile],
-      reserve: async () => {
-        reserves++;
-        throw Error("connection lost after POST");
-      },
-    }),
-  );
-  owners.add(owner);
+  const fixture = initialHistoryFailureFixture(emptyHistory, {
+    profiles: async () => [inertProfile],
+    reserve: async () => {
+      reserves++;
+      throw Error("connection lost after POST");
+    },
+  });
+  const { owner } = fixture;
+  fixture.failInitial();
+  await fixture.failed;
+  expect(owner.get().phase).toBe("held");
   await owner.refresh();
+  expect(owner.get().phase).toBe("ready");
+  expect(owner.get().error).toBe("");
   const request = {
     sourceChoice: {
       sourceType: "text" as const,
@@ -223,9 +289,112 @@ test("a lost reserve reply stays held and cannot issue another reservation", asy
   await owner.prepare(request);
   expect(reserves).toBe(1);
   expect(owner.get().phase).toBe("held");
+  await owner.refresh();
   await owner.prepare(request);
   expect(reserves).toBe(1);
   owner.dispose();
+});
+
+test("initial history recovery keeps active or foreign identities held", async () => {
+  const canonical = await councilFixture();
+  const original = canonical.original();
+  await canonical.owner.convene(original.requestId, original.intentHash);
+  await canonical.owner.refresh();
+  const activeHistory = canonical.owner.get().history;
+  if (!activeHistory?.activeRequestId)
+    throw Error("The canonical running Council fixture has no active ID.");
+  const workspace = original.binding.workspace;
+  canonical.owner.dispose();
+  for (const recoveredHistory of [
+    activeHistory,
+    {
+      ...emptyHistory,
+      workspace,
+      activeRequestId: "00000000-0000-4000-8000-000000000001",
+    },
+    {
+      ...emptyHistory,
+      workspace,
+      projectId: "project-0b4f8e0a-76f1-4c29-972e-4aee9c216d12",
+    },
+  ]) {
+    const fixture = initialHistoryFailureFixture(
+      recoveredHistory,
+      {},
+      workspace,
+    );
+    fixture.failInitial();
+    await fixture.failed;
+    await fixture.owner.refresh();
+    expect(fixture.owner.get().phase).toBe("held");
+    if (recoveredHistory === activeHistory) {
+      expect(fixture.owner.get().history?.activeRequestId).toBe(
+        activeHistory.activeRequestId,
+      );
+      expect(fixture.owner.get().history?.items[0]?.phase).toBe("running");
+    } else expect(fixture.owner.get().history).toBeNull();
+    expect(fixture.reads()).toBe(2);
+  }
+});
+
+test("a reentrant saved-original read holds initial metadata recovery", async () => {
+  const canonical = await councilFixture();
+  await canonical.markCompleteForNewDraft();
+  const original = canonical.original();
+  const history = canonical.owner.get().history;
+  if (!history || history.activeRequestId !== null)
+    throw Error("The canonical terminal history fixture is invalid.");
+  let releaseOriginal!: () => void;
+  let resolveOriginalStarted!: () => void;
+  const originalGate = new Promise<void>(
+    (resolve) => (releaseOriginal = resolve),
+  );
+  const originalStarted = new Promise<void>(
+    (resolve) => (resolveOriginalStarted = resolve),
+  );
+  const readOriginal = async () => {
+    resolveOriginalStarted();
+    await originalGate;
+    return projectCouncilOriginalReadSchema.parse({
+      metadata: projectCouncilMetadata(original),
+      original,
+    });
+  };
+  const fixture = initialHistoryFailureFixture(
+    history,
+    { original: readOriginal },
+    original.binding.workspace,
+  );
+  let opening = false;
+  let opened: Promise<void> | undefined;
+  const unsubscribe = fixture.owner.subscribe(() => {
+    if (!opening && fixture.owner.get().history) {
+      opening = true;
+      opened = fixture.owner.openSaved(original.requestId);
+    }
+  });
+  try {
+    fixture.failInitial();
+    await fixture.failed;
+    await fixture.owner.refresh();
+    await originalStarted;
+    expect(fixture.owner.get().phase).toBe("held");
+    expect(fixture.owner.get().original).toBeNull();
+    releaseOriginal();
+    if (!opened)
+      throw Error("The reentrant saved-original read did not start.");
+    await opened;
+    expect(fixture.owner.get().phase).toBe("held");
+    expect(fixture.owner.get().original?.original?.requestId).toBe(
+      original.requestId,
+    );
+    expect(fixture.owner.get().original?.original?.state).toBe("completed");
+  } finally {
+    releaseOriginal();
+    unsubscribe();
+    if (opened) await opened;
+    fixture.owner.dispose();
+  }
 });
 
 test("retirement cannot run without a verified source-known reserved original", async () => {
