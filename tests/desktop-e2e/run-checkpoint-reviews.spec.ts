@@ -283,7 +283,8 @@ async function commentEvents(
           signal: controller.signal,
         });
         reader = response.body?.getReader();
-        if (!reader) throw Error("The protected ledger events response had no body.");
+        if (!reader)
+          throw Error("The protected ledger events response had no body.");
         const decoder = new TextDecoder("utf-8", { fatal: true });
         const chunks: Uint8Array[] = [];
         let size = 0;
@@ -292,11 +293,14 @@ async function commentEvents(
           if (part.done) break;
           size += part.value.byteLength;
           if (size > 1024 * 1024)
-            throw Error("The protected ledger events response exceeded its byte limit.");
+            throw Error(
+              "The protected ledger events response exceeded its byte limit.",
+            );
           chunks.push(part.value);
         }
         let text = "";
-        for (const chunk of chunks) text += decoder.decode(chunk, { stream: true });
+        for (const chunk of chunks)
+          text += decoder.decode(chunk, { stream: true });
         text += decoder.decode();
         return { status: response.status, url: response.url, text };
       } finally {
