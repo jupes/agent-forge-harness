@@ -190,9 +190,9 @@ async function prepareReview(page: Page, deepDiscussion = false) {
   const requestBindingName = "__validateCouncilReserveRequest";
   const responseBindingName = "__validateCouncilReserveResponse";
   let captureFailure: string | undefined;
-  const installedBindings: string[] = [];
+  const installedBindings: Awaited<ReturnType<Page["exposeBinding"]>>[] = [];
   try {
-    await page.exposeBinding(
+    installedBindings.push(await page.exposeBinding(
       requestBindingName,
       (sourceInfo, url: string, bodyText: string) => {
         try {
@@ -234,9 +234,8 @@ async function prepareReview(page: Page, deepDiscussion = false) {
           return false;
         }
       },
-    );
-    installedBindings.push(requestBindingName);
-    await page.exposeBinding(
+    ));
+    installedBindings.push(await page.exposeBinding(
       responseBindingName,
       (sourceInfo, status: number, url: string, bodyText: string) => {
         try {
@@ -290,8 +289,7 @@ async function prepareReview(page: Page, deepDiscussion = false) {
           return false;
         }
       },
-    );
-    installedBindings.push(responseBindingName);
+    ));
     await page.evaluate(
       ({ origin, targetPath }) => {
         if (window.top !== window)
@@ -377,10 +375,11 @@ async function prepareReview(page: Page, deepDiscussion = false) {
           ...args: Parameters<typeof originalFetch>
         ): Promise<Response> {
           const input = args[0];
-          const rawUrl = input instanceof Request ? input.url : String(input);
+          const rawUrl =
+            input instanceof window.Request ? input.url : String(input);
           const method =
             args[1]?.method ??
-            (input instanceof Request ? input.method : "GET");
+            (input instanceof window.Request ? input.method : "GET");
           let url: URL;
           try {
             url = new URL(rawUrl, window.location.href);
@@ -415,8 +414,8 @@ async function prepareReview(page: Page, deepDiscussion = false) {
               if (initBody !== undefined && typeof initBody !== "string")
                 throw Error("request-body-not-cloneable");
               const requestInput =
-                input instanceof Request ? input.clone() : input;
-              requestWitness = new Request(requestInput, args[1]);
+              input instanceof window.Request ? input.clone() : input;
+            requestWitness = new window.Request(requestInput, args[1]);
             } catch {
               failProof();
             }
@@ -512,7 +511,7 @@ async function prepareReview(page: Page, deepDiscussion = false) {
       });
     } finally {
       await Promise.all(
-        installedBindings.map((name) => page.removeExposedFunction(name)),
+        installedBindings.map((binding) => binding.dispose()),
       );
     }
   }
