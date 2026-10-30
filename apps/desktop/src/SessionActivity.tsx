@@ -16,6 +16,7 @@ import type {
 import type { NativeChatTurnPlanReport } from "./native-chat-turn-plan";
 import type { NativeChatWebSearchReport } from "./native-chat-web-search";
 import type {
+  ClaudeRateLimitResetFact,
   NativeChatCommandReport,
   OwnedSessionTurn,
 } from "./session-activity";
@@ -705,8 +706,10 @@ const outcomeLabels: Record<CodingOutcomeCode, string> = {
 
 export function SessionOutcome({
   value,
+  rateLimitReset = null,
 }: {
   value: CodingOutcomeEvent | null;
+  rateLimitReset?: ClaudeRateLimitResetFact | null;
 }) {
   if (!value) return null;
   return (
@@ -735,8 +738,23 @@ export function SessionOutcome({
                 <time dateTime={value.resetAt}>
                   {new Date(value.resetAt).toLocaleString()}
                 </time>
+              ) : rateLimitReset ? (
+                rateLimitReset.resetsAt === undefined ? (
+                  <>
+                    Latest Claude rate-limit report in this turn. Reset value not
+                    reported by <code>{rateLimitReset.source}</code>.
+                  </>
+                ) : (
+                  <>
+                    Latest Claude rate-limit report in this turn. Reset value:{" "}
+                    <code>{rateLimitReset.resetsAt}</code> · unit not reported ·
+                    source: <code>{rateLimitReset.source}</code>
+                  </>
+                )
               ) : (
-                "Not reported. Check Providers for current allowance."
+                value.provider === "claude"
+                  ? "No Claude rate-limit reset fact was saved for this turn."
+                  : "Reset value was not reported by this CLI."
               )}
             </dd>
           </>
