@@ -12,8 +12,6 @@ import { expect, type Page, type Route, test } from "@playwright/test";
 import { runsHref } from "../../apps/desktop/src/project-runs-model";
 import type { ForgeState } from "../../scripts/forge/phases";
 import { OPERATOR_HEADER } from "../../scripts/hearth/paths";
-import { appendEvent } from "../../scripts/ledger/append";
-import { ledgerPath } from "../../scripts/ledger/paths";
 import {
   projectRunArtifactSchema,
   projectRunDetailSchema,
@@ -23,6 +21,7 @@ import { readState, withStateLock, writeState } from "../e2e/bd-stand-in-state";
 import { openSettled, reloadSettled } from "../e2e/fixtures";
 import { pageToken } from "../e2e/launch-link";
 import { BD_STAND_IN_STATE, HEARTH_HOME } from "../e2e/servers";
+import { seedObservationEvents } from "./observed-session-fixtures";
 import { alpha, beta, seedProjects } from "./project-fixtures";
 
 const owned = new Map<string, string>();
@@ -227,29 +226,25 @@ function seedRuns() {
 }
 function recordRunSessions(runId: string, count: number) {
   const workspace = realpathSync.native(process.cwd());
-  const path = ledgerPath({ AGENT_FORGE_HOME: HEARTH_HOME });
   const sessionIds: string[] = [];
+  const events: import("../../types/hearth").LedgerEventInput[] = [];
   for (let index = 0; index < count; index++) {
     const sessionId = `run-session-${randomUUID()}`;
-    const result = appendEvent(
-      {
-        kind: "session.started",
-        workspace,
-        beadId: "alpha-epic",
-        runId,
-        sessionId,
-        payload: {
-          source: "headless:claude",
-          kind: "headless",
-          worktree: workspace,
-        },
+    events.push({
+      kind: "session.started",
+      workspace,
+      beadId: "alpha-epic",
+      runId,
+      sessionId,
+      payload: {
+        source: "headless:claude",
+        kind: "headless",
+        worktree: workspace,
       },
-      { path },
-    );
-    if (!result.ok || !("id" in result))
-      throw Error("The inert run session was not recorded in the E2E ledger");
+    });
     sessionIds.push(sessionId);
   }
+  seedObservationEvents(events);
   return sessionIds;
 }
 function held() {
