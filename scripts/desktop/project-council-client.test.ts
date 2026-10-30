@@ -262,11 +262,11 @@ test("explicit initial-history recovery clears its error without effects", async
 test("a lost reserve reply after metadata recovery stays held and cannot reserve again", async () => {
   let reserves = 0;
   const fixture = initialHistoryFailureFixture(emptyHistory, {
-      profiles: async () => [inertProfile],
-      reserve: async () => {
-        reserves++;
-        throw Error("connection lost after POST");
-      },
+    profiles: async () => [inertProfile],
+    reserve: async () => {
+      reserves++;
+      throw Error("connection lost after POST");
+    },
   });
   const { owner } = fixture;
   fixture.failInitial();
@@ -346,8 +346,12 @@ test("a reentrant saved-original read holds initial metadata recovery", async ()
     throw Error("The canonical terminal history fixture is invalid.");
   let releaseOriginal!: () => void;
   let resolveOriginalStarted!: () => void;
-  const originalGate = new Promise<void>((resolve) => (releaseOriginal = resolve));
-  const originalStarted = new Promise<void>((resolve) => (resolveOriginalStarted = resolve));
+  const originalGate = new Promise<void>(
+    (resolve) => (releaseOriginal = resolve),
+  );
+  const originalStarted = new Promise<void>(
+    (resolve) => (resolveOriginalStarted = resolve),
+  );
   const readOriginal = async () => {
     resolveOriginalStarted();
     await originalGate;
@@ -377,7 +381,8 @@ test("a reentrant saved-original read holds initial metadata recovery", async ()
     expect(fixture.owner.get().phase).toBe("held");
     expect(fixture.owner.get().original).toBeNull();
     releaseOriginal();
-    if (!opened) throw Error("The reentrant saved-original read did not start.");
+    if (!opened)
+      throw Error("The reentrant saved-original read did not start.");
     await opened;
     expect(fixture.owner.get().phase).toBe("held");
     expect(fixture.owner.get().original?.original?.requestId).toBe(

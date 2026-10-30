@@ -543,7 +543,9 @@ test("a completed bead-source review links to its bead and reports the one recor
   await historyFilter.fill("completed");
   await expect(savedRow).toBeVisible();
   await historyFilter.fill("no-such-saved-review");
-  await expect(page.getByText("No saved reviews match this filter.")).toBeVisible();
+  await expect(
+    page.getByText("No saved reviews match this filter."),
+  ).toBeVisible();
   await expect(savedRow).toHaveCount(0);
   const clearFilters = page.getByRole("button", { name: "Clear filters" });
   await historyFilter.press("Tab");
@@ -551,7 +553,9 @@ test("a completed bead-source review links to its bead and reports the one recor
   await expect(clearFilters).toHaveCSS("outline-width", "2px");
   await page.keyboard.press("Enter");
   await expect(savedRow).toBeVisible();
-  await expect(savedRow.getByRole("heading", { name: /Verified result facts/ })).toBeVisible();
+  await expect(
+    savedRow.getByRole("heading", { name: /Verified result facts/ }),
+  ).toBeVisible();
   expect(historyGets).toBe(historyGetCountBeforeFilter);
   expect(posts).toHaveLength(postCountBeforeFilter);
 
@@ -563,7 +567,9 @@ test("a completed bead-source review links to its bead and reports the one recor
   let releaseHold!: () => void;
   let resolveHandlerDone!: () => void;
   const heldResponse = new Promise<void>((resolve) => (releaseHold = resolve));
-  const handlerDone = new Promise<void>((resolve) => (resolveHandlerDone = resolve));
+  const handlerDone = new Promise<void>(
+    (resolve) => (resolveHandlerDone = resolve),
+  );
   let holdReleased = false;
   let holdTimer: ReturnType<typeof setTimeout> | undefined;
   const failureListener = (request: Request) => {
@@ -607,7 +613,8 @@ test("a completed bead-source review links to its bead and reports the one recor
       await heldResponse;
       await route.abort("failed");
     } catch {
-      routeFailure = routeFailure ?? "The held browser history GET could not be aborted.";
+      routeFailure =
+        routeFailure ?? "The held browser history GET could not be aborted.";
       await route.abort("failed").catch(() => undefined);
     } finally {
       if (holdTimer !== undefined) clearTimeout(holdTimer);
@@ -630,14 +637,22 @@ test("a completed bead-source review links to its bead and reports the one recor
         .getByRole("status")
         .getByText("Loading saved Council reviews…", { exact: true }),
     ).toBeVisible();
-    await expect(page.getByRole("button", { name: "Check saved reviews" })).toBeDisabled();
-    await expect(page.getByRole("heading", { name: "No council reviews yet" })).toHaveCount(0);
+    await expect(
+      page.getByRole("button", { name: "Check saved reviews" }),
+    ).toBeDisabled();
+    await expect(
+      page.getByRole("heading", { name: "No council reviews yet" }),
+    ).toHaveCount(0);
     releaseHistory();
     await expect.poll(() => failedHistoryRequests).toBe(1);
     await expect(
-      page.getByRole("alert").filter({ hasText: "Saved review status is unknown" }),
+      page
+        .getByRole("alert")
+        .filter({ hasText: "Saved review status is unknown" }),
     ).toContainText("Keep it held");
-    await expect(page.getByRole("button", { name: "New review" })).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "New review" })).toHaveCount(
+      0,
+    );
   } finally {
     releaseHistory();
     try {
@@ -645,7 +660,8 @@ test("a completed bead-source review links to its bead and reports the one recor
         try {
           await page.unroute(historyMatcher, historyHandler);
         } catch {
-          routeFailure = routeFailure ?? "The history route could not be removed.";
+          routeFailure =
+            routeFailure ?? "The history route could not be removed.";
         }
         if (historyRouteCalls > 0) {
           let drainTimer: ReturnType<typeof setTimeout> | undefined;
@@ -657,7 +673,8 @@ test("a completed bead-source review links to its bead and reports the one recor
           ]);
           if (drainTimer !== undefined) clearTimeout(drainTimer);
           if (!drained)
-            routeFailure = routeFailure ?? "The held history route did not drain.";
+            routeFailure =
+              routeFailure ?? "The held history route did not drain.";
         }
       }
     } finally {
