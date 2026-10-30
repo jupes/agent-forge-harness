@@ -28,9 +28,11 @@ import {
 import { projectShiftRequestHash } from "./registry";
 
 type AttemptEvidenceContext = {
+  intent: ProjectShiftIntent;
   projectId: string;
   workspace: string;
   originalRequestId: string;
+  expectedRequestHash: string;
   shiftId: string;
   firstBeadId: string;
   attempt: 1;
@@ -46,6 +48,9 @@ async function seedOwnedAttemptEvidence(
     recordWorkspace?: string;
     rowBeadId?: string;
     corruptRegistry?: boolean;
+    acceptedText?: string;
+    about?: Array<{ kind: "bead" | "run"; id: string }>;
+    extraTurn?: boolean;
   } = {},
 ) {
   mkdirSync(join(root, ".git"), { recursive: true });
@@ -60,15 +65,7 @@ async function seedOwnedAttemptEvidence(
     admissionsFile = join(stateDir, "provider-admissions.jsonl"),
     callsFile = join(stateDir, "calls.jsonl"),
     privateBody = "PRIVATE_ATTEMPT_BODY_SENTINEL",
-    processPid = 987654,
-    context: AttemptEvidenceContext = {
-      projectId: FIXTURE_PROJECT_ID,
-      workspace,
-      originalRequestId,
-      shiftId,
-      firstBeadId,
-      attempt: 1,
-    };
+    processPid = 987654;
   mkdirSync(home, { recursive: true });
   mkdirSync(join(home, "sessions"), { recursive: true });
   mkdirSync(stateDir, { recursive: true });
@@ -149,6 +146,16 @@ async function seedOwnedAttemptEvidence(
     canonicalAttemptHash = shiftAttemptHash(intent, input, attempt, cliVersion),
     registry = createSessionRegistry(home),
     records = [];
+  const context: AttemptEvidenceContext = {
+    intent,
+    projectId: FIXTURE_PROJECT_ID,
+    workspace,
+    originalRequestId,
+    expectedRequestHash: intent.requestHash,
+    shiftId,
+    firstBeadId,
+    attempt: 1,
+  };
   for (let index = 0; index < (options.copies ?? 1); index++) {
     const requestId = index === 0 ? canonicalAttemptId : randomUUID(),
       requestHash =
@@ -189,8 +196,8 @@ async function seedOwnedAttemptEvidence(
     await store.accept(FIXTURE_PROJECT_ID, {
       requestId: selected.requestId,
       expectedRevision: 0,
-      text: privateBody,
-      about: [
+      text: options.acceptedText ?? privateBody,
+      about: options.about ?? [
         { kind: "bead", id: origin.beadId },
         { kind: "run", id: origin.runId },
       ],
@@ -214,6 +221,14 @@ async function seedOwnedAttemptEvidence(
           "failed",
           null,
         );
+      if (options.extraTurn) {
+        await store.accept(FIXTURE_PROJECT_ID, {
+          requestId: randomUUID(),
+          expectedRevision: store.read(FIXTURE_PROJECT_ID).revision,
+          text: "extra fixture turn",
+          about: [],
+        });
+      }
     }
   }
   if (options.corruptRegistry)
@@ -229,16 +244,7 @@ async function seedOwnedAttemptEvidence(
     sessionId: selected?.id ?? "",
     attemptRequestId: selected?.requestId ?? "",
     facts() {
-      const result: unknown = Reflect.apply(keeperWaitFacts, undefined, [
-        home,
-        shiftId,
-        admissionsFile,
-        callsFile,
-        context,
-      ]);
-      if (typeof result !== "string")
-        throw new Error("Keeper wait facts did not return text");
-      return result;
+      return keeperWaitFacts(home, shiftId, admissionsFile, callsFile, context);
     },
   };
 }
@@ -287,6 +293,20 @@ test("Keeper wait facts correlate only the exact first Shift-owned attempt", asy
     expect(reservationOnly.facts()).toContain("attemptReservation=matched");
     expect(reservationOnly.facts()).toContain("ownerTurn=unknown");
     expect(reservationOnly.facts()).toContain("processFrame=unknown");
+
+    for (const invalidTurn of [
+      { acceptedText: "different private input" },
+      { about: [{ kind: "run" as const, id: "fixture-run-1" }, { kind: "bead" as const, id: "alpha-work" }] },
+      { extraTurn: true, turnPhase: "failed" as const },
+    ]) {
+      const invalid = await seedOwnedAttemptEvidence(
+        scratch.make("owned attempt evidence invalid turn "),
+        { turnPhase: "failed", ...invalidTurn },
+      );
+      expect(invalid.facts()).toContain("attemptReservation=matched");
+      expect(invalid.facts()).toContain("ownerTurn=unknown");
+      expect(invalid.facts()).toContain("processFrame=unknown");
+    }
 
     for (const origin of [
       { originalRequestId: randomUUID() },
