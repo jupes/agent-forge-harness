@@ -337,6 +337,61 @@ test("initial history recovery keeps active or foreign identities held", async (
   }
 });
 
+test("a reentrant saved-original read holds initial metadata recovery", async () => {
+  const canonical = await councilFixture();
+  await canonical.markCompleteForNewDraft();
+  const original = canonical.original();
+  const history = canonical.owner.get().history;
+  if (!history || history.activeRequestId !== null)
+    throw Error("The canonical terminal history fixture is invalid.");
+  let releaseOriginal!: () => void;
+  let resolveOriginalStarted!: () => void;
+  const originalGate = new Promise<void>((resolve) => (releaseOriginal = resolve));
+  const originalStarted = new Promise<void>((resolve) => (resolveOriginalStarted = resolve));
+  const readOriginal = async () => {
+    resolveOriginalStarted();
+    await originalGate;
+    return projectCouncilOriginalReadSchema.parse({
+      metadata: projectCouncilMetadata(original),
+      original,
+    });
+  };
+  const fixture = initialHistoryFailureFixture(
+    history,
+    { original: readOriginal },
+    original.binding.workspace,
+  );
+  let opening = false;
+  let opened: Promise<void> | undefined;
+  const unsubscribe = fixture.owner.subscribe(() => {
+    if (!opening && fixture.owner.get().history) {
+      opening = true;
+      opened = fixture.owner.openSaved(original.requestId);
+    }
+  });
+  try {
+    fixture.failInitial();
+    await fixture.failed;
+    await fixture.owner.refresh();
+    await originalStarted;
+    expect(fixture.owner.get().phase).toBe("held");
+    expect(fixture.owner.get().original).toBeNull();
+    releaseOriginal();
+    if (!opened) throw Error("The reentrant saved-original read did not start.");
+    await opened;
+    expect(fixture.owner.get().phase).toBe("held");
+    expect(fixture.owner.get().original?.original?.requestId).toBe(
+      original.requestId,
+    );
+    expect(fixture.owner.get().original?.original?.state).toBe("completed");
+  } finally {
+    releaseOriginal();
+    unsubscribe();
+    if (opened) await opened;
+    fixture.owner.dispose();
+  }
+});
+
 test("retirement cannot run without a verified source-known reserved original", async () => {
   let retirements = 0;
   const owner = createProjectCouncilOwner(
