@@ -134,6 +134,62 @@ test("Grok does not identify unrelated semver text and runs only its version pro
   expect(inspected.installation.version).toBeNull();
 });
 
+test("Grok preserves a source-shaped version report without inferring readiness", async () => {
+  const calls: string[][] = [];
+  const inspector = createProviderInspector({
+    root: "/fixture",
+    home: "/private-fixture",
+    environment: {},
+    which: (binary) => (binary === "grok" ? "/fixture/grok" : null),
+    run: async (command) => {
+      calls.push([...command]);
+      return {
+        exitCode: 0,
+        stdout: "grok 0.2.5-rc.1+build.7 (fedcba987654) [alpha]\n",
+        valid: true,
+      };
+    },
+  });
+
+  const inspected = await inspector.inspect("grok", []);
+
+  expect(calls).toEqual([["/fixture/grok", "--version"]]);
+  expect(inspected.installation.versionOk).toBe(true);
+  expect(inspected.installation.version).toBe(
+    "0.2.5-rc.1+build.7 (fedcba987654) [alpha]",
+  );
+  expect(inspected.installation.compatibility).toBe("unknown");
+  expect(inspected.authentication.mode).toBe("unknown");
+  expect(inspected.adapter.supported).toBe(false);
+  expect(inspected.signIn.command).toBeNull();
+});
+
+test("Grok failed version probes remain unverified and do not launch another command", async () => {
+  for (const probe of [
+    { exitCode: 0, stdout: "grok 0.2.5 (0123456789ab)\n", valid: false },
+    { exitCode: 1, stdout: "grok 0.2.5 (0123456789ab)\n", valid: true },
+  ]) {
+    const calls: string[][] = [];
+    const inspector = createProviderInspector({
+      root: "/fixture",
+      home: "/private-fixture",
+      environment: {},
+      which: (binary) => (binary === "grok" ? "/fixture/grok" : null),
+      run: async (command) => {
+        calls.push([...command]);
+        return probe;
+      },
+    });
+
+    const inspected = await inspector.inspect("grok", []);
+
+    expect(calls).toEqual([["/fixture/grok", "--version"]]);
+    expect(inspected.installation.versionOk).toBe(false);
+    expect(inspected.installation.version).toBeNull();
+    expect(inspected.authentication.mode).toBe("unknown");
+  }
+});
+
 test("not found, old/unsupported and failed status stay separate; deferred OpenRouter never gains an invented adapter", async () => {
   const calls: string[][] = [];
   const inspector = createProviderInspector({

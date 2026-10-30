@@ -4,6 +4,7 @@ import {
   normalizeUsageWindow,
   parseClaudeAuthentication,
   parseCodexAuthentication,
+  parseGrokBuildVersionOutput,
 } from "./readiness";
 
 const now = Date.parse("2026-10-23T06:40:00Z");
@@ -21,6 +22,32 @@ const window = {
   source: "provider-cli",
   reason: null,
 } as const;
+
+test("Grok version output requires its complete SemVer, commit stamp and channel grammar", () => {
+  for (const [stdout, expected] of [
+    ["grok 0.2.5 (0123456789ab) [stable]\n", "0.2.5 (0123456789ab) [stable]"],
+    [
+      "grok 0.2.5-rc.1+build.7 (fedcba987654) [alpha]\n",
+      "0.2.5-rc.1+build.7 (fedcba987654) [alpha]",
+    ],
+    ["grok 0.2.5 (unknown)\n", "0.2.5 (unknown)"],
+  ] as const)
+    expect(parseGrokBuildVersionOutput(stdout)).toBe(expected);
+
+  for (const stdout of [
+    "Community Grok CLI 9.9.9\n",
+    "grok unrelated-cli 9.9.9 (0123456789ab)\n",
+    "grok 01.2.5 (0123456789ab)\n",
+    "grok 0.2.5-01 (0123456789ab)\n",
+    "grok 0.2.5 (0123456789a)\n",
+    "grok 0.2.5 (0123456789aG)\n",
+    "grok 0.2.5 (0123456789ab) [beta]\n",
+    "grok 0.2.5 (0123456789ab)\nextra\n",
+    "grok 0.2.5 (0123456789ab) [stable]\n\n",
+    "grok 0.2.5 (0123456789ab)",
+  ])
+    expect(parseGrokBuildVersionOutput(stdout)).toBeNull();
+});
 
 test("reported remaining normalizes once to the same used measure; missing reset stays unknown", () => {
   const used = normalizeUsageWindow(window, now);
