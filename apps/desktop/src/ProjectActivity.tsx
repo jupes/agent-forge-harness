@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "preact/hooks";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { Button } from "../../../docs/js/ds/Button";
 import { visibleWindow } from "../../../docs/js/timeline-model";
 import { projectActivityFiltersSchema } from "../../../scripts/projects/activity-protocol";
@@ -49,7 +49,7 @@ export function ProjectActivityFeed({
   const key = JSON.stringify(filters);
   const [draft, setDraft] = useState(filters ?? emptyActivityFilters()),
     [formError, setFormError] = useState("");
-  useEffect(() => {
+  useLayoutEffect(() => {
     setDraft(filters ?? emptyActivityFilters());
     setFormError("");
   }, [key]);
