@@ -551,7 +551,12 @@ test("Stop during a capability probe waits for cleanup and returns a known pre-d
         close = stat.lastIndexOf(") ");
       const pidField = open > 0 ? stat.slice(0, open) : "";
       const fields =
-        close > open ? stat.slice(close + 2).trim().split(/\s+/) : [];
+        close > open
+          ? stat
+              .slice(close + 2)
+              .trim()
+              .split(/\s+/)
+          : [];
       const startTime = fields[19];
       if (
         !/^\d+$/.test(pidField) ||

@@ -14,8 +14,8 @@ import { expect, test } from "@playwright/test";
 import { z } from "zod";
 import type { ForgeState } from "../../scripts/forge/phases";
 import { artifactPath } from "../../scripts/forge/phases";
-import type { ProjectCatalog } from "../../types/projects";
 import type { LedgerEventInput } from "../../types/hearth";
+import type { ProjectCatalog } from "../../types/projects";
 import { openSettled } from "../e2e/fixtures";
 import { bunPath, HEARTH_HOME } from "../e2e/servers";
 import { seedObservationEvents } from "./observed-session-fixtures";
@@ -437,7 +437,9 @@ test("foreground monitoring keeps Alpha and Beta scope, source limits and record
   const activity = alphaActivity.getByRole("listbox", {
     name: "Project activity",
   });
-  await expect(alphaActivity.getByText("25 events", { exact: true })).toBeVisible();
+  await expect(
+    alphaActivity.getByText("25 events", { exact: true }),
+  ).toBeVisible();
   await expect(activity).not.toContainText("Alpha monitoring event");
   expect(await activity.locator(".af-activity-row").count()).toBeLessThan(25);
   await activity.focus();
@@ -449,14 +451,18 @@ test("foreground monitoring keeps Alpha and Beta scope, source limits and record
 
   await page.getByRole("link", { name: "Projects", exact: true }).click();
   await page.getByRole("link", { name: "Open Beta", exact: true }).click();
-  await betaProjectNav.getByRole("link", { name: "Activity", exact: true }).click();
+  await betaProjectNav
+    .getByRole("link", { name: "Activity", exact: true })
+    .click();
   const betaActivity = page.getByRole("region", { name: "Project Activity" });
   await betaActivity.getByLabel("Session filter").fill(activitySessionId);
   await betaActivity.getByRole("button", { name: "Apply filters" }).click();
   const betaFeed = betaActivity.getByRole("listbox", {
     name: "Project activity",
   });
-  await expect(betaActivity.getByText("1 event", { exact: true })).toBeVisible();
+  await expect(
+    betaActivity.getByText("1 event", { exact: true }),
+  ).toBeVisible();
   await expect(betaFeed).toContainText("Beta monitoring event");
   await expect(betaFeed).not.toContainText("Alpha monitoring event");
   expect(protectedPosts).toEqual([]);
