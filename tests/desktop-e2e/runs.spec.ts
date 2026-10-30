@@ -315,11 +315,7 @@ async function runDetailResponse(response: Response) {
 }
 function availableHistory(detail: ProjectRunDetail, after: number) {
   const history = detail.sessionHistory;
-  if (
-    !history ||
-    history.status !== "available" ||
-    history.after !== after
-  )
+  if (!history || history.status !== "available" || history.after !== after)
     throw Error("Recorded-session page did not match its requested cursor");
   return history;
 }

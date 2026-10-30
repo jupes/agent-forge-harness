@@ -893,9 +893,7 @@ export function RunDetail({
                   sessionHistoryCapped ||
                   !onLoadMoreSessions
                 }
-                {...(onLoadMoreSessions
-                  ? { onClick: onLoadMoreSessions }
-                  : {})}
+                {...(onLoadMoreSessions ? { onClick: onLoadMoreSessions } : {})}
               >
                 Load more recorded sessions
               </Button>
