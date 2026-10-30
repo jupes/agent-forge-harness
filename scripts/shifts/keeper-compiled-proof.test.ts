@@ -7,6 +7,7 @@ import type {
   ProjectShiftStartRequest,
 } from "../../types/project-shifts";
 import type { ProjectShiftAttemptOrigin } from "../../types/shift-origin";
+import { conversationFile } from "../conversations/paths";
 import { createConversationStore } from "../conversations/store";
 import type { PrivateExecInput } from "../executors/private-capture";
 import { PRIVATE_CAPTURE_FAILURE } from "../executors/private-capture";
@@ -53,8 +54,8 @@ async function seedOwnedAttemptEvidence(
     recordWorkspace?: string;
     rowBeadId?: string;
     corruptRegistry?: boolean;
-    acceptedText?: string;
-    about?: Array<{ kind: "bead" | "run"; id: string }>;
+    wrongText?: string;
+    wrongAbout?: Array<{ kind: "bead" | "run"; id: string }>;
     extraTurn?: boolean;
   } = {},
 ) {
@@ -213,8 +214,8 @@ async function seedOwnedAttemptEvidence(
     await store.accept(FIXTURE_PROJECT_ID, {
       requestId: selected.requestId,
       expectedRevision: 0,
-      text: options.acceptedText ?? privateBody,
-      about: options.about ?? [
+      text: privateBody,
+      about: [
         { kind: "bead", id: origin.beadId },
         { kind: "run", id: origin.runId },
       ],
@@ -245,6 +246,23 @@ async function seedOwnedAttemptEvidence(
           text: "extra fixture turn",
           about: [],
         });
+      }
+      if (options.wrongText !== undefined || options.wrongAbout) {
+        const persisted = store.read(FIXTURE_PROJECT_ID),
+          userFrame = persisted.frames.find(
+            (frame) =>
+              frame.turnId === selected.requestId &&
+              frame.event.kind === "user",
+          );
+        if (!userFrame || userFrame.event.kind !== "user")
+          throw new Error("Canonical fixture user frame was not persisted");
+        if (options.wrongText !== undefined)
+          userFrame.event.text = options.wrongText;
+        if (options.wrongAbout) userFrame.event.about = options.wrongAbout;
+        writeFileSync(
+          conversationFile(home, FIXTURE_PROJECT_ID, address),
+          JSON.stringify(persisted),
+        );
       }
     }
   }
@@ -312,9 +330,9 @@ test("Keeper wait facts correlate only the exact first Shift-owned attempt", asy
     expect(reservationOnly.facts()).toContain("processFrame=unknown");
 
     for (const invalidTurn of [
-      { acceptedText: "different private input" },
+      { wrongText: "different private input" },
       {
-        about: [
+        wrongAbout: [
           { kind: "run" as const, id: "fixture-run-1" },
           { kind: "bead" as const, id: "alpha-work" },
         ],
