@@ -57,7 +57,10 @@ declare global {
       body: unknown,
     ) => Promise<boolean>;
     __restoreCouncilFetch?: () => void;
-    __validateCouncilReserveRequest?: (body: string) => Promise<boolean>;
+    __validateCouncilReserveRequest?: (
+      url: string,
+      body: string,
+    ) => Promise<boolean>;
     __validateCouncilReserveResponse?: (
       status: number,
       url: string,
