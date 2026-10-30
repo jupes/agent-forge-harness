@@ -229,7 +229,7 @@ export function ProjectRuns({
                 ? "Prepare an attended forge run in the Claude composer."
                 : "A current writable project and verified served Runs read are required."
             }
-            onClick={onNewForgeRun}
+            {...(onNewForgeRun ? { onClick: onNewForgeRun } : {})}
           >
             New forge run
           </Button>

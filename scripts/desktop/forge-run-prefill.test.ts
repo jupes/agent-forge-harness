@@ -183,14 +183,16 @@ test("the snapshot covers every visible and hidden provider draft field", () => 
     },
     (view: ReturnType<typeof project>) => {
       view.codexMode = "chat";
-      view.codexChatComposer.prompt = "hidden Codex draft";
+      view.codexChatComposer.model = "hidden Codex chat model";
+      view.codexChatComposer.effort = "high";
     },
     (view: ReturnType<typeof project>) => {
       view.codexComposer.model = "hidden Codex task model";
     },
     (view: ReturnType<typeof project>) => {
       view.geminiMode = "chat";
-      view.geminiChatComposer.prompt = "hidden Gemini draft";
+      view.geminiChatComposer.model = "hidden Gemini chat model";
+      view.geminiChatComposer.approvalMode = "plan";
     },
     (view: ReturnType<typeof project>) => {
       view.geminiComposer.model = "hidden Gemini task model";

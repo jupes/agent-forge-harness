@@ -667,7 +667,7 @@ export function DesktopApp(): JSX.Element {
     identityScope: VerifiedSessionIdentityScope | null;
     beadsPage: typeof beads.data;
     beadsLoading: boolean;
-    beadsError: string;
+    beadsError: string | null;
     sessions: typeof sessions;
   } | null>(null);
   forgeRunCurrent.current = {
@@ -871,7 +871,8 @@ export function DesktopApp(): JSX.Element {
     return null;
   };
   const applyForgeRunPrefill = (prefill: ForgeRunPrefill) => {
-    if (!forgeRunReview) return;
+    if (!forgeRunReview)
+      return "This forge-run review is no longer current. Reopen preparation from the Runs page.";
     const checked = validateForgeRunReview(forgeRunReview);
     if (checked.error) return checked.error;
     const current = forgeRunCurrent.current;
@@ -1501,7 +1502,7 @@ export function DesktopApp(): JSX.Element {
             onCouncilBeadPrefill={(source, sourceWorkspace, origin) =>
               openCouncilSource(source, sourceWorkspace, false, origin)
             }
-            onNewForgeRun={forgeRunCanOpen ? openNewForgeRun : undefined}
+            {...(forgeRunCanOpen ? { onNewForgeRun: openNewForgeRun } : {})}
             returnFocus={
               councilReturnFocus &&
               councilReturnFocusRef.current?.generation ===
