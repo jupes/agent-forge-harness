@@ -257,7 +257,9 @@ test("run session pages preserve the raw cursor while excluding foreign and unre
     { path: h.ledger },
   );
   if (!otherWorkspace.ok || !("id" in otherWorkspace))
-    throw Error("The foreign-workspace event was not recorded in the fixture ledger");
+    throw Error(
+      "The foreign-workspace event was not recorded in the fixture ledger",
+    );
 
   const read = (after: number) =>
     fetch(`${path}/alpha-run?after=${after}&limit=1`, {
@@ -287,10 +289,9 @@ test("run session pages preserve the raw cursor while excluding foreign and unre
     sessions: [],
   });
 
-  const final = await fetch(
-    `${path}/alpha-run?after=${foreignId}&limit=100`,
-    { headers: h.headers(h.hearth.token) },
-  );
+  const final = await fetch(`${path}/alpha-run?after=${foreignId}&limit=100`, {
+    headers: h.headers(h.hearth.token),
+  });
   expect(final.status).toBe(200);
   const finalBody = await final.json();
   expect(finalBody.data.sessionHistory).toMatchObject({
@@ -298,7 +299,9 @@ test("run session pages preserve the raw cursor while excluding foreign and unre
     nextAfter: missingSessionId,
     more: false,
     membershipKey,
-    sessions: [{ sessionId: "untagged-recorded-session", detailsAvailable: false }],
+    sessions: [
+      { sessionId: "untagged-recorded-session", detailsAvailable: false },
+    ],
   });
   const result = JSON.stringify(finalBody.data.sessionHistory);
   expect(result).not.toContain("foreign-recorded-session");

@@ -198,11 +198,8 @@ test("recorded run session pages advance by cursor, append once, and reject a st
     detail: (slug, _signal, after) => {
       calls.push({ slug, after });
       if (slug === "alpha-run" && after === 0)
-        return Promise.resolve(
-          historyDetail(0, 5, true, [firstSession]),
-        );
-      if (slug === "alpha-run" && after === 5)
-        return later.promise;
+        return Promise.resolve(historyDetail(0, 5, true, [firstSession]));
+      if (slug === "alpha-run" && after === 5) return later.promise;
       return Promise.resolve(detail(slug));
     },
   });

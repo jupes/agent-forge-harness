@@ -188,7 +188,7 @@ export function createProjectRunsClient(deps: {
         typeof response === "object" &&
         response !== null &&
         !Array.isArray(response) &&
-        Object.prototype.hasOwnProperty.call(response, "sessionHistory");
+        Object.hasOwn(response, "sessionHistory");
       const core =
         typeof response === "object" &&
         response !== null &&
@@ -234,10 +234,7 @@ export function createProjectRunsClient(deps: {
           after: 0,
           reason: "unsupported-server",
         };
-      } else if (
-        !checkedHistory.success ||
-        checkedHistory.data.after !== 0
-      ) {
+      } else if (!checkedHistory.success || checkedHistory.data.after !== 0) {
         sessionHistory = {
           status: "unavailable",
           after: 0,
@@ -316,19 +313,25 @@ export function createProjectRunsClient(deps: {
         parsed.data.checkout !== checkout ||
         parsed.data.run.slug !== slug
       )
-        throw Error("This session page does not match the verified project and run.");
+        throw Error(
+          "This session page does not match the verified project and run.",
+        );
       const page = parsed.data.sessionHistory;
       if (!page)
         throw Error("This server does not provide recorded run sessions.");
       if (page.status === "unavailable")
-        throw Error("Recorded session history is unavailable. Refresh to retry.");
+        throw Error(
+          "Recorded session history is unavailable. Refresh to retry.",
+        );
       if (page.after !== after)
         throw Error("This session page does not match its requested cursor.");
       if (page.membershipKey !== history.membershipKey)
         throw Error(
           "Project or session membership changed while reading this run. Refresh Runs before continuing.",
         );
-      const seen = new Set(history.sessions.map((session) => session.sessionId));
+      const seen = new Set(
+        history.sessions.map((session) => session.sessionId),
+      );
       const sessions = [...history.sessions];
       for (const session of page.sessions) {
         if (seen.has(session.sessionId)) continue;

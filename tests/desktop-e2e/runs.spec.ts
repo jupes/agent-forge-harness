@@ -11,9 +11,9 @@ import { dirname, join } from "node:path";
 import { expect, type Page, type Route, test } from "@playwright/test";
 import { runsHref } from "../../apps/desktop/src/project-runs-model";
 import type { ForgeState } from "../../scripts/forge/phases";
+import { OPERATOR_HEADER } from "../../scripts/hearth/paths";
 import { appendEvent } from "../../scripts/ledger/append";
 import { ledgerPath } from "../../scripts/ledger/paths";
-import { OPERATOR_HEADER } from "../../scripts/hearth/paths";
 import {
   projectRunArtifactSchema,
   projectRunDetailSchema,
@@ -619,24 +619,35 @@ test("recorded run sessions page in the served project and open only admitted me
     name: "Recorded sessions for this run",
   });
   await expect(history.getByText(sessions[0]!, { exact: true })).toBeVisible();
-  await expect(history.getByText(sessions[100]!, { exact: true })).toHaveCount(0);
+  await expect(history.getByText(sessions[100]!, { exact: true })).toHaveCount(
+    0,
+  );
   await history
     .getByRole("button", { name: "Load more recorded sessions" })
     .click();
-  await expect(history.getByText(sessions[100]!, { exact: true })).toBeVisible();
+  await expect(
+    history.getByText(sessions[100]!, { exact: true }),
+  ).toBeVisible();
 
-  await history.getByRole("link", { name: "Open session metadata" }).first().click();
+  await history
+    .getByRole("link", { name: "Open session metadata" })
+    .first()
+    .click();
   await expect(
     page.getByRole("heading", { name: "Session metadata", exact: true }),
   ).toBeVisible();
   await expect(page.getByText(sessions[0]!, { exact: true })).toBeVisible();
-  await expect(page.getByText("Session start recorded", { exact: true })).toBeVisible();
+  await expect(
+    page.getByText("Session start recorded", { exact: true }),
+  ).toBeVisible();
 
   await openSettled(page, href(beta.id, fixture.foreign));
   const betaHistory = page.getByRole("region", {
     name: "Recorded sessions for this run",
   });
-  await expect(betaHistory.getByText(sessions[0]!, { exact: true })).toHaveCount(0);
+  await expect(
+    betaHistory.getByText(sessions[0]!, { exact: true }),
+  ).toHaveCount(0);
   expect(posts).toEqual([]);
   expect(dispatches()).toEqual(beforeDispatches);
 });
@@ -663,7 +674,9 @@ test("a changed run-session admission key keeps the old page stale and disables 
     "Project or session membership changed while reading this run",
   );
   await expect(history.getByText(sessions[0]!, { exact: true })).toBeVisible();
-  await expect(history.getByText(newlyAdmitted, { exact: true })).toHaveCount(0);
+  await expect(history.getByText(newlyAdmitted, { exact: true })).toHaveCount(
+    0,
+  );
   await expect(
     history.getByRole("link", { name: "Open session metadata" }),
   ).toHaveCount(0);

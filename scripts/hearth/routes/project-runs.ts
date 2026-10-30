@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { LOG_BASE_DIR } from "../../../.claude/hooks/utils/constants";
 import { checkpointsForEpic } from "../../../docs/js/forge-checkpoints";
+import { SESSION_KINDS } from "../../../types/hearth";
 import type {
   ProjectRunArtifact,
   ProjectRunDetail,
@@ -9,7 +10,6 @@ import type {
   ProjectRunSessionHistory,
   ProjectRunsPage,
 } from "../../../types/project-runs";
-import { SESSION_KINDS } from "../../../types/hearth";
 import type { ProjectRecord, ProjectWorkspace } from "../../../types/projects";
 import { boardRows, forgeRunSnapshot } from "../../dashboard/forge-run-model";
 import {
@@ -32,15 +32,20 @@ import {
   projectRunSessionHistorySchema,
   projectRunsPageSchema,
 } from "../../projects/run-protocol";
-import { summarizeProject } from "../../projects/summary";
 import { selectProjectBeads, workspaceKey } from "../../projects/scope";
 import {
   createProjectStore,
   isProjectId,
   ProjectStoreError,
 } from "../../projects/store";
+import { summarizeProject } from "../../projects/summary";
 import type { ReadRoute, RouteReply } from "../api";
-import { fail, hearthLedger, noParameters, type ReadDeps } from "./operator-reads";
+import {
+  fail,
+  hearthLedger,
+  noParameters,
+  type ReadDeps,
+} from "./operator-reads";
 import type { ProjectSnapshot } from "./project-summaries";
 
 export class RunReadError extends Error {
@@ -398,8 +403,16 @@ export function createProjectRunRoutes(
     slug?: string,
     sessionPage: { after: number; limit: number } = { after: 0, limit: 100 },
   ) {
-    const { snapshot, project, scope, source, members, checkouts, states, found } =
-      await authority.resolveRun(projectId, slug);
+    const {
+      snapshot,
+      project,
+      scope,
+      source,
+      members,
+      checkouts,
+      states,
+      found,
+    } = await authority.resolveRun(projectId, slug);
     const gates = scopedGateLogs(
       states.length
         ? readInspectionGateLogs(deps.forgeGateLogRoot ?? LOG_BASE_DIR)

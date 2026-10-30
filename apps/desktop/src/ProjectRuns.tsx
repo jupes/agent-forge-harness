@@ -281,7 +281,9 @@ export function ProjectRuns({
                 detail={view.detail}
                 sessionHistoryLoading={view.sessionHistoryLoading}
                 sessionHistoryError={view.sessionHistoryError}
-                sessionHistoryStale={view.sessionHistoryStale || view.detailStale}
+                sessionHistoryStale={
+                  view.sessionHistoryStale || view.detailStale
+                }
                 sessionHistoryCapped={view.sessionHistoryCapped}
                 onLoadMoreSessions={() => client?.loadMoreSessions()}
                 checkpointResult={checkpointResult}
@@ -837,8 +839,7 @@ export function RunDetail({
         )}
         {detail.sessionHistory?.status === "unavailable" ? (
           <p role="status">
-            Recorded session history is unavailable; no empty result is
-            assumed.
+            Recorded session history is unavailable; no empty result is assumed.
           </p>
         ) : detail.sessionHistory?.status === "available" ? (
           <>
@@ -855,7 +856,9 @@ export function RunDetail({
                   <li key={session.sessionId}>
                     <code>{session.sessionId}</code>
                     <span>
-                      {session.kind ? ` · ${session.kind}` : " · kind not recorded"}
+                      {session.kind
+                        ? ` · ${session.kind}`
+                        : " · kind not recorded"}
                     </span>
                     {time(session.startedAt)}
                     {session.detailsAvailable && !sessionHistoryStale ? (
@@ -897,7 +900,9 @@ export function RunDetail({
             )}
           </>
         ) : (
-          <p role="status">This server does not report recorded session history.</p>
+          <p role="status">
+            This server does not report recorded session history.
+          </p>
         )}
       </section>
       <RunCheckpoints

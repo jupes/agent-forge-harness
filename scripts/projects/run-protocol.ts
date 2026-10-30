@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { SESSION_KINDS } from "../../types/hearth";
 import type {
   ProjectRunArtifact,
   ProjectRunDetail,
@@ -6,7 +7,6 @@ import type {
   ProjectRunSessionHistory,
   ProjectRunsPage,
 } from "../../types/project-runs";
-import { SESSION_KINDS } from "../../types/hearth";
 import { artifactPath, FORGE_PHASES } from "../forge/phases";
 import { comparableCheckout, isValidSlug } from "../forge/runs";
 import { sessionProjectIdSchema } from "../sessions/identity-protocol";
