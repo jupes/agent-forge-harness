@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import {
   existsSync,
   lstatSync,
@@ -13,10 +14,9 @@ import { expect, test } from "@playwright/test";
 import { z } from "zod";
 import type { ForgeState } from "../../scripts/forge/phases";
 import { artifactPath } from "../../scripts/forge/phases";
-import { parseProjectCatalog } from "../../scripts/projects/store";
 import type { ProjectCatalog } from "../../types/projects";
 import { openSettled } from "../e2e/fixtures";
-import { HEARTH_HOME } from "../e2e/servers";
+import { bunPath, HEARTH_HOME } from "../e2e/servers";
 import { seedObservationEvents } from "./observed-session-fixtures";
 import {
   alpha,
@@ -105,6 +105,47 @@ function expectOnlyReadinessProbes(before: Map<string, string | null>): void {
         );
     }
   }
+}
+
+function validateCatalogWithBun(root: string, candidate: ProjectCatalog): void {
+  const result = spawnSync(
+    bunPath(),
+    [
+      "-e",
+      `import { parseProjectCatalog } from "./scripts/projects/store";
+try {
+  parseProjectCatalog(JSON.parse(await Bun.stdin.text()));
+  process.stdout.write('{"ok":true}');
+} catch {
+  process.stdout.write('{"ok":false}');
+  process.exitCode = 1;
+}`,
+    ],
+    {
+      cwd: root,
+      input: JSON.stringify(candidate),
+      encoding: "utf8",
+      timeout: 5_000,
+      maxBuffer: 64 * 1024,
+      windowsHide: true,
+    },
+  );
+  if (
+    result.error ||
+    result.signal !== null ||
+    result.status !== 0 ||
+    typeof result.stdout !== "string" ||
+    Buffer.byteLength(result.stdout) > 64 * 1024
+  )
+    throw Error("Monitoring fixture catalog validation did not complete cleanly.");
+  let response: unknown;
+  try {
+    response = JSON.parse(result.stdout);
+  } catch {
+    throw Error("Monitoring fixture catalog validation returned invalid JSON.");
+  }
+  if (!z.object({ ok: z.literal(true) }).strict().safeParse(response).success)
+    throw Error("Monitoring fixture catalog failed project-store validation.");
 }
 
 function inside(root: string, path: string): void {
@@ -214,7 +255,8 @@ function addPartialOverviewScope(): void {
         : project,
     ),
   };
-  writeFileSync(catalogFile, JSON.stringify(parseProjectCatalog(partial)));
+  validateCatalogWithBun(realpathSync.native(process.cwd()), partial);
+  writeFileSync(catalogFile, JSON.stringify(partial));
 }
 
 test.beforeEach(({ page }) => {
