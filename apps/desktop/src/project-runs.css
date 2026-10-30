@@ -165,7 +165,7 @@
 }
 .af-run-phases {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
   list-style: none;
   padding: 0;
   gap: 10px;
@@ -246,11 +246,6 @@
 }
 .af-checkpoint-review li {
   overflow-wrap: anywhere;
-}
-@media (max-width: 1200px) {
-  .af-run-phases {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
 }
 @media (prefers-reduced-motion: reduce) {
   .af-project-runs * {
