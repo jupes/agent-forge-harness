@@ -18,9 +18,23 @@ import type { ProjectCatalog } from "../../types/projects";
 import { openSettled } from "../e2e/fixtures";
 import { HEARTH_HOME } from "../e2e/servers";
 import { seedObservationEvents } from "./observed-session-fixtures";
-import { alpha, catalog, catalogFile, seedProjects, seedSessions, workspace } from "./project-fixtures";
+import {
+  alpha,
+  catalog,
+  catalogFile,
+  seedProjects,
+  seedSessions,
+  workspace,
+} from "./project-fixtures";
 
-const providerDispatchFiles = ["codex-fixture-calls.jsonl", "gemini-fixture-calls.jsonl", "codex-chat-fixture-calls.jsonl", "gemini-chat-fixture-calls.json", "keeper-fixture-starts.jsonl", "coding-fixture-starts.jsonl"] as const;
+const providerDispatchFiles = [
+  "codex-fixture-calls.jsonl",
+  "gemini-fixture-calls.jsonl",
+  "codex-chat-fixture-calls.jsonl",
+  "gemini-chat-fixture-calls.json",
+  "keeper-fixture-starts.jsonl",
+  "coding-fixture-starts.jsonl",
+] as const;
 const protectedPosts: string[] = [];
 const ownedFiles: { root: string; path: string; bytes: Buffer }[] = [];
 let dispatchesBefore = new Map<string, string | null>();
@@ -29,7 +43,10 @@ function dispatchSnapshot(): Map<string, string | null> {
   return new Map(
     providerDispatchFiles.map((name) => {
       const path = join(HEARTH_HOME, name);
-      return [name, existsSync(path) ? readFileSync(path, "utf8") : null] as const;
+      return [
+        name,
+        existsSync(path) ? readFileSync(path, "utf8") : null,
+      ] as const;
     }),
   );
 }
@@ -39,7 +56,9 @@ function expectOnlyReadinessProbes(before: Map<string, string | null>): void {
     const path = join(HEARTH_HOME, name);
     const current = existsSync(path) ? readFileSync(path, "utf8") : null;
     if (
-      !["codex-fixture-calls.jsonl", "gemini-fixture-calls.jsonl"].includes(name) ||
+      !["codex-fixture-calls.jsonl", "gemini-fixture-calls.jsonl"].includes(
+        name,
+      ) ||
       current === prior
     ) {
       expect(current).toBe(prior);
@@ -58,17 +77,32 @@ function expectOnlyReadinessProbes(before: Map<string, string | null>): void {
         throw Error("A readiness log contained invalid JSON.");
       }
       if (name === "gemini-fixture-calls.jsonl") {
-        z.object({ kind: z.enum(["version", "help"]) }).strict().parse(raw);
+        z.object({ kind: z.enum(["version", "help"]) })
+          .strict()
+          .parse(raw);
         continue;
       }
-      const probe = z.object({
-        kind: z.enum(["version", "help", "status"]), argv: z.array(z.string()),
-        stdin: z.literal(""), cwd: z.literal(realpathSync.native(process.cwd())),
-        id: z.uuid(), pid: z.number().int().positive(), childPid: z.null(),
-      }).strict().parse(raw);
-      const expected = { version: ["--version"], help: ["--help"], status: ["login", "status"] }[probe.kind];
+      const probe = z
+        .object({
+          kind: z.enum(["version", "help", "status"]),
+          argv: z.array(z.string()),
+          stdin: z.literal(""),
+          cwd: z.literal(realpathSync.native(process.cwd())),
+          id: z.uuid(),
+          pid: z.number().int().positive(),
+          childPid: z.null(),
+        })
+        .strict()
+        .parse(raw);
+      const expected = {
+        version: ["--version"],
+        help: ["--help"],
+        status: ["login", "status"],
+      }[probe.kind];
       if (JSON.stringify(probe.argv) !== JSON.stringify(expected))
-        throw Error("A provider fixture recorded a non-read-only startup call.");
+        throw Error(
+          "A provider fixture recorded a non-read-only startup call.",
+        );
     }
   }
 }
@@ -170,7 +204,9 @@ function addPartialOverviewScope(): void {
               ...project.workspaces,
               {
                 root: resolve(workspace, "..", "monitoring-unserved-scope"),
-                repositories: [resolve(workspace, "..", "monitoring-unserved-repo")],
+                repositories: [
+                  resolve(workspace, "..", "monitoring-unserved-repo"),
+                ],
                 epicIds: ["monitoring-unserved-epic"],
               },
             ],
