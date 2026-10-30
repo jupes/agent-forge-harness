@@ -876,7 +876,9 @@ async function exerciseCheckpoint(
     return {
       width: element.getBoundingClientRect().width,
       parentWidth: parent?.getBoundingClientRect().width ?? -1,
-      parentOverflow: parent ? parent.scrollWidth > parent.clientWidth + 1 : true,
+      parentOverflow: parent
+        ? parent.scrollWidth > parent.clientWidth + 1
+        : true,
       viewportOverflow:
         document.documentElement.scrollWidth > window.innerWidth,
     };
