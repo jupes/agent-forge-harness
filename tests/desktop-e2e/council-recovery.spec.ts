@@ -192,104 +192,109 @@ async function prepareReview(page: Page, deepDiscussion = false) {
   let captureFailure: string | undefined;
   const installedBindings: Awaited<ReturnType<Page["exposeBinding"]>>[] = [];
   try {
-    installedBindings.push(await page.exposeBinding(
-      requestBindingName,
-      (sourceInfo, url: string, bodyText: string) => {
-        try {
-          const requestUrl = new URL(url);
-          const frameUrl = new URL(sourceInfo.frame.url());
-          if (
-            sourceInfo.page !== page ||
-            sourceInfo.frame !== page.mainFrame() ||
-            frameUrl.origin !== origin ||
-            requestUrl.origin !== origin ||
-            requestUrl.pathname !== targetPath ||
-            requestUrl.search !== "" ||
-            requestUrl.hash !== ""
-          )
-            throw Error("invalid-request-source");
-          let body: unknown;
+    installedBindings.push(
+      await page.exposeBinding(
+        requestBindingName,
+        (sourceInfo, url: string, bodyText: string) => {
           try {
-            body = JSON.parse(bodyText);
+            const requestUrl = new URL(url);
+            const frameUrl = new URL(sourceInfo.frame.url());
+            if (
+              sourceInfo.page !== page ||
+              sourceInfo.frame !== page.mainFrame() ||
+              frameUrl.origin !== origin ||
+              requestUrl.origin !== origin ||
+              requestUrl.pathname !== targetPath ||
+              requestUrl.search !== "" ||
+              requestUrl.hash !== ""
+            )
+              throw Error("invalid-request-source");
+            let body: unknown;
+            try {
+              body = JSON.parse(bodyText);
+            } catch {
+              throw Error("invalid-request-json");
+            }
+            const parsed = projectCouncilReserveRequestSchema.safeParse(body);
+            if (!parsed.success) throw Error("invalid-request-schema");
+            if (
+              parsed.data.sourceChoice.sourceType !==
+                expectedRequest.sourceChoice.sourceType ||
+              parsed.data.sourceChoice.source !==
+                expectedRequest.sourceChoice.source ||
+              parsed.data.profileChoice !== expectedRequest.profileChoice ||
+              parsed.data.maxUsd !== expectedRequest.maxUsd ||
+              parsed.data.maxBytes !== expectedRequest.maxBytes ||
+              parsed.data.redactSecrets !== expectedRequest.redactSecrets ||
+              parsed.data.deepDiscussion !== expectedRequest.deepDiscussion
+            )
+              throw Error("request-does-not-match-ui");
+            return true;
           } catch {
-            throw Error("invalid-request-json");
+            captureFailure ??= "request-proof";
+            return false;
           }
-          const parsed = projectCouncilReserveRequestSchema.safeParse(body);
-          if (!parsed.success) throw Error("invalid-request-schema");
-          if (
-            parsed.data.sourceChoice.sourceType !==
-              expectedRequest.sourceChoice.sourceType ||
-            parsed.data.sourceChoice.source !==
-              expectedRequest.sourceChoice.source ||
-            parsed.data.profileChoice !== expectedRequest.profileChoice ||
-            parsed.data.maxUsd !== expectedRequest.maxUsd ||
-            parsed.data.maxBytes !== expectedRequest.maxBytes ||
-            parsed.data.redactSecrets !== expectedRequest.redactSecrets ||
-            parsed.data.deepDiscussion !== expectedRequest.deepDiscussion
-          )
-            throw Error("request-does-not-match-ui");
-          return true;
-        } catch {
-          captureFailure ??= "request-proof";
-          return false;
-        }
-      },
-    ));
-    installedBindings.push(await page.exposeBinding(
-      responseBindingName,
-      (sourceInfo, status: number, url: string, bodyText: string) => {
-        try {
-          const responseUrl = new URL(url);
-          const frameUrl = new URL(sourceInfo.frame.url());
-          if (
-            sourceInfo.page !== page ||
-            sourceInfo.frame !== page.mainFrame() ||
-            frameUrl.origin !== origin ||
-            status !== 202 ||
-            responseUrl.origin !== origin ||
-            responseUrl.pathname !== targetPath ||
-            responseUrl.search !== "" ||
-            responseUrl.hash !== ""
-          )
-            throw Error("invalid-response-source");
-          let raw: unknown;
+        },
+      ),
+    );
+    installedBindings.push(
+      await page.exposeBinding(
+        responseBindingName,
+        (sourceInfo, status: number, url: string, bodyText: string) => {
           try {
-            raw = JSON.parse(bodyText);
+            const responseUrl = new URL(url);
+            const frameUrl = new URL(sourceInfo.frame.url());
+            if (
+              sourceInfo.page !== page ||
+              sourceInfo.frame !== page.mainFrame() ||
+              frameUrl.origin !== origin ||
+              status !== 202 ||
+              responseUrl.origin !== origin ||
+              responseUrl.pathname !== targetPath ||
+              responseUrl.search !== "" ||
+              responseUrl.hash !== ""
+            )
+              throw Error("invalid-response-source");
+            let raw: unknown;
+            try {
+              raw = JSON.parse(bodyText);
+            } catch {
+              throw Error("invalid-response-json");
+            }
+            const data = responseData(raw);
+            if (
+              typeof data !== "object" ||
+              data === null ||
+              !("metadata" in data)
+            )
+              throw Error("missing-response-metadata");
+            const parsedMetadata = projectCouncilMetadataSchema.safeParse(
+              data.metadata,
+            );
+            if (!parsedMetadata.success)
+              throw Error("invalid-response-metadata");
+            if (
+              parsedMetadata.data.projectId !== alpha.id ||
+              parsedMetadata.data.state !== "reserved" ||
+              parsedMetadata.data.sourceType !==
+                expectedRequest.sourceChoice.sourceType ||
+              parsedMetadata.data.maxUsd !== expectedRequest.maxUsd ||
+              parsedMetadata.data.maxBytes !== expectedRequest.maxBytes ||
+              parsedMetadata.data.redactSecrets !==
+                expectedRequest.redactSecrets ||
+              parsedMetadata.data.deepDiscussion !==
+                expectedRequest.deepDiscussion
+            )
+              throw Error("response-does-not-match-request");
+            metadata = parsedMetadata.data;
+            return true;
           } catch {
-            throw Error("invalid-response-json");
+            captureFailure ??= "response-proof";
+            return false;
           }
-          const data = responseData(raw);
-          if (
-            typeof data !== "object" ||
-            data === null ||
-            !("metadata" in data)
-          )
-            throw Error("missing-response-metadata");
-          const parsedMetadata = projectCouncilMetadataSchema.safeParse(
-            data.metadata,
-          );
-          if (!parsedMetadata.success) throw Error("invalid-response-metadata");
-          if (
-            parsedMetadata.data.projectId !== alpha.id ||
-            parsedMetadata.data.state !== "reserved" ||
-            parsedMetadata.data.sourceType !==
-              expectedRequest.sourceChoice.sourceType ||
-            parsedMetadata.data.maxUsd !== expectedRequest.maxUsd ||
-            parsedMetadata.data.maxBytes !== expectedRequest.maxBytes ||
-            parsedMetadata.data.redactSecrets !==
-              expectedRequest.redactSecrets ||
-            parsedMetadata.data.deepDiscussion !==
-              expectedRequest.deepDiscussion
-          )
-            throw Error("response-does-not-match-request");
-          metadata = parsedMetadata.data;
-          return true;
-        } catch {
-          captureFailure ??= "response-proof";
-          return false;
-        }
-      },
-    ));
+        },
+      ),
+    );
     await page.evaluate(
       ({ origin, targetPath }) => {
         if (window.top !== window)
@@ -414,8 +419,8 @@ async function prepareReview(page: Page, deepDiscussion = false) {
               if (initBody !== undefined && typeof initBody !== "string")
                 throw Error("request-body-not-cloneable");
               const requestInput =
-              input instanceof window.Request ? input.clone() : input;
-            requestWitness = new window.Request(requestInput, args[1]);
+                input instanceof window.Request ? input.clone() : input;
+              requestWitness = new window.Request(requestInput, args[1]);
             } catch {
               failProof();
             }
@@ -510,9 +515,7 @@ async function prepareReview(page: Page, deepDiscussion = false) {
         if (restore) await restore();
       });
     } finally {
-      await Promise.all(
-        installedBindings.map((binding) => binding.dispose()),
-      );
+      await Promise.all(installedBindings.map((binding) => binding.dispose()));
     }
   }
   const browserFailure = await page.evaluate(
