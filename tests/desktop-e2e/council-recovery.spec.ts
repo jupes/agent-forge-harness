@@ -408,7 +408,7 @@ async function prepareReview(page: Page, deepDiscussion = false) {
             }
           }
           const operation = (async () => {
-            let requestWitness: Request | undefined;
+            let requestWitness: InstanceType<typeof window.Request> | undefined;
             try {
               const initBody = args[1]?.body;
               if (initBody !== undefined && typeof initBody !== "string")
