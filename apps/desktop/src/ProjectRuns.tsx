@@ -1,4 +1,4 @@
-import { useLayoutEffect, useState } from "preact/hooks";
+import { useLayoutEffect, useRef, useState } from "preact/hooks";
 import { Button } from "../../../docs/js/ds/Button";
 import type { IssueStatus } from "../../../types/beads";
 import type { ProjectBeadsPage } from "../../../types/project-beads";
@@ -15,6 +15,11 @@ import type {
   ProjectCheckpointReviewTarget,
 } from "./project-checkpoint-review-client";
 import type { ProjectCouncilSourcePrefill } from "./project-council-draft";
+import type {
+  ProjectCouncilReturnFocus,
+  ProjectCouncilReturnOrigin,
+} from "./project-council-return";
+import { projectCouncilReturnTargetMatches } from "./project-council-return";
 import {
   deriveProjectRunCheckpoints,
   type ProjectRunCheckpointResult,
@@ -81,6 +86,9 @@ export function ProjectRuns({
   onCouncilBeadPrefill,
   checkpointReviewOwner,
   checkpointReviewsWritable = false,
+  returnFocus = null,
+  returnFocusNotice = "",
+  onReturnFocusHandled,
   filters,
   filterError,
   onFilter,
@@ -100,11 +108,18 @@ export function ProjectRuns({
   onCouncilBeadPrefill?: (
     source: ProjectCouncilSourcePrefill,
     workspace: string,
+    origin: ProjectCouncilReturnOrigin,
   ) => void;
   checkpointReviewOwner?(
     target: ProjectCheckpointReviewTarget,
   ): ProjectCheckpointReviewOwner;
   checkpointReviewsWritable?: boolean;
+  returnFocus?: ProjectCouncilReturnFocus | null;
+  returnFocusNotice?: string;
+  onReturnFocusHandled?(
+    focus: ProjectCouncilReturnFocus,
+    result: "focused" | "unavailable",
+  ): void;
   filters: RunFilters | null;
   filterError: string;
   onFilter(filters: RunFilters): void;
@@ -122,6 +137,70 @@ export function ProjectRuns({
     setDraft(filters ?? emptyRunFilters());
   }, [filterKey]);
   const selected = view?.selectedSlug ?? null;
+  const checkpointReviewAvailable =
+    !!view?.page &&
+    view.page.problems.length === 0 &&
+    view.detail?.problems.length === 0 &&
+    !view.loading &&
+    !view.error &&
+    !view.detailLoading &&
+    !view.detailError &&
+    !view.detailStale;
+  const handledReturnFocus = useRef<number | null>(null);
+  useLayoutEffect(() => {
+    const focus = returnFocus;
+    if (!focus || handledReturnFocus.current === focus.generation) return;
+    const origin = focus.origin;
+    if (selected !== origin.runSlug) return;
+    if (
+      !view ||
+      !client ||
+      view.loading ||
+      view.detailLoading ||
+      checkpointResult.kind === "loading"
+    )
+      return;
+    let result: "focused" | "unavailable" = "unavailable";
+    const detail = view.detail;
+    if (
+      projectId === origin.projectId &&
+      workspace === origin.workspace &&
+      !view.error &&
+      !view.detailError &&
+      !view.detailStale &&
+      view.page?.problems.length === 0 &&
+      detail?.problems.length === 0 &&
+      detail?.workspace === origin.workspace &&
+      checkpointResult.kind === "ready" &&
+      checkpointResult.workspace === origin.workspace &&
+      detail &&
+      projectCouncilReturnTargetMatches(
+        origin,
+        { projectId, workspace: checkpointResult.workspace },
+        detail.run.slug,
+        checkpointResult.summary.inProgressIds,
+      )
+    ) {
+      const note = document.getElementById(
+        `checkpoint-review-note-${origin.checkpointId}`,
+      );
+      if (note instanceof HTMLTextAreaElement && !note.disabled) {
+        note.focus();
+        if (document.activeElement === note) result = "focused";
+      }
+    }
+    handledReturnFocus.current = focus.generation;
+    onReturnFocusHandled?.(focus, result);
+  }, [
+    returnFocus,
+    selected,
+    client,
+    projectId,
+    workspace,
+    view,
+    checkpointResult,
+    onReturnFocusHandled,
+  ]);
   const rows = filters ? filterRuns(view?.page?.runs ?? [], filters) : [];
   const filtered =
     !!filters && !!(filters.search || filters.health || filters.mode);
@@ -149,6 +228,11 @@ export function ProjectRuns({
           </Button>
         </div>
       </header>
+      {returnFocusNotice ? (
+        <p role="status" class="af-runs-note">
+          {returnFocusNotice}
+        </p>
+      ) : null}
       <p class="af-runs-note">
         Run launch and correlated sessions are not available here. Checkpoint
         reviews add a comment and do not change Beads status.
@@ -187,24 +271,27 @@ export function ProjectRuns({
                 checkpointResult={checkpointResult}
                 {...(checkpointReviewOwner ? { checkpointReviewOwner } : {})}
                 checkpointReviewsWritable={checkpointReviewsWritable}
-                checkpointReviewAvailable={
-                  !!view.page &&
-                  view.page.problems.length === 0 &&
-                  view.detail.problems.length === 0 &&
-                  !view.loading &&
-                  !view.error &&
-                  !view.detailLoading &&
-                  !view.detailError &&
-                  !view.detailStale
-                }
+                checkpointReviewAvailable={checkpointReviewAvailable}
                 onCouncilBeadPrefill={(id) => {
+                  const detail = view?.detail;
                   if (
+                    detail &&
+                    checkpointReviewAvailable &&
+                    view?.selectedSlug === detail.run.slug &&
                     checkpointResult.kind === "ready" &&
+                    checkpointResult.workspace === detail.workspace &&
                     checkpointResult.summary.inProgressIds.includes(id)
                   )
                     onCouncilBeadPrefill?.(
                       { sourceType: "bead", source: id },
                       checkpointResult.workspace,
+                      {
+                        kind: "run-checkpoint",
+                        projectId,
+                        workspace: checkpointResult.workspace,
+                        runSlug: detail.run.slug,
+                        checkpointId: id,
+                      },
                     );
                 }}
                 canOpenArtifacts={
