@@ -77,6 +77,7 @@ const flag = (name: string): string | undefined => {
 const provider = flag("--fake-provider") ?? "claude";
 const mode = flag("--fake-mode") ?? "ok";
 const dump = flag("--fake-dump");
+const milestonesFile = flag("--fake-milestones");
 const attach = flag("--fake-attach");
 const responseModel = flag("--fake-model");
 const sessionId = argv.includes("--fake-no-id")
@@ -88,7 +89,27 @@ if (argv.includes("--version")) {
   process.exit(0);
 }
 
+const milestoneStart = performance.now();
+const milestones: Array<{ stage: string; elapsedMs: number }> = [];
+function markMilestone(stage: string): void {
+  if (!milestonesFile || milestones.length >= 4) return;
+  milestones.push({
+    stage,
+    elapsedMs: Math.round(performance.now() - milestoneStart),
+  });
+  try {
+    writeWhole(
+      milestonesFile,
+      JSON.stringify({ version: 1, stages: milestones }),
+    );
+  } catch {
+    // Diagnostics must not change the fake provider's behavior.
+  }
+}
+
+markMilestone("fixture-entered");
 const stdin = await new Response(Bun.stdin.stream()).text();
+markMilestone("stdin-read-completed");
 if (dump) {
   // Whole or not there: a hung child is killed at its timeout, which can land
   // while this is being written (`write-whole.ts`).
@@ -187,6 +208,8 @@ function hangingChild(): Bun.Subprocess {
 
 if (mode === "hang-tree") {
   const child = hangingChild();
+  markMilestone("descendant-spawn-returned");
+  markMilestone("stdout-write-requested");
   emit({ childPid: child.pid });
   setInterval(() => undefined, 1000);
   await new Promise(() => undefined);
