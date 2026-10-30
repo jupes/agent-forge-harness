@@ -353,14 +353,17 @@ function expectDispatchesUnchanged(before: Map<string, string | null>) {
   for (const [name, bytes] of before) {
     const path = join(HEARTH_HOME, name);
     const current = existsSync(path) ? readFileSync(path, "utf8") : null;
-    if (name !== "codex-fixture-calls.jsonl" || current === bytes) {
+    if (
+      !["codex-fixture-calls.jsonl", "gemini-fixture-calls.jsonl"].includes(
+        name,
+      ) ||
+      current === bytes
+    ) {
       expect(current).toBe(bytes);
       continue;
     }
     if (current === null || (bytes !== null && !current.startsWith(bytes)))
-      throw Error(
-        "The Codex fixture call log changed before its saved prefix.",
-      );
+      throw Error("An inert CLI fixture call log changed before its saved prefix.");
     const added = current.slice(bytes?.length ?? 0);
     if (added.length > 0 && !added.endsWith("\n"))
       throw Error("The Codex fixture call log ended with a partial row.");
@@ -370,7 +373,11 @@ function expectDispatchesUnchanged(before: Map<string, string | null>) {
       try {
         raw = JSON.parse(line);
       } catch {
-        throw Error("The Codex fixture call log had invalid JSON.");
+        throw Error("An inert CLI fixture call log had invalid JSON.");
+      }
+      if (name === "gemini-fixture-calls.jsonl") {
+        z.object({ kind: z.literal("version") }).strict().parse(raw);
+        continue;
       }
       const probe = z
         .object({
@@ -1136,9 +1143,15 @@ test("lost commit reply after comment persistence stays held until explicit exac
   ).toBeVisible();
   await panel.getByRole("textbox", { name: "Review note" }).fill(note);
   await panel.getByRole("button", { name: "Request changes" }).click();
+  await expect(panel.getByRole("alert")).toContainText(
+    "Read this exact original before continuing",
+  );
+  await expect(
+    panel.getByRole("button", { name: "Request changes" }),
+  ).toBeDisabled();
   await expect(
     panel.getByRole("button", { name: "Check recorded comment" }),
-  ).toBeVisible();
+  ).toHaveCount(0);
   const prepared = hook.prepared();
   const lost = hook.lost();
   if (!prepared || !lost)
@@ -1148,7 +1161,14 @@ test("lost commit reply after comment persistence stays held until explicit exac
   expect(lost.requestId).toBe(prepared.requestId);
   expect(lost.intentHash).toBe(prepared.intentHash);
   expect(lost.state).toBe("unknown");
-  expect(readComments(BD_STAND_IN_STATE)[fixture.beadId]).toHaveLength(1);
+  const commentsAfterLostReply =
+    readComments(BD_STAND_IN_STATE)[fixture.beadId] ?? [];
+  expect(commentsAfterLostReply).toHaveLength(1);
+  expect(commentsAfterLostReply[0]?.text).toContain(note);
+  expect(commentsAfterLostReply[0]?.text.split(/\r?\n/).at(-1)).toBe(
+    `Forge checkpoint review ${prepared.requestId}`,
+  );
+  expect(readCallsForComment(fixture.beadId)).toHaveLength(1);
   expectFaultConsumed();
   expect(await commentEvents(page, fixture.beadId)).toHaveLength(0);
   await screenshotIfRequested(page, "checkpoint-review-unknown-held.png", [
