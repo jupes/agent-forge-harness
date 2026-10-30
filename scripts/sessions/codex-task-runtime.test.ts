@@ -522,15 +522,71 @@ test("Stop during a capability probe waits for cleanup and returns a known pre-d
     await until(
       () => f.records().filter((record) => record.kind === "help").length === 2,
     );
-    const preStopProbe = f
-      .records()
-      .filter((record) => record.kind === "help")
-      .at(-1);
+    const preStopHelps = f.records().filter((record) => record.kind === "help");
+    const preStopHelpCount = preStopHelps.length;
+    const preStopProbe = preStopHelps.at(-1);
     if (
       typeof preStopProbe?.pid !== "number" ||
       typeof preStopProbe.childPid !== "number"
     )
       throw new Error("Missing capability process tree before Stop");
+    const processState = (
+      pid: number,
+      expectedStartTime?: string,
+    ): {
+      state: "absent" | "zombie" | "active" | "unknown";
+      startTime?: string;
+    } => {
+      let stat: string;
+      try {
+        stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      } catch (error) {
+        const code =
+          error instanceof Error && "code" in error ? error.code : null;
+        return {
+          state: code === "ENOENT" || code === "ESRCH" ? "absent" : "unknown",
+        };
+      }
+      const open = stat.indexOf(" ("),
+        close = stat.lastIndexOf(") ");
+      const pidField = open > 0 ? stat.slice(0, open) : "";
+      const fields =
+        close > open
+          ? stat
+              .slice(close + 2)
+              .trim()
+              .split(/\s+/)
+          : [];
+      const startTime = fields[19];
+      if (
+        !/^\d+$/.test(pidField) ||
+        Number(pidField) !== pid ||
+        close < 0 ||
+        !/^[A-Za-z]$/.test(fields[0] ?? "") ||
+        !startTime ||
+        !/^\d+$/.test(startTime)
+      )
+        return { state: "unknown" };
+      if (expectedStartTime !== undefined && startTime !== expectedStartTime)
+        return { state: "unknown" };
+      return { state: fields[0] === "Z" ? "zombie" : "active", startTime };
+    };
+    let originalProcesses: {
+      root: { pid: number; startTime: string };
+      child: { pid: number; startTime: string };
+    } | null = null;
+    if (process.platform === "linux") {
+      const rootBefore = processState(preStopProbe.pid);
+      const childBefore = processState(preStopProbe.childPid);
+      expect(rootBefore.state).toBe("active");
+      expect(childBefore.state).toBe("active");
+      if (!rootBefore.startTime || !childBefore.startTime)
+        throw new Error("Missing Linux process start identity before Stop");
+      originalProcesses = {
+        root: { pid: preStopProbe.pid, startTime: rootBefore.startTime },
+        child: { pid: preStopProbe.childPid, startTime: childBefore.startTime },
+      };
+    }
     expect(running(preStopProbe.childPid)).toBe(true);
     controller.abort();
     const result = await job;
@@ -540,13 +596,30 @@ test("Stop during a capability probe waits for cleanup and returns a known pre-d
         .records()
         .some((record) => record.kind === "sync" || record.kind === "task"),
     ).toBe(false);
-    const probe = f
-      .records()
-      .filter((record) => record.kind === "help")
-      .at(-1);
+    const stoppedHelps = f.records().filter((record) => record.kind === "help");
+    expect(stoppedHelps).toHaveLength(preStopHelpCount);
+    const probe = stoppedHelps.at(-1);
     if (typeof probe?.pid !== "number" || typeof probe.childPid !== "number")
       throw new Error("Missing capability process tree");
-    expect(running(probe.pid) || running(probe.childPid)).toBe(false);
+    expect(probe.pid).toBe(preStopProbe.pid);
+    expect(probe.childPid).toBe(preStopProbe.childPid);
+    if (process.platform === "linux" && originalProcesses) {
+      const rootAfter = processState(
+        originalProcesses.root.pid,
+        originalProcesses.root.startTime,
+      );
+      const childAfter = processState(
+        originalProcesses.child.pid,
+        originalProcesses.child.startTime,
+      );
+      process.stdout.write(
+        `${JSON.stringify({ kind: "codex-task-stop-probe-liveness", root: rootAfter.state, child: childAfter.state })}\n`,
+      );
+      expect(["absent", "zombie"]).toContain(rootAfter.state);
+      expect(["absent", "zombie"]).toContain(childAfter.state);
+    } else {
+      expect(running(probe.pid) || running(probe.childPid)).toBe(false);
+    }
   } finally {
     controller.abort();
     await job.catch(() => undefined);
