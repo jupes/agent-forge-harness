@@ -806,11 +806,7 @@ test("Claude usage-limit reset shows only the latest matching turn report and ke
     message: { text: "Provider reported a limit", truncated: false },
     stderrTail: { text: "", truncated: false },
   } as const;
-  const current = page([
-    claudeRateLimit(99),
-    outcome,
-    claudeRateLimit(123),
-  ]);
+  const current = page([claudeRateLimit(99), outcome, claudeRateLimit(123)]);
   const reset = ownedSessionTurn(current, turnId).rateLimitReset;
   expect(reset).toEqual({
     source: "claude.rate_limit_event",
@@ -818,7 +814,9 @@ test("Claude usage-limit reset shows only the latest matching turn report and ke
     resetUnit: "unreported",
   });
   const view = SessionOutcome({ value: outcome, rateLimitReset: reset });
-  expect(textOf(view)).toContain("Latest Claude rate-limit report in this turn");
+  expect(textOf(view)).toContain(
+    "Latest Claude rate-limit report in this turn",
+  );
   expect(textOf(view)).toContain("Reset value: 123");
   expect(textOf(view)).toContain("unit not reported");
   expect(textOf(view)).toContain("claude.rate_limit_event");

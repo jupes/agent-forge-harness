@@ -741,8 +741,8 @@ export function SessionOutcome({
               ) : rateLimitReset ? (
                 rateLimitReset.resetsAt === undefined ? (
                   <>
-                    Latest Claude rate-limit report in this turn. Reset value not
-                    reported by <code>{rateLimitReset.source}</code>.
+                    Latest Claude rate-limit report in this turn. Reset value
+                    not reported by <code>{rateLimitReset.source}</code>.
                   </>
                 ) : (
                   <>
@@ -751,10 +751,10 @@ export function SessionOutcome({
                     source: <code>{rateLimitReset.source}</code>
                   </>
                 )
+              ) : value.provider === "claude" ? (
+                "No Claude rate-limit reset fact was saved for this turn."
               ) : (
-                value.provider === "claude"
-                  ? "No Claude rate-limit reset fact was saved for this turn."
-                  : "Reset value was not reported by this CLI."
+                "Reset value was not reported by this CLI."
               )}
             </dd>
           </>
