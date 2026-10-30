@@ -232,9 +232,9 @@ test("private terminal facts refuse missing, foreign, future, malformed, duplica
         throw Error("Private terminal controls cannot enter stdout");
       },
     });
-    const withSettlementFact = async (assertion: Promise<unknown>) => {
+    const withSettlementFact = async (assertion: () => unknown) => {
       try {
-        await assertion;
+        await assertion();
       } catch (error) {
         if (settlementFact === null) throw error;
         throw new Error(
@@ -244,12 +244,13 @@ test("private terminal facts refuse missing, foreign, future, malformed, duplica
       }
     };
     await withSettlementFact(
-      expect(handle.done).rejects.toThrow("private interactive terminal"),
+      () => expect(handle.done).rejects.toThrow("private interactive terminal"),
     );
     await withSettlementFact(
-      expect(handle.stop("late rejected cleanup")).rejects.toThrow(
-        "private interactive terminal",
-      ),
+      () =>
+        expect(handle.stop("late rejected cleanup")).rejects.toThrow(
+          "private interactive terminal",
+        ),
     );
     expect(alive(handle.pid)).toBe(false);
   }
