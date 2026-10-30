@@ -243,14 +243,13 @@ test("private terminal facts refuse missing, foreign, future, malformed, duplica
         );
       }
     };
-    await withSettlementFact(
-      () => expect(handle.done).rejects.toThrow("private interactive terminal"),
+    await withSettlementFact(() =>
+      expect(handle.done).rejects.toThrow("private interactive terminal"),
     );
-    await withSettlementFact(
-      () =>
-        expect(handle.stop("late rejected cleanup")).rejects.toThrow(
-          "private interactive terminal",
-        ),
+    await withSettlementFact(() =>
+      expect(handle.stop("late rejected cleanup")).rejects.toThrow(
+        "private interactive terminal",
+      ),
     );
     expect(alive(handle.pid)).toBe(false);
   }
