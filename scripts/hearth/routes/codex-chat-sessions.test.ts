@@ -894,11 +894,11 @@ test("file Allow stays unavailable without actual diffs, current/foreign scope r
   expect((await f.get(`/${id}/approvals`)).pending).toEqual([]);
 });
 
-test("a linked Codex Fork child accepts a turn through its dedicated action", async () => {
-  for (const [mode, expectedTier] of [
-    ["fork-service-tier-null", null],
-    ["fork-service-tier-priority", "priority"],
-  ] as const) {
+for (const [mode, expectedTier] of [
+  ["fork-service-tier-null", null],
+  ["fork-service-tier-priority", "priority"],
+] as const) {
+  test(`a linked Codex Fork child accepts a turn through its dedicated action (${mode})`, async () => {
     const modeStarted = performance.now(),
       f = await fixture(mode, false, false, "never"),
       start = await timedForkStage(mode, "parent-start", () =>
@@ -1046,8 +1046,8 @@ test("a linked Codex Fork child accepts a turn through its dedicated action", as
       console.error(
         `[fork-test] ${JSON.stringify({ mode, stage: "mode-complete", elapsedMs: Math.round(performance.now() - modeStarted) })}`,
       );
-  }
-});
+  });
+}
 
 test("Fork child approvals use dedicated controls after the parent prefix is unavailable", async () => {
   const f = await fixture("fork-approval-command"),
