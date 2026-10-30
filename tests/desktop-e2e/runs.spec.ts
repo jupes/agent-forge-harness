@@ -423,7 +423,7 @@ test("scoped Runs keyboard inspection preserves real phase, review and gate trut
   );
   await expect(
     runs.getByRole("button", { name: "New forge run" }),
-  ).toBeDisabled();
+  ).toBeEnabled();
   const link = runs.getByRole("link", {
     name: "Scoped forge delivery",
     exact: true,
