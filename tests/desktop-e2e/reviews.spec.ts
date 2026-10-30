@@ -348,7 +348,9 @@ test("a completed bead-source review links to its bead and reports the one recor
       });
       const bodyResult = await Promise.race([response.body(), captureDeadline]);
       if ("timedOut" in bodyResult)
-        throw new Error("The Council reservation body exceeded its time bound.");
+        throw new Error(
+          "The Council reservation body exceeded its time bound.",
+        );
       if (bodyResult.byteLength > 512 * 1024)
         throw new Error(
           "The Council reservation body exceeded its bounded size.",
@@ -357,8 +359,7 @@ test("a completed bead-source review links to its bead and reports the one recor
       await route.fulfill({ response, body: bodyResult });
       resolveReservation({ original });
     } catch (error) {
-      captureError =
-        error instanceof Error ? error : new Error(String(error));
+      captureError = error instanceof Error ? error : new Error(String(error));
       resolveReservation({ error });
       await route.abort().catch(() => undefined);
     }
