@@ -1,19 +1,338 @@
 import { expect, test } from "bun:test";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import type { ProjectShiftAttemptOrigin } from "../../types/shift-origin";
+import type { ProjectShiftIntent } from "../../types/project-shifts";
 import type { ProjectShiftStartRequest } from "../../types/project-shifts";
+import type { PrivateExecInput } from "../executors/private-capture";
+import { createConversationStore } from "../conversations/store";
 import { PRIVATE_CAPTURE_FAILURE } from "../executors/private-capture";
 import { resolveCheckout } from "../ledger/workspace";
 import { workspaceKey } from "../projects/scope";
 import { FIXTURE_PROJECT_ID, projectCatalogFixture } from "../projects/testing";
+import { createSessionRegistry, sessionRegistryFile } from "../sessions/registry";
 import { SHIFTS_DIR } from "../scheduler/shift-store";
 import { scratchDirs } from "../test-scratch";
+import {
+  prepareShiftTurnSnapshot,
+  shiftAttemptHash,
+  shiftAttemptOrigin,
+  shiftAttemptRequestId,
+} from "./attempt-identity";
 import {
   keeperStartFailureDiagnostic,
   keeperWaitFacts,
   physicalKeeperProofRoot,
 } from "./keeper-compiled-proof";
 import { projectShiftRequestHash } from "./registry";
+
+type AttemptEvidenceContext = {
+  projectId: string;
+  workspace: string;
+  originalRequestId: string;
+  shiftId: string;
+  firstBeadId: string;
+  attempt: 1;
+};
+
+async function seedOwnedAttemptEvidence(
+  root: string,
+  options: {
+    origin?: Partial<ProjectShiftAttemptOrigin>;
+    copies?: number;
+    turnPhase?: "accepted" | "running" | "failed";
+    processFrame?: boolean;
+    recordWorkspace?: string;
+    rowBeadId?: string;
+    corruptRegistry?: boolean;
+  } = {},
+) {
+  mkdirSync(join(root, ".git"), { recursive: true });
+  const workspace = resolveCheckout(root).workspace,
+    home = join(root, "home"),
+    shiftId = "shift-20261025-130000-abcd",
+    originalRequestId = "913c01ee-e854-4d0e-8d6c-a246304d74a1",
+    firstBeadId = "alpha-work",
+    runId = "fixture-run-1",
+    recordWorkspace = options.recordWorkspace ?? workspace,
+    stateDir = join(root, "fixture"),
+    admissionsFile = join(stateDir, "provider-admissions.jsonl"),
+    callsFile = join(stateDir, "calls.jsonl"),
+    privateBody = "PRIVATE_ATTEMPT_BODY_SENTINEL",
+    processPid = 987654,
+    context: AttemptEvidenceContext = {
+      projectId: FIXTURE_PROJECT_ID,
+      workspace,
+      originalRequestId,
+      shiftId,
+      firstBeadId,
+      attempt: 1,
+    };
+  mkdirSync(home, { recursive: true });
+  mkdirSync(join(home, "sessions"), { recursive: true });
+  mkdirSync(stateDir, { recursive: true });
+  mkdirSync(join(home, SHIFTS_DIR), { recursive: true });
+  writeFileSync(admissionsFile, "");
+  writeFileSync(callsFile, "");
+  writeFileSync(
+    join(home, SHIFTS_DIR, `${shiftId}.json`),
+    JSON.stringify({
+      shiftId,
+      pid: 12345,
+      workspace,
+      startedAt: "2026-10-25T13:00:00.000Z",
+      deadline: "2026-10-25T13:01:00.000Z",
+      state: "stopped",
+      reason: "halted",
+      options: {},
+      spentUsd: 0,
+      unpriced: 0,
+      admitted: 1,
+      beads: [
+        {
+          beadId: options.rowBeadId ?? firstBeadId,
+          runId,
+          outcome: "released",
+          attempts: 1,
+        },
+      ],
+    }),
+  );
+
+  const request: ProjectShiftStartRequest = {
+      requestId: originalRequestId,
+      expectedCatalogRevision: 1,
+      options: {
+        for: "1m",
+        concurrency: 1,
+        maxBeads: 1,
+        maxUsd: 5,
+        repairs: 1,
+        base: "main",
+        smith: "claude-journeyman",
+      },
+    },
+    intent: ProjectShiftIntent = {
+      projectId: FIXTURE_PROJECT_ID,
+      workspace,
+      request,
+      shiftId,
+      requestHash: projectShiftRequestHash(FIXTURE_PROJECT_ID, workspace, request),
+      createdAt: "2026-10-25T13:00:00.000Z",
+      attemptedAt: "2026-10-25T13:00:01.000Z",
+      executionStartedAt: "2026-10-25T13:00:02.000Z",
+    },
+    input: PrivateExecInput = {
+      provider: "claude",
+      beadId: firstBeadId,
+      runId,
+      workspace,
+      cwd: workspace,
+      smith: {
+        name: "claude-journeyman",
+        provider: "claude",
+        model: "claude-sonnet-5-5",
+        effort: "medium",
+        enabled: true,
+        tags: [],
+      },
+      command: [join(root, "bin", "claude")],
+      stdin: privateBody,
+      timeoutMs: 10_000,
+    },
+    attempt = 1,
+    cliVersion = "2.1.293",
+    canonicalOrigin = shiftAttemptOrigin(intent, input, attempt),
+    origin: ProjectShiftAttemptOrigin = { ...canonicalOrigin, ...options.origin },
+    canonicalAttemptId = shiftAttemptRequestId(intent, input, attempt),
+    canonicalAttemptHash = shiftAttemptHash(intent, input, attempt, cliVersion),
+    registry = createSessionRegistry(home),
+    records = [];
+  for (let index = 0; index < (options.copies ?? 1); index++) {
+    const requestId = index === 0 ? canonicalAttemptId : randomUUID(),
+      requestHash =
+        index === 0
+          ? canonicalAttemptHash
+          : createHash("sha256").update(`fixture-${index}`).digest("hex");
+    records.push(
+      await registry.reserve(FIXTURE_PROJECT_ID, requestId, requestHash, () => ({
+        mode: "task",
+        provider: "claude",
+        workspace: recordWorkspace,
+        repository: recordWorkspace,
+        worktree: recordWorkspace,
+        beadId: origin.beadId,
+        smith: "claude-journeyman",
+        requestedModel: input.smith.model,
+        requestedEffort: input.smith.effort,
+        origin: index === 0 ? origin : canonicalOrigin,
+      })),
+    );
+  }
+  const selected = records[0];
+  if (selected && options.turnPhase) {
+    const address = {
+        kind: "session" as const,
+        projectId: FIXTURE_PROJECT_ID,
+        sessionId: selected.id,
+      },
+      store = createConversationStore(home, undefined, address),
+      owner = randomUUID(),
+      snapshot = prepareShiftTurnSnapshot(
+        intent,
+        input,
+        attempt,
+        cliVersion,
+        selected.id,
+      );
+    await store.accept(FIXTURE_PROJECT_ID, {
+      requestId: selected.requestId,
+      expectedRevision: 0,
+      text: privateBody,
+      about: [
+        { kind: "bead", id: origin.beadId },
+        { kind: "run", id: origin.runId },
+      ],
+      shift: snapshot,
+    });
+    if (options.turnPhase !== "accepted") {
+      await store.start(FIXTURE_PROJECT_ID, selected.requestId, owner);
+      if (options.processFrame)
+        await store.append(FIXTURE_PROJECT_ID, selected.requestId, owner, {
+          kind: "process",
+          pid: processPid,
+          smith: selected.smith,
+          requestedModel: selected.requestedModel,
+          requestedEffort: selected.requestedEffort ?? "medium",
+        });
+      if (options.turnPhase === "failed")
+        await store.finish(
+          FIXTURE_PROJECT_ID,
+          selected.requestId,
+          owner,
+          "failed",
+          null,
+        );
+    }
+  }
+  if (options.corruptRegistry)
+    writeFileSync(sessionRegistryFile(home), "{invalid registry");
+  return {
+    home,
+    context,
+    admissionsFile,
+    callsFile,
+    privateBody,
+    processPid,
+    attemptHash: canonicalAttemptHash,
+    sessionId: selected?.id ?? "",
+    attemptRequestId: selected?.requestId ?? "",
+    facts() {
+      const result: unknown = Reflect.apply(keeperWaitFacts, undefined, [
+        home,
+        shiftId,
+        admissionsFile,
+        callsFile,
+        context,
+      ]);
+      if (typeof result !== "string")
+        throw new Error("Keeper wait facts did not return text");
+      return result;
+    },
+  };
+}
+
+test("Keeper wait facts correlate only the exact first Shift-owned attempt", async () => {
+  const scratch = scratchDirs();
+  try {
+    const positive = await seedOwnedAttemptEvidence(
+        scratch.make("owned attempt evidence positive "),
+        { turnPhase: "running", processFrame: true },
+      ),
+      facts = positive.facts();
+    expect(facts).toContain("attemptReservation=matched");
+    expect(facts).toContain("ownerTurn=running");
+    expect(facts).toContain("processFrame=observed");
+    for (const privateValue of [
+      positive.privateBody,
+      positive.attemptHash,
+      positive.home,
+      positive.sessionId,
+      positive.attemptRequestId,
+      String(positive.processPid),
+    ])
+      expect(facts).not.toContain(privateValue);
+    expect(facts.length).toBeLessThanOrEqual(800);
+
+    const accepted = await seedOwnedAttemptEvidence(
+      scratch.make("owned attempt evidence accepted "),
+      { turnPhase: "accepted" },
+    );
+    expect(accepted.facts()).toContain("ownerTurn=accepted");
+    const running = await seedOwnedAttemptEvidence(
+      scratch.make("owned attempt evidence running "),
+      { turnPhase: "running" },
+    );
+    expect(running.facts()).toContain("processFrame=not-observed");
+    const terminal = await seedOwnedAttemptEvidence(
+      scratch.make("owned attempt evidence terminal "),
+      { turnPhase: "failed", processFrame: true },
+    );
+    expect(terminal.facts()).toContain("ownerTurn=failed");
+    expect(terminal.facts()).toContain("processFrame=observed");
+    const reservationOnly = await seedOwnedAttemptEvidence(
+      scratch.make("owned attempt evidence reservation only "),
+    );
+    expect(reservationOnly.facts()).toContain("attemptReservation=matched");
+    expect(reservationOnly.facts()).toContain("ownerTurn=unknown");
+    expect(reservationOnly.facts()).toContain("processFrame=unknown");
+
+    for (const origin of [
+      { originalRequestId: randomUUID() },
+      { shiftId: "shift-20261025-130001-abcd" },
+      { runId: "foreign-run" },
+      { beadId: "foreign-bead" },
+      { attempt: 2 },
+    ]) {
+      const foreign = await seedOwnedAttemptEvidence(
+        scratch.make("owned attempt evidence foreign "),
+        { origin },
+      );
+      expect(foreign.facts()).toContain("attemptReservation=unknown");
+    }
+
+    const absent = await seedOwnedAttemptEvidence(
+      scratch.make("owned attempt evidence absent "),
+      { copies: 0 },
+    );
+    expect(absent.facts()).toContain("attemptReservation=unknown");
+    const malformed = await seedOwnedAttemptEvidence(
+      scratch.make("owned attempt evidence malformed "),
+      { corruptRegistry: true },
+    );
+    expect(malformed.facts()).toContain("attemptReservation=unknown");
+    const ambiguous = await seedOwnedAttemptEvidence(
+      scratch.make("owned attempt evidence ambiguous "),
+      { copies: 2 },
+    );
+    expect(ambiguous.facts()).toContain("attemptReservation=ambiguous");
+    const outside = scratch.make("owned attempt evidence other workspace ");
+    mkdirSync(join(outside, ".git"), { recursive: true });
+    const scopeMismatch = await seedOwnedAttemptEvidence(
+      scratch.make("owned attempt evidence scope mismatch "),
+      { recordWorkspace: resolveCheckout(outside).workspace },
+    );
+    expect(scopeMismatch.facts()).toContain("attemptReservation=unknown");
+    const firstBeadMismatch = await seedOwnedAttemptEvidence(
+      scratch.make("owned attempt evidence first bead mismatch "),
+      { rowBeadId: "other-bead" },
+    );
+    expect(firstBeadMismatch.facts()).toContain("attemptReservation=unknown");
+  } finally {
+    scratch.cleanup();
+  }
+});
 
 test("compiled Keeper fixture shares the disk-canonical workspace for scope and request hashes", () => {
   const scratch = scratchDirs();
@@ -157,6 +476,7 @@ test("Keeper first-admission timeout facts omit native-tool arguments and stay b
       "The inert native fixture refused worktree creation.",
     );
     expect(facts).toContain("admissionCount=1");
+    expect(facts).not.toContain("attemptReservation=");
     expect(facts).toContain("git:worktree add");
     expect(facts).not.toContain("PRIVATE");
     expect(facts).not.toContain("SECRET_ARGUMENT");
