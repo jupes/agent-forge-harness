@@ -9,7 +9,7 @@
   padding: 8px;
   color: var(--color-text);
   background: var(--color-surface);
-  font: 12px/1.5 var(--font-mono);
+  font: 12px / 1.5 var(--font-mono);
   overflow-wrap: anywhere;
 }
 .af-council-transcript:focus-visible {
