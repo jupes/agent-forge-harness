@@ -633,7 +633,7 @@ async function installCheckpointResponseObserver(
     { epoch: number; kind: CheckpointCaptureKind }
   >();
 
-  const fail = (message: string): never => {
+  const fail: (message: string) => never = (message) => {
     invalid ??= Error(message);
     for (const waiter of waiters) {
       clearTimeout(waiter.timer);
@@ -1243,9 +1243,9 @@ async function installCheckpointResponseObserver(
           } finally {
             window.clearTimeout(timer);
             readers.delete(reader);
-            window.__checkpointReaders = window.__checkpointReaders?.filter(
-              (active) => active !== reader,
-            );
+            window.__checkpointReaders = (
+              window.__checkpointReaders ?? []
+            ).filter((active) => active !== reader);
             if (!complete) void reader.cancel().catch(() => undefined);
             try {
               reader.releaseLock();
@@ -1287,9 +1287,9 @@ async function installCheckpointResponseObserver(
           } finally {
             window.clearTimeout(timer);
             readers.delete(reader);
-            window.__checkpointReaders = window.__checkpointReaders?.filter(
-              (active) => active !== reader,
-            );
+            window.__checkpointReaders = (
+              window.__checkpointReaders ?? []
+            ).filter((active) => active !== reader);
             if (!complete) void reader.cancel().catch(() => undefined);
             try {
               reader.releaseLock();
