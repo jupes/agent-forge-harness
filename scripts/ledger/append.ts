@@ -22,6 +22,13 @@ export type AppendResult =
   | { ok: true; duplicate: true; ulid: string }
   | { ok: false; error: string };
 
+export interface AppendFailureFacts {
+  readonly phase: "open-ledger" | "append-operation";
+  readonly sqliteClass: "busy" | "locked" | "ioerr" | "other";
+  readonly attemptCount: number;
+  readonly elapsedMs: number | null;
+}
+
 export interface AppendOptions {
   /** Supplied by an emitter that may deliver the same event twice. */
   ulid?: string;
@@ -30,6 +37,8 @@ export interface AppendOptions {
   now?: () => Date;
   /** Busy retry milliseconds, truncated and clamped to zero; absent/non-finite uses 100 ms. */
   waitMs?: number;
+  /** Optional, failure-only metadata. Observer errors never change the append result. */
+  onFailure?(facts: Readonly<AppendFailureFacts>): void;
 }
 
 const INSERT = `INSERT OR IGNORE INTO events
@@ -169,14 +178,56 @@ function insertPaced(
   row: Row,
   path: string | undefined,
   waitMs: number,
+  options: AppendOptions,
 ): AppendResult {
-  const deadline = performance.now() + waitMs;
+  const started = performance.now(),
+    deadline = started + waitMs;
+  let phase: AppendFailureFacts["phase"] = "open-ledger",
+    attemptCount = 0;
   for (;;) {
+    attemptCount = Math.min(attemptCount + 1, 65_535);
+    phase = "open-ledger";
     try {
       const db = openLedger(path);
+      phase = "append-operation";
       return withoutBusyWait(db, () => insert(db, row));
     } catch (error) {
-      if (!isBusy(error) || performance.now() >= deadline) throw error;
+      const busy = isBusy(error);
+      if (!busy || performance.now() >= deadline) {
+        try {
+          const onFailure = options.onFailure;
+          if (typeof onFailure === "function") {
+            let sqliteClass: AppendFailureFacts["sqliteClass"] = "other";
+            const code =
+              typeof error === "object" && error !== null && "code" in error
+                ? error.code
+                : null;
+            if (typeof code === "string")
+              sqliteClass = code.startsWith("SQLITE_BUSY")
+                ? "busy"
+                : code.startsWith("SQLITE_LOCKED")
+                  ? "locked"
+                  : code.startsWith("SQLITE_IOERR")
+                    ? "ioerr"
+                    : "other";
+            const elapsed = performance.now() - started;
+            onFailure.call(
+              options,
+              Object.freeze({
+                phase,
+                sqliteClass,
+                attemptCount,
+                elapsedMs: Number.isFinite(elapsed)
+                  ? Math.min(60_000, Math.max(0, Math.trunc(elapsed)))
+                  : null,
+              }),
+            );
+          }
+        } catch {
+          // Reporting failures cannot replace the primary error or result.
+        }
+        throw error;
+      }
       Bun.sleepSync(1 + Math.floor(Math.random() * MAX_RETRY_PAUSE_MS));
     }
   }
@@ -246,7 +297,7 @@ export function appendEvent(
       typeof given === "number" && Number.isFinite(given)
         ? Math.max(0, Math.trunc(given))
         : APPEND_WAIT_MS;
-    return insertPaced(prepared.row, opts.path, waitMs);
+    return insertPaced(prepared.row, opts.path, waitMs, opts);
   } catch (error) {
     return refuse(error instanceof Error ? error.message : String(error));
   }

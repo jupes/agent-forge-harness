@@ -24,7 +24,9 @@ import {
   type ProjectCouncilDraft as Draft,
   type ProjectCouncilDraftScope,
 } from "./project-council-draft";
+import type { ProjectCouncilReturnOrigin } from "./project-council-return";
 import { useProjectCouncil } from "./use-project-council";
+import "./project-reviews.css";
 
 type SourceType = ProjectCouncilReserveRequest["sourceChoice"]["sourceType"];
 function parseSourceType(value: string): SourceType | null {
@@ -1021,6 +1023,9 @@ export function ProjectReviews({
   draftCache,
   draftGeneration,
   focusSource,
+  returnOrigin = null,
+  onReturnToRun,
+  onSourceIdentityChanged,
 }: {
   projectId: string;
   workspace: string | null;
@@ -1029,6 +1034,9 @@ export function ProjectReviews({
   draftCache: ReturnType<typeof createProjectCouncilDraftCache> | null;
   draftGeneration: number;
   focusSource: boolean;
+  returnOrigin?: ProjectCouncilReturnOrigin | null;
+  onReturnToRun?(origin: ProjectCouncilReturnOrigin): void;
+  onSourceIdentityChanged?(): void;
 }): JSX.Element {
   const { owner, view } = useProjectCouncil(projectId, workspace);
   const focusedDraftGeneration = useRef<number | null>(null);
@@ -1116,6 +1124,9 @@ export function ProjectReviews({
       );
       return;
     }
+    const sourceIdentityChanged =
+      updated.sourceType !== draft.sourceType ||
+      updated.source !== draft.source;
     const saved = draftCache.write(scope, updated);
     if (saved.kind !== "saved") {
       setDraftCacheError(
@@ -1129,6 +1140,7 @@ export function ProjectReviews({
     }
     setDraft(saved.draft);
     setDraftCacheError("");
+    if (sourceIdentityChanged) onSourceIdentityChanged?.();
   };
   const prepare = () => {
     if (!owner || !profile || !canPrepare || !source.success) return;
@@ -1235,19 +1247,29 @@ export function ProjectReviews({
             Prepare and inspect a saved original before any review is started.
           </p>
         </div>
-        <Button
-          onClick={() => {
-            if (owner) void owner.refresh();
-          }}
-          disabled={
-            !owner ||
-            view?.phase === "loading" ||
-            view?.phase === "preparing" ||
-            view?.phase === "retiring"
-          }
-        >
-          Check saved reviews
-        </Button>
+        <div class="af-runs-actions">
+          {returnOrigin && onReturnToRun ? (
+            <Button
+              aria-label={`Back to Run ${returnOrigin.runSlug} checkpoint ${returnOrigin.checkpointId}`}
+              onClick={() => onReturnToRun?.(returnOrigin)}
+            >
+              Back to Run {returnOrigin.runSlug} checkpoint
+            </Button>
+          ) : null}
+          <Button
+            onClick={() => {
+              if (owner) void owner.refresh();
+            }}
+            disabled={
+              !owner ||
+              view?.phase === "loading" ||
+              view?.phase === "preparing" ||
+              view?.phase === "retiring"
+            }
+          >
+            Check saved reviews
+          </Button>
+        </div>
       </header>
       {!view || view.phase === "loading" ? (
         <p role="status">Loading saved Council reviews…</p>

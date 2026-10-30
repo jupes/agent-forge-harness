@@ -1,5 +1,5 @@
 import type { JSX } from "preact";
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import { Button } from "../../../docs/js/ds/Button";
 import { Dialog } from "../../../docs/js/ds/Dialog";
 import { EmptyState } from "../../../docs/js/ds/EmptyState";
@@ -56,6 +56,12 @@ import {
   type ProjectCouncilDraftScope,
   type ProjectCouncilSourcePrefill,
 } from "./project-council-draft";
+import {
+  createProjectCouncilReturnMemory,
+  type ProjectCouncilReturnFocus,
+  type ProjectCouncilReturnOrigin,
+  type ProjectCouncilSourceIntent,
+} from "./project-council-return";
 import type { VerifiedProjectCreate } from "./project-create-owner";
 import { parseRunFilters, runsHref } from "./project-runs-model";
 import { ClaudeSessionComposer, SessionComposer } from "./SessionComposer";
@@ -97,6 +103,12 @@ export function DesktopApp(): JSX.Element {
   > | null>(null);
   if (!councilDraftCache.current)
     councilDraftCache.current = createProjectCouncilDraftCache();
+  const councilReturnMemory = useRef(createProjectCouncilReturnMemory());
+  const [councilReturnFocus, setCouncilReturnFocus] =
+    useState<ProjectCouncilReturnFocus | null>(null);
+  const councilReturnFocusRef = useRef<ProjectCouncilReturnFocus | null>(null);
+  const [councilReturnNotice, setCouncilReturnNotice] = useState("");
+  const [, setCouncilReturnRevision] = useState(0);
   const checkpointReviewOwners = useRef(
     new Map<string, ProjectCheckpointReviewOwner>(),
   );
@@ -111,6 +123,7 @@ export function DesktopApp(): JSX.Element {
   const [councilSourceReplacement, setCouncilSourceReplacement] = useState<{
     scope: ProjectCouncilDraftScope;
     pending: PendingProjectCouncilSourceReplacement;
+    intent: ProjectCouncilSourceIntent;
     focusSource: boolean;
     error: string;
   } | null>(null);
@@ -139,6 +152,94 @@ export function DesktopApp(): JSX.Element {
   const summary = projects.data?.summaries.find(
     (item) => item.projectId === project?.id,
   );
+  const currentCouncilScope: ProjectCouncilDraftScope | null =
+    project?.id && summary?.workspace
+      ? { projectId: project.id, workspace: summary.workspace }
+      : null;
+  const clearCouncilReturnPath = useCallback(() => {
+    councilReturnMemory.current.clear();
+    setCouncilReturnRevision((revision) => revision + 1);
+    setCouncilSourceReplacement(null);
+    councilReturnFocusRef.current = null;
+    setCouncilReturnFocus(null);
+    setCouncilReturnNotice("");
+  }, []);
+  const lastCouncilScope = useRef<ProjectCouncilDraftScope | null>(null);
+  useEffect(() => {
+    const previous = lastCouncilScope.current;
+    const next = currentCouncilScope;
+    if (
+      previous &&
+      (!next ||
+        previous.projectId !== next.projectId ||
+        previous.workspace !== next.workspace)
+    ) {
+      clearCouncilReturnPath();
+      setCouncilReturnNotice(
+        "The project workspace changed. The previous Run return path was cleared.",
+      );
+    }
+    lastCouncilScope.current = next;
+  }, [
+    clearCouncilReturnPath,
+    currentCouncilScope?.projectId,
+    currentCouncilScope?.workspace,
+  ]);
+  const lastRouteKey = useRef(
+    JSON.stringify([
+      route.destination,
+      route.projectId,
+      route.selection?.kind ?? null,
+      route.selection?.id ?? null,
+    ]),
+  );
+  const currentRouteKey = JSON.stringify([
+    route.destination,
+    route.projectId,
+    route.selection?.kind ?? null,
+    route.selection?.id ?? null,
+  ]);
+  useEffect(() => {
+    const previousKey = lastRouteKey.current;
+    if (previousKey !== currentRouteKey && route.destination !== "reviews") {
+      const focus = councilReturnFocusRef.current;
+      const isIntendedRun =
+        route.destination === "runs" &&
+        route.projectId === focus?.origin.projectId &&
+        route.selection?.kind === "run" &&
+        route.selection.id === focus.origin.runSlug;
+      const isSameScopeRunBrowse =
+        route.destination === "runs" &&
+        !!currentCouncilScope &&
+        route.projectId === currentCouncilScope.projectId &&
+        councilReturnMemory.current.get(currentCouncilScope) !== null;
+      if (!isIntendedRun && !isSameScopeRunBrowse) {
+        clearCouncilReturnPath();
+      }
+    }
+    const focus = councilReturnFocusRef.current;
+    if (
+      focus &&
+      route.destination !== "reviews" &&
+      !(
+        route.destination === "runs" &&
+        route.projectId === focus.origin.projectId &&
+        route.selection?.kind === "run" &&
+        route.selection.id === focus.origin.runSlug
+      )
+    ) {
+      clearCouncilReturnPath();
+    }
+    lastRouteKey.current = currentRouteKey;
+  }, [
+    clearCouncilReturnPath,
+    currentCouncilScope?.projectId,
+    currentCouncilScope?.workspace,
+    currentRouteKey,
+    route.destination,
+    route.projectId,
+    route.selection,
+  ]);
   useEffect(() => {
     if (
       councilSourceReplacement &&
@@ -155,6 +256,7 @@ export function DesktopApp(): JSX.Element {
     source: ProjectCouncilSourcePrefill,
     sourceWorkspace: string,
     focusSource = false,
+    returnOrigin: ProjectCouncilReturnOrigin | null = null,
   ) => {
     if (
       !project ||
@@ -167,23 +269,38 @@ export function DesktopApp(): JSX.Element {
       return;
     }
     const scope = { projectId: project.id, workspace: summary.workspace };
+    const matchingOrigin =
+      returnOrigin &&
+      source.sourceType === "bead" &&
+      source.source === returnOrigin.checkpointId
+        ? returnOrigin
+        : null;
+    const intent = councilReturnMemory.current.begin(scope, matchingOrigin);
     const result = councilDraftCache.current?.prefill(scope, source);
     if (result?.kind === "confirmation-required") {
       setCouncilSourceReplacement({
         scope,
         pending: result.pending,
+        intent,
         focusSource,
         error: "",
       });
       return;
     }
     if (result?.kind !== "applied") {
+      councilReturnMemory.current.reject(intent, scope);
       setCouncilDraftNotice(
         result?.reason === "capacity"
           ? "The 32-draft limit is reached. Existing Council drafts were kept."
           : result?.reason === "source-too-large"
             ? "This source is too large for the private Council draft cache. The existing draft was kept."
             : "A current served project workspace is required. The existing draft was kept.",
+      );
+      return;
+    }
+    if (!councilReturnMemory.current.apply(intent, scope)) {
+      setCouncilDraftNotice(
+        "This source request is no longer current. The existing Council draft and Run return path were kept.",
       );
       return;
     }
@@ -208,6 +325,18 @@ export function DesktopApp(): JSX.Element {
       );
       return;
     }
+    if (
+      !councilReturnMemory.current.keep(
+        councilSourceReplacement.intent,
+        councilSourceReplacement.scope,
+      )
+    ) {
+      setCouncilSourceReplacement(null);
+      setCouncilDraftNotice(
+        "This source request is no longer current. The existing Council draft and Run return path were kept.",
+      );
+      return;
+    }
     setCouncilSourceReplacement(null);
     setCouncilDraftGeneration((current) => current + 1);
     setFocusCouncilSource(false);
@@ -229,6 +358,23 @@ export function DesktopApp(): JSX.Element {
       );
       return;
     }
+    if (
+      !councilReturnMemory.current.isCurrent(
+        councilSourceReplacement.intent,
+        councilSourceReplacement.scope,
+      )
+    ) {
+      setCouncilSourceReplacement((current) =>
+        current
+          ? {
+              ...current,
+              error:
+                "The source request is no longer current. Keep the existing draft and choose the source again.",
+            }
+          : current,
+      );
+      return;
+    }
     const result = councilDraftCache.current?.confirm(
       councilSourceReplacement.scope,
       councilSourceReplacement.pending,
@@ -246,6 +392,10 @@ export function DesktopApp(): JSX.Element {
       return;
     }
     if (result?.kind !== "applied") {
+      councilReturnMemory.current.reject(
+        councilSourceReplacement.intent,
+        councilSourceReplacement.scope,
+      );
       setCouncilDraftNotice(
         result?.reason === "capacity"
           ? "The 32-draft limit is reached. Existing Council drafts were kept."
@@ -254,6 +404,23 @@ export function DesktopApp(): JSX.Element {
             : "A current served project workspace is required. The existing draft was kept.",
       );
       setCouncilSourceReplacement(null);
+      return;
+    }
+    if (
+      !councilReturnMemory.current.apply(
+        councilSourceReplacement.intent,
+        councilSourceReplacement.scope,
+      )
+    ) {
+      setCouncilSourceReplacement((current) =>
+        current
+          ? {
+              ...current,
+              error:
+                "The source request changed before it could be applied. Keep the existing draft and choose the source again.",
+            }
+          : current,
+      );
       return;
     }
     setCouncilDraftNotice("");
@@ -266,6 +433,47 @@ export function DesktopApp(): JSX.Element {
       destination: "reviews",
       selection: null,
     }).slice(1);
+  };
+  const returnToCouncilSourceRun = (
+    expectedOrigin: ProjectCouncilReturnOrigin,
+  ) => {
+    if (!currentCouncilScope) {
+      setCouncilReturnNotice(
+        "A verified project workspace is required to return to this Run.",
+      );
+      return;
+    }
+    const focus = councilReturnMemory.current.take(
+      currentCouncilScope,
+      expectedOrigin,
+    );
+    if (!focus) {
+      councilReturnMemory.current.clear();
+      setCouncilReturnNotice(
+        "The saved Run return path is no longer current. Select the Run again to inspect its checkpoint.",
+      );
+      return;
+    }
+    councilReturnFocusRef.current = focus;
+    setCouncilReturnFocus(focus);
+    setCouncilReturnNotice("");
+    window.location.hash = runsHref(
+      focus.origin.projectId,
+      focus.origin.runSlug,
+    ).slice(1);
+  };
+  const handleCouncilReturnFocus = (
+    focus: ProjectCouncilReturnFocus,
+    result: "focused" | "unavailable",
+  ) => {
+    if (councilReturnFocusRef.current?.generation !== focus.generation) return;
+    councilReturnFocusRef.current = null;
+    setCouncilReturnFocus(null);
+    setCouncilReturnNotice(
+      result === "focused"
+        ? "Returned to the exact Run checkpoint."
+        : "The Run checkpoint could not be freshly verified as in progress. Focus was not restored.",
+    );
   };
   const activityFilters =
     route.destination === "activity"
@@ -1025,6 +1233,13 @@ export function DesktopApp(): JSX.Element {
             draftCache={councilDraftCache.current}
             draftGeneration={councilDraftGeneration}
             focusSource={focusCouncilSource}
+            returnOrigin={
+              currentCouncilScope
+                ? councilReturnMemory.current.get(currentCouncilScope)
+                : null
+            }
+            onReturnToRun={returnToCouncilSourceRun}
+            onSourceIdentityChanged={clearCouncilReturnPath}
           />
         ) : route.destination === "runs" && project ? (
           <ProjectRuns
@@ -1038,7 +1253,27 @@ export function DesktopApp(): JSX.Element {
               error: beads.error,
             }}
             onCouncilArtifactPrefill={openCouncilSource}
-            onCouncilBeadPrefill={openCouncilSource}
+            onCouncilBeadPrefill={(source, sourceWorkspace, origin) =>
+              openCouncilSource(source, sourceWorkspace, false, origin)
+            }
+            returnFocus={
+              councilReturnFocus &&
+              councilReturnFocusRef.current?.generation ===
+                councilReturnFocus.generation &&
+              route.destination === "runs" &&
+              route.projectId === councilReturnFocus.origin.projectId &&
+              route.selection?.kind === "run" &&
+              route.selection.id === councilReturnFocus.origin.runSlug &&
+              currentCouncilScope &&
+              currentCouncilScope.projectId ===
+                councilReturnFocus.origin.projectId &&
+              currentCouncilScope.workspace ===
+                councilReturnFocus.origin.workspace
+                ? councilReturnFocus
+                : null
+            }
+            returnFocusNotice={councilReturnNotice}
+            onReturnFocusHandled={handleCouncilReturnFocus}
             checkpointReviewOwner={checkpointReviewOwner}
             checkpointReviewsWritable={writesAllowed && !project.archived}
             filters={runFilters.filters}
