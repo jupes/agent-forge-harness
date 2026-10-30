@@ -8,6 +8,7 @@ import {
   INTERACTIVE_BOOTSTRAP_TERMINAL,
 } from "./interactive-bootstrap";
 import { supervise } from "./supervisor";
+import { guardSuspendedWindowsProcess } from "./tree-guard";
 
 const scratch = scratchDirs();
 afterAll(() => scratch.cleanup());
@@ -181,6 +182,8 @@ test("private terminal facts refuse missing, foreign, future, malformed, duplica
     "duplicate",
     "order",
   ]) {
+    let settlementFact: string | null = null;
+    const startedAt = Date.now();
     const handle = supervise({
       command: [command],
       bootstrapCommand: [
@@ -192,13 +195,61 @@ test("private terminal facts refuse missing, foreign, future, malformed, duplica
       env: buildChildEnv(process.env, []),
       stdinMode: "interactive",
       timeoutMs: 3000,
+      ...(process.platform === "win32" && process.arch === "x64"
+        ? {
+            interactiveGuard(pid: number) {
+              return guardSuspendedWindowsProcess(pid, {
+                onWindowsSettlementFailure(
+                  phase,
+                  generationFailure,
+                  unaccountedFailure,
+                ) {
+                  if (settlementFact !== null) return;
+                  try {
+                    const bounded = (value: number | null | undefined) =>
+                        value !== null &&
+                        value !== undefined &&
+                        Number.isSafeInteger(value) &&
+                        value >= 0 &&
+                        value <= 0xffff_ffff
+                          ? String(value)
+                          : "unknown",
+                      elapsedMs = Math.min(
+                        3000,
+                        Math.max(0, Date.now() - startedAt),
+                      ),
+                      reason = generationFailure?.reason ?? "none";
+                    settlementFact = `mode=${mode}; phase=${phase}; reason=${reason}; elapsedMs=${elapsedMs}; generationCounts=${bounded(generationFailure?.initialTotal)},${bounded(generationFailure?.capturedTotal)},${bounded(generationFailure?.retainedCount)},${bounded(generationFailure?.capturedMemberCount)}; accountingCounts=${bounded(unaccountedFailure?.activeCount)},${bounded(unaccountedFailure?.retainedCount)},${bounded(unaccountedFailure?.capturedMemberCount)},${bounded(unaccountedFailure?.initialTotal)},${bounded(unaccountedFailure?.capturedTotal)}`;
+                  } catch {
+                    settlementFact = `mode=${mode}; phase=${phase}; reason=unknown; elapsedMs=unknown; generationCounts=unknown; accountingCounts=unknown`;
+                  }
+                },
+              });
+            },
+          }
+        : {}),
       onLine() {
         throw Error("Private terminal controls cannot enter stdout");
       },
     });
-    await expect(handle.done).rejects.toThrow("private interactive terminal");
-    await expect(handle.stop("late rejected cleanup")).rejects.toThrow(
-      "private interactive terminal",
+    const withSettlementFact = async (assertion: () => unknown) => {
+      try {
+        await assertion();
+      } catch (error) {
+        if (settlementFact === null) throw error;
+        throw new Error(
+          `The private-terminal rejection assertion failed; ${settlementFact}`,
+          { cause: error },
+        );
+      }
+    };
+    await withSettlementFact(() =>
+      expect(handle.done).rejects.toThrow("private interactive terminal"),
+    );
+    await withSettlementFact(() =>
+      expect(handle.stop("late rejected cleanup")).rejects.toThrow(
+        "private interactive terminal",
+      ),
     );
     expect(alive(handle.pid)).toBe(false);
   }

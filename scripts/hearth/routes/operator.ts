@@ -21,13 +21,19 @@ import {
   safeCouncilError,
 } from "../../council/service";
 import { reviewCommentFor } from "../../dashboard/forge-run-model";
+import type { ProjectCheckpointReviewQueueLock } from "../../forge/project-checkpoint-review-store";
 import type { KeeperOperatorPost } from "../../keeper/operator-post";
 import type { KeeperRuntime } from "../../keeper/recovery-runtime";
 import type { AppendResult } from "../../ledger/append";
 import { latestEventId, queryEvents } from "../../ledger/query";
 import type { createRepositoryOnboarding } from "../../projects/repository-onboarding";
+import { createProjectStore } from "../../projects/store";
 import type { ProviderInspector } from "../../providers/inspect";
 import type { ProviderLoginService } from "../../providers/login";
+import type {
+  NativeConsoleChild,
+  NativeConsoleLaunchOptions,
+} from "../../providers/native-console";
 import type { SessionRuntime } from "../../sessions/admission";
 import type { createCodexChatRuntime } from "../../sessions/codex-chat-runtime";
 import type { createCodexTaskRuntime } from "../../sessions/codex-task-runtime";
@@ -70,6 +76,8 @@ import {
 import { createProjectActivityRoutes } from "./project-activity";
 import { projectBeadWriteRoutes } from "./project-bead-writes";
 import { projectBeadsRoute } from "./project-beads";
+import { createProjectCheckpointReviewRoutes } from "./project-checkpoint-reviews";
+import { createProjectCouncilRoutes } from "./project-council";
 import { projectOverviewRoute } from "./project-overview";
 import { createProjectRunRoutes } from "./project-runs";
 import { projectShiftOptionsRoute, projectShiftRoutes } from "./project-shifts";
@@ -96,6 +104,10 @@ type CouncilService = ReturnType<typeof createCouncilService>;
 export interface OperatorDeps extends ReadDeps {
   providerInspector: ProviderInspector;
   providerLogin: ProviderLoginService;
+  sessionTerminalEnvironment?: Record<string, string | undefined>;
+  sessionTerminalLauncher?: (
+    options: NativeConsoleLaunchOptions,
+  ) => NativeConsoleChild;
   /** Captured once by server-runtime; never selected from a request. */
   smithCreateService: Parameters<typeof smithConfigCreateRoutes>[0];
   /** Captured once by server-runtime; never selected from a request. */
@@ -120,6 +132,8 @@ export interface OperatorDeps extends ReadDeps {
   appendEvent(event: LedgerEventInput): AppendResult;
   /** The queue lock's file: one for every process that moves beads of this tracker. */
   queueLockFile: string;
+  /** Shared process-level queue lock for durable checkpoint review writes. */
+  checkpointReviewQueueLock: ProjectCheckpointReviewQueueLock;
   /** Where shifts given this hearth's home keep their records and stop requests. */
   shiftsDir: string;
   /** The shifts this hearth starts (`POST /shifts`); the hearth closes them. */
@@ -438,7 +452,23 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
   });
   const projectRuns = createProjectRunRoutes(
     deps,
-    projectSnapshotReader(deps.projectHome, deps, { membershipOnly: true }),
+    projectSnapshotReader(deps.projectHome, deps, { omitRuns: true }),
+  );
+  const checkpointReviews = createProjectCheckpointReviewRoutes({
+    home: deps.projectHome,
+    workspace: deps.workspace,
+    appendEvent: deps.appendEvent,
+    queueLock: deps.checkpointReviewQueueLock,
+    runBd: deps.runBd,
+    ...(deps.bdTimeoutMs !== undefined
+      ? { bdTimeoutMs: deps.bdTimeoutMs }
+      : {}),
+    resolveAuthority: projectRuns.checkpointAuthority,
+    readScope: projectRuns.checkpointReadScope,
+  });
+  const projectCouncil = createProjectCouncilRoutes(
+    deps,
+    createProjectSnapshot,
   );
   const scopedShifts = projectShiftRoutes(deps, projectSnapshot);
   const keeperShiftStarts = createKeeperShiftStartRoutes(
@@ -453,6 +483,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     keeperAboutValidator(deps, projectSnapshot),
     createKeeperBriefPreparer(deps.projectHome, deps, projectSnapshot),
     deps.keeperRuntime,
+    (requestId) => createProjectStore(deps.projectHome).readCreate(requestId),
   );
   const ownedSessions = createOwnedSessionRoutes(
     deps.projectHome,
@@ -464,6 +495,9 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       codexChatRuntime: deps.codexChatRuntime,
       geminiTaskRuntime: deps.geminiTaskRuntime,
       geminiChatRuntime: deps.geminiChatRuntime,
+      terminalInspector: deps.providerInspector,
+      terminalEnvironment: deps.sessionTerminalEnvironment,
+      terminalLauncher: deps.sessionTerminalLauncher,
     },
   );
   const keeperSessionStarts = createKeeperSessionStartRoutes(
@@ -550,6 +584,8 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     activity.detail,
     projectRuns.list,
     projectRuns.detail,
+    projectRuns.artifact,
+    ...checkpointReviews.reads,
     projectBeadsRoute(deps, projectSnapshot),
     projectShiftOptionsRoute(
       deps,
@@ -563,6 +599,8 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     keeperReadRoute(deps, projectSnapshot),
     conversations.read,
     conversations.briefs,
+    conversations.intentDiscovery,
+    conversations.intentOriginal,
     conversations.recovery,
     proposals.read,
     keeperSessionStarts.read,
@@ -574,6 +612,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     ownedSessions.forkOriginalContext,
     ownedSessions.ownerRelease,
     ownedSessions.list,
+    ownedSessions.terminalRead,
     ownedSessions.read,
     ownedSessions.forkTurnRead,
     ownedSessions.approvals,
@@ -611,6 +650,8 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
   return {
     routes: [
       ...reads,
+      ...projectCouncil.routes,
+      ...checkpointReviews.actions,
       stream,
       conversations.events,
       ownedSessions.events,
@@ -630,6 +671,8 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       cloneRepository,
       registerClonedRepository,
       conversations.send,
+      conversations.intentReserve,
+      conversations.intentRetire,
       conversations.refresh,
       conversations.continuation,
       proposals.approve,
@@ -647,6 +690,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       ownedSessions.preview,
       ownedSessions.send,
       ownedSessions.stop,
+      ownedSessions.terminalOpen,
       ownedSessions.decide,
       ownedSessions.forkDecide,
       ownedSessions.forkStop,
@@ -677,6 +721,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       await ownedSessions.close();
       await proposals.close();
       await conversations.close();
+      await checkpointReviews.close();
     },
   };
 }

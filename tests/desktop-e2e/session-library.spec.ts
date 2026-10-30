@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   type Download,
@@ -338,7 +338,7 @@ test("actual >100-frame private export includes attachments and all reports; com
   ).toBeDisabled();
   await expect(
     dialog.getByRole("button", {
-      name: "Open session in terminal",
+      name: "Open Claude Chat in terminal",
       exact: true,
     }),
   ).toBeDisabled();
@@ -611,6 +611,124 @@ test("Continue Chat only focuses the composer; the explicit next send resumes th
   expect(native).toMatchObject({
     id: binding?.sessionId,
     argv: expect.arrayContaining(["--resume", binding?.sessionId]),
+  });
+});
+
+test.describe("Windows terminal handoff UI", () => {
+  test.use({
+    userAgent:
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+  });
+
+  test("terminal handoff requires source review and a lost reply stays held after GET and reload", async ({
+    page,
+  }) => {
+    const before = starts(),
+      record = await start(page, "chat");
+    await expect(page.locator("[data-session-state]")).toHaveAttribute(
+      "data-session-state",
+      "idle",
+    );
+    const beforeState = bytes(record.id),
+      original = {
+        projectId: record.projectId,
+        sessionId: record.id,
+        turnRequestId: record.requestId,
+        requestId: "",
+        phase: "unknown",
+        startedAt: new Date().toISOString(),
+        endedAt: null,
+        auditEventId: 41,
+      };
+    let posts = 0,
+      reads = 0;
+    await page.route(
+      `**/projects/${alpha.id}/sessions/${record.id}/terminal-handoff`,
+      async (route) => {
+        if (route.request().method() === "GET") {
+          reads++;
+          await route.fulfill({
+            status: 200,
+            contentType: "application/json",
+            body: JSON.stringify({
+              ok: true,
+              data: { attempt: posts ? original : null },
+              error: null,
+            }),
+          });
+          return;
+        }
+        posts++;
+        const body: unknown = route.request().postDataJSON();
+        if (!body || typeof body !== "object" || !("requestId" in body))
+          throw Error(
+            "Terminal handoff did not send its reviewed request UUID.",
+          );
+        original.requestId = String(body.requestId);
+        await route.abort("failed");
+      },
+    );
+
+    let dialog = await actions(page);
+    const openReview = dialog.getByRole("button", {
+      name: "Open Claude Chat in terminal",
+      exact: true,
+    });
+    await expect(openReview).toBeEnabled();
+    await openReview.click();
+    const review = page.getByRole("dialog", {
+      name: "Review terminal handoff",
+      exact: true,
+    });
+    await expect(
+      review.getByRole("region", { name: "Original source input" }),
+    ).toContainText("Private library fixture request");
+    await expect(review).toContainText("acceptEdits");
+    await expect(
+      review.getByRole("list", { name: "Enabled Claude tools" }),
+    ).toBeVisible();
+    const confirm = review.getByRole("checkbox");
+    const openTerminal = review.getByRole("button", {
+      name: "Open managed terminal",
+      exact: true,
+    });
+    await expect(openTerminal).toBeDisabled();
+    await confirm.check();
+    await expect(openTerminal).toBeEnabled();
+    const shotDir = process.env["SHOT_DIR"];
+    if (shotDir) {
+      mkdirSync(shotDir, { recursive: true });
+      await review.screenshot({
+        path: join(shotDir, "terminal-handoff-review.png"),
+        animations: "disabled",
+        mask: [review.locator("dl dd").nth(0), review.locator("dl dd").nth(1)],
+      });
+    }
+    await openTerminal.click();
+    await expect(review).toContainText("no automatic retry was sent");
+    await expect(review).toContainText("original request is held");
+    expect(posts).toBe(1);
+    expect(reads).toBeGreaterThanOrEqual(1);
+    expect(starts()).toBe(before + 1);
+    expect(bytes(record.id)).toEqual(beforeState);
+    const readsBeforeReload = reads;
+    await page.keyboard.press("Escape");
+    await reloadSettled(page);
+    dialog = await actions(page);
+    await expect(
+      dialog.getByRole("button", {
+        name: "Open Claude Chat in terminal",
+        exact: true,
+      }),
+    ).toBeDisabled();
+    await expect(dialog).toContainText("another terminal is blocked");
+    expect(reads).toBeGreaterThan(readsBeforeReload);
+    await expect(
+      page.getByRole("textbox", { name: "Session reply prompt", exact: true }),
+    ).toBeDisabled();
+    expect(posts).toBe(1);
+    expect(starts()).toBe(before + 1);
+    expect(bytes(record.id)).toEqual(beforeState);
   });
 });
 

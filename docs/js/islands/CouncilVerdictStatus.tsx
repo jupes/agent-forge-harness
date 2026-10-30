@@ -1,7 +1,18 @@
-import type { CouncilServiceJob } from "../../../scripts/council/service";
 import { parseBeadsIssueId } from "../../../scripts/run-correlation";
 import type { EventsPage, LedgerPayloads } from "../../../types/hearth";
 import { useOperatorRead } from "../use-stream";
+
+export type CouncilVerdictJob = {
+  runId: string;
+  status: "running" | "cancelling" | "completed" | "failed" | "cancelled";
+  startedAt: string;
+  run?:
+    | {
+        status: "running" | "cancelling" | "completed" | "failed" | "cancelled";
+        context: { source: { kind: string; locator: string } };
+      }
+    | undefined;
+};
 
 const KINDS = ["council.verdict.comment"] as const;
 type Status = LedgerPayloads["council.verdict.comment"]["status"];
@@ -14,7 +25,7 @@ const MESSAGES: Record<Status, string> = {
 };
 
 /** Only the source actually reviewed names the bead, never the editable draft. */
-export function verdictBead(job: CouncilServiceJob): string | null {
+export function verdictBead(job: CouncilVerdictJob): string | null {
   const source = job.run?.context?.source;
   return job.status === "completed" &&
     job.run?.status === "completed" &&
@@ -27,12 +38,17 @@ export function verdictBead(job: CouncilServiceJob): string | null {
 
 /** A missing or truncated page is no evidence that a comment was refused. */
 export function verdictStatus(
-  job: CouncilServiceJob,
+  job: CouncilVerdictJob,
   page: EventsPage | null,
 ): Status {
   const bead = verdictBead(job);
   const start = Date.parse(job.startedAt);
-  if (!bead || !Number.isFinite(start) || !Array.isArray(page?.events))
+  if (
+    !bead ||
+    !Number.isFinite(start) ||
+    !Array.isArray(page?.events) ||
+    page.more
+  )
     return "unknown";
   const found = new Set<Status>();
   for (const event of page.events) {
@@ -55,7 +71,7 @@ export function CouncilVerdictStatus({
   job,
   bead,
 }: {
-  job: CouncilServiceJob;
+  job: CouncilVerdictJob;
   bead: string;
 }) {
   // This child is keyed by the job: an old read cannot flash the previous run's outcome.

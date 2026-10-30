@@ -34,7 +34,20 @@ import type {
   SmithsView,
 } from "../../types/hearth";
 import type { OwnedSessionRecord } from "../../types/owned-session";
+import {
+  type ProjectCheckpointReviewBinding,
+  type ProjectCheckpointReviewOriginal,
+  projectCheckpointReviewCommentText,
+  projectCheckpointReviewIntentJson,
+  projectCheckpointReviewOriginalSchema,
+} from "../../types/project-checkpoint-reviews";
+import {
+  type ProjectCouncilBinding,
+  projectCouncilMetadataSchema,
+  projectCouncilReceiptSchema,
+} from "../../types/project-council";
 import type { ProjectCatalog } from "../../types/projects";
+import { terminalHandoffAttemptSchema } from "../../types/session-terminal-handoff";
 import type { SmithConfigEditRequest } from "../../types/smith-config-edit";
 import type { SmithRoutingEditRequest } from "../../types/smith-routing-edit";
 import { type LoadedConfig, loadConfig } from "../config/load";
@@ -65,11 +78,24 @@ import {
 import { conversationFile } from "../conversations/paths";
 import { createConversationStore } from "../conversations/store";
 import { runCouncilCli } from "../council/cli";
+import { buildContextPack, contextListing } from "../council/context";
 import type { CommandResult, CommandRunner } from "../council/pr-source";
+import {
+  createProjectCouncilOriginalStore,
+  projectCouncilInputHash,
+  projectCouncilProfileHash,
+} from "../council/project-original-store";
+import { providerEndpointSnapshot } from "../council/providers";
 import type { CouncilPreview } from "../council/service";
+import { parseCouncilProfileJson } from "../council/types";
 import { REVIEW_NOTE_LIMIT } from "../dashboard/forge-run-model";
+import { createProjectCheckpointReviewStore } from "../forge/project-checkpoint-review-store";
 import { hashText } from "../hash-text";
 import { createRestartIdentityJournal } from "../identities/restart-index";
+import {
+  keeperBriefIntentMetadataSchema,
+  keeperBriefIntentOriginalSchema,
+} from "../keeper/brief-protocol";
 import { createKeeperProposalStore } from "../keeper/proposal-store";
 import { keeperSessionStartReceiptSchema } from "../keeper/session-start-protocol";
 import { keeperShiftStartRequestSchema } from "../keeper/shift-start-protocol";
@@ -86,8 +112,15 @@ import {
   projectCatalogPath,
 } from "../projects/store";
 import { FIXTURE_PROJECT_ID, projectCatalogFixture } from "../projects/testing";
+import type { ProviderInspector } from "../providers/inspect";
 import { providerLoginFile } from "../providers/login";
+import type {
+  NativeConsoleChild,
+  NativeConsoleExit,
+  NativeConsoleLaunchOptions,
+} from "../providers/native-console";
 import { queueTracker } from "../scheduler/queue-fixture";
+import { withQueueLock } from "../scheduler/queue-lock";
 import {
   readShiftRecord,
   SHIFTS_DIR,
@@ -179,6 +212,7 @@ import {
   FIXTURE_SESSION_START,
   FIXTURE_SESSION_STOP,
   fakeSessionRuntime,
+  fixtureSessionFlags,
   fixtureSessionGit,
   seedOwnedSession,
   sessionStartFixture,
@@ -279,6 +313,33 @@ async function envelope<T = unknown>(
   if (!checked.ok) throw new Error(`not an envelope: ${checked.error}`);
   // justification: the guard above proved the envelope; `T` is the caller's claim about `data`.
   return checked.value as OperatorEnvelope<T>;
+}
+
+async function reserveBriefTicket(h: TestHearth) {
+  const store = createConversationStore(h.home);
+  const response = await post(
+    h,
+    `/projects/${FIXTURE_PROJECT_ID}/keeper/brief-intents/reserve`,
+    {
+      expectedRevision: store.read(FIXTURE_PROJECT_ID).revision,
+      origin: { kind: "overview" },
+    },
+  );
+  expect(response.status).toBe(202);
+  const metadata = keeperBriefIntentMetadataSchema.parse(
+    (await envelope(response)).data,
+  );
+  const originalResponse = await get(
+    h,
+    `/projects/${FIXTURE_PROJECT_ID}/keeper/brief-intents/${metadata.requestId}`,
+    h.headers(h.hearth.token),
+  );
+  expect(originalResponse.status).toBe(200);
+  const original = keeperBriefIntentOriginalSchema.parse(
+    (await envelope(originalResponse)).data,
+  );
+  expect(original.intentHash).toBe(metadata.intentHash);
+  return metadata;
 }
 
 const RUN_STATE = JSON.stringify({
@@ -618,6 +679,161 @@ function post(
   });
 }
 
+type ProjectCouncilSeed = {
+  requestId: string;
+  intentHash: string;
+  runId: string;
+};
+const projectCouncilSeeds = new WeakMap<
+  TestHearth,
+  Map<string, ProjectCouncilSeed>
+>();
+
+function projectCouncilReserveBody(source: string) {
+  return {
+    sourceChoice: { sourceType: "text", source },
+    profileChoice: resolve(
+      import.meta.dir,
+      "../..",
+      "councils",
+      "default.json",
+    ),
+    maxUsd: 0.25,
+    maxBytes: 1024,
+    redactSecrets: false,
+    deepDiscussion: false,
+  };
+}
+
+async function seedProjectCouncilOriginal(
+  h: TestHearth,
+  source = "An API inventory Council fixture.",
+): Promise<ProjectCouncilSeed> {
+  let bySource = projectCouncilSeeds.get(h);
+  if (!bySource) {
+    bySource = new Map();
+    projectCouncilSeeds.set(h, bySource);
+  }
+  const found = bySource.get(source);
+  if (found) return found;
+  const response = await post(
+    h,
+    `/projects/${FIXTURE_PROJECT_ID}/council/reviews`,
+    projectCouncilReserveBody(source),
+  );
+  const body = await envelope<unknown>(response);
+  if (
+    response.status !== 202 ||
+    !body.ok ||
+    typeof body.data !== "object" ||
+    body.data === null ||
+    Array.isArray(body.data) ||
+    !("metadata" in body.data) ||
+    typeof body.data.metadata !== "object" ||
+    body.data.metadata === null ||
+    !("requestId" in body.data.metadata) ||
+    typeof body.data.metadata.requestId !== "string" ||
+    !/^[0-9a-f-]{36}$/.test(body.data.metadata.requestId) ||
+    !("intentHash" in body.data.metadata) ||
+    typeof body.data.metadata.intentHash !== "string" ||
+    !/^[a-f0-9]{64}$/.test(body.data.metadata.intentHash) ||
+    !("runId" in body.data.metadata) ||
+    typeof body.data.metadata.runId !== "string"
+  )
+    throw new Error(
+      `Could not seed a project Council original (${response.status}).`,
+    );
+  const seed = {
+    requestId: body.data.metadata.requestId,
+    intentHash: body.data.metadata.intentHash,
+    runId: body.data.metadata.runId,
+  };
+  bySource.set(source, seed);
+  return seed;
+}
+
+async function seedProjectCouncilReadOriginal(
+  h: TestHearth,
+  source = "An API inventory read-only Council fixture.",
+): Promise<ProjectCouncilSeed> {
+  const profileChoice = resolve(
+    import.meta.dir,
+    "../..",
+    "councils",
+    "default.json",
+  );
+  const profileResult = parseCouncilProfileJson(
+    readFileSync(profileChoice, "utf8"),
+  );
+  if (!profileResult.ok)
+    throw new Error("The inert Council read profile fixture is invalid.");
+  const profile = profileResult.value;
+  const projectId = FIXTURE_PROJECT_ID;
+  const binding: ProjectCouncilBinding = {
+    projectId,
+    workspace: h.workspace,
+    catalogRevision: 1,
+    scopeHash: "a".repeat(64),
+    profileHash: projectCouncilProfileHash(profile),
+  };
+  const context = buildContextPack({
+    kind: "stdin",
+    text: source,
+    maxBytes: 1024,
+  });
+  const store = createProjectCouncilOriginalStore({
+    home: h.home,
+    workspace: h.workspace,
+    projectId,
+    withQueueLock,
+  });
+  const reserved = await store.reservePrepared({
+    binding,
+    inputHash: projectCouncilInputHash({ sourceType: "text", source }),
+    profileChoice,
+    profile,
+    providerEndpoints: providerEndpointSnapshot(profile, {}),
+    context,
+    listing: contextListing(context),
+    options: {
+      maxUsd: 0.25,
+      maxBytes: 1024,
+      redactSecrets: false,
+      deepDiscussion: false,
+    },
+  });
+  return {
+    requestId: reserved.original.requestId,
+    intentHash: reserved.original.intentHash,
+    runId: reserved.original.runId,
+  };
+}
+
+function projectCouncilPaths(seed: ProjectCouncilSeed): void {
+  READS["GET /projects/:id/council/reviews"] =
+    `/projects/${FIXTURE_PROJECT_ID}/council/reviews`;
+  READS["GET /projects/:id/council/reviews/:requestId"] =
+    `/projects/${FIXTURE_PROJECT_ID}/council/reviews/${seed.requestId}`;
+  READS["GET /projects/:id/council/reviews/:requestId/run"] =
+    `/projects/${FIXTURE_PROJECT_ID}/council/reviews/${seed.requestId}/run`;
+}
+
+async function commitProjectCouncilOriginal(
+  h: TestHearth,
+  seed: ProjectCouncilSeed,
+): Promise<void> {
+  const response = await post(
+    h,
+    `/projects/${FIXTURE_PROJECT_ID}/council/reviews/${seed.requestId}/commit`,
+    { intentHash: seed.intentHash },
+  );
+  if (response.status !== 202)
+    throw new Error(
+      `Could not commit project Council fixture (${response.status}).`,
+    );
+  await response.body?.cancel();
+}
+
 /**
  * What the hearth's token file holds against the token the test sends: the
  * hearth honours its token only while the file still holds it (bu05).
@@ -667,6 +883,7 @@ interface ActionFixture {
     body: unknown;
     status: number;
     target?: string;
+    beadId?: string;
     audit?: Record<string, string>;
     ok?: boolean;
     error?: string | null;
@@ -707,6 +924,12 @@ const API_REPOSITORY_CLONE_RESERVE_ID = "4c1656b0-9e1a-4d92-aabc-75d4b4ba9a03";
 const API_REPOSITORY_CLONE_READ_ID = "4c1656b0-9e1a-4d92-aabc-75d4b4ba9a04";
 const API_REPOSITORY_CLONE_EFFECT_ID = "4c1656b0-9e1a-4d92-aabc-75d4b4ba9a05";
 const API_REPOSITORY_CLONE_REGISTER_ID = "4c1656b0-9e1a-4d92-aabc-75d4b4ba9a06";
+const API_CHECKPOINT_REVIEW_ID = "960cd714-5279-4238-b2dc-ecab29435610";
+const API_CHECKPOINT_REVIEW_COMMIT_ID = "960cd714-5279-4238-b2dc-ecab29435611";
+const API_CHECKPOINT_REVIEW_RETIRE_ID = "960cd714-5279-4238-b2dc-ecab29435612";
+const API_CHECKPOINT_REVIEW_READBACK_ID =
+  "960cd714-5279-4238-b2dc-ecab29435613";
+const API_CHECKPOINT_REVIEW_BEAD = "alpha-epic.1";
 function apiProjectCreateOriginal(slug: string, root = "") {
   return {
     slug,
@@ -1283,8 +1506,359 @@ function ownedSessionFixture(
   };
 }
 
+const API_TERMINAL_HANDOFF_REQUEST = "3c4c44a9-2579-4294-9b47-ae594cdb48a5";
+const API_TERMINAL_HANDOFF_SESSION =
+  "session-82b3eb58-056a-4bc2-b918-b92247db7561";
+const API_TERMINAL_HANDOFF_START = "80f7900a-1eea-4f76-a858-d6049795a4c7";
+async function seedTerminalHandoffSession(h: TestHearth) {
+  const record: OwnedSessionRecord = {
+    projectId: FIXTURE_PROJECT_ID,
+    id: API_TERMINAL_HANDOFF_SESSION,
+    requestId: API_TERMINAL_HANDOFF_START,
+    requestHash: "c".repeat(64),
+    createdAt: "2026-10-28T00:00:00.000Z",
+    mode: "chat",
+    provider: "claude",
+    workspace: h.workspace,
+    repository: h.workspace,
+    worktree: h.workspace,
+    smith: "claude-journeyman",
+    requestedModel: "sonnet",
+    requestedEffort: null,
+  };
+  const registry = createSessionRegistry(h.home);
+  writeOwnerOnly(
+    sessionRegistryFile(h.home),
+    JSON.stringify({
+      version: 1,
+      records: [...registry.list(FIXTURE_PROJECT_ID), record],
+    }),
+  );
+  const store = createConversationStore(h.home, undefined, {
+    kind: "session",
+    projectId: FIXTURE_PROJECT_ID,
+    sessionId: record.id,
+  });
+  await store.accept(FIXTURE_PROJECT_ID, {
+    requestId: record.requestId,
+    expectedRevision: 0,
+    text: FIXTURE_SESSION_PROMPT,
+    about: [],
+    session: {
+      version: 1,
+      provider: "claude",
+      smith: record.smith,
+      cwd: h.workspace,
+      launch: {
+        mode: "chat",
+        model: "sonnet",
+        prompt: FIXTURE_SESSION_PROMPT,
+        context: {
+          projectId: FIXTURE_PROJECT_ID,
+          repository: h.workspace,
+          worktree: h.workspace,
+          about: [],
+        },
+      },
+      capabilities: { version: "2.1.296", flags: fixtureSessionFlags },
+    },
+  });
+  const owner = randomUUID();
+  await store.start(FIXTURE_PROJECT_ID, record.requestId, owner);
+  await store.append(FIXTURE_PROJECT_ID, record.requestId, owner, {
+    kind: "identity",
+    provider: "claude",
+    sessionId: randomUUID(),
+    version: "2.1.296",
+  });
+  await store.finish(
+    FIXTURE_PROJECT_ID,
+    record.requestId,
+    owner,
+    "completed",
+    null,
+  );
+  return record;
+}
+
+function makeTerminalHandoffFixture() {
+  let hearth: TestHearth | null = null;
+  const launches: Array<{
+      options: NativeConsoleLaunchOptions;
+      auditEventId: number | null;
+    }> = [],
+    supported = process.platform === "win32" && process.arch === "x64",
+    inspector: ProviderInspector = {
+      async inspect(provider) {
+        return {
+          provider,
+          name: "Inert API fixture",
+          installation: {
+            found: true,
+            versionOk: true,
+            version: "2.1.296",
+            path: "C:\\fixture\\claude.exe",
+            checkedAt: new Date().toISOString(),
+            compatibility: "supported",
+            reason: null,
+          },
+          authentication: {
+            mode: "unknown",
+            source: "unavailable",
+            observedAt: null,
+            reason: "The API fixture never checks provider accounts.",
+          },
+          adapter: { supported: true, reason: null },
+          signIn: { command: null, reason: null, nativeAvailable: true },
+        };
+      },
+    },
+    api = {
+      providerInspector: inspector,
+      sessionTerminalLauncher(
+        options: NativeConsoleLaunchOptions,
+      ): NativeConsoleChild {
+        const audit = hearth
+          ?.events(["operator.action"])
+          .filter(
+            (event) =>
+              event.kind === "operator.action" &&
+              event.payload.action === "session.terminal.open",
+          )
+          .at(-1);
+        launches.push({ options, auditEventId: audit?.id ?? null });
+        const done: Promise<NativeConsoleExit> = Promise.resolve({
+          exitCode: 0,
+          stopped: false,
+          timedOut: false,
+        });
+        return { pid: 1, done, stop: async () => done };
+      },
+    } satisfies TestHearthOptions["api"];
+
+  return {
+    api,
+    action: {
+      valid: {
+        path: `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_TERMINAL_HANDOFF_SESSION}/terminal-handoff`,
+        body: { requestId: API_TERMINAL_HANDOFF_REQUEST },
+        status: supported ? 200 : 409,
+        target: API_TERMINAL_HANDOFF_SESSION,
+        audit: { requestId: API_TERMINAL_HANDOFF_REQUEST },
+        ...(!supported
+          ? {
+              ok: false,
+              error:
+                "Native terminal handoff is available only on Windows x64.",
+            }
+          : {}),
+      },
+      invalid: {
+        path: `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_TERMINAL_HANDOFF_SESSION}/terminal-handoff`,
+        body: { requestId: "invalid" },
+      },
+      async prepare(selected: TestHearth) {
+        hearth = selected;
+        launches.length = 0;
+        await seedTerminalHandoffSession(selected);
+      },
+      async happened(selected: TestHearth, answer: unknown) {
+        const record = createSessionRegistry(selected.home)
+            .list(FIXTURE_PROJECT_ID)
+            .find((item) => item.id === API_TERMINAL_HANDOFF_SESSION),
+          saved = record
+            ? createConversationStore(selected.home, undefined, {
+                kind: "session",
+                projectId: FIXTURE_PROJECT_ID,
+                sessionId: record.id,
+              }).read(FIXTURE_PROJECT_ID)
+            : null;
+        expect(saved?.turns.at(-1)?.phase).toBe("completed");
+        if (!supported) {
+          expect(launches).toEqual([]);
+          return;
+        }
+        const parsed = terminalHandoffAttemptSchema.parse(answer),
+          launch = launches[0];
+        expect(parsed).toMatchObject({
+          projectId: FIXTURE_PROJECT_ID,
+          sessionId: API_TERMINAL_HANDOFF_SESSION,
+          requestId: API_TERMINAL_HANDOFF_REQUEST,
+          phase: "opened",
+        });
+        expect(launch).toBeDefined();
+        expect(launch?.auditEventId).toBe(parsed.auditEventId);
+        expect(
+          selected
+            .events(["operator.action"])
+            .some(
+              (event) =>
+                event.kind === "operator.action" &&
+                event.id === parsed.auditEventId &&
+                event.payload.action === "session.terminal.open",
+            ),
+        ).toBe(true);
+      },
+    } satisfies ActionFixture,
+  };
+}
+const terminalHandoffFixture = makeTerminalHandoffFixture();
+
+const checkpointReviewPath = (projectId: string, requestId?: string) => {
+  const path = `/projects/${projectId}/runs/demo/checkpoints/${API_CHECKPOINT_REVIEW_BEAD}/reviews`;
+  return requestId === undefined ? path : `${path}/${requestId}`;
+};
+
+async function seedCheckpointReviewRead(h: TestHearth): Promise<void> {
+  const binding: ProjectCheckpointReviewBinding = {
+    projectId: FIXTURE_PROJECT_ID,
+    workspacePath: h.workspace,
+    checkout: h.root,
+    runSlug: "demo",
+    epicId: "alpha-epic",
+    beadId: API_CHECKPOINT_REVIEW_BEAD,
+    runUpdatedAt: "2026-10-01T00:00:00.000Z",
+    catalogRevision: 1,
+    scopeHash: "d".repeat(64),
+  };
+  const value = {
+    schemaVersion: 1 as const,
+    requestId: API_CHECKPOINT_REVIEW_ID,
+    binding,
+    decision: "approve" as const,
+    note: "Private API inventory sentinel.",
+    createdAt: "2026-10-29T18:00:00.000Z",
+    commentText: "",
+    intentHash: "0".repeat(64),
+  };
+  value.commentText = projectCheckpointReviewCommentText(value);
+  value.intentHash = createHash("sha256")
+    .update(projectCheckpointReviewIntentJson(value), "utf8")
+    .digest("hex");
+  const original: ProjectCheckpointReviewOriginal =
+    projectCheckpointReviewOriginalSchema.parse(value);
+  const store = createProjectCheckpointReviewStore({
+    home: h.home,
+    withQueueLock,
+  });
+  await store.prepare(original, 901);
+  READS["GET /projects/:id/runs/:slug/checkpoints/:beadId/reviews"] =
+    checkpointReviewPath(FIXTURE_PROJECT_ID);
+  READS["GET /projects/:id/runs/:slug/checkpoints/:beadId/reviews/:requestId"] =
+    checkpointReviewPath(FIXTURE_PROJECT_ID, API_CHECKPOINT_REVIEW_ID);
+}
+
 /** One entry per action row of the table; a row with none fails the suite. */
 const ACTIONS: Record<string, ActionFixture> = {
+  "POST /projects/:id/runs/:slug/checkpoints/:beadId/reviews": {
+    valid: {
+      path: checkpointReviewPath(FIXTURE_PROJECT_ID),
+      body: {
+        requestId: API_CHECKPOINT_REVIEW_ID,
+        expectedEpicId: "alpha-epic",
+        expectedRunUpdatedAt: "2026-10-01T00:00:00.000Z",
+        decision: "approve",
+        note: "",
+      },
+      status: 503,
+      ok: false,
+      error:
+        "Project membership is unavailable or incomplete. Refresh Runs after the tracker can be read.",
+      target: API_CHECKPOINT_REVIEW_BEAD,
+      beadId: API_CHECKPOINT_REVIEW_BEAD,
+      audit: { requestId: API_CHECKPOINT_REVIEW_ID },
+    },
+    invalid: {
+      path: checkpointReviewPath(FIXTURE_PROJECT_ID),
+      body: { requestId: "invalid" },
+    },
+    happened: async (h) => {
+      expect(
+        h.bd.calls.some((args) => args[0] === "comments" && args[1] === "add"),
+      ).toBe(false);
+    },
+  },
+  "POST /projects/:id/runs/:slug/checkpoints/:beadId/reviews/:requestId/commit":
+    {
+      valid: {
+        path: `${checkpointReviewPath(FIXTURE_PROJECT_ID)}/${API_CHECKPOINT_REVIEW_COMMIT_ID}/commit`,
+        body: { intentHash: "e".repeat(64) },
+        status: 404,
+        ok: false,
+        error: "This checkpoint review original is not retained.",
+        target: API_CHECKPOINT_REVIEW_BEAD,
+        beadId: API_CHECKPOINT_REVIEW_BEAD,
+        audit: {
+          requestId: API_CHECKPOINT_REVIEW_COMMIT_ID,
+          inputHash: "e".repeat(64),
+        },
+      },
+      invalid: {
+        path: `${checkpointReviewPath(FIXTURE_PROJECT_ID)}/${API_CHECKPOINT_REVIEW_COMMIT_ID}/commit`,
+        body: { intentHash: "invalid" },
+      },
+      happened: async (h) => {
+        expect(
+          h.bd.calls.some(
+            (args) => args[0] === "comments" && args[1] === "add",
+          ),
+        ).toBe(false);
+      },
+    },
+  "POST /projects/:id/runs/:slug/checkpoints/:beadId/reviews/:requestId/retire":
+    {
+      valid: {
+        path: `${checkpointReviewPath(FIXTURE_PROJECT_ID)}/${API_CHECKPOINT_REVIEW_RETIRE_ID}/retire`,
+        body: { intentHash: "f".repeat(64) },
+        status: 404,
+        ok: false,
+        error: "This checkpoint review original is not retained.",
+        target: API_CHECKPOINT_REVIEW_BEAD,
+        beadId: API_CHECKPOINT_REVIEW_BEAD,
+        audit: {
+          requestId: API_CHECKPOINT_REVIEW_RETIRE_ID,
+          inputHash: "f".repeat(64),
+        },
+      },
+      invalid: {
+        path: `${checkpointReviewPath(FIXTURE_PROJECT_ID)}/${API_CHECKPOINT_REVIEW_RETIRE_ID}/retire`,
+        body: { intentHash: "invalid" },
+      },
+      happened: async (h) => {
+        expect(
+          h.bd.calls.some(
+            (args) => args[0] === "comments" && args[1] === "add",
+          ),
+        ).toBe(false);
+      },
+    },
+  "POST /projects/:id/runs/:slug/checkpoints/:beadId/reviews/:requestId/readback":
+    {
+      valid: {
+        path: `${checkpointReviewPath(FIXTURE_PROJECT_ID)}/${API_CHECKPOINT_REVIEW_READBACK_ID}/readback`,
+        body: { intentHash: "a".repeat(64) },
+        status: 404,
+        ok: false,
+        error: "This checkpoint review original is not retained.",
+        target: API_CHECKPOINT_REVIEW_BEAD,
+        beadId: API_CHECKPOINT_REVIEW_BEAD,
+        audit: {
+          requestId: API_CHECKPOINT_REVIEW_READBACK_ID,
+          inputHash: "a".repeat(64),
+        },
+      },
+      invalid: {
+        path: `${checkpointReviewPath(FIXTURE_PROJECT_ID)}/${API_CHECKPOINT_REVIEW_READBACK_ID}/readback`,
+        body: { intentHash: "invalid" },
+      },
+      happened: async (h) => {
+        expect(
+          h.bd.calls.some(
+            (args) => args[0] === "comments" && args[1] === "add",
+          ),
+        ).toBe(false);
+      },
+    },
   "POST /config/smiths/preview": {
     valid: {
       path: "/config/smiths/preview",
@@ -2115,6 +2689,8 @@ const ACTIONS: Record<string, ActionFixture> = {
     },
   },
   "POST /projects/:id/sessions/:sessionId/turns": ownedSessionFixture("send"),
+  "POST /projects/:id/sessions/:sessionId/terminal-handoff":
+    terminalHandoffFixture.action,
   "POST /projects/:id/sessions/:sessionId/fork-turns": {
     valid: {
       path: `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_CHAT_SESSION}/fork-turns`,
@@ -2315,29 +2891,105 @@ const ACTIONS: Record<string, ActionFixture> = {
   },
   "POST /projects/:id/keeper/proposals/approve": keeperProposalFixture(false),
   "POST /projects/:id/keeper/proposals/dismiss": keeperProposalFixture(true),
+  "POST /projects/:id/keeper/brief-intents/reserve": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/keeper/brief-intents/reserve`,
+      body: { expectedRevision: 0, origin: { kind: "overview" } },
+      status: 202,
+      target: FIXTURE_PROJECT_ID,
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/keeper/brief-intents/reserve`,
+      body: {
+        expectedRevision: 0,
+        origin: { kind: "overview", workspace: "forged" },
+      },
+    },
+    prepare: async (h) => {
+      const fixture =
+        ACTIONS["POST /projects/:id/keeper/brief-intents/reserve"]!;
+      fixture.valid.body = {
+        expectedRevision: createConversationStore(h.home).read(
+          FIXTURE_PROJECT_ID,
+        ).revision,
+        origin: { kind: "overview" },
+      };
+    },
+    happened: async (_h, data) => {
+      const metadata = keeperBriefIntentMetadataSchema.parse(data);
+      expect(metadata.state).toBe("reserved");
+      expect(data).not.toHaveProperty("snapshot");
+      expect(data).not.toHaveProperty("text");
+      expect(data).not.toHaveProperty("about");
+    },
+  },
+  "POST /projects/:id/keeper/brief-intents/retire": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/keeper/brief-intents/retire`,
+      body: {
+        requestId: "9b77d65d-18f9-4a15-ab82-8f48dfab6b02",
+        intentHash: "0".repeat(64),
+      },
+      status: 200,
+      target: FIXTURE_PROJECT_ID,
+      audit: {
+        requestId: "9b77d65d-18f9-4a15-ab82-8f48dfab6b02",
+      },
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/keeper/brief-intents/retire`,
+      body: { requestId: "not-a-request", intentHash: "x" },
+    },
+    prepare: async (h) => {
+      const ticket = await reserveBriefTicket(h);
+      const fixture =
+        ACTIONS["POST /projects/:id/keeper/brief-intents/retire"]!;
+      fixture.valid.body = {
+        requestId: ticket.requestId,
+        intentHash: ticket.intentHash,
+      };
+      fixture.valid.audit = {
+        requestId: ticket.requestId,
+      };
+    },
+    happened: async (_h, data) => {
+      expect(keeperBriefIntentMetadataSchema.parse(data).state).toBe("retired");
+    },
+  },
   "POST /projects/:id/keeper/briefs": {
     valid: {
       path: `/projects/${FIXTURE_PROJECT_ID}/keeper/briefs`,
       body: {
         requestId: "9b77d65d-18f9-4a15-ab82-8f48dfab6b02",
         expectedRevision: 0,
+        intentHash: "0".repeat(64),
       },
       status: 202,
       target: FIXTURE_PROJECT_ID,
+      audit: {
+        requestId: "9b77d65d-18f9-4a15-ab82-8f48dfab6b02",
+      },
     },
     invalid: {
       path: `/projects/${FIXTURE_PROJECT_ID}/keeper/briefs`,
-      body: { requestId: "not-a-request", expectedRevision: 0 },
+      body: {
+        requestId: "not-a-request",
+        expectedRevision: 0,
+        intentHash: "x",
+      },
     },
     prepare: async (h) => {
       const fixture = ACTIONS["POST /projects/:id/keeper/briefs"];
-      if (fixture)
-        fixture.valid.body = {
-          requestId: "9b77d65d-18f9-4a15-ab82-8f48dfab6b02",
-          expectedRevision: createConversationStore(h.home).read(
-            FIXTURE_PROJECT_ID,
-          ).revision,
-        };
+      if (!fixture) return;
+      const ticket = await reserveBriefTicket(h);
+      fixture.valid.body = {
+        requestId: ticket.requestId,
+        expectedRevision: ticket.expectedRevision,
+        intentHash: ticket.intentHash,
+      };
+      fixture.valid.audit = {
+        requestId: ticket.requestId,
+      };
     },
     happened: async (h) => {
       const state = createConversationStore(h.home).read(FIXTURE_PROJECT_ID);
@@ -3253,6 +3905,259 @@ const ACTIONS: Record<string, ActionFixture> = {
     },
     happened: started("fixture-a"),
   },
+  "POST /projects/:id/council/reviews": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/council/reviews`,
+      body: {},
+      status: 202,
+      target: FIXTURE_PROJECT_ID,
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/council/reviews`,
+      body: { sourceChoice: { sourceType: "invalid", source: "x" } },
+    },
+    prepare: async (h) => {
+      const source = "API inventory reserved review fixture.";
+      const seed = await seedProjectCouncilOriginal(h, source);
+      ACTIONS["POST /projects/:id/council/reviews"]!.valid.body =
+        projectCouncilReserveBody(source);
+      projectCouncilPaths(seed);
+    },
+    settled: async (h) => {
+      const seed = await seedProjectCouncilOriginal(
+        h,
+        "API inventory reserved review fixture.",
+      );
+      const store = createProjectCouncilOriginalStore({
+        home: h.home,
+        workspace: h.workspace,
+        projectId: FIXTURE_PROJECT_ID,
+        withQueueLock,
+      });
+      await store.retire(FIXTURE_PROJECT_ID, seed.requestId, seed.intentHash);
+    },
+    happened: async (h, answer) => {
+      const seed = await seedProjectCouncilOriginal(
+        h,
+        "API inventory reserved review fixture.",
+      );
+      if (
+        typeof answer !== "object" ||
+        answer === null ||
+        Array.isArray(answer) ||
+        !("metadata" in answer) ||
+        !("created" in answer) ||
+        answer.created !== false
+      )
+        throw new Error("The reserve action did not return its replay result.");
+      const metadata = projectCouncilMetadataSchema.safeParse(answer.metadata);
+      if (!metadata.success)
+        throw new Error("The reserve action metadata is not strict.");
+      expect(metadata.data).toMatchObject({
+        requestId: seed.requestId,
+        runId: seed.runId,
+        state: "reserved",
+      });
+      expect(h.commands.calls).toEqual([]);
+      expect(h.events(["council.run.started", "council.run.finished"])).toEqual(
+        [],
+      );
+    },
+  },
+  "POST /projects/:id/council/reviews/:requestId/commit": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/council/reviews/not-seeded/commit`,
+      body: { intentHash: "0".repeat(64) },
+      status: 202,
+      target: "not-seeded",
+      audit: { inputHash: "0".repeat(64) },
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/council/reviews/not-a-uuid/commit`,
+      body: { intentHash: "0".repeat(64) },
+    },
+    prepare: async (h) => {
+      const seed = await seedProjectCouncilOriginal(
+        h,
+        "API inventory committed review fixture.",
+      );
+      const fixture =
+        ACTIONS["POST /projects/:id/council/reviews/:requestId/commit"]!;
+      fixture.valid.path = `/projects/${FIXTURE_PROJECT_ID}/council/reviews/${seed.requestId}/commit`;
+      fixture.valid.body = { intentHash: seed.intentHash };
+      fixture.valid.target = seed.requestId;
+      fixture.valid.audit = { inputHash: seed.intentHash };
+    },
+    settled: async (h) => {
+      const seed = await seedProjectCouncilOriginal(
+        h,
+        "API inventory committed review fixture.",
+      );
+      await councilRunFinished(h, seed.runId);
+    },
+    happened: async (h, answer) => {
+      const seed = await seedProjectCouncilOriginal(
+        h,
+        "API inventory committed review fixture.",
+      );
+      const initialReceipt = projectCouncilReceiptSchema.safeParse(answer);
+      if (!initialReceipt.success)
+        throw new Error("The commit action did not return a strict receipt.");
+      expect(initialReceipt.data).toMatchObject({
+        metadata: {
+          requestId: seed.requestId,
+          runId: seed.runId,
+          intentHash: seed.intentHash,
+        },
+        phase: expect.stringMatching(/^(running|unknown)$/),
+      });
+      expect(await runStatus(h, seed.runId)).toBe("completed");
+      const exact = await get(
+        h,
+        `/projects/${FIXTURE_PROJECT_ID}/council/reviews/${seed.requestId}/run`,
+        h.headers(h.hearth.token),
+      );
+      expect(exact.status).toBe(200);
+      expect(await exact.json()).toMatchObject({
+        data: {
+          version: 1,
+          receipt: { phase: "completed" },
+          job: {
+            runId: seed.runId,
+            status: "completed",
+            run: {
+              context: {
+                contentHash: expect.any(String),
+                evidence: expect.any(Array),
+              },
+            },
+          },
+          verdictCommentPreview: null,
+        },
+      });
+      const runsBeforeReplay = await runIds(h);
+      const callsBeforeReplay = h.commands.calls.length;
+      const replay = await post(
+        h,
+        `/projects/${FIXTURE_PROJECT_ID}/council/reviews/${seed.requestId}/commit`,
+        { intentHash: seed.intentHash },
+      );
+      expect(replay.status).toBe(202);
+      const replayEnvelope = await envelope<unknown>(replay);
+      if (!replayEnvelope.ok)
+        throw new Error("The replayed commit returned an error envelope.");
+      const replayReceipt = projectCouncilReceiptSchema.safeParse(
+        replayEnvelope.data,
+      );
+      if (!replayReceipt.success)
+        throw new Error("The replayed commit receipt is not strict.");
+      expect(replayReceipt.data).toMatchObject({
+        metadata: {
+          requestId: seed.requestId,
+          runId: seed.runId,
+          intentHash: seed.intentHash,
+          state: "completed",
+        },
+        phase: "completed",
+      });
+      expect(await runIds(h)).toEqual(runsBeforeReplay);
+      expect(h.commands.calls).toHaveLength(callsBeforeReplay);
+    },
+  },
+  "POST /projects/:id/council/reviews/:requestId/retire": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/council/reviews/not-seeded/retire`,
+      body: { intentHash: "0".repeat(64) },
+      status: 200,
+      target: "not-seeded",
+      audit: { inputHash: "0".repeat(64) },
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/council/reviews/not-a-uuid/retire`,
+      body: { intentHash: "0".repeat(64) },
+    },
+    prepare: async (h) => {
+      const seed = await seedProjectCouncilOriginal(
+        h,
+        "API inventory retired review fixture.",
+      );
+      const fixture =
+        ACTIONS["POST /projects/:id/council/reviews/:requestId/retire"]!;
+      fixture.valid.path = `/projects/${FIXTURE_PROJECT_ID}/council/reviews/${seed.requestId}/retire`;
+      fixture.valid.body = { intentHash: seed.intentHash };
+      fixture.valid.target = seed.requestId;
+      fixture.valid.audit = { inputHash: seed.intentHash };
+    },
+    happened: async (h, answer) => {
+      const seed = await seedProjectCouncilOriginal(
+        h,
+        "API inventory retired review fixture.",
+      );
+      const receipt = projectCouncilReceiptSchema.safeParse(answer);
+      if (!receipt.success)
+        throw new Error("The retire action did not return a strict receipt.");
+      expect(receipt.data).toMatchObject({
+        metadata: {
+          requestId: seed.requestId,
+          runId: seed.runId,
+          intentHash: seed.intentHash,
+          state: "retired",
+        },
+        phase: "retired",
+      });
+    },
+  },
+  "POST /projects/:id/council/reviews/:requestId/cancel": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/council/reviews/not-seeded/cancel`,
+      body: { intentHash: "0".repeat(64) },
+      status: 200,
+      target: "not-seeded",
+      audit: { inputHash: "0".repeat(64) },
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/council/reviews/not-a-uuid/cancel`,
+      body: { intentHash: "0".repeat(64) },
+    },
+    prepare: async (h) => {
+      const seed = await seedProjectCouncilOriginal(
+        h,
+        "API inventory cancelled review fixture.",
+      );
+      await commitProjectCouncilOriginal(h, seed);
+      const fixture =
+        ACTIONS["POST /projects/:id/council/reviews/:requestId/cancel"]!;
+      fixture.valid.path = `/projects/${FIXTURE_PROJECT_ID}/council/reviews/${seed.requestId}/cancel`;
+      fixture.valid.body = { intentHash: seed.intentHash };
+      fixture.valid.target = seed.requestId;
+      fixture.valid.audit = { inputHash: seed.intentHash };
+    },
+    settled: async (h) => {
+      const seed = await seedProjectCouncilOriginal(
+        h,
+        "API inventory cancelled review fixture.",
+      );
+      await councilRunFinished(h, seed.runId);
+    },
+    happened: async (h, answer) => {
+      const seed = await seedProjectCouncilOriginal(
+        h,
+        "API inventory cancelled review fixture.",
+      );
+      const receipt = projectCouncilReceiptSchema.safeParse(answer);
+      if (!receipt.success)
+        throw new Error("The cancel action did not return a strict receipt.");
+      expect(receipt.data).toMatchObject({
+        metadata: {
+          requestId: seed.requestId,
+          runId: seed.runId,
+          intentHash: seed.intentHash,
+          state: expect.stringMatching(/^(completed|cancelled)$/),
+        },
+        phase: expect.stringMatching(/^(completed|cancelled)$/),
+      });
+    },
+  },
   "POST /council/preview": {
     valid: {
       path: "/council/preview",
@@ -3340,6 +4245,13 @@ const ACTIONS: Record<string, ActionFixture> = {
 
 /** A concrete path per read row; a row with none fails the suite. */
 const READS: Record<string, string> = {
+  "GET /projects/:id/runs/:slug/checkpoints/:beadId/reviews":
+    checkpointReviewPath(FIXTURE_PROJECT_ID),
+  "GET /projects/:id/runs/:slug/checkpoints/:beadId/reviews/:requestId":
+    checkpointReviewPath(FIXTURE_PROJECT_ID, API_CHECKPOINT_REVIEW_ID),
+  "GET /projects/:id/council/reviews": `/projects/${FIXTURE_PROJECT_ID}/council/reviews`,
+  "GET /projects/:id/council/reviews/:requestId": `/projects/${FIXTURE_PROJECT_ID}/council/reviews/${API_PROJECT_CREATE_READ_ID}`,
+  "GET /projects/:id/council/reviews/:requestId/run": `/projects/${FIXTURE_PROJECT_ID}/council/reviews/${API_PROJECT_CREATE_READ_ID}/run`,
   "GET /projects/create-options": "/projects/create-options",
   "GET /projects/create-scope-preview":
     "/projects/create-scope-preview?slug=alpha&epicId=alpha-epic",
@@ -3353,6 +4265,7 @@ const READS: Record<string, string> = {
   "GET /projects/:id/session-operation-identities": `/projects/${FIXTURE_PROJECT_ID}/session-operation-identities`,
   "GET /projects/:id/runs": `/projects/${FIXTURE_PROJECT_ID}/runs`,
   "GET /projects/:id/runs/:slug": `/projects/${FIXTURE_PROJECT_ID}/runs/demo`,
+  "GET /projects/:id/runs/:slug/artifacts/:kind": `/projects/${FIXTURE_PROJECT_ID}/runs/demo/artifacts/research`,
   "GET /projects/:id/shifts": `/projects/${FIXTURE_PROJECT_ID}/shifts`,
   "GET /projects/:id/shifts/requests/:requestId": `/projects/${FIXTURE_PROJECT_ID}/shifts/requests/${FIXTURE_SHIFT_START.requestId}`,
   "GET /projects/:id/shifts/requests/:requestId/attempts": `/projects/${FIXTURE_PROJECT_ID}/shifts/requests/${FIXTURE_SHIFT_START.requestId}/attempts`,
@@ -3373,6 +4286,7 @@ const READS: Record<string, string> = {
   "GET /projects/:id/activity": `/projects/${FIXTURE_PROJECT_ID}/activity`,
   "GET /projects/:id/activity/:eventId": `/projects/${FIXTURE_PROJECT_ID}/activity/1`,
   "GET /projects/:id/sessions/:sessionId": `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_OWNED_SESSION_ID}`,
+  "GET /projects/:id/sessions/:sessionId/terminal-handoff": `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_TERMINAL_HANDOFF_SESSION}/terminal-handoff`,
   "GET /projects/:id/sessions/:sessionId/owner-release": `/projects/${FIXTURE_PROJECT_ID}/sessions/${FIXTURE_CHAT_SESSION}/owner-release`,
   "GET /projects/:id/sessions/:sessionId/fork-turns": `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_CODEX_CHAT_FORK_CONTROL_CHILD_ID}/fork-turns`,
   "GET /projects/:id/sessions/:sessionId/fork-review": `/projects/${FIXTURE_PROJECT_ID}/sessions/${API_CODEX_CHAT_FORK_SOURCE.sessionId}/fork-review?throughTurnRequestId=${API_CODEX_CHAT_FORK_SOURCE.turnRequestId}`,
@@ -3387,6 +4301,8 @@ const READS: Record<string, string> = {
     "/projects/project-a5832fa0-7a21-403b-8184-44892f0d8d86/overview",
   "GET /projects/:id/keeper": `/projects/${FIXTURE_PROJECT_ID}/keeper`,
   "GET /projects/:id/keeper/briefs": `/projects/${FIXTURE_PROJECT_ID}/keeper/briefs`,
+  "GET /projects/:id/keeper/brief-intents": `/projects/${FIXTURE_PROJECT_ID}/keeper/brief-intents`,
+  "GET /projects/:id/keeper/brief-intents/:requestId": `/projects/${FIXTURE_PROJECT_ID}/keeper/brief-intents/9b77d65d-18f9-4a15-ab82-8f48dfab6b02`,
   "GET /projects/:id/keeper/recovery": `/projects/${FIXTURE_PROJECT_ID}/keeper/recovery`,
   "GET /projects/:id/keeper/proposals": `/projects/${FIXTURE_PROJECT_ID}/keeper/proposals`,
   "GET /projects/:id/keeper/read": `/projects/${FIXTURE_PROJECT_ID}/keeper/read?kind=beads`,
@@ -3794,7 +4710,7 @@ describe("every action row (iterating the table)", () => {
     });
     diagnostics.push(...diagnosticTimers);
     try {
-      const started = await probed();
+      const started = await probed({ api: terminalHandoffFixture.api });
       const h = started.h;
       probes = started.probes;
       const rows = actionRows(h);
@@ -3868,6 +4784,8 @@ describe("every action row (iterating the table)", () => {
             (event) => ({ row: key(row), ...event }),
           ),
         ]);
+        if (valid.beadId !== undefined)
+          expect(added[0]?.beadId).toBe(valid.beadId);
 
         // The effect ran once, and that row was already stored when it started.
         const calls = probes.slice(seen);
@@ -4369,11 +5287,15 @@ describe("a read row or the stream while another connection holds the write lock
       return { status: 1, stdout: "", stderr: "" };
     };
     const h = await start({
-      files: { ".tmp/work/forge-runs/demo.json": RUN_STATE },
+      files: {
+        ".tmp/work/forge-runs/demo.json": RUN_STATE,
+        "plans/research/demo.md": "# Recorded research\n",
+      },
       api: { git },
     });
     workspace = h.workspace;
     await seedOwnedSession(h);
+    await seedTerminalHandoffSession(h);
     await seedChatDecision(h);
     await seedProjectShift(h);
     await seedProjectShiftAttempt(h);
@@ -4387,9 +5309,11 @@ describe("a read row or the stream while another connection holds the write lock
       API_PROJECT_CREATE_READ_ID,
       "cold-ledger-project-read",
     );
+    projectCouncilPaths(await seedProjectCouncilReadOriginal(h));
     await seedSmithCreateOriginal(h);
     await seedSmithEditOriginal(h);
     await seedSmithRoutingEditOriginal(h);
+    await seedCheckpointReviewRead(h);
     // Seed the private Fork journal without an audited HTTP action, which
     // would open the otherwise-cold ledger before this lock assertion.
     await seedForkReadChild(h);
@@ -5483,7 +6407,10 @@ describe("Session Start identity actions", () => {
 describe("every read row (iterating the table)", () => {
   test("answers a valid envelope for its fixture path", async () => {
     const h = await start({
-      files: { ".tmp/work/forge-runs/demo.json": RUN_STATE },
+      files: {
+        ".tmp/work/forge-runs/demo.json": RUN_STATE,
+        "plans/research/demo.md": "# Recorded research\n",
+      },
       api: { git: fixtureSessionGit },
     });
     await seedOwnedSession(h);
@@ -5507,6 +6434,8 @@ describe("every read row (iterating the table)", () => {
       API_PROJECT_CREATE_READ_ID,
       "api-project-read",
     );
+    projectCouncilPaths(await seedProjectCouncilReadOriginal(h));
+    await seedCheckpointReviewRead(h);
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");
     for (const row of rows) {
@@ -5536,7 +6465,10 @@ describe("every read row (iterating the table)", () => {
 
   test("refuses a request that does not declare the hearth's own origin, and appends nothing", async () => {
     const h = await start({
-      files: { ".tmp/work/forge-runs/demo.json": RUN_STATE },
+      files: {
+        ".tmp/work/forge-runs/demo.json": RUN_STATE,
+        "plans/research/demo.md": "# Recorded research\n",
+      },
       api: { git: fixtureSessionGit },
     });
     await seedOwnedSession(h);
@@ -5544,6 +6476,7 @@ describe("every read row (iterating the table)", () => {
     await seedProjectShift(h);
     await seedProjectShiftAttempt(h);
     seedProjectBeadWriteFixture(h);
+    await seedCheckpointReviewRead(h);
     const before = seedActivityReadFixture(h);
     await seedKeeperSessionStartHistory(h);
     await seedKeeperShiftStartHistory(h);
@@ -5560,6 +6493,7 @@ describe("every read row (iterating the table)", () => {
       API_PROJECT_CREATE_READ_ID,
       "api-project-read",
     );
+    projectCouncilPaths(await seedProjectCouncilReadOriginal(h));
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");
     const refused: Array<[string, Record<string, string>]> = [

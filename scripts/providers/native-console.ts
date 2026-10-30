@@ -95,32 +95,46 @@ export interface NativeConsoleExit {
   stopped: boolean;
   timedOut: boolean;
 }
+/** Exact source-proven CreateProcessW refusal; no native process was created. */
+export class NativeConsoleNotStartedError extends Error {
+  constructor() {
+    super("The vendor terminal could not be opened. No CLI ran.");
+    this.name = "NativeConsoleNotStartedError";
+  }
+}
 export interface NativeConsoleChild {
   pid: number;
   done: Promise<NativeConsoleExit>;
   stop(): Promise<NativeConsoleExit>;
 }
 
+export type NativeConsoleLaunchOptions = {
+  command: readonly string[];
+  cwd: string;
+  env: Readonly<Record<string, string>>;
+  /** Hidden inert fixtures only; the product always opens the vendor's own console. */
+  visible?: boolean;
+} & (
+  | { lifetime?: { kind: "bounded" } | undefined; timeoutMs: number }
+  | { lifetime: { kind: "managed" }; timeoutMs?: never }
+);
+
 /** Server-only primitive. The public action supplies a fixed vendor command, never caller argv. */
 export function launchWindowsConsole(
-  options: {
-    command: readonly string[];
-    cwd: string;
-    env: Readonly<Record<string, string>>;
-    timeoutMs: number;
-    /** Hidden inert fixtures only; the product always opens the vendor's own console. */
-    visible?: boolean;
-  },
+  options: NativeConsoleLaunchOptions,
   deps: { guard?: typeof guardSuspendedWindowsProcess } = {},
 ): NativeConsoleChild {
   if (process.platform !== "win32" || process.arch !== "x64")
     throw Error("Native sign-in terminals require Windows x64.");
+  const managed = options.lifetime?.kind === "managed";
   if (
     !win32.isAbsolute(options.cwd) ||
     options.cwd.includes("\0") ||
-    !Number.isFinite(options.timeoutMs) ||
-    options.timeoutMs < 1 ||
-    options.timeoutMs > 900000
+    (options.lifetime?.kind !== "managed" &&
+      (typeof options.timeoutMs !== "number" ||
+        !Number.isFinite(options.timeoutMs) ||
+        options.timeoutMs < 1 ||
+        options.timeoutMs > 900000))
   )
     throw Error("The native terminal bounds or working directory are invalid.");
   const command = windowsConsoleCommand(options.command),
@@ -151,7 +165,7 @@ export function launchWindowsConsole(
       ptr(information),
     ) === 0
   )
-    throw Error("The vendor terminal could not be opened. No CLI ran.");
+    throw new NativeConsoleNotStartedError();
   const info = new DataView(information.buffer),
     // justification: successful CreateProcessW filled these native HANDLE out-parameters.
     processHandle = Number(info.getBigUint64(0, true)) as Pointer,
@@ -176,7 +190,9 @@ export function launchWindowsConsole(
   let stopped = false,
     timedOut = false,
     settled = false;
-  const deadline = performance.now() + options.timeoutMs;
+  const deadline = managed
+    ? Number.POSITIVE_INFINITY
+    : performance.now() + (options.timeoutMs ?? 0);
   const done = (async (): Promise<NativeConsoleExit> => {
     try {
       for (;;) {

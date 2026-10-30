@@ -1,5 +1,5 @@
 import type { JSX } from "preact";
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import { Button } from "../../../docs/js/ds/Button";
 import { Dialog } from "../../../docs/js/ds/Dialog";
 import { EmptyState } from "../../../docs/js/ds/EmptyState";
@@ -8,6 +8,15 @@ import { BeadWriteNotices, NewBeadForm } from "./BeadWrites";
 import { ConnectionBanner, useDesktopRecovery } from "./ConnectionBanner";
 import type { FrameSession } from "./DesktopFrame";
 import { DesktopFrame } from "./DesktopFrame";
+import {
+  captureForgeRunDraft,
+  type ForgeRunDraftSnapshot,
+  type ForgeRunPrefill,
+  forgeRunComposerPatch,
+  forgeRunDraftIsPristine,
+  forgeRunDraftMatches,
+  forgeRunPreparationHold,
+} from "./forge-run-prefill";
 import { KeeperConversation, KeeperScope } from "./KeeperConversation";
 import { KeeperShiftReviewDialog } from "./KeeperShiftReviewDialog";
 import type { KeeperSessionReview } from "./keeper-session-review";
@@ -17,6 +26,7 @@ import {
   managedShiftHref,
   managedShiftSelection,
 } from "./managed-shift-navigation";
+import { NewForgeRun } from "./NewForgeRun";
 import {
   desktopHref,
   desktopRoute,
@@ -33,6 +43,7 @@ import {
 } from "./ProjectActivity";
 import { BeadPanel, beadHref, ProjectBeads } from "./ProjectBeads";
 import { ProjectOverview } from "./ProjectOverview";
+import { ProjectReviews } from "./ProjectReviews";
 import { ProjectRuns } from "./ProjectRuns";
 import { ProjectSessions, SessionInspector } from "./ProjectSessions";
 import { ProjectShifts } from "./ProjectShifts";
@@ -44,10 +55,33 @@ import {
   emptyActivityFilters,
   parseActivityFilters,
 } from "./project-activity-model";
+import {
+  createProjectCheckpointReviewOwner,
+  type ProjectCheckpointReviewOwner,
+  type ProjectCheckpointReviewTarget,
+} from "./project-checkpoint-review-client";
+import {
+  createProjectCouncilDraftCache,
+  type PendingProjectCouncilSourceReplacement,
+  type ProjectCouncilDraftScope,
+  type ProjectCouncilSourcePrefill,
+} from "./project-council-draft";
+import {
+  createProjectCouncilReturnMemory,
+  type ProjectCouncilReturnFocus,
+  type ProjectCouncilReturnOrigin,
+  type ProjectCouncilSourceIntent,
+} from "./project-council-return";
+import type { VerifiedProjectCreate } from "./project-create-owner";
 import { parseRunFilters, runsHref } from "./project-runs-model";
 import { ClaudeSessionComposer, SessionComposer } from "./SessionComposer";
 import { SessionConversation } from "./SessionConversation";
 import { Smiths } from "./Smiths";
+import {
+  canContinueClaudeRateLimit,
+  validContinuationSummary,
+} from "./session-continuation";
+import type { VerifiedSessionIdentityScope } from "./session-start-identity-server";
 import { useBeadWrites } from "./use-bead-writes";
 import { useBeads } from "./use-beads";
 import { useKeeper } from "./use-keeper";
@@ -69,9 +103,76 @@ import { useSmithRoutingEdit } from "./use-smith-routing-edit";
 import { useSmiths } from "./use-smiths";
 import { useWorkbench } from "./use-workbench";
 
+function sameDesktopRoute(
+  left: ReturnType<typeof desktopRoute>,
+  right: ReturnType<typeof desktopRoute>,
+): boolean {
+  return (
+    left.destination === right.destination &&
+    left.projectId === right.projectId &&
+    left.selection?.kind === right.selection?.kind &&
+    left.selection?.id === right.selection?.id
+  );
+}
+
+function sameForgeRunIdentityScope(
+  left: VerifiedSessionIdentityScope | null,
+  right: VerifiedSessionIdentityScope | null,
+): boolean {
+  if (!left || !right) return left === right;
+  return (
+    left.projectId === right.projectId &&
+    left.workspace === right.workspace &&
+    left.generation === right.generation
+  );
+}
+
 /** Desktop routing stays separate from the ordinary dashboard's legacy URLs and snapshot mode. */
 export function DesktopApp(): JSX.Element {
   const [route, setRoute] = useState(() => desktopRoute(window.location.hash));
+  const forgeRouteGeneration = useRef(0);
+  useEffect(() => {
+    const changed = (event: HashChangeEvent) => {
+      if (event.oldURL !== event.newURL) forgeRouteGeneration.current++;
+    };
+    window.addEventListener("hashchange", changed);
+    return () => window.removeEventListener("hashchange", changed);
+  }, []);
+  const [finishBrief, setFinishBrief] = useState<VerifiedProjectCreate | null>(
+    null,
+  );
+  const councilDraftCache = useRef<ReturnType<
+    typeof createProjectCouncilDraftCache
+  > | null>(null);
+  if (!councilDraftCache.current)
+    councilDraftCache.current = createProjectCouncilDraftCache();
+  const councilReturnMemory = useRef(createProjectCouncilReturnMemory());
+  const [councilReturnFocus, setCouncilReturnFocus] =
+    useState<ProjectCouncilReturnFocus | null>(null);
+  const councilReturnFocusRef = useRef<ProjectCouncilReturnFocus | null>(null);
+  const [councilReturnNotice, setCouncilReturnNotice] = useState("");
+  const [, setCouncilReturnRevision] = useState(0);
+  const checkpointReviewOwners = useRef(
+    new Map<string, ProjectCheckpointReviewOwner>(),
+  );
+  useEffect(
+    () => () => {
+      for (const owner of checkpointReviewOwners.current.values())
+        owner.dispose();
+      checkpointReviewOwners.current.clear();
+    },
+    [],
+  );
+  const [councilSourceReplacement, setCouncilSourceReplacement] = useState<{
+    scope: ProjectCouncilDraftScope;
+    pending: PendingProjectCouncilSourceReplacement;
+    intent: ProjectCouncilSourceIntent;
+    focusSource: boolean;
+    error: string;
+  } | null>(null);
+  const [councilDraftGeneration, setCouncilDraftGeneration] = useState(0);
+  const [focusCouncilSource, setFocusCouncilSource] = useState(false);
+  const [councilDraftNotice, setCouncilDraftNotice] = useState("");
   const managedSelection = managedShiftSelection(window.location.hash);
   const [inspectorOpen, setInspectorOpen] = useState(
     () => window.matchMedia("(min-width: 1201px)").matches,
@@ -94,6 +195,329 @@ export function DesktopApp(): JSX.Element {
   const summary = projects.data?.summaries.find(
     (item) => item.projectId === project?.id,
   );
+  const currentCouncilScope: ProjectCouncilDraftScope | null =
+    project?.id && summary?.workspace
+      ? { projectId: project.id, workspace: summary.workspace }
+      : null;
+  const clearCouncilReturnPath = useCallback(() => {
+    councilReturnMemory.current.clear();
+    setCouncilReturnRevision((revision) => revision + 1);
+    setCouncilSourceReplacement(null);
+    councilReturnFocusRef.current = null;
+    setCouncilReturnFocus(null);
+    setCouncilReturnNotice("");
+  }, []);
+  const lastCouncilScope = useRef<ProjectCouncilDraftScope | null>(null);
+  useEffect(() => {
+    const previous = lastCouncilScope.current;
+    const next = currentCouncilScope;
+    if (
+      previous &&
+      (!next ||
+        previous.projectId !== next.projectId ||
+        previous.workspace !== next.workspace)
+    ) {
+      clearCouncilReturnPath();
+      setCouncilReturnNotice(
+        "The project workspace changed. The previous Run return path was cleared.",
+      );
+    }
+    lastCouncilScope.current = next;
+  }, [
+    clearCouncilReturnPath,
+    currentCouncilScope?.projectId,
+    currentCouncilScope?.workspace,
+  ]);
+  const lastRouteKey = useRef(
+    JSON.stringify([
+      route.destination,
+      route.projectId,
+      route.selection?.kind ?? null,
+      route.selection?.id ?? null,
+    ]),
+  );
+  const currentRouteKey = JSON.stringify([
+    route.destination,
+    route.projectId,
+    route.selection?.kind ?? null,
+    route.selection?.id ?? null,
+  ]);
+  useEffect(() => {
+    const previousKey = lastRouteKey.current;
+    if (previousKey !== currentRouteKey && route.destination !== "reviews") {
+      const focus = councilReturnFocusRef.current;
+      const isIntendedRun =
+        route.destination === "runs" &&
+        route.projectId === focus?.origin.projectId &&
+        route.selection?.kind === "run" &&
+        route.selection.id === focus.origin.runSlug;
+      const isSameScopeRunBrowse =
+        route.destination === "runs" &&
+        !!currentCouncilScope &&
+        route.projectId === currentCouncilScope.projectId &&
+        councilReturnMemory.current.get(currentCouncilScope) !== null;
+      if (!isIntendedRun && !isSameScopeRunBrowse) {
+        clearCouncilReturnPath();
+      }
+    }
+    const focus = councilReturnFocusRef.current;
+    if (
+      focus &&
+      route.destination !== "reviews" &&
+      !(
+        route.destination === "runs" &&
+        route.projectId === focus.origin.projectId &&
+        route.selection?.kind === "run" &&
+        route.selection.id === focus.origin.runSlug
+      )
+    ) {
+      clearCouncilReturnPath();
+    }
+    lastRouteKey.current = currentRouteKey;
+  }, [
+    clearCouncilReturnPath,
+    currentCouncilScope?.projectId,
+    currentCouncilScope?.workspace,
+    currentRouteKey,
+    route.destination,
+    route.projectId,
+    route.selection,
+  ]);
+  useEffect(() => {
+    if (
+      councilSourceReplacement &&
+      (councilSourceReplacement.scope.projectId !== project?.id ||
+        councilSourceReplacement.scope.workspace !== summary?.workspace)
+    ) {
+      setCouncilSourceReplacement(null);
+      setCouncilDraftNotice(
+        "The project workspace changed. The existing Council draft was kept; choose its source again from the current workspace.",
+      );
+    }
+  }, [councilSourceReplacement, project?.id, summary?.workspace]);
+  const openCouncilSource = (
+    source: ProjectCouncilSourcePrefill,
+    sourceWorkspace: string,
+    focusSource = false,
+    returnOrigin: ProjectCouncilReturnOrigin | null = null,
+  ) => {
+    if (
+      !project ||
+      !summary?.workspace ||
+      sourceWorkspace !== summary.workspace
+    ) {
+      setCouncilDraftNotice(
+        "This source is not from the current served project workspace. The existing Council draft was kept.",
+      );
+      return;
+    }
+    const scope = { projectId: project.id, workspace: summary.workspace };
+    const matchingOrigin =
+      returnOrigin &&
+      source.sourceType === "bead" &&
+      source.source === returnOrigin.checkpointId
+        ? returnOrigin
+        : null;
+    const intent = councilReturnMemory.current.begin(scope, matchingOrigin);
+    const result = councilDraftCache.current?.prefill(scope, source);
+    if (result?.kind === "confirmation-required") {
+      setCouncilSourceReplacement({
+        scope,
+        pending: result.pending,
+        intent,
+        focusSource,
+        error: "",
+      });
+      return;
+    }
+    if (result?.kind !== "applied") {
+      councilReturnMemory.current.reject(intent, scope);
+      setCouncilDraftNotice(
+        result?.reason === "capacity"
+          ? "The 32-draft limit is reached. Existing Council drafts were kept."
+          : result?.reason === "source-too-large"
+            ? "This source is too large for the private Council draft cache. The existing draft was kept."
+            : "A current served project workspace is required. The existing draft was kept.",
+      );
+      return;
+    }
+    if (!councilReturnMemory.current.apply(intent, scope)) {
+      setCouncilDraftNotice(
+        "This source request is no longer current. The existing Council draft and Run return path were kept.",
+      );
+      return;
+    }
+    setCouncilDraftNotice("");
+    setCouncilDraftGeneration((current) => current + 1);
+    setFocusCouncilSource(focusSource);
+    window.location.hash = desktopHref({
+      projectId: project.id,
+      destination: "reviews",
+      selection: null,
+    }).slice(1);
+  };
+  const keepCouncilDraft = () => {
+    if (!councilSourceReplacement) return;
+    if (
+      project?.id !== councilSourceReplacement.scope.projectId ||
+      summary?.workspace !== councilSourceReplacement.scope.workspace
+    ) {
+      setCouncilSourceReplacement(null);
+      setCouncilDraftNotice(
+        "The project workspace changed. The existing Council draft was kept.",
+      );
+      return;
+    }
+    if (
+      !councilReturnMemory.current.keep(
+        councilSourceReplacement.intent,
+        councilSourceReplacement.scope,
+      )
+    ) {
+      setCouncilSourceReplacement(null);
+      setCouncilDraftNotice(
+        "This source request is no longer current. The existing Council draft and Run return path were kept.",
+      );
+      return;
+    }
+    setCouncilSourceReplacement(null);
+    setCouncilDraftGeneration((current) => current + 1);
+    setFocusCouncilSource(false);
+    window.location.hash = desktopHref({
+      projectId: councilSourceReplacement.scope.projectId,
+      destination: "reviews",
+      selection: null,
+    }).slice(1);
+  };
+  const replaceCouncilDraftSource = () => {
+    if (!councilSourceReplacement) return;
+    if (
+      project?.id !== councilSourceReplacement.scope.projectId ||
+      summary?.workspace !== councilSourceReplacement.scope.workspace
+    ) {
+      setCouncilSourceReplacement(null);
+      setCouncilDraftNotice(
+        "The project workspace changed. The existing Council draft was kept.",
+      );
+      return;
+    }
+    if (
+      !councilReturnMemory.current.isCurrent(
+        councilSourceReplacement.intent,
+        councilSourceReplacement.scope,
+      )
+    ) {
+      setCouncilSourceReplacement((current) =>
+        current
+          ? {
+              ...current,
+              error:
+                "The source request is no longer current. Keep the existing draft and choose the source again.",
+            }
+          : current,
+      );
+      return;
+    }
+    const result = councilDraftCache.current?.confirm(
+      councilSourceReplacement.scope,
+      councilSourceReplacement.pending,
+    );
+    if (result?.kind === "stale") {
+      setCouncilSourceReplacement((current) =>
+        current
+          ? {
+              ...current,
+              error:
+                "The draft changed while this confirmation was open. Keep the current draft and review it again.",
+            }
+          : current,
+      );
+      return;
+    }
+    if (result?.kind !== "applied") {
+      councilReturnMemory.current.reject(
+        councilSourceReplacement.intent,
+        councilSourceReplacement.scope,
+      );
+      setCouncilDraftNotice(
+        result?.reason === "capacity"
+          ? "The 32-draft limit is reached. Existing Council drafts were kept."
+          : result?.reason === "source-too-large"
+            ? "This source is too large for the private Council draft cache. The existing draft was kept."
+            : "A current served project workspace is required. The existing draft was kept.",
+      );
+      setCouncilSourceReplacement(null);
+      return;
+    }
+    if (
+      !councilReturnMemory.current.apply(
+        councilSourceReplacement.intent,
+        councilSourceReplacement.scope,
+      )
+    ) {
+      setCouncilSourceReplacement((current) =>
+        current
+          ? {
+              ...current,
+              error:
+                "The source request changed before it could be applied. Keep the existing draft and choose the source again.",
+            }
+          : current,
+      );
+      return;
+    }
+    setCouncilDraftNotice("");
+    const projectId = councilSourceReplacement.scope.projectId;
+    setCouncilSourceReplacement(null);
+    setCouncilDraftGeneration((current) => current + 1);
+    setFocusCouncilSource(councilSourceReplacement.focusSource);
+    window.location.hash = desktopHref({
+      projectId,
+      destination: "reviews",
+      selection: null,
+    }).slice(1);
+  };
+  const returnToCouncilSourceRun = (
+    expectedOrigin: ProjectCouncilReturnOrigin,
+  ) => {
+    if (!currentCouncilScope) {
+      setCouncilReturnNotice(
+        "A verified project workspace is required to return to this Run.",
+      );
+      return;
+    }
+    const focus = councilReturnMemory.current.take(
+      currentCouncilScope,
+      expectedOrigin,
+    );
+    if (!focus) {
+      councilReturnMemory.current.clear();
+      setCouncilReturnNotice(
+        "The saved Run return path is no longer current. Select the Run again to inspect its checkpoint.",
+      );
+      return;
+    }
+    councilReturnFocusRef.current = focus;
+    setCouncilReturnFocus(focus);
+    setCouncilReturnNotice("");
+    window.location.hash = runsHref(
+      focus.origin.projectId,
+      focus.origin.runSlug,
+    ).slice(1);
+  };
+  const handleCouncilReturnFocus = (
+    focus: ProjectCouncilReturnFocus,
+    result: "focused" | "unavailable",
+  ) => {
+    if (councilReturnFocusRef.current?.generation !== focus.generation) return;
+    councilReturnFocusRef.current = null;
+    setCouncilReturnFocus(null);
+    setCouncilReturnNotice(
+      result === "focused"
+        ? "Returned to the exact Run checkpoint."
+        : "The Run checkpoint could not be freshly verified as in progress. Focus was not restored.",
+    );
+  };
   const activityFilters =
     route.destination === "activity"
       ? parseActivityFilters(window.location.hash)
@@ -115,6 +539,20 @@ export function DesktopApp(): JSX.Element {
     selectedActivityId,
   );
   const writesAllowed = recovery?.connection.writesAllowed ?? false;
+  const checkpointReviewOwner = (target: ProjectCheckpointReviewTarget) => {
+    const key = JSON.stringify([
+      target.projectId,
+      target.workspacePath,
+      target.runSlug,
+      target.beadId,
+    ]);
+    let owner = checkpointReviewOwners.current.get(key);
+    if (!owner) {
+      owner = createProjectCheckpointReviewOwner(target);
+      checkpointReviewOwners.current.set(key, owner);
+    }
+    return owner;
+  };
   const smithCreates = useSmithCreate(
     writesAllowed,
     providers.data?.workspace ?? null,
@@ -140,6 +578,7 @@ export function DesktopApp(): JSX.Element {
   );
   const beads = useBeads(
     route.destination === "beads" ||
+      route.destination === "runs" ||
       (route.destination === "workbench" && route.selection?.kind === "bead")
       ? (project?.id ?? null)
       : null,
@@ -192,6 +631,59 @@ export function DesktopApp(): JSX.Element {
     writesAllowed,
     providers.data,
   );
+  const actualRoute = desktopRoute(window.location.hash);
+  const renderedRouteMatchesActual = sameDesktopRoute(route, actualRoute);
+  const selectedRunSlug =
+    route.selection?.kind === "run" ? route.selection.id : null;
+  const currentRunPage = runs.view?.page;
+  const forgeRunCanOpen = Boolean(
+    renderedRouteMatchesActual &&
+      actualRoute.destination === "runs" &&
+      actualRoute.projectId === project?.id &&
+      project &&
+      !project.archived &&
+      writesAllowed &&
+      summary?.workspace &&
+      providers.data?.workspace === summary.workspace &&
+      project.workspaces.some((scope) => scope.root === summary.workspace) &&
+      runs.view &&
+      !runs.view.loading &&
+      !runs.view.error &&
+      runs.view.selectedSlug === selectedRunSlug &&
+      currentRunPage &&
+      currentRunPage.projectId === project.id &&
+      currentRunPage.workspace === summary.workspace &&
+      currentRunPage.coverage === "served-checkout-only" &&
+      currentRunPage.problems.length === 0,
+  );
+  const forgeRunCurrent = useRef<{
+    canOpen: boolean;
+    projectId: string | null;
+    workspace: string | null;
+    routeHash: string;
+    navigationGeneration: number;
+    renderedRoute: typeof route;
+    actualRoute: typeof actualRoute;
+    identityScope: VerifiedSessionIdentityScope | null;
+    beadsPage: typeof beads.data;
+    beadsLoading: boolean;
+    beadsError: string | null;
+    sessions: typeof sessions;
+  } | null>(null);
+  forgeRunCurrent.current = {
+    canOpen: forgeRunCanOpen,
+    projectId: project?.id ?? null,
+    workspace: summary?.workspace ?? null,
+    routeHash: window.location.hash,
+    navigationGeneration: forgeRouteGeneration.current,
+    renderedRoute: route,
+    actualRoute,
+    identityScope: sessions.currentIdentityScope(),
+    beadsPage: beads.data,
+    beadsLoading: beads.loading,
+    beadsError: beads.error,
+    sessions,
+  };
   const observationRows = project
     ? observations.rows(project.id, sessions.project(project.id).records)
     : [];
@@ -226,6 +718,15 @@ export function DesktopApp(): JSX.Element {
     writesAllowed,
   );
   const [composerOpen, setComposerOpen] = useState(false);
+  const [forgeRunReview, setForgeRunReview] = useState<{
+    projectId: string;
+    workspace: string;
+    routeHash: string;
+    navigationGeneration: number;
+    identityScope: VerifiedSessionIdentityScope | null;
+    draft: ForgeRunDraftSnapshot;
+  } | null>(null);
+  const forgeRunOpener = useRef<HTMLElement>(null);
   const reviews = useKeeperSessionReviews(writesAllowed, sessions);
   const shiftReviews = useKeeperShiftReviews(writesAllowed);
   const [sessionReview, setSessionReview] =
@@ -272,6 +773,147 @@ export function DesktopApp(): JSX.Element {
     setShiftReview(null);
   };
   const composerOpener = useRef<HTMLElement>(null);
+  const openNewForgeRun = () => {
+    const current = forgeRunCurrent.current;
+    const liveIdentityScope = current?.sessions.currentIdentityScope() ?? null;
+    const currentIdentityView = current?.projectId
+      ? current.sessions.project(current.projectId)
+      : null;
+    if (
+      !current?.canOpen ||
+      !current.projectId ||
+      !current.workspace ||
+      !sameForgeRunIdentityScope(current.identityScope, liveIdentityScope) ||
+      !currentIdentityView ||
+      current.routeHash !== window.location.hash ||
+      current.navigationGeneration !== forgeRouteGeneration.current ||
+      !sameDesktopRoute(
+        current.renderedRoute,
+        desktopRoute(window.location.hash),
+      ) ||
+      current.actualRoute.destination !== "runs" ||
+      current.actualRoute.projectId !== current.projectId
+    )
+      return;
+    forgeRunOpener.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    setForgeRunReview({
+      projectId: current.projectId,
+      workspace: current.workspace,
+      routeHash: current.routeHash,
+      navigationGeneration: current.navigationGeneration,
+      identityScope: liveIdentityScope,
+      draft: captureForgeRunDraft(currentIdentityView),
+    });
+  };
+  const validateForgeRunReview = (
+    expected: NonNullable<typeof forgeRunReview>,
+  ): { view: ReturnType<typeof sessions.project>; error: string | null } => {
+    const current = forgeRunCurrent.current;
+    const liveIdentityScope = current?.sessions.currentIdentityScope() ?? null;
+    if (
+      !current?.canOpen ||
+      current.projectId !== expected.projectId ||
+      current.workspace !== expected.workspace ||
+      current.routeHash !== expected.routeHash ||
+      window.location.hash !== expected.routeHash ||
+      current.navigationGeneration !== expected.navigationGeneration ||
+      current.navigationGeneration !== forgeRouteGeneration.current ||
+      !sameForgeRunIdentityScope(current.identityScope, liveIdentityScope) ||
+      !sameForgeRunIdentityScope(liveIdentityScope, expected.identityScope) ||
+      !sameDesktopRoute(
+        current.renderedRoute,
+        desktopRoute(window.location.hash),
+      ) ||
+      current.actualRoute.destination !== "runs" ||
+      current.actualRoute.projectId !== expected.projectId
+    )
+      return {
+        view: sessions.project(expected.projectId),
+        error:
+          "The project, workspace, or Runs view changed. Close this preparation and review it again from the current Runs page.",
+      };
+    const view = current.sessions.project(expected.projectId);
+    const hold = forgeRunPreparationHold(view, liveIdentityScope);
+    if (hold) return { view, error: hold };
+    if (!forgeRunDraftMatches(expected.draft, view))
+      return {
+        view,
+        error:
+          "A composer draft or session identity changed while you reviewed this prompt. Reopen preparation to review the current state.",
+      };
+    return { view, error: null };
+  };
+  const validateForgeRunBead = (
+    current: NonNullable<typeof forgeRunCurrent.current>,
+    prefill: ForgeRunPrefill,
+    expected: NonNullable<typeof forgeRunReview>,
+  ): string | null => {
+    if (!prefill.beadId) return null;
+    const page = current.beadsPage;
+    if (
+      !page ||
+      current.beadsLoading ||
+      current.beadsError ||
+      page.projectId !== expected.projectId ||
+      page.workspace !== expected.workspace ||
+      !page.complete ||
+      page.problems.length > 0 ||
+      !page.beads.some(
+        (bead) =>
+          bead.id === prefill.beadId &&
+          (bead.type === "feature" || bead.type === "epic"),
+      )
+    )
+      return "That feature or epic is no longer verified in this project workspace. Review the scoped bead list again.";
+    return null;
+  };
+  const applyForgeRunPrefill = (prefill: ForgeRunPrefill) => {
+    if (!forgeRunReview)
+      return "This forge-run review is no longer current. Reopen preparation from the Runs page.";
+    const checked = validateForgeRunReview(forgeRunReview);
+    if (checked.error) return checked.error;
+    const current = forgeRunCurrent.current;
+    if (!current)
+      return "The current Runs scope is unavailable. Reopen preparation.";
+    const beadError = validateForgeRunBead(current, prefill, forgeRunReview);
+    if (beadError) return beadError;
+    current.sessions.chooseComposerProvider(forgeRunReview.projectId, "claude");
+    current.sessions.editComposer(
+      forgeRunReview.projectId,
+      forgeRunComposerPatch(prefill),
+    );
+    composerOpener.current = forgeRunOpener.current;
+    setForgeRunReview(null);
+    setComposerOpen(true);
+    return null;
+  };
+  const continueForgeRunToComposer = (prefill: ForgeRunPrefill) => {
+    if (!forgeRunReview)
+      return "Reopen preparation from the current Runs page.";
+    const checked = validateForgeRunReview(forgeRunReview);
+    if (checked.error) return checked.error;
+    const current = forgeRunCurrent.current;
+    if (!current)
+      return "The current Runs scope is unavailable. Reopen preparation.";
+    const beadError = validateForgeRunBead(current, prefill, forgeRunReview);
+    if (beadError) return beadError;
+    return forgeRunDraftIsPristine(forgeRunReview.draft)
+      ? (applyForgeRunPrefill(prefill) ?? "applied")
+      : "confirm";
+  };
+  const keepForgeRunDraft = () => {
+    if (!forgeRunReview)
+      return "Reopen preparation from the current Runs page.";
+    const checked = validateForgeRunReview(forgeRunReview);
+    if (checked.error) return checked.error;
+    composerOpener.current = forgeRunOpener.current;
+    setForgeRunReview(null);
+    setComposerOpen(true);
+    return null;
+  };
   const openSession = (beadId?: string) => {
     if (!project || project.archived) return;
     composerOpener.current =
@@ -280,6 +922,71 @@ export function DesktopApp(): JSX.Element {
         : null;
     if (beadId) sessions.editComposer(project.id, { beadId });
     setComposerOpen(true);
+  };
+  const continueToChat = (
+    handoffSummary: string,
+    sourceSessionId: string,
+    target: "codex" | "gemini",
+  ) => {
+    if (
+      !project ||
+      project.archived ||
+      !writesAllowed ||
+      selectedOwnedSession !== sourceSessionId ||
+      !validContinuationSummary(handoffSummary)
+    )
+      return false;
+    const currentProject = sessions.project(project.id),
+      currentView = sessions.session(project.id, sourceSessionId);
+    if (
+      !canContinueClaudeRateLimit({
+        projectId: project.id,
+        workspace: summary?.workspace ?? null,
+        writable: writesAllowed,
+        archived: project.archived,
+        record:
+          currentProject.records.find(
+            (record) => record.id === sourceSessionId,
+          ) ?? null,
+        page: currentView.page,
+        loaded: currentView.loaded,
+        live: currentView.live,
+        feedInterrupted: currentView.feedInterrupted,
+        readError: currentView.readError,
+        stopping: !!currentView.stopping,
+        stopPosting: currentView.stopPosting,
+        stopUnknown: currentView.stopUnknown,
+        pending: !!currentView.pending,
+        posting: currentView.posting,
+        identity: {
+          page: currentProject.identityPage,
+          loading: currentProject.identityLoading,
+          generation: currentProject.identityGeneration,
+          startIdentity: currentProject.startIdentity,
+          pendingStart: !!currentProject.pendingStart,
+          starting: currentProject.starting,
+          startIdentityError: currentProject.startIdentityError,
+          legacyIdentityError: currentProject.legacyIdentityError,
+          legacyIdentityUnavailable: currentProject.legacyIdentityUnavailable,
+          inspection: currentProject.identityInspection,
+        },
+      })
+    )
+      return false;
+    sessions.chooseComposerProvider(project.id, target);
+    if (target === "gemini") sessions.chooseGeminiMode(project.id, "chat");
+    else sessions.chooseCodexMode(project.id, "chat");
+    sessions.editComposer(project.id, {
+      prompt: handoffSummary.trim(),
+      attachments: [],
+      about: [{ kind: "session", id: sourceSessionId }],
+    });
+    composerOpener.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    setComposerOpen(true);
+    return true;
   };
   const keeper = useKeeper(project?.id ?? null, writesAllowed);
   const proposals = useKeeperProposals(
@@ -394,6 +1101,33 @@ export function DesktopApp(): JSX.Element {
     "Projects";
   return (
     <>
+      <Dialog
+        open={!!councilSourceReplacement}
+        title="Replace Council draft source?"
+        titleId="af-council-source-replacement-title"
+        onClose={() => setCouncilSourceReplacement(null)}
+        class="af-session-dialog"
+      >
+        {councilSourceReplacement && (
+          <>
+            <p>
+              This project and workspace already have a Council draft with a
+              source. Keep the current draft or replace only its source?
+            </p>
+            <p>Profile and review options stay with the draft.</p>
+            {councilSourceReplacement.error && (
+              <p role="alert">{councilSourceReplacement.error}</p>
+            )}
+            <div class="af-button-row">
+              <Button onClick={keepCouncilDraft}>Keep draft</Button>
+              <Button variant="primary" onClick={replaceCouncilDraftSource}>
+                Replace source
+              </Button>
+            </div>
+          </>
+        )}
+      </Dialog>
+      {councilDraftNotice && <p role="alert">{councilDraftNotice}</p>}
       <DesktopFrame
         providers={providers.data}
         providerStale={providers.stale}
@@ -449,6 +1183,13 @@ export function DesktopApp(): JSX.Element {
               page={beads.data}
               sessions={summary?.sessions ?? []}
               sessionsComplete={summary?.sessionsComplete ?? false}
+              onCouncilPrefill={(id) =>
+                beads.data?.workspace &&
+                openCouncilSource(
+                  { sourceType: "bead", source: id },
+                  beads.data.workspace,
+                )
+              }
               onAskKeeper={openKeeper}
               writes={beadWrites}
               onStart={
@@ -462,6 +1203,14 @@ export function DesktopApp(): JSX.Element {
               session={summary?.sessions.find(
                 (session) => session.sessionId === route.selection?.id,
               )}
+              onCouncilSummary={() =>
+                summary?.workspace &&
+                openCouncilSource(
+                  { sourceType: "text", source: "" },
+                  summary.workspace,
+                  true,
+                )
+              }
               onAskKeeper={openKeeper}
             />
           ) : route.destination === "keeper" && project ? (
@@ -559,6 +1308,14 @@ export function DesktopApp(): JSX.Element {
             writesAllowed={recovery?.connection.writesAllowed ?? false}
             reload={projects.reload}
             change={projects.change}
+            onCreated={(created) => {
+              setFinishBrief(created);
+              window.location.hash = desktopHref({
+                projectId: created.projectId,
+                destination: "overview",
+                selection: null,
+              });
+            }}
           />
         ) : route.destination === "providers" ? (
           <Providers
@@ -583,6 +1340,15 @@ export function DesktopApp(): JSX.Element {
             active={!keeperOpen}
             onReviewSession={openSessionReview}
             onReviewShift={openShiftReview}
+            onCouncilSummary={() => {
+              setKeeperOpen(false);
+              if (summary?.workspace)
+                openCouncilSource(
+                  { sourceType: "text", source: "" },
+                  summary.workspace,
+                  true,
+                );
+            }}
           />
         ) : route.destination === "beads" && project ? (
           fullBead && route.selection?.kind === "bead" ? (
@@ -609,6 +1375,13 @@ export function DesktopApp(): JSX.Element {
                 page={beads.data}
                 sessions={summary?.sessions ?? []}
                 sessionsComplete={summary?.sessionsComplete ?? false}
+                onCouncilPrefill={(id) =>
+                  beads.data?.workspace &&
+                  openCouncilSource(
+                    { sourceType: "bead", source: id },
+                    beads.data.workspace,
+                  )
+                }
                 onAskKeeper={openKeeper}
                 writes={beadWrites}
                 onStart={
@@ -684,6 +1457,9 @@ export function DesktopApp(): JSX.Element {
             selectedId={
               route.selection?.kind === "bead" ? route.selection.id : null
             }
+            onCouncilPrefill={(id, workspace) =>
+              openCouncilSource({ sourceType: "bead", source: id }, workspace)
+            }
             onSelect={(id) => {
               setInspectorOpen(true);
               window.location.hash = desktopHref({
@@ -693,11 +1469,60 @@ export function DesktopApp(): JSX.Element {
               }).slice(1);
             }}
           />
+        ) : route.destination === "reviews" && project ? (
+          <ProjectReviews
+            key={`${project.id}:${summary?.workspace ?? ""}`}
+            projectId={project.id}
+            workspace={summary?.workspace ?? null}
+            archived={project.archived}
+            writesAllowed={writesAllowed}
+            draftCache={councilDraftCache.current}
+            draftGeneration={councilDraftGeneration}
+            focusSource={focusCouncilSource}
+            returnOrigin={
+              currentCouncilScope
+                ? councilReturnMemory.current.get(currentCouncilScope)
+                : null
+            }
+            onReturnToRun={returnToCouncilSourceRun}
+            onSourceIdentityChanged={clearCouncilReturnPath}
+          />
         ) : route.destination === "runs" && project ? (
           <ProjectRuns
             key={project.id}
             projectId={project.id}
+            workspace={summary?.workspace ?? null}
             controller={runs}
+            beads={{
+              page: beads.data,
+              loading: beads.loading,
+              error: beads.error,
+            }}
+            onCouncilArtifactPrefill={openCouncilSource}
+            onCouncilBeadPrefill={(source, sourceWorkspace, origin) =>
+              openCouncilSource(source, sourceWorkspace, false, origin)
+            }
+            {...(forgeRunCanOpen ? { onNewForgeRun: openNewForgeRun } : {})}
+            returnFocus={
+              councilReturnFocus &&
+              councilReturnFocusRef.current?.generation ===
+                councilReturnFocus.generation &&
+              route.destination === "runs" &&
+              route.projectId === councilReturnFocus.origin.projectId &&
+              route.selection?.kind === "run" &&
+              route.selection.id === councilReturnFocus.origin.runSlug &&
+              currentCouncilScope &&
+              currentCouncilScope.projectId ===
+                councilReturnFocus.origin.projectId &&
+              currentCouncilScope.workspace ===
+                councilReturnFocus.origin.workspace
+                ? councilReturnFocus
+                : null
+            }
+            returnFocusNotice={councilReturnNotice}
+            onReturnFocusHandled={handleCouncilReturnFocus}
+            checkpointReviewOwner={checkpointReviewOwner}
+            checkpointReviewsWritable={writesAllowed && !project.archived}
             filters={runFilters.filters}
             filterError={runFilters.error}
             onFilter={(filters) => {
@@ -735,6 +1560,16 @@ export function DesktopApp(): JSX.Element {
             key={project.id}
             projectId={project.id}
             keeper={keeper}
+            onboardingRequestId={
+              finishBrief?.projectId === project.id
+                ? finishBrief.requestId
+                : undefined
+            }
+            onFinishFirstBrief={(requestId) =>
+              setFinishBrief((current) =>
+                current?.requestId === requestId ? null : current,
+              )
+            }
           />
         ) : route.destination === "sessions" &&
           project &&
@@ -769,6 +1604,8 @@ export function DesktopApp(): JSX.Element {
             writesAllowed={writesAllowed}
             archived={project.archived}
             library={sessionLibrary}
+            workspace={summary?.workspace ?? null}
+            onContinueToChat={continueToChat}
           />
         ) : route.destination === "sessions" && project && selectedSession ? (
           <ObservedSessionDetail
@@ -849,6 +1686,42 @@ export function DesktopApp(): JSX.Element {
         )}
       </Dialog>
       <Dialog
+        open={Boolean(
+          forgeRunReview &&
+            project?.id === forgeRunReview.projectId &&
+            summary?.workspace === forgeRunReview.workspace &&
+            route.destination === "runs" &&
+            window.location.hash === forgeRunReview.routeHash &&
+            forgeRouteGeneration.current ===
+              forgeRunReview.navigationGeneration &&
+            sameForgeRunIdentityScope(
+              sessions.currentIdentityScope(),
+              forgeRunReview.identityScope,
+            ),
+        )}
+        title={`Prepare forge run · ${project?.name ?? ""}`}
+        titleId="af-new-forge-run-title"
+        onClose={() => setForgeRunReview(null)}
+        returnFocusRef={forgeRunOpener}
+        class="af-new-forge-run-dialog"
+        initialFocus="content"
+      >
+        {forgeRunReview && (
+          <NewForgeRun
+            key={`${forgeRunReview.projectId}:${forgeRunReview.workspace}:${forgeRunReview.routeHash}`}
+            projectId={forgeRunReview.projectId}
+            workspace={forgeRunReview.workspace}
+            beadsPage={beads.data}
+            beadsLoading={beads.loading}
+            beadsError={beads.error}
+            onContinue={continueForgeRunToComposer}
+            onReplace={applyForgeRunPrefill}
+            onKeep={keepForgeRunDraft}
+            onCancel={() => setForgeRunReview(null)}
+          />
+        )}
+      </Dialog>
+      <Dialog
         open={composerOpen && Boolean(project)}
         title={`New session · ${project?.name ?? ""}`}
         titleId="af-session-composer-title"
@@ -919,6 +1792,15 @@ export function DesktopApp(): JSX.Element {
               onNavigate={() => setKeeperOpen(false)}
               onReviewSession={openSessionReview}
               onReviewShift={openShiftReview}
+              onCouncilSummary={() => {
+                setKeeperOpen(false);
+                if (summary?.workspace)
+                  openCouncilSource(
+                    { sourceType: "text", source: "" },
+                    summary.workspace,
+                    true,
+                  );
+              }}
             />
           </>
         )}

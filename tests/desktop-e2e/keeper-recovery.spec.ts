@@ -513,7 +513,7 @@ test("exhaustion, missing Keeper adapter and unavailable reporting have distinct
   }
 });
 
-test("Overview explains why its brief Refresh is unavailable and links to Keeper recovery", async ({
+test("Overview leaves brief review available while Keeper send readiness is unavailable", async ({
   page,
 }) => {
   const reason =
@@ -537,9 +537,11 @@ test("Overview explains why its brief Refresh is unavailable and links to Keeper
   await openSettled(page, `/index.html#/desktop/project/${alpha.id}/overview`);
   const brief = page.getByRole("region", { name: "Keeper brief", exact: true });
   await expect(
-    brief.getByRole("button", { name: "Refresh brief", exact: true }),
-  ).toBeDisabled();
-  await expect(brief.getByText(reason, { exact: false })).toBeVisible();
+    brief.getByRole("button", { name: "Review a brief", exact: true }),
+  ).toBeEnabled();
+  await expect(
+    brief.getByText("Keeper cannot send a brief yet.", { exact: false }),
+  ).toBeVisible();
   await brief.getByRole("link", { name: "Review Keeper readiness" }).click();
   await expect(page).toHaveURL(new RegExp(`/project/${alpha.id}/keeper$`));
   expect(state().turns).toHaveLength(1);

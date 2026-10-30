@@ -181,6 +181,7 @@ export function KeeperConversation({
   onScope,
   onReviewSession,
   onReviewShift,
+  onCouncilSummary,
   active = true,
 }: {
   project: ProjectRecord;
@@ -201,6 +202,7 @@ export function KeeperConversation({
         requestId?: string,
       ) => void)
     | undefined;
+  onCouncilSummary?: (() => void) | undefined;
   active?: boolean;
 }): JSX.Element {
   const state = client.get(project.id);
@@ -317,6 +319,16 @@ export function KeeperConversation({
             </button>
           ) : (
             <span class="af-keeper-chip">Scope · {project.name}</span>
+          )}
+          {onCouncilSummary && (
+            <button
+              type="button"
+              class="af-keeper-chip"
+              title="Opens a blank summary; conversation content is not copied."
+              onClick={onCouncilSummary}
+            >
+              Write a Council summary
+            </button>
           )}
           <span class="af-keeper-context" title={context.detail}>
             {context.label}

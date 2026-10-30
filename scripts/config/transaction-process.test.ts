@@ -154,6 +154,8 @@ function fixtureStage(root: string, role: "hold" | "write") {
     } else if (existsSync(join(root, "write-cli-started"))) {
       return "cli-started" as const;
     }
+    if (existsSync(join(root, `${role}-config-loaded`)))
+      return "config-loaded" as const;
     if (existsSync(join(root, `${role}-child-started`)))
       return "child-started" as const;
     return "none" as const;
@@ -196,10 +198,12 @@ test("with no home given, --user writes config.toml in AGENT_FORGE_HOME, and sho
   const forgeHome = join(root, "moved forge home");
   const osHome = join(root, "os home");
   const file = join(forgeHome, "config.toml");
+  const movedHome = start(root, "moved-home");
   const { set, show } = envelope(
-    await start(root, "moved-home").done,
+    await movedHome.done,
     z.object({ set: cliOutcome, show: cliOutcome, file: z.string() }).strict(),
   );
+  expect(existsSync(join(root, "moved-home-config-loaded"))).toBe(true);
   expect(
     decode(
       set.stdout,
@@ -231,6 +235,7 @@ test("two actual writers in different profile and checkout spellings serialize w
   const holder = start(root, "hold");
   await marker(root, "holder-entered", holder, "hold");
   expect(existsSync(join(root, "hold-child-started"))).toBe(true);
+  expect(existsSync(join(root, "hold-config-loaded"))).toBe(true);
   expect(existsSync(join(root, "hold-transaction-prepared"))).toBe(true);
   expect(existsSync(join(root, "hold-transaction-entered"))).toBe(true);
   const lock = join(root, "coordination", "write.lock.db");
@@ -238,6 +243,7 @@ test("two actual writers in different profile and checkout spellings serialize w
   const writer = start(root, "write");
   await marker(root, "writer-entered", writer, "write");
   expect(existsSync(join(root, "write-child-started"))).toBe(true);
+  expect(existsSync(join(root, "write-config-loaded"))).toBe(true);
   // A separate acquisition refuses while the first process owns the lock.
   const context = prepareConfigTransaction({
     options: {
@@ -278,6 +284,7 @@ test("death of the actual lock owner releases it for a new scalar writer and kee
   const root = box();
   const holder = start(root, "hold");
   await marker(root, "holder-entered", holder, "hold");
+  expect(existsSync(join(root, "hold-config-loaded"))).toBe(true);
   const lock = join(root, "coordination", "write.lock.db");
   const heldIdentity = lstatSync(lock, { bigint: true });
   holder.process.kill();
@@ -285,7 +292,9 @@ test("death of the actual lock owner releases it for a new scalar writer and kee
   expect(existsSync(join(root, "shared workspace", "agent-forge.toml"))).toBe(
     false,
   );
-  const result = envelope(await start(root, "write").done, cliOutcome);
+  const writer = start(root, "write");
+  const result = envelope(await writer.done, cliOutcome);
+  expect(existsSync(join(root, "write-config-loaded"))).toBe(true);
   expect(result.code, result.stdout).toBe(0);
   expect(
     readFileSync(join(root, "shared workspace", "agent-forge.toml"), "utf8"),

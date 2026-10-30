@@ -12,8 +12,11 @@ import { smithsViewSchema } from "../../apps/desktop/src/smiths-protocol";
 import { conversationPageSchema } from "../../scripts/conversations/protocol";
 import { OPERATOR_HEADER, SURFACE_HEADER } from "../../scripts/hearth/paths";
 import {
-  briefRefreshSchema,
   briefsSchema,
+  keeperBriefIntentMetadataSchema,
+  keeperBriefIntentOriginalSchema,
+  keeperBriefIntentReferenceSchema,
+  keeperBriefIntentReserveRequestSchema,
 } from "../../scripts/keeper/brief-protocol";
 import { keeperRecoveryPageSchema } from "../../scripts/keeper/recovery-protocol";
 import { resolveCheckout } from "../../scripts/ledger/workspace";
@@ -544,7 +547,7 @@ test("a reviewed project is created from its saved original and opens Overview",
   );
 });
 
-test("a created project gets its first Keeper brief only after explicit Refresh", async ({
+test("a created project reviews its exact first Keeper brief before explicit send", async ({
   page,
 }) => {
   setKeeperFixtureMode("brief");
@@ -567,18 +570,11 @@ test("a created project gets its first Keeper brief only after explicit Refresh"
     });
     await expect(panel).toContainText("No confirmed brief yet");
     await expect(
-      panel.getByRole("button", { name: "Refresh brief" }),
+      panel.getByRole("button", { name: "Review first brief" }),
     ).toBeEnabled();
     await expect.poll(() => keeperFixtureStarts()).toBe(startsBefore);
 
     const createPosts = expectedProjectCreatePosts(saved.requestId);
-    expect(posts).toEqual(createPosts);
-    await reloadSettled(page);
-    await expect(page.locator(".af-desktop-project-name")).toHaveText(
-      saved.original.name,
-    );
-    await expect(panel).toContainText("No confirmed brief yet");
-    await expect.poll(() => keeperFixtureStarts()).toBe(startsBefore);
     expect(posts).toEqual(createPosts);
 
     const token = await pageToken(page);
@@ -588,12 +584,15 @@ test("a created project gets its first Keeper brief only after explicit Refresh"
     };
     const initialReads = await page.evaluate(
       async ({ projectId, headers }) => {
-        const [conversation, briefs, audit] = await Promise.all([
+        const [conversation, briefs, intent, audit] = await Promise.all([
           fetch(
             `/__agent-forge/projects/${projectId}/keeper?after=0&limit=100`,
             { headers },
           ),
           fetch(`/__agent-forge/projects/${projectId}/keeper/briefs`, {
+            headers,
+          }),
+          fetch(`/__agent-forge/projects/${projectId}/keeper/brief-intents`, {
             headers,
           }),
           fetch("/__agent-forge/events?kind=operator.action&limit=100", {
@@ -606,6 +605,7 @@ test("a created project gets its first Keeper brief only after explicit Refresh"
             body: await conversation.json(),
           },
           briefs: { status: briefs.status, body: await briefs.json() },
+          intent: { status: intent.status, body: await intent.json() },
           audit: { status: audit.status, body: await audit.json() },
         };
       },
@@ -614,16 +614,19 @@ test("a created project gets its first Keeper brief only after explicit Refresh"
     const {
       conversation: conversationRead,
       briefs: briefsRead,
+      intent: intentRead,
       audit: auditRead,
     } = initialReads;
     expect(conversationRead.status).toBe(200);
     expect(briefsRead.status).toBe(200);
+    expect(intentRead.status).toBe(200);
     expect(auditRead.status).toBe(200);
     expect(conversationRead.body).toMatchObject({
       ok: true,
       error: null,
     });
     expect(briefsRead.body).toMatchObject({ ok: true, error: null });
+    expect(intentRead.body).toMatchObject({ ok: true, error: null });
     expect(auditRead.body).toMatchObject({ ok: true, error: null });
     const conversationPage = conversationPageSchema.parse(
       (conversationRead.body as { data: unknown }).data,
@@ -633,27 +636,115 @@ test("a created project gets its first Keeper brief only after explicit Refresh"
       (briefsRead.body as { data: unknown }).data,
     );
     expect(emptyBriefs).toMatchObject({ projectId, latest: null });
+    expect((intentRead.body as { data: unknown }).data).toBeNull();
     const auditBefore = (auditRead.body as { data: EventsPage }).data;
 
-    const refreshResponse = page.waitForResponse(
+    const reserveResponse = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname ===
+          `/__agent-forge/projects/${projectId}/keeper/brief-intents/reserve` &&
+        response.request().method() === "POST",
+    );
+    await panel.getByRole("button", { name: "Review first brief" }).click();
+    const reservation = await reserveResponse;
+    expect(reservation.status()).toBe(202);
+    const reserveBody = keeperBriefIntentReserveRequestSchema.parse(
+      reservation.request().postDataJSON(),
+    );
+    expect(reserveBody).toMatchObject({
+      expectedRevision: conversationPage.revision,
+      origin: { kind: "onboarding", projectCreateRequestId: saved.requestId },
+    });
+    const intentMetadata = keeperBriefIntentMetadataSchema.parse(
+      (await reservation.json()).data,
+    );
+    expect(intentMetadata).toMatchObject({
+      projectId,
+      expectedRevision: conversationPage.revision,
+      origin: {
+        kind: "onboarding",
+        projectId,
+        projectCreate: { requestId: saved.requestId },
+      },
+      state: "reserved",
+    });
+    const exactRead = await protectedRead(
+      page,
+      `/__agent-forge/projects/${projectId}/keeper/brief-intents/${intentMetadata.requestId}`,
+    );
+    expect(exactRead.status).toBe(200);
+    const frozenOriginal = keeperBriefIntentOriginalSchema.parse(
+      (exactRead.body as { data: unknown }).data,
+    );
+    expect(frozenOriginal).toMatchObject({
+      requestId: intentMetadata.requestId,
+      intentHash: intentMetadata.intentHash,
+      state: "reserved",
+      snapshot: {
+        projectId,
+        projectName: saved.original.name,
+        workspace: saved.original.workspaces[0]!.root,
+        catalogRevision: createdRevision,
+        scope: {
+          label: `project:${saved.original.slug}`,
+          epicIds: saved.original.workspaces[0]!.epicIds,
+          epicCount: saved.original.workspaces[0]!.epicIds.length,
+          repositoryCount: saved.original.workspaces[0]!.repositories.length,
+        },
+      },
+    });
+    await expect(
+      panel.getByRole("region", { name: "Exact Keeper brief original" }),
+    ).toBeVisible();
+    await expect(panel.locator(".af-brief-review pre")).toHaveText(
+      frozenOriginal.text,
+    );
+    await expect.poll(() => keeperFixtureStarts()).toBe(startsBefore);
+    expect(posts).toEqual([
+      ...createPosts,
+      `/__agent-forge/projects/${projectId}/keeper/brief-intents/reserve`,
+    ]);
+    const shotDir = process.env["SHOT_DIR"];
+    if (shotDir) {
+      mkdirSync(shotDir, { recursive: true });
+      await panel
+        .getByRole("region", { name: "Exact Keeper brief original" })
+        .screenshot({
+          path: join(shotDir, "keeper-first-brief-review.png"),
+        });
+    }
+
+    const commitResponse = page.waitForResponse(
       (response) =>
         new URL(response.url()).pathname ===
           `/__agent-forge/projects/${projectId}/keeper/briefs` &&
         response.request().method() === "POST",
     );
-    await panel.getByRole("button", { name: "Refresh brief" }).click();
-    const response = await refreshResponse;
-    expect(response.status()).toBe(202);
-    const refreshBody = briefRefreshSchema.parse(
-      response.request().postDataJSON(),
+    await expect(
+      panel.getByRole("region", { name: "Finish project setup" }),
+    ).toBeVisible();
+    await panel
+      .getByRole("button", { name: "Finish and send reviewed brief" })
+      .click();
+    const committed = await commitResponse;
+    expect(committed.status()).toBe(202);
+    await expect(
+      panel.getByRole("region", { name: "Finish project setup" }),
+    ).toHaveCount(0);
+    await expect(
+      panel.getByRole("region", { name: "Exact Keeper brief original" }),
+    ).toBeVisible();
+    const commitBody = keeperBriefIntentReferenceSchema.parse(
+      committed.request().postDataJSON(),
     );
-    expect(refreshBody.expectedRevision).toBe(conversationPage.revision);
-    expect(response.request().postDataJSON()).toMatchObject({
-      requestId: refreshBody.requestId,
-      expectedRevision: conversationPage.revision,
+    expect(commitBody).toEqual({
+      requestId: frozenOriginal.requestId,
+      expectedRevision: frozenOriginal.expectedRevision,
+      intentHash: frozenOriginal.intentHash,
     });
     expect(posts).toEqual([
       ...createPosts,
+      `/__agent-forge/projects/${projectId}/keeper/brief-intents/reserve`,
       `/__agent-forge/projects/${projectId}/keeper/briefs`,
     ]);
 
@@ -667,19 +758,27 @@ test("a created project gets its first Keeper brief only after explicit Refresh"
 
     const finalReads = await page.evaluate(
       async ({ projectId, requestId, after, headers }) => {
-        const [briefs, conversation, audit] = await Promise.all([
-          fetch(`/__agent-forge/projects/${projectId}/keeper/briefs`, {
-            headers,
-          }),
-          fetch(
-            `/__agent-forge/projects/${projectId}/keeper?after=0&limit=100&requestId=${requestId}`,
-            { headers },
-          ),
-          fetch(
-            `/__agent-forge/events?kind=operator.action&after=${after}&limit=100`,
-            { headers },
-          ),
-        ]);
+        const [briefs, conversation, audit, intent, original] =
+          await Promise.all([
+            fetch(`/__agent-forge/projects/${projectId}/keeper/briefs`, {
+              headers,
+            }),
+            fetch(
+              `/__agent-forge/projects/${projectId}/keeper?after=0&limit=100&requestId=${requestId}`,
+              { headers },
+            ),
+            fetch(
+              `/__agent-forge/events?kind=operator.action&after=${after}&limit=100`,
+              { headers },
+            ),
+            fetch(`/__agent-forge/projects/${projectId}/keeper/brief-intents`, {
+              headers,
+            }),
+            fetch(
+              `/__agent-forge/projects/${projectId}/keeper/brief-intents/${requestId}`,
+              { headers },
+            ),
+          ]);
         return {
           briefs: { status: briefs.status, body: await briefs.json() },
           conversation: {
@@ -687,11 +786,13 @@ test("a created project gets its first Keeper brief only after explicit Refresh"
             body: await conversation.json(),
           },
           audit: { status: audit.status, body: await audit.json() },
+          intent: { status: intent.status, body: await intent.json() },
+          original: { status: original.status, body: await original.json() },
         };
       },
       {
         projectId,
-        requestId: refreshBody.requestId,
+        requestId: frozenOriginal.requestId,
         after: auditBefore.cursor,
         headers,
       },
@@ -700,21 +801,45 @@ test("a created project gets its first Keeper brief only after explicit Refresh"
       briefs: savedBriefRead,
       conversation: savedConversationRead,
       audit: auditAfterRead,
+      intent: finalIntentRead,
+      original: finalOriginalRead,
     } = finalReads;
     expect(savedBriefRead.status).toBe(200);
     expect(savedConversationRead.status).toBe(200);
     expect(auditAfterRead.status).toBe(200);
+    expect(finalIntentRead.status).toBe(200);
+    expect(finalOriginalRead.status).toBe(200);
     expect(savedBriefRead.body).toMatchObject({ ok: true, error: null });
     expect(savedConversationRead.body).toMatchObject({
       ok: true,
       error: null,
     });
     expect(auditAfterRead.body).toMatchObject({ ok: true, error: null });
+    expect(finalIntentRead.body).toMatchObject({ ok: true, error: null });
+    expect(finalOriginalRead.body).toMatchObject({ ok: true, error: null });
+    const finalIntent = keeperBriefIntentMetadataSchema.parse(
+      (finalIntentRead.body as { data: unknown }).data,
+    );
+    const finalOriginal = keeperBriefIntentOriginalSchema.parse(
+      (finalOriginalRead.body as { data: unknown }).data,
+    );
+    expect(finalIntent).toMatchObject({
+      requestId: frozenOriginal.requestId,
+      intentHash: frozenOriginal.intentHash,
+      state: "admitted",
+    });
+    expect(finalOriginal).toMatchObject({
+      requestId: frozenOriginal.requestId,
+      intentHash: frozenOriginal.intentHash,
+      state: "admitted",
+      text: frozenOriginal.text,
+      preparedTurnHash: frozenOriginal.preparedTurnHash,
+    });
     const savedBriefs = briefsSchema.parse(
       (savedBriefRead.body as { data: unknown }).data,
     );
     expect(savedBriefs.projectId).toBe(projectId);
-    expect(savedBriefs.latest?.requestId).toBe(refreshBody.requestId);
+    expect(savedBriefs.latest?.requestId).toBe(frozenOriginal.requestId);
     expect(savedBriefs.latest?.snapshot).toMatchObject({
       projectId,
       projectName: saved.original.name,
@@ -728,7 +853,7 @@ test("a created project gets its first Keeper brief only after explicit Refresh"
       },
     });
     expect(savedBriefs.refresh).toMatchObject({
-      requestId: refreshBody.requestId,
+      requestId: frozenOriginal.requestId,
       phase: "completed",
     });
     const savedConversation = conversationPageSchema.parse(
@@ -736,29 +861,66 @@ test("a created project gets its first Keeper brief only after explicit Refresh"
     );
     expect(
       savedConversation.turns.find(
-        (turn) => turn.requestId === refreshBody.requestId,
+        (turn) => turn.requestId === frozenOriginal.requestId,
       )?.phase,
     ).toBe("completed");
+    expect(
+      savedConversation.turns.find(
+        (turn) => turn.requestId === frozenOriginal.requestId,
+      )?.hash,
+    ).toBe(frozenOriginal.preparedTurnHash);
     const auditPage = (auditAfterRead.body as { data: EventsPage }).data;
     const auditEvents = auditPage.events;
     expect(auditPage.more).toBe(false);
-    expect(auditEvents).toHaveLength(1);
-    const refreshAudits = auditEvents.filter(
+    expect(auditEvents).toHaveLength(2);
+    const briefAudits = auditEvents.filter(
       (event): event is LedgerEventOf<"operator.action"> =>
         event.kind === "operator.action" &&
-        event.payload.action === "keeper.brief.refresh",
+        (event.payload.action === "keeper.brief.reserve" ||
+          event.payload.action === "keeper.brief.refresh"),
     );
-    expect(refreshAudits).toHaveLength(1);
-    expect(refreshAudits[0]?.payload).toMatchObject({
+    expect(briefAudits).toHaveLength(2);
+    expect(briefAudits.map((event) => event.payload.action)).toEqual([
+      "keeper.brief.reserve",
+      "keeper.brief.refresh",
+    ]);
+    expect(briefAudits[0]?.payload).toMatchObject({
+      action: "keeper.brief.reserve",
+      surface: "ui",
+      target: projectId,
+    });
+    expect(briefAudits[1]?.payload).toMatchObject({
       action: "keeper.brief.refresh",
       surface: "ui",
       target: projectId,
     });
     expect(posts).toEqual([
       ...createPosts,
+      `/__agent-forge/projects/${projectId}/keeper/brief-intents/reserve`,
       `/__agent-forge/projects/${projectId}/keeper/briefs`,
     ]);
     expect(keeperFixtureStarts()).toBe(startsBefore + 1);
+    await reloadSettled(page);
+    const recoveredOriginal = await protectedRead(
+      page,
+      `/__agent-forge/projects/${projectId}/keeper/brief-intents/${frozenOriginal.requestId}`,
+    );
+    expect(recoveredOriginal.status).toBe(200);
+    const recovered = keeperBriefIntentOriginalSchema.parse(
+      (recoveredOriginal.body as { data: unknown }).data,
+    );
+    expect(recovered).toMatchObject({
+      requestId: frozenOriginal.requestId,
+      intentHash: frozenOriginal.intentHash,
+      state: "admitted",
+      text: frozenOriginal.text,
+      preparedTurnHash: frozenOriginal.preparedTurnHash,
+    });
+    expect(posts).toEqual([
+      ...createPosts,
+      `/__agent-forge/projects/${projectId}/keeper/brief-intents/reserve`,
+      `/__agent-forge/projects/${projectId}/keeper/briefs`,
+    ]);
   } finally {
     setKeeperFixtureMode("normal");
   }
@@ -788,13 +950,39 @@ test("a new project's legacy Keeper capability stays unavailable without fallbac
     const unavailable = panel.locator(
       '.af-brief-availability[data-readiness="unavailable"]',
     );
-    await expect(unavailable).toContainText("Brief refresh is unavailable.");
+    await expect(unavailable).toContainText("Keeper cannot send a brief yet.");
     await expect(unavailable).toContainText(
       "The Keeper adapter capability check could not be verified. Recheck before sending.",
     );
     await expect(
-      panel.getByRole("button", { name: "Refresh brief" }),
-    ).toBeDisabled();
+      panel.getByRole("button", { name: "Review first brief" }),
+    ).toBeEnabled();
+    const reservation = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname ===
+          `/__agent-forge/projects/${projectId}/keeper/brief-intents/reserve` &&
+        response.request().method() === "POST",
+    );
+    await panel.getByRole("button", { name: "Review first brief" }).click();
+    expect((await reservation).status()).toBe(202);
+    await expect(
+      panel.getByRole("region", { name: "Exact Keeper brief original" }),
+    ).toBeVisible();
+    const reservedId = await panel
+      .locator(".af-brief-review dd")
+      .first()
+      .textContent();
+    await expect.poll(() => keeperFixtureStarts()).toBe(startsBefore);
+    await expect(
+      panel.getByRole("button", { name: "Finish without a brief" }),
+    ).toBeEnabled();
+    await panel.getByRole("button", { name: "Finish without a brief" }).click();
+    await expect(
+      panel.getByRole("region", { name: "Exact Keeper brief original" }),
+    ).toBeVisible();
+    await expect(panel.locator(".af-brief-review dd").first()).toHaveText(
+      reservedId ?? "",
+    );
     await expect(page.locator(".af-desktop-project-name")).toHaveText(
       saved.original.name,
     );
@@ -821,7 +1009,10 @@ test("a new project's legacy Keeper capability stays unavailable without fallbac
       reason:
         "The Keeper adapter capability check could not be verified. Recheck before sending.",
     });
-    expect(posts).toEqual(createPosts);
+    expect(posts).toEqual([
+      ...createPosts,
+      `/__agent-forge/projects/${projectId}/keeper/brief-intents/reserve`,
+    ]);
     expect(keeperFixtureStarts()).toBe(startsBefore);
   } finally {
     setKeeperFixtureMode("normal");

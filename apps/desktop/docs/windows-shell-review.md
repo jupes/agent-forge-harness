@@ -1,9 +1,12 @@
 # Windows shell review
 
-Status: automated evidence prepared; human review still required for
-`agent-forge-harness-cla5.1.4` (Verify the shell on Windows).
+Status: candidate version 1.0.0-rc.1; human review remains pending for
+`agent-forge-harness-cla5.1.4` (Verify the shell on Windows). The automated
+evidence below records the historical 0.1.0 shell/frame work and does not
+validate this release candidate.
 
-Review the Windows x64 Release app, version 0.1.0. The frame baseline is
+Review the Windows x64 Release app, version 1.0.0-rc.1. This is a metadata-only
+candidate; no runtime or feature change is included. The frame baseline is
 commit `20827ee` (PR #263). The shared-hearth lifetime correction is
 `agent-forge-harness-c9pb` (Keep a shared hearth alive when its first window
 closes); record the final PR head commit with the human result.
@@ -17,6 +20,10 @@ From the checkout containing the reviewed changes:
 bun run desktop:build
 bun run desktop:smoke
 ```
+
+Build and smoke the exact reviewed 1.0.0-rc.1 checkout. Record its exact commit
+and observed version in the human checkpoint below; this candidate is not a
+stable release and must not be tagged as one before that review is complete.
 
 The demo runs the actual packaged Tauri/WebView2 app with a temporary checkout,
 private hearth home, compiled tracker stand-in and separate WebView2 profiles.

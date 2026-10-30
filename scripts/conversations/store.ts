@@ -8,6 +8,13 @@ import type {
   OwnedConversationAddress,
   PreparedConversationSend,
 } from "../../types/conversation";
+import type {
+  KeeperBriefIntent,
+  KeeperBriefIntentHistory,
+  KeeperBriefOriginBinding,
+  KeeperBriefSelection,
+  KeeperBriefSnapshot,
+} from "../../types/keeper-brief";
 import type { KeeperContinuationRequest } from "../../types/keeper-recovery";
 import {
   ensurePrivateHome,
@@ -15,6 +22,14 @@ import {
   readSessionTranscript,
 } from "../hearth/home-guard";
 import { writeOwnerOnly } from "../hearth/token";
+import {
+  keeperBriefIntentHistorySchema,
+  keeperBriefIntentReferenceSchema,
+  keeperBriefIntentReserveSchema,
+  keeperBriefIntentRetireSchema,
+  MAX_KEEPER_BRIEF_INTENT_BYTES,
+  MAX_KEEPER_BRIEF_INTENT_HISTORY,
+} from "../keeper/brief-protocol";
 import { keeperContinuationSchema } from "../keeper/recovery-protocol";
 import { withQueueLock } from "../scheduler/queue-lock";
 import {
@@ -135,6 +150,169 @@ function validKeeperRecovery(state: ConversationState): boolean {
   );
 }
 
+function keeperBriefPreparedTurnHash(
+  intent: Pick<KeeperBriefIntent, "text" | "about" | "snapshot">,
+): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        text: intent.text,
+        about: intent.about,
+        brief: intent.snapshot,
+      }),
+    )
+    .digest("hex");
+}
+
+function keeperBriefIntentHash(
+  intent: Pick<
+    KeeperBriefIntent,
+    | "version"
+    | "requestId"
+    | "projectId"
+    | "conversationId"
+    | "expectedRevision"
+    | "origin"
+    | "selection"
+    | "purpose"
+    | "text"
+    | "about"
+    | "snapshot"
+    | "createdAt"
+  >,
+): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        version: intent.version,
+        requestId: intent.requestId,
+        projectId: intent.projectId,
+        conversationId: intent.conversationId,
+        expectedRevision: intent.expectedRevision,
+        origin: intent.origin,
+        selection: intent.selection,
+        purpose: intent.purpose,
+        text: intent.text,
+        about: intent.about,
+        snapshot: intent.snapshot,
+        createdAt: intent.createdAt,
+      }),
+    )
+    .digest("hex");
+}
+
+function terminalBriefPhase(
+  phase: ConversationState["turns"][number]["phase"] | undefined,
+): boolean {
+  return phase === "completed" || phase === "cancelled" || phase === "failed";
+}
+
+function validKeeperBriefIntent(
+  state: ConversationState,
+  intent: KeeperBriefIntent,
+  location: "active" | "history",
+): boolean {
+  if (
+    intent.projectId !== state.projectId ||
+    intent.conversationId !== state.conversationId ||
+    intent.expectedRevision > state.revision ||
+    intent.origin.projectId !== state.projectId ||
+    intent.selection.enabled !== true ||
+    intent.snapshot.projectId !== state.projectId ||
+    intent.snapshot.workspace !== intent.origin.workspace ||
+    intent.snapshot.catalogRevision !== intent.origin.catalogRevision ||
+    intent.preparedTurnHash !== keeperBriefPreparedTurnHash(intent) ||
+    intent.intentHash !== keeperBriefIntentHash(intent) ||
+    (location === "active" && intent.state === "retired") ||
+    (location === "history" && intent.state === "reserved") ||
+    state.keeperRecovery?.records.some(
+      (record) => record.requestId === intent.requestId,
+    )
+  )
+    return false;
+
+  const turn = state.turns.find((row) => row.requestId === intent.requestId);
+  const userFrames = state.frames.filter(
+    (frame) => frame.turnId === intent.requestId && frame.event.kind === "user",
+  );
+  if (intent.state === "retired") return !turn && userFrames.length === 0;
+  if (intent.state === "reserved") return !turn && userFrames.length === 0;
+  if (
+    !turn ||
+    intent.expectedRevision >= state.revision ||
+    turn.hash !== intent.preparedTurnHash ||
+    userFrames.length !== 1 ||
+    (location === "history" && !terminalBriefPhase(turn.phase))
+  )
+    return false;
+  const user = userFrames[0]?.event;
+  return (
+    user?.kind === "user" &&
+    JSON.stringify(user) ===
+      JSON.stringify({
+        kind: "user",
+        text: intent.text,
+        about: intent.about,
+        brief: intent.snapshot,
+      })
+  );
+}
+
+function validKeeperBriefIntents(state: ConversationState): boolean {
+  const intents = state.keeperBriefIntents;
+  if (!intents) return true;
+  const parsed = keeperBriefIntentHistorySchema.safeParse(intents);
+  if (!parsed.success) return false;
+  const rows = [
+    ...(intents.active
+      ? [{ row: intents.active, location: "active" as const }]
+      : []),
+    ...intents.history.map((row) => ({ row, location: "history" as const })),
+  ];
+  return (
+    Buffer.byteLength(JSON.stringify(intents)) <=
+      MAX_KEEPER_BRIEF_INTENT_BYTES &&
+    rows.every(({ row, location }) =>
+      validKeeperBriefIntent(state, row, location),
+    )
+  );
+}
+
+function withKeeperBriefHistory(
+  intents: KeeperBriefIntentHistory,
+  original: KeeperBriefIntent,
+): KeeperBriefIntentHistory {
+  if (intents.history.length >= MAX_KEEPER_BRIEF_INTENT_HISTORY)
+    throw new ConversationError(
+      503,
+      "Keeper brief original history is full. Saved identities have been kept.",
+    );
+  const next = {
+    version: 1 as const,
+    active: null,
+    history: [...intents.history, original],
+  };
+  if (Buffer.byteLength(JSON.stringify(next)) > MAX_KEEPER_BRIEF_INTENT_BYTES)
+    throw new ConversationError(
+      503,
+      "Keeper brief original history is full. Saved identities have been kept.",
+    );
+  return next;
+}
+
+function assertKeeperBriefIntentHistoryFits(
+  intents: KeeperBriefIntentHistory,
+): void {
+  if (
+    intents.history.length > MAX_KEEPER_BRIEF_INTENT_HISTORY ||
+    Buffer.byteLength(JSON.stringify(intents)) > MAX_KEEPER_BRIEF_INTENT_BYTES
+  )
+    throw new ConversationError(
+      503,
+      "Keeper brief original history is full. Saved identities have been kept.",
+    );
+}
+
 /** A lease-free observation; producing this view never writes the transcript. */
 export function interruptedConversation(
   state: ConversationState,
@@ -200,6 +378,7 @@ export function createConversationStore(
       !validKeeperRecovery(parsed.data) ||
       !validShiftInputs(parsed.data) ||
       !validGeminiChatIntents(parsed.data) ||
+      !validKeeperBriefIntents(parsed.data) ||
       parsed.data.frames.some(
         (frame, index) =>
           frame.seq !== index + 1 ||
@@ -222,6 +401,7 @@ export function createConversationStore(
       !validKeeperRecovery(state) ||
       !validShiftInputs(state) ||
       !validGeminiChatIntents(state) ||
+      !validKeeperBriefIntents(state) ||
       Buffer.byteLength(content) > MAX_SESSION_TRANSCRIPT_BYTES
     )
       throw new ConversationError(
@@ -254,8 +434,388 @@ export function createConversationStore(
       );
     return result.value;
   };
+  const changeWithoutRevision = async <T>(
+    projectId: string,
+    update: (state: ConversationState) => T,
+    isCurrent?: () => boolean,
+  ): Promise<T> => {
+    const lock = conversationWriteLockFile(home, projectId, address);
+    ensurePrivateHome(home);
+    const result = await withQueueLock(
+      lock,
+      async () => {
+        assertCurrentOwner(isCurrent);
+        const state = read(projectId);
+        const value = update(state);
+        save(state);
+        return value;
+      },
+      { waitMs: 1000 },
+    );
+    if (!result.ok)
+      throw new ConversationError(
+        503,
+        "The conversation is busy or unavailable. Read the original request before retrying.",
+      );
+    return result.value;
+  };
   return {
     read,
+    /** Saves the exact reviewed original without changing the conversation revision. */
+    async reserveKeeperBrief(
+      projectId: string,
+      input: {
+        expectedRevision: number;
+        origin: KeeperBriefOriginBinding;
+        selection: KeeperBriefSelection;
+        text: string;
+        about: KeeperBriefIntent["about"];
+        snapshot: KeeperBriefSnapshot;
+      },
+      isCurrent?: () => boolean,
+    ): Promise<KeeperBriefIntent> {
+      if (address)
+        throw new ConversationError(
+          400,
+          "Keeper brief originals belong to the standing conversation.",
+        );
+      const parsed = keeperBriefIntentReserveSchema.safeParse(input);
+      if (
+        !parsed.success ||
+        parsed.data.origin.projectId !== projectId ||
+        parsed.data.snapshot.projectId !== projectId ||
+        parsed.data.snapshot.workspace !== parsed.data.origin.workspace ||
+        parsed.data.snapshot.catalogRevision !==
+          parsed.data.origin.catalogRevision
+      )
+        throw new ConversationError(
+          400,
+          "Expected a bounded brief original bound to this project's trusted scope.",
+        );
+      return changeWithoutRevision(
+        projectId,
+        (state) => {
+          const existing: KeeperBriefIntentHistory =
+            state.keeperBriefIntents ?? {
+              version: 1,
+              active: null,
+              history: [],
+            };
+          let active = existing.active;
+          let history = existing.history;
+          if (
+            active &&
+            active.expectedRevision === parsed.data.expectedRevision &&
+            JSON.stringify(active.origin) ===
+              JSON.stringify(parsed.data.origin) &&
+            JSON.stringify(active.selection) ===
+              JSON.stringify(parsed.data.selection)
+          )
+            return active;
+          if (active?.state === "admitted") {
+            const prior = state.turns.find(
+              (turn) => turn.requestId === active?.requestId,
+            );
+            if (terminalBriefPhase(prior?.phase)) {
+              history = withKeeperBriefHistory(
+                { version: 1, active: null, history },
+                active,
+              ).history;
+              active = null;
+            }
+          }
+          if (active) {
+            throw new ConversationError(
+              409,
+              "A different Keeper brief original is already reserved or unresolved. Read it or explicitly retire the reservation first.",
+            );
+          }
+          if (state.revision !== parsed.data.expectedRevision)
+            throw new ConversationError(
+              409,
+              "The conversation changed. Read it again before reserving a brief.",
+            );
+          if (
+            state.turns.some((turn) =>
+              ["accepted", "running", "cancelling", "unknown"].includes(
+                turn.phase,
+              ),
+            )
+          )
+            throw new ConversationError(
+              409,
+              "A turn is active or its outcome is unknown. Read its outcome before reserving a brief.",
+            );
+          const requestId = randomUUID();
+          const prepared = parsePreparedConversationSend({
+            requestId,
+            expectedRevision: parsed.data.expectedRevision,
+            text: parsed.data.text,
+            about: parsed.data.about,
+            brief: parsed.data.snapshot,
+          });
+          if (!prepared.brief)
+            throw new ConversationError(
+              400,
+              "Expected the frozen brief snapshot in its prepared input.",
+            );
+          const original = {
+            version: 1 as const,
+            requestId,
+            projectId,
+            conversationId: state.conversationId,
+            expectedRevision: parsed.data.expectedRevision,
+            origin: parsed.data.origin,
+            selection: parsed.data.selection,
+            purpose: "brief" as const,
+            text: prepared.text,
+            about: prepared.about,
+            snapshot: prepared.brief,
+          };
+          const identity = { ...original, createdAt: now().toISOString() };
+          const intent: KeeperBriefIntent = {
+            ...identity,
+            intentHash: keeperBriefIntentHash(identity),
+            state: "reserved",
+            preparedTurnHash: keeperBriefPreparedTurnHash(original),
+          };
+          const intents = { version: 1 as const, active: intent, history };
+          assertKeeperBriefIntentHistoryFits(intents);
+          state.keeperBriefIntents = intents;
+          return intent;
+        },
+        isCurrent,
+      );
+    },
+    discoverKeeperBrief(projectId: string): KeeperBriefIntent | null {
+      if (address)
+        throw new ConversationError(
+          400,
+          "Keeper brief originals belong to the standing conversation.",
+        );
+      return read(projectId).keeperBriefIntents?.active ?? null;
+    },
+    readKeeperBriefIntent(
+      projectId: string,
+      requestId: string,
+    ): KeeperBriefIntent | null {
+      if (address)
+        throw new ConversationError(
+          400,
+          "Keeper brief originals belong to the standing conversation.",
+        );
+      if (!isConversationRequestId(requestId))
+        throw new ConversationError(400, "Expected a Keeper brief ticket id.");
+      const intents = read(projectId).keeperBriefIntents;
+      if (intents?.active?.requestId === requestId) return intents.active;
+      return (
+        intents?.history.find((item) => item.requestId === requestId) ?? null
+      );
+    },
+    async retireKeeperBrief(
+      projectId: string,
+      input: { requestId: string; intentHash: string },
+    ): Promise<KeeperBriefIntent> {
+      if (address)
+        throw new ConversationError(
+          400,
+          "Keeper brief originals belong to the standing conversation.",
+        );
+      const checked = keeperBriefIntentRetireSchema.safeParse(input);
+      if (!checked.success)
+        throw new ConversationError(
+          400,
+          "Expected an exact Keeper brief ticket.",
+        );
+      const request = checked.data;
+      return changeWithoutRevision(projectId, (state) => {
+        const intents = state.keeperBriefIntents;
+        const active = intents?.active;
+        if (
+          !intents ||
+          !active ||
+          active.requestId !== request.requestId ||
+          active.intentHash !== request.intentHash ||
+          active.state !== "reserved" ||
+          state.turns.some((turn) => turn.requestId === request.requestId) ||
+          state.frames.some((frame) => frame.turnId === request.requestId)
+        )
+          throw new ConversationError(
+            409,
+            "Only the exact unadmitted Keeper brief reservation can be retired.",
+          );
+        const retired = { ...active, state: "retired" as const };
+        state.keeperBriefIntents = withKeeperBriefHistory(intents, retired);
+        return retired;
+      });
+    },
+    async acceptKeeperBrief(
+      projectId: string,
+      input: {
+        requestId: string;
+        expectedRevision: number;
+        intentHash: string;
+      },
+      isCurrent?: () => boolean,
+    ): Promise<{ receipt: ConversationReceipt; created: boolean }> {
+      if (address)
+        throw new ConversationError(
+          400,
+          "Keeper brief originals belong to the standing conversation.",
+        );
+      const checked = keeperBriefIntentReferenceSchema.safeParse(input);
+      if (!checked.success)
+        throw new ConversationError(
+          400,
+          "Expected an exact Keeper brief ticket.",
+        );
+      const request = checked.data;
+      const lock = conversationWriteLockFile(home, projectId, address);
+      ensurePrivateHome(home);
+      const result = await withQueueLock(
+        lock,
+        async () => {
+          const state = read(projectId);
+          assertCurrentOwner(isCurrent);
+          const active = state.keeperBriefIntents?.active;
+          const history = state.keeperBriefIntents?.history ?? [];
+          const intent =
+            active?.requestId === request.requestId
+              ? active
+              : history.find((item) => item.requestId === request.requestId);
+          if (!intent)
+            throw new ConversationError(
+              409,
+              "The exact Keeper brief original is not retained. Inspect its saved outcome before acting.",
+            );
+          if (
+            intent.intentHash !== request.intentHash ||
+            intent.expectedRevision !== request.expectedRevision
+          )
+            throw new ConversationError(
+              409,
+              "The Keeper brief ticket does not match its saved original.",
+            );
+          if (intent.state === "retired")
+            throw new ConversationError(
+              409,
+              "This Keeper brief reservation was explicitly retired.",
+            );
+          if (intent.state === "admitted") {
+            const prior = state.turns.find(
+              (turn) => turn.requestId === intent.requestId,
+            );
+            if (!prior)
+              throw new ConversationError(
+                503,
+                "The saved Keeper brief turn is missing. Its original has been kept.",
+              );
+            return {
+              receipt: {
+                conversationId: state.conversationId,
+                revision: state.revision,
+                turn: prior,
+              },
+              created: false,
+            };
+          }
+          if (active !== intent)
+            throw new ConversationError(
+              409,
+              "Only the current reserved Keeper brief original can be admitted.",
+            );
+          if (state.revision !== intent.expectedRevision)
+            throw new ConversationError(
+              409,
+              "The conversation changed. Review the saved brief original again.",
+            );
+          if (
+            state.turns.some((turn) =>
+              ["accepted", "running", "cancelling", "unknown"].includes(
+                turn.phase,
+              ),
+            )
+          )
+            throw new ConversationError(
+              409,
+              "A turn is active or its outcome is unknown. Read its outcome before admitting a brief.",
+            );
+          if (
+            state.keeperRecovery?.records.some(
+              (record) => record.requestId === intent.requestId,
+            )
+          )
+            throw new ConversationError(
+              409,
+              "This ticket id already names a Keeper continuation.",
+            );
+          const prepared = parsePreparedConversationSend({
+            requestId: intent.requestId,
+            expectedRevision: intent.expectedRevision,
+            text: intent.text,
+            about: intent.about,
+            brief: intent.snapshot,
+          });
+          if (
+            !prepared.brief ||
+            prepared.text !== intent.text ||
+            JSON.stringify(prepared.about) !== JSON.stringify(intent.about) ||
+            JSON.stringify(prepared.brief) !== JSON.stringify(intent.snapshot)
+          )
+            throw new ConversationError(
+              503,
+              "The saved Keeper brief original no longer matches its prepared input.",
+            );
+          const hash = keeperBriefPreparedTurnHash(intent);
+          if (hash !== intent.preparedTurnHash)
+            throw new ConversationError(
+              503,
+              "The saved Keeper brief original failed its prepared hash check.",
+            );
+          const at = now().toISOString();
+          const accepted = {
+            requestId: intent.requestId,
+            hash,
+            phase: "accepted" as const,
+            createdAt: at,
+            updatedAt: at,
+            reason: null,
+            owner: null,
+          };
+          state.revision++;
+          state.turns.push(accepted);
+          state.frames.push({
+            seq: state.frames.length + 1,
+            turnId: intent.requestId,
+            at,
+            event: {
+              kind: "user",
+              text: prepared.text,
+              about: prepared.about,
+              brief: prepared.brief,
+            },
+          });
+          intent.state = "admitted";
+          state.keeperBriefIntents!.active = intent;
+          save(state);
+          return {
+            receipt: {
+              conversationId: state.conversationId,
+              revision: state.revision,
+              turn: accepted,
+            },
+            created: true,
+          };
+        },
+        { waitMs: 1000 },
+      );
+      if (!result.ok)
+        throw new ConversationError(
+          503,
+          "The conversation is busy or unavailable. Read the original request before retrying.",
+        );
+      return result.value;
+    },
     /** Publish only the exact empty, native-bound child journal without replacing an existing path. */
     async bootstrapCodexForkChild(
       projectId: string,
@@ -849,6 +1409,16 @@ export function createConversationStore(
         async () => {
           const state = read(projectId);
           assertCurrentOwner(isCurrent);
+          if (
+            state.keeperBriefIntents?.active?.requestId === request.requestId ||
+            state.keeperBriefIntents?.history.some(
+              (item) => item.requestId === request.requestId,
+            )
+          )
+            throw new ConversationError(
+              409,
+              "This request id names a canonical Keeper brief original. Use its explicit ticket.",
+            );
           const previous = state.turns.find(
             (item) => item.requestId === request.requestId,
           );
@@ -873,6 +1443,11 @@ export function createConversationStore(
               turn: previous,
             };
           }
+          if (request.brief && state.keeperBriefIntents?.active && !previous)
+            throw new ConversationError(
+              409,
+              "An active canonical Keeper brief reservation must be admitted by its exact ticket.",
+            );
           if (
             state.turns.some((item) =>
               ["accepted", "running", "cancelling", "unknown"].includes(

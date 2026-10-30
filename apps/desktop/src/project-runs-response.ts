@@ -1,11 +1,16 @@
-import { MAX_PROJECT_RUN_BYTES } from "../../../scripts/projects/run-protocol";
+import {
+  MAX_PROJECT_RUN_ARTIFACT_RESPONSE_BYTES,
+  MAX_PROJECT_RUN_BYTES,
+} from "../../../scripts/projects/run-protocol";
 
 /** Complete bounded UTF-8 envelope, inside the protected read's existing deadline. */
-export async function readProjectRunsResponse(
+async function readBoundedResponse(
   response: Response,
+  maxBytes: number,
+  label: "Run metadata" | "Run artifact",
 ): Promise<unknown> {
   const reader = response.body?.getReader();
-  if (!reader) throw Error("Run metadata returned no complete body.");
+  if (!reader) throw Error(`${label} returned no complete body.`);
   const decoder = new TextDecoder("utf-8", { fatal: true });
   let bytes = 0,
     text = "";
@@ -14,15 +19,15 @@ export async function readProjectRunsResponse(
       const part = await reader.read();
       if (part.done) break;
       bytes += part.value.byteLength;
-      if (bytes > MAX_PROJECT_RUN_BYTES + 1024) {
+      if (bytes > maxBytes) {
         await reader.cancel();
-        throw Error("Run metadata exceeds this read's receiving limit.");
+        throw Error(`${label} exceeds this read's receiving limit.`);
       }
       try {
         text += decoder.decode(part.value, { stream: true });
       } catch {
         await reader.cancel();
-        throw Error("Run metadata returned invalid text.");
+        throw Error(`${label} returned invalid text.`);
       }
     }
     let raw: unknown;
@@ -30,7 +35,7 @@ export async function readProjectRunsResponse(
       text += decoder.decode();
       raw = JSON.parse(text);
     } catch {
-      throw Error("Run metadata returned invalid data.");
+      throw Error(`${label} returned invalid data.`);
     }
     if (
       !raw ||
@@ -41,16 +46,26 @@ export async function readProjectRunsResponse(
       !("data" in raw) ||
       !("error" in raw)
     )
-      throw Error("Run metadata returned an incomplete answer.");
+      throw Error(`${label} returned an incomplete answer.`);
     if (!response.ok || raw.ok !== true)
       throw Error(
         typeof raw.error === "string" && raw.error.length <= 2000
           ? raw.error
-          : `Run metadata was refused (HTTP ${response.status}).`,
+          : `${label} was refused (HTTP ${response.status}).`,
       );
-    if (raw.error !== null) throw Error("Run metadata could not be verified.");
+    if (raw.error !== null) throw Error(`${label} could not be verified.`);
     return raw.data;
   } finally {
     reader.releaseLock();
   }
 }
+
+export const readProjectRunsResponse = (response: Response) =>
+  readBoundedResponse(response, MAX_PROJECT_RUN_BYTES + 1024, "Run metadata");
+
+export const readProjectRunArtifactResponse = (response: Response) =>
+  readBoundedResponse(
+    response,
+    MAX_PROJECT_RUN_ARTIFACT_RESPONSE_BYTES + 1024,
+    "Run artifact",
+  );

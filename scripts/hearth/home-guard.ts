@@ -239,6 +239,8 @@ function isLockFile(file: string): boolean {
 export const MAX_HOME_FILE_BYTES = 65_536;
 /** Separate ceiling for hearth-owned session bodies; lock/catalog readers stay at 64 KiB. */
 export const MAX_SESSION_TRANSCRIPT_BYTES = 8 * 1024 * 1024;
+/** Largest explicitly bounded private journal read. Ordinary home reads stay at 64 KiB. */
+export const MAX_BOUNDED_HOME_FILE_BYTES = 32 * 1024 * 1024;
 
 /**
  * What a client may use from a file in the hearth home (`readHomeFile`):
@@ -321,7 +323,7 @@ export function readHomeFile(
   return readHomeText(home, file, options, MAX_HOME_FILE_BYTES);
 }
 
-/** Read one owner-checked file through its opened handle with a smaller byte ceiling. */
+/** Read one owner-checked file through its opened handle with an explicit byte ceiling. */
 export function readHomeFileBounded(
   home: string,
   file: string,
@@ -330,8 +332,8 @@ export function readHomeFileBounded(
 ): HomeRead {
   if (
     !Number.isSafeInteger(maxBytes) ||
-    maxBytes < 0 ||
-    maxBytes > MAX_HOME_FILE_BYTES
+    maxBytes < 1 ||
+    maxBytes > MAX_BOUNDED_HOME_FILE_BYTES
   )
     return refused("The requested home-file read limit is invalid.");
   return readHomeText(home, file, options, maxBytes);

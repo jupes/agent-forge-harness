@@ -8,24 +8,35 @@ import {
   writeFileSync,
 } from "node:fs";
 import { dirname, join } from "node:path";
-import { expect, type Page, type Route, test } from "@playwright/test";
+import {
+  expect,
+  type Page,
+  type Response,
+  type Route,
+  test,
+} from "@playwright/test";
 import { runsHref } from "../../apps/desktop/src/project-runs-model";
 import type { ForgeState } from "../../scripts/forge/phases";
 import { OPERATOR_HEADER } from "../../scripts/hearth/paths";
 import {
+  projectRunArtifactSchema,
   projectRunDetailSchema,
   projectRunsPageSchema,
 } from "../../scripts/projects/run-protocol";
+import type { ProjectRunDetail } from "../../types/project-runs";
+import { readState, withStateLock, writeState } from "../e2e/bd-stand-in-state";
 import { openSettled, reloadSettled } from "../e2e/fixtures";
 import { pageToken } from "../e2e/launch-link";
-import { HEARTH_HOME } from "../e2e/servers";
-import { alpha, beta, seedProjects } from "./project-fixtures";
+import { BD_STAND_IN_STATE, HEARTH_HOME } from "../e2e/servers";
+import { seedObservationEvents } from "./observed-session-fixtures";
+import { alpha, beta, seedProjects, workspace } from "./project-fixtures";
 
 const owned = new Map<string, string>();
 const posts: string[] = [];
 const releases: Array<() => void> = [];
 let beforeDispatches: number[] = [];
 let streams = 0;
+let artifactReads = 0;
 let fixture: ReturnType<typeof seedRuns>;
 type RunsFilterEffectGate = {
   arm(): void;
@@ -110,7 +121,7 @@ function seedRuns() {
     epic: "alpha-epic",
     phase: "plan",
     completed: ["research", "plan"],
-    artifacts: {},
+    artifacts: { research: `plans/research/${primary}.md` },
     mode: "gated",
     checkout,
     updatedAt: "2026-10-23T13:00:00.000Z",
@@ -125,6 +136,11 @@ function seedRuns() {
       },
     ],
   };
+  const research = `# Verified research\n\n<script>must remain text</script>\n\n![inert image](https://example.com/image.png)\n\n[Safe link](https://example.com/research)\n`;
+  const researchPath = join(checkout, `plans/research/${primary}.md`);
+  mkdirSync(dirname(researchPath), { recursive: true });
+  writeFileSync(researchPath, research, { flag: "wx" });
+  owned.set(researchPath, research);
   publish(path(primary), base);
   publish(path(shipped), {
     ...base,
@@ -213,7 +229,30 @@ function seedRuns() {
   mkdirSync(dirname(logPath), { recursive: true });
   writeFileSync(logPath, logs, { flag: "wx" });
   owned.set(logPath, logs);
-  return { primary, shipped, legacy, foreign, path };
+  return { primary, shipped, legacy, foreign, path, research };
+}
+function recordRunSessions(runId: string, count: number) {
+  const worktree = realpathSync.native(process.cwd());
+  const sessionIds: string[] = [];
+  const events: import("../../types/hearth").LedgerEventInput[] = [];
+  for (let index = 0; index < count; index++) {
+    const sessionId = `run-session-${randomUUID()}`;
+    events.push({
+      kind: "session.started",
+      workspace,
+      beadId: "alpha-epic",
+      runId,
+      sessionId,
+      payload: {
+        source: "headless:claude",
+        kind: "headless",
+        worktree,
+      },
+    });
+    sessionIds.push(sessionId);
+  }
+  seedObservationEvents(events);
+  return sessionIds;
 }
 function held() {
   let release!: () => void;
@@ -244,6 +283,44 @@ async function protectedRead(page: Page, path: string) {
     { path, token, header: OPERATOR_HEADER },
   );
 }
+async function matchesRunDetailPage(response: Response, after: number) {
+  const url = new URL(response.url());
+  if (
+    url.pathname !==
+      `/__agent-forge/projects/${alpha.id}/runs/${fixture.primary}` ||
+    url.search !== `?after=${after}&limit=100`
+  )
+    return false;
+  return (await response.finished()) === null;
+}
+function runDetailFromEnvelope(body: unknown) {
+  if (
+    !body ||
+    typeof body !== "object" ||
+    Array.isArray(body) ||
+    !("ok" in body) ||
+    body.ok !== true ||
+    !("data" in body)
+  )
+    throw Error("Missing protected Run detail response");
+  return projectRunDetailSchema.parse(body.data);
+}
+async function runDetailResponse(response: Response) {
+  expect(response.status()).toBe(200);
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    throw Error("Incomplete protected Run detail response");
+  }
+  return runDetailFromEnvelope(body);
+}
+function availableHistory(detail: ProjectRunDetail, after: number) {
+  const history = detail.sessionHistory;
+  if (!history || history.status !== "available" || history.after !== after)
+    throw Error("Recorded-session page did not match its requested cursor");
+  return history;
+}
 /** Playwright's server-side forward must retain the browser's declared same-origin boundary. */
 async function forwardRun(route: Route) {
   const response = await route.fetch({
@@ -268,7 +345,10 @@ async function forwardRun(route: Route) {
     !("data" in envelope)
   )
     throw Error("The forwarded run read was not a verified protected answer");
-  if (new URL(route.request().url()).pathname.endsWith("/runs"))
+  const pathname = new URL(route.request().url()).pathname;
+  if (pathname.includes("/artifacts/"))
+    projectRunArtifactSchema.parse(envelope.data);
+  else if (pathname.endsWith("/runs"))
     projectRunsPageSchema.parse(envelope.data);
   else projectRunDetailSchema.parse(envelope.data);
   return response;
@@ -280,10 +360,13 @@ test.beforeEach(({ page }) => {
   seedProjects();
   fixture = seedRuns();
   posts.length = 0;
+  artifactReads = 0;
   streams = 0;
   beforeDispatches = dispatches();
   page.on("request", (request) => {
     if (new URL(request.url()).pathname === "/__agent-forge/stream") streams++;
+    if (new URL(request.url()).pathname.includes("/artifacts/"))
+      artifactReads++;
     if (
       request.method() === "POST" &&
       request.url().includes("/__agent-forge/")
@@ -297,6 +380,101 @@ test.afterEach(async ({ page }) => {
   for (const path of [...owned.keys()]) remove(path);
   expect(posts).toEqual([]);
   expect(dispatches()).toEqual(beforeDispatches);
+});
+
+function checkpoint(
+  id: string,
+  issueType: "feature" | "task",
+  status: "open" | "in_progress",
+  parent: string,
+  blocker?: string,
+) {
+  return {
+    id,
+    title: id,
+    issue_type: issueType,
+    status,
+    priority: 2,
+    created_at: "2026-10-29T00:00:00.000Z",
+    updated_at: "2026-10-29T00:00:00.000Z",
+    labels: ["project:alpha"],
+    dependencies: [
+      { issue_id: id, depends_on_id: parent, type: "parent-child" },
+      ...(blocker
+        ? [{ issue_id: id, depends_on_id: blocker, type: "blocks" }]
+        : []),
+    ],
+  };
+}
+
+test("selected run shows its scoped checkpoints and prefills only the current bead in Council", async ({
+  page,
+}) => {
+  withStateLock(BD_STAND_IN_STATE, () => {
+    const state = readState(BD_STAND_IN_STATE);
+    Object.assign(state, {
+      "alpha-feature": checkpoint(
+        "alpha-feature",
+        "feature",
+        "open",
+        "alpha-epic",
+      ),
+      "alpha-active": checkpoint(
+        "alpha-active",
+        "task",
+        "in_progress",
+        "alpha-feature",
+      ),
+      "alpha-second": checkpoint(
+        "alpha-second",
+        "task",
+        "in_progress",
+        "alpha-feature",
+      ),
+      "alpha-next": checkpoint(
+        "alpha-next",
+        "task",
+        "open",
+        "alpha-feature",
+        "alpha-active",
+      ),
+    });
+    writeState(BD_STAND_IN_STATE, state);
+  });
+  await openSettled(page, href(alpha.id, fixture.primary));
+  const detail = page.getByRole("article", { name: "Selected forge run" });
+  const checkpoints = detail.getByRole("region", { name: "Run checkpoints" });
+  const active = checkpoints.locator('[data-checkpoint-id="alpha-active"]');
+  const second = checkpoints.locator('[data-checkpoint-id="alpha-second"]');
+  const waiting = checkpoints.locator('[data-checkpoint-id="alpha-next"]');
+  await expect(active).toContainText("In progress");
+  await expect(second).toContainText("In progress");
+  await expect(waiting).toContainText("Open");
+  await expect(waiting).toContainText("waiting on alpha-active");
+  await expect(
+    waiting.getByRole("button", { name: "Send alpha-next to Council" }),
+  ).toHaveCount(0);
+  await active
+    .getByRole("button", { name: "Send alpha-active to Council" })
+    .click();
+  await expect(page).toHaveURL(/\/reviews$/);
+  await expect(page.getByLabel("Source type")).toHaveValue("bead");
+  await expect(page.getByLabel("Beads issue ID")).toHaveValue("alpha-active");
+  await page.goBack();
+  await expect(detail).toBeVisible();
+  const secondAction = second.getByRole("button", {
+    name: "Send alpha-second to Council",
+  });
+  await expect(secondAction).toBeEnabled();
+  await secondAction.click();
+  const replace = page.getByRole("dialog", {
+    name: "Replace Council draft source?",
+  });
+  await expect(replace).toBeVisible();
+  await replace.getByRole("button", { name: "Replace source" }).click();
+  await expect(page).toHaveURL(/\/reviews$/);
+  await expect(page.getByLabel("Beads issue ID")).toHaveValue("alpha-second");
+  expect(posts).toEqual([]);
 });
 
 test("scoped Runs keyboard inspection preserves real phase, review and gate truth through Activity, Back and reload without writes", async ({
@@ -314,7 +492,7 @@ test("scoped Runs keyboard inspection preserves real phase, review and gate trut
   );
   await expect(
     runs.getByRole("button", { name: "New forge run" }),
-  ).toBeDisabled();
+  ).toBeEnabled();
   const link = runs.getByRole("link", {
     name: "Scoped forge delivery",
     exact: true,
@@ -336,6 +514,33 @@ test("scoped Runs keyboard inspection preserves real phase, review and gate trut
       "data-state",
       state,
     );
+  expect(artifactReads).toBe(0);
+  const readArtifact = detail.getByRole("button", {
+    name: "Read research artifact",
+  });
+  await readArtifact.focus();
+  await expect(readArtifact).toHaveCSS("outline-width", "2px");
+  await page.keyboard.press("Enter");
+  const artifact = page.getByRole("region", { name: "Verified run artifact" });
+  await expect(
+    artifact.getByText("Verified research", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    artifact.getByText("<script>must remain text</script>", { exact: true }),
+  ).toBeVisible();
+  await expect(artifact.locator("script, img")).toHaveCount(0);
+  await expect(
+    artifact.getByRole("link", { name: "Safe link" }),
+  ).toHaveAttribute("href", "https://example.com/research");
+  expect(artifactReads).toBe(1);
+  const shotDir = process.env["SHOT_DIR"];
+  if (shotDir) {
+    mkdirSync(shotDir, { recursive: true });
+    await artifact.screenshot({
+      path: join(shotDir, "runs-artifact.png"),
+      animations: "disabled",
+    });
+  }
   await expect(detail.getByText("Gate failed", { exact: true })).toBeVisible();
   const checks = detail.getByRole("table", { name: "Gate checks" }).first();
   await expect(
@@ -443,6 +648,165 @@ test("scoped Runs keyboard inspection preserves real phase, review and gate trut
     "linked",
     "legacy",
   ]);
+});
+
+test("recorded run sessions page in the served project and open only admitted metadata", async ({
+  page,
+}) => {
+  const sessions = recordRunSessions(fixture.primary, 101);
+  await openSettled(page, href(alpha.id, fixture.primary));
+  const history = page.getByRole("region", {
+    name: "Recorded sessions for this run",
+  });
+  await expect(history.getByText(sessions[0]!, { exact: true })).toBeVisible();
+  await expect(history.getByText(sessions[100]!, { exact: true })).toHaveCount(
+    0,
+  );
+  await history
+    .getByRole("button", { name: "Load more recorded sessions" })
+    .click();
+  await expect(
+    history.getByText(sessions[100]!, { exact: true }),
+  ).toBeVisible();
+  await history
+    .getByRole("heading", { name: "Sessions", exact: true })
+    .scrollIntoViewIfNeeded();
+  await page.screenshot({
+    path: test.info().outputPath("recorded-run-sessions.png"),
+  });
+
+  await history
+    .getByRole("link", { name: "Open session metadata" })
+    .first()
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "Session metadata", exact: true }),
+  ).toBeVisible();
+  await expect(
+    page
+      .getByRole("region", {
+        name: "Session metadata details",
+        exact: true,
+      })
+      .getByText(sessions[0]!, { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Session start recorded", { exact: true }),
+  ).toBeVisible();
+
+  await openSettled(page, href(beta.id, fixture.foreign));
+  const betaHistory = page.getByRole("region", {
+    name: "Recorded sessions for this run",
+  });
+  await expect(
+    betaHistory.getByText(sessions[0]!, { exact: true }),
+  ).toHaveCount(0);
+  expect(posts).toEqual([]);
+  expect(dispatches()).toEqual(beforeDispatches);
+});
+
+test("a changed run-session admission key keeps the old page stale and disables metadata links and paging", async ({
+  page,
+}) => {
+  const sessions = recordRunSessions(fixture.primary, 101);
+  const initialPageResponse = page.waitForResponse((response) =>
+    matchesRunDetailPage(response, 0),
+  );
+  await openSettled(page, href(alpha.id, fixture.primary));
+  const initialDetail = await runDetailResponse(await initialPageResponse);
+  const initialHistory = availableHistory(initialDetail, 0);
+  const nextAfter = initialHistory.nextAfter;
+  const history = page.getByRole("region", {
+    name: "Recorded sessions for this run",
+  });
+  await expect(history.getByText(sessions[0]!, { exact: true })).toBeVisible();
+  await expect(
+    history.getByRole("link", { name: "Open session metadata" }).first(),
+  ).toBeVisible();
+
+  withStateLock(BD_STAND_IN_STATE, () => {
+    const state = readState(BD_STAND_IN_STATE);
+    Object.assign(state, {
+      "alpha-membership-added": checkpoint(
+        "alpha-membership-added",
+        "feature",
+        "open",
+        "alpha-epic",
+      ),
+    });
+    writeState(BD_STAND_IN_STATE, state);
+  });
+
+  const changedRead = await protectedRead(
+    page,
+    `/projects/${alpha.id}/runs/${fixture.primary}?after=0&limit=100`,
+  );
+  expect(changedRead.status).toBe(200);
+  const changedDetail = runDetailFromEnvelope(changedRead.body);
+  expect(changedDetail.run.slug).toBe(fixture.primary);
+  expect(changedDetail.run.epic).toBe("alpha-epic");
+  const changedHistory = availableHistory(changedDetail, 0);
+  expect(changedHistory.membershipKey).not.toBe(initialHistory.membershipKey);
+
+  const nextPageResponse = page.waitForResponse((response) =>
+    matchesRunDetailPage(response, nextAfter),
+  );
+  await history
+    .getByRole("button", { name: "Load more recorded sessions" })
+    .click();
+  const nextDetail = await runDetailResponse(await nextPageResponse);
+  const nextHistory = availableHistory(nextDetail, nextAfter);
+  expect(nextHistory.membershipKey).toBe(changedHistory.membershipKey);
+  expect(nextHistory.membershipKey).not.toBe(initialHistory.membershipKey);
+
+  await expect(history).toContainText(
+    "Project or session membership changed while reading this run",
+  );
+  await expect(history.getByText(sessions[0]!, { exact: true })).toBeVisible();
+  await expect(history.getByText(sessions[100]!, { exact: true })).toHaveCount(
+    0,
+  );
+  await expect(
+    history.getByRole("link", { name: "Open session metadata" }),
+  ).toHaveCount(0);
+  await expect(
+    history.getByRole("button", { name: "Load more recorded sessions" }),
+  ).toBeDisabled();
+
+  const refreshedPageResponse = page.waitForResponse((response) =>
+    matchesRunDetailPage(response, 0),
+  );
+  await page.getByRole("button", { name: "Refresh runs", exact: true }).click();
+  const refreshedDetail = await runDetailResponse(await refreshedPageResponse);
+  const refreshedHistory = availableHistory(refreshedDetail, 0);
+  expect(refreshedHistory.membershipKey).toBe(changedHistory.membershipKey);
+  await expect(history).not.toContainText(
+    "Project or session membership changed while reading this run",
+  );
+  await expect(
+    history.getByRole("link", { name: "Open session metadata" }).first(),
+  ).toBeVisible();
+  await expect(
+    history.getByRole("button", { name: "Load more recorded sessions" }),
+  ).toBeEnabled();
+
+  const recoveredPageResponse = page.waitForResponse((response) =>
+    matchesRunDetailPage(response, refreshedHistory.nextAfter),
+  );
+  await history
+    .getByRole("button", { name: "Load more recorded sessions" })
+    .click();
+  const recoveredDetail = await runDetailResponse(await recoveredPageResponse);
+  const recoveredHistory = availableHistory(
+    recoveredDetail,
+    refreshedHistory.nextAfter,
+  );
+  expect(recoveredHistory.membershipKey).toBe(changedHistory.membershipKey);
+  await expect(
+    history.getByText(sessions[100]!, { exact: true }),
+  ).toBeVisible();
+  expect(posts).toEqual([]);
+  expect(dispatches()).toEqual(beforeDispatches);
 });
 
 test("Runs filters and verified empty/loading/error states never claim unavailable sources are empty", async ({
@@ -664,9 +1028,13 @@ test("late run and project answers cannot replace a newer scoped selection and f
   const entered = held(),
     release = held(),
     finished = held();
+  let primaryDetailRequests = 0;
   await page.route(
-    `**/__agent-forge/projects/${alpha.id}/runs/${fixture.primary}`,
+    new RegExp(
+      `^https?://[^/]+/__agent-forge/projects/${alpha.id}/runs/${fixture.primary}\\?after=0&limit=100$`,
+    ),
     async (route) => {
+      primaryDetailRequests++;
       try {
         const response = await forwardRun(route);
         entered.release();
@@ -682,6 +1050,7 @@ test("late run and project answers cannot replace a newer scoped selection and f
     .getByRole("link", { name: "Scoped forge delivery", exact: true })
     .click();
   await entered.promise;
+  expect(primaryDetailRequests).toBe(1);
   await page.evaluate((hash) => {
     location.hash = hash;
   }, runsHref(alpha.id, fixture.shipped).slice(1));

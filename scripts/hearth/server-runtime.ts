@@ -30,7 +30,10 @@ import type {
   CouncilAttachResolver,
 } from "../council/ledger-events";
 import { type CommandRunner, runLocalCommand } from "../council/pr-source";
-import { createCouncilService } from "../council/service";
+import {
+  type CouncilServiceOptions,
+  createCouncilService,
+} from "../council/service";
 import { loadDashboardServerEnvironment } from "../dashboard/server-environment";
 import { ownInterrupts } from "../executors/supervisor";
 import { createClaudeConversationTransport } from "../keeper/claude-transport";
@@ -54,6 +57,11 @@ import {
   type ProviderLoginService,
 } from "../providers/login";
 import { createNativeLoginPreparation } from "../providers/login-native";
+import type {
+  NativeConsoleChild,
+  NativeConsoleLaunchOptions,
+} from "../providers/native-console";
+import { withQueueLock } from "../scheduler/queue-lock";
 import { SHIFTS_DIR } from "../scheduler/shift-store";
 import type { GitRun } from "../scheduler/worktrees";
 import type { SessionRuntime } from "../sessions/admission";
@@ -161,6 +169,8 @@ export interface HearthOptions extends HearthInternalCommands {
    * where the hearth's own `bd` runs (`hearthCouncilRunner`).
    */
   councilRunCommand?: CommandRunner;
+  /** Trusted test/embedder-only Council transport composition; never request supplied. */
+  councilResolveTransport?: CouncilServiceOptions["resolveTransport"];
   /** What the operator API reads and writes, when not the defaults. Tests inject these. */
   api?: OperatorApiOverrides;
   /**
@@ -206,6 +216,12 @@ export interface OperatorApiOverrides {
   /** Fixed status probes only; tests supply a fixture and never inspect real accounts. */
   providerInspector?: ProviderInspector;
   providerLogin?: ProviderLoginService;
+  /** Trusted fixture launcher for native terminal handoff; never request supplied. */
+  sessionTerminalLauncher?: (
+    options: NativeConsoleLaunchOptions,
+  ) => NativeConsoleChild;
+  /** Minimal explicit environment for inert terminal fixtures; never request supplied. */
+  sessionTerminalEnvironment?: Record<string, string | undefined>;
   /** Trusted coding runtime seam; hermetic tests never launch a real provider. */
   sessionRuntime?: SessionRuntime;
   /** Trusted native Task runtime only; never selected by a caller-supplied command. */
@@ -336,6 +352,8 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
 
   const service = createCouncilService({
     workspaceRoot: root,
+    reviewHome: home,
+    withQueueLock,
     harnessRoot: options.harnessRoot ?? root,
     environment:
       options.environment ??
@@ -347,6 +365,9 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
         }
       : {}),
     runCommand: hearthCouncilRunner(root, options.councilRunCommand),
+    ...(options.councilResolveTransport
+      ? { resolveTransport: options.councilResolveTransport }
+      : {}),
   });
   const tokenFile = tokenPath(home, root);
   let token = "";
@@ -563,6 +584,13 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
     smithEditService,
     smithRoutingEditService,
     providerInspector,
+    sessionTerminalEnvironment:
+      options.api?.sessionTerminalEnvironment ??
+      options.environment ??
+      process.env,
+    ...(options.api?.sessionTerminalLauncher
+      ? { sessionTerminalLauncher: options.api.sessionTerminalLauncher }
+      : {}),
     providerLogin:
       options.api?.providerLogin ??
       createProviderLoginService({
@@ -663,6 +691,7 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
     appendEvent: append,
     // Under the home, with the ledger: a shift given the same home takes the same lock.
     queueLockFile: join(home, QUEUE_LOCK_FILE),
+    checkpointReviewQueueLock: withQueueLock,
     shiftsDir,
     shiftStarts,
     projectShiftRuntime:
