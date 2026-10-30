@@ -3,8 +3,8 @@ import { join } from "node:path";
 import { expect, type Page, type Request, test } from "@playwright/test";
 import {
   projectCouncilMetadataSchema,
-  projectCouncilReserveRequestSchema,
   projectCouncilReceiptSchema,
+  projectCouncilReserveRequestSchema,
 } from "../../types/project-council";
 import type { ProjectCouncilRunRead } from "../../types/project-council-run-read";
 import { openSettled } from "../e2e/fixtures";
@@ -184,108 +184,123 @@ async function prepareReview(page: Page, deepDiscussion = false) {
   });
   const origin = await page.evaluate(() => location.origin);
   const targetPath = reviewsPath;
-  let metadata: ReturnType<typeof projectCouncilMetadataSchema.parse> | undefined;
+  let metadata:
+    | ReturnType<typeof projectCouncilMetadataSchema.parse>
+    | undefined;
   const requestBindingName = "__validateCouncilReserveRequest";
   const responseBindingName = "__validateCouncilReserveResponse";
   let captureFailure: string | undefined;
   const installedBindings: string[] = [];
   try {
-  await page.exposeBinding(
-    requestBindingName,
-    (sourceInfo, url: string, bodyText: string) => {
-      try {
-        const requestUrl = new URL(url);
-        const frameUrl = new URL(sourceInfo.frame.url());
-        if (
-          sourceInfo.page !== page ||
-          sourceInfo.frame !== page.mainFrame() ||
-          frameUrl.origin !== origin ||
-          requestUrl.origin !== origin ||
-          requestUrl.pathname !== targetPath ||
-          requestUrl.search !== "" ||
-          requestUrl.hash !== ""
-        )
-          throw Error("invalid-request-source");
-        let body: unknown;
+    await page.exposeBinding(
+      requestBindingName,
+      (sourceInfo, url: string, bodyText: string) => {
         try {
-          body = JSON.parse(bodyText);
+          const requestUrl = new URL(url);
+          const frameUrl = new URL(sourceInfo.frame.url());
+          if (
+            sourceInfo.page !== page ||
+            sourceInfo.frame !== page.mainFrame() ||
+            frameUrl.origin !== origin ||
+            requestUrl.origin !== origin ||
+            requestUrl.pathname !== targetPath ||
+            requestUrl.search !== "" ||
+            requestUrl.hash !== ""
+          )
+            throw Error("invalid-request-source");
+          let body: unknown;
+          try {
+            body = JSON.parse(bodyText);
+          } catch {
+            throw Error("invalid-request-json");
+          }
+          const parsed = projectCouncilReserveRequestSchema.safeParse(body);
+          if (!parsed.success) throw Error("invalid-request-schema");
+          if (
+            parsed.data.sourceChoice.sourceType !==
+              expectedRequest.sourceChoice.sourceType ||
+            parsed.data.sourceChoice.source !==
+              expectedRequest.sourceChoice.source ||
+            parsed.data.profileChoice !== expectedRequest.profileChoice ||
+            parsed.data.maxUsd !== expectedRequest.maxUsd ||
+            parsed.data.maxBytes !== expectedRequest.maxBytes ||
+            parsed.data.redactSecrets !== expectedRequest.redactSecrets ||
+            parsed.data.deepDiscussion !== expectedRequest.deepDiscussion
+          )
+            throw Error("request-does-not-match-ui");
+          return true;
         } catch {
-          throw Error("invalid-request-json");
+          captureFailure ??= "request-proof";
+          return false;
         }
-        const parsed = projectCouncilReserveRequestSchema.safeParse(body);
-        if (!parsed.success) throw Error("invalid-request-schema");
-        if (
-          parsed.data.sourceChoice.sourceType !== expectedRequest.sourceChoice.sourceType ||
-          parsed.data.sourceChoice.source !== expectedRequest.sourceChoice.source ||
-          parsed.data.profileChoice !== expectedRequest.profileChoice ||
-          parsed.data.maxUsd !== expectedRequest.maxUsd ||
-          parsed.data.maxBytes !== expectedRequest.maxBytes ||
-          parsed.data.redactSecrets !== expectedRequest.redactSecrets ||
-          parsed.data.deepDiscussion !== expectedRequest.deepDiscussion
-        )
-          throw Error("request-does-not-match-ui");
-        return true;
-      } catch {
-        captureFailure ??= "request-proof";
-        return false;
-      }
-    },
-  );
-  installedBindings.push(requestBindingName);
-  await page.exposeBinding(
-    responseBindingName,
-    (sourceInfo, status: number, url: string, bodyText: string) => {
-      try {
-        const responseUrl = new URL(url);
-        const frameUrl = new URL(sourceInfo.frame.url());
-        if (
-          sourceInfo.page !== page ||
-          sourceInfo.frame !== page.mainFrame() ||
-          frameUrl.origin !== origin ||
-          status !== 202 ||
-          responseUrl.origin !== origin ||
-          responseUrl.pathname !== targetPath ||
-          responseUrl.search !== "" ||
-          responseUrl.hash !== ""
-        )
-          throw Error("invalid-response-source");
-        let raw: unknown;
+      },
+    );
+    installedBindings.push(requestBindingName);
+    await page.exposeBinding(
+      responseBindingName,
+      (sourceInfo, status: number, url: string, bodyText: string) => {
         try {
-          raw = JSON.parse(bodyText);
+          const responseUrl = new URL(url);
+          const frameUrl = new URL(sourceInfo.frame.url());
+          if (
+            sourceInfo.page !== page ||
+            sourceInfo.frame !== page.mainFrame() ||
+            frameUrl.origin !== origin ||
+            status !== 202 ||
+            responseUrl.origin !== origin ||
+            responseUrl.pathname !== targetPath ||
+            responseUrl.search !== "" ||
+            responseUrl.hash !== ""
+          )
+            throw Error("invalid-response-source");
+          let raw: unknown;
+          try {
+            raw = JSON.parse(bodyText);
+          } catch {
+            throw Error("invalid-response-json");
+          }
+          const data = responseData(raw);
+          if (
+            typeof data !== "object" ||
+            data === null ||
+            !("metadata" in data)
+          )
+            throw Error("missing-response-metadata");
+          const parsedMetadata = projectCouncilMetadataSchema.safeParse(
+            data.metadata,
+          );
+          if (!parsedMetadata.success) throw Error("invalid-response-metadata");
+          if (
+            parsedMetadata.data.projectId !== alpha.id ||
+            parsedMetadata.data.state !== "reserved" ||
+            parsedMetadata.data.sourceType !==
+              expectedRequest.sourceChoice.sourceType ||
+            parsedMetadata.data.maxUsd !== expectedRequest.maxUsd ||
+            parsedMetadata.data.maxBytes !== expectedRequest.maxBytes ||
+            parsedMetadata.data.redactSecrets !==
+              expectedRequest.redactSecrets ||
+            parsedMetadata.data.deepDiscussion !==
+              expectedRequest.deepDiscussion
+          )
+            throw Error("response-does-not-match-request");
+          metadata = parsedMetadata.data;
+          return true;
         } catch {
-          throw Error("invalid-response-json");
+          captureFailure ??= "response-proof";
+          return false;
         }
-        const data = responseData(raw);
-        if (typeof data !== "object" || data === null || !("metadata" in data))
-          throw Error("missing-response-metadata");
-        const parsedMetadata = projectCouncilMetadataSchema.safeParse(data.metadata);
-        if (!parsedMetadata.success) throw Error("invalid-response-metadata");
-        if (
-          parsedMetadata.data.projectId !== alpha.id ||
-          parsedMetadata.data.state !== "reserved" ||
-          parsedMetadata.data.sourceType !== expectedRequest.sourceChoice.sourceType ||
-          parsedMetadata.data.maxUsd !== expectedRequest.maxUsd ||
-          parsedMetadata.data.maxBytes !== expectedRequest.maxBytes ||
-          parsedMetadata.data.redactSecrets !== expectedRequest.redactSecrets ||
-          parsedMetadata.data.deepDiscussion !== expectedRequest.deepDiscussion
-        )
-          throw Error("response-does-not-match-request");
-        metadata = parsedMetadata.data;
-        return true;
-      } catch {
-        captureFailure ??= "response-proof";
-        return false;
-      }
-    },
-  );
-  installedBindings.push(responseBindingName);
+      },
+    );
+    installedBindings.push(responseBindingName);
     await page.evaluate(
       ({ origin, targetPath }) => {
         if (window.top !== window)
           throw Error("Council reservation capture requires the main frame.");
         const originalFetch = window.fetch;
         const pending = new Set<Promise<unknown>>();
-        const activeReaders = new Set<ReadableStreamDefaultReader<Uint8Array>>();
+        const activeReaders = new Set<
+          ReadableStreamDefaultReader<Uint8Array>
+        >();
         let accepting = true;
         let matchedRequests = 0;
         const failProof = () => {
@@ -309,7 +324,9 @@ async function prepareReview(page: Page, deepDiscussion = false) {
               if (part.done) break;
               size += part.value.byteLength;
               if (size > limit)
-                throw Error("Council reservation evidence exceeded its byte limit.");
+                throw Error(
+                  "Council reservation evidence exceeded its byte limit.",
+                );
               text += decoder.decode(part.value, { stream: true });
             }
             return text + decoder.decode();
@@ -327,9 +344,12 @@ async function prepareReview(page: Page, deepDiscussion = false) {
           } finally {
             window.clearTimeout(timer);
             if (!complete) {
-              void reader.cancel().catch(() => undefined).finally(() => {
-                activeReaders.delete(reader);
-              });
+              void reader
+                .cancel()
+                .catch(() => undefined)
+                .finally(() => {
+                  activeReaders.delete(reader);
+                });
             } else {
               reader.releaseLock();
               activeReaders.delete(reader);
@@ -352,102 +372,104 @@ async function prepareReview(page: Page, deepDiscussion = false) {
             window.clearTimeout(timer);
           }
         };
-        const wrapper = Object.assign(
-          async function (
-            this: unknown,
-            ...args: Parameters<typeof originalFetch>
-          ): Promise<Response> {
-            const input = args[0];
-            const rawUrl = input instanceof Request ? input.url : String(input);
-            const method =
-              args[1]?.method ?? (input instanceof Request ? input.method : "GET");
-            let url: URL;
+        const wrapper = Object.assign(async function (
+          this: unknown,
+          ...args: Parameters<typeof originalFetch>
+        ): Promise<Response> {
+          const input = args[0];
+          const rawUrl = input instanceof Request ? input.url : String(input);
+          const method =
+            args[1]?.method ??
+            (input instanceof Request ? input.method : "GET");
+          let url: URL;
+          try {
+            url = new URL(rawUrl, window.location.href);
+          } catch {
+            return Reflect.apply(originalFetch, this, args);
+          }
+          const matchesPath =
+            String(method).toUpperCase() === "POST" &&
+            url.pathname === targetPath;
+          if (!matchesPath) return Reflect.apply(originalFetch, this, args);
+          if (!accepting) return Reflect.apply(originalFetch, this, args);
+          matchedRequests += 1;
+          if (
+            matchedRequests > 1 ||
+            url.origin !== origin ||
+            url.search !== "" ||
+            url.hash !== ""
+          ) {
+            failProof();
+            const duplicate = Reflect.apply(originalFetch, this, args);
+            pending.add(duplicate);
             try {
-              url = new URL(rawUrl, window.location.href);
+              return await duplicate;
+            } finally {
+              pending.delete(duplicate);
+            }
+          }
+          const operation = (async () => {
+            let requestWitness: Request | undefined;
+            try {
+              const initBody = args[1]?.body;
+              if (initBody !== undefined && typeof initBody !== "string")
+                throw Error("request-body-not-cloneable");
+              const requestInput =
+                input instanceof Request ? input.clone() : input;
+              requestWitness = new Request(requestInput, args[1]);
             } catch {
-              return Reflect.apply(originalFetch, this, args);
-            }
-            const matchesPath =
-              String(method).toUpperCase() === "POST" &&
-              url.pathname === targetPath;
-            if (!matchesPath) return Reflect.apply(originalFetch, this, args);
-            if (!accepting)
-              return Reflect.apply(originalFetch, this, args);
-            matchedRequests += 1;
-            if (
-              matchedRequests > 1 ||
-              url.origin !== origin ||
-              url.search !== "" ||
-              url.hash !== ""
-            ) {
               failProof();
-              const duplicate = Reflect.apply(originalFetch, this, args);
-              pending.add(duplicate);
-              try {
-                return await duplicate;
-              } finally {
-                pending.delete(duplicate);
-              }
             }
-            const operation = (async () => {
-              let requestWitness: Request | undefined;
+            const responsePromise = Reflect.apply(originalFetch, this, args);
+            const requestProof = (async () => {
+              if (!requestWitness) return;
               try {
-                const initBody = args[1]?.body;
-                if (initBody !== undefined && typeof initBody !== "string")
-                  throw Error("request-body-not-cloneable");
-                const requestInput =
-                  input instanceof Request ? input.clone() : input;
-                requestWitness = new Request(requestInput, args[1]);
-              } catch {
-                failProof();
-              }
-              const responsePromise = Reflect.apply(originalFetch, this, args);
-              const requestProof = (async () => {
-                if (!requestWitness) return;
-                try {
-                  const requestBody = await readBounded(
-                    requestWitness.body,
-                    16 * 1024,
-                  );
-                  const valid = await boundedValidation(
-                    window.__validateCouncilReserveRequest?.(url.href, requestBody),
-                  );
-                  if (!valid) failProof();
-                } catch {
-                  failProof();
-                }
-              })();
-              pending.add(requestProof);
-              void requestProof.finally(() => pending.delete(requestProof)).catch(() => undefined);
-              const response = await responsePromise;
-              await requestProof;
-              try {
-                const responseBody = await readBounded(
-                  response.clone().body,
-                  1024 * 1024,
+                const requestBody = await readBounded(
+                  requestWitness.body,
+                  16 * 1024,
                 );
                 const valid = await boundedValidation(
-                  window.__validateCouncilReserveResponse?.(
-                    response.status,
-                    response.url,
-                    responseBody,
+                  window.__validateCouncilReserveRequest?.(
+                    url.href,
+                    requestBody,
                   ),
                 );
                 if (!valid) failProof();
               } catch {
                 failProof();
               }
-              return response;
             })();
-            pending.add(operation);
+            pending.add(requestProof);
+            void requestProof
+              .finally(() => pending.delete(requestProof))
+              .catch(() => undefined);
+            const response = await responsePromise;
+            await requestProof;
             try {
-              return await operation;
-            } finally {
-              pending.delete(operation);
+              const responseBody = await readBounded(
+                response.clone().body,
+                1024 * 1024,
+              );
+              const valid = await boundedValidation(
+                window.__validateCouncilReserveResponse?.(
+                  response.status,
+                  response.url,
+                  responseBody,
+                ),
+              );
+              if (!valid) failProof();
+            } catch {
+              failProof();
             }
-          },
-          originalFetch,
-        );
+            return response;
+          })();
+          pending.add(operation);
+          try {
+            return await operation;
+          } finally {
+            pending.delete(operation);
+          }
+        }, originalFetch);
         window.__restoreCouncilReserveCapture = async () => {
           accepting = false;
           if (window.fetch === wrapper) window.fetch = originalFetch;
@@ -459,7 +481,8 @@ async function prepareReview(page: Page, deepDiscussion = false) {
               Promise.allSettled([...pending]),
               new Promise<never>((_, reject) => {
                 timer = window.setTimeout(
-                  () => reject(Error("Council reservation capture did not drain.")),
+                  () =>
+                    reject(Error("Council reservation capture did not drain.")),
                   10_000,
                 );
               }),
