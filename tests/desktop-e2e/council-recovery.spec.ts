@@ -10,6 +10,7 @@ import { openSettled } from "../e2e/fixtures";
 import { HEARTH_HOME } from "../e2e/servers";
 import { seedCouncilProject } from "./council-fixtures";
 import {
+  type RunReadObservations,
   observeRunReads,
   responseData,
   verifiedRunReads,
@@ -196,10 +197,12 @@ test("actual Stop cancels the held Council transport and keeps the same original
   selectMode("hold", "council-cancel");
   const posts = observeCouncilPosts(page);
   const original = await prepareReview(page);
-  const runReads = observeRunReads(
+  const runReads = await observeRunReads(
     page,
     `${reviewsPath}/${original.requestId}/run`,
+    original,
   );
+  try {
   await page
     .getByRole("button", { name: "Convene this exact original" })
     .click();
@@ -252,6 +255,9 @@ test("actual Stop cancels the held Council transport and keeps the same original
       profileId: original.profileId,
     },
   ]);
+  } finally {
+    await runReads.dispose();
+  }
 });
 
 test("actual deep discussion exposes peer round zero before Stop cancels its held revision", async ({
@@ -260,10 +266,12 @@ test("actual deep discussion exposes peer round zero before Stop cancels its hel
   selectMode("hold", "council-deep-discussion");
   const posts = observeCouncilPosts(page);
   const original = await prepareReview(page, true);
-  const runReads = observeRunReads(
+  const runReads = await observeRunReads(
     page,
     `${reviewsPath}/${original.requestId}/run`,
+    original,
   );
+  try {
   await page
     .getByRole("button", { name: "Convene this exact original" })
     .click();
@@ -391,6 +399,9 @@ test("actual deep discussion exposes peer round zero before Stop cancels its hel
       profileId: original.profileId,
     },
   ]);
+  } finally {
+    await runReads.dispose();
+  }
 });
 
 test("actual failed Council run keeps partial seat records and no recommendation", async ({
@@ -399,10 +410,12 @@ test("actual failed Council run keeps partial seat records and no recommendation
   selectMode("fail", "council-failure");
   const posts = observeCouncilPosts(page);
   const original = await prepareReview(page);
-  const runReads = observeRunReads(
+  const runReads = await observeRunReads(
     page,
     `${reviewsPath}/${original.requestId}/run`,
+    original,
   );
+  try {
   await page
     .getByRole("button", { name: "Convene this exact original" })
     .click();
@@ -478,6 +491,9 @@ test("actual failed Council run keeps partial seat records and no recommendation
     callsFor("council-failure").filter((call) => call.kind === "admission"),
   ).toHaveLength(1);
   expect(requests.every((call) => call.runId === original.runId)).toBe(true);
+  } finally {
+    await runReads.dispose();
+  }
 });
 
 test("lost commit delivery stays unknown until the exact saved result is checked", async ({
@@ -487,7 +503,6 @@ test("lost commit delivery stays unknown until the exact saved result is checked
   const posts = observeCouncilPosts(page);
   const original = await prepareReview(page);
   const runPath = `${reviewsPath}/${original.requestId}/run`;
-  const runReads = observeRunReads(page, runPath);
   const runRequests: string[] = [];
   page.on("request", (request) => {
     if (
@@ -526,6 +541,7 @@ test("lost commit delivery stays unknown until the exact saved result is checked
       }
     },
   );
+  let runReads: RunReadObservations | undefined;
   try {
     await page.evaluate(
       ({ commitUrl, expectedIntentHash }) => {
@@ -738,6 +754,8 @@ test("lost commit delivery stays unknown until the exact saved result is checked
     ]);
     expect(runRequests).toHaveLength(0);
 
+    const exactRunReads = await observeRunReads(page, runPath, original);
+    runReads = exactRunReads;
     await page.getByRole("button", { name: "Read saved original" }).click();
     await expect(
       page.getByRole("button", { name: "Check saved result" }),
@@ -746,7 +764,7 @@ test("lost commit delivery stays unknown until the exact saved result is checked
     await expect(page.getByText("Verified state: completed")).toBeVisible({
       timeout: 15_000,
     });
-    const savedReads = await verifiedRunReads(runReads);
+    const savedReads = await verifiedRunReads(exactRunReads);
     expect(savedReads).toHaveLength(1);
     expect(savedReads[0]?.provenance).toMatchObject({
       requestId: original.requestId,
@@ -769,9 +787,13 @@ test("lost commit delivery stays unknown until the exact saved result is checked
     ).toBe(true);
   } finally {
     try {
-      await page.evaluate(() => window.__restoreCouncilFetch?.());
+      if (runReads) await runReads.dispose();
     } finally {
-      await receiptValidator.dispose();
+      try {
+        await page.evaluate(() => window.__restoreCouncilFetch?.());
+      } finally {
+        await receiptValidator.dispose();
+      }
     }
   }
 });

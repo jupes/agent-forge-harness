@@ -243,21 +243,16 @@ test("a completed bead-source review links to its bead and reports the one recor
     "alpha-council-first",
   );
   const reservationOrigin = new URL(page.url()).origin;
-  let capturedReservation:
-    | {
-        response: Response;
-        body: Promise<
-          { ok: true; bytes: Uint8Array } | { ok: false; error: unknown }
-        >;
-      }
-    | undefined;
+  type ReservationCapture = {
+    response: Response;
+    body: Promise<
+      { ok: true; bytes: Uint8Array } | { ok: false; error: unknown }
+    >;
+  };
+  let capturedReservation: ReservationCapture | undefined;
   let captureError: Error | undefined;
-  let resolveReservation!: (
-    value: NonNullable<typeof capturedReservation>,
-  ) => void;
-  const reservationCapture = new Promise<
-    NonNullable<typeof capturedReservation>
-  >((resolve) => {
+  let resolveReservation!: (value: ReservationCapture) => void;
+  const reservationCapture = new Promise<ReservationCapture>((resolve) => {
     resolveReservation = resolve;
   });
   const captureReservation = (response: Response) => {
@@ -281,7 +276,7 @@ test("a completed bead-source review links to its bead and reports the one recor
       );
       return;
     }
-    let body: NonNullable<typeof capturedReservation>["body"];
+    let body: ReservationCapture["body"];
     try {
       body = response.body().then(
         (bytes) => ({ ok: true as const, bytes }),
@@ -359,9 +354,10 @@ test("a completed bead-source review links to its bead and reports the one recor
   await expect(
     page.getByRole("heading", { name: "Exact saved original" }),
   ).toBeVisible();
-  const runReads = observeRunReads(
+  const runReads = await observeRunReads(
     page,
     `${reviewsPath}/${original.requestId}/run`,
+    original,
   );
   let verifiedRun: ProjectCouncilRunRead | undefined;
   const matchesOriginal = (read: ProjectCouncilRunRead) =>
@@ -435,7 +431,7 @@ test("a completed bead-source review links to its bead and reports the one recor
         "The completed Council result did not match its saved original.",
       );
   } finally {
-    runReads.dispose();
+    await runReads.dispose();
   }
   if (!verifiedRun?.job?.run)
     throw Error("The completed Bead result was not read back.");
