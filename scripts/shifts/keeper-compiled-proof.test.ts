@@ -200,10 +200,19 @@ test("Keeper timeout facts classify only fixed errors and aggregate bounded bead
     };
 
     for (const { record, classification } of [
-      { record: { ...base, error: PRIVATE_CAPTURE_FAILURE }, classification: "private-capture" },
-      { record: { ...base, error: "the shift failed: PRIVATE_LOOP_DETAIL" }, classification: "shift-loop" },
+      {
+        record: { ...base, error: PRIVATE_CAPTURE_FAILURE },
+        classification: "private-capture",
+      },
+      {
+        record: { ...base, error: "the shift failed: PRIVATE_LOOP_DETAIL" },
+        classification: "shift-loop",
+      },
       { record: base, classification: "none" },
-      { record: { ...base, error: "PRIVATE_OTHER_DETAIL" }, classification: "other" },
+      {
+        record: { ...base, error: "PRIVATE_OTHER_DETAIL" },
+        classification: "other",
+      },
     ]) {
       const facts = factsFor(record);
       expect(facts).toContain(`errorClass=${classification}`);
