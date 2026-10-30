@@ -427,6 +427,9 @@ for (const [fixtureMode, outcome, title] of [
       await expect(result).toContainText("Reset value: 123");
       await expect(result).toContainText("claude.rate_limit_event");
       await expect(result).toContainText("unit not reported");
+      await result.screenshot({
+        path: test.info().outputPath("reported-reset.png"),
+      });
       await expect(result).not.toContainText(
         "Not reported. Check Providers for current allowance.",
       );
