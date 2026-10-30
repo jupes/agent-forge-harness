@@ -617,7 +617,9 @@ test("an attended prompt uses ordinary Preview and one identity-bound Start afte
     throw new Error("The inert provider input recording is unavailable");
   }
   expect(providerInput.stdin.includes(expectedPrompt)).toBe(true);
-  expect(providerInput.argv.join("\u0000").includes(expectedPrompt)).toBe(false);
+  expect(providerInput.argv.join("\u0000").includes(expectedPrompt)).toBe(
+    false,
+  );
 
   await navigateToRuns(page);
   await launchPreparation(page);
