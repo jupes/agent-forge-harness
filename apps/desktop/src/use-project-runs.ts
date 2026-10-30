@@ -44,6 +44,7 @@ export function useProjectRuns(
         "gate.ran",
         "review.recorded",
         "verdict.bound",
+        "session.started",
       ],
       refresh,
     );

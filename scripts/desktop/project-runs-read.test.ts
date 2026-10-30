@@ -47,7 +47,7 @@ test("actual Runs read wiring receives bounded protected metadata and never send
   expect(cancelled).toBe(true);
   expect(calls).toEqual([
     "/__agent-forge/projects/project-alpha/runs",
-    "/__agent-forge/projects/project-alpha/runs/alpha-run",
+    "/__agent-forge/projects/project-alpha/runs/alpha-run?after=0&limit=100",
   ]);
 });
 

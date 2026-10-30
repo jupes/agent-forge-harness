@@ -1,8 +1,10 @@
 import { z } from "zod";
+import { SESSION_KINDS } from "../../types/hearth";
 import type {
   ProjectRunArtifact,
   ProjectRunDetail,
   ProjectRunRow,
+  ProjectRunSessionHistory,
   ProjectRunsPage,
 } from "../../types/project-runs";
 import { artifactPath, FORGE_PHASES } from "../forge/phases";
@@ -119,6 +121,44 @@ const gate = z
     evaluatorEvidence: z.enum(["schema-2", "legacy"]).nullable(),
   })
   .strict();
+export const projectRunSessionHistorySchema: z.ZodType<ProjectRunSessionHistory> =
+  z.discriminatedUnion("status", [
+    z
+      .object({
+        status: z.literal("available"),
+        after: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+        nextAfter: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+        more: z.boolean(),
+        membershipKey: z.string().regex(/^[0-9a-f]{64}$/),
+        sessions: z
+          .array(
+            z
+              .object({
+                sessionId: text.max(256).min(1),
+                startedAt: z.iso.datetime(),
+                kind: z.enum(SESSION_KINDS).nullable(),
+                detailsAvailable: z.boolean(),
+              })
+              .strict(),
+          )
+          .max(100),
+      })
+      .strict()
+      .refine(
+        (page) =>
+          page.nextAfter >= page.after &&
+          (!page.more || page.nextAfter > page.after) &&
+          new Set(page.sessions.map((session) => session.sessionId)).size ===
+            page.sessions.length,
+      ),
+    z
+      .object({
+        status: z.literal("unavailable"),
+        after: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER),
+        reason: z.literal("ledger-unavailable"),
+      })
+      .strict(),
+  ]);
 export const projectRunDetailSchema: z.ZodType<ProjectRunDetail> = z
   .object({
     ...source,
@@ -140,6 +180,7 @@ export const projectRunDetailSchema: z.ZodType<ProjectRunDetail> = z
     gateHistory: z.array(gate).max(11),
     gateHistoryDays: z.literal(30),
     earlierGateLimit: z.literal(10),
+    sessionHistory: projectRunSessionHistorySchema.optional(),
   })
   .strict()
   .refine(

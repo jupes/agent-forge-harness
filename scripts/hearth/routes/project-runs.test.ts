@@ -2,6 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { appendEvent } from "../../ledger/append";
 import {
   projectRunDetailSchema,
   projectRunsPageSchema,
@@ -159,6 +160,205 @@ test("protected project Runs reads the served checkout without migrating legacy 
   );
   expect(h.events(["operator.action"])).toEqual([]);
   expect(h.bd.calls.every((args) => args[0] === "export")).toBe(true);
+});
+
+test("protected run detail returns the exact recorded session.started association", async () => {
+  const { h, path } = await fixture();
+  const startedAt = "2026-10-23T12:30:00.000Z";
+  const eventId = h.append({
+    kind: "session.started",
+    beadId: "alpha-epic",
+    runId: "alpha-run",
+    sessionId: "recorded-run-session",
+    ts: startedAt,
+    payload: {
+      source: "headless:claude",
+      kind: "headless",
+      worktree: h.root,
+    },
+  });
+
+  const response = await fetch(`${path}/alpha-run`, {
+    headers: h.headers(h.hearth.token),
+  });
+
+  expect(response.status).toBe(200);
+  const envelope = await response.json();
+  expect(envelope.ok).toBe(true);
+  expect(envelope.data.sessionHistory).toEqual({
+    status: "available",
+    after: 0,
+    nextAfter: eventId,
+    more: false,
+    membershipKey: expect.stringMatching(/^[0-9a-f]{64}$/),
+    sessions: [
+      {
+        sessionId: "recorded-run-session",
+        startedAt,
+        kind: "headless",
+        detailsAvailable: true,
+      },
+    ],
+  });
+});
+
+test("run session pages preserve the raw cursor while excluding foreign and unrelated rows", async () => {
+  const { h, path } = await fixture();
+  const exactId = h.append({
+    kind: "session.started",
+    beadId: "alpha-epic",
+    runId: "alpha-run",
+    sessionId: "alpha-recorded-session",
+    ts: "2026-10-23T12:31:00.000Z",
+    payload: { kind: "headless" },
+  });
+  const foreignId = h.append({
+    kind: "session.started",
+    beadId: "foreign-bead",
+    runId: "alpha-run",
+    sessionId: "foreign-recorded-session",
+    payload: { kind: "headless" },
+  });
+  const untaggedId = h.append({
+    kind: "session.started",
+    runId: "alpha-run",
+    sessionId: "untagged-recorded-session",
+    payload: { kind: "headless" },
+  });
+  const missingSessionId = h.append({
+    kind: "session.started",
+    beadId: "alpha-epic",
+    runId: "alpha-run",
+    payload: { kind: "headless" },
+  });
+  h.append({
+    kind: "session.started",
+    beadId: "alpha-epic",
+    runId: "another-run",
+    sessionId: "another-run-session",
+    payload: { kind: "headless" },
+  });
+  h.append({
+    kind: "tool.called",
+    beadId: "alpha-epic",
+    runId: "alpha-run",
+    sessionId: "tool-only-session",
+    payload: { tool: "read", argsHash: "a".repeat(64) },
+  });
+  const otherWorkspace = appendEvent(
+    {
+      kind: "session.started",
+      workspace: join(h.root, "foreign-workspace"),
+      beadId: "alpha-epic",
+      runId: "alpha-run",
+      sessionId: "foreign-workspace-session",
+      payload: { kind: "headless" },
+    },
+    { path: h.ledger },
+  );
+  if (!otherWorkspace.ok || !("id" in otherWorkspace))
+    throw Error(
+      "The foreign-workspace event was not recorded in the fixture ledger",
+    );
+
+  const read = (after: number) =>
+    fetch(`${path}/alpha-run?after=${after}&limit=1`, {
+      headers: h.headers(h.hearth.token),
+    });
+  const first = await read(0);
+  expect(first.status).toBe(200);
+  const firstBody = await first.json();
+  expect(firstBody.data.sessionHistory).toMatchObject({
+    status: "available",
+    after: 0,
+    nextAfter: exactId,
+    more: true,
+    membershipKey: expect.stringMatching(/^[0-9a-f]{64}$/),
+    sessions: [{ sessionId: "alpha-recorded-session", detailsAvailable: true }],
+  });
+  const membershipKey = firstBody.data.sessionHistory.membershipKey;
+
+  const suppressed = await read(exactId);
+  expect(suppressed.status).toBe(200);
+  const suppressedBody = await suppressed.json();
+  expect(suppressedBody.data.sessionHistory).toMatchObject({
+    after: exactId,
+    nextAfter: foreignId,
+    more: true,
+    membershipKey,
+    sessions: [],
+  });
+
+  const final = await fetch(`${path}/alpha-run?after=${foreignId}&limit=100`, {
+    headers: h.headers(h.hearth.token),
+  });
+  expect(final.status).toBe(200);
+  const finalBody = await final.json();
+  expect(finalBody.data.sessionHistory).toMatchObject({
+    after: foreignId,
+    nextAfter: missingSessionId,
+    more: false,
+    membershipKey,
+    sessions: [
+      { sessionId: "untagged-recorded-session", detailsAvailable: false },
+    ],
+  });
+  const result = JSON.stringify(finalBody.data.sessionHistory);
+  expect(result).not.toContain("foreign-recorded-session");
+  expect(result).not.toContain("another-run-session");
+  expect(result).not.toContain("tool-only-session");
+  expect(result).not.toContain("foreign-workspace-session");
+});
+
+test("run session membership key stays stable for the same authority and changes when admitted sessions change", async () => {
+  const { h, path } = await fixture();
+  const firstId = h.append({
+    kind: "session.started",
+    beadId: "alpha-epic",
+    runId: "alpha-run",
+    sessionId: "first-admitted-session",
+    payload: { kind: "headless" },
+  });
+  const read = (after: number) =>
+    fetch(`${path}/alpha-run?after=${after}&limit=1`, {
+      headers: h.headers(h.hearth.token),
+    });
+  const first = await read(0);
+  const firstBody = await first.json();
+  const initialKey = firstBody.data.sessionHistory.membershipKey;
+  expect(initialKey).toMatch(/^[0-9a-f]{64}$/);
+
+  const same = await read(firstId);
+  const sameBody = await same.json();
+  expect(sameBody.data.sessionHistory.membershipKey).toBe(initialKey);
+
+  h.append({
+    kind: "session.started",
+    beadId: "alpha-epic",
+    runId: "alpha-run",
+    sessionId: "second-admitted-session",
+    payload: { kind: "headless" },
+  });
+  const changed = await read(firstId);
+  const changedBody = await changed.json();
+  expect(changedBody.data.sessionHistory.membershipKey).not.toBe(initialKey);
+});
+
+test("run session cursor query rejects repeated, malformed and unknown parameters", async () => {
+  const { h, path } = await fixture();
+  for (const query of [
+    "after=-1",
+    "after=9007199254740992",
+    "after=1&after=2",
+    "limit=0",
+    "limit=101",
+    "other=value",
+  ]) {
+    const response = await fetch(`${path}/alpha-run?${query}`, {
+      headers: h.headers(h.hearth.token),
+    });
+    expect(response.status).toBe(400);
+  }
 });
 
 test("protected artifact read returns the exact completed canonical research body without an audit write", async () => {
