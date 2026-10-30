@@ -22,7 +22,7 @@ import { openSettled, reloadSettled } from "../e2e/fixtures";
 import { pageToken } from "../e2e/launch-link";
 import { BD_STAND_IN_STATE, HEARTH_HOME } from "../e2e/servers";
 import { seedObservationEvents } from "./observed-session-fixtures";
-import { alpha, beta, seedProjects } from "./project-fixtures";
+import { alpha, beta, seedProjects, workspace } from "./project-fixtures";
 
 const owned = new Map<string, string>();
 const posts: string[] = [];
@@ -225,7 +225,7 @@ function seedRuns() {
   return { primary, shipped, legacy, foreign, path, research };
 }
 function recordRunSessions(runId: string, count: number) {
-  const workspace = realpathSync.native(process.cwd());
+  const worktree = realpathSync.native(process.cwd());
   const sessionIds: string[] = [];
   const events: import("../../types/hearth").LedgerEventInput[] = [];
   for (let index = 0; index < count; index++) {
@@ -239,7 +239,7 @@ function recordRunSessions(runId: string, count: number) {
       payload: {
         source: "headless:claude",
         kind: "headless",
-        worktree: workspace,
+        worktree,
       },
     });
     sessionIds.push(sessionId);
@@ -901,9 +901,13 @@ test("late run and project answers cannot replace a newer scoped selection and f
   const entered = held(),
     release = held(),
     finished = held();
+  let primaryDetailRequests = 0;
   await page.route(
-    `**/__agent-forge/projects/${alpha.id}/runs/${fixture.primary}`,
+    new RegExp(
+      `^https?://[^/]+/__agent-forge/projects/${alpha.id}/runs/${fixture.primary}\\?after=0&limit=100$`,
+    ),
     async (route) => {
+      primaryDetailRequests++;
       try {
         const response = await forwardRun(route);
         entered.release();
@@ -919,6 +923,7 @@ test("late run and project answers cannot replace a newer scoped selection and f
     .getByRole("link", { name: "Scoped forge delivery", exact: true })
     .click();
   await entered.promise;
+  expect(primaryDetailRequests).toBe(1);
   await page.evaluate((hash) => {
     location.hash = hash;
   }, runsHref(alpha.id, fixture.shipped).slice(1));
