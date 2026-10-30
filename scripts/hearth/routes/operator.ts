@@ -440,7 +440,10 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       : { projectRepositoryRegistryRoot: deps.projectRepositoryRegistryRoot }),
     loadScope: createProjectSnapshot,
   });
-  const projectRuns = createProjectRunRoutes(deps, projectSnapshot);
+  const projectRuns = createProjectRunRoutes(
+    deps,
+    projectSnapshotReader(deps.projectHome, deps, { omitRuns: true }),
+  );
   const checkpointReviews = createProjectCheckpointReviewRoutes({
     home: deps.projectHome,
     workspace: deps.workspace,
