@@ -115,6 +115,18 @@ function sameDesktopRoute(
   );
 }
 
+function sameForgeRunIdentityScope(
+  left: VerifiedSessionIdentityScope | null,
+  right: VerifiedSessionIdentityScope | null,
+): boolean {
+  if (!left || !right) return left === right;
+  return (
+    left.projectId === right.projectId &&
+    left.workspace === right.workspace &&
+    left.generation === right.generation
+  );
+}
+
 /** Desktop routing stays separate from the ordinary dashboard's legacy URLs and snapshot mode. */
 export function DesktopApp(): JSX.Element {
   const [route, setRoute] = useState(() => desktopRoute(window.location.hash));
@@ -763,10 +775,16 @@ export function DesktopApp(): JSX.Element {
   const composerOpener = useRef<HTMLElement>(null);
   const openNewForgeRun = () => {
     const current = forgeRunCurrent.current;
+    const liveIdentityScope = current?.sessions.currentIdentityScope() ?? null;
+    const currentIdentityView = current?.projectId
+      ? current.sessions.project(current.projectId)
+      : null;
     if (
       !current?.canOpen ||
       !current.projectId ||
       !current.workspace ||
+      !sameForgeRunIdentityScope(current.identityScope, liveIdentityScope) ||
+      !currentIdentityView ||
       current.routeHash !== window.location.hash ||
       current.navigationGeneration !== forgeRouteGeneration.current ||
       !sameDesktopRoute(
@@ -786,16 +804,15 @@ export function DesktopApp(): JSX.Element {
       workspace: current.workspace,
       routeHash: current.routeHash,
       navigationGeneration: current.navigationGeneration,
-      identityScope: current.identityScope,
-      draft: captureForgeRunDraft(
-        current.sessions.project(current.projectId),
-      ),
+      identityScope: liveIdentityScope,
+      draft: captureForgeRunDraft(currentIdentityView),
     });
   };
   const validateForgeRunReview = (
     expected: NonNullable<typeof forgeRunReview>,
   ): { view: ReturnType<typeof sessions.project>; error: string | null } => {
     const current = forgeRunCurrent.current;
+    const liveIdentityScope = current?.sessions.currentIdentityScope() ?? null;
     if (
       !current?.canOpen ||
       current.projectId !== expected.projectId ||
@@ -804,8 +821,8 @@ export function DesktopApp(): JSX.Element {
       window.location.hash !== expected.routeHash ||
       current.navigationGeneration !== expected.navigationGeneration ||
       current.navigationGeneration !== forgeRouteGeneration.current ||
-      JSON.stringify(current.identityScope) !==
-        JSON.stringify(expected.identityScope) ||
+      !sameForgeRunIdentityScope(current.identityScope, liveIdentityScope) ||
+      !sameForgeRunIdentityScope(liveIdentityScope, expected.identityScope) ||
       !sameDesktopRoute(
         current.renderedRoute,
         desktopRoute(window.location.hash),
@@ -819,14 +836,15 @@ export function DesktopApp(): JSX.Element {
           "The project, workspace, or Runs view changed. Close this preparation and review it again from the current Runs page.",
       };
     const view = current.sessions.project(expected.projectId);
+    const hold = forgeRunPreparationHold(view, liveIdentityScope);
+    if (hold) return { view, error: hold };
     if (!forgeRunDraftMatches(expected.draft, view))
       return {
         view,
         error:
           "A composer draft or session identity changed while you reviewed this prompt. Reopen preparation to review the current state.",
       };
-    const hold = forgeRunPreparationHold(view, current.identityScope);
-    return { view, error: hold };
+    return { view, error: null };
   };
   const validateForgeRunBead = (
     current: NonNullable<typeof forgeRunCurrent.current>,
@@ -1671,8 +1689,10 @@ export function DesktopApp(): JSX.Element {
             window.location.hash === forgeRunReview.routeHash &&
             forgeRouteGeneration.current ===
               forgeRunReview.navigationGeneration &&
-            JSON.stringify(forgeRunCurrent.current?.identityScope) ===
-              JSON.stringify(forgeRunReview.identityScope),
+            sameForgeRunIdentityScope(
+              sessions.currentIdentityScope(),
+              forgeRunReview.identityScope,
+            ),
         )}
         title={`Prepare forge run · ${project?.name ?? ""}`}
         titleId="af-new-forge-run-title"

@@ -58,11 +58,23 @@ test("forge prefill refuses empty input and route or smith control tokens withou
   expect(() => forgeRunPrefill("full", { kind: "text", text: " \n " })).toThrow(
     /enter feature text/i,
   );
-  for (const control of ["--full", "--mini=x", "Use --SMITH=other"]) {
+  for (const control of [
+    "--full",
+    "--FULL=other",
+    "--mini=x",
+    "--Mini",
+    "Use --SMITH=other",
+  ]) {
     expect(() =>
       forgeRunPrefill("mini", { kind: "text", text: control }),
     ).toThrow(/choose the route above/i);
   }
+  expect(
+    forgeRunPrefill("mini", {
+      kind: "text",
+      text: "Keep --full-ish as ordinary punctuation.",
+    }).prompt,
+  ).toBe("/forgemaster --mini Keep --full-ish as ordinary punctuation.");
   expect(
     forgeRunPrefill("mini", {
       kind: "text",
@@ -151,4 +163,154 @@ test("the volatile snapshot notices hidden provider edits and the shared identit
   expect(
     forgeRunPreparationHold(view, currentScope),
   ).toMatch(/original session request is unresolved/i);
+});
+
+test("the snapshot covers every visible and hidden provider draft field", () => {
+  const mutations = [
+    (view: ReturnType<typeof project>) =>
+      view.composer.attachments.push({
+        kind: "text",
+        name: "notes.txt",
+        text: "private draft",
+      }),
+    (view: ReturnType<typeof project>) => {
+      view.composerProvider = "codex";
+    },
+    (view: ReturnType<typeof project>) =>
+      view.composer.about.push({ kind: "bead", id: "af-42" }),
+    (view: ReturnType<typeof project>) => {
+      view.composer.beadId = "af-42";
+    },
+    (view: ReturnType<typeof project>) => {
+      view.codexMode = "chat";
+      view.codexChatComposer.prompt = "hidden Codex draft";
+    },
+    (view: ReturnType<typeof project>) => {
+      view.codexComposer.model = "hidden Codex task model";
+    },
+    (view: ReturnType<typeof project>) => {
+      view.geminiMode = "chat";
+      view.geminiChatComposer.prompt = "hidden Gemini draft";
+    },
+    (view: ReturnType<typeof project>) => {
+      view.geminiComposer.model = "hidden Gemini task model";
+    },
+  ];
+  for (const mutate of mutations) {
+    const view = project();
+    const snapshot = captureForgeRunDraft(view);
+    mutate(view);
+    expect(forgeRunDraftMatches(snapshot, view)).toBe(false);
+  }
+});
+
+test("all unresolved identity states and scope failures hold preparation", () => {
+  const scope = {
+    projectId: "project-a",
+    workspace: "C:/workspace",
+    generation: 4,
+  };
+  const verified = () => {
+    const view = project();
+    view.identityPage = {
+      version: 1,
+      scope: {
+        family: "owned-session-start",
+        projectId: scope.projectId,
+        workspace: scope.workspace,
+      },
+      identities: [],
+    };
+    view.identityGeneration = scope.generation;
+    return view;
+  };
+  const heldViews = [
+    (() => {
+      const view = verified();
+      view.pendingStart = {
+        requestId: "request",
+        smith: "fixture-smith",
+        repository: "C:/workspace",
+        worktree: "C:/workspace",
+        launch: { mode: "chat", model: "fixture-model", prompt: "held" },
+      };
+      return view;
+    })(),
+    (() => {
+      const view = verified();
+      view.startIdentity = {
+        projectId: "project-00000000-0000-4000-8000-000000000000",
+        requestId: "00000000-0000-4000-8000-000000000000",
+        requestHash: "a".repeat(64),
+        provider: "claude",
+      };
+      return view;
+    })(),
+    (() => {
+      const view = verified();
+      view.startIdentityError = "identity read failed";
+      return view;
+    })(),
+    (() => {
+      const view = verified();
+      view.legacyIdentityHint = {
+        projectId: "project-00000000-0000-4000-8000-000000000000",
+        requestId: "00000000-0000-4000-8000-000000000000",
+        requestHash: "b".repeat(64),
+        provider: "claude",
+      };
+      return view;
+    })(),
+    (() => {
+      const view = verified();
+      view.legacyIdentityError = "legacy identity unavailable";
+      return view;
+    })(),
+    (() => {
+      const view = verified();
+      view.legacyIdentityUnavailable = true;
+      return view;
+    })(),
+    (() => {
+      const view = verified();
+      view.identityInspection = {
+        requestId: "request",
+        state: "loading",
+        sessionId: null,
+      };
+      return view;
+    })(),
+    (() => {
+      const view = verified();
+      view.identityInspection = {
+        requestId: "request",
+        state: "unavailable",
+        sessionId: null,
+      };
+      return view;
+    })(),
+  ];
+  for (const view of heldViews)
+    expect(forgeRunPreparationHold(view, scope)).toMatch(
+      /original session request is unresolved/i,
+    );
+
+  const missing = verified();
+  missing.identityPage = null;
+  expect(forgeRunPreparationHold(missing, scope)).toMatch(
+    /identity scope is not verified/i,
+  );
+  expect(forgeRunPreparationHold(verified(), null)).toMatch(
+    /identity scope is not verified/i,
+  );
+  const wrongProject = verified();
+  wrongProject.identityPage!.scope.projectId = "project-b";
+  expect(forgeRunPreparationHold(wrongProject, scope)).toMatch(
+    /identity scope is not verified/i,
+  );
+  const wrongGeneration = verified();
+  wrongGeneration.identityGeneration = scope.generation + 1;
+  expect(forgeRunPreparationHold(wrongGeneration, scope)).toMatch(
+    /identity scope is not verified/i,
+  );
 });
