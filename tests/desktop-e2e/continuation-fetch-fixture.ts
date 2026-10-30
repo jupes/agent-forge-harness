@@ -45,6 +45,20 @@ function withTimeout<T>(promise: Promise<T>, ms: number, message: string) {
   });
 }
 
+function exactReadbackQuery(url: URL, requestId: string): boolean {
+  const entries = [...url.searchParams.entries()];
+  return (
+    url.hash === "" &&
+    entries.length === 3 &&
+    entries.filter(([key]) => key === "after").length === 1 &&
+    entries.filter(([key]) => key === "limit").length === 1 &&
+    entries.filter(([key]) => key === "requestId").length === 1 &&
+    url.searchParams.get("after") === "0" &&
+    url.searchParams.get("limit") === "100" &&
+    url.searchParams.get("requestId") === requestId
+  );
+}
+
 /** Cache one authenticated catalog read and project the existing inert native fixture Smith for UI only. */
 export async function installCachedGeminiSmithRead(
   page: Page,
@@ -264,7 +278,10 @@ export async function installGeminiContinuationFetchFixture(
     requestHash: string;
     turnHash: string;
   } | null = null;
+  let candidateReadbackCaptured = false;
+  let acceptedReadbackCaptured = false;
   let readbackCaptured = false;
+  let invalidReadback: unknown = null;
   let readbackRelease = () => {};
   let readbackReleased = new Promise<void>((resolve) => {
     readbackRelease = resolve;
@@ -297,6 +314,7 @@ export async function installGeminiContinuationFetchFixture(
       .object({
         captureId: z.literal(captureId),
         kind: z.literal("readback"),
+        candidate: z.boolean(),
         method: z.literal("GET"),
         requestUrl: z.string().url().max(2048),
         status: z.number().int().min(0).max(599),
@@ -325,6 +343,7 @@ export async function installGeminiContinuationFetchFixture(
       if (
         !expected ||
         !readbackCaptured ||
+        invalidReadback !== null ||
         payload.requestId !== expected.requestId ||
         payload.sessionId !== expected.sessionId
       )
@@ -433,14 +452,24 @@ export async function installGeminiContinuationFetchFixture(
         const exactExpected = expected;
         if (!exactExpected)
           throw new Error("No verified Gemini Start preceded readback.");
+        if (payload.candidate) {
+          if (candidateReadbackCaptured)
+            throw new Error(
+              "The Gemini readback candidate was observed twice.",
+            );
+          candidateReadbackCaptured = true;
+        } else {
+          if (acceptedReadbackCaptured)
+            throw new Error("The accepted Gemini readback was observed twice.");
+          acceptedReadbackCaptured = true;
+        }
         const requestUrl = new URL(payload.requestUrl);
         const responseUrl = new URL(payload.responseUrl);
         const targetPath = `${startPath}/${encodeURIComponent(exactExpected.sessionId)}`;
         if (
           requestUrl.origin !== origin ||
           requestUrl.pathname !== targetPath ||
-          requestUrl.searchParams.get("requestId") !==
-            exactExpected.requestId ||
+          !exactReadbackQuery(requestUrl, exactExpected.requestId) ||
           responseUrl.origin !== origin ||
           responseUrl.pathname !== targetPath ||
           responseUrl.search !== requestUrl.search ||
@@ -469,6 +498,21 @@ export async function installGeminiContinuationFetchFixture(
             "The protected original read did not match its schema.",
           );
         const saved = envelope.data.data;
+        if (
+          payload.candidate &&
+          saved.projectId === options.projectId &&
+          saved.conversationId === exactExpected.sessionId &&
+          saved.revision === 0 &&
+          saved.binding === null &&
+          saved.turns.length === 0 &&
+          saved.frames.length === 0 &&
+          saved.more === false &&
+          saved.nextCursor === 0 &&
+          saved.lastSequence === 0 &&
+          saved.request === null &&
+          saved.controllable === false
+        )
+          return { action: "defer-empty-candidate" };
         const turn =
           saved.request?.requestId === exactExpected.requestId
             ? saved.request
@@ -493,17 +537,15 @@ export async function installGeminiContinuationFetchFixture(
           throw new Error(
             "The protected read did not prove the original Gemini request.",
           );
-        if (readbackCaptured)
-          throw new Error(
-            "The original Gemini readback was captured more than once.",
-          );
-        readbackCaptured = true;
-        readbackEvidence.resolve({
-          requestId: exactExpected.requestId,
-          sessionId: exactExpected.sessionId,
-          requestHash: exactExpected.requestHash,
-          turnHash: exactExpected.turnHash,
-        });
+        if (!readbackCaptured) {
+          readbackCaptured = true;
+          readbackEvidence.resolve({
+            requestId: exactExpected.requestId,
+            sessionId: exactExpected.sessionId,
+            requestHash: exactExpected.requestHash,
+            turnHash: exactExpected.turnHash,
+          });
+        }
         let timer: ReturnType<typeof setTimeout> | undefined;
         try {
           await Promise.race([
@@ -523,7 +565,9 @@ export async function installGeminiContinuationFetchFixture(
         }
         return { action: "deliver-original-response" };
       } catch (error) {
+        invalidReadback = error;
         readbackEvidence.reject(error);
+        readbackDelivered.reject(error);
         throw error;
       }
     }
@@ -566,27 +610,49 @@ export async function installGeminiContinuationFetchFixture(
     },
     async dispose() {
       if (disposed) return;
-      disposed = true;
       readbackRelease();
+      let drainError: unknown = null;
       try {
         await page.evaluate(
-          ({ stateName }) => {
+          async ({ stateName, drainTimeoutMs }) => {
             const globals = window as unknown as Record<string, unknown>;
             const state = globals[stateName] as
               | {
                   originalFetch: typeof window.fetch;
                   wrapper: typeof window.fetch;
+                  settleStartDecision?: () => void;
+                  stopNewCaptures?: () => void;
+                  drainReadbacks?: (timeoutMs: number) => Promise<void>;
                 }
               | undefined;
-            if (state && window.fetch === state.wrapper)
-              window.fetch = state.originalFetch;
-            delete globals[stateName];
+            let failure: unknown = null;
+            try {
+              state?.stopNewCaptures?.();
+              state?.settleStartDecision?.();
+              await state?.drainReadbacks?.(drainTimeoutMs);
+            } catch (error) {
+              failure = error;
+            } finally {
+              if (state && window.fetch === state.wrapper)
+                window.fetch = state.originalFetch;
+              delete globals[stateName];
+            }
+            if (failure !== null)
+              throw new Error("The Gemini readback observer did not drain.", {
+                cause: failure,
+              });
           },
-          { stateName },
+          { stateName, drainTimeoutMs: CLONE_TIMEOUT_MS },
         );
       } catch {
-        // Navigation may have replaced the document before cleanup.
+        drainError = new Error("The Gemini readback observer cleanup failed.");
       }
+      disposed = true;
+      if (invalidReadback !== null)
+        throw new Error("The Gemini readback observation was invalid.", {
+          cause: invalidReadback,
+        });
+      if (drainError !== null) throw drainError;
     },
   };
 }
@@ -610,7 +676,30 @@ function installNativeFetchObserver(options: {
   const originalFetch = window.fetch;
   let target: { requestId: string; sessionId: string } | null = null;
   let startCaptured = false;
-  let originalReadbackCaptured = false;
+  let candidateReadbackCaptured = false;
+  let acceptedReadbackCaptured = false;
+  let acceptingCaptures = true;
+  let observerFailure: unknown = null;
+  const pendingReadbacks = new Set<Promise<Response>>();
+  let tentativeRequestId: string | null = null;
+  let startDecisionResolved = false;
+  let resolveStartDecision!: (accepted: boolean) => void;
+  const startDecision = new Promise<boolean>((resolve) => {
+    resolveStartDecision = resolve;
+  });
+  const finishStartDecision = (accepted: boolean) => {
+    if (startDecisionResolved) return;
+    startDecisionResolved = true;
+    resolveStartDecision(accepted);
+  };
+  const waitForStartDecision = () =>
+    new Promise<boolean>((resolve) => {
+      const timer = setTimeout(() => resolve(false), options.cloneTimeoutMs);
+      void startDecision.then((accepted) => {
+        clearTimeout(timer);
+        resolve(accepted);
+      });
+    });
 
   const boundedText = async (
     stream: ReadableStream<Uint8Array> | null,
@@ -669,11 +758,44 @@ function installNativeFetchObserver(options: {
     return (binding as (value: unknown) => Promise<unknown>)(payload);
   };
 
+  const sessionSegment = (url: URL): string | null => {
+    const prefix = `${options.startPath}/`;
+    if (!url.pathname.startsWith(prefix)) return null;
+    const raw = url.pathname.slice(prefix.length);
+    if (!raw || raw.includes("/")) return null;
+    try {
+      const decoded = decodeURIComponent(raw);
+      return decoded &&
+        !decoded.includes("/") &&
+        !decoded.includes("\\") &&
+        encodeURIComponent(decoded) === raw
+        ? decoded
+        : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const exactReadbackQuery = (url: URL, requestId: string) => {
+    const entries = [...url.searchParams.entries()];
+    return (
+      url.hash === "" &&
+      entries.length === 3 &&
+      entries.filter(([key]) => key === "after").length === 1 &&
+      entries.filter(([key]) => key === "limit").length === 1 &&
+      entries.filter(([key]) => key === "requestId").length === 1 &&
+      url.searchParams.get("after") === "0" &&
+      url.searchParams.get("limit") === "100" &&
+      url.searchParams.get("requestId") === requestId
+    );
+  };
+
   const wrapper = async function (
     this: Window,
     ...args: Parameters<typeof fetch>
   ): Promise<Response> {
     const [input, init] = args;
+    if (!acceptingCaptures) return Reflect.apply(originalFetch, this, args);
     let url: URL;
     let method: string;
     try {
@@ -685,7 +807,7 @@ function installNativeFetchObserver(options: {
         init?.method ?? (input instanceof Request ? input.method : "GET")
       ).toUpperCase();
     } catch {
-      return originalFetch.apply(this, args);
+      return Reflect.apply(originalFetch, this, args);
     }
     const isStart =
       !startCaptured &&
@@ -693,41 +815,74 @@ function installNativeFetchObserver(options: {
       url.origin === options.origin &&
       url.pathname === options.startPath &&
       url.search === "";
-    const targetPath = target
-      ? `${options.startPath}/${encodeURIComponent(target.sessionId)}`
-      : "";
+    const candidateSessionId = method === "GET" ? sessionSegment(url) : null;
+    const candidateReadback =
+      method === "GET" &&
+      target === null &&
+      startCaptured &&
+      !candidateReadbackCaptured &&
+      !startDecisionResolved &&
+      tentativeRequestId !== null &&
+      candidateSessionId !== null &&
+      url.origin === options.origin &&
+      exactReadbackQuery(url, tentativeRequestId);
     const isReadback =
       method === "GET" &&
       target !== null &&
-      !originalReadbackCaptured &&
+      !acceptedReadbackCaptured &&
       url.origin === options.origin &&
-      url.pathname === targetPath &&
-      url.searchParams.get("requestId") === target.requestId;
-    if (!isStart && !isReadback) return originalFetch.apply(this, args);
+      candidateSessionId === target.sessionId &&
+      exactReadbackQuery(url, target.requestId);
+    if (!isStart && !isReadback && !candidateReadback)
+      return Reflect.apply(originalFetch, this, args);
 
     if (isStart) {
       startCaptured = true;
-      let requestTextPromise: Promise<string>;
+      let requestText: string;
+      let requestIdFromBody: string | null = null;
       try {
         const requestForCapture =
           input instanceof Request
             ? new Request(input.clone(), init)
             : new Request(input, init);
-        requestTextPromise = boundedText(
+        requestText = await boundedText(
           requestForCapture.clone().body,
           options.maxRequestBytes,
         );
+        try {
+          const raw: unknown = JSON.parse(requestText);
+          if (typeof raw === "object" && raw !== null && !Array.isArray(raw)) {
+            const value = (raw as Record<string, unknown>)["requestId"];
+            if (
+              typeof value === "string" &&
+              /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+                value,
+              )
+            ) {
+              requestIdFromBody = value;
+              tentativeRequestId = value;
+            }
+          }
+        } catch {
+          // The host binding remains the sole authority for Start validation.
+        }
       } catch {
-        return originalFetch.apply(this, args);
+        finishStartDecision(false);
+        return Reflect.apply(originalFetch, this, args);
       }
-      const response = await originalFetch.apply(this, args);
+      let response: Response;
+      try {
+        response = await Reflect.apply(originalFetch, this, args);
+      } catch (error) {
+        finishStartDecision(false);
+        throw error;
+      }
       let dropResponse = false;
       try {
-        const [requestText, responseText] = await Promise.all([
-          requestTextPromise,
-          boundedText(response.clone().body, options.maxResponseBytes),
-        ]);
-        const rawRequest = JSON.parse(requestText) as { requestId?: unknown };
+        const responseText = await boundedText(
+          response.clone().body,
+          options.maxResponseBytes,
+        );
         const decision = await callBinding({
           captureId: options.captureId,
           kind: "start",
@@ -745,16 +900,20 @@ function installNativeFetchObserver(options: {
         if (
           result?.["action"] === "drop-accepted-start-response" &&
           typeof result["requestId"] === "string" &&
-          result["requestId"] === rawRequest.requestId &&
+          result["requestId"] === requestIdFromBody &&
           typeof result["sessionId"] === "string"
         ) {
           target = {
             requestId: result["requestId"],
             sessionId: result["sessionId"],
           };
+          finishStartDecision(true);
           dropResponse = true;
+        } else {
+          finishStartDecision(false);
         }
       } catch {
+        finishStartDecision(false);
         // Failed evidence leaves the real native response untouched; the host test fails closed.
       }
       if (dropResponse)
@@ -762,48 +921,121 @@ function installNativeFetchObserver(options: {
       return response;
     }
 
-    originalReadbackCaptured = true;
-    const response = await originalFetch.apply(this, args);
-    try {
-      const responseText = await boundedText(
-        response.clone().body,
-        options.maxResponseBytes,
-      );
-      const decision = await callBinding({
-        captureId: options.captureId,
-        kind: "readback",
-        method,
-        requestUrl: url.href,
-        status: response.status,
-        responseUrl: response.url,
-        responseText,
-      });
-      if (
-        typeof decision !== "object" ||
-        decision === null ||
-        (decision as Record<string, unknown>)["action"] !==
-          "deliver-original-response"
-      )
+    if (candidateReadback) candidateReadbackCaptured = true;
+    else acceptedReadbackCaptured = true;
+    const observation = Promise.resolve().then(async (): Promise<Response> => {
+      const response = await Reflect.apply(originalFetch, this, args);
+      try {
+        const responseTextPromise = boundedText(
+          response.clone().body,
+          options.maxResponseBytes,
+        ).then(
+          (text) => ({ text }),
+          (error: unknown) => ({ error }),
+        );
+        if (candidateReadback) {
+          const accepted = await waitForStartDecision();
+          if (
+            !accepted ||
+            !target ||
+            target.requestId !== tentativeRequestId ||
+            target.sessionId !== candidateSessionId
+          )
+            return response;
+        }
+        const cloned = await responseTextPromise;
+        if (!("text" in cloned)) {
+          await callBinding({
+            captureId: options.captureId,
+            kind: "readback",
+            candidate: candidateReadback,
+            method,
+            requestUrl: url.href,
+            status: response.status,
+            responseUrl: response.url,
+            responseText: "",
+          });
+          return response;
+        }
+        const decision = await callBinding({
+          captureId: options.captureId,
+          kind: "readback",
+          candidate: candidateReadback,
+          method,
+          requestUrl: url.href,
+          status: response.status,
+          responseUrl: response.url,
+          responseText: cloned.text,
+        });
+        if (
+          typeof decision !== "object" ||
+          decision === null ||
+          ((decision as Record<string, unknown>)["action"] !==
+            "deliver-original-response" &&
+            (decision as Record<string, unknown>)["action"] !==
+              "defer-empty-candidate")
+        )
+          return response;
+        if (
+          (decision as Record<string, unknown>)["action"] ===
+          "defer-empty-candidate"
+        )
+          return response;
+        const delivered = await callBinding({
+          captureId: options.captureId,
+          kind: "delivered",
+          requestId: target?.requestId,
+          sessionId: target?.sessionId,
+        });
+        if (
+          typeof delivered !== "object" ||
+          delivered === null ||
+          (delivered as Record<string, unknown>)["action"] !==
+            "observed-original-delivery"
+        )
+          return response;
+      } catch (error) {
+        observerFailure = error;
         return response;
-      const delivered = await callBinding({
-        captureId: options.captureId,
-        kind: "delivered",
-        requestId: target?.requestId,
-        sessionId: target?.sessionId,
-      });
-      if (
-        typeof delivered !== "object" ||
-        delivered === null ||
-        (delivered as Record<string, unknown>)["action"] !==
-          "observed-original-delivery"
-      )
-        return response;
-    } catch {
+      }
       return response;
+    });
+    pendingReadbacks.add(observation);
+    try {
+      return await observation;
+    } finally {
+      pendingReadbacks.delete(observation);
     }
-    return response;
   } as typeof window.fetch;
-  const state = { originalFetch, wrapper };
+  const state = {
+    originalFetch,
+    wrapper,
+    stopNewCaptures: () => {
+      acceptingCaptures = false;
+    },
+    drainReadbacks: async (timeoutMs: number) => {
+      const pending = [...pendingReadbacks];
+      if (pending.length === 0) return;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const results = await Promise.race([
+          Promise.allSettled(pending),
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(
+              () => reject(new Error("Readback observer drain timed out.")),
+              timeoutMs,
+            );
+          }),
+        ]);
+        const failed = results.find((result) => result.status === "rejected");
+        if (failed?.status === "rejected") throw failed.reason;
+        if (observerFailure !== null) throw observerFailure;
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+      }
+    },
+    settleStartDecision: () => finishStartDecision(false),
+  };
   globals[options.stateName] = state;
   window.fetch = wrapper;
 }

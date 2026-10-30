@@ -335,11 +335,13 @@ export function ProjectSessions({
 export function SessionInspector({
   projectId,
   session,
+  onCouncilSummary,
   onAskKeeper,
   row,
 }: {
   projectId: string;
   session: SessionSummary | undefined;
+  onCouncilSummary?: (() => void) | undefined;
   onAskKeeper?: () => void;
   row?: SessionObservationRow | undefined;
 }): JSX.Element {
@@ -365,6 +367,12 @@ export function SessionInspector({
         >
           Open session
         </Button>
+        {onCouncilSummary && (
+          <>
+            <Button onClick={onCouncilSummary}>Write a Council summary</Button>
+            <p>Start a blank summary; session content is never copied.</p>
+          </>
+        )}
       </section>
     );
   if (!session)
@@ -403,6 +411,12 @@ export function SessionInspector({
       >
         Open session
       </Button>
+      {onCouncilSummary && (
+        <>
+          <Button onClick={onCouncilSummary}>Write a Council summary</Button>
+          <p>Start a blank summary; session content is never copied.</p>
+        </>
+      )}
       {onAskKeeper && (
         <Button onClick={onAskKeeper} aria-haspopup="dialog">
           Ask Keeper about this session

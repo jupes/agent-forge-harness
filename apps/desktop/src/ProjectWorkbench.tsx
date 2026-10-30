@@ -36,6 +36,7 @@ export function ProjectWorkbench({
   writes,
   selectedId,
   onSelect,
+  onCouncilPrefill,
   shifts,
 }: {
   projectId: string;
@@ -46,6 +47,7 @@ export function ProjectWorkbench({
   writes: DesktopBeadWrites;
   selectedId: string | null;
   onSelect(id: string): void;
+  onCouncilPrefill?: ((id: string, workspace: string) => void) | undefined;
   shifts?: ComponentChildren;
 }) {
   const [filters, setFilters] = useState(emptyFilters),
@@ -346,6 +348,7 @@ export function ProjectWorkbench({
                           now={now}
                           selected={selectedId === card.entry.beadId}
                           onSelect={() => onSelect(card.entry.beadId)}
+                          onCouncilPrefill={onCouncilPrefill}
                           onMove={(action, smith) => {
                             void move(card, action, smith);
                           }}
@@ -372,6 +375,7 @@ function WorkbenchCard({
   now,
   selected,
   onSelect,
+  onCouncilPrefill,
   onMove,
 }: {
   card: ProjectWorkbenchCard;
@@ -382,6 +386,7 @@ function WorkbenchCard({
   now: number;
   selected: boolean;
   onSelect(): void;
+  onCouncilPrefill?: ((id: string, workspace: string) => void) | undefined;
   onMove(action: OperatorMove, smith?: string): void;
 }) {
   const { entry } = card;
@@ -415,6 +420,12 @@ function WorkbenchCard({
       >
         {entry.title}
       </button>
+      <Button
+        onClick={() => onCouncilPrefill?.(entry.beadId, page.workspace)}
+        disabled={!onCouncilPrefill || !fresh}
+      >
+        Review bead in Council
+      </Button>
       <p class="af-wb-muted">
         {assigned
           ? card.smith.via === "bead"

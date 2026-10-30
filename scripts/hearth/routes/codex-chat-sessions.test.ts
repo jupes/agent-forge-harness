@@ -33,6 +33,23 @@ import { fixtureSessionGit } from "./session-fixture";
 
 const opened: TestHearth[] = [],
   releaseHeld: Array<() => void> = [];
+const FORK_DIAGNOSTICS =
+  process.env["AGENT_FORGE_TEST_PROBE_DIAGNOSTICS"] === "1";
+async function timedForkStage<T>(
+  mode: string,
+  stage: string,
+  action: () => Promise<T>,
+): Promise<T> {
+  const started = performance.now();
+  try {
+    return await action();
+  } finally {
+    if (FORK_DIAGNOSTICS)
+      console.error(
+        `[fork-test] ${JSON.stringify({ mode, stage, elapsedMs: Math.round(performance.now() - started) })}`,
+      );
+  }
+}
 const binaries = scratchDirs();
 let command: string;
 beforeAll(() => {
@@ -882,14 +899,19 @@ test("a linked Codex Fork child accepts a turn through its dedicated action", as
     ["fork-service-tier-null", null],
     ["fork-service-tier-priority", "priority"],
   ] as const) {
-    const f = await fixture(mode, false, false, "never"),
-      start = await f.post("", f.request);
+    const modeStarted = performance.now(),
+      f = await fixture(mode, false, false, "never"),
+      start = await timedForkStage(mode, "parent-start", () =>
+        f.post("", f.request),
+      );
     expect(start.status).toBe(202);
     const started = ownedCodingStartReceiptSchema.parse(
         (await start.json()).data,
       ),
       parentSessionId = started.session.id,
-      completed = await f.settle(parentSessionId),
+      completed = await timedForkStage(mode, "parent-settle", () =>
+        f.settle(parentSessionId),
+      ),
       selectedTurn = completed.turns.find(
         (turn) => turn.requestId === f.request.requestId,
       );
@@ -900,7 +922,9 @@ test("a linked Codex Fork child accepts a turn through its dedicated action", as
         requestId: randomUUID(),
         throughTurnRequestId: selectedTurn.requestId,
       },
-      forkResponse = await f.post(`/${parentSessionId}/forks`, forkRequest),
+      forkResponse = await timedForkStage(mode, "fork-link", () =>
+        f.post(`/${parentSessionId}/forks`, forkRequest),
+      ),
       forkEnvelope = await forkResponse.json();
     expect(forkResponse.status).toBe(200);
     expect(forkEnvelope.data.state).toBe("linked");
@@ -936,9 +960,11 @@ test("a linked Codex Fork child accepts a turn through its dedicated action", as
           about: [],
         },
       ],
-      outcomes = await Promise.all(
-        contenders.map((input) =>
-          f.post(`/${childSessionId}/fork-turns`, input),
+      outcomes = await timedForkStage(mode, "child-admission-race", () =>
+        Promise.all(
+          contenders.map((input) =>
+            f.post(`/${childSessionId}/fork-turns`, input),
+          ),
         ),
       );
     expect(outcomes.map((response) => response.status).sort()).toEqual([
@@ -949,7 +975,9 @@ test("a linked Codex Fork child accepts a turn through its dedicated action", as
       ),
       winner = contenders[winnerIndex];
     if (!winner) throw Error("No Fork-child turn won the admission race");
-    const childPage = await f.settleFork(childSessionId);
+    const childPage = await timedForkStage(mode, "child-settle", () =>
+      f.settleFork(childSessionId),
+    );
     expect((await f.post(`/${childSessionId}/fork-turns`, winner)).status).toBe(
       202,
     );
@@ -1014,6 +1042,10 @@ test("a linked Codex Fork child accepts a turn through its dedicated action", as
     expect(JSON.stringify(childTurnRpc.input)).not.toContain(
       f.request.launch.prompt,
     );
+    if (FORK_DIAGNOSTICS)
+      console.error(
+        `[fork-test] ${JSON.stringify({ mode, stage: "mode-complete", elapsedMs: Math.round(performance.now() - modeStarted) })}`,
+      );
   }
 });
 

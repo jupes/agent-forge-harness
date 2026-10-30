@@ -412,6 +412,7 @@ export function BeadPanel({
   reload,
   sessions = [],
   sessionsComplete = false,
+  onCouncilPrefill,
   onAskKeeper,
   onStart,
   writes,
@@ -424,6 +425,7 @@ export function BeadPanel({
   reload(): void;
   sessions?: readonly SessionSummary[];
   sessionsComplete?: boolean;
+  onCouncilPrefill?: ((id: string) => void) | undefined;
   onAskKeeper(): void;
   onStart?: ((id: string) => void) | undefined;
   writes?: DesktopBeadWrites | undefined;
@@ -487,6 +489,14 @@ export function BeadPanel({
       </p>
       <div class="af-beads-actions">
         <Button href={beadHref(projectId, id, true)}>Open full-width</Button>
+        <Button
+          onClick={() => onCouncilPrefill?.(bead.id)}
+          disabled={
+            !onCouncilPrefill || !!error || loading || !bead.detailsLoaded
+          }
+        >
+          Review bead in Council
+        </Button>
         <Button
           onClick={() => onStart?.(id)}
           disabled={!onStart || !!error || loading || !bead.detailsLoaded}
