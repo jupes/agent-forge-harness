@@ -428,6 +428,78 @@ async function waitForAnswerCount(
   }
 }
 
+type SafeForkCount = number | "unknown";
+const boundedForkCount = (
+  rows: Record<string, unknown>[],
+  matches: (row: Record<string, unknown>) => boolean,
+): SafeForkCount => {
+  if (rows.length > 1000) return "unknown";
+  let count = 0;
+  for (const row of rows) if (matches(row)) count++;
+  return count <= 1000 ? count : "unknown";
+};
+
+function forkLostReplyFacts(
+  rows: Record<string, unknown>[],
+  processStartsBefore: SafeForkCount,
+  childThreadId: string,
+  turn: { phase?: unknown } | undefined,
+  bindingPresent: boolean,
+) {
+  const processStartsAfter = boundedForkCount(
+      rows,
+      (row) => row.kind === "process",
+    ),
+    processStartDelta =
+      typeof processStartsAfter === "number" &&
+      typeof processStartsBefore === "number" &&
+      processStartsAfter >= processStartsBefore
+        ? processStartsAfter - processStartsBefore
+        : "unknown",
+    matchingRpc = (method: string) =>
+      boundedForkCount(rows, (row) => {
+        const params = row.params;
+        return (
+          row.kind === "rpc" &&
+          row.method === method &&
+          typeof params === "object" &&
+          params !== null &&
+          "threadId" in params &&
+          params.threadId === childThreadId
+        );
+      }),
+    phase =
+      turn &&
+      typeof turn.phase === "string" &&
+      [
+        "accepted",
+        "running",
+        "cancelling",
+        "completed",
+        "failed",
+        "cancelled",
+        "unknown",
+      ].includes(turn.phase)
+        ? turn.phase
+        : turn
+          ? "unknown"
+          : "absent";
+  return {
+    processStartDelta,
+    childResumeRpcCount: matchingRpc("thread/resume"),
+    childTurnStartRpcCount: matchingRpc("turn/start"),
+    childEffectMarkerCount: boundedForkCount(
+      rows,
+      (row) =>
+        row.kind === "child-turn-effect" && row.threadId === childThreadId,
+    ),
+    processStartDeltaIsObservationalOnly: true,
+    turnPresent: turn !== undefined,
+    turnPhase: phase,
+    bindingPresent,
+  };
+}
+
 async function closeFixture(f: Awaited<ReturnType<typeof fixture>>) {
   await f.h.close();
   const index = opened.indexOf(f.h);
@@ -1391,10 +1463,15 @@ test("a lost Fork-child turn reply stays unknown after parent activity and never
     text: "The child dispatch reply will be lost after native acceptance.",
     about: [],
   };
+  const processStartsBeforeChild = boundedForkCount(
+    f.records(),
+    (row) => row.kind === "process",
+  );
   expect(
     (await f.post(`/${childSessionId}/fork-turns`, childInput)).status,
   ).toBe(202);
   const childAfterLoss = await f.settleFork(childSessionId),
+    recordsAfterLoss = f.records(),
     originalChildTurn = childAfterLoss.turns.find(
       (turn) => turn.requestId === childInput.requestId,
     );
@@ -1408,9 +1485,28 @@ test("a lost Fork-child turn reply stays unknown after parent activity and never
           (row.params as Record<string, unknown> | undefined)?.threadId ===
             "0199a213-81c0-7800-8aa1-bbab2a035a55",
       );
-  expect(
-    f.records().filter((row) => row.kind === "child-turn-effect"),
-  ).toHaveLength(1);
+  const childEffectMarkers = recordsAfterLoss.filter(
+    (row) => row.kind === "child-turn-effect",
+  );
+  if (
+    FORK_DIAGNOSTICS &&
+    childEffectMarkers.length !== 1
+  )
+    console.error(
+      `[fork-test] ${JSON.stringify({
+        mode: "fork-child-lost-turn-reply",
+        stage: "effect-mismatch",
+        facts: forkLostReplyFacts(
+          recordsAfterLoss,
+          processStartsBeforeChild,
+          "0199a213-81c0-7800-8aa1-bbab2a035a55",
+          originalChildTurn,
+          childAfterLoss.binding !== null &&
+            childAfterLoss.binding !== undefined,
+        ),
+      })}`,
+    );
+  expect(childEffectMarkers).toHaveLength(1);
   expect(
     childEffectRows().filter((row) => row.method === "thread/resume"),
   ).toHaveLength(1);
