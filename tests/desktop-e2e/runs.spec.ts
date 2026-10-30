@@ -665,6 +665,23 @@ test("scoped Runs keyboard inspection preserves real phase, review and gate trut
     "linked",
     "legacy",
   ]);
+  await openSettled(page, href(beta.id, fixture.foreign));
+  const betaDetail = page.getByRole("article", {
+    name: "Selected forge run",
+  });
+  await expect(
+    betaDetail.getByRole("heading", { name: "FOREIGN BETA RUN", exact: true }),
+  ).toBeVisible();
+  const showBetaInspector = page.getByRole("button", {
+    name: "Show inspector",
+    exact: true,
+  });
+  if (await showBetaInspector.isVisible()) await showBetaInspector.click();
+  const betaMetadata = page
+    .getByRole("complementary", { name: "Inspector", exact: true })
+    .getByRole("region", { name: "Run metadata", exact: true });
+  await expect(betaMetadata).toContainText("FOREIGN BETA RUN");
+  await expect(betaMetadata).not.toContainText("Scoped forge delivery");
 });
 
 test("recorded run sessions page in the served project and open only admitted metadata", async ({

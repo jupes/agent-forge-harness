@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 import { type ComponentChildren, isValidElement } from "preact";
 import {
+  ProjectRunInspector,
   RunDetail,
   RunGateChecks,
   RunReadStatus,
@@ -57,7 +58,7 @@ test("initial unavailable metadata is announced as loading or failed, never as a
   );
 });
 
-test("phase and gate detail keep recorded failure separate from unavailable route/start and non-calendar history coverage", () => {
+test("Run detail and inspector keep recorded facts separate from unavailable route, start and history", () => {
   const detail: ProjectRunDetail = {
     version: 1,
     projectId: "project-alpha",
@@ -106,6 +107,11 @@ test("phase and gate detail keep recorded failure separate from unavailable rout
     gateHistory: [],
     gateHistoryDays: 30,
     earlierGateLimit: 10,
+    sessionHistory: {
+      status: "unavailable",
+      after: 0,
+      reason: "ledger-unavailable",
+    },
   };
   const copy = text(RunDetail({ projectId: "project-alpha", detail }));
   for (const required of [
@@ -124,5 +130,77 @@ test("phase and gate detail keep recorded failure separate from unavailable rout
   ])
     expect(copy).toContain(required);
   expect(copy).not.toContain("last 30 days");
+  const view: ProjectRunsView = {
+    ...empty,
+    page: {
+      version: detail.version,
+      projectId: detail.projectId,
+      workspace: detail.workspace,
+      checkout: detail.checkout,
+      asOf: detail.asOf,
+      coverage: detail.coverage,
+      problems: detail.problems,
+      runs: [detail.run],
+    },
+    selectedSlug: detail.run.slug,
+    detail,
+    sessionHistoryLoading: true,
+    sessionHistoryError: "The session ledger is unavailable.",
+    sessionHistoryStale: true,
+  };
+  const inspector = (workspace: string) =>
+    ProjectRunInspector({
+      projectId: detail.projectId,
+      workspace,
+      slug: detail.run.slug,
+      routeCurrent: true,
+      view,
+    });
+  const inspectorCopy = text(inspector(detail.workspace));
+  expect(inspectorCopy).toContain("Scoped forge");
+  expect(inspectorCopy).toContain("Unattended (historical)");
+  expect(inspectorCopy).toContain("Full or Mini");
+  expect(inspectorCopy).toContain("Started");
+  expect(inspectorCopy).toContain("Not recorded");
+  expect(inspectorCopy).toContain("served checkout only");
+  expect(inspectorCopy).not.toContain("session ledger is unavailable");
+  const props = {
+    projectId: detail.projectId,
+    workspace: detail.workspace,
+    slug: detail.run.slug,
+    routeCurrent: true,
+    view,
+  };
+  const expectHidden = (next: Parameters<typeof ProjectRunInspector>[0]) => {
+    const copy = text(ProjectRunInspector(next));
+    expect(copy).not.toContain("Scoped forge");
+    expect(copy).not.toContain(detail.run.slug);
+  };
+  for (const next of [
+    { ...props, projectId: "project-beta" },
+    { ...props, workspace: "/different-workspace" },
+    { ...props, slug: "other-run" },
+    { ...props, routeCurrent: false },
+  ])
+    expectHidden(next);
+  for (const flags of [
+    { loading: true },
+    { detailLoading: true },
+    { error: "List read failed" },
+    { detailError: "Detail read failed" },
+    { detailStale: true },
+  ])
+    expectHidden({ ...props, view: { ...view, ...flags } });
+  expectHidden({
+    ...props,
+    view: { ...view, page: { ...view.page!, runs: [] } },
+  });
+  expectHidden({
+    ...props,
+    view: {
+      ...view,
+      detail: { ...view.detail!, checkout: "/other-checkout" },
+    },
+  });
   expect(text(RunGateChecks({ gate: null })).match(/Not run/g)).toHaveLength(5);
 });

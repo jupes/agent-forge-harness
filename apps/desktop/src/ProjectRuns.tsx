@@ -78,6 +78,112 @@ export function RunReadStatus({ view }: { view: ProjectRunsView | null }) {
   );
 }
 
+export function ProjectRunInspector({
+  projectId,
+  workspace,
+  slug,
+  routeCurrent,
+  view,
+}: {
+  projectId: string;
+  workspace: string | null;
+  slug: string | null;
+  routeCurrent: boolean;
+  view: ProjectRunsView | null;
+}) {
+  const unavailable = (
+    message: string,
+    role: "alert" | "status" = "status",
+  ) => (
+    <section aria-label="Run metadata">
+      <p role={role}>{message}</p>
+    </section>
+  );
+  if (!routeCurrent || !slug)
+    return unavailable("The selected Run route is no longer current.");
+  if (!workspace)
+    return unavailable("The current workspace is unavailable.", "alert");
+  if (!view || view.loading || view.detailLoading)
+    return unavailable("Loading verified Run metadata…");
+  if (view.error || view.detailError)
+    return unavailable(
+      "The current Run metadata could not be verified.",
+      "alert",
+    );
+  if (view.detailStale)
+    return unavailable("Refresh Runs to verify the selected Run metadata.");
+  const page = view.page;
+  const detail = view.detail;
+  if (!page || !detail)
+    return unavailable(
+      "No verified detail is available for this Run.",
+      "alert",
+    );
+  const valid =
+    view.selectedSlug === slug &&
+    page.projectId === projectId &&
+    detail.projectId === projectId &&
+    page.workspace === workspace &&
+    detail.workspace === workspace &&
+    page.checkout === detail.checkout &&
+    page.coverage === "served-checkout-only" &&
+    detail.coverage === "served-checkout-only" &&
+    page.problems.length === 0 &&
+    detail.problems.length === 0 &&
+    page.runs.some((run) => run.slug === slug) &&
+    detail.run.slug === slug;
+  if (!valid)
+    return unavailable(
+      "Run metadata is unavailable for the current project scope.",
+      "alert",
+    );
+  const run = detail.run;
+  return (
+    <section aria-label="Run metadata">
+      <h3>{run.feature ?? run.slug}</h3>
+      <p>
+        <code>{run.slug}</code> · {runStatus(run)}
+      </p>
+      <dl class="af-run-facts">
+        <div>
+          <dt>Recorded mode</dt>
+          <dd>{mode(run.mode)}</dd>
+        </div>
+        <div>
+          <dt>Epic</dt>
+          <dd>{run.epic ?? "Not reported"}</dd>
+        </div>
+        <div>
+          <dt>Phases</dt>
+          <dd>
+            {run.phases
+              .map(
+                (phase) =>
+                  `${phaseName(phase.id)}: ${phaseName(phase.state)}`,
+              )
+              .join(" · ")}
+          </dd>
+        </div>
+        <div>
+          <dt>Route</dt>
+          <dd>Not recorded (Full or Mini)</dd>
+        </div>
+        <div>
+          <dt>Started</dt>
+          <dd>Not recorded</dd>
+        </div>
+        <div>
+          <dt>Updated</dt>
+          <dd>{time(run.updatedAt)}</dd>
+        </div>
+      </dl>
+      <p class="af-runs-source">
+        Verified metadata from the served checkout only.
+      </p>
+    </section>
+  );
+}
+
 export function ProjectRuns({
   projectId,
   workspace,
