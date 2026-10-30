@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { ProjectShiftStartRequest } from "../../types/project-shifts";
+import { PRIVATE_CAPTURE_FAILURE } from "../executors/private-capture";
 import { resolveCheckout } from "../ledger/workspace";
 import { workspaceKey } from "../projects/scope";
 import { FIXTURE_PROJECT_ID, projectCatalogFixture } from "../projects/testing";
@@ -160,6 +161,82 @@ test("Keeper first-admission timeout facts omit native-tool arguments and stay b
     expect(facts).not.toContain("PRIVATE");
     expect(facts).not.toContain("SECRET_ARGUMENT");
     expect(facts.length).toBeLessThanOrEqual(800);
+  } finally {
+    scratch.cleanup();
+  }
+});
+
+test("Keeper timeout facts classify only fixed errors and aggregate bounded bead metadata", () => {
+  const scratch = scratchDirs();
+  try {
+    const home = scratch.make("compiled Keeper bounded facts "),
+      shiftId = "shift-20261025-120001-abcd",
+      shiftDir = join(home, SHIFTS_DIR),
+      stateDir = join(home, "fixture"),
+      recordFile = join(shiftDir, `${shiftId}.json`),
+      admissionsFile = join(stateDir, "provider-admissions.jsonl"),
+      callsFile = join(stateDir, "calls.jsonl"),
+      base: Record<string, unknown> = {
+        shiftId,
+        pid: 12345,
+        workspace: "C:/fixture",
+        startedAt: "2026-10-25T12:00:00.000Z",
+        deadline: "2026-10-25T12:01:00.000Z",
+        state: "stopped",
+        reason: "halted",
+        options: {},
+        spentUsd: 0,
+        unpriced: 0,
+        admitted: 1,
+        beads: [],
+      };
+    mkdirSync(shiftDir, { recursive: true });
+    mkdirSync(stateDir, { recursive: true });
+    writeFileSync(admissionsFile, "");
+    writeFileSync(callsFile, "");
+    const factsFor = (record: Record<string, unknown>): string => {
+      writeFileSync(recordFile, JSON.stringify(record));
+      return keeperWaitFacts(home, shiftId, admissionsFile, callsFile);
+    };
+
+    for (const { record, classification } of [
+      { record: { ...base, error: PRIVATE_CAPTURE_FAILURE }, classification: "private-capture" },
+      { record: { ...base, error: "the shift failed: PRIVATE_LOOP_DETAIL" }, classification: "shift-loop" },
+      { record: base, classification: "none" },
+      { record: { ...base, error: "PRIVATE_OTHER_DETAIL" }, classification: "other" },
+    ]) {
+      const facts = factsFor(record);
+      expect(facts).toContain(`errorClass=${classification}`);
+      expect(facts).not.toContain(PRIVATE_CAPTURE_FAILURE);
+      expect(facts).not.toContain("the shift failed:");
+      expect(facts).not.toContain("PRIVATE_LOOP_DETAIL");
+      expect(facts).not.toContain("PRIVATE_OTHER_DETAIL");
+    }
+
+    for (const value of [0, 100])
+      expect(factsFor({ ...base, admitted: value })).toContain(
+        `recordAdmitted=${value}`,
+      );
+    for (const value of [-1, 101, 1.5])
+      expect(factsFor({ ...base, admitted: value })).toContain(
+        "recordAdmitted=unknown",
+      );
+
+    expect(
+      factsFor({
+        ...base,
+        beads: [
+          { outcome: "running", attempts: 1 },
+          { outcome: "released", attempts: 2 },
+        ],
+      }),
+    ).toContain("beadFacts=2;1,0,1,0,0,0;3");
+    expect(
+      factsFor({
+        ...base,
+        beads: [{ outcome: "private", attempts: 12 }],
+      }),
+    ).toContain("beadFacts=unknown");
   } finally {
     scratch.cleanup();
   }
