@@ -854,9 +854,12 @@ export function RunDetail({
               <ul class="af-run-reviews">
                 {detail.sessionHistory.sessions.map((session) => (
                   <li key={session.sessionId}>
-                    <p><code>{session.sessionId}</code></p>
+                    <p>
+                      <code>{session.sessionId}</code>
+                    </p>
                     <p class="af-runs-note">
-                      {session.kind ?? "kind not recorded"} · Recorded start: {time(session.startedAt)}
+                      {session.kind ?? "kind not recorded"} · Recorded start:{" "}
+                      {time(session.startedAt)}
                     </p>
                     <p>
                       {session.detailsAvailable && !sessionHistoryStale ? (
