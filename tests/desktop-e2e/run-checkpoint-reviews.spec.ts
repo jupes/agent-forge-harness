@@ -10,12 +10,12 @@ import {
 } from "node:fs";
 import { dirname, join } from "node:path";
 import { expect, type Locator, type Page, test } from "@playwright/test";
+import { z } from "zod";
 import { runsHref } from "../../apps/desktop/src/project-runs-model";
 import type { ForgeState } from "../../scripts/forge/phases";
 import { hashText } from "../../scripts/hash-text";
+import { OPERATOR_HEADER } from "../../scripts/hearth/paths";
 import { writeOwnerOnly } from "../../scripts/hearth/token";
-import { queryEvents } from "../../scripts/ledger/query";
-import type { LedgerEvent } from "../../types/hearth";
 import {
   projectCheckpointReviewHashRequestSchema,
   projectCheckpointReviewIntentJson,
@@ -32,6 +32,7 @@ import {
   writeState,
 } from "../e2e/bd-stand-in-state";
 import { openSettled, reloadSettled } from "../e2e/fixtures";
+import { pageToken } from "../e2e/launch-link";
 import { BD_STAND_IN_STATE, HEARTH_HOME } from "../e2e/servers";
 import { captureTextResponseThroughBrowserFetch } from "./browser-response-capture";
 import { seedCouncilProject } from "./council-fixtures";
@@ -210,18 +211,129 @@ function readCallsForComment(beadId: string): string[][] {
     );
 }
 
-function commentEvents(
+const checkpointCommentEventSchema = z
+  .object({
+    id: z.number().int().positive(),
+    ulid: z.string().min(1),
+    ts: z.iso.datetime(),
+    workspace: z.string().min(1),
+    beadId: z.string().min(1),
+    runId: z.string().min(1).optional(),
+    sessionId: z.string().min(1).optional(),
+    executor: z
+      .object({
+        provider: z.string().min(1),
+        model: z.string().min(1),
+        effort: z.string().min(1).optional(),
+        smith: z.string().min(1).optional(),
+        sessionId: z.string().min(1).optional(),
+      })
+      .strict()
+      .optional(),
+    kind: z.literal("bead.transitioned"),
+    payload: z
+      .object({
+        action: z.literal("comment"),
+        hash: z.string().regex(/^[a-f0-9]{64}$/),
+        length: z.number().int().nonnegative(),
+      })
+      .strict(),
+  })
+  .strict();
+const checkpointCommentEventsPageSchema = z
+  .object({
+    ok: z.literal(true),
+    data: z
+      .object({
+        events: z.array(checkpointCommentEventSchema).max(1000),
+        cursor: z.number().int().nonnegative(),
+        more: z.boolean(),
+      })
+      .strict(),
+    error: z.null(),
+  })
+  .strict();
+
+type CheckpointCommentEvent = z.infer<typeof checkpointCommentEventSchema>;
+
+async function commentEvents(
+  page: Page,
   beadId: string,
-): Extract<LedgerEvent, { kind: "bead.transitioned" }>[] {
-  return queryEvents(
-    { workspace, beadId, beadExact: true, kinds: ["bead.transitioned"] },
-    { path: join(HEARTH_HOME, "ledger.db") },
-  ).filter(
-    (event): event is Extract<LedgerEvent, { kind: "bead.transitioned" }> =>
-      event.kind === "bead.transitioned" &&
-      "action" in event.payload &&
-      event.payload.action === "comment",
+): Promise<CheckpointCommentEvent[]> {
+  const token = await pageToken(page);
+  const query = new URLSearchParams({
+    bead: beadId,
+    beadExact: "1",
+    kind: "bead.transitioned",
+    limit: "1000",
+  });
+  const path = `/__agent-forge/events?${query}`;
+  const expectedUrl = new URL(path, page.url()).href;
+  const answer = await page.evaluate(
+    async ({ url, token, header }) => {
+      const controller = new AbortController();
+      let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+      const timer = window.setTimeout(() => {
+        controller.abort();
+        if (reader) void reader.cancel().catch(() => undefined);
+      }, 10_000);
+      try {
+        const response = await fetch(url, {
+          headers: { [header]: token },
+          signal: controller.signal,
+        });
+        reader = response.body?.getReader();
+        if (!reader) throw Error("The protected ledger events response had no body.");
+        const decoder = new TextDecoder("utf-8", { fatal: true });
+        const chunks: Uint8Array[] = [];
+        let size = 0;
+        for (;;) {
+          const part = await reader.read();
+          if (part.done) break;
+          size += part.value.byteLength;
+          if (size > 1024 * 1024)
+            throw Error("The protected ledger events response exceeded its byte limit.");
+          chunks.push(part.value);
+        }
+        let text = "";
+        for (const chunk of chunks) text += decoder.decode(chunk, { stream: true });
+        text += decoder.decode();
+        return { status: response.status, url: response.url, text };
+      } finally {
+        window.clearTimeout(timer);
+        if (reader) {
+          void reader.cancel().catch(() => undefined);
+          try {
+            reader.releaseLock();
+          } catch {
+            // The bounded abort can release an outstanding read first.
+          }
+        }
+      }
+    },
+    { url: path, token, header: OPERATOR_HEADER },
   );
+  expect(answer.url).toBe(expectedUrl);
+  expect(answer.status).toBe(200);
+  let raw: unknown;
+  try {
+    raw = JSON.parse(answer.text);
+  } catch {
+    throw Error("The protected ledger events response was invalid JSON.");
+  }
+  const parsed = checkpointCommentEventsPageSchema.parse(raw);
+  const { events, cursor, more } = parsed.data;
+  expect(more).toBe(false);
+  expect(cursor).toBe(events.at(-1)?.id ?? 0);
+  const ids = events.map((event) => event.id);
+  expect(ids).toEqual([...new Set(ids)].sort((a, b) => a - b));
+  for (const event of events) {
+    expect(event.workspace).toBe(workspace);
+    expect(event.beadId).toBe(beadId);
+    expect(event.kind).toBe("bead.transitioned");
+    expect(event.payload.action).toBe("comment");
+  }
+  return events;
 }
 
 function dispatchSnapshot(): Map<string, string | null> {
@@ -922,7 +1034,7 @@ test("keyboard request-changes records one exact comment without changing run or
     `Forge checkpoint review ${prepared.requestId}`,
   );
   expect(readCallsForComment(fixture.beadId)).toHaveLength(1);
-  const events = commentEvents(fixture.beadId);
+  const events = await commentEvents(page, fixture.beadId);
   expect(events).toHaveLength(1);
   expect(events[0]).toMatchObject({
     workspace,
@@ -976,7 +1088,7 @@ test("lost commit reply after comment persistence stays held until explicit exac
   expect(lost.state).toBe("unknown");
   expect(readComments(BD_STAND_IN_STATE)[fixture.beadId]).toHaveLength(1);
   expectFaultConsumed();
-  expect(commentEvents(fixture.beadId)).toHaveLength(0);
+  expect(await commentEvents(page, fixture.beadId)).toHaveLength(0);
   await screenshotIfRequested(page, "checkpoint-review-unknown-held.png", [
     panel.getByRole("textbox", { name: "Review note" }),
   ]);
@@ -1103,8 +1215,9 @@ test("lost commit reply after comment persistence stays held until explicit exac
   const comments = readComments(BD_STAND_IN_STATE)[fixture.beadId] ?? [];
   expect(comments).toHaveLength(1);
   expect(comments[0]?.text).toBe(savedOriginal.original.commentText);
-  expect(commentEvents(fixture.beadId)).toHaveLength(1);
-  expect(JSON.stringify(commentEvents(fixture.beadId))).not.toContain(note);
+  const events = await commentEvents(page, fixture.beadId);
+  expect(events).toHaveLength(1);
+  expect(JSON.stringify(events)).not.toContain(note);
   expectRunAndBeadUnchanged(fixture);
   await expectNoPersistentNote(page, note);
   expectDispatchesUnchanged(dispatchesBefore);
@@ -1222,7 +1335,7 @@ test("prepared checkpoint review survives a run switch and reload but needs an e
   const comments = readComments(BD_STAND_IN_STATE)[fixture.beadId] ?? [];
   expect(comments).toHaveLength(1);
   expect(comments[0]?.text).toBe(saved.original.commentText);
-  expect(commentEvents(fixture.beadId)).toHaveLength(1);
+  expect(await commentEvents(page, fixture.beadId)).toHaveLength(1);
   expectRunAndBeadUnchanged(fixture);
   await expectNoPersistentNote(page, note);
   expectDispatchesUnchanged(dispatchesBefore);
