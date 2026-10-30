@@ -390,7 +390,7 @@ test("A-to-B-to-A navigation invalidates an open Run review", async ({
   const originalPrompt = "Keep this session draft after stale navigation";
   await composer.getByLabel("Session prompt").fill(originalPrompt);
   await composer.getByRole("button", { name: "Cancel", exact: true }).click();
-  await openRuns(page);
+  await navigateToRuns(page);
   await launchPreparation(page);
   const preparation = page.getByRole("dialog");
   await preparation.getByLabel("Feature description").fill("Stale review");
