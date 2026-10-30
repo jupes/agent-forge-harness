@@ -161,6 +161,45 @@ test("protected project Runs reads the served checkout without migrating legacy 
   expect(h.bd.calls.every((args) => args[0] === "export")).toBe(true);
 });
 
+test("protected run detail returns the exact recorded session.started association", async () => {
+  const { h, path } = await fixture();
+  const startedAt = "2026-10-23T12:30:00.000Z";
+  const eventId = h.append({
+    kind: "session.started",
+    beadId: "alpha-epic",
+    runId: "alpha-run",
+    sessionId: "recorded-run-session",
+    ts: startedAt,
+    payload: {
+      source: "headless:claude",
+      kind: "headless",
+      worktree: h.root,
+    },
+  });
+
+  const response = await fetch(`${path}/alpha-run`, {
+    headers: h.headers(h.hearth.token),
+  });
+
+  expect(response.status).toBe(200);
+  const envelope = await response.json();
+  expect(envelope.ok).toBe(true);
+  expect(envelope.data.sessionHistory).toEqual({
+    status: "available",
+    after: 0,
+    nextAfter: eventId,
+    more: false,
+    sessions: [
+      {
+        sessionId: "recorded-run-session",
+        startedAt,
+        kind: "headless",
+        detailsAvailable: true,
+      },
+    ],
+  });
+});
+
 test("protected artifact read returns the exact completed canonical research body without an audit write", async () => {
   const { h, path, state, directory, project } = await fixture();
   const detailResponse = await fetch(`${path}/alpha-run`, {
