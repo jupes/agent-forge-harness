@@ -15,6 +15,7 @@ import { z } from "zod";
 import type { ForgeState } from "../../scripts/forge/phases";
 import { artifactPath } from "../../scripts/forge/phases";
 import type { ProjectCatalog } from "../../types/projects";
+import type { LedgerEventInput } from "../../types/hearth";
 import { openSettled } from "../e2e/fixtures";
 import { bunPath, HEARTH_HOME } from "../e2e/servers";
 import { seedObservationEvents } from "./observed-session-fixtures";
@@ -292,12 +293,29 @@ test("foreground monitoring keeps Alpha and Beta scope, source limits and record
   addPartialOverviewScope();
   const runSlug = seedAlphaRun();
   seedBetaRun();
+  const activitySessionId = randomUUID();
+  const priorActivity: LedgerEventInput[] = Array.from(
+    { length: 24 },
+    (_, index) => ({
+      kind: "tool.called",
+      workspace,
+      beadId: "alpha-epic",
+      sessionId: activitySessionId,
+      executor: { provider: "codex", model: "recorded-model" },
+      payload: {
+        tool: `Alpha prior activity ${index + 1}`,
+        argsHash: "c".repeat(64),
+        durationMs: index + 1,
+      },
+    }),
+  );
   seedObservationEvents([
+    ...priorActivity,
     {
       kind: "tool.called",
       workspace,
       beadId: "alpha-epic",
-      sessionId: "e2e-alpha-parent",
+      sessionId: activitySessionId,
       executor: { provider: "codex", model: "recorded-model" },
       payload: {
         tool: "Alpha monitoring event",
@@ -309,7 +327,7 @@ test("foreground monitoring keeps Alpha and Beta scope, source limits and record
       kind: "tool.called",
       workspace,
       beadId: "beta-epic",
-      sessionId: "e2e-beta-own",
+      sessionId: activitySessionId,
       executor: { provider: "codex", model: "recorded-model" },
       payload: {
         tool: "Beta monitoring event",
