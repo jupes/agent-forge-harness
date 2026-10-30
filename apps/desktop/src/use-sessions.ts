@@ -160,5 +160,9 @@ export function useSessions(
     },
     [client, fork],
   );
-  return Object.assign(client, { fork });
+  return Object.assign(client, {
+    fork,
+    currentIdentityScope: () =>
+      scope.current ? { ...scope.current } : null,
+  });
 }
