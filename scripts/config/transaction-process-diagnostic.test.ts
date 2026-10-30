@@ -30,7 +30,11 @@ test("transaction fixture failure facts expose only bounded fixed categories", (
       child: "running",
       stderr: "unavailable",
     }),
-  ).toEqual({ stage: "config-loaded", child: "running", stderr: "unavailable" });
+  ).toEqual({
+    stage: "config-loaded",
+    child: "running",
+    stderr: "unavailable",
+  });
   expect(
     summarizeTransactionFixtureFailure({
       stage: privateValues[0] as never,
