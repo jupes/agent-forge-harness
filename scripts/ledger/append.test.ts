@@ -7,8 +7,8 @@ import type { LedgerEventInput } from "../../types/hearth";
 import { validateLedgerEvent } from "../hearth/validate";
 import { redactSecrets } from "../secret-patterns";
 import {
-  appendEvent,
   type AppendFailureFacts,
+  appendEvent,
   type JoinField,
   refusedJoinValue,
 } from "./append";
@@ -670,18 +670,18 @@ describe("an append that finds the ledger busy", () => {
     expect(appendEvent(started, { path, onFailure: () => calls++ }).ok).toBe(
       true,
     );
-    expect(
-      appendEvent(started, { path, onFailure: () => calls++ }).ok,
-    ).toBe(true);
+    expect(appendEvent(started, { path, onFailure: () => calls++ }).ok).toBe(
+      true,
+    );
     // justification: this deliberately violates the validated event contract.
     const malformed = {
       kind: "tool.called",
       workspace: "w",
       payload: { tool: "Bash" },
     } as unknown as LedgerEventInput;
-    expect(
-      appendEvent(malformed, { path, onFailure: () => calls++ }).ok,
-    ).toBe(false);
+    expect(appendEvent(malformed, { path, onFailure: () => calls++ }).ok).toBe(
+      false,
+    );
     expect(calls).toBe(0);
 
     const writer = new Database(path);
@@ -693,7 +693,11 @@ describe("an append that finds the ledger busy", () => {
       const throwingGetter = Object.defineProperty(
         { path, waitMs: 0 },
         "onFailure",
-        { get: () => { throw new Error("observer getter failure"); } },
+        {
+          get: () => {
+            throw new Error("observer getter failure");
+          },
+        },
       );
       expect(appendEvent(toolCall, throwingGetter)).toEqual(plain);
       expect(plain.ok).toBe(false);

@@ -4,9 +4,9 @@
  */
 
 import {
+  type AppendFailureFacts,
   ASYNC_HOOK_APPEND_WAIT_MS,
   appendEvent,
-  type AppendFailureFacts,
 } from "../append";
 import { openLedger } from "../db";
 
