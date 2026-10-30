@@ -2,17 +2,22 @@ import { expect, test } from "bun:test";
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import type {
+  ProjectShiftIntent,
+  ProjectShiftStartRequest,
+} from "../../types/project-shifts";
 import type { ProjectShiftAttemptOrigin } from "../../types/shift-origin";
-import type { ProjectShiftIntent } from "../../types/project-shifts";
-import type { ProjectShiftStartRequest } from "../../types/project-shifts";
-import type { PrivateExecInput } from "../executors/private-capture";
 import { createConversationStore } from "../conversations/store";
+import type { PrivateExecInput } from "../executors/private-capture";
 import { PRIVATE_CAPTURE_FAILURE } from "../executors/private-capture";
 import { resolveCheckout } from "../ledger/workspace";
 import { workspaceKey } from "../projects/scope";
 import { FIXTURE_PROJECT_ID, projectCatalogFixture } from "../projects/testing";
-import { createSessionRegistry, sessionRegistryFile } from "../sessions/registry";
 import { SHIFTS_DIR } from "../scheduler/shift-store";
+import {
+  createSessionRegistry,
+  sessionRegistryFile,
+} from "../sessions/registry";
 import { scratchDirs } from "../test-scratch";
 import {
   prepareShiftTurnSnapshot,
@@ -115,7 +120,11 @@ async function seedOwnedAttemptEvidence(
       workspace,
       request,
       shiftId,
-      requestHash: projectShiftRequestHash(FIXTURE_PROJECT_ID, workspace, request),
+      requestHash: projectShiftRequestHash(
+        FIXTURE_PROJECT_ID,
+        workspace,
+        request,
+      ),
       createdAt: "2026-10-25T13:00:00.000Z",
       attemptedAt: "2026-10-25T13:00:01.000Z",
       executionStartedAt: "2026-10-25T13:00:02.000Z",
@@ -141,7 +150,10 @@ async function seedOwnedAttemptEvidence(
     attempt = 1,
     cliVersion = "2.1.293",
     canonicalOrigin = shiftAttemptOrigin(intent, input, attempt),
-    origin: ProjectShiftAttemptOrigin = { ...canonicalOrigin, ...options.origin },
+    origin: ProjectShiftAttemptOrigin = {
+      ...canonicalOrigin,
+      ...options.origin,
+    },
     canonicalAttemptId = shiftAttemptRequestId(intent, input, attempt),
     canonicalAttemptHash = shiftAttemptHash(intent, input, attempt, cliVersion),
     registry = createSessionRegistry(home),
@@ -163,18 +175,23 @@ async function seedOwnedAttemptEvidence(
           ? canonicalAttemptHash
           : createHash("sha256").update(`fixture-${index}`).digest("hex");
     records.push(
-      await registry.reserve(FIXTURE_PROJECT_ID, requestId, requestHash, () => ({
-        mode: "task",
-        provider: "claude",
-        workspace: recordWorkspace,
-        repository: recordWorkspace,
-        worktree: recordWorkspace,
-        beadId: origin.beadId,
-        smith: "claude-journeyman",
-        requestedModel: input.smith.model,
-        requestedEffort: input.smith.effort,
-        origin: index === 0 ? origin : canonicalOrigin,
-      })),
+      await registry.reserve(
+        FIXTURE_PROJECT_ID,
+        requestId,
+        requestHash,
+        () => ({
+          mode: "task",
+          provider: "claude",
+          workspace: recordWorkspace,
+          repository: recordWorkspace,
+          worktree: recordWorkspace,
+          beadId: origin.beadId,
+          smith: "claude-journeyman",
+          requestedModel: input.smith.model,
+          requestedEffort: input.smith.effort,
+          origin: index === 0 ? origin : canonicalOrigin,
+        }),
+      ),
     );
   }
   const selected = records[0];
@@ -296,7 +313,12 @@ test("Keeper wait facts correlate only the exact first Shift-owned attempt", asy
 
     for (const invalidTurn of [
       { acceptedText: "different private input" },
-      { about: [{ kind: "run" as const, id: "fixture-run-1" }, { kind: "bead" as const, id: "alpha-work" }] },
+      {
+        about: [
+          { kind: "run" as const, id: "fixture-run-1" },
+          { kind: "bead" as const, id: "alpha-work" },
+        ],
+      },
       { extraTurn: true, turnPhase: "failed" as const },
     ]) {
       const invalid = await seedOwnedAttemptEvidence(

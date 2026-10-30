@@ -14,8 +14,9 @@ import { basename, join, resolve } from "node:path";
 import { z } from "zod";
 import type { KeeperShiftStartRequest } from "../../types/keeper-shift-start";
 import type { ProjectShiftIntent } from "../../types/project-shifts";
-import { createConversationStore } from "../conversations/store";
+import type { ProjectShiftAttemptOrigin } from "../../types/shift-origin";
 import { conversationFile } from "../conversations/paths";
+import { createConversationStore } from "../conversations/store";
 import { buildChildEnv } from "../executors/env";
 import {
   PRIVATE_CAPTURE_FAILURE,
@@ -42,24 +43,20 @@ import { keeperShiftStartReceiptSchema } from "../keeper/shift-start-protocol";
 import { closeLedger } from "../ledger/db";
 import { queryEvents } from "../ledger/query";
 import { resolveCheckout } from "../ledger/workspace";
-import { projectCatalogPath } from "../projects/store";
 import { workspaceKey } from "../projects/scope";
+import { projectCatalogPath } from "../projects/store";
 import { FIXTURE_PROJECT_ID, projectCatalogFixture } from "../projects/testing";
 import { readShiftRecord, SHIFTS_DIR } from "../scheduler/shift-store";
 import { createSessionRegistry } from "../sessions/registry";
 import { projectShiftAttemptOriginSchema } from "../sessions/shift-origin-protocol";
-import type { ProjectShiftAttemptOrigin } from "../../types/shift-origin";
 import { scratchDirs } from "../test-scratch";
-import { shiftTurnSnapshotSchema } from "./turn-protocol";
+import { shiftAttemptHash, shiftAttemptRequestId } from "./attempt-identity";
 import { projectShiftReceiptSchema } from "./protocol";
 import {
   createProjectShiftRegistry,
   projectShiftRequestHash,
 } from "./registry";
-import {
-  shiftAttemptHash,
-  shiftAttemptRequestId,
-} from "./attempt-identity";
+import { shiftTurnSnapshotSchema } from "./turn-protocol";
 
 const envelope = z
   .object({ ok: z.literal(true), data: z.unknown(), error: z.null() })
@@ -381,10 +378,40 @@ function admissions(file: string): Array<z.infer<typeof admission>> {
     .map((line) => admission.parse(parseJson(line, "Provider admission log")));
 }
 
-type AttemptEvidenceContext = { intent: ProjectShiftIntent; projectId: string; workspace: string; originalRequestId: string; expectedRequestHash: string; shiftId: string; firstBeadId: string; attempt: 1 };
-const attemptEvidence = (reservation: "unknown" | "ambiguous" | "matched", ownerTurn = "unknown", processFrame = "unknown") => `attemptReservation=${reservation}; ownerTurn=${ownerTurn}; processFrame=${processFrame}`;
-function isRecord(value: unknown): value is Record<string, unknown> { return typeof value === "object" && value !== null && !Array.isArray(value); }
-function sameAttemptOrigin(left: ProjectShiftAttemptOrigin | undefined, right: ProjectShiftAttemptOrigin): boolean { return !!left && left.kind === right.kind && left.projectId === right.projectId && left.originalRequestId === right.originalRequestId && left.shiftId === right.shiftId && left.runId === right.runId && left.beadId === right.beadId && left.attempt === right.attempt; }
+type AttemptEvidenceContext = {
+  intent: ProjectShiftIntent;
+  projectId: string;
+  workspace: string;
+  originalRequestId: string;
+  expectedRequestHash: string;
+  shiftId: string;
+  firstBeadId: string;
+  attempt: 1;
+};
+const attemptEvidence = (
+  reservation: "unknown" | "ambiguous" | "matched",
+  ownerTurn = "unknown",
+  processFrame = "unknown",
+) =>
+  `attemptReservation=${reservation}; ownerTurn=${ownerTurn}; processFrame=${processFrame}`;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function sameAttemptOrigin(
+  left: ProjectShiftAttemptOrigin | undefined,
+  right: ProjectShiftAttemptOrigin,
+): boolean {
+  return (
+    !!left &&
+    left.kind === right.kind &&
+    left.projectId === right.projectId &&
+    left.originalRequestId === right.originalRequestId &&
+    left.shiftId === right.shiftId &&
+    left.runId === right.runId &&
+    left.beadId === right.beadId &&
+    left.attempt === right.attempt
+  );
+}
 
 function ownedAttemptEvidence(
   home: string,
@@ -395,15 +422,72 @@ function ownedAttemptEvidence(
   try {
     const beads: unknown = row?.beads,
       first = Array.isArray(beads) ? beads[0] : undefined;
-    if (!row || row.shiftId !== context.shiftId || workspaceKey(row.workspace) !== workspaceKey(context.workspace) || !Array.isArray(beads) || beads.length < 1 || beads.length > 100 || !isRecord(first) || first.beadId !== context.firstBeadId || typeof first.runId !== "string" || first.attempts !== 1 || !["running", "review", "released", "halted", "left", "set-aside"].includes(String(first.outcome)) || beads.filter((bead) => isRecord(bead) && bead.beadId === context.firstBeadId).length !== 1) return unknown;
-    if (context.intent.projectId !== context.projectId || workspaceKey(context.intent.workspace) !== workspaceKey(context.workspace) || context.intent.shiftId !== context.shiftId || context.intent.request.requestId !== context.originalRequestId || context.intent.requestHash !== context.expectedRequestHash || projectShiftRequestHash(context.projectId, context.workspace, context.intent.request) !== context.expectedRequestHash) return unknown;
-    const checkedOrigin = projectShiftAttemptOriginSchema.safeParse({ kind: "shift", projectId: context.projectId, originalRequestId: context.originalRequestId, shiftId: context.shiftId, runId: first.runId, beadId: first.beadId, attempt: context.attempt });
+    if (
+      !row ||
+      row.shiftId !== context.shiftId ||
+      workspaceKey(row.workspace) !== workspaceKey(context.workspace) ||
+      !Array.isArray(beads) ||
+      beads.length < 1 ||
+      beads.length > 100 ||
+      !isRecord(first) ||
+      first.beadId !== context.firstBeadId ||
+      typeof first.runId !== "string" ||
+      first.attempts !== 1 ||
+      ![
+        "running",
+        "review",
+        "released",
+        "halted",
+        "left",
+        "set-aside",
+      ].includes(String(first.outcome)) ||
+      beads.filter(
+        (bead) => isRecord(bead) && bead.beadId === context.firstBeadId,
+      ).length !== 1
+    )
+      return unknown;
+    if (
+      context.intent.projectId !== context.projectId ||
+      workspaceKey(context.intent.workspace) !==
+        workspaceKey(context.workspace) ||
+      context.intent.shiftId !== context.shiftId ||
+      context.intent.request.requestId !== context.originalRequestId ||
+      context.intent.requestHash !== context.expectedRequestHash ||
+      projectShiftRequestHash(
+        context.projectId,
+        context.workspace,
+        context.intent.request,
+      ) !== context.expectedRequestHash
+    )
+      return unknown;
+    const checkedOrigin = projectShiftAttemptOriginSchema.safeParse({
+      kind: "shift",
+      projectId: context.projectId,
+      originalRequestId: context.originalRequestId,
+      shiftId: context.shiftId,
+      runId: first.runId,
+      beadId: first.beadId,
+      attempt: context.attempt,
+    });
     if (!checkedOrigin.success) return unknown;
     const expectedOrigin = checkedOrigin.data,
-      candidates = createSessionRegistry(home).listAll(context.projectId).filter((record) => {
-        const origin = projectShiftAttemptOriginSchema.safeParse(record.origin);
-        return record.projectId === context.projectId && record.beadId === expectedOrigin.beadId && workspaceKey(record.workspace) === workspaceKey(context.workspace) && workspaceKey(record.repository) === workspaceKey(context.workspace) && origin.success && sameAttemptOrigin(origin.data, expectedOrigin);
-      });
+      candidates = createSessionRegistry(home)
+        .listAll(context.projectId)
+        .filter((record) => {
+          const origin = projectShiftAttemptOriginSchema.safeParse(
+            record.origin,
+          );
+          return (
+            record.projectId === context.projectId &&
+            record.beadId === expectedOrigin.beadId &&
+            workspaceKey(record.workspace) ===
+              workspaceKey(context.workspace) &&
+            workspaceKey(record.repository) ===
+              workspaceKey(context.workspace) &&
+            origin.success &&
+            sameAttemptOrigin(origin.data, expectedOrigin)
+          );
+        });
     if (candidates.length !== 1)
       return attemptEvidence(candidates.length > 1 ? "ambiguous" : "unknown");
     const session = candidates[0];
@@ -415,29 +499,64 @@ function ownedAttemptEvidence(
         sessionId: session.id,
       },
       file = conversationFile(home, context.projectId, address);
-    let info;
-    try { info = lstatSync(file); } catch { return attemptEvidence("matched"); }
-    if (info.isSymbolicLink() || !info.isFile() || info.nlink !== 1 || info.size > 2_097_152) return attemptEvidence("matched");
+    let info: ReturnType<typeof lstatSync>;
     try {
-      const state = createConversationStore(home, undefined, address).read(context.projectId),
+      info = lstatSync(file);
+    } catch {
+      return attemptEvidence("matched");
+    }
+    if (
+      info.isSymbolicLink() ||
+      !info.isFile() ||
+      info.nlink !== 1 ||
+      info.size > 2_097_152
+    )
+      return attemptEvidence("matched");
+    try {
+      const state = createConversationStore(home, undefined, address).read(
+          context.projectId,
+        ),
         turns = state.turns,
-        userFrames = state.frames.filter((frame) => frame.turnId === session.requestId && frame.event.kind === "user");
+        userFrames = state.frames.filter(
+          (frame) =>
+            frame.turnId === session.requestId && frame.event.kind === "user",
+        );
       if (
         state.projectId !== context.projectId ||
         state.conversationId !== session.id ||
-        turns.length !== 1 || turns[0]?.requestId !== session.requestId ||
+        turns.length !== 1 ||
+        turns[0]?.requestId !== session.requestId ||
         state.frames.some((frame) => frame.turnId !== session.requestId) ||
         userFrames.length !== 1
       )
         return attemptEvidence("matched");
       const turn = turns[0],
         event = userFrames[0]?.event;
-      if (!turn || event?.kind !== "user" || !event.shift || event.text !== event.shift.stdin || !Array.isArray(event.about) || event.about.length !== 2 || event.about[0]?.kind !== "bead" || event.about[0].id !== event.shift.beadId || event.about[1]?.kind !== "run" || event.about[1].id !== event.shift.runId)
+      if (
+        !turn ||
+        event?.kind !== "user" ||
+        !event.shift ||
+        event.text !== event.shift.stdin ||
+        !Array.isArray(event.about) ||
+        event.about.length !== 2 ||
+        event.about[0]?.kind !== "bead" ||
+        event.about[0].id !== event.shift.beadId ||
+        event.about[1]?.kind !== "run" ||
+        event.about[1].id !== event.shift.runId
+      )
         return attemptEvidence("matched");
       const parsedSnapshot = shiftTurnSnapshotSchema.safeParse(event.shift);
       if (!parsedSnapshot.success) return attemptEvidence("matched");
       const snapshot = parsedSnapshot.data;
-      const snapshotOrigin: ProjectShiftAttemptOrigin = { kind: "shift", projectId: snapshot.projectId, originalRequestId: snapshot.originalRequestId, shiftId: snapshot.shiftId, runId: snapshot.runId, beadId: snapshot.beadId, attempt: snapshot.attempt };
+      const snapshotOrigin: ProjectShiftAttemptOrigin = {
+        kind: "shift",
+        projectId: snapshot.projectId,
+        originalRequestId: snapshot.originalRequestId,
+        shiftId: snapshot.shiftId,
+        runId: snapshot.runId,
+        beadId: snapshot.beadId,
+        attempt: snapshot.attempt,
+      };
       if (
         !sameAttemptOrigin(snapshotOrigin, expectedOrigin) ||
         snapshot.conversationId !== session.id ||
@@ -473,8 +592,12 @@ function ownedAttemptEvidence(
       if (
         shiftAttemptRequestId(context.intent, input, snapshot.attempt) !==
           session.requestId ||
-        shiftAttemptHash(context.intent, input, snapshot.attempt, snapshot.cliVersion) !==
-          session.requestHash
+        shiftAttemptHash(
+          context.intent,
+          input,
+          snapshot.attempt,
+          snapshot.cliVersion,
+        ) !== session.requestHash
       )
         return attemptEvidence("matched");
       const processFrames = state.frames.filter(
@@ -482,7 +605,16 @@ function ownedAttemptEvidence(
           frame.turnId === session.requestId && frame.event.kind === "process",
       );
       const processEvent = processFrames[0]?.event,
-        process = processFrames.length === 0 ? "not-observed" : processFrames.length === 1 && processEvent?.kind === "process" && processEvent.smith === session.smith && processEvent.requestedModel === session.requestedModel && processEvent.requestedEffort === session.requestedEffort ? "observed" : "unknown";
+        process =
+          processFrames.length === 0
+            ? "not-observed"
+            : processFrames.length === 1 &&
+                processEvent?.kind === "process" &&
+                processEvent.smith === session.smith &&
+                processEvent.requestedModel === session.requestedModel &&
+                processEvent.requestedEffort === session.requestedEffort
+              ? "observed"
+              : "unknown";
       return attemptEvidence("matched", turn.phase, process);
     } catch {
       return matched;
