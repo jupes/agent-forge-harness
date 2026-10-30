@@ -158,8 +158,7 @@ export function ProjectRunInspector({
           <dd>
             {run.phases
               .map(
-                (phase) =>
-                  `${phaseName(phase.id)}: ${phaseName(phase.state)}`,
+                (phase) => `${phaseName(phase.id)}: ${phaseName(phase.state)}`,
               )
               .join(" · ")}
           </dd>
