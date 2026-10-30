@@ -283,13 +283,15 @@ async function protectedRead(page: Page, path: string) {
     { path, token, header: OPERATOR_HEADER },
   );
 }
-function matchesRunDetailPage(response: Response, after: number) {
+async function matchesRunDetailPage(response: Response, after: number) {
   const url = new URL(response.url());
-  return (
-    url.pathname ===
-      `/__agent-forge/projects/${alpha.id}/runs/${fixture.primary}` &&
-    url.search === `?after=${after}&limit=100`
-  );
+  if (
+    url.pathname !==
+      `/__agent-forge/projects/${alpha.id}/runs/${fixture.primary}` ||
+    url.search !== `?after=${after}&limit=100`
+  )
+    return false;
+  return (await response.finished()) === null;
 }
 function runDetailFromEnvelope(body: unknown) {
   if (
