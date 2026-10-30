@@ -4,6 +4,7 @@ import {
   mkdirSync,
   readFileSync,
   realpathSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
@@ -426,42 +427,113 @@ test("canonical whole-shift Stop waits for supervised fake delivery to settle an
   expect(liveChildCount()).toBe(0);
 }, 45000);
 
-test("the compiled coding fixture enters its explicit non-recursive stop-helper smoke mode", async () => {
+test("source and compiled coding fixture entries reach the explicit non-recursive stop-helper smoke mode", async () => {
   const baseline = liveChildCount();
   const f = await fixture("claude", "helper-smoke");
-  const result = Bun.spawnSync([f.providerExe], {
-    cwd: f.root,
-    env: f.environment,
-    stdin: "ignore",
-    stdout: "ignore",
-    stderr: "ignore",
-    timeout: 5_000,
-    maxBuffer: 4 * 1024,
-    windowsHide: true,
-  });
-  expect(result.exitedDueToTimeout ?? false).toBe(false);
-  expect(result.exitedDueToMaxBuffer ?? false).toBe(false);
-  expect(result.exitCode).toBe(0);
+  const sourceEntry = join(
+    import.meta.dir,
+    "../sessions/fixtures/coding-cli.ts",
+  );
+  const entries = [
+    { kind: "source", command: [process.execPath, sourceEntry] },
+    { kind: "compiled", command: [f.providerExe] },
+  ] as const;
+  const attempts: Array<{
+    kind: (typeof entries)[number]["kind"];
+    exitCode: number | null;
+    timedOut: boolean;
+    outputLimitExceeded: boolean;
+    spawnError: boolean;
+    recordBytes: Uint8Array | null;
+    recordTooLarge: boolean;
+  }> = [];
+  for (const entry of entries) {
+    const recordPath = join(f.root, `${entry.kind}-helper-record.json`);
+    let exitCode: number | null = null;
+    let timedOut = false;
+    let outputLimitExceeded = false;
+    let spawnError = false;
+    try {
+      const result = Bun.spawnSync(entry.command, {
+        cwd: f.root,
+        env: { ...f.environment, CODING_FIXTURE_RECORD: recordPath },
+        stdin: "ignore",
+        stdout: "ignore",
+        stderr: "ignore",
+        timeout: 5_000,
+        maxBuffer: 4 * 1024,
+        windowsHide: true,
+      });
+      exitCode = result.exitCode;
+      timedOut = result.exitedDueToTimeout ?? false;
+      outputLimitExceeded = result.exitedDueToMaxBuffer ?? false;
+    } catch {
+      spawnError = true;
+    }
+    let recordBytes: Uint8Array | null = null;
+    let recordTooLarge = false;
+    try {
+      if (statSync(recordPath).size > 4 * 1024) recordTooLarge = true;
+      else recordBytes = readFileSync(recordPath);
+    } catch {
+      recordBytes = null;
+    }
+    attempts.push({
+      kind: entry.kind,
+      exitCode,
+      timedOut,
+      outputLimitExceeded,
+      spawnError,
+      recordBytes,
+      recordTooLarge,
+    });
+  }
 
-  const record: unknown = JSON.parse(readFileSync(f.log, "utf8"));
-  expect(record).toMatchObject({
-    helperSmoke: {
-      exitCode: 0,
-      marker: "fixture-stop-helper-smoke",
-    },
+  expect(attempts.map(({ kind }) => kind)).toEqual(["source", "compiled"]);
+  const records = attempts.map(({ recordBytes }) => {
+    if (!recordBytes) return null;
+    try {
+      const raw: unknown = JSON.parse(Buffer.from(recordBytes).toString("utf8"));
+      const parsed = z
+        .object({
+          pid: z.number(),
+          childPid: z.number().nullable(),
+          helperSmoke: z
+            .object({ exitCode: z.number(), marker: z.string() })
+            .optional(),
+        })
+        .safeParse(raw);
+      return parsed.success ? parsed.data : null;
+    } catch {
+      return null;
+    }
   });
-  const smoke = z
-    .object({
-      pid: z.number(),
-      childPid: z.number(),
-      helperSmoke: z.object({
-        exitCode: z.literal(0),
-        marker: z.literal("fixture-stop-helper-smoke"),
-      }),
-    })
+  for (const [index, record] of records.entries()) {
+    const attempt = attempts[index];
+    expect(attempt?.spawnError).toBe(false);
+    expect(attempt?.timedOut).toBe(false);
+    expect(attempt?.outputLimitExceeded).toBe(false);
+    expect(attempt?.recordTooLarge).toBe(false);
+    expect(attempt?.exitCode).toBe(0);
+    expect(record).toMatchObject({
+      helperSmoke: {
+        exitCode: 0,
+        marker: "fixture-stop-helper-smoke",
+      },
+    });
+    const smoke = z
+      .object({
+        pid: z.number(),
+        childPid: z.number(),
+        helperSmoke: z.object({
+          exitCode: z.literal(0),
+          marker: z.literal("fixture-stop-helper-smoke"),
+        }),
+      })
     .parse(record);
-  expect(smoke.childPid).not.toBe(smoke.pid);
-  expect(processAlive(smoke.childPid)).toBe(false);
+    expect(smoke.childPid).not.toBe(smoke.pid);
+    expect(processAlive(smoke.childPid)).toBe(false);
+  }
   expect(liveChildCount()).toBe(baseline);
 }, 45000);
 
