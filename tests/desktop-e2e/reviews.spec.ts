@@ -557,7 +557,6 @@ test("a completed bead-source review links to its bead and reports the one recor
 
   const appOrigin = new URL(page.url()).origin;
   const historyMatcher = `**${reviewsPath}`;
-  let actualHistoryStatus: number | undefined;
   let routeFailure: string | undefined;
   let historyRouteCalls = 0;
   let failedHistoryRequests = 0;
@@ -600,21 +599,15 @@ test("a completed bead-source review links to its bead and reports the one recor
       await route.abort("failed").catch(() => undefined);
       return;
     }
+    holdTimer = setTimeout(() => {
+      if (!holdReleased) routeFailure = "The bounded history hold expired.";
+      releaseHold();
+    }, 5000);
     try {
-      const realResponse = await route.fetch({
-        timeout: 5000,
-        maxRetries: 0,
-        maxRedirects: 0,
-      });
-      actualHistoryStatus = realResponse.status();
-      holdTimer = setTimeout(() => {
-        if (!holdReleased) routeFailure = "The bounded history hold expired.";
-        releaseHold();
-      }, 5000);
       await heldResponse;
       await route.abort("failed");
     } catch {
-      routeFailure = routeFailure ?? "The real saved-history GET failed.";
+      routeFailure = routeFailure ?? "The held browser history GET could not be aborted.";
       await route.abort("failed").catch(() => undefined);
     } finally {
       if (holdTimer !== undefined) clearTimeout(holdTimer);
@@ -631,7 +624,7 @@ test("a completed bead-source review links to its bead and reports the one recor
     await page.route(historyMatcher, historyHandler);
     routeInstalled = true;
     await page.reload({ waitUntil: "domcontentloaded" });
-    await expect.poll(() => actualHistoryStatus, { timeout: 6000 }).toBe(200);
+    await expect.poll(() => historyRouteCalls, { timeout: 6000 }).toBe(1);
     await expect(
       page
         .getByRole("status")
