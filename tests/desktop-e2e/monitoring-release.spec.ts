@@ -1,5 +1,5 @@
-import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   existsSync,
   lstatSync,
@@ -137,14 +137,21 @@ try {
     typeof result.stdout !== "string" ||
     Buffer.byteLength(result.stdout) > 64 * 1024
   )
-    throw Error("Monitoring fixture catalog validation did not complete cleanly.");
+    throw Error(
+      "Monitoring fixture catalog validation did not complete cleanly.",
+    );
   let response: unknown;
   try {
     response = JSON.parse(result.stdout);
   } catch {
     throw Error("Monitoring fixture catalog validation returned invalid JSON.");
   }
-  if (!z.object({ ok: z.literal(true) }).strict().safeParse(response).success)
+  if (
+    !z
+      .object({ ok: z.literal(true) })
+      .strict()
+      .safeParse(response).success
+  )
     throw Error("Monitoring fixture catalog failed project-store validation.");
 }
 
