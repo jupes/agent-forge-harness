@@ -1,6 +1,12 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { expect, type Response, test } from "@playwright/test";
+import {
+  expect,
+  type Request,
+  type Response,
+  type Route,
+  test,
+} from "@playwright/test";
 import { projectCouncilMetadataSchema } from "../../types/project-council";
 import type { ProjectCouncilRunRead } from "../../types/project-council-run-read";
 import type { ProjectRecord } from "../../types/projects";
@@ -228,10 +234,32 @@ test("a completed bead-source review links to its bead and reports the one recor
 }) => {
   const posts: string[] = [];
   const reviewsPath = `/__agent-forge/projects/${alpha.id}/council/reviews`;
+  let historyGets = 0;
+  let historyResponseCount = 0;
+  let lastHistoryResponse: Response | undefined;
   page.on("request", (request) => {
+    const url = new URL(request.url());
     if (request.method() === "POST")
       posts.push(new URL(request.url()).pathname);
+    if (
+      request.method() === "GET" &&
+      url.origin === new URL(page.url()).origin &&
+      url.pathname === reviewsPath
+    )
+      historyGets++;
   });
+  page.on("response", (response) => {
+    const url = new URL(response.url());
+    if (
+      response.request().method() === "GET" &&
+      url.origin === new URL(page.url()).origin &&
+      url.pathname === reviewsPath
+    ) {
+      historyResponseCount++;
+      lastHistoryResponse = response;
+    }
+  });
+  await page.emulateMedia({ reducedMotion: "reduce" });
   await openSettled(page, `/index.html#/desktop/project/${alpha.id}/beads`);
   await page
     .getByRole("button", {
@@ -509,10 +537,159 @@ test("a completed bead-source review links to its bead and reports the one recor
     "Verdict comment posted to the bead.",
   );
 
-  await page.reload();
+  const historyGetCountBeforeFilter = historyGets;
+  const postCountBeforeFilter = posts.length;
+  const historyFilter = page.getByLabel("Filter saved reviews");
+  await historyFilter.fill("completed");
+  await expect(savedRow).toBeVisible();
+  await historyFilter.fill("no-such-saved-review");
+  await expect(page.getByText("No saved reviews match this filter.")).toBeVisible();
+  await expect(savedRow).toHaveCount(0);
+  const clearFilters = page.getByRole("button", { name: "Clear filters" });
+  await historyFilter.press("Tab");
+  await expect(clearFilters).toBeFocused();
+  await expect(clearFilters).toHaveCSS("outline-width", "2px");
+  await page.keyboard.press("Enter");
+  await expect(savedRow).toBeVisible();
+  await expect(savedRow.getByRole("heading", { name: /Verified result facts/ })).toBeVisible();
+  expect(historyGets).toBe(historyGetCountBeforeFilter);
+  expect(posts).toHaveLength(postCountBeforeFilter);
+
+  const appOrigin = new URL(page.url()).origin;
+  const historyMatcher = `**${reviewsPath}`;
+  let actualHistoryStatus: number | undefined;
+  let routeFailure: string | undefined;
+  let historyRouteCalls = 0;
+  let failedHistoryRequests = 0;
+  let releaseHold!: () => void;
+  let resolveHandlerDone!: () => void;
+  const heldResponse = new Promise<void>((resolve) => (releaseHold = resolve));
+  const handlerDone = new Promise<void>((resolve) => (resolveHandlerDone = resolve));
+  let holdReleased = false;
+  let holdTimer: ReturnType<typeof setTimeout> | undefined;
+  const failureListener = (request: Request) => {
+    const url = new URL(request.url());
+    if (
+      request.method() === "GET" &&
+      url.origin === appOrigin &&
+      url.pathname === reviewsPath
+    )
+      failedHistoryRequests++;
+  };
+  const historyHandler = async (route: Route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (
+      request.method() !== "GET" ||
+      request.frame() !== page.mainFrame() ||
+      url.origin !== appOrigin ||
+      url.pathname !== reviewsPath ||
+      url.search !== ""
+    ) {
+      try {
+        await route.continue();
+      } catch {
+        routeFailure = "A nonmatching request could not continue.";
+        await route.abort("failed").catch(() => undefined);
+      }
+      return;
+    }
+    historyRouteCalls++;
+    if (historyRouteCalls !== 1) {
+      routeFailure = "An unexpected extra saved-history GET was attempted.";
+      await route.abort("failed").catch(() => undefined);
+      return;
+    }
+    try {
+      const realResponse = await route.fetch({
+        timeout: 5000,
+        maxRetries: 0,
+        maxRedirects: 0,
+      });
+      actualHistoryStatus = realResponse.status();
+      holdTimer = setTimeout(() => {
+        if (!holdReleased) routeFailure = "The bounded history hold expired.";
+        releaseHold();
+      }, 5000);
+      await heldResponse;
+      await route.abort("failed");
+    } catch {
+      routeFailure = routeFailure ?? "The real saved-history GET failed.";
+      await route.abort("failed").catch(() => undefined);
+    } finally {
+      if (holdTimer !== undefined) clearTimeout(holdTimer);
+      resolveHandlerDone();
+    }
+  };
+  const releaseHistory = () => {
+    holdReleased = true;
+    releaseHold();
+  };
+  page.on("requestfailed", failureListener);
+  let routeInstalled = false;
+  try {
+    await page.route(historyMatcher, historyHandler);
+    routeInstalled = true;
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await expect.poll(() => actualHistoryStatus, { timeout: 6000 }).toBe(200);
+    await expect(
+      page
+        .getByRole("status")
+        .getByText("Loading saved Council reviews…", { exact: true }),
+    ).toBeVisible();
+    await expect(page.getByRole("button", { name: "Check saved reviews" })).toBeDisabled();
+    await expect(page.getByRole("heading", { name: "No council reviews yet" })).toHaveCount(0);
+    releaseHistory();
+    await expect.poll(() => failedHistoryRequests).toBe(1);
+    await expect(
+      page.getByRole("alert").filter({ hasText: "Saved review status is unknown" }),
+    ).toContainText("Keep it held");
+    await expect(page.getByRole("button", { name: "New review" })).toHaveCount(0);
+  } finally {
+    releaseHistory();
+    try {
+      if (routeInstalled) {
+        try {
+          await page.unroute(historyMatcher, historyHandler);
+        } catch {
+          routeFailure = routeFailure ?? "The history route could not be removed.";
+        }
+        if (historyRouteCalls > 0) {
+          let drainTimer: ReturnType<typeof setTimeout> | undefined;
+          const drained = await Promise.race([
+            handlerDone.then(() => true),
+            new Promise<boolean>((resolve) => {
+              drainTimer = setTimeout(() => resolve(false), 6000);
+            }),
+          ]);
+          if (drainTimer !== undefined) clearTimeout(drainTimer);
+          if (!drained)
+            routeFailure = routeFailure ?? "The held history route did not drain.";
+        }
+      }
+    } finally {
+      page.off("requestfailed", failureListener);
+    }
+  }
+  if (routeFailure) throw new Error(routeFailure);
+  expect(historyRouteCalls).toBe(1);
+  expect(historyGets).toBe(historyGetCountBeforeFilter + 1);
+  const beforeExplicitCheck = historyGets;
+  const beforeExplicitResponse = historyResponseCount;
+  await page
+    .getByRole("alert")
+    .filter({ hasText: "Saved review status is unknown" })
+    .getByRole("button", { name: "Check saved reviews" })
+    .click();
+  await expect
+    .poll(() => historyResponseCount > beforeExplicitResponse)
+    .toBe(true);
+  expect(historyGets).toBe(beforeExplicitCheck + 1);
+  expect(lastHistoryResponse?.status()).toBe(200);
   await expect(
     page.getByRole("heading", { name: "Saved reviews" }),
   ).toBeVisible();
+  await expect(savedRow).toBeVisible();
   await expect(
     page.getByText(
       "Open this result to read verified facts and Bead comment status.",
