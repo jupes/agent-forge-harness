@@ -1124,7 +1124,8 @@ export function ProjectReviews({
       return;
     }
     const sourceIdentityChanged =
-      updated.sourceType !== draft.sourceType || updated.source !== draft.source;
+      updated.sourceType !== draft.sourceType ||
+      updated.source !== draft.source;
     const saved = draftCache.write(scope, updated);
     if (saved.kind !== "saved") {
       setDraftCacheError(

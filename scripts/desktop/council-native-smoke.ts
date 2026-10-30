@@ -1,5 +1,5 @@
-import { createHash } from "node:crypto";
 import { Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
 import {
   copyFileSync,
   cpSync,
@@ -21,6 +21,12 @@ import {
   sep,
 } from "node:path";
 import { chromium, type Page } from "@playwright/test";
+import { runsHref } from "../../apps/desktop/src/project-runs-model";
+import {
+  readComments,
+  readState,
+  writeState,
+} from "../../tests/e2e/bd-stand-in-state";
 import {
   type ProjectCouncilMetadata,
   type ProjectCouncilOriginalRead,
@@ -35,28 +41,25 @@ import {
   projectCouncilRunReadSchema,
 } from "../../types/project-council-run-read";
 import { loadCouncilProfile } from "../council/workflow";
+import { reviewCommentFor } from "../dashboard/forge-run-model";
+import type { ForgeState } from "../forge/phases";
 import { makeOwnerOnly } from "../hearth/acl-windows";
 import { isMain } from "../is-main";
 import { workspaceKey } from "../projects/scope";
 import { createProjectStore } from "../projects/store";
-import { readComments, readState, writeState } from "../../tests/e2e/bd-stand-in-state";
-import type { ForgeState } from "../forge/phases";
-import { reviewCommentFor } from "../dashboard/forge-run-model";
-import { runsHref } from "../../apps/desktop/src/project-runs-model";
 
 const root = resolve(import.meta.dir, "../..");
 const stage = join(root, "apps/desktop/build/windows-x64");
 const body =
   "Council native smoke fixture: the blue lantern rests beside the open notebook.";
-const checkpointNote = "Please add a deterministic example for the checkpoint command.";
+const checkpointNote =
+  "Please add a deterministic example for the checkpoint command.";
 const entrypoint = isMain(import.meta);
 const modeArgs = entrypoint ? process.argv.slice(2) : [];
 const checkpointMode = modeArgs.length === 1 && modeArgs[0] === "--checkpoint";
 if (modeArgs.length > 0 && !checkpointMode)
   throw new Error("Expected no arguments or the explicit --checkpoint mode.");
-const epicId = checkpointMode
-  ? "checkpoint-native-epic"
-  : "council-smoke-epic";
+const epicId = checkpointMode ? "checkpoint-native-epic" : "council-smoke-epic";
 const checkpointId = `${epicId}.native-review`;
 const waitMs = 60_000;
 type Identity = {
@@ -371,7 +374,12 @@ async function main(): Promise<void> {
       : {}),
     ...(!checkpointMode
       ? {
-          schemas: { metadata: false, original: false, receipt: false, run: false },
+          schemas: {
+            metadata: false,
+            original: false,
+            receipt: false,
+            run: false,
+          },
           protectedReads: 0,
         }
       : {}),
@@ -475,7 +483,10 @@ async function main(): Promise<void> {
       });
       const runsDir = join(workspaceRoot, ".tmp/work/forge-runs");
       mkdirSync(runsDir, { recursive: true });
-      const makeRun = (slug: string, label: string): { state: ForgeState; bytes: string } => {
+      const makeRun = (
+        slug: string,
+        label: string,
+      ): { state: ForgeState; bytes: string } => {
         const state: ForgeState = {
           schemaVersion: 2,
           slug,
@@ -722,9 +733,14 @@ async function exerciseCheckpoint(
   appPid: number,
   appPath: string,
 ): Promise<Identity[][]> {
-  const runB = runs.find((item) => item.state.slug === "native-checkpoint-run-b");
-  const runA = runs.find((item) => item.state.slug === "native-checkpoint-run-a");
-  if (!runA || !runB) throw new Error("The two native checkpoint Runs were not seeded.");
+  const runB = runs.find(
+    (item) => item.state.slug === "native-checkpoint-run-b",
+  );
+  const runA = runs.find(
+    (item) => item.state.slug === "native-checkpoint-run-a",
+  );
+  if (!runA || !runB)
+    throw new Error("The two native checkpoint Runs were not seeded.");
   const runBTitle = runB.state.feature ?? runB.state.slug;
   const posts: { path: string; body: unknown }[] = [];
   page.on("request", (request) => {
@@ -754,18 +770,35 @@ async function exerciseCheckpoint(
   await checkpointButton.waitFor({ timeout: waitMs });
   await checkpointButton.click();
   if (posts.length !== 0)
-    throw new Error("Opening the canonical checkpoint Council draft caused a POST.");
+    throw new Error(
+      "Opening the canonical checkpoint Council draft caused a POST.",
+    );
   await nav.getByRole("link", { name: "Reviews", exact: true }).click();
   const sourceType = page.getByLabel("Source type");
   const source = page.getByLabel("Beads issue ID");
   await source.waitFor({ timeout: waitMs });
-  if ((await sourceType.inputValue()) !== "bead" || (await source.inputValue()) !== checkpointId)
-    throw new Error("Council did not receive the exact canonical checkpoint source.");
+  if (
+    (await sourceType.inputValue()) !== "bead" ||
+    (await source.inputValue()) !== checkpointId
+  )
+    throw new Error(
+      "Council did not receive the exact canonical checkpoint source.",
+    );
   const profile = page.getByLabel("Council profile");
-  if (!(await profile.inputValue()).replaceAll("\\", "/").endsWith("councils/default.json"))
-    throw new Error("The checkpoint flow did not select the fake-only Council profile.");
-  await page.getByRole("button", { name: "Prepare original for review" }).click();
-  await page.getByRole("heading", { name: "Exact saved original" }).waitFor({ timeout: waitMs });
+  if (
+    !(await profile.inputValue())
+      .replaceAll("\\", "/")
+      .endsWith("councils/default.json")
+  )
+    throw new Error(
+      "The checkpoint flow did not select the fake-only Council profile.",
+    );
+  await page
+    .getByRole("button", { name: "Prepare original for review" })
+    .click();
+  await page
+    .getByRole("heading", { name: "Exact saved original" })
+    .waitFor({ timeout: waitMs });
   const savedCouncilOriginal = page.locator(
     '[aria-label="Exact saved Council original"]',
   );
@@ -777,37 +810,57 @@ async function exerciseCheckpoint(
   const councilIntentHash = (await originalIdentity.nth(1).innerText()).trim();
   const councilRunId = (await originalIdentity.nth(2).innerText()).trim();
   if (
-    !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(councilRequestId) ||
+    !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+      councilRequestId,
+    ) ||
     !/^[a-f0-9]{64}$/.test(councilIntentHash) ||
     !councilRunId
   )
-    throw new Error("The exact saved Council original identity was not visible.");
-  await page.getByRole("button", { name: "Convene this exact original" }).click();
-  await page.getByRole("heading", { name: "Verified result facts" }).waitFor({ timeout: waitMs });
-  await page.getByRole("heading", { name: "Council result" }).waitFor({ timeout: waitMs });
-  await page.getByText("Inspect complete public Council result", { exact: true }).click();
+    throw new Error(
+      "The exact saved Council original identity was not visible.",
+    );
+  await page
+    .getByRole("button", { name: "Convene this exact original" })
+    .click();
+  await page
+    .getByRole("heading", { name: "Verified result facts" })
+    .waitFor({ timeout: waitMs });
+  await page
+    .getByRole("heading", { name: "Council result" })
+    .waitFor({ timeout: waitMs });
+  await page
+    .getByText("Inspect complete public Council result", { exact: true })
+    .click();
   let publicRunValue: unknown;
   try {
     publicRunValue = JSON.parse(
-      await page.getByLabel("Complete public Council result transcript").inputValue(),
+      await page
+        .getByLabel("Complete public Council result transcript")
+        .inputValue(),
     );
   } catch {
     throw new Error("The visible completed Council result was invalid JSON.");
   }
   const publicRun = record(publicRunValue);
-  const verifiedState = page.getByText("Verified state: completed", { exact: true });
+  const verifiedState = page.getByText("Verified state: completed", {
+    exact: true,
+  });
   await verifiedState.waitFor({ timeout: waitMs });
   if (
     !publicRun ||
     publicRun.runId !== councilRunId ||
     publicRun.status !== "completed"
   )
-    throw new Error("The completed Council result changed the saved original run identity.");
+    throw new Error(
+      "The completed Council result changed the saved original run identity.",
+    );
   await page
     .getByTestId("council-verdict-status")
     .getByText("Verdict comment posted to the bead.", { exact: true })
     .waitFor({ timeout: waitMs });
-  const preview = page.locator('[aria-label="Bead verdict comment preview"] pre');
+  const preview = page.locator(
+    '[aria-label="Bead verdict comment preview"] pre',
+  );
   await preview.waitFor({ timeout: waitMs });
   const previewText = (await preview.textContent()) ?? "";
   const councilComments = readComments(standInState)[checkpointId] ?? [];
@@ -817,11 +870,14 @@ async function exerciseCheckpoint(
     !councilComment?.id ||
     councilComment.text !== previewText
   )
-    throw new Error("The completed Council verdict did not match its one persisted Bead comment.");
+    throw new Error(
+      "The completed Council verdict did not match its one persisted Bead comment.",
+    );
   const firstPosts = posts.filter((post) =>
     post.path.includes("/projects/" + projectId + "/council/reviews"),
   );
-  const reservePath = "/__agent-forge/projects/" + projectId + "/council/reviews";
+  const reservePath =
+    "/__agent-forge/projects/" + projectId + "/council/reviews";
   const reservePost = firstPosts.find((post) => post.path === reservePath);
   const commitPath = reservePath + "/" + councilRequestId + "/commit";
   const commitPost = firstPosts.find((post) => post.path === commitPath);
@@ -836,10 +892,30 @@ async function exerciseCheckpoint(
     sourceChoice.source !== checkpointId ||
     commitBody?.intentHash !== councilIntentHash
   )
-    throw new Error("Council did not perform exactly one reserve and one commit.");
-  const councilLedgerBaseline = readNativeCheckpointEvents(home, workspace, checkpointId, "bead.transitioned", 3);
-  const councilCommentRows = readNativeCheckpointEvents(home, workspace, checkpointId, "council.verdict.comment", 2);
-  const councilStartedRows = readNativeCheckpointEvents(home, workspace, checkpointId, "council.run.started", 2);
+    throw new Error(
+      "Council did not perform exactly one reserve and one commit.",
+    );
+  const councilLedgerBaseline = readNativeCheckpointEvents(
+    home,
+    workspace,
+    checkpointId,
+    "bead.transitioned",
+    3,
+  );
+  const councilCommentRows = readNativeCheckpointEvents(
+    home,
+    workspace,
+    checkpointId,
+    "council.verdict.comment",
+    2,
+  );
+  const councilStartedRows = readNativeCheckpointEvents(
+    home,
+    workspace,
+    checkpointId,
+    "council.run.started",
+    2,
+  );
   const councilEventRow = councilCommentRows[0];
   const councilBeadEvent = councilLedgerBaseline[0];
   const councilStartedEvent = councilStartedRows[0];
@@ -853,7 +929,9 @@ async function exerciseCheckpoint(
     !councilStartedEvent ||
     councilStartedEvent.kind !== "council.run.started"
   )
-    throw new Error("The Council review did not produce one scoped start, verdict, and Bead event.");
+    throw new Error(
+      "The Council review did not produce one scoped start, verdict, and Bead event.",
+    );
   let councilEventPayload: unknown;
   try {
     councilEventPayload = JSON.parse(councilEventRow.payload);
@@ -867,7 +945,9 @@ async function exerciseCheckpoint(
     councilEvent.councilRunId !== councilRunId ||
     councilEvent.status !== "posted"
   )
-    throw new Error("The Council comment event did not match the displayed result run.");
+    throw new Error(
+      "The Council comment event did not match the displayed result run.",
+    );
   let councilStartedPayload: unknown;
   try {
     councilStartedPayload = JSON.parse(councilStartedEvent.payload);
@@ -875,7 +955,9 @@ async function exerciseCheckpoint(
     throw new Error("The Council start event payload was invalid JSON.");
   }
   if (record(councilStartedPayload)?.councilRunId !== councilRunId)
-    throw new Error("The Council start event did not match the saved original run.");
+    throw new Error(
+      "The Council start event did not match the saved original run.",
+    );
   let councilBeadPayload: unknown;
   try {
     councilBeadPayload = JSON.parse(councilBeadEvent.payload);
@@ -887,12 +969,18 @@ async function exerciseCheckpoint(
     !councilBead ||
     Object.keys(councilBead).sort().join(",") !== "action,hash,length" ||
     councilBead.action !== "comment" ||
-    councilBead.hash !== createHash("sha256").update(councilComment.text, "utf8").digest("hex") ||
+    councilBead.hash !==
+      createHash("sha256").update(councilComment.text, "utf8").digest("hex") ||
     councilBead.length !== councilComment.text.length
   )
-    throw new Error("The Council Bead metadata did not match its exact persisted comment.");
+    throw new Error(
+      "The Council Bead metadata did not match its exact persisted comment.",
+    );
   await page.setViewportSize({ width: 1100, height: 700 });
-  const beforeBack = join(String(report.proofDir), "checkpoint-council-result.png");
+  const beforeBack = join(
+    String(report.proofDir),
+    "checkpoint-council-result.png",
+  );
   await page.screenshot({ path: beforeBack, fullPage: true });
   await page
     .getByRole("button", {
@@ -909,10 +997,17 @@ async function exerciseCheckpoint(
     throw new Error("Council returned to a different Run selection.");
   const note = page.getByLabel("Review note");
   await note.waitFor({ timeout: waitMs });
-  if (!(await note.isEnabled()) || !(await note.evaluate((element) => document.activeElement === element)))
-    throw new Error("Back to Run did not focus the exact active checkpoint note.");
+  if (
+    !(await note.isEnabled()) ||
+    !(await note.evaluate((element) => document.activeElement === element))
+  )
+    throw new Error(
+      "Back to Run did not focus the exact active checkpoint note.",
+    );
   if (posts.length !== 2)
-    throw new Error("Returning from Council submitted a human checkpoint action.");
+    throw new Error(
+      "Returning from Council submitted a human checkpoint action.",
+    );
   const humanNote = checkpointNote;
   await page.keyboard.type(humanNote);
   await page.keyboard.press("Tab");
@@ -921,7 +1016,11 @@ async function exerciseCheckpoint(
     name: "Request changes",
     exact: true,
   });
-  if (!(await requestChanges.evaluate((element) => document.activeElement === element)))
+  if (
+    !(await requestChanges.evaluate(
+      (element) => document.activeElement === element,
+    ))
+  )
     throw new Error("Keyboard focus did not reach Request changes.");
   await page.keyboard.press("Enter");
   await page
@@ -929,7 +1028,9 @@ async function exerciseCheckpoint(
     .waitFor({ timeout: waitMs });
   const comments = readComments(standInState)[checkpointId] ?? [];
   const humanComment = comments[1];
-  const marker = humanComment?.text.match(/Forge checkpoint review ([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/);
+  const marker = humanComment?.text.match(
+    /Forge checkpoint review ([0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/,
+  );
   const requestId = marker?.[1];
   const canonicalReview = reviewCommentFor({
     issueId: checkpointId,
@@ -937,8 +1038,11 @@ async function exerciseCheckpoint(
     note: humanNote,
   });
   if (!canonicalReview.ok || !humanComment || !requestId)
-    throw new Error("The human checkpoint comment did not retain its canonical request identity.");
-  const expectedHumanComment = canonicalReview.body + "\nForge checkpoint review " + requestId;
+    throw new Error(
+      "The human checkpoint comment did not retain its canonical request identity.",
+    );
+  const expectedHumanComment =
+    canonicalReview.body + "\nForge checkpoint review " + requestId;
   if (
     comments.length !== 2 ||
     comments[0]?.id !== councilComment.id ||
@@ -946,9 +1050,13 @@ async function exerciseCheckpoint(
     humanComment.issueId !== checkpointId ||
     humanComment.text !== expectedHumanComment
   )
-    throw new Error("Council and human review comments were not two distinct exact writes.");
+    throw new Error(
+      "Council and human review comments were not two distinct exact writes.",
+    );
   const checkpointPosts = posts.filter((post) =>
-    post.path.includes("/runs/" + runB.state.slug + "/checkpoints/" + checkpointId + "/reviews"),
+    post.path.includes(
+      "/runs/" + runB.state.slug + "/checkpoints/" + checkpointId + "/reviews",
+    ),
   );
   if (
     checkpointPosts.length !== 2 ||
@@ -968,29 +1076,52 @@ async function exerciseCheckpoint(
     record(checkpointPosts[0]?.body)?.requestId !== requestId ||
     !checkpointPosts[1]?.path.endsWith("/" + requestId + "/commit") ||
     typeof record(checkpointPosts[1]?.body)?.intentHash !== "string" ||
-    !/^[a-f0-9]{64}$/.test(
-      String(record(checkpointPosts[1]?.body)?.intentHash),
-    )
+    !/^[a-f0-9]{64}$/.test(String(record(checkpointPosts[1]?.body)?.intentHash))
   )
-    throw new Error("The human review did not use one matching prepare/commit pair.");
+    throw new Error(
+      "The human review did not use one matching prepare/commit pair.",
+    );
   const issue = readState(standInState)[checkpointId];
   if (issue?.status !== "in_progress")
     throw new Error("The review action changed the checkpoint Beads status.");
   const runFiles = join(workspace, ".tmp/work/forge-runs");
   for (const item of [runA, runB])
-    if (readFileSync(join(runFiles, item.state.slug + ".json"), "utf8") !== item.bytes)
+    if (
+      readFileSync(join(runFiles, item.state.slug + ".json"), "utf8") !==
+      item.bytes
+    )
       throw new Error("A checkpoint review changed a Run file.");
-  const events = readNativeCheckpointEvents(home, workspace, checkpointId, "bead.transitioned", 3);
-  const finalCouncilComments = readNativeCheckpointEvents(home, workspace, checkpointId, "council.verdict.comment", 2);
-  const finalCouncilStarted = readNativeCheckpointEvents(home, workspace, checkpointId, "council.run.started", 2);
+  const events = readNativeCheckpointEvents(
+    home,
+    workspace,
+    checkpointId,
+    "bead.transitioned",
+    3,
+  );
+  const finalCouncilComments = readNativeCheckpointEvents(
+    home,
+    workspace,
+    checkpointId,
+    "council.verdict.comment",
+    2,
+  );
+  const finalCouncilStarted = readNativeCheckpointEvents(
+    home,
+    workspace,
+    checkpointId,
+    "council.run.started",
+    2,
+  );
   const event = events[1];
   if (
     posts.length !== 4 ||
     events.length !== 2 ||
     finalCouncilComments.length !== 1 ||
-    JSON.stringify(finalCouncilComments) !== JSON.stringify(councilCommentRows) ||
+    JSON.stringify(finalCouncilComments) !==
+      JSON.stringify(councilCommentRows) ||
     finalCouncilStarted.length !== 1 ||
-    JSON.stringify(finalCouncilStarted) !== JSON.stringify(councilStartedRows) ||
+    JSON.stringify(finalCouncilStarted) !==
+      JSON.stringify(councilStartedRows) ||
     JSON.stringify(events.slice(0, 1)) !==
       JSON.stringify(councilLedgerBaseline) ||
     !event ||
@@ -999,29 +1130,45 @@ async function exerciseCheckpoint(
     event.bead_id !== checkpointId ||
     event.workspace !== workspaceKey(workspace)
   )
-    throw new Error("The human comment metadata event was absent or ambiguous.");
+    throw new Error(
+      "The human comment metadata event was absent or ambiguous.",
+    );
   let payload: unknown;
   try {
     payload = JSON.parse(event.payload);
   } catch {
-    throw new Error("The checkpoint comment metadata payload was invalid JSON.");
+    throw new Error(
+      "The checkpoint comment metadata payload was invalid JSON.",
+    );
   }
   const eventPayload = record(payload);
   if (
     !eventPayload ||
     Object.keys(eventPayload).sort().join(",") !== "action,hash,length" ||
     eventPayload.action !== "comment" ||
-    eventPayload.hash !== createHash("sha256").update(humanComment.text, "utf8").digest("hex") ||
+    eventPayload.hash !==
+      createHash("sha256").update(humanComment.text, "utf8").digest("hex") ||
     eventPayload.length !== humanComment.text.length
   )
-    throw new Error("The metadata event did not match the human comment hash and length.");
+    throw new Error(
+      "The metadata event did not match the human comment hash and length.",
+    );
   const urlAndStorage = await page.evaluate(() =>
-    [location.href, ...Object.values(localStorage), ...Object.values(sessionStorage)].join("\n"),
+    [
+      location.href,
+      ...Object.values(localStorage),
+      ...Object.values(sessionStorage),
+    ].join("\n"),
   );
   if (urlAndStorage.includes(humanNote))
-    throw new Error("The private checkpoint note appeared in URL or browser storage.");
+    throw new Error(
+      "The private checkpoint note appeared in URL or browser storage.",
+    );
   await page.screenshot({
-    path: join(String(report.proofDir), "checkpoint-human-comment-recorded.png"),
+    path: join(
+      String(report.proofDir),
+      "checkpoint-human-comment-recorded.png",
+    ),
     fullPage: true,
   });
   report.checkpointReturn = {
@@ -1041,8 +1188,12 @@ async function exerciseCheckpoint(
     runFilesUnchanged: true,
     beadRemainsInProgress: true,
     returnFocusVerified: true,
-    screenshots: [beforeBack, join(String(report.proofDir), "checkpoint-human-comment-recorded.png")],
-    viewport: "WebView2 viewport emulation at 1100x700; native OS window geometry was not asserted.",
+    screenshots: [
+      beforeBack,
+      join(String(report.proofDir), "checkpoint-human-comment-recorded.png"),
+    ],
+    viewport:
+      "WebView2 viewport emulation at 1100x700; native OS window geometry was not asserted.",
   };
   report.councilPosts = firstPosts.map((post) => post.path);
   report.screenshots = [

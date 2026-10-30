@@ -37,7 +37,9 @@ function sameScope(
   left: ProjectCouncilDraftScope,
   right: ProjectCouncilDraftScope,
 ): boolean {
-  return left.projectId === right.projectId && left.workspace === right.workspace;
+  return (
+    left.projectId === right.projectId && left.workspace === right.workspace
+  );
 }
 
 function sameOrigin(
@@ -119,7 +121,9 @@ export function createProjectCouncilReturnMemory() {
       advance();
       return true;
     },
-    get(currentScope: ProjectCouncilDraftScope): ProjectCouncilReturnOrigin | null {
+    get(
+      currentScope: ProjectCouncilDraftScope,
+    ): ProjectCouncilReturnOrigin | null {
       return scope && sameScope(scope, currentScope) ? origin : null;
     },
     take(

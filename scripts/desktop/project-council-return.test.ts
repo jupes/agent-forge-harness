@@ -2,8 +2,8 @@ import { describe, expect, test } from "bun:test";
 import type { ProjectCouncilDraftScope } from "../../apps/desktop/src/project-council-draft";
 import {
   createProjectCouncilReturnMemory,
-  projectCouncilReturnTargetMatches,
   type ProjectCouncilReturnOrigin,
+  projectCouncilReturnTargetMatches,
 } from "../../apps/desktop/src/project-council-return";
 
 const scope: ProjectCouncilDraftScope = {
@@ -95,12 +95,9 @@ describe("Council Run return memory", () => {
       projectCouncilReturnTargetMatches(originA, scope, originA.runSlug, []),
     ).toBe(false);
     expect(
-      projectCouncilReturnTargetMatches(
-        originA,
-        otherScope,
-        originA.runSlug,
-        [originA.checkpointId],
-      ),
+      projectCouncilReturnTargetMatches(originA, otherScope, originA.runSlug, [
+        originA.checkpointId,
+      ]),
     ).toBe(false);
   });
 });

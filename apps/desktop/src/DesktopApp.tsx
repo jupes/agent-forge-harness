@@ -103,9 +103,7 @@ export function DesktopApp(): JSX.Element {
   > | null>(null);
   if (!councilDraftCache.current)
     councilDraftCache.current = createProjectCouncilDraftCache();
-  const councilReturnMemory = useRef(
-    createProjectCouncilReturnMemory(),
-  );
+  const councilReturnMemory = useRef(createProjectCouncilReturnMemory());
   const [councilReturnFocus, setCouncilReturnFocus] =
     useState<ProjectCouncilReturnFocus | null>(null);
   const councilReturnFocusRef = useRef<ProjectCouncilReturnFocus | null>(null);

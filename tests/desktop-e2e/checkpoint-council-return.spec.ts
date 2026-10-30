@@ -16,10 +16,8 @@ import { reviewCommentFor } from "../../scripts/dashboard/forge-run-model";
 import type { ForgeState } from "../../scripts/forge/phases";
 import { hashText } from "../../scripts/hash-text";
 import { OPERATOR_HEADER } from "../../scripts/hearth/paths";
+import { projectCheckpointReviewPrepareRequestSchema } from "../../types/project-checkpoint-reviews";
 import { projectCouncilReserveRequestSchema } from "../../types/project-council";
-import {
-  projectCheckpointReviewPrepareRequestSchema,
-} from "../../types/project-checkpoint-reviews";
 import {
   readComments,
   readState,
@@ -200,7 +198,9 @@ function expectOnlyReadinessProbes(before: Map<string, string | null>): void {
         throw Error("A provider readiness log contained invalid JSON.");
       }
       if (name === "gemini-fixture-calls.jsonl") {
-        z.object({ kind: z.literal("version") }).strict().parse(raw);
+        z.object({ kind: z.literal("version") })
+          .strict()
+          .parse(raw);
         continue;
       }
       const probe = z
@@ -221,12 +221,17 @@ function expectOnlyReadinessProbes(before: Map<string, string | null>): void {
         (probe.kind === "status" &&
           JSON.stringify(probe.argv) !== JSON.stringify(["login", "status"]))
       )
-        throw Error("A provider fixture recorded a non-read-only startup call.");
+        throw Error(
+          "A provider fixture recorded a non-read-only startup call.",
+        );
     }
   }
 }
 
-function expectCallLogAppend(before: string | null, expectedRunId: string): void {
+function expectCallLogAppend(
+  before: string | null,
+  expectedRunId: string,
+): void {
   const after = callLog();
   const prefix = before ?? "";
   if (after === null || !after.startsWith(prefix))
@@ -332,7 +337,8 @@ async function commentEvents(page: Page, beadId: string) {
           chunks.push(part.value);
         }
         let text = "";
-        for (const chunk of chunks) text += decoder.decode(chunk, { stream: true });
+        for (const chunk of chunks)
+          text += decoder.decode(chunk, { stream: true });
         text += decoder.decode();
         return { status: response.status, url: response.url, text };
       } finally {
@@ -382,7 +388,10 @@ function expectBeadsInProgress(ids: readonly string[]): void {
   for (const id of ids) expect(state[id]?.status).toBe("in_progress");
 }
 
-async function focusedCheckpointField(page: Page, beadId: string): Promise<Locator> {
+async function focusedCheckpointField(
+  page: Page,
+  beadId: string,
+): Promise<Locator> {
   const region = page.getByRole("region", {
     name: `Checkpoint review ${beadId}`,
   });
@@ -410,19 +419,25 @@ async function openRun(page: Page, projectId: string, run: ForgeState) {
   await page.getByRole("link", { name: "Runs", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Forge runs" })).toBeVisible();
   await page.getByRole("link", { name: run.feature, exact: true }).click();
-  await expect.poll(() => new URL(page.url()).hash).toBe(
-    runsHref(projectId, run.slug),
-  );
+  await expect
+    .poll(() => new URL(page.url()).hash)
+    .toBe(runsHref(projectId, run.slug));
   await expect(page.getByText(run.slug, { exact: true })).toBeVisible();
 }
 
 test.beforeEach(() => {
   ownedRunFiles.length = 0;
-  writeFileSync(controlFile, JSON.stringify({ mode: "success", caseId: "idle" }));
+  writeFileSync(
+    controlFile,
+    JSON.stringify({ mode: "success", caseId: "idle" }),
+  );
 });
 
 test.afterEach(() => {
-  writeFileSync(controlFile, JSON.stringify({ mode: "success", caseId: "idle" }));
+  writeFileSync(
+    controlFile,
+    JSON.stringify({ mode: "success", caseId: "idle" }),
+  );
   for (const owned of ownedRunFiles.splice(0)) {
     inside(realpathSync.native(process.cwd()), owned.path);
     inside(realpathSync.native(owned.root), owned.path);
@@ -435,7 +450,9 @@ test.afterEach(() => {
         stat.nlink !== 1 ||
         !current.equals(owned.bytes)
       )
-        throw Error("An owned Run fixture changed and was retained for review.");
+        throw Error(
+          "An owned Run fixture changed and was retained for review.",
+        );
       unlinkSync(owned.path);
     }
     expect(existsSync(owned.path)).toBe(false);
@@ -454,12 +471,17 @@ test("dirty Council draft keeps options and only its accepted source owns return
   const dispatchBefore = dispatchSnapshot();
   await page.setViewportSize({ width: 1100, height: 700 });
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await openSettled(page, `/index.html${runsHref(fixture.projectId, fixture.runA.slug)}`);
+  await openSettled(
+    page,
+    `/index.html${runsHref(fixture.projectId, fixture.runA.slug)}`,
+  );
   const eventBaselineA = await commentEvents(page, fixture.beadA);
   const eventBaselineB = await commentEvents(page, fixture.beadB);
   expect(eventBaselineA).toEqual([]);
   expect(eventBaselineB).toEqual([]);
-  await page.getByRole("button", { name: `Send ${fixture.beadA} to Council` }).click();
+  await page
+    .getByRole("button", { name: `Send ${fixture.beadA} to Council` })
+    .click();
   const profile = page.getByLabel("Council profile");
   await expect(profile).toHaveValue(/.+/);
   const profileBefore = await profile.inputValue();
@@ -470,7 +492,9 @@ test("dirty Council draft keeps options and only its accepted source owns return
   await page.getByLabel("Maximum estimated cost (USD)").fill("12.50");
   await page.getByLabel("Maximum prepared bytes").fill("123456");
   await page
-    .getByLabel("Redact detected secrets; otherwise source preparation rejects them")
+    .getByLabel(
+      "Redact detected secrets; otherwise source preparation rejects them",
+    )
     .uncheck();
   await page
     .getByLabel("Allow deep discussion when supported by this profile")
@@ -478,44 +502,76 @@ test("dirty Council draft keeps options and only its accepted source owns return
   await expect(backA).toBeVisible();
 
   await openRun(page, fixture.projectId, fixture.runB);
-  await page.getByRole("button", { name: `Send ${fixture.beadB} to Council` }).click();
-  const keepDialog = page.getByRole("dialog", { name: "Replace Council draft source?" });
+  await page
+    .getByRole("button", { name: `Send ${fixture.beadB} to Council` })
+    .click();
+  const keepDialog = page.getByRole("dialog", {
+    name: "Replace Council draft source?",
+  });
   await keepDialog.getByRole("button", { name: "Keep draft" }).click();
   await expect(page.getByLabel("Source type")).toHaveValue("bead");
   await expect(page.getByLabel("Beads issue ID")).toHaveValue(fixture.beadA);
   await expect(backA).toBeVisible();
   await expect(profile).toHaveValue(profileBefore);
-  await expect(page.getByLabel("Maximum estimated cost (USD)")).toHaveValue("12.50");
+  await expect(page.getByLabel("Maximum estimated cost (USD)")).toHaveValue(
+    "12.50",
+  );
   await expect(page.getByLabel("Maximum prepared bytes")).toHaveValue("123456");
-  await expect(page.getByLabel("Redact detected secrets; otherwise source preparation rejects them")).not.toBeChecked();
-  await expect(page.getByLabel("Allow deep discussion when supported by this profile")).toBeChecked();
+  await expect(
+    page.getByLabel(
+      "Redact detected secrets; otherwise source preparation rejects them",
+    ),
+  ).not.toBeChecked();
+  await expect(
+    page.getByLabel("Allow deep discussion when supported by this profile"),
+  ).toBeChecked();
 
   await openRun(page, fixture.projectId, fixture.runB);
-  await page.getByRole("button", { name: `Send ${fixture.beadB} to Council` }).click();
-  const replaceDialog = page.getByRole("dialog", { name: "Replace Council draft source?" });
+  await page
+    .getByRole("button", { name: `Send ${fixture.beadB} to Council` })
+    .click();
+  const replaceDialog = page.getByRole("dialog", {
+    name: "Replace Council draft source?",
+  });
   await replaceDialog.getByRole("button", { name: "Replace source" }).click();
   await expect(page.getByLabel("Source type")).toHaveValue("bead");
   await expect(page.getByLabel("Beads issue ID")).toHaveValue(fixture.beadB);
-  await expect(page.getByRole("button", {
-    name: `Back to Run ${fixture.runB.slug} checkpoint ${fixture.beadB}`,
-  })).toBeVisible();
+  await expect(
+    page.getByRole("button", {
+      name: `Back to Run ${fixture.runB.slug} checkpoint ${fixture.beadB}`,
+    }),
+  ).toBeVisible();
   await expect(profile).toHaveValue(profileBefore);
-  await expect(page.getByLabel("Maximum estimated cost (USD)")).toHaveValue("12.50");
-  await expect(page.getByLabel("Maximum prepared bytes")).toHaveValue("123456");
-  await expect(page.getByLabel("Redact detected secrets; otherwise source preparation rejects them")).not.toBeChecked();
-  await expect(page.getByLabel("Allow deep discussion when supported by this profile")).toBeChecked();
-
-  await page.getByRole("button", {
-    name: `Back to Run ${fixture.runB.slug} checkpoint ${fixture.beadB}`,
-  }).focus();
-  await page.keyboard.press("Enter");
-  await expect.poll(() => new URL(page.url()).hash).toBe(
-    runsHref(fixture.projectId, fixture.runB.slug),
+  await expect(page.getByLabel("Maximum estimated cost (USD)")).toHaveValue(
+    "12.50",
   );
-  await expect(page.getByText(fixture.runB.slug, { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Maximum prepared bytes")).toHaveValue("123456");
+  await expect(
+    page.getByLabel(
+      "Redact detected secrets; otherwise source preparation rejects them",
+    ),
+  ).not.toBeChecked();
+  await expect(
+    page.getByLabel("Allow deep discussion when supported by this profile"),
+  ).toBeChecked();
+
+  await page
+    .getByRole("button", {
+      name: `Back to Run ${fixture.runB.slug} checkpoint ${fixture.beadB}`,
+    })
+    .focus();
+  await page.keyboard.press("Enter");
+  await expect
+    .poll(() => new URL(page.url()).hash)
+    .toBe(runsHref(fixture.projectId, fixture.runB.slug));
+  await expect(
+    page.getByText(fixture.runB.slug, { exact: true }),
+  ).toBeVisible();
   await focusedCheckpointField(page, fixture.beadB);
 
-  await page.getByRole("button", { name: `Send ${fixture.beadB} to Council` }).click();
+  await page
+    .getByRole("button", { name: `Send ${fixture.beadB} to Council` })
+    .click();
   const backB = page.getByRole("button", {
     name: `Back to Run ${fixture.runB.slug} checkpoint ${fixture.beadB}`,
   });
@@ -527,7 +583,11 @@ test("dirty Council draft keeps options and only its accepted source owns return
   await page.getByLabel("Document or question").fill(manualSource);
   await expect(backB).toHaveCount(0);
   const persistedText = await page.evaluate(() =>
-    [window.location.href, ...Object.values(localStorage), ...Object.values(sessionStorage)].join("\n"),
+    [
+      window.location.href,
+      ...Object.values(localStorage),
+      ...Object.values(sessionStorage),
+    ].join("\n"),
   );
   expect(persistedText).not.toContain(manualSource);
   expect(posts).toEqual([]);
@@ -553,8 +613,13 @@ test("completed Council verdict returns to the exact checkpoint for a separate h
   const note = `Separate human checkpoint review ${randomUUID()}`;
   await page.setViewportSize({ width: 1100, height: 700 });
   await page.emulateMedia({ reducedMotion: "reduce" });
-  await openSettled(page, `/index.html${runsHref(fixture.projectId, fixture.runB.slug)}`);
-  await page.getByRole("button", { name: `Send ${fixture.beadB} to Council` }).click();
+  await openSettled(
+    page,
+    `/index.html${runsHref(fixture.projectId, fixture.runB.slug)}`,
+  );
+  await page
+    .getByRole("button", { name: `Send ${fixture.beadB} to Council` })
+    .click();
   await expect(page.getByLabel("Source type")).toHaveValue("bead");
   await expect(page.getByLabel("Beads issue ID")).toHaveValue(fixture.beadB);
   expect(posts).toEqual([]);
@@ -564,17 +629,23 @@ test("completed Council verdict returns to the exact checkpoint for a separate h
   });
   await expect(prepareCouncil).toBeEnabled({ timeout: 15_000 });
   await prepareCouncil.click();
-  const original = page.getByRole("region", { name: "Exact saved Council original" });
+  const original = page.getByRole("region", {
+    name: "Exact saved Council original",
+  });
   await expect(original).toBeVisible({ timeout: 15_000 });
   const identityCodes = original.locator("details").first().locator("dd code");
   const councilRequestId = await identityCodes.nth(0).innerText();
   const councilIntentHash = await identityCodes.nth(1).innerText();
-  const councilRunId = z.string().min(1).max(256).parse(
-    await identityCodes.nth(2).innerText(),
-  );
+  const councilRunId = z
+    .string()
+    .min(1)
+    .max(256)
+    .parse(await identityCodes.nth(2).innerText());
   expect(requestIdSchema.parse(councilRequestId)).toBe(councilRequestId);
   expect(councilIntentHash).toMatch(/^[a-f0-9]{64}$/);
-  const councilPrepare = projectCouncilReserveRequestSchema.parse(posts[0]?.body);
+  const councilPrepare = projectCouncilReserveRequestSchema.parse(
+    posts[0]?.body,
+  );
   expect(posts[0]?.path).toBe(baseCouncilPath);
   expect(councilPrepare.sourceChoice).toEqual({
     sourceType: "bead",
@@ -582,24 +653,37 @@ test("completed Council verdict returns to the exact checkpoint for a separate h
   });
   expect(posts).toHaveLength(1);
 
-  await page.getByRole("button", { name: "Convene this exact original" }).click();
-  await expect(page.getByText("Verified state: completed", { exact: true })).toBeVisible({
+  await page
+    .getByRole("button", { name: "Convene this exact original" })
+    .click();
+  await expect(
+    page.getByText("Verified state: completed", { exact: true }),
+  ).toBeVisible({
     timeout: 20_000,
   });
-  await expect(page.getByRole("heading", { name: "Council result" })).toBeVisible({
+  await expect(
+    page.getByRole("heading", { name: "Council result" }),
+  ).toBeVisible({
     timeout: 20_000,
   });
-  await expect(page.getByRole("heading", { name: "Verified result facts" })).toBeVisible();
-  const previewNode = page.getByRole("region", { name: "Bead verdict comment preview" }).locator("pre");
+  await expect(
+    page.getByRole("heading", { name: "Verified result facts" }),
+  ).toBeVisible();
+  const previewNode = page
+    .getByRole("region", { name: "Bead verdict comment preview" })
+    .locator("pre");
   await expect(previewNode).toBeVisible();
   const preview = await previewNode.innerText();
   await expect(page.getByTestId("council-verdict-status")).toHaveText(
     "Verdict comment posted to the bead.",
     { timeout: 15_000 },
   );
-  await expect.poll(() => readComments(BD_STAND_IN_STATE)[fixture.beadB]?.length).toBe(1);
+  await expect
+    .poll(() => readComments(BD_STAND_IN_STATE)[fixture.beadB]?.length)
+    .toBe(1);
   const councilComment = readComments(BD_STAND_IN_STATE)[fixture.beadB]?.[0];
-  if (!councilComment) throw Error("The actual Council verdict comment was absent.");
+  if (!councilComment)
+    throw Error("The actual Council verdict comment was absent.");
   expect(councilComment.text).toBe(preview);
   expectCallLogAppend(callsBefore, councilRunId);
   expect(posts).toHaveLength(2);
@@ -614,13 +698,17 @@ test("completed Council verdict returns to the exact checkpoint for a separate h
     hash: hashText(preview),
     length: preview.length,
   });
-  await page.getByRole("button", {
-    name: `Back to Run ${fixture.runB.slug} checkpoint ${fixture.beadB}`,
-  }).click();
-  await expect.poll(() => new URL(page.url()).hash).toBe(
-    runsHref(fixture.projectId, fixture.runB.slug),
-  );
-  await expect(page.getByText(fixture.runB.slug, { exact: true })).toBeVisible();
+  await page
+    .getByRole("button", {
+      name: `Back to Run ${fixture.runB.slug} checkpoint ${fixture.beadB}`,
+    })
+    .click();
+  await expect
+    .poll(() => new URL(page.url()).hash)
+    .toBe(runsHref(fixture.projectId, fixture.runB.slug));
+  await expect(
+    page.getByText(fixture.runB.slug, { exact: true }),
+  ).toBeVisible();
   const region = page.getByRole("region", {
     name: `Checkpoint review ${fixture.beadB}`,
   });
@@ -634,10 +722,14 @@ test("completed Council verdict returns to the exact checkpoint for a separate h
   await expect(requestChanges).toBeFocused();
   await page.keyboard.press("Enter");
   await expect(
-    page.getByRole("status").filter({ hasText: "Review comment recorded and verified." }),
+    page
+      .getByRole("status")
+      .filter({ hasText: "Review comment recorded and verified." }),
   ).toBeVisible({ timeout: 15_000 });
   expect(posts).toHaveLength(4);
-  const humanPrepare = projectCheckpointReviewPrepareRequestSchema.parse(posts[2]?.body);
+  const humanPrepare = projectCheckpointReviewPrepareRequestSchema.parse(
+    posts[2]?.body,
+  );
   expect(posts[2]?.path).toBe(checkpointPath);
   expect(humanPrepare).toMatchObject({
     expectedEpicId: fixture.epicId,
@@ -663,14 +755,17 @@ test("completed Council verdict returns to the exact checkpoint for a separate h
   expect(requestIdSchema.parse(humanRequestId)).toBe(humanRequestId);
   expect(humanPrepare.requestId).toBe(humanRequestId);
 
-  await expect.poll(() => readComments(BD_STAND_IN_STATE)[fixture.beadB]?.length).toBe(2);
+  await expect
+    .poll(() => readComments(BD_STAND_IN_STATE)[fixture.beadB]?.length)
+    .toBe(2);
   const comments = readComments(BD_STAND_IN_STATE)[fixture.beadB] ?? [];
   expect(comments.map((comment) => comment.id)).toHaveLength(2);
   expect(new Set(comments.map((comment) => comment.id)).size).toBe(2);
   expect(comments[0]?.id).toBe(councilComment.id);
   expect(comments[0]?.text).toBe(preview);
   const humanComment = comments.find((comment) => comment.text.includes(note));
-  if (!humanComment) throw Error("The explicit human checkpoint comment was absent.");
+  if (!humanComment)
+    throw Error("The explicit human checkpoint comment was absent.");
   expect(humanRequestId).not.toBe(councilRequestId);
   expect(humanCommitPath).toBe(`${checkpointPath}/${humanRequestId}/commit`);
   expect(humanCommit.intentHash).toMatch(/^[a-f0-9]{64}$/);
@@ -686,9 +781,9 @@ test("completed Council verdict returns to the exact checkpoint for a separate h
   );
   const events = await commentEvents(page, fixture.beadB);
   expect(events).toHaveLength(councilEvents.length + 1);
-  expect(events.slice(0, councilEvents.length).map((event) => event.id)).toEqual(
-    councilEvents.map((event) => event.id),
-  );
+  expect(
+    events.slice(0, councilEvents.length).map((event) => event.id),
+  ).toEqual(councilEvents.map((event) => event.id));
   expect(events.at(-1)?.payload).toEqual({
     action: "comment",
     hash: hashText(humanComment.text),
