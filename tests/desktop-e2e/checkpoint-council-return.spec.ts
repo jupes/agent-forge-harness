@@ -424,7 +424,11 @@ async function openRun(page: Page, projectId: string, run: ForgeState) {
   await expect
     .poll(() => new URL(page.url()).hash)
     .toBe(runsHref(projectId, run.slug));
-  await expect(page.getByText(run.slug, { exact: true })).toBeVisible();
+  await expect(
+    page
+      .getByRole("article", { name: "Selected forge run" })
+      .getByText(run.slug, { exact: true }),
+  ).toBeVisible();
 }
 
 test.beforeEach(() => {
@@ -567,7 +571,9 @@ test("dirty Council draft keeps options and only its accepted source owns return
     .poll(() => new URL(page.url()).hash)
     .toBe(runsHref(fixture.projectId, fixture.runB.slug));
   await expect(
-    page.getByText(fixture.runB.slug, { exact: true }),
+    page
+      .getByRole("article", { name: "Selected forge run" })
+      .getByText(fixture.runB.slug, { exact: true }),
   ).toBeVisible();
   await focusedCheckpointField(page, fixture.beadB);
 
@@ -636,6 +642,12 @@ test("completed Council verdict returns to the exact checkpoint for a separate h
   });
   await expect(original).toBeVisible({ timeout: 15_000 });
   const identityCodes = original.locator("details").first().locator("dd code");
+  const identitySummary = original.getByText("Request identity and scope", {
+    exact: true,
+  });
+  await identitySummary.focus();
+  await page.keyboard.press("Enter");
+  await expect(identityCodes.nth(0)).toBeVisible();
   const councilRequestId = await identityCodes.nth(0).innerText();
   const councilIntentHash = await identityCodes.nth(1).innerText();
   const councilRunId = z
@@ -709,7 +721,9 @@ test("completed Council verdict returns to the exact checkpoint for a separate h
     .poll(() => new URL(page.url()).hash)
     .toBe(runsHref(fixture.projectId, fixture.runB.slug));
   await expect(
-    page.getByText(fixture.runB.slug, { exact: true }),
+    page
+      .getByRole("article", { name: "Selected forge run" })
+      .getByText(fixture.runB.slug, { exact: true }),
   ).toBeVisible();
   const region = page.getByRole("region", {
     name: `Checkpoint review ${fixture.beadB}`,
