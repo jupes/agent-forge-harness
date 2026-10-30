@@ -34,6 +34,18 @@ import {
 } from "./tree-guard";
 import type { ChildExit } from "./types";
 
+export type SupervisorOwnershipRefusalMessage =
+  | "Interactive child ownership could not be established."
+  | "Windows owned process cleanup could not be confirmed."
+  | "Owned process group cleanup could not be confirmed."
+  | "The private interactive terminal could not be confirmed.";
+
+export class SupervisorOwnershipRefusalError extends Error {
+  constructor(message: SupervisorOwnershipRefusalMessage) {
+    super(message);
+  }
+}
+
 /** How much of a child's stderr is kept: the end, where a failure says why. */
 export const STDERR_TAIL_CHARS = 4000;
 
@@ -431,7 +443,9 @@ export function supervise(
     void proc.stderr.cancel().catch(() => undefined);
     live.delete(proc.pid);
     void proc.exited.then(cleanupIsolated);
-    throw new Error("Interactive child ownership could not be established.");
+    throw new SupervisorOwnershipRefusalError(
+      "Interactive child ownership could not be established.",
+    );
   }
 
   let providerReady = false;
@@ -484,10 +498,14 @@ export function supervise(
         // Keep the guard unreleased if its stop capability is unavailable.
       }
       windowsStopSettlement = Promise.reject(
-        new Error("Windows owned process cleanup could not be confirmed."),
+        new SupervisorOwnershipRefusalError(
+          "Windows owned process cleanup could not be confirmed.",
+        ),
       );
       rejectWindowsStopFailure(
-        new Error("Windows owned process cleanup could not be confirmed."),
+        new SupervisorOwnershipRefusalError(
+          "Windows owned process cleanup could not be confirmed.",
+        ),
       );
     } else {
       try {
@@ -500,7 +518,7 @@ export function supervise(
           } catch {
             // The guard remains unreleased on uncertain cleanup.
           }
-          const error = new Error(
+          const error = new SupervisorOwnershipRefusalError(
             "Windows owned process cleanup could not be confirmed.",
           );
           rejectWindowsStopFailure(error);
@@ -513,7 +531,7 @@ export function supervise(
         } catch {
           // The guard remains unreleased on uncertain cleanup.
         }
-        const error = new Error(
+        const error = new SupervisorOwnershipRefusalError(
           "Windows owned process cleanup could not be confirmed.",
         );
         windowsStopSettlement = Promise.reject(error);
@@ -637,7 +655,7 @@ export function supervise(
   receiveControl = (message, senderPid) => {
     if (settled || controlFailure) return;
     const invalid = () => {
-      controlFailure = new Error(
+      controlFailure = new SupervisorOwnershipRefusalError(
         "The private interactive terminal could not be confirmed.",
       );
       rejectTerminal(controlFailure);
@@ -766,9 +784,15 @@ export function supervise(
         // Work has exited. Cleanup cannot fabricate a work timeout while awaiting
         // a helper's physical exit; its kernel observation has a separate bound.
         if (timer) clearTimeout(timer);
-        await waitForOwnedProcessGroup((signal) =>
-          observeOwnedProcessGroup(proc.pid, signal),
-        );
+        try {
+          await waitForOwnedProcessGroup((signal) =>
+            observeOwnedProcessGroup(proc.pid, signal),
+          );
+        } catch {
+          throw new SupervisorOwnershipRefusalError(
+            "Owned process group cleanup could not be confirmed.",
+          );
+        }
         if (interactive) ownedTreeReleased = true;
       }
       await pumped.catch(() => undefined);
@@ -784,7 +808,7 @@ export function supervise(
               receiptDeadline = setTimeout(
                 () =>
                   reject(
-                    new Error(
+                    new SupervisorOwnershipRefusalError(
                       "The private interactive terminal could not be confirmed.",
                     ),
                   ),

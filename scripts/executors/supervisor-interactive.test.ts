@@ -10,7 +10,12 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildChildEnv } from "./env";
-import { killTree, liveChildCount, supervise } from "./supervisor";
+import {
+  killTree,
+  liveChildCount,
+  SupervisorOwnershipRefusalError,
+  supervise,
+} from "./supervisor";
 import { guardRequiredTree, guardSuspendedWindowsProcess } from "./tree-guard";
 import type {
   WindowsJobSettlementFailurePhase,
@@ -636,6 +641,9 @@ test("Windows interactive refused tree settlement cannot report a released owner
     await expect(f.handle.done).rejects.toThrow(
       "Windows owned process cleanup could not be confirmed.",
     );
+    await expect(f.handle.done).rejects.toBeInstanceOf(
+      SupervisorOwnershipRefusalError,
+    );
     expect(ownership.calls).not.toContain("release");
   } finally {
     await ownership.cleanup();
@@ -698,8 +706,14 @@ test("Windows interactive missing settlement capability retains its real job unt
     await expect(stopping).rejects.toThrow(
       "Windows owned process cleanup could not be confirmed.",
     );
+    await expect(stopping).rejects.toBeInstanceOf(
+      SupervisorOwnershipRefusalError,
+    );
     await expect(handle.done).rejects.toThrow(
       "Windows owned process cleanup could not be confirmed.",
+    );
+    await expect(handle.done).rejects.toBeInstanceOf(
+      SupervisorOwnershipRefusalError,
     );
     expect(terminateCalls).toBeGreaterThan(0);
     expect(releaseCalls).toBe(0);
@@ -750,8 +764,10 @@ test("interactive queue bounds reject before buffering oversized input and prese
 test("a failed mandatory ownership guard refuses before any protocol stdin", async () => {
   let pid = 0;
   const before = liveChildCount();
-  expect(() =>
-    supervise({
+  let refusal: unknown;
+  let unexpectedlyStarted: ReturnType<typeof supervise> | undefined;
+  try {
+    unexpectedlyStarted = supervise({
       windowsHide: true,
       command: [process.execPath, fake],
       cwd: import.meta.dir,
@@ -767,15 +783,24 @@ test("a failed mandatory ownership guard refuses before any protocol stdin", asy
           "No failed-ownership child may deliver a protocol frame.",
         );
       },
-    }),
-  ).toThrow("ownership");
+    });
+  } catch (error) {
+    refusal = error;
+  }
+  if (unexpectedlyStarted)
+    await unexpectedlyStarted.stop("unexpected ownership acceptance");
+  expect(refusal).toBeInstanceOf(Error);
+  expect(refusal instanceof Error ? refusal.message : null).toBe(
+    "Interactive child ownership could not be established.",
+  );
   expect(pid).toBeGreaterThan(0);
   expect(await gone(pid)).toBe(true);
   expect(liveChildCount()).toBe(before);
+  expect(refusal).toBeInstanceOf(SupervisorOwnershipRefusalError);
 });
 
-test("private PID controls reject malformed or duplicate messages independently of provider stdout", async () => {
-  for (const mode of ["malformed", "duplicate"]) {
+test("private terminal receipt failures preserve typed ownership uncertainty", async () => {
+  for (const mode of ["malformed", "duplicate", "terminal-invalid-missing"]) {
     let errors = 0;
     const handle = supervise({
       windowsHide: true,
@@ -797,13 +822,21 @@ test("private PID controls reject malformed or duplicate messages independently 
       },
     });
     try {
-      await expect(handle.done).rejects.toThrow("private interactive terminal");
-      expect(errors).toBe(1);
+      await expect(handle.done).rejects.toThrow(
+        "The private interactive terminal could not be confirmed.",
+      );
+      await expect(handle.done).rejects.toBeInstanceOf(
+        SupervisorOwnershipRefusalError,
+      );
+      expect(errors).toBe(mode === "terminal-invalid-missing" ? 0 : 1);
       await expect(handle.write("late")).rejects.toThrow("closed");
       expect(await gone(handle.pid)).toBe(true);
     } finally {
       await expect(handle.stop("fixture cleanup")).rejects.toThrow(
-        "private interactive terminal",
+        "The private interactive terminal could not be confirmed.",
+      );
+      await expect(handle.stop("fixture cleanup")).rejects.toBeInstanceOf(
+        SupervisorOwnershipRefusalError,
       );
     }
   }
