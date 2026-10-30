@@ -418,7 +418,9 @@ async function focusedCheckpointField(
 async function openRun(page: Page, projectId: string, run: ForgeState) {
   await page.getByRole("link", { name: "Runs", exact: true }).click();
   await expect(page.getByRole("heading", { name: "Forge runs" })).toBeVisible();
-  await page.getByRole("link", { name: run.feature, exact: true }).click();
+  await page
+    .getByRole("link", { name: run.feature ?? run.slug, exact: true })
+    .click();
   await expect
     .poll(() => new URL(page.url()).hash)
     .toBe(runsHref(projectId, run.slug));

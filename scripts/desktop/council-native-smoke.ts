@@ -713,7 +713,7 @@ function readNativeCheckpointEvents(
   const db = new Database(join(home, "ledger.db"), { readonly: true });
   try {
     return db
-      .query<NativeCheckpointEvent, [string, string, string, string]>(
+      .query<NativeCheckpointEvent, [string, string, string]>(
         `SELECT id, ulid, ts, kind, workspace, bead_id, run_id, session_id, payload FROM events WHERE workspace = ? AND bead_id = ? AND kind = ? ORDER BY id LIMIT ${limit}`,
       )
       .all(workspaceKey(workspace), beadId, kind);
@@ -743,6 +743,7 @@ async function exerciseCheckpoint(
     throw new Error("The two native checkpoint Runs were not seeded.");
   const runBTitle = runB.state.feature ?? runB.state.slug;
   const posts: { path: string; body: unknown }[] = [];
+  const postCount = () => posts.length;
   page.on("request", (request) => {
     const path = new URL(request.url()).pathname;
     if (request.method() !== "POST" || !path.startsWith("/__agent-forge/"))
@@ -769,7 +770,7 @@ async function exerciseCheckpoint(
   });
   await checkpointButton.waitFor({ timeout: waitMs });
   await checkpointButton.click();
-  if (posts.length !== 0)
+  if (postCount() !== 0)
     throw new Error(
       "Opening the canonical checkpoint Council draft caused a POST.",
     );
@@ -1004,7 +1005,7 @@ async function exerciseCheckpoint(
     throw new Error(
       "Back to Run did not focus the exact active checkpoint note.",
     );
-  if (posts.length !== 2)
+  if (postCount() !== 2)
     throw new Error(
       "Returning from Council submitted a human checkpoint action.",
     );
@@ -1114,7 +1115,7 @@ async function exerciseCheckpoint(
   );
   const event = events[1];
   if (
-    posts.length !== 4 ||
+    postCount() !== 4 ||
     events.length !== 2 ||
     finalCouncilComments.length !== 1 ||
     JSON.stringify(finalCouncilComments) !==
