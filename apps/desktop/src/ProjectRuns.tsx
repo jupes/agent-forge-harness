@@ -851,36 +851,35 @@ export function RunDetail({
               </p>
             )}
             {detail.sessionHistory.sessions.length > 0 && (
-              <ul>
+              <ul class="af-run-reviews">
                 {detail.sessionHistory.sessions.map((session) => (
                   <li key={session.sessionId}>
-                    <code>{session.sessionId}</code>
-                    <span>
-                      {session.kind
-                        ? ` · ${session.kind}`
-                        : " · kind not recorded"}
-                    </span>
-                    {time(session.startedAt)}
-                    {session.detailsAvailable && !sessionHistoryStale ? (
-                      <a
-                        href={desktopHref({
-                          projectId,
-                          destination: "sessions",
-                          selection: {
-                            kind: "session",
-                            id: session.sessionId,
-                          },
-                        })}
-                      >
-                        Open session metadata
-                      </a>
-                    ) : (
-                      <span>
-                        {session.detailsAvailable
-                          ? " Session metadata is not current."
-                          : " Session metadata is not independently available."}
-                      </span>
-                    )}
+                    <p><code>{session.sessionId}</code></p>
+                    <p class="af-runs-note">
+                      {session.kind ?? "kind not recorded"} · Recorded start: {time(session.startedAt)}
+                    </p>
+                    <p>
+                      {session.detailsAvailable && !sessionHistoryStale ? (
+                        <a
+                          href={desktopHref({
+                            projectId,
+                            destination: "sessions",
+                            selection: {
+                              kind: "session",
+                              id: session.sessionId,
+                            },
+                          })}
+                        >
+                          Open session metadata
+                        </a>
+                      ) : (
+                        <span>
+                          {session.detailsAvailable
+                            ? "Session metadata is not current."
+                            : "Session metadata is not independently available."}
+                        </span>
+                      )}
+                    </p>
                   </li>
                 ))}
               </ul>
