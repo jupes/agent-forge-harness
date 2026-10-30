@@ -1,6 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { expect, test } from "@playwright/test";
+import { expect, type Response, test } from "@playwright/test";
 import { projectCouncilMetadataSchema } from "../../types/project-council";
 import type { ProjectCouncilRunRead } from "../../types/project-council-run-read";
 import type { ProjectRecord } from "../../types/projects";
@@ -242,17 +242,106 @@ test("a completed bead-source review links to its bead and reports the one recor
   await expect(page.getByLabel("Beads issue ID")).toHaveValue(
     "alpha-council-first",
   );
-  const reservationResponse = page.waitForResponse(
-    (response) =>
-      response.request().method() === "POST" &&
-      new URL(response.url()).pathname === reviewsPath,
-  );
-  await page
-    .getByRole("button", { name: "Prepare original for review" })
-    .click();
-  const reserved = await reservationResponse;
+  const reservationOrigin = new URL(page.url()).origin;
+  type ReservationCapture = {
+    response: Response;
+    body: Promise<
+      { ok: true; bytes: Uint8Array } | { ok: false; error: unknown }
+    >;
+  };
+  let capturedReservation: ReservationCapture | undefined;
+  let captureError: Error | undefined;
+  let resolveReservation!: (value: ReservationCapture) => void;
+  const reservationCapture = new Promise<ReservationCapture>((resolve) => {
+    resolveReservation = resolve;
+  });
+  const captureReservation = (response: Response) => {
+    const request = response.request();
+    let url: URL;
+    try {
+      url = new URL(response.url());
+    } catch {
+      return;
+    }
+    if (
+      request.method() !== "POST" ||
+      request.frame() !== page.mainFrame() ||
+      url.origin !== reservationOrigin ||
+      url.pathname !== reviewsPath
+    )
+      return;
+    if (capturedReservation) {
+      captureError = new Error(
+        "Multiple Council reservation responses were observed.",
+      );
+      return;
+    }
+    let body: ReservationCapture["body"];
+    try {
+      body = response.body().then(
+        (bytes) => ({ ok: true as const, bytes }),
+        (error: unknown) => ({ ok: false as const, error }),
+      );
+    } catch (error) {
+      body = Promise.resolve({ ok: false as const, error });
+    }
+    capturedReservation = { response, body };
+    resolveReservation(capturedReservation);
+  };
+  page.on("response", captureReservation);
+  let captureTimer: ReturnType<typeof setTimeout> | undefined;
+  let captureTimedOut = false;
+  const captureDeadline = new Promise<{ timedOut: true }>((resolve) => {
+    captureTimer = setTimeout(() => {
+      captureTimedOut = true;
+      resolve({ timedOut: true });
+    }, 10_000);
+  });
+  let reserved: Response;
+  let reservationBody: Uint8Array;
+  try {
+    await page
+      .getByRole("button", { name: "Prepare original for review" })
+      .click();
+    if (captureTimedOut)
+      throw new Error(
+        "The Council reservation response was not captured in time.",
+      );
+    const captured = await Promise.race([reservationCapture, captureDeadline]);
+    if ("timedOut" in captured)
+      throw new Error(
+        "The Council reservation response was not captured in time.",
+      );
+    const bodyResult = await Promise.race([captured.body, captureDeadline]);
+    if ("timedOut" in bodyResult)
+      throw new Error("The Council reservation body exceeded its time bound.");
+    if (captureError) throw captureError;
+    if (!bodyResult.ok)
+      throw new Error(
+        `The Council reservation body was unavailable: ${String(bodyResult.error)}`,
+      );
+    if (bodyResult.bytes.byteLength > 512 * 1024)
+      throw new Error(
+        "The Council reservation body exceeded its bounded size.",
+      );
+    reserved = captured.response;
+    reservationBody = bodyResult.bytes;
+  } finally {
+    page.off("response", captureReservation);
+    if (captureTimer !== undefined) clearTimeout(captureTimer);
+  }
+  if (captureError) throw captureError;
   expect(reserved.status()).toBe(202);
-  const reservedData = responseData(await reserved.json());
+  const reservationText = new TextDecoder("utf-8", { fatal: true }).decode(
+    reservationBody,
+  );
+  let reservationEnvelope: unknown;
+  try {
+    reservationEnvelope = JSON.parse(reservationText);
+  } catch {
+    throw Error("The actual Council reservation body was not valid JSON.");
+  }
+  const reservedData = responseData(reservationEnvelope);
   if (
     typeof reservedData !== "object" ||
     reservedData === null ||
@@ -265,9 +354,10 @@ test("a completed bead-source review links to its bead and reports the one recor
   await expect(
     page.getByRole("heading", { name: "Exact saved original" }),
   ).toBeVisible();
-  const runReads = observeRunReads(
+  const runReads = await observeRunReads(
     page,
     `${reviewsPath}/${original.requestId}/run`,
+    original,
   );
   let verifiedRun: ProjectCouncilRunRead | undefined;
   const matchesOriginal = (read: ProjectCouncilRunRead) =>
@@ -341,7 +431,7 @@ test("a completed bead-source review links to its bead and reports the one recor
         "The completed Council result did not match its saved original.",
       );
   } finally {
-    runReads.dispose();
+    await runReads.dispose();
   }
   if (!verifiedRun?.job?.run)
     throw Error("The completed Bead result was not read back.");
