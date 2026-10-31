@@ -21,6 +21,64 @@ import {
 } from "./project-fixtures";
 
 test.beforeEach(seedProjects);
+test("observed session exposes the shared project Activity feed in its Activity tab", async ({
+  page,
+}) => {
+  const sessionId = `activity-observed-tab-${randomUUID()}`;
+  seedObservationEvents([
+    {
+      kind: "session.started",
+      workspace,
+      beadId: "alpha-epic",
+      sessionId,
+      executor: { provider: "codex", model: "recorded-model" },
+      payload: { kind: "interactive" },
+    },
+    {
+      kind: "tool.called",
+      workspace,
+      beadId: "alpha-epic",
+      sessionId,
+      executor: { provider: "codex", model: "recorded-model" },
+      payload: {
+        tool: "Observed shared Activity marker",
+        argsHash: "a".repeat(64),
+      },
+    },
+  ]);
+  await openSettled(page, `/index.html#/desktop/project/${alpha.id}/sessions`);
+  await page
+    .getByRole("link", { name: `Open ${sessionId}`, exact: true })
+    .click();
+
+  const detail = page.getByRole("region", {
+    name: "Observed session details",
+    exact: true,
+  });
+  await expect(detail).toBeVisible();
+  await expect(
+    detail.getByRole("region", {
+      name: "Recorded activity metadata",
+      exact: true,
+    }),
+  ).toContainText("Observed shared Activity marker");
+  const activityTab = detail.getByRole("tab", {
+    name: "Activity",
+    exact: true,
+  });
+  await expect(activityTab).toBeVisible();
+  await activityTab.click();
+
+  const feed = detail.getByRole("listbox", { name: "Project activity" });
+  await expect(feed).toBeVisible();
+  await expect(feed).toContainText("Observed shared Activity marker");
+  await expect(detail.getByLabel("Session filter")).toHaveValue(sessionId);
+  await expect(detail.getByLabel("Session filter")).toHaveAttribute(
+    "readonly",
+    "",
+  );
+});
+
 test("project Activity virtualizes scoped metadata and keyboard selection opens its protected inspector", async ({
   page,
 }) => {
