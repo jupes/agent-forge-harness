@@ -2127,13 +2127,21 @@ test("prepared checkpoint review survives a run switch and reload but needs an e
     if (!orphanCandidate)
       throw Error("The gated history GET had no observer metadata.");
     expect(posts.map((post) => post.path)).toEqual([basePath]);
+    const historyWait = observer.waitFor("history", postReleaseMarker);
+    void historyWait.catch(() => undefined);
+    releaseHistoryRoute();
+    const historyCapture = await historyWait;
+    expect(historyCapture.sequence).toBe(orphanCandidate.sequence);
+    expect(historyCapture.epoch).toBe(orphanCandidate.epoch);
+    await page.evaluate(() => window.__checkpointObserverDrain?.());
+    const pendingBeforeReload = observer.diagnosticSnapshot().pending;
+    expect(pendingBeforeReload).not.toContainEqual(orphanCandidate);
     await reloadSettled(page);
     await expect
       .poll(() => observer.diagnosticSnapshot().epoch)
       .toBeGreaterThan(postReleaseMarker.epoch);
-    expect(observer.diagnosticSnapshot().pending).toContainEqual(
-      orphanCandidate,
-    );
+    const pendingAfterReload = observer.diagnosticSnapshot().pending;
+    expect(pendingAfterReload).not.toContainEqual(orphanCandidate);
   } finally {
     if (historyRouteTimer) clearTimeout(historyRouteTimer);
     releaseHistoryRoute();
