@@ -679,6 +679,52 @@ function post(
   });
 }
 
+test(
+  "POST /projects/:id/inbox-dispositions/requests retains an exact reservation",
+  async () => {
+    const h = await start();
+    const original = {
+      requestId: "5d82e460-f6c8-4a8d-85ad-8caa65af50e6",
+      expectedCatalogRevision: 1,
+      workspace: workspaceKey(h.workspace),
+      item: {
+        sourceKind: "unknown-bead-write",
+        stableItemId: "bead-write:api-fixture",
+        sourceRevision: "notice-1",
+      },
+      expectedRevision: 0,
+      operation: "snooze-1h",
+    };
+    const reservationPath = `/projects/${FIXTURE_PROJECT_ID}/inbox-dispositions/requests`;
+    const reserved = await post(h, reservationPath, original);
+    expect(reserved.status).toBe(200);
+    const reservedEnvelope = await envelope<{
+      entry: null;
+      receipt: {
+        original: typeof original & { projectId: string };
+        phase: string;
+        reservedAt: string;
+      };
+    }>(reserved);
+    expect(reservedEnvelope.data).toMatchObject({
+      entry: null,
+      receipt: {
+        original: { ...original, projectId: FIXTURE_PROJECT_ID },
+        phase: "reserved",
+        reservedAt: expect.any(String),
+      },
+    });
+
+    const recovered = await get(
+      h,
+      `${reservationPath}/${original.requestId}`,
+      h.headers(h.hearth.token),
+    );
+    expect(recovered.status).toBe(200);
+    expect((await envelope(recovered)).data).toEqual(reservedEnvelope.data);
+  },
+);
+
 type ProjectCouncilSeed = {
   requestId: string;
   intentHash: string;
