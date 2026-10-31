@@ -58,12 +58,21 @@ function heldWindowsSettlementGuard(
       if (wrappedSettlement) return wrappedSettlement;
       calls.push("settle-start");
       enter();
-      wrappedSettlement = (async () => {
-        await settlement;
-        if (!actual?.settleStopped)
-          throw new Error("The retained Windows job cannot settle.");
+      if (!actual?.settleStopped)
+        throw new Error("The retained Windows job cannot settle.");
+      try {
         actualSettlement ??= actual.settleStopped();
-        await actualSettlement;
+      } catch (error) {
+        actualSettlement ??= Promise.reject(error);
+      }
+      void actualSettlement.catch(() => undefined);
+      wrappedSettlement = (async () => {
+        const [manualResult, nativeResult] = await Promise.allSettled([
+          settlement,
+          actualSettlement!,
+        ]);
+        if (manualResult.status === "rejected") throw manualResult.reason;
+        if (nativeResult.status === "rejected") throw nativeResult.reason;
         calls.push("settle-confirmed");
       })();
       return wrappedSettlement;
@@ -82,12 +91,17 @@ function heldWindowsSettlementGuard(
       return guard;
     },
     async cleanup() {
+      if (actual?.settleStopped) {
+        try {
+          actualSettlement ??= actual.settleStopped();
+        } catch (error) {
+          actualSettlement ??= Promise.reject(error);
+        }
+        void actualSettlement.catch(() => undefined);
+      }
       confirm();
       if (wrappedSettlement) await wrappedSettlement.catch(() => undefined);
-      if (actual?.settleStopped) {
-        actualSettlement ??= actual.settleStopped();
-        await actualSettlement.catch(() => undefined);
-      }
+      if (actualSettlement) await actualSettlement.catch(() => undefined);
     },
   };
 }
