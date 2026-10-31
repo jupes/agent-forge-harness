@@ -1,4 +1,6 @@
 import { expect, test } from "bun:test";
+import type { ChatDecisionActivation } from "../../apps/desktop/src/chat-decision-owners";
+import type { GeminiChatDecisionAddress } from "../../apps/desktop/src/gemini-chat-authority";
 import {
   createGeminiChatDecisionIdentities,
   GEMINI_CHAT_DECISION_IDENTITIES,
@@ -132,6 +134,66 @@ test("approval reserves bounded metadata before POST and a lost answer or recrea
   second.dispose();
 });
 
+test("Gemini changed workspace and offer generation while reserving prevents the awaited POST", async () => {
+  const fixture = sessionStartFixture();
+  let grant = () => {},
+    posts = 0;
+  const heldLock = new Promise<void>((resolve) => {
+    grant = resolve;
+  });
+  const identities = createGeminiChatDecisionIdentities({
+    storage: fixture.storage,
+    withLock: async (work) => {
+      await heldLock;
+      return fixture.withLock(work);
+    },
+  });
+  let current: GeminiChatDecisionAddress | ChatDecisionActivation = {
+    ...address,
+    turnRequestId,
+    actionable: true,
+  };
+  const first = {
+    ...address,
+    workspace: "C:/workspaces/alpha",
+    acceptedTurnId: turnRequestId,
+    requestId: approvalId,
+    generation: 1,
+    turnRequestId,
+    actionable: true,
+  };
+  current = first;
+  const client = createGeminiChatDecisions({
+    identities,
+    current: () => current,
+    canWrite: () => true,
+    requestId: () => requestId,
+    read: async () => ({ pending: [offer], receipt: null }),
+    post: async () => {
+      posts++;
+      return { state: "unknown", message: "Must not send" };
+    },
+  });
+  client.activate(first);
+  await client.refreshPending();
+  const sending = client.decide(approvalId, "native-allow");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const next = {
+    ...first,
+    workspace: "C:/workspaces/beta",
+    requestId: "d1757233-e46b-4b0a-abcf-dc4958b13c9f",
+    generation: 2,
+  };
+  current = next;
+  client.activate(next);
+  grant();
+  await sending;
+  expect(posts).toBe(0);
+  expect(identities.read(projectId, sessionId)).toBeNull();
+  expect(client.view()?.pending).toEqual([]);
+  client.dispose();
+});
+
 test("only an exact protected recorded-intent receipt clears a restored original; foreign or actionable receipt pages stay held", async () => {
   const storage = sessionStartFixture();
   const identities = createGeminiChatDecisionIdentities({
@@ -156,11 +218,23 @@ test("only an exact protected recorded-intent receipt clears a restored original
     recordedAt: "2026-10-23T03:00:00.000Z",
   };
   let answer: unknown = { pending: [offer], receipt },
-    posts = 0;
+    posts = 0,
+    scope: { projectId: string; workspace: string; sessionId: string } | null =
+      {
+        projectId,
+        workspace: "",
+        sessionId,
+      },
+    currentAddress: GeminiChatDecisionAddress | null = {
+      ...address,
+      turnRequestId,
+      actionable: true,
+    };
   const queries: (string | undefined)[] = [];
   const client = createGeminiChatDecisions({
     identities,
-    current: () => ({ ...address, turnRequestId, actionable: true }),
+    current: () => currentAddress,
+    scopeCurrent: () => (scope ? { ...scope, provider: "gemini" } : null),
     canWrite: () => false,
     requestId: () => {
       throw Error("Must not mint");
@@ -188,10 +262,144 @@ test("only an exact protected recorded-intent receipt clears a restored original
   expect(client.view()?.identity?.requestId).toBe(requestId);
   answer = { pending: [], receipt };
   await client.checkOriginal();
+  currentAddress = null;
   expect(client.view()?.identity).toBeNull();
   expect(client.view()?.receipt).toEqual(receipt);
   expect(client.view()?.notice).toContain("does not confirm native delivery");
+  expect(client.view()).toMatchObject({
+    receipt,
+    pending: [],
+    actionable: false,
+  });
+  scope = null;
+  expect(client.view()).toBeNull();
+  scope = { projectId, sessionId, workspace: "C:/foreign" };
+  expect(client.view()).toBeNull();
+  scope = { ...scope, projectId: "foreign-project" };
+  expect(client.view()).toBeNull();
+  scope = { projectId, workspace: "", sessionId: "foreign-session" };
+  expect(client.view()).toBeNull();
+  await client.decide(approvalId, "native-allow");
   expect(queries).toEqual([requestId, requestId, requestId, requestId]);
+  expect(posts).toBe(0);
+  client.dispose();
+});
+
+test("a same-scope terminal activation during the exact receipt read preserves its valid confirmation", async () => {
+  const storage = sessionStartFixture();
+  const identities = createGeminiChatDecisionIdentities({
+    storage: storage.storage,
+    withLock: storage.withLock,
+  });
+  const original = {
+    ...address,
+    turnRequestId,
+    approvalId,
+    optionId: "native-reject",
+  };
+  await identities.reserve(
+    original,
+    () => requestId,
+    () => true,
+  );
+  const receipt = {
+    ...original,
+    requestId,
+    state: "recorded" as const,
+    recordedAt: "2026-10-23T03:00:00.000Z",
+  };
+  let resolveRead = (_value: unknown) => {};
+  const read = new Promise<unknown>((resolve) => {
+    resolveRead = resolve;
+  });
+  let posts = 0;
+  const scope = { projectId, workspace: "", sessionId };
+  const client = createGeminiChatDecisions({
+    identities,
+    current: () => null,
+    scopeCurrent: () => ({ ...scope, provider: "gemini" }),
+    canWrite: () => false,
+    requestId: () => {
+      throw Error("Must not mint");
+    },
+    read: () => read,
+    post: async () => {
+      posts++;
+      return { state: "unknown", message: "Must not send" };
+    },
+  });
+  client.activate({ ...address, turnRequestId, actionable: true });
+  const checking = client.checkOriginal();
+  client.activate({ ...address, turnRequestId, actionable: false });
+  resolveRead({ pending: [], receipt });
+  await checking;
+  expect(client.view()?.receipt).toEqual(receipt);
+  expect(client.view()?.identity).toBeNull();
+  expect(client.view()?.notice).toContain("does not confirm native delivery");
+  expect(posts).toBe(0);
+  client.dispose();
+});
+
+test("Gemini original receipt reads keep a replaced held identity when it changes in flight", async () => {
+  const storage = sessionStartFixture();
+  const identities = createGeminiChatDecisionIdentities({
+    storage: storage.storage,
+    withLock: storage.withLock,
+  });
+  const original = {
+    ...address,
+    turnRequestId,
+    approvalId,
+    optionId: "native-reject",
+  };
+  const saved = await identities.reserve(
+    original,
+    () => requestId,
+    () => true,
+  );
+  const receipt = {
+    ...original,
+    requestId,
+    state: "recorded" as const,
+    recordedAt: "2026-10-23T03:00:00.000Z",
+  };
+  let resolveRead = (_value: unknown) => {};
+  const read = new Promise<unknown>((resolve) => {
+    resolveRead = resolve;
+  });
+  let posts = 0;
+  const client = createGeminiChatDecisions({
+    identities,
+    current: () => null,
+    scopeCurrent: () => ({
+      projectId,
+      workspace: "",
+      sessionId,
+      provider: "gemini",
+    }),
+    canWrite: () => false,
+    requestId: () => {
+      throw Error("Must not mint");
+    },
+    read: () => read,
+    post: async () => {
+      posts++;
+      return { state: "unknown", message: "Must not send" };
+    },
+  });
+  client.activate({ ...address, turnRequestId: null, actionable: false });
+  const checking = client.checkOriginal();
+  await identities.release(saved.identity);
+  const replacement = await identities.reserve(
+    { ...original, approvalId: "9964f120-0e87-484f-a786-fbe122c9f9ef" },
+    () => "bc825846-2bc4-485f-b20d-579cd65442ea",
+    () => true,
+  );
+  client.refreshIdentities();
+  resolveRead({ pending: [], receipt });
+  await checking;
+  expect(client.view()?.identity).toEqual(replacement.identity);
+  expect(client.view()?.receipt).toBeNull();
   expect(posts).toBe(0);
   client.dispose();
 });
@@ -242,25 +450,23 @@ test("a delayed live read after Stop or a foreign accepted turn cannot revive ap
   client.dispose();
 });
 
-test("same-scope background checks retain the reviewed offer and cannot repopulate it after a decision dispatch", async () => {
+test("a fresh action read refuses an approval withdrawn by a concurrent check", async () => {
   const fixture = sessionStartFixture(),
     identities = createGeminiChatDecisionIdentities({
       storage: fixture.storage,
       withLock: fixture.withLock,
     });
-  let release = (_value: unknown) => {},
-    reads = 0,
+  let reads = 0,
     posts = 0;
-  const waiting = new Promise<unknown>((resolve) => {
-    release = resolve;
-  });
   const client = createGeminiChatDecisions({
     identities,
     current: () => ({ ...address, turnRequestId, actionable: true }),
     canWrite: () => true,
     requestId: () => requestId,
-    read: async () =>
-      ++reads === 1 ? { pending: [offer], receipt: null } : waiting,
+    read: async () => ({
+      pending: ++reads === 1 ? [offer] : [],
+      receipt: null,
+    }),
     post: async () => {
       posts++;
       return { state: "unknown", message: "Lost answer" };
@@ -272,25 +478,29 @@ test("same-scope background checks retain the reviewed offer and cannot repopula
   const background = client.refreshPending();
   expect(client.view()?.pending).toBe(retained);
   expect(client.view()?.loading).toBe(false);
-  await client.decide(approvalId, "native-allow");
-  expect(posts).toBe(1);
-  release({ pending: [offer], receipt: null });
   await background;
+  await client.decide(approvalId, "native-allow");
+  expect(posts).toBe(0);
   expect(client.view()?.pending).toEqual([]);
-  expect(client.view()?.identity?.requestId).toBe(requestId);
+  expect(client.view()?.identity).toBeNull();
   client.dispose();
 });
 
 test("Stop while the origin lock is pending releases only the proven-unsent reservation and makes no POST", async () => {
   const storage = sessionStartFixture();
   let grant = () => {},
+    entered = () => {},
     posts = 0;
   const lock = new Promise<void>((resolve) => {
     grant = resolve;
   });
+  const lockEntered = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
   const identities = createGeminiChatDecisionIdentities({
     storage: storage.storage,
     withLock: async (work) => {
+      entered();
       await lock;
       return storage.withLock(work);
     },
@@ -309,6 +519,7 @@ test("Stop while the origin lock is pending releases only the proven-unsent rese
   client.activate({ ...address, turnRequestId, actionable: true });
   await client.refreshPending();
   const sending = client.decide(approvalId, "native-allow");
+  await lockEntered;
   client.invalidate();
   grant();
   await sending;
@@ -318,7 +529,7 @@ test("Stop while the origin lock is pending releases only the proven-unsent rese
   client.dispose();
 });
 
-test("a protected refresh that withdraws an offer during origin-lock acquisition prevents its pending decision dispatch", async () => {
+test("a protected refresh and exact action re-read that withdraw an offer prevent dispatch", async () => {
   const fixture = sessionStartFixture();
   let grant = () => {},
     reads = 0,
@@ -349,8 +560,7 @@ test("a protected refresh that withdraws an offer during origin-lock acquisition
   });
   client.activate({ ...address, turnRequestId, actionable: true });
   await client.refreshPending();
-  // Start a protected refresh before the decision's lock wait; it may complete
-  // while the original is being durably reserved.
+  // Start a protected refresh before the exact action re-read.
   const refresh = client.refreshPending(),
     sending = client.decide(approvalId, "native-allow");
   await refresh;

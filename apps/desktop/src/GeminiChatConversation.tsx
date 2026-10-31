@@ -18,9 +18,11 @@ export function GeminiChatConversation({
   projectId,
   sessionId,
   client,
+  decisionOwners,
   writesAllowed,
   library,
   archived = false,
+  workspace = null,
   record,
 }: SessionConversationProps & { record: GeminiChatOwnedRecord }) {
   const view = client.session(projectId, sessionId),
@@ -63,13 +65,14 @@ export function GeminiChatConversation({
       )
       .at(-1)?.seq ?? 0;
   const approvals = useGeminiChatDecisions({
+    owners: decisionOwners,
     projectId,
+    workspace,
     sessionId,
     turnRequestId: current?.requestId ?? null,
     enabled: true,
     actionable: permissionActionable,
     approvalRevision: revision,
-    readCurrent: readPermissionAddress,
   });
   const prompt = useRef<HTMLTextAreaElement>(null),
     feed = useRef<HTMLDivElement>(null),
