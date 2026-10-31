@@ -175,3 +175,22 @@ export function standInEnvironment(
     BD_STAND_IN_STATE,
   };
 }
+
+/** Real Git is needed only by the desktop suite's private onboarding fixture. */
+export function repositoryFixtureEnvironment(
+  parentPath = process.env[PATH_KEY] ?? "",
+): Record<string, string> {
+  const gitExecutable = process.platform === "win32" ? "git.exe" : "git";
+  const repositoryFixtureGit = parentPath
+    .split(delimiter)
+    .filter(Boolean)
+    .map((directory) => join(directory, gitExecutable))
+    .find((candidate) => existsSync(candidate));
+  if (!repositoryFixtureGit)
+    throw new Error(
+      "The desktop onboarding fixture needs Git in the runner's PATH.",
+    );
+  return {
+    AGENT_FORGE_E2E_REPOSITORY_GIT: resolve(repositoryFixtureGit),
+  };
+}

@@ -1,5 +1,6 @@
 import { defineConfig } from "@playwright/test";
 import base from "./playwright.config";
+import { repositoryFixtureEnvironment } from "./tests/e2e/servers";
 
 /** The real desktop renderer and the existing isolated hearth/CLI fixtures. */
 export default defineConfig({
@@ -14,6 +15,10 @@ export default defineConfig({
       server.name === "hearth"
         ? {
             ...server,
+            env: {
+              ...(server.env ?? {}),
+              ...repositoryFixtureEnvironment(),
+            },
             command: server.command.replace(
               "scripts/hearth/server.ts",
               "tests/desktop-e2e/hearth-server.ts",

@@ -1086,8 +1086,11 @@ test("lost commit delivery stays unknown until the exact saved result is checked
       );
     await expect(
       page.getByText(
-        /Check the saved original and result; do not submit Convene again\./,
+        /Check the saved original and result; do not submit Convene again\.|Saved review state changed\. Read this exact saved original before continuing\./,
       ),
+    ).toBeVisible({ timeout: 15_000 });
+    await expect(
+      page.getByRole("button", { name: "Read saved original" }),
     ).toBeVisible({ timeout: 15_000 });
     const witness = await page.evaluate(() => window.__councilLostCommit);
     if (!witness)
