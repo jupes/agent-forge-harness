@@ -34,21 +34,31 @@ export function parseDesktopArguments(args: readonly string[]): {
   hearthCommand: string[];
 } {
   if (
-    args.length !== 6 ||
+    args.length !== 8 ||
     args[0] !== "--root" ||
     args[2] !== "--assets" ||
-    args[4] !== "--hearth"
+    args[4] !== "--hearth" ||
+    args[6] !== "--native-picker"
   )
     throw new Error(
-      "Expected --root <checkout> --assets <built assets dir> --hearth <executable>",
+      "Expected --root <checkout> --assets <built assets dir> --hearth <executable> --native-picker <executable>",
     );
-  const [root, assetsRoot, hearth] = [args[1], args[3], args[5]];
-  if (!root || !assetsRoot || !hearth)
+  const [root, assetsRoot, hearth, nativePicker] = [
+    args[1],
+    args[3],
+    args[5],
+    args[7],
+  ];
+  if (!root || !assetsRoot || !hearth || !nativePicker)
     throw new Error("Desktop host arguments must not be empty");
   return {
     root: resolve(root),
     assetsRoot: resolve(assetsRoot),
-    hearthCommand: [resolve(hearth)],
+    hearthCommand: [
+      resolve(hearth),
+      "--native-project-picker",
+      resolve(nativePicker),
+    ],
   };
 }
 

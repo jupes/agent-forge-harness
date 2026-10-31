@@ -26,6 +26,7 @@ import type { KeeperOperatorPost } from "../../keeper/operator-post";
 import type { KeeperRuntime } from "../../keeper/recovery-runtime";
 import type { AppendResult } from "../../ledger/append";
 import { latestEventId, queryEvents } from "../../ledger/query";
+import type { createRepositoryOnboarding } from "../../projects/repository-onboarding";
 import { createProjectStore } from "../../projects/store";
 import type { ProviderInspector } from "../../providers/inspect";
 import type { ProviderLoginService } from "../../providers/login";
@@ -117,6 +118,7 @@ export interface OperatorDeps extends ReadDeps {
   projectHome: string;
   /** Trusted internal repository registry source; absent uses localStateRoot(root). */
   projectRepositoryRegistryRoot?: string | undefined;
+  projectRepositoryOnboarding: ReturnType<typeof createRepositoryOnboarding>;
   conversationTransport?: ConversationTransport | undefined;
   sessionRuntime: SessionRuntime;
   codexTaskRuntime?: ReturnType<typeof createCodexTaskRuntime> | undefined;
@@ -428,9 +430,16 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     preferences,
     createList,
     createOriginal,
+    repositorySelectionRead,
+    repositoryCloneRead,
     reserve,
     commit,
     retire,
+    pickRepository,
+    registerRepository,
+    reserveRepositoryClone,
+    cloneRepository,
+    registerClonedRepository,
   } = projectRoutes(deps.projectHome, {
     root: deps.root,
     workspace: deps.workspace,
@@ -438,6 +447,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     ...(deps.projectRepositoryRegistryRoot === undefined
       ? {}
       : { projectRepositoryRegistryRoot: deps.projectRepositoryRegistryRoot }),
+    repositoryOnboarding: deps.projectRepositoryOnboarding,
     loadScope: createProjectSnapshot,
   });
   const projectRuns = createProjectRunRoutes(
@@ -564,6 +574,8 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     scopePreview,
     createList,
     createOriginal,
+    repositorySelectionRead,
+    repositoryCloneRead,
     projectSummaryRoute(deps.projectHome, deps, projectSnapshot),
     projectOverviewRoute(deps, projectSnapshot),
     observations.list,
@@ -653,6 +665,11 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       reserve,
       commit,
       retire,
+      pickRepository,
+      registerRepository,
+      reserveRepositoryClone,
+      cloneRepository,
+      registerClonedRepository,
       conversations.send,
       conversations.intentReserve,
       conversations.intentRetire,
