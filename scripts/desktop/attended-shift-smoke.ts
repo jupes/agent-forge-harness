@@ -12,7 +12,10 @@ import type {
 } from "../executors/windows-job-settlement";
 import { FIXTURE_PROJECT_ID } from "../projects/testing";
 
-export type PackagedStopLabel = "before-restart" | "after-recovery" | "finally-cleanup";
+export type PackagedStopLabel =
+  | "before-restart"
+  | "after-recovery"
+  | "finally-cleanup";
 type StopWitness = {
   phase: WindowsJobSettlementFailurePhase;
   generationFailure: WindowsJobSettlementGenerationFailureWitness | null;
@@ -35,7 +38,8 @@ type StopInvocation = {
 };
 
 export function capturePackagedStopWitness(
-  active: boolean, phase: WindowsJobSettlementFailurePhase,
+  active: boolean,
+  phase: WindowsJobSettlementFailurePhase,
   generation?: WindowsJobSettlementGenerationFailureWitness,
   accounting?: WindowsJobSettlementUnaccountedFailureWitness,
 ): StopWitness | null {
@@ -70,7 +74,12 @@ export function recordPackagedStopWitness(
   accounting?: WindowsJobSettlementUnaccountedFailureWitness,
 ): void {
   if (!current || current.witness !== null) return;
-  current.witness = capturePackagedStopWitness(true, phase, generation, accounting);
+  current.witness = capturePackagedStopWitness(
+    true,
+    phase,
+    generation,
+    accounting,
+  );
 }
 
 export function packagedStopRecord(input: {
@@ -88,13 +97,20 @@ export function packagedStopRecord(input: {
     outcome: input.outcome,
     phase: refused ? (input.witness?.phase ?? "unavailable") : null,
     failure: refused ? (input.failure ?? "other") : null,
-    generationFailure: refused ? (input.witness?.generationFailure ?? null) : null,
-    accountingFailure: refused ? (input.witness?.accountingFailure ?? null) : null,
+    generationFailure: refused
+      ? (input.witness?.generationFailure ?? null)
+      : null,
+    accountingFailure: refused
+      ? (input.witness?.accountingFailure ?? null)
+      : null,
   };
 }
 
-export function reportPackagedStopFailure(error: unknown, record: StopRecord,
-  write: (line: string) => void = (line) => console.error(line)): never {
+export function reportPackagedStopFailure(
+  error: unknown,
+  record: StopRecord,
+  write: (line: string) => void = (line) => console.error(line),
+): never {
   try {
     write(JSON.stringify(record));
   } catch {
@@ -103,7 +119,9 @@ export function reportPackagedStopFailure(error: unknown, record: StopRecord,
   throw error;
 }
 
-function packagedStopFailure(error: unknown): NonNullable<StopRecord["failure"]> {
+function packagedStopFailure(
+  error: unknown,
+): NonNullable<StopRecord["failure"]> {
   return error instanceof Error &&
     error.message === "Windows owned process cleanup could not be confirmed."
     ? "windows-cleanup-unconfirmed"
@@ -181,7 +199,11 @@ export async function verifyAttendedProjectShifts(
   let stopInvocation = 0;
   let activeStop: StopInvocation | null = null;
   const stop = async (label: PackagedStopLabel) => {
-    const current: StopInvocation = { invocation: ++stopInvocation, label, witness: null };
+    const current: StopInvocation = {
+      invocation: ++stopInvocation,
+      label,
+      witness: null,
+    };
     activeStop = current;
     try {
       socket?.close();
@@ -267,11 +289,11 @@ export async function verifyAttendedProjectShifts(
                   const current = activeStop;
                   try {
                     recordPackagedStopWitness(
-                    current,
-                    phase,
-                    generationFailure,
-                    accountingFailure,
-                  );
+                      current,
+                      phase,
+                      generationFailure,
+                      accountingFailure,
+                    );
                   } catch {
                     // Stop diagnostics cannot change the native settlement result.
                   }
