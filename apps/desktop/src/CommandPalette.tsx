@@ -11,6 +11,9 @@ import {
 } from "./command-palette";
 import "./command-palette.css";
 
+const rowKey = (row: PaletteRow) =>
+  JSON.stringify([row.kind, row.projectId, row.id]);
+
 export function CommandPalette({
   open,
   index,
@@ -29,7 +32,10 @@ export function CommandPalette({
   onClose: () => void;
 }) {
   const [query, setQuery] = useState("");
-  const [active, setActive] = useState(0);
+  const [selection, setSelection] = useState<{
+    scope: string;
+    key: string | null;
+  }>({ scope: "", key: null });
   const [selectionIssue, setSelectionIssue] = useState("");
   const search = useRef<HTMLInputElement>(null);
   const rows = useMemo(() => {
@@ -38,9 +44,19 @@ export function CommandPalette({
       ? searchPalette(index, query, projectId)
       : recentPaletteRows(index, recents);
   }, [index, query, projectId, recents]);
+  const selectionScope = JSON.stringify([open, query]);
+  const selectedPosition =
+    selection.scope === selectionScope && selection.key !== null
+      ? rows.findIndex((row) => rowKey(row) === selection.key)
+      : -1;
+  const active =
+    selectedPosition >= 0 ? selectedPosition : rows.length ? 0 : -1;
+  const activeRow = active >= 0 ? rows[active] : undefined;
+  const activeKey = activeRow ? rowKey(activeRow) : null;
+  if (selection.scope !== selectionScope || selection.key !== activeKey)
+    setSelection({ scope: selectionScope, key: activeKey });
   useEffect(() => {
     setQuery("");
-    setActive(0);
     setSelectionIssue("");
   }, [open]);
   useEffect(() => {
@@ -56,13 +72,21 @@ export function CommandPalette({
   const keyDown = (event: KeyboardEvent) => {
     if (event.key === "ArrowDown") {
       event.preventDefault();
-      setActive((value) => movePaletteActive(value, "ArrowDown", rows.length));
+      const next = movePaletteActive(active, "ArrowDown", rows.length);
+      setSelection({
+        scope: selectionScope,
+        key: rows[next] ? rowKey(rows[next]) : null,
+      });
     } else if (event.key === "ArrowUp") {
       event.preventDefault();
-      setActive((value) => movePaletteActive(value, "ArrowUp", rows.length));
+      const next = movePaletteActive(active, "ArrowUp", rows.length);
+      setSelection({
+        scope: selectionScope,
+        key: rows[next] ? rowKey(rows[next]) : null,
+      });
     } else if (event.key === "Enter") {
       event.preventDefault();
-      choose(rows[active]);
+      choose(activeRow);
     }
   };
   return (
@@ -82,13 +106,14 @@ export function CommandPalette({
             autoFocus
             value={query}
             onInput={(event) => {
-              setQuery((event.currentTarget as HTMLInputElement).value);
-              setActive(0);
+              const value = (event.currentTarget as HTMLInputElement).value;
+              setQuery(value);
+              setSelection({ scope: JSON.stringify([open, value]), key: null });
             }}
             placeholder="Search projects, work, commands…"
             aria-controls="af-command-palette-results"
             aria-activedescendant={
-              rows[active] ? `af-palette-${active}` : undefined
+              active >= 0 ? `af-palette-${active}` : undefined
             }
             role="combobox"
             aria-expanded="true"
@@ -131,14 +156,16 @@ export function CommandPalette({
           >
             {rows.map((row, position) => (
               <div
-                key={`${row.kind}:${row.projectId}:${row.id}`}
+                key={rowKey(row)}
                 class={position === active ? "is-active" : ""}
                 id={`af-palette-${position}`}
                 role="option"
                 aria-selected={position === active}
                 aria-disabled={!!row.unavailable}
                 tabIndex={-1}
-                onMouseEnter={() => setActive(position)}
+                onMouseEnter={() =>
+                  setSelection({ scope: selectionScope, key: rowKey(row) })
+                }
                 onClick={() => choose(row)}
               >
                 <span>
