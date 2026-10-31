@@ -7,7 +7,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { expect, test } from "@playwright/test";
+import { expect, type Locator, type Page, test } from "@playwright/test";
 import { smithsViewSchema } from "../../apps/desktop/src/smiths-protocol";
 import { conversationPageSchema } from "../../scripts/conversations/protocol";
 import { OPERATOR_HEADER, SURFACE_HEADER } from "../../scripts/hearth/paths";
@@ -75,6 +75,21 @@ const catalog: ProjectCatalog = {
   revision: 1,
   projects: [alpha, beta],
 };
+
+async function tabTo(page: Page, target: Locator): Promise<void> {
+  if (await target.evaluate((element) => element === document.activeElement))
+    await page.keyboard.press("Shift+Tab");
+  for (let step = 0; step < 60; step++) {
+    await page.keyboard.press("Tab");
+    if (
+      await target.evaluate((element) => element === document.activeElement)
+    ) {
+      await expect(target).toBeFocused();
+      return;
+    }
+  }
+  throw new Error("Keyboard traversal did not reach the requested control.");
+}
 
 test.beforeEach(() => {
   for (const path of [repositoryPickerControl, repositoryCloneCalls]) {
@@ -1388,13 +1403,20 @@ test("Add Folder keeps cancellation inert and permits a new picker after an inva
       folderRegistrations.push(pathname);
   });
   await openSettled(page, "/index.html#/desktop/projects");
-  await page.getByRole("button", { name: "New project", exact: true }).click();
+  await tabTo(
+    page,
+    page.getByRole("button", { name: "New project", exact: true }),
+  );
+  await page.keyboard.press("Enter");
   const dialog = page.getByRole("dialog", { name: "Create a project" });
   await expect(dialog).toBeVisible();
 
-  await dialog
-    .getByRole("button", { name: "Add a folder…", exact: true })
-    .click();
+  const addFolder = dialog.getByRole("button", {
+    name: "Add a folder…",
+    exact: true,
+  });
+  await tabTo(page, addFolder);
+  await page.keyboard.press("Enter");
   await expect(
     dialog.getByText("Folder selection cancelled. Nothing was registered.", {
       exact: true,
@@ -1402,9 +1424,8 @@ test("Add Folder keeps cancellation inert and permits a new picker after an inva
   ).toBeVisible();
 
   setRepositoryPickerPath(emptyGitMarker);
-  await dialog
-    .getByRole("button", { name: "Add a folder…", exact: true })
-    .click();
+  await tabTo(page, addFolder);
+  await page.keyboard.press("Enter");
   await expect(
     dialog.getByText(
       "The selected folder was not confirmed as a Git repository root. You may choose another folder.",
@@ -1416,9 +1437,14 @@ test("Add Folder keeps cancellation inert and permits a new picker after an inva
   ).toBeEnabled();
 
   setRepositoryPickerPath(selectedFolder);
-  await dialog
-    .getByRole("button", { name: "Choose another folder…", exact: true })
-    .click();
+  await tabTo(
+    page,
+    dialog.getByRole("button", {
+      name: "Choose another folder…",
+      exact: true,
+    }),
+  );
+  await page.keyboard.press("Enter");
   await expect(
     dialog.getByRole("textbox", { name: "Folder repository name" }),
   ).toHaveValue("selected-folder");
@@ -1473,19 +1499,31 @@ test("Add Folder and a reviewed local clone feed a fresh two-repository project 
       projectReservations.push(pathname);
   });
   await openSettled(page, "/index.html#/desktop/projects");
-  await page.getByRole("button", { name: "New project", exact: true }).click();
+  await tabTo(
+    page,
+    page.getByRole("button", { name: "New project", exact: true }),
+  );
+  await page.keyboard.press("Enter");
   const dialog = page.getByRole("dialog", { name: "Create a project" });
   await expect(dialog).toBeVisible();
 
-  await dialog
-    .getByRole("button", { name: "Add a folder…", exact: true })
-    .click();
-  await dialog
-    .getByRole("textbox", { name: "Folder repository name" })
-    .fill("selected-folder");
-  await dialog
-    .getByRole("button", { name: "Review folder registration", exact: true })
-    .click();
+  const addFolder = dialog.getByRole("button", {
+    name: "Add a folder…",
+    exact: true,
+  });
+  await tabTo(page, addFolder);
+  await page.keyboard.press("Enter");
+  const folderName = dialog.getByRole("textbox", {
+    name: "Folder repository name",
+  });
+  await tabTo(page, folderName);
+  await page.keyboard.type("selected-folder");
+  const reviewFolder = dialog.getByRole("button", {
+    name: "Review folder registration",
+    exact: true,
+  });
+  await tabTo(page, reviewFolder);
+  await page.keyboard.press("Enter");
   const screenshotDir = process.env["SHOT_DIR"];
   if (screenshotDir) {
     mkdirSync(screenshotDir, { recursive: true });
@@ -1493,9 +1531,14 @@ test("Add Folder and a reviewed local clone feed a fresh two-repository project 
       path: join(screenshotDir, "repository-folder-review.png"),
     });
   }
-  await dialog
-    .getByRole("button", { name: "Register reviewed folder", exact: true })
-    .click();
+  await tabTo(
+    page,
+    dialog.getByRole("button", {
+      name: "Register reviewed folder",
+      exact: true,
+    }),
+  );
+  await page.keyboard.press("Enter");
   await expect(
     dialog.getByText(
       "Repository registered. Choose it in the reviewed project scope.",
@@ -1507,15 +1550,24 @@ test("Add Folder and a reviewed local clone feed a fresh two-repository project 
   ).toBeVisible();
   expect(folderRegistrations).toHaveLength(1);
 
-  await dialog
-    .getByRole("textbox", { name: "Repository clone URL" })
-    .fill(fixtureCloneUrl);
-  await dialog
-    .getByRole("textbox", { name: "Clone repository name" })
-    .fill("cloned-folder");
-  await dialog
-    .getByRole("button", { name: "Review clone destination", exact: true })
-    .click();
+  const cloneUrl = dialog.getByRole("textbox", {
+    name: "Repository clone URL",
+  });
+  await tabTo(page, cloneUrl);
+  await page.keyboard.type(fixtureCloneUrl);
+  const cloneName = dialog.getByRole("textbox", {
+    name: "Clone repository name",
+  });
+  await page.keyboard.press("Tab");
+  await expect(cloneName).toBeFocused();
+  await page.keyboard.type("cloned-folder");
+  await page.keyboard.press("Tab");
+  const reviewClone = dialog.getByRole("button", {
+    name: "Review clone destination",
+    exact: true,
+  });
+  await expect(reviewClone).toBeFocused();
+  await page.keyboard.press("Enter");
   await expect(dialog.getByText("Clone status", { exact: true })).toBeVisible();
   expect(localCloneCount()).toBe(0);
   await page.route(
@@ -1527,9 +1579,14 @@ test("Add Folder and a reviewed local clone feed a fresh two-repository project 
       await route.abort("failed");
     },
   );
-  await dialog
-    .getByRole("button", { name: "Clone reviewed repository", exact: true })
-    .click();
+  await tabTo(
+    page,
+    dialog.getByRole("button", {
+      name: "Clone reviewed repository",
+      exact: true,
+    }),
+  );
+  await page.keyboard.press("Enter");
   await expect(
     dialog.getByText(
       "Clone completed and the trusted repository choices were refreshed.",
@@ -1546,7 +1603,11 @@ test("Add Folder and a reviewed local clone feed a fresh two-repository project 
   await page.unroute("**/repository-clone-reservations/*/clone");
 
   await reloadSettled(page);
-  await page.getByRole("button", { name: "New project", exact: true }).click();
+  await tabTo(
+    page,
+    page.getByRole("button", { name: "New project", exact: true }),
+  );
+  await page.keyboard.press("Enter");
   const freshDialog = page.getByRole("dialog", { name: "Create a project" });
   await expect(
     freshDialog.getByRole("checkbox", { name: /selected-folder/ }),
@@ -1592,8 +1653,16 @@ test("Add Folder and a reviewed local clone feed a fresh two-repository project 
     .getByRole("combobox", { name: "Project color" })
     .selectOption("green");
   const repositories = freshDialog.locator("fieldset").first();
-  await repositories.getByRole("checkbox", { name: /selected-folder/ }).check();
-  await repositories.getByRole("checkbox", { name: /cloned-folder/ }).check();
+  const selectedRepository = repositories.getByRole("checkbox", {
+    name: /selected-folder/,
+  });
+  await tabTo(page, selectedRepository);
+  await page.keyboard.press("Space");
+  const clonedRepository = repositories.getByRole("checkbox", {
+    name: /cloned-folder/,
+  });
+  await tabTo(page, clonedRepository);
+  await page.keyboard.press("Space");
   await freshDialog
     .getByRole("group", { name: "Epics", exact: true })
     .getByRole("checkbox")
