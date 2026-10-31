@@ -417,6 +417,51 @@ test("a sibling source completion cannot renew the generation freshness timestam
   }
 });
 
+test("client-normalized unsupported session history does not hide a verified checkpoint review", async () => {
+  const projectId = projectIds[0];
+  const run = runPage(projectId, true);
+  const indexer = createCommandPaletteIndex({
+    readBeads: async () => beadPage(projectId),
+    readSessions: async () => sessionsPage(projectId),
+    readRuns: async () => ({
+      page: run.page,
+      detail: {
+        ...run.detail,
+        sessionHistory: {
+          status: "unavailable",
+          after: 0,
+          reason: "unsupported-server",
+        },
+      },
+    }),
+    readCouncil: async () => null,
+  });
+  const snapshot = await indexer.refresh({
+    generation: 12,
+    scope: {
+      catalogRevision: 8,
+      routeGeneration: 2,
+      projectId,
+      workspace: "/workspace/shared",
+      writesAllowed: true,
+      nativeAvailable: false,
+    },
+    home: home(1),
+    signal: new AbortController().signal,
+    isCurrent: () => true,
+    selectedRun: { projectId, slug: "alpha" },
+  });
+  expect(
+    snapshot.rows.some(
+      (row) =>
+        row.kind === "review" &&
+        row.intent?.kind === "review" &&
+        row.intent.target.kind === "checkpoint" &&
+        row.intent.target.checkpointId === `${projectId}-checkpoint`,
+    ),
+  ).toBe(true);
+});
+
 test("superseded generation cannot publish a partial snapshot", async () => {
   const controller = new AbortController();
   const indexer = createCommandPaletteIndex({
