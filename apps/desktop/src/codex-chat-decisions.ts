@@ -9,7 +9,10 @@ import type {
   CodexChatDecisionReceipt,
   CodexChatDecisionRequest,
 } from "../../../types/codex-owned-chat";
-import type { ChatDecisionActivation } from "./chat-decision-owners";
+import type {
+  ChatDecisionActivation,
+  ChatDecisionScope,
+} from "./chat-decision-owners";
 import {
   type CodexChatDecisionIdentities,
   type CodexChatDecisionIdentity,
@@ -47,6 +50,7 @@ export function createCodexChatDecisions(deps: {
   identities: CodexChatDecisionIdentities;
   canWrite(): boolean;
   current?(): ChatDecisionActivation | null;
+  scopeCurrent?(): ChatDecisionScope | null;
   requestId(): string;
   read(
     projectId: string,
@@ -192,14 +196,27 @@ export function createCodexChatDecisions(deps: {
     },
     view() {
       const entry = selected;
-      if (!entry || !deps.current) return entry;
-      const current = deps.current();
-      if (
-        !current ||
-        current.projectId !== entry.projectId ||
-        current.sessionId !== entry.sessionId
-      )
-        return null;
+      if (!entry) return null;
+      if (deps.scopeCurrent) {
+        const scope = deps.scopeCurrent();
+        if (
+          !scope ||
+          scope.projectId !== entry.projectId ||
+          scope.workspace !== (entry.activation?.workspace ?? "") ||
+          scope.sessionId !== entry.sessionId ||
+          scope.provider !== "codex"
+        )
+          return null;
+      } else if (deps.current) {
+        const current = deps.current();
+        if (
+          !current ||
+          current.projectId !== entry.projectId ||
+          current.workspace !== (entry.activation?.workspace ?? "") ||
+          current.sessionId !== entry.sessionId
+        )
+          return null;
+      }
       return live(entry)
         ? entry
         : { ...entry, pending: [], actionable: false, loading: false };

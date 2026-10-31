@@ -218,11 +218,22 @@ test("only an exact protected recorded-intent receipt clears a restored original
     recordedAt: "2026-10-23T03:00:00.000Z",
   };
   let answer: unknown = { pending: [offer], receipt },
-    posts = 0;
+    posts = 0,
+    scope: { projectId: string; workspace: string; sessionId: string } | null = {
+      projectId,
+      workspace: "",
+      sessionId,
+    },
+    currentAddress: GeminiChatDecisionAddress | null = {
+      ...address,
+      turnRequestId,
+      actionable: true,
+    };
   const queries: (string | undefined)[] = [];
   const client = createGeminiChatDecisions({
     identities,
-    current: () => ({ ...address, turnRequestId, actionable: true }),
+    current: () => currentAddress,
+    scopeCurrent: () => (scope ? { ...scope, provider: "gemini" } : null),
     canWrite: () => false,
     requestId: () => {
       throw Error("Must not mint");
@@ -250,9 +261,24 @@ test("only an exact protected recorded-intent receipt clears a restored original
   expect(client.view()?.identity?.requestId).toBe(requestId);
   answer = { pending: [], receipt };
   await client.checkOriginal();
+  currentAddress = null;
   expect(client.view()?.identity).toBeNull();
   expect(client.view()?.receipt).toEqual(receipt);
   expect(client.view()?.notice).toContain("does not confirm native delivery");
+  expect(client.view()).toMatchObject({
+    receipt,
+    pending: [],
+    actionable: false,
+  });
+  scope = null;
+  expect(client.view()).toBeNull();
+  scope = { projectId, sessionId, workspace: "C:/foreign" };
+  expect(client.view()).toBeNull();
+  scope = { ...scope, projectId: "foreign-project" };
+  expect(client.view()).toBeNull();
+  scope = { projectId, workspace: "", sessionId: "foreign-session" };
+  expect(client.view()).toBeNull();
+  await client.decide(approvalId, "native-allow");
   expect(queries).toEqual([requestId, requestId, requestId, requestId]);
   expect(posts).toBe(0);
   client.dispose();

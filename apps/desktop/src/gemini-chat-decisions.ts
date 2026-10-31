@@ -9,7 +9,10 @@ import type {
   GeminiChatDecisionReceipt,
   GeminiChatDecisionRequest,
 } from "../../../types/gemini-owned-chat";
-import type { ChatDecisionActivation } from "./chat-decision-owners";
+import type {
+  ChatDecisionActivation,
+  ChatDecisionScope,
+} from "./chat-decision-owners";
 import type { GeminiChatDecisionAddress } from "./gemini-chat-authority";
 import {
   decisionBody,
@@ -45,6 +48,7 @@ type Address = GeminiChatDecisionAddress &
 export function createGeminiChatDecisions(deps: {
   identities: GeminiChatDecisionIdentities;
   current(): Address | ChatDecisionActivation | null;
+  scopeCurrent?(): ChatDecisionScope | null;
   canWrite(): boolean;
   requestId(): string;
   read(
@@ -219,7 +223,18 @@ export function createGeminiChatDecisions(deps: {
     view() {
       const current = observed(),
         entry = selected;
-      if (!entry || !sameAuthorityScope(entry.activation, current)) return null;
+      const scope = deps.scopeCurrent?.();
+      if (!entry) return null;
+      if (deps.scopeCurrent) {
+        if (
+          !scope ||
+          scope.projectId !== entry.projectId ||
+          scope.workspace !== (entry.activation?.workspace ?? "") ||
+          scope.sessionId !== entry.sessionId ||
+          scope.provider !== "gemini"
+        )
+          return null;
+      } else if (!sameAuthorityScope(entry.activation, current)) return null;
       // Original intent is inspectable within its project/session/workspace.
       // Full activation equality still gates every live offer and action.
       return live(entry, current ?? undefined)

@@ -27,6 +27,17 @@ export interface ChatDecisionActivation {
 export interface ChatDecisionAuthority {
   canWrite(address: ChatDecisionActivation): boolean;
   isCurrent(address: ChatDecisionActivation): boolean;
+  isSameAuthorityScope(
+    address: ChatDecisionActivation,
+    provider: "codex" | "gemini",
+  ): boolean;
+}
+
+export interface ChatDecisionScope {
+  projectId: string;
+  workspace: string;
+  sessionId: string;
+  provider: "codex" | "gemini";
 }
 
 export interface ChatDecisionOwnerPlatform {
@@ -44,6 +55,17 @@ export interface ChatDecisionOwners {
   codex: SharedClient<CodexClient>;
   gemini: SharedClient<GeminiClient>;
   dispose(): void;
+}
+
+export function createChatDecisionAuthorityProxy(latest: {
+  current: ChatDecisionAuthority;
+}): ChatDecisionAuthority {
+  return {
+    canWrite: (address) => latest.current.canWrite(address),
+    isCurrent: (address) => latest.current.isCurrent(address),
+    isSameAuthorityScope: (address, provider) =>
+      latest.current.isSameAuthorityScope(address, provider),
+  };
 }
 
 const route = (project: string, session: string) =>
@@ -93,6 +115,16 @@ export function createChatDecisionOwners(
     }),
     canWrite: () => writable(codexAddress),
     current: () => (current(codexAddress) ? codexAddress : null),
+    scopeCurrent: () =>
+      codexAddress &&
+      currentAuthority.current.isSameAuthorityScope(codexAddress, "codex")
+        ? {
+            projectId: codexAddress.projectId,
+            workspace: codexAddress.workspace,
+            sessionId: codexAddress.sessionId,
+            provider: "codex",
+          }
+        : null,
     requestId: () => crypto.randomUUID(),
     read: (projectId, sessionId, requestId) =>
       readOperatorRoute(
@@ -117,6 +149,16 @@ export function createChatDecisionOwners(
     }),
     canWrite: () => writable(geminiAddress),
     current: () => (current(geminiAddress) ? geminiAddress : null),
+    scopeCurrent: () =>
+      geminiAddress &&
+      currentAuthority.current.isSameAuthorityScope(geminiAddress, "gemini")
+        ? {
+            projectId: geminiAddress.projectId,
+            workspace: geminiAddress.workspace,
+            sessionId: geminiAddress.sessionId,
+            provider: "gemini",
+          }
+        : null,
     requestId: () => crypto.randomUUID(),
     read: (projectId, sessionId, requestId) =>
       readOperatorRoute(
@@ -180,13 +222,9 @@ export function useChatDecisionOwners(authority: ChatDecisionAuthority) {
   latest.current = authority;
   const held = useRef<ChatDecisionOwners | null>(null);
   if (!held.current) {
-    const proxy = {
-      canWrite: (address: ChatDecisionActivation) =>
-        latest.current.canWrite(address),
-      isCurrent: (address: ChatDecisionActivation) =>
-        latest.current.isCurrent(address),
-    };
-    held.current = createChatDecisionOwners(proxy);
+    held.current = createChatDecisionOwners(
+      createChatDecisionAuthorityProxy(latest),
+    );
   }
   const owners = held.current;
   useEffect(() => {

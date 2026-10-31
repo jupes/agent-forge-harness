@@ -194,11 +194,18 @@ test("only an exact protected recorded-intent receipt clears a restored original
     recordedAt: "2026-10-23T03:00:00.000Z",
   };
   let answer: unknown = { pending: [offer], receipt },
-    posts = 0;
+    posts = 0,
+    scope: { projectId: string; workspace: string; sessionId: string } | null = {
+      projectId,
+      workspace: "",
+      sessionId,
+    };
   const queries: (string | undefined)[] = [];
   const client = createCodexChatDecisions({
     identities,
     canWrite: () => false,
+    current: () => null,
+    scopeCurrent: () => (scope ? { ...scope, provider: "codex" } : null),
     requestId: () => {
       throw Error("Must not mint");
     },
@@ -228,6 +235,20 @@ test("only an exact protected recorded-intent receipt clears a restored original
   expect(client.view()?.identity).toBeNull();
   expect(client.view()?.receipt).toEqual(receipt);
   expect(client.view()?.notice).toContain("does not confirm native delivery");
+  expect(client.view()).toMatchObject({
+    receipt,
+    pending: [],
+    actionable: false,
+  });
+  scope = null;
+  expect(client.view()).toBeNull();
+  scope = { projectId, sessionId, workspace: "C:/foreign" };
+  expect(client.view()).toBeNull();
+  scope = { ...scope, projectId: "foreign-project" };
+  expect(client.view()).toBeNull();
+  scope = { projectId, workspace: "", sessionId: "foreign-session" };
+  expect(client.view()).toBeNull();
+  await client.decide(approvalId, "accept");
   expect(queries).toEqual([requestId, requestId, requestId, requestId]);
   expect(posts).toBe(0);
   client.dispose();

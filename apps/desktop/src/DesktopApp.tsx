@@ -766,6 +766,33 @@ export function DesktopApp(): JSX.Element {
             currentTurn?.phase === "running"),
       );
     },
+    isSameAuthorityScope: (address, provider) => {
+      const currentProject = projects.data?.catalog.projects.find(
+          (item) => item.id === address.projectId,
+        ),
+        currentSummary = projects.data?.summaries.find(
+          (item) => item.projectId === address.projectId,
+        ),
+        currentRecord = sessions
+          .project(address.projectId)
+          .records.find((item) => item.id === address.sessionId),
+        actualRoute = desktopRoute(window.location.hash);
+      return Boolean(
+        sameDesktopRoute(route, actualRoute) &&
+          actualRoute.destination === "sessions" &&
+          actualRoute.projectId === address.projectId &&
+          actualRoute.selection?.kind === "session" &&
+          actualRoute.selection.id === address.sessionId &&
+          currentProject &&
+          currentSummary?.workspace === address.workspace &&
+          currentProject.workspaces.some(
+            (scope) => scope.root === address.workspace,
+          ) &&
+          currentRecord?.projectId === address.projectId &&
+          currentRecord.mode === "chat" &&
+          currentRecord.provider === provider,
+      );
+    },
   });
   useEffect(() => {
     sessions.activate(project?.id ?? null, selectedOwnedSession);
