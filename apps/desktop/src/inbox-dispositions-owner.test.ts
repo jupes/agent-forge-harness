@@ -15,6 +15,9 @@ import {
   type InboxDispositionSnapshot,
 } from "./inbox-dispositions-owner";
 
+type DeferredResponse = { resolve?: (response: Response) => void };
+type DeferredSignal = { resolve?: () => void };
+
 const projectId = "project-a5832fa0-7a21-403b-8184-44892f0d8d86";
 const workspace = "c:/work/alpha";
 const item = { sourceKind: "unknown-bead-write" as const, stableItemId: "bead-write:owner-test", sourceRevision: "notice-1" };
@@ -213,18 +216,18 @@ test("a failed exact review does not authorize a replacement request", async () 
 });
 
 test("a delayed collection from an old activation cannot repopulate the new scope", async () => {
-  let finish: ((response: Response) => void) | null = null;
-  let startCollection: (() => void) | null = null;
-  const collectionStarted = new Promise<void>((resolve) => { startCollection = resolve; });
+  const finish: DeferredResponse = {};
+  const startCollection: DeferredSignal = {};
+  const collectionStarted = new Promise<void>((resolve) => { startCollection.resolve = resolve; });
   const read: OperatorRead = async () => {
-    startCollection?.();
-    return new Promise<Response>((resolve) => { finish = resolve; });
+    startCollection.resolve?.();
+    return new Promise<Response>((resolve) => { finish.resolve = resolve; });
   };
   const owner = fixture(async () => envelope({}), read, () => ({ activation, sources: [proof()] }), []);
   const pending = owner.refresh();
   await collectionStarted;
   owner.activate({ ...activation, scope: { projectId, workspace: "c:/work/other" }, generation: 2 });
-  const resolve = finish;
+  const resolve = finish.resolve;
   if (!resolve) throw Error("Expected the old collection read to be waiting.");
   resolve(envelope({ entries: [], receipts: [receiptFor(original("77c37127-1c22-4a2a-8e7d-69cc74ff1215"))] }));
   await pending;
@@ -246,12 +249,12 @@ test("a fresh owner recovers retained originals from the server collection witho
 
 test("a second click cannot start another original while reservation is pending", async () => {
   const id = "77c37127-1c22-4a2a-8e7d-69cc74ff1216";
-  let finishReserve: ((response: Response) => void) | null = null;
+  const finishReserve: DeferredResponse = {};
   const urls: string[] = [];
   const post: OperatorPost = async (url, body) => {
     urls.push(url);
     const value = inboxDispositionOriginalSchema.parse(body);
-    if (url.endsWith("/requests")) return new Promise<Response>((resolve) => { finishReserve = (response) => resolve(response); });
+    if (url.endsWith("/requests")) return new Promise<Response>((resolve) => { finishReserve.resolve = resolve; });
     const receipt = receiptFor(value, "applied");
     return envelope({ entry: { projectId, workspace, item: value.item, revision: 1, operation: value.operation, updatedAt: "2026-10-31T18:01:00.000Z" }, receipt });
   };
@@ -259,7 +262,7 @@ test("a second click cannot start another original while reservation is pending"
   await owner.refresh();
   const first = owner.acknowledge(proof(), "done");
   expect(await owner.acknowledge(proof(), "done")).toMatchObject({ state: "not-sent" });
-  const resolve = finishReserve;
+  const resolve = finishReserve.resolve;
   if (!resolve) throw Error("Expected the original reservation to be waiting.");
   resolve(envelope({ entry: null, receipt: receiptFor(original(id)) }));
   expect(await first).toMatchObject({ state: "confirmed" });
@@ -299,16 +302,16 @@ test("a delayed exact read cannot restore a hold after a newer terminal discard"
   const reserved = receiptFor(value);
   const stored = inboxDispositionStoredOriginalSchema.parse({ ...value, projectId });
   const discarded = inboxDispositionReceiptSchema.parse({ original: stored, phase: "refused", reservedAt: reserved.reservedAt, settledAt: "2026-10-31T18:02:00.000Z", outcome: "refused", refusalCode: "discarded", refusalReason: "Explicitly discarded." });
-  let finishExact: ((response: Response) => void) | null = null;
+  const finishExact: DeferredResponse = {};
   const read: OperatorRead = async (url) => url.endsWith("/requests/" + id)
-    ? new Promise<Response>((resolve) => { finishExact = resolve; })
+    ? new Promise<Response>((resolve) => { finishExact.resolve = resolve; })
     : envelope({ entries: [], receipts: [reserved] });
   const post: OperatorPost = async () => envelope({ entry: null, receipt: discarded });
   const owner = fixture(post, read, () => ({ activation, sources: [proof()] }), [id], [reserved]);
   await owner.refresh();
   const pendingRead = owner.checkOriginal(id);
   expect(await owner.discard(value)).toMatchObject({ state: "confirmed", value: { receipt: { phase: "refused" } } });
-  const resolve = finishExact;
+  const resolve = finishExact.resolve;
   if (!resolve) throw Error("Expected the exact read to be waiting.");
   resolve(envelope({ entry: null, receipt: reserved }));
   await pendingRead;
@@ -410,17 +413,17 @@ test("a caller-mutated proof cannot authorize applying the captured original", a
 });
 
 test("a late A-scope reservation reply remains a global hold and never enters B's visible rows", async () => {
-  let finishReserve: ((response: Response) => void) | null = null;
+  const finishReserve: DeferredResponse = {};
   const urls: string[] = [];
   const owner = fixture(async (url) => {
     urls.push(url);
-    if (url.endsWith("/requests")) return new Promise<Response>((resolve) => { finishReserve = resolve; });
+    if (url.endsWith("/requests")) return new Promise<Response>((resolve) => { finishReserve.resolve = resolve; });
     return envelope({});
   }, async () => envelope({ entries: [], receipts: [] }), () => ({ activation, sources: [proof()] }), ["77c37127-1c22-4a2a-8e7d-69cc74ff1284"]);
   await owner.refresh();
   const pending = owner.acknowledge(proof(), "done");
   owner.activate({ ...activation, scope: { projectId, workspace: "c:/work/other" }, generation: 2 });
-  const resolve = finishReserve;
+  const resolve = finishReserve.resolve;
   if (!resolve) throw Error("Expected the A-scope reservation to remain pending.");
   resolve(envelope({ entry: null, receipt: receiptFor(original("77c37127-1c22-4a2a-8e7d-69cc74ff1284")) }));
   await pending;
@@ -474,16 +477,16 @@ test("checking an exact original during refresh does not supersede that refresh"
   const reserved = receiptFor(original(id));
   let recoveryReads = 0;
   let exactReads = 0;
-  let finishRecovery: ((response: Response) => void) | null = null;
-  let markSecondRecoveryStarted: (() => void) | null = null;
-  const secondRecoveryStarted = new Promise<void>((resolve) => { markSecondRecoveryStarted = resolve; });
+  const finishRecovery: DeferredResponse = {};
+  const markSecondRecoveryStarted: DeferredSignal = {};
+  const secondRecoveryStarted = new Promise<void>((resolve) => { markSecondRecoveryStarted.resolve = resolve; });
   const client = createInboxDispositionsClient({
     post: async () => envelope({}),
     read: async (url) => {
       if (url.endsWith("/recovery")) {
         if (++recoveryReads === 2) {
-          markSecondRecoveryStarted?.();
-          return new Promise<Response>((resolve) => { finishRecovery = resolve; });
+          markSecondRecoveryStarted.resolve?.();
+          return new Promise<Response>((resolve) => { finishRecovery.resolve = resolve; });
         }
         return envelope({ version: 1, complete: true, receipts: [reserved] });
       }
@@ -503,7 +506,7 @@ test("checking an exact original during refresh does not supersede that refresh"
   expect(await owner.checkOriginal(id)).toMatchObject({ state: "unavailable" });
   expect(exactReads).toBe(0);
   expect(recoveryReads).toBe(2);
-  const finish = finishRecovery;
+  const finish = finishRecovery.resolve;
   if (!finish) throw Error("Expected the active recovery read to remain pending.");
   finish(envelope({ version: 1, complete: true, receipts: [reserved] }));
   await refreshing;
@@ -514,16 +517,16 @@ test("a reserve review during refresh revokes old permission without superseding
   const id = "77c37127-1c22-4a2a-8e7d-69cc74ff1302";
   let recoveryReads = 0;
   let exactReads = 0;
-  let finishRecovery: ((response: Response) => void) | null = null;
-  let markThirdRecoveryStarted: (() => void) | null = null;
-  const thirdRecoveryStarted = new Promise<void>((resolve) => { markThirdRecoveryStarted = resolve; });
+  const finishRecovery: DeferredResponse = {};
+  const markThirdRecoveryStarted: DeferredSignal = {};
+  const thirdRecoveryStarted = new Promise<void>((resolve) => { markThirdRecoveryStarted.resolve = resolve; });
   const client = createInboxDispositionsClient({
     post: async () => { throw Error("Reserve response lost."); },
     read: async (url) => {
       if (url.endsWith("/recovery")) {
         if (++recoveryReads === 3) {
-          markThirdRecoveryStarted?.();
-          return new Promise<Response>((resolve) => { finishRecovery = resolve; });
+          markThirdRecoveryStarted.resolve?.();
+          return new Promise<Response>((resolve) => { finishRecovery.resolve = resolve; });
         }
         return envelope({ version: 1, complete: true, receipts: [] });
       }
@@ -548,7 +551,7 @@ test("a reserve review during refresh revokes old permission without superseding
   expect(exactReads).toBe(1);
   expect(recoveryReads).toBe(3);
   expect(owner.canStartReviewedNewIntent(id, proof())).toBe(false);
-  const finish = finishRecovery;
+  const finish = finishRecovery.resolve;
   if (!finish) throw Error("Expected the active recovery read to remain pending.");
   finish(envelope({ version: 1, complete: true, receipts: [] }));
   await refreshing;
@@ -556,16 +559,16 @@ test("a reserve review during refresh revokes old permission without superseding
 });
 
 test("a terminal apply reply arriving after scope change is reconciled globally only", async () => {
-  let completeApply: ((response: Response) => void) | null = null;
-  let markApplyStarted: (() => void) | null = null;
-  const applyStarted = new Promise<void>((resolve) => { markApplyStarted = resolve; });
+  const completeApply: DeferredResponse = {};
+  const markApplyStarted: DeferredSignal = {};
+  const applyStarted = new Promise<void>((resolve) => { markApplyStarted.resolve = resolve; });
   const id = "77c37127-1c22-4a2a-8e7d-69cc74ff1288";
   const owner = fixture(async (url, body) => {
     const submitted = inboxDispositionOriginalSchema.parse(body);
     if (url.endsWith("/requests")) return envelope({ entry: null, receipt: receiptFor(submitted) });
     if (url.endsWith("/inbox-dispositions")) {
-      markApplyStarted?.();
-      return new Promise<Response>((resolve) => { completeApply = resolve; });
+      markApplyStarted.resolve?.();
+      return new Promise<Response>((resolve) => { completeApply.resolve = resolve; });
     }
     return envelope({});
   }, async () => envelope({ entries: [], receipts: [] }), () => ({ activation, sources: [proof()] }), [id]);
@@ -573,7 +576,7 @@ test("a terminal apply reply arriving after scope change is reconciled globally 
   const pending = owner.acknowledge(proof(), "done");
   await applyStarted;
   owner.activate({ ...activation, scope: { projectId, workspace: "c:/work/other" }, generation: 2 });
-  const finish = completeApply;
+  const finish = completeApply.resolve;
   if (!finish) throw Error("Expected the old-scope apply to remain pending.");
   const applied = receiptFor(original(id), "applied");
   finish(envelope({ entry: { projectId, workspace, item, revision: 1, operation: "done", updatedAt: "2026-10-31T18:01:00.000Z" }, receipt: applied }));
@@ -582,13 +585,13 @@ test("a terminal apply reply arriving after scope change is reconciled globally 
 });
 
 test("a stale recovery completion cannot mark the replacement activation ready", async () => {
-  let finishRecovery: ((response: Response) => void) | null = null;
+  const finishRecovery: DeferredResponse = {};
   let recoveryReads = 0;
   const client = createInboxDispositionsClient({
     read: async (url) => {
       if (url.endsWith("/recovery")) {
         recoveryReads++;
-        return new Promise<Response>((resolve) => { finishRecovery = resolve; });
+        return new Promise<Response>((resolve) => { finishRecovery.resolve = resolve; });
       }
       return envelope({ entries: [], receipts: [] });
     },
@@ -599,7 +602,7 @@ test("a stale recovery completion cannot mark the replacement activation ready",
   owner.activate(activation);
   const pending = owner.refresh();
   owner.activate({ ...activation, scope: { projectId, workspace: "c:/work/other" }, generation: 2 });
-  const finish = finishRecovery;
+  const finish = finishRecovery.resolve;
   if (!finish) throw Error("Expected the first private-home recovery read to be pending.");
   finish(envelope({ version: 1, complete: true, receipts: [receiptFor(original("77c37127-1c22-4a2a-8e7d-69cc74ff1290"))] }));
   await pending;
@@ -612,23 +615,23 @@ test("an old-scope write settling during refresh clears loading and requires fre
   const nextActivation: InboxDispositionActivation = { ...activation, scope: { projectId, workspace: "c:/work/other" }, generation: 2 };
   let currentActivation = activation;
   let recoveryReads = 0;
-  let finishRecovery: ((response: Response) => void) | null = null;
-  let finishApply: ((response: Response) => void) | null = null;
-  let markNextRecoveryStarted: (() => void) | null = null;
-  let markApplyStarted: (() => void) | null = null;
-  const nextRecoveryStarted = new Promise<void>((resolve) => { markNextRecoveryStarted = resolve; });
-  const applyStarted = new Promise<void>((resolve) => { markApplyStarted = resolve; });
+  const finishRecovery: DeferredResponse = {};
+  const finishApply: DeferredResponse = {};
+  const markNextRecoveryStarted: DeferredSignal = {};
+  const markApplyStarted: DeferredSignal = {};
+  const nextRecoveryStarted = new Promise<void>((resolve) => { markNextRecoveryStarted.resolve = resolve; });
+  const applyStarted = new Promise<void>((resolve) => { markApplyStarted.resolve = resolve; });
   const client = createInboxDispositionsClient({
     post: async (url, body) => {
       const submitted = inboxDispositionOriginalSchema.parse(body);
       if (url.endsWith("/requests")) return envelope({ entry: null, receipt: receiptFor(submitted) });
-      markApplyStarted?.();
-      return new Promise<Response>((resolve) => { finishApply = resolve; });
+      markApplyStarted.resolve?.();
+      return new Promise<Response>((resolve) => { finishApply.resolve = resolve; });
     },
     read: async (url) => {
     if (url.endsWith("/recovery") && ++recoveryReads === 2) {
-      markNextRecoveryStarted?.();
-      return new Promise<Response>((resolve) => { finishRecovery = resolve; });
+      markNextRecoveryStarted.resolve?.();
+      return new Promise<Response>((resolve) => { finishRecovery.resolve = resolve; });
     }
     return url.endsWith("/recovery")
       ? envelope({ version: 1, complete: true, receipts: [] })
@@ -647,7 +650,7 @@ test("an old-scope write settling during refresh clears loading and requires fre
   const refreshing = owner.refresh();
   await nextRecoveryStarted;
 
-  const settleApply = finishApply;
+  const settleApply = finishApply.resolve;
   if (!settleApply) throw Error("Expected the old-scope apply to remain pending.");
   settleApply(envelope({
     entry: { projectId, workspace, item, revision: 1, operation: "done", updatedAt: "2026-10-31T18:01:00.000Z" },
@@ -659,7 +662,7 @@ test("an old-scope write settling during refresh clears loading and requires fre
     error: "An Inbox write settled during refresh; refresh again before acting.",
   });
 
-  const staleRecovery = finishRecovery;
+  const staleRecovery = finishRecovery.resolve;
   if (!staleRecovery) throw Error("Expected the replacement-scope recovery read to be pending.");
   staleRecovery(envelope({ version: 1, complete: true, receipts: [] }));
   await refreshing;
@@ -746,27 +749,27 @@ test("a read started during discard cannot replace the terminal receipt after th
     refusalCode: "discarded",
     refusalReason: "Explicit discard.",
   });
-  let finishRead: ((response: Response) => void) | null = null;
-  let finishDiscard: ((response: Response) => void) | null = null;
-  let markReadStarted: (() => void) | null = null;
-  let markDiscardStarted: (() => void) | null = null;
-  const readStarted = new Promise<void>((resolve) => { markReadStarted = resolve; });
-  const discardStarted = new Promise<void>((resolve) => { markDiscardStarted = resolve; });
+  const finishRead: DeferredResponse = {};
+  const finishDiscard: DeferredResponse = {};
+  const markReadStarted: DeferredSignal = {};
+  const markDiscardStarted: DeferredSignal = {};
+  const readStarted = new Promise<void>((resolve) => { markReadStarted.resolve = resolve; });
+  const discardStarted = new Promise<void>((resolve) => { markDiscardStarted.resolve = resolve; });
   const read: OperatorRead = async (url) => url.endsWith("/requests/" + id)
-    ? new Promise<Response>((resolve) => { finishRead = resolve; markReadStarted?.(); })
+    ? new Promise<Response>((resolve) => { finishRead.resolve = resolve; markReadStarted.resolve?.(); })
     : envelope({ entries: [], receipts: [reserved] });
-  const post: OperatorPost = async () => new Promise<Response>((resolve) => { finishDiscard = resolve; markDiscardStarted?.(); });
+  const post: OperatorPost = async () => new Promise<Response>((resolve) => { finishDiscard.resolve = resolve; markDiscardStarted.resolve?.(); });
   const owner = fixture(post, read, () => ({ activation, sources: [proof()] }), [id], [reserved]);
   await owner.refresh();
   const discarding = owner.discard(original(id));
   await discardStarted;
   const staleRead = owner.checkOriginal(id);
   await readStarted;
-  const settle = finishDiscard;
+  const settle = finishDiscard.resolve;
   if (!settle) throw Error("Expected the discard write to be pending.");
   settle(envelope({ entry: null, receipt: discarded }));
   expect(await discarding).toMatchObject({ state: "confirmed", value: { receipt: { phase: "refused" } } });
-  const finish = finishRead;
+  const finish = finishRead.resolve;
   if (!finish) throw Error("Expected the older exact read to be pending.");
   finish(envelope({ entry: null, receipt: reserved }));
   expect(await staleRead).toMatchObject({ state: "unknown" });
