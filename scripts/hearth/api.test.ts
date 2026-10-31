@@ -34,6 +34,7 @@ import type {
   SmithsView,
 } from "../../types/hearth";
 import type { OwnedSessionRecord } from "../../types/owned-session";
+import type { InboxDispositionOriginal } from "../../types/inbox";
 import {
   type ProjectCheckpointReviewBinding,
   type ProjectCheckpointReviewOriginal,
@@ -90,6 +91,7 @@ import type { CouncilPreview } from "../council/service";
 import { parseCouncilProfileJson } from "../council/types";
 import { REVIEW_NOTE_LIMIT } from "../dashboard/forge-run-model";
 import { createProjectCheckpointReviewStore } from "../forge/project-checkpoint-review-store";
+import { createInboxDispositionStore } from "../inbox/disposition-store";
 import { hashText } from "../hash-text";
 import { createRestartIdentityJournal } from "../identities/restart-index";
 import {
@@ -624,6 +626,42 @@ test("an effect receives its actual persisted operator audit id; HTTP input cann
   expect(calls).toBe(1);
 });
 
+test("an unflagged action keeps the shared API's legacy duplicate-key parsing", async () => {
+  const row: ActionRoute<null> = {
+    kind: "action",
+    method: "POST",
+    path: "/duplicate-key-compatibility",
+    action: "fixture.duplicate.compatibility",
+    validate: () => ({ ok: true, value: null }),
+    subject: () => ({}),
+    effect: () => ({ status: 200, data: { accepted: true } }),
+  };
+  const h = await start({ api: { decorate: (routes) => [...routes, row] } });
+  const response = await post(h, row.path, '{"value":1,"value":2}');
+  expect(response.status).toBe(200);
+  expect((await envelope(response)).data).toEqual({ accepted: true });
+  expect(h.events(["operator.action"])).toHaveLength(1);
+});
+
+test("the opt-in duplicate scanner scopes keys to their own objects across arrays", async () => {
+  const row: ActionRoute<unknown> = {
+    kind: "action",
+    method: "POST",
+    path: "/duplicate-key-scope",
+    action: "fixture.duplicate.scope",
+    rejectDuplicateBodyKeys: true,
+    validate: (request) => ({ ok: true, value: request.body }),
+    subject: () => ({}),
+    effect: (input) => ({ status: 200, data: input }),
+  };
+  const h = await start({ api: { decorate: (routes) => [...routes, row] } });
+  const response = await post(h, row.path, '{"left":{"same":1},"right":{"same":2},"values":[{"same":3},{"same":4}]}');
+  expect(response.status).toBe(200);
+  const duplicate = await post(h, row.path, '{"left":{"same":1,"same":2}}');
+  expect(duplicate.status).toBe(400);
+  expect(h.events(["operator.action"])).toHaveLength(1);
+});
+
 test("desktop recovery's action row refuses invalid input and failed audits before restart", async () => {
   let effects = 0;
   const decorate = (routes: readonly ApiRoute[]) => [
@@ -724,6 +762,89 @@ test(
     expect((await envelope(recovered)).data).toEqual(reservedEnvelope.data);
   },
 );
+
+test("Inbox action bodies reject decoded duplicate keys before audit but preserve escaped string content", async () => {
+  const h = await start();
+  const path = `/projects/${FIXTURE_PROJECT_ID}/inbox-dispositions/requests`;
+  const before = h.events();
+  const sourceCalls = h.bd.calls.length;
+  const aliasDuplicate = `{"requestId":"${API_INBOX_RESERVE_ID}","request\\u0049d":"${API_INBOX_RESERVE_ID}","expectedCatalogRevision":1,"workspace":"${workspaceKey(h.workspace)}","item":{"sourceKind":"unknown-bead-write","stableItemId":"bead-write:dup","sourceRevision":"notice-1"},"expectedRevision":0,"operation":"done"}`;
+  const nestedDuplicate = `{"requestId":"${API_INBOX_RESERVE_ID}","expectedCatalogRevision":1,"workspace":"${workspaceKey(h.workspace)}","item":{"sourceKind":"unknown-bead-write","stableItemId":"bead-write:first","stableItemId":"bead-write:second","sourceRevision":"notice-1"},"expectedRevision":0,"operation":"done"}`;
+  for (const raw of [aliasDuplicate, nestedDuplicate]) {
+    const response = await post(h, path, raw);
+    expect(response.status).toBe(400);
+    const body = await response.text();
+    expect(body).not.toContain("requestId");
+  }
+  expect(h.events()).toEqual(before);
+  const escaped = {
+    ...apiInboxOriginal(API_INBOX_RESERVE_ID),
+    workspace: workspaceKey(h.workspace),
+    item: {
+      sourceKind: "unknown-bead-write" as const,
+      stableItemId: 'bead-write:"same":1,"same":2:{braces}\\tail',
+      sourceRevision: 'notice:"{escaped}\\tail',
+    },
+  };
+  const accepted = await post(h, path, escaped);
+  expect(accepted.status).toBe(200);
+  expect((await envelope<{ receipt: { original: typeof escaped } }>(accepted)).data?.receipt.original.item).toEqual(escaped.item);
+  expect(h.bd.calls).toHaveLength(sourceCalls);
+});
+
+test("an A-workspace hearth refuses Inbox requests for a sibling project workspace", async () => {
+  const h = await start();
+  const catalog = createProjectStore(h.home).read();
+  const foreign = `${workspaceKey(h.workspace)}/sibling`;
+  catalog.projects[0]!.workspaces.push({
+    root: foreign,
+    repositories: [foreign],
+    epicIds: ["sibling-epic"],
+  });
+  writeOwnerOnly(projectCatalogPath(h.home), JSON.stringify(catalog));
+  const original = {
+    ...apiInboxOriginal("77c37127-1c22-4a2a-8e7d-69cc74ff1294"),
+    workspace: foreign,
+  };
+  const path = `/projects/${FIXTURE_PROJECT_ID}/inbox-dispositions/requests`;
+  const before = h.events();
+  const reserve = await post(h, path, original);
+  expect(reserve.status).toBe(400);
+  const exact = await get(h, `${path}/${original.requestId}`, h.headers(h.hearth.token));
+  expect(exact.status).toBe(404);
+  const discard = await post(
+    h,
+    `${path}/${original.requestId}/discard`,
+    original,
+  );
+  expect(discard.status).toBe(400);
+  expect(h.events()).toEqual(before);
+});
+
+test("exact Inbox recovery remains read-only after the project is archived", async () => {
+  const h = await start();
+  const original: InboxDispositionOriginal = {
+    ...apiInboxOriginal(API_INBOX_READ_ID),
+    expectedCatalogRevision: createProjectStore(h.home).read().revision,
+    workspace: workspaceKey(h.workspace),
+  };
+  const path = `/projects/${FIXTURE_PROJECT_ID}/inbox-dispositions/requests`;
+  const reserved = await post(h, path, original);
+  expect(reserved.status).toBe(200);
+  const receipt = (await envelope<{ receipt: { phase: string } }>(reserved)).data;
+  const beforeRead = h.events();
+  await createProjectStore(h.home).preferences(FIXTURE_PROJECT_ID, 1, {
+    archived: true,
+  });
+  const recovered = await get(
+    h,
+    `${path}/${original.requestId}`,
+    h.headers(h.hearth.token),
+  );
+  expect(recovered.status).toBe(200);
+  expect((await envelope(recovered)).data).toEqual(receipt);
+  expect(h.events()).toEqual(beforeRead);
+});
 
 type ProjectCouncilSeed = {
   requestId: string;
@@ -976,6 +1097,65 @@ const API_CHECKPOINT_REVIEW_RETIRE_ID = "960cd714-5279-4238-b2dc-ecab29435612";
 const API_CHECKPOINT_REVIEW_READBACK_ID =
   "960cd714-5279-4238-b2dc-ecab29435613";
 const API_CHECKPOINT_REVIEW_BEAD = "alpha-epic.1";
+const API_INBOX_RESERVE_ID = "77c37127-1c22-4a2a-8e7d-69cc74ff1201";
+const API_INBOX_APPLY_ID = "77c37127-1c22-4a2a-8e7d-69cc74ff1202";
+const API_INBOX_DISCARD_ID = "77c37127-1c22-4a2a-8e7d-69cc74ff1203";
+const API_INBOX_READ_ID = "77c37127-1c22-4a2a-8e7d-69cc74ff1204";
+const inboxBdCallCounts = new WeakMap<TestHearth, number>();
+
+function apiInboxOriginal(requestId: string): InboxDispositionOriginal {
+  return {
+    requestId,
+    expectedCatalogRevision: 1,
+    workspace: "",
+    item: {
+      sourceKind: "unknown-bead-write",
+      stableItemId: `bead-write:api-${requestId.slice(-4)}`,
+      sourceRevision: "notice-1",
+    },
+    expectedRevision: 0,
+    operation: "done",
+  };
+}
+
+async function prepareInboxAction(
+  h: TestHearth,
+  key: string,
+  requestId: string,
+  reserve: boolean,
+): Promise<InboxDispositionOriginal> {
+  const original: InboxDispositionOriginal = {
+    ...apiInboxOriginal(requestId),
+    expectedCatalogRevision: createProjectStore(h.home).read().revision,
+    workspace: workspaceKey(h.workspace),
+  };
+  ACTIONS[key]!.valid.body = original;
+  if (reserve)
+    await createInboxDispositionStore(h.home).reserve(
+      FIXTURE_PROJECT_ID,
+      original.workspace,
+      original,
+    );
+  inboxBdCallCounts.set(h, h.bd.calls.length);
+  return original;
+}
+
+function expectInboxSourceUntouched(h: TestHearth): void {
+  expect(h.bd.calls.length).toBe(inboxBdCallCounts.get(h));
+}
+
+async function seedInboxRead(h: TestHearth): Promise<void> {
+  const original = {
+    ...apiInboxOriginal(API_INBOX_READ_ID),
+    expectedCatalogRevision: createProjectStore(h.home).read().revision,
+    workspace: workspaceKey(h.workspace),
+  };
+  await createInboxDispositionStore(h.home).reserve(
+    FIXTURE_PROJECT_ID,
+    original.workspace,
+    original,
+  );
+}
 function apiProjectCreateOriginal(slug: string, root = "") {
   return {
     slug,
@@ -2388,7 +2568,7 @@ const ACTIONS: Record<string, ActionFixture> = {
         },
       );
     },
-    happened: async (_h, answer) => {
+    happened: async (h, answer) => {
       expect(answer).toMatchObject({
         family: "codex-chat-fork",
         requestId: API_CODEX_CHAT_FORK_RESERVE_ID,
@@ -4313,6 +4493,93 @@ const ACTIONS: Record<string, ActionFixture> = {
     },
     invalid: { path: "/council-api/runs/trailing./cancel", body: {} },
   },
+  "POST /projects/:id/inbox-dispositions/requests": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/inbox-dispositions/requests`,
+      body: apiInboxOriginal(API_INBOX_RESERVE_ID),
+      status: 200,
+      audit: { requestId: API_INBOX_RESERVE_ID },
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/inbox-dispositions/requests`,
+      body: { requestId: "invalid", extra: true },
+    },
+    prepare: async (h) => {
+      await prepareInboxAction(
+        h,
+        "POST /projects/:id/inbox-dispositions/requests",
+        API_INBOX_RESERVE_ID,
+        false,
+      );
+    },
+    happened: async (h, answer) => {
+      expectInboxSourceUntouched(h);
+      expect(answer).toMatchObject({
+        entry: null,
+        receipt: {
+          phase: "reserved",
+          original: { projectId: FIXTURE_PROJECT_ID },
+        },
+      });
+    },
+  },
+  "POST /projects/:id/inbox-dispositions": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/inbox-dispositions`,
+      body: apiInboxOriginal(API_INBOX_APPLY_ID),
+      status: 200,
+      audit: { requestId: API_INBOX_APPLY_ID },
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/inbox-dispositions`,
+      body: { requestId: "invalid", extra: true },
+    },
+    prepare: async (h) => {
+      await prepareInboxAction(
+        h,
+        "POST /projects/:id/inbox-dispositions",
+        API_INBOX_APPLY_ID,
+        true,
+      );
+    },
+    happened: async (h, answer) => {
+      expectInboxSourceUntouched(h);
+      expect(answer).toMatchObject({
+        entry: { operation: "done", revision: 1 },
+        receipt: { phase: "applied", outcome: "applied" },
+      });
+    },
+  },
+  "POST /projects/:id/inbox-dispositions/requests/:requestId/discard": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/inbox-dispositions/requests/${API_INBOX_DISCARD_ID}/discard`,
+      body: apiInboxOriginal(API_INBOX_DISCARD_ID),
+      status: 200,
+      audit: { requestId: API_INBOX_DISCARD_ID },
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/inbox-dispositions/requests/not-a-uuid/discard`,
+      body: { requestId: "invalid", extra: true },
+    },
+    prepare: async (h) => {
+      await prepareInboxAction(
+        h,
+        "POST /projects/:id/inbox-dispositions/requests/:requestId/discard",
+        API_INBOX_DISCARD_ID,
+        true,
+      );
+    },
+    happened: async (h, answer) => {
+      expectInboxSourceUntouched(h);
+      expect(answer).toMatchObject({
+        entry: null,
+        receipt: {
+          phase: "refused",
+          refusalCode: "discarded",
+        },
+      });
+    },
+  },
   "POST /dev-api/forge-run/review": {
     valid: {
       path: "/dev-api/forge-run/review",
@@ -4342,6 +4609,8 @@ const ACTIONS: Record<string, ActionFixture> = {
 
 /** A concrete path per read row; a row with none fails the suite. */
 const READS: Record<string, string> = {
+  "GET /projects/:id/inbox-dispositions": `/projects/${FIXTURE_PROJECT_ID}/inbox-dispositions`,
+  "GET /projects/:id/inbox-dispositions/requests/:requestId": `/projects/${FIXTURE_PROJECT_ID}/inbox-dispositions/requests/${API_INBOX_READ_ID}`,
   "GET /projects/:id/runs/:slug/checkpoints/:beadId/reviews":
     checkpointReviewPath(FIXTURE_PROJECT_ID),
   "GET /projects/:id/runs/:slug/checkpoints/:beadId/reviews/:requestId":
@@ -6531,6 +6800,7 @@ describe("every read row (iterating the table)", () => {
       API_PROJECT_CREATE_READ_ID,
       "api-project-read",
     );
+    await seedInboxRead(h);
     projectCouncilPaths(await seedProjectCouncilReadOriginal(h));
     await seedCheckpointReviewRead(h);
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
@@ -6590,6 +6860,7 @@ describe("every read row (iterating the table)", () => {
       API_PROJECT_CREATE_READ_ID,
       "api-project-read",
     );
+    await seedInboxRead(h);
     projectCouncilPaths(await seedProjectCouncilReadOriginal(h));
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");

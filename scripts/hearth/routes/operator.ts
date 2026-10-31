@@ -74,6 +74,7 @@ import {
   workspaceReads,
 } from "./operator-reads";
 import { createProjectActivityRoutes } from "./project-activity";
+import { createInboxDispositionRoutes } from "./inbox-dispositions";
 import { projectBeadWriteRoutes } from "./project-bead-writes";
 import { projectBeadsRoute } from "./project-beads";
 import { createProjectCheckpointReviewRoutes } from "./project-checkpoint-reviews";
@@ -551,6 +552,10 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
   );
   const observations = createSessionObservationRoutes(deps, projectSnapshot);
   const activity = createProjectActivityRoutes(deps, projectSnapshot);
+  const inboxDispositions = createInboxDispositionRoutes(
+    deps.projectHome,
+    deps.workspace,
+  );
   const reads: ReadRoute[] = [
     ...providerLogins.reads,
     providers.read,
@@ -571,6 +576,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     counts,
     scoreboard,
     projects,
+    ...inboxDispositions.reads,
     createOptionsRead,
     scopePreview,
     createList,
@@ -657,6 +663,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       conversations.events,
       ownedSessions.events,
       ...actions(deps),
+      ...inboxDispositions.actions,
       ...smithCreates.actions,
       ...smithEdits.actions,
       ...smithRoutingEdits.actions,
