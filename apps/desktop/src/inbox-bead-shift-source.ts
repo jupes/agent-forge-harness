@@ -1,11 +1,11 @@
-import type { OperatorMove } from "../../../scripts/scheduler/queue-table";
+import { projectBeadsPageSchema } from "../../../scripts/projects/beads-protocol";
 import { workspaceKey } from "../../../scripts/projects/scope";
+import { projectWorkbenchPageSchema } from "../../../scripts/projects/workbench-protocol";
+import type { OperatorMove } from "../../../scripts/scheduler/queue-table";
+import { projectShiftsPageSchema } from "../../../scripts/shifts/protocol";
 import type { ProjectBeadsPage } from "../../../types/project-beads";
 import type { ProjectShiftsPage } from "../../../types/project-shifts";
 import type { ProjectWorkbenchPage } from "../../../types/project-workbench";
-import { projectBeadsPageSchema } from "../../../scripts/projects/beads-protocol";
-import { projectWorkbenchPageSchema } from "../../../scripts/projects/workbench-protocol";
-import { projectShiftsPageSchema } from "../../../scripts/shifts/protocol";
 import type { InboxDispositionScope } from "./inbox-dispositions-client";
 import { verifyProjectShiftReceipt } from "./project-shift-receipt";
 
@@ -200,11 +200,7 @@ export async function projectInboxBeadShiftSources(
       beads: beadsRaw,
       fresh: true,
     };
-  if (
-    retainedPair?.coherent &&
-    workbenchLastVerified &&
-    beadsLastVerified
-  )
+  if (retainedPair?.coherent && workbenchLastVerified && beadsLastVerified)
     priorPair = {
       ...retainedPair,
       workbench: workbenchLastVerified,
@@ -256,7 +252,8 @@ export async function projectInboxBeadShiftSources(
     ];
     for (const candidate of candidates) {
       const checked = projectShiftsPageSchema.safeParse(candidate);
-      if (!checked.success || checked.data.projectId !== scope.projectId) continue;
+      if (!checked.success || checked.data.projectId !== scope.projectId)
+        continue;
       try {
         for (const receipt of checked.data.items) {
           await verifyProjectShiftReceipt(scope, receipt, {
@@ -278,7 +275,8 @@ export async function projectInboxBeadShiftSources(
     for (const { card, bead } of beadPair.candidates) {
       const { entry } = card;
       if (entry.state !== "proposed" && entry.state !== "halted") continue;
-      const sourceKind = entry.state === "proposed" ? "bead-approval" : "halted-bead",
+      const sourceKind =
+          entry.state === "proposed" ? "bead-approval" : "halted-bead",
         allowedMoves = beadPair.fresh ? [...card.moves] : [];
       const itemTuple = [
         "inbox-source-v1",
@@ -309,7 +307,8 @@ export async function projectInboxBeadShiftSources(
           fresh: beadPair.fresh,
           complete: beadPair.fresh,
           resolved: false,
-          unresolvedReason: "No independent exact-original resolution witness is available.",
+          unresolvedReason:
+            "No independent exact-original resolution witness is available.",
         };
       if (entry.state === "proposed") {
         facts.push({
@@ -346,7 +345,10 @@ export async function projectInboxBeadShiftSources(
   if (shiftsRetained) {
     for (const receipt of shiftsRetained.items) {
       const { intent, observation } = receipt;
-      if (observation.phase !== "needs-recovery" && observation.phase !== "stopped")
+      if (
+        observation.phase !== "needs-recovery" &&
+        observation.phase !== "stopped"
+      )
         continue;
       const itemTuple = [
         "inbox-source-v1",
@@ -374,7 +376,8 @@ export async function projectInboxBeadShiftSources(
         fresh: shiftsIsCurrent,
         complete: shiftsIsCurrent,
         resolved: false,
-        unresolvedReason: "No independent exact-original resolution witness is available.",
+        unresolvedReason:
+          "No independent exact-original resolution witness is available.",
       };
       if (observation.phase === "needs-recovery") {
         facts.push({
@@ -429,7 +432,10 @@ function joinBeadSources(
 ): JoinedBeadSources {
   const cardCounts = new Map<string, number>(),
     beadById = new Map(beads.beads.map((bead) => [bead.id, bead])),
-    candidates: { card: ProjectWorkbenchPage["cards"][number]; bead: ProjectBeadsPage["beads"][number] }[] = [];
+    candidates: {
+      card: ProjectWorkbenchPage["cards"][number];
+      bead: ProjectBeadsPage["beads"][number];
+    }[] = [];
   for (const card of workbench.cards)
     cardCounts.set(
       card.entry.beadId,
@@ -497,6 +503,7 @@ function readCoverage<T>(read: InboxSourceRead<T>, verified: boolean) {
     fresh: verified,
     error: verified
       ? null
-      : read.coverage.error ?? "Source read is incomplete, stale, malformed, or out of scope.",
+      : (read.coverage.error ??
+        "Source read is incomplete, stale, malformed, or out of scope."),
   };
 }

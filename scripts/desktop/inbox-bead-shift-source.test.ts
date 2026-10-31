@@ -1,18 +1,21 @@
 import { expect, test } from "bun:test";
-import { projectBeadsPageSchema } from "../projects/beads-protocol";
-import { projectWorkbenchPageSchema } from "../projects/workbench-protocol";
-import { projectShiftsPageSchema } from "../shifts/protocol";
-import type { ProjectBeadsPage } from "../../types/project-beads";
-import type { ProjectShiftsPage, ProjectShiftReceipt } from "../../types/project-shifts";
-import type { ProjectWorkbenchPage } from "../../types/project-workbench";
-import { projectShiftInputHash } from "../../apps/desktop/src/project-shift-identities";
-import { verifyProjectShiftReceipt } from "../../apps/desktop/src/project-shift-receipt";
-import { workspaceKey } from "../projects/scope";
 import {
   type InboxBeadShiftProjection,
-  projectInboxBeadShiftSources,
   type InboxSourceRead,
+  projectInboxBeadShiftSources,
 } from "../../apps/desktop/src/inbox-bead-shift-source";
+import { projectShiftInputHash } from "../../apps/desktop/src/project-shift-identities";
+import { verifyProjectShiftReceipt } from "../../apps/desktop/src/project-shift-receipt";
+import type { ProjectBeadsPage } from "../../types/project-beads";
+import type {
+  ProjectShiftReceipt,
+  ProjectShiftsPage,
+} from "../../types/project-shifts";
+import type { ProjectWorkbenchPage } from "../../types/project-workbench";
+import { projectBeadsPageSchema } from "../projects/beads-protocol";
+import { workspaceKey } from "../projects/scope";
+import { projectWorkbenchPageSchema } from "../projects/workbench-protocol";
+import { projectShiftsPageSchema } from "../shifts/protocol";
 
 const scope = {
     projectId: "project-a5832fa0-7a21-403b-8184-44892f0d8d86",
@@ -513,8 +516,9 @@ test("incoherent current snapshots fall back atomically to the retained joined p
     read({ ...priorBeads, beads: [] }),
     read(await shifts()),
   );
-  expect(noPrior.facts.some((fact) => fact.sourceKind === "bead-approval"))
-    .toBe(false);
+  expect(
+    noPrior.facts.some((fact) => fact.sourceKind === "bead-approval"),
+  ).toBe(false);
   expect(noPrior.coverage.workbench.complete).toBe(false);
   expect(noPrior.coverage.beads.complete).toBe(false);
 });
@@ -524,7 +528,10 @@ test("failed or malformed refreshes never mix raw and retained source generation
     priorBeads = beads(),
     currentWorkbench = workbench("proposed", "2026-10-31T12:00:02.000Z"),
     currentBeads = beads("proposed", "2026-10-31T12:00:02.000Z"),
-    cases: [InboxSourceRead<ProjectWorkbenchPage>, InboxSourceRead<ProjectBeadsPage>][] = [
+    cases: [
+      InboxSourceRead<ProjectWorkbenchPage>,
+      InboxSourceRead<ProjectBeadsPage>,
+    ][] = [
       [
         { raw: {}, lastVerified: priorWorkbench, coverage: staleCoverage },
         read(currentBeads, priorBeads),
@@ -578,8 +585,9 @@ test("unbacked and proposed rows without legal approve are excluded without fals
       read(beads()),
       read(await shifts()),
     );
-    expect(result.facts.some((fact) => fact.sourceKind === "bead-approval"))
-      .toBe(false);
+    expect(
+      result.facts.some((fact) => fact.sourceKind === "bead-approval"),
+    ).toBe(false);
     expect(result.coverage.workbench.complete).toBe(true);
     expect(result.coverage.beads.complete).toBe(true);
   }
@@ -614,8 +622,9 @@ test("foreign scope, a false shift hash and duplicate Workbench rows fail closed
       read(beads()),
       read(await shifts()),
     );
-  expect(foreignScope.facts.some((fact) => fact.sourceKind === "bead-approval"))
-    .toBe(false);
+  expect(
+    foreignScope.facts.some((fact) => fact.sourceKind === "bead-approval"),
+  ).toBe(false);
   expect(foreignScope.coverage.workbench.fresh).toBe(false);
 
   const foreignBeads = { ...beads(), workspace: "/other/workspace" },
@@ -639,8 +648,9 @@ test("foreign scope, a false shift hash and duplicate Workbench rows fail closed
     read(beads()),
     read(tamperedShift),
   );
-  expect(badHash.facts.some((fact) => fact.sourceKind === "stopped-shift"))
-    .toBe(false);
+  expect(
+    badHash.facts.some((fact) => fact.sourceKind === "stopped-shift"),
+  ).toBe(false);
   expect(badHash.coverage.shifts.fresh).toBe(false);
 
   const foreignShift = structuredClone(await shifts()),
@@ -706,9 +716,7 @@ test("canonical item identity separates project and canonical workspace scope", 
     ),
     workspaceVariant = await projectFromScope(
       otherWorkspace,
-      read(
-        workbench("proposed", asOf, "Approve alpha task", otherWorkspace),
-      ),
+      read(workbench("proposed", asOf, "Approve alpha task", otherWorkspace)),
       read(beads("proposed", asOf, "Approve alpha task", otherWorkspace)),
       read(await shifts("needs-recovery", otherWorkspace)),
     );
@@ -727,8 +735,9 @@ test("duplicate shift originals do not create actionable current facts", async (
       read(beads()),
       read(duplicate),
     );
-  expect(projected.facts.some((fact) => fact.sourceKind === "stopped-shift"))
-    .toBe(false);
+  expect(
+    projected.facts.some((fact) => fact.sourceKind === "stopped-shift"),
+  ).toBe(false);
   expect(projected.coverage.shifts.complete).toBe(false);
   expect(projected.coverage.shifts.fresh).toBe(false);
 });
@@ -881,8 +890,7 @@ test("captures nested raw and retained originals before awaiting receipt verific
     throw Error("Missing retained exact shift facts");
   expect(retainedShift.sourceIdentity).toMatchObject({
     phase: "needs-recovery",
-    recomputedRequestHash:
-      priorShiftFact.sourceIdentity.recomputedRequestHash,
+    recomputedRequestHash: priorShiftFact.sourceIdentity.recomputedRequestHash,
   });
   expect(retainedShift?.fresh).toBe(false);
   expect(retainedShift?.resolved).toBe(false);
