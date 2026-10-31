@@ -414,9 +414,9 @@ async function verifyHeldReadRejectsReturnedActivation(provider: "codex" | "gemi
     posts = 0,
     writes = 0,
     observedActivation: ChatDecisionActivation | null = null,
-    sessionList = { loaded: true, loading: false, error: "" },
-    releaseRead: ((value: unknown) => void) | null = null;
-  const pendingRead = new Promise<unknown>((resolve) => { releaseRead = resolve; });
+    sessionList = { loaded: true, loading: false, error: "" };
+  const readGate: { resolve?: (value: unknown) => void } = {};
+  const pendingRead = new Promise<unknown>((resolve) => { readGate.resolve = resolve; });
   const rawIdentity = {
       requestId: "4ed0a0c0-32da-4d6d-972f-616f2489556e",
       turnRequestId,
@@ -426,6 +426,22 @@ async function verifyHeldReadRejectsReturnedActivation(provider: "codex" | "gemi
       ...(provider === "codex" ? { decision: "accept" } : { optionId: null }),
     };
   let identityStore = JSON.stringify({ version: 1, records: [rawIdentity] });
+  let inboxSelection: InboxPermissionSelection = {
+    kind: "permission",
+    state: "current",
+    complete: true,
+    actionable: true,
+    projectId,
+    workspace,
+    provider,
+    sessionId,
+    acceptedTurnId: turnRequestId,
+    offerId: approvalId,
+    snapshotGeneration: 8,
+    currentSnapshotGeneration: 8,
+    selectionGeneration,
+    currentSelectionGeneration: selectionGeneration,
+  };
   const storage = {
       getItem: () => identityStore,
       setItem: (_key: string, value: string) => { writes++; identityStore = value; },
@@ -439,22 +455,6 @@ async function verifyHeldReadRejectsReturnedActivation(provider: "codex" | "gemi
       turnRequestId,
       actionable: true,
     },
-    inboxSelection: InboxPermissionSelection = {
-      kind: "permission",
-      state: "current",
-      complete: true,
-      actionable: true,
-      projectId,
-      workspace,
-      provider,
-      sessionId,
-      acceptedTurnId: turnRequestId,
-      offerId: approvalId,
-      snapshotGeneration: 8,
-      currentSnapshotGeneration: 8,
-      selectionGeneration,
-      currentSelectionGeneration: selectionGeneration,
-    },
     scopeFor = (address: Omit<ChatDecisionActivation, "generation">) => chatDecisionAuthorityScopeIsCurrent({
       address: { ...address, generation: 0 },
       provider,
@@ -465,8 +465,11 @@ async function verifyHeldReadRejectsReturnedActivation(provider: "codex" | "gemi
       session: { id: sessionId, projectId, workspace, provider, mode: "chat" },
       sessionList,
       inboxSelection,
-    }),
-    freshAddress = { ...activationBase, inboxSelectionGeneration: selectionGeneration };
+    });
+  let freshAddress: typeof activationBase & { inboxSelectionGeneration: number } = {
+    ...activationBase,
+    inboxSelectionGeneration: selectionGeneration,
+  };
 
   let activate: (address: typeof activationBase & { inboxSelectionGeneration: number }) => void,
     view: () => unknown,
@@ -531,12 +534,15 @@ async function verifyHeldReadRejectsReturnedActivation(provider: "codex" | "gemi
     observedActivation = null;
     expect(view()).toBeNull();
     await dispatch();
-    releaseRead?.({ pending: [], receipt: null });
+    const resolveRead = readGate.resolve;
+    if (!resolveRead) throw Error("The original held read was not pending.");
+    resolveRead({ pending: [], receipt: null });
     await staleCheck;
     await dispatch();
     expect(posts).toBe(0);
     expect(writes).toBe(0);
-    expect(identityStore).toContain(rawIdentity.requestId);
+    const identityStoreSnapshot = (): string => identityStore;
+    expect(identityStoreSnapshot()).toContain(rawIdentity.requestId);
     expect(reads).toBe(1);
 
     freshAddress = { ...activationBase, inboxSelectionGeneration: selectionGeneration };
@@ -592,6 +598,7 @@ async function verifyLiveDecisionReadRejectsReturnedActivation(provider: "codex"
     saved: string | null = null;
   const delayedDecisionReads = new Map<number, Promise<unknown>>(),
     releaseDecisionReads = new Map<number, (value: unknown) => void>();
+  const savedSnapshot = (): string | null => saved;
   for (const call of [2, 4, 5])
     delayedDecisionReads.set(call, new Promise<unknown>((resolve) => releaseDecisionReads.set(call, resolve)));
   const
@@ -761,7 +768,7 @@ async function verifyLiveDecisionReadRejectsReturnedActivation(provider: "codex"
     expect(readCalls).toBe(7);
     expect(posts).toBe(1);
     expect(writes).toBe(1);
-    expect(saved).toContain(approvalId);
+    expect(savedSnapshot()).toContain(approvalId);
   } finally {
     dispose();
   }

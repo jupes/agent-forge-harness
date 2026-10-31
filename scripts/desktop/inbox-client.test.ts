@@ -76,9 +76,9 @@ function sessionsSource() {
 
 test("Inbox permission discovery stays read-only and synchronously invalidates selection on refresh", async () => {
   let blockRead = false,
-    releaseRead: ((value: unknown) => void) | null = null,
     announceRead: (() => void) | null = null,
     heldReads = 0;
+  const approvalGate: { resolve?: (value: unknown) => void } = {};
   const readStarted = new Promise<void>((resolve) => {
     announceRead = resolve;
   });
@@ -92,7 +92,7 @@ test("Inbox permission discovery stays read-only and synchronously invalidates s
       if (!blockRead) return approvalPage;
       announceRead?.();
       return new Promise((resolve) => {
-        releaseRead = resolve;
+        approvalGate.resolve = resolve;
       });
     },
   });
@@ -130,7 +130,9 @@ test("Inbox permission discovery stays read-only and synchronously invalidates s
     expect(client.snapshot().loading).toBe(true);
     expect(client.currentSelection()).toBeNull();
     await readStarted;
-    releaseRead?.({ pending: [], receipt: null });
+    const resolveApprovalRead = approvalGate.resolve;
+    if (!resolveApprovalRead) throw Error("The protected approval read was not pending.");
+    resolveApprovalRead({ pending: [], receipt: null });
     await refreshing;
     expect(client.snapshot().items).toEqual([]);
     expect(client.currentSelection()).toBeNull();
