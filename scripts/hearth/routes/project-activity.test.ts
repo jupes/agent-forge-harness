@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import type { LedgerEventInput } from "../../../types/hearth";
+import { appendEvent } from "../../ledger/append";
 import { openLedger } from "../../ledger/db";
 import { activitySessionMembership } from "../../projects/activity-membership";
 import { projectActivityPageSchema } from "../../projects/activity-protocol";
@@ -460,6 +461,18 @@ test("Shift Activity includes only project-member runs named by the canonical Sh
     runId: `${shiftId}-1x`,
     payload: { phase: "implement" },
   });
+  const foreignWorkspace = appendEvent(
+    {
+      kind: "run.phase.entered",
+      workspace: `${h.workspace}-foreign`,
+      beadId: "alpha-epic",
+      runId: `alpha-epic-${shiftId}`,
+      payload: { phase: "implement" },
+    },
+    { path: h.ledger },
+  );
+  if (!foreignWorkspace.ok || !("id" in foreignWorkspace))
+    throw new Error("Foreign-workspace fixture event was not recorded");
   h.append({
     kind: "shift.started",
     payload: { shiftId, concurrency: 1 },

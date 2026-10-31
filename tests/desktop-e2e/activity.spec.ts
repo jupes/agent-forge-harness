@@ -393,6 +393,13 @@ test("verified original Shift Activity is distinct from Attend and clears after 
       workspace,
       payload: { shiftId, concurrency: 1, durationMs: 300_000, maxBeads: 1 },
     },
+    {
+      kind: "run.phase.entered",
+      workspace,
+      beadId: "alpha-epic",
+      runId: `alpha-epic-${shiftId}`,
+      payload: { phase: "research" },
+    },
   ]);
   await openSettled(page, `/index.html#/desktop/project/${alpha.id}/workbench`);
   const shift = page.locator(`[data-shift="${shiftId}"]`);
@@ -407,7 +414,7 @@ test("verified original Shift Activity is distinct from Attend and clears after 
   await expect(activityTab).toHaveAttribute("aria-selected", "true");
   const feed = shift.getByRole("listbox", { name: "Project activity" });
   await expect(feed).toBeVisible();
-  await expect(feed).toContainText("Shift started");
+  await expect(feed).toContainText("Phase started: research");
   await expect(shift.getByLabel("Shift filter")).toHaveValue(shiftId);
   await expect(shift.getByLabel("Shift filter")).toHaveAttribute(
     "readonly",
