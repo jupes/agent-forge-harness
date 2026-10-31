@@ -775,7 +775,7 @@ test("GET /inbox-dispositions/recovery returns the complete strict private-home 
 
   const recovered = await get(
     h,
-    "/__agent-forge/inbox-dispositions/recovery",
+    "/inbox-dispositions/recovery",
     h.headers(h.hearth.token),
   );
   expect(recovered.status).toBe(200);
