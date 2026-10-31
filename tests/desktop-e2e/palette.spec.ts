@@ -19,10 +19,10 @@ import {
   projectRunsPageSchema,
 } from "../../scripts/projects/run-protocol";
 import {
+  type ProjectCouncilOriginal,
   projectCouncilHistorySchema,
   projectCouncilMetadata,
   projectCouncilOriginalReadSchema,
-  type ProjectCouncilOriginal,
 } from "../../types/project-council";
 import { projectCouncilRunReadSchema } from "../../types/project-council-run-read";
 import { openSettled } from "../e2e/fixtures";
@@ -39,7 +39,11 @@ function savedCouncilReadFixtures(requestId: string) {
   if (!parsedProfile.ok) throw Error("The inert Council fixture is invalid.");
   const source = "Palette saved review fixture.";
   const now = new Date().toISOString();
-  const context = buildContextPack({ kind: "stdin", text: source, maxBytes: 1024 });
+  const context = buildContextPack({
+    kind: "stdin",
+    text: source,
+    maxBytes: 1024,
+  });
   const binding = {
     projectId: alpha.id,
     workspace,
@@ -304,19 +308,13 @@ test("failed Keeper read is explicit current-project coverage, not an empty prop
     .getByRole("status")
     .filter({ hasText: "Source coverage:" })
     .filter({ hasText: "Keeper current project: unavailable" });
-  await expect(
-    keeperCoverage,
-  ).toBeVisible();
-  await expect(
-    keeperCoverage,
-  ).not.toContainText("private server detail");
+  await expect(keeperCoverage).toBeVisible();
+  await expect(keeperCoverage).not.toContainText("private server detail");
   await dialog.getByRole("combobox").fill("proposal that does not exist");
   await expect(
     dialog.getByRole("option").filter({ hasText: "Keeper proposal review" }),
   ).toHaveCount(0);
-  await expect(
-    keeperCoverage,
-  ).toBeVisible();
+  await expect(keeperCoverage).toBeVisible();
 });
 
 test("Council history palette target opens the exact saved-result owner without a Council mutation", async ({
