@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { expect, test, type Request } from "@playwright/test";
+import { expect, type Request, test } from "@playwright/test";
 import { runsHref } from "../../apps/desktop/src/project-runs-model";
 import type { ConversationState } from "../../types/conversation";
 import type { OwnedSessionRecord } from "../../types/owned-session";
@@ -72,10 +72,23 @@ test.beforeEach(({ page }) => {
 test.afterEach(async ({ page }, testInfo) => {
   const cleanupErrors: Error[] = [];
   if (testInfo.title === explicitStartTitle) {
-    try { await attendedDiagnosticCapture?.(); } catch { cleanupErrors.push(new Error("diagnostic snapshot capture failed")); }
-    try { await attendedDiagnosticCleanup?.(); } catch (error) { cleanupErrors.push(error instanceof Error ? error : new Error("diagnostic cleanup failed")); }
-    try { if (attendedRequestObserver) page.off("request", attendedRequestObserver); }
-    catch { cleanupErrors.push(new Error("request observer removal failed")); }
+    try {
+      await attendedDiagnosticCapture?.();
+    } catch {
+      cleanupErrors.push(new Error("diagnostic snapshot capture failed"));
+    }
+    try {
+      await attendedDiagnosticCleanup?.();
+    } catch (error) {
+      cleanupErrors.push(
+        error instanceof Error ? error : new Error("diagnostic cleanup failed"),
+      );
+    }
+    try {
+      if (attendedRequestObserver) page.off("request", attendedRequestObserver);
+    } catch {
+      cleanupErrors.push(new Error("request observer removal failed"));
+    }
     attendedDiagnosticCapture = undefined;
     attendedDiagnosticCleanup = undefined;
     attendedRequestObserver = undefined;
@@ -87,10 +100,18 @@ test.afterEach(async ({ page }, testInfo) => {
       testInfo.title === explicitStartTitle ? explicitStartPosts() : [],
     );
   } catch (error) {
-    cleanupErrors.push(error instanceof Error ? error : new Error("protected-post assertion failed"));
+    cleanupErrors.push(
+      error instanceof Error
+        ? error
+        : new Error("protected-post assertion failed"),
+    );
   }
   if (cleanupErrors.length === 1) throw cleanupErrors[0];
-  if (cleanupErrors.length > 1) throw new AggregateError(cleanupErrors, "Attended Start diagnostics cleanup failed");
+  if (cleanupErrors.length > 1)
+    throw new AggregateError(
+      cleanupErrors,
+      "Attended Start diagnostics cleanup failed",
+    );
 });
 
 test("New forge run opens attended preparation only after the scoped Runs read", async ({
@@ -547,8 +568,12 @@ test("an attended prompt uses ordinary Preview and one identity-bound Start afte
       const origin = new URL(request.frame().url()).origin;
       if (
         url.origin === origin &&
-        ["/js/use-stream.ts", "/docs/js/use-stream.ts"].includes(url.pathname) && attendedStreamModuleUrls.length < 33
-      ) attendedStreamModuleUrls.push(url.href);
+        ["/js/use-stream.ts", "/docs/js/use-stream.ts"].includes(
+          url.pathname,
+        ) &&
+        attendedStreamModuleUrls.length < 33
+      )
+        attendedStreamModuleUrls.push(url.href);
     } catch {
       // An unrecognized module URL leaves stream-cause evidence unknown.
     }
@@ -563,25 +588,34 @@ test("an attended prompt uses ordinary Preview and one identity-bound Start afte
     const markers: Observation[] = [];
     const disposers: Array<() => void> = [];
     let overflow = false;
-    const total = () => identities.length + stream.length + starts.length + markers.length;
+    const total = () =>
+      identities.length + stream.length + starts.length + markers.length;
     const add = (target: Observation[], item: Observation) => {
       if (total() >= limit) overflow = true;
       else target.push(item);
     };
     const composerDialog = () => {
-      const dialogs = document.querySelectorAll('dialog.af-session-dialog[open][aria-labelledby="af-session-composer-title"]');
+      const dialogs = document.querySelectorAll(
+        'dialog.af-session-dialog[open][aria-labelledby="af-session-composer-title"]',
+      );
       return dialogs.length === 1 ? dialogs[0] : null;
     };
     const ui = () => {
       const dialog = composerDialog();
-      const statuses = [...(dialog?.querySelectorAll("[role=status]") ?? [])].map((node) => node.textContent ?? "");
+      const statuses = [
+        ...(dialog?.querySelectorAll("[role=status]") ?? []),
+      ].map((node) => node.textContent ?? "");
       const button = [...(dialog?.querySelectorAll("button") ?? [])].find(
         (candidate) => candidate.textContent?.trim() === "Start",
       );
       return {
         identitySection: !!dialog?.querySelector(".af-start-identities"),
-        checking: statuses.some((status) => status.includes("Checking the server-owned identity page")),
-        statusWarning: statuses.some((status) => /failed|unavailable|could not/i.test(status)),
+        checking: statuses.some((status) =>
+          status.includes("Checking the server-owned identity page"),
+        ),
+        statusWarning: statuses.some((status) =>
+          /failed|unavailable|could not/i.test(status),
+        ),
         startDisabled: button?.disabled ?? null,
       };
     };
@@ -596,13 +630,22 @@ test("an attended prompt uses ordinary Preview and one identity-bound Start afte
       return known.join(",") || "unknown";
     };
     const originalFetch = window.fetch;
-    const wrappedFetch = Object.assign(function (this: typeof window, input: RequestInfo | URL, init?: RequestInit) {
+    const wrappedFetch = Object.assign(function (
+      this: typeof window,
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) {
       let matches = false;
       try {
         const url = input instanceof Request ? input.url : String(input);
-        const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+        const method =
+          init?.method ?? (input instanceof Request ? input.method : "GET");
         const parsed = new URL(url, location.href);
-        matches = parsed.origin === location.origin && method.toUpperCase() === "GET" && parsed.pathname === identityPath && parsed.search === "";
+        matches =
+          parsed.origin === location.origin &&
+          method.toUpperCase() === "GET" &&
+          parsed.pathname === identityPath &&
+          parsed.search === "";
       } catch {
         // Unrecognized fetch input is delegated without observation.
       }
@@ -616,19 +659,21 @@ test("an attended prompt uses ordinary Preview and one identity-bound Start afte
       add(identities, item);
       const pending = originalFetch.call(this, input, init);
       // This records response headers only; the app owns the unchanged body read.
-      void pending.then(
-        (response) => {
-          item.headerStage = "headers-received";
-          item.headersAt = performance.now();
-          item.status = response.status;
-          item.headerUi = ui();
-        },
-        () => {
-          item.headerStage = "transport-error";
-          item.transportErrorAt = performance.now();
-          item.headerUi = ui();
-        },
-      ).catch(() => undefined);
+      void pending
+        .then(
+          (response) => {
+            item.headerStage = "headers-received";
+            item.headersAt = performance.now();
+            item.status = response.status;
+            item.headerUi = ui();
+          },
+          () => {
+            item.headerStage = "transport-error";
+            item.transportErrorAt = performance.now();
+            item.headerUi = ui();
+          },
+        )
+        .catch(() => undefined);
       return pending;
     }, originalFetch);
     const click = (event: MouseEvent) => {
@@ -654,18 +699,48 @@ test("an attended prompt uses ordinary Preview and one identity-bound Start afte
       },
       admissionReady() {
         if (overflow) return false;
-        const baseline = markers.filter((item) => item.label === "before-preview").at(-1)?.at;
+        const baseline = markers
+          .filter((item) => item.label === "before-preview")
+          .at(-1)?.at;
         if (typeof baseline !== "number") return false;
-        const events = stream.filter((item) => item.kind === "operator.action" && item.reason === "events" && typeof item.at === "number" && item.at > baseline);
-        const reads = identities.filter((item) => typeof item.startedAt === "number" && item.startedAt > baseline);
+        const events = stream.filter(
+          (item) =>
+            item.kind === "operator.action" &&
+            item.reason === "events" &&
+            typeof item.at === "number" &&
+            item.at > baseline,
+        );
+        const reads = identities.filter(
+          (item) =>
+            typeof item.startedAt === "number" && item.startedAt > baseline,
+        );
         const read = reads.at(-1);
         const action = events.at(-1);
-        if (!read || !action || typeof read.startedAt !== "number" || typeof read.headersAt !== "number" || typeof action.at !== "number" || action.at >= read.startedAt) return false;
-        if (read.headerStage !== "headers-received" || read.status !== 200 || read.headersAt < read.startedAt) return false;
+        if (
+          !read ||
+          !action ||
+          typeof read.startedAt !== "number" ||
+          typeof read.headersAt !== "number" ||
+          typeof action.at !== "number" ||
+          action.at >= read.startedAt
+        )
+          return false;
+        if (
+          read.headerStage !== "headers-received" ||
+          read.status !== 200 ||
+          read.headersAt < read.startedAt
+        )
+          return false;
         const requestUi = read.requestUi as { checking?: unknown } | null;
         const headerUi = read.headerUi as { checking?: unknown } | null;
         const current = ui();
-        return (requestUi?.checking === true || headerUi?.checking === true) && current.identitySection && !current.checking && !current.statusWarning && current.startDisabled === false;
+        return (
+          (requestUi?.checking === true || headerUi?.checking === true) &&
+          current.identitySection &&
+          !current.checking &&
+          !current.statusWarning &&
+          current.startDisabled === false
+        );
       },
       addDisposer(dispose: () => void) {
         disposers.push(dispose);
@@ -674,13 +749,30 @@ test("an attended prompt uses ordinary Preview and one identity-bound Start afte
         return { identities, stream, starts, markers, overflow, cleanupErrors };
       },
       cleanup() {
-        for (const dispose of disposers.splice(0)) try { dispose(); } catch { cleanupErrors.push("watch-dispose"); }
-        try { document.removeEventListener("click", click, true); } catch { cleanupErrors.push("click-listener-remove"); }
-        try { if (window.fetch === wrappedFetch) window.fetch = originalFetch; } catch { cleanupErrors.push("fetch-restore"); }
+        for (const dispose of disposers.splice(0))
+          try {
+            dispose();
+          } catch {
+            cleanupErrors.push("watch-dispose");
+          }
         try {
-          if (Reflect.get(window, "__cla5_96_attended_diagnostic") === diagnostic)
+          document.removeEventListener("click", click, true);
+        } catch {
+          cleanupErrors.push("click-listener-remove");
+        }
+        try {
+          if (window.fetch === wrappedFetch) window.fetch = originalFetch;
+        } catch {
+          cleanupErrors.push("fetch-restore");
+        }
+        try {
+          if (
+            Reflect.get(window, "__cla5_96_attended_diagnostic") === diagnostic
+          )
             Reflect.deleteProperty(window, "__cla5_96_attended_diagnostic");
-        } catch { cleanupErrors.push("diagnostic-global-remove"); }
+        } catch {
+          cleanupErrors.push("diagnostic-global-remove");
+        }
         return cleanupErrors;
       },
     };
@@ -697,7 +789,8 @@ test("an attended prompt uses ordinary Preview and one identity-bound Start afte
       };
       return state.cleanup();
     });
-    if (errors.length) throw new Error(`diagnostic cleanup failed: ${errors.join(",")}`);
+    if (errors.length)
+      throw new Error(`diagnostic cleanup failed: ${errors.join(",")}`);
   };
   attendedDiagnosticCapture = async () => {
     const snapshot: unknown = await page.evaluate(() => {
@@ -725,7 +818,9 @@ test("an attended prompt uses ordinary Preview and one identity-bound Start afte
     const matches = (value: string) => {
       try {
         const url = new URL(value);
-        return url.origin === location.origin && modulePaths.includes(url.pathname);
+        return (
+          url.origin === location.origin && modulePaths.includes(url.pathname)
+        );
       } catch {
         return false;
       }
@@ -734,13 +829,24 @@ test("an attended prompt uses ordinary Preview and one identity-bound Start afte
     const requested = [...new Set(requestUrls.filter(matches))];
     let url = requested.length === 1 ? requested[0] : undefined;
     if (requested.length === 0) {
-      const loaded = [...new Set(performance.getEntriesByType("resource")
-        .filter((entry) => "initiatorType" in entry && entry.initiatorType === "script" && matches(entry.name))
-        .map((entry) => entry.name))];
+      const loaded = [
+        ...new Set(
+          performance
+            .getEntriesByType("resource")
+            .filter(
+              (entry) =>
+                "initiatorType" in entry &&
+                entry.initiatorType === "script" &&
+                matches(entry.name),
+            )
+            .map((entry) => entry.name),
+        ),
+      ];
       if (loaded.length === 1) url = loaded[0];
     }
     if (!url) return false;
-    type ObservedKind = "operator.action" | "session.started" | "session.ended"; type StreamModule = {
+    type ObservedKind = "operator.action" | "session.started" | "session.ended";
+    type StreamModule = {
       appStream(): {
         getState(): { status: string };
         watch(
@@ -757,11 +863,18 @@ test("an attended prompt uses ordinary Preview and one identity-bound Start afte
     try {
       const module = (await import(url)) as StreamModule;
       const client = module.appStream();
-      if (typeof client.getState !== "function" || client.getState().status !== "live") {
+      if (
+        typeof client.getState !== "function" ||
+        client.getState().status !== "live"
+      ) {
         state.mark("stream-not-live");
         return false;
       }
-      for (const kind of ["operator.action", "session.started", "session.ended"] as const)
+      for (const kind of [
+        "operator.action",
+        "session.started",
+        "session.ended",
+      ] as const)
         state.addDisposer(
           client.watch([kind], (reason) => state.streamEvent(kind, reason)),
         );
@@ -813,12 +926,16 @@ test("an attended prompt uses ordinary Preview and one identity-bound Start afte
     .getByRole("button", { name: "Check supported options", exact: true })
     .click();
   const start = composer.getByRole("button", { name: "Start", exact: true });
-  await expect.poll(() => page.evaluate(() => {
-    const state = Reflect.get(window, "__cla5_96_attended_diagnostic") as {
-      admissionReady(): boolean;
-    };
-    return state.admissionReady();
-  })).toBe(true);
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const state = Reflect.get(window, "__cla5_96_attended_diagnostic") as {
+          admissionReady(): boolean;
+        };
+        return state.admissionReady();
+      }),
+    )
+    .toBe(true);
   await expect(start).toBeEnabled();
 
   let holdRecovery = false;
