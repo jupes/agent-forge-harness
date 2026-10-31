@@ -823,10 +823,7 @@ test("mentions and harness commands edit the shared draft with keyboard suggesti
       return captured.id;
     };
     probe.wrappedCancel = (id) => {
-      if (
-        probe.captured?.id === id &&
-        !probe.captured.fired
-      )
+      if (probe.captured?.id === id && !probe.captured.fired)
         probe.captured.canceled = true;
       originalCancel.call(window, id);
     };
@@ -954,9 +951,10 @@ test("mentions and harness commands edit the shared draft with keyboard suggesti
       });
       expect(frame.after.start).toBe(frame.after.end);
       await page.keyboard.insertText("/forge");
-      await expect(input, "CI94 captured RAF clobbered the selected draft").toHaveValue(
-        "/forge",
-      );
+      await expect(
+        input,
+        "CI94 captured RAF clobbered the selected draft",
+      ).toHaveValue("/forge");
     } else {
       await input.fill("/forge");
       await expect(input).toHaveValue("/forge");

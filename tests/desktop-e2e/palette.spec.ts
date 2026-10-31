@@ -28,7 +28,13 @@ import {
 import { projectCouncilRunReadSchema } from "../../types/project-council-run-read";
 import { openSettled } from "../e2e/fixtures";
 import { HEARTH_HOME } from "../e2e/servers";
-import { alpha, beta, seedKeeper, seedProjects, workspace } from "./project-fixtures";
+import {
+  alpha,
+  beta,
+  seedKeeper,
+  seedProjects,
+  workspace,
+} from "./project-fixtures";
 
 test.beforeEach(() => seedProjects());
 
@@ -299,15 +305,15 @@ test("expired palette selection stays open with a refresh path and performs no w
   await expect
     .poll(async () => {
       const statuses = await dialog.getByRole("status").allInnerTexts();
-      return statuses.some((status) => /loading|Refreshing verified results/i.test(status));
+      return statuses.some((status) =>
+        /loading|Refreshing verified results/i.test(status),
+      );
     })
     .toBe(false);
   await page.evaluate(
     () =>
       new Promise<void>((resolve) =>
-        requestAnimationFrame(() =>
-          requestAnimationFrame(() => resolve()),
-        ),
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
       ),
   );
   const initialCoverage = await coverage.innerText();
@@ -377,10 +383,8 @@ test("expired palette selection stays open with a refresh path and performs no w
     evidenceCaptured = true;
     return evidence;
   };
-  const hold = (
-    source: keyof typeof started,
-    gate: Promise<void>,
-  ) =>
+  const hold =
+    (source: keyof typeof started, gate: Promise<void>) =>
     async (route: import("@playwright/test").Route) => {
       started[source] = true;
       activeRouteHandlers++;
@@ -422,7 +426,8 @@ test("expired palette selection stays open with a refresh path and performs no w
         waitForRoutesIdle(),
         new Promise<never>((_, reject) => {
           timer = setTimeout(
-            () => reject(Error("Palette route continuations exceeded 10 seconds.")),
+            () =>
+              reject(Error("Palette route continuations exceeded 10 seconds.")),
             10_000,
           );
         }),
@@ -433,6 +438,7 @@ test("expired palette selection stays open with a refresh path and performs no w
     if (routeContinuationFailures)
       throw Error("A held palette route continuation rejected.");
   };
+  const failures: unknown[] = [];
   try {
     await page.route(beadsPattern, holdBeads);
     await page.route(betaBeadsPattern, holdBetaBeads);
@@ -467,8 +473,9 @@ test("expired palette selection stays open with a refresh path and performs no w
           dialog?.querySelectorAll('[role="status"]') ?? [],
         ).find((status) => status.textContent?.includes("Source coverage:"));
         const text = coverage?.textContent ?? "";
-        const refresh = Array.from(dialog?.querySelectorAll("button") ?? [])
-          .some((button) => button.textContent?.includes("Refresh results"));
+        const refresh = Array.from(
+          dialog?.querySelectorAll("button") ?? [],
+        ).some((button) => button.textContent?.includes("Refresh results"));
         return {
           warningPresent: Array.from(
             dialog.querySelectorAll('[role="alert"]'),
@@ -486,10 +493,13 @@ test("expired palette selection stays open with a refresh path and performs no w
           refreshVisible: refresh,
           refreshingMarker: Array.from(
             dialog.querySelectorAll('[role="status"]'),
-          ).some((status) =>
-            status.textContent?.trim() === "Refreshing verified results…",
+          ).some(
+            (status) =>
+              status.textContent?.trim() === "Refreshing verified results…",
           ),
-          dialogOpen: Boolean(dialog?.isConnected && dialog.getClientRects().length),
+          dialogOpen: Boolean(
+            dialog?.isConnected && dialog.getClientRects().length,
+          ),
         };
       };
       const observer: PaletteObserver = {
@@ -504,14 +514,15 @@ test("expired palette selection stays open with a refresh path and performs no w
         node instanceof Element &&
         (node.matches('[role="alert"]') ||
           Boolean(node.querySelector('[role="alert"]')))
-          ? node.textContent?.includes(
+          ? (node.textContent?.includes(
               "This result changed or its owner is unavailable.",
-            ) ?? false
+            ) ?? false)
           : false;
       const recordMutations = (records: MutationRecord[]) => {
         const next = snapshot();
         for (const record of records) {
-          if (record.target !== dialog && !dialog.contains(record.target)) continue;
+          if (record.target !== dialog && !dialog.contains(record.target))
+            continue;
           if ([...record.addedNodes].some(containsChangedWarning)) {
             if (observer.warningMutations.length < 64)
               observer.warningMutations.push({
@@ -566,7 +577,9 @@ test("expired palette selection stays open with a refresh path and performs no w
         }
         observer.observer?.disconnect();
       };
-      (window as Window & { __ci94PaletteDom?: PaletteObserver }).__ci94PaletteDom = observer;
+      (
+        window as Window & { __ci94PaletteDom?: PaletteObserver }
+      ).__ci94PaletteDom = observer;
     });
     await page.keyboard.press("Enter");
     await expect(dialog).toBeVisible();
@@ -593,9 +606,7 @@ test("expired palette selection stays open with a refresh path and performs no w
     await page.evaluate(
       () =>
         new Promise<void>((resolve) =>
-          requestAnimationFrame(() =>
-            requestAnimationFrame(() => resolve()),
-          ),
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
         ),
     );
     await captureEvidence();
@@ -615,66 +626,59 @@ test("expired palette selection stays open with a refresh path and performs no w
       dialog.getByRole("button", { name: "Refresh results" }),
     ).toBeVisible();
     expect(writes).toEqual([]);
-  } finally {
-    let evidenceFailure: string | undefined;
-    const cleanupFailures: string[] = [];
-    if (!evidenceCaptured) {
-      try {
-        await captureEvidence();
-      } catch (error) {
-        evidenceFailure = String(error);
-      }
-    }
-    releaseSummary();
-    releaseBetaBeads();
-    releaseBeads();
-    try {
-      await settleRoutes();
-    } catch (error) {
-      cleanupFailures.push(String(error));
-    }
-    try {
-      await unrouteOwnedHandlers();
-    } catch (error) {
-      cleanupFailures.push(String(error));
-    }
-    const clockCleanup = await Promise.allSettled([page.evaluate(() => {
-        type ClockProbe = {
-          original: typeof Date.now;
-          shifted: typeof Date.now;
-        };
-        const host = window as Window & { __ci94PaletteClock?: ClockProbe };
-        const probe = host.__ci94PaletteClock;
-        if (probe && Date.now === probe.shifted) Date.now = probe.original;
-        delete host.__ci94PaletteClock;
-        const dom = window as Window & {
-          __ci94PaletteDom?: {
-            observer: MutationObserver | null;
-            finalize: () => void;
-          };
-        };
-        dom.__ci94PaletteDom?.observer?.disconnect();
-        delete dom.__ci94PaletteDom;
-      })]);
-    cleanupFailures.push(
-      ...clockCleanup.flatMap((result) =>
-        result.status === "rejected"
-          ? [`Clock or observer restoration failed: ${String(result.reason)}`]
-          : [],
-      ),
-    );
-    try {
-      await settleRoutes();
-    } catch (error) {
-      cleanupFailures.push(String(error));
-    }
-    if (evidenceFailure)
-      cleanupFailures.push(
-        `Palette DOM evidence could not be captured before cleanup: ${evidenceFailure}`,
-      );
-    if (cleanupFailures.length)
-      throw Error(`CI94 palette cleanup failures: ${cleanupFailures.join("; ")}`);
+  } catch (error) {
+    failures.push(error);
   }
+  if (!evidenceCaptured) {
+    try {
+      await captureEvidence();
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  releaseSummary();
+  releaseBetaBeads();
+  releaseBeads();
+  try {
+    await settleRoutes();
+  } catch (error) {
+    failures.push(error);
+  }
+  try {
+    await unrouteOwnedHandlers();
+  } catch (error) {
+    failures.push(error);
+  }
+  const clockCleanup = await Promise.allSettled([
+    page.evaluate(() => {
+      type ClockProbe = {
+        original: typeof Date.now;
+        shifted: typeof Date.now;
+      };
+      const host = window as Window & { __ci94PaletteClock?: ClockProbe };
+      const probe = host.__ci94PaletteClock;
+      if (probe && Date.now === probe.shifted) Date.now = probe.original;
+      delete host.__ci94PaletteClock;
+      const dom = window as Window & {
+        __ci94PaletteDom?: {
+          observer: MutationObserver | null;
+          finalize: () => void;
+        };
+      };
+      dom.__ci94PaletteDom?.observer?.disconnect();
+      delete dom.__ci94PaletteDom;
+    }),
+  ]);
+  for (const result of clockCleanup)
+    if (result.status === "rejected") failures.push(result.reason);
+  try {
+    await settleRoutes();
+  } catch (error) {
+    failures.push(error);
+  }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1)
+    throw new AggregateError(failures, "CI94 palette body or cleanup failed.");
 });
 
 test("partial source and filtered-empty state stay visible while reads load", async ({
