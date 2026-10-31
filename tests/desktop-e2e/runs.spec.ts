@@ -504,6 +504,27 @@ test("scoped Runs keyboard inspection preserves real phase, review and gate trut
   await expect(
     detail.getByRole("heading", { name: "Scoped forge delivery", exact: true }),
   ).toBeVisible();
+  const showInspector = page.getByRole("button", {
+    name: "Show inspector",
+    exact: true,
+  });
+  if (await showInspector.isVisible()) {
+    await showInspector.focus();
+    await expect(showInspector).toHaveCSS("outline-width", "2px");
+    await page.keyboard.press("Enter");
+  }
+  const inspector = page.getByRole("complementary", {
+    name: "Inspector",
+    exact: true,
+  });
+  await expect(inspector).toBeVisible();
+  const runMetadata = inspector.getByRole("region", {
+    name: "Run metadata",
+    exact: true,
+  });
+  await expect(runMetadata).toBeVisible();
+  await expect(runMetadata).toContainText("Scoped forge delivery");
+  await expect(runMetadata).toContainText(fixture.primary);
   for (const [phase, state] of [
     ["research", "complete"],
     ["plan", "complete"],
@@ -605,6 +626,21 @@ test("scoped Runs keyboard inspection preserves real phase, review and gate trut
       requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
     );
   });
+  const researchPhase = detail.locator('[data-phase="research"]');
+  const researchArtifactButton = researchPhase.getByRole("button", {
+    name: "Read research artifact",
+  });
+  await expect(researchArtifactButton).toBeVisible();
+  const phaseBox = await researchPhase.boundingBox();
+  const artifactButtonBox = await researchArtifactButton.boundingBox();
+  expect(phaseBox).not.toBeNull();
+  expect(artifactButtonBox).not.toBeNull();
+  if (!phaseBox || !artifactButtonBox)
+    throw new Error("Research artifact layout could not be measured.");
+  expect(artifactButtonBox.x).toBeGreaterThanOrEqual(phaseBox.x - 1);
+  expect(artifactButtonBox.x + artifactButtonBox.width).toBeLessThanOrEqual(
+    phaseBox.x + phaseBox.width + 1,
+  );
   await page.screenshot({
     path: "apps/desktop/docs/screenshots/runs-inspection.png",
     fullPage: true,
@@ -648,6 +684,23 @@ test("scoped Runs keyboard inspection preserves real phase, review and gate trut
     "linked",
     "legacy",
   ]);
+  await openSettled(page, href(beta.id, fixture.foreign));
+  const betaDetail = page.getByRole("article", {
+    name: "Selected forge run",
+  });
+  await expect(
+    betaDetail.getByRole("heading", { name: "FOREIGN BETA RUN", exact: true }),
+  ).toBeVisible();
+  const showBetaInspector = page.getByRole("button", {
+    name: "Show inspector",
+    exact: true,
+  });
+  if (await showBetaInspector.isVisible()) await showBetaInspector.click();
+  const betaMetadata = page
+    .getByRole("complementary", { name: "Inspector", exact: true })
+    .getByRole("region", { name: "Run metadata", exact: true });
+  await expect(betaMetadata).toContainText("FOREIGN BETA RUN");
+  await expect(betaMetadata).not.toContainText("Scoped forge delivery");
 });
 
 test("recorded run sessions page in the served project and open only admitted metadata", async ({

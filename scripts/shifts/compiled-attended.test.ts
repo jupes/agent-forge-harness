@@ -121,7 +121,7 @@ test("the actual compiled production hearth executes attended input through fixe
       provider = join(bin, `claude${extension}`);
     writeFileSync(
       providerSource,
-      `import {basename} from "node:path"; import {runCodingCliFixture} from ${JSON.stringify(join(source, "sessions/fixtures/coding-cli-fixture.ts").replaceAll("\\", "/"))}; import {runCodexTaskRuntimeFixture} from ${JSON.stringify(join(source, "sessions/fixtures/codex-task-runtime-fixture.ts").replaceAll("\\", "/"))}; if(basename(process.execPath).startsWith("codex")) await runCodexTaskRuntimeFixture(); else await runCodingCliFixture();`,
+      `import {basename} from "node:path"; import {runCodingCliFixture} from ${JSON.stringify(join(source, "sessions/fixtures/coding-cli-fixture.ts").replaceAll("\\", "/"))}; import {runCodexTaskRuntimeFixture} from ${JSON.stringify(join(source, "sessions/fixtures/codex-task-runtime-fixture.ts").replaceAll("\\", "/"))}; const args=process.argv.slice(2); if(args.length===1&&args[0]==="--fixture-stop-helper") await runCodingCliFixture({kind:"compiled"}); else if(basename(process.execPath).startsWith("codex")) await runCodexTaskRuntimeFixture(); else await runCodingCliFixture({kind:"compiled"});`,
     );
     compile(providerSource, provider);
     copyFileSync(provider, join(bin, `codex${extension}`));
