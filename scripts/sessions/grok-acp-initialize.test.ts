@@ -1,8 +1,8 @@
 import { expect, test } from "bun:test";
-import { decodeAcpServerFrame, type AcpRpcId } from "./acp-wire";
+import { type AcpRpcId, decodeAcpServerFrame } from "./acp-wire";
 import {
-  reduceGrokInitialize,
   type GrokConnectionState,
+  reduceGrokInitialize,
 } from "./grok-acp-initialize";
 
 test("a matched decoded Grok initialize response admits protocol readiness", () => {
@@ -28,9 +28,7 @@ function pending(requestId: AcpRpcId = "init-1"): GrokConnectionState {
 }
 
 function decoded(result: unknown, id: AcpRpcId = "init-1") {
-  return decodeAcpServerFrame(
-    JSON.stringify({ jsonrpc: "2.0", id, result }),
-  );
+  return decodeAcpServerFrame(JSON.stringify({ jsonrpc: "2.0", id, result }));
 }
 
 function initializedState(frame = decoded({ protocolVersion: 1 })) {
@@ -66,7 +64,10 @@ test("explicit malformed initialize protocol, capability, or inventory fields fa
       protocolVersion: 1,
       authMethods: [{ id: "method", name: "Method", type: "unsupported" }],
     },
-    { protocolVersion: 1, authMethods: [{ id: "bad\u0000id", name: "Method" }] },
+    {
+      protocolVersion: 1,
+      authMethods: [{ id: "bad\u0000id", name: "Method" }],
+    },
   ]) {
     expect(reduceGrokInitialize(pending(), decoded(result))).toEqual({
       kind: "failed-closed",
@@ -113,7 +114,10 @@ test("initialized and failed-closed states absorb late frames by identity", () =
     kind: "failed-closed",
     reason: "unsupported-version",
   };
-  const late = decoded({ protocolVersion: 1, authMethods: [{ id: "other", name: "Other" }] });
+  const late = decoded({
+    protocolVersion: 1,
+    authMethods: [{ id: "other", name: "Other" }],
+  });
   expect(reduceGrokInitialize(ready, late)).toBe(ready);
   expect(reduceGrokInitialize(failed, late)).toBe(failed);
 });
@@ -124,7 +128,10 @@ test("auth inventory is bounded, deduplicated, normalized, and never authenticat
     { id: "one", name: "Duplicate" },
   ];
   expect(
-    reduceGrokInitialize(pending(), decoded({ protocolVersion: 1, authMethods: methods })),
+    reduceGrokInitialize(
+      pending(),
+      decoded({ protocolVersion: 1, authMethods: methods }),
+    ),
   ).toEqual({ kind: "failed-closed", reason: "invalid-initialize-result" });
 
   const tooMany = Array.from({ length: 65 }, (_, index) => ({
@@ -132,7 +139,10 @@ test("auth inventory is bounded, deduplicated, normalized, and never authenticat
     name: "method",
   }));
   expect(
-    reduceGrokInitialize(pending(), decoded({ protocolVersion: 1, authMethods: tooMany })),
+    reduceGrokInitialize(
+      pending(),
+      decoded({ protocolVersion: 1, authMethods: tooMany }),
+    ),
   ).toEqual({ kind: "failed-closed", reason: "invalid-initialize-result" });
 
   const result = reduceGrokInitialize(

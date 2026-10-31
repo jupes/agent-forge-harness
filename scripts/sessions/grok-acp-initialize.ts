@@ -1,5 +1,5 @@
-import type { AcpRpcId, AcpServerFrame } from "./acp-wire";
 import { z } from "zod";
+import type { AcpRpcId, AcpServerFrame } from "./acp-wire";
 
 const boundedNativeString = (max: number) =>
   z
@@ -23,14 +23,21 @@ const authMethod = z
       : { description: method.description }),
     type: method.type,
   }));
-const authMethods = z.array(authMethod).max(64).superRefine((methods, ctx) => {
-  const ids = new Set<string>();
-  methods.forEach((method, index) => {
-    if (ids.has(method.id))
-      ctx.addIssue({ code: "custom", path: [index, "id"], message: "duplicate" });
-    ids.add(method.id);
+const authMethods = z
+  .array(authMethod)
+  .max(64)
+  .superRefine((methods, ctx) => {
+    const ids = new Set<string>();
+    methods.forEach((method, index) => {
+      if (ids.has(method.id))
+        ctx.addIssue({
+          code: "custom",
+          path: [index, "id"],
+          message: "duplicate",
+        });
+      ids.add(method.id);
+    });
   });
-});
 const capabilityBoolean = z.boolean().optional().default(false);
 const initializeResult = z
   .object({
@@ -135,10 +142,7 @@ export function reduceGrokInitialize(
   if (parsed.data.protocolVersion !== 1)
     return { kind: "failed-closed", reason: "unsupported-version" };
 
-  const defaultAuthMethodId = getDefaultAuthMethodId(
-    frame.result,
-    parsed.data,
-  );
+  const defaultAuthMethodId = getDefaultAuthMethodId(frame.result, parsed.data);
   return {
     kind: "initialized",
     authMethods: parsed.data.authMethods,
