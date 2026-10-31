@@ -589,7 +589,7 @@ test("an attended prompt uses ordinary Preview and one identity-bound Start afte
       return known.join(",") || "unknown";
     };
     const originalFetch = window.fetch;
-    const wrappedFetch: typeof window.fetch = function (input, init) {
+    const wrappedFetch = Object.assign(function (this: typeof window, input: RequestInfo | URL, init?: RequestInit) {
       let matches = false;
       try {
         const url = input instanceof Request ? input.url : String(input);
@@ -623,7 +623,7 @@ test("an attended prompt uses ordinary Preview and one identity-bound Start afte
         },
       ).catch(() => undefined);
       return pending;
-    };
+    }, originalFetch);
     const click = (event: MouseEvent) => {
       if (!(event.target instanceof Element)) return;
       const button = event.target.closest("button");
