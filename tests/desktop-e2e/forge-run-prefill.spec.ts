@@ -703,8 +703,7 @@ test("an attended prompt uses ordinary Preview and one identity-bound Start afte
     } catch {
       return false;
     }
-    type ObservedKind = "operator.action" | "session.started" | "session.ended";
-    type StreamModule = {
+    type ObservedKind = "operator.action" | "session.started" | "session.ended"; type StreamModule = {
       appStream(): {
         getState(): { status: string };
         watch(
@@ -766,6 +765,7 @@ test("an attended prompt uses ordinary Preview and one identity-bound Start afte
     };
     state.mark("after-preview-composer-open");
   });
+
   const composer = page.getByRole("dialog", { name: "New session · Alpha" });
   const expectedPrompt = "/forgemaster --full One reviewed request";
   await expect(
