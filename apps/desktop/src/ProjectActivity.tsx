@@ -20,6 +20,7 @@ import { useProjectActivity } from "./use-project-activity";
 import "./project-activity.css";
 
 const ROW_PX = 64;
+const activityTabKeys = new Set(["ArrowLeft", "ArrowRight", "Home", "End"]);
 function localTime(value: string | null): string {
   if (!value) return "";
   const date = new Date(value);
@@ -613,5 +614,74 @@ export function ScopedProjectActivity({
         />
       )}
     </>
+  );
+}
+
+export function ObjectActivityTabs({
+  label,
+  detailLabel,
+  selected,
+  activityAvailable,
+  onSelect,
+}: {
+  label: string;
+  detailLabel: string;
+  selected: "details" | "activity";
+  activityAvailable: boolean;
+  onSelect(value: "details" | "activity"): void;
+}) {
+  return (
+    <div
+      class="af-beads-tabs"
+      role="tablist"
+      aria-label={label}
+      onKeyDown={(event) => {
+        if (!activityTabKeys.has(event.key)) return;
+        const buttons = [
+          ...event.currentTarget.querySelectorAll<HTMLButtonElement>(
+            'button[role="tab"]:not(:disabled)',
+          ),
+        ];
+        const focused = document.activeElement;
+        if (!(focused instanceof HTMLButtonElement)) return;
+        const index = buttons.indexOf(focused);
+        if (index < 0 || buttons.length === 0) return;
+        const next =
+          event.key === "Home"
+            ? 0
+            : event.key === "End"
+              ? buttons.length - 1
+              : (index +
+                  (event.key === "ArrowRight" ? 1 : -1) +
+                  buttons.length) %
+                buttons.length;
+        event.preventDefault();
+        buttons[next]?.focus();
+        buttons[next]?.click();
+      }}
+    >
+      <button
+        class="af-btn af-btn-secondary"
+        type="button"
+        role="tab"
+        aria-selected={selected === "details"}
+        tabIndex={selected === "details" ? 0 : -1}
+        onClick={() => onSelect("details")}
+      >
+        {detailLabel}
+      </button>
+      {activityAvailable && (
+        <button
+          class="af-btn af-btn-secondary"
+          type="button"
+          role="tab"
+          aria-selected={selected === "activity"}
+          tabIndex={selected === "activity" ? 0 : -1}
+          onClick={() => onSelect("activity")}
+        >
+          Activity
+        </button>
+      )}
+    </div>
   );
 }

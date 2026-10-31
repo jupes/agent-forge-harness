@@ -6,7 +6,10 @@ export function GeminiChatApprovals({
   client,
   actionable,
 }: {
-  client: GeminiChatDecisions;
+  client: Pick<
+    GeminiChatDecisions,
+    "view" | "refreshPending" | "checkOriginal" | "decide"
+  >;
   actionable: boolean;
 }) {
   const view = client.view();

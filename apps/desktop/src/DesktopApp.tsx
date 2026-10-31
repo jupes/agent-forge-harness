@@ -27,6 +27,7 @@ import {
   createCommandPaletteIndex,
   type PaletteIndexSnapshot,
 } from "./command-palette-index";
+import { useChatDecisionOwners } from "./chat-decision-owners";
 import type { FrameSession } from "./DesktopFrame";
 import { DesktopFrame } from "./DesktopFrame";
 import {
@@ -846,6 +847,94 @@ export function DesktopApp(): JSX.Element {
     !managedSession
       ? selectedOwner.record.id
       : null;
+  const chatDecisionOwners = useChatDecisionOwners({
+    canWrite: (address) => {
+      const target = projects.data?.catalog.projects.find(
+        (item) => item.id === address.projectId,
+      );
+      return writesAllowed && !!target && !target.archived;
+    },
+    isCurrent: (address) => {
+      const currentProject = projects.data?.catalog.projects.find(
+          (item) => item.id === address.projectId,
+        ),
+        currentSummary = projects.data?.summaries.find(
+          (item) => item.projectId === address.projectId,
+        ),
+        currentRecord = sessions
+          .project(address.projectId)
+          .records.find((item) => item.id === address.sessionId),
+        currentSession = sessions.session(address.projectId, address.sessionId),
+        currentTurn = currentSession.page?.turns.at(-1),
+        actualRoute = desktopRoute(window.location.hash),
+        routeCurrent =
+          sameDesktopRoute(route, actualRoute) &&
+          ((actualRoute.destination === "sessions" &&
+            actualRoute.projectId === address.projectId &&
+            actualRoute.selection?.kind === "session" &&
+            actualRoute.selection.id === address.sessionId) ||
+            actualRoute.destination === "inbox");
+      const projectScopeCurrent = Boolean(
+        routeCurrent &&
+          currentProject &&
+          currentSummary?.workspace === address.workspace &&
+          currentProject.workspaces.some(
+            (scope) => scope.root === address.workspace,
+          ),
+      );
+      // Inbox activations are independently bound by the exact project-scoped
+      // approvals read and offer ID; SessionsClient only keeps the selected
+      // conversation live and cannot be the cross-project authority here.
+      if (actualRoute.destination === "inbox")
+        return Boolean(
+          projectScopeCurrent && address.requestId && address.acceptedTurnId,
+        );
+      return Boolean(
+        projectScopeCurrent &&
+          currentRecord?.projectId === address.projectId &&
+          currentRecord?.mode === "chat" &&
+          (currentRecord?.provider === "codex" ||
+            currentRecord?.provider === "gemini") &&
+          currentSession.loaded &&
+          currentSession.live &&
+          !currentSession.readError &&
+          !currentSession.feedInterrupted &&
+          !currentSession.stopping &&
+          !currentSession.stopPosting &&
+          !currentSession.stopUnknown &&
+          currentTurn?.requestId === address.acceptedTurnId &&
+          (currentTurn?.phase === "accepted" ||
+            currentTurn?.phase === "running"),
+      );
+    },
+    isSameAuthorityScope: (address, provider) => {
+      const currentProject = projects.data?.catalog.projects.find(
+          (item) => item.id === address.projectId,
+        ),
+        currentSummary = projects.data?.summaries.find(
+          (item) => item.projectId === address.projectId,
+        ),
+        currentRecord = sessions
+          .project(address.projectId)
+          .records.find((item) => item.id === address.sessionId),
+        actualRoute = desktopRoute(window.location.hash);
+      return Boolean(
+        sameDesktopRoute(route, actualRoute) &&
+          actualRoute.destination === "sessions" &&
+          actualRoute.projectId === address.projectId &&
+          actualRoute.selection?.kind === "session" &&
+          actualRoute.selection.id === address.sessionId &&
+          currentProject &&
+          currentSummary?.workspace === address.workspace &&
+          currentProject.workspaces.some(
+            (scope) => scope.root === address.workspace,
+          ) &&
+          currentRecord?.projectId === address.projectId &&
+          currentRecord.mode === "chat" &&
+          currentRecord.provider === provider,
+      );
+    },
+  });
   useEffect(() => {
     sessions.activate(project?.id ?? null, selectedOwnedSession);
   }, [sessions, project?.id, selectedOwnedSession]);
@@ -2421,6 +2510,7 @@ export function DesktopApp(): JSX.Element {
             projectId={project.id}
             sessionId={selectedOwnedSession}
             client={sessions}
+            decisionOwners={chatDecisionOwners}
             forkClient={sessions.fork}
             keeper={keeper}
             writesAllowed={writesAllowed}
