@@ -123,6 +123,55 @@ import { useSessionObservations } from "./use-session-observations";
 const paletteUnavailable = (message: string | undefined) =>
   message ? { unavailable: message } : {};
 
+function paletteSourceLabel(
+  source: string,
+  projects: readonly { id: string; name: string }[],
+): string {
+  const labels: Record<string, string> = {
+    beads: "Beads",
+    sessions: "Sessions",
+    runs: "Runs",
+    council: "Council",
+  };
+  const separator = source.indexOf(":");
+  const kind = separator < 0 ? "" : source.slice(0, separator);
+  const projectId = separator < 0 ? "" : source.slice(separator + 1);
+  const label = labels[kind];
+  if (label) {
+    const project = projects.find((item) => item.id === projectId);
+    return `${project?.name ?? "Project unavailable"} · ${label}`;
+  }
+  return source === "projects"
+    ? "Project catalog"
+    : "Unrecognized desktop source";
+}
+
+function paletteSourceStatuses(
+  sources: PaletteIndexSnapshot["sources"],
+  projects: readonly { id: string; name: string }[],
+): string[] {
+  return Object.entries(sources).map(
+    ([source, value]) =>
+      `${paletteSourceLabel(source, projects)}: ${value.coverage}`,
+  );
+}
+
+function paletteSourceErrors(
+  sources: PaletteIndexSnapshot["sources"],
+  projects: readonly { id: string; name: string }[],
+): string[] {
+  return Object.entries(sources)
+    .filter(
+      ([, value]) =>
+        value.coverage === "partial" || value.coverage === "unavailable",
+    )
+    .map(([source, value]) => {
+      const label = paletteSourceLabel(source, projects);
+      const detail = value.error || value.coverage;
+      return `${label}: ${detail}`;
+    });
+}
+
 function keeperPaletteCoverage(
   projectId: string,
   state: ProposalState | null,
@@ -1418,19 +1467,14 @@ export function DesktopApp(): JSX.Element {
               generation !== paletteGeneration.current
             )
               return;
-            const statuses = Object.entries(progress.sources).map(
-              ([source, value]) => `${source}: ${value.coverage}`,
+            const statuses = paletteSourceStatuses(
+              progress.sources,
+              home.catalog.projects,
             );
-            const errors = Object.entries(progress.sources)
-              .filter(
-                ([, value]) =>
-                  value.coverage === "partial" ||
-                  value.coverage === "unavailable",
-              )
-              .map(
-                ([source, value]) =>
-                  `${source}: ${value.error || value.coverage}`,
-              );
+            const errors = paletteSourceErrors(
+              progress.sources,
+              home.catalog.projects,
+            );
             const index = createPaletteIndex({
               generation,
               sourceRows: progress.rows,
@@ -1620,19 +1664,18 @@ export function DesktopApp(): JSX.Element {
               sourceId: councilBead.id,
             },
           });
-        const incompleteSources = Object.entries(snapshot.sources)
-          .filter(
-            ([, value]) =>
-              value.coverage === "partial" || value.coverage === "unavailable",
-          )
-          .map(([name, value]) => `${name}: ${value.error || value.coverage}`);
+        const incompleteSources = paletteSourceErrors(
+          snapshot.sources,
+          home.catalog.projects,
+        );
         const errors = incompleteSources.slice(0, 8);
         if (incompleteSources.length > errors.length)
           errors.push(
             `${incompleteSources.length - errors.length} additional sources are partial or unavailable.`,
           );
-        const statuses = Object.entries(snapshot.sources).map(
-          ([source, value]) => `${source}: ${value.coverage}`,
+        const statuses = paletteSourceStatuses(
+          snapshot.sources,
+          home.catalog.projects,
         );
         let finalIndex = createPaletteIndex({
           generation,

@@ -109,6 +109,16 @@ test("the visible Search entry opens the keyboard palette", async ({
   ).toBeFocused();
   const screenshotDirectory = process.env["SHOT_DIR"];
   if (screenshotDirectory) {
+    const coverage = dialog
+      .getByRole("status")
+      .filter({ hasText: "Source coverage:" });
+    await expect(coverage).toContainText("Alpha · Beads:");
+    await expect(coverage).not.toContainText("loading");
+    await expect(coverage).not.toContainText(alpha.id);
+    await dialog.getByRole("combobox").fill("Alpha");
+    await expect(
+      dialog.getByRole("option", { name: /^Alpha epic\b/ }),
+    ).toBeVisible();
     mkdirSync(screenshotDirectory, { recursive: true });
     await page.setViewportSize({ width: 1280, height: 900 });
     await dialog.screenshot({
@@ -233,18 +243,24 @@ test("partial source and filtered-empty state stay visible while reads load", as
   });
   await page.keyboard.press("Control+k");
   const dialog = page.getByRole("dialog", { name: "Command palette" });
+  const coverage = dialog
+    .getByRole("status")
+    .filter({ hasText: "Source coverage:" });
+  const unavailable = dialog
+    .getByRole("status")
+    .filter({ hasText: "Some sources are unavailable" });
   await expect(
-    dialog
-      .getByRole("status")
-      .filter({ hasText: `beads:${alpha.id}: loading` }),
+    coverage.filter({ hasText: "Alpha · Beads: loading" }),
   ).toBeVisible();
+  await expect(coverage).not.toContainText(alpha.id);
   const search = dialog.getByRole("combobox");
   await search.fill("palette-query-with-no-matching-row");
-  await expect(
-    dialog
-      .getByRole("status")
-      .filter({ hasText: "Some sources are unavailable" }),
-  ).toBeVisible();
+  await expect(unavailable).toBeVisible();
+  await expect(coverage).toContainText("Alpha · Beads: unavailable");
+  await expect(unavailable).toContainText(
+    "Alpha · Beads: Current Beads metadata could not be verified.",
+  );
+  await expect(unavailable).not.toContainText(alpha.id);
   await expect(
     dialog.getByRole("status").filter({ hasText: "No matching results" }),
   ).toBeVisible();
