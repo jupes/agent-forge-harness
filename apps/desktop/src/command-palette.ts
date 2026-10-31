@@ -254,7 +254,7 @@ export function paletteIndexCurrent(
   index: PaletteIndex | null,
   now = Date.now(),
 ): index is PaletteIndex {
-  return !!index && now >= index.asOf && now - index.asOf <= MAX_AGE_MS;
+  return !!index && now >= index.asOf && now - index.asOf < MAX_AGE_MS;
 }
 export function searchPalette(
   index: PaletteIndex,
