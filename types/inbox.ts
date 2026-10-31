@@ -206,6 +206,26 @@ export const inboxDispositionStoreSchema = z
       });
   });
 
+export const inboxDispositionRecoverySchema = z
+  .object({
+    version: z.literal(1),
+    complete: z.literal(true),
+    receipts: z.array(inboxDispositionReceiptSchema).max(4096),
+  })
+  .strict()
+  .superRefine((inventory, context) => {
+    const checked = inboxDispositionStoreSchema.safeParse({
+      version: 1,
+      entries: [],
+      receipts: inventory.receipts,
+    });
+    if (!checked.success)
+      context.addIssue({
+        code: "custom",
+        message: "invalid retained receipt inventory",
+      });
+  });
+
 export type InboxDispositionOriginal = z.infer<
   typeof inboxDispositionOriginalSchema
 >;
@@ -217,3 +237,6 @@ export type InboxDispositionReceipt = z.infer<
 >;
 export type InboxDispositionEntry = z.infer<typeof inboxDispositionEntrySchema>;
 export type InboxDispositionStore = z.infer<typeof inboxDispositionStoreSchema>;
+export type InboxDispositionRecovery = z.infer<
+  typeof inboxDispositionRecoverySchema
+>;

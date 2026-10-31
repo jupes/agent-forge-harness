@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -10,7 +10,7 @@ import { writeOwnerOnly } from "../hearth/token";
 import { resolveCheckout } from "../ledger/workspace";
 import { workspaceKey } from "../projects/scope";
 import { createProjectStore, projectCatalogPath } from "../projects/store";
-import { projectCatalogFixture } from "../projects/testing";
+import { projectCatalogFixture, projectFixture } from "../projects/testing";
 import {
   createInboxDispositionStore,
   MAX_INBOX_DISPOSITION_ENTRIES,
@@ -19,6 +19,7 @@ import {
 
 const homes: string[] = [];
 const PROJECT = "project-a5832fa0-7a21-403b-8184-44892f0d8d86";
+const OTHER_PROJECT = "project-b5832fa0-7a21-403b-8184-44892f0d8d86";
 const REQUEST = "77c37127-1c22-4a2a-8e7d-69cc74ff1299";
 afterEach(() => {
   for (const home of homes.splice(0))
@@ -123,6 +124,63 @@ test("reservation and apply replay retain one exact snooze receipt", async () =>
   expect(store.collection(PROJECT, original.workspace).receipts).toHaveLength(
     1,
   );
+});
+
+test("complete recovery retains receipts across removed projects and workspaces", async () => {
+  const { home, store, original } = fixture();
+  const oldWorkspaceHome = mkdtempSync(
+    join(tmpdir(), "forge-inbox-disposition-old-workspace-"),
+  );
+  homes.push(oldWorkspaceHome);
+  mkdirSync(join(oldWorkspaceHome, ".git"));
+  const oldWorkspace = workspaceKey(
+    resolveCheckout(oldWorkspaceHome).workspace,
+  );
+  const catalog = createProjectStore(home).read();
+  catalog.projects[0]!.workspaces.push({
+    root: oldWorkspace,
+    repositories: [oldWorkspace],
+    epicIds: ["old-epic"],
+  });
+  catalog.projects.push(
+    projectFixture(original.workspace, {
+      id: OTHER_PROJECT,
+      slug: "beta",
+    }),
+  );
+  writeOwnerOnly(projectCatalogPath(home), JSON.stringify(catalog));
+
+  const current = await store.reserve(PROJECT, original.workspace, original);
+  const oldScopeOriginal = {
+    ...original,
+    requestId: "77c37127-1c22-4a2a-8e7d-69cc74ff1298",
+    workspace: oldWorkspace,
+    item: { ...original.item, stableItemId: "bead-write:old-workspace" },
+  };
+  const oldScope = await store.reserve(PROJECT, oldWorkspace, oldScopeOriginal);
+  const otherProjectOriginal = {
+    ...original,
+    requestId: "77c37127-1c22-4a2a-8e7d-69cc74ff1297",
+    item: { ...original.item, stableItemId: "bead-write:other-project" },
+  };
+  const otherProject = await store.reserve(
+    OTHER_PROJECT,
+    original.workspace,
+    otherProjectOriginal,
+  );
+
+  const archived = await createProjectStore(home).preferences(PROJECT, 1, {
+    archived: true,
+  });
+  archived.projects[0]!.workspaces = [archived.projects[0]!.workspaces[1]!];
+  archived.projects = archived.projects.filter((item) => item.id === PROJECT);
+  writeOwnerOnly(projectCatalogPath(home), JSON.stringify(archived));
+
+  expect(store.recovery()).toEqual({
+    version: 1,
+    complete: true,
+    receipts: [current.receipt, oldScope.receipt, otherProject.receipt],
+  });
 });
 
 test("a pending identity fences source revision changes", async () => {
@@ -454,10 +512,13 @@ test("missing or corrupt initialized storage refuses instead of returning empty"
   const file = join(home, "inbox-dispositions", "state.json");
   rmSync(join(home, "inbox-dispositions"), { recursive: true, force: true });
   expect(thrown(() => store.read())).toMatchObject({ status: 503 });
+  expect(thrown(() => store.recovery())).toMatchObject({ status: 503 });
   writeOwnerOnly(file, "{");
   expect(thrown(() => store.read())).toMatchObject({ status: 503 });
+  expect(thrown(() => store.recovery())).toMatchObject({ status: 503 });
   writeOwnerOnly(file, "x".repeat(4 * 1024 * 1024 + 1));
   expect(thrown(() => store.read())).toMatchObject({ status: 503 });
+  expect(thrown(() => store.recovery())).toMatchObject({ status: 503 });
 });
 
 test("a hearth cannot reserve, apply, discard, or recover another workspace's original", async () => {

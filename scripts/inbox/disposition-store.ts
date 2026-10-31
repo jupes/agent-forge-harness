@@ -4,10 +4,12 @@ import {
   type InboxDispositionEntry,
   type InboxDispositionOriginal,
   type InboxDispositionReceipt,
+  type InboxDispositionRecovery,
   type InboxDispositionStore,
   type InboxDispositionStoredOriginal,
   inboxDispositionEntrySchema,
   inboxDispositionReceiptSchema,
+  inboxDispositionRecoverySchema,
   inboxDispositionStoreSchema,
 } from "../../types/inbox";
 import type { ProjectCatalog } from "../../types/projects";
@@ -373,6 +375,14 @@ export function createInboxDispositionStore(
 
   return {
     read,
+    recovery(): InboxDispositionRecovery {
+      const state = read();
+      return inboxDispositionRecoverySchema.parse({
+        version: 1,
+        complete: true,
+        receipts: state.receipts,
+      });
+    },
     collection(projectId: string, servedWorkspace: string) {
       if (!isProjectId(projectId))
         throw new InboxDispositionError(
