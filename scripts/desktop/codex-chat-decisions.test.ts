@@ -316,13 +316,18 @@ test("a fresh action read refuses an approval withdrawn by a concurrent check", 
 test("Stop while the origin lock is pending releases only the proven-unsent reservation and makes no POST", async () => {
   const storage = sessionStartFixture();
   let grant = () => {},
+    entered = () => {},
     posts = 0;
   const lock = new Promise<void>((resolve) => {
     grant = resolve;
   });
+  const lockEntered = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
   const identities = createCodexChatDecisionIdentities({
     storage: storage.storage,
     withLock: async (work) => {
+      entered();
       await lock;
       return storage.withLock(work);
     },
@@ -340,6 +345,7 @@ test("Stop while the origin lock is pending releases only the proven-unsent rese
   client.activate({ ...address, turnRequestId, actionable: true });
   await client.refreshPending();
   const sending = client.decide(approvalId, "accept");
+  await lockEntered;
   client.invalidate();
   grant();
   await sending;

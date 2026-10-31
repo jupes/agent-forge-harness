@@ -81,6 +81,16 @@ export function createGeminiChatDecisions(deps: {
       activation.requestId === address.requestId) &&
     (address.generation === undefined ||
       activation.generation === address.generation);
+  const sameAuthorityScope = (
+    activation: ChatDecisionActivation | null,
+    address: Address | ChatDecisionActivation | null,
+  ) =>
+    !!activation &&
+    !!address &&
+    activation.projectId === address.projectId &&
+    activation.sessionId === address.sessionId &&
+    (address.workspace === undefined ||
+      activation.workspace === address.workspace);
   const normalize = (address: Address | null): ChatDecisionActivation | null =>
     address
       ? {
@@ -209,9 +219,9 @@ export function createGeminiChatDecisions(deps: {
     view() {
       const current = observed(),
         entry = selected;
-      if (!entry || !sameActivation(entry.activation, current)) return null;
-      // Synchronous projection must not wait for the activation effect. Retain
-      // same-scope original receipts, but never old live offers for a new turn.
+      if (!entry || !sameAuthorityScope(entry.activation, current)) return null;
+      // Original intent is inspectable within its project/session/workspace.
+      // Full activation equality still gates every live offer and action.
       return live(entry, current ?? undefined)
         ? entry
         : { ...entry, pending: [], actionable: false, loading: false };

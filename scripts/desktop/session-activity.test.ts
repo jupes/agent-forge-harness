@@ -545,6 +545,7 @@ test("Needs permission requires a current protected offer for this exact live ow
     checking: false,
     posting: false,
     receipt: null,
+    activation: null,
   };
   const options = {
     mode: "chat",
