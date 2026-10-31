@@ -25,8 +25,8 @@ import {
   projectCreateRetireSchema,
 } from "../../projects/create-protocol";
 import {
-  projectGeneralSettingsRequestSchema,
   type ProjectGeneralSettings,
+  projectGeneralSettingsRequestSchema,
 } from "../../projects/project-general-protocol";
 import {
   createRepositoryOnboarding,
@@ -540,9 +540,7 @@ function generalSettingsChange(
   const id = request.params["id"];
   const parsed = projectGeneralSettingsRequestSchema.safeParse(request.body);
   if (!isProjectId(id) || !parsed.success)
-    return fail(
-      "Expected a project id and complete general project settings.",
-    );
+    return fail("Expected a project id and complete general project settings.");
   return {
     ok: true,
     value: { id, ...parsed.data },
@@ -976,9 +974,7 @@ export function projectRoutes(
     subject: ({ id }) => ({ target: id }),
     effect: async ({ id, expectedRevision, general }) =>
       reply(async () =>
-        publicCatalog(
-          await store.updateGeneral(id, expectedRevision, general),
-        ),
+        publicCatalog(await store.updateGeneral(id, expectedRevision, general)),
       ),
   };
   const createList: ReadRoute<null> = {

@@ -153,108 +153,124 @@ test("POST /projects/:id/settings/general updates the current project through th
   });
 });
 
-test(
-  "General settings clear omitted color and reject stale or unknown input",
-  async () => {
-    const h = await startTestHearth();
-    opened.push(h);
-    const store = createProjectStore(h.home);
-    const created = await store.create(
-      {
-        slug: "general-settings",
-        name: "Before",
-        description: "Before description",
-        icon: "B",
-        color: "blue",
-        keeperSmith: "claude-master",
-        workspaces: [
-          {
-            root: h.workspace,
-            repositories: [h.workspace],
-            epicIds: ["alpha-epic"],
-          },
-        ],
-      },
-      0,
-    );
-    const original = created.projects[0];
-    if (!original) throw new Error("project fixture missing");
-    const preferred = await store.preferences(original.id, created.revision, {
-      pinned: true,
-      archived: true,
-    });
-    const response = await fetch(
-      `${h.api}/projects/${original.id}/settings/general`,
-      {
-        method: "POST",
-        headers: h.headers(h.hearth.token),
-        body: JSON.stringify({
-          expectedRevision: preferred.revision,
-          general: {
-            name: "After",
-            description: "After description",
-            icon: "A",
-          },
-        }),
-      },
-    );
-    expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({
-      ok: true,
-      error: null,
-      data: { revision: preferred.revision + 1 },
-    });
-    const updated = store.read().projects[0];
-    if (!updated) throw new Error("updated project missing");
-    expect(updated).toMatchObject({
-      id: original.id,
-      slug: original.slug,
-      name: "After",
-      description: "After description",
-      icon: "A",
-      workspaces: original.workspaces,
+test("General settings clear omitted color and reject stale or unknown input", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  const store = createProjectStore(h.home);
+  const created = await store.create(
+    {
+      slug: "general-settings",
+      name: "Before",
+      description: "Before description",
+      icon: "B",
+      color: "blue",
       keeperSmith: "claude-master",
-      pinned: true,
-      archived: true,
-      createdAt: original.createdAt,
-    });
-    expect(updated).not.toHaveProperty("color");
-    expect(h.events(["operator.action"])).toHaveLength(1);
-    expect(h.events(["operator.action"])[0]?.payload).toMatchObject({
-      action: "project.settings.general",
-      target: original.id,
-    });
+      workspaces: [
+        {
+          root: h.workspace,
+          repositories: [h.workspace],
+          epicIds: ["alpha-epic"],
+        },
+      ],
+    },
+    0,
+  );
+  const original = created.projects[0];
+  if (!original) throw new Error("project fixture missing");
+  const preferred = await store.preferences(original.id, created.revision, {
+    pinned: true,
+    archived: true,
+  });
+  const response = await fetch(
+    `${h.api}/projects/${original.id}/settings/general`,
+    {
+      method: "POST",
+      headers: h.headers(h.hearth.token),
+      body: JSON.stringify({
+        expectedRevision: preferred.revision,
+        general: {
+          name: "After",
+          description: "After description",
+          icon: "A",
+        },
+      }),
+    },
+  );
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({
+    ok: true,
+    error: null,
+    data: { revision: preferred.revision + 1 },
+  });
+  const updated = store.read().projects[0];
+  if (!updated) throw new Error("updated project missing");
+  expect(updated).toMatchObject({
+    id: original.id,
+    slug: original.slug,
+    name: "After",
+    description: "After description",
+    icon: "A",
+    workspaces: original.workspaces,
+    keeperSmith: "claude-master",
+    pinned: true,
+    archived: true,
+    createdAt: original.createdAt,
+  });
+  expect(updated).not.toHaveProperty("color");
+  expect(h.events(["operator.action"])).toHaveLength(1);
+  expect(h.events(["operator.action"])[0]?.payload).toMatchObject({
+    action: "project.settings.general",
+    target: original.id,
+  });
 
-    const stale = await fetch(
-      `${h.api}/projects/${original.id}/settings/general`,
-      {
-        method: "POST",
-        headers: h.headers(h.hearth.token),
-        body: JSON.stringify({
-          expectedRevision: preferred.revision,
-          general: { name: "Stale", description: "", icon: "S" },
-        }),
-      },
-    );
-    expect(stale.status).toBe(409);
-    expect(store.read().projects[0]).toEqual(updated);
+  const stale = await fetch(
+    `${h.api}/projects/${original.id}/settings/general`,
+    {
+      method: "POST",
+      headers: h.headers(h.hearth.token),
+      body: JSON.stringify({
+        expectedRevision: preferred.revision,
+        general: { name: "Stale", description: "", icon: "S" },
+      }),
+    },
+  );
+  expect(stale.status).toBe(409);
+  expect(store.read().projects[0]).toEqual(updated);
 
-    const absentId = "project-00000000-0000-4000-8000-000000000000";
-    const absent = await fetch(
-      `${h.api}/projects/${absentId}/settings/general`,
-      {
-        method: "POST",
-        headers: h.headers(h.hearth.token),
-        body: JSON.stringify({
-          expectedRevision: store.read().revision,
-          general: { name: "Missing", description: "", icon: "M" },
-        }),
-      },
-    );
-    expect(absent.status).toBe(404);
-    expect(store.read().projects[0]).toEqual(updated);
-    const auditedCount = h.events(["operator.action"]).length;
-    const invalid = await fetch(
+  const absentId = "project-00000000-0000-4000-8000-000000000000";
+  const absent = await fetch(`${h.api}/projects/${absentId}/settings/general`, {
+    method: "POST",
+    headers: h.headers(h.hearth.token),
+    body: JSON.stringify({
+      expectedRevision: store.read().revision,
+      general: { name: "Missing", description: "", icon: "M" },
+    }),
+  });
+  expect(absent.status).toBe(404);
+  expect(store.read().projects[0]).toEqual(updated);
+  const auditedCount = h.events(["operator.action"]).length;
+  const invalid = await fetch(
+    `${h.api}/projects/${original.id}/settings/general`,
+    {
+      method: "POST",
+      headers: h.headers(h.hearth.token),
+      body: JSON.stringify({
+        expectedRevision: store.read().revision,
+        general: {
+          name: "Invalid",
+          description: "",
+          icon: "I",
+          extra: true,
+        },
+      }),
+    },
+  );
+  expect(invalid.status).toBe(400);
+  expect(h.events(["operator.action"])).toHaveLength(auditedCount);
+  expect(store.read().projects[0]).toEqual(updated);
+
+  for (const color of [null, "ultraviolet"]) {
+    const malformedColor = await fetch(
       `${h.api}/projects/${original.id}/settings/general`,
       {
         method: "POST",
@@ -262,41 +278,19 @@ test(
         body: JSON.stringify({
           expectedRevision: store.read().revision,
           general: {
-            name: "Invalid",
+            name: "Invalid color",
             description: "",
             icon: "I",
-            extra: true,
+            color,
           },
         }),
       },
     );
-    expect(invalid.status).toBe(400);
+    expect(malformedColor.status).toBe(400);
     expect(h.events(["operator.action"])).toHaveLength(auditedCount);
     expect(store.read().projects[0]).toEqual(updated);
-
-    for (const color of [null, "ultraviolet"]) {
-      const malformedColor = await fetch(
-        `${h.api}/projects/${original.id}/settings/general`,
-        {
-          method: "POST",
-          headers: h.headers(h.hearth.token),
-          body: JSON.stringify({
-            expectedRevision: store.read().revision,
-            general: {
-              name: "Invalid color",
-              description: "",
-              icon: "I",
-              color,
-            },
-          }),
-        },
-      );
-      expect(malformedColor.status).toBe(400);
-      expect(h.events(["operator.action"])).toHaveLength(auditedCount);
-      expect(store.read().projects[0]).toEqual(updated);
-    }
-  },
-);
+  }
+});
 
 test("protected project-create options expose complete trusted choices without writes", async () => {
   const h = await startTestHearth();

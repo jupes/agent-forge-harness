@@ -22,8 +22,8 @@ import { resolveCheckout } from "../ledger/workspace";
 import { withQueueLock } from "../scheduler/queue-lock";
 import { MAX_PROJECT_CREATE_OPERATIONS } from "./create-protocol";
 import {
-  projectGeneralSettingsSchema,
   type ProjectGeneralSettings,
+  projectGeneralSettingsSchema,
 } from "./project-general-protocol";
 
 export const PROJECT_STORE_VERSION = 1;
