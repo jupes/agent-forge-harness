@@ -11,7 +11,10 @@ export function CodexChatApprovals({
   client,
   actionable,
 }: {
-  client: CodexChatDecisions;
+  client: Pick<
+    CodexChatDecisions,
+    "view" | "refreshPending" | "checkOriginal" | "decide"
+  >;
   actionable: boolean;
 }) {
   const view = client.view();
