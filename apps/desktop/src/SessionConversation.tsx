@@ -12,6 +12,7 @@ import type { KeeperClient } from "./keeper-client";
 import { insertKeeperSuggestion, keeperPicker } from "./keeper-context";
 import { keeperTurns } from "./keeper-model";
 import { desktopHref } from "./navigation";
+import { ObjectActivityTabs, ScopedProjectActivity } from "./ProjectActivity";
 import {
   SessionActivity,
   SessionOutcome,
@@ -68,14 +69,52 @@ export function SessionConversation(props: SessionConversationProps) {
   const record = props.client
     .project(props.projectId)
     .records.find((item) => item.id === props.sessionId);
-  return record?.provider === "gemini" && record.mode === "chat" ? (
-    <GeminiChatConversation
-      key={`${props.projectId}:${props.sessionId}`}
-      {...props}
-      record={record}
-    />
-  ) : (
-    <StandardSessionConversation {...props} />
+  const [tab, setTab] = useState<"details" | "activity">("details");
+  const activityAvailable =
+    !!props.workspace &&
+    record?.id === props.sessionId &&
+    record.projectId === props.projectId &&
+    record.workspace === props.workspace;
+  const showActivity = tab === "activity" && activityAvailable;
+  return (
+    <>
+      <ObjectActivityTabs
+        label="Session views"
+        detailLabel="Conversation"
+        selected={showActivity ? "activity" : "details"}
+        activityAvailable={activityAvailable}
+        onSelect={setTab}
+      />
+      <div
+        role="tabpanel"
+        aria-label="Session conversation"
+        hidden={showActivity}
+      >
+        {record?.provider === "gemini" && record.mode === "chat" ? (
+          <GeminiChatConversation
+            key={`${props.projectId}:${props.sessionId}`}
+            {...props}
+            record={record}
+          />
+        ) : (
+          <StandardSessionConversation {...props} />
+        )}
+      </div>
+      {showActivity && props.workspace && (
+        <div role="tabpanel" aria-label="Session Activity">
+          <ScopedProjectActivity
+            key={JSON.stringify([
+              props.workspace,
+              props.projectId,
+              props.sessionId,
+            ])}
+            projectId={props.projectId}
+            workspace={props.workspace}
+            scope={{ sessionId: props.sessionId }}
+          />
+        </div>
+      )}
+    </>
   );
 }
 function StandardSessionConversation({

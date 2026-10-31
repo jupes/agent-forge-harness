@@ -1,7 +1,9 @@
+import { useState } from "preact/hooks";
 import { Button } from "../../../docs/js/ds/Button";
 import { EmptyState } from "../../../docs/js/ds/EmptyState";
 import type { SessionObservedActivity } from "../../../types/session-observations";
 import { desktopHref } from "./navigation";
+import { ObjectActivityTabs, ScopedProjectActivity } from "./ProjectActivity";
 import type { SessionObservationRow } from "./session-observations";
 import type { SessionObservationsClient } from "./session-observations-client";
 import "./observed-session.css";
@@ -57,6 +59,17 @@ export function ObservedSessionDetail({
   const view = client.detail(projectId, sessionId),
     data = view.data,
     summary = data?.observation;
+  const [tab, setTab] = useState<"details" | "activity">("details");
+  const activityAvailable =
+    !view.loading &&
+    !view.error &&
+    !!view.workspace &&
+    view.projectId === projectId &&
+    view.sessionId === sessionId &&
+    data?.projectId === projectId &&
+    data.sessionId === sessionId &&
+    data.workspace === view.workspace;
+  const showActivity = tab === "activity" && activityAvailable;
   const external = row?.ownership === "external";
   const name = external
     ? "Observed session details"
@@ -96,6 +109,18 @@ export function ObservedSessionDetail({
             "Checking this session's project membership and ownership."}
         </p>
       </header>
+      <ObjectActivityTabs
+        label="Session views"
+        detailLabel="Details"
+        selected={showActivity ? "activity" : "details"}
+        activityAvailable={activityAvailable}
+        onSelect={setTab}
+      />
+      <div
+        role="tabpanel"
+        aria-label="Session metadata details"
+        hidden={showActivity}
+      >
       {view.error && (
         <p role="alert" class="af-notice">
           {view.error}
@@ -245,6 +270,17 @@ export function ObservedSessionDetail({
             </p>
           </section>
         </>
+      )}
+      </div>
+      {showActivity && view.workspace && (
+        <div role="tabpanel" aria-label="Session Activity">
+          <ScopedProjectActivity
+            key={JSON.stringify([view.workspace, projectId, sessionId])}
+            projectId={projectId}
+            workspace={view.workspace}
+            scope={{ sessionId }}
+          />
+        </div>
       )}
     </section>
   );

@@ -1,11 +1,29 @@
 import { randomUUID } from "node:crypto";
-import { writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  realpathSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { dirname, join } from "node:path";
 import { expect, test } from "@playwright/test";
+import { runsHref } from "../../apps/desktop/src/project-runs-model";
+import { projectShiftInputHash } from "../../apps/desktop/src/project-shift-identities";
+import { createSessionRegistry } from "../../scripts/sessions/registry";
+import type { ForgeState } from "../../scripts/forge/phases";
 import { projectFixture } from "../../scripts/projects/testing";
 import type { LedgerEventInput } from "../../types/hearth";
+import type {
+  ProjectShiftReceipt,
+  ProjectShiftStartRequest,
+  ProjectShiftsPage,
+} from "../../types/project-shifts";
+import type { OwnedSessionMetadata } from "../../types/owned-session";
 import { readState, withStateLock, writeState } from "../e2e/bd-stand-in-state";
 import { openSettled } from "../e2e/fixtures";
-import { BD_STAND_IN_STATE } from "../e2e/servers";
+import { BD_STAND_IN_STATE, HEARTH_HOME } from "../e2e/servers";
 import {
   activityFixtureSessionCount,
   clearActivityMembershipFixtures,
@@ -21,6 +39,69 @@ import {
 } from "./project-fixtures";
 
 test.beforeEach(seedProjects);
+const activityRunFiles = new Set<string>();
+let savedRegistry: { path: string; contents: string | null } | null = null;
+test.afterEach(() => {
+  for (const path of activityRunFiles) {
+    if (existsSync(path)) unlinkSync(path);
+  }
+  activityRunFiles.clear();
+  if (savedRegistry) {
+    if (savedRegistry.contents === null) {
+      if (existsSync(savedRegistry.path)) unlinkSync(savedRegistry.path);
+    } else {
+      writeFileSync(savedRegistry.path, savedRegistry.contents);
+    }
+    savedRegistry = null;
+  }
+});
+
+function seedActivityRun(slug: string) {
+  const checkout = realpathSync.native(process.cwd());
+  const path = join(checkout, ".tmp", "work", "forge-runs", `${slug}.json`);
+  mkdirSync(dirname(path), { recursive: true });
+  const state: ForgeState = {
+    schemaVersion: 2,
+    slug,
+    feature: "Scoped Activity fixture",
+    epic: "alpha-epic",
+    phase: "research",
+    completed: [],
+    artifacts: {},
+    mode: "gated",
+    checkout,
+    updatedAt: "2026-10-30T12:00:00.000Z",
+    reviews: [],
+  };
+  writeFileSync(path, JSON.stringify(state), { flag: "wx" });
+  activityRunFiles.add(path);
+}
+
+async function seedOwnedActivitySession() {
+  const path = join(HEARTH_HOME, "sessions", "registry.json");
+  if (savedRegistry) throw Error("Owned session fixture already active");
+  const contents = existsSync(path) ? readFileSync(path, "utf8") : null;
+  savedRegistry = { path, contents };
+  const requestId = randomUUID();
+  const metadata: OwnedSessionMetadata = {
+    mode: "chat",
+    provider: "claude",
+    workspace,
+    repository: workspace,
+    worktree: workspace,
+    beadId: "alpha-epic",
+    smith: "fixture-smith",
+    requestedModel: "recorded-model",
+    requestedEffort: null,
+  };
+  return createSessionRegistry(HEARTH_HOME).reserve(
+    alpha.id,
+    requestId,
+    "a".repeat(64),
+    async () => metadata,
+  );
+}
+
 test("observed session exposes the shared project Activity feed in its Activity tab", async ({
   page,
 }) => {
@@ -67,7 +148,9 @@ test("observed session exposes the shared project Activity feed in its Activity 
     exact: true,
   });
   await expect(activityTab).toBeVisible();
-  await activityTab.click();
+  await detail.getByRole("tab", { name: "Details", exact: true }).focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(activityTab).toHaveAttribute("aria-selected", "true");
 
   const feed = detail.getByRole("listbox", { name: "Project activity" });
   await expect(feed).toBeVisible();
@@ -77,6 +160,233 @@ test("observed session exposes the shared project Activity feed in its Activity 
     "readonly",
     "",
   );
+  await page.goto(
+    `/index.html#/desktop/project/${beta.id}/sessions?selectionKind=session&selectionId=${encodeURIComponent(sessionId)}`,
+  );
+  await expect(
+    page.getByRole("region", { name: "Session metadata details" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("listbox", { name: "Project activity" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("region", { name: "Activity inspector" }),
+  ).toHaveCount(0);
+});
+
+test("owned conversation keeps private turns separate from scoped project Activity", async ({
+  page,
+}) => {
+  const record = await seedOwnedActivitySession();
+  seedObservationEvents([
+    {
+      kind: "session.started",
+      workspace,
+      beadId: "alpha-epic",
+      sessionId: record.id,
+      executor: { provider: "claude", model: "recorded-model" },
+      payload: { kind: "interactive" },
+    },
+    {
+      kind: "tool.called",
+      workspace,
+      beadId: "alpha-epic",
+      sessionId: record.id,
+      executor: { provider: "claude", model: "recorded-model" },
+      payload: {
+        tool: "Owned shared Activity marker",
+        argsHash: "b".repeat(64),
+      },
+    },
+  ]);
+  await openSettled(
+    page,
+    `/index.html#/desktop/project/${alpha.id}/sessions?selectionKind=session&selectionId=${encodeURIComponent(record.id)}`,
+  );
+  const conversation = page.getByRole("tabpanel", {
+    name: "Session conversation",
+    exact: true,
+  });
+  await expect(conversation).toBeVisible();
+  const activityTab = page.getByRole("tab", {
+    name: "Activity",
+    exact: true,
+  });
+  await expect(activityTab).toBeVisible();
+  await page.getByRole("tab", { name: "Conversation", exact: true }).focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(activityTab).toHaveAttribute("aria-selected", "true");
+  const feed = page.getByRole("listbox", { name: "Project activity" });
+  await expect(feed).toBeVisible();
+  await expect(feed).toContainText("Owned shared Activity marker");
+  await expect(page.getByLabel("Session filter")).toHaveValue(record.id);
+  await expect(page.getByLabel("Session filter")).toHaveAttribute(
+    "readonly",
+    "",
+  );
+  await expect(
+    page.getByRole("tabpanel", { name: "Session Activity" }),
+  ).toBeVisible();
+  await expect(
+    page.getByRole("region", { name: "Recorded activity metadata" }),
+  ).toHaveCount(0);
+});
+
+test("verified Run Activity is pinned to its slug and disappears for a foreign project selection", async ({
+  page,
+}) => {
+  const runId = `activity-${randomUUID()}`,
+    sessionId = `activity-run-session-${randomUUID()}`;
+  seedActivityRun(runId);
+  seedObservationEvents([
+    {
+      kind: "tool.called",
+      workspace,
+      beadId: "alpha-epic",
+      runId,
+      sessionId,
+      executor: { provider: "codex", model: "recorded-model" },
+      payload: {
+        tool: "Run shared Activity marker",
+        argsHash: "c".repeat(64),
+      },
+    },
+  ]);
+  await openSettled(page, `/index.html${runsHref(alpha.id, runId)}`);
+  const detail = page.getByRole("article", {
+    name: "Selected forge run",
+    exact: true,
+  });
+  await expect(detail).toBeVisible();
+  const activityTab = detail.getByRole("tab", {
+    name: "Activity",
+    exact: true,
+  });
+  await expect(activityTab).toBeVisible();
+  await detail.getByRole("tab", { name: "Run", exact: true }).focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(activityTab).toHaveAttribute("aria-selected", "true");
+  const feed = detail.getByRole("listbox", { name: "Project activity" });
+  await expect(feed).toBeVisible();
+  await expect(feed).toContainText("Run shared Activity marker");
+  await expect(detail.getByLabel("Run filter")).toHaveValue(runId);
+  await expect(detail.getByLabel("Run filter")).toHaveAttribute(
+    "readonly",
+    "",
+  );
+
+  await page.goto(`/index.html${runsHref(beta.id, runId)}`);
+  await expect(
+    page.getByRole("listbox", { name: "Project activity" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("region", { name: "Activity inspector" }),
+  ).toHaveCount(0);
+});
+
+test("verified original Shift Activity is distinct from Attend and clears after a refused refresh", async ({
+  page,
+}) => {
+  const scope = { projectId: alpha.id, workspace };
+  const request: ProjectShiftStartRequest = {
+    requestId: randomUUID(),
+    expectedCatalogRevision: 1,
+    options: {
+      for: "5m",
+      concurrency: 1,
+      maxBeads: 1,
+      maxUsd: 5,
+      repairs: 0,
+      base: "main",
+    },
+  };
+  const shiftId = `shift-20261030-120000-${randomUUID().slice(0, 4)}`;
+  const receipt: ProjectShiftReceipt = {
+    intent: {
+      projectId: alpha.id,
+      workspace,
+      shiftId,
+      request,
+      requestHash: await projectShiftInputHash(scope, request),
+      createdAt: "2026-10-30T12:00:00.000Z",
+      attemptedAt: null,
+    },
+    observation: {
+      shiftId,
+      requestId: request.requestId,
+      phase: "reserved",
+      reason: null,
+      actual: null,
+    },
+  };
+  const pageData: ProjectShiftsPage = {
+    projectId: alpha.id,
+    asOf: "2026-10-30T12:00:00.000Z",
+    items: [receipt],
+  };
+  let mismatch = false;
+  await page.route(`**/projects/${alpha.id}/shifts`, (route) =>
+    route.fulfill({
+      status: 200,
+      json: {
+        ok: true,
+        data: mismatch ? { ...pageData, projectId: beta.id, items: [] } : pageData,
+        error: null,
+      },
+    }),
+  );
+  await page.route(
+    `**/projects/${alpha.id}/shifts/requests/${request.requestId}`,
+    (route) =>
+      route.fulfill({
+        status: 200,
+        json: { ok: true, data: receipt, error: null },
+      }),
+  );
+  seedObservationEvents([
+    {
+      kind: "shift.started",
+      workspace,
+      shiftId,
+      payload: { shiftId, concurrency: 1, durationMs: 300_000, maxBeads: 1 },
+    },
+  ]);
+  await openSettled(
+    page,
+    `/index.html#/desktop/project/${alpha.id}/workbench`,
+  );
+  const shift = page.locator(`[data-shift="${shiftId}"]`);
+  await expect(shift).toBeVisible();
+  const activityTab = shift.getByRole("tab", {
+    name: "Activity",
+    exact: true,
+  });
+  await expect(activityTab).toBeVisible();
+  await shift.getByRole("tab", { name: "Shift", exact: true }).focus();
+  await page.keyboard.press("ArrowRight");
+  await expect(activityTab).toHaveAttribute("aria-selected", "true");
+  const feed = shift.getByRole("listbox", { name: "Project activity" });
+  await expect(feed).toBeVisible();
+  await expect(feed).toContainText("Shift started");
+  await expect(shift.getByLabel("Shift filter")).toHaveValue(shiftId);
+  await expect(shift.getByLabel("Shift filter")).toHaveAttribute(
+    "readonly",
+    "",
+  );
+  await expect(
+    shift.getByRole("button", { name: "Attend shift", exact: true }),
+  ).toBeVisible();
+
+  mismatch = true;
+  await page.getByRole("button", { name: "Refresh shifts", exact: true }).click();
+  await expect(page.getByRole("alert")).toContainText("scoped shift read");
+  await expect(shift.getByRole("tab", { name: "Activity" })).toHaveCount(0);
+  await expect(
+    page.getByRole("listbox", { name: "Project activity" }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByRole("region", { name: "Activity inspector" }),
+  ).toHaveCount(0);
 });
 
 test("project Activity virtualizes scoped metadata and keyboard selection opens its protected inspector", async ({

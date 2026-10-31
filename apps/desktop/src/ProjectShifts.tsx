@@ -6,6 +6,7 @@ import type {
   ProjectShiftReceipt,
 } from "../../../types/project-shifts";
 import { ProjectShiftAttempts } from "./ProjectShiftAttempts";
+import { ObjectActivityTabs, ScopedProjectActivity } from "./ProjectActivity";
 import { ProjectShiftListStatus } from "./ProjectShiftListStatus";
 import type { ProjectShiftsClient } from "./project-shift-client";
 import {
@@ -110,6 +111,25 @@ export function ProjectShifts({
   const receipt = view.page?.items.find(
     (row) => row.intent.request.requestId === attending,
   );
+  const activityScopeReady =
+    !view.loading &&
+    !view.error &&
+    !!view.page &&
+    view.page.projectId === scope.projectId;
+  const activityReadyFor = (selected: ProjectShiftReceipt) =>
+    activityScopeReady &&
+    selected.intent.projectId === scope.projectId &&
+    selected.intent.workspace === scope.workspace &&
+    selected.observation.requestId === selected.intent.request.requestId &&
+    selected.observation.shiftId === selected.intent.shiftId &&
+    !!view.page?.items.some(
+      (item) =>
+        item.intent.request.requestId === selected.intent.request.requestId &&
+        item.intent.shiftId === selected.intent.shiftId &&
+        item.intent.workspace === scope.workspace &&
+        item.observation.requestId === selected.intent.request.requestId &&
+        item.observation.shiftId === selected.intent.shiftId,
+    );
   const openStart = async () => {
     if (startHeld) return;
     const owner = ++formOwner.current;
@@ -216,6 +236,8 @@ export function ProjectShifts({
           <ShiftRow
             key={item.intent.request.requestId}
             receipt={item}
+            scope={scope}
+            activityReady={activityReadyFor(item)}
             now={now}
             busy={view.busy || !!view.pendingControl || !writesAllowed}
             onCheck={() => {
@@ -492,6 +514,8 @@ export function ProjectShiftFields({
 
 function ShiftRow({
   receipt,
+  scope,
+  activityReady,
   now,
   busy,
   onCheck,
@@ -500,6 +524,8 @@ function ShiftRow({
   onAttend,
 }: {
   receipt: ProjectShiftReceipt;
+  scope: ProjectShiftScope;
+  activityReady: boolean;
   now: number;
   busy: boolean;
   onCheck(): void;
@@ -507,9 +533,11 @@ function ShiftRow({
   selected: boolean;
   onAttend(): void;
 }) {
+  const [tab, setTab] = useState<"details" | "activity">("details");
   const { observation, intent } = receipt,
     actual = observation.actual,
     reviewed = intent.request.options;
+  const showActivity = tab === "activity" && activityReady;
   return (
     <article
       class="af-shift-row"
@@ -550,6 +578,18 @@ function ShiftRow({
           </Button>
         </div>
       </div>
+      <ObjectActivityTabs
+        label={`Shift views for ${intent.shiftId}`}
+        detailLabel="Shift"
+        selected={showActivity ? "activity" : "details"}
+        activityAvailable={activityReady}
+        onSelect={setTab}
+      />
+      <div
+        role="tabpanel"
+        aria-label={`Shift details for ${intent.shiftId}`}
+        hidden={showActivity}
+      >
       {observation.reason && (
         <p>{projectShiftReasonLabel(observation.reason)}</p>
       )}
@@ -660,6 +700,21 @@ function ShiftRow({
           </div>
         </dl>
       </details>
+      </div>
+      {showActivity && (
+        <div role="tabpanel" aria-label={`Shift Activity for ${intent.shiftId}`}>
+          <ScopedProjectActivity
+            key={JSON.stringify([
+              scope.workspace,
+              scope.projectId,
+              intent.shiftId,
+            ])}
+            projectId={scope.projectId}
+            workspace={scope.workspace}
+            scope={{ shiftId: intent.shiftId }}
+          />
+        </div>
+      )}
     </article>
   );
 }

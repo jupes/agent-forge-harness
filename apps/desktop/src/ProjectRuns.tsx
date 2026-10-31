@@ -10,6 +10,7 @@ import type {
 import { KeeperMarkdown } from "./KeeperMarkdown";
 import { desktopHref } from "./navigation";
 import { ProjectCheckpointReview } from "./ProjectCheckpointReview";
+import { ObjectActivityTabs, ScopedProjectActivity } from "./ProjectActivity";
 import { activityHref, emptyActivityFilters } from "./project-activity-model";
 import type {
   ProjectCheckpointReviewOwner,
@@ -245,6 +246,28 @@ export function ProjectRuns({
     setDraft(filters ?? emptyRunFilters());
   }, [filterKey]);
   const selected = view?.selectedSlug ?? null;
+  const activityReady =
+    !!workspace &&
+    !!view &&
+    !!view.page &&
+    !!view.detail &&
+    !view.loading &&
+    !view.error &&
+    !view.detailLoading &&
+    !view.detailError &&
+    !view.detailStale &&
+    view.selectedSlug === selected &&
+    selected === view.detail.run.slug &&
+    view.page.projectId === projectId &&
+    view.detail.projectId === projectId &&
+    view.page.workspace === workspace &&
+    view.detail.workspace === workspace &&
+    view.page.checkout === view.detail.checkout &&
+    view.page.coverage === "served-checkout-only" &&
+    view.detail.coverage === "served-checkout-only" &&
+    view.page.problems.length === 0 &&
+    view.detail.problems.length === 0 &&
+    view.page.runs.some((run) => run.slug === selected);
   const checkpointReviewAvailable =
     !!view?.page &&
     view.page.problems.length === 0 &&
@@ -381,8 +404,15 @@ export function ProjectRuns({
           )}
           {view?.detail && (
             <>
-              <RunDetail
+              <RunDetailWithActivity
+                key={JSON.stringify([
+                  workspace,
+                  projectId,
+                  view.detail.run.slug,
+                ])}
                 projectId={projectId}
+                workspace={workspace}
+                activityReady={activityReady}
                 detail={view.detail}
                 sessionHistoryLoading={view.sessionHistoryLoading}
                 sessionHistoryError={view.sessionHistoryError}
@@ -746,6 +776,10 @@ function RunCheckpoints({
 
 export function RunDetail({
   projectId,
+  workspace,
+  activityReady,
+  activityTab = "details",
+  onActivityTabSelect = () => {},
   detail,
   sessionHistoryLoading = false,
   sessionHistoryError = "",
@@ -762,6 +796,10 @@ export function RunDetail({
   onCouncilArtifactPrefill,
 }: {
   projectId: string;
+  workspace?: string | null;
+  activityReady?: boolean;
+  activityTab?: "details" | "activity";
+  onActivityTabSelect?(value: "details" | "activity"): void;
   detail: ProjectRunDetail;
   sessionHistoryLoading?: boolean;
   sessionHistoryError?: string;
@@ -783,6 +821,7 @@ export function RunDetail({
   ): void;
 }) {
   const run = detail.run;
+  const showActivity = activityTab === "activity" && activityReady && !!workspace;
   const runUpdatedAt = run.updatedAt;
   const latest = detail.gateHistory[0] ?? null;
   return (
@@ -801,6 +840,14 @@ export function RunDetail({
           Open run Activity
         </Button>
       </header>
+      <ObjectActivityTabs
+        label="Run views"
+        detailLabel="Run"
+        selected={showActivity ? "activity" : "details"}
+        activityAvailable={!!activityReady && !!workspace}
+        onSelect={onActivityTabSelect}
+      />
+      <div role="tabpanel" aria-label="Run details" hidden={showActivity}>
       <dl class="af-run-facts">
         <div>
           <dt>Recorded mode</dt>
@@ -1121,6 +1168,33 @@ export function RunDetail({
         </p>
       ))}
       <p class="af-runs-note">Detail last verified {time(detail.asOf)}</p>
+      </div>
+      {showActivity && workspace && (
+        <div role="tabpanel" aria-label="Run Activity">
+          <ScopedProjectActivity
+            key={JSON.stringify([workspace, projectId, run.slug])}
+            projectId={projectId}
+            workspace={workspace}
+            scope={{ runId: run.slug }}
+          />
+        </div>
+      )}
     </article>
+  );
+}
+
+function RunDetailWithActivity(props: Parameters<typeof RunDetail>[0]) {
+  const [activityTab, setActivityTab] = useState<"details" | "activity">(
+    "details",
+  );
+  const { workspace = null, activityReady = false, ...presenterProps } = props;
+  return (
+    <RunDetail
+      {...presenterProps}
+      workspace={workspace}
+      activityReady={activityReady}
+      activityTab={activityTab}
+      onActivityTabSelect={setActivityTab}
+    />
   );
 }
