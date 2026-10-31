@@ -18,8 +18,8 @@
  * documents (levels `low`, `medium`, `high`, `xhigh`, `max`; a level the model
  * does not support runs as the highest one below it). It was added after that
  * run and has not been run against a real CLI. The reference does not say
- * what a model without effort support (`claude-apprentice`'s Haiku 4.5) does
- * with the flag.
+ * what a model without effort support does with the flag, nor whether the
+ * apprentice smith's model has that support.
  *
  * The CLI's help lists a `--session-id` flag that would fix the id up front.
  * The adapter does not pass it and takes the id the stream reports instead:
