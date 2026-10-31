@@ -30,7 +30,7 @@ export type InboxDispositionResult<T> =
   | { state: "confirmed"; value: T }
   | { state: "not-sent"; message: string }
   | { state: "refused"; message: string; value?: T }
-  | { state: "unknown"; message: string; value?: T }
+  | { state: "unknown"; message: string }
   | { state: "unavailable"; message: string }
   | { state: "missing" };
 
@@ -105,11 +105,14 @@ export function createInboxDispositionsClient(deps: {
   post: OperatorPost;
   requestId(): string;
 }) {
-  const bindingIdentity = Object.freeze({ read: deps.read, post: deps.post });
+  const read = deps.read;
+  const post = deps.post;
+  const requestId = deps.requestId;
+  const bindingIdentity = Object.freeze({ read, post });
 
   async function get<T>(url: string, parse: (raw: unknown) => T): Promise<InboxDispositionResult<T>> {
     try {
-      const response = await deps.read(url, { method: "GET" }, { maxBodyBytes: LIMIT });
+      const response = await read(url, { method: "GET" }, { maxBodyBytes: LIMIT });
       const raw = await envelope(response);
       if (response.status === 404)
         return errorText(raw) === null
@@ -141,7 +144,7 @@ export function createInboxDispositionsClient(deps: {
       const bytes = new TextEncoder().encode(JSON.stringify(original));
       if (bytes.byteLength > 4096)
         return { state: "not-sent", message: "The Inbox original exceeds the request bound." };
-      const response = await deps.post(url, original, { maxBodyBytes: LIMIT });
+      const response = await post(url, original, { maxBodyBytes: LIMIT });
       const raw = await envelope(response);
       const refused = errorText(raw);
       if (!response.ok && refused !== null && (response.status === 409 || response.status === 503))
@@ -155,12 +158,12 @@ export function createInboxDispositionsClient(deps: {
       if (response.status === 409) {
         if (value.receipt.phase === "refused")
           return { state: "refused", message: value.receipt.refusalReason ?? "The saved Inbox action was refused.", value };
-        return { state: "unknown", message: "The 409 Inbox reply did not contain a terminal refusal.", value };
+        return { state: "unknown", message: "The 409 Inbox reply did not contain a terminal refusal." };
       }
-      if (!response.ok) return { state: "unknown", message: "The Inbox write reply could not be verified.", value };
+      if (!response.ok) return { state: "unknown", message: "The Inbox write reply could not be verified." };
       return accepts(value)
         ? { state: "confirmed", value }
-        : { state: "unknown", message: "The Inbox write did not return the required terminal receipt.", value };
+        : { state: "unknown", message: "The Inbox write did not return the required terminal receipt." };
     } catch (error) {
       return error instanceof NotSent
         ? { state: "not-sent", message: error.message }
@@ -217,7 +220,7 @@ export function createInboxDispositionsClient(deps: {
         (saved) => saved.receipt.phase === "refused" && saved.receipt.refusalCode === "discarded");
     },
     mintOriginal(scope: InboxDispositionScope, input: Omit<InboxDispositionOriginal, "requestId" | "workspace">) {
-      return inboxDispositionOriginalSchema.parse({ ...input, requestId: deps.requestId(), workspace: scope.workspace });
+      return inboxDispositionOriginalSchema.parse({ ...input, requestId: requestId(), workspace: scope.workspace });
     },
   };
   return Object.freeze(client);

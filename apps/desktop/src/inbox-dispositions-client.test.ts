@@ -202,7 +202,7 @@ test("same-result-revision contradictions are unknown while a newer entry may di
     requestId: () => requestId,
     post: async () => new Response(JSON.stringify({ ok: true, data: { entry, receipt: applied }, error: null }), { status: 200 }),
   });
-  expect(await clientFor(forEntry(1, "snooze-1h", applied.settledAt)).apply(scope, original)).toMatchObject({ state: "unknown" });
+  expect(await clientFor(forEntry(1, "snooze-1h", "2026-10-31T18:01:00.000Z")).apply(scope, original)).toMatchObject({ state: "unknown" });
   expect(await clientFor(forEntry(2, "snooze-1h", "2026-10-31T18:02:00.000Z")).apply(scope, original)).toMatchObject({ state: "confirmed", value: { entry: { revision: 2 } } });
 });
 
@@ -221,6 +221,29 @@ test("apply reserved and discard with another terminal reason remain unknown", a
     requestId: () => requestId,
     post: async () => new Response(JSON.stringify({ ok: true, data: { entry: null, receipt: saved }, error: null }), { status: 200 }),
   });
-  expect(await clientFor({ entry: null, receipt }).apply(scope, original)).toMatchObject({ state: "unknown", value: { receipt: { phase: "reserved" } } });
-  expect(await clientFor({ entry: null, receipt: discarded }).discard(scope, original)).toMatchObject({ state: "unknown", value: { receipt: { refusalCode: "entry-revision-changed" } } });
+  expect(await clientFor(receipt).apply(scope, original)).toMatchObject({ state: "unknown" });
+  expect(await clientFor(discarded).discard(scope, original)).toMatchObject({ state: "unknown" });
+});
+
+test("the client keeps the injected transport functions fixed for its lifetime", async () => {
+  let originalReads = 0;
+  let replacementReads = 0;
+  let originalPosts = 0;
+  let replacementPosts = 0;
+  const dependencies = {
+    read: async () => { originalReads++; return new Response(JSON.stringify({ ok: true, data: { version: 1, complete: true, receipts: [] }, error: null }), { status: 200 }); },
+    post: async () => { originalPosts++; return new Response(JSON.stringify({ ok: true, data: { entry: null, receipt }, error: null }), { status: 200 }); },
+    requestId: () => requestId,
+  };
+  const client = createInboxDispositionsClient(dependencies);
+  const originalBinding = client.bindingIdentity;
+  dependencies.read = async () => { replacementReads++; return new Response("{}"); };
+  dependencies.post = async () => { replacementPosts++; return new Response("{}"); };
+  expect(await client.recovery()).toMatchObject({ state: "confirmed", value: [] });
+  expect(await client.reserve(scope, original)).toMatchObject({ state: "confirmed" });
+  expect(client.bindingIdentity).toBe(originalBinding);
+  expect(originalReads).toBe(1);
+  expect(replacementReads).toBe(0);
+  expect(originalPosts).toBe(1);
+  expect(replacementPosts).toBe(0);
 });

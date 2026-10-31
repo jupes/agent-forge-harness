@@ -112,14 +112,31 @@ export function createInboxDispositionsOwner(deps: {
     collectionReady: !!activation && bound() && !!collectionFor && collectionFor.scope === scopeKey(activation.scope) && collectionFor.activation === activation.generation && collectionFor.binding === boundIdentity,
     recoveryReady: !!activation && bound() && !!recoveryFor && recoveryFor.activation === activation.generation && recoveryFor.sourceGeneration === activation.sourceGeneration && recoveryFor.binding === boundIdentity,
   });
+  const settleWrite = () => {
+    writeInFlight = false;
+    generation++;
+    collectionFor = null;
+    recoveryFor = null;
+    if (loading) {
+      loading = false;
+      error = "An Inbox write settled during refresh; refresh again before acting.";
+    }
+  };
   const current = (capture: InboxDispositionActivation, client: Client, identity: object) => activation === capture && deps.client === client && client.bindingIdentity === identity && boundClient === client && boundIdentity === identity;
-  const findCurrentProof = (proof: InboxDispositionSourceProof, capture: InboxDispositionActivation, client: Client, identity: object) => {
-    if (!current(capture, client, identity) || !capture.writable || proof.sourceGeneration !== capture.sourceGeneration || scopeKey(capture.scope) !== scopeKey(proof.scope)) return false;
+  const latestSnapshot = (capture: InboxDispositionActivation, client: Client, identity: object) => {
+    if (!current(capture, client, identity) || !capture.writable) return null;
     let snapshot: InboxDispositionSnapshot | null;
-    try { snapshot = deps.currentSnapshot(); } catch { return false; }
+    try { snapshot = deps.currentSnapshot(); } catch { return null; }
     if (!snapshot || !snapshot.activation.writable || snapshot.activation.generation !== capture.generation ||
-      snapshot.activation.sourceGeneration !== capture.sourceGeneration || scopeKey(snapshot.activation.scope) !== scopeKey(capture.scope)) return false;
-    return snapshot.sources.some((candidate) => sameProof(candidate, proof));
+      snapshot.activation.sourceGeneration !== capture.sourceGeneration || scopeKey(snapshot.activation.scope) !== scopeKey(capture.scope)) return null;
+    return snapshot;
+  };
+  const currentAuthority = (capture: InboxDispositionActivation, client: Client, identity: object) => latestSnapshot(capture, client, identity) !== null;
+  const findCurrentProof = (proof: InboxDispositionSourceProof, capture: InboxDispositionActivation, client: Client, identity: object) => {
+    if (proof.sourceGeneration !== capture.sourceGeneration || scopeKey(capture.scope) !== scopeKey(proof.scope)) return false;
+    const snapshot = latestSnapshot(capture, client, identity);
+    if (!snapshot) return false;
+    return !!snapshot?.sources.some((candidate) => sameProof(candidate, proof));
   };
   const ready = (capture: InboxDispositionActivation, client: Client, identity: object) =>
     current(capture, client, identity) && !!recoveryFor && recoveryFor.activation === capture.generation &&
@@ -138,9 +155,12 @@ export function createInboxDispositionsOwner(deps: {
   const reconcile = (receipt: InboxDispositionReceipt, state: HistoryState) => {
     const original = receipt.original;
     const prior = history.get(original.requestId);
-    if (prior && !sameOriginal(prior.original, original)) return false;
     const saved = allReceipts.get(original.requestId);
+    if (prior && !sameOriginal(prior.original, original)) return false;
     if (saved && !sameOriginal(saved.original, original)) return false;
+    const previousReceipt = prior?.receipt ?? saved;
+    if (previousReceipt && previousReceipt.phase !== "reserved" &&
+      (receipt.phase === "reserved" || JSON.stringify(previousReceipt) !== JSON.stringify(receipt))) return false;
     const known = unresolved.get(original.requestId);
     if (known && !sameOriginal(known, original)) return false;
     allReceipts.set(original.requestId, copyReceipt(receipt));
@@ -158,9 +178,19 @@ export function createInboxDispositionsOwner(deps: {
     }
     return true;
   };
+  const compatible = (receipt: InboxDispositionReceipt) => {
+    const prior = history.get(receipt.original.requestId);
+    const saved = allReceipts.get(receipt.original.requestId);
+    const known = unresolved.get(receipt.original.requestId);
+    if ((prior && !sameOriginal(prior.original, receipt.original)) || (saved && !sameOriginal(saved.original, receipt.original)) || (known && !sameOriginal(known, receipt.original))) return false;
+    const previousReceipt = prior?.receipt ?? saved;
+    return !previousReceipt || previousReceipt.phase === "reserved" ||
+      (receipt.phase !== "reserved" && JSON.stringify(previousReceipt) === JSON.stringify(receipt));
+  };
   const markUnknown = (original: InboxDispositionStoredOriginal, state: Extract<HistoryState, "reserve-unknown" | "apply-unknown" | "discard-unknown">) => {
     const previous = history.get(original.requestId);
-    if (previous && !sameOriginal(previous.original, original)) return false;
+    const saved = allReceipts.get(original.requestId);
+    if ((previous && (!sameOriginal(previous.original, original) || previous.state === "terminal")) || (saved && saved.phase !== "reserved")) return false;
     history.set(original.requestId, { original: copyOriginal(original), state, ...(previous?.receipt ? { receipt: copyReceipt(previous.receipt) } : {}) });
     unresolved.set(original.requestId, copyOriginal(original));
     return true;
@@ -208,11 +238,7 @@ export function createInboxDispositionsOwner(deps: {
         error = recovery.state === "missing" ? "The Inbox recovery inventory is unavailable." : recovery.message;
         return view();
       }
-      if (recovery.value.some((receipt) => {
-        const prior = history.get(receipt.original.requestId);
-        const saved = allReceipts.get(receipt.original.requestId);
-        return (!!prior && !sameOriginal(prior.original, receipt.original)) || (!!saved && !sameOriginal(saved.original, receipt.original));
-      })) {
+      if (recovery.value.some((receipt) => !compatible(receipt))) {
         loading = false;
         error = "The complete Inbox recovery inventory conflicts with a retained original.";
         return view();
@@ -267,7 +293,7 @@ export function createInboxDispositionsOwner(deps: {
         return { state: "refused", message: "An unresolved Inbox original must be checked before another item can be acknowledged." };
       if (!capture || writeInFlight || !ready(capture, client, identity) || !findCurrentProof(capturedProof, capture, client, identity) || (operation === "done" && !capturedProof.resolved))
         return { state: "not-sent", message: "The Inbox item, recovery inventory, or write authority changed before reservation." };
-      if (otherHolds(reviewedId).length || (!reviewed && [...unresolved.values()].some((held) => itemKey({ projectId: held.projectId, workspace: held.workspace }, held.item) === itemKey(capturedProof.scope, capturedProof.item)))
+      if (otherHolds(reviewedId).length || (!reviewed && [...unresolved.values()].some((held) => itemKey({ projectId: held.projectId, workspace: held.workspace }, held.item) === itemKey(capturedProof.scope, capturedProof.item))))
         return { state: "refused", message: "An unresolved Inbox original already holds this item." };
       const savedEntry = collection.entries.find((entry) => itemKey({ projectId: entry.projectId, workspace: entry.workspace }, entry.item) === itemKey(capturedProof.scope, capturedProof.item) && entry.item.sourceRevision === capturedProof.item.sourceRevision);
       if ((savedEntry?.revision ?? 0) !== capturedProof.expectedRevision)
@@ -286,14 +312,16 @@ export function createInboxDispositionsOwner(deps: {
       writeInFlight = true;
       let reserved: InboxDispositionResult<InboxDispositionRecord>;
       try { reserved = await client.reserve(capturedProof.scope, original); }
-      finally { writeInFlight = false; }
+      finally { settleWrite(); }
       if (reserved.state === "unknown") reserveOnlyUnknown.add(original.requestId);
       if (reserved.state === "not-sent" || reserved.state === "refused" && !reserved.value) {
         unresolved.delete(original.requestId);
         history.delete(original.requestId);
       }
-      if ((reserved.state === "confirmed" || reserved.state === "refused" && reserved.value || reserved.state === "unknown" && reserved.value) && reserved.value) {
-        if (reconcile(reserved.value.receipt, reserved.value.receipt.phase === "reserved" ? "persisted-reserved" : "terminal")) rememberVisible(reserved.value, capture, client, identity);
+      if ((reserved.state === "confirmed" || reserved.state === "refused" && reserved.value) && reserved.value) {
+        if (!reconcile(reserved.value.receipt, reserved.value.receipt.phase === "reserved" ? "persisted-reserved" : "terminal"))
+          return { state: "unknown", message: "The reserve reply conflicts with an immutable retained receipt." };
+        rememberVisible(reserved.value, capture, client, identity);
       }
       if (reserved.state !== "confirmed" || reserved.value.receipt.phase !== "reserved" || !sameOriginal(reserved.value.receipt.original, stored)) return reserved;
       if (!findCurrentProof(capturedProof, capture, client, identity) || otherHolds(original.requestId).some((held) => held.requestId !== reviewedId))
@@ -304,10 +332,12 @@ export function createInboxDispositionsOwner(deps: {
       markUnknown(stored, "apply-unknown");
       let applied: InboxDispositionResult<InboxDispositionRecord>;
       try { applied = await client.apply(capturedProof.scope, original); }
-      finally { writeInFlight = false; }
+      finally { settleWrite(); }
       if (applied.state === "not-sent") applyOrDiscardPossible.delete(original.requestId);
-      if ((applied.state === "confirmed" || applied.state === "refused" && applied.value || applied.state === "unknown" && applied.value) && applied.value) {
-        if (reconcile(applied.value.receipt, applied.value.receipt.phase === "reserved" ? "apply-unknown" : "terminal")) rememberVisible(applied.value, capture, client, identity);
+      if ((applied.state === "confirmed" || applied.state === "refused" && applied.value) && applied.value) {
+        if (!reconcile(applied.value.receipt, applied.value.receipt.phase === "reserved" ? "apply-unknown" : "terminal"))
+          return { state: "unknown", message: "The apply reply conflicts with an immutable retained receipt." };
+        rememberVisible(applied.value, capture, client, identity);
       }
       return applied;
     },
@@ -321,7 +351,8 @@ export function createInboxDispositionsOwner(deps: {
       const read = ++generation;
       const result = await client.original(capture.scope, requestId);
       if (read === generation && current(capture, client, identity) && result.state === "confirmed" && sameOriginal(result.value.receipt.original, original)) {
-        reconcile(result.value.receipt, result.value.receipt.phase === "reserved" ? "persisted-reserved" : "terminal");
+        if (!reconcile(result.value.receipt, result.value.receipt.phase === "reserved" ? "persisted-reserved" : "terminal"))
+          return { state: "unknown", message: "The exact Inbox reply conflicts with the immutable retained receipt." };
         rememberVisible(result.value, capture, client, identity);
         if (result.value.receipt.phase === "reserved") exactChecks.set(requestId, { original: copyOriginal(result.value.receipt.original), activation: capture.generation, binding: identity });
       } else if (result.state === "confirmed") return { state: "unknown", message: "The exact Inbox reply did not match its retained original." };
@@ -341,6 +372,8 @@ export function createInboxDispositionsOwner(deps: {
         !sameOriginal(held, { ...candidate, projectId: held.projectId }))
         return { state: "not-sent", message: "Only the exact confirmed reserved original in this served scope may be discarded." };
       const wire = wireOriginal(held);
+      if (!currentAuthority(capture, client, identity))
+        return { state: "not-sent", message: "The Inbox scope or write authority changed before discard." };
       generation++;
       loading = false;
       collectionFor = null;
@@ -350,10 +383,12 @@ export function createInboxDispositionsOwner(deps: {
       markUnknown(held, "discard-unknown");
       let result: InboxDispositionResult<InboxDispositionRecord>;
       try { result = await client.discard({ projectId: held.projectId, workspace: held.workspace }, wire); }
-      finally { writeInFlight = false; }
+      finally { settleWrite(); }
       if (result.state === "not-sent") applyOrDiscardPossible.delete(candidate.requestId);
-      if ((result.state === "confirmed" || result.state === "refused" && result.value || result.state === "unknown" && result.value) && result.value) {
-        if (reconcile(result.value.receipt, result.value.receipt.phase === "reserved" ? "discard-unknown" : "terminal")) rememberVisible(result.value, capture, client, identity);
+      if ((result.state === "confirmed" || result.state === "refused" && result.value) && result.value) {
+        if (!reconcile(result.value.receipt, result.value.receipt.phase === "reserved" ? "discard-unknown" : "terminal"))
+          return { state: "unknown", message: "The discard reply conflicts with an immutable retained receipt." };
+        rememberVisible(result.value, capture, client, identity);
       }
       return result;
     },
@@ -362,17 +397,19 @@ export function createInboxDispositionsOwner(deps: {
       const client = boundClient;
       const identity = boundIdentity;
       const capturedProof = copyProof(proof);
-      prunePermits();
+      permits.clear();
+      collectionFor = null;
+      recoveryFor = null;
+      const read = ++generation;
       const held = unresolved.get(candidate.requestId);
       if (writeInFlight || !capture || !current(capture, client, identity) || !held || !reserveOnlyUnknown.has(candidate.requestId) || applyOrDiscardPossible.has(candidate.requestId) ||
         !sameOriginal(held, { ...candidate, projectId: held.projectId }) ||
         itemKey({ projectId: held.projectId, workspace: held.workspace }, held.item) !== itemKey(capturedProof.scope, capturedProof.item) ||
         !findCurrentProof(capturedProof, capture, client, identity)) return { state: "unavailable" as const };
-      const read = ++generation;
       const recovery = await client.recovery();
       if (read !== generation || !current(capture, client, identity) || !findCurrentProof(capturedProof, capture, client, identity) || recovery.state !== "confirmed") return { state: "unavailable" as const };
+      if (recovery.value.some((receipt) => !compatible(receipt))) return { state: "held" as const };
       for (const receipt of recovery.value) if (!reconcile(receipt, receipt.phase === "reserved" ? "persisted-reserved" : "terminal")) return { state: "held" as const };
-      recoveryFor = { activation: capture.generation, sourceGeneration: capture.sourceGeneration, binding: identity };
       if (recovery.value.some((receipt) => receipt.original.requestId === candidate.requestId)) return { state: "held" as const };
       const list = await client.collection(capturedProof.scope);
       if (read !== generation || !current(capture, client, identity) || !findCurrentProof(capturedProof, capture, client, identity) || list.state !== "confirmed") return { state: "unavailable" as const };
@@ -391,6 +428,7 @@ export function createInboxDispositionsOwner(deps: {
       if ((savedEntry?.revision ?? 0) !== capturedProof.expectedRevision) return { state: "held" as const };
       collection = { entries: list.value.entries.map(copyEntry), receipts: list.value.receipts.map(copyReceipt) };
       collectionFor = { scope: scopeKey(capturedProof.scope), activation: capture.generation, binding: identity };
+      recoveryFor = { activation: capture.generation, sourceGeneration: capture.sourceGeneration, binding: identity };
       permits.set(candidate.requestId, { proof: copyProof(capturedProof), oldItemKey: fence });
       return { state: "reviewed" as const };
     },

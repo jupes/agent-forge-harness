@@ -4,6 +4,7 @@ import {
   inboxDispositionReceiptSchema,
   inboxDispositionStoredOriginalSchema,
   type InboxDispositionOriginal,
+  type InboxDispositionReceipt,
 } from "../../../types/inbox";
 import type { OperatorPost, OperatorRead } from "../../../docs/js/operator";
 import { createInboxDispositionsClient } from "./inbox-dispositions-client";
@@ -213,9 +214,15 @@ test("a failed exact review does not authorize a replacement request", async () 
 
 test("a delayed collection from an old activation cannot repopulate the new scope", async () => {
   let finish: ((response: Response) => void) | null = null;
-  const read: OperatorRead = async () => new Promise<Response>((resolve) => { finish = resolve; });
+  let startCollection: (() => void) | null = null;
+  const collectionStarted = new Promise<void>((resolve) => { startCollection = resolve; });
+  const read: OperatorRead = async () => {
+    startCollection?.();
+    return new Promise<Response>((resolve) => { finish = resolve; });
+  };
   const owner = fixture(async () => envelope({}), read, () => ({ activation, sources: [proof()] }), []);
   const pending = owner.refresh();
+  await collectionStarted;
   owner.activate({ ...activation, scope: { projectId, workspace: "c:/work/other" }, generation: 2 });
   const resolve = finish;
   if (!resolve) throw Error("Expected the old collection read to be waiting.");
@@ -423,7 +430,8 @@ test("a late A-scope reservation reply remains a global hold and never enters B'
 });
 
 test("reviewing a missing reserve preserves its typed history after a distinct new intent", async () => {
-  const ids = ["77c37127-1c22-4a2a-8e7d-69cc74ff1285", "77c37127-1c22-4a2a-8e7d-69cc74ff1286"];
+  const oldId = "77c37127-1c22-4a2a-8e7d-69cc74ff1285";
+  const newId = "77c37127-1c22-4a2a-8e7d-69cc74ff1286";
   let posts = 0;
   let currentProof = proof("notice-1");
   const owner = fixture(async (url, body) => {
@@ -433,17 +441,17 @@ test("reviewing a missing reserve preserves its typed history after a distinct n
     if (url.endsWith("/requests")) return envelope({ entry: null, receipt: receiptFor(submitted) });
     return envelope({ entry: null, receipt: receiptFor(submitted, "applied") });
   }, async (url) => url.includes("/requests/") ? failed("Original not found", 404) : envelope({ entries: [], receipts: [] }),
-  () => ({ activation, sources: [currentProof] }), ids);
+  () => ({ activation, sources: [currentProof] }), [oldId, newId]);
   await owner.refresh();
   const oldProof = proof("notice-1");
   expect(await owner.acknowledge(oldProof, "done")).toMatchObject({ state: "unknown" });
   const newProof = proof("notice-2");
   currentProof = newProof;
-  expect(await owner.reviewReserveUnknown(original(ids[0] ?? ""), newProof)).toEqual({ state: "reviewed" });
-  expect(owner.canStartReviewedNewIntent(ids[0] ?? "", newProof)).toBe(true);
+  expect(await owner.reviewReserveUnknown(original(oldId), newProof)).toEqual({ state: "reviewed" });
+  expect(owner.canStartReviewedNewIntent(oldId, newProof)).toBe(true);
   expect(await owner.acknowledge(newProof, "done")).toMatchObject({ state: "confirmed" });
-  expect(owner.view().history).toContainEqual(expect.objectContaining({ original: expect.objectContaining({ requestId: ids[0] }), state: "reserve-unknown" }));
-  expect(owner.view().holds.map((held) => held.requestId)).toContain(ids[0]);
+  expect(owner.view().history).toContainEqual(expect.objectContaining({ original: expect.objectContaining({ requestId: oldId }), state: "reserve-unknown" }));
+  expect(owner.view().holds.map((held) => held.requestId)).toContain(oldId);
 });
 
 test("an unavailable global recovery inventory cannot admit an acknowledgment", async () => {
@@ -513,6 +521,62 @@ test("a stale recovery completion cannot mark the replacement activation ready",
   expect(owner.view()).toMatchObject({ scope: { workspace: "c:/work/other" }, recoveryReady: false, collectionReady: false, holds: [] });
 });
 
+test("an old-scope write settling during refresh clears loading and requires fresh evidence", async () => {
+  const id = "77c37127-1c22-4a2a-8e7d-69cc74ff1300";
+  const nextActivation: InboxDispositionActivation = { ...activation, scope: { projectId, workspace: "c:/work/other" }, generation: 2 };
+  let currentActivation = activation;
+  let recoveryReads = 0;
+  let finishRecovery: ((response: Response) => void) | null = null;
+  let finishApply: ((response: Response) => void) | null = null;
+  let markNextRecoveryStarted: (() => void) | null = null;
+  let markApplyStarted: (() => void) | null = null;
+  const nextRecoveryStarted = new Promise<void>((resolve) => { markNextRecoveryStarted = resolve; });
+  const applyStarted = new Promise<void>((resolve) => { markApplyStarted = resolve; });
+  const owner = fixture(async (url, body) => {
+    const submitted = inboxDispositionOriginalSchema.parse(body);
+    if (url.endsWith("/requests")) return envelope({ entry: null, receipt: receiptFor(submitted) });
+    markApplyStarted?.();
+    return new Promise<Response>((resolve) => { finishApply = resolve; });
+  }, async (url) => {
+    if (url.endsWith("/recovery") && ++recoveryReads === 2) {
+      markNextRecoveryStarted?.();
+      return new Promise<Response>((resolve) => { finishRecovery = resolve; });
+    }
+    return url.endsWith("/recovery")
+      ? envelope({ version: 1, complete: true, receipts: [] })
+      : envelope({ entries: [], receipts: [] });
+  }, () => ({ activation: currentActivation, sources: [proof()] }), [id]);
+  await owner.refresh();
+  const writing = owner.acknowledge(proof(), "done");
+  await applyStarted;
+
+  currentActivation = nextActivation;
+  owner.activate(nextActivation);
+  const refreshing = owner.refresh();
+  await nextRecoveryStarted;
+
+  const settleApply = finishApply;
+  if (!settleApply) throw Error("Expected the old-scope apply to remain pending.");
+  settleApply(envelope({
+    entry: { projectId, workspace, item, revision: 1, operation: "done", updatedAt: "2026-10-31T18:01:00.000Z" },
+    receipt: receiptFor(original(id), "applied"),
+  }));
+  expect(await writing).toMatchObject({ state: "confirmed" });
+  expect(owner.view()).toMatchObject({
+    scope: { workspace: "c:/work/other" }, loading: false, collectionReady: false, recoveryReady: false,
+    error: "An Inbox write settled during refresh; refresh again before acting.",
+  });
+
+  const staleRecovery = finishRecovery;
+  if (!staleRecovery) throw Error("Expected the replacement-scope recovery read to be pending.");
+  staleRecovery(envelope({ version: 1, complete: true, receipts: [] }));
+  await refreshing;
+  expect(owner.view()).toMatchObject({ loading: false, collectionReady: false, recoveryReady: false });
+
+  await owner.refresh();
+  expect(owner.view()).toMatchObject({ loading: false, collectionReady: true, recoveryReady: true, error: "" });
+});
+
 test("a scoped collection absent from the complete inventory cannot authorize writes", async () => {
   const saved = receiptFor(original("77c37127-1c22-4a2a-8e7d-69cc74ff1291"));
   let posts = 0;
@@ -533,4 +597,121 @@ test("a retained reservation from another served scope cannot be discarded here"
   expect(await owner.discard(original(foreign.original.requestId))).toMatchObject({ state: "not-sent" });
   expect(posts).toBe(0);
   expect(owner.view().holds.map((held) => held.requestId)).toContain(foreign.original.requestId);
+});
+
+test("a malformed terminal HTTP outcome never reconciles the held reservation", async () => {
+  const id = "77c37127-1c22-4a2a-8e7d-69cc74ff1293";
+  const posted: string[] = [];
+  const owner = fixture(async (url, body) => {
+    posted.push(url);
+    const submitted = inboxDispositionOriginalSchema.parse(body);
+    if (url.endsWith("/requests")) return envelope({ entry: null, receipt: receiptFor(submitted) });
+    return envelope({ entry: null, receipt: receiptFor(submitted, "applied") }, 409);
+  }, async () => envelope({ entries: [], receipts: [] }), () => ({ activation, sources: [proof()] }), [id]);
+  await owner.refresh();
+  expect(await owner.acknowledge(proof(), "done")).toMatchObject({ state: "unknown" });
+  expect(posted).toHaveLength(2);
+  expect(owner.view().holds.map((held) => held.requestId)).toContain(id);
+  expect(owner.view().history).toContainEqual(expect.objectContaining({ original: expect.objectContaining({ requestId: id }), state: "apply-unknown", receipt: expect.objectContaining({ phase: "reserved" }) }));
+});
+
+test("terminal history cannot regress to reserved or be replaced by another terminal receipt", async () => {
+  const id = "77c37127-1c22-4a2a-8e7d-69cc74ff1294";
+  const terminal = receiptFor(original(id), "applied");
+  const changedTerminal = inboxDispositionReceiptSchema.parse({
+    original: terminal.original,
+    phase: "refused",
+    reservedAt: terminal.reservedAt,
+    settledAt: "2026-10-31T18:02:00.000Z",
+    outcome: "refused",
+    refusalCode: "entry-revision-changed",
+    refusalReason: "A conflicting terminal receipt.",
+  });
+  let recoveryRead = 0;
+  const owner = fixture(async () => envelope({}), async () => envelope({ entries: [], receipts: [terminal] }),
+    () => ({ activation, sources: [proof()] }), [], () => {
+      recoveryRead++;
+      return [recoveryRead === 1 ? terminal : recoveryRead === 2 ? changedTerminal : receiptFor(original(id))];
+    });
+  await owner.refresh();
+  await owner.refresh();
+  await owner.refresh();
+  expect(owner.view().history).toMatchObject([{ original: { requestId: id }, state: "terminal", receipt: { phase: "applied" } }]);
+  expect(owner.view().holds).toEqual([]);
+  expect(owner.view().collectionReady).toBe(false);
+});
+
+test("a read started during discard cannot replace the terminal receipt after the write settles", async () => {
+  const id = "77c37127-1c22-4a2a-8e7d-69cc74ff1295";
+  const reserved = receiptFor(original(id));
+  const stored = inboxDispositionStoredOriginalSchema.parse({ ...original(id), projectId });
+  const discarded = inboxDispositionReceiptSchema.parse({
+    original: stored,
+    phase: "refused",
+    reservedAt: reserved.reservedAt,
+    settledAt: "2026-10-31T18:02:00.000Z",
+    outcome: "refused",
+    refusalCode: "discarded",
+    refusalReason: "Explicit discard.",
+  });
+  let finishRead: ((response: Response) => void) | null = null;
+  let finishDiscard: ((response: Response) => void) | null = null;
+  let markReadStarted: (() => void) | null = null;
+  let markDiscardStarted: (() => void) | null = null;
+  const readStarted = new Promise<void>((resolve) => { markReadStarted = resolve; });
+  const discardStarted = new Promise<void>((resolve) => { markDiscardStarted = resolve; });
+  const read: OperatorRead = async (url) => url.endsWith("/requests/" + id)
+    ? new Promise<Response>((resolve) => { finishRead = resolve; markReadStarted?.(); })
+    : envelope({ entries: [], receipts: [reserved] });
+  const post: OperatorPost = async () => new Promise<Response>((resolve) => { finishDiscard = resolve; markDiscardStarted?.(); });
+  const owner = fixture(post, read, () => ({ activation, sources: [proof()] }), [id], [reserved]);
+  await owner.refresh();
+  const discarding = owner.discard(original(id));
+  await discardStarted;
+  const staleRead = owner.checkOriginal(id);
+  await readStarted;
+  const settle = finishDiscard;
+  if (!settle) throw Error("Expected the discard write to be pending.");
+  settle(envelope({ entry: null, receipt: discarded }));
+  expect(await discarding).toMatchObject({ state: "confirmed", value: { receipt: { phase: "refused" } } });
+  const finish = finishRead;
+  if (!finish) throw Error("Expected the older exact read to be pending.");
+  finish(envelope({ entry: null, receipt: reserved }));
+  expect(await staleRead).toMatchObject({ state: "unknown" });
+  expect(owner.view().history).toMatchObject([{ original: { requestId: id }, state: "terminal", receipt: { refusalCode: "discarded" } }]);
+  expect(owner.view().holds).toEqual([]);
+});
+
+test("a repeated failed reserve review revokes its previous one-use permission", async () => {
+  const id = "77c37127-1c22-4a2a-8e7d-69cc74ff1296";
+  let exactReads = 0;
+  const oldProof = proof();
+  const currentProof = proof("notice-2");
+  let current = oldProof;
+  const owner = fixture(async () => { throw Error("Reserve response lost."); }, async (url) => {
+    if (url.includes("/requests/")) return exactReads++ === 0 ? failed("Missing", 404) : failed("Unavailable", 503);
+    return envelope({ entries: [], receipts: [] });
+  }, () => ({ activation, sources: [current] }), [id]);
+  await owner.refresh();
+  expect(await owner.acknowledge(oldProof, "done")).toMatchObject({ state: "unknown" });
+  current = currentProof;
+  expect(await owner.reviewReserveUnknown(original(id), currentProof)).toEqual({ state: "reviewed" });
+  expect(owner.canStartReviewedNewIntent(id, currentProof)).toBe(true);
+  expect(await owner.reviewReserveUnknown(original(id), currentProof)).toEqual({ state: "held" });
+  expect(owner.canStartReviewedNewIntent(id, currentProof)).toBe(false);
+  expect(owner.view()).toMatchObject({ collectionReady: false, recoveryReady: false });
+});
+
+test("discard refuses if latest authority changes after the original was loaded", async () => {
+  const id = "77c37127-1c22-4a2a-8e7d-69cc74ff1297";
+  const saved = receiptFor(original(id));
+  let current = { activation, sources: [proof()] };
+  let posts = 0;
+  const owner = fixture(async () => { posts++; return envelope({}); }, async () => envelope({ entries: [], receipts: [saved] }),
+    () => current, [id], [saved]);
+  await owner.refresh();
+  current = { activation: { ...activation, writable: false }, sources: [proof()] };
+  expect(await owner.discard(original(id))).toMatchObject({ state: "not-sent" });
+  expect(posts).toBe(0);
+  expect(owner.view().holds.map((held) => held.requestId)).toContain(id);
 });
