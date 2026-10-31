@@ -390,9 +390,38 @@ test("a completed bead-source review links to its bead and reports the one recor
     if (captureTimer !== undefined) clearTimeout(captureTimer);
   }
   if (captureError) throw captureError;
-  await expect(
-    page.getByRole("heading", { name: "Exact saved original" }),
-  ).toBeVisible();
+  const exactOriginal = page.getByRole("heading", {
+      name: "Exact saved original",
+    }),
+    readSaved = page.getByRole("button", { name: "Read saved original" }),
+    convene = page.getByRole("button", {
+      name: "Convene this exact original",
+    });
+  await expect
+    .poll(
+      async () =>
+        ((await exactOriginal.isVisible()) && (await convene.isVisible())) ||
+        (await readSaved.isVisible()),
+      { timeout: 10_000 },
+    )
+    .toBe(true);
+  if (!(await convene.isVisible())) {
+    const originalRead = page.waitForResponse(
+      (response) => {
+        const url = new URL(response.url());
+        return (
+          response.request().method() === "GET" &&
+          url.origin === reservationOrigin &&
+          url.pathname === `${reviewsPath}/${original.requestId}`
+        );
+      },
+      { timeout: 10_000 },
+    );
+    await readSaved.click();
+    expect((await originalRead).status()).toBe(200);
+  }
+  await expect(exactOriginal).toBeVisible();
+  await expect(convene).toBeVisible();
   const runReads = await observeRunReads(
     page,
     `${reviewsPath}/${original.requestId}/run`,
