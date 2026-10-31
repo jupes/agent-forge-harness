@@ -75,7 +75,9 @@ test("project General settings loads the selected fixture fields", async ({
   await expect(page.getByLabel("Project icon", { exact: true })).toHaveValue(
     "A",
   );
-  await expect(page.locator(".af-project-settings-provenance")).toContainText("last-known hearth project catalog");
+  await expect(page.locator(".af-project-settings-provenance")).toContainText(
+    "last-known hearth project catalog",
+  );
   const readsBeforeRefresh = catalogReads;
   await page.getByRole("button", { name: "Refresh current settings" }).click();
   await expect(page.locator(".af-project-settings-provenance")).toContainText(
@@ -87,9 +89,15 @@ test("project General settings loads the selected fixture fields", async ({
   if (capture) {
     mkdirSync(capture, { recursive: true });
     await page.setViewportSize({ width: 1280, height: 900 });
-    await page.screenshot({ path: join(capture, "project-settings-general-desktop.png"), fullPage: true });
+    await page.screenshot({
+      path: join(capture, "project-settings-general-desktop.png"),
+      fullPage: true,
+    });
     await page.setViewportSize({ width: 375, height: 812 });
-    await page.screenshot({ path: join(capture, "project-settings-general-mobile.png"), fullPage: true });
+    await page.screenshot({
+      path: join(capture, "project-settings-general-mobile.png"),
+      fullPage: true,
+    });
   }
 });
 
