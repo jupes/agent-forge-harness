@@ -205,6 +205,17 @@ test("observed session exposes the shared project Activity feed in its Activity 
     "readonly",
     "",
   );
+  const captureDirectory = process.env["SHOT_DIR"];
+  if (captureDirectory)
+    await page.screenshot({
+      path: join(captureDirectory, "scoped-session-activity.png"),
+      mask: [
+        detail.getByLabel("Session filter"),
+        detail.locator(".af-observed-address"),
+      ],
+      maskColor: "#3f424d",
+      style: "time { visibility: hidden !important; }",
+    });
   await page.goto(
     `/index.html#/desktop/project/${beta.id}/sessions?selectionKind=session&selectionId=${encodeURIComponent(sessionId)}`,
   );
