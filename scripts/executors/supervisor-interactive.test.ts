@@ -26,7 +26,10 @@ type SettlementTestGuard = {
   settleStopped(): Promise<void>;
 };
 
-function heldWindowsSettlementGuard() {
+function heldWindowsSettlementGuard(
+  createActual: (pid: number) => ReturnType<typeof guardRequiredTree> =
+    guardRequiredTree,
+) {
   let enter!: () => void;
   let confirm!: () => void;
   let refuse!: (error: Error) => void;
@@ -73,7 +76,7 @@ function heldWindowsSettlementGuard() {
     refuse,
     calls,
     attach(pid: number) {
-      actual = guardRequiredTree(pid);
+      actual = createActual(pid);
       if (!actual?.settleStopped)
         throw new Error("A retained Windows job could not be created.");
       return guard;
@@ -88,6 +91,44 @@ function heldWindowsSettlementGuard() {
     },
   };
 }
+
+test("Windows stopped settlement starts native cleanup before waiting for fixture delivery", async () => {
+  let resolveNative!: () => void;
+  const nativeSettlement = new Promise<void>((resolve) => {
+    resolveNative = resolve;
+  });
+  let nativeStarts = 0;
+  const ownership = heldWindowsSettlementGuard(() => ({
+    release: () => undefined,
+    terminate: () => undefined,
+    settleStopped() {
+      nativeStarts++;
+      return nativeSettlement;
+    },
+  }));
+  // This inert factory exercises the helper contract; the numeric id is not
+  // passed to an OS process or treated as authority to manage one.
+  ownership.attach(12345);
+  const first = ownership.guard.settleStopped();
+  let delivered = false;
+  void first.then(() => {
+    delivered = true;
+  });
+  try {
+    expect(nativeStarts).toBe(1);
+    expect(ownership.guard.settleStopped()).toBe(first);
+    ownership.confirm();
+    await Promise.resolve();
+    expect(delivered).toBe(false);
+    resolveNative();
+    await first;
+    expect(delivered).toBe(true);
+  } finally {
+    ownership.confirm();
+    resolveNative();
+    await ownership.cleanup();
+  }
+});
 
 test("a trusted shift lifetime reaches the ownership grant exactly rather than shortening the reviewed timeout", async () => {
   const lines: string[] = [];
