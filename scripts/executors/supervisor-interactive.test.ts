@@ -26,7 +26,11 @@ type SettlementTestGuard = {
   settleStopped(): Promise<void>;
 };
 
-function heldWindowsSettlementGuard() {
+function heldWindowsSettlementGuard(
+  createActual: (
+    pid: number,
+  ) => ReturnType<typeof guardRequiredTree> = guardRequiredTree,
+) {
   let enter!: () => void;
   let confirm!: () => void;
   let refuse!: (error: Error) => void;
@@ -55,12 +59,21 @@ function heldWindowsSettlementGuard() {
       if (wrappedSettlement) return wrappedSettlement;
       calls.push("settle-start");
       enter();
-      wrappedSettlement = (async () => {
-        await settlement;
-        if (!actual?.settleStopped)
-          throw new Error("The retained Windows job cannot settle.");
+      if (!actual?.settleStopped)
+        throw new Error("The retained Windows job cannot settle.");
+      try {
         actualSettlement ??= actual.settleStopped();
-        await actualSettlement;
+      } catch (error) {
+        actualSettlement ??= Promise.reject(error);
+      }
+      void actualSettlement.catch(() => undefined);
+      wrappedSettlement = (async () => {
+        const [manualResult, nativeResult] = await Promise.allSettled([
+          settlement,
+          actualSettlement!,
+        ]);
+        if (manualResult.status === "rejected") throw manualResult.reason;
+        if (nativeResult.status === "rejected") throw nativeResult.reason;
         calls.push("settle-confirmed");
       })();
       return wrappedSettlement;
@@ -73,21 +86,64 @@ function heldWindowsSettlementGuard() {
     refuse,
     calls,
     attach(pid: number) {
-      actual = guardRequiredTree(pid);
+      actual = createActual(pid);
       if (!actual?.settleStopped)
         throw new Error("A retained Windows job could not be created.");
       return guard;
     },
     async cleanup() {
+      if (actual?.settleStopped) {
+        try {
+          actualSettlement ??= actual.settleStopped();
+        } catch (error) {
+          actualSettlement ??= Promise.reject(error);
+        }
+        void actualSettlement.catch(() => undefined);
+      }
       confirm();
       if (wrappedSettlement) await wrappedSettlement.catch(() => undefined);
-      if (actual?.settleStopped) {
-        actualSettlement ??= actual.settleStopped();
-        await actualSettlement.catch(() => undefined);
-      }
+      if (actualSettlement) await actualSettlement.catch(() => undefined);
     },
   };
 }
+
+test("Windows stopped settlement starts native cleanup before waiting for fixture delivery", async () => {
+  let resolveNative!: () => void;
+  const nativeSettlement = new Promise<void>((resolve) => {
+    resolveNative = resolve;
+  });
+  let nativeStarts = 0;
+  const ownership = heldWindowsSettlementGuard(() => ({
+    release: () => undefined,
+    terminate: () => undefined,
+    settleStopped() {
+      nativeStarts++;
+      return nativeSettlement;
+    },
+  }));
+  // This inert factory exercises the helper contract; the numeric id is not
+  // passed to an OS process or treated as authority to manage one.
+  ownership.attach(12345);
+  const first = ownership.guard.settleStopped();
+  let delivered = false;
+  void first.then(() => {
+    delivered = true;
+  });
+  try {
+    expect(nativeStarts).toBe(1);
+    expect(ownership.guard.settleStopped()).toBe(first);
+    ownership.confirm();
+    await Promise.resolve();
+    expect(delivered).toBe(false);
+    resolveNative();
+    await first;
+    expect(delivered).toBe(true);
+  } finally {
+    ownership.confirm();
+    resolveNative();
+    await ownership.cleanup();
+  }
+});
 
 test("a trusted shift lifetime reaches the ownership grant exactly rather than shortening the reviewed timeout", async () => {
   const lines: string[] = [];
