@@ -7,7 +7,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { expect, test, type Locator, type Page } from "@playwright/test";
+import { expect, type Locator, type Page, test } from "@playwright/test";
 import { smithsViewSchema } from "../../apps/desktop/src/smiths-protocol";
 import { conversationPageSchema } from "../../scripts/conversations/protocol";
 import { OPERATOR_HEADER, SURFACE_HEADER } from "../../scripts/hearth/paths";
@@ -81,7 +81,9 @@ async function tabTo(page: Page, target: Locator): Promise<void> {
     await page.keyboard.press("Shift+Tab");
   for (let step = 0; step < 60; step++) {
     await page.keyboard.press("Tab");
-    if (await target.evaluate((element) => element === document.activeElement)) {
+    if (
+      await target.evaluate((element) => element === document.activeElement)
+    ) {
       await expect(target).toBeFocused();
       return;
     }
