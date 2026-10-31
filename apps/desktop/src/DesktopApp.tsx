@@ -3,11 +3,13 @@ import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import { Button } from "../../../docs/js/ds/Button";
 import { Dialog } from "../../../docs/js/ds/Dialog";
 import { EmptyState } from "../../../docs/js/ds/EmptyState";
+import { appStream } from "../../../docs/js/use-stream";
 import type { KeeperProposal } from "../../../types/keeper-proposal";
 import { BeadWriteNotices, NewBeadForm } from "./BeadWrites";
 import { ConnectionBanner, useDesktopRecovery } from "./ConnectionBanner";
 import { chatDecisionAuthorityScopeIsCurrent } from "./chat-decision-authority";
 import { useChatDecisionOwners } from "./chat-decision-owners";
+import { createInboxClient, type InboxClient } from "./inbox-client";
 import type { FrameSession } from "./DesktopFrame";
 import { DesktopFrame } from "./DesktopFrame";
 import {
@@ -707,6 +709,7 @@ export function DesktopApp(): JSX.Element {
     !managedSession
       ? selectedOwner.record.id
       : null;
+  const inboxClient = useRef<InboxClient | null>(null);
   const chatDecisionOwners = useChatDecisionOwners({
     canWrite: (address) => {
       const target = projects.data?.catalog.projects.find(
@@ -721,12 +724,14 @@ export function DesktopApp(): JSX.Element {
         currentSummary = projects.data?.summaries.find(
           (item) => item.projectId === address.projectId,
         ),
-        currentRecord = sessions
-          .project(address.projectId)
-          .records.find((item) => item.id === address.sessionId),
+        currentProjectSessions = sessions.project(address.projectId),
+        currentRecord = currentProjectSessions.records.find(
+          (item) => item.id === address.sessionId,
+        ),
         currentSession = sessions.session(address.projectId, address.sessionId),
         currentTurn = currentSession.page?.turns.at(-1),
         actualRoute = desktopRoute(window.location.hash),
+        inboxSelection = inboxClient.current?.currentSelection() ?? null,
         routeCurrent =
           sameDesktopRoute(route, actualRoute) &&
           ((actualRoute.destination === "sessions" &&
@@ -747,7 +752,23 @@ export function DesktopApp(): JSX.Element {
       // conversation live and cannot be the cross-project authority here.
       if (actualRoute.destination === "inbox")
         return Boolean(
-          projectScopeCurrent && address.requestId && address.acceptedTurnId,
+          projectScopeCurrent &&
+            address.actionable &&
+            address.requestId &&
+            address.acceptedTurnId &&
+            inboxSelection?.state === "current" &&
+            inboxSelection.actionable &&
+            chatDecisionAuthorityScopeIsCurrent({
+              address,
+              provider: currentRecord?.provider === "gemini" ? "gemini" : "codex",
+              route,
+              actualRoute,
+              project: currentProject ?? null,
+              summary: currentSummary ?? null,
+              session: currentRecord ?? null,
+              sessionList: currentProjectSessions,
+              inboxSelection,
+            }),
         );
       return Boolean(
         projectScopeCurrent &&
@@ -774,9 +795,10 @@ export function DesktopApp(): JSX.Element {
         currentSummary = projects.data?.summaries.find(
           (item) => item.projectId === address.projectId,
         ),
-        currentRecord = sessions
-          .project(address.projectId)
-          .records.find((item) => item.id === address.sessionId),
+        currentProjectSessions = sessions.project(address.projectId),
+        currentRecord = currentProjectSessions.records.find(
+          (item) => item.id === address.sessionId,
+        ),
         actualRoute = desktopRoute(window.location.hash);
       return chatDecisionAuthorityScopeIsCurrent({
         address,
@@ -786,9 +808,37 @@ export function DesktopApp(): JSX.Element {
         project: currentProject ?? null,
         summary: currentSummary ?? null,
         session: currentRecord ?? null,
+        sessionList: currentProjectSessions,
+        inboxSelection: inboxClient.current?.currentSelection() ?? null,
       });
     },
   });
+  if (!inboxClient.current)
+    inboxClient.current = createInboxClient({
+      heldOriginal: (provider, projectId, sessionId) =>
+        provider === "codex"
+          ? chatDecisionOwners.codex.heldOriginal(projectId, sessionId)
+          : chatDecisionOwners.gemini.heldOriginal(projectId, sessionId),
+    });
+  const inbox = inboxClient.current;
+  const [, setInboxRevision] = useState(0);
+  useEffect(() => inbox.subscribe(() => setInboxRevision((value) => value + 1)), [inbox]);
+  useEffect(() => {
+    inbox.syncRoute(route);
+    if (route.destination !== "inbox") return;
+    const refresh = () =>
+      void inbox.refresh({
+        home: projects.data ?? null,
+        homeCurrent: !projects.loading && !projects.error,
+        sessions,
+      });
+    refresh();
+    return appStream().watch(
+      ["operator.action", "session.started", "session.ended"],
+      refresh,
+    );
+  }, [inbox, route.destination, projects.data, projects.loading, projects.error, sessions]);
+  useEffect(() => () => inbox.dispose(), [inbox]);
   useEffect(() => {
     sessions.activate(project?.id ?? null, selectedOwnedSession);
   }, [sessions, project?.id, selectedOwnedSession]);
@@ -1123,11 +1173,15 @@ export function DesktopApp(): JSX.Element {
       {
         hash: () => window.location.hash,
         listen: (changed) => {
-          window.addEventListener("hashchange", changed);
-          return () => window.removeEventListener("hashchange", changed);
+          const transitioned = (event: HashChangeEvent) => changed(event.newURL);
+          window.addEventListener("hashchange", transitioned);
+          return () => window.removeEventListener("hashchange", transitioned);
         },
       },
-      setRoute,
+        (nextRoute) => {
+          inboxClient.current?.syncRoute(nextRoute);
+          setRoute(nextRoute);
+        },
     );
   }, []);
   useEffect(() => {

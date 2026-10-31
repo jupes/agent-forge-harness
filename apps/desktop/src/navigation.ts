@@ -87,10 +87,20 @@ export function desktopRoute(hash: string): DesktopRoute {
 
 /** Observe browser navigation independently of when the first UI frame paints. */
 export function observeDesktopRoute(
-  browser: { hash(): string; listen(changed: () => void): () => void },
+  browser: { hash(): string; listen(changed: (newUrl?: string) => void): () => void },
   update: (route: DesktopRoute) => void,
 ): () => void {
-  const changed = () => update(desktopRoute(browser.hash()));
+  const changed = (newUrl?: string) => {
+    let hash = browser.hash();
+    if (newUrl) {
+      try {
+        hash = new URL(newUrl).hash;
+      } catch {
+        // Invalid event URLs fall back to the browser's current location.
+      }
+    }
+    update(desktopRoute(hash));
+  };
   const stop = browser.listen(changed);
   changed();
   return stop;

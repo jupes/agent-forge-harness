@@ -44,6 +44,7 @@ type Address = {
   acceptedTurnId?: string;
   requestId?: string | null;
   generation?: number;
+  inboxSelectionGeneration?: number;
 };
 /** Owns original decisions, never native callbacks. History reads cannot resend or answer a live offer. */
 export function createCodexChatDecisions(deps: {
@@ -78,6 +79,7 @@ export function createCodexChatDecisions(deps: {
       left.projectId === right.projectId &&
       left.workspace === right.workspace &&
       left.sessionId === right.sessionId &&
+      left.inboxSelectionGeneration === right.inboxSelectionGeneration &&
       left.acceptedTurnId === right.acceptedTurnId &&
       left.requestId === right.requestId &&
       left.generation === right.generation &&
@@ -92,6 +94,9 @@ export function createCodexChatDecisions(deps: {
           acceptedTurnId: address.acceptedTurnId ?? address.turnRequestId ?? "",
           requestId: address.requestId ?? null,
           generation: address.generation ?? generation,
+          ...(address.inboxSelectionGeneration === undefined
+            ? {}
+            : { inboxSelectionGeneration: address.inboxSelectionGeneration }),
           turnRequestId: address.turnRequestId,
           actionable: address.actionable,
         }
@@ -147,6 +152,7 @@ export function createCodexChatDecisions(deps: {
     left.projectId === right.projectId &&
     left.workspace === right.workspace &&
     left.sessionId === right.sessionId &&
+    left.inboxSelectionGeneration === right.inboxSelectionGeneration &&
     left.provider === "codex" &&
     right.provider === "codex";
   const sameHeldIdentity = (
@@ -220,6 +226,8 @@ export function createCodexChatDecisions(deps: {
           scope.workspace !== (entry.activation?.workspace ?? "") ||
           scope.sessionId !== entry.sessionId ||
           scope.provider !== "codex"
+          || (entry.activation?.inboxSelectionGeneration !== undefined &&
+            scope.inboxSelectionGeneration !== entry.activation.inboxSelectionGeneration)
         )
           return null;
       } else if (deps.current) {
@@ -235,6 +243,9 @@ export function createCodexChatDecisions(deps: {
       return live(entry)
         ? entry
         : { ...entry, pending: [], actionable: false, loading: false };
+    },
+    heldOriginal(projectId: string, sessionId: string) {
+      return deps.identities.read(projectId, sessionId);
     },
     refreshIdentities() {
       for (const entry of entries.values()) hydrate(entry);
@@ -311,7 +322,9 @@ export function createCodexChatDecisions(deps: {
           scopeAtStart.projectId !== entry.projectId ||
           scopeAtStart.workspace !== (entry.activation?.workspace ?? "") ||
           scopeAtStart.sessionId !== entry.sessionId ||
-          scopeAtStart.provider !== "codex")
+          scopeAtStart.provider !== "codex" ||
+          (activation?.inboxSelectionGeneration !== undefined &&
+            scopeAtStart.inboxSelectionGeneration !== activation.inboxSelectionGeneration))
       )
         return;
       hydrate(entry);

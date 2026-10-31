@@ -41,7 +41,11 @@ type Address = GeminiChatDecisionAddress &
   Partial<
     Pick<
       ChatDecisionActivation,
-      "workspace" | "acceptedTurnId" | "requestId" | "generation"
+      | "workspace"
+      | "acceptedTurnId"
+      | "requestId"
+      | "generation"
+      | "inboxSelectionGeneration"
     >
   >;
 /** Owns original decisions, never native callbacks. History reads cannot resend or answer a live offer. */
@@ -75,6 +79,7 @@ export function createGeminiChatDecisions(deps: {
     !!address &&
     activation.projectId === address.projectId &&
     activation.sessionId === address.sessionId &&
+      activation.inboxSelectionGeneration === address.inboxSelectionGeneration &&
     activation.turnRequestId === address.turnRequestId &&
     activation.actionable === address.actionable &&
     (address.workspace === undefined ||
@@ -84,7 +89,9 @@ export function createGeminiChatDecisions(deps: {
     (address.requestId === undefined ||
       activation.requestId === address.requestId) &&
     (address.generation === undefined ||
-      activation.generation === address.generation);
+      activation.generation === address.generation) &&
+    (address.inboxSelectionGeneration === undefined ||
+      activation.inboxSelectionGeneration === address.inboxSelectionGeneration);
   const sameAuthorityScope = (
     activation: ChatDecisionActivation | null,
     address: Address | ChatDecisionActivation | null,
@@ -93,6 +100,8 @@ export function createGeminiChatDecisions(deps: {
     !!address &&
     activation.projectId === address.projectId &&
     activation.sessionId === address.sessionId &&
+    (address.inboxSelectionGeneration === undefined ||
+      activation.inboxSelectionGeneration === address.inboxSelectionGeneration) &&
     (address.workspace === undefined ||
       activation.workspace === address.workspace);
   const sameReadScope = (
@@ -104,6 +113,7 @@ export function createGeminiChatDecisions(deps: {
     left.projectId === right.projectId &&
     left.workspace === right.workspace &&
     left.sessionId === right.sessionId &&
+    left.inboxSelectionGeneration === right.inboxSelectionGeneration &&
     left.provider === "gemini" &&
     right.provider === "gemini";
   const sameHeldIdentity = (
@@ -119,6 +129,9 @@ export function createGeminiChatDecisions(deps: {
           acceptedTurnId: address.acceptedTurnId ?? address.turnRequestId ?? "",
           requestId: address.requestId ?? null,
           generation: address.generation ?? generation,
+          ...(address.inboxSelectionGeneration === undefined
+            ? {}
+            : { inboxSelectionGeneration: address.inboxSelectionGeneration }),
           turnRequestId: address.turnRequestId,
           actionable: address.actionable,
         }
@@ -246,7 +259,9 @@ export function createGeminiChatDecisions(deps: {
           scope.projectId !== entry.projectId ||
           scope.workspace !== (entry.activation?.workspace ?? "") ||
           scope.sessionId !== entry.sessionId ||
-          scope.provider !== "gemini"
+          scope.provider !== "gemini" ||
+          (entry.activation?.inboxSelectionGeneration !== undefined &&
+            scope.inboxSelectionGeneration !== entry.activation.inboxSelectionGeneration)
         )
           return null;
       } else if (!sameAuthorityScope(entry.activation, current)) return null;
@@ -255,6 +270,9 @@ export function createGeminiChatDecisions(deps: {
       return live(entry, current ?? undefined)
         ? entry
         : { ...entry, pending: [], actionable: false, loading: false };
+    },
+    heldOriginal(projectId: string, sessionId: string) {
+      return deps.identities.read(projectId, sessionId);
     },
     refreshIdentities() {
       for (const entry of entries.values()) hydrate(entry);
@@ -331,7 +349,9 @@ export function createGeminiChatDecisions(deps: {
           scopeAtStart.projectId !== entry.projectId ||
           scopeAtStart.workspace !== (entry.activation?.workspace ?? "") ||
           scopeAtStart.sessionId !== entry.sessionId ||
-          scopeAtStart.provider !== "gemini")
+          scopeAtStart.provider !== "gemini" ||
+          (activation?.inboxSelectionGeneration !== undefined &&
+            scopeAtStart.inboxSelectionGeneration !== activation.inboxSelectionGeneration))
       )
         return;
       hydrate(entry);

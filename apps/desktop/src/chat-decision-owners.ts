@@ -20,6 +20,7 @@ export interface ChatDecisionActivation {
   acceptedTurnId: string;
   requestId: string | null;
   generation: number;
+  inboxSelectionGeneration?: number;
   turnRequestId: string | null;
   actionable: boolean;
 }
@@ -38,6 +39,7 @@ export interface ChatDecisionScope {
   workspace: string;
   sessionId: string;
   provider: "codex" | "gemini";
+  inboxSelectionGeneration?: number;
 }
 
 export interface ChatDecisionOwnerPlatform {
@@ -123,6 +125,9 @@ export function createChatDecisionOwners(
             workspace: codexAddress.workspace,
             sessionId: codexAddress.sessionId,
             provider: "codex",
+            ...(codexAddress.inboxSelectionGeneration === undefined
+              ? {}
+              : { inboxSelectionGeneration: codexAddress.inboxSelectionGeneration }),
           }
         : null,
     requestId: () => crypto.randomUUID(),
@@ -157,6 +162,9 @@ export function createChatDecisionOwners(
             workspace: geminiAddress.workspace,
             sessionId: geminiAddress.sessionId,
             provider: "gemini",
+            ...(geminiAddress.inboxSelectionGeneration === undefined
+              ? {}
+              : { inboxSelectionGeneration: geminiAddress.inboxSelectionGeneration }),
           }
         : null,
     requestId: () => crypto.randomUUID(),
