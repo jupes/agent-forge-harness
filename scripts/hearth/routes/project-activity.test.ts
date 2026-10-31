@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import type { LedgerEventInput } from "../../../types/hearth";
+import { appendEvent } from "../../ledger/append";
 import { openLedger } from "../../ledger/db";
 import { activitySessionMembership } from "../../projects/activity-membership";
 import { projectActivityPageSchema } from "../../projects/activity-protocol";
@@ -431,6 +432,61 @@ test("verified current owned metadata admits untagged activity but cannot overri
   expect(page.events[0]?.actor).toBeNull();
   expect(JSON.stringify(body)).not.toContain("requested-only");
   expect(JSON.stringify(body)).not.toContain("FOREIGN");
+});
+
+test("Shift Activity includes only project-member runs named by the canonical Shift identity", async () => {
+  const { h, path } = await fixture();
+  const shiftId = "shift-20261030-120000-abcd";
+  const canonical = h.append({
+    kind: "run.phase.entered",
+    beadId: "alpha-epic",
+    runId: `alpha-epic-${shiftId}`,
+    payload: { phase: "research" },
+  });
+  h.append({
+    kind: "run.phase.entered",
+    beadId: "beta-epic",
+    runId: `beta-epic-${shiftId}`,
+    payload: { phase: "research" },
+  });
+  h.append({
+    kind: "run.phase.entered",
+    beadId: "alpha-epic",
+    runId: `alpha-epic-${shiftId}0`,
+    payload: { phase: "implement" },
+  });
+  h.append({
+    kind: "run.phase.entered",
+    beadId: "alpha-epic",
+    runId: `${shiftId}-1x`,
+    payload: { phase: "implement" },
+  });
+  const foreignWorkspace = appendEvent(
+    {
+      kind: "run.phase.entered",
+      workspace: `${h.workspace}-foreign`,
+      beadId: "alpha-epic",
+      runId: `alpha-epic-${shiftId}`,
+      payload: { phase: "implement" },
+    },
+    { path: h.ledger },
+  );
+  if (!foreignWorkspace.ok || !("id" in foreignWorkspace))
+    throw new Error("Foreign-workspace fixture event was not recorded");
+  h.append({
+    kind: "shift.started",
+    payload: { shiftId, concurrency: 1 },
+  });
+
+  const response = await fetch(`${path}?shift=${shiftId}`, {
+    headers: h.headers(h.hearth.token),
+  });
+  expect(response.status).toBe(200);
+  const body = await response.json();
+  expect(body.ok).toBe(true);
+  const page = projectActivityPageSchema.parse(body.data);
+  expect(page.events.map((event) => event.id)).toEqual([canonical]);
+  expect(page.events[0]?.summary).toBe("Phase started: research");
 });
 
 test("time filters include their actual boundary instants, and unknown roots do not grant project membership", async () => {

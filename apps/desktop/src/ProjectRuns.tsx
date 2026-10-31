@@ -9,6 +9,7 @@ import type {
 } from "../../../types/project-runs";
 import { KeeperMarkdown } from "./KeeperMarkdown";
 import { desktopHref } from "./navigation";
+import { ObjectActivityTabs, ScopedProjectActivity } from "./ProjectActivity";
 import { ProjectCheckpointReview } from "./ProjectCheckpointReview";
 import { activityHref, emptyActivityFilters } from "./project-activity-model";
 import type {
@@ -245,6 +246,28 @@ export function ProjectRuns({
     setDraft(filters ?? emptyRunFilters());
   }, [filterKey]);
   const selected = view?.selectedSlug ?? null;
+  const activityReady =
+    !!workspace &&
+    !!view &&
+    !!view.page &&
+    !!view.detail &&
+    !view.loading &&
+    !view.error &&
+    !view.detailLoading &&
+    !view.detailError &&
+    !view.detailStale &&
+    view.selectedSlug === selected &&
+    selected === view.detail.run.slug &&
+    view.page.projectId === projectId &&
+    view.detail.projectId === projectId &&
+    view.page.workspace === workspace &&
+    view.detail.workspace === workspace &&
+    view.page.checkout === view.detail.checkout &&
+    view.page.coverage === "served-checkout-only" &&
+    view.detail.coverage === "served-checkout-only" &&
+    view.page.problems.length === 0 &&
+    view.detail.problems.length === 0 &&
+    view.page.runs.some((run) => run.slug === selected);
   const checkpointReviewAvailable =
     !!view?.page &&
     view.page.problems.length === 0 &&
@@ -381,8 +404,15 @@ export function ProjectRuns({
           )}
           {view?.detail && (
             <>
-              <RunDetail
+              <RunDetailWithActivity
+                key={JSON.stringify([
+                  workspace,
+                  projectId,
+                  view.detail.run.slug,
+                ])}
                 projectId={projectId}
+                workspace={workspace}
+                activityReady={activityReady}
                 detail={view.detail}
                 sessionHistoryLoading={view.sessionHistoryLoading}
                 sessionHistoryError={view.sessionHistoryError}
@@ -746,6 +776,10 @@ function RunCheckpoints({
 
 export function RunDetail({
   projectId,
+  workspace,
+  activityReady,
+  activityTab = "details",
+  onActivityTabSelect = () => {},
   detail,
   sessionHistoryLoading = false,
   sessionHistoryError = "",
@@ -762,6 +796,10 @@ export function RunDetail({
   onCouncilArtifactPrefill,
 }: {
   projectId: string;
+  workspace?: string | null;
+  activityReady?: boolean;
+  activityTab?: "details" | "activity";
+  onActivityTabSelect?(value: "details" | "activity"): void;
   detail: ProjectRunDetail;
   sessionHistoryLoading?: boolean;
   sessionHistoryError?: string;
@@ -783,6 +821,8 @@ export function RunDetail({
   ): void;
 }) {
   const run = detail.run;
+  const showActivity =
+    activityTab === "activity" && activityReady && !!workspace;
   const runUpdatedAt = run.updatedAt;
   const latest = detail.gateHistory[0] ?? null;
   return (
@@ -801,326 +841,367 @@ export function RunDetail({
           Open run Activity
         </Button>
       </header>
-      <dl class="af-run-facts">
-        <div>
-          <dt>Recorded mode</dt>
-          <dd>{mode(run.mode)}</dd>
-        </div>
-        <div>
-          <dt>Epic</dt>
-          <dd>{run.epic}</dd>
-        </div>
-        <div>
-          <dt>Route</dt>
-          <dd>
-            — <small>Full or Mini is not recorded.</small>
-          </dd>
-        </div>
-        <div>
-          <dt>Started</dt>
-          <dd>
-            — <small>Start time is not recorded.</small>
-          </dd>
-        </div>
-        <div>
-          <dt>Updated</dt>
-          <dd>{time(run.updatedAt)}</dd>
-        </div>
-      </dl>
-      <section aria-label="Run phases">
-        <h4>Phases</h4>
-        <ol class="af-run-phases">
-          {run.phases.map((phase) => (
-            <li key={phase.id} data-phase={phase.id} data-state={phase.state}>
-              <h5>{phaseName(phase.id)}</h5>
-              <p>{phaseName(phase.state)}</p>
-              {phase.state === "active" && run.gatePassed === false && (
-                <p class="af-run-fail">Gate failed</p>
-              )}
-              {phase.artifact && (
-                <p class="af-run-artifact">
-                  <code>{phase.artifact}</code>
-                  {phase.artifactMissing && (
-                    <small>Recorded artifact is missing.</small>
-                  )}
-                </p>
-              )}
-              {phase.artifact &&
-                (phase.state === "complete" &&
-                (phase.id === "research" ||
-                  phase.id === "plan" ||
-                  phase.id === "ship") ? (
-                  <>
-                    <Button
-                      disabled={!canOpenArtifacts}
-                      onClick={() => {
-                        if (
-                          phase.id === "research" ||
-                          phase.id === "plan" ||
-                          phase.id === "ship"
-                        )
-                          onOpenArtifact?.(phase.id);
-                      }}
-                    >
-                      Read {phaseName(phase.id).toLowerCase()} artifact
-                    </Button>
-                    <small>
-                      Artifact contents are unavailable until explicitly opened.
-                    </small>
-                  </>
-                ) : (
-                  <small>
-                    Artifact contents are available after this phase is
-                    complete.
-                  </small>
-                ))}
-              {phase.state === "complete" &&
-                !phase.artifactMissing &&
-                phase.artifact &&
-                (phase.id === "research" ||
-                  phase.id === "plan" ||
-                  phase.id === "ship") &&
-                (() => {
-                  const expected =
-                    phase.id === "research"
-                      ? `plans/research/${run.slug}.md`
-                      : phase.id === "plan"
-                        ? `plans/drafts/${run.slug}.md`
-                        : `reports/${run.slug}-ship.md`;
-                  if (phase.artifact !== expected) return null;
-                  const kind = phase.id;
-                  const sourceType = kind === "plan" ? "plan" : "file";
-                  const label = phaseName(kind).toLowerCase();
-                  return (
+      <ObjectActivityTabs
+        label="Run views"
+        detailLabel="Run"
+        selected={showActivity ? "activity" : "details"}
+        activityAvailable={!!activityReady && !!workspace}
+        onSelect={onActivityTabSelect}
+      />
+      <div role="tabpanel" aria-label="Run details" hidden={showActivity}>
+        <dl class="af-run-facts">
+          <div>
+            <dt>Recorded mode</dt>
+            <dd>{mode(run.mode)}</dd>
+          </div>
+          <div>
+            <dt>Epic</dt>
+            <dd>{run.epic}</dd>
+          </div>
+          <div>
+            <dt>Route</dt>
+            <dd>
+              — <small>Full or Mini is not recorded.</small>
+            </dd>
+          </div>
+          <div>
+            <dt>Started</dt>
+            <dd>
+              — <small>Start time is not recorded.</small>
+            </dd>
+          </div>
+          <div>
+            <dt>Updated</dt>
+            <dd>{time(run.updatedAt)}</dd>
+          </div>
+        </dl>
+        <section aria-label="Run phases">
+          <h4>Phases</h4>
+          <ol class="af-run-phases">
+            {run.phases.map((phase) => (
+              <li key={phase.id} data-phase={phase.id} data-state={phase.state}>
+                <h5>{phaseName(phase.id)}</h5>
+                <p>{phaseName(phase.state)}</p>
+                {phase.state === "active" && run.gatePassed === false && (
+                  <p class="af-run-fail">Gate failed</p>
+                )}
+                {phase.artifact && (
+                  <p class="af-run-artifact">
+                    <code>{phase.artifact}</code>
+                    {phase.artifactMissing && (
+                      <small>Recorded artifact is missing.</small>
+                    )}
+                  </p>
+                )}
+                {phase.artifact &&
+                  (phase.state === "complete" &&
+                  (phase.id === "research" ||
+                    phase.id === "plan" ||
+                    phase.id === "ship") ? (
                     <>
                       <Button
-                        aria-label={`Review ${label} artifact in Council`}
                         disabled={!canOpenArtifacts}
-                        onClick={() =>
-                          onCouncilArtifactPrefill?.(kind, {
-                            sourceType,
-                            source: expected,
-                          })
-                        }
+                        onClick={() => {
+                          if (
+                            phase.id === "research" ||
+                            phase.id === "plan" ||
+                            phase.id === "ship"
+                          )
+                            onOpenArtifact?.(phase.id);
+                        }}
                       >
-                        Review in Council
+                        Read {phaseName(phase.id).toLowerCase()} artifact
                       </Button>
                       <small>
-                        This opens a draft from the recorded artifact; it does
-                        not complete or change a checkpoint.
+                        Artifact contents are unavailable until explicitly
+                        opened.
                       </small>
                     </>
-                  );
-                })()}
-            </li>
-          ))}
-        </ol>
-      </section>
-      <section aria-label="Recorded sessions for this run">
-        <h4>Sessions</h4>
-        <p>
-          These are session starts recorded with this run. They do not report
-          whether a session is currently running.
-        </p>
-        {sessionHistoryLoading && (
-          <p role="status" aria-live="polite">
-            {detail.sessionHistory?.status === "available"
-              ? "Loading more recorded sessions…"
-              : "Reading recorded sessions…"}
-          </p>
-        )}
-        {sessionHistoryError && (
-          <p role="alert" class="af-runs-error">
-            {sessionHistoryError}
-            {detail.sessionHistory?.status === "available" &&
-              " Previously verified sessions are retained."}
-          </p>
-        )}
-        {sessionHistoryStale && (
-          <p role="status">
-            These session records have not been verified against the current
-            project and run. Refresh Runs to check them again.
-          </p>
-        )}
-        {detail.sessionHistory?.status === "unavailable" ? (
-          <p role="status">
-            Recorded session history is unavailable; no empty result is assumed.
-          </p>
-        ) : detail.sessionHistory?.status === "available" ? (
-          <>
-            {detail.sessionHistory.sessions.length === 0 && (
-              <p role="status">
-                {detail.sessionHistory.more
-                  ? "No verified session rows are available on this page; more recorded rows may follow."
-                  : "No session starts are recorded for this run in the served workspace."}
-              </p>
-            )}
-            {detail.sessionHistory.sessions.length > 0 && (
-              <ul class="af-run-reviews">
-                {detail.sessionHistory.sessions.map((session) => (
-                  <li key={session.sessionId}>
-                    <p>
-                      <code>{session.sessionId}</code>
-                    </p>
-                    <p class="af-runs-note">
-                      {session.kind ?? "kind not recorded"} · Recorded start:{" "}
-                      {time(session.startedAt)}
-                    </p>
-                    <p>
-                      {session.detailsAvailable && !sessionHistoryStale ? (
-                        <a
-                          href={desktopHref({
-                            projectId,
-                            destination: "sessions",
-                            selection: {
-                              kind: "session",
-                              id: session.sessionId,
-                            },
-                          })}
+                  ) : (
+                    <small>
+                      Artifact contents are available after this phase is
+                      complete.
+                    </small>
+                  ))}
+                {phase.state === "complete" &&
+                  !phase.artifactMissing &&
+                  phase.artifact &&
+                  (phase.id === "research" ||
+                    phase.id === "plan" ||
+                    phase.id === "ship") &&
+                  (() => {
+                    const expected =
+                      phase.id === "research"
+                        ? `plans/research/${run.slug}.md`
+                        : phase.id === "plan"
+                          ? `plans/drafts/${run.slug}.md`
+                          : `reports/${run.slug}-ship.md`;
+                    if (phase.artifact !== expected) return null;
+                    const kind = phase.id;
+                    const sourceType = kind === "plan" ? "plan" : "file";
+                    const label = phaseName(kind).toLowerCase();
+                    return (
+                      <>
+                        <Button
+                          aria-label={`Review ${label} artifact in Council`}
+                          disabled={!canOpenArtifacts}
+                          onClick={() =>
+                            onCouncilArtifactPrefill?.(kind, {
+                              sourceType,
+                              source: expected,
+                            })
+                          }
                         >
-                          Open session metadata
-                        </a>
-                      ) : (
-                        <span>
-                          {session.detailsAvailable
-                            ? "Session metadata is not current."
-                            : "Session metadata is not independently available."}
-                        </span>
-                      )}
-                    </p>
-                  </li>
-                ))}
-              </ul>
-            )}
-            {detail.sessionHistory.more && (
-              <Button
-                disabled={
-                  sessionHistoryLoading ||
-                  sessionHistoryStale ||
-                  sessionHistoryCapped ||
-                  !onLoadMoreSessions
-                }
-                {...(onLoadMoreSessions ? { onClick: onLoadMoreSessions } : {})}
-              >
-                Load more recorded sessions
-              </Button>
-            )}
-          </>
-        ) : (
-          <p role="status">
-            This server does not report recorded session history.
-          </p>
-        )}
-      </section>
-      <RunCheckpoints
-        result={checkpointResult}
-        {...(checkpointReviewAvailable &&
-        checkpointResult.kind === "ready" &&
-        typeof runUpdatedAt === "string" &&
-        projectCheckpointReviewBindingSchema.shape.runUpdatedAt.safeParse(
-          runUpdatedAt,
-        ).success
-          ? {
-              reviewTarget: {
-                projectId,
-                workspacePath: detail.workspace,
-                checkout: detail.checkout,
-                runSlug: run.slug,
-                epicId: checkpointResult.epicId,
-                runUpdatedAt,
-              },
-            }
-          : {})}
-        {...(checkpointReviewOwner
-          ? { reviewOwner: checkpointReviewOwner }
-          : {})}
-        reviewsWritable={checkpointReviewsWritable}
-        {...(onCouncilBeadPrefill
-          ? { onCouncilPrefill: onCouncilBeadPrefill }
-          : {})}
-      />
-      <section aria-label="Run gate history">
-        <h4>Gate history</h4>
-        <p class="af-runs-note">
-          Up to 30 retained log-date folders · latest matching gate and up to 10
-          earlier entries. Gaps or older history may be absent.
-        </p>
-        <p>
-          Only matching run and checkout records are shown. Unlinked gate
-          entries cannot establish this run's result.
-        </p>
-        {!latest && <p>No matching gate was recorded in the retained logs.</p>}
-        {latest && (
-          <p>
-            <strong>
-              {latest.link === "legacy" ? "Legacy record" : "Linked gate"}:{" "}
-              {latest.passed ? "Pass" : "Fail"}
-            </strong>{" "}
-            · {time(latest.timestamp)}
-            {latest.link === "legacy" && (
-              <small>
-                Legacy metadata does not confirm a linked gate or evaluator for
-                this run.
-              </small>
-            )}
-          </p>
-        )}
-        <div class="af-runs-table-wrap">
-          <RunGateChecks gate={latest} />
-        </div>
-        {latest?.evaluatorEvidence && (
-          <p>
-            Evaluator evidence:{" "}
-            {latest.evaluatorEvidence === "schema-2"
-              ? "recorded schema-2 binding"
-              : "legacy; this run's evaluator was not bound"}
-            .
-          </p>
-        )}
-        {detail.gateHistory.slice(1).map((gate, index) => (
-          <details key={`${index}:${gate.timestamp}`}>
-            <summary>
-              Earlier gate · {gate.link === "legacy" ? "Legacy" : "Linked"} ·{" "}
-              {gate.passed ? "Pass" : "Fail"} · {time(gate.timestamp)}
-            </summary>
-            <div class="af-runs-table-wrap">
-              <RunGateChecks gate={gate} />
-            </div>
-          </details>
-        ))}
-      </section>
-      <section aria-label="Run review rounds">
-        <h4>Review rounds</h4>
-        {detail.reviews.length ? (
-          <ol class="af-run-reviews">
-            {detail.reviews.map((review, index) => (
-              <li key={`${index}:${review.phase}:${review.round}`}>
-                <h5>
-                  {phaseName(review.phase)} · Round {review.round} ·{" "}
-                  {review.verdict}
-                </h5>
-                <p>{time(review.at)}</p>
-                <p>
-                  Blocker {review.findings.blocker} · High{" "}
-                  {review.findings.high} · Medium {review.findings.medium} · Low{" "}
-                  {review.findings.low}
-                </p>
-                <p class="af-run-review-summary">
-                  {review.summary ?? "No review summary was recorded."}
-                </p>
+                          Review in Council
+                        </Button>
+                        <small>
+                          This opens a draft from the recorded artifact; it does
+                          not complete or change a checkpoint.
+                        </small>
+                      </>
+                    );
+                  })()}
               </li>
             ))}
           </ol>
-        ) : (
-          <p>No review rounds were recorded.</p>
-        )}
-      </section>
-      {detail.problems.map((problem, index) => (
-        <p class="af-runs-notice" key={`${index}:${problem}`}>
-          {problem}
-        </p>
-      ))}
-      <p class="af-runs-note">Detail last verified {time(detail.asOf)}</p>
+        </section>
+        <section aria-label="Recorded sessions for this run">
+          <h4>Sessions</h4>
+          <p>
+            These are session starts recorded with this run. They do not report
+            whether a session is currently running.
+          </p>
+          {sessionHistoryLoading && (
+            <p role="status" aria-live="polite">
+              {detail.sessionHistory?.status === "available"
+                ? "Loading more recorded sessions…"
+                : "Reading recorded sessions…"}
+            </p>
+          )}
+          {sessionHistoryError && (
+            <p role="alert" class="af-runs-error">
+              {sessionHistoryError}
+              {detail.sessionHistory?.status === "available" &&
+                " Previously verified sessions are retained."}
+            </p>
+          )}
+          {sessionHistoryStale && (
+            <p role="status">
+              These session records have not been verified against the current
+              project and run. Refresh Runs to check them again.
+            </p>
+          )}
+          {detail.sessionHistory?.status === "unavailable" ? (
+            <p role="status">
+              Recorded session history is unavailable; no empty result is
+              assumed.
+            </p>
+          ) : detail.sessionHistory?.status === "available" ? (
+            <>
+              {detail.sessionHistory.sessions.length === 0 && (
+                <p role="status">
+                  {detail.sessionHistory.more
+                    ? "No verified session rows are available on this page; more recorded rows may follow."
+                    : "No session starts are recorded for this run in the served workspace."}
+                </p>
+              )}
+              {detail.sessionHistory.sessions.length > 0 && (
+                <ul class="af-run-reviews">
+                  {detail.sessionHistory.sessions.map((session) => (
+                    <li key={session.sessionId}>
+                      <p>
+                        <code>{session.sessionId}</code>
+                      </p>
+                      <p class="af-runs-note">
+                        {session.kind ?? "kind not recorded"} · Recorded start:{" "}
+                        {time(session.startedAt)}
+                      </p>
+                      <p>
+                        {session.detailsAvailable && !sessionHistoryStale ? (
+                          <a
+                            href={desktopHref({
+                              projectId,
+                              destination: "sessions",
+                              selection: {
+                                kind: "session",
+                                id: session.sessionId,
+                              },
+                            })}
+                          >
+                            Open session metadata
+                          </a>
+                        ) : (
+                          <span>
+                            {session.detailsAvailable
+                              ? "Session metadata is not current."
+                              : "Session metadata is not independently available."}
+                          </span>
+                        )}
+                      </p>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {detail.sessionHistory.more && (
+                <Button
+                  disabled={
+                    sessionHistoryLoading ||
+                    sessionHistoryStale ||
+                    sessionHistoryCapped ||
+                    !onLoadMoreSessions
+                  }
+                  {...(onLoadMoreSessions
+                    ? { onClick: onLoadMoreSessions }
+                    : {})}
+                >
+                  Load more recorded sessions
+                </Button>
+              )}
+            </>
+          ) : (
+            <p role="status">
+              This server does not report recorded session history.
+            </p>
+          )}
+        </section>
+        <RunCheckpoints
+          result={checkpointResult}
+          {...(checkpointReviewAvailable &&
+          checkpointResult.kind === "ready" &&
+          typeof runUpdatedAt === "string" &&
+          projectCheckpointReviewBindingSchema.shape.runUpdatedAt.safeParse(
+            runUpdatedAt,
+          ).success
+            ? {
+                reviewTarget: {
+                  projectId,
+                  workspacePath: detail.workspace,
+                  checkout: detail.checkout,
+                  runSlug: run.slug,
+                  epicId: checkpointResult.epicId,
+                  runUpdatedAt,
+                },
+              }
+            : {})}
+          {...(checkpointReviewOwner
+            ? { reviewOwner: checkpointReviewOwner }
+            : {})}
+          reviewsWritable={checkpointReviewsWritable}
+          {...(onCouncilBeadPrefill
+            ? { onCouncilPrefill: onCouncilBeadPrefill }
+            : {})}
+        />
+        <section aria-label="Run gate history">
+          <h4>Gate history</h4>
+          <p class="af-runs-note">
+            Up to 30 retained log-date folders · latest matching gate and up to
+            10 earlier entries. Gaps or older history may be absent.
+          </p>
+          <p>
+            Only matching run and checkout records are shown. Unlinked gate
+            entries cannot establish this run's result.
+          </p>
+          {!latest && (
+            <p>No matching gate was recorded in the retained logs.</p>
+          )}
+          {latest && (
+            <p>
+              <strong>
+                {latest.link === "legacy" ? "Legacy record" : "Linked gate"}:{" "}
+                {latest.passed ? "Pass" : "Fail"}
+              </strong>{" "}
+              · {time(latest.timestamp)}
+              {latest.link === "legacy" && (
+                <small>
+                  Legacy metadata does not confirm a linked gate or evaluator
+                  for this run.
+                </small>
+              )}
+            </p>
+          )}
+          <div class="af-runs-table-wrap">
+            <RunGateChecks gate={latest} />
+          </div>
+          {latest?.evaluatorEvidence && (
+            <p>
+              Evaluator evidence:{" "}
+              {latest.evaluatorEvidence === "schema-2"
+                ? "recorded schema-2 binding"
+                : "legacy; this run's evaluator was not bound"}
+              .
+            </p>
+          )}
+          {detail.gateHistory.slice(1).map((gate, index) => (
+            <details key={`${index}:${gate.timestamp}`}>
+              <summary>
+                Earlier gate · {gate.link === "legacy" ? "Legacy" : "Linked"} ·{" "}
+                {gate.passed ? "Pass" : "Fail"} · {time(gate.timestamp)}
+              </summary>
+              <div class="af-runs-table-wrap">
+                <RunGateChecks gate={gate} />
+              </div>
+            </details>
+          ))}
+        </section>
+        <section aria-label="Run review rounds">
+          <h4>Review rounds</h4>
+          {detail.reviews.length ? (
+            <ol class="af-run-reviews">
+              {detail.reviews.map((review, index) => (
+                <li key={`${index}:${review.phase}:${review.round}`}>
+                  <h5>
+                    {phaseName(review.phase)} · Round {review.round} ·{" "}
+                    {review.verdict}
+                  </h5>
+                  <p>{time(review.at)}</p>
+                  <p>
+                    Blocker {review.findings.blocker} · High{" "}
+                    {review.findings.high} · Medium {review.findings.medium} ·
+                    Low {review.findings.low}
+                  </p>
+                  <p class="af-run-review-summary">
+                    {review.summary ?? "No review summary was recorded."}
+                  </p>
+                </li>
+              ))}
+            </ol>
+          ) : (
+            <p>No review rounds were recorded.</p>
+          )}
+        </section>
+        {detail.problems.map((problem, index) => (
+          <p class="af-runs-notice" key={`${index}:${problem}`}>
+            {problem}
+          </p>
+        ))}
+        <p class="af-runs-note">Detail last verified {time(detail.asOf)}</p>
+      </div>
+      {showActivity && workspace && (
+        <div role="tabpanel" aria-label="Run Activity">
+          <ScopedProjectActivity
+            key={JSON.stringify([workspace, projectId, run.slug])}
+            projectId={projectId}
+            workspace={workspace}
+            scope={{ runId: run.slug }}
+          />
+        </div>
+      )}
     </article>
+  );
+}
+
+function RunDetailWithActivity(props: Parameters<typeof RunDetail>[0]) {
+  const [activityTab, setActivityTab] = useState<"details" | "activity">(
+    "details",
+  );
+  const { workspace = null, activityReady = false, ...presenterProps } = props;
+  return (
+    <RunDetail
+      {...presenterProps}
+      workspace={workspace}
+      activityReady={activityReady}
+      activityTab={activityTab}
+      onActivityTabSelect={setActivityTab}
+    />
   );
 }
