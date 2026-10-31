@@ -4,6 +4,8 @@ import {
   GEMINI_CHAT_DECISION_IDENTITIES,
 } from "../../apps/desktop/src/gemini-chat-decision-identities";
 import { createGeminiChatDecisions } from "../../apps/desktop/src/gemini-chat-decisions";
+import type { ChatDecisionActivation } from "../../apps/desktop/src/chat-decision-owners";
+import type { GeminiChatDecisionAddress } from "../../apps/desktop/src/gemini-chat-authority";
 import { sessionStartFixture } from "./session-start-fixture";
 
 const projectId = "project-a5832fa0-7a21-403b-8184-44892f0d8d86",
@@ -132,6 +134,66 @@ test("approval reserves bounded metadata before POST and a lost answer or recrea
   second.dispose();
 });
 
+test("Gemini changed workspace and offer generation while reserving prevents the awaited POST", async () => {
+  const fixture = sessionStartFixture();
+  let grant = () => {},
+    posts = 0;
+  const heldLock = new Promise<void>((resolve) => {
+    grant = resolve;
+  });
+  const identities = createGeminiChatDecisionIdentities({
+    storage: fixture.storage,
+    withLock: async (work) => {
+      await heldLock;
+      return fixture.withLock(work);
+    },
+  });
+  let current: GeminiChatDecisionAddress | ChatDecisionActivation = {
+    ...address,
+    turnRequestId,
+    actionable: true,
+  };
+  const first = {
+    ...address,
+    workspace: "C:/workspaces/alpha",
+    acceptedTurnId: turnRequestId,
+    requestId: approvalId,
+    generation: 1,
+    turnRequestId,
+    actionable: true,
+  };
+  current = first;
+  const client = createGeminiChatDecisions({
+    identities,
+    current: () => current,
+    canWrite: () => true,
+    requestId: () => requestId,
+    read: async () => ({ pending: [offer], receipt: null }),
+    post: async () => {
+      posts++;
+      return { state: "unknown", message: "Must not send" };
+    },
+  });
+  client.activate(first);
+  await client.refreshPending();
+  const sending = client.decide(approvalId, "native-allow");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const next = {
+    ...first,
+    workspace: "C:/workspaces/beta",
+    requestId: "d1757233-e46b-4b0a-abcf-dc4958b13c9f",
+    generation: 2,
+  };
+  current = next;
+  client.activate(next);
+  grant();
+  await sending;
+  expect(posts).toBe(0);
+  expect(identities.read(projectId, sessionId)).toBeNull();
+  expect(client.view()?.pending).toEqual([]);
+  client.dispose();
+});
+
 test("only an exact protected recorded-intent receipt clears a restored original; foreign or actionable receipt pages stay held", async () => {
   const storage = sessionStartFixture();
   const identities = createGeminiChatDecisionIdentities({
@@ -242,25 +304,23 @@ test("a delayed live read after Stop or a foreign accepted turn cannot revive ap
   client.dispose();
 });
 
-test("same-scope background checks retain the reviewed offer and cannot repopulate it after a decision dispatch", async () => {
+test("a fresh action read refuses an approval withdrawn by a concurrent check", async () => {
   const fixture = sessionStartFixture(),
     identities = createGeminiChatDecisionIdentities({
       storage: fixture.storage,
       withLock: fixture.withLock,
     });
-  let release = (_value: unknown) => {},
-    reads = 0,
+  let reads = 0,
     posts = 0;
-  const waiting = new Promise<unknown>((resolve) => {
-    release = resolve;
-  });
   const client = createGeminiChatDecisions({
     identities,
     current: () => ({ ...address, turnRequestId, actionable: true }),
     canWrite: () => true,
     requestId: () => requestId,
-    read: async () =>
-      ++reads === 1 ? { pending: [offer], receipt: null } : waiting,
+    read: async () => ({
+      pending: ++reads === 1 ? [offer] : [],
+      receipt: null,
+    }),
     post: async () => {
       posts++;
       return { state: "unknown", message: "Lost answer" };
@@ -272,12 +332,11 @@ test("same-scope background checks retain the reviewed offer and cannot repopula
   const background = client.refreshPending();
   expect(client.view()?.pending).toBe(retained);
   expect(client.view()?.loading).toBe(false);
-  await client.decide(approvalId, "native-allow");
-  expect(posts).toBe(1);
-  release({ pending: [offer], receipt: null });
   await background;
+  await client.decide(approvalId, "native-allow");
+  expect(posts).toBe(0);
   expect(client.view()?.pending).toEqual([]);
-  expect(client.view()?.identity?.requestId).toBe(requestId);
+  expect(client.view()?.identity).toBeNull();
   client.dispose();
 });
 
@@ -318,7 +377,7 @@ test("Stop while the origin lock is pending releases only the proven-unsent rese
   client.dispose();
 });
 
-test("a protected refresh that withdraws an offer during origin-lock acquisition prevents its pending decision dispatch", async () => {
+test("a protected refresh and exact action re-read that withdraw an offer prevent dispatch", async () => {
   const fixture = sessionStartFixture();
   let grant = () => {},
     reads = 0,
@@ -349,8 +408,7 @@ test("a protected refresh that withdraws an offer during origin-lock acquisition
   });
   client.activate({ ...address, turnRequestId, actionable: true });
   await client.refreshPending();
-  // Start a protected refresh before the decision's lock wait; it may complete
-  // while the original is being durably reserved.
+  // Start a protected refresh before the exact action re-read.
   const refresh = client.refreshPending(),
     sending = client.decide(approvalId, "native-allow");
   await refresh;

@@ -9,6 +9,7 @@ import type {
   CodexChatDecisionReceipt,
   CodexChatDecisionRequest,
 } from "../../../types/codex-owned-chat";
+import type { ChatDecisionActivation } from "./chat-decision-owners";
 import {
   type CodexChatDecisionIdentities,
   type CodexChatDecisionIdentity,
@@ -29,17 +30,23 @@ export interface CodexChatDecisionView {
   checking: boolean;
   posting: boolean;
   receipt: CodexChatDecisionReceipt | null;
+  activation: ChatDecisionActivation | null;
 }
 type Address = {
   projectId: string;
   sessionId: string;
   turnRequestId: string | null;
   actionable: boolean;
+  workspace?: string;
+  acceptedTurnId?: string;
+  requestId?: string | null;
+  generation?: number;
 };
 /** Owns original decisions, never native callbacks. History reads cannot resend or answer a live offer. */
 export function createCodexChatDecisions(deps: {
   identities: CodexChatDecisionIdentities;
   canWrite(): boolean;
+  current?(): ChatDecisionActivation | null;
   requestId(): string;
   read(
     projectId: string,
@@ -57,6 +64,35 @@ export function createCodexChatDecisions(deps: {
   let selected: CodexChatDecisionView | null = null,
     generation = 0,
     disposed = false;
+  const sameActivation = (
+    left: ChatDecisionActivation | null,
+    right: ChatDecisionActivation | null,
+  ) =>
+    left === right ||
+    (!!left &&
+      !!right &&
+      left.projectId === right.projectId &&
+      left.workspace === right.workspace &&
+      left.sessionId === right.sessionId &&
+      left.acceptedTurnId === right.acceptedTurnId &&
+      left.requestId === right.requestId &&
+      left.generation === right.generation &&
+      left.turnRequestId === right.turnRequestId &&
+      left.actionable === right.actionable);
+  const normalize = (address: Address | null): ChatDecisionActivation | null =>
+    address
+      ? {
+          projectId: address.projectId,
+          workspace: address.workspace ?? "",
+          sessionId: address.sessionId,
+          acceptedTurnId:
+            address.acceptedTurnId ?? address.turnRequestId ?? "",
+          requestId: address.requestId ?? null,
+          generation: address.generation ?? generation,
+          turnRequestId: address.turnRequestId,
+          actionable: address.actionable,
+        }
+      : null;
   const tell = () => {
     if (!disposed) for (const listener of [...listeners]) listener();
   };
@@ -85,6 +121,7 @@ export function createCodexChatDecisions(deps: {
         checking: false,
         posting: false,
         receipt: null,
+        activation: null,
       };
       entries.set(key, entry);
       hydrate(entry);
@@ -96,7 +133,8 @@ export function createCodexChatDecisions(deps: {
     selected === entry &&
     entry.actionable &&
     !!entry.turnRequestId &&
-    deps.canWrite();
+    deps.canWrite() &&
+    (!deps.current || sameActivation(entry.activation, deps.current()));
   const confirm = async (entry: CodexChatDecisionView, raw: unknown) => {
     const parsed = codexChatDecisionReceiptSchema.safeParse(raw),
       identity = entry.identity;
@@ -132,26 +170,40 @@ export function createCodexChatDecisions(deps: {
       };
     },
     activate(address: Address | null) {
+      const activation = normalize(address);
       const next = address ? entryFor(address) : null;
       if (
         selected === next &&
         next &&
-        address &&
-        next.turnRequestId === address.turnRequestId &&
-        next.actionable === address.actionable
+        sameActivation(next.activation, activation)
       )
         return;
       if (selected) selected.pending = [];
       generation++;
       selected = next;
       if (next && address) {
-        Object.assign(next, address, { pending: [], loading: false });
+        Object.assign(next, address, {
+          activation,
+          pending: [],
+          loading: false,
+        });
         hydrate(next);
       }
       tell();
     },
     view() {
-      return selected;
+      const entry = selected;
+      if (!entry || !deps.current) return entry;
+      const current = deps.current();
+      if (
+        !current ||
+        current.projectId !== entry.projectId ||
+        current.sessionId !== entry.sessionId
+      )
+        return null;
+      return live(entry)
+        ? entry
+        : { ...entry, pending: [], actionable: false, loading: false };
     },
     refreshIdentities() {
       for (const entry of entries.values()) hydrate(entry);
@@ -195,7 +247,14 @@ export function createCodexChatDecisions(deps: {
           throw Error(
             "The live approval page did not match this accepted turn.",
           );
-        entry.pending = page.pending;
+        const pending = entry.activation?.requestId
+          ? page.pending.filter(
+              (item) => item.approval.id === entry.activation?.requestId,
+            )
+          : page.pending;
+        if (entry.activation?.requestId && pending.length !== 1)
+          throw Error("The exact original approval offer is no longer pending.");
+        entry.pending = pending;
       } catch {
         if (current === generation) {
           entry.pending = [];
@@ -210,6 +269,8 @@ export function createCodexChatDecisions(deps: {
     async checkOriginal() {
       const entry = selected;
       if (!entry || entry.checking || entry.posting) return;
+      const current = generation,
+        activation = entry.activation;
       hydrate(entry);
       const identity = entry.identity;
       if (!identity) return;
@@ -220,6 +281,12 @@ export function createCodexChatDecisions(deps: {
         const page = codexChatApprovalPageSchema.parse(
           await deps.read(entry.projectId, entry.sessionId, identity.requestId),
         );
+        if (
+          current !== generation ||
+          selected !== entry ||
+          !sameActivation(entry.activation, activation)
+        )
+          return;
         if (page.pending.length)
           throw Error(
             "An original receipt read cannot advertise live approvals.",
@@ -256,14 +323,56 @@ export function createCodexChatDecisions(deps: {
           item.approval.id === approvalId &&
           item.turnRequestId === entry.turnRequestId,
       );
-      if (!offered || !offered.approval.availableDecisions.includes(decision))
+      if (
+        !offered ||
+        (entry.activation?.requestId !== null &&
+          entry.activation?.requestId !== undefined &&
+          entry.activation.requestId !== approvalId) ||
+        !offered.approval.availableDecisions.includes(decision)
+      )
         return;
       const turn = offered.turnRequestId,
-        current = generation;
+        current = generation,
+        activation = entry.activation;
       entry.posting = true;
       entry.error = "";
       tell();
       try {
+        const fresh = codexChatApprovalPageSchema.parse(
+          await deps.read(entry.projectId, entry.sessionId),
+        );
+        if (
+          current !== generation ||
+          !live(entry) ||
+          !sameActivation(entry.activation, activation)
+        )
+          return;
+        if (
+          fresh.receipt ||
+          fresh.pending.some((item) => item.turnRequestId !== turn) ||
+          new Set(fresh.pending.map((item) => item.approval.id)).size !==
+            fresh.pending.length
+        )
+          throw Error("The exact live approval page could not be verified.");
+        const freshOffer = fresh.pending.find(
+          (item) =>
+            item.approval.id === approvalId &&
+            item.turnRequestId === turn &&
+            item.approval.availableDecisions.includes(decision),
+        );
+        if (
+          !freshOffer ||
+          JSON.stringify(freshOffer) !== JSON.stringify(offered)
+        ) {
+          entry.pending = fresh.pending.filter(
+            (item) =>
+              !activation?.requestId ||
+              item.approval.id === activation.requestId,
+          );
+          entry.notice =
+            "The live approval changed before dispatch. Refresh and review its current choices.";
+          return;
+        }
         const reserved = await deps.identities.reserve(
           {
             projectId: entry.projectId,
@@ -282,6 +391,7 @@ export function createCodexChatDecisions(deps: {
         }
         if (
           !live(entry) ||
+          !sameActivation(entry.activation, activation) ||
           entry.turnRequestId !== turn ||
           generation !== current ||
           !entry.pending.some(
@@ -299,12 +409,39 @@ export function createCodexChatDecisions(deps: {
         // A pre-dispatch read must not repopulate an offer consumed by this
         // original, even if its protected answer arrives after the POST.
         generation++;
+        const dispatchGeneration = generation;
+        // Generation and exact activation are rechecked immediately before the
+        // protected write after every asynchronous reservation boundary.
+        if (
+          disposed ||
+          !live(entry) ||
+          selected !== entry ||
+          entry.activation?.generation !== activation?.generation ||
+          (deps.current &&
+            !sameActivation(entry.activation, deps.current()))
+        ) {
+          await deps.identities.release(reserved.identity);
+          entry.identity = null;
+          entry.notice =
+            "The live approval changed before dispatch. No decision was sent.";
+          return;
+        }
         const result = await deps.post(
           entry.projectId,
           entry.sessionId,
           decisionBody(reserved.identity),
         );
+        const stillCurrent =
+          !disposed &&
+          generation === dispatchGeneration &&
+          selected === entry &&
+          entry.activation?.generation === activation?.generation &&
+          (!deps.current ||
+            sameActivation(entry.activation, deps.current()));
         if (result.state === "done") await confirm(entry, result.data);
+        else if (!stillCurrent)
+          entry.notice =
+            "The original decision may have been sent. Its identity remains held; check its exact receipt before leaving it unresolved.";
         else
           entry.notice =
             "The original approval decision is unconfirmed. Check its protected receipt; it will not be resent automatically.";

@@ -46,12 +46,14 @@ import { GeminiChatConversation } from "./GeminiChatConversation";
 import { SessionLibraryControls } from "./SessionLibraryControls";
 import { SessionReply } from "./SessionReply";
 import type { SessionLibraryClient } from "./session-library-client";
+import type { ChatDecisionOwners } from "./chat-decision-owners";
 import { useCodexChatDecisions } from "./use-codex-chat-decisions";
 
 export interface SessionConversationProps {
   projectId: string;
   sessionId: string;
   client: SessionsClient;
+  decisionOwners: ChatDecisionOwners;
   keeper: KeeperClient;
   writesAllowed: boolean;
   library?: SessionLibraryClient;
@@ -82,6 +84,7 @@ function StandardSessionConversation({
   projectId,
   sessionId,
   client,
+  decisionOwners,
   keeper,
   writesAllowed,
   library,
@@ -169,7 +172,9 @@ function StandardSessionConversation({
     !view.readError &&
     !view.feedInterrupted;
   const approvals = useCodexChatDecisions({
+    owners: decisionOwners,
     projectId,
+    workspace,
     sessionId,
     turnRequestId: current?.requestId ?? null,
     enabled: isCodexChat,

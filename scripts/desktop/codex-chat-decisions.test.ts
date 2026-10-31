@@ -123,6 +123,57 @@ test("Codex permission view preserves the exact shared activation across a valid
   client.dispose();
 });
 
+test("Codex changed workspace and offer generation while reserving prevents the awaited POST", async () => {
+  const fixture = sessionStartFixture();
+  let grant = () => {},
+    posts = 0;
+  const heldLock = new Promise<void>((resolve) => {
+    grant = resolve;
+  });
+  const identities = createCodexChatDecisionIdentities({
+    storage: fixture.storage,
+    withLock: async (work) => {
+      await heldLock;
+      return fixture.withLock(work);
+    },
+  });
+  const first = {
+    ...address,
+    workspace: "C:/workspaces/alpha",
+    acceptedTurnId: turnRequestId,
+    requestId: approvalId,
+    generation: 1,
+    turnRequestId,
+    actionable: true,
+  };
+  const client = createCodexChatDecisions({
+    identities,
+    canWrite: () => true,
+    requestId: () => requestId,
+    read: async () => ({ pending: [offer], receipt: null }),
+    post: async () => {
+      posts++;
+      return { state: "unknown", message: "Must not send" };
+    },
+  });
+  client.activate(first);
+  await client.refreshPending();
+  const sending = client.decide(approvalId, "accept");
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  client.activate({
+    ...first,
+    workspace: "C:/workspaces/beta",
+    requestId: "d1757233-e46b-4b0a-abcf-dc4958b13c9f",
+    generation: 2,
+  });
+  grant();
+  await sending;
+  expect(posts).toBe(0);
+  expect(identities.read(projectId, sessionId)).toBeNull();
+  expect(client.view()?.pending).toEqual([]);
+  client.dispose();
+});
+
 test("only an exact protected recorded-intent receipt clears a restored original; foreign or actionable receipt pages stay held", async () => {
   const storage = sessionStartFixture();
   const identities = createCodexChatDecisionIdentities({
@@ -227,24 +278,22 @@ test("a delayed live read after Stop or a foreign accepted turn cannot revive ap
   client.dispose();
 });
 
-test("same-scope background checks retain the reviewed offer and cannot repopulate it after a decision dispatch", async () => {
+test("a fresh action read refuses an approval withdrawn by a concurrent check", async () => {
   const fixture = sessionStartFixture(),
     identities = createCodexChatDecisionIdentities({
       storage: fixture.storage,
       withLock: fixture.withLock,
     });
-  let release = (_value: unknown) => {},
-    reads = 0,
+  let reads = 0,
     posts = 0;
-  const waiting = new Promise<unknown>((resolve) => {
-    release = resolve;
-  });
   const client = createCodexChatDecisions({
     identities,
     canWrite: () => true,
     requestId: () => requestId,
-    read: async () =>
-      ++reads === 1 ? { pending: [offer], receipt: null } : waiting,
+    read: async () => ({
+      pending: ++reads === 1 ? [offer] : [],
+      receipt: null,
+    }),
     post: async () => {
       posts++;
       return { state: "unknown", message: "Lost answer" };
@@ -256,12 +305,11 @@ test("same-scope background checks retain the reviewed offer and cannot repopula
   const background = client.refreshPending();
   expect(client.view()?.pending).toBe(retained);
   expect(client.view()?.loading).toBe(false);
-  await client.decide(approvalId, "accept");
-  expect(posts).toBe(1);
-  release({ pending: [offer], receipt: null });
   await background;
+  await client.decide(approvalId, "accept");
+  expect(posts).toBe(0);
   expect(client.view()?.pending).toEqual([]);
-  expect(client.view()?.identity?.requestId).toBe(requestId);
+  expect(client.view()?.identity).toBeNull();
   client.dispose();
 });
 
@@ -301,7 +349,7 @@ test("Stop while the origin lock is pending releases only the proven-unsent rese
   client.dispose();
 });
 
-test("a protected refresh that withdraws an offer during origin-lock acquisition prevents its pending decision dispatch", async () => {
+test("a protected refresh and exact action re-read that withdraw an offer prevent dispatch", async () => {
   const fixture = sessionStartFixture();
   let grant = () => {},
     reads = 0,
@@ -331,8 +379,7 @@ test("a protected refresh that withdraws an offer during origin-lock acquisition
   });
   client.activate({ ...address, turnRequestId, actionable: true });
   await client.refreshPending();
-  // Start a protected refresh before the decision's lock wait; it may complete
-  // while the original is being durably reserved.
+  // Start a protected refresh before the exact action re-read.
   const refresh = client.refreshPending(),
     sending = client.decide(approvalId, "accept");
   await refresh;

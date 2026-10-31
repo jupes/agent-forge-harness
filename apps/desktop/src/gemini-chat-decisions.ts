@@ -10,6 +10,7 @@ import type {
   GeminiChatDecisionRequest,
 } from "../../../types/gemini-owned-chat";
 import type { GeminiChatDecisionAddress } from "./gemini-chat-authority";
+import type { ChatDecisionActivation } from "./chat-decision-owners";
 import {
   decisionBody,
   GeminiChatDecisionChanged,
@@ -31,12 +32,14 @@ export interface GeminiChatDecisionView {
   checking: boolean;
   posting: boolean;
   receipt: GeminiChatDecisionReceipt | null;
+  activation: ChatDecisionActivation | null;
 }
-type Address = GeminiChatDecisionAddress;
+type Address = GeminiChatDecisionAddress &
+  Partial<Pick<ChatDecisionActivation, "workspace" | "acceptedTurnId" | "requestId" | "generation">>;
 /** Owns original decisions, never native callbacks. History reads cannot resend or answer a live offer. */
 export function createGeminiChatDecisions(deps: {
   identities: GeminiChatDecisionIdentities;
-  current(): Address | null;
+  current(): Address | ChatDecisionActivation | null;
   canWrite(): boolean;
   requestId(): string;
   read(
@@ -55,6 +58,38 @@ export function createGeminiChatDecisions(deps: {
   let selected: GeminiChatDecisionView | null = null,
     generation = 0,
     disposed = false;
+  const sameActivation = (
+    activation: ChatDecisionActivation | null,
+    address: Address | ChatDecisionActivation | null,
+  ) =>
+    !!activation &&
+    !!address &&
+    activation.projectId === address.projectId &&
+    activation.sessionId === address.sessionId &&
+    activation.turnRequestId === address.turnRequestId &&
+    activation.actionable === address.actionable &&
+    (address.workspace === undefined ||
+      activation.workspace === address.workspace) &&
+    (address.acceptedTurnId === undefined ||
+      activation.acceptedTurnId === address.acceptedTurnId) &&
+    (address.requestId === undefined ||
+      activation.requestId === address.requestId) &&
+    (address.generation === undefined ||
+      activation.generation === address.generation);
+  const normalize = (address: Address | null): ChatDecisionActivation | null =>
+    address
+      ? {
+          projectId: address.projectId,
+          workspace: address.workspace ?? "",
+          sessionId: address.sessionId,
+          acceptedTurnId:
+            address.acceptedTurnId ?? address.turnRequestId ?? "",
+          requestId: address.requestId ?? null,
+          generation: address.generation ?? generation,
+          turnRequestId: address.turnRequestId,
+          actionable: address.actionable,
+        }
+      : null;
   const tell = () => {
     if (!disposed) for (const listener of [...listeners]) listener();
   };
@@ -83,6 +118,7 @@ export function createGeminiChatDecisions(deps: {
         checking: false,
         posting: false,
         receipt: null,
+        activation: null,
       };
       entries.set(key, entry);
       hydrate(entry);
@@ -106,6 +142,7 @@ export function createGeminiChatDecisions(deps: {
       current.sessionId === entry.sessionId &&
       current.turnRequestId === entry.turnRequestId &&
       current.actionable &&
+      sameActivation(entry.activation, current) &&
       deps.canWrite()
     );
   };
@@ -144,20 +181,23 @@ export function createGeminiChatDecisions(deps: {
       };
     },
     activate(address: Address | null) {
+      const activation = normalize(address);
       const next = address ? entryFor(address) : null;
       if (
         selected === next &&
         next &&
-        address &&
-        next.turnRequestId === address.turnRequestId &&
-        next.actionable === address.actionable
+        sameActivation(next.activation, activation)
       )
         return;
       if (selected) selected.pending = [];
       generation++;
       selected = next;
       if (next && address) {
-        Object.assign(next, address, { pending: [], loading: false });
+        Object.assign(next, address, {
+          activation,
+          pending: [],
+          loading: false,
+        });
         hydrate(next);
       }
       tell();
@@ -167,13 +207,12 @@ export function createGeminiChatDecisions(deps: {
         entry = selected;
       if (
         !entry ||
-        current?.projectId !== entry.projectId ||
-        current.sessionId !== entry.sessionId
+        !sameActivation(entry.activation, current)
       )
         return null;
       // Synchronous projection must not wait for the activation effect. Retain
       // same-scope original receipts, but never old live offers for a new turn.
-      return live(entry, current)
+      return live(entry, current ?? undefined)
         ? entry
         : { ...entry, pending: [], actionable: false, loading: false };
     },
@@ -219,7 +258,14 @@ export function createGeminiChatDecisions(deps: {
           throw Error(
             "The live approval page did not match this accepted turn.",
           );
-        entry.pending = page.pending;
+        const pending = entry.activation?.requestId
+          ? page.pending.filter(
+              (item) => item.approval.id === entry.activation?.requestId,
+            )
+          : page.pending;
+        if (entry.activation?.requestId && pending.length !== 1)
+          throw Error("The exact original approval offer is no longer pending.");
+        entry.pending = pending;
       } catch {
         if (current === generation) {
           entry.pending = [];
@@ -234,6 +280,8 @@ export function createGeminiChatDecisions(deps: {
     async checkOriginal() {
       const entry = selected;
       if (!entry || entry.checking || entry.posting) return;
+      const current = generation,
+        activation = entry.activation;
       hydrate(entry);
       const identity = entry.identity;
       if (!identity) return;
@@ -244,6 +292,12 @@ export function createGeminiChatDecisions(deps: {
         const page = geminiChatApprovalPageSchema.parse(
           await deps.read(entry.projectId, entry.sessionId, identity.requestId),
         );
+        if (
+          current !== generation ||
+          selected !== entry ||
+          !sameActivation(entry.activation, activation)
+        )
+          return;
         if (page.pending.length)
           throw Error(
             "An original receipt read cannot advertise live approvals.",
@@ -282,6 +336,9 @@ export function createGeminiChatDecisions(deps: {
       );
       if (
         !offered ||
+        (entry.activation?.requestId !== null &&
+          entry.activation?.requestId !== undefined &&
+          entry.activation.requestId !== approvalId) ||
         (optionId !== null &&
           !offered.approval.options.some(
             (option) => option.optionId === optionId,
@@ -289,9 +346,11 @@ export function createGeminiChatDecisions(deps: {
       )
         return;
       const turn = offered.turnRequestId,
-        current = generation;
+        current = ++generation,
+        activation = entry.activation;
       const stillOffered = () =>
         live(entry) &&
+        sameActivation(entry.activation, activation) &&
         entry.turnRequestId === turn &&
         generation === current &&
         entry.pending.some(
@@ -301,6 +360,44 @@ export function createGeminiChatDecisions(deps: {
       entry.error = "";
       tell();
       try {
+        const fresh = geminiChatApprovalPageSchema.parse(
+          await deps.read(entry.projectId, entry.sessionId),
+        );
+        if (
+          current !== generation ||
+          !live(entry) ||
+          !sameActivation(entry.activation, activation)
+        )
+          return;
+        if (
+          fresh.receipt ||
+          fresh.pending.some((item) => item.turnRequestId !== turn) ||
+          new Set(fresh.pending.map((item) => item.approval.id)).size !==
+            fresh.pending.length
+        )
+          throw Error("The exact live approval page could not be verified.");
+        const freshOffer = fresh.pending.find(
+          (item) =>
+            item.approval.id === approvalId &&
+            item.turnRequestId === turn &&
+            (optionId === null ||
+              item.approval.options.some(
+                (option) => option.optionId === optionId,
+              )),
+        );
+        if (
+          !freshOffer ||
+          JSON.stringify(freshOffer) !== JSON.stringify(offered)
+        ) {
+          entry.pending = fresh.pending.filter(
+            (item) =>
+              !activation?.requestId ||
+              item.approval.id === activation.requestId,
+          );
+          entry.notice =
+            "The live approval changed before dispatch. Refresh and review its current choices.";
+          return;
+        }
         const reserved = await deps.identities.reserve(
           {
             projectId: entry.projectId,
@@ -320,6 +417,7 @@ export function createGeminiChatDecisions(deps: {
         }
         if (
           !live(entry) ||
+          !sameActivation(entry.activation, activation) ||
           entry.turnRequestId !== turn ||
           generation !== current ||
           !entry.pending.some(
@@ -337,12 +435,35 @@ export function createGeminiChatDecisions(deps: {
         // A pre-dispatch read must not repopulate an offer consumed by this
         // original, even if its protected answer arrives after the POST.
         generation++;
+        const dispatchGeneration = generation;
+        if (
+          disposed ||
+          !live(entry) ||
+          selected !== entry ||
+          !sameActivation(entry.activation, activation) ||
+          !sameActivation(entry.activation, observed())
+        ) {
+          await deps.identities.release(reserved.identity);
+          entry.identity = null;
+          entry.notice =
+            "The live approval changed before dispatch. No decision was sent.";
+          return;
+        }
         const result = await deps.post(
           entry.projectId,
           entry.sessionId,
           decisionBody(reserved.identity),
         );
+        const stillCurrent =
+          !disposed &&
+          generation === dispatchGeneration &&
+          selected === entry &&
+          sameActivation(entry.activation, activation) &&
+          sameActivation(entry.activation, observed());
         if (result.state === "done") await confirm(entry, result.data);
+        else if (!stillCurrent)
+          entry.notice =
+            "The original decision may have been sent. Its identity remains held; check its exact receipt before leaving it unresolved.";
         else
           entry.notice =
             "The original approval decision is unconfirmed. Check its protected receipt; it will not be resent automatically.";
