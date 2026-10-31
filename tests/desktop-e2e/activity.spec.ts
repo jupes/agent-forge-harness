@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import {
   existsSync,
   mkdirSync,
@@ -13,7 +14,6 @@ import { runsHref } from "../../apps/desktop/src/project-runs-model";
 import { projectShiftInputHash } from "../../apps/desktop/src/project-shift-identities";
 import type { ForgeState } from "../../scripts/forge/phases";
 import { projectFixture } from "../../scripts/projects/testing";
-import { createSessionRegistry } from "../../scripts/sessions/registry";
 import type { LedgerEventInput } from "../../types/hearth";
 import type { OwnedSessionMetadata } from "../../types/owned-session";
 import type {
@@ -23,7 +23,7 @@ import type {
 } from "../../types/project-shifts";
 import { readState, withStateLock, writeState } from "../e2e/bd-stand-in-state";
 import { openSettled } from "../e2e/fixtures";
-import { BD_STAND_IN_STATE, HEARTH_HOME } from "../e2e/servers";
+import { BD_STAND_IN_STATE, bunPath, HEARTH_HOME } from "../e2e/servers";
 import {
   activityFixtureSessionCount,
   clearActivityMembershipFixtures,
@@ -94,12 +94,57 @@ async function seedOwnedActivitySession() {
     requestedModel: "recorded-model",
     requestedEffort: null,
   };
-  return createSessionRegistry(HEARTH_HOME).reserve(
-    alpha.id,
-    requestId,
-    "a".repeat(64),
-    async () => metadata,
+  const result = spawnSync(
+    bunPath(),
+    [
+      "-e",
+      `
+        import { createSessionRegistry } from "./scripts/sessions/registry";
+        let input;
+        try { input = JSON.parse(await Bun.stdin.text()); }
+        catch { throw new Error("Invalid owned session fixture input"); }
+        const record = await createSessionRegistry(process.env.AGENT_FORGE_HOME).reserve(
+          input.projectId,
+          input.requestId,
+          input.requestHash,
+          async () => input.metadata,
+        );
+        process.stdout.write(JSON.stringify({ id: record.id }));
+      `,
+    ],
+    {
+      env: { ...process.env, AGENT_FORGE_HOME: HEARTH_HOME },
+      encoding: "utf8",
+      input: JSON.stringify({
+        projectId: alpha.id,
+        requestId,
+        requestHash: "a".repeat(64),
+        metadata,
+      }),
+      timeout: 15_000,
+      maxBuffer: 1024 * 1024,
+    },
   );
+  if (result.status !== 0)
+    throw new Error(
+      `Owned session fixture failed: ${result.error?.message ?? result.stderr}`,
+    );
+  let value: unknown;
+  try {
+    value = JSON.parse(result.stdout);
+  } catch {
+    throw new Error("Owned session fixture returned invalid JSON");
+  }
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    !("id" in value) ||
+    typeof value.id !== "string" ||
+    !/^session-[0-9a-f-]{36}$/.test(value.id)
+  )
+    throw new Error("Owned session fixture returned an invalid session id");
+  return { id: value.id };
 }
 
 test("observed session exposes the shared project Activity feed in its Activity tab", async ({
