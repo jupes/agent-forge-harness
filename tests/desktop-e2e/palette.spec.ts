@@ -319,6 +319,17 @@ test("expired palette selection stays open with a refresh path and performs no w
   const sessionsPattern =
     `**/__agent-forge/projects/${alpha.id}/session-observations*`;
   const summaryPattern = "**/projects/summary";
+  type PaletteDomEvidence = {
+    warningPresent: boolean;
+    coverage: {
+      beadsAvailable: boolean;
+      beadsLoading: boolean;
+      sessionsAvailable: boolean;
+      sessionsLoading: boolean;
+    };
+    refreshVisible: boolean;
+    dialogOpen: boolean;
+  };
   const hold = (
     source: keyof typeof started,
     gate: Promise<void>,
@@ -379,16 +390,126 @@ test("expired palette selection stays open with a refresh path and performs no w
       host.__ci94PaletteClock = { original, shifted };
       Date.now = shifted;
     });
+    await page.evaluate(() => {
+      type PaletteObserver = {
+        initial: PaletteDomEvidence;
+        events: PaletteDomEvidence[];
+        warningMutations: Array<{
+          inserted: boolean;
+          coverage: PaletteDomEvidence["coverage"];
+          dialogOpen: boolean;
+        }>;
+        overflow: boolean;
+        observer: MutationObserver | null;
+        finalize: () => void;
+      };
+      const dialog = document.querySelector('[role="dialog"]');
+      if (!dialog) throw Error("Command palette dialog was not mounted.");
+      const snapshot = (): PaletteDomEvidence => {
+        const coverage = Array.from(
+          dialog?.querySelectorAll('[role="status"]') ?? [],
+        ).find((status) => status.textContent?.includes("Source coverage:"));
+        const text = coverage?.textContent ?? "";
+        const refresh = Array.from(dialog?.querySelectorAll("button") ?? [])
+          .some((button) => button.textContent?.includes("Refresh results"));
+        return {
+          warningPresent: Array.from(
+            dialog.querySelectorAll('[role="alert"]'),
+          ).some((alert) =>
+            alert.textContent?.includes(
+              "This result changed or its owner is unavailable.",
+            ),
+          ),
+          coverage: {
+            beadsAvailable: /Beads: available/.test(text),
+            beadsLoading: /Beads: loading/.test(text),
+            sessionsAvailable: /Sessions: available/.test(text),
+            sessionsLoading: /Sessions: loading/.test(text),
+          },
+          refreshVisible: refresh,
+          dialogOpen: Boolean(dialog?.isConnected && dialog.getClientRects().length),
+        };
+      };
+      const observer: PaletteObserver = {
+        initial: snapshot(),
+        events: [],
+        warningMutations: [],
+        overflow: false,
+        observer: null,
+        finalize: () => {},
+      };
+      const containsChangedWarning = (node: Node) =>
+        node instanceof Element &&
+        (node.matches('[role="alert"]') ||
+          Boolean(node.querySelector('[role="alert"]')))
+          ? node.textContent?.includes(
+              "This result changed or its owner is unavailable.",
+            ) ?? false
+          : false;
+      const recordMutations = (records: MutationRecord[]) => {
+        const next = snapshot();
+        for (const record of records) {
+          if (record.target !== dialog && !dialog.contains(record.target)) continue;
+          if ([...record.addedNodes].some(containsChangedWarning)) {
+            if (observer.warningMutations.length < 64)
+              observer.warningMutations.push({
+                inserted: true,
+                coverage: next.coverage,
+                dialogOpen: next.dialogOpen,
+              });
+            else observer.overflow = true;
+          }
+          if ([...record.removedNodes].some(containsChangedWarning)) {
+            if (observer.warningMutations.length < 64)
+              observer.warningMutations.push({
+                inserted: false,
+                coverage: next.coverage,
+                dialogOpen: next.dialogOpen,
+              });
+            else observer.overflow = true;
+          }
+        }
+        const previous = observer.events.at(-1) ?? observer.initial;
+        if (
+          next.warningPresent !== previous.warningPresent ||
+          JSON.stringify(next.coverage) !== JSON.stringify(previous.coverage) ||
+          next.refreshVisible !== previous.refreshVisible ||
+          next.dialogOpen !== previous.dialogOpen
+        ) {
+          if (observer.events.length < 64) observer.events.push(next);
+          else observer.overflow = true;
+        }
+      };
+      observer.observer = new MutationObserver(recordMutations);
+      observer.observer.observe(dialog, {
+        childList: true,
+        subtree: true,
+        characterData: true,
+        attributes: true,
+      });
+      observer.finalize = () => {
+        recordMutations(observer.observer?.takeRecords() ?? []);
+        const next = snapshot();
+        const previous = observer.events.at(-1) ?? observer.initial;
+        if (
+          next.warningPresent !== previous.warningPresent ||
+          JSON.stringify(next.coverage) !== JSON.stringify(previous.coverage) ||
+          next.refreshVisible !== previous.refreshVisible ||
+          next.dialogOpen !== previous.dialogOpen
+        ) {
+          if (observer.events.length < 64) observer.events.push(next);
+          else observer.overflow = true;
+        }
+        observer.observer?.disconnect();
+      };
+      (window as Window & { __ci94PaletteDom?: PaletteObserver }).__ci94PaletteDom = observer;
+    });
     await page.keyboard.press("Enter");
     await expect(dialog).toBeVisible();
-    await expect(dialog.getByRole("alert")).toContainText(
-      "This result changed",
-    );
     expect(writes).toEqual([]);
     await expect.poll(() => started.summary).toBe(true);
 
-    // Keep the summary refresh from publishing its initial loading snapshot
-    // until the rejected-selection warning has been observed above.
+    // Release the initial source snapshot only after its route is known to be held.
     releaseSummary();
     await expect.poll(() => started.beads).toBe(true);
     await expect.poll(() => started.sessions).toBe(true);
@@ -413,6 +534,37 @@ test("expired palette selection stays open with a refresh path and performs no w
           ),
         ),
     );
+    const evidence = await page.evaluate(() => {
+      type PaletteObserver = {
+        initial: PaletteDomEvidence;
+        events: PaletteDomEvidence[];
+        warningMutations: Array<{
+          inserted: boolean;
+          coverage: PaletteDomEvidence["coverage"];
+          dialogOpen: boolean;
+        }>;
+        overflow: boolean;
+        observer: MutationObserver | null;
+        finalize: () => void;
+      };
+      const host = window as Window & { __ci94PaletteDom?: PaletteObserver };
+      const probe = host.__ci94PaletteDom;
+      if (!probe) return null;
+      probe.finalize();
+      return {
+        initial: probe.initial,
+        events: probe.events,
+        warningMutations: probe.warningMutations,
+        overflow: probe.overflow,
+      };
+    });
+    test.info().annotations.push({
+      type: "Palette DOM state evidence",
+      description: JSON.stringify(evidence),
+    });
+    await expect(dialog.getByRole("alert")).toContainText(
+      "This result changed",
+    );
     await expect(dialog.getByRole("alert")).toContainText(
       "This result changed",
     );
@@ -420,6 +572,36 @@ test("expired palette selection stays open with a refresh path and performs no w
       dialog.getByRole("button", { name: "Refresh results" }),
     ).toBeVisible();
     expect(writes).toEqual([]);
+    expect(evidence, "Palette DOM evidence observer was not installed.").not.toBeNull();
+    const timeline = evidence
+      ? [evidence.initial, ...evidence.events]
+      : [];
+    const warningInsertedAndRemoved = Boolean(
+      evidence?.warningMutations.some((change) => change.inserted) &&
+        evidence.warningMutations.some((change) => !change.inserted),
+    );
+    const coverageChanged = timeline.some(
+      (entry, index) =>
+        index > 0 &&
+        JSON.stringify(entry.coverage) !==
+          JSON.stringify(timeline[index - 1]?.coverage),
+    );
+    expect(
+      {
+        warningInsertedAndRemoved,
+        coverageChanged,
+        overflow: evidence?.overflow ?? true,
+        dialogStayedOpen: timeline.every((entry) => entry.dialogOpen),
+        timeline,
+        warningMutations: evidence?.warningMutations,
+      },
+      "Palette causality requires an observed warning insertion/removal and rendered coverage transition.",
+    ).toMatchObject({
+      warningInsertedAndRemoved: true,
+      coverageChanged: true,
+      overflow: false,
+      dialogStayedOpen: true,
+    });
   } finally {
     releaseSummary();
     releaseSessions();
@@ -437,6 +619,11 @@ test("expired palette selection stays open with a refresh path and performs no w
         const probe = host.__ci94PaletteClock;
         if (probe && Date.now === probe.shifted) Date.now = probe.original;
         delete host.__ci94PaletteClock;
+        const dom = window as Window & {
+          __ci94PaletteDom?: { observer: MutationObserver };
+        };
+        dom.__ci94PaletteDom?.observer.disconnect();
+        delete dom.__ci94PaletteDom;
       }),
     ]);
     await settleRoutes();
