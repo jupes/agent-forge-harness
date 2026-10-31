@@ -12,7 +12,6 @@ const protectedPosts: string[] = [];
 let releaseIdentityRead: (() => void) | undefined;
 let attendedDiagnosticCapture: (() => Promise<void>) | undefined;
 let attendedDiagnosticCleanup: (() => Promise<void>) | undefined;
-let attendedStreamModuleUrl: string | undefined;
 let attendedRequestObserver: ((request: Request) => void) | undefined;
 const explicitStartTitle =
   "an attended prompt uses ordinary Preview and one identity-bound Start after a lost reply";
@@ -62,7 +61,6 @@ test.beforeEach(({ page }) => {
   releaseIdentityRead = undefined;
   attendedDiagnosticCapture = undefined;
   attendedDiagnosticCleanup = undefined;
-  attendedStreamModuleUrl = undefined;
   attendedRequestObserver = undefined;
   page.on("request", (request) => {
     const pathname = new URL(request.url()).pathname;
@@ -542,10 +540,15 @@ test("A-to-B-to-A navigation invalidates an open Run review", async ({
 test("an attended prompt uses ordinary Preview and one identity-bound Start after a lost reply", async ({
   page,
 }, testInfo) => {
+  const attendedStreamModuleUrls: string[] = [];
   attendedRequestObserver = (request) => {
     try {
-      if (new URL(request.url()).pathname.endsWith("/docs/js/use-stream.ts"))
-        attendedStreamModuleUrl = request.url();
+      const url = new URL(request.url());
+      const origin = new URL(request.frame().url()).origin;
+      if (
+        url.origin === origin &&
+        ["/js/use-stream.ts", "/docs/js/use-stream.ts"].includes(url.pathname) && attendedStreamModuleUrls.length < 33
+      ) attendedStreamModuleUrls.push(url.href);
     } catch {
       // An unrecognized module URL leaves stream-cause evidence unknown.
     }
@@ -565,8 +568,12 @@ test("an attended prompt uses ordinary Preview and one identity-bound Start afte
       if (total() >= limit) overflow = true;
       else target.push(item);
     };
+    const composerDialog = () => {
+      const dialogs = document.querySelectorAll('dialog.af-session-dialog[open][aria-labelledby="af-session-composer-title"]');
+      return dialogs.length === 1 ? dialogs[0] : null;
+    };
     const ui = () => {
-      const dialog = document.querySelector("dialog.af-session-dialog");
+      const dialog = composerDialog();
       const statuses = [...(dialog?.querySelectorAll("[role=status]") ?? [])].map((node) => node.textContent ?? "");
       const button = [...(dialog?.querySelectorAll("button") ?? [])].find(
         (candidate) => candidate.textContent?.trim() === "Start",
@@ -627,9 +634,11 @@ test("an attended prompt uses ordinary Preview and one identity-bound Start afte
     const click = (event: MouseEvent) => {
       if (!(event.target instanceof Element)) return;
       const button = event.target.closest("button");
+      const dialog = composerDialog();
       if (
         button?.textContent?.trim() === "Start" &&
-        button.closest("dialog.af-session-dialog")
+        dialog &&
+        button.closest("dialog.af-session-dialog") === dialog
       )
         add(starts, { at: performance.now(), startUi: ui() });
     };
@@ -696,13 +705,26 @@ test("an attended prompt uses ordinary Preview and one identity-bound Start afte
     JSON.stringify("normal"),
   );
   await openRuns(page);
-  const streamObserved = await page.evaluate(async (url) => {
-    if (!url) return false;
-    try {
-      if (new URL(url).origin !== location.origin) return false;
-    } catch {
-      return false;
+  const streamObserved = await page.evaluate(async (requestUrls) => {
+    const modulePaths = ["/js/use-stream.ts", "/docs/js/use-stream.ts"];
+    const matches = (value: string) => {
+      try {
+        const url = new URL(value);
+        return url.origin === location.origin && modulePaths.includes(url.pathname);
+      } catch {
+        return false;
+      }
+    };
+    if (requestUrls.length > 32) return false;
+    const requested = [...new Set(requestUrls.filter(matches))];
+    let url = requested.length === 1 ? requested[0] : undefined;
+    if (requested.length === 0) {
+      const loaded = [...new Set(performance.getEntriesByType("resource")
+        .filter((entry) => "initiatorType" in entry && entry.initiatorType === "script" && matches(entry.name))
+        .map((entry) => entry.name))];
+      if (loaded.length === 1) url = loaded[0];
     }
+    if (!url) return false;
     type ObservedKind = "operator.action" | "session.started" | "session.ended"; type StreamModule = {
       appStream(): {
         getState(): { status: string };
@@ -734,7 +756,7 @@ test("an attended prompt uses ordinary Preview and one identity-bound Start afte
       state.mark("stream-module-import-failed");
       return false;
     }
-  }, attendedStreamModuleUrl ?? null);
+  }, attendedStreamModuleUrls);
   if (!streamObserved)
     await page.evaluate(() => {
       const state = Reflect.get(window, "__cla5_96_attended_diagnostic") as {
