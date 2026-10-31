@@ -98,6 +98,7 @@ export interface DesktopFrameProps {
   children: ComponentChildren;
   inspector?: ComponentChildren;
   onNewSession?: (() => void) | undefined;
+  onSearch?: (() => void) | undefined;
 }
 
 /** One content outlet; changing destinations never owns or recreates the page stream. */
@@ -110,6 +111,7 @@ export function DesktopFrame({
   children,
   inspector,
   onNewSession,
+  onSearch,
   providers,
   providerStale,
 }: DesktopFrameProps): JSX.Element {
@@ -160,10 +162,12 @@ export function DesktopFrame({
           <Button
             variant="ghost"
             icon="magnifying-glass"
-            disabled
-            title="Search is not available yet"
+            {...(onSearch ? { onClick: onSearch } : {})}
+            disabled={!onSearch}
+            aria-label="Open command palette"
+            title="Search projects, work, and commands"
           >
-            Search unavailable
+            Search
           </Button>
           <Tag tone="outline">Hearth {connectionLabel}</Tag>
           <a

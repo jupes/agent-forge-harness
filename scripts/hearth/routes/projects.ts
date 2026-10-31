@@ -25,6 +25,10 @@ import {
   projectCreateRetireSchema,
 } from "../../projects/create-protocol";
 import {
+  type ProjectGeneralSettings,
+  projectGeneralSettingsRequestSchema,
+} from "../../projects/project-general-protocol";
+import {
   createRepositoryOnboarding,
   type RepositoryOnboardingOptions,
 } from "../../projects/repository-onboarding";
@@ -57,6 +61,12 @@ interface PreferenceChange {
   id: string;
   revision: number;
   patch: ProjectPreferences;
+}
+
+interface GeneralSettingsChange {
+  id: string;
+  expectedRevision: number;
+  general: ProjectGeneralSettings;
 }
 
 export interface ProjectCreateRouteOptions {
@@ -524,6 +534,19 @@ function preferenceChange(
   };
 }
 
+function generalSettingsChange(
+  request: RouteRequest,
+): ValidationResult<GeneralSettingsChange> {
+  const id = request.params["id"];
+  const parsed = projectGeneralSettingsRequestSchema.safeParse(request.body);
+  if (!isProjectId(id) || !parsed.success)
+    return fail("Expected a project id and complete general project settings.");
+  return {
+    ok: true,
+    value: { id, ...parsed.data },
+  };
+}
+
 async function reply(
   work: () => unknown | Promise<unknown>,
   status: number | (() => number) = 200,
@@ -942,6 +965,18 @@ export function projectRoutes(
         publicCatalog(await store.preferences(id, revision, patch)),
       ),
   };
+  const generalSettings: ActionRoute<GeneralSettingsChange> = {
+    kind: "action",
+    method: "POST",
+    path: "/projects/:id/settings/general",
+    action: "project.settings.general",
+    validate: generalSettingsChange,
+    subject: ({ id }) => ({ target: id }),
+    effect: async ({ id, expectedRevision, general }) =>
+      reply(async () =>
+        publicCatalog(await store.updateGeneral(id, expectedRevision, general)),
+      ),
+  };
   const createList: ReadRoute<null> = {
     kind: "read",
     method: "GET",
@@ -1143,6 +1178,7 @@ export function projectRoutes(
     createOptionsRead,
     scopePreview,
     preferences,
+    generalSettings,
     createList,
     createOriginal,
     repositorySelectionRead,
