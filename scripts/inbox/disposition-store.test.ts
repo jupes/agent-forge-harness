@@ -133,7 +133,9 @@ test("complete recovery retains receipts across removed projects and workspaces"
   );
   homes.push(oldWorkspaceHome);
   mkdirSync(join(oldWorkspaceHome, ".git"));
-  const oldWorkspace = workspaceKey(resolveCheckout(oldWorkspaceHome).workspace);
+  const oldWorkspace = workspaceKey(
+    resolveCheckout(oldWorkspaceHome).workspace,
+  );
   const catalog = createProjectStore(home).read();
   catalog.projects[0]!.workspaces.push({
     root: oldWorkspace,
@@ -177,11 +179,7 @@ test("complete recovery retains receipts across removed projects and workspaces"
   expect(store.recovery()).toEqual({
     version: 1,
     complete: true,
-    receipts: [
-      current.receipt,
-      oldScope.receipt,
-      otherProject.receipt,
-    ],
+    receipts: [current.receipt, oldScope.receipt, otherProject.receipt],
   });
 });
 

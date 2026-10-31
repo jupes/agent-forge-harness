@@ -79,8 +79,10 @@ test("route validators reject query drift, malformed IDs, and extra original fie
   ).toBe(false);
   expect(recovery?.validate(request()).ok).toBe(true);
   expect(
-    recovery?.validate({ ...request(), query: new URLSearchParams("unknown=1") })
-      .ok,
+    recovery?.validate({
+      ...request(),
+      query: new URLSearchParams("unknown=1"),
+    }).ok,
   ).toBe(false);
   expect(
     exact?.validate(request(undefined, { id: project, requestId })).ok,

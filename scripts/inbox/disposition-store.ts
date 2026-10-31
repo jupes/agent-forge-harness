@@ -3,13 +3,13 @@ import { join } from "node:path";
 import {
   type InboxDispositionEntry,
   type InboxDispositionOriginal,
-  type InboxDispositionRecovery,
   type InboxDispositionReceipt,
+  type InboxDispositionRecovery,
   type InboxDispositionStore,
   type InboxDispositionStoredOriginal,
   inboxDispositionEntrySchema,
-  inboxDispositionRecoverySchema,
   inboxDispositionReceiptSchema,
+  inboxDispositionRecoverySchema,
   inboxDispositionStoreSchema,
 } from "../../types/inbox";
 import type { ProjectCatalog } from "../../types/projects";
