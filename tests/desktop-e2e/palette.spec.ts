@@ -126,9 +126,11 @@ test("palette opens by shortcut, navigates a scoped result, and restores it as a
   await expect(search).toHaveCSS("outline-width", "2px");
   await search.fill("alpha-epic");
   const bead = dialog.getByRole("option", { name: /^Alpha epic\b/ });
+  const review = dialog.getByRole("option", { name: /^Review Alpha epic\b/ });
   await expect(bead).toHaveCount(1);
   await expect(bead.getByRole("button")).toHaveCount(0);
   await page.keyboard.press("ArrowDown");
+  await expect(review).toHaveAttribute("aria-selected", "true");
   await page.keyboard.press("Enter");
   await expect(page).toHaveURL(
     new RegExp(
@@ -140,7 +142,7 @@ test("palette opens by shortcut, navigates a scoped result, and restores it as a
   await page.keyboard.press("Control+k");
   const reopened = page.getByRole("dialog", { name: "Command palette" });
   await expect(
-    reopened.getByRole("option", { name: /^Alpha epic\b/ }),
+    reopened.getByRole("option", { name: /^Review Alpha epic\b/ }),
   ).toHaveCount(1);
   await reopened.getByRole("combobox").press("Escape");
   await expect(reopened).not.toBeVisible();
