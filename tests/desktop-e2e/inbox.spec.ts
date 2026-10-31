@@ -186,7 +186,11 @@ test("Inbox offers the current permission inline beside retained unknown writes"
     .getByRole("link", { name: "Inbox", exact: true })
     .click();
 
-  await expect(page.getByRole("heading", { name: "Inbox", exact: true })).toBeVisible();
+  await expect(
+    page
+      .getByRole("region", { name: "Bead write outcomes", exact: true })
+      .getByRole("heading", { name: "Inbox", exact: true }),
+  ).toBeVisible();
   await expect(page.getByText("Outcome unknown", { exact: true })).toBeVisible();
   await expect(
     page.getByRole("link", { name: "Check alpha-epic", exact: true }),
