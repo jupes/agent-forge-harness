@@ -4,7 +4,119 @@ import { z } from "zod";
 import type { ProjectShiftObservation } from "../../types/project-shifts";
 import { buildChildEnv } from "../executors/env";
 import { type InteractiveSupervised, supervise } from "../executors/supervisor";
+import { guardSuspendedWindowsProcess } from "../executors/tree-guard";
+import type {
+  WindowsJobSettlementFailurePhase,
+  WindowsJobSettlementGenerationFailureWitness,
+  WindowsJobSettlementUnaccountedFailureWitness,
+} from "../executors/windows-job-settlement";
 import { FIXTURE_PROJECT_ID } from "../projects/testing";
+
+export type PackagedStopLabel = "before-restart" | "after-recovery" | "finally-cleanup";
+type StopWitness = {
+  phase: WindowsJobSettlementFailurePhase;
+  generationFailure: WindowsJobSettlementGenerationFailureWitness | null;
+  accountingFailure: WindowsJobSettlementUnaccountedFailureWitness | null;
+};
+type StopRecord = {
+  kind: "packaged-attended-stop-settlement";
+  invocation: number;
+  label: PackagedStopLabel;
+  outcome: "confirmed" | "refused" | "no-owned-host";
+  phase: WindowsJobSettlementFailurePhase | "unavailable" | null;
+  failure: "windows-cleanup-unconfirmed" | "other" | null;
+  generationFailure: StopWitness["generationFailure"];
+  accountingFailure: StopWitness["accountingFailure"];
+};
+type StopInvocation = {
+  invocation: number;
+  label: PackagedStopLabel;
+  witness: StopWitness | null;
+};
+
+export function capturePackagedStopWitness(
+  active: boolean, phase: WindowsJobSettlementFailurePhase,
+  generation?: WindowsJobSettlementGenerationFailureWitness,
+  accounting?: WindowsJobSettlementUnaccountedFailureWitness,
+): StopWitness | null {
+  if (!active || phase === "guard-root") return null;
+  return {
+    phase,
+    generationFailure: generation
+      ? {
+          reason: generation.reason,
+          initialTotal: generation.initialTotal,
+          capturedTotal: generation.capturedTotal,
+          retainedCount: generation.retainedCount,
+          capturedMemberCount: generation.capturedMemberCount,
+        }
+      : null,
+    accountingFailure: accounting
+      ? {
+          activeCount: accounting.activeCount,
+          retainedCount: accounting.retainedCount,
+          capturedMemberCount: accounting.capturedMemberCount,
+          initialTotal: accounting.initialTotal,
+          capturedTotal: accounting.capturedTotal,
+        }
+      : null,
+  };
+}
+
+export function recordPackagedStopWitness(
+  current: StopInvocation | null,
+  phase: WindowsJobSettlementFailurePhase,
+  generation?: WindowsJobSettlementGenerationFailureWitness,
+  accounting?: WindowsJobSettlementUnaccountedFailureWitness,
+): void {
+  if (!current || current.witness !== null) return;
+  current.witness = capturePackagedStopWitness(true, phase, generation, accounting);
+}
+
+export function packagedStopRecord(input: {
+  invocation: number;
+  label: PackagedStopLabel;
+  outcome: StopRecord["outcome"];
+  witness?: StopWitness | null;
+  failure?: StopRecord["failure"];
+}): StopRecord {
+  const refused = input.outcome === "refused";
+  return {
+    kind: "packaged-attended-stop-settlement",
+    invocation: input.invocation,
+    label: input.label,
+    outcome: input.outcome,
+    phase: refused ? (input.witness?.phase ?? "unavailable") : null,
+    failure: refused ? (input.failure ?? "other") : null,
+    generationFailure: refused ? (input.witness?.generationFailure ?? null) : null,
+    accountingFailure: refused ? (input.witness?.accountingFailure ?? null) : null,
+  };
+}
+
+export function reportPackagedStopFailure(error: unknown, record: StopRecord,
+  write: (line: string) => void = (line) => console.error(line)): never {
+  try {
+    write(JSON.stringify(record));
+  } catch {
+    // Smoke diagnostics cannot replace the original owner/settlement failure.
+  }
+  throw error;
+}
+
+function packagedStopFailure(error: unknown): NonNullable<StopRecord["failure"]> {
+  return error instanceof Error &&
+    error.message === "Windows owned process cleanup could not be confirmed."
+    ? "windows-cleanup-unconfirmed"
+    : "other";
+}
+
+function reportPackagedStop(record: StopRecord): void {
+  try {
+    console.error(JSON.stringify(record));
+  } catch {
+    // Successful and no-owner records are best-effort smoke evidence only.
+  }
+}
 
 interface NativePageTools {
   availablePort(): Promise<number>;
@@ -66,13 +178,47 @@ export async function verifyAttendedProjectShifts(
     socket: WebSocket | null = null,
     csp = 0;
   let code: number | null = null;
-  const stop = async () => {
-    socket?.close();
-    socket = null;
-    if (owned) {
+  let stopInvocation = 0;
+  let activeStop: StopInvocation | null = null;
+  const stop = async (label: PackagedStopLabel) => {
+    const current: StopInvocation = { invocation: ++stopInvocation, label, witness: null };
+    activeStop = current;
+    try {
+      socket?.close();
+      socket = null;
+      if (!owned) {
+        reportPackagedStop(
+          packagedStopRecord({
+            invocation: current.invocation,
+            label,
+            outcome: "no-owned-host",
+          }),
+        );
+        return;
+      }
       await owned.stop("The isolated packaged shift probe is closing.");
       await owned.done;
       owned = null;
+      reportPackagedStop(
+        packagedStopRecord({
+          invocation: current.invocation,
+          label,
+          outcome: "confirmed",
+        }),
+      );
+    } catch (error) {
+      reportPackagedStopFailure(
+        error,
+        packagedStopRecord({
+          invocation: current.invocation,
+          label,
+          outcome: "refused",
+          witness: current.witness,
+          failure: packagedStopFailure(error),
+        }),
+      );
+    } finally {
+      if (activeStop === current) activeStop = null;
     }
   };
   const start = async () => {
@@ -109,6 +255,30 @@ export async function verifyAttendedProjectShifts(
       ],
       onLine: () => {},
       maxLineBytes: 4096,
+      ...(process.platform === "win32" && process.arch === "x64"
+        ? {
+            interactiveGuard: (pid: number) =>
+              guardSuspendedWindowsProcess(pid, {
+                onWindowsSettlementFailure(
+                  phase,
+                  generationFailure,
+                  accountingFailure,
+                ) {
+                  const current = activeStop;
+                  try {
+                    recordPackagedStopWitness(
+                    current,
+                    phase,
+                    generationFailure,
+                    accountingFailure,
+                  );
+                  } catch {
+                    // Stop diagnostics cannot change the native settlement result.
+                  }
+                },
+              }),
+          }
+        : {}),
     });
     owned = child;
     code = null;
@@ -318,7 +488,7 @@ export async function verifyAttendedProjectShifts(
     if (!claude.childPid)
       throw Error("The native Stop/recovery proof has no owned helper.");
     // Abrupt owner termination is through the actual held job, never a persisted numeric PID.
-    await stop();
+    await stop("before-restart");
     await gone(claude.pid);
     await gone(claude.childPid);
     current = await start();
@@ -365,7 +535,7 @@ export async function verifyAttendedProjectShifts(
       throw Error(
         "Packaged recovery repeated a provider turn or violated the renderer content policy.",
       );
-    await stop();
+    await stop("after-recovery");
     writeFileSync(
       join(FIXTURE_ROOT, "native-attended-proof.json"),
       JSON.stringify({
@@ -379,7 +549,7 @@ export async function verifyAttendedProjectShifts(
       }),
     );
   } finally {
-    await stop();
+    await stop("finally-cleanup");
     fixture.cleanupFixture();
   }
 }
