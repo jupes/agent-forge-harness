@@ -47,8 +47,8 @@ test("conversation and future Inbox share one per-provider owner with exact root
       turnRequestId,
       actionable: true,
     },
-    authorityAddress = { current: null as ChatDecisionActivation | null },
-    currentTurn = true;
+    authorityAddress = { current: null as ChatDecisionActivation | null };
+  let currentTurn = true;
   const owners = createChatDecisionOwners(
     {
       canWrite: () => true,

@@ -219,11 +219,12 @@ test("only an exact protected recorded-intent receipt clears a restored original
   };
   let answer: unknown = { pending: [offer], receipt },
     posts = 0,
-    scope: { projectId: string; workspace: string; sessionId: string } | null = {
-      projectId,
-      workspace: "",
-      sessionId,
-    },
+    scope: { projectId: string; workspace: string; sessionId: string } | null =
+      {
+        projectId,
+        workspace: "",
+        sessionId,
+      },
     currentAddress: GeminiChatDecisionAddress | null = {
       ...address,
       turnRequestId,
