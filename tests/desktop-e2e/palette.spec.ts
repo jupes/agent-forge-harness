@@ -602,6 +602,7 @@ test("expired palette selection stays open with a refresh path and performs no w
     releaseSummary();
     releaseBetaBeads();
     releaseBeads();
+    await settleRoutes();
     await unrouteOwnedHandlers();
     await settleRoutes();
     await expect(dialog.getByRole("alert")).toContainText(
@@ -615,20 +616,29 @@ test("expired palette selection stays open with a refresh path and performs no w
     ).toBeVisible();
     expect(writes).toEqual([]);
   } finally {
-    let evidenceFailure = false;
+    let evidenceFailure: string | undefined;
+    const cleanupFailures: string[] = [];
     if (!evidenceCaptured) {
       try {
         await captureEvidence();
-      } catch {
-        evidenceFailure = true;
+      } catch (error) {
+        evidenceFailure = String(error);
       }
     }
     releaseSummary();
     releaseBetaBeads();
     releaseBeads();
-    const cleanupResults = await Promise.allSettled([
-      unrouteOwnedHandlers(),
-      page.evaluate(() => {
+    try {
+      await settleRoutes();
+    } catch (error) {
+      cleanupFailures.push(String(error));
+    }
+    try {
+      await unrouteOwnedHandlers();
+    } catch (error) {
+      cleanupFailures.push(String(error));
+    }
+    const clockCleanup = await Promise.allSettled([page.evaluate(() => {
         type ClockProbe = {
           original: typeof Date.now;
           shifted: typeof Date.now;
@@ -645,13 +655,25 @@ test("expired palette selection stays open with a refresh path and performs no w
         };
         dom.__ci94PaletteDom?.observer?.disconnect();
         delete dom.__ci94PaletteDom;
-      }),
-    ]);
-    await settleRoutes();
-    if (cleanupResults.some((result) => result.status === "rejected"))
-      throw Error("A CI94 palette route or clock cleanup failed.");
+      })]);
+    cleanupFailures.push(
+      ...clockCleanup.flatMap((result) =>
+        result.status === "rejected"
+          ? [`Clock or observer restoration failed: ${String(result.reason)}`]
+          : [],
+      ),
+    );
+    try {
+      await settleRoutes();
+    } catch (error) {
+      cleanupFailures.push(String(error));
+    }
     if (evidenceFailure)
-      throw Error("Palette DOM evidence could not be captured before cleanup.");
+      cleanupFailures.push(
+        `Palette DOM evidence could not be captured before cleanup: ${evidenceFailure}`,
+      );
+    if (cleanupFailures.length)
+      throw Error(`CI94 palette cleanup failures: ${cleanupFailures.join("; ")}`);
   }
 });
 
