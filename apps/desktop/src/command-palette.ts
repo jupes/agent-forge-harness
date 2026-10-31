@@ -8,7 +8,8 @@ export type PaletteSourceKind =
   | "run"
   | "review"
   | "smith"
-  | "setting";
+  | "setting"
+  | "action";
 export type PaletteReviewTarget =
   | { kind: "bead"; projectId: string; beadId: string }
   | {
@@ -185,16 +186,19 @@ export function createPaletteIndex(input: {
   errors?: readonly string[];
   statuses?: readonly string[];
 }): PaletteIndex {
-  const rows: PaletteRow[] = input.sourceRows.map((source) => ({
-    kind: source.kind,
-    id: source.id,
-    label: safeText(source.label),
-    detail: safeText(source.detail),
-    keywords: safeText(source.keywords),
-    projectId: source.projectId ?? null,
-    intent: safeIntent(source.intent),
-    unavailable: safeText(source.unavailable) || undefined,
-  }));
+  const rows: PaletteRow[] = input.sourceRows.map((source) => {
+    const unavailable = safeText(source.unavailable);
+    return {
+      kind: source.kind,
+      id: source.id,
+      label: safeText(source.label),
+      detail: safeText(source.detail),
+      keywords: safeText(source.keywords),
+      projectId: source.projectId ?? null,
+      intent: safeIntent(source.intent),
+      ...(unavailable ? { unavailable } : {}),
+    };
+  });
   for (const command of input.commands) {
     if (!/^\/[a-z0-9][a-z0-9-]*$/i.test(command.name)) continue;
     rows.push({
@@ -209,7 +213,9 @@ export function createPaletteIndex(input: {
         name: command.name,
         argumentHint: safeText(command.argumentHint),
       },
-      unavailable: input.slashUnavailable,
+      ...(input.slashUnavailable
+        ? { unavailable: input.slashUnavailable }
+        : {}),
     });
   }
   const unique = new Map(rows.map((row) => [key(row), row]));
@@ -219,7 +225,7 @@ export function createPaletteIndex(input: {
     rows: [...unique.values()],
     errors: [...(input.errors ?? [])].map((error) => safeText(error)),
     statuses: [...(input.statuses ?? [])].map((value) => safeText(value)),
-    scopeKey: input.scopeKey,
+    ...(input.scopeKey ? { scopeKey: input.scopeKey } : {}),
   };
 }
 export function appendPaletteRows(
@@ -228,6 +234,7 @@ export function appendPaletteRows(
 ): PaletteIndex {
   const rows = new Map(index.rows.map((row) => [key(row), row]));
   for (const source of additions) {
+    const unavailable = safeText(source.unavailable);
     const row: PaletteRow = {
       kind: source.kind,
       id: safeText(source.id),
@@ -236,7 +243,7 @@ export function appendPaletteRows(
       keywords: safeText(source.keywords),
       projectId: source.projectId ?? null,
       intent: safeIntent(source.intent),
-      unavailable: safeText(source.unavailable) || undefined,
+      ...(unavailable ? { unavailable } : {}),
     };
     rows.set(key(row), row);
   }

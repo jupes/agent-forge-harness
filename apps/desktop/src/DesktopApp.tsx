@@ -119,6 +119,9 @@ import { useProviders } from "./use-providers";
 import { useSessionLibrary } from "./use-session-library";
 import { useSessionObservations } from "./use-session-observations";
 
+const paletteUnavailable = (message: string | undefined) =>
+  message ? { unavailable: message } : {};
+
 function keeperPaletteCoverage(
   projectId: string,
   state: ProposalState | null,
@@ -170,9 +173,9 @@ function withKeeperPaletteCoverage(
           label: item.proposal.draft.title,
           detail: "Keeper proposal review · current project",
           keywords: `${item.proposal.draft.detail} ${item.proposal.id}`,
-          unavailable: !writesAllowed
-            ? "Writes are currently unavailable."
-            : undefined,
+          ...paletteUnavailable(
+            !writesAllowed ? "Writes are currently unavailable." : undefined,
+          ),
           intent: {
             kind: "review",
             target: {
@@ -1267,7 +1270,9 @@ export function DesktopApp(): JSX.Element {
   const paletteIndexer = useRef<ReturnType<
     typeof createCommandPaletteIndex
   > | null>(null);
-  paletteIndexer.current ??= createCommandPaletteIndex();
+  if (paletteIndexer.current === null)
+    paletteIndexer.current = createCommandPaletteIndex();
+  const paletteIndexService = paletteIndexer.current;
   const paletteEffectKey = `${projects.data?.catalog.revision ?? -1}:${route.projectId ?? ""}:${summary?.workspace ?? ""}:${forgeRouteGeneration.current}:${writesAllowed}`;
   useEffect(() => {
     if (!paletteOpen) return;
@@ -1299,7 +1304,7 @@ export function DesktopApp(): JSX.Element {
           nativeAvailable: false,
         };
         const scopeKey = `${scope.catalogRevision}:${scope.projectId ?? ""}:${scope.workspace ?? ""}:${scope.routeGeneration}:${scope.writesAllowed}`;
-        const snapshot = await paletteIndexer.current!.refresh({
+        const snapshot = await paletteIndexService.refresh({
           generation,
           scope,
           home,
@@ -1392,10 +1397,11 @@ export function DesktopApp(): JSX.Element {
               detail: "Project navigation",
               projectId: item.id,
               keywords: destination.id,
-              unavailable:
+              ...paletteUnavailable(
                 destination.id === "project-settings"
                   ? "Project settings are not available in this desktop owner yet."
                   : undefined,
+              ),
               intent: {
                 kind: "navigate",
                 route: {
@@ -1412,10 +1418,11 @@ export function DesktopApp(): JSX.Element {
             id: entry.id,
             label: entry.label,
             detail: entry.id === "app-settings" ? "Settings" : "Navigate",
-            unavailable:
+            ...paletteUnavailable(
               entry.id === "app-settings"
                 ? "Settings and theme controls are not available yet."
                 : undefined,
+            ),
             intent: {
               kind: "navigate",
               route: {
@@ -1452,7 +1459,7 @@ export function DesktopApp(): JSX.Element {
               label: "New session",
               detail: "Open the reviewed session composer",
               projectId: projectHome.id,
-              unavailable,
+              ...paletteUnavailable(unavailable),
               intent: { kind: "new-session", projectId: projectHome.id },
             },
             {
@@ -1461,7 +1468,7 @@ export function DesktopApp(): JSX.Element {
               label: "Ask Keeper",
               detail: "Open the current project Keeper",
               projectId: projectHome.id,
-              unavailable,
+              ...paletteUnavailable(unavailable),
               intent: { kind: "ask-keeper", projectId: projectHome.id },
             },
             {
@@ -1470,7 +1477,7 @@ export function DesktopApp(): JSX.Element {
               label: "New bead",
               detail: "Open the existing bead form",
               projectId: projectHome.id,
-              unavailable,
+              ...paletteUnavailable(unavailable),
               intent: { kind: "new-bead", projectId: projectHome.id },
             },
             {
@@ -1479,7 +1486,7 @@ export function DesktopApp(): JSX.Element {
               label: "Start shift",
               detail: "Open the attended Workbench start form",
               projectId: projectHome.id,
-              unavailable:
+              ...paletteUnavailable(
                 !writesAllowed ||
                 !activeSummary?.workspace ||
                 providers.data?.workspace !== activeSummary.workspace ||
@@ -1488,6 +1495,7 @@ export function DesktopApp(): JSX.Element {
                 )
                   ? "A current writable project workspace is required."
                   : undefined,
+              ),
               intent: { kind: "start-shift", projectId: projectHome.id },
             },
           );
@@ -1511,9 +1519,9 @@ export function DesktopApp(): JSX.Element {
             label: `Send “${councilBead.label}” to Council`,
             detail: "Prepare a source in the existing Council draft",
             projectId: projectHome.id,
-            unavailable: !writesAllowed
-              ? "Writes are currently unavailable."
-              : undefined,
+            ...paletteUnavailable(
+              !writesAllowed ? "Writes are currently unavailable." : undefined,
+            ),
             intent: {
               kind: "send-to-council",
               projectId: projectHome.id,
@@ -1543,10 +1551,12 @@ export function DesktopApp(): JSX.Element {
           errors,
           statuses,
           scopeKey,
-          slashUnavailable:
-            !writesAllowed || !projectHome || projectHome.archived
-              ? "A current writable project is required to open this command draft."
-              : undefined,
+          ...(!writesAllowed || !projectHome || projectHome.archived
+            ? {
+                slashUnavailable:
+                  "A current writable project is required to open this command draft.",
+              }
+            : {}),
         });
         if (projectHome)
           finalIndex = withKeeperPaletteCoverage(
@@ -1583,7 +1593,7 @@ export function DesktopApp(): JSX.Element {
       }
     };
     void run();
-    const stop = paletteIndexer.current.watchInvalidation(() =>
+    const stop = paletteIndexService.watchInvalidation(() =>
       setPaletteRefreshToken((value) => value + 1),
     );
     return () => {
@@ -1613,11 +1623,12 @@ export function DesktopApp(): JSX.Element {
       return;
     }
     if (!configuration?.data) return;
+    const configurationData = configuration.data;
     setPaletteIndex((current) =>
       current && current.generation === paletteIndex.generation
         ? appendPaletteRows(
             current,
-            configuration.data.smiths.map((item) => ({
+            configurationData.smiths.map((item) => ({
               kind: "smith" as const,
               id: item.name,
               label: item.name,
@@ -1760,10 +1771,11 @@ export function DesktopApp(): JSX.Element {
       writesAllowed &&
       project?.id === intent.target.projectId
     ) {
+      const target = intent.target;
       const proposalState = proposals.get(project.id);
       const page = proposalState.page;
       const source = page?.proposals.find(
-        (entry) => entry.proposal.sourceRequestId === intent.target.requestId,
+        (entry) => entry.proposal.sourceRequestId === target.requestId,
       );
       const fresh =
         !!page &&
@@ -1775,7 +1787,7 @@ export function DesktopApp(): JSX.Element {
         fresh &&
         page?.complete &&
         !page.problems.length &&
-        page.revision === intent.target.revision &&
+        page.revision === target.revision &&
         source
       ) {
         const shift = source.proposal.draft.action.kind === "start-shift";
@@ -1784,28 +1796,29 @@ export function DesktopApp(): JSX.Element {
             source.proposal,
             page.revision,
             false,
-            intent.target.requestId,
+            target.requestId,
           );
         else
           openSessionReview(
             source.proposal,
             page.revision,
-            intent.target.requestId,
+            target.requestId,
           );
         handled = true;
       }
     } else if (intent.kind === "review" && intent.target.kind === "bead") {
+      const target = intent.target;
       const sourceExists = paletteIndex.rows.some(
         (entry) =>
           entry.kind === "review" &&
-          entry.projectId === intent.target.projectId &&
-          entry.id === `bead:${intent.target.beadId}`,
+          entry.projectId === target.projectId &&
+          entry.id === `bead:${target.beadId}`,
       );
       if (sourceExists) {
         window.location.hash = desktopHref({
           destination: "beads",
-          projectId: intent.target.projectId,
-          selection: { kind: "bead", id: intent.target.beadId },
+          projectId: target.projectId,
+          selection: { kind: "bead", id: target.beadId },
         }).slice(1);
         handled = true;
       }
@@ -1816,6 +1829,7 @@ export function DesktopApp(): JSX.Element {
       project?.id === intent.target.projectId &&
       route.destination === "runs"
     ) {
+      const target = intent.target;
       const currentRuns = runs.view;
       const currentBeads = beads.data;
       const result = deriveProjectRunCheckpoints({
@@ -1833,21 +1847,21 @@ export function DesktopApp(): JSX.Element {
         currentRuns?.page &&
         currentRuns.page.problems.length === 0 &&
         currentRuns.page.runs.find(
-          (entry) => entry.slug === intent.target.runSlug,
+          (entry) => entry.slug === target.runSlug,
         )?.complete &&
-        currentRuns.selectedSlug === intent.target.runSlug &&
+        currentRuns.selectedSlug === target.runSlug &&
         detail &&
         detail.problems.length === 0 &&
-        detail.run.updatedAt === intent.target.runUpdatedAt &&
+        detail.run.updatedAt === target.runUpdatedAt &&
         result.kind === "ready" &&
         result.workspace === summary?.workspace &&
-        result.summary.inProgressIds.includes(intent.target.checkpointId)
+        result.summary.inProgressIds.includes(target.checkpointId)
       ) {
-        setPaletteCheckpointFocus(intent.target.checkpointId);
+        setPaletteCheckpointFocus(target.checkpointId);
         window.location.hash = desktopHref({
           destination: "runs",
           projectId: project.id,
-          selection: { kind: "run", id: intent.target.runSlug },
+          selection: { kind: "run", id: target.runSlug },
         }).slice(1);
         handled = true;
       }

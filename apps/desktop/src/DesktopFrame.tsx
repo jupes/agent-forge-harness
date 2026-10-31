@@ -162,7 +162,7 @@ export function DesktopFrame({
           <Button
             variant="ghost"
             icon="magnifying-glass"
-            onClick={onSearch}
+            {...(onSearch ? { onClick: onSearch } : {})}
             disabled={!onSearch}
             aria-label="Open command palette"
             title="Search projects, work, and commands"

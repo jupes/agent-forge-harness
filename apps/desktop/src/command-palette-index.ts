@@ -172,7 +172,9 @@ export function createCommandPaletteIndex(
           kind: "project",
           id: project.id,
           label: project.name,
-          detail: project.description,
+          ...(project.description !== undefined
+            ? { detail: project.description }
+            : {}),
           keywords: project.slug,
           projectId: project.id,
           intent: {
@@ -314,7 +316,8 @@ export function createCommandPaletteIndex(
                   ? ""
                   : "Session observations or ownership are incomplete.",
               );
-              for (const row of sessionObservationRows(data))
+              for (const row of sessionObservationRows(data)) {
+                const lastEventAt = row.observation?.lastEventAt;
                 rows.push({
                   kind: "session",
                   id: row.id,
@@ -333,8 +336,9 @@ export function createCommandPaletteIndex(
                       selection: { kind: "session", id: row.id },
                     },
                   },
-                  updatedAt: row.observation?.lastEventAt,
+                  ...(lastEventAt !== undefined ? { updatedAt: lastEventAt } : {}),
                 });
+              }
             } else
               sources[`sessions:${project.id}`] = status(
                 "unavailable",
@@ -394,7 +398,9 @@ export function createCommandPaletteIndex(
                       selection: { kind: "run", id: run.slug },
                     },
                   },
-                  updatedAt: run.updatedAt,
+                  ...(run.updatedAt !== null
+                    ? { updatedAt: run.updatedAt }
+                    : {}),
                 });
               const beads =
                 beadPage?.success &&
@@ -437,6 +443,8 @@ export function createCommandPaletteIndex(
                   result.kind === "ready" &&
                   listed.complete &&
                   !detail.problems.length &&
+                  listed.updatedAt !== null &&
+                  detail.run.updatedAt !== null &&
                   detail.run.updatedAt === listed.updatedAt
                 )
                   for (const checkpointId of result.summary.inProgressIds)
@@ -447,9 +455,9 @@ export function createCommandPaletteIndex(
                       label: `Review checkpoint ${checkpointId}`,
                       detail: listed.feature ?? listed.slug,
                       keywords: `${checkpointId} ${listed.slug} checkpoint`,
-                      unavailable: !scope.writesAllowed
-                        ? "Writes are currently unavailable."
-                        : undefined,
+                      ...(!scope.writesAllowed
+                        ? { unavailable: "Writes are currently unavailable." }
+                        : {}),
                       intent: {
                         kind: "review",
                         target: {
