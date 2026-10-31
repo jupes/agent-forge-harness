@@ -11,6 +11,7 @@ import type { KeeperProposal } from "../../../types/keeper-proposal";
 import { BeadWriteNotices, NewBeadForm } from "./BeadWrites";
 import { CommandPalette } from "./CommandPalette";
 import { ConnectionBanner, useDesktopRecovery } from "./ConnectionBanner";
+import { useChatDecisionOwners } from "./chat-decision-owners";
 import {
   appendPaletteRows,
   createPaletteIndex,
@@ -27,7 +28,6 @@ import {
   createCommandPaletteIndex,
   type PaletteIndexSnapshot,
 } from "./command-palette-index";
-import { useChatDecisionOwners } from "./chat-decision-owners";
 import type { FrameSession } from "./DesktopFrame";
 import { DesktopFrame } from "./DesktopFrame";
 import {
