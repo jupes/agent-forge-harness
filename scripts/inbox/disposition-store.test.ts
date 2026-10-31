@@ -128,7 +128,11 @@ test("reservation and apply replay retain one exact snooze receipt", async () =>
 
 test("complete recovery retains receipts across removed projects and workspaces", async () => {
   const { home, store, original } = fixture();
-  const oldWorkspace = `${original.workspace}/old-workspace`;
+  const oldWorkspaceHome = mkdtempSync(
+    join(tmpdir(), "forge-inbox-disposition-old-workspace-"),
+  );
+  homes.push(oldWorkspaceHome);
+  const oldWorkspace = workspaceKey(resolveCheckout(oldWorkspaceHome).workspace);
   const catalog = createProjectStore(home).read();
   catalog.projects[0]!.workspaces.push({
     root: oldWorkspace,
