@@ -422,8 +422,7 @@ export function createCommandPaletteIndex(
                       ),
                     )
                   : rawDetail;
-              const detailResult =
-                projectRunDetailSchema.safeParse(detailCore);
+              const detailResult = projectRunDetailSchema.safeParse(detailCore);
               const detail = detailResult.success ? detailResult.data : null;
               if (
                 input.selectedRun?.projectId === project.id &&
