@@ -5378,6 +5378,11 @@ describe("every action row (iterating the table)", () => {
           // Keeper proposal validation reads the durable source and revision
           // before reaching the audit boundary, so seed that inert fixture.
           await prepare?.(h);
+        } else if (row.action.startsWith("inbox.disposition.")) {
+          // These shared fixture bodies are workspace-bound. Prepare each
+          // original for this hearth before proving the audit append refuses
+          // the action; apply/discard preparation seeds only their reservation.
+          await prepare?.(h);
         }
         const response = await post(h, valid.path, valid.body);
         const body = await envelope(response);
@@ -5697,6 +5702,9 @@ describe("a read row or the stream while another connection holds the write lock
     await seedForkReadChild(h);
     await seedForkReadSourceReview(h);
     await seedForkReadOriginal(h);
+    // Inbox exact-original reads use their private store, not the event ledger.
+    // Seed a real receipt so this read remains successful while the ledger is locked.
+    await seedInboxRead(h);
     const rows = h.hearth.routes.filter(
       (route) => route.kind === "read" || route.kind === "stream",
     );
