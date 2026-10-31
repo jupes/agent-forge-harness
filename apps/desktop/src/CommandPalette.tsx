@@ -59,9 +59,10 @@ export function CommandPalette({
     setQuery("");
     setSelectionIssue("");
   }, [open]);
-  useEffect(() => {
-    if (index) setSelectionIssue("");
-  }, [index]);
+  const refresh = () => {
+    setSelectionIssue("");
+    onRefresh();
+  };
   const choose = (row: PaletteRow | undefined) => {
     const intent = row && paletteIntent(row);
     if (row && intent && !row.unavailable && !onSelect(intent, row))
@@ -108,6 +109,7 @@ export function CommandPalette({
             onInput={(event) => {
               const value = (event.currentTarget as HTMLInputElement).value;
               setQuery(value);
+              setSelectionIssue("");
               setSelection({ scope: JSON.stringify([open, value]), key: null });
             }}
             placeholder="Search projects, work, commands…"
@@ -126,7 +128,7 @@ export function CommandPalette({
         {index?.errors.length ? (
           <p class="af-command-palette-status" role="status">
             Some sources are unavailable: {index.errors.join("; ")}
-            <button type="button" onClick={onRefresh}>
+            <button type="button" onClick={refresh}>
               Refresh results
             </button>
           </p>
@@ -139,7 +141,7 @@ export function CommandPalette({
         {selectionIssue && (
           <p class="af-command-palette-status" role="alert">
             {selectionIssue}{" "}
-            <button type="button" onClick={onRefresh}>
+            <button type="button" onClick={refresh}>
               Refresh results
             </button>
           </p>

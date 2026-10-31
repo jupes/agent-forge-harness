@@ -1,5 +1,5 @@
 import type { JSX } from "preact";
-import { useEffect, useRef, useState } from "preact/hooks";
+import { useEffect, useLayoutEffect, useRef, useState } from "preact/hooks";
 import { Button } from "../../../docs/js/ds/Button";
 import { Icon } from "../../../docs/js/ds/Icon";
 import { parseKeeperProposalMessage } from "../../../scripts/keeper/proposal-protocol";
@@ -232,27 +232,100 @@ export function KeeperConversation({
   const [editing, setEditing] = useState(false);
   const [pickerDismissed, setPickerDismissed] = useState(false);
   const pickerVisible = active && editing && !pickerDismissed;
+  const projectGeneration = useRef({ projectId: project.id, value: 0 });
+  if (projectGeneration.current.projectId !== project.id) {
+    projectGeneration.current = {
+      projectId: project.id,
+      value: projectGeneration.current.value + 1,
+    };
+  }
+  const pendingCaret = useRef<{
+    owner: HTMLTextAreaElement;
+    projectId: string;
+    projectGeneration: number;
+    draft: string;
+    position: number;
+    focusFromPicker: boolean;
+  } | null>(null);
   const choose = (value: string, object?: ConversationObject) => {
     const picker = keeperPicker(state.draft, caret);
     if (!picker) return;
+    const owner = input.current;
+    if (!owner?.isConnected) return;
     if (object) void client.attach(project.id, object);
     // Kind buttons change the active mention token; actual choices finish it.
     const switchingKind = value.endsWith(":");
     const next = insertKeeperSuggestion(state.draft, picker, value);
-    client.draft(
-      project.id,
-      switchingKind
-        ? next.text.slice(0, next.caret - 1) + next.text.slice(next.caret)
-        : next.text,
-    );
-    setCaret(switchingKind ? next.caret - 1 : next.caret);
+    const draft = switchingKind
+      ? next.text.slice(0, next.caret - 1) + next.text.slice(next.caret)
+      : next.text;
+    const position = switchingKind ? next.caret - 1 : next.caret;
+    pendingCaret.current = {
+      owner,
+      projectId: project.id,
+      projectGeneration: projectGeneration.current.value,
+      draft,
+      position,
+      focusFromPicker: Boolean(
+        pickerRegion.current?.contains(document.activeElement),
+      ),
+    };
+    client.draft(project.id, draft);
+    setCaret(position);
     setPickerDismissed(!switchingKind);
-    requestAnimationFrame(() => {
-      input.current?.focus();
-      const position = switchingKind ? next.caret - 1 : next.caret;
-      input.current?.setSelectionRange(position, position);
-    });
   };
+  useLayoutEffect(() => {
+    const pending = pendingCaret.current;
+    if (!pending) return;
+    const owner = input.current;
+    if (
+      !owner ||
+      !active ||
+      pending.owner !== owner ||
+      pending.projectId !== project.id ||
+      pending.projectGeneration !== projectGeneration.current.value ||
+      pending.draft !== state.draft ||
+      !owner?.isConnected ||
+      owner.value !== pending.draft
+    ) {
+      pendingCaret.current = null;
+      return;
+    }
+    const focused = document.activeElement;
+    const pickerOwnedFocus = pickerRegion.current?.contains(focused) ?? false;
+    const removedPickerReturnedFocusToBody =
+      focused === document.body &&
+      pending.focusFromPicker &&
+      !pickerRegion.current?.isConnected;
+    if (
+      focused !== owner &&
+      !pickerOwnedFocus &&
+      !removedPickerReturnedFocusToBody
+    ) {
+      pendingCaret.current = null;
+      return;
+    }
+    pendingCaret.current = null;
+    owner.focus();
+    owner.setSelectionRange(pending.position, pending.position);
+  }, [active, project.id, state.draft]);
+  useEffect(
+    () => () => {
+      pendingCaret.current = null;
+    },
+    [],
+  );
+  useEffect(() => {
+    const invalidatePendingCaret = () => {
+      pendingCaret.current = null;
+    };
+    document.addEventListener("keydown", invalidatePendingCaret, true);
+    document.addEventListener("pointerdown", invalidatePendingCaret, true);
+    return () => {
+      document.removeEventListener("keydown", invalidatePendingCaret, true);
+      document.removeEventListener("pointerdown", invalidatePendingCaret, true);
+    };
+  }, []);
   const follow = useRef(true);
   const [away, setAway] = useState(false);
   const [copyNotice, setCopyNotice] = useState("");
@@ -668,12 +741,16 @@ export function KeeperConversation({
           placeholder={`Ask about ${project.name}…`}
           aria-describedby={`keeper-hint-${compact ? "drawer" : "full"}`}
           onInput={(event) => {
+            pendingCaret.current = null;
             client.draft(project.id, event.currentTarget.value);
             setCaret(event.currentTarget.selectionStart);
             setEditing(true);
             setPickerDismissed(false);
           }}
-          onSelect={(event) => setCaret(event.currentTarget.selectionStart)}
+          onSelect={(event) => {
+            pendingCaret.current = null;
+            setCaret(event.currentTarget.selectionStart);
+          }}
           onFocus={() => setEditing(true)}
           onKeyDown={(event) => {
             if (pickerVisible && keeperPicker(state.draft, caret)) {
