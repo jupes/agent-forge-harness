@@ -39,9 +39,7 @@ export async function runCodingCliFixture(entry: CodingCliFixtureEntry) {
           ? argv[index + 1]
           : randomUUID();
     let childPid: number | null = null;
-    let helperSmoke:
-      | { exitCode: number; marker: string }
-      | undefined;
+    let helperSmoke: { exitCode: number; marker: string } | undefined;
     if (mode === "hang-tree" || mode === "helper-smoke") {
       const helperMode =
         mode === "hang-tree" ? "stop-helper" : "stop-helper-smoke";
@@ -49,22 +47,19 @@ export async function runCodingCliFixture(entry: CodingCliFixtureEntry) {
         entry.kind === "source"
           ? [process.execPath, entry.path, "--fixture-stop-helper"]
           : [process.execPath, "--fixture-stop-helper"];
-      const helper = Bun.spawn(
-        helperCommand,
-        {
-          env: {
-            ...process.env,
-            CODING_FIXTURE_MODE: helperMode,
-            CODING_FIXTURE_RECORD: undefined,
-          },
-          stdin: "ignore",
-          stdout: mode === "helper-smoke" ? "pipe" : "ignore",
-          stderr: "ignore",
-          ...(mode === "helper-smoke"
-            ? { timeout: 5000, maxBuffer: 4 * 1024 }
-            : {}),
+      const helper = Bun.spawn(helperCommand, {
+        env: {
+          ...process.env,
+          CODING_FIXTURE_MODE: helperMode,
+          CODING_FIXTURE_RECORD: undefined,
         },
-      );
+        stdin: "ignore",
+        stdout: mode === "helper-smoke" ? "pipe" : "ignore",
+        stderr: "ignore",
+        ...(mode === "helper-smoke"
+          ? { timeout: 5000, maxBuffer: 4 * 1024 }
+          : {}),
+      });
       childPid = helper.pid;
       if (mode === "helper-smoke") {
         const [exitCode, output] = await Promise.all([

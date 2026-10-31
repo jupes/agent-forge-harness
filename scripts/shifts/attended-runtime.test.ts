@@ -493,7 +493,9 @@ test("source and compiled coding fixture entries reach the explicit non-recursiv
   const records = attempts.map(({ recordBytes }) => {
     if (!recordBytes) return null;
     try {
-      const raw: unknown = JSON.parse(Buffer.from(recordBytes).toString("utf8"));
+      const raw: unknown = JSON.parse(
+        Buffer.from(recordBytes).toString("utf8"),
+      );
       const parsed = z
         .object({
           pid: z.number(),
@@ -530,7 +532,7 @@ test("source and compiled coding fixture entries reach the explicit non-recursiv
           marker: z.literal("fixture-stop-helper-smoke"),
         }),
       })
-    .parse(record);
+      .parse(record);
     expect(smoke.childPid).not.toBe(smoke.pid);
     expect(processAlive(smoke.childPid)).toBe(false);
   }
