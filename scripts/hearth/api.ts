@@ -103,6 +103,8 @@ export interface ActionRoute<Input = unknown> extends RouteCommon<Input> {
   action: string;
   /** Largest request body accepted; defaults to 16 kB. */
   maxBodyBytes?: number;
+  /** Reject duplicate decoded keys in the raw JSON object before auditing. */
+  rejectDuplicateBodyKeys?: boolean;
   subject(input: Input): ActionSubject;
   effect(
     input: Input,
@@ -370,6 +372,7 @@ async function readJsonBody(
   body: RequestBody,
   maxBytes: number,
   timeoutMs: number,
+  rejectDuplicateKeys = false,
 ): Promise<{ ok: true; value: unknown } | { ok: false; refusal: RouteReply }> {
   if (!req.headers["content-type"]?.startsWith("application/json"))
     return { ok: false, refusal: refuse(400, "Use application/json") };
@@ -387,7 +390,13 @@ async function readJsonBody(
     };
   if (read.bytes === null) return { ok: false, refusal: tooLarge };
   try {
-    const value: unknown = JSON.parse(read.bytes.toString("utf8"));
+    const source = read.bytes.toString("utf8");
+    const value: unknown = JSON.parse(source);
+    if (rejectDuplicateKeys && hasDuplicateObjectKeys(source))
+      return {
+        ok: false,
+        refusal: refuse(400, "Request body contains duplicate object keys"),
+      };
     return { ok: true, value };
   } catch {
     return {
@@ -395,6 +404,45 @@ async function readJsonBody(
       refusal: refuse(400, "Request body must be valid JSON"),
     };
   }
+}
+
+/** Scan valid JSON iteratively so decoded duplicate names are rejected before route validation. */
+function hasDuplicateObjectKeys(source: string): boolean {
+  const stack: Array<{
+    kind: "object" | "array";
+    expectKey: boolean;
+    keys?: Set<string>;
+  }> = [];
+  for (let index = 0; index < source.length; index++) {
+    const character = source[index];
+    if (character === '"') {
+      const start = index++;
+      while (index < source.length) {
+        if (source[index] === "\\") index += 2;
+        else if (source[index++] === '"') break;
+      }
+      const frame = stack.at(-1);
+      if (frame?.kind === "object" && frame.expectKey) {
+        const key: unknown = JSON.parse(source.slice(start, index));
+        if (typeof key !== "string") return true;
+        if (frame.keys?.has(key)) return true;
+        frame.keys?.add(key);
+        frame.expectKey = false;
+      }
+      index--;
+    } else if (character === "{") {
+      const parent = stack.at(-1);
+      if (parent) parent.expectKey = false;
+      stack.push({ kind: "object", expectKey: true, keys: new Set() });
+    } else if (character === "[") {
+      const parent = stack.at(-1);
+      if (parent) parent.expectKey = false;
+      stack.push({ kind: "array", expectKey: false });
+    } else if (character === "}" || character === "]") stack.pop();
+    else if (character === "," && stack.at(-1)?.kind === "object")
+      stack.at(-1)!.expectKey = true;
+  }
+  return false;
 }
 
 const sleep = (ms: number): Promise<void> =>
@@ -476,6 +524,7 @@ export function createOperatorApi(
       incoming,
       route.maxBodyBytes ?? DEFAULT_BODY_BYTES,
       bodyTimeoutMs,
+      route.rejectDuplicateBodyKeys === true,
     );
     if (!body.ok) return body.refusal;
     const input = route.validate({
