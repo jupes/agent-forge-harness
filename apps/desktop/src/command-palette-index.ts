@@ -411,9 +411,19 @@ export function createCommandPaletteIndex(
                 beadPage.data.workspace === workspace
                   ? beadPage.data
                   : null;
-              const detailResult = projectRunDetailSchema.safeParse(
-                runValue?.detail,
-              );
+              const rawDetail = runValue?.detail;
+              const detailCore =
+                typeof rawDetail === "object" &&
+                rawDetail !== null &&
+                !Array.isArray(rawDetail)
+                  ? Object.fromEntries(
+                      Object.entries(rawDetail).filter(
+                        ([key]) => key !== "sessionHistory",
+                      ),
+                    )
+                  : rawDetail;
+              const detailResult =
+                projectRunDetailSchema.safeParse(detailCore);
               const detail = detailResult.success ? detailResult.data : null;
               if (
                 input.selectedRun?.projectId === project.id &&
