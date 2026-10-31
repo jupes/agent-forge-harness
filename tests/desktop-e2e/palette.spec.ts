@@ -293,21 +293,156 @@ test("expired palette selection stays open with a refresh path and performs no w
   await expect(option).toBeVisible();
   await expect(search).toBeFocused();
   await expect(option).toHaveAttribute("aria-selected", "true");
-  await page.route(`**/projects/${alpha.id}/beads*`, async (route) => {
-    await new Promise((resolve) => setTimeout(resolve, 900));
-    await route.continue();
+  const coverage = dialog
+    .getByRole("status")
+    .filter({ hasText: "Source coverage:" });
+  const initialCoverage = await coverage.innerText();
+  expect(initialCoverage).toContain("Beads: available");
+
+  let releaseBeads!: () => void;
+  let releaseSessions!: () => void;
+  let releaseSummary!: () => void;
+  const started = { beads: false, sessions: false, summary: false };
+  let activeRouteHandlers = 0;
+  let routeContinuationFailures = 0;
+  let signalRoutesIdle: (() => void) | undefined;
+  const beadsGate = new Promise<void>((resolve) => {
+    releaseBeads = resolve;
   });
-  await page.evaluate(() => {
-    const now = Date.now();
-    Date.now = () => now + 31_000;
+  const sessionsGate = new Promise<void>((resolve) => {
+    releaseSessions = resolve;
   });
-  await page.keyboard.press("Enter");
-  await expect(dialog).toBeVisible();
-  await expect(dialog.getByRole("alert")).toContainText("This result changed");
-  await expect(
-    dialog.getByRole("button", { name: "Refresh results" }),
-  ).toBeVisible();
-  expect(writes).toEqual([]);
+  const summaryGate = new Promise<void>((resolve) => {
+    releaseSummary = resolve;
+  });
+  const beadsPattern = `**/projects/${alpha.id}/beads*`;
+  const sessionsPattern =
+    `**/__agent-forge/projects/${alpha.id}/session-observations*`;
+  const summaryPattern = "**/projects/summary";
+  const hold = (
+    source: keyof typeof started,
+    gate: Promise<void>,
+  ) =>
+    async (route: import("@playwright/test").Route) => {
+      started[source] = true;
+      activeRouteHandlers++;
+      try {
+        await gate;
+        await route.continue();
+      } catch {
+        routeContinuationFailures++;
+      } finally {
+        activeRouteHandlers--;
+        if (activeRouteHandlers === 0) signalRoutesIdle?.();
+      }
+    };
+  const holdBeads = hold("beads", beadsGate);
+  const holdSessions = hold("sessions", sessionsGate);
+  const holdSummary = hold("summary", summaryGate);
+  const waitForRoutesIdle = () =>
+    activeRouteHandlers === 0
+      ? Promise.resolve()
+      : new Promise<void>((resolve) => {
+          signalRoutesIdle = resolve;
+        });
+  const settleRoutes = async () => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        waitForRoutesIdle(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(Error("Palette route continuations exceeded 10 seconds.")),
+            10_000,
+          );
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+    if (routeContinuationFailures)
+      throw Error("A held palette route continuation rejected.");
+  };
+  try {
+    await page.route(beadsPattern, holdBeads);
+    await page.route(sessionsPattern, holdSessions);
+    await page.route(summaryPattern, holdSummary);
+    await page.evaluate(() => {
+      type ClockProbe = {
+        original: typeof Date.now;
+        shifted: typeof Date.now;
+      };
+      const host = window as Window & { __ci94PaletteClock?: ClockProbe };
+      const original = Date.now;
+      const now = original();
+      const shifted = () => now + 31_000;
+      host.__ci94PaletteClock = { original, shifted };
+      Date.now = shifted;
+    });
+    await page.keyboard.press("Enter");
+    await expect(dialog).toBeVisible();
+    await expect(dialog.getByRole("alert")).toContainText(
+      "This result changed",
+    );
+    expect(writes).toEqual([]);
+    await expect.poll(() => started.summary).toBe(true);
+
+    // Keep the summary refresh from publishing its initial loading snapshot
+    // until the rejected-selection warning has been observed above.
+    releaseSummary();
+    await expect.poll(() => started.beads).toBe(true);
+    await expect.poll(() => started.sessions).toBe(true);
+    const fastSourceResponse = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname ===
+          `/__agent-forge/projects/${alpha.id}/session-observations` &&
+        response.request().method() === "GET",
+      { timeout: 10_000 },
+    );
+    releaseSessions();
+    const response = await fastSourceResponse;
+    expect(response.status()).toBe(200);
+    await expect(coverage).toContainText("Sessions: available");
+    await expect(coverage).toContainText("Beads: loading");
+    expect(await coverage.innerText()).not.toBe(initialCoverage);
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve) =>
+          requestAnimationFrame(() =>
+            requestAnimationFrame(() => resolve()),
+          ),
+        ),
+    );
+    await expect(dialog.getByRole("alert")).toContainText(
+      "This result changed",
+    );
+    await expect(
+      dialog.getByRole("button", { name: "Refresh results" }),
+    ).toBeVisible();
+    expect(writes).toEqual([]);
+  } finally {
+    releaseSummary();
+    releaseSessions();
+    releaseBeads();
+    const cleanupResults = await Promise.allSettled([
+      page.unroute(beadsPattern, holdBeads),
+      page.unroute(sessionsPattern, holdSessions),
+      page.unroute(summaryPattern, holdSummary),
+      page.evaluate(() => {
+        type ClockProbe = {
+          original: typeof Date.now;
+          shifted: typeof Date.now;
+        };
+        const host = window as Window & { __ci94PaletteClock?: ClockProbe };
+        const probe = host.__ci94PaletteClock;
+        if (probe && Date.now === probe.shifted) Date.now = probe.original;
+        delete host.__ci94PaletteClock;
+      }),
+    ]);
+    await settleRoutes();
+    if (cleanupResults.some((result) => result.status === "rejected"))
+      throw Error("A CI94 palette route or clock cleanup failed.");
+  }
 });
 
 test("partial source and filtered-empty state stay visible while reads load", async ({

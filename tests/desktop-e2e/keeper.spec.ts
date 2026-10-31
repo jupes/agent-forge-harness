@@ -771,20 +771,223 @@ test("mentions and harness commands edit the shared draft with keyboard suggesti
   await page.screenshot({
     path: "apps/desktop/docs/screenshots/keeper-mentions.png",
   });
-  await page.keyboard.press("Enter");
-  await expect(input).toHaveValue("Explain @bead:alpha-epic ");
-  await expect(
-    drawer
-      .getByRole("group", { name: "About context for Alpha" })
-      .getByRole("link", { name: "bead alpha-epic", exact: true }),
-  ).toBeVisible();
-  await input.fill("/forge");
-  const commands = drawer.getByRole("group", { name: "Harness commands" });
-  await commands
-    .getByRole("button", { name: "/forge-plan", exact: false })
-    .click();
-  await expect(input).toHaveValue("/forge-plan ");
-  expect(starts()).toBe(before);
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      ),
+  );
+  await page.evaluate(() => {
+    type CapturedFrame = {
+      id: number;
+      callback: FrameRequestCallback;
+      fired: boolean;
+      canceled: boolean;
+      timestamp: number | null;
+    };
+    type Probe = {
+      armed: boolean;
+      captured: CapturedFrame | null;
+      originalRequest: typeof window.requestAnimationFrame;
+      originalCancel: typeof window.cancelAnimationFrame;
+      wrappedRequest: typeof window.requestAnimationFrame;
+      wrappedCancel: typeof window.cancelAnimationFrame;
+    };
+    const host = window as Window & { __ci94KeeperFrameProbe?: Probe };
+    const originalRequest = window.requestAnimationFrame;
+    const originalCancel = window.cancelAnimationFrame;
+    const probe: Probe = {
+      armed: true,
+      captured: null,
+      originalRequest,
+      originalCancel,
+      wrappedRequest: (() => 0) as typeof window.requestAnimationFrame,
+      wrappedCancel: (() => {}) as typeof window.cancelAnimationFrame,
+    };
+    probe.wrappedRequest = (callback) => {
+      if (!probe.armed || probe.captured)
+        return originalRequest.call(window, callback);
+      probe.armed = false;
+      const captured: CapturedFrame = {
+        id: 0,
+        callback,
+        fired: false,
+        canceled: false,
+        timestamp: null,
+      };
+      captured.id = originalRequest.call(window, (timestamp) => {
+        captured.fired = true;
+        captured.timestamp = timestamp;
+      });
+      probe.captured = captured;
+      return captured.id;
+    };
+    probe.wrappedCancel = (id) => {
+      if (
+        probe.captured?.id === id &&
+        !probe.captured.fired
+      )
+        probe.captured.canceled = true;
+      originalCancel.call(window, id);
+    };
+    host.__ci94KeeperFrameProbe = probe;
+    window.requestAnimationFrame = probe.wrappedRequest;
+    window.cancelAnimationFrame = probe.wrappedCancel;
+  });
+  try {
+    await page.keyboard.press("Enter");
+    await expect(input).toHaveValue("Explain @bead:alpha-epic ");
+    await expect(
+      drawer
+        .getByRole("group", { name: "About context for Alpha" })
+        .getByRole("link", { name: "bead alpha-epic", exact: true }),
+    ).toBeVisible();
+    const expectedDraft = "Explain @bead:alpha-epic ";
+    const selection = await input.evaluate((element: HTMLTextAreaElement) => {
+      element.focus();
+      element.select();
+      return {
+        valueLength: element.value.length,
+        matchesExpected: element.value === "Explain @bead:alpha-epic ",
+        connected: element.isConnected,
+        active: document.activeElement === element,
+        start: element.selectionStart,
+        end: element.selectionEnd,
+      };
+    });
+    expect(selection).toEqual({
+      valueLength: expectedDraft.length,
+      matchesExpected: true,
+      connected: true,
+      active: true,
+      start: 0,
+      end: expectedDraft.length,
+    });
+    const frame = await page.evaluate(async (expectedLength) => {
+      type Probe = {
+        captured: {
+          callback: FrameRequestCallback;
+          fired: boolean;
+          canceled: boolean;
+          timestamp: number | null;
+        } | null;
+        originalRequest: typeof window.requestAnimationFrame;
+      };
+      const host = window as Window & { __ci94KeeperFrameProbe?: Probe };
+      const probe = host.__ci94KeeperFrameProbe;
+      if (!probe) return { state: "missing" as const };
+      const nextFrame = () =>
+        new Promise<void>((resolve) =>
+          probe.originalRequest.call(window, () => resolve()),
+        );
+      await nextFrame();
+      await nextFrame();
+      const captured = probe.captured;
+      if (!captured) return { state: "none" as const };
+      if (captured.canceled || !captured.fired || captured.timestamp === null)
+        return { state: "inconclusive" as const };
+      const element = document.getElementById(
+        "keeper-message-drawer",
+      ) as HTMLTextAreaElement | null;
+      if (!element) return { state: "inconclusive" as const };
+      const before = {
+        valueLength: element.value.length,
+        matchesExpected: element.value === "Explain @bead:alpha-epic ",
+        connected: element.isConnected,
+        active: document.activeElement === element,
+        start: element.selectionStart,
+        end: element.selectionEnd,
+      };
+      await new Promise<void>((resolve) =>
+        probe.originalRequest.call(window, (timestamp) => {
+          captured.callback(timestamp);
+          resolve();
+        }),
+      );
+      await nextFrame();
+      await nextFrame();
+      const after = {
+        valueLength: element.value.length,
+        matchesExpected: element.value === "Explain @bead:alpha-epic ",
+        connected: element.isConnected,
+        active: document.activeElement === element,
+        start: element.selectionStart,
+        end: element.selectionEnd,
+      };
+      const sameLiveSelection =
+        before.connected &&
+        before.active &&
+        before.matchesExpected &&
+        before.valueLength === expectedLength &&
+        before.start === 0 &&
+        before.end === before.valueLength;
+      if (!sameLiveSelection || !after.connected || !after.active)
+        return { state: "inconclusive" as const, before, after };
+      return {
+        state:
+          after.matchesExpected === before.matchesExpected &&
+          after.valueLength === before.valueLength &&
+          after.start === after.end &&
+          (after.start !== before.start || after.end !== before.end)
+            ? ("clobbered" as const)
+            : ("preserved" as const),
+        before,
+        after,
+      };
+    }, expectedDraft.length);
+    if (frame.state === "inconclusive" || frame.state === "missing")
+      test.skip(true, "Keeper RAF selection witness was inconclusive.");
+    if (frame.state === "clobbered") {
+      expect(frame.before).toMatchObject({
+        valueLength: selection.valueLength,
+        matchesExpected: true,
+        connected: true,
+        active: true,
+        start: 0,
+        end: selection.valueLength,
+      });
+      expect(frame.after).toMatchObject({
+        valueLength: selection.valueLength,
+        matchesExpected: true,
+        connected: true,
+        active: true,
+      });
+      expect(frame.after.start).toBe(frame.after.end);
+      await page.keyboard.insertText("/forge");
+      await expect(input, "CI94 captured RAF clobbered the selected draft").toHaveValue(
+        "/forge",
+      );
+    } else {
+      await input.fill("/forge");
+      await expect(input).toHaveValue("/forge");
+    }
+    const commands = drawer.getByRole("group", { name: "Harness commands" });
+    await commands
+      .getByRole("button", { name: "/forge-plan", exact: false })
+      .click();
+    await expect(input).toHaveValue("/forge-plan ");
+    expect(starts()).toBe(before);
+  } finally {
+    await page.evaluate(() => {
+      type Probe = {
+        originalRequest: typeof window.requestAnimationFrame;
+        originalCancel: typeof window.cancelAnimationFrame;
+        wrappedRequest: typeof window.requestAnimationFrame;
+        wrappedCancel: typeof window.cancelAnimationFrame;
+        captured: { id: number; canceled: boolean } | null;
+      };
+      const host = window as Window & { __ci94KeeperFrameProbe?: Probe };
+      const probe = host.__ci94KeeperFrameProbe;
+      if (!probe) return;
+      if (probe.captured && !probe.captured.canceled)
+        probe.originalCancel.call(window, probe.captured.id);
+      if (window.requestAnimationFrame === probe.wrappedRequest)
+        window.requestAnimationFrame = probe.originalRequest;
+      if (window.cancelAnimationFrame === probe.wrappedCancel)
+        window.cancelAnimationFrame = probe.originalCancel;
+      delete host.__ci94KeeperFrameProbe;
+    });
+  }
   await input.fill("@bead:no-such-id");
   await expect(mentions).toContainText(
     "No matching objects in the available project read.",
