@@ -14,6 +14,7 @@ import {
 import { providerEndpointSnapshot } from "../../scripts/council/providers";
 import { parseCouncilProfileJson } from "../../scripts/council/types";
 import { projectBeadsPageSchema } from "../../scripts/projects/beads-protocol";
+import { projectSessionObservationsSchema } from "../../scripts/projects/session-observations-protocol";
 import {
   projectRunDetailSchema,
   projectRunsPageSchema,
@@ -138,37 +139,98 @@ test("palette opens by shortcut, navigates a scoped result, and restores it as a
 }) => {
   await page.emulateMedia({ reducedMotion: "reduce" });
   await openSettled(page, `/index.html#/desktop/project/${alpha.id}/overview`);
-  await page.keyboard.press("Control+k");
-
+  const sessionPath = `**/__agent-forge/projects/${alpha.id}/session-observations`;
+  let releaseSessions!: () => void;
+  let signalSessionsStarted!: () => void;
+  let signalSessionsFinished!: () => void;
+  let sessionReadStarted = false;
+  const sessionsHeld = new Promise<void>((resolve) => (releaseSessions = resolve));
+  const sessionsStarted = new Promise<void>((resolve) => (signalSessionsStarted = resolve));
+  const sessionsFinished = new Promise<void>((resolve) => (signalSessionsFinished = resolve));
+  const asOf = new Date().toISOString();
+  const sessions = projectSessionObservationsSchema.parse({
+    projectId: alpha.id,
+    workspace,
+    asOf,
+    observations: Array.from({ length: 16 }, (_, index) => ({
+      sessionId: `palette-session-${String(index).padStart(2, "0")}`,
+      workspace,
+      beadId: "alpha-epic",
+      lastEventAt: asOf,
+    })),
+    observationsComplete: true,
+    ownership: { available: true, records: [], reason: null },
+    problems: [],
+  });
+  await page.route(sessionPath, async (route) => {
+    sessionReadStarted = true;
+    signalSessionsStarted();
+    try {
+      await sessionsHeld;
+      await route.fulfill({ json: { ok: true, data: sessions, error: null } });
+    } finally {
+      signalSessionsFinished();
+    }
+  });
+  const writes: string[] = [];
+  page.on("request", (request) => {
+    if (request.method() === "POST") writes.push(new URL(request.url()).pathname);
+  });
   const dialog = page.getByRole("dialog", { name: "Command palette" });
   const search = dialog.getByRole("combobox", {
     name: "Search projects, work, and commands",
   });
-  await expect(dialog).toBeVisible();
-  await expect(search).toBeFocused();
-  await expect(search).toHaveCSS("outline-width", "2px");
-  await search.fill("alpha-epic");
-  const bead = dialog.getByRole("option", { name: /^Alpha epic\b/ });
-  const review = dialog.getByRole("option", { name: /^Review Alpha epic\b/ });
-  await expect(bead).toHaveCount(1);
-  await expect(bead.getByRole("button")).toHaveCount(0);
-  await page.keyboard.press("ArrowDown");
-  await expect(review).toHaveAttribute("aria-selected", "true");
-  await page.keyboard.press("Enter");
-  await expect(page).toHaveURL(
-    new RegExp(
-      `/desktop/project/${alpha.id}/beads\\?selectionKind=bead&selectionId=alpha-epic`,
-    ),
-  );
-  await expect(dialog).not.toBeVisible();
+  try {
+    await page.keyboard.press("Control+k");
+    await expect(dialog).toBeVisible();
+    await expect(search).toBeFocused();
+    await expect(search).toHaveCSS("outline-width", "2px");
+    await search.fill("alpha-epic");
+    await sessionsStarted;
+    const coverage = dialog.getByRole("status").filter({ hasText: "Source coverage:" });
+    await expect(coverage).toContainText("Beads: available");
+    await expect(coverage).toContainText("Sessions: loading");
+    const bead = dialog.getByRole("option", { name: /^Alpha epic\b/ });
+    const review = dialog.getByRole("option", { name: /^Review Alpha epic\b/ });
+    await expect(bead).toHaveCount(1);
+    await expect(bead.getByRole("button")).toHaveCount(0);
+    await page.keyboard.press("ArrowDown");
+    await expect(review).toHaveAttribute("aria-selected", "true");
+    const reviewIdBefore = await review.getAttribute("id");
+    await expect(search).toHaveAttribute("aria-activedescendant", reviewIdBefore!);
 
-  await page.keyboard.press("Control+k");
-  const reopened = page.getByRole("dialog", { name: "Command palette" });
-  await expect(
-    reopened.getByRole("option", { name: /^Review Alpha epic\b/ }),
-  ).toHaveCount(1);
-  await reopened.getByRole("combobox").press("Escape");
-  await expect(reopened).not.toBeVisible();
+    releaseSessions();
+    await expect(coverage).toContainText("Sessions: available");
+    await expect(search).toHaveValue("alpha-epic");
+    await expect(dialog.getByRole("option", { name: /^alpha-epic\b/ })).toHaveCount(16);
+    const reviewIdAfter = await review.getAttribute("id");
+    expect(reviewIdAfter).not.toBe(reviewIdBefore);
+    expect(Number(reviewIdAfter?.replace("af-palette-", ""))).toBe(
+      Number(reviewIdBefore?.replace("af-palette-", "")) + 16,
+    );
+    await expect(review).toHaveAttribute("aria-selected", "true");
+    await expect(dialog.getByRole("option", { selected: true })).toHaveCount(1);
+    await expect(search).toHaveAttribute("aria-activedescendant", reviewIdAfter!);
+    await page.keyboard.press("Enter");
+    await expect(page).toHaveURL(
+      new RegExp(
+        `/desktop/project/${alpha.id}/beads\\?selectionKind=bead&selectionId=alpha-epic`,
+      ),
+    );
+    await expect(dialog).not.toBeVisible();
+    await page.keyboard.press("Control+k");
+    const reopened = page.getByRole("dialog", { name: "Command palette" });
+    await expect(
+      reopened.getByRole("option", { name: /^Review Alpha epic\b/ }),
+    ).toHaveCount(1);
+    await reopened.getByRole("combobox").press("Escape");
+    await expect(reopened).not.toBeVisible();
+    expect(writes).toEqual([]);
+  } finally {
+    releaseSessions();
+    if (sessionReadStarted) await sessionsFinished;
+    await page.unroute(sessionPath);
+  }
 });
 
 test("palette command selection displays generated argument guidance without a shortcut side effect", async ({
