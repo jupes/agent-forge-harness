@@ -521,7 +521,9 @@ test("project Activity virtualizes scoped metadata and keyboard selection opens 
     page.getByText("Activity tool 1200", { exact: true }).last(),
   ).toBeVisible();
   await expect(
-    page.getByText("Recorded provider", { exact: true }),
+    page
+      .getByRole("region", { name: "Activity inspector" })
+      .getByText("Recorded provider", { exact: true }),
   ).toBeVisible();
   await expect(page.getByText("FOREIGN ACTIVITY", { exact: true })).toHaveCount(
     0,
