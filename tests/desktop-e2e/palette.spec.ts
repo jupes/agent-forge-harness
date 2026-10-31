@@ -1,4 +1,4 @@
-import { readFileSync, rmSync } from "node:fs";
+import { mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
 import {
@@ -102,12 +102,25 @@ test("the visible Search entry opens the keyboard palette", async ({
 }) => {
   await openSettled(page, `/index.html#/desktop/project/${alpha.id}/overview`);
   await page.getByRole("button", { name: "Open command palette" }).click();
-  await expect(
-    page.getByRole("dialog", { name: "Command palette" }),
-  ).toBeVisible();
+  const dialog = page.getByRole("dialog", { name: "Command palette" });
+  await expect(dialog).toBeVisible();
   await expect(
     page.getByRole("combobox", { name: "Search projects, work, and commands" }),
   ).toBeFocused();
+  const screenshotDirectory = process.env["SHOT_DIR"];
+  if (screenshotDirectory) {
+    mkdirSync(screenshotDirectory, { recursive: true });
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await dialog.screenshot({
+      path: join(screenshotDirectory, "command-palette.png"),
+      animations: "disabled",
+    });
+    await page.setViewportSize({ width: 375, height: 812 });
+    await dialog.screenshot({
+      path: join(screenshotDirectory, "command-palette-narrow.png"),
+      animations: "disabled",
+    });
+  }
 });
 
 test("palette opens by shortcut, navigates a scoped result, and restores it as a recent", async ({
