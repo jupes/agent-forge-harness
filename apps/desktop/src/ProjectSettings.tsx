@@ -61,8 +61,9 @@ export function ProjectSettings({
       </section>
     );
 
-  const current = catalog?.project.id === project.id ? catalog.project : null;
-  if (!current)
+  const currentCatalog = catalog;
+  const current = currentCatalog?.project.id === project.id ? currentCatalog.project : null;
+  if (!current || !currentCatalog)
     return (
       <section class="af-project-settings" aria-labelledby="project-settings-title">
         <h2 id="project-settings-title">Project settings</h2>
@@ -104,11 +105,11 @@ export function ProjectSettings({
       <section aria-labelledby="project-general-heading">
         <h3 id="project-general-heading">General</h3>
         <p class="af-project-settings-provenance">
-          Source: {catalog.freshRead ? "current hearth project catalog read" : "last-known hearth project catalog"} · revision {catalog?.revision ?? initialRevision ?? "unavailable"} ·
+          Source: {currentCatalog.freshRead ? "current hearth project catalog read" : "last-known hearth project catalog"} · revision {currentCatalog.revision ?? initialRevision ?? "unavailable"} ·
           record updated <time dateTime={current.updatedAt}>{current.updatedAt}</time>
         </p>
         {state.projectionErrors[project.id] && <p role="alert">The latest project summary could not be projected: {state.projectionErrors[project.id]}. These values are last-known; refresh the General catalog before saving.</p>}
-        <Button onClick={() => void owner.review(project.id, catalog?.revision ?? 0)} disabled={busy}>Refresh current settings</Button>
+        <Button onClick={() => void owner.review(project.id, currentCatalog.revision)} disabled={busy}>Refresh current settings</Button>
         <dl class="af-project-settings-current" aria-label="Current catalog values">
           <div><dt>Name</dt><dd>{current.general.name}</dd></div>
           <div><dt>Description</dt><dd>{current.general.description || "No description"}</dd></div>
@@ -144,7 +145,7 @@ export function ProjectSettings({
               </Button>
             ) : (
               <Button
-                onClick={() => void owner.review(project.id, catalog?.revision ?? 0)}
+              onClick={() => void owner.review(project.id, currentCatalog.revision)}
                 disabled={busy}
               >
                 {currentUnresolved.length ? "Check current settings" : "Refresh current settings"}
@@ -156,7 +157,7 @@ export function ProjectSettings({
           class="af-project-settings-form"
           onSubmit={(event) => {
             event.preventDefault();
-            if (catalog) void owner.save(project.id, catalog.revision, original, draft);
+            void owner.save(project.id, currentCatalog.revision, original, draft);
           }}
         >
           <label>
@@ -215,7 +216,7 @@ export function ProjectSettings({
           <button
             class="af-btn af-btn-primary"
             type="submit"
-            disabled={!editable || needsReview || !catalog}
+            disabled={!editable || needsReview}
           >
             {state.sendingProjectId === project.id ? "Saving…" : "Save General settings"}
           </button>

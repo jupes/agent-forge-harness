@@ -38,7 +38,15 @@ const submitted: ProjectGeneralSettings = {
 const draft: GeneralDraft = submitted;
 
 function updated(revision: number, general: ProjectGeneralSettings): ProjectCatalog {
-  return catalog(revision, { ...alpha, ...general, updatedAt: "2026-10-31T00:00:00.000Z" });
+  const { color, ...requiredGeneral } = general;
+  const project: ProjectRecord = {
+    ...alpha,
+    ...requiredGeneral,
+    updatedAt: "2026-10-31T00:00:00.000Z",
+  };
+  if (color === undefined) delete project.color;
+  else project.color = color;
+  return catalog(revision, project);
 }
 
 test("sends the complete General snapshot at the reviewed catalog revision", async () => {
@@ -176,7 +184,9 @@ test("unknown intent stays project-bound while a reviewed same-revision save cle
       wireBody = JSON.parse(JSON.stringify(body));
       const next: ProjectRecord = {
         ...alpha,
-        ...cleared,
+        name: cleared.name,
+        description: cleared.description,
+        icon: cleared.icon,
         updatedAt: "2026-10-31T00:00:00.000Z",
       };
       delete next.color;
