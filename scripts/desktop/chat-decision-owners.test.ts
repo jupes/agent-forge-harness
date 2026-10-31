@@ -623,8 +623,12 @@ async function verifyHeldReadRejectsReturnedActivation(
 
     freshAddress = {
       ...activationBase,
+      actionable: false,
       inboxSelectionGeneration: selectionGeneration,
     };
+    // The original approval has a terminal receipt, so the still-current
+    // permission row is no longer actionable when the operator returns.
+    inboxSelection = { ...inboxSelection, actionable: false };
     activate(freshAddress);
     expect(view()).toMatchObject({
       identity: rawIdentity,
