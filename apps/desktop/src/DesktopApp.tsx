@@ -75,6 +75,7 @@ import { ProjectOverview } from "./ProjectOverview";
 import { ProjectReviews } from "./ProjectReviews";
 import { ProjectRunInspector, ProjectRuns } from "./ProjectRuns";
 import { ProjectSessions, SessionInspector } from "./ProjectSessions";
+import { ProjectSettings } from "./ProjectSettings";
 import { ProjectShifts } from "./ProjectShifts";
 import { ProjectsHome } from "./ProjectsHome";
 import { ProjectWorkbench } from "./ProjectWorkbench";
@@ -102,6 +103,7 @@ import {
   type ProjectCouncilSourceIntent,
 } from "./project-council-return";
 import type { VerifiedProjectCreate } from "./project-create-owner";
+import { generalCatalogForProject } from "./project-general-settings-client";
 import { parseRunFilters, runsHref } from "./project-runs-model";
 import { ClaudeSessionComposer, SessionComposer } from "./SessionComposer";
 import { SessionConversation } from "./SessionConversation";
@@ -119,6 +121,7 @@ import { useKeeperSessionReviews } from "./use-keeper-session-reviews";
 import { useKeeperShiftReviews } from "./use-keeper-shift-reviews";
 import { useProjectActivity } from "./use-project-activity";
 import { useProjectCreate } from "./use-project-create";
+import { useProjectGeneralSettings } from "./use-project-general-settings";
 import { useProjectRuns } from "./use-project-runs";
 import { useProjectShifts } from "./use-project-shifts";
 import { useProjects } from "./use-projects";
@@ -351,6 +354,10 @@ export function DesktopApp(): JSX.Element {
   );
   const recovery = useDesktopRecovery();
   const projects = useProjects();
+  const projectGeneralSettings = useProjectGeneralSettings(
+    projects.refreshProjectHome,
+  );
+  const settingsCatalog = projects.data?.catalog ?? null;
   const providers = useProviders();
   const projectCreate = useProjectCreate(
     providers.data?.workspace ?? null,
@@ -361,9 +368,13 @@ export function DesktopApp(): JSX.Element {
     route.destination === "smiths" || paletteOpen,
     providers.data?.workspace ?? null,
   );
-  const project = projects.data?.catalog.projects.find(
+  const project = settingsCatalog?.projects.find(
     (item) => item.id === route.projectId,
   );
+  useEffect(() => {
+    if (settingsCatalog && route.projectId)
+      projectGeneralSettings.owner.adopt(route.projectId, settingsCatalog);
+  }, [projectGeneralSettings.owner, route.projectId, settingsCatalog]);
   const summary = projects.data?.summaries.find(
     (item) => item.projectId === project?.id,
   );
@@ -1576,8 +1587,6 @@ export function DesktopApp(): JSX.Element {
             label: `${item.name} settings`,
             detail: "Project settings",
             projectId: item.id,
-            unavailable:
-              "Project settings are not available in this desktop owner yet.",
             intent: {
               kind: "navigate",
               route: {
@@ -1595,11 +1604,6 @@ export function DesktopApp(): JSX.Element {
               detail: "Project navigation",
               projectId: item.id,
               keywords: destination.id,
-              ...paletteUnavailable(
-                destination.id === "project-settings"
-                  ? "Project settings are not available in this desktop owner yet."
-                  : undefined,
-              ),
               intent: {
                 kind: "navigate",
                 route: {
@@ -2329,6 +2333,23 @@ export function DesktopApp(): JSX.Element {
                 selection: null,
               });
             }}
+          />
+        ) : route.destination === "project-settings" ? (
+          <ProjectSettings
+            projectId={route.projectId}
+            project={project ?? null}
+            catalog={generalCatalogForProject(
+              projectGeneralSettings,
+              route.projectId,
+            )}
+            initialRevision={settingsCatalog?.revision ?? null}
+            loading={projects.loading}
+            error={projects.error}
+            stale={recovery?.connection.phase !== "connected"}
+            writesAllowed={writesAllowed}
+            owner={projectGeneralSettings.owner}
+            state={projectGeneralSettings}
+            onRefresh={projects.reload}
           />
         ) : route.destination === "providers" ? (
           <Providers

@@ -1,0 +1,88 @@
+.af-project-settings {
+  display: grid;
+  align-content: start;
+  gap: var(--space-5);
+  max-width: 760px;
+  min-width: 0;
+}
+.af-project-settings-heading h2,
+.af-project-settings h3 {
+  margin: 0;
+  font-weight: var(--font-heading-weight);
+}
+.af-project-settings-heading p,
+.af-project-settings-provenance {
+  color: var(--color-neutral-300);
+  font-size: 13px;
+}
+.af-project-settings-provenance time {
+  margin-inline-start: 4px;
+  overflow-wrap: anywhere;
+}
+.af-project-settings-current {
+  display: grid;
+  gap: var(--space-2);
+  margin: 0 0 var(--space-5);
+  padding: var(--space-4);
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-md);
+}
+.af-project-settings-current div {
+  display: grid;
+  grid-template-columns: minmax(100px, 0.35fr) minmax(0, 1fr);
+  gap: var(--space-3);
+}
+.af-project-settings-current dt {
+  color: var(--color-neutral-300);
+}
+.af-project-settings-current dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.af-project-settings-notice,
+.af-project-settings-review {
+  padding: var(--space-3);
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-md);
+}
+.af-project-settings-review p {
+  margin-top: 0;
+}
+.af-project-settings-form {
+  display: grid;
+  gap: var(--space-4);
+  max-width: 560px;
+}
+.af-project-settings-form label {
+  display: grid;
+  gap: var(--space-2);
+  min-width: 0;
+}
+.af-project-settings-form :where(input, textarea, select) {
+  width: 100%;
+  min-width: 0;
+  min-height: 40px;
+  padding: 8px 10px;
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-sm);
+  background: var(--desktop-side-surface);
+  color: inherit;
+  font: inherit;
+}
+.af-project-settings-form textarea {
+  min-height: 88px;
+  resize: vertical;
+}
+.af-project-settings :where(a, button, input, textarea, select):focus-visible {
+  outline: 2px solid var(--color-accent-400);
+  outline-offset: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .af-project-settings,
+  .af-project-settings * {
+    scroll-behavior: auto;
+    animation-duration: 0.01ms;
+    transition-duration: 0.01ms;
+  }
+}
