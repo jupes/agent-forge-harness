@@ -1,7 +1,7 @@
 import { z } from "zod";
 import {
-  inboxDispositionOriginalSchema,
   type InboxDispositionOriginal,
+  inboxDispositionOriginalSchema,
 } from "../../../types/inbox";
 import {
   createInboxDispositionStore,
@@ -9,12 +9,7 @@ import {
   MAX_INBOX_DISPOSITION_POST_BYTES,
 } from "../../inbox/disposition-store";
 import { isProjectId } from "../../projects/store";
-import type {
-  ActionRoute,
-  ReadRoute,
-  RouteReply,
-  RouteRequest,
-} from "../api";
+import type { ActionRoute, ReadRoute, RouteReply, RouteRequest } from "../api";
 import type { ValidationResult } from "../validate";
 import { fail, noParameters } from "./operator-reads";
 
@@ -23,11 +18,14 @@ function errorReply(error: unknown): RouteReply {
     ? { status: error.status, error: error.message }
     : {
         status: 503,
-        error: "Inbox disposition storage is unavailable. Read the saved original before continuing.",
+        error:
+          "Inbox disposition storage is unavailable. Read the saved original before continuing.",
       };
 }
 
-async function answer(work: () => unknown | Promise<unknown>): Promise<RouteReply> {
+async function answer(
+  work: () => unknown | Promise<unknown>,
+): Promise<RouteReply> {
   try {
     return { status: 200, data: await work() };
   } catch (error) {
@@ -39,7 +37,9 @@ function projectId(request: RouteRequest): ValidationResult<string> {
   const empty = noParameters(request);
   if (!empty.ok) return empty;
   const id = request.params["id"];
-  return isProjectId(id) ? { ok: true, value: id } : fail("Expected a project id.");
+  return isProjectId(id)
+    ? { ok: true, value: id }
+    : fail("Expected a project id.");
 }
 
 const requestIdSchema = z
@@ -47,7 +47,10 @@ const requestIdSchema = z
   .uuid()
   .refine((value) => value === value.toLowerCase());
 
-function original(request: RouteRequest, servedWorkspace: string): ValidationResult<{
+function original(
+  request: RouteRequest,
+  servedWorkspace: string,
+): ValidationResult<{
   projectId: string;
   original: InboxDispositionOriginal;
 }> {
@@ -62,8 +65,11 @@ function original(request: RouteRequest, servedWorkspace: string): ValidationRes
 export function createInboxDispositionRoutes(
   home: string,
   workspace: string,
-  storeFactory: (home: string) => ReturnType<typeof createInboxDispositionStore> =
-    createInboxDispositionStore,
+  storeFactory: (
+    home: string,
+  ) => ReturnType<
+    typeof createInboxDispositionStore
+  > = createInboxDispositionStore,
 ) {
   const store = storeFactory(home);
   const list: ReadRoute<string> = {
@@ -84,7 +90,10 @@ export function createInboxDispositionRoutes(
       if (!id.ok) return id;
       const requestId = requestIdSchema.safeParse(request.params["requestId"]);
       return requestId.success
-        ? { ok: true, value: { projectId: id.value, requestId: requestId.data } }
+        ? {
+            ok: true,
+            value: { projectId: id.value, requestId: requestId.data },
+          }
         : fail("Expected an Inbox request UUID.");
     },
     read: ({ projectId: id, requestId }) =>
@@ -176,5 +185,8 @@ export function createInboxDispositionRoutes(
       }
     },
   };
-  return { reads: [list, exact] as const, actions: [reserve, apply, discard] as const };
+  return {
+    reads: [list, exact] as const,
+    actions: [reserve, apply, discard] as const,
+  };
 }

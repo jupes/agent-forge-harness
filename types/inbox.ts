@@ -16,11 +16,19 @@ const boundedText = (max: number) =>
     .string()
     .min(1)
     .max(max)
-    .refine((value) => [...value].every((character) => character.charCodeAt(0) >= 32 && character.charCodeAt(0) !== 127));
+    .refine((value) =>
+      [...value].every(
+        (character) =>
+          character.charCodeAt(0) >= 32 && character.charCodeAt(0) !== 127,
+      ),
+    );
 
 export const inboxDispositionOriginalSchema = z
   .object({
-    requestId: z.string().uuid().refine((value) => value === value.toLowerCase()),
+    requestId: z
+      .string()
+      .uuid()
+      .refine((value) => value === value.toLowerCase()),
     expectedCatalogRevision: z
       .number()
       .int()
@@ -43,13 +51,16 @@ export const inboxDispositionOriginalSchema = z
   })
   .strict();
 
-export const inboxDispositionStoredOriginalSchema = inboxDispositionOriginalSchema
-  .extend({
-    projectId: z
-      .string()
-      .regex(/^project-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/),
-  })
-  .strict();
+export const inboxDispositionStoredOriginalSchema =
+  inboxDispositionOriginalSchema
+    .extend({
+      projectId: z
+        .string()
+        .regex(
+          /^project-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+        ),
+    })
+    .strict();
 
 export const inboxDispositionReceiptSchema = z
   .object({
@@ -81,7 +92,10 @@ export const inboxDispositionReceiptSchema = z
         receipt.refusalCode !== undefined ||
         receipt.refusalReason !== undefined
       )
-        context.addIssue({ code: "custom", message: "reserved receipt has no outcome" });
+        context.addIssue({
+          code: "custom",
+          message: "reserved receipt has no outcome",
+        });
     } else if (receipt.phase === "applied") {
       const settled = Date.parse(receipt.settledAt ?? "");
       if (
@@ -98,7 +112,10 @@ export const inboxDispositionReceiptSchema = z
         receipt.refusalCode !== undefined ||
         receipt.refusalReason !== undefined
       )
-        context.addIssue({ code: "custom", message: "applied receipt is incomplete" });
+        context.addIssue({
+          code: "custom",
+          message: "applied receipt is incomplete",
+        });
     } else if (
       receipt.settledAt === undefined ||
       receipt.outcome !== "refused" ||
@@ -109,7 +126,10 @@ export const inboxDispositionReceiptSchema = z
       receipt.snoozedUntil !== undefined ||
       Date.parse(receipt.settledAt ?? "") < Date.parse(receipt.reservedAt)
     ) {
-      context.addIssue({ code: "custom", message: "refused receipt is incomplete" });
+      context.addIssue({
+        code: "custom",
+        message: "refused receipt is incomplete",
+      });
     }
   });
 
@@ -117,7 +137,9 @@ export const inboxDispositionEntrySchema = z
   .object({
     projectId: z
       .string()
-      .regex(/^project-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/),
+      .regex(
+        /^project-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+      ),
     workspace: boundedText(1024),
     item: z
       .object({
@@ -134,8 +156,7 @@ export const inboxDispositionEntrySchema = z
   .strict()
   .refine(
     (entry) =>
-      (entry.operation === "snooze-1h") ===
-      (entry.snoozedUntil !== undefined),
+      (entry.operation === "snooze-1h") === (entry.snoozedUntil !== undefined),
   );
 
 export const inboxDispositionStoreSchema = z
@@ -155,7 +176,9 @@ export const inboxDispositionStoreSchema = z
         entry.item.sourceRevision,
       ]),
     );
-    const requestIds = store.receipts.map((receipt) => receipt.original.requestId);
+    const requestIds = store.receipts.map(
+      (receipt) => receipt.original.requestId,
+    );
     const pendingFences = store.receipts
       .filter((receipt) => receipt.phase === "reserved")
       .map((receipt) =>
@@ -167,11 +190,20 @@ export const inboxDispositionStoreSchema = z
         ]),
       );
     if (new Set(entryIds).size !== entryIds.length)
-      context.addIssue({ code: "custom", message: "duplicate disposition entry" });
+      context.addIssue({
+        code: "custom",
+        message: "duplicate disposition entry",
+      });
     if (new Set(requestIds).size !== requestIds.length)
-      context.addIssue({ code: "custom", message: "duplicate disposition request" });
+      context.addIssue({
+        code: "custom",
+        message: "duplicate disposition request",
+      });
     if (new Set(pendingFences).size !== pendingFences.length)
-      context.addIssue({ code: "custom", message: "duplicate pending disposition fence" });
+      context.addIssue({
+        code: "custom",
+        message: "duplicate pending disposition fence",
+      });
   });
 
 export type InboxDispositionOriginal = z.infer<
@@ -183,7 +215,5 @@ export type InboxDispositionStoredOriginal = z.infer<
 export type InboxDispositionReceipt = z.infer<
   typeof inboxDispositionReceiptSchema
 >;
-export type InboxDispositionEntry = z.infer<
-  typeof inboxDispositionEntrySchema
->;
+export type InboxDispositionEntry = z.infer<typeof inboxDispositionEntrySchema>;
 export type InboxDispositionStore = z.infer<typeof inboxDispositionStoreSchema>;

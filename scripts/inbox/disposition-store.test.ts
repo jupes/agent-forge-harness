@@ -6,11 +6,11 @@ import {
   type InboxDispositionOriginal,
   inboxDispositionStoreSchema,
 } from "../../types/inbox";
-import { projectCatalogFixture } from "../projects/testing";
+import { writeOwnerOnly } from "../hearth/token";
+import { resolveCheckout } from "../ledger/workspace";
 import { workspaceKey } from "../projects/scope";
 import { createProjectStore, projectCatalogPath } from "../projects/store";
-import { resolveCheckout } from "../ledger/workspace";
-import { writeOwnerOnly } from "../hearth/token";
+import { projectCatalogFixture } from "../projects/testing";
 import {
   createInboxDispositionStore,
   MAX_INBOX_DISPOSITION_ENTRIES,
@@ -21,7 +21,8 @@ const homes: string[] = [];
 const PROJECT = "project-a5832fa0-7a21-403b-8184-44892f0d8d86";
 const REQUEST = "77c37127-1c22-4a2a-8e7d-69cc74ff1299";
 afterEach(() => {
-  for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true });
+  for (const home of homes.splice(0))
+    rmSync(home, { recursive: true, force: true });
 });
 
 function fixture(options: { afterWrite?: () => void; now?: () => Date } = {}) {
@@ -66,24 +67,38 @@ test("reservation and apply replay retain one exact snooze receipt", async () =>
   const reserved = await store.reserve(PROJECT, original.workspace, original);
   expect(reserved).toMatchObject({
     entry: null,
-    receipt: { original: { ...original, projectId: PROJECT }, phase: "reserved" },
+    receipt: {
+      original: { ...original, projectId: PROJECT },
+      phase: "reserved",
+    },
   });
-  expect(await store.reserve(PROJECT, original.workspace, original)).toEqual(reserved);
+  expect(await store.reserve(PROJECT, original.workspace, original)).toEqual(
+    reserved,
+  );
   const changed = { ...original, operation: "done" as const };
   await expect(
     store.reserve(PROJECT, original.workspace, changed),
   ).rejects.toMatchObject({ status: 409, code: "request-id-reused" });
-  await expect(store.apply(PROJECT, original.workspace, changed)).rejects.toMatchObject({
-    status: 409,
-    code: "original-mismatch",
-  });
-  await expect(store.discard(PROJECT, REQUEST, original.workspace, changed)).rejects.toMatchObject({
-    status: 409,
-    code: "original-mismatch",
-  });
-  expect(store.original(PROJECT, REQUEST, original.workspace)).toEqual(reserved);
   await expect(
-    store.apply(PROJECT, original.workspace, { ...original, requestId: "77c37127-1c22-4a2a-8e7d-69cc74ff1286" }),
+    store.apply(PROJECT, original.workspace, changed),
+  ).rejects.toMatchObject({
+    status: 409,
+    code: "original-mismatch",
+  });
+  await expect(
+    store.discard(PROJECT, REQUEST, original.workspace, changed),
+  ).rejects.toMatchObject({
+    status: 409,
+    code: "original-mismatch",
+  });
+  expect(store.original(PROJECT, REQUEST, original.workspace)).toEqual(
+    reserved,
+  );
+  await expect(
+    store.apply(PROJECT, original.workspace, {
+      ...original,
+      requestId: "77c37127-1c22-4a2a-8e7d-69cc74ff1286",
+    }),
   ).rejects.toMatchObject({ status: 409, code: "reservation-missing" });
   const applied = await store.apply(PROJECT, original.workspace, original);
   expect(applied).toMatchObject({
@@ -96,10 +111,18 @@ test("reservation and apply replay retain one exact snooze receipt", async () =>
     },
   });
   instant = new Date("2026-10-31T14:00:00.000Z");
-  expect(await store.apply(PROJECT, original.workspace, original)).toEqual(applied);
-  expect(await store.reserve(PROJECT, original.workspace, original)).toEqual(applied);
-  expect(inboxDispositionStoreSchema.safeParse(store.read()).success).toBe(true);
-  expect(store.collection(PROJECT, original.workspace).receipts).toHaveLength(1);
+  expect(await store.apply(PROJECT, original.workspace, original)).toEqual(
+    applied,
+  );
+  expect(await store.reserve(PROJECT, original.workspace, original)).toEqual(
+    applied,
+  );
+  expect(inboxDispositionStoreSchema.safeParse(store.read()).success).toBe(
+    true,
+  );
+  expect(store.collection(PROJECT, original.workspace).receipts).toHaveLength(
+    1,
+  );
 });
 
 test("a pending identity fences source revision changes", async () => {
@@ -113,14 +136,18 @@ test("a pending identity fences source revision changes", async () => {
     store.reserve(PROJECT, original.workspace, original),
     store.reserve(PROJECT, changed.workspace, changed),
   ]);
-  expect(attempts.filter((item) => item.status === "fulfilled")).toHaveLength(1);
+  expect(attempts.filter((item) => item.status === "fulfilled")).toHaveLength(
+    1,
+  );
   expect(attempts.filter((item) => item.status === "rejected")).toHaveLength(1);
   const refused = attempts.find((item) => item.status === "rejected");
   expect(refused?.status === "rejected" ? refused.reason : null).toMatchObject({
     status: 409,
     code: "pending-original",
   });
-  expect(store.collection(PROJECT, original.workspace).receipts).toHaveLength(1);
+  expect(store.collection(PROJECT, original.workspace).receipts).toHaveLength(
+    1,
+  );
 });
 
 test("an acknowledgment for one source revision never carries into the next", async () => {
@@ -132,10 +159,14 @@ test("an acknowledgment for one source revision never carries into the next", as
     requestId: "77c37127-1c22-4a2a-8e7d-69cc74ff1287",
     item: { ...original.item, sourceRevision: "notice-2" },
   };
-  expect(store.original(PROJECT, original.requestId, original.workspace)?.entry).toMatchObject({
+  expect(
+    store.original(PROJECT, original.requestId, original.workspace)?.entry,
+  ).toMatchObject({
     item: { sourceRevision: "notice-1" },
   });
-  expect(await store.reserve(PROJECT, next.workspace, next)).toMatchObject({ entry: null });
+  expect(await store.reserve(PROJECT, next.workspace, next)).toMatchObject({
+    entry: null,
+  });
   expect(await store.apply(PROJECT, next.workspace, next)).toMatchObject({
     entry: { item: { sourceRevision: "notice-2" }, revision: 1 },
   });
@@ -150,11 +181,16 @@ test("discard and apply serialize to one immutable terminal receipt", async () =
     store.discard(PROJECT, REQUEST, original.workspace, original),
   ]);
   const saved = store.original(PROJECT, REQUEST, original.workspace);
-  if (!saved) throw new Error("The terminal disposition receipt was not retained");
+  if (!saved)
+    throw new Error("The terminal disposition receipt was not retained");
   expect(saved.receipt.phase).toMatch(/^(applied|refused)$/);
   expect([applied.receipt, discarded.receipt]).toContainEqual(saved.receipt);
-  expect(await store.apply(PROJECT, original.workspace, original)).toEqual(saved);
-  expect(await store.discard(PROJECT, REQUEST, original.workspace, original)).toEqual(saved);
+  expect(await store.apply(PROJECT, original.workspace, original)).toEqual(
+    saved,
+  );
+  expect(
+    await store.discard(PROJECT, REQUEST, original.workspace, original),
+  ).toEqual(saved);
 });
 
 test("an apply arriving after explicit discard cannot create an entry", async () => {
@@ -186,9 +222,9 @@ test("a write that throws after rename is confirmed by exact readback", async ()
   });
   const saved = await store.reserve(PROJECT, original.workspace, original);
   expect(store.original(PROJECT, REQUEST, original.workspace)).toEqual(saved);
-  expect(readFileSync(join(home, "inbox-dispositions", "state.json"), "utf8")).toContain(
-    '"phase": "reserved"',
-  );
+  expect(
+    readFileSync(join(home, "inbox-dispositions", "state.json"), "utf8"),
+  ).toContain('"phase": "reserved"');
 });
 
 test("an apply that throws after persisting its entry returns the confirmed exact receipt", async () => {
@@ -210,7 +246,9 @@ test("an apply that throws after persisting its entry returns the confirmed exac
       outcome: "applied",
     },
   });
-  expect(store.original(PROJECT, original.requestId, original.workspace)).toEqual(applied);
+  expect(
+    store.original(PROJECT, original.requestId, original.workspace),
+  ).toEqual(applied);
 });
 
 test("an apply with an unconfirmable post-write outcome stays uncertain with 504", async () => {
@@ -227,7 +265,9 @@ test("an apply with an unconfirmable post-write outcome stays uncertain with 504
   });
   stateFile = join(home, "inbox-dispositions", "state.json");
   await store.reserve(PROJECT, original.workspace, original);
-  await expect(store.apply(PROJECT, original.workspace, original)).rejects.toMatchObject({
+  await expect(
+    store.apply(PROJECT, original.workspace, original),
+  ).rejects.toMatchObject({
     status: 504,
     code: "write-uncertain",
   });
@@ -244,7 +284,9 @@ test("a changed project catalog becomes a retained refusal with no app entry", a
     receipt: { phase: "refused", refusalCode: "catalog-changed" },
   });
   await createProjectStore(home).preferences(PROJECT, 2, { archived: true });
-  expect(store.original(PROJECT, original.requestId, original.workspace)).toEqual(saved);
+  expect(
+    store.original(PROJECT, original.requestId, original.workspace),
+  ).toEqual(saved);
 });
 
 test("a stale apply retains the newer entry and its original request", async () => {
@@ -283,20 +325,26 @@ test("entry and original limits refuse without evicting retained records", async
   await store.reserve(PROJECT, original.workspace, original);
   const withEntries = {
     ...store.read(),
-    entries: Array.from({ length: MAX_INBOX_DISPOSITION_ENTRIES }, (_, index) => ({
-      projectId: PROJECT,
-      workspace: original.workspace,
-      item: {
-        sourceKind: "unknown-bead-write" as const,
-        stableItemId: `bead-write:${index}`,
-        sourceRevision: "bounded-fixture",
-      },
-      revision: 1,
-      operation: "done" as const,
-      updatedAt: "2026-10-31T12:00:00.000Z",
-    })),
+    entries: Array.from(
+      { length: MAX_INBOX_DISPOSITION_ENTRIES },
+      (_, index) => ({
+        projectId: PROJECT,
+        workspace: original.workspace,
+        item: {
+          sourceKind: "unknown-bead-write" as const,
+          stableItemId: `bead-write:${index}`,
+          sourceRevision: "bounded-fixture",
+        },
+        revision: 1,
+        operation: "done" as const,
+        updatedAt: "2026-10-31T12:00:00.000Z",
+      }),
+    ),
   };
-  writeOwnerOnly(join(home, "inbox-dispositions", "state.json"), JSON.stringify(withEntries));
+  writeOwnerOnly(
+    join(home, "inbox-dispositions", "state.json"),
+    JSON.stringify(withEntries),
+  );
   const before = store.read();
   const next = {
     ...original,
@@ -305,27 +353,40 @@ test("entry and original limits refuse without evicting retained records", async
   };
   await store.reserve(PROJECT, next.workspace, next);
   const beforeApply = store.read();
-  await expect(store.apply(PROJECT, next.workspace, next)).rejects.toMatchObject({ code: "entry-limit" });
+  await expect(
+    store.apply(PROJECT, next.workspace, next),
+  ).rejects.toMatchObject({ code: "entry-limit" });
   expect(store.read()).toEqual(beforeApply);
   expect(store.read().entries).toEqual(before.entries);
 
-  const receipts = Array.from({ length: MAX_INBOX_DISPOSITION_ORIGINALS }, (_, index) => ({
-    original: {
-      ...original,
-      projectId: PROJECT,
-      requestId: `00000000-0000-4000-8000-${index.toString(16).padStart(12, "0")}`,
-      item: { ...original.item, stableItemId: `bead-write:retained-${index}` },
-    },
-    phase: "reserved" as const,
-    reservedAt: "2026-10-31T12:00:00.000Z",
-  }));
+  const receipts = Array.from(
+    { length: MAX_INBOX_DISPOSITION_ORIGINALS },
+    (_, index) => ({
+      original: {
+        ...original,
+        projectId: PROJECT,
+        requestId: `00000000-0000-4000-8000-${index.toString(16).padStart(12, "0")}`,
+        item: {
+          ...original.item,
+          stableItemId: `bead-write:retained-${index}`,
+        },
+      },
+      phase: "reserved" as const,
+      reservedAt: "2026-10-31T12:00:00.000Z",
+    }),
+  );
   const full = { version: 1 as const, entries: [], receipts };
-  writeOwnerOnly(join(home, "inbox-dispositions", "state.json"), JSON.stringify(full));
-  await expect(store.reserve(PROJECT, original.workspace, {
-    ...original,
-    requestId: "77c37127-1c22-4a2a-8e7d-69cc74ff1291",
-    item: { ...original.item, stableItemId: "bead-write:extra" },
-  })).rejects.toMatchObject({ code: "original-limit" });
+  writeOwnerOnly(
+    join(home, "inbox-dispositions", "state.json"),
+    JSON.stringify(full),
+  );
+  await expect(
+    store.reserve(PROJECT, original.workspace, {
+      ...original,
+      requestId: "77c37127-1c22-4a2a-8e7d-69cc74ff1291",
+      item: { ...original.item, stableItemId: "bead-write:extra" },
+    }),
+  ).rejects.toMatchObject({ code: "original-limit" });
   expect(store.read().receipts).toHaveLength(MAX_INBOX_DISPOSITION_ORIGINALS);
 });
 
@@ -343,17 +404,33 @@ test("semantically duplicate retained entries or pending fences fail closed", as
           ...reserved.receipts[0]!.original,
           requestId: "77c37127-1c22-4a2a-8e7d-69cc74ff1292",
           workspace: `${reserved.receipts[0]!.original.workspace}/`,
-          item: { ...reserved.receipts[0]!.original.item, sourceRevision: "notice-2" },
+          item: {
+            ...reserved.receipts[0]!.original.item,
+            sourceRevision: "notice-2",
+          },
         },
       },
     ],
   };
-  writeOwnerOnly(join(home, "inbox-dispositions", "state.json"), JSON.stringify(duplicatePending));
-  expect(thrown(() => store.read())).toMatchObject({ code: "storage-duplicate-identity" });
+  writeOwnerOnly(
+    join(home, "inbox-dispositions", "state.json"),
+    JSON.stringify(duplicatePending),
+  );
+  expect(thrown(() => store.read())).toMatchObject({
+    code: "storage-duplicate-identity",
+  });
 
   const appliedStore = fixture();
-  const saved = await appliedStore.store.reserve(PROJECT, appliedStore.original.workspace, appliedStore.original);
-  await appliedStore.store.apply(PROJECT, appliedStore.original.workspace, appliedStore.original);
+  const saved = await appliedStore.store.reserve(
+    PROJECT,
+    appliedStore.original.workspace,
+    appliedStore.original,
+  );
+  await appliedStore.store.apply(
+    PROJECT,
+    appliedStore.original.workspace,
+    appliedStore.original,
+  );
   const state = appliedStore.store.read();
   writeOwnerOnly(
     join(appliedStore.home, "inbox-dispositions", "state.json"),
@@ -365,7 +442,9 @@ test("semantically duplicate retained entries or pending fences fail closed", as
       ],
     }),
   );
-  expect(thrown(() => appliedStore.store.read())).toMatchObject({ code: "storage-duplicate-identity" });
+  expect(thrown(() => appliedStore.store.read())).toMatchObject({
+    code: "storage-duplicate-identity",
+  });
   expect(saved.receipt.phase).toBe("reserved");
 });
 
@@ -414,9 +493,15 @@ test("a hearth cannot reserve, apply, discard, or recover another workspace's or
       ],
     }),
   );
-  await expect(store.reserve(PROJECT, served, { ...original, workspace: foreign })).rejects.toMatchObject({ code: "workspace-not-served" });
-  await expect(store.apply(PROJECT, served, foreignOriginal)).rejects.toMatchObject({ code: "workspace-not-served" });
-  await expect(store.discard(PROJECT, foreignOriginal.requestId, served, foreignOriginal)).rejects.toMatchObject({ code: "workspace-not-served" });
+  await expect(
+    store.reserve(PROJECT, served, { ...original, workspace: foreign }),
+  ).rejects.toMatchObject({ code: "workspace-not-served" });
+  await expect(
+    store.apply(PROJECT, served, foreignOriginal),
+  ).rejects.toMatchObject({ code: "workspace-not-served" });
+  await expect(
+    store.discard(PROJECT, foreignOriginal.requestId, served, foreignOriginal),
+  ).rejects.toMatchObject({ code: "workspace-not-served" });
   expect(store.original(PROJECT, foreignOriginal.requestId, served)).toBeNull();
   expect(store.original(PROJECT, REQUEST, served)).toEqual(retained);
   expect(store.collection(PROJECT, served).receipts).toHaveLength(1);

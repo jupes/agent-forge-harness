@@ -393,7 +393,10 @@ async function readJsonBody(
     const source = read.bytes.toString("utf8");
     const value: unknown = JSON.parse(source);
     if (rejectDuplicateKeys && hasDuplicateObjectKeys(source))
-      return { ok: false, refusal: refuse(400, "Request body contains duplicate object keys") };
+      return {
+        ok: false,
+        refusal: refuse(400, "Request body contains duplicate object keys"),
+      };
     return { ok: true, value };
   } catch {
     return {

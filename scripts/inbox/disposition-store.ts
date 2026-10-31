@@ -1,31 +1,31 @@
 import { lstatSync } from "node:fs";
 import { join } from "node:path";
 import {
-  inboxDispositionEntrySchema,
-  inboxDispositionReceiptSchema,
-  inboxDispositionStoreSchema,
   type InboxDispositionEntry,
   type InboxDispositionOriginal,
   type InboxDispositionReceipt,
   type InboxDispositionStore,
   type InboxDispositionStoredOriginal,
+  inboxDispositionEntrySchema,
+  inboxDispositionReceiptSchema,
+  inboxDispositionStoreSchema,
 } from "../../types/inbox";
 import type { ProjectCatalog } from "../../types/projects";
-import { resolveCheckout } from "../ledger/workspace";
-import { workspaceKey } from "../projects/scope";
-import {
-  createProjectStore,
-  isProjectId,
-  projectWriteLockPath,
-  ProjectStoreError,
-} from "../projects/store";
-import { withQueueLock } from "../scheduler/queue-lock";
 import {
   ensurePrivateHome,
   readHomeFile,
   readHomeFileBounded,
 } from "../hearth/home-guard";
 import { writeOwnerOnly } from "../hearth/token";
+import { resolveCheckout } from "../ledger/workspace";
+import { workspaceKey } from "../projects/scope";
+import {
+  createProjectStore,
+  isProjectId,
+  ProjectStoreError,
+  projectWriteLockPath,
+} from "../projects/store";
+import { withQueueLock } from "../scheduler/queue-lock";
 
 export const MAX_INBOX_DISPOSITION_BYTES = 4 * 1024 * 1024;
 export const MAX_INBOX_DISPOSITION_ENTRIES = 1000;
@@ -73,7 +73,10 @@ const same = (left: unknown, right: unknown) => stable(left) === stable(right);
 
 /** Versioned acknowledgment identity includes the producer's source revision. */
 function inboxDispositionIdentityKey(
-  original: Pick<InboxDispositionStoredOriginal, "projectId" | "workspace" | "item">,
+  original: Pick<
+    InboxDispositionStoredOriginal,
+    "projectId" | "workspace" | "item"
+  >,
 ): string {
   return stable([
     1,
@@ -86,7 +89,10 @@ function inboxDispositionIdentityKey(
 }
 
 function pendingReservationFenceKey(
-  original: Pick<InboxDispositionStoredOriginal, "projectId" | "workspace" | "item">,
+  original: Pick<
+    InboxDispositionStoredOriginal,
+    "projectId" | "workspace" | "item"
+  >,
 ): string {
   return stable([
     1,
@@ -304,7 +310,11 @@ export function createInboxDispositionStore(
       catalog = projectStore.read();
     } catch (error) {
       if (error instanceof ProjectStoreError)
-        throw new InboxDispositionError(503, "catalog-unavailable", error.message);
+        throw new InboxDispositionError(
+          503,
+          "catalog-unavailable",
+          error.message,
+        );
       throw error;
     }
     const project = catalog.projects.find((item) => item.id === projectId);
@@ -356,14 +366,20 @@ export function createInboxDispositionStore(
   }
 
   function findReceipt(state: InboxDispositionStore, requestId: string) {
-    return state.receipts.find((receipt) => receipt.original.requestId === requestId);
+    return state.receipts.find(
+      (receipt) => receipt.original.requestId === requestId,
+    );
   }
 
   return {
     read,
     collection(projectId: string, servedWorkspace: string) {
       if (!isProjectId(projectId))
-        throw new InboxDispositionError(400, "project-id", "Expected a project id.");
+        throw new InboxDispositionError(
+          400,
+          "project-id",
+          "Expected a project id.",
+        );
       const state = read();
       const workspace = workspaceKey(servedWorkspace);
       const receipts = state.receipts.filter(
@@ -386,26 +402,35 @@ export function createInboxDispositionStore(
       servedWorkspace: string,
     ): InboxDispositionRecord | null {
       if (!isProjectId(projectId))
-        throw new InboxDispositionError(400, "project-id", "Expected a project id.");
+        throw new InboxDispositionError(
+          400,
+          "project-id",
+          "Expected a project id.",
+        );
       const state = read();
       const receipt = findReceipt(state, requestId);
       return receipt?.original.projectId === projectId &&
-        workspaceKey(receipt.original.workspace) === workspaceKey(servedWorkspace)
+        workspaceKey(receipt.original.workspace) ===
+          workspaceKey(servedWorkspace)
         ? receiptRecord(state, receipt)
         : null;
     },
-    reserve(projectId: string, servedWorkspace: string, body: InboxDispositionOriginal) {
+    reserve(
+      projectId: string,
+      servedWorkspace: string,
+      body: InboxDispositionOriginal,
+    ) {
       return locked(async () => {
         if (workspaceKey(body.workspace) !== workspaceKey(servedWorkspace))
-          throw new InboxDispositionError(409, "workspace-not-served", "This hearth cannot acknowledge an Inbox item from another workspace.");
+          throw new InboxDispositionError(
+            409,
+            "workspace-not-served",
+            "This hearth cannot acknowledge an Inbox item from another workspace.",
+          );
         const state = read();
         const previous = findReceipt(state, body.requestId);
         if (previous) {
-          const repeated = originalFor(
-            projectId,
-            body.workspace,
-            body,
-          );
+          const repeated = originalFor(projectId, body.workspace, body);
           if (!same(previous.original, repeated))
             throw new InboxDispositionError(
               409,
@@ -461,10 +486,18 @@ export function createInboxDispositionStore(
         return receiptRecord(saved, receipt);
       });
     },
-    apply(projectId: string, servedWorkspace: string, body: InboxDispositionOriginal) {
+    apply(
+      projectId: string,
+      servedWorkspace: string,
+      body: InboxDispositionOriginal,
+    ) {
       return locked(async () => {
         if (workspaceKey(body.workspace) !== workspaceKey(servedWorkspace))
-          throw new InboxDispositionError(409, "workspace-not-served", "This hearth cannot acknowledge an Inbox item from another workspace.");
+          throw new InboxDispositionError(
+            409,
+            "workspace-not-served",
+            "This hearth cannot acknowledge an Inbox item from another workspace.",
+          );
         const state = read();
         const saved = findReceipt(state, body.requestId);
         if (!saved || saved.original.projectId !== projectId)
@@ -473,11 +506,7 @@ export function createInboxDispositionStore(
             "reservation-missing",
             "The exact durable reservation is unavailable; no acknowledgment was applied.",
           );
-        const submitted = originalFor(
-          projectId,
-          body.workspace,
-          body,
-        );
+        const submitted = originalFor(projectId, body.workspace, body);
         if (!same(saved.original, submitted))
           throw new InboxDispositionError(
             409,
@@ -495,7 +524,8 @@ export function createInboxDispositionStore(
           if (currentWorkspace !== saved.original.workspace)
             refusal = {
               code: "workspace-changed",
-              reason: "The project's canonical workspace changed after reservation.",
+              reason:
+                "The project's canonical workspace changed after reservation.",
             };
         } catch (error) {
           if (error instanceof InboxDispositionError && error.status === 409)
@@ -506,7 +536,8 @@ export function createInboxDispositionStore(
         if (!refusal && (existing?.revision ?? 0) !== body.expectedRevision)
           refusal = {
             code: "entry-revision-changed",
-            reason: "The Inbox disposition changed after reservation; no acknowledgment was applied.",
+            reason:
+              "The Inbox disposition changed after reservation; no acknowledgment was applied.",
           };
         const stamp = now();
         if (refusal) {
@@ -557,7 +588,9 @@ export function createInboxDispositionStore(
         const next = {
           ...state,
           entries: [
-            ...state.entries.filter((item) => entryKey(item) !== entryKey(entry)),
+            ...state.entries.filter(
+              (item) => entryKey(item) !== entryKey(entry),
+            ),
             entry,
           ],
           receipts: state.receipts.map((item) =>
@@ -575,14 +608,26 @@ export function createInboxDispositionStore(
     ) {
       return locked(async () => {
         if (workspaceKey(body.workspace) !== workspaceKey(servedWorkspace))
-          throw new InboxDispositionError(409, "workspace-not-served", "This hearth cannot discard an Inbox original from another workspace.");
+          throw new InboxDispositionError(
+            409,
+            "workspace-not-served",
+            "This hearth cannot discard an Inbox original from another workspace.",
+          );
         const state = read();
         const saved = findReceipt(state, requestId);
         if (!saved || saved.original.projectId !== projectId)
-          throw new InboxDispositionError(404, "original-missing", "The exact Inbox original was not found.");
+          throw new InboxDispositionError(
+            404,
+            "original-missing",
+            "The exact Inbox original was not found.",
+          );
         const supplied = originalFor(projectId, body.workspace, body);
         if (requestId !== body.requestId || !same(saved.original, supplied))
-          throw new InboxDispositionError(409, "original-mismatch", "Discard must name the exact immutable original.");
+          throw new InboxDispositionError(
+            409,
+            "original-mismatch",
+            "Discard must name the exact immutable original.",
+          );
         if (saved.phase !== "reserved") return receiptRecord(state, saved);
         const receipt = inboxDispositionReceiptSchema.parse({
           original: saved.original,
@@ -591,7 +636,8 @@ export function createInboxDispositionStore(
           settledAt: now().toISOString(),
           outcome: "refused",
           refusalCode: "discarded",
-          refusalReason: "The reserved Inbox acknowledgment was explicitly discarded.",
+          refusalReason:
+            "The reserved Inbox acknowledgment was explicitly discarded.",
         });
         const next = {
           ...state,

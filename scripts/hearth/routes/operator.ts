@@ -57,6 +57,7 @@ import { beadRoutes } from "./beads";
 import { conversationRoutes } from "./conversations";
 import { postCouncilVerdict } from "./council-verdict";
 import { applyReview, localStateRoot } from "./dev-api";
+import { createInboxDispositionRoutes } from "./inbox-dispositions";
 import { createKeeperBriefPreparer } from "./keeper-briefs-source";
 import { keeperProposalRoutes } from "./keeper-proposals";
 import { keeperAboutValidator, keeperReadRoute } from "./keeper-read";
@@ -74,7 +75,6 @@ import {
   workspaceReads,
 } from "./operator-reads";
 import { createProjectActivityRoutes } from "./project-activity";
-import { createInboxDispositionRoutes } from "./inbox-dispositions";
 import { projectBeadWriteRoutes } from "./project-bead-writes";
 import { projectBeadsRoute } from "./project-beads";
 import { createProjectCheckpointReviewRoutes } from "./project-checkpoint-reviews";

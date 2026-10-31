@@ -33,8 +33,8 @@ import type {
   SessionSummary,
   SmithsView,
 } from "../../types/hearth";
-import type { OwnedSessionRecord } from "../../types/owned-session";
 import type { InboxDispositionOriginal } from "../../types/inbox";
+import type { OwnedSessionRecord } from "../../types/owned-session";
 import {
   type ProjectCheckpointReviewBinding,
   type ProjectCheckpointReviewOriginal,
@@ -91,9 +91,9 @@ import type { CouncilPreview } from "../council/service";
 import { parseCouncilProfileJson } from "../council/types";
 import { REVIEW_NOTE_LIMIT } from "../dashboard/forge-run-model";
 import { createProjectCheckpointReviewStore } from "../forge/project-checkpoint-review-store";
-import { createInboxDispositionStore } from "../inbox/disposition-store";
 import { hashText } from "../hash-text";
 import { createRestartIdentityJournal } from "../identities/restart-index";
+import { createInboxDispositionStore } from "../inbox/disposition-store";
 import {
   keeperBriefIntentMetadataSchema,
   keeperBriefIntentOriginalSchema,
@@ -655,7 +655,11 @@ test("the opt-in duplicate scanner scopes keys to their own objects across array
     effect: (input) => ({ status: 200, data: input }),
   };
   const h = await start({ api: { decorate: (routes) => [...routes, row] } });
-  const response = await post(h, row.path, '{"left":{"same":1},"right":{"same":2},"values":[{"same":3},{"same":4}]}');
+  const response = await post(
+    h,
+    row.path,
+    '{"left":{"same":1},"right":{"same":2},"values":[{"same":3},{"same":4}]}',
+  );
   expect(response.status).toBe(200);
   const duplicate = await post(h, row.path, '{"left":{"same":1,"same":2}}');
   expect(duplicate.status).toBe(400);
@@ -717,51 +721,48 @@ function post(
   });
 }
 
-test(
-  "POST /projects/:id/inbox-dispositions/requests retains an exact reservation",
-  async () => {
-    const h = await start();
-    const original = {
-      requestId: "5d82e460-f6c8-4a8d-85ad-8caa65af50e6",
-      expectedCatalogRevision: 1,
-      workspace: workspaceKey(h.workspace),
-      item: {
-        sourceKind: "unknown-bead-write",
-        stableItemId: "bead-write:api-fixture",
-        sourceRevision: "notice-1",
-      },
-      expectedRevision: 0,
-      operation: "snooze-1h",
+test("POST /projects/:id/inbox-dispositions/requests retains an exact reservation", async () => {
+  const h = await start();
+  const original = {
+    requestId: "5d82e460-f6c8-4a8d-85ad-8caa65af50e6",
+    expectedCatalogRevision: 1,
+    workspace: workspaceKey(h.workspace),
+    item: {
+      sourceKind: "unknown-bead-write",
+      stableItemId: "bead-write:api-fixture",
+      sourceRevision: "notice-1",
+    },
+    expectedRevision: 0,
+    operation: "snooze-1h",
+  };
+  const reservationPath = `/projects/${FIXTURE_PROJECT_ID}/inbox-dispositions/requests`;
+  const reserved = await post(h, reservationPath, original);
+  expect(reserved.status).toBe(200);
+  const reservedEnvelope = await envelope<{
+    entry: null;
+    receipt: {
+      original: typeof original & { projectId: string };
+      phase: string;
+      reservedAt: string;
     };
-    const reservationPath = `/projects/${FIXTURE_PROJECT_ID}/inbox-dispositions/requests`;
-    const reserved = await post(h, reservationPath, original);
-    expect(reserved.status).toBe(200);
-    const reservedEnvelope = await envelope<{
-      entry: null;
-      receipt: {
-        original: typeof original & { projectId: string };
-        phase: string;
-        reservedAt: string;
-      };
-    }>(reserved);
-    expect(reservedEnvelope.data).toMatchObject({
-      entry: null,
-      receipt: {
-        original: { ...original, projectId: FIXTURE_PROJECT_ID },
-        phase: "reserved",
-        reservedAt: expect.any(String),
-      },
-    });
+  }>(reserved);
+  expect(reservedEnvelope.data).toMatchObject({
+    entry: null,
+    receipt: {
+      original: { ...original, projectId: FIXTURE_PROJECT_ID },
+      phase: "reserved",
+      reservedAt: expect.any(String),
+    },
+  });
 
-    const recovered = await get(
-      h,
-      `${reservationPath}/${original.requestId}`,
-      h.headers(h.hearth.token),
-    );
-    expect(recovered.status).toBe(200);
-    expect((await envelope(recovered)).data).toEqual(reservedEnvelope.data);
-  },
-);
+  const recovered = await get(
+    h,
+    `${reservationPath}/${original.requestId}`,
+    h.headers(h.hearth.token),
+  );
+  expect(recovered.status).toBe(200);
+  expect((await envelope(recovered)).data).toEqual(reservedEnvelope.data);
+});
 
 test("Inbox action bodies reject decoded duplicate keys before audit but preserve escaped string content", async () => {
   const h = await start();
@@ -788,7 +789,10 @@ test("Inbox action bodies reject decoded duplicate keys before audit but preserv
   };
   const accepted = await post(h, path, escaped);
   expect(accepted.status).toBe(200);
-  expect((await envelope<{ receipt: { original: typeof escaped } }>(accepted)).data?.receipt.original.item).toEqual(escaped.item);
+  expect(
+    (await envelope<{ receipt: { original: typeof escaped } }>(accepted)).data
+      ?.receipt.original.item,
+  ).toEqual(escaped.item);
   expect(h.bd.calls).toHaveLength(sourceCalls);
 });
 
@@ -810,7 +814,11 @@ test("an A-workspace hearth refuses Inbox requests for a sibling project workspa
   const before = h.events();
   const reserve = await post(h, path, original);
   expect(reserve.status).toBe(400);
-  const exact = await get(h, `${path}/${original.requestId}`, h.headers(h.hearth.token));
+  const exact = await get(
+    h,
+    `${path}/${original.requestId}`,
+    h.headers(h.hearth.token),
+  );
   expect(exact.status).toBe(404);
   const discard = await post(
     h,
@@ -831,7 +839,8 @@ test("exact Inbox recovery remains read-only after the project is archived", asy
   const path = `/projects/${FIXTURE_PROJECT_ID}/inbox-dispositions/requests`;
   const reserved = await post(h, path, original);
   expect(reserved.status).toBe(200);
-  const receipt = (await envelope<{ receipt: { phase: string } }>(reserved)).data;
+  const receipt = (await envelope<{ receipt: { phase: string } }>(reserved))
+    .data;
   const beforeRead = h.events();
   await createProjectStore(h.home).preferences(FIXTURE_PROJECT_ID, 1, {
     archived: true,
@@ -1142,7 +1151,8 @@ async function prepareInboxAction(
 
 function expectInboxSourceUntouched(h: TestHearth): void {
   const before = inboxBdCallCounts.get(h);
-  if (before === undefined) throw new Error("Inbox source-call baseline was not captured");
+  if (before === undefined)
+    throw new Error("Inbox source-call baseline was not captured");
   expect(h.bd.calls.length).toBe(before);
 }
 
