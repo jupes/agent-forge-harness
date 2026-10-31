@@ -95,6 +95,21 @@ export function createGeminiChatDecisions(deps: {
     activation.sessionId === address.sessionId &&
     (address.workspace === undefined ||
       activation.workspace === address.workspace);
+  const sameReadScope = (
+    left: ChatDecisionScope | null,
+    right: ChatDecisionScope | null,
+  ) =>
+    !!left &&
+    !!right &&
+    left.projectId === right.projectId &&
+    left.workspace === right.workspace &&
+    left.sessionId === right.sessionId &&
+    left.provider === "gemini" &&
+    right.provider === "gemini";
+  const sameHeldIdentity = (
+    left: GeminiChatDecisionIdentity | null,
+    right: GeminiChatDecisionIdentity,
+  ) => !!left && JSON.stringify(left) === JSON.stringify(right);
   const normalize = (address: Address | null): ChatDecisionActivation | null =>
     address
       ? {
@@ -308,7 +323,17 @@ export function createGeminiChatDecisions(deps: {
       const entry = selected;
       if (!entry || entry.checking || entry.posting) return;
       const current = generation,
-        activation = entry.activation;
+        activation = entry.activation,
+        scopeAtStart = deps.scopeCurrent?.() ?? null;
+      if (
+        deps.scopeCurrent &&
+        (!scopeAtStart ||
+          scopeAtStart.projectId !== entry.projectId ||
+          scopeAtStart.workspace !== (entry.activation?.workspace ?? "") ||
+          scopeAtStart.sessionId !== entry.sessionId ||
+          scopeAtStart.provider !== "gemini")
+      )
+        return;
       hydrate(entry);
       const identity = entry.identity;
       if (!identity) return;
@@ -319,12 +344,15 @@ export function createGeminiChatDecisions(deps: {
         const page = geminiChatApprovalPageSchema.parse(
           await deps.read(entry.projectId, entry.sessionId, identity.requestId),
         );
-        if (
-          current !== generation ||
-          selected !== entry ||
-          !sameActivation(entry.activation, activation)
-        )
+        if (selected !== entry || !sameHeldIdentity(entry.identity, identity))
           return;
+        if (deps.scopeCurrent) {
+          const scopeAfterRead = deps.scopeCurrent();
+          if (!sameReadScope(scopeAtStart, scopeAfterRead)) return;
+        } else if (
+          current !== generation ||
+          !sameActivation(entry.activation, activation)
+        ) return;
         if (page.pending.length)
           throw Error(
             "An original receipt read cannot advertise live approvals.",

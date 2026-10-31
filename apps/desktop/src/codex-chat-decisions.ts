@@ -138,6 +138,21 @@ export function createCodexChatDecisions(deps: {
     !!entry.turnRequestId &&
     deps.canWrite() &&
     (!deps.current || sameActivation(entry.activation, deps.current()));
+  const sameReadScope = (
+    left: ChatDecisionScope | null,
+    right: ChatDecisionScope | null,
+  ) =>
+    !!left &&
+    !!right &&
+    left.projectId === right.projectId &&
+    left.workspace === right.workspace &&
+    left.sessionId === right.sessionId &&
+    left.provider === "codex" &&
+    right.provider === "codex";
+  const sameHeldIdentity = (
+    left: CodexChatDecisionIdentity | null,
+    right: CodexChatDecisionIdentity,
+  ) => !!left && JSON.stringify(left) === JSON.stringify(right);
   const confirm = async (entry: CodexChatDecisionView, raw: unknown) => {
     const parsed = codexChatDecisionReceiptSchema.safeParse(raw),
       identity = entry.identity;
@@ -288,7 +303,17 @@ export function createCodexChatDecisions(deps: {
       const entry = selected;
       if (!entry || entry.checking || entry.posting) return;
       const current = generation,
-        activation = entry.activation;
+        activation = entry.activation,
+        scopeAtStart = deps.scopeCurrent?.() ?? null;
+      if (
+        deps.scopeCurrent &&
+        (!scopeAtStart ||
+          scopeAtStart.projectId !== entry.projectId ||
+          scopeAtStart.workspace !== (entry.activation?.workspace ?? "") ||
+          scopeAtStart.sessionId !== entry.sessionId ||
+          scopeAtStart.provider !== "codex")
+      )
+        return;
       hydrate(entry);
       const identity = entry.identity;
       if (!identity) return;
@@ -299,12 +324,15 @@ export function createCodexChatDecisions(deps: {
         const page = codexChatApprovalPageSchema.parse(
           await deps.read(entry.projectId, entry.sessionId, identity.requestId),
         );
-        if (
-          current !== generation ||
-          selected !== entry ||
-          !sameActivation(entry.activation, activation)
-        )
+        if (selected !== entry || !sameHeldIdentity(entry.identity, identity))
           return;
+        if (deps.scopeCurrent) {
+          const scopeAfterRead = deps.scopeCurrent();
+          if (!sameReadScope(scopeAtStart, scopeAfterRead)) return;
+        } else if (
+          current !== generation ||
+          !sameActivation(entry.activation, activation)
+        ) return;
         if (page.pending.length)
           throw Error(
             "An original receipt read cannot advertise live approvals.",
