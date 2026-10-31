@@ -652,6 +652,21 @@ test("an attended prompt uses ordinary Preview and one identity-bound Start afte
       streamEvent(kind: string, reason: "events" | "resync") {
         add(stream, { kind, reason, at: performance.now(), ...ui() });
       },
+      admissionReady() {
+        if (overflow) return false;
+        const baseline = markers.filter((item) => item.label === "before-preview").at(-1)?.at;
+        if (typeof baseline !== "number") return false;
+        const events = stream.filter((item) => item.kind === "operator.action" && item.reason === "events" && typeof item.at === "number" && item.at > baseline);
+        const reads = identities.filter((item) => typeof item.startedAt === "number" && item.startedAt > baseline);
+        const read = reads.at(-1);
+        const action = events.at(-1);
+        if (!read || !action || typeof read.startedAt !== "number" || typeof read.headersAt !== "number" || typeof action.at !== "number" || action.at >= read.startedAt) return false;
+        if (read.headerStage !== "headers-received" || read.status !== 200 || read.headersAt < read.startedAt) return false;
+        const requestUi = read.requestUi as { checking?: unknown } | null;
+        const headerUi = read.headerUi as { checking?: unknown } | null;
+        const current = ui();
+        return (requestUi?.checking === true || headerUi?.checking === true) && current.identitySection && !current.checking && !current.statusWarning && current.startDisabled === false;
+      },
       addDisposer(dispose: () => void) {
         disposers.push(dispose);
       },
@@ -769,12 +784,6 @@ test("an attended prompt uses ordinary Preview and one identity-bound Start afte
   await preparation
     .getByLabel("Feature description")
     .fill("One reviewed request");
-  await page.evaluate(() => {
-    const state = Reflect.get(window, "__cla5_96_attended_diagnostic") as {
-      mark(label: string): void;
-    };
-    state.mark("before-preview");
-  });
   await preparation
     .getByRole("button", { name: "Review generated prompt" })
     .click();
@@ -794,10 +803,22 @@ test("an attended prompt uses ordinary Preview and one identity-bound Start afte
     composer.getByLabel("Session prompt", { exact: true }),
   ).toHaveValue(expectedPrompt);
   await composer.getByLabel("Session effort", { exact: true }).selectOption("");
+  await page.evaluate(() => {
+    const state = Reflect.get(window, "__cla5_96_attended_diagnostic") as {
+      mark(label: string): void;
+    };
+    state.mark("before-preview");
+  });
   await composer
     .getByRole("button", { name: "Check supported options", exact: true })
     .click();
   const start = composer.getByRole("button", { name: "Start", exact: true });
+  await expect.poll(() => page.evaluate(() => {
+    const state = Reflect.get(window, "__cla5_96_attended_diagnostic") as {
+      admissionReady(): boolean;
+    };
+    return state.admissionReady();
+  })).toBe(true);
   await expect(start).toBeEnabled();
 
   let holdRecovery = false;
