@@ -150,8 +150,9 @@ test("discard and apply serialize to one immutable terminal receipt", async () =
     store.discard(PROJECT, REQUEST, original.workspace, original),
   ]);
   const saved = store.original(PROJECT, REQUEST, original.workspace);
-  expect(saved?.receipt.phase).toMatch(/^(applied|refused)$/);
-  expect([applied.receipt, discarded.receipt]).toContainEqual(saved?.receipt);
+  if (!saved) throw new Error("The terminal disposition receipt was not retained");
+  expect(saved.receipt.phase).toMatch(/^(applied|refused)$/);
+  expect([applied.receipt, discarded.receipt]).toContainEqual(saved.receipt);
   expect(await store.apply(PROJECT, original.workspace, original)).toEqual(saved);
   expect(await store.discard(PROJECT, REQUEST, original.workspace, original)).toEqual(saved);
 });

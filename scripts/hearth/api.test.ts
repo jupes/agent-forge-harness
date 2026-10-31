@@ -1141,7 +1141,9 @@ async function prepareInboxAction(
 }
 
 function expectInboxSourceUntouched(h: TestHearth): void {
-  expect(h.bd.calls.length).toBe(inboxBdCallCounts.get(h));
+  const before = inboxBdCallCounts.get(h);
+  if (before === undefined) throw new Error("Inbox source-call baseline was not captured");
+  expect(h.bd.calls.length).toBe(before);
 }
 
 async function seedInboxRead(h: TestHearth): Promise<void> {

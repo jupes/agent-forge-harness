@@ -24,7 +24,10 @@ const original = {
   expectedRevision: 0,
   operation: "done",
 };
-const request = (body?: unknown, params = { id: project }): RouteRequest => ({
+const request = (
+  body?: unknown,
+  params: RouteRequest["params"] = { id: project },
+): RouteRequest => ({
   params,
   query: new URLSearchParams(),
   headers: {},
