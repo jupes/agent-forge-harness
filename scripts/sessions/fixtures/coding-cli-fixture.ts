@@ -4,7 +4,11 @@ import { randomUUID } from "node:crypto";
 import { writeWhole } from "../../executors/fixtures/write-whole";
 import { claudeReportedActivity } from "./reported-activity";
 
-export async function runCodingCliFixture() {
+export type CodingCliFixtureEntry =
+  | { kind: "source"; path: string }
+  | { kind: "compiled" };
+
+export async function runCodingCliFixture(entry: CodingCliFixtureEntry) {
   const argv = process.argv.slice(2);
   const mode = process.env["CODING_FIXTURE_MODE"] ?? "normal";
   if (argv.length === 1 && argv[0] === "--fixture-stop-helper") {
@@ -41,8 +45,12 @@ export async function runCodingCliFixture() {
     if (mode === "hang-tree" || mode === "helper-smoke") {
       const helperMode =
         mode === "hang-tree" ? "stop-helper" : "stop-helper-smoke";
+      const helperCommand =
+        entry.kind === "source"
+          ? [process.execPath, entry.path, "--fixture-stop-helper"]
+          : [process.execPath, "--fixture-stop-helper"];
       const helper = Bun.spawn(
-        [process.execPath, "--fixture-stop-helper"],
+        helperCommand,
         {
           env: {
             ...process.env,
