@@ -149,6 +149,14 @@ export function createInboxDispositionRoutes(
       }
     },
   };
+  const recovery: ReadRoute<null> = {
+    kind: "read",
+    method: "GET",
+    operatorOnly: true,
+    path: "/inbox-dispositions/recovery",
+    validate: noParameters,
+    read: () => answer(() => store.recovery()),
+  };
   const discard: ActionRoute<{
     projectId: string;
     requestId: string;
@@ -186,7 +194,7 @@ export function createInboxDispositionRoutes(
     },
   };
   return {
-    reads: [list, exact] as const,
+    reads: [list, exact, recovery] as const,
     actions: [reserve, apply, discard] as const,
   };
 }

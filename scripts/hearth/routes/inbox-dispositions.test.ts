@@ -43,6 +43,7 @@ test("Inbox rows are protected reads and the three audited actions", () => {
   ).toEqual([
     "GET /projects/:id/inbox-dispositions",
     "GET /projects/:id/inbox-dispositions/requests/:requestId",
+    "GET /inbox-dispositions/recovery",
     "POST /projects/:id/inbox-dispositions/requests",
     "POST /projects/:id/inbox-dispositions",
     "POST /projects/:id/inbox-dispositions/requests/:requestId/discard",
@@ -67,12 +68,18 @@ test("route validators reject query drift, malformed IDs, and extra original fie
   const routes = createInboxDispositionRoutes("C:/private", "C:/work/project");
   const list = routes.reads[0];
   const exact = routes.reads[1];
+  const recovery = routes.reads[2];
   const reserve = routes.actions[0];
   const apply = routes.actions[1];
   const discard = routes.actions[2];
   expect(list?.validate(request()).ok).toBe(true);
   expect(
     list?.validate({ ...request(), query: new URLSearchParams("unknown=1") })
+      .ok,
+  ).toBe(false);
+  expect(recovery?.validate(request()).ok).toBe(true);
+  expect(
+    recovery?.validate({ ...request(), query: new URLSearchParams("unknown=1") })
       .ok,
   ).toBe(false);
   expect(

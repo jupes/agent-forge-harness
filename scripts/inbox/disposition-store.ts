@@ -3,10 +3,12 @@ import { join } from "node:path";
 import {
   type InboxDispositionEntry,
   type InboxDispositionOriginal,
+  type InboxDispositionRecovery,
   type InboxDispositionReceipt,
   type InboxDispositionStore,
   type InboxDispositionStoredOriginal,
   inboxDispositionEntrySchema,
+  inboxDispositionRecoverySchema,
   inboxDispositionReceiptSchema,
   inboxDispositionStoreSchema,
 } from "../../types/inbox";
@@ -373,6 +375,14 @@ export function createInboxDispositionStore(
 
   return {
     read,
+    recovery(): InboxDispositionRecovery {
+      const state = read();
+      return inboxDispositionRecoverySchema.parse({
+        version: 1,
+        complete: true,
+        receipts: state.receipts,
+      });
+    },
     collection(projectId: string, servedWorkspace: string) {
       if (!isProjectId(projectId))
         throw new InboxDispositionError(
