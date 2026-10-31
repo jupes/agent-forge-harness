@@ -66,6 +66,93 @@ test("projects load through the hearth and audited preferences survive a fresh r
   expect(store.read().projects[0]?.archived).toBe(false);
 });
 
+test("POST /projects/:id/settings/general updates the current project through the protected route", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  const store = createProjectStore(h.home);
+  const created = await store.create(
+    {
+      slug: "alpha",
+      name: "Alpha",
+      description: "Before",
+      icon: "A",
+      color: "blue",
+      keeperSmith: "claude-master",
+      workspaces: [
+        {
+          root: h.workspace,
+          repositories: [h.workspace],
+          epicIds: ["alpha-epic"],
+        },
+      ],
+    },
+    0,
+  );
+  const original = created.projects[0];
+  if (!original) throw new Error("project fixture missing");
+  const read = await fetch(`${h.api}/projects`, { headers: h.headers() });
+  expect(read.status).toBe(200);
+  expect(await read.json()).toEqual({ ok: true, data: created, error: null });
+
+  const response = await fetch(
+    `${h.api}/projects/${original.id}/settings/general`,
+    {
+      method: "POST",
+      headers: h.headers(h.hearth.token),
+      body: JSON.stringify({
+        expectedRevision: created.revision,
+        general: {
+          name: "Alpha renamed",
+          description: "Updated description",
+          icon: "G",
+          color: "green",
+        },
+      }),
+    },
+  );
+  expect(response.status).toBe(200);
+  expect(await response.json()).toMatchObject({
+    ok: true,
+    error: null,
+    data: {
+      revision: created.revision + 1,
+      projects: [
+        {
+          id: original.id,
+          slug: original.slug,
+          name: "Alpha renamed",
+          description: "Updated description",
+          icon: "G",
+          color: "green",
+          workspaces: original.workspaces,
+          keeperSmith: original.keeperSmith,
+          pinned: original.pinned,
+          archived: original.archived,
+          createdAt: original.createdAt,
+        },
+      ],
+    },
+  });
+  expect(store.read().projects[0]).toMatchObject({
+    id: original.id,
+    slug: original.slug,
+    name: "Alpha renamed",
+    description: "Updated description",
+    icon: "G",
+    color: "green",
+    workspaces: original.workspaces,
+    keeperSmith: original.keeperSmith,
+    pinned: original.pinned,
+    archived: original.archived,
+    createdAt: original.createdAt,
+  });
+  expect(h.events(["operator.action"])).toHaveLength(1);
+  expect(h.events(["operator.action"])[0]?.payload).toMatchObject({
+    action: "project.settings.general",
+    target: original.id,
+  });
+});
+
 test("protected project-create options expose complete trusted choices without writes", async () => {
   const h = await startTestHearth();
   opened.push(h);
