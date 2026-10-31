@@ -114,10 +114,10 @@ test("Inbox offers the current permission inline beside retained unknown writes"
       frame.event.kind === "coding-chat" &&
       frame.event.event.kind === "approval-request",
   )?.event;
-  if (
-    originalOffer?.kind !== "coding-chat" ||
-    originalOffer.event.kind !== "approval-request"
-  )
+  if (originalOffer?.kind !== "coding-chat")
+    throw Error("The valid Inbox permission fixture has no original offer.");
+  const originalEvent = originalOffer.event;
+  if (originalEvent.kind !== "approval-request")
     throw Error("The valid Inbox permission fixture has no original offer.");
 
   const token = await pageToken(page);
@@ -156,7 +156,7 @@ test("Inbox offers the current permission inline beside retained unknown writes"
     setupEnvelope.data.data.pending.some(
       (pending) =>
         pending.turnRequestId === session.requestId &&
-        pending.approval.id === originalOffer.event.approval.id &&
+        pending.approval.id === originalEvent.approval.id &&
         pending.approval.availableDecisions.includes("accept"),
     ),
   ).toBe(true);
