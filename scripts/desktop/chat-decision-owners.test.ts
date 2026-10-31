@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import {
-  createChatDecisionOwners,
   type ChatDecisionActivation,
+  createChatDecisionOwners,
 } from "../../apps/desktop/src/chat-decision-owners";
 
 const projectId = "project-a5832fa0-7a21-403b-8184-44892f0d8d86",

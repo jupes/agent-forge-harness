@@ -1,11 +1,11 @@
 import { expect, test } from "bun:test";
+import type { ChatDecisionActivation } from "../../apps/desktop/src/chat-decision-owners";
+import type { GeminiChatDecisionAddress } from "../../apps/desktop/src/gemini-chat-authority";
 import {
   createGeminiChatDecisionIdentities,
   GEMINI_CHAT_DECISION_IDENTITIES,
 } from "../../apps/desktop/src/gemini-chat-decision-identities";
 import { createGeminiChatDecisions } from "../../apps/desktop/src/gemini-chat-decisions";
-import type { ChatDecisionActivation } from "../../apps/desktop/src/chat-decision-owners";
-import type { GeminiChatDecisionAddress } from "../../apps/desktop/src/gemini-chat-authority";
 import { sessionStartFixture } from "./session-start-fixture";
 
 const projectId = "project-a5832fa0-7a21-403b-8184-44892f0d8d86",

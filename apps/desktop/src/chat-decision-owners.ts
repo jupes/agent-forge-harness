@@ -81,17 +81,15 @@ export function createChatDecisionOwners(
   let codexGeneration = 0;
   let geminiGeneration = 0;
   const current = (address: ChatDecisionActivation | null) =>
-    !!address &&
-    currentAuthority.current.isCurrent(address);
+    !!address && currentAuthority.current.isCurrent(address);
   const writable = (address: ChatDecisionActivation | null) =>
-    !!address &&
-    current(address) &&
-    currentAuthority.current.canWrite(address);
+    !!address && current(address) && currentAuthority.current.canWrite(address);
 
   const codex = createCodexChatDecisions({
     identities: createCodexChatDecisionIdentities({
       storage: platform.storage,
-      withLock: (work) => platform.withLock(CODEX_CHAT_DECISION_IDENTITIES, work),
+      withLock: (work) =>
+        platform.withLock(CODEX_CHAT_DECISION_IDENTITIES, work),
     }),
     canWrite: () => writable(codexAddress),
     current: () => (current(codexAddress) ? codexAddress : null),
@@ -114,7 +112,8 @@ export function createChatDecisionOwners(
   const gemini = createGeminiChatDecisions({
     identities: createGeminiChatDecisionIdentities({
       storage: platform.storage,
-      withLock: (work) => platform.withLock(GEMINI_CHAT_DECISION_IDENTITIES, work),
+      withLock: (work) =>
+        platform.withLock(GEMINI_CHAT_DECISION_IDENTITIES, work),
     }),
     canWrite: () => writable(geminiAddress),
     current: () => (current(geminiAddress) ? geminiAddress : null),
@@ -135,19 +134,31 @@ export function createChatDecisionOwners(
       ),
   });
 
-  const { activate: activateCodex, dispose: disposeCodex, ...codexPublic } = codex;
-  const { activate: activateGemini, dispose: disposeGemini, ...geminiPublic } = gemini;
+  const {
+    activate: activateCodex,
+    dispose: disposeCodex,
+    ...codexPublic
+  } = codex;
+  const {
+    activate: activateGemini,
+    dispose: disposeGemini,
+    ...geminiPublic
+  } = gemini;
   const sharedCodex = Object.assign({}, codexPublic, {
     activate(address: Omit<ChatDecisionActivation, "generation"> | null) {
       codexGeneration++;
-      codexAddress = address ? { ...address, generation: codexGeneration } : null;
+      codexAddress = address
+        ? { ...address, generation: codexGeneration }
+        : null;
       activateCodex(codexAddress);
     },
   }) as SharedClient<CodexClient>;
   const sharedGemini = Object.assign({}, geminiPublic, {
     activate(address: Omit<ChatDecisionActivation, "generation"> | null) {
       geminiGeneration++;
-      geminiAddress = address ? { ...address, generation: geminiGeneration } : null;
+      geminiAddress = address
+        ? { ...address, generation: geminiGeneration }
+        : null;
       activateGemini(geminiAddress);
     },
   }) as SharedClient<GeminiClient>;

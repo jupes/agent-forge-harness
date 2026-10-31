@@ -9,8 +9,8 @@ import type {
   GeminiChatDecisionReceipt,
   GeminiChatDecisionRequest,
 } from "../../../types/gemini-owned-chat";
-import type { GeminiChatDecisionAddress } from "./gemini-chat-authority";
 import type { ChatDecisionActivation } from "./chat-decision-owners";
+import type { GeminiChatDecisionAddress } from "./gemini-chat-authority";
 import {
   decisionBody,
   GeminiChatDecisionChanged,
@@ -35,7 +35,12 @@ export interface GeminiChatDecisionView {
   activation: ChatDecisionActivation | null;
 }
 type Address = GeminiChatDecisionAddress &
-  Partial<Pick<ChatDecisionActivation, "workspace" | "acceptedTurnId" | "requestId" | "generation">>;
+  Partial<
+    Pick<
+      ChatDecisionActivation,
+      "workspace" | "acceptedTurnId" | "requestId" | "generation"
+    >
+  >;
 /** Owns original decisions, never native callbacks. History reads cannot resend or answer a live offer. */
 export function createGeminiChatDecisions(deps: {
   identities: GeminiChatDecisionIdentities;
@@ -82,8 +87,7 @@ export function createGeminiChatDecisions(deps: {
           projectId: address.projectId,
           workspace: address.workspace ?? "",
           sessionId: address.sessionId,
-          acceptedTurnId:
-            address.acceptedTurnId ?? address.turnRequestId ?? "",
+          acceptedTurnId: address.acceptedTurnId ?? address.turnRequestId ?? "",
           requestId: address.requestId ?? null,
           generation: address.generation ?? generation,
           turnRequestId: address.turnRequestId,
@@ -205,11 +209,7 @@ export function createGeminiChatDecisions(deps: {
     view() {
       const current = observed(),
         entry = selected;
-      if (
-        !entry ||
-        !sameActivation(entry.activation, current)
-      )
-        return null;
+      if (!entry || !sameActivation(entry.activation, current)) return null;
       // Synchronous projection must not wait for the activation effect. Retain
       // same-scope original receipts, but never old live offers for a new turn.
       return live(entry, current ?? undefined)
@@ -264,7 +264,9 @@ export function createGeminiChatDecisions(deps: {
             )
           : page.pending;
         if (entry.activation?.requestId && pending.length !== 1)
-          throw Error("The exact original approval offer is no longer pending.");
+          throw Error(
+            "The exact original approval offer is no longer pending.",
+          );
         entry.pending = pending;
       } catch {
         if (current === generation) {

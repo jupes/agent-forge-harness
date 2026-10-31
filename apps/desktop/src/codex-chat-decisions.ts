@@ -85,8 +85,7 @@ export function createCodexChatDecisions(deps: {
           projectId: address.projectId,
           workspace: address.workspace ?? "",
           sessionId: address.sessionId,
-          acceptedTurnId:
-            address.acceptedTurnId ?? address.turnRequestId ?? "",
+          acceptedTurnId: address.acceptedTurnId ?? address.turnRequestId ?? "",
           requestId: address.requestId ?? null,
           generation: address.generation ?? generation,
           turnRequestId: address.turnRequestId,
@@ -253,7 +252,9 @@ export function createCodexChatDecisions(deps: {
             )
           : page.pending;
         if (entry.activation?.requestId && pending.length !== 1)
-          throw Error("The exact original approval offer is no longer pending.");
+          throw Error(
+            "The exact original approval offer is no longer pending.",
+          );
         entry.pending = pending;
       } catch {
         if (current === generation) {
@@ -417,8 +418,7 @@ export function createCodexChatDecisions(deps: {
           !live(entry) ||
           selected !== entry ||
           entry.activation?.generation !== activation?.generation ||
-          (deps.current &&
-            !sameActivation(entry.activation, deps.current()))
+          (deps.current && !sameActivation(entry.activation, deps.current()))
         ) {
           await deps.identities.release(reserved.identity);
           entry.identity = null;
@@ -436,8 +436,7 @@ export function createCodexChatDecisions(deps: {
           generation === dispatchGeneration &&
           selected === entry &&
           entry.activation?.generation === activation?.generation &&
-          (!deps.current ||
-            sameActivation(entry.activation, deps.current()));
+          (!deps.current || sameActivation(entry.activation, deps.current()));
         if (result.state === "done") await confirm(entry, result.data);
         else if (!stillCurrent)
           entry.notice =

@@ -6,6 +6,7 @@ import { EmptyState } from "../../../docs/js/ds/EmptyState";
 import type { KeeperProposal } from "../../../types/keeper-proposal";
 import { BeadWriteNotices, NewBeadForm } from "./BeadWrites";
 import { ConnectionBanner, useDesktopRecovery } from "./ConnectionBanner";
+import { useChatDecisionOwners } from "./chat-decision-owners";
 import type { FrameSession } from "./DesktopFrame";
 import { DesktopFrame } from "./DesktopFrame";
 import {
@@ -83,7 +84,6 @@ import {
 } from "./session-continuation";
 import type { VerifiedSessionIdentityScope } from "./session-start-identity-server";
 import { useBeadWrites } from "./use-bead-writes";
-import { useChatDecisionOwners } from "./chat-decision-owners";
 import { useBeads } from "./use-beads";
 import { useKeeper } from "./use-keeper";
 import { useKeeperProposals } from "./use-keeper-proposals";
@@ -746,9 +746,7 @@ export function DesktopApp(): JSX.Element {
       // conversation live and cannot be the cross-project authority here.
       if (actualRoute.destination === "inbox")
         return Boolean(
-          projectScopeCurrent &&
-            address.requestId &&
-            address.acceptedTurnId,
+          projectScopeCurrent && address.requestId && address.acceptedTurnId,
         );
       return Boolean(
         projectScopeCurrent &&
