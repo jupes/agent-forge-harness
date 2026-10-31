@@ -454,7 +454,7 @@ test("source and compiled coding fixture entries reach the explicit non-recursiv
     let outputLimitExceeded = false;
     let spawnError = false;
     try {
-      const result = Bun.spawnSync(entry.command, {
+      const result = Bun.spawnSync([...entry.command], {
         cwd: f.root,
         env: { ...f.environment, CODING_FIXTURE_RECORD: recordPath },
         stdin: "ignore",
