@@ -32,7 +32,7 @@ import { alpha, seedKeeper, seedProjects, workspace } from "./project-fixtures";
 test.beforeEach(() => seedProjects());
 
 function savedCouncilReadFixtures(requestId: string) {
-  const profilePath = join(import.meta.dir, "../../councils/default.json");
+  const profilePath = join(process.cwd(), "councils/default.json");
   const parsedProfile = parseCouncilProfileJson(
     readFileSync(profilePath, "utf8"),
   );
