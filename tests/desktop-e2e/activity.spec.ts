@@ -346,7 +346,6 @@ test("verified original Shift Activity is distinct from Attend and clears after 
     {
       kind: "shift.started",
       workspace,
-      shiftId,
       payload: { shiftId, concurrency: 1, durationMs: 300_000, maxBeads: 1 },
     },
   ]);
