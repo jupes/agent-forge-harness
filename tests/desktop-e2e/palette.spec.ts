@@ -28,7 +28,13 @@ import {
 import { projectCouncilRunReadSchema } from "../../types/project-council-run-read";
 import { openSettled } from "../e2e/fixtures";
 import { HEARTH_HOME } from "../e2e/servers";
-import { alpha, seedKeeper, seedProjects, workspace } from "./project-fixtures";
+import {
+  alpha,
+  beta,
+  seedKeeper,
+  seedProjects,
+  workspace,
+} from "./project-fixtures";
 
 test.beforeEach(() => seedProjects());
 
@@ -293,21 +299,388 @@ test("expired palette selection stays open with a refresh path and performs no w
   await expect(option).toBeVisible();
   await expect(search).toBeFocused();
   await expect(option).toHaveAttribute("aria-selected", "true");
-  await page.route(`**/projects/${alpha.id}/beads*`, async (route) => {
-    await new Promise((resolve) => setTimeout(resolve, 900));
-    await route.continue();
+  const coverage = dialog
+    .getByRole("status")
+    .filter({ hasText: "Source coverage:" });
+  await expect
+    .poll(async () => {
+      const statuses = await dialog.getByRole("status").allInnerTexts();
+      return statuses.some((status) =>
+        /loading|Refreshing verified results/i.test(status),
+      );
+    })
+    .toBe(false);
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) =>
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+      ),
+  );
+  const initialCoverage = await coverage.innerText();
+  expect(initialCoverage).toContain("Beads: available");
+
+  let releaseBeads!: () => void;
+  let releaseBetaBeads!: () => void;
+  let releaseSummary!: () => void;
+  const started = { beads: false, betaBeads: false, summary: false };
+  let evidenceCaptured = false;
+  let activeRouteHandlers = 0;
+  let routeContinuationFailures = 0;
+  let signalRoutesIdle: (() => void) | undefined;
+  const beadsGate = new Promise<void>((resolve) => {
+    releaseBeads = resolve;
   });
-  await page.evaluate(() => {
-    const now = Date.now();
-    Date.now = () => now + 31_000;
+  const betaBeadsGate = new Promise<void>((resolve) => {
+    releaseBetaBeads = resolve;
   });
-  await page.keyboard.press("Enter");
-  await expect(dialog).toBeVisible();
-  await expect(dialog.getByRole("alert")).toContainText("This result changed");
-  await expect(
-    dialog.getByRole("button", { name: "Refresh results" }),
-  ).toBeVisible();
-  expect(writes).toEqual([]);
+  const summaryGate = new Promise<void>((resolve) => {
+    releaseSummary = resolve;
+  });
+  const beadsPattern = `**/projects/${alpha.id}/beads*`;
+  const betaBeadsPattern = `**/projects/${beta.id}/beads*`;
+  const summaryPattern = "**/projects/summary";
+  type PaletteDomEvidence = {
+    warningPresent: boolean;
+    coverage: {
+      beadsAvailable: boolean;
+      beadsLoading: boolean;
+      sessionsAvailable: boolean;
+      sessionsLoading: boolean;
+    };
+    refreshVisible: boolean;
+    refreshingMarker: boolean;
+    dialogOpen: boolean;
+  };
+  const captureEvidence = async () => {
+    const evidence = await page.evaluate(() => {
+      type PaletteObserver = {
+        initial: PaletteDomEvidence;
+        events: PaletteDomEvidence[];
+        warningMutations: Array<{
+          inserted: boolean;
+          coverage: PaletteDomEvidence["coverage"];
+          dialogOpen: boolean;
+        }>;
+        overflow: boolean;
+        observer: MutationObserver | null;
+        finalize: () => void;
+      };
+      const host = window as Window & { __ci94PaletteDom?: PaletteObserver };
+      const probe = host.__ci94PaletteDom;
+      if (!probe) return null;
+      probe.finalize();
+      return {
+        initial: probe.initial,
+        events: probe.events,
+        warningMutations: probe.warningMutations,
+        overflow: probe.overflow,
+      };
+    });
+    test.info().annotations.push({
+      type: "Palette DOM state evidence",
+      description: JSON.stringify({ started: { ...started }, evidence }),
+    });
+    evidenceCaptured = true;
+    return evidence;
+  };
+  const hold =
+    (source: keyof typeof started, gate: Promise<void>) =>
+    async (route: import("@playwright/test").Route) => {
+      started[source] = true;
+      activeRouteHandlers++;
+      try {
+        await gate;
+        await route.continue();
+      } catch {
+        routeContinuationFailures++;
+      } finally {
+        activeRouteHandlers--;
+        if (activeRouteHandlers === 0) signalRoutesIdle?.();
+      }
+    };
+  const holdBeads = hold("beads", beadsGate);
+  const holdBetaBeads = hold("betaBeads", betaBeadsGate);
+  const holdSummary = hold("summary", summaryGate);
+  let ownedHandlersUnrouted = false;
+  const unrouteOwnedHandlers = async () => {
+    if (ownedHandlersUnrouted) return;
+    const results = await Promise.allSettled([
+      page.unroute(beadsPattern, holdBeads),
+      page.unroute(betaBeadsPattern, holdBetaBeads),
+      page.unroute(summaryPattern, holdSummary),
+    ]);
+    if (results.some((result) => result.status === "rejected"))
+      throw Error("A CI94 palette route handler could not be removed.");
+    ownedHandlersUnrouted = true;
+  };
+  const waitForRoutesIdle = () =>
+    activeRouteHandlers === 0
+      ? Promise.resolve()
+      : new Promise<void>((resolve) => {
+          signalRoutesIdle = resolve;
+        });
+  const settleRoutes = async () => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await Promise.race([
+        waitForRoutesIdle(),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () =>
+              reject(Error("Palette route continuations exceeded 10 seconds.")),
+            10_000,
+          );
+        }),
+      ]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+    if (routeContinuationFailures)
+      throw Error("A held palette route continuation rejected.");
+  };
+  const failures: unknown[] = [];
+  try {
+    await page.route(beadsPattern, holdBeads);
+    await page.route(betaBeadsPattern, holdBetaBeads);
+    await page.route(summaryPattern, holdSummary);
+    await page.evaluate(() => {
+      type ClockProbe = {
+        original: typeof Date.now;
+        shifted: typeof Date.now;
+      };
+      const host = window as Window & { __ci94PaletteClock?: ClockProbe };
+      const original = Date.now;
+      const now = original();
+      const shifted = () => now + 31_000;
+      host.__ci94PaletteClock = { original, shifted };
+      Date.now = shifted;
+    });
+    await dialog.evaluate((dialog) => {
+      type PaletteObserver = {
+        initial: PaletteDomEvidence;
+        events: PaletteDomEvidence[];
+        warningMutations: Array<{
+          inserted: boolean;
+          coverage: PaletteDomEvidence["coverage"];
+          dialogOpen: boolean;
+        }>;
+        overflow: boolean;
+        observer: MutationObserver | null;
+        finalize: () => void;
+      };
+      const snapshot = (): PaletteDomEvidence => {
+        const coverage = Array.from(
+          dialog?.querySelectorAll('[role="status"]') ?? [],
+        ).find((status) => status.textContent?.includes("Source coverage:"));
+        const text = coverage?.textContent ?? "";
+        const refresh = Array.from(
+          dialog?.querySelectorAll("button") ?? [],
+        ).some((button) => button.textContent?.includes("Refresh results"));
+        return {
+          warningPresent: Array.from(
+            dialog.querySelectorAll('[role="alert"]'),
+          ).some((alert) =>
+            alert.textContent?.includes(
+              "This result changed or its owner is unavailable.",
+            ),
+          ),
+          coverage: {
+            beadsAvailable: /Beads: available/.test(text),
+            beadsLoading: /Beads: loading/.test(text),
+            sessionsAvailable: /Sessions: available/.test(text),
+            sessionsLoading: /Sessions: loading/.test(text),
+          },
+          refreshVisible: refresh,
+          refreshingMarker: Array.from(
+            dialog.querySelectorAll('[role="status"]'),
+          ).some(
+            (status) =>
+              status.textContent?.trim() === "Refreshing verified results…",
+          ),
+          dialogOpen: Boolean(
+            dialog?.isConnected && dialog.getClientRects().length,
+          ),
+        };
+      };
+      const observer: PaletteObserver = {
+        initial: snapshot(),
+        events: [],
+        warningMutations: [],
+        overflow: false,
+        observer: null,
+        finalize: () => {},
+      };
+      const containsChangedWarning = (node: Node) =>
+        node instanceof Element &&
+        (node.matches('[role="alert"]') ||
+          Boolean(node.querySelector('[role="alert"]')))
+          ? (node.textContent?.includes(
+              "This result changed or its owner is unavailable.",
+            ) ?? false)
+          : false;
+      const recordMutations = (records: MutationRecord[]) => {
+        const next = snapshot();
+        for (const record of records) {
+          if (record.target !== dialog && !dialog.contains(record.target))
+            continue;
+          if ([...record.addedNodes].some(containsChangedWarning)) {
+            if (observer.warningMutations.length < 64)
+              observer.warningMutations.push({
+                inserted: true,
+                coverage: next.coverage,
+                dialogOpen: next.dialogOpen,
+              });
+            else observer.overflow = true;
+          }
+          if ([...record.removedNodes].some(containsChangedWarning)) {
+            if (observer.warningMutations.length < 64)
+              observer.warningMutations.push({
+                inserted: false,
+                coverage: next.coverage,
+                dialogOpen: next.dialogOpen,
+              });
+            else observer.overflow = true;
+          }
+        }
+        const previous = observer.events.at(-1) ?? observer.initial;
+        if (
+          next.warningPresent !== previous.warningPresent ||
+          JSON.stringify(next.coverage) !== JSON.stringify(previous.coverage) ||
+          next.refreshVisible !== previous.refreshVisible ||
+          next.refreshingMarker !== previous.refreshingMarker ||
+          next.dialogOpen !== previous.dialogOpen
+        ) {
+          if (observer.events.length < 64) observer.events.push(next);
+          else observer.overflow = true;
+        }
+      };
+      observer.observer = new MutationObserver(recordMutations);
+      observer.observer.observe(dialog, {
+        childList: true,
+        subtree: true,
+        characterData: true,
+        attributes: true,
+      });
+      observer.finalize = () => {
+        recordMutations(observer.observer?.takeRecords() ?? []);
+        const next = snapshot();
+        const previous = observer.events.at(-1) ?? observer.initial;
+        if (
+          next.warningPresent !== previous.warningPresent ||
+          JSON.stringify(next.coverage) !== JSON.stringify(previous.coverage) ||
+          next.refreshVisible !== previous.refreshVisible ||
+          next.refreshingMarker !== previous.refreshingMarker ||
+          next.dialogOpen !== previous.dialogOpen
+        ) {
+          if (observer.events.length < 64) observer.events.push(next);
+          else observer.overflow = true;
+        }
+        observer.observer?.disconnect();
+      };
+      (
+        window as Window & { __ci94PaletteDom?: PaletteObserver }
+      ).__ci94PaletteDom = observer;
+    });
+    await page.keyboard.press("Enter");
+    await expect(dialog).toBeVisible();
+    expect(writes).toEqual([]);
+    await expect.poll(() => started.summary).toBe(true);
+
+    // Release the initial source snapshot only after its route is known to be held.
+    releaseSummary();
+    await expect.poll(() => started.beads).toBe(true);
+    await expect.poll(() => started.betaBeads).toBe(true);
+    const fastSourceResponse = page.waitForResponse(
+      (response) =>
+        new URL(response.url()).pathname ===
+          `/__agent-forge/projects/${beta.id}/beads` &&
+        response.request().method() === "GET",
+      { timeout: 10_000 },
+    );
+    releaseBetaBeads();
+    const response = await fastSourceResponse;
+    expect(response.status()).toBe(200);
+    await expect(coverage).toContainText("Beta · Beads: available");
+    await expect(coverage).toContainText("Alpha · Beads: loading");
+    expect(await coverage.innerText()).not.toBe(initialCoverage);
+    await page.evaluate(
+      () =>
+        new Promise<void>((resolve) =>
+          requestAnimationFrame(() => requestAnimationFrame(() => resolve())),
+        ),
+    );
+    await captureEvidence();
+    releaseSummary();
+    releaseBetaBeads();
+    releaseBeads();
+    await settleRoutes();
+    await unrouteOwnedHandlers();
+    await settleRoutes();
+    await expect(dialog.getByRole("alert")).toContainText(
+      "This result changed",
+    );
+    await expect(dialog.getByRole("alert")).toContainText(
+      "This result changed",
+    );
+    await expect(
+      dialog
+        .getByRole("alert")
+        .getByRole("button", { name: "Refresh results", exact: true }),
+    ).toBeVisible();
+    expect(writes).toEqual([]);
+  } catch (error) {
+    failures.push(error);
+  }
+  if (!evidenceCaptured) {
+    try {
+      await captureEvidence();
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  releaseSummary();
+  releaseBetaBeads();
+  releaseBeads();
+  try {
+    await settleRoutes();
+  } catch (error) {
+    failures.push(error);
+  }
+  try {
+    await unrouteOwnedHandlers();
+  } catch (error) {
+    failures.push(error);
+  }
+  const clockCleanup = await Promise.allSettled([
+    page.evaluate(() => {
+      type ClockProbe = {
+        original: typeof Date.now;
+        shifted: typeof Date.now;
+      };
+      const host = window as Window & { __ci94PaletteClock?: ClockProbe };
+      const probe = host.__ci94PaletteClock;
+      if (probe && Date.now === probe.shifted) Date.now = probe.original;
+      delete host.__ci94PaletteClock;
+      const dom = window as Window & {
+        __ci94PaletteDom?: {
+          observer: MutationObserver | null;
+          finalize: () => void;
+        };
+      };
+      dom.__ci94PaletteDom?.observer?.disconnect();
+      delete dom.__ci94PaletteDom;
+    }),
+  ]);
+  for (const result of clockCleanup)
+    if (result.status === "rejected") failures.push(result.reason);
+  try {
+    await settleRoutes();
+  } catch (error) {
+    failures.push(error);
+  }
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1)
+    throw new AggregateError(failures, "CI94 palette body or cleanup failed.");
 });
 
 test("partial source and filtered-empty state stay visible while reads load", async ({
