@@ -255,6 +255,111 @@ test("only an exact protected recorded-intent receipt clears a restored original
   client.dispose();
 });
 
+test("a same-scope terminal activation during the exact receipt read preserves its valid confirmation", async () => {
+  const storage = sessionStartFixture();
+  const identities = createCodexChatDecisionIdentities({
+    storage: storage.storage,
+    withLock: storage.withLock,
+  });
+  const original = {
+    ...address,
+    turnRequestId,
+    approvalId,
+    decision: "decline" as const,
+  };
+  await identities.reserve(original, () => requestId);
+  const receipt = {
+    ...original,
+    requestId,
+    state: "recorded" as const,
+    recordedAt: "2026-10-23T03:00:00.000Z",
+  };
+  let resolveRead = (_value: unknown) => {};
+  const read = new Promise<unknown>((resolve) => {
+    resolveRead = resolve;
+  });
+  let posts = 0;
+  const scope = { projectId, workspace: "", sessionId };
+  const client = createCodexChatDecisions({
+    identities,
+    canWrite: () => false,
+    current: () => null,
+    scopeCurrent: () => ({ ...scope, provider: "codex" }),
+    requestId: () => {
+      throw Error("Must not mint");
+    },
+    read: () => read,
+    post: async () => {
+      posts++;
+      return { state: "unknown", message: "Must not send" };
+    },
+  });
+  client.activate({ ...address, turnRequestId, actionable: true });
+  const checking = client.checkOriginal();
+  client.activate({ ...address, turnRequestId, actionable: false });
+  resolveRead({ pending: [], receipt });
+  await checking;
+  expect(client.view()?.receipt).toEqual(receipt);
+  expect(client.view()?.identity).toBeNull();
+  expect(client.view()?.notice).toContain("does not confirm native delivery");
+  expect(posts).toBe(0);
+  client.dispose();
+});
+
+test("Codex original receipt reads keep a replaced held identity when it changes in flight", async () => {
+  const storage = sessionStartFixture();
+  const identities = createCodexChatDecisionIdentities({
+    storage: storage.storage,
+    withLock: storage.withLock,
+  });
+  const original = {
+    ...address,
+    turnRequestId,
+    approvalId,
+    decision: "decline" as const,
+  };
+  const saved = await identities.reserve(original, () => requestId);
+  const receipt = {
+    ...original,
+    requestId,
+    state: "recorded" as const,
+    recordedAt: "2026-10-23T03:00:00.000Z",
+  };
+  let resolveRead = (_value: unknown) => {};
+  const read = new Promise<unknown>((resolve) => {
+    resolveRead = resolve;
+  });
+  let posts = 0;
+  const client = createCodexChatDecisions({
+    identities,
+    canWrite: () => false,
+    current: () => null,
+    scopeCurrent: () => ({ projectId, workspace: "", sessionId, provider: "codex" }),
+    requestId: () => {
+      throw Error("Must not mint");
+    },
+    read: () => read,
+    post: async () => {
+      posts++;
+      return { state: "unknown", message: "Must not send" };
+    },
+  });
+  client.activate({ ...address, turnRequestId: null, actionable: false });
+  const checking = client.checkOriginal();
+  await identities.release(saved.identity);
+  const replacement = await identities.reserve(
+    { ...original, approvalId: "9964f120-0e87-484f-a786-fbe122c9f9ef" },
+    () => "bc825846-2bc4-485f-b20d-579cd65442ea",
+  );
+  client.refreshIdentities();
+  resolveRead({ pending: [], receipt });
+  await checking;
+  expect(client.view()?.identity).toEqual(replacement.identity);
+  expect(client.view()?.receipt).toBeNull();
+  expect(posts).toBe(0);
+  client.dispose();
+});
+
 test("a delayed live read after Stop or a foreign accepted turn cannot revive approval controls", async () => {
   const storage = sessionStartFixture(),
     identities = createCodexChatDecisionIdentities({
