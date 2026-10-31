@@ -2,16 +2,31 @@ import type { JSX } from "preact";
 import { useCallback, useEffect, useRef, useState } from "preact/hooks";
 import { Button } from "../../../docs/js/ds/Button";
 import { Dialog } from "../../../docs/js/ds/Dialog";
+import { EmptyState } from "../../../docs/js/ds/EmptyState";
 import { COMMANDS } from "../../../docs/js/generated/commands";
 import { operatorRead } from "../../../docs/js/operator";
 import { pageReads, readOperatorRoute } from "../../../docs/js/use-stream";
 import { projectBeadsPageSchema } from "../../../scripts/projects/beads-protocol";
-import { EmptyState } from "../../../docs/js/ds/EmptyState";
 import type { KeeperProposal } from "../../../types/keeper-proposal";
-import type { ProposalState } from "./keeper-proposals-client";
 import { BeadWriteNotices, NewBeadForm } from "./BeadWrites";
-import { ConnectionBanner, useDesktopRecovery } from "./ConnectionBanner";
 import { CommandPalette } from "./CommandPalette";
+import { ConnectionBanner, useDesktopRecovery } from "./ConnectionBanner";
+import {
+  appendPaletteRows,
+  createPaletteIndex,
+  type PaletteIndex,
+  type PaletteIntent,
+  type PaletteRow,
+  type PaletteSourceRow,
+  paletteIndexCurrent,
+  readPaletteRecents,
+  replacePaletteRows,
+  writePaletteRecent,
+} from "./command-palette";
+import {
+  createCommandPaletteIndex,
+  type PaletteIndexSnapshot,
+} from "./command-palette-index";
 import type { FrameSession } from "./DesktopFrame";
 import { DesktopFrame } from "./DesktopFrame";
 import {
@@ -25,6 +40,7 @@ import {
 } from "./forge-run-prefill";
 import { KeeperConversation, KeeperScope } from "./KeeperConversation";
 import { KeeperShiftReviewDialog } from "./KeeperShiftReviewDialog";
+import type { ProposalState } from "./keeper-proposals-client";
 import type { KeeperSessionReview } from "./keeper-session-review";
 import type { KeeperShiftReviewEntry } from "./keeper-shift-review-owner";
 import { ManagedShiftSession } from "./ManagedShiftSession";
@@ -41,18 +57,6 @@ import {
   observeDesktopRoute,
   PROJECT_DESTINATIONS,
 } from "./navigation";
-import {
-  appendPaletteRows,
-  createPaletteIndex,
-  paletteIndexCurrent,
-  readPaletteRecents,
-  replacePaletteRows,
-  writePaletteRecent,
-  type PaletteIndex,
-  type PaletteIntent,
-  type PaletteRow,
-  type PaletteSourceRow,
-} from "./command-palette";
 import { ObservedSessionDetail } from "./ObservedSessionDetail";
 import { OwnedSessions } from "./OwnedSessions";
 import {
@@ -114,16 +118,37 @@ import { useProjects } from "./use-projects";
 import { useProviders } from "./use-providers";
 import { useSessionLibrary } from "./use-session-library";
 import { useSessionObservations } from "./use-session-observations";
-import { createCommandPaletteIndex, type PaletteIndexSnapshot } from "./command-palette-index";
 
-function keeperPaletteCoverage(projectId: string, state: ProposalState | null, now = Date.now()) {
-  if (!state || state.loading) return { coverage: "loading" as const, message: "" };
-  if (state.error) return { coverage: "unavailable" as const, message: "Keeper proposals could not be read." };
+function keeperPaletteCoverage(
+  projectId: string,
+  state: ProposalState | null,
+  now = Date.now(),
+) {
+  if (!state || state.loading)
+    return { coverage: "loading" as const, message: "" };
+  if (state.error)
+    return {
+      coverage: "unavailable" as const,
+      message: "Keeper proposals could not be read.",
+    };
   const page = state.page;
-  if (!page || page.projectId !== projectId) return { coverage: "unavailable" as const, message: "No verified current-project Keeper page is available." };
+  if (!page || page.projectId !== projectId)
+    return {
+      coverage: "unavailable" as const,
+      message: "No verified current-project Keeper page is available.",
+    };
   const asOf = Date.parse(page.asOf);
-  if (!Number.isFinite(asOf) || now < asOf || now - asOf > 30_000 || !page.complete || page.problems.length)
-    return { coverage: "partial" as const, message: "Current-project Keeper proposals are stale or incomplete." };
+  if (
+    !Number.isFinite(asOf) ||
+    now < asOf ||
+    now - asOf > 30_000 ||
+    !page.complete ||
+    page.problems.length
+  )
+    return {
+      coverage: "partial" as const,
+      message: "Current-project Keeper proposals are stale or incomplete.",
+    };
   return { coverage: "available" as const, message: "" };
 }
 
@@ -136,29 +161,52 @@ function withKeeperPaletteCoverage(
   const result = keeperPaletteCoverage(projectId, state);
   const prefix = "Keeper current project:";
   const page = state?.page;
-  const additions: PaletteSourceRow[] = result.coverage === "available" && page
-    ? page.proposals.map((item) => ({
-        kind: "review",
-        id: `keeper:${item.proposal.sourceRequestId}`,
-        projectId,
-        label: item.proposal.draft.title,
-        detail: "Keeper proposal review · current project",
-        keywords: `${item.proposal.draft.detail} ${item.proposal.id}`,
-        unavailable: !writesAllowed ? "Writes are currently unavailable." : undefined,
-        intent: { kind: "review", target: { kind: "keeper", projectId, requestId: item.proposal.sourceRequestId, revision: page.revision } },
-      }))
-    : [];
+  const additions: PaletteSourceRow[] =
+    result.coverage === "available" && page
+      ? page.proposals.map((item) => ({
+          kind: "review",
+          id: `keeper:${item.proposal.sourceRequestId}`,
+          projectId,
+          label: item.proposal.draft.title,
+          detail: "Keeper proposal review · current project",
+          keywords: `${item.proposal.draft.detail} ${item.proposal.id}`,
+          unavailable: !writesAllowed
+            ? "Writes are currently unavailable."
+            : undefined,
+          intent: {
+            kind: "review",
+            target: {
+              kind: "keeper",
+              projectId,
+              requestId: item.proposal.sourceRequestId,
+              revision: page.revision,
+            },
+          },
+        }))
+      : [];
   const updated = replacePaletteRows(
     index,
-    (row) => row.kind === "review" && row.projectId === projectId && row.id.startsWith("keeper:"),
+    (row) =>
+      row.kind === "review" &&
+      row.projectId === projectId &&
+      row.id.startsWith("keeper:"),
     additions,
   );
   return {
     ...updated,
-    statuses: [...updated.statuses.filter((item) => !item.startsWith(prefix)), `${prefix} ${result.coverage}`],
-    errors: [...updated.errors.filter((item) => !item.startsWith(prefix)), ...(result.message ? [`${prefix} ${result.coverage}: ${result.message}`] : [])],
+    statuses: [
+      ...updated.statuses.filter((item) => !item.startsWith(prefix)),
+      `${prefix} ${result.coverage}`,
+    ],
+    errors: [
+      ...updated.errors.filter((item) => !item.startsWith(prefix)),
+      ...(result.message
+        ? [`${prefix} ${result.coverage}: ${result.message}`]
+        : []),
+    ],
   };
 }
+
 import { deriveProjectRunCheckpoints } from "./project-run-checkpoints";
 import { useSessions } from "./use-sessions";
 import { useSmithCreate } from "./use-smith-create";
@@ -674,7 +722,9 @@ export function DesktopApp(): JSX.Element {
     projects.reload();
   });
   const [newBeadOpen, setNewBeadOpen] = useState(false);
-  const [pendingPaletteNewBead, setPendingPaletteNewBead] = useState<string | null>(null);
+  const [pendingPaletteNewBead, setPendingPaletteNewBead] = useState<
+    string | null
+  >(null);
   const beadOpener = useRef<HTMLElement>(null);
   const openNewBead = () => {
     if (!project || !beads.data || project.archived || !writesAllowed) return;
@@ -698,7 +748,14 @@ export function DesktopApp(): JSX.Element {
       setPendingPaletteNewBead(null);
       openNewBead();
     }
-  }, [pendingPaletteNewBead, project?.id, route.destination, beads.data, writesAllowed, openNewBead]);
+  }, [
+    pendingPaletteNewBead,
+    project?.id,
+    route.destination,
+    beads.data,
+    writesAllowed,
+    openNewBead,
+  ]);
   const selectedSession =
     route.selection?.kind === "session" ? route.selection.id : null;
   const observations = useSessionObservations(
@@ -1184,7 +1241,9 @@ export function DesktopApp(): JSX.Element {
   const [paletteRecents, setPaletteRecents] = useState<string[]>([]);
   const [paletteStartToken, setPaletteStartToken] = useState(0);
   const [paletteRefreshToken, setPaletteRefreshToken] = useState(0);
-  const [paletteCheckpointFocus, setPaletteCheckpointFocus] = useState<string | null>(null);
+  const [paletteCheckpointFocus, setPaletteCheckpointFocus] = useState<
+    string | null
+  >(null);
   const paletteGeneration = useRef(0);
   const paletteCatalogRevision = useRef(projects.data?.catalog.revision ?? -1);
   useEffect(() => {
@@ -1192,21 +1251,31 @@ export function DesktopApp(): JSX.Element {
       if (
         !(event.ctrlKey || event.metaKey) ||
         event.key.toLowerCase() !== "k" ||
-        event.altKey || event.shiftKey || event.isComposing ||
-        event.defaultPrevented || document.querySelector("dialog[open]")
-      ) return;
+        event.altKey ||
+        event.shiftKey ||
+        event.isComposing ||
+        event.defaultPrevented ||
+        document.querySelector("dialog[open]")
+      )
+        return;
       event.preventDefault();
       setPaletteOpen(true);
     };
     window.addEventListener("keydown", shortcut);
     return () => window.removeEventListener("keydown", shortcut);
   }, []);
-  const paletteIndexer = useRef<ReturnType<typeof createCommandPaletteIndex> | null>(null);
+  const paletteIndexer = useRef<ReturnType<
+    typeof createCommandPaletteIndex
+  > | null>(null);
   paletteIndexer.current ??= createCommandPaletteIndex();
   const paletteEffectKey = `${projects.data?.catalog.revision ?? -1}:${route.projectId ?? ""}:${summary?.workspace ?? ""}:${forgeRouteGeneration.current}:${writesAllowed}`;
   useEffect(() => {
     if (!paletteOpen) return;
-    try { setPaletteRecents(readPaletteRecents(window.localStorage)); } catch { setPaletteRecents([]); }
+    try {
+      setPaletteRecents(readPaletteRecents(window.localStorage));
+    } catch {
+      setPaletteRecents([]);
+    }
     const controller = new AbortController();
     const generation = ++paletteGeneration.current;
     let expiry = 0;
@@ -1215,8 +1284,12 @@ export function DesktopApp(): JSX.Element {
       try {
         const home = await projects.refreshProjectHome();
         paletteCatalogRevision.current = home.catalog.revision;
-        const projectHome = home.catalog.projects.find((item) => item.id === route.projectId);
-        const activeSummary = home.summaries.find((item) => item.projectId === route.projectId);
+        const projectHome = home.catalog.projects.find(
+          (item) => item.id === route.projectId,
+        );
+        const activeSummary = home.summaries.find(
+          (item) => item.projectId === route.projectId,
+        );
         const scope = {
           catalogRevision: home.catalog.revision,
           routeGeneration: forgeRouteGeneration.current,
@@ -1227,91 +1300,365 @@ export function DesktopApp(): JSX.Element {
         };
         const scopeKey = `${scope.catalogRevision}:${scope.projectId ?? ""}:${scope.workspace ?? ""}:${scope.routeGeneration}:${scope.writesAllowed}`;
         const snapshot = await paletteIndexer.current!.refresh({
-          generation, scope, home, signal: controller.signal,
-          isCurrent: () => !controller.signal.aborted && generation === paletteGeneration.current && scope.catalogRevision === paletteCatalogRevision.current && scope.projectId === desktopRoute(window.location.hash).projectId && scope.workspace === (projects.data?.summaries.find((item) => item.projectId === scope.projectId)?.workspace ?? scope.workspace) && scope.routeGeneration === forgeRouteGeneration.current,
-          selectedRun: selectedRunSlug && route.projectId ? { projectId: route.projectId, slug: selectedRunSlug } : null,
+          generation,
+          scope,
+          home,
+          signal: controller.signal,
+          isCurrent: () =>
+            !controller.signal.aborted &&
+            generation === paletteGeneration.current &&
+            scope.catalogRevision === paletteCatalogRevision.current &&
+            scope.projectId === desktopRoute(window.location.hash).projectId &&
+            scope.workspace ===
+              (projects.data?.summaries.find(
+                (item) => item.projectId === scope.projectId,
+              )?.workspace ?? scope.workspace) &&
+            scope.routeGeneration === forgeRouteGeneration.current,
+          selectedRun:
+            selectedRunSlug && route.projectId
+              ? { projectId: route.projectId, slug: selectedRunSlug }
+              : null,
           onSnapshot: (progress: PaletteIndexSnapshot) => {
-            if (controller.signal.aborted || generation !== paletteGeneration.current) return;
-            const statuses = Object.entries(progress.sources).map(([source, value]) => `${source}: ${value.coverage}`);
+            if (
+              controller.signal.aborted ||
+              generation !== paletteGeneration.current
+            )
+              return;
+            const statuses = Object.entries(progress.sources).map(
+              ([source, value]) => `${source}: ${value.coverage}`,
+            );
             const errors = Object.entries(progress.sources)
-              .filter(([, value]) => value.coverage === "partial" || value.coverage === "unavailable")
-              .map(([source, value]) => `${source}: ${value.error || value.coverage}`);
-            const index = createPaletteIndex({ generation, sourceRows: progress.rows, commands: COMMANDS, statuses, errors, scopeKey });
-            const proposalState = route.projectId ? proposals.get(route.projectId) : null;
-            setPaletteIndex(projectHome ? withKeeperPaletteCoverage(index, projectHome.id, proposalState, writesAllowed) : index);
+              .filter(
+                ([, value]) =>
+                  value.coverage === "partial" ||
+                  value.coverage === "unavailable",
+              )
+              .map(
+                ([source, value]) =>
+                  `${source}: ${value.error || value.coverage}`,
+              );
+            const index = createPaletteIndex({
+              generation,
+              sourceRows: progress.rows,
+              commands: COMMANDS,
+              statuses,
+              errors,
+              scopeKey,
+            });
+            const proposalState = route.projectId
+              ? proposals.get(route.projectId)
+              : null;
+            setPaletteIndex(
+              projectHome
+                ? withKeeperPaletteCoverage(
+                    index,
+                    projectHome.id,
+                    proposalState,
+                    writesAllowed,
+                  )
+                : index,
+            );
           },
         });
-        if (controller.signal.aborted || generation !== paletteGeneration.current) return;
+        if (
+          controller.signal.aborted ||
+          generation !== paletteGeneration.current
+        )
+          return;
         const sourceRows = [...snapshot.rows];
         for (const item of home.catalog.projects) {
-          sourceRows.push({ kind: "setting", id: `settings:${item.id}`, label: `${item.name} settings`, detail: "Project settings", projectId: item.id, unavailable: "Project settings are not available in this desktop owner yet.", intent: { kind: "navigate", route: { destination: "project-settings", projectId: item.id, selection: null } } });
-          for (const destination of PROJECT_DESTINATIONS) sourceRows.push({ kind: "setting", id: `${destination.id}:${item.id}`, label: `${item.name} · ${destination.label}`, detail: "Project navigation", projectId: item.id, keywords: destination.id, unavailable: destination.id === "project-settings" ? "Project settings are not available in this desktop owner yet." : undefined, intent: { kind: "navigate", route: { destination: destination.id, projectId: item.id, selection: null } } });
+          sourceRows.push({
+            kind: "setting",
+            id: `settings:${item.id}`,
+            label: `${item.name} settings`,
+            detail: "Project settings",
+            projectId: item.id,
+            unavailable:
+              "Project settings are not available in this desktop owner yet.",
+            intent: {
+              kind: "navigate",
+              route: {
+                destination: "project-settings",
+                projectId: item.id,
+                selection: null,
+              },
+            },
+          });
+          for (const destination of PROJECT_DESTINATIONS)
+            sourceRows.push({
+              kind: "setting",
+              id: `${destination.id}:${item.id}`,
+              label: `${item.name} · ${destination.label}`,
+              detail: "Project navigation",
+              projectId: item.id,
+              keywords: destination.id,
+              unavailable:
+                destination.id === "project-settings"
+                  ? "Project settings are not available in this desktop owner yet."
+                  : undefined,
+              intent: {
+                kind: "navigate",
+                route: {
+                  destination: destination.id,
+                  projectId: item.id,
+                  selection: null,
+                },
+              },
+            });
         }
-        for (const entry of GLOBAL_DESTINATIONS) sourceRows.push({ kind: "setting", id: entry.id, label: entry.label, detail: entry.id === "app-settings" ? "Settings" : "Navigate", unavailable: entry.id === "app-settings" ? "Settings and theme controls are not available yet." : undefined, intent: { kind: "navigate", route: { destination: entry.id, projectId: null, selection: null } } });
-        sourceRows.push({ kind: "action", id: "toggle-theme", label: "Toggle theme", detail: "Choose light, dark, or system appearance", unavailable: "Theme settings are not available yet.", intent: { kind: "navigate", route: { destination: "app-settings", projectId: null, selection: null } } });
-        const unavailable = writesAllowed && !!projectHome && !projectHome.archived ? undefined : "Writes are currently unavailable for this project.";
-        if (projectHome && !projectHome.archived) sourceRows.push(
-          { kind: "action", id: "new-session", label: "New session", detail: "Open the reviewed session composer", projectId: projectHome.id, unavailable, intent: { kind: "new-session", projectId: projectHome.id } },
-          { kind: "action", id: "ask-keeper", label: "Ask Keeper", detail: "Open the current project Keeper", projectId: projectHome.id, unavailable, intent: { kind: "ask-keeper", projectId: projectHome.id } },
-          { kind: "action", id: "new-bead", label: "New bead", detail: "Open the existing bead form", projectId: projectHome.id, unavailable, intent: { kind: "new-bead", projectId: projectHome.id } },
-          { kind: "action", id: "start-shift", label: "Start shift", detail: "Open the attended Workbench start form", projectId: projectHome.id, unavailable: !writesAllowed || !activeSummary?.workspace || providers.data?.workspace !== activeSummary.workspace || !projectHome.workspaces.some((entry) => entry.root === activeSummary.workspace) ? "A current writable project workspace is required." : undefined, intent: { kind: "start-shift", projectId: projectHome.id } },
-        );
-        const councilBead = projectHome && activeSummary?.workspace && snapshot.sources[`beads:${projectHome.id}`]?.coverage === "available" && projectHome.workspaces.some((entry) => entry.root === activeSummary.workspace)
-          ? sourceRows.find((entry) => entry.kind === "bead" && entry.projectId === projectHome.id)
-          : undefined;
-        if (projectHome && activeSummary?.workspace && councilBead) sourceRows.push({
-          kind: "action", id: `send-council:${councilBead.id}`, label: `Send “${councilBead.label}” to Council`, detail: "Prepare a source in the existing Council draft", projectId: projectHome.id,
-          unavailable: !writesAllowed ? "Writes are currently unavailable." : undefined,
-          intent: { kind: "send-to-council", projectId: projectHome.id, workspace: activeSummary.workspace, sourceType: "bead", sourceId: councilBead.id },
+        for (const entry of GLOBAL_DESTINATIONS)
+          sourceRows.push({
+            kind: "setting",
+            id: entry.id,
+            label: entry.label,
+            detail: entry.id === "app-settings" ? "Settings" : "Navigate",
+            unavailable:
+              entry.id === "app-settings"
+                ? "Settings and theme controls are not available yet."
+                : undefined,
+            intent: {
+              kind: "navigate",
+              route: {
+                destination: entry.id,
+                projectId: null,
+                selection: null,
+              },
+            },
+          });
+        sourceRows.push({
+          kind: "action",
+          id: "toggle-theme",
+          label: "Toggle theme",
+          detail: "Choose light, dark, or system appearance",
+          unavailable: "Theme settings are not available yet.",
+          intent: {
+            kind: "navigate",
+            route: {
+              destination: "app-settings",
+              projectId: null,
+              selection: null,
+            },
+          },
         });
-        const incompleteSources = Object.entries(snapshot.sources).filter(([, value]) => value.coverage === "partial" || value.coverage === "unavailable").map(([name, value]) => `${name}: ${value.error || value.coverage}`);
+        const unavailable =
+          writesAllowed && projectHome && !projectHome.archived
+            ? undefined
+            : "Writes are currently unavailable for this project.";
+        if (projectHome && !projectHome.archived)
+          sourceRows.push(
+            {
+              kind: "action",
+              id: "new-session",
+              label: "New session",
+              detail: "Open the reviewed session composer",
+              projectId: projectHome.id,
+              unavailable,
+              intent: { kind: "new-session", projectId: projectHome.id },
+            },
+            {
+              kind: "action",
+              id: "ask-keeper",
+              label: "Ask Keeper",
+              detail: "Open the current project Keeper",
+              projectId: projectHome.id,
+              unavailable,
+              intent: { kind: "ask-keeper", projectId: projectHome.id },
+            },
+            {
+              kind: "action",
+              id: "new-bead",
+              label: "New bead",
+              detail: "Open the existing bead form",
+              projectId: projectHome.id,
+              unavailable,
+              intent: { kind: "new-bead", projectId: projectHome.id },
+            },
+            {
+              kind: "action",
+              id: "start-shift",
+              label: "Start shift",
+              detail: "Open the attended Workbench start form",
+              projectId: projectHome.id,
+              unavailable:
+                !writesAllowed ||
+                !activeSummary?.workspace ||
+                providers.data?.workspace !== activeSummary.workspace ||
+                !projectHome.workspaces.some(
+                  (entry) => entry.root === activeSummary.workspace,
+                )
+                  ? "A current writable project workspace is required."
+                  : undefined,
+              intent: { kind: "start-shift", projectId: projectHome.id },
+            },
+          );
+        const councilBead =
+          projectHome &&
+          activeSummary?.workspace &&
+          snapshot.sources[`beads:${projectHome.id}`]?.coverage ===
+            "available" &&
+          projectHome.workspaces.some(
+            (entry) => entry.root === activeSummary.workspace,
+          )
+            ? sourceRows.find(
+                (entry) =>
+                  entry.kind === "bead" && entry.projectId === projectHome.id,
+              )
+            : undefined;
+        if (projectHome && activeSummary?.workspace && councilBead)
+          sourceRows.push({
+            kind: "action",
+            id: `send-council:${councilBead.id}`,
+            label: `Send “${councilBead.label}” to Council`,
+            detail: "Prepare a source in the existing Council draft",
+            projectId: projectHome.id,
+            unavailable: !writesAllowed
+              ? "Writes are currently unavailable."
+              : undefined,
+            intent: {
+              kind: "send-to-council",
+              projectId: projectHome.id,
+              workspace: activeSummary.workspace,
+              sourceType: "bead",
+              sourceId: councilBead.id,
+            },
+          });
+        const incompleteSources = Object.entries(snapshot.sources)
+          .filter(
+            ([, value]) =>
+              value.coverage === "partial" || value.coverage === "unavailable",
+          )
+          .map(([name, value]) => `${name}: ${value.error || value.coverage}`);
         const errors = incompleteSources.slice(0, 8);
-        if (incompleteSources.length > errors.length) errors.push(`${incompleteSources.length - errors.length} additional sources are partial or unavailable.`);
-        const statuses = Object.entries(snapshot.sources).map(([source, value]) => `${source}: ${value.coverage}`);
-        let finalIndex = createPaletteIndex({ generation, sourceRows, commands: COMMANDS, errors, statuses, scopeKey, slashUnavailable: !writesAllowed || !projectHome || projectHome.archived ? "A current writable project is required to open this command draft." : undefined });
-        if (projectHome) finalIndex = withKeeperPaletteCoverage(finalIndex, projectHome.id, route.projectId ? proposals.get(route.projectId) : null, writesAllowed);
+        if (incompleteSources.length > errors.length)
+          errors.push(
+            `${incompleteSources.length - errors.length} additional sources are partial or unavailable.`,
+          );
+        const statuses = Object.entries(snapshot.sources).map(
+          ([source, value]) => `${source}: ${value.coverage}`,
+        );
+        let finalIndex = createPaletteIndex({
+          generation,
+          sourceRows,
+          commands: COMMANDS,
+          errors,
+          statuses,
+          scopeKey,
+          slashUnavailable:
+            !writesAllowed || !projectHome || projectHome.archived
+              ? "A current writable project is required to open this command draft."
+              : undefined,
+        });
+        if (projectHome)
+          finalIndex = withKeeperPaletteCoverage(
+            finalIndex,
+            projectHome.id,
+            route.projectId ? proposals.get(route.projectId) : null,
+            writesAllowed,
+          );
         setPaletteIndex(finalIndex);
-        expiry = window.setTimeout(() => setPaletteRefreshToken((value) => value + 1), 30_000);
+        expiry = window.setTimeout(
+          () => setPaletteRefreshToken((value) => value + 1),
+          30_000,
+        );
       } catch {
-        if (!controller.signal.aborted && generation === paletteGeneration.current) {
-          setPaletteIndex(createPaletteIndex({ generation, sourceRows: [], commands: COMMANDS, errors: ["Project catalog refresh failed; open the Projects view to retry."] }));
-          expiry = window.setTimeout(() => setPaletteRefreshToken((value) => value + 1), 30_000);
+        if (
+          !controller.signal.aborted &&
+          generation === paletteGeneration.current
+        ) {
+          setPaletteIndex(
+            createPaletteIndex({
+              generation,
+              sourceRows: [],
+              commands: COMMANDS,
+              errors: [
+                "Project catalog refresh failed; open the Projects view to retry.",
+              ],
+            }),
+          );
+          expiry = window.setTimeout(
+            () => setPaletteRefreshToken((value) => value + 1),
+            30_000,
+          );
         }
       }
     };
     void run();
-    const stop = paletteIndexer.current.watchInvalidation(() => setPaletteRefreshToken((value) => value + 1));
-    return () => { window.clearTimeout(expiry); controller.abort(); stop(); paletteGeneration.current++; };
+    const stop = paletteIndexer.current.watchInvalidation(() =>
+      setPaletteRefreshToken((value) => value + 1),
+    );
+    return () => {
+      window.clearTimeout(expiry);
+      controller.abort();
+      stop();
+      paletteGeneration.current++;
+    };
   }, [paletteOpen, paletteEffectKey, paletteRefreshToken]);
   useEffect(() => {
     const configuration = smiths.view?.configuration;
     if (!paletteOpen || !paletteIndex) return;
     if (configuration?.error) {
-      setPaletteIndex((current) => current && current.generation === paletteIndex.generation
-        ? { ...current, errors: [...new Set([...current.errors, "Smith configuration is unavailable."])] }
-        : current);
+      setPaletteIndex((current) =>
+        current && current.generation === paletteIndex.generation
+          ? {
+              ...current,
+              errors: [
+                ...new Set([
+                  ...current.errors,
+                  "Smith configuration is unavailable.",
+                ]),
+              ],
+            }
+          : current,
+      );
       return;
     }
     if (!configuration?.data) return;
-    setPaletteIndex((current) => current && current.generation === paletteIndex.generation
-      ? appendPaletteRows(current, configuration.data.smiths.map((item) => ({
-          kind: "smith" as const,
-          id: item.name,
-          label: item.name,
-          detail: `${item.provider} · ${item.model}`,
-          keywords: item.tags.join(" "),
-          intent: { kind: "navigate" as const, route: { destination: "smiths" as const, projectId: null, selection: null } },
-        })))
-      : current);
+    setPaletteIndex((current) =>
+      current && current.generation === paletteIndex.generation
+        ? appendPaletteRows(
+            current,
+            configuration.data.smiths.map((item) => ({
+              kind: "smith" as const,
+              id: item.name,
+              label: item.name,
+              detail: `${item.provider} · ${item.model}`,
+              keywords: item.tags.join(" "),
+              intent: {
+                kind: "navigate" as const,
+                route: {
+                  destination: "smiths" as const,
+                  projectId: null,
+                  selection: null,
+                },
+              },
+            })),
+          )
+        : current,
+    );
   }, [paletteOpen, paletteIndex?.generation, smiths.view?.configuration]);
   const currentProposalState = project?.id ? proposals.get(project.id) : null;
   const currentProposalPage = currentProposalState?.page ?? null;
   useEffect(() => {
     if (!paletteOpen || !paletteIndex || !project) return;
-    setPaletteIndex((current) => current && current.generation === paletteIndex.generation
-      ? withKeeperPaletteCoverage(current, project.id, currentProposalState, writesAllowed)
-      : current);
-  }, [paletteOpen, paletteIndex?.generation, project?.id, currentProposalPage, currentProposalState?.loading, currentProposalState?.error, writesAllowed]);
+    setPaletteIndex((current) =>
+      current && current.generation === paletteIndex.generation
+        ? withKeeperPaletteCoverage(
+            current,
+            project.id,
+            currentProposalState,
+            writesAllowed,
+          )
+        : current,
+    );
+  }, [
+    paletteOpen,
+    paletteIndex?.generation,
+    project?.id,
+    currentProposalPage,
+    currentProposalState?.loading,
+    currentProposalState?.error,
+    writesAllowed,
+  ]);
   const refreshPaletteSources = () => {
     setPaletteRefreshToken((value) => value + 1);
     beads.reload();
@@ -1320,70 +1667,213 @@ export function DesktopApp(): JSX.Element {
   };
   const selectPaletteItem = (intent: PaletteIntent, row: PaletteRow) => {
     const actualRoute = desktopRoute(window.location.hash);
-    const actualWorkspace = projects.data?.summaries.find((item) => item.projectId === actualRoute.projectId)?.workspace ?? null;
+    const actualWorkspace =
+      projects.data?.summaries.find(
+        (item) => item.projectId === actualRoute.projectId,
+      )?.workspace ?? null;
     const liveScopeKey = `${paletteCatalogRevision.current}:${actualRoute.projectId ?? ""}:${actualWorkspace ?? ""}:${forgeRouteGeneration.current}:${writesAllowed}`;
-    if (!paletteIndexCurrent(paletteIndex) || paletteIndex?.scopeKey !== liveScopeKey || !paletteIndex?.rows.some((current) => current.kind === row.kind && current.id === row.id && current.projectId === row.projectId)) {
+    if (
+      !paletteIndexCurrent(paletteIndex) ||
+      paletteIndex?.scopeKey !== liveScopeKey ||
+      !paletteIndex?.rows.some(
+        (current) =>
+          current.kind === row.kind &&
+          current.id === row.id &&
+          current.projectId === row.projectId,
+      )
+    ) {
       setPaletteIndex(null);
       refreshPaletteSources();
       return false;
     }
-    try { writePaletteRecent(window.localStorage, row); } catch { /* Per-origin recents are optional. */ }
-    setPaletteRecents((current) => [
-      `${row.kind}:${row.projectId ?? ""}:${row.id}`,
-      ...current.filter((identity) => identity !== `${row.kind}:${row.projectId ?? ""}:${row.id}`),
-    ].slice(0, 8));
+    try {
+      writePaletteRecent(window.localStorage, row);
+    } catch {
+      /* Per-origin recents are optional. */
+    }
+    setPaletteRecents((current) =>
+      [
+        `${row.kind}:${row.projectId ?? ""}:${row.id}`,
+        ...current.filter(
+          (identity) =>
+            identity !== `${row.kind}:${row.projectId ?? ""}:${row.id}`,
+        ),
+      ].slice(0, 8),
+    );
     let handled = false;
     if (intent.kind === "navigate") {
       window.location.hash = desktopHref(intent.route).slice(1);
       handled = true;
-    } else if (intent.kind === "new-session" && writesAllowed && project?.id === intent.projectId && !project.archived) {
+    } else if (
+      intent.kind === "new-session" &&
+      writesAllowed &&
+      project?.id === intent.projectId &&
+      !project.archived
+    ) {
       openSession(intent.beadId);
       handled = true;
-    } else if (intent.kind === "new-bead" && writesAllowed && project?.id === intent.projectId) {
-      if (beads.data?.projectId === project.id && beads.data.complete && !beads.data.problems.length) openNewBead();
+    } else if (
+      intent.kind === "new-bead" &&
+      writesAllowed &&
+      project?.id === intent.projectId
+    ) {
+      if (
+        beads.data?.projectId === project.id &&
+        beads.data.complete &&
+        !beads.data.problems.length
+      )
+        openNewBead();
       else {
         setPendingPaletteNewBead(project.id);
-        window.location.hash = desktopHref({ destination: "beads", projectId: project.id, selection: null }).slice(1);
+        window.location.hash = desktopHref({
+          destination: "beads",
+          projectId: project.id,
+          selection: null,
+        }).slice(1);
       }
       handled = true;
-    } else if (intent.kind === "ask-keeper" && project?.id === intent.projectId) {
+    } else if (
+      intent.kind === "ask-keeper" &&
+      project?.id === intent.projectId
+    ) {
       openKeeper();
       handled = true;
-    } else if (intent.kind === "start-shift" && writesAllowed && project?.id === intent.projectId && !project.archived && !!summary?.workspace && providers.data?.workspace === summary.workspace && project.workspaces.some((scope) => scope.root === summary.workspace)) {
-      window.location.hash = desktopHref({ destination: "workbench", projectId: project.id, selection: null }).slice(1);
+    } else if (
+      intent.kind === "start-shift" &&
+      writesAllowed &&
+      project?.id === intent.projectId &&
+      !project.archived &&
+      summary?.workspace &&
+      providers.data?.workspace === summary.workspace &&
+      project.workspaces.some((scope) => scope.root === summary.workspace)
+    ) {
+      window.location.hash = desktopHref({
+        destination: "workbench",
+        projectId: project.id,
+        selection: null,
+      }).slice(1);
       setPaletteStartToken((token) => token + 1);
       handled = true;
-    } else if (intent.kind === "review" && intent.target.kind === "keeper" && writesAllowed && project?.id === intent.target.projectId) {
+    } else if (
+      intent.kind === "review" &&
+      intent.target.kind === "keeper" &&
+      writesAllowed &&
+      project?.id === intent.target.projectId
+    ) {
       const proposalState = proposals.get(project.id);
       const page = proposalState.page;
-      const source = page?.proposals.find((entry) => entry.proposal.sourceRequestId === intent.target.requestId);
-      const fresh = !!page && Date.now() >= Date.parse(page.asOf) && Date.now() - Date.parse(page.asOf) <= 30_000;
-      if (!proposalState.loading && !proposalState.error && fresh && page?.complete && !page.problems.length && page.revision === intent.target.revision && source) {
+      const source = page?.proposals.find(
+        (entry) => entry.proposal.sourceRequestId === intent.target.requestId,
+      );
+      const fresh =
+        !!page &&
+        Date.now() >= Date.parse(page.asOf) &&
+        Date.now() - Date.parse(page.asOf) <= 30_000;
+      if (
+        !proposalState.loading &&
+        !proposalState.error &&
+        fresh &&
+        page?.complete &&
+        !page.problems.length &&
+        page.revision === intent.target.revision &&
+        source
+      ) {
         const shift = source.proposal.draft.action.kind === "start-shift";
-        if (shift) openShiftReview(source.proposal, page.revision, false, intent.target.requestId);
-        else openSessionReview(source.proposal, page.revision, intent.target.requestId);
+        if (shift)
+          openShiftReview(
+            source.proposal,
+            page.revision,
+            false,
+            intent.target.requestId,
+          );
+        else
+          openSessionReview(
+            source.proposal,
+            page.revision,
+            intent.target.requestId,
+          );
         handled = true;
       }
     } else if (intent.kind === "review" && intent.target.kind === "bead") {
-      const sourceExists = paletteIndex.rows.some((entry) => entry.kind === "review" && entry.projectId === intent.target.projectId && entry.id === `bead:${intent.target.beadId}`);
+      const sourceExists = paletteIndex.rows.some(
+        (entry) =>
+          entry.kind === "review" &&
+          entry.projectId === intent.target.projectId &&
+          entry.id === `bead:${intent.target.beadId}`,
+      );
       if (sourceExists) {
-        window.location.hash = desktopHref({ destination: "beads", projectId: intent.target.projectId, selection: { kind: "bead", id: intent.target.beadId } }).slice(1);
+        window.location.hash = desktopHref({
+          destination: "beads",
+          projectId: intent.target.projectId,
+          selection: { kind: "bead", id: intent.target.beadId },
+        }).slice(1);
         handled = true;
       }
-    } else if (intent.kind === "review" && intent.target.kind === "checkpoint" && writesAllowed && project?.id === intent.target.projectId && route.destination === "runs") {
+    } else if (
+      intent.kind === "review" &&
+      intent.target.kind === "checkpoint" &&
+      writesAllowed &&
+      project?.id === intent.target.projectId &&
+      route.destination === "runs"
+    ) {
       const currentRuns = runs.view;
       const currentBeads = beads.data;
-      const result = deriveProjectRunCheckpoints({ projectId: project.id, workspace: summary?.workspace ?? null, runs: currentRuns, beads: { page: currentBeads, loading: beads.loading, error: beads.error } });
+      const result = deriveProjectRunCheckpoints({
+        projectId: project.id,
+        workspace: summary?.workspace ?? null,
+        runs: currentRuns,
+        beads: {
+          page: currentBeads,
+          loading: beads.loading,
+          error: beads.error,
+        },
+      });
       const detail = currentRuns?.detail;
-      if (currentRuns?.page && currentRuns.page.problems.length === 0 && currentRuns.page.runs.find((entry) => entry.slug === intent.target.runSlug)?.complete && currentRuns.selectedSlug === intent.target.runSlug && detail && detail.problems.length === 0 && detail.run.updatedAt === intent.target.runUpdatedAt && result.kind === "ready" && result.workspace === summary?.workspace && result.summary.inProgressIds.includes(intent.target.checkpointId)) {
+      if (
+        currentRuns?.page &&
+        currentRuns.page.problems.length === 0 &&
+        currentRuns.page.runs.find(
+          (entry) => entry.slug === intent.target.runSlug,
+        )?.complete &&
+        currentRuns.selectedSlug === intent.target.runSlug &&
+        detail &&
+        detail.problems.length === 0 &&
+        detail.run.updatedAt === intent.target.runUpdatedAt &&
+        result.kind === "ready" &&
+        result.workspace === summary?.workspace &&
+        result.summary.inProgressIds.includes(intent.target.checkpointId)
+      ) {
         setPaletteCheckpointFocus(intent.target.checkpointId);
-        window.location.hash = desktopHref({ destination: "runs", projectId: project.id, selection: { kind: "run", id: intent.target.runSlug } }).slice(1);
+        window.location.hash = desktopHref({
+          destination: "runs",
+          projectId: project.id,
+          selection: { kind: "run", id: intent.target.runSlug },
+        }).slice(1);
         handled = true;
       }
-    } else if (intent.kind === "send-to-council" && writesAllowed && project?.id === intent.projectId && summary?.workspace === intent.workspace && paletteIndexCurrent(paletteIndex) && paletteIndex.rows.some((entry) => entry.kind === "action" && entry.id === `send-council:${intent.sourceId}`)) {
-      openCouncilSource({ sourceType: "bead", source: intent.sourceId }, intent.workspace);
+    } else if (
+      intent.kind === "send-to-council" &&
+      writesAllowed &&
+      project?.id === intent.projectId &&
+      summary?.workspace === intent.workspace &&
+      paletteIndexCurrent(paletteIndex) &&
+      paletteIndex.rows.some(
+        (entry) =>
+          entry.kind === "action" &&
+          entry.id === `send-council:${intent.sourceId}`,
+      )
+    ) {
+      openCouncilSource(
+        { sourceType: "bead", source: intent.sourceId },
+        intent.workspace,
+      );
       handled = true;
-    } else if (intent.kind === "slash-command" && project && writesAllowed && !project.archived) {
+    } else if (
+      intent.kind === "slash-command" &&
+      project &&
+      writesAllowed &&
+      !project.archived
+    ) {
       sessions.editComposer(project.id, { prompt: `${intent.name} ` });
       openSession();
       handled = true;
@@ -1790,7 +2280,9 @@ export function DesktopApp(): JSX.Element {
           <ProjectReviews
             key={`${project.id}:${summary?.workspace ?? ""}`}
             projectId={project.id}
-            focusRequestId={route.selection?.kind === "event" ? route.selection.id : null}
+            focusRequestId={
+              route.selection?.kind === "event" ? route.selection.id : null
+            }
             workspace={summary?.workspace ?? null}
             archived={project.archived}
             writesAllowed={writesAllowed}

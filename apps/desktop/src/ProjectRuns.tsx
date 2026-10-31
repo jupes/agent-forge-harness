@@ -249,10 +249,22 @@ export function ProjectRuns({
   const selected = view?.selectedSlug ?? null;
   const focusedCheckpoint = useRef<string | null>(null);
   useLayoutEffect(() => {
-    if (!focusCheckpointId || !view?.detail || focusedCheckpoint.current === focusCheckpointId) return;
-    const row = [...document.querySelectorAll<HTMLElement>("[data-checkpoint-id]")].find((item) => item.dataset.checkpointId === focusCheckpointId);
-    const input = row?.querySelector<HTMLTextAreaElement>(".af-checkpoint-review textarea");
-    if (input) { focusedCheckpoint.current = focusCheckpointId; input.focus(); }
+    if (
+      !focusCheckpointId ||
+      !view?.detail ||
+      focusedCheckpoint.current === focusCheckpointId
+    )
+      return;
+    const row = [
+      ...document.querySelectorAll<HTMLElement>("[data-checkpoint-id]"),
+    ].find((item) => item.dataset.checkpointId === focusCheckpointId);
+    const input = row?.querySelector<HTMLTextAreaElement>(
+      ".af-checkpoint-review textarea",
+    );
+    if (input) {
+      focusedCheckpoint.current = focusCheckpointId;
+      input.focus();
+    }
   }, [focusCheckpointId, view?.detail, checkpointResult]);
   const checkpointReviewAvailable =
     !!view?.page &&

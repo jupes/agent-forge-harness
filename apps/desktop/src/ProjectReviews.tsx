@@ -1161,11 +1161,19 @@ export function ProjectReviews({
   const openedRequestId = view?.original?.original.requestId ?? null;
   const focusedRequest = useRef<string | null>(null);
   useEffect(() => {
-    if (!focusRequestId || !view?.history || focusedRequest.current === focusRequestId) return;
-    const item = view.history.items.find((entry) => entry.requestId === focusRequestId);
+    if (
+      !focusRequestId ||
+      !view?.history ||
+      focusedRequest.current === focusRequestId
+    )
+      return;
+    const item = view.history.items.find(
+      (entry) => entry.requestId === focusRequestId,
+    );
     if (!item || !owner) return;
     focusedRequest.current = focusRequestId;
-    if (item.phase !== "reserved" && item.phase !== "retired") void owner.openResult(item.requestId);
+    if (item.phase !== "reserved" && item.phase !== "retired")
+      void owner.openResult(item.requestId);
     else void owner.openSaved(item.requestId);
   }, [focusRequestId, view?.history, owner]);
   const historyItems =

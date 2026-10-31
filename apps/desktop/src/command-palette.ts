@@ -90,12 +90,19 @@ function safeIntent(intent: PaletteIntent): PaletteIntent {
           destination: intent.route.destination,
           projectId: intent.route.projectId,
           selection: intent.route.selection
-            ? { kind: intent.route.selection.kind, id: intent.route.selection.id }
+            ? {
+                kind: intent.route.selection.kind,
+                id: intent.route.selection.id,
+              }
             : null,
         },
       };
     case "new-session":
-      return { kind: "new-session", projectId: intent.projectId, ...(intent.beadId ? { beadId: intent.beadId } : {}) };
+      return {
+        kind: "new-session",
+        projectId: intent.projectId,
+        ...(intent.beadId ? { beadId: intent.beadId } : {}),
+      };
     case "new-bead":
       return { kind: "new-bead", projectId: intent.projectId };
     case "ask-keeper":
@@ -104,23 +111,61 @@ function safeIntent(intent: PaletteIntent): PaletteIntent {
       return { kind: "start-shift", projectId: intent.projectId };
     case "review":
       return intent.target.kind === "bead"
-        ? { kind: "review", target: { kind: "bead", projectId: intent.target.projectId, beadId: intent.target.beadId } }
+        ? {
+            kind: "review",
+            target: {
+              kind: "bead",
+              projectId: intent.target.projectId,
+              beadId: intent.target.beadId,
+            },
+          }
         : intent.target.kind === "checkpoint"
-          ? { kind: "review", target: { kind: "checkpoint", projectId: intent.target.projectId, runSlug: intent.target.runSlug, checkpointId: intent.target.checkpointId, runUpdatedAt: intent.target.runUpdatedAt } }
-          : { kind: "review", target: { kind: "keeper", projectId: intent.target.projectId, requestId: intent.target.requestId, revision: intent.target.revision } };
+          ? {
+              kind: "review",
+              target: {
+                kind: "checkpoint",
+                projectId: intent.target.projectId,
+                runSlug: intent.target.runSlug,
+                checkpointId: intent.target.checkpointId,
+                runUpdatedAt: intent.target.runUpdatedAt,
+              },
+            }
+          : {
+              kind: "review",
+              target: {
+                kind: "keeper",
+                projectId: intent.target.projectId,
+                requestId: intent.target.requestId,
+                revision: intent.target.revision,
+              },
+            };
     case "send-to-council":
-      return { kind: "send-to-council", projectId: intent.projectId, workspace: intent.workspace, sourceType: intent.sourceType, sourceId: intent.sourceId };
+      return {
+        kind: "send-to-council",
+        projectId: intent.projectId,
+        workspace: intent.workspace,
+        sourceType: intent.sourceType,
+        sourceId: intent.sourceId,
+      };
     case "slash-command":
-      return { kind: "slash-command", name: safeText(intent.name), argumentHint: safeText(intent.argumentHint) };
+      return {
+        kind: "slash-command",
+        name: safeText(intent.name),
+        argumentHint: safeText(intent.argumentHint),
+      };
   }
 }
 const key = (row: Pick<PaletteRow, "kind" | "id" | "projectId">) =>
   `${row.kind}:${row.projectId ?? ""}:${row.id}`;
 function score(query: string, candidate: string): number | null {
-  const q = query.toLocaleLowerCase(), c = candidate.toLocaleLowerCase();
+  const q = query.toLocaleLowerCase(),
+    c = candidate.toLocaleLowerCase();
   if (!q) return 0;
   if (c.includes(q)) return c.indexOf(q) + (c === q ? -100 : 0);
-  let qi = 0, start = -1, previous = -2, gaps = 0;
+  let qi = 0,
+    start = -1,
+    previous = -2,
+    gaps = 0;
   for (let i = 0; i < c.length && qi < q.length; i++) {
     if (c[i] !== q[qi]) continue;
     if (start < 0) start = i;
@@ -222,10 +267,13 @@ export function searchPalette(
       row,
       score: score(normalized, `${row.label} ${row.detail} ${row.keywords}`),
     }))
-    .filter((item): item is { row: PaletteRow; score: number } => item.score !== null)
+    .filter(
+      (item): item is { row: PaletteRow; score: number } => item.score !== null,
+    )
     .sort(
       (a, b) =>
-        (a.score - (a.row.projectId === projectId ? 5 : 0)) -
+        a.score -
+          (a.row.projectId === projectId ? 5 : 0) -
           (b.score - (b.row.projectId === projectId ? 5 : 0)) ||
         a.row.label.localeCompare(b.row.label) ||
         key(a.row).localeCompare(key(b.row)),
@@ -248,7 +296,9 @@ export type GeneratedSlashRow = {
   description: string;
   argumentHint: string;
 };
-export function paletteIntent(row: PaletteRow | GeneratedSlashRow): PaletteIntent | null {
+export function paletteIntent(
+  row: PaletteRow | GeneratedSlashRow,
+): PaletteIntent | null {
   if ("intent" in row) return row.intent;
   return row.kind === "slash-command"
     ? { kind: "slash-command", name: row.name, argumentHint: row.argumentHint }
@@ -258,13 +308,22 @@ export function buildPaletteRows(input: {
   projects: readonly PaletteProjectInput[];
   beads: readonly PaletteBeadInput[];
   commands: readonly CommandEntry[];
-}): ({ kind: "project" | "bead"; id: string; projectId: string; label: string } | GeneratedSlashRow)[] {
+}): (
+  | { kind: "project" | "bead"; id: string; projectId: string; label: string }
+  | GeneratedSlashRow
+)[] {
   return [
     ...input.projects.map((project) => ({
-      kind: "project" as const, id: project.id, projectId: project.id, label: project.name,
+      kind: "project" as const,
+      id: project.id,
+      projectId: project.id,
+      label: project.name,
     })),
     ...input.beads.map((bead) => ({
-      kind: "bead" as const, id: bead.id, projectId: bead.projectId, label: bead.title,
+      kind: "bead" as const,
+      id: bead.id,
+      projectId: bead.projectId,
+      label: bead.title,
     })),
     ...input.commands.map((command) => ({
       kind: "slash-command" as const,
@@ -274,14 +333,25 @@ export function buildPaletteRows(input: {
     })),
   ];
 }
-export function readPaletteRecents(storage: Pick<Storage, "getItem"> | null): string[] {
+export function readPaletteRecents(
+  storage: Pick<Storage, "getItem"> | null,
+): string[] {
   if (!storage) return [];
   try {
-    const raw: unknown = JSON.parse(storage.getItem("af.palette.recents.v1") ?? "null");
+    const raw: unknown = JSON.parse(
+      storage.getItem("af.palette.recents.v1") ?? "null",
+    );
     if (!Array.isArray(raw)) return [];
-    return [...new Set(raw.filter((item): item is string =>
-      typeof item === "string" && item.length <= 600 && /^[a-z-]+:[^\u0000-\u001f]{0,560}$/.test(item),
-    ))].slice(0, 8);
+    return [
+      ...new Set(
+        raw.filter(
+          (item): item is string =>
+            typeof item === "string" &&
+            item.length <= 600 &&
+            /^[a-z-]+:[^\u0000-\u001f]{0,560}$/.test(item),
+        ),
+      ),
+    ].slice(0, 8);
   } catch {
     return [];
   }
@@ -292,13 +362,19 @@ export function writePaletteRecent(
 ): void {
   if (!storage) return;
   try {
-    const next = [key(row), ...readPaletteRecents(storage).filter((item) => item !== key(row))].slice(0, 8);
+    const next = [
+      key(row),
+      ...readPaletteRecents(storage).filter((item) => item !== key(row)),
+    ].slice(0, 8);
     storage.setItem("af.palette.recents.v1", JSON.stringify(next));
   } catch {
     // The palette remains usable when the per-origin browser store is unavailable.
   }
 }
-export function recentPaletteRows(index: PaletteIndex, recents: readonly string[]): PaletteRow[] {
+export function recentPaletteRows(
+  index: PaletteIndex,
+  recents: readonly string[],
+): PaletteRow[] {
   const rows = new Map(index.rows.map((row) => [key(row), row]));
   return recents.flatMap((identity) => {
     const row = rows.get(identity);
