@@ -2,4 +2,5 @@
 import { isMain } from "../../is-main";
 import { runCodingCliFixture } from "./coding-cli-fixture";
 
-if (isMain(import.meta)) await runCodingCliFixture();
+if (isMain(import.meta))
+  await runCodingCliFixture({ kind: "source", path: import.meta.path });

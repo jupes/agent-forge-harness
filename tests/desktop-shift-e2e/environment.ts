@@ -150,10 +150,11 @@ export function prepareFixture(bun: string) {
     providerSource,
     `import {readFileSync} from "node:fs";import {basename} from "node:path";import {isConsoleWindowVisible} from ${JSON.stringify(resolve("scripts/providers/fixtures/console-visibility.ts").replaceAll("\\", "/"))};import {runCodingCliFixture} from ${JSON.stringify(resolve("scripts/sessions/fixtures/coding-cli-fixture.ts").replaceAll("\\", "/"))};import {runCodexTaskRuntimeFixture} from ${JSON.stringify(resolve("scripts/sessions/fixtures/codex-task-runtime-fixture.ts").replaceAll("\\", "/"))};
     const args=process.argv.slice(2);
-    if(JSON.stringify(args)===JSON.stringify(["auth","status"])){console.log(JSON.stringify({loggedIn:false,authMethod:"none",consoleWindowVisible:isConsoleWindowVisible()}));process.exitCode=1;}
+    if(args.length===1&&args[0]==="--fixture-stop-helper"){await runCodingCliFixture({kind:"compiled"});}
+    else if(JSON.stringify(args)===JSON.stringify(["auth","status"])){console.log(JSON.stringify({loggedIn:false,authMethod:"none",consoleWindowVisible:isConsoleWindowVisible()}));process.exitCode=1;}
     else if(JSON.stringify(args)===JSON.stringify(["login","status"])){console.error("Not logged in");process.exitCode=1;}
     else if(args[0]==="-e"){if(args.length!==2||args[1]!=="setInterval(() => {}, 1000)")throw Error("Inert helper refused");await new Promise(()=>setInterval(()=>{},1000));}
-    else{let mode;try{mode=JSON.parse(readFileSync(${JSON.stringify(join(STATE, "mode.json"))},"utf8"));}catch{throw Error("Invalid fixture mode");}if(!["rich","hang-tree"].includes(mode))throw Error("Unsupported fixture mode");process.env.CODING_FIXTURE_MODE=mode;process.env.CODEX_RUNTIME_MODE=mode;process.env.CODING_FIXTURE_RECORD=${JSON.stringify(join(STATE, "claude.json"))};process.env.CODEX_RUNTIME_LOG=${JSON.stringify(join(STATE, "codex.jsonl"))};if(basename(process.execPath).startsWith("codex"))await runCodexTaskRuntimeFixture();else await runCodingCliFixture();}`,
+    else{let mode;try{mode=JSON.parse(readFileSync(${JSON.stringify(join(STATE, "mode.json"))},"utf8"));}catch{throw Error("Invalid fixture mode");}if(!["rich","hang-tree"].includes(mode))throw Error("Unsupported fixture mode");process.env.CODING_FIXTURE_MODE=mode;process.env.CODEX_RUNTIME_MODE=mode;process.env.CODING_FIXTURE_RECORD=${JSON.stringify(join(STATE, "claude.json"))};process.env.CODEX_RUNTIME_LOG=${JSON.stringify(join(STATE, "codex.jsonl"))};if(basename(process.execPath).startsWith("codex"))await runCodexTaskRuntimeFixture();else await runCodingCliFixture({kind:"compiled"});}`,
   );
   const provider = build(providerSource, "claude");
   copyFileSync(

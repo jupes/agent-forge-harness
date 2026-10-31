@@ -44,7 +44,7 @@ import {
 import { BeadPanel, beadHref, ProjectBeads } from "./ProjectBeads";
 import { ProjectOverview } from "./ProjectOverview";
 import { ProjectReviews } from "./ProjectReviews";
-import { ProjectRuns } from "./ProjectRuns";
+import { ProjectRunInspector, ProjectRuns } from "./ProjectRuns";
 import { ProjectSessions, SessionInspector } from "./ProjectSessions";
 import { ProjectShifts } from "./ProjectShifts";
 import { ProjectsHome } from "./ProjectsHome";
@@ -1212,6 +1212,20 @@ export function DesktopApp(): JSX.Element {
                 )
               }
               onAskKeeper={openKeeper}
+            />
+          ) : route.selection?.kind === "run" && project ? (
+            <ProjectRunInspector
+              projectId={project.id}
+              workspace={summary?.workspace ?? null}
+              slug={route.selection.id}
+              view={runs.view}
+              routeCurrent={
+                renderedRouteMatchesActual &&
+                actualRoute.destination === "runs" &&
+                actualRoute.projectId === project.id &&
+                actualRoute.selection?.kind === "run" &&
+                actualRoute.selection.id === route.selection.id
+              }
             />
           ) : route.destination === "keeper" && project ? (
             <KeeperScope project={project} page={keeper.get(project.id).page} />

@@ -4,9 +4,26 @@ import { randomUUID } from "node:crypto";
 import { writeWhole } from "../../executors/fixtures/write-whole";
 import { claudeReportedActivity } from "./reported-activity";
 
-export async function runCodingCliFixture() {
+export type CodingCliFixtureEntry =
+  | { kind: "source"; path: string }
+  | { kind: "compiled" };
+
+export async function runCodingCliFixture(entry: CodingCliFixtureEntry) {
   const argv = process.argv.slice(2);
   const mode = process.env["CODING_FIXTURE_MODE"] ?? "normal";
+  if (argv.length === 1 && argv[0] === "--fixture-stop-helper") {
+    if (mode === "stop-helper-smoke") {
+      console.log("fixture-stop-helper-smoke");
+      return;
+    }
+    if (mode === "stop-helper") {
+      await new Promise<void>(() => {
+        setInterval(() => {}, 1000);
+      });
+      return;
+    }
+    throw new Error("Invalid coding fixture stop-helper entry");
+  }
   const flags =
     "--print --input-format --output-format --verbose --include-partial-messages --model --effort --permission-mode --permission-prompts --allowedTools --resume --fallback-model --add-dir --max-budget-usd --json-schema";
   if (argv.includes("--version")) console.log("2.1.296 (Claude Code fixture)");
@@ -22,11 +39,42 @@ export async function runCodingCliFixture() {
           ? argv[index + 1]
           : randomUUID();
     let childPid: number | null = null;
-    if (mode === "hang-tree")
-      childPid = Bun.spawn(
-        [process.execPath, "-e", "setInterval(() => {}, 1000)"],
-        { stdin: "ignore", stdout: "ignore", stderr: "ignore" },
-      ).pid;
+    let helperSmoke: { exitCode: number; marker: string } | undefined;
+    if (mode === "hang-tree" || mode === "helper-smoke") {
+      const helperMode =
+        mode === "hang-tree" ? "stop-helper" : "stop-helper-smoke";
+      const helperCommand =
+        entry.kind === "source"
+          ? [process.execPath, entry.path, "--fixture-stop-helper"]
+          : [process.execPath, "--fixture-stop-helper"];
+      const helper = Bun.spawn(helperCommand, {
+        env: {
+          ...process.env,
+          CODING_FIXTURE_MODE: helperMode,
+          CODING_FIXTURE_RECORD: undefined,
+        },
+        stdin: "ignore",
+        stdout: mode === "helper-smoke" ? "pipe" : "ignore",
+        stderr: "ignore",
+        ...(mode === "helper-smoke"
+          ? { timeout: 5000, maxBuffer: 4 * 1024 }
+          : {}),
+      });
+      childPid = helper.pid;
+      if (mode === "helper-smoke") {
+        const [exitCode, output] = await Promise.all([
+          helper.exited,
+          new Response(helper.stdout).text(),
+        ]);
+        helperSmoke = {
+          exitCode,
+          marker:
+            output === "fixture-stop-helper-smoke\n"
+              ? "fixture-stop-helper-smoke"
+              : "invalid-helper-output",
+        };
+      }
+    }
     const record = process.env["CODING_FIXTURE_RECORD"];
     if (record)
       writeWhole(
@@ -37,6 +85,7 @@ export async function runCodingCliFixture() {
           cwd: process.cwd(),
           pid: process.pid,
           childPid,
+          ...(helperSmoke ? { helperSmoke } : {}),
           operatorSecret: process.env["TEST_OPERATOR_SECRET"] !== undefined,
           forged:
             process.env["AGENT_FORGE_FORGED"] !== undefined ||
