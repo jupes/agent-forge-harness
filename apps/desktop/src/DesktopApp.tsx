@@ -9,7 +9,6 @@ import { BeadWriteNotices, NewBeadForm } from "./BeadWrites";
 import { ConnectionBanner, useDesktopRecovery } from "./ConnectionBanner";
 import { chatDecisionAuthorityScopeIsCurrent } from "./chat-decision-authority";
 import { useChatDecisionOwners } from "./chat-decision-owners";
-import { createInboxClient, type InboxClient } from "./inbox-client";
 import type { FrameSession } from "./DesktopFrame";
 import { DesktopFrame } from "./DesktopFrame";
 import {
@@ -21,6 +20,7 @@ import {
   forgeRunDraftMatches,
   forgeRunPreparationHold,
 } from "./forge-run-prefill";
+import { createInboxClient, type InboxClient } from "./inbox-client";
 import { KeeperConversation, KeeperScope } from "./KeeperConversation";
 import { KeeperShiftReviewDialog } from "./KeeperShiftReviewDialog";
 import type { KeeperSessionReview } from "./keeper-session-review";
@@ -760,7 +760,8 @@ export function DesktopApp(): JSX.Element {
             inboxSelection.actionable &&
             chatDecisionAuthorityScopeIsCurrent({
               address,
-              provider: currentRecord?.provider === "gemini" ? "gemini" : "codex",
+              provider:
+                currentRecord?.provider === "gemini" ? "gemini" : "codex",
               route,
               actualRoute,
               project: currentProject ?? null,
@@ -822,7 +823,10 @@ export function DesktopApp(): JSX.Element {
     });
   const inbox = inboxClient.current;
   const [, setInboxRevision] = useState(0);
-  useEffect(() => inbox.subscribe(() => setInboxRevision((value) => value + 1)), [inbox]);
+  useEffect(
+    () => inbox.subscribe(() => setInboxRevision((value) => value + 1)),
+    [inbox],
+  );
   useEffect(() => {
     inbox.syncRoute(route);
     if (route.destination !== "inbox") return;
@@ -837,7 +841,14 @@ export function DesktopApp(): JSX.Element {
       ["operator.action", "session.started", "session.ended"],
       refresh,
     );
-  }, [inbox, route.destination, projects.data, projects.loading, projects.error, sessions]);
+  }, [
+    inbox,
+    route.destination,
+    projects.data,
+    projects.loading,
+    projects.error,
+    sessions,
+  ]);
   useEffect(() => () => inbox.dispose(), [inbox]);
   useEffect(() => {
     sessions.activate(project?.id ?? null, selectedOwnedSession);
@@ -1173,15 +1184,16 @@ export function DesktopApp(): JSX.Element {
       {
         hash: () => window.location.hash,
         listen: (changed) => {
-          const transitioned = (event: HashChangeEvent) => changed(event.newURL);
+          const transitioned = (event: HashChangeEvent) =>
+            changed(event.newURL);
           window.addEventListener("hashchange", transitioned);
           return () => window.removeEventListener("hashchange", transitioned);
         },
       },
-        (nextRoute) => {
-          inboxClient.current?.syncRoute(nextRoute);
-          setRoute(nextRoute);
-        },
+      (nextRoute) => {
+        inboxClient.current?.syncRoute(nextRoute);
+        setRoute(nextRoute);
+      },
     );
   }, []);
   useEffect(() => {

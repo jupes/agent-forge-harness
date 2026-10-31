@@ -1,15 +1,13 @@
 import { operatorRead } from "../../../docs/js/operator";
 import { pageReads, readOperatorRoute } from "../../../docs/js/use-stream";
+import { workspaceKey } from "../../../scripts/projects/scope";
 import { codexChatApprovalPageSchema } from "../../../scripts/sessions/codex-chat-owned-protocol";
 import { geminiChatApprovalPageSchema } from "../../../scripts/sessions/gemini-chat-owned-protocol";
-import { workspaceKey } from "../../../scripts/projects/scope";
-import type { ProjectsHome } from "../../../types/project-summary";
 import type { OwnedCodingSessionRecord } from "../../../types/codex-owned-task";
+import type { ProjectsHome } from "../../../types/project-summary";
+import type { ChatDecisionActivation } from "./chat-decision-owners";
 import type { CodexChatDecisionIdentity } from "./codex-chat-decision-identities";
 import type { GeminiChatDecisionIdentity } from "./gemini-chat-decision-identities";
-import type { SessionProjectView, SessionsClient } from "./session-client";
-import type { ChatDecisionActivation } from "./chat-decision-owners";
-import type { DesktopRoute } from "./navigation";
 import {
   type InboxCurrentPermissionItem,
   type InboxHeldPermissionItem,
@@ -21,6 +19,8 @@ import {
   permissionItemKey,
   permissionSelection,
 } from "./inbox-model";
+import type { DesktopRoute } from "./navigation";
+import type { SessionProjectView, SessionsClient } from "./session-client";
 
 const MAX_PERMISSION_SESSIONS = 256;
 const READ_CONCURRENCY = 4;
@@ -43,7 +43,9 @@ const approvalPath = (projectId: string, sessionId: string) =>
 
 type HeldIdentity = CodexChatDecisionIdentity | GeminiChatDecisionIdentity;
 type InboxSessionSource = Pick<SessionsClient, "refresh"> & {
-  project(projectId: string): Pick<SessionProjectView, "records" | "loaded" | "loading" | "error">;
+  project(
+    projectId: string,
+  ): Pick<SessionProjectView, "records" | "loaded" | "loading" | "error">;
 };
 type InboxOwnedSession = Extract<
   OwnedCodingSessionRecord,
@@ -114,8 +116,10 @@ export function createInboxClient(deps: {
   const tell = () => {
     if (!disposed) for (const listener of [...listeners]) listener();
   };
-  const read = deps.read ?? ((path: string) =>
-    readOperatorRoute(path, { ...pageReads(), fetch: operatorRead }));
+  const read =
+    deps.read ??
+    ((path: string) =>
+      readOperatorRoute(path, { ...pageReads(), fetch: operatorRead }));
   const now = deps.now ?? (() => new Date().toISOString());
   const client: InboxClient = {
     snapshot: () => snapshot,
@@ -204,7 +208,8 @@ export function createInboxClient(deps: {
                 provider: null,
                 state: "unavailable",
                 observedAt: requestedAt,
-                reason: "The current project and session catalog is unavailable.",
+                reason:
+                  "The current project and session catalog is unavailable.",
               },
             ],
             observedAt: requestedAt,
@@ -222,7 +227,8 @@ export function createInboxClient(deps: {
             summary.sessionsComplete &&
             summary.problems.length === 0 &&
             project.workspaces.some(
-              (scope) => workspaceKey(scope.root) === workspaceKey(summary.workspace),
+              (scope) =>
+                workspaceKey(scope.root) === workspaceKey(summary.workspace),
             ),
         ),
       );
@@ -236,7 +242,8 @@ export function createInboxClient(deps: {
           !summary.sessionsComplete ||
           summary.problems.length > 0 ||
           !project.workspaces.some(
-            (scope) => workspaceKey(scope.root) === workspaceKey(summary.workspace),
+            (scope) =>
+              workspaceKey(scope.root) === workspaceKey(summary.workspace),
           )
         )
           coverage.push({
@@ -274,7 +281,8 @@ export function createInboxClient(deps: {
                 record.origin === undefined &&
                 record.mode === "chat" &&
                 isProvider(record.provider) &&
-                workspaceKey(record.workspace) === workspaceKey(summary.workspace),
+                workspaceKey(record.workspace) ===
+                  workspaceKey(summary.workspace),
             );
             if (records.length === 0)
               coverage.push({
@@ -304,9 +312,11 @@ export function createInboxClient(deps: {
           }
         },
       );
-      const sessionsToRead = projectSessions.filter((entry) => entry !== null).flatMap((entry) =>
-        entry.records.map((record) => ({ ...entry, record })),
-      );
+      const sessionsToRead = projectSessions
+        .filter((entry) => entry !== null)
+        .flatMap((entry) =>
+          entry.records.map((record) => ({ ...entry, record })),
+        );
       const boundedSessions = sessionsToRead.slice(0, MAX_PERMISSION_SESSIONS);
       if (sessionsToRead.length > boundedSessions.length)
         coverage.push({
@@ -351,7 +361,11 @@ export function createInboxClient(deps: {
           try {
             identity = deps.heldOriginal(provider, project.id, record.id);
             if (current !== generation || disposed) return [];
-            if (identity && (identity.projectId !== project.id || identity.sessionId !== record.id))
+            if (
+              identity &&
+              (identity.projectId !== project.id ||
+                identity.sessionId !== record.id)
+            )
               throw Error("Held decision identity did not match the session.");
             if (current !== generation || disposed) return [];
             const rawPage = await withReadSlot(() =>
@@ -442,7 +456,8 @@ export function createInboxClient(deps: {
               provider,
               state: "unavailable",
               observedAt: now(),
-              reason: "The current protected approval or held decision could not be verified.",
+              reason:
+                "The current protected approval or held decision could not be verified.",
             });
             const held = heldRow();
             return held ? [held] : [];
@@ -465,13 +480,20 @@ export function createInboxClient(deps: {
               provider: null,
               state: "unavailable",
               observedAt,
-              reason: "The current permission snapshot contains duplicate identities.",
+              reason:
+                "The current permission snapshot contains duplicate identities.",
             },
           ],
           observedAt,
         };
       } else {
-        snapshot = { generation: current, loading: false, items, coverage, observedAt };
+        snapshot = {
+          generation: current,
+          loading: false,
+          items,
+          coverage,
+          observedAt,
+        };
       }
       tell();
     },
@@ -485,7 +507,13 @@ export function createInboxClient(deps: {
       selectionGeneration++;
       selectedKey = null;
       listeners.clear();
-      snapshot = { generation, loading: false, items: [], coverage: [], observedAt: null };
+      snapshot = {
+        generation,
+        loading: false,
+        items: [],
+        coverage: [],
+        observedAt: null,
+      };
     },
   };
   return client;

@@ -225,9 +225,10 @@ export function createCodexChatDecisions(deps: {
           scope.projectId !== entry.projectId ||
           scope.workspace !== (entry.activation?.workspace ?? "") ||
           scope.sessionId !== entry.sessionId ||
-          scope.provider !== "codex"
-          || (entry.activation?.inboxSelectionGeneration !== undefined &&
-            scope.inboxSelectionGeneration !== entry.activation.inboxSelectionGeneration)
+          scope.provider !== "codex" ||
+          (entry.activation?.inboxSelectionGeneration !== undefined &&
+            scope.inboxSelectionGeneration !==
+              entry.activation.inboxSelectionGeneration)
         )
           return null;
       } else if (deps.current) {
@@ -324,7 +325,8 @@ export function createCodexChatDecisions(deps: {
           scopeAtStart.sessionId !== entry.sessionId ||
           scopeAtStart.provider !== "codex" ||
           (activation?.inboxSelectionGeneration !== undefined &&
-            scopeAtStart.inboxSelectionGeneration !== activation.inboxSelectionGeneration))
+            scopeAtStart.inboxSelectionGeneration !==
+              activation.inboxSelectionGeneration))
       )
         return;
       hydrate(entry);

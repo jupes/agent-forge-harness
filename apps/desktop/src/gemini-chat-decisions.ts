@@ -79,7 +79,7 @@ export function createGeminiChatDecisions(deps: {
     !!address &&
     activation.projectId === address.projectId &&
     activation.sessionId === address.sessionId &&
-      activation.inboxSelectionGeneration === address.inboxSelectionGeneration &&
+    activation.inboxSelectionGeneration === address.inboxSelectionGeneration &&
     activation.turnRequestId === address.turnRequestId &&
     activation.actionable === address.actionable &&
     (address.workspace === undefined ||
@@ -101,7 +101,8 @@ export function createGeminiChatDecisions(deps: {
     activation.projectId === address.projectId &&
     activation.sessionId === address.sessionId &&
     (address.inboxSelectionGeneration === undefined ||
-      activation.inboxSelectionGeneration === address.inboxSelectionGeneration) &&
+      activation.inboxSelectionGeneration ===
+        address.inboxSelectionGeneration) &&
     (address.workspace === undefined ||
       activation.workspace === address.workspace);
   const sameReadScope = (
@@ -261,7 +262,8 @@ export function createGeminiChatDecisions(deps: {
           scope.sessionId !== entry.sessionId ||
           scope.provider !== "gemini" ||
           (entry.activation?.inboxSelectionGeneration !== undefined &&
-            scope.inboxSelectionGeneration !== entry.activation.inboxSelectionGeneration)
+            scope.inboxSelectionGeneration !==
+              entry.activation.inboxSelectionGeneration)
         )
           return null;
       } else if (!sameAuthorityScope(entry.activation, current)) return null;
@@ -351,7 +353,8 @@ export function createGeminiChatDecisions(deps: {
           scopeAtStart.sessionId !== entry.sessionId ||
           scopeAtStart.provider !== "gemini" ||
           (activation?.inboxSelectionGeneration !== undefined &&
-            scopeAtStart.inboxSelectionGeneration !== activation.inboxSelectionGeneration))
+            scopeAtStart.inboxSelectionGeneration !==
+              activation.inboxSelectionGeneration))
       )
         return;
       hydrate(entry);

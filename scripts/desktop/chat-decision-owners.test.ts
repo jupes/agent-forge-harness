@@ -5,12 +5,12 @@ import {
   createChatDecisionAuthorityProxy,
   createChatDecisionOwners,
 } from "../../apps/desktop/src/chat-decision-owners";
-import type { InboxPermissionSelection } from "../../apps/desktop/src/inbox-model";
-import type { DesktopRoute } from "../../apps/desktop/src/navigation";
 import { createCodexChatDecisionIdentities } from "../../apps/desktop/src/codex-chat-decision-identities";
 import { createCodexChatDecisions } from "../../apps/desktop/src/codex-chat-decisions";
 import { createGeminiChatDecisionIdentities } from "../../apps/desktop/src/gemini-chat-decision-identities";
 import { createGeminiChatDecisions } from "../../apps/desktop/src/gemini-chat-decisions";
+import type { InboxPermissionSelection } from "../../apps/desktop/src/inbox-model";
+import type { DesktopRoute } from "../../apps/desktop/src/navigation";
 
 const projectId = "project-a5832fa0-7a21-403b-8184-44892f0d8d86",
   sessionId = "session-2d5ed741-5528-424c-a927-263348778dad",
@@ -137,7 +137,11 @@ function expectProviderInboxScope(provider: "codex" | "gemini") {
     });
 
     for (const contextProjectId of [null, "project-foreign-context"]) {
-      currentRoute = { destination: "inbox", projectId: contextProjectId, selection: null };
+      currentRoute = {
+        destination: "inbox",
+        projectId: contextProjectId,
+        selection: null,
+      };
       expect(owner.view()?.activation).toMatchObject({
         projectId,
         sessionId,
@@ -279,7 +283,12 @@ test("Codex decision factory sends nothing after Inbox selection leaves and retu
     current: () => (scope() ? address : null),
     scopeCurrent: () =>
       scope()
-        ? { projectId, workspace: address.workspace, sessionId, provider: "codex" }
+        ? {
+            projectId,
+            workspace: address.workspace,
+            sessionId,
+            provider: "codex",
+          }
         : null,
     requestId: () => "",
     read: async () => {
@@ -384,7 +393,12 @@ test("Gemini decision factory sends nothing after Inbox selection leaves and ret
     current: () => (scope() ? address : null),
     scopeCurrent: () =>
       scope()
-        ? { projectId, workspace: address.workspace, sessionId, provider: "gemini" }
+        ? {
+            projectId,
+            workspace: address.workspace,
+            sessionId,
+            provider: "gemini",
+          }
         : null,
     requestId: () => "",
     read: async () => {
@@ -406,9 +420,15 @@ test("Gemini decision factory sends nothing after Inbox selection leaves and ret
   owner.dispose();
 });
 
-async function verifyHeldReadRejectsReturnedActivation(provider: "codex" | "gemini") {
+async function verifyHeldReadRejectsReturnedActivation(
+  provider: "codex" | "gemini",
+) {
   const workspace = "C:/workspaces/alpha";
-  let route: DesktopRoute = { destination: "inbox", projectId: null, selection: null },
+  let route: DesktopRoute = {
+      destination: "inbox",
+      projectId: null,
+      selection: null,
+    },
     selectionGeneration = 5,
     reads = 0,
     posts = 0,
@@ -416,15 +436,17 @@ async function verifyHeldReadRejectsReturnedActivation(provider: "codex" | "gemi
     observedActivation: ChatDecisionActivation | null = null,
     sessionList = { loaded: true, loading: false, error: "" };
   const readGate: { resolve?: (value: unknown) => void } = {};
-  const pendingRead = new Promise<unknown>((resolve) => { readGate.resolve = resolve; });
+  const pendingRead = new Promise<unknown>((resolve) => {
+    readGate.resolve = resolve;
+  });
   const rawIdentity = {
-      requestId: "4ed0a0c0-32da-4d6d-972f-616f2489556e",
-      turnRequestId,
-      approvalId,
-      projectId,
-      sessionId,
-      ...(provider === "codex" ? { decision: "accept" } : { optionId: null }),
-    };
+    requestId: "4ed0a0c0-32da-4d6d-972f-616f2489556e",
+    turnRequestId,
+    approvalId,
+    projectId,
+    sessionId,
+    ...(provider === "codex" ? { decision: "accept" } : { optionId: null }),
+  };
   let identityStore = JSON.stringify({ version: 1, records: [rawIdentity] });
   let inboxSelection: InboxPermissionSelection = {
     kind: "permission",
@@ -444,7 +466,10 @@ async function verifyHeldReadRejectsReturnedActivation(provider: "codex" | "gemi
   };
   const storage = {
       getItem: () => identityStore,
-      setItem: (_key: string, value: string) => { writes++; identityStore = value; },
+      setItem: (_key: string, value: string) => {
+        writes++;
+        identityStore = value;
+      },
     },
     activationBase = {
       projectId,
@@ -455,23 +480,40 @@ async function verifyHeldReadRejectsReturnedActivation(provider: "codex" | "gemi
       turnRequestId,
       actionable: true,
     },
-    scopeFor = (address: Omit<ChatDecisionActivation, "generation">) => chatDecisionAuthorityScopeIsCurrent({
-      address: { ...address, generation: 0 },
-      provider,
-      route,
-      actualRoute: route,
-      project: { id: projectId, workspaces: [{ root: workspace }] },
-      summary: { projectId, workspace, complete: true, sessionsComplete: true, problems: [] },
-      session: { id: sessionId, projectId, workspace, provider, mode: "chat" },
-      sessionList,
-      inboxSelection,
-    });
-  let freshAddress: typeof activationBase & { inboxSelectionGeneration: number } = {
+    scopeFor = (address: Omit<ChatDecisionActivation, "generation">) =>
+      chatDecisionAuthorityScopeIsCurrent({
+        address: { ...address, generation: 0 },
+        provider,
+        route,
+        actualRoute: route,
+        project: { id: projectId, workspaces: [{ root: workspace }] },
+        summary: {
+          projectId,
+          workspace,
+          complete: true,
+          sessionsComplete: true,
+          problems: [],
+        },
+        session: {
+          id: sessionId,
+          projectId,
+          workspace,
+          provider,
+          mode: "chat",
+        },
+        sessionList,
+        inboxSelection,
+      });
+  let freshAddress: typeof activationBase & {
+    inboxSelectionGeneration: number;
+  } = {
     ...activationBase,
     inboxSelectionGeneration: selectionGeneration,
   };
 
-  let activate: (address: typeof activationBase & { inboxSelectionGeneration: number }) => void,
+  let activate: (
+      address: typeof activationBase & { inboxSelectionGeneration: number },
+    ) => void,
     view: () => unknown,
     checkOriginal: () => Promise<void>,
     dispatch: () => Promise<void>,
@@ -479,9 +521,16 @@ async function verifyHeldReadRejectsReturnedActivation(provider: "codex" | "gemi
   const common = {
     canWrite: () => true,
     current: () => observedActivation,
-    scopeCurrent: () => scopeFor(freshAddress)
-      ? { projectId, workspace, sessionId, provider, inboxSelectionGeneration: selectionGeneration }
-      : null,
+    scopeCurrent: () =>
+      scopeFor(freshAddress)
+        ? {
+            projectId,
+            workspace,
+            sessionId,
+            provider,
+            inboxSelectionGeneration: selectionGeneration,
+          }
+        : null,
     requestId: () => "",
     read: async () => {
       reads++;
@@ -498,14 +547,23 @@ async function verifyHeldReadRejectsReturnedActivation(provider: "codex" | "gemi
             },
           };
     },
-    post: async () => { posts++; throw Error("Held original must never dispatch."); },
+    post: async () => {
+      posts++;
+      throw Error("Held original must never dispatch.");
+    },
   };
   if (provider === "codex") {
     const owner = createCodexChatDecisions({
       ...common,
-      identities: createCodexChatDecisionIdentities({ storage, withLock: async (work) => work() }),
+      identities: createCodexChatDecisionIdentities({
+        storage,
+        withLock: async (work) => work(),
+      }),
     });
-    activate = (address) => { owner.activate(address); observedActivation = owner.view()?.activation ?? null; };
+    activate = (address) => {
+      owner.activate(address);
+      observedActivation = owner.view()?.activation ?? null;
+    };
     view = () => owner.view();
     checkOriginal = () => owner.checkOriginal();
     dispatch = () => owner.decide(approvalId, "accept");
@@ -513,9 +571,15 @@ async function verifyHeldReadRejectsReturnedActivation(provider: "codex" | "gemi
   } else {
     const owner = createGeminiChatDecisions({
       ...common,
-      identities: createGeminiChatDecisionIdentities({ storage, withLock: async (work) => work() }),
+      identities: createGeminiChatDecisionIdentities({
+        storage,
+        withLock: async (work) => work(),
+      }),
     });
-    activate = (address) => { owner.activate(address); observedActivation = owner.view()?.activation ?? null; };
+    activate = (address) => {
+      owner.activate(address);
+      observedActivation = owner.view()?.activation ?? null;
+    };
     view = () => owner.view();
     checkOriginal = () => owner.checkOriginal();
     dispatch = () => owner.decide(approvalId, null);
@@ -527,10 +591,22 @@ async function verifyHeldReadRejectsReturnedActivation(provider: "codex" | "gemi
     const staleCheck = checkOriginal();
     await Promise.resolve();
     expect(reads).toBe(1);
-    route = { destination: "sessions", projectId, selection: { kind: "session", id: sessionId } };
+    route = {
+      destination: "sessions",
+      projectId,
+      selection: { kind: "session", id: sessionId },
+    };
     selectionGeneration++;
-    route = { destination: "inbox", projectId: "project-other-context", selection: null };
-    inboxSelection = { ...inboxSelection, selectionGeneration, currentSelectionGeneration: selectionGeneration };
+    route = {
+      destination: "inbox",
+      projectId: "project-other-context",
+      selection: null,
+    };
+    inboxSelection = {
+      ...inboxSelection,
+      selectionGeneration,
+      currentSelectionGeneration: selectionGeneration,
+    };
     observedActivation = null;
     expect(view()).toBeNull();
     await dispatch();
@@ -545,10 +621,21 @@ async function verifyHeldReadRejectsReturnedActivation(provider: "codex" | "gemi
     expect(identityStoreSnapshot()).toContain(rawIdentity.requestId);
     expect(reads).toBe(1);
 
-    freshAddress = { ...activationBase, inboxSelectionGeneration: selectionGeneration };
+    freshAddress = {
+      ...activationBase,
+      inboxSelectionGeneration: selectionGeneration,
+    };
     activate(freshAddress);
-    expect(view()).toMatchObject({ identity: rawIdentity, pending: [], actionable: false });
-    sessionList = { loaded: false, loading: true, error: "session list is refreshing" };
+    expect(view()).toMatchObject({
+      identity: rawIdentity,
+      pending: [],
+      actionable: false,
+    });
+    sessionList = {
+      loaded: false,
+      loading: true,
+      error: "session list is refreshing",
+    };
     await checkOriginal();
     expect(reads).toBe(1);
     expect(writes).toBe(0);
@@ -570,9 +657,15 @@ test("Gemini held original survives A→away→A while read waits; fresh activat
   await verifyHeldReadRejectsReturnedActivation("gemini");
 });
 
-async function verifyLiveDecisionReadRejectsReturnedActivation(provider: "codex" | "gemini") {
+async function verifyLiveDecisionReadRejectsReturnedActivation(
+  provider: "codex" | "gemini",
+) {
   const workspace = "C:/workspaces/alpha";
-  let route: DesktopRoute = { destination: "inbox", projectId: null, selection: null },
+  let route: DesktopRoute = {
+      destination: "inbox",
+      projectId: null,
+      selection: null,
+    },
     selectionGeneration = 1,
     inboxSelection: InboxPermissionSelection = {
       kind: "permission",
@@ -600,55 +693,79 @@ async function verifyLiveDecisionReadRejectsReturnedActivation(provider: "codex"
     releaseDecisionReads = new Map<number, (value: unknown) => void>();
   const savedSnapshot = (): string | null => saved;
   for (const call of [2, 4, 5])
-    delayedDecisionReads.set(call, new Promise<unknown>((resolve) => releaseDecisionReads.set(call, resolve)));
-  const
-    project = { id: projectId, workspaces: [{ root: workspace }] },
-    summary = { projectId, workspace, complete: true, sessionsComplete: true, problems: [] },
+    delayedDecisionReads.set(
+      call,
+      new Promise<unknown>((resolve) =>
+        releaseDecisionReads.set(call, resolve),
+      ),
+    );
+  const project = { id: projectId, workspaces: [{ root: workspace }] },
+    summary = {
+      projectId,
+      workspace,
+      complete: true,
+      sessionsComplete: true,
+      problems: [],
+    },
     session = { id: sessionId, projectId, workspace, mode: "chat", provider },
-    pendingPage: unknown = provider === "codex"
-      ? {
-          pending: [{
-            turnRequestId,
-            actionable: true,
-            detailsUnavailableReason: null,
-            approval: {
-              id: approvalId,
-              kind: "command",
-              command: "command",
-              cwd: workspace,
-              reason: "requested",
-              availableDecisions: ["accept", "decline", "cancel"],
-            },
-          }],
-          receipt: null,
-        }
-      : {
-          pending: [{
-            turnRequestId,
-            actionable: true,
-            approval: {
-              id: approvalId,
-              detail: { json: "{}", truncated: false },
-              detailsComplete: true,
-              options: [
-                { optionId: "native-allow", name: "Allow once", kind: "allow_once" },
-                { optionId: "native-reject", name: "Reject once", kind: "reject_once" },
-              ],
-            },
-          }],
-          receipt: null,
-        },
-    scopeIsCurrent = (address: ChatDecisionActivation) => chatDecisionAuthorityScopeIsCurrent({
-      address,
-      provider,
-      route,
-      actualRoute: route,
-      project,
-      summary,
-      session,
-      sessionList,
-      inboxSelection,
-    }),
+    pendingPage: unknown =
+      provider === "codex"
+        ? {
+            pending: [
+              {
+                turnRequestId,
+                actionable: true,
+                detailsUnavailableReason: null,
+                approval: {
+                  id: approvalId,
+                  kind: "command",
+                  command: "command",
+                  cwd: workspace,
+                  reason: "requested",
+                  availableDecisions: ["accept", "decline", "cancel"],
+                },
+              },
+            ],
+            receipt: null,
+          }
+        : {
+            pending: [
+              {
+                turnRequestId,
+                actionable: true,
+                approval: {
+                  id: approvalId,
+                  detail: { json: "{}", truncated: false },
+                  detailsComplete: true,
+                  options: [
+                    {
+                      optionId: "native-allow",
+                      name: "Allow once",
+                      kind: "allow_once",
+                    },
+                    {
+                      optionId: "native-reject",
+                      name: "Reject once",
+                      kind: "reject_once",
+                    },
+                  ],
+                },
+              },
+            ],
+            receipt: null,
+          },
+    scopeIsCurrent = (address: ChatDecisionActivation) =>
+      chatDecisionAuthorityScopeIsCurrent({
+        address,
+        provider,
+        route,
+        actualRoute: route,
+        project,
+        summary,
+        session,
+        sessionList,
+        inboxSelection,
+      }),
     address: ChatDecisionActivation = {
       projectId,
       workspace,
@@ -662,7 +779,10 @@ async function verifyLiveDecisionReadRejectsReturnedActivation(provider: "codex"
     },
     storage = {
       getItem: () => saved,
-      setItem: (_key: string, value: string) => { writes++; saved = value; },
+      setItem: (_key: string, value: string) => {
+        writes++;
+        saved = value;
+      },
     },
     read = async () => {
       readCalls++;
@@ -670,20 +790,27 @@ async function verifyLiveDecisionReadRejectsReturnedActivation(provider: "codex"
     },
     post = async () => {
       posts++;
-      return { state: "unknown" as const, message: "awaiting original receipt" };
+      return {
+        state: "unknown" as const,
+        message: "awaiting original receipt",
+      };
     };
   const common = {
     canWrite: () => true,
-    current: () => observedAddress && scopeIsCurrent(observedAddress) ? observedAddress : null,
-    scopeCurrent: () => observedAddress && scopeIsCurrent(observedAddress)
-      ? {
-          projectId,
-          workspace,
-          sessionId,
-          provider,
-          inboxSelectionGeneration: selectionGeneration,
-        }
-      : null,
+    current: () =>
+      observedAddress && scopeIsCurrent(observedAddress)
+        ? observedAddress
+        : null,
+    scopeCurrent: () =>
+      observedAddress && scopeIsCurrent(observedAddress)
+        ? {
+            projectId,
+            workspace,
+            sessionId,
+            provider,
+            inboxSelectionGeneration: selectionGeneration,
+          }
+        : null,
     requestId: () => "93eb33c3-9386-4dda-a4d4-4b26d04d869a",
     read,
     post,
@@ -695,20 +822,32 @@ async function verifyLiveDecisionReadRejectsReturnedActivation(provider: "codex"
   if (provider === "codex") {
     const owner = createCodexChatDecisions({
       ...common,
-      identities: createCodexChatDecisionIdentities({ storage, withLock: async (work) => work() }),
+      identities: createCodexChatDecisionIdentities({
+        storage,
+        withLock: async (work) => work(),
+      }),
     });
     refreshPending = () => owner.refreshPending();
     decide = () => owner.decide(approvalId, "accept");
-    activate = (next) => { owner.activate(next); observedAddress = next; };
+    activate = (next) => {
+      owner.activate(next);
+      observedAddress = next;
+    };
     dispose = () => owner.dispose();
   } else {
     const owner = createGeminiChatDecisions({
       ...common,
-      identities: createGeminiChatDecisionIdentities({ storage, withLock: async (work) => work() }),
+      identities: createGeminiChatDecisionIdentities({
+        storage,
+        withLock: async (work) => work(),
+      }),
     });
     refreshPending = () => owner.refreshPending();
     decide = () => owner.decide(approvalId, "native-allow");
-    activate = (next) => { owner.activate(next); observedAddress = next; };
+    activate = (next) => {
+      owner.activate(next);
+      observedAddress = next;
+    };
     dispose = () => owner.dispose();
   }
   try {
@@ -717,10 +856,22 @@ async function verifyLiveDecisionReadRejectsReturnedActivation(provider: "codex"
     const liveDecision = decide();
     await Promise.resolve();
     expect(readCalls).toBe(2);
-    route = { destination: "sessions", projectId, selection: { kind: "session", id: sessionId } };
-    route = { destination: "inbox", projectId: "project-other-context", selection: null };
+    route = {
+      destination: "sessions",
+      projectId,
+      selection: { kind: "session", id: sessionId },
+    };
+    route = {
+      destination: "inbox",
+      projectId: "project-other-context",
+      selection: null,
+    };
     selectionGeneration++;
-    inboxSelection = { ...inboxSelection, selectionGeneration, currentSelectionGeneration: selectionGeneration };
+    inboxSelection = {
+      ...inboxSelection,
+      selectionGeneration,
+      currentSelectionGeneration: selectionGeneration,
+    };
     observedAddress = null;
     releaseDecisionReads.get(2)?.(pendingPage);
     await liveDecision;
@@ -748,7 +899,11 @@ async function verifyLiveDecisionReadRejectsReturnedActivation(provider: "codex"
     const unavailableDecision = decide();
     await Promise.resolve();
     expect(readCalls).toBe(5);
-    sessionList = { loaded: false, loading: false, error: "session list unavailable" };
+    sessionList = {
+      loaded: false,
+      loading: false,
+      error: "session list unavailable",
+    };
     releaseDecisionReads.get(5)?.(pendingPage);
     await unavailableDecision;
     expect(posts).toBe(0);
@@ -756,7 +911,11 @@ async function verifyLiveDecisionReadRejectsReturnedActivation(provider: "codex"
 
     sessionList = { loaded: true, loading: false, error: "" };
     selectionGeneration++;
-    inboxSelection = { ...inboxSelection, selectionGeneration, currentSelectionGeneration: selectionGeneration };
+    inboxSelection = {
+      ...inboxSelection,
+      selectionGeneration,
+      currentSelectionGeneration: selectionGeneration,
+    };
     const recoveredAddress: ChatDecisionActivation = {
       ...freshAddress,
       generation: 3,

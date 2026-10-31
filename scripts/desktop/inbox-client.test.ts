@@ -1,9 +1,15 @@
 import { expect, test } from "bun:test";
 import { createInboxClient } from "../../apps/desktop/src/inbox-client";
-import { desktopRoute, observeDesktopRoute } from "../../apps/desktop/src/navigation";
-import type { ProjectsHome } from "../../types/project-summary";
+import {
+  desktopRoute,
+  observeDesktopRoute,
+} from "../../apps/desktop/src/navigation";
+import {
+  FIXTURE_PROJECT_ID,
+  projectCatalogFixture,
+} from "../../scripts/projects/testing";
 import type { GeminiChatOwnedRecord } from "../../types/gemini-owned-chat";
-import { FIXTURE_PROJECT_ID, projectCatalogFixture } from "../../scripts/projects/testing";
+import type { ProjectsHome } from "../../types/project-summary";
 
 const workspace = "C:/workspaces/inbox-fixture",
   sessionId = "session-4126bd68-13ab-4a9c-a517-4ce1215b0ef8",
@@ -58,7 +64,13 @@ const approvalPage = {
         id: approvalId,
         detail: { json: "{}", truncated: false },
         detailsComplete: true,
-        options: [{ optionId: "allow", name: "Allow once", kind: "allow_once" as const }],
+        options: [
+          {
+            optionId: "allow",
+            name: "Allow once",
+            kind: "allow_once" as const,
+          },
+        ],
       },
     },
   ],
@@ -131,7 +143,8 @@ test("Inbox permission discovery stays read-only and synchronously invalidates s
     expect(client.currentSelection()).toBeNull();
     await readStarted;
     const resolveApprovalRead = approvalGate.resolve;
-    if (!resolveApprovalRead) throw Error("The protected approval read was not pending.");
+    if (!resolveApprovalRead)
+      throw Error("The protected approval read was not pending.");
     resolveApprovalRead({ pending: [], receipt: null });
     await refreshing;
     expect(client.snapshot().items).toEqual([]);
@@ -158,7 +171,11 @@ test("Inbox keeps the exact held original visible when the current approvals rea
     },
   });
   try {
-    await client.refresh({ home, homeCurrent: true, sessions: sessionsSource() });
+    await client.refresh({
+      home,
+      homeCurrent: true,
+      sessions: sessionsSource(),
+    });
     const [item] = client.snapshot().items;
     expect(item).toMatchObject({
       state: "held",
@@ -181,7 +198,10 @@ test("Inbox keeps the exact held original visible when the current approvals rea
       }),
     );
     expect(client.selectPermission(item!.key)).toBe(true);
-    expect(client.currentSelection()).toMatchObject({ state: "held", actionable: false });
+    expect(client.currentSelection()).toMatchObject({
+      state: "held",
+      actionable: false,
+    });
     expect(client.selectedActivation()).toMatchObject({
       requestId: approvalId,
       turnRequestId,
@@ -193,9 +213,16 @@ test("Inbox keeps the exact held original visible when the current approvals rea
 });
 
 test("Inbox route identity changes invalidate selection even when returning to the same route", async () => {
-  const client = createInboxClient({ heldOriginal: () => null, read: async () => approvalPage });
+  const client = createInboxClient({
+    heldOriginal: () => null,
+    read: async () => approvalPage,
+  });
   try {
-    await client.refresh({ home, homeCurrent: true, sessions: sessionsSource() });
+    await client.refresh({
+      home,
+      homeCurrent: true,
+      sessions: sessionsSource(),
+    });
     const key = client.snapshot().items[0]!.key;
     client.syncRoute(desktopRoute("#/desktop/inbox?project=alpha"));
     expect(client.selectPermission(key)).toBe(true);
@@ -212,18 +239,30 @@ test("Inbox route identity changes invalidate selection even when returning to t
 });
 
 test("route observer invalidates A→B→A from each event URL when location already returned to A", async () => {
-  const client = createInboxClient({ heldOriginal: () => null, read: async () => approvalPage });
+  const client = createInboxClient({
+    heldOriginal: () => null,
+    read: async () => approvalPage,
+  });
   let currentHash = "#/desktop/inbox?project=alpha",
     listener = { changed: (_newUrl?: string) => {} };
   const stop = observeDesktopRoute(
     {
       hash: () => currentHash,
-      listen: (changed) => { listener.changed = changed; return () => { listener.changed = () => {}; }; },
+      listen: (changed) => {
+        listener.changed = changed;
+        return () => {
+          listener.changed = () => {};
+        };
+      },
     },
     (nextRoute) => client.syncRoute(nextRoute),
   );
   try {
-    await client.refresh({ home, homeCurrent: true, sessions: sessionsSource() });
+    await client.refresh({
+      home,
+      homeCurrent: true,
+      sessions: sessionsSource(),
+    });
     const key = client.snapshot().items[0]!.key;
     expect(client.selectPermission(key)).toBe(true);
     expect(client.currentSelection()).not.toBeNull();
@@ -244,11 +283,17 @@ test("route observer invalidates A→B→A from each event URL when location alr
 
 test("Inbox maps a same-store held identity read failure to unavailable coverage", async () => {
   const client = createInboxClient({
-    heldOriginal: () => { throw Error("private decision store is unreadable"); },
+    heldOriginal: () => {
+      throw Error("private decision store is unreadable");
+    },
     read: async () => approvalPage,
   });
   try {
-    await client.refresh({ home, homeCurrent: true, sessions: sessionsSource() });
+    await client.refresh({
+      home,
+      homeCurrent: true,
+      sessions: sessionsSource(),
+    });
     expect(client.snapshot().items).toEqual([]);
     expect(client.snapshot().coverage).toContainEqual(
       expect.objectContaining({
@@ -256,7 +301,8 @@ test("Inbox maps a same-store held identity read failure to unavailable coverage
         sessionId,
         provider: "gemini",
         state: "unavailable",
-        reason: "The current protected approval or held decision could not be verified.",
+        reason:
+          "The current protected approval or held decision could not be verified.",
       }),
     );
   } finally {
@@ -273,7 +319,9 @@ test("Inbox serializes overlapping refresh reads, suppresses stale queues, and k
     peak = 0,
     calls = 0,
     announceFour: (() => void) | null = null;
-  const firstFourStarted = new Promise<void>((resolve) => { announceFour = resolve; }),
+  const firstFourStarted = new Promise<void>((resolve) => {
+      announceFour = resolve;
+    }),
     releases: Array<(value: unknown) => void> = [];
   const client = createInboxClient({
     heldOriginal: () => null,
@@ -291,7 +339,9 @@ test("Inbox serializes overlapping refresh reads, suppresses stale queues, and k
   });
   const sessions = {
     async refresh() {},
-    project() { return { records, loaded: true, loading: false, error: "" }; },
+    project() {
+      return { records, loaded: true, loading: false, error: "" };
+    },
   };
   try {
     const obsolete = client.refresh({ home, homeCurrent: true, sessions });
@@ -303,7 +353,8 @@ test("Inbox serializes overlapping refresh reads, suppresses stale queues, and k
     expect(latestSnapshot.coverage[0]?.state).toBe("unavailable");
     expect(calls).toBe(4);
     client.dispose();
-    for (const release of releases) release({ pending: [approvalPage.pending[0]], receipt: null });
+    for (const release of releases)
+      release({ pending: [approvalPage.pending[0]], receipt: null });
     await obsolete;
     expect(peak).toBe(4);
     expect(calls).toBe(4);
@@ -322,7 +373,9 @@ test("Two valid competing Inbox refresh pools share four read slots and only the
     peak = 0,
     calls = 0,
     announceFour: (() => void) | null = null;
-  const firstFourStarted = new Promise<void>((resolve) => { announceFour = resolve; }),
+  const firstFourStarted = new Promise<void>((resolve) => {
+      announceFour = resolve;
+    }),
     releases: Array<(value: unknown) => void> = [];
   const client = createInboxClient({
     heldOriginal: () => null,
@@ -342,18 +395,24 @@ test("Two valid competing Inbox refresh pools share four read slots and only the
   });
   const sessions = {
     async refresh() {},
-    project() { return { records, loaded: true, loading: false, error: "" }; },
+    project() {
+      return { records, loaded: true, loading: false, error: "" };
+    },
   };
   try {
     const obsolete = client.refresh({ home, homeCurrent: true, sessions });
     await firstFourStarted;
     const latest = client.refresh({ home, homeCurrent: true, sessions });
     const latestGeneration = client.snapshot().generation;
-    for (const release of releases) release({ pending: [approvalPage.pending[0]], receipt: null });
+    for (const release of releases)
+      release({ pending: [approvalPage.pending[0]], receipt: null });
     await Promise.all([obsolete, latest]);
     expect(peak).toBeLessThanOrEqual(4);
     expect(calls).toBe(13);
-    expect(client.snapshot()).toMatchObject({ generation: latestGeneration, loading: false });
+    expect(client.snapshot()).toMatchObject({
+      generation: latestGeneration,
+      loading: false,
+    });
     expect(client.snapshot().items).toHaveLength(9);
   } finally {
     client.dispose();

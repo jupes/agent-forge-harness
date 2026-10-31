@@ -1,7 +1,7 @@
 import { workspaceKey } from "../../../scripts/projects/scope";
-import type { CodexChatDecisionIdentity } from "./codex-chat-decision-identities";
 import type { CodexChatApprovalPage } from "../../../types/codex-owned-chat";
 import type { GeminiChatApprovalPage } from "../../../types/gemini-owned-chat";
+import type { CodexChatDecisionIdentity } from "./codex-chat-decision-identities";
 import type { GeminiChatDecisionIdentity } from "./gemini-chat-decision-identities";
 
 export type InboxPermissionProvider = "codex" | "gemini";

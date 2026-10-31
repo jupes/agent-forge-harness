@@ -1,7 +1,7 @@
-import type { ChatDecisionActivation } from "./chat-decision-owners";
-import type { DesktopRoute } from "./navigation";
 import { workspaceKey } from "../../../scripts/projects/scope";
+import type { ChatDecisionActivation } from "./chat-decision-owners";
 import type { InboxPermissionSelection } from "./inbox-model";
+import type { DesktopRoute } from "./navigation";
 
 export interface ChatDecisionAuthorityScopeInput {
   address: ChatDecisionActivation;
@@ -63,7 +63,7 @@ export function chatDecisionAuthorityScopeIsCurrent({
   if (!routeMatches) return false;
   if (route.destination === "sessions") return selectedSessionMatches;
   return Boolean(
-      route.destination === "inbox" &&
+    route.destination === "inbox" &&
       project?.id === address.projectId &&
       project.workspaces.some(
         (scope) => workspaceKey(scope.root) === workspaceKey(address.workspace),
@@ -91,7 +91,8 @@ export function chatDecisionAuthorityScopeIsCurrent({
       inboxSelection.selectionGeneration ===
         inboxSelection.currentSelectionGeneration &&
       inboxSelection.projectId === address.projectId &&
-      workspaceKey(inboxSelection.workspace) === workspaceKey(address.workspace) &&
+      workspaceKey(inboxSelection.workspace) ===
+        workspaceKey(address.workspace) &&
       inboxSelection.provider === provider &&
       inboxSelection.sessionId === address.sessionId &&
       inboxSelection.acceptedTurnId === address.acceptedTurnId &&

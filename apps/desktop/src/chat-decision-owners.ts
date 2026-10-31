@@ -127,7 +127,10 @@ export function createChatDecisionOwners(
             provider: "codex",
             ...(codexAddress.inboxSelectionGeneration === undefined
               ? {}
-              : { inboxSelectionGeneration: codexAddress.inboxSelectionGeneration }),
+              : {
+                  inboxSelectionGeneration:
+                    codexAddress.inboxSelectionGeneration,
+                }),
           }
         : null,
     requestId: () => crypto.randomUUID(),
@@ -164,7 +167,10 @@ export function createChatDecisionOwners(
             provider: "gemini",
             ...(geminiAddress.inboxSelectionGeneration === undefined
               ? {}
-              : { inboxSelectionGeneration: geminiAddress.inboxSelectionGeneration }),
+              : {
+                  inboxSelectionGeneration:
+                    geminiAddress.inboxSelectionGeneration,
+                }),
           }
         : null,
     requestId: () => crypto.randomUUID(),
