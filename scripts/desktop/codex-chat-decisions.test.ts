@@ -87,6 +87,42 @@ test("approval reserves bounded metadata before POST and a lost answer or recrea
   second.dispose();
 });
 
+test("Codex permission view preserves the exact shared activation across a valid awaited offer read", async () => {
+  const storage = sessionStartFixture(),
+    identities = createCodexChatDecisionIdentities({
+      storage: storage.storage,
+      withLock: storage.withLock,
+    });
+  const activation = {
+    ...address,
+    workspace: "C:/workspaces/alpha",
+    acceptedTurnId: turnRequestId,
+    requestId: approvalId,
+    generation: 41,
+    turnRequestId,
+    actionable: true,
+  };
+  let release = (_value: unknown) => {};
+  const pendingRead = new Promise<unknown>((resolve) => {
+    release = resolve;
+  });
+  const client = createCodexChatDecisions({
+    identities,
+    canWrite: () => true,
+    requestId: () => requestId,
+    read: () => pendingRead,
+    post: async () => ({ state: "unknown", message: "Not dispatched" }),
+  });
+
+  client.activate(activation);
+  const refreshing = client.refreshPending();
+  release({ pending: [offer], receipt: null });
+  await refreshing;
+
+  expect(client.view()).toMatchObject({ activation, pending: [offer] });
+  client.dispose();
+});
+
 test("only an exact protected recorded-intent receipt clears a restored original; foreign or actionable receipt pages stay held", async () => {
   const storage = sessionStartFixture();
   const identities = createCodexChatDecisionIdentities({
