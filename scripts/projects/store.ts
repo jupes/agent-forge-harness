@@ -334,6 +334,11 @@ export function projectCatalogPath(home: string): string {
   return join(home, "projects", "catalog.json");
 }
 
+/** Shared lock for catalog and project-owned private state mutations. */
+export function projectWriteLockPath(home: string): string {
+  return join(home, "projects", "write.lock.db");
+}
+
 /** One machine catalog above workspaces; catalog reads never inspect workspace paths. */
 export function createProjectStore(
   home: string,
@@ -367,7 +372,7 @@ export function createProjectStore(
       throw new ProjectStoreError(400, "Expected a project catalog revision.");
     ensurePrivateHome(home);
     const result = await withQueueLock(
-      join(home, "projects", "write.lock.db"),
+      projectWriteLockPath(home),
       async () => {
         const catalog = read();
         if (catalog.revision !== expectedRevision)
@@ -398,7 +403,7 @@ export function createProjectStore(
   ): Promise<ProjectCatalog> => {
     ensurePrivateHome(home);
     const result = await withQueueLock(
-      join(home, "projects", "write.lock.db"),
+      projectWriteLockPath(home),
       async () => {
         const catalog = read();
         const next = parseProjectCatalog(await update(catalog));
