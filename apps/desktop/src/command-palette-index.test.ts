@@ -398,11 +398,11 @@ test("a sibling source completion cannot renew the generation freshness timestam
     });
     await sessionsStarted;
     const held = snapshots.at(-1);
-    expect(held?.sources[`beads:${projectIds[0]}`]?.coverage).toBe("available");
-    expect(held?.sources[`sessions:${projectIds[0]}`]?.coverage).toBe(
-      "loading",
-    );
-    const generationAsOf = held?.asOf;
+    if (held === undefined)
+      throw new Error("The held sibling snapshot was not published.");
+    expect(held.sources[`beads:${projectIds[0]}`]?.coverage).toBe("available");
+    expect(held.sources[`sessions:${projectIds[0]}`]?.coverage).toBe("loading");
+    const generationAsOf = held.asOf;
     expect(generationAsOf).toBe(1_000);
     now += 31_000;
     resolveSessions(sessionsPage(projectIds[0]));
