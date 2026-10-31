@@ -146,6 +146,94 @@ test("a project survives reopening with stable identity and revision-checked pre
   expect(createProjectStore(home).read()).toEqual(updated);
 });
 
+test("general metadata updates advance one revision and preserve project and create-ledger fields", async () => {
+  const { home, store, input } = fixture();
+  const created = await store.create(
+    { ...input, color: "blue", keeperSmith: "claude-master" },
+    0,
+  );
+  const id = created.projects[0]?.id;
+  if (!id) throw new Error("project missing");
+  const withSecondProject = await store.create(
+    { ...input, slug: "beta", name: "Beta" },
+    created.revision,
+  );
+  const preferred = await store.preferences(id, withSecondProject.revision, {
+    pinned: true,
+    archived: true,
+  });
+  writeOwnerOnly(
+    projectCatalogPath(home),
+    JSON.stringify({ ...preferred, createOperations: [] }),
+  );
+  const before = store.read();
+  const original = before.projects[0];
+  if (!original) throw new Error("project missing");
+  const updated = await store.updateGeneral(id, before.revision, {
+    name: "Renamed",
+    description: "Updated description",
+    icon: "G",
+  });
+  expect(updated.revision).toBe(before.revision + 1);
+  const expectedProject = {
+    ...original,
+    name: "Renamed",
+    description: "Updated description",
+    icon: "G",
+    updatedAt: expect.any(String),
+  };
+  delete expectedProject.color;
+  expect(updated.projects[0]).toEqual(expectedProject);
+  expect(updated.projects[0]).not.toHaveProperty("color");
+  expect(updated.projects[1]).toEqual(before.projects[1]);
+  expect(Object.hasOwn(updated, "createOperations")).toBe(true);
+  expect(updated.createOperations).toEqual([]);
+  expect(store.read()).toEqual(updated);
+  await expect(
+    store.updateGeneral(id, before.revision, {
+      name: "Stale",
+      description: "",
+      icon: "S",
+    }),
+  ).rejects.toMatchObject({ status: 409 });
+
+  const pendingId = "ec61d4ee-8951-4f63-8c4b-ecfca0067c17";
+  const pendingOriginal = { ...input, slug: "reserved" };
+  const pendingReservation = await store.reserveCreate({
+    requestId: pendingId,
+    original: pendingOriginal,
+    expectedCatalogRevision: updated.revision,
+    preflightScope: { hash: "a".repeat(64), count: 0 },
+    validateScope: async () => ({ hash: "a".repeat(64), count: 0 }),
+  });
+  expect(pendingReservation.operation.state).toBe("reserved");
+  const exactPending = createProjectStore(home).readCreate(pendingId);
+  expect(exactPending).toEqual(pendingReservation.operation);
+  const withPending = await store.updateGeneral(id, updated.revision, {
+    name: "Renamed with pending create",
+    description: "",
+    icon: "P",
+  });
+  expect(withPending.revision).toBe(updated.revision + 1);
+  expect(store.readCreate(pendingId)).toEqual(exactPending);
+  expect(store.readCreate(pendingId)).toMatchObject({
+    state: "reserved",
+    original: pendingOriginal,
+  });
+  expect(createProjectStore(home).readCreate(pendingId)).toEqual(exactPending);
+
+  const legacy = fixture();
+  const legacyCreated = await legacy.store.create(legacy.input, 0);
+  const legacyId = legacyCreated.projects[0]?.id;
+  if (!legacyId) throw new Error("legacy project missing");
+  const legacyUpdated = await legacy.store.updateGeneral(
+    legacyId,
+    legacyCreated.revision,
+    { name: "Legacy renamed", description: "", icon: "L" },
+  );
+  expect(Object.hasOwn(legacyUpdated, "createOperations")).toBe(false);
+});
+
 test("create identity hashes bind the UUID and expected semantic revision", async () => {
   const { store, input } = fixture();
   const firstId = "cf2ca2e2-a2d1-42bb-b9b4-1517c3db434e";

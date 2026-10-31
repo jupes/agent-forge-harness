@@ -21,6 +21,10 @@ import { isBeadId } from "../hearth/tracker-write";
 import { resolveCheckout } from "../ledger/workspace";
 import { withQueueLock } from "../scheduler/queue-lock";
 import { MAX_PROJECT_CREATE_OPERATIONS } from "./create-protocol";
+import {
+  type ProjectGeneralSettings,
+  projectGeneralSettingsSchema,
+} from "./project-general-protocol";
 
 export const PROJECT_STORE_VERSION = 1;
 export const isProjectId = (value: unknown): value is string =>
@@ -562,6 +566,42 @@ export function createProjectStore(
           ? { createOperations: catalog.createOperations }
           : {}),
       }));
+    },
+    async updateGeneral(
+      id: string,
+      expectedRevision: number,
+      general: ProjectGeneralSettings,
+    ): Promise<ProjectCatalog> {
+      const checked = projectGeneralSettingsSchema.safeParse(general);
+      if (!isProjectId(id) || !checked.success)
+        throw new ProjectStoreError(
+          400,
+          "Expected a project id and complete general project settings.",
+        );
+      return change(expectedRevision, (catalog) => {
+        if (!catalog.projects.some((item) => item.id === id))
+          throw new ProjectStoreError(
+            404,
+            "This project is no longer in the catalog. Choose a project again.",
+          );
+        const { color, ...fields } = checked.data;
+        return {
+          projects: catalog.projects.map((item) => {
+            if (item.id !== id) return item;
+            const withoutColor = { ...item };
+            delete withoutColor.color;
+            return {
+              ...withoutColor,
+              ...fields,
+              ...(color !== undefined ? { color } : {}),
+              updatedAt: now().toISOString(),
+            };
+          }),
+          ...(catalog.createOperations !== undefined
+            ? { createOperations: catalog.createOperations }
+            : {}),
+        };
+      });
     },
     readCreate(requestId: string): ProjectCreateOperation | null {
       if (!requestId || !/^[0-9a-f-]{36}$/.test(requestId)) return null;
