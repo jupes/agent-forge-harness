@@ -587,7 +587,7 @@ test("an attended prompt uses ordinary Preview and one identity-bound Start afte
   const allowedStartPosts = explicitStartPosts();
   await start.click();
   await expect.poll(() => recoveryReadHeld).toBe(true);
-  expect(starts()).toBe(beforeStarts + 1);
+  await expect.poll(() => starts()).toBe(beforeStarts + 1);
   expect(records()).toHaveLength(beforeRecords + 1);
   const original = records().at(-1);
   if (!original)
