@@ -189,6 +189,8 @@ test("expired palette selection stays open with a refresh path and performs no w
   await search.fill("alpha-epic");
   const option = dialog.getByRole("option", { name: /^Alpha epic\b/ });
   await expect(option).toBeVisible();
+  await expect(search).toBeFocused();
+  await expect(option).toHaveAttribute("aria-selected", "true");
   await page.route(`**/projects/${alpha.id}/beads*`, async (route) => {
     await new Promise((resolve) => setTimeout(resolve, 900));
     await route.continue();
@@ -197,7 +199,7 @@ test("expired palette selection stays open with a refresh path and performs no w
     const now = Date.now();
     Date.now = () => now + 31_000;
   });
-  await option.click();
+  await page.keyboard.press("Enter");
   await expect(dialog).toBeVisible();
   await expect(dialog.getByRole("alert")).toContainText("This result changed");
   await expect(
