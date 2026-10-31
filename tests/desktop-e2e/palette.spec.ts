@@ -623,7 +623,9 @@ test("expired palette selection stays open with a refresh path and performs no w
       "This result changed",
     );
     await expect(
-      dialog.getByRole("button", { name: "Refresh results" }),
+      dialog
+        .getByRole("alert")
+        .getByRole("button", { name: "Refresh results", exact: true }),
     ).toBeVisible();
     expect(writes).toEqual([]);
   } catch (error) {
