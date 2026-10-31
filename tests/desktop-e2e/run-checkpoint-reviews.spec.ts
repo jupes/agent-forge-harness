@@ -633,7 +633,11 @@ async function installCheckpointResponseObserver(
   const waiters = new Set<CheckpointWaiter>();
   const pending = new Map<
     number,
-    { epoch: number; kind: CheckpointCaptureKind; phase: CheckpointObserverPhase }
+    {
+      epoch: number;
+      kind: CheckpointCaptureKind;
+      phase: CheckpointObserverPhase;
+    }
   >();
 
   const fail: (message: string) => never = (message) => {
@@ -2091,13 +2095,15 @@ test("prepared checkpoint review survives a run switch and reload but needs an e
       return;
     }
     historyRouteClaimed = true;
-    routedHistoryMetadata = observer.diagnosticSnapshot().pending.filter(
-      (entry) =>
-        entry.phase === "post-release" &&
-        entry.kind === "history" &&
-        entry.epoch === postReleaseMarker.epoch &&
-        entry.sequence > postReleaseMarker.sequence,
-    );
+    routedHistoryMetadata = observer
+      .diagnosticSnapshot()
+      .pending.filter(
+        (entry) =>
+          entry.phase === "post-release" &&
+          entry.kind === "history" &&
+          entry.epoch === postReleaseMarker.epoch &&
+          entry.sequence > postReleaseMarker.sequence,
+      );
     resolveHistoryRoute();
     try {
       await historyRouteGate;
