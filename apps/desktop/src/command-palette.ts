@@ -348,7 +348,9 @@ export function readPaletteRecents(
           (item): item is string =>
             typeof item === "string" &&
             item.length <= 600 &&
-            /^[a-z-]+:[^\u0000-\u001f]{0,560}$/.test(item),
+            /^[a-z-]+:/.test(item) &&
+            item.slice(item.indexOf(":") + 1).length <= 560 &&
+            [...item].every((character) => character.charCodeAt(0) >= 0x20),
         ),
       ),
     ].slice(0, 8);

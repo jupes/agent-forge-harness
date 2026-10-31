@@ -124,40 +124,37 @@ export function CommandPalette({
             Refreshing verified results…
           </p>
         ) : rows.length ? (
-          <ul
+          <div
             id="af-command-palette-results"
             role="listbox"
             aria-label="Palette results"
           >
             {rows.map((row, position) => (
-              <li
+              <div
                 key={`${row.kind}:${row.projectId}:${row.id}`}
                 class={position === active ? "is-active" : ""}
+                id={`af-palette-${position}`}
+                role="option"
+                aria-selected={position === active}
+                aria-disabled={!!row.unavailable}
+                tabIndex={-1}
+                onMouseEnter={() => setActive(position)}
+                onClick={() => choose(row)}
               >
-                <div
-                  id={`af-palette-${position}`}
-                  role="option"
-                  aria-selected={position === active}
-                  aria-disabled={!!row.unavailable}
-                  tabIndex={-1}
-                  onMouseEnter={() => setActive(position)}
-                  onClick={() => choose(row)}
-                >
-                  <span>
-                    <strong>{row.label}</strong>
-                    <small>{row.detail}</small>
-                  </span>
-                  {row.kind === "slash-command" &&
-                  row.intent?.kind === "slash-command" ? (
-                    <code>{row.intent.argumentHint}</code>
-                  ) : (
-                    <kbd>↵</kbd>
-                  )}
-                  {row.unavailable && <small>{row.unavailable}</small>}
-                </div>
-              </li>
+                <span>
+                  <strong>{row.label}</strong>
+                  <small>{row.detail}</small>
+                </span>
+                {row.kind === "slash-command" &&
+                row.intent?.kind === "slash-command" ? (
+                  <code>{row.intent.argumentHint}</code>
+                ) : (
+                  <kbd>↵</kbd>
+                )}
+                {row.unavailable && <small>{row.unavailable}</small>}
+              </div>
             ))}
-          </ul>
+          </div>
         ) : (
           <p class="af-command-palette-status" role="status">
             {query.trim()
