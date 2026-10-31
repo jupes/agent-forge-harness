@@ -105,16 +105,18 @@ export interface InboxBeadShiftProjection {
   diagnostics: readonly string[];
 }
 
-interface JoinedBeadSources {
-  coherent: boolean;
-  candidates: {
-    card: ProjectWorkbenchPage["cards"][number];
-    bead: ProjectBeadsPage["beads"][number];
-  }[];
-  reason: string;
-}
-interface SelectedBeadSources extends JoinedBeadSources {
-  coherent: true;
+type JoinedBeadSources =
+  | { coherent: false; candidates: []; reason: string }
+  | {
+      coherent: true;
+      candidates: {
+        card: ProjectWorkbenchPage["cards"][number];
+        bead: ProjectBeadsPage["beads"][number];
+      }[];
+      reason: string;
+    };
+interface SelectedBeadSources
+  extends Extract<JoinedBeadSources, { coherent: true }> {
   workbench: ProjectWorkbenchPage;
   beads: ProjectBeadsPage;
   fresh: boolean;

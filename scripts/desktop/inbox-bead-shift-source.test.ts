@@ -432,9 +432,9 @@ test("partial reads retain verified originals stale without action authority or 
     oldBeads = beads(),
     oldShifts = await shifts(),
     projected = await projectFrom(
-      read(null, oldWorkbench, staleCoverage),
-      read(null, oldBeads, staleCoverage),
-      read(null, oldShifts, staleCoverage),
+      retainedRead(oldWorkbench, staleCoverage),
+      retainedRead(oldBeads, staleCoverage),
+      retainedRead(oldShifts, staleCoverage),
     );
   expect(projected.facts.map((fact) => fact.sourceKind).sort()).toEqual([
     "bead-approval",
