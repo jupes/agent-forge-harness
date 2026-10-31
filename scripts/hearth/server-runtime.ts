@@ -16,10 +16,10 @@
  * the table.
  */
 
-import { rmSync } from "node:fs";
+import { realpathSync, rmSync, statSync } from "node:fs";
 import { createServer, type Server, type ServerResponse } from "node:http";
 import type { AddressInfo } from "node:net";
-import { join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import type { LedgerEventInput } from "../../types/hearth";
 import { createSmithCreateService } from "../config/smith-create-service";
 import { createSmithEditService } from "../config/smith-edit-service";
@@ -44,6 +44,10 @@ import {
 } from "../keeper/recovery-runtime";
 import { type AppendResult, appendEvent } from "../ledger/append";
 import { resolveCheckout } from "../ledger/workspace";
+import {
+  createRepositoryOnboarding,
+  type RepositoryOnboardingOptions,
+} from "../projects/repository-onboarding";
 import {
   createProviderInspector,
   type ProviderInspector,
@@ -132,6 +136,10 @@ export interface HearthInternalCommands {
   codexSyncCommand?: readonly string[];
   /** Mandatory owned bootstrap for private attended execution; no caller-provided command. */
   interactiveBootstrapCommand?: readonly string[];
+  /** Fixed native folder-picker helper; never selected by an HTTP request. */
+  projectRepositoryPickerCommand?: readonly string[];
+  /** Trusted legacy `repos/repos.json` checkout used only for collision refusal. */
+  projectRepositoryLegacyRoot?: string;
 }
 
 export interface HearthOptions extends HearthInternalCommands {
@@ -198,6 +206,11 @@ export interface OperatorApiOverrides {
   forgeGateLogRoot?: string;
   /** Trusted repository registry root; absent defaults to localStateRoot(root). */
   projectRepositoryRegistryRoot?: string;
+  projectRepositoryManifestRoot?: string;
+  projectRepositoryOnboarding?: ReturnType<typeof createRepositoryOnboarding>;
+  projectRepositoryRunGit?: RepositoryOnboardingOptions["runGit"];
+  projectRepositoryRunPicker?: RepositoryOnboardingOptions["runPicker"];
+  allowLocalRepositoryFixtureUrls?: boolean;
   /** Trusted attended project launcher; null explicitly holds Start. Never public request data. */
   projectShiftRuntime?: ProjectShiftRuntime | null | undefined;
   /** Fixed status probes only; tests supply a fixture and never inspect real accounts. */
@@ -539,6 +552,34 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
   const table = operatorRoutes({
     projectHome: home,
     projectRepositoryRegistryRoot: options.api?.projectRepositoryRegistryRoot,
+    projectRepositoryOnboarding:
+      options.api?.projectRepositoryOnboarding ??
+      createRepositoryOnboarding({
+        home,
+        workspace,
+        registryRoot:
+          options.api?.projectRepositoryManifestRoot ??
+          join(home, "project-create-registry"),
+        legacyRegistryRoot:
+          options.api?.projectRepositoryRegistryRoot ??
+          options.projectRepositoryLegacyRoot ??
+          localStateRoot(root),
+        ...(options.projectRepositoryPickerCommand === undefined
+          ? {}
+          : { pickerCommand: options.projectRepositoryPickerCommand }),
+        ...(options.api?.projectRepositoryRunGit === undefined
+          ? {}
+          : { runGit: options.api.projectRepositoryRunGit }),
+        ...(options.api?.projectRepositoryRunPicker === undefined
+          ? {}
+          : { runPicker: options.api.projectRepositoryRunPicker }),
+        ...(options.api?.allowLocalRepositoryFixtureUrls === undefined
+          ? {}
+          : {
+              allowLocalFixtureUrls:
+                options.api.allowLocalRepositoryFixtureUrls,
+            }),
+      }),
     smithCreateService,
     smithEditService,
     smithRoutingEditService,
@@ -870,6 +911,23 @@ async function main(
   commands: HearthInternalCommands,
 ): Promise<void> {
   const root = argValue(argv, "--root") ?? process.cwd();
+  const pickerIndex = argv.indexOf("--native-project-picker");
+  const pickerFlags = argv.filter(
+    (argument) => argument === "--native-project-picker",
+  ).length;
+  let projectRepositoryPickerCommand = commands.projectRepositoryPickerCommand;
+  if (pickerFlags > 0) {
+    const rawPicker = argv[pickerIndex + 1];
+    if (pickerFlags !== 1 || !rawPicker || !isAbsolute(rawPicker))
+      throw new Error("Invalid native repository picker command.");
+    try {
+      const picker = realpathSync.native(rawPicker);
+      if (!statSync(picker).isFile()) throw new Error();
+      projectRepositoryPickerCommand = [picker, "--choose-project-repository"];
+    } catch {
+      throw new Error("The native repository picker is unavailable.");
+    }
+  }
   const requested = process.env["HEARTH_PORT"];
   // Loaded here, not at the top: `createHearth` records council runs only when
   // it is handed a ledger for them, and a test that hands it none must get none.
@@ -877,6 +935,9 @@ async function main(
   const hearth = await createHearth({
     root,
     ...commands,
+    ...(projectRepositoryPickerCommand === undefined
+      ? {}
+      : { projectRepositoryPickerCommand }),
     councilLedger: operatorCouncilLedger(),
     ...(requested ? { port: Number(requested) } : {}),
   });

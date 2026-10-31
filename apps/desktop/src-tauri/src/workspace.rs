@@ -45,9 +45,42 @@ pub fn select_root(
 
 #[cfg(windows)]
 pub fn choose_folder() -> Result<Option<PathBuf>, &'static str> {
+    choose_folder_with_title("Choose an Agent Forge checkout", "Open workspace")
+}
+
+#[cfg(not(windows))]
+pub fn choose_folder() -> Result<Option<PathBuf>, &'static str> {
+    Err("folder picker unavailable")
+}
+
+pub fn choose_project_repository() -> Result<Option<PathBuf>, &'static str> {
+    let Some(path) = choose_folder_with_title("Choose a Git repository", "Select repository")?
+    else {
+        return Ok(None);
+    };
+    validate_repository(&path).map(Some)
+}
+
+fn validate_repository(path: &Path) -> Result<PathBuf, &'static str> {
+    let canonical = fs::canonicalize(&path).map_err(|_| "invalid repository folder")?;
+    let metadata = fs::metadata(&canonical).map_err(|_| "invalid repository folder")?;
+    let git = canonical.join(".git");
+    let git_metadata = fs::symlink_metadata(&git).map_err(|_| "invalid repository folder")?;
+    if !metadata.is_dir()
+        || git_metadata.file_type().is_symlink()
+        || !(git_metadata.is_dir() || git_metadata.is_file())
+        || canonical.to_string_lossy().len() > 1024
+    {
+        return Err("invalid repository folder");
+    }
+    Ok(canonical)
+}
+
+#[cfg(windows)]
+fn choose_folder_with_title(title: &str, button: &str) -> Result<Option<PathBuf>, &'static str> {
     use std::os::windows::ffi::{OsStrExt, OsStringExt};
     use windows::{
-        core::{w, HRESULT, PCWSTR},
+        core::{HRESULT, PCWSTR},
         Win32::{
             Foundation::ERROR_CANCELLED,
             System::Com::{
@@ -93,8 +126,10 @@ pub fn choose_folder() -> Result<Option<PathBuf>, &'static str> {
                 let folder: IShellItem = SHCreateItemFromParsingName(PCWSTR(path.as_ptr()), None)?;
                 dialog.SetFolder(&folder)?;
             }
-            dialog.SetTitle(w!("Choose an Agent Forge checkout"))?;
-            dialog.SetOkButtonLabel(w!("Open workspace"))?;
+            let title: Vec<u16> = title.encode_utf16().chain(Some(0)).collect();
+            let button: Vec<u16> = button.encode_utf16().chain(Some(0)).collect();
+            dialog.SetTitle(PCWSTR(title.as_ptr()))?;
+            dialog.SetOkButtonLabel(PCWSTR(button.as_ptr()))?;
             if let Err(error) = dialog.Show(None) {
                 if error.code() == HRESULT::from_win32(ERROR_CANCELLED.0) {
                     return Ok(None);
@@ -111,7 +146,7 @@ pub fn choose_folder() -> Result<Option<PathBuf>, &'static str> {
 }
 
 #[cfg(not(windows))]
-pub fn choose_folder() -> Result<Option<PathBuf>, &'static str> {
+fn choose_folder_with_title(_title: &str, _button: &str) -> Result<Option<PathBuf>, &'static str> {
     Err("folder picker unavailable")
 }
 
@@ -225,6 +260,23 @@ mod tests {
             ),
             Err("unavailable")
         );
+    }
+
+    #[test]
+    fn repository_picker_accepts_only_canonical_git_roots() {
+        let fixture = Fixture::new();
+        let linked = fixture.checkout(true);
+        let ordinary_fixture = Fixture::new();
+        let ordinary = ordinary_fixture.checkout(false);
+        assert_eq!(
+            validate_repository(&linked).unwrap(),
+            fs::canonicalize(linked).unwrap()
+        );
+        assert_eq!(
+            validate_repository(&ordinary).unwrap(),
+            fs::canonicalize(ordinary).unwrap()
+        );
+        assert!(validate_repository(&fixture.0).is_err());
     }
 
     #[test]

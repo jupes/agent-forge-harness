@@ -148,7 +148,9 @@ const NESTED: Readonly<Record<string, (value: unknown) => unknown>> = {
     value === "project-create" ||
     value === "codex-chat-fork" ||
     value === "codex-chat-fork-approval" ||
-    value === "codex-chat-fork-stop"
+    value === "codex-chat-fork-stop" ||
+    value === "project-repository-selection" ||
+    value === "project-repository-clone"
       ? value
       : DROP,
   requestId: (value) =>
