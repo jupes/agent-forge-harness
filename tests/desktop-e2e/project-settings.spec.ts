@@ -1,6 +1,10 @@
 import { expect, test } from "@playwright/test";
 import { openSettled } from "../e2e/fixtures";
-import { alpha, catalog as fixtureCatalog, seedProjects } from "./project-fixtures";
+import {
+  alpha,
+  catalog as fixtureCatalog,
+  seedProjects,
+} from "./project-fixtures";
 
 test.beforeEach(seedProjects);
 
@@ -17,7 +21,10 @@ test("project General settings loads the selected fixture fields", async ({
       await route.fulfill({ status: 409, body: "Fixture RED blocks writes." });
       return;
     }
-    if (request.method() === "GET" && url.pathname === "/__agent-forge/projects") {
+    if (
+      request.method() === "GET" &&
+      url.pathname === "/__agent-forge/projects"
+    ) {
       catalogReads++;
       await route.fulfill({
         status: 200,
@@ -117,7 +124,10 @@ test("General settings posts one revision-bound complete snapshot and reads it b
       });
       return;
     }
-    if (request.method() === "GET" && url.pathname === "/__agent-forge/projects") {
+    if (
+      request.method() === "GET" &&
+      url.pathname === "/__agent-forge/projects"
+    ) {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -137,12 +147,16 @@ test("General settings posts one revision-bound complete snapshot and reads it b
     `/index.html#/desktop/project/${alpha.id}/project-settings`,
   );
   expect((await summary).status()).toBe(200);
-  await expect(page.getByLabel("Project name", { exact: true })).toHaveValue("Alpha");
+  await expect(page.getByLabel("Project name", { exact: true })).toHaveValue(
+    "Alpha",
+  );
   await page.getByLabel("Project name", { exact: true }).fill(body.name);
   await page
     .getByLabel("Project description", { exact: true })
     .fill(body.description);
-  await page.getByLabel("Project color", { exact: true }).selectOption(body.color);
+  await page
+    .getByLabel("Project color", { exact: true })
+    .selectOption(body.color);
   await page.getByRole("button", { name: "Save General settings" }).click();
 
   const general = page.getByRole("region", { name: "General" });
@@ -196,7 +210,10 @@ test("unknown General save stays held until same-project review creates a new in
       });
       return;
     }
-    if (request.method() === "GET" && url.pathname === "/__agent-forge/projects") {
+    if (
+      request.method() === "GET" &&
+      url.pathname === "/__agent-forge/projects"
+    ) {
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -216,7 +233,9 @@ test("unknown General save stays held until same-project review creates a new in
     `/index.html#/desktop/project/${alpha.id}/project-settings`,
   );
   expect((await summary).status()).toBe(200);
-  await expect(page.getByLabel("Project name", { exact: true })).toHaveValue("Alpha");
+  await expect(page.getByLabel("Project name", { exact: true })).toHaveValue(
+    "Alpha",
+  );
   await page.getByLabel("Project name", { exact: true }).fill(name);
   await page.getByRole("button", { name: "Save General settings" }).click();
   const general = page.getByRole("region", { name: "General" });
@@ -224,13 +243,21 @@ test("unknown General save stays held until same-project review creates a new in
   expect(postCount).toBe(1);
 
   await page.getByRole("button", { name: "Check current settings" }).click();
-  await expect(general.getByRole("status")).toContainText("earlier outcome remains unknown");
-  expect(postCount).toBe(1);
-  await page.getByRole("button", { name: "I reviewed the current values" }).click();
-  await page.getByRole("button", { name: "Save General settings" }).click();
-  await expect(general.getByRole("status").filter({ hasText: "Current project settings read" })).toContainText(
-    "Current project settings read at catalog revision 2",
+  await expect(general.getByRole("status")).toContainText(
+    "earlier outcome remains unknown",
   );
-  await expect(general.getByRole("status").filter({ hasText: "outcome remains unknown" })).toBeVisible();
+  expect(postCount).toBe(1);
+  await page
+    .getByRole("button", { name: "I reviewed the current values" })
+    .click();
+  await page.getByRole("button", { name: "Save General settings" }).click();
+  await expect(
+    general
+      .getByRole("status")
+      .filter({ hasText: "Current project settings read" }),
+  ).toContainText("Current project settings read at catalog revision 2");
+  await expect(
+    general.getByRole("status").filter({ hasText: "outcome remains unknown" }),
+  ).toBeVisible();
   expect(postCount).toBe(2);
 });

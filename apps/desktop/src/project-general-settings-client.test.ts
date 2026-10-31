@@ -1,13 +1,13 @@
 import { expect, test } from "bun:test";
-import type { ProjectCatalog, ProjectRecord } from "../../../types/projects";
-import type { ProjectGeneralSettings } from "../../../scripts/projects/project-general-protocol";
-import {
-  ProjectGeneralSettingsOwner,
-  generalCatalogForProject,
-  validatedGeneralCatalog,
-  type GeneralDraft,
-} from "./project-general-settings-client";
 import { NotSent } from "../../../docs/js/operator";
+import type { ProjectGeneralSettings } from "../../../scripts/projects/project-general-protocol";
+import type { ProjectCatalog, ProjectRecord } from "../../../types/projects";
+import {
+  type GeneralDraft,
+  generalCatalogForProject,
+  ProjectGeneralSettingsOwner,
+  validatedGeneralCatalog,
+} from "./project-general-settings-client";
 
 const alpha: ProjectRecord = {
   id: "project-alpha",
@@ -22,7 +22,10 @@ const alpha: ProjectRecord = {
   createdAt: "2026-10-21T00:00:00.000Z",
   updatedAt: "2026-10-21T00:00:00.000Z",
 };
-const catalog = (revision: number, project: ProjectRecord = alpha): ProjectCatalog => ({
+const catalog = (
+  revision: number,
+  project: ProjectRecord = alpha,
+): ProjectCatalog => ({
   version: 1,
   revision,
   projects: [project],
@@ -37,7 +40,10 @@ const submitted: ProjectGeneralSettings = {
 };
 const draft: GeneralDraft = submitted;
 
-function updated(revision: number, general: ProjectGeneralSettings): ProjectCatalog {
+function updated(
+  revision: number,
+  general: ProjectGeneralSettings,
+): ProjectCatalog {
   const { color, ...requiredGeneral } = general;
   const project: ProjectRecord = {
     ...alpha,
@@ -55,7 +61,9 @@ test("sends the complete General snapshot at the reviewed catalog revision", asy
   const posts: { url: string; body: unknown }[] = [];
   const owner = new ProjectGeneralSettingsOwner({
     read: async () => current,
-    refreshHome: async () => { summaryRefreshes++; },
+    refreshHome: async () => {
+      summaryRefreshes++;
+    },
     post: async (url, body) => {
       posts.push({ url, body });
       current = updated(8, submitted);
@@ -99,7 +107,9 @@ test("503 remains unknown and a catalog check never resends the old request", as
   expect(owner.snapshot().unresolved).toHaveLength(1);
   expect(owner.snapshot().checkedProjectId).toBe("project-alpha");
   expect(owner.snapshot().reviewedProjectId).toBeNull();
-  expect(owner.snapshot().notices["project-alpha"]).toContain("outcome remains unknown");
+  expect(owner.snapshot().notices["project-alpha"]).toContain(
+    "outcome remains unknown",
+  );
 });
 
 test("explicit same-project review may create a new CAS at the unchanged revision", async () => {
@@ -124,8 +134,12 @@ test("explicit same-project review may create a new CAS at the unchanged revisio
   await owner.review("project-alpha");
   expect(posts).toBe(1);
   expect(owner.snapshot().unresolved).toHaveLength(1);
-  expect(owner.snapshot().notices["project-alpha"]).toContain("These values are present now");
-  expect(owner.snapshot().notices["project-alpha"]).toContain("outcome remains unknown");
+  expect(owner.snapshot().notices["project-alpha"]).toContain(
+    "These values are present now",
+  );
+  expect(owner.snapshot().notices["project-alpha"]).toContain(
+    "outcome remains unknown",
+  );
   owner.confirmReview("project-alpha");
   await owner.save("project-alpha", 7, submitted, draft);
 
@@ -202,7 +216,9 @@ test("unknown intent stays project-bound while a reviewed same-revision save cle
   await owner.review(beta.id);
   await owner.save(beta.id, 7, beta, beta);
   expect(reads).toBe(afterAlphaReview);
-  expect(owner.snapshot().notices[beta.id]).toContain("Resolve the pending General update");
+  expect(owner.snapshot().notices[beta.id]).toContain(
+    "Resolve the pending General update",
+  );
 
   owner.setDraft("project-alpha", cleared);
   owner.confirmReview("project-alpha");
@@ -230,22 +246,52 @@ test("projection validates the target General fields and discards shared catalog
     project: {
       id: alpha.id,
       updatedAt: alpha.updatedAt,
-      general: { name: "Alpha", description: "Fixture project", icon: "A", color: "blue" },
+      general: {
+        name: "Alpha",
+        description: "Fixture project",
+        icon: "A",
+        color: "blue",
+      },
     },
   });
-  expect(() => validatedGeneralCatalog({ ...raw, projects: [...raw.projects, alpha] }, alpha.id)).toThrow("missing or ambiguous");
-  expect(() => validatedGeneralCatalog({ ...raw, version: 2 }, alpha.id)).toThrow("malformed");
-  expect(() => validatedGeneralCatalog({ ...raw, createOperations: [] }, alpha.id)).toThrow("malformed");
-  expect(() => validatedGeneralCatalog({ ...raw, revision: Number.MAX_SAFE_INTEGER + 1 }, alpha.id)).toThrow("malformed");
-  const invalidName: unknown = { version: 1, revision: 7, projects: [{ ...alpha, name: null }] };
+  expect(() =>
+    validatedGeneralCatalog(
+      { ...raw, projects: [...raw.projects, alpha] },
+      alpha.id,
+    ),
+  ).toThrow("missing or ambiguous");
+  expect(() =>
+    validatedGeneralCatalog({ ...raw, version: 2 }, alpha.id),
+  ).toThrow("malformed");
+  expect(() =>
+    validatedGeneralCatalog({ ...raw, createOperations: [] }, alpha.id),
+  ).toThrow("malformed");
+  expect(() =>
+    validatedGeneralCatalog(
+      { ...raw, revision: Number.MAX_SAFE_INTEGER + 1 },
+      alpha.id,
+    ),
+  ).toThrow("malformed");
+  const invalidName: unknown = {
+    version: 1,
+    revision: 7,
+    projects: [{ ...alpha, name: null }],
+  };
   expect(() => validatedGeneralCatalog(invalidName, alpha.id)).toThrow();
-  expect(() => validatedGeneralCatalog(catalog(7, { ...alpha, updatedAt: "yesterday" }), alpha.id)).toThrow();
+  expect(() =>
+    validatedGeneralCatalog(
+      catalog(7, { ...alpha, updatedAt: "yesterday" }),
+      alpha.id,
+    ),
+  ).toThrow();
 });
 
 test("NotSent unlocks the request without losing the user's installed draft", async () => {
   const owner = new ProjectGeneralSettingsOwner({
     read: async () => catalog(7),
-    post: async () => { throw new NotSent("No dashboard session"); },
+    post: async () => {
+      throw new NotSent("No dashboard session");
+    },
   });
   owner.setDraft(alpha.id, { ...draft, name: "Saved draft" });
   await owner.save(alpha.id, 7, alpha, owner.draft(alpha.id, alpha));
@@ -256,13 +302,17 @@ test("NotSent unlocks the request without losing the user's installed draft", as
 
   const uncertain = new ProjectGeneralSettingsOwner({
     read: async () => catalog(7),
-    post: async () => { throw Error("socket closed after send"); },
+    post: async () => {
+      throw Error("socket closed after send");
+    },
   });
   uncertain.setDraft(alpha.id, { ...draft, name: "Possibly sent" });
   await uncertain.save(alpha.id, 7, alpha, uncertain.draft(alpha.id, alpha));
   expect(uncertain.snapshot().unresolved).toHaveLength(1);
   expect(uncertain.snapshot().drafts[alpha.id]?.name).toBe("Possibly sent");
-  expect(uncertain.snapshot().notices[alpha.id]).toContain("outcome is unknown");
+  expect(uncertain.snapshot().notices[alpha.id]).toContain(
+    "outcome is unknown",
+  );
 });
 
 test("accepted receipt is not adopted as current when the confirming GET fails", async () => {
@@ -286,8 +336,12 @@ test("accepted receipt is not adopted as current when the confirming GET fails",
   expect(owner.snapshot().unresolved).toHaveLength(0);
   expect(owner.snapshot().drafts[alpha.id]?.name).toBe("Kept until readback");
   expect(owner.snapshot().reviewRequired[alpha.id]).toBe(true);
-  expect(owner.snapshot().notices[alpha.id]).toContain("save was accepted at catalog revision 8");
-  expect(owner.snapshot().notices[alpha.id]).toContain("current values are unavailable");
+  expect(owner.snapshot().notices[alpha.id]).toContain(
+    "save was accepted at catalog revision 8",
+  );
+  expect(owner.snapshot().notices[alpha.id]).toContain(
+    "current values are unavailable",
+  );
 });
 
 test("project projections are cached per project without regression and fresh reads recover them", async () => {
@@ -303,45 +357,67 @@ test("project projections are cached per project without regression and fresh re
   owner.adopt(alpha.id, catalog(6, { ...alpha, name: "Older" }));
   expect(owner.snapshot().catalog?.project.id).toBe(alpha.id);
   expect(owner.snapshot().catalog?.revision).toBe(7);
-  expect(owner.snapshot().catalogs[alpha.id]?.project.general.name).toBe("Alpha");
+  expect(owner.snapshot().catalogs[alpha.id]?.project.general.name).toBe(
+    "Alpha",
+  );
   owner.adopt(alpha.id, catalog(8, { ...alpha, name: "New summary value" }));
   expect(owner.snapshot().catalog?.revision).toBe(8);
-  expect(owner.snapshot().catalog?.project.general.name).toBe("New summary value");
+  expect(owner.snapshot().catalog?.project.general.name).toBe(
+    "New summary value",
+  );
   expect(owner.snapshot().catalog?.freshRead).toBe(false);
 
   let recoveryReads = 0;
   const recovery = new ProjectGeneralSettingsOwner({
     read: async () => {
       recoveryReads++;
-      return recoveryReads === 1 ? catalog(4, beta) : catalog(8, { ...alpha, name: "Late Alpha read" });
+      return recoveryReads === 1
+        ? catalog(4, beta)
+        : catalog(8, { ...alpha, name: "Late Alpha read" });
     },
     post: async () => new Response("unused", { status: 500 }),
   });
   recovery.adopt(alpha.id, catalog(7));
   await recovery.review(beta.id);
   expect(recovery.snapshot().catalog?.project.id).toBe(alpha.id);
-  expect(generalCatalogForProject(recovery.snapshot(), beta.id)?.freshRead).toBe(true);
+  expect(
+    generalCatalogForProject(recovery.snapshot(), beta.id)?.freshRead,
+  ).toBe(true);
   const betaScreen = generalCatalogForProject(recovery.snapshot(), beta.id);
   await recovery.review(alpha.id);
-  expect(recovery.snapshot().catalog?.project.general.name).toBe("Late Alpha read");
-  expect(generalCatalogForProject(recovery.snapshot(), beta.id)).toBe(betaScreen);
+  expect(recovery.snapshot().catalog?.project.general.name).toBe(
+    "Late Alpha read",
+  );
+  expect(generalCatalogForProject(recovery.snapshot(), beta.id)).toBe(
+    betaScreen,
+  );
 });
 
 test("one held request owns the client across double-submit and another-project review", async () => {
   let releasePreflight!: (value: unknown) => void;
   let releaseConflict!: (value: unknown) => void;
   let reachedConflict!: () => void;
-  const conflictStarted = new Promise<void>((resolve) => { reachedConflict = () => resolve(); });
+  const conflictStarted = new Promise<void>((resolve) => {
+    reachedConflict = () => resolve();
+  });
   let reads = 0;
   let posts = 0;
   const owner = new ProjectGeneralSettingsOwner({
     read: () => {
       reads++;
-      if (reads === 1) return new Promise((resolve) => { releasePreflight = resolve; });
+      if (reads === 1)
+        return new Promise((resolve) => {
+          releasePreflight = resolve;
+        });
       reachedConflict();
-      return new Promise((resolve) => { releaseConflict = resolve; });
+      return new Promise((resolve) => {
+        releaseConflict = resolve;
+      });
     },
-    post: async () => { posts++; return new Response("stale", { status: 409 }); },
+    post: async () => {
+      posts++;
+      return new Response("stale", { status: 409 });
+    },
   });
   const first = owner.save(alpha.id, 7, alpha, draft);
   await owner.save(alpha.id, 7, alpha, draft);

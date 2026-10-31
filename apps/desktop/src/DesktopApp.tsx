@@ -67,9 +67,9 @@ import {
 import { BeadPanel, beadHref, ProjectBeads } from "./ProjectBeads";
 import { ProjectOverview } from "./ProjectOverview";
 import { ProjectReviews } from "./ProjectReviews";
-import { ProjectSettings } from "./ProjectSettings";
 import { ProjectRunInspector, ProjectRuns } from "./ProjectRuns";
 import { ProjectSessions, SessionInspector } from "./ProjectSessions";
+import { ProjectSettings } from "./ProjectSettings";
 import { ProjectShifts } from "./ProjectShifts";
 import { ProjectsHome } from "./ProjectsHome";
 import { ProjectWorkbench } from "./ProjectWorkbench";
@@ -97,6 +97,7 @@ import {
   type ProjectCouncilSourceIntent,
 } from "./project-council-return";
 import type { VerifiedProjectCreate } from "./project-create-owner";
+import { generalCatalogForProject } from "./project-general-settings-client";
 import { parseRunFilters, runsHref } from "./project-runs-model";
 import { ClaudeSessionComposer, SessionComposer } from "./SessionComposer";
 import { SessionConversation } from "./SessionConversation";
@@ -115,7 +116,6 @@ import { useKeeperShiftReviews } from "./use-keeper-shift-reviews";
 import { useProjectActivity } from "./use-project-activity";
 import { useProjectCreate } from "./use-project-create";
 import { useProjectGeneralSettings } from "./use-project-general-settings";
-import { generalCatalogForProject } from "./project-general-settings-client";
 import { useProjectRuns } from "./use-project-runs";
 import { useProjectShifts } from "./use-project-shifts";
 import { useProjects } from "./use-projects";
@@ -348,7 +348,9 @@ export function DesktopApp(): JSX.Element {
   );
   const recovery = useDesktopRecovery();
   const projects = useProjects();
-  const projectGeneralSettings = useProjectGeneralSettings(projects.refreshProjectHome);
+  const projectGeneralSettings = useProjectGeneralSettings(
+    projects.refreshProjectHome,
+  );
   const settingsCatalog = projects.data?.catalog ?? null;
   const providers = useProviders();
   const projectCreate = useProjectCreate(
@@ -2272,7 +2274,10 @@ export function DesktopApp(): JSX.Element {
           <ProjectSettings
             projectId={route.projectId}
             project={project ?? null}
-            catalog={generalCatalogForProject(projectGeneralSettings, route.projectId)}
+            catalog={generalCatalogForProject(
+              projectGeneralSettings,
+              route.projectId,
+            )}
             initialRevision={settingsCatalog?.revision ?? null}
             loading={projects.loading}
             error={projects.error}
