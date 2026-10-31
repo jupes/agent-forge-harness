@@ -3113,6 +3113,12 @@ const ACTIONS: Record<string, ActionFixture> = {
         general: { name: "", description: "", icon: "G" },
       },
     },
+    prepare: async (h) => {
+      writeOwnerOnly(
+        projectCatalogPath(h.home),
+        JSON.stringify(projectCatalogFixture(h.workspace)),
+      );
+    },
     captureBefore: (h) => createProjectStore(h.home).read().projects,
     happened: async (h, _answer, before) => {
       const original = before?.find(
