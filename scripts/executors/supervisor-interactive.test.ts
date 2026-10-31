@@ -27,8 +27,9 @@ type SettlementTestGuard = {
 };
 
 function heldWindowsSettlementGuard(
-  createActual: (pid: number) => ReturnType<typeof guardRequiredTree> =
-    guardRequiredTree,
+  createActual: (
+    pid: number,
+  ) => ReturnType<typeof guardRequiredTree> = guardRequiredTree,
 ) {
   let enter!: () => void;
   let confirm!: () => void;
