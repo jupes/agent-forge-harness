@@ -336,7 +336,9 @@ export function createCommandPaletteIndex(
                       selection: { kind: "session", id: row.id },
                     },
                   },
-                  ...(lastEventAt !== undefined ? { updatedAt: lastEventAt } : {}),
+                  ...(lastEventAt !== undefined
+                    ? { updatedAt: lastEventAt }
+                    : {}),
                 });
               }
             } else

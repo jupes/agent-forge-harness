@@ -1488,11 +1488,11 @@ export function DesktopApp(): JSX.Element {
               projectId: projectHome.id,
               ...paletteUnavailable(
                 !writesAllowed ||
-                !activeSummary?.workspace ||
-                providers.data?.workspace !== activeSummary.workspace ||
-                !projectHome.workspaces.some(
-                  (entry) => entry.root === activeSummary.workspace,
-                )
+                  !activeSummary?.workspace ||
+                  providers.data?.workspace !== activeSummary.workspace ||
+                  !projectHome.workspaces.some(
+                    (entry) => entry.root === activeSummary.workspace,
+                  )
                   ? "A current writable project workspace is required."
                   : undefined,
               ),
@@ -1799,11 +1799,7 @@ export function DesktopApp(): JSX.Element {
             target.requestId,
           );
         else
-          openSessionReview(
-            source.proposal,
-            page.revision,
-            target.requestId,
-          );
+          openSessionReview(source.proposal, page.revision, target.requestId);
         handled = true;
       }
     } else if (intent.kind === "review" && intent.target.kind === "bead") {
@@ -1846,9 +1842,8 @@ export function DesktopApp(): JSX.Element {
       if (
         currentRuns?.page &&
         currentRuns.page.problems.length === 0 &&
-        currentRuns.page.runs.find(
-          (entry) => entry.slug === target.runSlug,
-        )?.complete &&
+        currentRuns.page.runs.find((entry) => entry.slug === target.runSlug)
+          ?.complete &&
         currentRuns.selectedSlug === target.runSlug &&
         detail &&
         detail.problems.length === 0 &&
