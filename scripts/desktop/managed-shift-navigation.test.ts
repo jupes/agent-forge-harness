@@ -26,7 +26,7 @@ test("exact managed attempt and original links survive recreation and back/forwa
     error: "",
   });
   let hash = attemptHref;
-  const listener = { changed: () => {} },
+  const listener = { changed: (_newUrl?: string) => {} },
     observed: string[] = [];
   const close = observeDesktopRoute(
     {

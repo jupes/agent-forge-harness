@@ -11,7 +11,7 @@ import {
 test("navigation changed before the effect subscribes is reconciled, and cleanup releases future hash changes", () => {
   let hash = "#/desktop/projects";
   const mounted = desktopRoute(hash);
-  const listener = { changed: () => {} };
+  const listener = { changed: (_newUrl?: string) => {} };
   const observed: DesktopRoute[] = [];
   // The native renderer paints its first frame, then navigation arrives before
   // its passive effect installs the listener. That earlier event is not replayed.
