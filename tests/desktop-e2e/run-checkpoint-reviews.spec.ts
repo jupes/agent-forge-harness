@@ -14,6 +14,7 @@ import {
   expect,
   type Locator,
   type Page,
+  type Route,
   test,
 } from "@playwright/test";
 import { z } from "zod";
@@ -549,6 +550,7 @@ function isCheckpointCaptureKind(
   );
 }
 type CheckpointMarker = { sequence: number; epoch: number };
+type CheckpointObserverPhase = "setup" | "post-release";
 type CheckpointCapture = {
   kind: CheckpointCaptureKind;
   sequence: number;
@@ -620,6 +622,7 @@ async function installCheckpointResponseObserver(
   let lostCommitInjected = false;
   let acceptedReads = 0;
   let totalBytes = 0;
+  let phase: CheckpointObserverPhase = "setup";
   let held = false;
   let disposed = false;
   let initDisposable: Disposable | undefined;
@@ -630,7 +633,7 @@ async function installCheckpointResponseObserver(
   const waiters = new Set<CheckpointWaiter>();
   const pending = new Map<
     number,
-    { epoch: number; kind: CheckpointCaptureKind }
+    { epoch: number; kind: CheckpointCaptureKind; phase: CheckpointObserverPhase }
   >();
 
   const fail: (message: string) => never = (message) => {
@@ -911,7 +914,7 @@ async function installCheckpointResponseObserver(
       fail("The checkpoint observer read limit was exceeded.");
     acceptedReads++;
     sequence++;
-    pending.set(sequence, { epoch, kind });
+    pending.set(sequence, { epoch, kind, phase });
     return { accepted: true, sequence, epoch, kind };
   };
   const onComplete = (input: unknown) => {
@@ -1582,6 +1585,18 @@ async function installCheckpointResponseObserver(
   const observer = {
     mark,
     waitFor,
+    setPhase(value: CheckpointObserverPhase) {
+      phase = value;
+    },
+    diagnosticSnapshot: () => ({
+      epoch,
+      pending: [...pending.entries()].map(([sequence, entry]) => ({
+        phase: entry.phase,
+        kind: entry.kind,
+        sequence,
+        epoch: entry.epoch,
+      })),
+    }),
     prepared: () => accepted,
     original: () => preparedOriginal,
     commit: () => commitReceipt,
@@ -2047,12 +2062,106 @@ test("prepared checkpoint review survives a run switch and reload but needs an e
     }),
   ).toBeVisible();
   await expect(page.locator("body")).not.toContainText(note);
-  await observer.releaseOriginal();
-  await expect
-    .poll(() => page.evaluate(() => window.__checkpointOriginalReleased))
-    .toBe(true);
-  expect(posts.map((post) => post.path)).toEqual([basePath]);
-  await reloadSettled(page);
+  observer.setPhase("post-release");
+  const postReleaseMarker = await observer.mark();
+  const historyUrl = new URL(basePath, DASHBOARD_URL).href;
+  let releaseHistoryRoute!: () => void;
+  const historyRouteGate = new Promise<void>(
+    (resolve) => (releaseHistoryRoute = resolve),
+  );
+  let resolveHistoryRoute!: () => void;
+  let rejectHistoryRoute!: (error: Error) => void;
+  const historyRouteReached = new Promise<void>((resolve, reject) => {
+    resolveHistoryRoute = resolve;
+    rejectHistoryRoute = reject;
+  });
+  void historyRouteReached.catch(() => undefined);
+  let resolveHistoryRouteDone!: () => void;
+  const historyRouteDone = new Promise<void>(
+    (resolve) => (resolveHistoryRouteDone = resolve),
+  );
+  let historyRouteClaimed = false;
+  let historyRouteTimer: ReturnType<typeof setTimeout> | undefined;
+  let routedHistoryMetadata: ReturnType<
+    typeof observer.diagnosticSnapshot
+  >["pending"] = [];
+  const historyRoute = async (route: Route) => {
+    if (historyRouteClaimed || route.request().method() !== "GET") {
+      await route.continue();
+      return;
+    }
+    historyRouteClaimed = true;
+    routedHistoryMetadata = observer.diagnosticSnapshot().pending.filter(
+      (entry) =>
+        entry.phase === "post-release" &&
+        entry.kind === "history" &&
+        entry.epoch === postReleaseMarker.epoch &&
+        entry.sequence > postReleaseMarker.sequence,
+    );
+    resolveHistoryRoute();
+    try {
+      await historyRouteGate;
+      await route.continue();
+    } catch {
+      // Reload may abort the held fetch before the gate is released.
+    } finally {
+      resolveHistoryRouteDone();
+    }
+  };
+  await page.route(historyUrl, historyRoute);
+  try {
+    await observer.releaseOriginal();
+    await expect
+      .poll(() => page.evaluate(() => window.__checkpointOriginalReleased))
+      .toBe(true);
+    historyRouteTimer = setTimeout(
+      () =>
+        rejectHistoryRoute(
+          Error("The exact history GET was not routed within 10 seconds."),
+        ),
+      10_000,
+    );
+    await historyRouteReached;
+    expect(routedHistoryMetadata).toHaveLength(1);
+    const orphanCandidate = routedHistoryMetadata[0];
+    if (!orphanCandidate)
+      throw Error("The gated history GET had no observer metadata.");
+    expect(posts.map((post) => post.path)).toEqual([basePath]);
+    await reloadSettled(page);
+    await expect
+      .poll(() => observer.diagnosticSnapshot().epoch)
+      .toBeGreaterThan(postReleaseMarker.epoch);
+    expect(observer.diagnosticSnapshot().pending).toContainEqual(
+      orphanCandidate,
+    );
+  } finally {
+    if (historyRouteTimer) clearTimeout(historyRouteTimer);
+    releaseHistoryRoute();
+    await page.unroute(historyUrl, historyRoute);
+    if (historyRouteClaimed) {
+      let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await Promise.race([
+          historyRouteDone,
+          new Promise<void>((_, reject) => {
+            cleanupTimer = setTimeout(
+              () =>
+                reject(
+                  Error(
+                    "The held history route did not settle within 10 seconds.",
+                  ),
+                ),
+              10_000,
+            );
+          }),
+        ]);
+      } finally {
+        if (cleanupTimer) clearTimeout(cleanupTimer);
+      }
+    }
+    if (!page.isClosed())
+      await page.evaluate(() => window.__checkpointObserverDrain?.());
+  }
   await expect(
     page.getByRole("heading", {
       name: secondRun.feature ?? secondRun.slug,
