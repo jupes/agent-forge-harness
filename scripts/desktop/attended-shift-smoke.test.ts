@@ -6,6 +6,8 @@ import {
   reportPackagedStopFailure,
 } from "./attended-shift-smoke";
 
+type Invocation = NonNullable<Parameters<typeof recordPackagedStopWitness>[0]>;
+
 test("stop witness is active-only, skips guard-root, and allowlists fields", () => {
   const source = {
     reason: "growth-over-cap" as const,
@@ -37,7 +39,7 @@ test("stop witness is active-only, skips guard-root, and allowlists fields", () 
   };
   const accounting = capturePackagedStopWitness(
     true,
-    "accounting",
+    "verify-census-unaccounted",
     undefined,
     accountingSource,
   );
@@ -53,12 +55,12 @@ test("stop witness is active-only, skips guard-root, and allowlists fields", () 
 });
 
 test("each labeled stop gets its own first active witness and ordinal", () => {
-  const first = {
+  const first: Invocation = {
     invocation: 1,
     label: "before-restart" as const,
     witness: null,
   };
-  const next = {
+  const next: Invocation = {
     invocation: 2,
     label: "after-recovery" as const,
     witness: null,
