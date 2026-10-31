@@ -2,8 +2,8 @@ import { randomUUID } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
-  realpathSync,
   readFileSync,
+  realpathSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -11,16 +11,16 @@ import { dirname, join } from "node:path";
 import { expect, test } from "@playwright/test";
 import { runsHref } from "../../apps/desktop/src/project-runs-model";
 import { projectShiftInputHash } from "../../apps/desktop/src/project-shift-identities";
-import { createSessionRegistry } from "../../scripts/sessions/registry";
 import type { ForgeState } from "../../scripts/forge/phases";
 import { projectFixture } from "../../scripts/projects/testing";
+import { createSessionRegistry } from "../../scripts/sessions/registry";
 import type { LedgerEventInput } from "../../types/hearth";
+import type { OwnedSessionMetadata } from "../../types/owned-session";
 import type {
   ProjectShiftReceipt,
   ProjectShiftStartRequest,
   ProjectShiftsPage,
 } from "../../types/project-shifts";
-import type { OwnedSessionMetadata } from "../../types/owned-session";
 import { readState, withStateLock, writeState } from "../e2e/bd-stand-in-state";
 import { openSettled } from "../e2e/fixtures";
 import { BD_STAND_IN_STATE, HEARTH_HOME } from "../e2e/servers";
@@ -270,10 +270,7 @@ test("verified Run Activity is pinned to its slug and disappears for a foreign p
   await expect(feed).toBeVisible();
   await expect(feed).toContainText("Run shared Activity marker");
   await expect(detail.getByLabel("Run filter")).toHaveValue(runId);
-  await expect(detail.getByLabel("Run filter")).toHaveAttribute(
-    "readonly",
-    "",
-  );
+  await expect(detail.getByLabel("Run filter")).toHaveAttribute("readonly", "");
 
   await page.goto(`/index.html${runsHref(beta.id, runId)}`);
   await expect(
@@ -330,7 +327,9 @@ test("verified original Shift Activity is distinct from Attend and clears after 
       status: 200,
       json: {
         ok: true,
-        data: mismatch ? { ...pageData, projectId: beta.id, items: [] } : pageData,
+        data: mismatch
+          ? { ...pageData, projectId: beta.id, items: [] }
+          : pageData,
         error: null,
       },
     }),
@@ -351,10 +350,7 @@ test("verified original Shift Activity is distinct from Attend and clears after 
       payload: { shiftId, concurrency: 1, durationMs: 300_000, maxBeads: 1 },
     },
   ]);
-  await openSettled(
-    page,
-    `/index.html#/desktop/project/${alpha.id}/workbench`,
-  );
+  await openSettled(page, `/index.html#/desktop/project/${alpha.id}/workbench`);
   const shift = page.locator(`[data-shift="${shiftId}"]`);
   await expect(shift).toBeVisible();
   const activityTab = shift.getByRole("tab", {
@@ -378,7 +374,9 @@ test("verified original Shift Activity is distinct from Attend and clears after 
   ).toBeVisible();
 
   mismatch = true;
-  await page.getByRole("button", { name: "Refresh shifts", exact: true }).click();
+  await page
+    .getByRole("button", { name: "Refresh shifts", exact: true })
+    .click();
   await expect(page.getByRole("alert")).toContainText("scoped shift read");
   await expect(shift.getByRole("tab", { name: "Activity" })).toHaveCount(0);
   await expect(

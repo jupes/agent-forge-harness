@@ -651,7 +651,9 @@ export function ObjectActivityTabs({
             ? 0
             : event.key === "End"
               ? buttons.length - 1
-              : (index + (event.key === "ArrowRight" ? 1 : -1) + buttons.length) %
+              : (index +
+                  (event.key === "ArrowRight" ? 1 : -1) +
+                  buttons.length) %
                 buttons.length;
         event.preventDefault();
         buttons[next]?.focus();

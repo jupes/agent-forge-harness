@@ -5,8 +5,8 @@ import type {
   ProjectShiftOptions,
   ProjectShiftReceipt,
 } from "../../../types/project-shifts";
-import { ProjectShiftAttempts } from "./ProjectShiftAttempts";
 import { ObjectActivityTabs, ScopedProjectActivity } from "./ProjectActivity";
+import { ProjectShiftAttempts } from "./ProjectShiftAttempts";
 import { ProjectShiftListStatus } from "./ProjectShiftListStatus";
 import type { ProjectShiftsClient } from "./project-shift-client";
 import {
@@ -590,119 +590,124 @@ function ShiftRow({
         aria-label={`Shift details for ${intent.shiftId}`}
         hidden={showActivity}
       >
-      {observation.reason && (
-        <p>{projectShiftReasonLabel(observation.reason)}</p>
-      )}
-      {actual ? (
-        <dl class="af-shift-metrics">
-          <div>
-            <dt>Started</dt>
-            <dd>
-              <time dateTime={actual.startedAt}>{clock(actual.startedAt)}</time>
-            </dd>
-          </div>
-          <div>
-            <dt>Elapsed / limit</dt>
-            <dd>
-              {elapsed(
-                actual.startedAt,
-                actual.endedAt ? Date.parse(actual.endedAt) : now,
-              )}{" "}
-              / {reviewed.for}
-            </dd>
-          </div>
-          <div>
-            <dt>Active / concurrency</dt>
-            <dd>
-              {actual.running} / {actual.concurrency}
-            </dd>
-          </div>
-          <div>
-            <dt>Admitted / maximum beads</dt>
-            <dd>
-              {actual.admitted ?? "Not reported"} / {actual.maxBeads}
-            </dd>
-          </div>
-          <div>
-            <dt>Reviewed / halted</dt>
-            <dd>
-              {actual.reviewed} / {actual.halted}
-            </dd>
-          </div>
-          <div>
-            <dt>Reported spend / cap</dt>
-            <dd>
-              {money(actual.spentUsd)} / {money(actual.maxUsd)}
-              {actual.unpriced > 0 ? ` · ${actual.unpriced} unpriced` : ""}
-            </dd>
-          </div>
-          <div>
-            <dt>Last admission CPU / memory</dt>
-            <dd>
-              {actual.host
-                ? `${percent(actual.host.cpu)} / ${percent(actual.host.memory)}`
-                : "Not reported"}
-            </dd>
-          </div>
-          <div>
-            <dt>Throttle threshold</dt>
-            <dd>{percent(actual.throttle)}</dd>
-          </div>
-          <div>
-            <dt>Host sample</dt>
-            <dd>{actual.host ? clock(actual.host.asOf) : "Not reported"}</dd>
-          </div>
-        </dl>
-      ) : (
-        <p>
-          No correlated actual shift record is available. A reservation or
-          launch marker does not prove provider execution.
-        </p>
-      )}
-      <details>
-        <summary>Reviewed original bounds</summary>
-        <dl class="af-shift-metrics">
-          <div>
-            <dt>Duration</dt>
-            <dd>{reviewed.for}</dd>
-          </div>
-          <div>
-            <dt>Concurrency</dt>
-            <dd>{reviewed.concurrency}</dd>
-          </div>
-          <div>
-            <dt>Maximum beads</dt>
-            <dd>{reviewed.maxBeads}</dd>
-          </div>
-          <div>
-            <dt>Spend cap</dt>
-            <dd>{money(reviewed.maxUsd)}</dd>
-          </div>
-          <div>
-            <dt>Repairs</dt>
-            <dd>{reviewed.repairs}</dd>
-          </div>
-          <div>
-            <dt>Base</dt>
-            <dd>{reviewed.base}</dd>
-          </div>
-          <div>
-            <dt>Epic filter</dt>
-            <dd>{reviewed.epic ?? "All current project epics"}</dd>
-          </div>
-          <div>
-            <dt>Smith</dt>
-            <dd>{reviewed.smith ?? "Resolve each bead’s smith"}</dd>
-          </div>
-          <div>
-            <dt>Per-run timeout</dt>
-            <dd>{reviewed.runTimeout ?? "Remaining shift time"}</dd>
-          </div>
-        </dl>
-      </details>
+        {observation.reason && (
+          <p>{projectShiftReasonLabel(observation.reason)}</p>
+        )}
+        {actual ? (
+          <dl class="af-shift-metrics">
+            <div>
+              <dt>Started</dt>
+              <dd>
+                <time dateTime={actual.startedAt}>
+                  {clock(actual.startedAt)}
+                </time>
+              </dd>
+            </div>
+            <div>
+              <dt>Elapsed / limit</dt>
+              <dd>
+                {elapsed(
+                  actual.startedAt,
+                  actual.endedAt ? Date.parse(actual.endedAt) : now,
+                )}{" "}
+                / {reviewed.for}
+              </dd>
+            </div>
+            <div>
+              <dt>Active / concurrency</dt>
+              <dd>
+                {actual.running} / {actual.concurrency}
+              </dd>
+            </div>
+            <div>
+              <dt>Admitted / maximum beads</dt>
+              <dd>
+                {actual.admitted ?? "Not reported"} / {actual.maxBeads}
+              </dd>
+            </div>
+            <div>
+              <dt>Reviewed / halted</dt>
+              <dd>
+                {actual.reviewed} / {actual.halted}
+              </dd>
+            </div>
+            <div>
+              <dt>Reported spend / cap</dt>
+              <dd>
+                {money(actual.spentUsd)} / {money(actual.maxUsd)}
+                {actual.unpriced > 0 ? ` · ${actual.unpriced} unpriced` : ""}
+              </dd>
+            </div>
+            <div>
+              <dt>Last admission CPU / memory</dt>
+              <dd>
+                {actual.host
+                  ? `${percent(actual.host.cpu)} / ${percent(actual.host.memory)}`
+                  : "Not reported"}
+              </dd>
+            </div>
+            <div>
+              <dt>Throttle threshold</dt>
+              <dd>{percent(actual.throttle)}</dd>
+            </div>
+            <div>
+              <dt>Host sample</dt>
+              <dd>{actual.host ? clock(actual.host.asOf) : "Not reported"}</dd>
+            </div>
+          </dl>
+        ) : (
+          <p>
+            No correlated actual shift record is available. A reservation or
+            launch marker does not prove provider execution.
+          </p>
+        )}
+        <details>
+          <summary>Reviewed original bounds</summary>
+          <dl class="af-shift-metrics">
+            <div>
+              <dt>Duration</dt>
+              <dd>{reviewed.for}</dd>
+            </div>
+            <div>
+              <dt>Concurrency</dt>
+              <dd>{reviewed.concurrency}</dd>
+            </div>
+            <div>
+              <dt>Maximum beads</dt>
+              <dd>{reviewed.maxBeads}</dd>
+            </div>
+            <div>
+              <dt>Spend cap</dt>
+              <dd>{money(reviewed.maxUsd)}</dd>
+            </div>
+            <div>
+              <dt>Repairs</dt>
+              <dd>{reviewed.repairs}</dd>
+            </div>
+            <div>
+              <dt>Base</dt>
+              <dd>{reviewed.base}</dd>
+            </div>
+            <div>
+              <dt>Epic filter</dt>
+              <dd>{reviewed.epic ?? "All current project epics"}</dd>
+            </div>
+            <div>
+              <dt>Smith</dt>
+              <dd>{reviewed.smith ?? "Resolve each bead’s smith"}</dd>
+            </div>
+            <div>
+              <dt>Per-run timeout</dt>
+              <dd>{reviewed.runTimeout ?? "Remaining shift time"}</dd>
+            </div>
+          </dl>
+        </details>
       </div>
       {showActivity && (
-        <div role="tabpanel" aria-label={`Shift Activity for ${intent.shiftId}`}>
+        <div
+          role="tabpanel"
+          aria-label={`Shift Activity for ${intent.shiftId}`}
+        >
           <ScopedProjectActivity
             key={JSON.stringify([
               scope.workspace,
