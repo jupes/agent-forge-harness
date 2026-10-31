@@ -445,7 +445,7 @@ test.each([
   client.destroy();
 });
 
-test("accepts only the exact three trusted CLI options and keeps spaced values intact", () => {
+test("accepts only the exact trusted CLI options and keeps spaced values intact", () => {
   expect(
     parseDesktopArguments([
       "--root",
@@ -454,11 +454,17 @@ test("accepts only the exact three trusted CLI options and keeps spaced values i
       "C:\\built UI",
       "--hearth",
       "C:\\native hearth.exe",
+      "--native-picker",
+      "C:\\Agent Forge.exe",
     ]),
   ).toEqual({
     root: resolve("C:\\work tree"),
     assetsRoot: resolve("C:\\built UI"),
-    hearthCommand: [resolve("C:\\native hearth.exe")],
+    hearthCommand: [
+      resolve("C:\\native hearth.exe"),
+      "--native-project-picker",
+      resolve("C:\\Agent Forge.exe"),
+    ],
   });
   expect(() =>
     parseDesktopArguments([
