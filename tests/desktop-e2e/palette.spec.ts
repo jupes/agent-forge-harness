@@ -390,7 +390,7 @@ test("expired palette selection stays open with a refresh path and performs no w
       host.__ci94PaletteClock = { original, shifted };
       Date.now = shifted;
     });
-    await page.evaluate(() => {
+    await dialog.evaluate((dialog) => {
       type PaletteObserver = {
         initial: PaletteDomEvidence;
         events: PaletteDomEvidence[];
@@ -403,8 +403,6 @@ test("expired palette selection stays open with a refresh path and performs no w
         observer: MutationObserver | null;
         finalize: () => void;
       };
-      const dialog = document.querySelector('[role="dialog"]');
-      if (!dialog) throw Error("Command palette dialog was not mounted.");
       const snapshot = (): PaletteDomEvidence => {
         const coverage = Array.from(
           dialog?.querySelectorAll('[role="status"]') ?? [],
