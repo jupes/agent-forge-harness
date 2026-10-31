@@ -3091,6 +3091,51 @@ const ACTIONS: Record<string, ActionFixture> = {
       });
     },
   },
+  "POST /projects/:id/settings/general": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/settings/general`,
+      body: {
+        expectedRevision: 1,
+        general: {
+          name: "API renamed project",
+          description: "Updated through the action registry",
+          icon: "G",
+          color: "green",
+        },
+      },
+      status: 200,
+      target: FIXTURE_PROJECT_ID,
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/settings/general`,
+      body: {
+        expectedRevision: 1,
+        general: { name: "", description: "", icon: "G" },
+      },
+    },
+    captureBefore: (h) => createProjectStore(h.home).read().projects,
+    happened: async (h, _answer, before) => {
+      const original = before?.find(
+        (project) => project.id === FIXTURE_PROJECT_ID,
+      );
+      if (!original)
+        throw new Error("general settings fixture project missing");
+      const catalog = createProjectStore(h.home).read();
+      expect(catalog.revision).toBe(2);
+      expect(catalog.projects[0]).toMatchObject({
+        id: original.id,
+        slug: original.slug,
+        name: "API renamed project",
+        description: "Updated through the action registry",
+        icon: "G",
+        color: "green",
+        workspaces: original.workspaces,
+        pinned: original.pinned,
+        archived: original.archived,
+        createdAt: original.createdAt,
+      });
+    },
+  },
   "POST /projects/create-reservations": {
     valid: {
       path: "/projects/create-reservations",
