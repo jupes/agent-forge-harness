@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { expect, test } from "@playwright/test";
+import { expect, test, type Request } from "@playwright/test";
 import { runsHref } from "../../apps/desktop/src/project-runs-model";
 import type { ConversationState } from "../../types/conversation";
 import type { OwnedSessionRecord } from "../../types/owned-session";
@@ -10,6 +10,10 @@ import { alpha, beta, seedProjects } from "./project-fixtures";
 
 const protectedPosts: string[] = [];
 let releaseIdentityRead: (() => void) | undefined;
+let attendedDiagnosticCapture: (() => Promise<void>) | undefined;
+let attendedDiagnosticCleanup: (() => Promise<void>) | undefined;
+let attendedStreamModuleUrl: string | undefined;
+let attendedRequestObserver: ((request: Request) => void) | undefined;
 const explicitStartTitle =
   "an attended prompt uses ordinary Preview and one identity-bound Start after a lost reply";
 const explicitStartPosts = () => [
@@ -56,6 +60,10 @@ test.beforeEach(({ page }) => {
   seedProjects();
   protectedPosts.length = 0;
   releaseIdentityRead = undefined;
+  attendedDiagnosticCapture = undefined;
+  attendedDiagnosticCleanup = undefined;
+  attendedStreamModuleUrl = undefined;
+  attendedRequestObserver = undefined;
   page.on("request", (request) => {
     const pathname = new URL(request.url()).pathname;
     if (request.method() === "POST" && pathname.startsWith("/__agent-forge/"))
@@ -64,11 +72,27 @@ test.beforeEach(({ page }) => {
 });
 
 test.afterEach(async ({ page }, testInfo) => {
+  const cleanupErrors: Error[] = [];
+  if (testInfo.title === explicitStartTitle) {
+    try { await attendedDiagnosticCapture?.(); } catch { cleanupErrors.push(new Error("diagnostic snapshot capture failed")); }
+    try { await attendedDiagnosticCleanup?.(); } catch (error) { cleanupErrors.push(error instanceof Error ? error : new Error("diagnostic cleanup failed")); }
+    try { if (attendedRequestObserver) page.off("request", attendedRequestObserver); }
+    catch { cleanupErrors.push(new Error("request observer removal failed")); }
+    attendedDiagnosticCapture = undefined;
+    attendedDiagnosticCleanup = undefined;
+    attendedRequestObserver = undefined;
+  }
   releaseIdentityRead?.();
   await page.unrouteAll({ behavior: "ignoreErrors" });
-  expect(protectedPosts).toEqual(
-    testInfo.title === explicitStartTitle ? explicitStartPosts() : [],
-  );
+  try {
+    expect(protectedPosts).toEqual(
+      testInfo.title === explicitStartTitle ? explicitStartPosts() : [],
+    );
+  } catch (error) {
+    cleanupErrors.push(error instanceof Error ? error : new Error("protected-post assertion failed"));
+  }
+  if (cleanupErrors.length === 1) throw cleanupErrors[0];
+  if (cleanupErrors.length > 1) throw new AggregateError(cleanupErrors, "Attended Start diagnostics cleanup failed");
 });
 
 test("New forge run opens attended preparation only after the scoped Runs read", async ({
@@ -517,7 +541,154 @@ test("A-to-B-to-A navigation invalidates an open Run review", async ({
 
 test("an attended prompt uses ordinary Preview and one identity-bound Start after a lost reply", async ({
   page,
-}) => {
+}, testInfo) => {
+  attendedRequestObserver = (request) => {
+    try {
+      if (new URL(request.url()).pathname.endsWith("/docs/js/use-stream.ts"))
+        attendedStreamModuleUrl = request.url();
+    } catch {
+      // An unrecognized module URL leaves stream-cause evidence unknown.
+    }
+  };
+  page.on("request", attendedRequestObserver);
+  await page.addInitScript((identityPath) => {
+    type Observation = Record<string, unknown>;
+    const limit = 32;
+    const identities: Observation[] = [];
+    const stream: Observation[] = [];
+    const starts: Observation[] = [];
+    const markers: Observation[] = [];
+    const disposers: Array<() => void> = [];
+    let overflow = false;
+    const total = () => identities.length + stream.length + starts.length + markers.length;
+    const add = (target: Observation[], item: Observation) => {
+      if (total() >= limit) overflow = true;
+      else target.push(item);
+    };
+    const ui = () => {
+      const dialog = document.querySelector("dialog.af-session-dialog");
+      const statuses = [...(dialog?.querySelectorAll("[role=status]") ?? [])].map((node) => node.textContent ?? "");
+      const button = [...(dialog?.querySelectorAll("button") ?? [])].find(
+        (candidate) => candidate.textContent?.trim() === "Start",
+      );
+      return {
+        identitySection: !!dialog?.querySelector(".af-start-identities"),
+        checking: statuses.some((status) => status.includes("Checking the server-owned identity page")),
+        statusWarning: statuses.some((status) => /failed|unavailable|could not/i.test(status)),
+        startDisabled: button?.disabled ?? null,
+      };
+    };
+    const callerTags = () => {
+      const stack = new Error().stack ?? "";
+      const known = [
+        "session-start-identity-server",
+        "session-client",
+        "use-sessions",
+        "operator",
+      ].filter((name) => stack.includes(name));
+      return known.join(",") || "unknown";
+    };
+    const originalFetch = window.fetch;
+    const wrappedFetch: typeof window.fetch = function (input, init) {
+      let matches = false;
+      try {
+        const url = input instanceof Request ? input.url : String(input);
+        const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+        const parsed = new URL(url, location.href);
+        matches = parsed.origin === location.origin && method.toUpperCase() === "GET" && parsed.pathname === identityPath && parsed.search === "";
+      } catch {
+        // Unrecognized fetch input is delegated without observation.
+      }
+      if (!matches) return originalFetch.call(this, input, init);
+      const item: Observation = {
+        stage: "request-start",
+        startedAt: performance.now(),
+        callerTags: callerTags(),
+        requestUi: ui(),
+      };
+      add(identities, item);
+      const pending = originalFetch.call(this, input, init);
+      // This records response headers only; the app owns the unchanged body read.
+      void pending.then(
+        (response) => {
+          item.headerStage = "headers-received";
+          item.headersAt = performance.now();
+          item.status = response.status;
+          item.headerUi = ui();
+        },
+        () => {
+          item.headerStage = "transport-error";
+          item.transportErrorAt = performance.now();
+          item.headerUi = ui();
+        },
+      ).catch(() => undefined);
+      return pending;
+    };
+    const click = (event: MouseEvent) => {
+      if (!(event.target instanceof Element)) return;
+      const button = event.target.closest("button");
+      if (
+        button?.textContent?.trim() === "Start" &&
+        button.closest("dialog.af-session-dialog")
+      )
+        add(starts, { at: performance.now(), startUi: ui() });
+    };
+    document.addEventListener("click", click, true);
+    window.fetch = wrappedFetch;
+    const diagnostic = {
+      mark(label: string) {
+        add(markers, { label, at: performance.now(), ...ui() });
+      },
+      // WatchReason is batch-level evidence, not the event payload or cause.
+      streamEvent(kind: string, reason: "events" | "resync") {
+        add(stream, { kind, reason, at: performance.now(), ...ui() });
+      },
+      addDisposer(dispose: () => void) {
+        disposers.push(dispose);
+      },
+      snapshot() {
+        return { identities, stream, starts, markers, overflow, cleanupErrors };
+      },
+      cleanup() {
+        for (const dispose of disposers.splice(0)) try { dispose(); } catch { cleanupErrors.push("watch-dispose"); }
+        try { document.removeEventListener("click", click, true); } catch { cleanupErrors.push("click-listener-remove"); }
+        try { if (window.fetch === wrappedFetch) window.fetch = originalFetch; } catch { cleanupErrors.push("fetch-restore"); }
+        try {
+          if (Reflect.get(window, "__cla5_96_attended_diagnostic") === diagnostic)
+            Reflect.deleteProperty(window, "__cla5_96_attended_diagnostic");
+        } catch { cleanupErrors.push("diagnostic-global-remove"); }
+        return cleanupErrors;
+      },
+    };
+    const cleanupErrors: string[] = [];
+    Object.defineProperty(window, "__cla5_96_attended_diagnostic", {
+      configurable: true,
+      value: diagnostic,
+    });
+  }, `/__agent-forge/projects/${alpha.id}/session-start-identities`);
+  attendedDiagnosticCleanup = async () => {
+    const errors = await page.evaluate(() => {
+      const state = Reflect.get(window, "__cla5_96_attended_diagnostic") as {
+        cleanup(): string[];
+      };
+      return state.cleanup();
+    });
+    if (errors.length) throw new Error(`diagnostic cleanup failed: ${errors.join(",")}`);
+  };
+  attendedDiagnosticCapture = async () => {
+    const snapshot: unknown = await page.evaluate(() => {
+      const state = Reflect.get(window, "__cla5_96_attended_diagnostic") as {
+        snapshot(): unknown;
+      };
+      return state.snapshot();
+    });
+    const body = JSON.stringify(snapshot, null, 2);
+    if (body !== undefined)
+      await testInfo.attach("attended-start-diagnostic", {
+        body,
+        contentType: "application/json",
+      });
+  };
   const beforeStarts = starts();
   const beforeRecords = records().length;
   writeFileSync(
@@ -525,18 +696,76 @@ test("an attended prompt uses ordinary Preview and one identity-bound Start afte
     JSON.stringify("normal"),
   );
   await openRuns(page);
+  const streamObserved = await page.evaluate(async (url) => {
+    if (!url) return false;
+    try {
+      if (new URL(url).origin !== location.origin) return false;
+    } catch {
+      return false;
+    }
+    type ObservedKind = "operator.action" | "session.started" | "session.ended";
+    type StreamModule = {
+      appStream(): {
+        getState(): { status: string };
+        watch(
+          kinds: readonly ObservedKind[],
+          callback: (reason: "events" | "resync") => void,
+        ): () => void;
+      };
+    };
+    const state = Reflect.get(window, "__cla5_96_attended_diagnostic") as {
+      streamEvent(kind: ObservedKind, reason: "events" | "resync"): void;
+      addDisposer(dispose: () => void): void;
+      mark(label: string): void;
+    };
+    try {
+      const module = (await import(url)) as StreamModule;
+      const client = module.appStream();
+      if (typeof client.getState !== "function" || client.getState().status !== "live") {
+        state.mark("stream-not-live");
+        return false;
+      }
+      for (const kind of ["operator.action", "session.started", "session.ended"] as const)
+        state.addDisposer(
+          client.watch([kind], (reason) => state.streamEvent(kind, reason)),
+        );
+      state.mark("stream-observer-ready");
+      return true;
+    } catch {
+      state.mark("stream-module-import-failed");
+      return false;
+    }
+  }, attendedStreamModuleUrl ?? null);
+  if (!streamObserved)
+    await page.evaluate(() => {
+      const state = Reflect.get(window, "__cla5_96_attended_diagnostic") as {
+        mark(label: string): void;
+      };
+      state.mark("stream-module-url-unavailable");
+    });
   await launchPreparation(page);
   const preparation = page.getByRole("dialog");
   await preparation
     .getByLabel("Feature description")
     .fill("One reviewed request");
+  await page.evaluate(() => {
+    const state = Reflect.get(window, "__cla5_96_attended_diagnostic") as {
+      mark(label: string): void;
+    };
+    state.mark("before-preview");
+  });
   await preparation
     .getByRole("button", { name: "Review generated prompt" })
     .click();
   await preparation
     .getByRole("button", { name: "Continue to Claude composer" })
     .click();
-
+  await page.evaluate(() => {
+    const state = Reflect.get(window, "__cla5_96_attended_diagnostic") as {
+      mark(label: string): void;
+    };
+    state.mark("after-preview-composer-open");
+  });
   const composer = page.getByRole("dialog", { name: "New session · Alpha" });
   const expectedPrompt = "/forgemaster --full One reviewed request";
   await expect(
@@ -585,6 +814,12 @@ test("an attended prompt uses ordinary Preview and one identity-bound Start afte
     },
   );
   const allowedStartPosts = explicitStartPosts();
+  await page.evaluate(() => {
+    const state = Reflect.get(window, "__cla5_96_attended_diagnostic") as {
+      mark(label: string): void;
+    };
+    state.mark("before-start-click");
+  });
   await start.click();
   await expect.poll(() => recoveryReadHeld).toBe(true);
   await expect.poll(() => starts()).toBe(beforeStarts + 1);
