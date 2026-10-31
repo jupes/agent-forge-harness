@@ -28,7 +28,7 @@ import {
 import { projectCouncilRunReadSchema } from "../../types/project-council-run-read";
 import { openSettled } from "../e2e/fixtures";
 import { HEARTH_HOME } from "../e2e/servers";
-import { alpha, seedKeeper, seedProjects, workspace } from "./project-fixtures";
+import { alpha, beta, seedKeeper, seedProjects, workspace } from "./project-fixtures";
 
 test.beforeEach(() => seedProjects());
 
@@ -314,9 +314,9 @@ test("expired palette selection stays open with a refresh path and performs no w
   expect(initialCoverage).toContain("Beads: available");
 
   let releaseBeads!: () => void;
-  let releaseSessions!: () => void;
+  let releaseBetaBeads!: () => void;
   let releaseSummary!: () => void;
-  const started = { beads: false, sessions: false, summary: false };
+  const started = { beads: false, betaBeads: false, summary: false };
   let evidenceCaptured = false;
   let activeRouteHandlers = 0;
   let routeContinuationFailures = 0;
@@ -324,15 +324,14 @@ test("expired palette selection stays open with a refresh path and performs no w
   const beadsGate = new Promise<void>((resolve) => {
     releaseBeads = resolve;
   });
-  const sessionsGate = new Promise<void>((resolve) => {
-    releaseSessions = resolve;
+  const betaBeadsGate = new Promise<void>((resolve) => {
+    releaseBetaBeads = resolve;
   });
   const summaryGate = new Promise<void>((resolve) => {
     releaseSummary = resolve;
   });
   const beadsPattern = `**/projects/${alpha.id}/beads*`;
-  const sessionsPattern =
-    `**/__agent-forge/projects/${alpha.id}/session-observations*`;
+  const betaBeadsPattern = `**/projects/${beta.id}/beads*`;
   const summaryPattern = "**/projects/summary";
   type PaletteDomEvidence = {
     warningPresent: boolean;
@@ -396,8 +395,20 @@ test("expired palette selection stays open with a refresh path and performs no w
       }
     };
   const holdBeads = hold("beads", beadsGate);
-  const holdSessions = hold("sessions", sessionsGate);
+  const holdBetaBeads = hold("betaBeads", betaBeadsGate);
   const holdSummary = hold("summary", summaryGate);
+  let ownedHandlersUnrouted = false;
+  const unrouteOwnedHandlers = async () => {
+    if (ownedHandlersUnrouted) return;
+    const results = await Promise.allSettled([
+      page.unroute(beadsPattern, holdBeads),
+      page.unroute(betaBeadsPattern, holdBetaBeads),
+      page.unroute(summaryPattern, holdSummary),
+    ]);
+    if (results.some((result) => result.status === "rejected"))
+      throw Error("A CI94 palette route handler could not be removed.");
+    ownedHandlersUnrouted = true;
+  };
   const waitForRoutesIdle = () =>
     activeRouteHandlers === 0
       ? Promise.resolve()
@@ -424,7 +435,7 @@ test("expired palette selection stays open with a refresh path and performs no w
   };
   try {
     await page.route(beadsPattern, holdBeads);
-    await page.route(sessionsPattern, holdSessions);
+    await page.route(betaBeadsPattern, holdBetaBeads);
     await page.route(summaryPattern, holdSummary);
     await page.evaluate(() => {
       type ClockProbe = {
@@ -565,19 +576,19 @@ test("expired palette selection stays open with a refresh path and performs no w
     // Release the initial source snapshot only after its route is known to be held.
     releaseSummary();
     await expect.poll(() => started.beads).toBe(true);
-    await expect.poll(() => started.sessions).toBe(true);
+    await expect.poll(() => started.betaBeads).toBe(true);
     const fastSourceResponse = page.waitForResponse(
       (response) =>
         new URL(response.url()).pathname ===
-          `/__agent-forge/projects/${alpha.id}/session-observations` &&
+          `/__agent-forge/projects/${beta.id}/beads` &&
         response.request().method() === "GET",
       { timeout: 10_000 },
     );
-    releaseSessions();
+    releaseBetaBeads();
     const response = await fastSourceResponse;
     expect(response.status()).toBe(200);
-    await expect(coverage).toContainText("Sessions: available");
-    await expect(coverage).toContainText("Beads: loading");
+    await expect(coverage).toContainText("Beta · Beads: available");
+    await expect(coverage).toContainText("Alpha · Beads: loading");
     expect(await coverage.innerText()).not.toBe(initialCoverage);
     await page.evaluate(
       () =>
@@ -588,6 +599,11 @@ test("expired palette selection stays open with a refresh path and performs no w
         ),
     );
     await captureEvidence();
+    releaseSummary();
+    releaseBetaBeads();
+    releaseBeads();
+    await unrouteOwnedHandlers();
+    await settleRoutes();
     await expect(dialog.getByRole("alert")).toContainText(
       "This result changed",
     );
@@ -608,12 +624,10 @@ test("expired palette selection stays open with a refresh path and performs no w
       }
     }
     releaseSummary();
-    releaseSessions();
+    releaseBetaBeads();
     releaseBeads();
     const cleanupResults = await Promise.allSettled([
-      page.unroute(beadsPattern, holdBeads),
-      page.unroute(sessionsPattern, holdSessions),
-      page.unroute(summaryPattern, holdSummary),
+      unrouteOwnedHandlers(),
       page.evaluate(() => {
         type ClockProbe = {
           original: typeof Date.now;
