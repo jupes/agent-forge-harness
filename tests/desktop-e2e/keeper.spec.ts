@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { expect, test } from "@playwright/test";
+import { expect, type Page, test } from "@playwright/test";
 import { OPERATOR_HEADER } from "../../scripts/hearth/paths";
 import { openSettled, reloadSettled } from "../e2e/fixtures";
 import { HEARTH_HOME } from "../e2e/servers";
@@ -31,6 +31,25 @@ const starts = () =>
         .split("\n")
         .filter(Boolean).length
     : 0;
+type KeeperCaretRafProbe = {
+  status(): {
+    clickSeen: boolean;
+    captured: number;
+    canceled: number;
+    flushed: number;
+    pending: number;
+    rafRestoredAfterClick: boolean;
+  };
+  flush(): Promise<boolean>;
+  restore(): {
+    requestAnimationFrame: boolean;
+    cancelAnimationFrame: boolean;
+    probe: boolean;
+  };
+};
+type KeeperCaretProbeWindow = Window & {
+  __keeperCaretRafProbe?: KeeperCaretRafProbe;
+};
 test.beforeEach(() => {
   seedProjects();
   writeFileSync(
@@ -745,41 +764,328 @@ test("a late mention index cannot replace a newer object kind's suggestions", as
   ).toHaveCount(0);
 });
 
-test("mentions and harness commands edit the shared draft with keyboard suggestions, empty results and no automatic starts", async ({
-  page,
-}) => {
+async function exerciseKeeperMentionCommandDraft(
+  page: Page,
+  surface: "full" | "drawer",
+) {
+  const inDrawer = surface === "drawer";
   const before = starts();
-  await openSettled(page, `/index.html#/desktop/project/${alpha.id}/overview`);
-  await page.getByRole("button", { name: "Ask Keeper", exact: true }).click();
-  const drawer = page.getByRole("dialog", {
-    name: "Forge Keeper · Alpha",
-    exact: true,
+  await openSettled(
+    page,
+    `/index.html#/desktop/project/${alpha.id}/${inDrawer ? "overview" : "keeper"}`,
+  );
+  if (inDrawer)
+    await page.getByRole("button", { name: "Ask Keeper", exact: true }).click();
+  const conversation = inDrawer
+    ? page.getByRole("dialog", { name: "Forge Keeper · Alpha", exact: true })
+    : page.getByRole("region", {
+        name: "Keeper conversation for Alpha",
+        exact: true,
+      });
+  const input = conversation.getByRole("textbox", {
+    name: "Message the Keeper",
   });
-  const input = drawer.getByRole("textbox", { name: "Message the Keeper" });
   await expect(
-    drawer.getByRole("group", { name: "About context for Alpha" }),
+    conversation.getByRole("group", { name: "About context for Alpha" }),
   ).toHaveCount(0);
   await input.fill("Explain @bead:alpha");
-  const mentions = drawer.getByRole("group", { name: "Mention suggestions" });
+  const mentions = conversation.getByRole("group", {
+    name: "Mention suggestions",
+  });
   await expect(
     mentions.getByRole("button", {
       name: "bead alpha-epic Alpha epic",
       exact: true,
     }),
   ).toBeVisible();
+  const mentionOption = mentions.getByRole("button", {
+    name: "bead alpha-epic Alpha epic",
+    exact: true,
+  });
   await input.press("ArrowDown");
   await page.screenshot({
     path: "apps/desktop/docs/screenshots/keeper-mentions.png",
   });
-  await page.keyboard.press("Enter");
-  await expect(input).toHaveValue("Explain @bead:alpha-epic ");
-  await expect(
-    drawer
-      .getByRole("group", { name: "About context for Alpha" })
-      .getByRole("link", { name: "bead alpha-epic", exact: true }),
-  ).toBeVisible();
-  await input.fill("/forge");
-  const commands = drawer.getByRole("group", { name: "Harness commands" });
+  let primaryFailed = false;
+  let primaryFailure: unknown;
+  let cleanupFailure: unknown;
+  let restored: {
+    requestAnimationFrame: boolean;
+    cancelAnimationFrame: boolean;
+    probe: boolean;
+  } | null = null;
+  let probeInstalled = false;
+  try {
+    try {
+      await mentionOption.evaluate((button, surface) => {
+        const textarea = document.getElementById(`keeper-message-${surface}`);
+        if (!(textarea instanceof HTMLTextAreaElement))
+          throw new Error(
+            "Keeper textarea was not available for the caret probe.",
+          );
+        const target = window as KeeperCaretProbeWindow;
+        if (target.__keeperCaretRafProbe)
+          throw new Error("Keeper caret probe was already installed.");
+
+        const rafDescriptor = Object.getOwnPropertyDescriptor(
+          window,
+          "requestAnimationFrame",
+        );
+        const cancelDescriptor = Object.getOwnPropertyDescriptor(
+          window,
+          "cancelAnimationFrame",
+        );
+        const nativeRaf = window.requestAnimationFrame.bind(window);
+        const nativeCancel = window.cancelAnimationFrame.bind(window);
+        const pending = new Map<number, FrameRequestCallback>();
+        let clickSeen = false;
+        let captured = 0;
+        let canceled = 0;
+        let flushed = 0;
+        let rafRestoredAfterClick = false;
+
+        const restoreProperty = (
+          object: object,
+          property: PropertyKey,
+          descriptor: PropertyDescriptor | undefined,
+        ) => {
+          if (descriptor) Object.defineProperty(object, property, descriptor);
+          else Reflect.deleteProperty(object, property);
+        };
+        const descriptorMatches = (
+          object: object,
+          property: PropertyKey,
+          expected: PropertyDescriptor | undefined,
+        ) => {
+          const actual = Object.getOwnPropertyDescriptor(object, property);
+          return (
+            (!actual && !expected) ||
+            (!!actual &&
+              !!expected &&
+              actual.value === expected.value &&
+              actual.get === expected.get &&
+              actual.set === expected.set &&
+              actual.writable === expected.writable &&
+              actual.enumerable === expected.enumerable &&
+              actual.configurable === expected.configurable)
+          );
+        };
+        const onOptionClick = () => {
+          clickSeen = true;
+          window.requestAnimationFrame = (callback) => {
+            captured += 1;
+            const handle = nativeRaf(() => {});
+            nativeCancel(handle);
+            pending.set(handle, callback);
+            return handle;
+          };
+          window.cancelAnimationFrame = (handle) => {
+            if (pending.delete(handle)) {
+              canceled += 1;
+              nativeCancel(handle);
+              return;
+            }
+            nativeCancel(handle);
+          };
+        };
+        const restoreRafAfterDispatch = () => {
+          restoreProperty(window, "requestAnimationFrame", rafDescriptor);
+          rafRestoredAfterClick = descriptorMatches(
+            window,
+            "requestAnimationFrame",
+            rafDescriptor,
+          );
+        };
+        const probe: KeeperCaretRafProbe = {
+          status: () => ({
+            clickSeen,
+            captured,
+            canceled,
+            flushed,
+            pending: pending.size,
+            rafRestoredAfterClick,
+          }),
+          flush: () => {
+            if (!pending.size) return Promise.resolve(false);
+            if (pending.size !== 1)
+              return Promise.reject(
+                new Error("Keeper caret probe captured multiple frames."),
+              );
+            const entry = pending.entries().next().value;
+            if (!entry) return Promise.resolve(false);
+            const [handle, callback] = entry;
+            pending.delete(handle);
+            return new Promise<boolean>((resolve, reject) => {
+              nativeRaf((time) => {
+                try {
+                  callback(time);
+                  flushed += 1;
+                  resolve(true);
+                } catch (error) {
+                  reject(error);
+                }
+              });
+            });
+          },
+          restore: () => {
+            button.removeEventListener("click", onOptionClick, true);
+            button.removeEventListener("click", restoreRafAfterDispatch);
+            for (const handle of pending.keys()) nativeCancel(handle);
+            pending.clear();
+            restoreProperty(window, "requestAnimationFrame", rafDescriptor);
+            restoreProperty(window, "cancelAnimationFrame", cancelDescriptor);
+            const restored = {
+              requestAnimationFrame: descriptorMatches(
+                window,
+                "requestAnimationFrame",
+                rafDescriptor,
+              ),
+              cancelAnimationFrame: descriptorMatches(
+                window,
+                "cancelAnimationFrame",
+                cancelDescriptor,
+              ),
+            };
+            const probeDeleted = Reflect.deleteProperty(
+              target,
+              "__keeperCaretRafProbe",
+            );
+            return {
+              ...restored,
+              probe:
+                probeDeleted && !Object.hasOwn(target, "__keeperCaretRafProbe"),
+            };
+          },
+        };
+        target.__keeperCaretRafProbe = probe;
+        try {
+          button.addEventListener("click", onOptionClick, {
+            capture: true,
+            once: true,
+          });
+          button.addEventListener("click", restoreRafAfterDispatch, {
+            once: true,
+          });
+        } catch (error) {
+          try {
+            const restored = probe.restore();
+            if (Object.values(restored).some((wasRestored) => !wasRestored))
+              throw new Error(
+                "Keeper caret probe setup did not restore its properties.",
+              );
+          } catch (cleanupError) {
+            throw new AggregateError(
+              [error, cleanupError],
+              "Keeper caret probe setup and rollback both failed.",
+            );
+          }
+          throw error;
+        }
+      }, surface);
+      probeInstalled = true;
+      await page.keyboard.press("Enter");
+      await expect(input).toHaveValue("Explain @bead:alpha-epic ");
+      await expect(
+        conversation
+          .getByRole("group", { name: "About context for Alpha" })
+          .getByRole("link", { name: "bead alpha-epic", exact: true }),
+      ).toBeVisible();
+      await input.focus();
+      await input.press("ControlOrMeta+A");
+      const selection = await input.evaluate((element) => {
+        if (!(element instanceof HTMLTextAreaElement))
+          throw new Error("Keeper input was not a textarea.");
+        return {
+          focused: document.activeElement === element,
+          start: element.selectionStart,
+          end: element.selectionEnd,
+          valueLength: element.value.length,
+        };
+      });
+      expect(selection).toEqual({
+        focused: true,
+        start: 0,
+        end: selection.valueLength,
+        valueLength: selection.valueLength,
+      });
+      const interleave = await page.evaluate(
+        () =>
+          (window as KeeperCaretProbeWindow).__keeperCaretRafProbe?.status() ??
+          null,
+      );
+      await test.info().attach("keeper-caret-interleave-before-flush", {
+        body: JSON.stringify(interleave),
+        contentType: "application/json",
+      });
+      if (!interleave)
+        throw new Error("Keeper caret probe status was missing.");
+      expect(interleave).toMatchObject({
+        clickSeen: true,
+        rafRestoredAfterClick: true,
+      });
+      expect(interleave.captured).toBeLessThanOrEqual(2);
+      expect(interleave.pending).toBeLessThanOrEqual(1);
+      expect(interleave.pending + interleave.canceled).toBe(
+        interleave.captured,
+      );
+      const flushed = await page.evaluate(async () => {
+        const probe = (window as KeeperCaretProbeWindow).__keeperCaretRafProbe;
+        if (!probe) throw new Error("Keeper caret probe was not available.");
+        return probe.flush();
+      });
+      await page.keyboard.insertText("/forge");
+      const finalProbe = await page.evaluate(
+        () =>
+          (window as KeeperCaretProbeWindow).__keeperCaretRafProbe?.status() ??
+          null,
+      );
+      await test.info().attach("keeper-caret-interleave-after-flush", {
+        body: JSON.stringify({ selection, interleave, flushed, finalProbe }),
+        contentType: "application/json",
+      });
+      expect(finalProbe?.flushed).toBe(flushed ? 1 : 0);
+      expect(finalProbe?.pending).toBe(0);
+      expect(starts()).toBe(before);
+      await expect(input).toHaveValue("/forge");
+    } catch (error) {
+      primaryFailed = true;
+      primaryFailure = error;
+    }
+  } finally {
+    try {
+      restored = await page.evaluate(
+        () =>
+          (window as KeeperCaretProbeWindow).__keeperCaretRafProbe?.restore() ??
+          null,
+      );
+    } catch (error) {
+      cleanupFailure = error;
+    }
+  }
+  if (
+    probeInstalled &&
+    (!restored || Object.values(restored).some((wasRestored) => !wasRestored))
+  )
+    cleanupFailure ??= new Error(
+      "Keeper caret probe properties were not restored.",
+    );
+  if (primaryFailed) {
+    if (cleanupFailure !== undefined)
+      throw new AggregateError(
+        [primaryFailure, cleanupFailure],
+        "Keeper caret probe assertion and cleanup both failed.",
+      );
+    throw primaryFailure;
+  }
+  if (cleanupFailure !== undefined) throw cleanupFailure;
+  expect(restored).toEqual({
+    requestAnimationFrame: true,
+    cancelAnimationFrame: true,
+    probe: true,
+  });
+  const commands = conversation.getByRole("group", {
+    name: "Harness commands",
+  });
   await commands
     .getByRole("button", { name: "/forge-plan", exact: false })
     .click();
@@ -791,11 +1097,19 @@ test("mentions and harness commands edit the shared draft with keyboard suggesti
   );
   await input.press("Escape");
   await expect(mentions).not.toBeVisible();
-  await expect(drawer).toBeVisible();
-  await page.keyboard.press("Escape");
-  await expect(drawer).not.toBeVisible();
+  await expect(conversation).toBeVisible();
+  if (inDrawer) {
+    await page.keyboard.press("Escape");
+    await expect(conversation).not.toBeVisible();
+  }
   expect(starts()).toBe(before);
-});
+}
+
+for (const surface of ["full", "drawer"] as const) {
+  test(`mentions and harness commands edit the shared draft with keyboard suggestions, empty results and no automatic starts (${surface})`, async ({
+    page,
+  }) => exerciseKeeperMentionCommandDraft(page, surface));
+}
 
 test("a foreign selected bead holds Send until removed, while the session inspector attaches its actual scoped session", async ({
   page,
