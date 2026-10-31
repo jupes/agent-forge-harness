@@ -342,6 +342,7 @@ export function createInboxDispositionsOwner(deps: {
       return applied;
     },
     async checkOriginal(requestId: string): Promise<InboxDispositionResult<InboxDispositionRecord>> {
+      if (loading) return { state: "unavailable", message: "An Inbox refresh is in progress; check the exact original after it settles." };
       const capture = activation;
       const client = boundClient;
       const identity = boundIdentity;
@@ -398,6 +399,7 @@ export function createInboxDispositionsOwner(deps: {
       const identity = boundIdentity;
       const capturedProof = copyProof(proof);
       permits.clear();
+      if (loading) return { state: "unavailable" as const };
       collectionFor = null;
       recoveryFor = null;
       const read = ++generation;

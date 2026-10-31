@@ -469,6 +469,92 @@ test("an unavailable global recovery inventory cannot admit an acknowledgment", 
   expect(posts).toBe(0);
 });
 
+test("checking an exact original during refresh does not supersede that refresh", async () => {
+  const id = "77c37127-1c22-4a2a-8e7d-69cc74ff1301";
+  const reserved = receiptFor(original(id));
+  let recoveryReads = 0;
+  let exactReads = 0;
+  let finishRecovery: ((response: Response) => void) | null = null;
+  let markSecondRecoveryStarted: (() => void) | null = null;
+  const secondRecoveryStarted = new Promise<void>((resolve) => { markSecondRecoveryStarted = resolve; });
+  const client = createInboxDispositionsClient({
+    post: async () => envelope({}),
+    read: async (url) => {
+      if (url.endsWith("/recovery")) {
+        if (++recoveryReads === 2) {
+          markSecondRecoveryStarted?.();
+          return new Promise<Response>((resolve) => { finishRecovery = resolve; });
+        }
+        return envelope({ version: 1, complete: true, receipts: [reserved] });
+      }
+      if (url.endsWith("/requests/" + id)) exactReads++;
+      return url.endsWith("/requests/" + id)
+        ? envelope({ entry: null, receipt: reserved })
+        : envelope({ entries: [], receipts: [reserved] });
+    },
+    requestId: () => id,
+  });
+  const owner = createInboxDispositionsOwner({ client, currentSnapshot: () => ({ activation, sources: [proof()] }) });
+  owner.activate(activation);
+  await owner.refresh();
+  const refreshing = owner.refresh();
+  await secondRecoveryStarted;
+
+  expect(await owner.checkOriginal(id)).toMatchObject({ state: "unavailable" });
+  expect(exactReads).toBe(0);
+  expect(recoveryReads).toBe(2);
+  const finish = finishRecovery;
+  if (!finish) throw Error("Expected the active recovery read to remain pending.");
+  finish(envelope({ version: 1, complete: true, receipts: [reserved] }));
+  await refreshing;
+  expect(owner.view()).toMatchObject({ loading: false, collectionReady: true, recoveryReady: true });
+});
+
+test("a reserve review during refresh revokes old permission without superseding refresh", async () => {
+  const id = "77c37127-1c22-4a2a-8e7d-69cc74ff1302";
+  let recoveryReads = 0;
+  let exactReads = 0;
+  let finishRecovery: ((response: Response) => void) | null = null;
+  let markThirdRecoveryStarted: (() => void) | null = null;
+  const thirdRecoveryStarted = new Promise<void>((resolve) => { markThirdRecoveryStarted = resolve; });
+  const client = createInboxDispositionsClient({
+    post: async () => { throw Error("Reserve response lost."); },
+    read: async (url) => {
+      if (url.endsWith("/recovery")) {
+        if (++recoveryReads === 3) {
+          markThirdRecoveryStarted?.();
+          return new Promise<Response>((resolve) => { finishRecovery = resolve; });
+        }
+        return envelope({ version: 1, complete: true, receipts: [] });
+      }
+      if (url.endsWith("/requests/" + id)) {
+        exactReads++;
+        return failed("Missing", 404);
+      }
+      return envelope({ entries: [], receipts: [] });
+    },
+    requestId: () => id,
+  });
+  const owner = createInboxDispositionsOwner({ client, currentSnapshot: () => ({ activation, sources: [proof()] }) });
+  owner.activate(activation);
+  await owner.refresh();
+  expect(await owner.acknowledge(proof(), "done")).toMatchObject({ state: "unknown" });
+  expect(await owner.reviewReserveUnknown(original(id), proof())).toEqual({ state: "reviewed" });
+  expect(owner.canStartReviewedNewIntent(id, proof())).toBe(true);
+
+  const refreshing = owner.refresh();
+  await thirdRecoveryStarted;
+  expect(await owner.reviewReserveUnknown(original(id), proof())).toEqual({ state: "unavailable" });
+  expect(exactReads).toBe(1);
+  expect(recoveryReads).toBe(3);
+  expect(owner.canStartReviewedNewIntent(id, proof())).toBe(false);
+  const finish = finishRecovery;
+  if (!finish) throw Error("Expected the active recovery read to remain pending.");
+  finish(envelope({ version: 1, complete: true, receipts: [] }));
+  await refreshing;
+  expect(owner.view()).toMatchObject({ loading: false, collectionReady: true, recoveryReady: true });
+});
+
 test("a terminal apply reply arriving after scope change is reconciled globally only", async () => {
   let completeApply: ((response: Response) => void) | null = null;
   let markApplyStarted: (() => void) | null = null;
@@ -532,12 +618,14 @@ test("an old-scope write settling during refresh clears loading and requires fre
   let markApplyStarted: (() => void) | null = null;
   const nextRecoveryStarted = new Promise<void>((resolve) => { markNextRecoveryStarted = resolve; });
   const applyStarted = new Promise<void>((resolve) => { markApplyStarted = resolve; });
-  const owner = fixture(async (url, body) => {
-    const submitted = inboxDispositionOriginalSchema.parse(body);
-    if (url.endsWith("/requests")) return envelope({ entry: null, receipt: receiptFor(submitted) });
-    markApplyStarted?.();
-    return new Promise<Response>((resolve) => { finishApply = resolve; });
-  }, async (url) => {
+  const client = createInboxDispositionsClient({
+    post: async (url, body) => {
+      const submitted = inboxDispositionOriginalSchema.parse(body);
+      if (url.endsWith("/requests")) return envelope({ entry: null, receipt: receiptFor(submitted) });
+      markApplyStarted?.();
+      return new Promise<Response>((resolve) => { finishApply = resolve; });
+    },
+    read: async (url) => {
     if (url.endsWith("/recovery") && ++recoveryReads === 2) {
       markNextRecoveryStarted?.();
       return new Promise<Response>((resolve) => { finishRecovery = resolve; });
@@ -545,7 +633,11 @@ test("an old-scope write settling during refresh clears loading and requires fre
     return url.endsWith("/recovery")
       ? envelope({ version: 1, complete: true, receipts: [] })
       : envelope({ entries: [], receipts: [] });
-  }, () => ({ activation: currentActivation, sources: [proof()] }), [id]);
+    },
+    requestId: () => id,
+  });
+  const owner = createInboxDispositionsOwner({ client, currentSnapshot: () => ({ activation: currentActivation, sources: [proof()] }) });
+  owner.activate(activation);
   await owner.refresh();
   const writing = owner.acknowledge(proof(), "done");
   await applyStarted;
