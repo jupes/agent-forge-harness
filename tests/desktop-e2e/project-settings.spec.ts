@@ -1,3 +1,5 @@
+import { mkdirSync } from "node:fs";
+import { join } from "node:path";
 import { expect, test } from "@playwright/test";
 import { openSettled } from "../e2e/fixtures";
 import {
@@ -73,12 +75,22 @@ test("project General settings loads the selected fixture fields", async ({
   await expect(page.getByLabel("Project icon", { exact: true })).toHaveValue(
     "A",
   );
+  await expect(page.locator(".af-project-settings-provenance")).toContainText("last-known hearth project catalog");
+  const readsBeforeRefresh = catalogReads;
   await page.getByRole("button", { name: "Refresh current settings" }).click();
   await expect(page.locator(".af-project-settings-provenance")).toContainText(
     "current hearth project catalog read",
   );
-  expect(catalogReads).toBe(1);
+  await expect.poll(() => catalogReads).toBe(readsBeforeRefresh + 1);
   expect(postCount).toBe(0);
+  const capture = process.env["SHOT_DIR"];
+  if (capture) {
+    mkdirSync(capture, { recursive: true });
+    await page.setViewportSize({ width: 1280, height: 900 });
+    await page.screenshot({ path: join(capture, "project-settings-general-desktop.png"), fullPage: true });
+    await page.setViewportSize({ width: 375, height: 812 });
+    await page.screenshot({ path: join(capture, "project-settings-general-mobile.png"), fullPage: true });
+  }
 });
 
 test("General settings posts one revision-bound complete snapshot and reads it back", async ({
