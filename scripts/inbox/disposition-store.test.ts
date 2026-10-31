@@ -1,5 +1,5 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -132,6 +132,7 @@ test("complete recovery retains receipts across removed projects and workspaces"
     join(tmpdir(), "forge-inbox-disposition-old-workspace-"),
   );
   homes.push(oldWorkspaceHome);
+  mkdirSync(join(oldWorkspaceHome, ".git"));
   const oldWorkspace = workspaceKey(resolveCheckout(oldWorkspaceHome).workspace);
   const catalog = createProjectStore(home).read();
   catalog.projects[0]!.workspaces.push({
