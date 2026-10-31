@@ -195,6 +195,7 @@ export function ProjectRuns({
   checkpointReviewsWritable = false,
   returnFocus = null,
   returnFocusNotice = "",
+  focusCheckpointId = null,
   onReturnFocusHandled,
   filters,
   filterError,
@@ -224,6 +225,7 @@ export function ProjectRuns({
   checkpointReviewsWritable?: boolean;
   returnFocus?: ProjectCouncilReturnFocus | null;
   returnFocusNotice?: string;
+  focusCheckpointId?: string | null;
   onReturnFocusHandled?(
     focus: ProjectCouncilReturnFocus,
     result: "focused" | "unavailable",
@@ -245,6 +247,13 @@ export function ProjectRuns({
     setDraft(filters ?? emptyRunFilters());
   }, [filterKey]);
   const selected = view?.selectedSlug ?? null;
+  const focusedCheckpoint = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    if (!focusCheckpointId || !view?.detail || focusedCheckpoint.current === focusCheckpointId) return;
+    const row = [...document.querySelectorAll<HTMLElement>("[data-checkpoint-id]")].find((item) => item.dataset.checkpointId === focusCheckpointId);
+    const input = row?.querySelector<HTMLTextAreaElement>(".af-checkpoint-review textarea");
+    if (input) { focusedCheckpoint.current = focusCheckpointId; input.focus(); }
+  }, [focusCheckpointId, view?.detail, checkpointResult]);
   const checkpointReviewAvailable =
     !!view?.page &&
     view.page.problems.length === 0 &&

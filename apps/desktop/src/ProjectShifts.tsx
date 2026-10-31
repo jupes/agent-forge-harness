@@ -45,6 +45,7 @@ export function ProjectShifts({
   originalRequestId,
   selectionError,
   onOriginalSelect,
+  paletteStartToken,
 }: {
   client: ProjectShiftsClient;
   scope: ProjectShiftScope;
@@ -53,6 +54,7 @@ export function ProjectShifts({
   originalRequestId?: string | null;
   selectionError?: string;
   onOriginalSelect?: (requestId: string | null) => void;
+  paletteStartToken?: number;
 }) {
   const view = client.get(scope);
   const [open, setOpen] = useState(false),
@@ -125,6 +127,17 @@ export function ProjectShifts({
     if (owner === formOwner.current && current.options && !current.optionsError)
       setDraft(newProjectShiftDraft(current.options));
   };
+  const consumedPaletteStart = useRef(0);
+  useEffect(() => {
+    if (
+      paletteStartToken &&
+      paletteStartToken !== consumedPaletteStart.current &&
+      !startHeld
+    ) {
+      consumedPaletteStart.current = paletteStartToken;
+      void openStart();
+    }
+  }, [paletteStartToken, startHeld, openStart]);
   const start = async () => {
     if (
       startHeld ||
