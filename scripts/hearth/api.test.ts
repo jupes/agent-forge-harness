@@ -764,6 +764,28 @@ test("POST /projects/:id/inbox-dispositions/requests retains an exact reservatio
   expect((await envelope(recovered)).data).toEqual(reservedEnvelope.data);
 });
 
+test("GET /inbox-dispositions/recovery returns the complete strict private-home inventory", async () => {
+  const h = await start();
+  const collection = await get(
+    h,
+    `/projects/${FIXTURE_PROJECT_ID}/inbox-dispositions`,
+    h.headers(h.hearth.token),
+  );
+  expect(collection.status).toBe(200);
+
+  const recovered = await get(
+    h,
+    "/__agent-forge/inbox-dispositions/recovery",
+    h.headers(h.hearth.token),
+  );
+  expect(recovered.status).toBe(200);
+  expect((await envelope(recovered)).data).toEqual({
+    version: 1,
+    complete: true,
+    receipts: [],
+  });
+});
+
 test("Inbox action bodies reject decoded duplicate keys before audit but preserve escaped string content", async () => {
   const h = await start();
   const path = `/projects/${FIXTURE_PROJECT_ID}/inbox-dispositions/requests`;
