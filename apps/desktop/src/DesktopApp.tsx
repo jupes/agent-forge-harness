@@ -1349,6 +1349,7 @@ export function DesktopApp(): JSX.Element {
               statuses,
               errors,
               scopeKey,
+              now: progress.asOf,
             });
             const proposalState = route.projectId
               ? proposals.get(route.projectId)
@@ -1546,6 +1547,7 @@ export function DesktopApp(): JSX.Element {
         );
         let finalIndex = createPaletteIndex({
           generation,
+          now: snapshot.asOf,
           sourceRows,
           commands: COMMANDS,
           errors,

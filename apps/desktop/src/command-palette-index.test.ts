@@ -1,6 +1,9 @@
 import { expect, test } from "bun:test";
 import type { ProjectsHome } from "../../../types/project-summary";
-import { createCommandPaletteIndex } from "./command-palette-index";
+import {
+  createCommandPaletteIndex,
+  type PaletteIndexSnapshot,
+} from "./command-palette-index";
 
 const home = (count: number): ProjectsHome => ({
   catalog: {
@@ -352,6 +355,64 @@ test("valid scoped sources preserve sibling rows, mark incomplete Runs partial, 
         row.intent.route.projectId === projectIds[0],
     ),
   ).toBe(false);
+});
+
+test("a sibling source completion cannot renew the generation freshness timestamp", async () => {
+  const originalNow = Date.now;
+  let now = 1_000;
+  Date.now = () => now;
+  let startSessions!: () => void;
+  let resolveSessions!: (value: unknown) => void;
+  const sessionsStarted = new Promise<void>((resolve) => {
+    startSessions = resolve;
+  });
+  const sessionsPending = new Promise<unknown>((resolve) => {
+    resolveSessions = resolve;
+  });
+  const snapshots: PaletteIndexSnapshot[] = [];
+  const indexer = createCommandPaletteIndex({
+    readBeads: async (id) => beadPage(id),
+    readSessions: () => {
+      startSessions();
+      return sessionsPending;
+    },
+    readRuns: async () => null,
+    readCouncil: async () => null,
+  });
+  const controller = new AbortController();
+  try {
+    const refresh = indexer.refresh({
+      generation: 10,
+      scope: {
+        catalogRevision: 8,
+        routeGeneration: 2,
+        projectId: projectIds[0],
+        workspace: "/workspace/shared",
+        writesAllowed: true,
+        nativeAvailable: false,
+      },
+      home: home(1),
+      signal: controller.signal,
+      isCurrent: () => true,
+      onSnapshot: (snapshot) => snapshots.push(snapshot),
+    });
+    await sessionsStarted;
+    const held = snapshots.at(-1);
+    expect(held?.sources[`beads:${projectIds[0]}`]?.coverage).toBe("available");
+    expect(held?.sources[`sessions:${projectIds[0]}`]?.coverage).toBe("loading");
+    const generationAsOf = held?.asOf;
+    expect(generationAsOf).toBe(1_000);
+    now += 31_000;
+    resolveSessions(sessionsPage(projectIds[0]));
+    const final = await refresh;
+    expect(final.asOf).toBe(generationAsOf);
+    expect(snapshots.every((snapshot) => snapshot.asOf === generationAsOf)).toBe(
+      true,
+    );
+  } finally {
+    controller.abort();
+    Date.now = originalNow;
+  }
 });
 
 test("superseded generation cannot publish a partial snapshot", async () => {

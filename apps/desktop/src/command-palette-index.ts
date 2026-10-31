@@ -164,6 +164,7 @@ export function createCommandPaletteIndex(
       onSnapshot?(snapshot: PaletteIndexSnapshot): void;
     }): Promise<PaletteIndexSnapshot> {
       const { generation, scope, home, signal, isCurrent } = input;
+      const asOf = Date.now();
       const rows: PaletteSourceRow[] = [];
       const sources: Record<string, PaletteSourceStatus> = {};
       const projects = home.catalog.projects as unknown as PaletteProject[];
@@ -196,7 +197,7 @@ export function createCommandPaletteIndex(
           input.onSnapshot?.({
             scope,
             generation,
-            asOf: Date.now(),
+            asOf,
             rows: [...rows],
             sources: { ...sources },
           });
@@ -530,7 +531,7 @@ export function createCommandPaletteIndex(
       await Promise.all(workers);
       if (signal.aborted || !isCurrent())
         throw Error("Palette index refresh was superseded.");
-      return { scope, generation, asOf: Date.now(), rows, sources };
+      return { scope, generation, asOf, rows, sources };
     },
     watchInvalidation(callback: () => void) {
       return appStream().watch(

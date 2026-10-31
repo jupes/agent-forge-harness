@@ -1,17 +1,97 @@
-import { rmSync } from "node:fs";
+import { readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
+import {
+  buildContextPack,
+  contextListing,
+} from "../../scripts/council/context";
+import {
+  projectCouncilInputHash,
+  projectCouncilIntentHash,
+  projectCouncilProfileHash,
+  projectCouncilRunId,
+} from "../../scripts/council/project-original-store";
+import { providerEndpointSnapshot } from "../../scripts/council/providers";
+import { parseCouncilProfileJson } from "../../scripts/council/types";
 import { projectBeadsPageSchema } from "../../scripts/projects/beads-protocol";
 import {
   projectRunDetailSchema,
   projectRunsPageSchema,
 } from "../../scripts/projects/run-protocol";
-import { projectCouncilHistorySchema } from "../../types/project-council";
+import {
+  projectCouncilHistorySchema,
+  projectCouncilMetadata,
+  projectCouncilOriginalReadSchema,
+  type ProjectCouncilOriginal,
+} from "../../types/project-council";
+import { projectCouncilRunReadSchema } from "../../types/project-council-run-read";
 import { openSettled } from "../e2e/fixtures";
 import { HEARTH_HOME } from "../e2e/servers";
 import { alpha, seedKeeper, seedProjects, workspace } from "./project-fixtures";
 
 test.beforeEach(() => seedProjects());
+
+function savedCouncilReadFixtures(requestId: string) {
+  const profilePath = join(import.meta.dir, "../../councils/default.json");
+  const parsedProfile = parseCouncilProfileJson(
+    readFileSync(profilePath, "utf8"),
+  );
+  if (!parsedProfile.ok) throw Error("The inert Council fixture is invalid.");
+  const source = "Palette saved review fixture.";
+  const now = new Date().toISOString();
+  const context = buildContextPack({ kind: "stdin", text: source, maxBytes: 1024 });
+  const binding = {
+    projectId: alpha.id,
+    workspace,
+    catalogRevision: 1,
+    scopeHash: "b".repeat(64),
+    profileHash: projectCouncilProfileHash(parsedProfile.value),
+  };
+  const original: ProjectCouncilOriginal = {
+    requestId,
+    runId: projectCouncilRunId(requestId),
+    inputHash: projectCouncilInputHash({ source }),
+    intentHash: "0".repeat(64),
+    binding,
+    profileChoice: profilePath,
+    profile: parsedProfile.value,
+    providerEndpoints: providerEndpointSnapshot(parsedProfile.value, {}),
+    context,
+    listing: contextListing(context),
+    options: {
+      maxUsd: 1,
+      maxBytes: 1024,
+      redactSecrets: true,
+      deepDiscussion: false,
+    },
+    state: "failed",
+    createdAt: now,
+    updatedAt: now,
+    dispatchClaimedAt: now,
+  };
+  original.intentHash = projectCouncilIntentHash(original);
+  const originalRead = projectCouncilOriginalReadSchema.parse({
+    metadata: projectCouncilMetadata(original),
+    original,
+  });
+  const runRead = projectCouncilRunReadSchema.parse({
+    version: 1,
+    provenance: {
+      version: 1,
+      requestId,
+      intentHash: original.intentHash,
+      runId: original.runId,
+      projectId: alpha.id,
+      workspace,
+      catalogRevision: binding.catalogRevision,
+      scopeHash: binding.scopeHash,
+    },
+    receipt: { metadata: originalRead.metadata, phase: "failed" },
+    job: null,
+    verdictCommentPreview: null,
+  });
+  return { originalRead, runRead };
+}
 
 test("the visible Search entry opens the keyboard palette", async ({
   page,
@@ -41,7 +121,7 @@ test("palette opens by shortcut, navigates a scoped result, and restores it as a
   await expect(search).toBeFocused();
   await expect(search).toHaveCSS("outline-width", "2px");
   await search.fill("alpha-epic");
-  const bead = dialog.getByRole("option").filter({ hasText: "alpha-epic" });
+  const bead = dialog.getByRole("option", { name: /^Alpha epic\b/ });
   await expect(bead).toHaveCount(1);
   await expect(bead.getByRole("button")).toHaveCount(0);
   await page.keyboard.press("ArrowDown");
@@ -56,7 +136,7 @@ test("palette opens by shortcut, navigates a scoped result, and restores it as a
   await page.keyboard.press("Control+k");
   const reopened = page.getByRole("dialog", { name: "Command palette" });
   await expect(
-    reopened.getByRole("option").filter({ hasText: "alpha-epic" }),
+    reopened.getByRole("option", { name: /^Alpha epic\b/ }),
   ).toHaveCount(1);
   await reopened.getByRole("combobox").press("Escape");
   await expect(reopened).not.toBeVisible();
@@ -101,7 +181,7 @@ test("expired palette selection stays open with a refresh path and performs no w
   const dialog = page.getByRole("dialog", { name: "Command palette" });
   const search = dialog.getByRole("combobox");
   await search.fill("alpha-epic");
-  const option = dialog.getByRole("option").first();
+  const option = dialog.getByRole("option", { name: /^Alpha epic\b/ });
   await expect(option).toBeVisible();
   await page.route(`**/projects/${alpha.id}/beads*`, async (route) => {
     await new Promise((resolve) => setTimeout(resolve, 900));
@@ -220,24 +300,22 @@ test("failed Keeper read is explicit current-project coverage, not an empty prop
   await openSettled(page, `/index.html#/desktop/project/${alpha.id}/overview`);
   await page.keyboard.press("Control+k");
   const dialog = page.getByRole("dialog", { name: "Command palette" });
+  const keeperCoverage = dialog
+    .getByRole("status")
+    .filter({ hasText: "Source coverage:" })
+    .filter({ hasText: "Keeper current project: unavailable" });
   await expect(
-    dialog
-      .getByRole("status")
-      .filter({ hasText: "Keeper current project: unavailable" }),
+    keeperCoverage,
   ).toBeVisible();
   await expect(
-    dialog
-      .getByRole("status")
-      .filter({ hasText: "Keeper current project: unavailable" }),
+    keeperCoverage,
   ).not.toContainText("private server detail");
   await dialog.getByRole("combobox").fill("proposal that does not exist");
   await expect(
     dialog.getByRole("option").filter({ hasText: "Keeper proposal review" }),
   ).toHaveCount(0);
   await expect(
-    dialog
-      .getByRole("status")
-      .filter({ hasText: "Keeper current project: unavailable" }),
+    keeperCoverage,
   ).toBeVisible();
 });
 
@@ -245,6 +323,8 @@ test("Council history palette target opens the exact saved-result owner without 
   page,
 }) => {
   const requestId = "9f46f619-9750-4b30-9e86-bf43ebcabc01";
+  const { originalRead, runRead } = savedCouncilReadFixtures(requestId);
+  const profileTitle = originalRead.metadata.profileTitle;
   const history = projectCouncilHistorySchema.parse({
     version: 1,
     projectId: alpha.id,
@@ -257,12 +337,12 @@ test("Council history palette target opens the exact saved-result owner without 
         requestId,
         runId: "palette-run",
         intentHash: "a".repeat(64),
-        state: "completed",
-        phase: "completed",
-        sourceType: "bead",
+        state: "failed",
+        phase: "failed",
+        sourceType: "text",
         sourceName: "Palette saved review",
         profileId: "reviewer",
-        profileTitle: "Palette reviewer",
+        profileTitle,
         depth: "quick",
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
@@ -275,15 +355,33 @@ test("Council history palette target opens the exact saved-result owner without 
       await route.fulfill({ json: { ok: true, data: history, error: null } });
     },
   );
+  const originalReads: string[] = [];
   const ownerReads: string[] = [];
   const writes: string[] = [];
   page.on("request", (request) => {
     const path = new URL(request.url()).pathname;
+    if (
+      request.method() === "GET" &&
+      path.endsWith(`/council/reviews/${requestId}`)
+    )
+      originalReads.push(path);
     if (request.method() === "GET" && path.endsWith(`/${requestId}/run`))
       ownerReads.push(path);
     if (request.method() === "POST" && path.includes("/council/"))
       writes.push(path);
   });
+  await page.route(
+    `**/__agent-forge/projects/${alpha.id}/council/reviews/${requestId}`,
+    async (route) =>
+      route.fulfill({
+        json: { ok: true, data: originalRead, error: null },
+      }),
+  );
+  await page.route(
+    `**/__agent-forge/projects/${alpha.id}/council/reviews/${requestId}/run`,
+    async (route) =>
+      route.fulfill({ json: { ok: true, data: runRead, error: null } }),
+  );
   await openSettled(page, `/index.html#/desktop/project/${alpha.id}/overview`);
   await page.keyboard.press("Control+k");
   const dialog = page.getByRole("dialog", { name: "Command palette" });
@@ -297,7 +395,13 @@ test("Council history palette target opens the exact saved-result owner without 
       `/desktop/project/${alpha.id}/reviews\\?selectionKind=event&selectionId=${requestId}`,
     ),
   );
+  await expect.poll(() => originalReads.length).toBeGreaterThan(0);
   await expect.poll(() => ownerReads.length).toBeGreaterThan(0);
+  expect(
+    originalReads.every((path) =>
+      path.endsWith(`/council/reviews/${requestId}`),
+    ),
+  ).toBe(true);
   expect(ownerReads.every((path) => path.endsWith(`/${requestId}/run`))).toBe(
     true,
   );
