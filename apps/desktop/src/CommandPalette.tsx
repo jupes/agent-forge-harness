@@ -49,7 +49,8 @@ export function CommandPalette({
     selection.scope === selectionScope && selection.key !== null
       ? rows.findIndex((row) => rowKey(row) === selection.key)
       : -1;
-  const active = selectedPosition >= 0 ? selectedPosition : rows.length ? 0 : -1;
+  const active =
+    selectedPosition >= 0 ? selectedPosition : rows.length ? 0 : -1;
   const activeRow = active >= 0 ? rows[active] : undefined;
   const activeKey = activeRow ? rowKey(activeRow) : null;
   if (selection.scope !== selectionScope || selection.key !== activeKey)

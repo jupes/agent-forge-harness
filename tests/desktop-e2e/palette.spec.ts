@@ -14,11 +14,11 @@ import {
 import { providerEndpointSnapshot } from "../../scripts/council/providers";
 import { parseCouncilProfileJson } from "../../scripts/council/types";
 import { projectBeadsPageSchema } from "../../scripts/projects/beads-protocol";
-import { projectSessionObservationsSchema } from "../../scripts/projects/session-observations-protocol";
 import {
   projectRunDetailSchema,
   projectRunsPageSchema,
 } from "../../scripts/projects/run-protocol";
+import { projectSessionObservationsSchema } from "../../scripts/projects/session-observations-protocol";
 import {
   type ProjectCouncilOriginal,
   projectCouncilHistorySchema,
@@ -144,9 +144,15 @@ test("palette opens by shortcut, navigates a scoped result, and restores it as a
   let signalSessionsStarted!: () => void;
   let signalSessionsFinished!: () => void;
   let sessionReadStarted = false;
-  const sessionsHeld = new Promise<void>((resolve) => (releaseSessions = resolve));
-  const sessionsStarted = new Promise<void>((resolve) => (signalSessionsStarted = resolve));
-  const sessionsFinished = new Promise<void>((resolve) => (signalSessionsFinished = resolve));
+  const sessionsHeld = new Promise<void>(
+    (resolve) => (releaseSessions = resolve),
+  );
+  const sessionsStarted = new Promise<void>(
+    (resolve) => (signalSessionsStarted = resolve),
+  );
+  const sessionsFinished = new Promise<void>(
+    (resolve) => (signalSessionsFinished = resolve),
+  );
   const asOf = new Date().toISOString();
   const sessions = projectSessionObservationsSchema.parse({
     projectId: alpha.id,
@@ -174,7 +180,8 @@ test("palette opens by shortcut, navigates a scoped result, and restores it as a
   });
   const writes: string[] = [];
   page.on("request", (request) => {
-    if (request.method() === "POST") writes.push(new URL(request.url()).pathname);
+    if (request.method() === "POST")
+      writes.push(new URL(request.url()).pathname);
   });
   const dialog = page.getByRole("dialog", { name: "Command palette" });
   const search = dialog.getByRole("combobox", {
@@ -187,7 +194,9 @@ test("palette opens by shortcut, navigates a scoped result, and restores it as a
     await expect(search).toHaveCSS("outline-width", "2px");
     await search.fill("alpha-epic");
     await sessionsStarted;
-    const coverage = dialog.getByRole("status").filter({ hasText: "Source coverage:" });
+    const coverage = dialog
+      .getByRole("status")
+      .filter({ hasText: "Source coverage:" });
     await expect(coverage).toContainText("Beads: available");
     await expect(coverage).toContainText("Sessions: loading");
     const bead = dialog.getByRole("option", { name: /^Alpha epic\b/ });
@@ -197,12 +206,17 @@ test("palette opens by shortcut, navigates a scoped result, and restores it as a
     await page.keyboard.press("ArrowDown");
     await expect(review).toHaveAttribute("aria-selected", "true");
     const reviewIdBefore = await review.getAttribute("id");
-    await expect(search).toHaveAttribute("aria-activedescendant", reviewIdBefore!);
+    await expect(search).toHaveAttribute(
+      "aria-activedescendant",
+      reviewIdBefore!,
+    );
 
     releaseSessions();
     await expect(coverage).toContainText("Sessions: available");
     await expect(search).toHaveValue("alpha-epic");
-    await expect(dialog.getByRole("option", { name: /^alpha-epic\b/ })).toHaveCount(16);
+    await expect(
+      dialog.getByRole("option", { name: /^alpha-epic\b/ }),
+    ).toHaveCount(16);
     const reviewIdAfter = await review.getAttribute("id");
     expect(reviewIdAfter).not.toBe(reviewIdBefore);
     expect(Number(reviewIdAfter?.replace("af-palette-", ""))).toBe(
@@ -210,7 +224,10 @@ test("palette opens by shortcut, navigates a scoped result, and restores it as a
     );
     await expect(review).toHaveAttribute("aria-selected", "true");
     await expect(dialog.getByRole("option", { selected: true })).toHaveCount(1);
-    await expect(search).toHaveAttribute("aria-activedescendant", reviewIdAfter!);
+    await expect(search).toHaveAttribute(
+      "aria-activedescendant",
+      reviewIdAfter!,
+    );
     await page.keyboard.press("Enter");
     await expect(page).toHaveURL(
       new RegExp(
