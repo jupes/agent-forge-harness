@@ -6,6 +6,7 @@ import { EmptyState } from "../../../docs/js/ds/EmptyState";
 import type { KeeperProposal } from "../../../types/keeper-proposal";
 import { BeadWriteNotices, NewBeadForm } from "./BeadWrites";
 import { ConnectionBanner, useDesktopRecovery } from "./ConnectionBanner";
+import { chatDecisionAuthorityScopeIsCurrent } from "./chat-decision-authority";
 import { useChatDecisionOwners } from "./chat-decision-owners";
 import type { FrameSession } from "./DesktopFrame";
 import { DesktopFrame } from "./DesktopFrame";
@@ -777,21 +778,15 @@ export function DesktopApp(): JSX.Element {
           .project(address.projectId)
           .records.find((item) => item.id === address.sessionId),
         actualRoute = desktopRoute(window.location.hash);
-      return Boolean(
-        sameDesktopRoute(route, actualRoute) &&
-          actualRoute.destination === "sessions" &&
-          actualRoute.projectId === address.projectId &&
-          actualRoute.selection?.kind === "session" &&
-          actualRoute.selection.id === address.sessionId &&
-          currentProject &&
-          currentSummary?.workspace === address.workspace &&
-          currentProject.workspaces.some(
-            (scope) => scope.root === address.workspace,
-          ) &&
-          currentRecord?.projectId === address.projectId &&
-          currentRecord.mode === "chat" &&
-          currentRecord.provider === provider,
-      );
+      return chatDecisionAuthorityScopeIsCurrent({
+        address,
+        provider,
+        route,
+        actualRoute,
+        project: currentProject ?? null,
+        summary: currentSummary ?? null,
+        session: currentRecord ?? null,
+      });
     },
   });
   useEffect(() => {
