@@ -334,7 +334,12 @@ test("Codex original receipt reads keep a replaced held identity when it changes
     identities,
     canWrite: () => false,
     current: () => null,
-    scopeCurrent: () => ({ projectId, workspace: "", sessionId, provider: "codex" }),
+    scopeCurrent: () => ({
+      projectId,
+      workspace: "",
+      sessionId,
+      provider: "codex",
+    }),
     requestId: () => {
       throw Error("Must not mint");
     },

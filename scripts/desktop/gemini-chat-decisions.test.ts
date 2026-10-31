@@ -297,7 +297,11 @@ test("a same-scope terminal activation during the exact receipt read preserves i
     approvalId,
     optionId: "native-reject",
   };
-  await identities.reserve(original, () => requestId, () => true);
+  await identities.reserve(
+    original,
+    () => requestId,
+    () => true,
+  );
   const receipt = {
     ...original,
     requestId,
@@ -348,7 +352,11 @@ test("Gemini original receipt reads keep a replaced held identity when it change
     approvalId,
     optionId: "native-reject",
   };
-  const saved = await identities.reserve(original, () => requestId, () => true);
+  const saved = await identities.reserve(
+    original,
+    () => requestId,
+    () => true,
+  );
   const receipt = {
     ...original,
     requestId,
@@ -363,7 +371,12 @@ test("Gemini original receipt reads keep a replaced held identity when it change
   const client = createGeminiChatDecisions({
     identities,
     current: () => null,
-    scopeCurrent: () => ({ projectId, workspace: "", sessionId, provider: "gemini" }),
+    scopeCurrent: () => ({
+      projectId,
+      workspace: "",
+      sessionId,
+      provider: "gemini",
+    }),
     canWrite: () => false,
     requestId: () => {
       throw Error("Must not mint");

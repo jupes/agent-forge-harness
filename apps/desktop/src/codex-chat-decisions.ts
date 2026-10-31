@@ -332,7 +332,8 @@ export function createCodexChatDecisions(deps: {
         } else if (
           current !== generation ||
           !sameActivation(entry.activation, activation)
-        ) return;
+        )
+          return;
         if (page.pending.length)
           throw Error(
             "An original receipt read cannot advertise live approvals.",
