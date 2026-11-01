@@ -1,7 +1,14 @@
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, readFileSync, statSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { z } from "zod";
+import type { WorktreeEntry } from "../../../types/beads";
+import {
+  gitRun,
+  listWorktrees,
+  mainCheckoutOf,
+  type Listed,
+} from "../../scheduler/worktrees";
 import type {
   ProjectCatalog,
   ProjectPreferences,
@@ -56,6 +63,8 @@ import { bodyFields, fail, noParameters } from "./operator-reads";
 import type { ProjectSnapshot } from "./project-summaries";
 
 const MAX_PROJECT_REPOSITORY_REGISTRY_BYTES = 64 * 1024;
+const MAX_PROJECT_REPOSITORIES_READ_BYTES = 512 * 1024;
+const MAX_PROJECT_WORKTREES_READ = 4096;
 
 interface PreferenceChange {
   id: string;
@@ -81,6 +90,8 @@ export interface ProjectCreateRouteOptions {
   repositoryRunPicker?: RepositoryOnboardingOptions["runPicker"];
   allowLocalRepositoryFixtureUrls?: boolean;
   repositoryManifestRoot?: string;
+  /** Existing scheduler reader; injectable for project route tests. */
+  listProjectWorktrees?: typeof listWorktrees;
   loadScope(): Promise<ProjectSnapshot>;
 }
 
@@ -328,6 +339,116 @@ function canonicalRepositoryPath(path: string): string {
   if (workspaceKey(canonical) !== workspaceKey(root))
     throw new Error("Repository path is not canonical.");
   return canonical;
+}
+
+const projectWorktreeFactSchema = z
+  .object({
+    path: z.string().min(1).max(1024),
+    kind: z.enum(["trees", "claude", "other"]),
+    branch: z.string().max(1024).nullable(),
+    missing: z.boolean(),
+    id: z.string().min(1).max(64).optional(),
+    createdAt: z.string().datetime().optional(),
+  })
+  .strict();
+const projectRepositoryMemberSchema = z.discriminatedUnion("access", [
+  z.object({ path: z.string().min(1).max(1024), access: z.literal("unregistered") }).strict(),
+  z.object({
+    path: z.string().min(1).max(1024),
+    access: z.enum(["served", "approved"]),
+    name: z.string().min(1).max(80),
+    worktrees: z.array(projectWorktreeFactSchema).max(4096),
+  }).strict(),
+]);
+const projectRepositoryRowSchema = z.object({
+  workspaceRoot: z.string().min(1).max(1024),
+  repositories: z.array(projectRepositoryMemberSchema).max(128),
+}).strict();
+const projectRepositoriesDataSchema = z.object({
+  projectId: z.string().min(1).max(128),
+  catalogRevision: z.number().int().nonnegative().safe(),
+  repositories: z.array(projectRepositoryRowSchema).max(100),
+}).strict();
+
+function unavailableProjectRepositories(): ProjectStoreError {
+  return new ProjectStoreError(
+    503,
+    "Project repository information is unavailable. Refresh and try again.",
+  );
+}
+
+/** Fresh path identity check; cached checkout resolution is not evidence of current presence. */
+function freshProjectRepositoryPath(path: string, expectedKey: string): string {
+  try {
+    const canonical = realpathSync.native(path);
+    const directory = lstatSync(path);
+    const gitPath = join(path, ".git");
+    const gitMarker = lstatSync(gitPath);
+    const canonicalGitMarker = realpathSync.native(gitPath);
+    const realGitMarker = lstatSync(canonicalGitMarker);
+    if (
+      directory.isSymbolicLink() ||
+      !directory.isDirectory() ||
+      gitMarker.isSymbolicLink() ||
+      (!gitMarker.isDirectory() && !gitMarker.isFile()) ||
+      realGitMarker.isSymbolicLink() ||
+      (!realGitMarker.isDirectory() && !realGitMarker.isFile()) ||
+      workspaceKey(canonical) !== expectedKey
+    )
+      throw unavailableProjectRepositories();
+    return canonical;
+  } catch (error) {
+    if (error instanceof ProjectStoreError) throw error;
+    throw unavailableProjectRepositories();
+  }
+}
+
+function projectWorktreeFacts(
+  repositoryPath: string,
+  reader: typeof listWorktrees,
+): Array<z.infer<typeof projectWorktreeFactSchema>> {
+  const reportedMain = mainCheckoutOf(repositoryPath, gitRun);
+  if (reportedMain === null) throw unavailableProjectRepositories();
+  const mainKey = workspaceKey(reportedMain);
+  const main = freshProjectRepositoryPath(reportedMain, mainKey);
+  let listed: Listed;
+  try {
+    listed = reader(main);
+  } catch {
+    throw unavailableProjectRepositories();
+  }
+  if (!listed.ok) throw unavailableProjectRepositories();
+  const mainEntries = listed.entries.filter((entry) => entry.kind === "main");
+  if (mainEntries.length !== 1) throw unavailableProjectRepositories();
+  const listedMain = mainEntries[0];
+  if (!listedMain) throw unavailableProjectRepositories();
+  const canonicalListedMain = freshProjectRepositoryPath(listedMain.path, mainKey);
+  if (workspaceKey(canonicalListedMain) !== workspaceKey(main))
+    throw unavailableProjectRepositories();
+  const matchingCheckoutEntries = listed.entries.filter(
+    (entry) => workspaceKey(entry.path) === workspaceKey(repositoryPath),
+  );
+  if (
+    matchingCheckoutEntries.length !== 1 ||
+    matchingCheckoutEntries[0]?.missing !== false
+  )
+    throw unavailableProjectRepositories();
+  const facts = listed.entries
+    .filter((entry) => entry.kind !== "main")
+    .map((entry) => ({
+      path: entry.path,
+      kind: entry.kind,
+      branch: entry.branch,
+      missing: entry.missing,
+      ...(entry.id !== undefined ? { id: entry.id } : {}),
+      ...(entry.createdAt !== undefined ? { createdAt: entry.createdAt } : {}),
+    }));
+  const checked = z
+    .array(projectWorktreeFactSchema)
+    .max(MAX_PROJECT_WORKTREES_READ)
+    .safeParse(facts);
+  if (!checked.success) throw unavailableProjectRepositories();
+  return checked.data;
 }
 
 function projectCreateOptionsData(
@@ -888,6 +1009,130 @@ export function projectRoutes(
         }
       }),
   };
+  const projectRepositoriesData = (id: string) => {
+    try {
+      const catalog = store.read();
+      const project = catalog.projects.find((candidate) => candidate.id === id);
+      if (!project)
+        throw new ProjectStoreError(404, "The project was not found.");
+
+      let approved: ApprovedRepository[];
+      try {
+        approved = repositoryOnboarding.approvedRepositories().map((entry) => {
+          const checked = approvedRepositorySchema.safeParse(entry);
+          if (!checked.success) throw unavailableProjectRepositories();
+          return checked.data;
+        });
+      } catch (error) {
+        if (error instanceof ProjectStoreError) throw error;
+        throw unavailableProjectRepositories();
+      }
+      const approvedByKey = new Map<string, ApprovedRepository[]>();
+      for (const entry of approved) {
+        if (workspaceKey(entry.path) !== entry.key)
+          throw unavailableProjectRepositories();
+        const entries = approvedByKey.get(entry.key) ?? [];
+        entries.push(entry);
+        approvedByKey.set(entry.key, entries);
+      }
+
+      const servedPath = resolveCheckout(createOptions.root).workspace;
+      const servedKey = workspaceKey(servedPath);
+      const seenMembers = new Set<string>();
+      const reader = createOptions.listProjectWorktrees ?? listWorktrees;
+      let totalWorktreesRead = 0;
+      const readWorktrees = (path: string) => {
+        const facts = projectWorktreeFacts(path, reader);
+        totalWorktreesRead += facts.length;
+        if (totalWorktreesRead > MAX_PROJECT_WORKTREES_READ)
+          throw unavailableProjectRepositories();
+        return facts;
+      };
+      const repositories = project.workspaces.map((workspace) => ({
+        workspaceRoot: workspace.root,
+        repositories: workspace.repositories.map((path) => {
+          const key = workspaceKey(path);
+          if (seenMembers.has(key)) throw unavailableProjectRepositories();
+          seenMembers.add(key);
+          if (key === servedKey) {
+            const canonicalMember = freshProjectRepositoryPath(path, servedKey);
+            const canonicalServed = freshProjectRepositoryPath(
+              servedPath,
+              servedKey,
+            );
+            if (workspaceKey(canonicalMember) !== workspaceKey(canonicalServed))
+              throw unavailableProjectRepositories();
+            return {
+              path,
+              access: "served" as const,
+              name: basename(canonicalServed),
+              worktrees: readWorktrees(canonicalServed),
+            };
+          }
+          const matches = approvedByKey.get(key) ?? [];
+          if (matches.length === 0)
+            return { path, access: "unregistered" as const };
+          if (matches.length !== 1) throw unavailableProjectRepositories();
+          const registration = matches[0];
+          if (!registration) throw unavailableProjectRepositories();
+          const canonicalMember = freshProjectRepositoryPath(path, key);
+          const canonicalRegistered = freshProjectRepositoryPath(
+            registration.path,
+            registration.key,
+          );
+          if (
+            registration.key !== key ||
+            workspaceKey(canonicalMember) !== workspaceKey(canonicalRegistered)
+          )
+            throw unavailableProjectRepositories();
+          return {
+            path,
+            access: "approved" as const,
+            name: registration.name,
+            worktrees: readWorktrees(canonicalRegistered),
+          };
+        }),
+      }));
+      const checked = projectRepositoriesDataSchema.safeParse({
+        projectId: project.id,
+        catalogRevision: catalog.revision,
+        repositories,
+      });
+      if (!checked.success) throw unavailableProjectRepositories();
+      const worktreeCount = checked.data.repositories.reduce(
+        (total, workspace) =>
+          total + workspace.repositories.reduce(
+            (members, repository) =>
+              members + (repository.access === "unregistered" ? 0 : repository.worktrees.length),
+            0,
+          ),
+        0,
+      );
+      const json = JSON.stringify(checked.data);
+      if (
+        worktreeCount > MAX_PROJECT_WORKTREES_READ ||
+        Buffer.byteLength(json, "utf8") > MAX_PROJECT_REPOSITORIES_READ_BYTES
+      )
+        throw unavailableProjectRepositories();
+      return checked.data;
+    } catch (error) {
+      if (error instanceof ProjectStoreError) throw error;
+      throw unavailableProjectRepositories();
+    }
+  };
+  const projectRepositoriesRead: ReadRoute<{ id: string }> = {
+    kind: "read",
+    method: "GET",
+    path: "/projects/:id/settings/repositories",
+    operatorOnly: true,
+    validate: (request) => {
+      const id = request.params["id"];
+      return isProjectId(id)
+        ? { ok: true, value: { id } }
+        : fail("Expected a project id.");
+    },
+    read: ({ id }) => reply(() => projectRepositoriesData(id)),
+  };
   const projects: ReadRoute<null> = {
     kind: "read",
     method: "GET",
@@ -1175,6 +1420,7 @@ export function projectRoutes(
   };
   return {
     projects,
+    projectRepositoriesRead,
     createOptionsRead,
     scopePreview,
     preferences,
