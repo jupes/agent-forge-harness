@@ -30,6 +30,11 @@ import { createCodexChatApprovalBroker } from "./codex-chat-approval-broker";
 import { resolveCodexChatForkSource } from "./codex-chat-fork-source";
 import { createCodexOwnedChatService } from "./codex-chat-owned-admission";
 import { createCodexChatOwnedTransport } from "./codex-chat-owned-transport";
+import {
+  createDeadlineObserver,
+  emitCodexDeadlineFailureAndRethrow,
+  projectCodexDeadlineFacts,
+} from "./codex-chat-deadline-diagnostic.test-utils";
 import { foldCodexChatOwnerRelease } from "./codex-chat-owner-release";
 import { createCodexChatRuntime } from "./codex-chat-runtime";
 import {
@@ -2528,7 +2533,8 @@ test.each([
   "deadline",
 ])("actual %s retains only partial native summaries and never resends them after reopening", async (action) => {
   const f = await fixture("reasoning-summary-held");
-  const run = f.runtime.run.bind(f.runtime);
+  const originalRuntimeRun = f.runtime.run,
+    run = originalRuntimeRun.bind(f.runtime);
   let releaseFinalSave = () => {},
     heldFinalSave = false;
   const finalSave = new Promise<void>((resolve) => {
@@ -2556,6 +2562,20 @@ test.each([
             ),
         )
       : null;
+  const diagnosticObserver = createDeadlineObserver();
+  let diagnosticFacts = projectCodexDeadlineFacts({
+    observer: diagnosticObserver.snapshot(),
+    page: null,
+    originalRequestId: f.request.requestId,
+  });
+  let reopenedFacts = diagnosticFacts.reopened;
+  let reopenedReadAttempted = false,
+    reopenedReadSucceeded = false;
+  if (action === "deadline")
+    f.runtime.run = (input, persist, signal, callbacks) =>
+      diagnosticObserver.observeRuntime(() =>
+        run(input, (event) => diagnosticObserver.tapPersist(event, persist), signal, callbacks),
+      );
   try {
     let service = f.open();
     const started = await service.start(f.project.id, f.request),
@@ -2590,7 +2610,16 @@ test.each([
     await service.settled(f.project.id, sessionId);
     await service.close();
     service = f.open();
+    reopenedReadAttempted = true;
     const page = await service.read(f.project.id, sessionId);
+    reopenedReadSucceeded = true;
+    if (action === "deadline") {
+      diagnosticFacts = projectCodexDeadlineFacts({
+        observer: diagnosticObserver.snapshot(), page,
+        originalRequestId: f.request.requestId,
+      });
+      reopenedFacts = diagnosticFacts.reopened;
+    }
     const summaries = page.frames.filter(
       (frame) =>
         frame.event.kind === "coding-chat" &&
@@ -2628,9 +2657,26 @@ test.each([
     expect(
       f.records().filter((row) => row.method === "turn/start"),
     ).toHaveLength(1);
+  } catch (error) {
+    if (action !== "deadline") throw error;
+    const current = projectCodexDeadlineFacts({
+      observer: diagnosticObserver.snapshot(), page: null,
+      originalRequestId: f.request.requestId,
+    });
+    if (reopenedReadAttempted && !reopenedReadSucceeded)
+      reopenedFacts.read = "failed";
+    diagnosticFacts = {
+      runtime: current.runtime,
+      terminalPersist: current.terminalPersist,
+      reopened: reopenedFacts,
+    };
+    emitCodexDeadlineFailureAndRethrow(
+      error, diagnosticFacts, (row) => process.stderr.write(row),
+    );
   } finally {
     releaseFinalSave();
     held?.mockRestore();
+    if (action === "deadline") f.runtime.run = originalRuntimeRun;
   }
 });
 
