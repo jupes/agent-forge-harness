@@ -952,9 +952,10 @@ function apiProjectCreateOriginal(slug: string, root = "") {
   };
 }
 
-function seedProjectRepositoriesReadFixture(
-  h: TestHearth,
-): { path: string; revision: number } {
+function seedProjectRepositoriesReadFixture(h: TestHearth): {
+  path: string;
+  revision: number;
+} {
   const store = createProjectStore(h.home);
   const before = store.read();
   const original = before.projects.find(
@@ -977,8 +978,7 @@ function seedProjectRepositoriesReadFixture(
   });
   if (
     before.projects.some(
-      (project) =>
-        project.id === fixture.id || project.slug === fixture.slug,
+      (project) => project.id === fixture.id || project.slug === fixture.slug,
     )
   )
     throw new Error("repository read fixture identity is not unique");
