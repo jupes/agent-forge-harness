@@ -59,7 +59,6 @@ import {
   type InboxDispositionSourceProof,
 } from "./inbox-dispositions-owner";
 import {
-  bindInboxCardIdentity,
   type InboxCard,
   mergeInboxDispositionEntries,
   mergeInboxDispositionHistory,
@@ -956,14 +955,12 @@ export function DesktopApp(): JSX.Element {
         currentSession = sessions.session(address.projectId, address.sessionId),
         currentTurn = currentSession.page?.turns.at(-1),
         actualRoute = desktopRoute(window.location.hash),
-        inboxSelection = inboxClient.current?.currentSelection() ?? null,
         routeCurrent =
           sameDesktopRoute(route, actualRoute) &&
-          ((actualRoute.destination === "sessions" &&
-            actualRoute.projectId === address.projectId &&
-            actualRoute.selection?.kind === "session" &&
-            actualRoute.selection.id === address.sessionId) ||
-            actualRoute.destination === "inbox");
+          actualRoute.destination === "sessions" &&
+          actualRoute.projectId === address.projectId &&
+          actualRoute.selection?.kind === "session" &&
+          actualRoute.selection.id === address.sessionId;
       const projectScopeCurrent = Boolean(
         routeCurrent &&
           currentProject &&
@@ -972,30 +969,6 @@ export function DesktopApp(): JSX.Element {
             (scope) => scope.root === address.workspace,
           ),
       );
-      // Inbox activations are independently bound by the exact project-scoped
-      // approvals read and offer ID; SessionsClient only keeps the selected
-      // conversation live and cannot be the cross-project authority here.
-      if (actualRoute.destination === "inbox")
-        return Boolean(
-          projectScopeCurrent &&
-            address.actionable &&
-            address.requestId &&
-            address.acceptedTurnId &&
-            inboxSelection?.state === "current" &&
-            inboxSelection.actionable &&
-            chatDecisionAuthorityScopeIsCurrent({
-              address,
-              provider:
-                currentRecord?.provider === "gemini" ? "gemini" : "codex",
-              route,
-              actualRoute,
-              project: currentProject ?? null,
-              summary: currentSummary ?? null,
-              session: currentRecord ?? null,
-              sessionList: currentProjectSessions,
-              inboxSelection,
-            }),
-        );
       return Boolean(
         projectScopeCurrent &&
           currentRecord?.projectId === address.projectId &&
@@ -1026,6 +999,11 @@ export function DesktopApp(): JSX.Element {
           (item) => item.id === address.sessionId,
         ),
         actualRoute = desktopRoute(window.location.hash);
+      if (
+        route.destination !== "sessions" ||
+        actualRoute.destination !== "sessions"
+      )
+        return false;
       return chatDecisionAuthorityScopeIsCurrent({
         address,
         provider,
@@ -1590,6 +1568,7 @@ export function DesktopApp(): JSX.Element {
     card: InboxCard,
     operation: "done" | "snooze-1h",
   ) => {
+    if (card.sourceKind === "permission" || card.permission) return;
     dispositionReadGeneration.current++;
     dispositionOperationGeneration.current++;
     const context = latestInboxContext.current;
@@ -1677,46 +1656,6 @@ export function DesktopApp(): JSX.Element {
           item.stableItemId === card.stableItemId &&
           item.sourceRevision === card.sourceRevision,
       );
-    let reviewedPermissionSourceIsCurrent = false;
-    if (card.sourceKind === "permission" && card.permission) {
-      const permission = card.permission;
-      const snapshot = inbox.snapshot();
-      const selected = inbox.selectedPermission();
-      const selection = inbox.currentSelection();
-      const exact = snapshot.items.find((item) => item.key === permission.key);
-      const exactCurrent =
-        exact?.kind === "permission" && exact.state === "current"
-          ? exact
-          : null;
-      const sessionProject = sessions.project(card.projectId);
-      const session = sessionProject.records.find(
-        (item) => item.id === permission.sessionId,
-      );
-      reviewedPermissionSourceIsCurrent =
-        permission.state === "current" &&
-        !snapshot.loading &&
-        exactCurrent?.snapshotGeneration === snapshot.generation &&
-        exactCurrent.projectId === card.projectId &&
-        exactCurrent.workspace === card.workspace &&
-        exactCurrent.provider === permission.provider &&
-        exactCurrent.sessionId === permission.sessionId &&
-        exactCurrent.acceptedTurnId === permission.acceptedTurnId &&
-        exactCurrent.offerId === permission.offerId &&
-        JSON.stringify(exactCurrent.approval) ===
-          JSON.stringify(permission.approval) &&
-        selected?.key === permission.key &&
-        !!selection &&
-        selection.selectionGeneration ===
-          selection.currentSelectionGeneration &&
-        selection.selectionGeneration ===
-          dispositionSelectionGeneration.current &&
-        sessionProject.loaded &&
-        !sessionProject.loading &&
-        !sessionProject.error &&
-        !!session &&
-        session.provider === permission.provider &&
-        session.workspace === card.workspace;
-    }
     const reviewedSourceIsCurrent =
       !!reviewedOriginal &&
       !!activeBefore &&
@@ -1724,7 +1663,7 @@ export function DesktopApp(): JSX.Element {
       activeBefore.scope.projectId === card.projectId &&
       activeBefore.scope.workspace === card.workspace &&
       activeBefore.sourceGeneration === latestInboxSourceGeneration.current &&
-      (reviewedWriteSourceIsCurrent || reviewedPermissionSourceIsCurrent) &&
+      reviewedWriteSourceIsCurrent &&
       fenceBefore.activation === activeBefore &&
       fenceBefore.home === home &&
       fenceBefore.catalogRevision === home.catalog.revision &&
@@ -1745,102 +1684,37 @@ export function DesktopApp(): JSX.Element {
       : ++latestInboxSourceGeneration.current;
 
     let fresh = false;
-    let freshResolved = false;
-    if (card.permission) {
-      await inbox.refresh({
-        home,
-        homeCurrent: !projects.loading && !projects.error,
-        sessions,
-      });
-      if (sourceGeneration !== latestInboxSourceGeneration.current) return;
-      const permissionSnapshot = inbox.snapshot();
-      const exact = permissionSnapshot.items.find(
-        (item) =>
-          item.key === card.permission?.key &&
-          item.state === "current" &&
-          item.snapshotGeneration === permissionSnapshot.generation,
-      );
-      if (
-        exact &&
-        exact.kind === "permission" &&
-        exact.state === "current" &&
-        card.permission.state === "current"
-      ) {
-        inbox.selectPermission(exact.key);
-        const selected = inbox.selectedPermission();
-        const selection = inbox.currentSelection();
-        const sessionProject = sessions.project(card.projectId);
-        const session = sessionProject.records.find(
-          (item) => item.id === card.permission?.sessionId,
-        );
-        fresh =
-          !permissionSnapshot.loading &&
-          JSON.stringify(exact.approval) ===
-            JSON.stringify(card.permission.approval) &&
-          exact.projectId === card.permission.projectId &&
-          exact.workspace === card.permission.workspace &&
-          exact.provider === card.permission.provider &&
-          exact.sessionId === card.permission.sessionId &&
-          exact.acceptedTurnId === card.permission.acceptedTurnId &&
-          exact.offerId === card.permission.offerId &&
-          selected?.key === card.permission.key &&
-          !!selection &&
-          selection.selectionGeneration ===
-            selection.currentSelectionGeneration &&
-          sessionProject.loaded &&
-          !sessionProject.loading &&
-          !sessionProject.error &&
-          !!session &&
-          session.provider === card.permission.provider &&
-          session.workspace === card.workspace;
-        freshResolved = inbox
-          .permissionResolutions()
-          .some(
-            (proof) =>
-              proof.permissionKey === card.permission?.key &&
-              proof.snapshotGeneration === permissionSnapshot.generation &&
-              proof.projectId === card.projectId &&
-              proof.workspace === card.workspace &&
-              proof.provider === card.permission?.provider &&
-              proof.sessionId === card.permission?.sessionId &&
-              proof.acceptedTurnId === card.permission?.acceptedTurnId &&
-              proof.offerId === card.permission?.offerId &&
-              proof.complete &&
-              proof.resolved,
-          );
-      }
-      if (operation === "done" && !freshResolved) fresh = false;
-    } else {
-      const currentNotices = beadWrites.client.notices();
-      const currentProblem = beadWrites.client.problem();
-      const noticeSignature = JSON.stringify([currentNotices, currentProblem]);
-      const freshWrites = reuseReviewedIntent
-        ? writesBefore
-        : await readInboxWriteSources({
-            notices: currentNotices,
-            projects: home.catalog.projects,
-            journalCurrent: !currentProblem,
-            sourceGeneration,
-            catalogRevision: home.catalog.revision,
-            routeGeneration: forgeRouteGeneration.current,
-            noticeSignature,
-          });
-      if (sourceGeneration !== latestInboxSourceGeneration.current) return;
-      if (!reuseReviewedIntent) {
-        inboxWriteSourcesRef.current = freshWrites;
-        setInboxWriteSources(freshWrites);
-      }
-      const currentWrite = freshWrites.cards.find(
-        (item) =>
-          item.unknownWriteKey === card.unknownWriteKey &&
-          item.sourceRevision === card.sourceRevision &&
-          item.projectId === card.projectId &&
-          item.workspace === card.workspace,
-      );
-      fresh =
-        currentWrite?.sourceState === "current" &&
-        currentWrite.stableItemId === card.stableItemId;
+    const freshResolved = false;
+
+    const currentNotices = beadWrites.client.notices();
+    const currentProblem = beadWrites.client.problem();
+    const noticeSignature = JSON.stringify([currentNotices, currentProblem]);
+    const freshWrites = reuseReviewedIntent
+      ? writesBefore
+      : await readInboxWriteSources({
+          notices: currentNotices,
+          projects: home.catalog.projects,
+          journalCurrent: !currentProblem,
+          sourceGeneration,
+          catalogRevision: home.catalog.revision,
+          routeGeneration: forgeRouteGeneration.current,
+          noticeSignature,
+        });
+    if (sourceGeneration !== latestInboxSourceGeneration.current) return;
+    if (!reuseReviewedIntent) {
+      inboxWriteSourcesRef.current = freshWrites;
+      setInboxWriteSources(freshWrites);
     }
+    const currentWrite = freshWrites.cards.find(
+      (item) =>
+        item.unknownWriteKey === card.unknownWriteKey &&
+        item.sourceRevision === card.sourceRevision &&
+        item.projectId === card.projectId &&
+        item.workspace === card.workspace,
+    );
+    fresh =
+      currentWrite?.sourceState === "current" &&
+      currentWrite.stableItemId === card.stableItemId;
     if (!fresh || sourceGeneration !== latestInboxSourceGeneration.current)
       return;
 
@@ -1853,9 +1727,7 @@ export function DesktopApp(): JSX.Element {
           sourceGeneration,
           context.writesAllowed && !project.archived,
         );
-    dispositionSelectionGeneration.current = card.permission
-      ? (inbox.currentSelection()?.selectionGeneration ?? null)
-      : null;
+    dispositionSelectionGeneration.current = null;
     const loaded = await ackOwner.refresh();
     if (
       !loaded.collectionReady ||
@@ -1930,10 +1802,29 @@ export function DesktopApp(): JSX.Element {
       }));
     }
   };
+  const isPermissionDispositionRequest = (requestId: string) =>
+    dispositionState.history.some(
+      (item) =>
+        item.original.requestId === requestId &&
+        item.original.item.sourceKind === "permission",
+    ) ||
+    ackOwner.view().history.some(
+      (item) =>
+        item.original.requestId === requestId &&
+        item.original.item.sourceKind === "permission",
+    );
   const hydrateDispositionOriginal = async (requestId: string) => {
     const shown = dispositionState.history.find(
       (item) => item.original.requestId === requestId,
     );
+    const ownerShown = ackOwner
+      .view()
+      .history.find((item) => item.original.requestId === requestId);
+    if (
+      shown?.original.item.sourceKind === "permission" ||
+      ownerShown?.original.item.sourceKind === "permission"
+    )
+      return null;
     const context = latestInboxContext.current;
     const home = context.home;
     const routeGeneration = forgeRouteGeneration.current;
@@ -2036,6 +1927,12 @@ export function DesktopApp(): JSX.Element {
   const checkDispositionOriginal = async (
     requestId: string,
   ): Promise<boolean> => {
+    if (
+      isPermissionDispositionRequest(requestId) ||
+      desktopRoute(window.location.hash).destination !== "inbox" ||
+      latestInboxContext.current.route.destination !== "inbox"
+    )
+      return false;
     dispositionReadGeneration.current++;
     dispositionOperationGeneration.current++;
     setDispositionState((state) => ({
@@ -2095,6 +1992,12 @@ export function DesktopApp(): JSX.Element {
     }
   };
   const discardDispositionOriginal = async (requestId: string) => {
+    if (
+      isPermissionDispositionRequest(requestId) ||
+      desktopRoute(window.location.hash).destination !== "inbox" ||
+      latestInboxContext.current.route.destination !== "inbox"
+    )
+      return;
     dispositionReadGeneration.current++;
     dispositionOperationGeneration.current++;
     setDispositionState((state) => ({
@@ -2107,6 +2010,7 @@ export function DesktopApp(): JSX.Element {
       const hydrated = await hydrateDispositionOriginal(requestId);
       if (!hydrated) return;
       const original = hydrated.original;
+      if (original.item.sourceKind === "permission") return;
       const history = ackOwner
         .view()
         .history.find((item) => item.original.requestId === requestId);
@@ -2155,6 +2059,12 @@ export function DesktopApp(): JSX.Element {
     }
   };
   const reviewDispositionOriginal = async (requestId: string) => {
+    if (
+      isPermissionDispositionRequest(requestId) ||
+      desktopRoute(window.location.hash).destination !== "inbox" ||
+      latestInboxContext.current.route.destination !== "inbox"
+    )
+      return;
     dispositionReadGeneration.current++;
     dispositionOperationGeneration.current++;
     setDispositionState((state) => ({
@@ -2167,6 +2077,7 @@ export function DesktopApp(): JSX.Element {
       const hydrated = await hydrateDispositionOriginal(requestId);
       if (!hydrated) return;
       const { original, routeGeneration, routeHash } = hydrated;
+      if (original.item.sourceKind === "permission") return;
       const context = latestInboxContext.current;
       const project = context.home?.catalog.projects.find(
         (item) => item.id === original?.projectId,
@@ -2237,156 +2148,6 @@ export function DesktopApp(): JSX.Element {
             item.sourceRevision === original.item.sourceRevision &&
             item.sourceState === "current",
         );
-      } else if (original.item.sourceKind === "permission") {
-        await inbox.refresh({
-          home: context.home,
-          homeCurrent: true,
-          sessions,
-        });
-        if (
-          sourceGeneration !== latestInboxSourceGeneration.current ||
-          routeGeneration !== forgeRouteGeneration.current ||
-          routeHash !== window.location.hash
-        )
-          return;
-        const snapshot = inbox.snapshot();
-        let tuple: (typeof snapshot.items)[number] | undefined;
-        let verifiedCard: InboxCard | undefined;
-        for (const item of snapshot.items) {
-          if (
-            item.kind !== "permission" ||
-            item.state !== "current" ||
-            item.projectId !== original.projectId ||
-            item.workspace !== original.workspace
-          )
-            continue;
-          const verified = await bindInboxCardIdentity({
-            key: "",
-            projectId: item.projectId,
-            workspace: item.workspace,
-            projectName: project.name,
-            sourceKind: "permission",
-            stableItemId: JSON.stringify([
-              item.provider,
-              item.sessionId,
-              item.acceptedTurnId,
-              item.offerId,
-            ]),
-            sourceRevision: JSON.stringify(item.approval),
-            title: "",
-            detail: "",
-            observedAt: item.observedAt,
-            sourceState: "current",
-            resolved: false,
-            canSnooze: item.actionable,
-            canCheck: false,
-            permissionProvider: item.provider,
-            permission: item,
-            permissionKey: item.key,
-            notice: false,
-          });
-          if (
-            sourceGeneration !== latestInboxSourceGeneration.current ||
-            routeGeneration !== forgeRouteGeneration.current ||
-            routeHash !== window.location.hash
-          )
-            return;
-          if (
-            verified.stableItemId === original.item.stableItemId &&
-            verified.sourceRevision === original.item.sourceRevision
-          ) {
-            tuple = item;
-            verifiedCard = verified;
-            break;
-          }
-        }
-        if (
-          tuple &&
-          verifiedCard &&
-          !snapshot.loading &&
-          inbox.selectPermission(tuple.key)
-        ) {
-          const selected = inbox.selectedPermission();
-          const selection = inbox.currentSelection();
-          const sessionProject = sessions.project(tuple.projectId);
-          const session = sessionProject.records.find(
-            (item) => item.id === tuple.sessionId,
-          );
-          if (
-            selected?.key === tuple.key &&
-            selection &&
-            selection.selectionGeneration ===
-              selection.currentSelectionGeneration &&
-            selection.projectId === tuple.projectId &&
-            selection.workspace === tuple.workspace &&
-            selection.sessionId === tuple.sessionId &&
-            selection.provider === tuple.provider &&
-            sessionProject.loaded &&
-            !sessionProject.loading &&
-            !sessionProject.error &&
-            session?.provider === tuple.provider &&
-            session.workspace === tuple.workspace
-          ) {
-            const activation = inbox.selectedActivation();
-            if (activation) {
-              dispositionSelectionGeneration.current =
-                selection.selectionGeneration;
-              if (tuple.provider === "codex") {
-                chatDecisionOwners.gemini.activate(null);
-                chatDecisionOwners.codex.activate(activation);
-                await chatDecisionOwners.codex.refreshPending();
-                if (
-                  sourceGeneration !== latestInboxSourceGeneration.current ||
-                  routeGeneration !== forgeRouteGeneration.current ||
-                  routeHash !== window.location.hash
-                )
-                  return;
-                const native = chatDecisionOwners.codex.view();
-                if (
-                  !native?.pending.some(
-                    (offer) =>
-                      offer.approval.id === tuple.offerId &&
-                      offer.turnRequestId === tuple.acceptedTurnId,
-                  )
-                )
-                  return;
-                if (
-                  sourceGeneration !== latestInboxSourceGeneration.current ||
-                  routeGeneration !== forgeRouteGeneration.current ||
-                  routeHash !== window.location.hash
-                )
-                  return;
-                card = verifiedCard;
-              } else {
-                chatDecisionOwners.codex.activate(null);
-                chatDecisionOwners.gemini.activate(activation);
-                await chatDecisionOwners.gemini.refreshPending();
-                if (
-                  sourceGeneration !== latestInboxSourceGeneration.current ||
-                  routeGeneration !== forgeRouteGeneration.current ||
-                  routeHash !== window.location.hash
-                )
-                  return;
-                const native = chatDecisionOwners.gemini.view();
-                if (
-                  !native?.pending.some(
-                    (offer) =>
-                      offer.approval.id === tuple.offerId &&
-                      offer.turnRequestId === tuple.acceptedTurnId,
-                  )
-                )
-                  return;
-                if (
-                  sourceGeneration !== latestInboxSourceGeneration.current ||
-                  routeGeneration !== forgeRouteGeneration.current ||
-                  routeHash !== window.location.hash
-                )
-                  return;
-                card = verifiedCard;
-              }
-            }
-          }
-        }
       }
       if (!card) {
         setDispositionState((state) => ({
@@ -2403,23 +2164,6 @@ export function DesktopApp(): JSX.Element {
         sourceGeneration,
         context.writesAllowed && !project.archived,
       );
-      if (card.permission) {
-        const selection = inbox.currentSelection();
-        if (
-          !selection ||
-          selection.selectionGeneration !==
-            selection.currentSelectionGeneration ||
-          inbox.selectedPermission()?.key !== card.permissionKey
-        ) {
-          setDispositionState((state) => ({
-            ...state,
-            error:
-              "The exact permission selection changed before review. The original remains held.",
-          }));
-          return;
-        }
-        dispositionSelectionGeneration.current = selection.selectionGeneration;
-      }
       const loaded = await ackOwner.refresh();
       if (
         !loaded.collectionReady ||
@@ -2498,6 +2242,7 @@ export function DesktopApp(): JSX.Element {
     card: InboxCard,
     operation: "done" | "snooze-1h",
   ) => {
+    if (card.sourceKind === "permission" || card.permission) return;
     setDispositionState((state) => ({
       ...state,
       loading: true,
@@ -2518,51 +2263,6 @@ export function DesktopApp(): JSX.Element {
       dispositionOperationGeneration.current++;
     }
   };
-  const activateInboxPermission = (key: string) => {
-    if (!inbox.selectPermission(key)) return;
-    const item = inbox.selectedPermission();
-    const activation = inbox.selectedActivation();
-    if (!item || !activation) return;
-    if (item.provider === "codex") {
-      chatDecisionOwners.gemini.activate(null);
-      chatDecisionOwners.codex.activate(activation);
-      if (item.state === "held") {
-        void chatDecisionOwners.codex.checkOriginal().then(() => {
-          if (
-            inbox.selectedPermission()?.key !== key ||
-            desktopRoute(window.location.hash).destination !== "inbox"
-          )
-            return;
-          latestInboxSourceGeneration.current++;
-          void inbox.refresh({
-            home: projects.data ?? null,
-            homeCurrent: !projects.loading && !projects.error,
-            sessions,
-          });
-        });
-      } else if (item.actionable)
-        void chatDecisionOwners.codex.refreshPending();
-    } else {
-      chatDecisionOwners.codex.activate(null);
-      chatDecisionOwners.gemini.activate(activation);
-      if (item.state === "held") {
-        void chatDecisionOwners.gemini.checkOriginal().then(() => {
-          if (
-            inbox.selectedPermission()?.key !== key ||
-            desktopRoute(window.location.hash).destination !== "inbox"
-          )
-            return;
-          latestInboxSourceGeneration.current++;
-          void inbox.refresh({
-            home: projects.data ?? null,
-            homeCurrent: !projects.loading && !projects.error,
-            sessions,
-          });
-        });
-      } else if (item.actionable)
-        void chatDecisionOwners.gemini.refreshPending();
-    }
-  };
   useEffect(
     () => inbox.subscribe(() => setInboxRevision((value) => value + 1)),
     [inbox],
@@ -2572,18 +2272,11 @@ export function DesktopApp(): JSX.Element {
     if (route.destination !== "inbox") return;
     const refresh = () => {
       latestInboxSourceGeneration.current++;
-      void inbox
-        .refresh({
-          home: projects.data ?? null,
-          homeCurrent: !projects.loading && !projects.error,
-          sessions,
-        })
-        .then(() => {
-          const first = inbox
-            .snapshot()
-            .items.find((item) => item.state === "current" && item.actionable);
-          if (first) activateInboxPermission(first.key);
-        });
+      void inbox.refresh({
+        home: projects.data ?? null,
+        homeCurrent: !projects.loading && !projects.error,
+        sessions,
+      });
       void refreshInboxWriteSources();
     };
     refresh();
@@ -4243,12 +3936,10 @@ export function DesktopApp(): JSX.Element {
         ) : route.destination === "inbox" ? (
           <Inbox
             permission={inbox.snapshot()}
-            permissionResolutions={inbox.permissionResolutions()}
             writeCards={inboxWriteSources.cards}
             writeCoverage={inboxWriteSources.coverage}
             home={projects.data ?? null}
             writes={beadWrites}
-            decisionOwners={chatDecisionOwners}
             dispositions={dispositionState.entries}
             dispositionLoading={dispositionState.loading}
             dispositionRefreshing={dispositionState.refreshing}
@@ -4257,7 +3948,6 @@ export function DesktopApp(): JSX.Element {
             history={dispositionState.history}
             holds={dispositionState.holds}
             checkedOriginals={dispositionState.checkedOriginals}
-            onSelectPermission={activateInboxPermission}
             onAcknowledge={acknowledgeInboxCard}
             onCheckOriginal={checkDispositionOriginal}
             onDiscardOriginal={discardDispositionOriginal}

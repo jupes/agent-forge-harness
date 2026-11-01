@@ -6,8 +6,6 @@ import {
   type InboxDispositionEntry,
 } from "../../../types/inbox";
 import type { ProjectsHome } from "../../../types/project-summary";
-import type { ChatDecisionOwners } from "./chat-decision-owners";
-import type { InboxTerminalPermissionProof } from "./inbox-client";
 import type { InboxDispositionHistory } from "./inbox-dispositions-owner";
 import type { InboxPermissionSnapshot } from "./inbox-model";
 import type {
@@ -18,24 +16,16 @@ import type {
 } from "./inbox-view";
 import {
   bindInboxCardIdentity,
-  hasExactPermissionTerminalProof,
   projectInbox,
 } from "./inbox-view";
 import { desktopHref } from "./navigation";
 import type { DesktopBeadWrites } from "./use-bead-writes";
 import "./inbox.css";
 
-const choiceLabels = {
-  accept: "Allow once",
-  decline: "Deny",
-  cancel: "Cancel request",
-};
-
 function permissionCard(
   item: InboxPermissionSnapshot["items"][number],
   home: ProjectsHome | null,
   snapshot: InboxPermissionSnapshot,
-  resolutions: readonly InboxTerminalPermissionProof[],
 ): InboxCard {
   const project = home?.catalog.projects.find(
     (entry) => entry.id === item.projectId,
@@ -66,11 +56,7 @@ function permissionCard(
         ? (item.approval.value.reason ?? "The source did not provide a reason.")
         : item.approval.value.detailsComplete
           ? "A verified Gemini approval is waiting."
-          : "Approval details are incomplete; choices remain unavailable until checked.";
-  const resolved =
-    snapshot.loading || item.state !== "current"
-      ? false
-      : hasExactPermissionTerminalProof(item, snapshot.generation, resolutions);
+          : "Approval details are incomplete. Open the session to review the source.";
   return {
     key: JSON.stringify([
       item.workspace,
@@ -91,12 +77,12 @@ function permissionCard(
     detail,
     observedAt: item.observedAt,
     sourceState: current ? "current" : "unavailable",
-    canSnooze: current && item.actionable,
+    canSnooze: false,
     canCheck: false,
     permissionProvider: item.provider,
     ...(permission ? { permission } : {}),
     permissionKey: item.key,
-    resolved,
+    resolved: false,
     notice: false,
   };
 }
@@ -120,12 +106,10 @@ function unboundInboxCard(card: InboxCard): InboxCard {
 
 export interface InboxProps {
   permission: InboxPermissionSnapshot;
-  permissionResolutions: readonly InboxTerminalPermissionProof[];
   writeCards: readonly InboxCard[];
   writeCoverage: readonly InboxCoverage[];
   home: ProjectsHome | null;
   writes: DesktopBeadWrites;
-  decisionOwners: ChatDecisionOwners;
   dispositions: readonly InboxDispositionEntry[];
   dispositionLoading: boolean;
   dispositionRefreshing: boolean;
@@ -134,7 +118,6 @@ export interface InboxProps {
   history: readonly InboxDispositionHistory[];
   holds: readonly InboxDispositionHistory["original"][];
   checkedOriginals: readonly string[];
-  onSelectPermission(key: string): void;
   onAcknowledge(
     card: InboxCard,
     operation: "done" | "snooze-1h",
@@ -154,16 +137,6 @@ export function Inbox(props: InboxProps) {
     bucket: "needs-you",
   });
   const [, paint] = useState(0);
-  useEffect(() => {
-    const clients = [props.decisionOwners.codex, props.decisionOwners.gemini];
-    const unsubscribe = clients.map((client) =>
-      client.subscribe(() => paint((value) => value + 1)),
-    );
-    return () =>
-      unsubscribe.forEach((remove) => {
-        remove();
-      });
-  }, [props.decisionOwners]);
   const now = Date.now();
   const nextSnoozeExpiry = props.dispositions
     .map((entry) =>
@@ -183,12 +156,7 @@ export function Inbox(props: InboxProps) {
   }, [nextSnoozeExpiry]);
 
   const permissionCards = props.permission.items.map((item) =>
-    permissionCard(
-      item,
-      props.home,
-      props.permission,
-      props.permissionResolutions,
-    ),
+    permissionCard(item, props.home, props.permission),
   );
   const allCards = [...permissionCards, ...props.writeCards];
   const identitySignature = JSON.stringify(
@@ -287,6 +255,8 @@ export function Inbox(props: InboxProps) {
       ? "Retained notices remain visible above. Retry when sources are available to refresh action authority."
       : "Available project, session, and retained-write sources were checked. Other source classes may not have reported yet.";
   const canAcknowledge = (card: InboxCard) =>
+    card.sourceKind !== "permission" &&
+    !card.permission &&
     props.dispositionWritable &&
     props.home?.catalog.projects.some(
       (project) => project.id === card.projectId && !project.archived,
@@ -394,45 +364,17 @@ export function Inbox(props: InboxProps) {
                     </p>
                   )}
                 </div>
-                <div class="af-inbox-actions">
-                  <Button
-                    variant="ghost"
-                    disabled={props.dispositionLoading}
-                    onClick={() =>
-                      void props.onCheckOriginal(original.requestId)
-                    }
-                  >
-                    Check exact original
-                  </Button>
-                  {history?.state === "reserve-unknown" && (
-                    <Button
-                      variant="ghost"
-                      disabled={props.dispositionLoading}
-                      onClick={() =>
-                        void props.onReviewOriginal(original.requestId)
-                      }
-                    >
-                      Review unconfirmed reservation
-                    </Button>
-                  )}
-                  {reserved && (
-                    <Button
-                      variant="ghost"
-                      disabled={props.dispositionLoading || !checked}
-                      {...(checked
-                        ? {}
-                        : {
-                            title:
-                              "Check this exact original before discarding its reservation.",
-                          })}
-                      onClick={() =>
-                        void props.onDiscardOriginal(original.requestId)
-                      }
-                    >
-                      Discard checked reservation
-                    </Button>
-                  )}
-                </div>
+                <InboxDispositionHistoryActions
+                  sourceKind={original.item.sourceKind}
+                  requestId={original.requestId}
+                  state={history?.state}
+                  reserved={reserved}
+                  checked={checked}
+                  loading={props.dispositionLoading}
+                  onCheck={props.onCheckOriginal}
+                  onDiscard={props.onDiscardOriginal}
+                  onReview={props.onReviewOriginal}
+                />
               </article>
             );
           })}
@@ -649,50 +591,84 @@ export function Inbox(props: InboxProps) {
   );
 }
 
-export interface InboxPermissionChoice<T extends string> {
-  value: T;
-  label: string;
-}
-
-/** Controlled, keyboard-operable buttons shared by both existing permission owners. */
-export function InboxPermissionChoices<T extends string>(props: {
-  label: string;
-  offerId: string;
-  choices: readonly InboxPermissionChoice<T>[];
-  disabled: boolean;
-  onChoose(offerId: string, value: T): void;
+export function InboxDispositionHistoryActions({
+  sourceKind,
+  requestId,
+  state,
+  reserved,
+  checked,
+  loading,
+  onCheck,
+  onDiscard,
+  onReview,
+}: {
+  sourceKind: InboxSourceKind;
+  requestId: string;
+  state?: InboxDispositionHistory["state"];
+  reserved: boolean;
+  checked: boolean;
+  loading: boolean;
+  onCheck(requestId: string): Promise<boolean>;
+  onDiscard(requestId: string): Promise<void>;
+  onReview(requestId: string): Promise<void>;
 }) {
+  if (sourceKind === "permission")
+    return (
+      <p role="status">
+        This original permission record remains retained and read-only.
+      </p>
+    );
   return (
-    <div
-      class="af-inbox-permission-choices"
-      role="group"
-      aria-label={props.label}
-    >
-      {props.choices.map((choice) => (
+    <div class="af-inbox-actions">
+      <Button
+        variant="ghost"
+        disabled={loading}
+        onClick={() => void onCheck(requestId)}
+      >
+        Check exact original
+      </Button>
+      {state === "reserve-unknown" && (
         <Button
-          key={choice.value}
-          disabled={props.disabled}
-          onClick={() => props.onChoose(props.offerId, choice.value)}
+          variant="ghost"
+          disabled={loading}
+          onClick={() => void onReview(requestId)}
         >
-          {choice.label}
+          Review unconfirmed reservation
         </Button>
-      ))}
+      )}
+      {reserved && (
+        <Button
+          variant="ghost"
+          disabled={loading || !checked}
+          {...(checked
+            ? {}
+            : {
+                title:
+                  "Check this exact original before discarding its reservation.",
+              })}
+          onClick={() => void onDiscard(requestId)}
+        >
+          Discard checked reservation
+        </Button>
+      )}
     </div>
   );
 }
 
-function PermissionOrDispositionCard({
+export function PermissionOrDispositionCard({
   card,
   props,
   filters,
   canAcknowledge,
 }: {
   card: InboxCard;
-  props: InboxProps;
+  props: Pick<InboxProps, "dispositionLoading" | "onAcknowledge">;
   filters: InboxFilters;
   canAcknowledge: boolean;
 }) {
   const permission = card.permission;
+  const readOnlyPermission =
+    card.sourceKind === "permission" || Boolean(permission);
   return (
     <article class="af-inbox-card" key={card.key}>
       <div class="af-inbox-card-copy">
@@ -707,9 +683,7 @@ function PermissionOrDispositionCard({
             <dl class="af-inbox-request-details">
               <dt>Requested command</dt>
               <dd>
-                <code>
-                  {permission.approval.value.command ?? "Not provided"}
-                </code>
+                <code>{permission.approval.value.command ?? "Not provided"}</code>
               </dd>
               <dt>Working directory</dt>
               <dd>
@@ -729,66 +703,36 @@ function PermissionOrDispositionCard({
               <summary>Review native permission details</summary>
               <pre>
                 {permission.approval.value.detail.json}
-                {permission.approval.value.detail.truncated
-                  ? " (truncated)"
-                  : ""}
+                {permission.approval.value.detail.truncated ? " (truncated)" : ""}
               </pre>
               {!permission.approval.value.detailsComplete && (
                 <p role="status">
-                  Complete details are unavailable. Choices stay disabled until
-                  checked.
+                  Complete details are unavailable. This permission item
+                  remains read-only.
                 </p>
               )}
             </details>
           )}
         {permission?.state === "held" && (
-          <>
-            <p role="status">
-              Original permission is held. Inspect its receipt; no replacement
-              decision will be sent.
-            </p>
-            <a
-              class="af-inbox-link"
-              href={desktopHref({
-                destination: "sessions",
-                projectId: permission.projectId,
-                selection: { kind: "session", id: permission.sessionId },
-              })}
-            >
-              Inspect original decision
-            </a>
-          </>
+          <p role="status">
+            Original permission is held. No replacement decision will be sent.
+          </p>
         )}
       </div>
       <div class="af-inbox-actions">
         {permission && (
-          <Button
-            variant="ghost"
-            disabled={
-              permission.state !== "held" && card.sourceState !== "current"
-            }
-            onClick={() => props.onSelectPermission(permission.key)}
+          <a
+            class="af-inbox-link"
+            href={desktopHref({
+              destination: "sessions",
+              projectId: permission.projectId,
+              selection: { kind: "session", id: permission.sessionId },
+            })}
           >
-            {permission.state === "held"
-              ? "Check original decision"
-              : "Refresh exact offer"}
-          </Button>
+            Open session
+          </a>
         )}
-        {permission?.state === "current" &&
-          permission.approval.provider === "codex" && (
-            <CodexPermissionActions
-              permission={permission}
-              owners={props.decisionOwners}
-            />
-          )}
-        {permission?.state === "current" &&
-          permission.approval.provider === "gemini" && (
-            <GeminiPermissionActions
-              permission={permission}
-              owners={props.decisionOwners}
-            />
-          )}
-        {card.canSnooze && (
+        {!readOnlyPermission && card.canSnooze && (
           <Button
             variant="ghost"
             disabled={props.dispositionLoading || !canAcknowledge}
@@ -797,21 +741,22 @@ function PermissionOrDispositionCard({
             Snooze 1 hour
           </Button>
         )}
-        {card.resolved ? (
-          <Button
-            disabled={props.dispositionLoading || !canAcknowledge}
-            onClick={() => void props.onAcknowledge(card, "done")}
-          >
-            Mark done
-          </Button>
-        ) : (
-          <Button
-            disabled
-            title="A fresh exact source join has not confirmed resolution."
-          >
-            Mark done · source unresolved
-          </Button>
-        )}
+        {!readOnlyPermission &&
+          (card.resolved ? (
+            <Button
+              disabled={props.dispositionLoading || !canAcknowledge}
+              onClick={() => void props.onAcknowledge(card, "done")}
+            >
+              Mark done
+            </Button>
+          ) : (
+            <Button
+              disabled
+              title="A fresh exact source join has not confirmed resolution."
+            >
+              Mark done · source unresolved
+            </Button>
+          ))}
         {filters.bucket === "snoozed" && card.checkHref && (
           <a class="af-inbox-link" href={card.checkHref}>
             Open source
@@ -819,107 +764,5 @@ function PermissionOrDispositionCard({
         )}
       </div>
     </article>
-  );
-}
-
-function CodexPermissionActions({
-  permission,
-  owners,
-}: {
-  permission: NonNullable<InboxCard["permission"]>;
-  owners: ChatDecisionOwners;
-}) {
-  if (
-    permission.state !== "current" ||
-    permission.approval.provider !== "codex"
-  )
-    return null;
-  const client = owners.codex;
-  const view = client.view();
-  const offer =
-    view?.projectId === permission.projectId &&
-    view.sessionId === permission.sessionId
-      ? view.pending.find(
-          (item) =>
-            item.turnRequestId === permission.acceptedTurnId &&
-            item.approval.id === permission.offerId,
-        )
-      : undefined;
-  if (!offer || !view?.actionable)
-    return <span role="status">Refreshing the exact offer…</span>;
-  if (view.identity || view.identityError)
-    return (
-      <span role="status">
-        Original decision held; no replacement will be sent.
-      </span>
-    );
-  return (
-    <>
-      {view.error && <span role="alert">{view.error}</span>}
-      {view.notice && <span role="status">{view.notice}</span>}
-      <InboxPermissionChoices
-        label="Codex permission decisions"
-        offerId={offer.approval.id}
-        choices={offer.approval.availableDecisions.map((decision) => ({
-          value: decision,
-          label: choiceLabels[decision],
-        }))}
-        disabled={view.posting || view.loading || view.checking}
-        onChoose={(offerId, decision) => {
-          void client.decide(offerId, decision);
-        }}
-      />
-    </>
-  );
-}
-
-function GeminiPermissionActions({
-  permission,
-  owners,
-}: {
-  permission: NonNullable<InboxCard["permission"]>;
-  owners: ChatDecisionOwners;
-}) {
-  if (
-    permission.state !== "current" ||
-    permission.approval.provider !== "gemini"
-  )
-    return null;
-  const client = owners.gemini;
-  const view = client.view();
-  const offer =
-    view?.projectId === permission.projectId &&
-    view.sessionId === permission.sessionId
-      ? view.pending.find(
-          (item) =>
-            item.turnRequestId === permission.acceptedTurnId &&
-            item.approval.id === permission.offerId,
-        )
-      : undefined;
-  if (!offer || !view?.actionable)
-    return <span role="status">Refreshing the exact offer…</span>;
-  if (view.identity || view.identityError)
-    return (
-      <span role="status">
-        Original decision held; no replacement will be sent.
-      </span>
-    );
-  return (
-    <>
-      {view.error && <span role="alert">{view.error}</span>}
-      {view.notice && <span role="status">{view.notice}</span>}
-      <InboxPermissionChoices
-        label="Gemini permission decisions"
-        offerId={offer.approval.id}
-        choices={offer.approval.options.map((option) => ({
-          value: option.optionId,
-          label: option.name,
-        }))}
-        disabled={view.posting || view.loading || view.checking}
-        onChoose={(offerId, optionId) => {
-          void client.decide(offerId, optionId);
-        }}
-      />
-    </>
   );
 }

@@ -189,6 +189,7 @@ function dispositionFor(
   card: InboxCard,
   entries: readonly InboxDispositionEntry[],
 ) {
+  if (card.sourceKind === "permission") return undefined;
   return entries.find(
     (entry) =>
       entry.projectId === card.projectId &&

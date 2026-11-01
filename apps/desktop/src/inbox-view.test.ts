@@ -148,6 +148,50 @@ test("keeps permission rows visible despite matching saved Snooze and Done dispo
   expect(doneProjection.visibleCount).toBe(1);
 });
 
+test("still applies Snooze and Done dispositions to non-permission items", () => {
+  const action = card({
+    sourceKind: "unknown-bead-write",
+    stableItemId: "write-generic",
+    sourceRevision: "write:comment:generic",
+  });
+  const snoozed = snooze(action, "2026-10-31T13:00:00.000Z");
+  expect(
+    projectInbox({ cards: [action], dispositions: [snoozed], coverage, filters, now })
+      .cards,
+  ).toEqual([]);
+  expect(
+    projectInbox({
+      cards: [action],
+      dispositions: [snoozed],
+      coverage,
+      filters: { ...filters, bucket: "snoozed" },
+      now,
+    }),
+  ).toMatchObject({ cards: [action], visibleCount: 1 });
+
+  const resolved = {
+    ...action,
+    key: "write-done",
+    stableItemId: "write-done",
+    resolved: true,
+  };
+  const done: InboxDispositionEntry = {
+    projectId: resolved.projectId,
+    workspace: resolved.workspace,
+    item: {
+      sourceKind: resolved.sourceKind,
+      stableItemId: resolved.stableItemId,
+      sourceRevision: resolved.sourceRevision,
+    },
+    revision: 1,
+    operation: "done",
+    updatedAt: now,
+  };
+  expect(
+    projectInbox({ cards: [resolved], dispositions: [done], coverage, filters, now }),
+  ).toMatchObject({ cards: [], visibleCount: 0 });
+});
+
 test("leaves unknown outcome notices visible while their action card is snoozed", () => {
   const notice = card({
     key: "write-1",
@@ -210,7 +254,11 @@ test("stable identity is independent from source version and keeps permission se
 });
 
 test("expires Snooze and never hides stale or unverified source rows", () => {
-  const item = card();
+  const item = card({
+    sourceKind: "unknown-bead-write",
+    stableItemId: "write-expiry",
+    sourceRevision: "write:comment:expiry",
+  });
   const activeSnooze = snooze(item, "2026-10-31T13:00:00.000Z");
   const expired = projectInbox({
     cards: [item],
@@ -220,7 +268,11 @@ test("expires Snooze and never hides stale or unverified source rows", () => {
     now,
   });
   expect(expired.cards).toEqual([item]);
-  const stale = card({ sourceState: "unavailable", resolved: true });
+  const stale: InboxCard = {
+    ...item,
+    sourceState: "unavailable",
+    resolved: true,
+  };
   const staleDone: InboxDispositionEntry = {
     projectId: stale.projectId,
     workspace: stale.workspace,
@@ -233,14 +285,51 @@ test("expires Snooze and never hides stale or unverified source rows", () => {
     operation: "done",
     updatedAt: now,
   };
-  const retained = projectInbox({
+  const retainedAfterStaleSnooze = projectInbox({
     cards: [stale],
-    dispositions: [activeSnooze, staleDone],
+    dispositions: [activeSnooze],
     coverage,
     filters,
     now,
   });
-  expect(retained.cards).toEqual([stale]);
+  expect(retainedAfterStaleSnooze.cards).toEqual([stale]);
+
+  const retainedAfterStaleDone = projectInbox({
+    cards: [stale],
+    dispositions: [staleDone],
+    coverage,
+    filters,
+    now,
+  });
+  expect(retainedAfterStaleDone.cards).toEqual([stale]);
+
+  const unresolved = {
+    ...item,
+    stableItemId: "write-unresolved-done",
+    sourceRevision: "write:comment:unresolved-done",
+    resolved: false,
+  };
+  const unresolvedDone: InboxDispositionEntry = {
+    projectId: unresolved.projectId,
+    workspace: unresolved.workspace,
+    item: {
+      sourceKind: unresolved.sourceKind,
+      stableItemId: unresolved.stableItemId,
+      sourceRevision: unresolved.sourceRevision,
+    },
+    revision: 1,
+    operation: "done",
+    updatedAt: now,
+  };
+  expect(
+    projectInbox({
+      cards: [unresolved],
+      dispositions: [unresolvedDone],
+      coverage,
+      filters,
+      now,
+    }).cards,
+  ).toEqual([unresolved]);
 });
 
 test("does not report a complete or zero Inbox while any producer is unreported", () => {
