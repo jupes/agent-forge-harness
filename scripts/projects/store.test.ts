@@ -313,7 +313,9 @@ test("a created project keeps its private original through General edits and exa
   expect(createdReader.read()).toEqual(created.catalog);
   expect(createdReader.readCreate(requestId)).toEqual(created.operation);
   const serializedOperations = () => {
-    const saved = JSON.parse(readFileSync(projectCatalogPath(home), "utf8")) as {
+    const saved = JSON.parse(
+      readFileSync(projectCatalogPath(home), "utf8"),
+    ) as {
       createOperations?: unknown[];
     };
     return JSON.stringify(saved.createOperations);
@@ -407,10 +409,14 @@ test("a created project keeps its private original through General edits and exa
     reviewedScopeHash: reserved.operation.scopeHash,
     preflightScope: scope,
     validateScope: async () => {
-      throw new Error("created replay after color clearing must not validate scope again");
+      throw new Error(
+        "created replay after color clearing must not validate scope again",
+      );
     },
     validateKeeperSmith: () => {
-      throw new Error("created replay after color clearing must not validate Keeper again");
+      throw new Error(
+        "created replay after color clearing must not validate Keeper again",
+      );
     },
   });
   expect(clearedReplay.operation).toEqual(created.operation);
