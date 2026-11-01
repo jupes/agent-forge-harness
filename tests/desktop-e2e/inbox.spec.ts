@@ -2,6 +2,7 @@ import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
 import { z } from "zod";
+import { GEMINI_CHAT_DECISION_IDENTITIES } from "../../apps/desktop/src/gemini-chat-decision-identities";
 import { OPERATOR_HEADER } from "../../scripts/hearth/paths";
 import {
   codexChatApprovalPageSchema,
@@ -10,7 +11,6 @@ import {
 import { ownedCodingStateSchema } from "../../scripts/sessions/codex-owned-journal";
 import { ownedCodingSessionSchema } from "../../scripts/sessions/codex-owned-wire-protocol";
 import { geminiChatApprovalPageSchema } from "../../scripts/sessions/gemini-chat-owned-protocol";
-import { GEMINI_CHAT_DECISION_IDENTITIES } from "../../apps/desktop/src/gemini-chat-decision-identities";
 import {
   inboxDispositionEntrySchema,
   inboxDispositionOriginalSchema,
@@ -542,7 +542,9 @@ test("Inbox offers the current permission inline beside retained unknown writes"
           !collection.success ||
           !collectionStore?.success
         )
-          throw Error("The held Beta collection read was not a valid protected 200.");
+          throw Error(
+            "The held Beta collection read was not a valid protected 200.",
+          );
         markCollectionCaptured();
         await collectionGate;
         await route.fulfill({ response });
@@ -1473,7 +1475,9 @@ test("Inbox binds Gemini options to its exact offer and recovers a held original
     }
     if (
       request.method() === "POST" &&
-      url.pathname.startsWith("/__agent-forge/projects/" + beta.id + "/inbox-dispositions")
+      url.pathname.startsWith(
+        "/__agent-forge/projects/" + beta.id + "/inbox-dispositions",
+      )
     )
       betaDispositionWriteCount++;
     if (
@@ -1511,14 +1515,16 @@ test("Inbox binds Gemini options to its exact offer and recovers a held original
     const url = new URL(request.url());
     return (
       request.method() === "POST" &&
-      url.pathname === "/__agent-forge/projects/" + beta.id + "/inbox-dispositions/requests"
+      url.pathname ===
+        "/__agent-forge/projects/" + beta.id + "/inbox-dispositions/requests"
     );
   });
   const betaApplyResponse = page.waitForResponse((response) => {
     const url = new URL(response.url());
     return (
       response.request().method() === "POST" &&
-      url.pathname === "/__agent-forge/projects/" + beta.id + "/inbox-dispositions"
+      url.pathname ===
+        "/__agent-forge/projects/" + beta.id + "/inbox-dispositions"
     );
   });
   await betaWriteCard
@@ -1529,7 +1535,9 @@ test("Inbox binds Gemini options to its exact offer and recovers a held original
     betaReserve.postDataJSON(),
   );
   if (!betaSnoozeOriginal.success)
-    throw Error("The Beta snooze reservation did not match its strict original.");
+    throw Error(
+      "The Beta snooze reservation did not match its strict original.",
+    );
   const betaSnoozeReply = await betaApplyResponse;
   await betaSnoozeReply.finished();
   const betaSnoozeEnvelope = z
@@ -1546,7 +1554,9 @@ test("Inbox binds Gemini options to its exact offer and recovers a held original
     .strict()
     .safeParse(await betaSnoozeReply.json());
   if (!betaSnoozeEnvelope.success || !betaSnoozeEnvelope.data.data.entry)
-    throw Error("The Beta snooze returned no strict applied entry and receipt.");
+    throw Error(
+      "The Beta snooze returned no strict applied entry and receipt.",
+    );
   const betaSnoozeRecord = betaSnoozeEnvelope.data.data;
   expect(betaSnoozeReply.status()).toBe(200);
   expect(betaSnoozeOriginal.data.workspace).toBe(workspace);
@@ -1575,13 +1585,17 @@ test("Inbox binds Gemini options to its exact offer and recovers a held original
     const url = new URL(request.url());
     if (
       request.method() === "POST" &&
-      url.pathname.startsWith("/__agent-forge/projects/" + alpha.id + "/sessions")
+      url.pathname.startsWith(
+        "/__agent-forge/projects/" + alpha.id + "/sessions",
+      )
     )
       sessionReplayPosts.push(url.pathname);
   };
   page.on("request", recordSessionReplay);
   await page.reload();
-  await expect(inbox.getByRole("heading", { name: "Inbox", exact: true })).toBeVisible();
+  await expect(
+    inbox.getByRole("heading", { name: "Inbox", exact: true }),
+  ).toBeVisible();
   await expect(
     page.getByRole("link", { name: "Choose project: Beta", exact: true }),
   ).toBeVisible();
@@ -1609,7 +1623,9 @@ test("Inbox binds Gemini options to its exact offer and recovers a held original
     reloadedOffer?.event.kind !== "coding-gemini-chat" ||
     reloadedOffer.event.event.kind !== "approval-offer"
   )
-    throw Error("The same durable Gemini R1 offer pair did not survive reload.");
+    throw Error(
+      "The same durable Gemini R1 offer pair did not survive reload.",
+    );
   expect(reloadedPermission.event).toEqual(savedPermissionEvent);
   expect(reloadedOffer.event).toEqual(savedOfferEvent);
   expect(reloadedPermission.seq).toBe(savedPermissionFrame.seq);
@@ -1621,7 +1637,12 @@ test("Inbox binds Gemini options to its exact offer and recovers a held original
       exact: true,
     }),
   });
-  const approvalsPath = "/__agent-forge/projects/" + alpha.id + "/sessions/" + session.id + "/approvals";
+  const approvalsPath =
+    "/__agent-forge/projects/" +
+    alpha.id +
+    "/sessions/" +
+    session.id +
+    "/approvals";
   const reactivateResponse = page.waitForResponse((response) => {
     const url = new URL(response.url());
     return (
@@ -1654,7 +1675,9 @@ test("Inbox binds Gemini options to its exact offer and recovers a held original
     JSON.stringify(refreshedOfferEnvelope.data.data.pending[0]) !==
       JSON.stringify(offer)
   )
-    throw Error("The exact durable Gemini R1 offer did not refresh successfully.");
+    throw Error(
+      "The exact durable Gemini R1 offer did not refresh successfully.",
+    );
   await expect(
     geminiCard.getByRole("button", { name: "Allow once", exact: true }),
   ).toBeEnabled();
@@ -1681,7 +1704,10 @@ test("Inbox binds Gemini options to its exact offer and recovers a held original
   });
   const foreignPayload = {
     ok: true,
-    data: { pending: [{ ...offer, turnRequestId: foreignTurn }], receipt: null },
+    data: {
+      pending: [{ ...offer, turnRequestId: foreignTurn }],
+      receipt: null,
+    },
     error: null,
   };
   const checkedForeignPayload = z
@@ -1693,12 +1719,17 @@ test("Inbox binds Gemini options to its exact offer and recovers a held original
     .strict()
     .safeParse(foreignPayload);
   if (!checkedForeignPayload.success)
-    throw Error("The foreign-turn fixture did not match the strict approval schema.");
+    throw Error(
+      "The foreign-turn fixture did not match the strict approval schema.",
+    );
   const foreignHandler = async (route: import("@playwright/test").Route) => {
     if (route.request().method() !== "GET") return route.continue();
     const url = new URL(route.request().url());
     foreignReadUrls.push(url.pathname + url.search);
-    if (url.pathname !== approvalsPath || url.search !== expectedApprovalsSearch)
+    if (
+      url.pathname !== approvalsPath ||
+      url.search !== expectedApprovalsSearch
+    )
       return route.continue();
     await route.fulfill({
       status: 200,
@@ -1709,20 +1740,29 @@ test("Inbox binds Gemini options to its exact offer and recovers a held original
   };
   const decisionPreflightRequest = page.waitForRequest((request) => {
     const url = new URL(request.url());
-    return request.method() === "GET" &&
-      url.pathname === approvalsPath && url.search === expectedApprovalsSearch;
+    return (
+      request.method() === "GET" &&
+      url.pathname === approvalsPath &&
+      url.search === expectedApprovalsSearch
+    );
   });
   const decisionPreflightResponse = page.waitForResponse((response) => {
     const url = new URL(response.url());
-    return response.request().method() === "GET" &&
-      url.pathname === approvalsPath && url.search === expectedApprovalsSearch;
+    return (
+      response.request().method() === "GET" &&
+      url.pathname === approvalsPath &&
+      url.search === expectedApprovalsSearch
+    );
   });
   await page.route(approvalsPattern, foreignHandler);
-  await geminiCard.getByRole("button", { name: "Allow once", exact: true }).click();
+  await geminiCard
+    .getByRole("button", { name: "Allow once", exact: true })
+    .click();
   const decisionPreflight = await decisionPreflightRequest;
-  expect(new URL(decisionPreflight.url()).pathname + new URL(decisionPreflight.url()).search).toBe(
-    approvalsPath + expectedApprovalsSearch,
-  );
+  expect(
+    new URL(decisionPreflight.url()).pathname +
+      new URL(decisionPreflight.url()).search,
+  ).toBe(approvalsPath + expectedApprovalsSearch);
   const foreignResponse = await decisionPreflightResponse;
   await foreignResponse.finished();
   await foreignResponseSettled;
@@ -1735,7 +1775,9 @@ test("Inbox binds Gemini options to its exact offer and recovers a held original
     .strict()
     .safeParse(await foreignResponse.json());
   if (foreignResponse.status() !== 200 || !foreignEnvelope.success)
-    throw Error("The decision preflight did not return the strict foreign approval page.");
+    throw Error(
+      "The decision preflight did not return the strict foreign approval page.",
+    );
   expect(foreignEnvelope.data.data.pending).toEqual([
     { ...offer, turnRequestId: foreignTurn },
   ]);
@@ -1747,7 +1789,10 @@ test("Inbox binds Gemini options to its exact offer and recovers a held original
   ).toBeVisible();
   expect(foreignReadUrls).toEqual([approvalsPath + expectedApprovalsSearch]);
   expect(
-    await page.evaluate((key) => localStorage.getItem(key), GEMINI_CHAT_DECISION_IDENTITIES),
+    await page.evaluate(
+      (key) => localStorage.getItem(key),
+      GEMINI_CHAT_DECISION_IDENTITIES,
+    ),
   ).toBe(identityBytesBeforeForeignDecision);
   expect(decisionPosts).toBe(0);
   expect(decisionRequests).toHaveLength(0);
@@ -1759,8 +1804,11 @@ test("Inbox binds Gemini options to its exact offer and recovers a held original
     .click();
   const retryRefreshResponse = page.waitForResponse((response) => {
     const url = new URL(response.url());
-    return response.request().method() === "GET" &&
-      url.pathname === approvalsPath && url.search === "";
+    return (
+      response.request().method() === "GET" &&
+      url.pathname === approvalsPath &&
+      url.search === ""
+    );
   });
   await geminiCard
     .getByRole("button", { name: "Refresh exact offer", exact: true })
@@ -1783,7 +1831,9 @@ test("Inbox binds Gemini options to its exact offer and recovers a held original
     JSON.stringify(retryOfferEnvelope.data.data.pending[0]) !==
       JSON.stringify(offer)
   )
-    throw Error("The same durable Gemini R1 offer did not refresh before retry.");
+    throw Error(
+      "The same durable Gemini R1 offer did not refresh before retry.",
+    );
   await expect(
     geminiCard.getByRole("button", { name: "Allow once", exact: true }),
   ).toBeEnabled();
