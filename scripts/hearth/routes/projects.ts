@@ -21,11 +21,6 @@ import {
   projectScopePreviewSchema,
 } from "../../projects/create-options-protocol";
 import {
-  type ProjectScopePreviewSettingsQuery,
-  projectScopePreviewSettingsQuerySchema,
-  projectScopePreviewSettingsSchema,
-} from "../../projects/project-scope-preview-protocol";
-import {
   projectCreateCommitSchema,
   projectCreateReserveSchema,
   projectCreateRetireSchema,
@@ -34,6 +29,11 @@ import {
   type ProjectGeneralSettings,
   projectGeneralSettingsRequestSchema,
 } from "../../projects/project-general-protocol";
+import {
+  type ProjectScopePreviewSettingsQuery,
+  projectScopePreviewSettingsQuerySchema,
+  projectScopePreviewSettingsSchema,
+} from "../../projects/project-scope-preview-protocol";
 import {
   createRepositoryOnboarding,
   type RepositoryOnboardingOptions,
@@ -135,7 +135,10 @@ interface ProjectRepositoryOption {
 }
 
 function unavailableScopePreview(): ProjectStoreError {
-  return new ProjectStoreError(503, "The complete project scope preview is unavailable. Refresh before trying again.");
+  return new ProjectStoreError(
+    503,
+    "The complete project scope preview is unavailable. Refresh before trying again.",
+  );
 }
 
 function unavailableProjectOptions(): ProjectStoreError {
@@ -403,7 +406,10 @@ function settingsScopePreviewInput(
 ): ValidationResult<ProjectScopePreviewSettingsQuery & { id: string }> {
   const id = request.params["id"];
   const allowed = new Set(["revision", "epicId"]);
-  if (!isProjectId(id) || [...request.query.keys()].some((name) => !allowed.has(name)))
+  if (
+    !isProjectId(id) ||
+    [...request.query.keys()].some((name) => !allowed.has(name))
+  )
     return fail("The project scope preview query is invalid.");
   const revisions = request.query.getAll("revision");
   const rawRevision = revisions[0];
@@ -476,7 +482,10 @@ function scopeProof(
     epicIds: [...epicIds].sort(),
     members,
   });
-  return { hash: createHash("sha256").update(proof).digest("hex"), count: members.length };
+  return {
+    hash: createHash("sha256").update(proof).digest("hex"),
+    count: members.length,
+  };
 }
 
 function checkedScope(
@@ -536,7 +545,12 @@ function checkedScope(
       503,
       "The complete live project scope is unavailable. Refresh before reserving this project.",
     );
-  return scopeProof(original.slug, served, scope.epicIds, snapshot.source.issues);
+  return scopeProof(
+    original.slug,
+    served,
+    scope.epicIds,
+    snapshot.source.issues,
+  );
 }
 
 function preferenceChange(
@@ -1019,7 +1033,11 @@ export function projectRoutes(
           );
           if (!found)
             throw new ProjectStoreError(404, "The project was not found.");
-          if (!isRecord(found) || typeof found["slug"] !== "string" || !Array.isArray(found["workspaces"]))
+          if (
+            !isRecord(found) ||
+            typeof found["slug"] !== "string" ||
+            !Array.isArray(found["workspaces"])
+          )
             throw unavailableScopePreview();
           if (catalog.revision !== revision)
             throw new ProjectStoreError(
@@ -1064,18 +1082,27 @@ export function projectRoutes(
             !Array.isArray(issues) ||
             typeof source["asOf"] !== "string" ||
             !Number.isFinite(Date.parse(source["asOf"])) ||
-            new Set(issues.map((issue) => isRecord(issue) ? issue["id"] : null)).size !== issues.length ||
+            new Set(
+              issues.map((issue) => (isRecord(issue) ? issue["id"] : null)),
+            ).size !== issues.length ||
             issues.some(
               (issue) =>
                 !isRecord(issue) ||
                 typeof issue["id"] !== "string" ||
-                !["epic", "feature", "task", "bug", "chore"].includes(String(issue["type"])) ||
+                !["epic", "feature", "task", "bug", "chore"].includes(
+                  String(issue["type"]),
+                ) ||
                 typeof issue["title"] !== "string" ||
-                !["open", "in_progress", "closed", "blocked"].includes(String(issue["status"])) ||
+                !["open", "in_progress", "closed", "blocked"].includes(
+                  String(issue["status"]),
+                ) ||
                 (issue["labels"] !== undefined &&
                   (!Array.isArray(issue["labels"]) ||
-                    issue["labels"].some((label) => typeof label !== "string"))) ||
-                (issue["parent"] !== undefined && typeof issue["parent"] !== "string")
+                    issue["labels"].some(
+                      (label) => typeof label !== "string",
+                    ))) ||
+                (issue["parent"] !== undefined &&
+                  typeof issue["parent"] !== "string"),
             )
           )
             throw unavailableScopePreview();
@@ -1097,7 +1124,10 @@ export function projectRoutes(
             sourceAsOf: source["asOf"],
           });
           if (!result.success) throw unavailableScopePreview();
-          if (Buffer.byteLength(JSON.stringify(result.data), "utf8") > MAX_PROJECT_CREATE_OPTIONS_BYTES)
+          if (
+            Buffer.byteLength(JSON.stringify(result.data), "utf8") >
+            MAX_PROJECT_CREATE_OPTIONS_BYTES
+          )
             throw unavailableScopePreview();
           return result.data;
         } catch (error) {
