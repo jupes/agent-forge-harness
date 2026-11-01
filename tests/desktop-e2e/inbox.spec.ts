@@ -78,54 +78,87 @@ test.beforeEach(() => {
 });
 
 test.afterEach(async ({ page }) => {
-  releaseHeldDispositionRead?.();
+  const cleanupErrors: unknown[] = [];
+  try {
+    releaseHeldDispositionRead?.();
+  } catch (error) {
+    cleanupErrors.push(error);
+  }
   releaseHeldDispositionRead = null;
-  for (const release of releaseHeldInboxRoutes.splice(0)) release();
-  await page.unrouteAll({ behavior: "ignoreErrors" });
-  for (const session of sessions().filter(
-    (item) => !priorSessions.has(item.id),
-  )) {
-    const active = savedSession(session.id).turns.find((turn) =>
-      ["accepted", "running", "cancelling"].includes(turn.phase),
-    );
-    if (!active) continue;
-    const token = await pageToken(page);
-    await page.evaluate(
-      async ({ projectId, sessionId, requestId, token, header }) => {
-        await fetch(
-          `/__agent-forge/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/stop`,
-          {
-            method: "POST",
-            headers: { "Content-Type": "application/json", [header]: token },
-            body: JSON.stringify({ requestId }),
-          },
-        );
-      },
-      {
-        projectId: session.projectId,
-        sessionId: session.id,
-        requestId: active.requestId,
-        token,
-        header: OPERATOR_HEADER,
-      },
-    );
-    await expect
-      .poll(() =>
-        savedSession(session.id).turns.some((turn) =>
-          ["accepted", "running", "cancelling"].includes(turn.phase),
-        ),
-      )
-      .toBe(false);
+  for (const release of releaseHeldInboxRoutes.splice(0)) {
+    try {
+      release();
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
   }
-  if (geminiControlCaptured) {
-    if (savedGeminiControl)
-      writeFileSync(geminiControlPath, savedGeminiControl);
-    else if (existsSync(geminiControlPath)) unlinkSync(geminiControlPath);
+  try {
+    await page.unrouteAll({ behavior: "ignoreErrors" });
+  } catch (error) {
+    cleanupErrors.push(error);
   }
-  savedGeminiControl = null;
-  geminiControlCaptured = false;
+  let newSessions: ReturnType<typeof sessions> = [];
+  try {
+    newSessions = ownedCodingSessionSchema
+      .array()
+      .parse(JSON.parse(readFileSync(sessionsPath, "utf8")).records)
+      .filter((item) => !priorSessions.has(item.id));
+  } catch (error) {
+    cleanupErrors.push(error);
+  }
+  for (const session of newSessions) {
+    try {
+      const active = savedSession(session.id).turns.find((turn) =>
+        ["accepted", "running", "cancelling"].includes(turn.phase),
+      );
+      if (!active) continue;
+      const token = await pageToken(page);
+      await page.evaluate(
+        async ({ projectId, sessionId, requestId, token, header }) => {
+          await fetch(
+            `/__agent-forge/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/stop`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json", [header]: token },
+              body: JSON.stringify({ requestId }),
+            },
+          );
+        },
+        {
+          projectId: session.projectId,
+          sessionId: session.id,
+          requestId: active.requestId,
+          token,
+          header: OPERATOR_HEADER,
+        },
+      );
+      await expect
+        .poll(() =>
+          savedSession(session.id).turns.some((turn) =>
+            ["accepted", "running", "cancelling"].includes(turn.phase),
+          ),
+        )
+        .toBe(false);
+    } catch (error) {
+      cleanupErrors.push(error);
+    }
+  }
+  try {
+    if (geminiControlCaptured) {
+      if (savedGeminiControl)
+        writeFileSync(geminiControlPath, savedGeminiControl);
+      else if (existsSync(geminiControlPath)) unlinkSync(geminiControlPath);
+    }
+  } catch (error) {
+    cleanupErrors.push(error);
+  } finally {
+    savedGeminiControl = null;
+    geminiControlCaptured = false;
+  }
+  if (cleanupErrors.length === 1) throw cleanupErrors[0];
+  if (cleanupErrors.length > 1)
+    throw new AggregateError(cleanupErrors, "Inbox test cleanup failed.");
 });
-
 test("Inbox offers the current permission inline beside retained unknown writes", async ({
   page,
 }) => {
@@ -361,13 +394,13 @@ test("Inbox offers the current permission inline beside retained unknown writes"
   ).toBeVisible();
   const inboxRegion = page.getByRole("region", { name: "Inbox", exact: true });
   const alphaNotice = inboxRegion.locator(".af-inbox-notice").filter({
-    has: inboxRegion.getByRole("heading", {
+    has: page.getByRole("heading", {
       name: "Fixture unknown write",
       exact: true,
     }),
   });
   const betaNotice = inboxRegion.locator(".af-inbox-notice").filter({
-    has: inboxRegion.getByRole("heading", {
+    has: page.getByRole("heading", {
       name: "Fixture Beta unknown write",
       exact: true,
     }),
@@ -393,7 +426,7 @@ test("Inbox offers the current permission inline beside retained unknown writes"
   expect(decisionPosts).toBe(0);
 
   const codexPermissionCard = inboxRegion.locator(".af-inbox-card").filter({
-    has: inboxRegion.getByRole("heading", {
+    has: page.getByRole("heading", {
       name: "Command permission",
       exact: true,
     }),
@@ -416,7 +449,7 @@ test("Inbox offers the current permission inline beside retained unknown writes"
     '.af-inbox-project[aria-label="Beta"]',
   );
   const unknownAction = alphaProject.locator(".af-inbox-card").filter({
-    has: alphaProject.getByRole("heading", {
+    has: page.getByRole("heading", {
       name: "Review comment outcome",
       exact: true,
     }),
@@ -425,7 +458,7 @@ test("Inbox offers the current permission inline beside retained unknown writes"
     unknownAction.getByRole("button", { name: "Snooze 1 hour", exact: true }),
   ).toBeVisible();
   const betaAction = betaProject.locator(".af-inbox-card").filter({
-    has: betaProject.getByRole("heading", {
+    has: page.getByRole("heading", {
       name: "Review comment outcome",
       exact: true,
     }),
@@ -781,7 +814,7 @@ test("Inbox offers the current permission inline beside retained unknown writes"
   ).toBe(false);
 
   const betaActionAfterHold = betaProject.locator(".af-inbox-card").filter({
-    has: betaProject.getByRole("heading", {
+    has: page.getByRole("heading", {
       name: "Review comment outcome",
       exact: true,
     }),
@@ -960,7 +993,7 @@ test("Inbox reviews an unknown permission acknowledgment through both existing r
     .click();
   const inbox = page.getByRole("region", { name: "Inbox", exact: true });
   const permission = inbox.locator(".af-inbox-card").filter({
-    has: inbox.getByRole("heading", {
+    has: page.getByRole("heading", {
       name: "Command permission",
       exact: true,
     }),
@@ -1261,6 +1294,60 @@ test("Inbox binds Gemini options to its exact offer and recovers a held original
   );
   if (!session)
     throw Error("The valid Gemini Inbox fixture session is absent.");
+  const sessionConversation = page.getByRole("region", {
+    name: "Session conversation",
+    exact: true,
+  });
+  await expect(
+    sessionConversation.getByRole("button", {
+      name: "Allow once",
+      exact: true,
+    }),
+  ).toBeVisible({ timeout: 10_000 });
+  const savedConversationPath = join(
+    HEARTH_HOME,
+    "conversations",
+    `${session.id}.json`,
+  );
+  await expect.poll(() => existsSync(savedConversationPath)).toBe(true);
+  const savedGemini = savedSession(session.id);
+  expect(savedGemini.projectId).toBe(session.projectId);
+  expect(savedGemini.conversationId).toBe(session.id);
+  expect(savedGemini.turns[0]?.requestId).toBe(session.requestId);
+  const r1Frames = savedGemini.frames.filter(
+    (frame) => frame.turnId === session.requestId,
+  );
+  const savedPermissionFrame = r1Frames.find(
+    (frame) =>
+      frame.event.kind === "coding-gemini-chat" &&
+      frame.event.event.kind === "permission",
+  );
+  const savedOfferFrame = r1Frames.find(
+    (frame) =>
+      frame.event.kind === "coding-gemini-chat" &&
+      frame.event.event.kind === "approval-offer",
+  );
+  const savedPermissionEvent = savedPermissionFrame?.event;
+  const savedOfferEvent = savedOfferFrame?.event;
+  if (
+    savedPermissionFrame === undefined ||
+    savedOfferFrame === undefined ||
+    savedPermissionEvent?.kind !== "coding-gemini-chat" ||
+    savedPermissionEvent.event.kind !== "permission" ||
+    savedOfferEvent?.kind !== "coding-gemini-chat" ||
+    savedOfferEvent.event.kind !== "approval-offer"
+  )
+    throw Error("The durable Gemini R1 permission offer pair is absent.");
+  const savedPermission = savedPermissionEvent.event;
+  const savedOffer = savedOfferEvent.event;
+  if (
+    savedPermission.requestId !== session.requestId ||
+    savedOffer.requestId !== session.requestId ||
+    savedPermissionFrame.seq >= savedOfferFrame.seq ||
+    savedPermission.rpcId !== savedOffer.rpcId ||
+    savedPermission.toolCallId !== savedOffer.toolCallId
+  )
+    throw Error("The durable Gemini R1 permission offer pair did not match.");
   const token = await pageToken(page);
   const setup = await page.evaluate(
     async ({ projectId, sessionId, token, header }) => {
@@ -1294,10 +1381,18 @@ test("Inbox binds Gemini options to its exact offer and recovers a held original
   if (setup.status !== 200 || !setupEnvelope.success)
     throw Error("The protected Gemini setup read was not a valid 200 fixture.");
   const offer = setupEnvelope.data.data.pending.find(
-    (item) => item.turnRequestId === session.requestId,
+    (item) =>
+      item.turnRequestId === session.requestId &&
+      item.approval.id === savedOffer.id,
   );
   if (!offer || offer.approval.options.length === 0)
     throw Error("The protected Gemini fixture had no exact offered option.");
+  expect(offer.approval).toEqual({
+    id: savedOffer.id,
+    detail: savedPermission.detail,
+    detailsComplete: savedPermission.detailsComplete,
+    options: savedPermission.options,
+  });
 
   const approvalsPattern = `**/sessions/${session.id}/approvals**`;
   let decisionPosts = 0;
@@ -1341,7 +1436,7 @@ test("Inbox binds Gemini options to its exact offer and recovers a held original
   const inbox = page.getByRole("region", { name: "Inbox", exact: true });
   const betaContext = inbox.locator('.af-inbox-project[aria-label="Beta"]');
   const betaWriteCard = betaContext.locator(".af-inbox-card").filter({
-    has: betaContext.getByRole("heading", {
+    has: page.getByRole("heading", {
       name: "Review comment outcome",
       exact: true,
     }),
@@ -1359,7 +1454,7 @@ test("Inbox binds Gemini options to its exact offer and recovers a held original
     page.getByRole("link", { name: "Choose project: Beta", exact: true }),
   ).toBeVisible();
   const geminiCard = inbox.locator(".af-inbox-card").filter({
-    has: inbox.getByRole("heading", {
+    has: page.getByRole("heading", {
       name: "Gemini permission",
       exact: true,
     }),
@@ -1462,7 +1557,7 @@ test("Inbox binds Gemini options to its exact offer and recovers a held original
     .getByRole("button", { name: "Refresh Inbox", exact: true })
     .click();
   const heldCard = inbox.locator(".af-inbox-card").filter({
-    has: inbox.getByRole("heading", {
+    has: page.getByRole("heading", {
       name: "Original permission decision held",
       exact: true,
     }),
