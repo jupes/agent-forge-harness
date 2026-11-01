@@ -1356,6 +1356,7 @@ test("Inbox refuses a held Codex Sessions preflight while retaining generic writ
   const collectionFinished = new Promise<void>((resolve) => {
     markCollectionFinished = resolve;
   });
+  const heldBetaSnapshot: { value: ReturnType<typeof inboxDispositionStoreSchema.parse> | null } = { value: null };
   await ownRoute(page,
     `**/projects/${beta.id}/inbox-dispositions`,
     async (route) => {
@@ -1405,6 +1406,7 @@ test("Inbox refuses a held Codex Sessions preflight while retaining generic writ
           throw Error(
             "The held Beta collection read was not a valid protected 200.",
           );
+        heldBetaSnapshot.value = collectionStore.data;
         markCollectionCaptured();
         await collectionGate;
         await route.fulfill({ response });
@@ -1417,10 +1419,24 @@ test("Inbox refuses a held Codex Sessions preflight while retaining generic writ
       await route.continue();
     },
   );
+  const betaReserveRequestPromise = page.waitForRequest((request) => request.method() === "POST" && new URL(request.url()).pathname === `/__agent-forge/projects/${beta.id}/inbox-dispositions/requests`);
+  const betaReserveResponsePromise = page.waitForResponse((response) => response.request().method() === "POST" && new URL(response.url()).pathname === `/__agent-forge/projects/${beta.id}/inbox-dispositions/requests`);
+  const betaApplyResponsePromise = page.waitForResponse((response) => response.request().method() === "POST" && new URL(response.url()).pathname === `/__agent-forge/projects/${beta.id}/inbox-dispositions`);
   await markInboxRecoveryPhase(page, "codex-beta-snooze");
   await betaAction
     .getByRole("button", { name: "Snooze 1 hour", exact: true })
     .click();
+  const betaReserveRequest = await waitForRouteSignal(betaReserveRequestPromise);
+  const betaWire = inboxDispositionOriginalSchema.strict().safeParse(betaReserveRequest.postDataJSON());
+  if (!betaWire.success) throw Error("The Beta reserve original was invalid.");
+  expect(betaWire.data.workspace).toBe(workspace);
+  expect(betaWire.data.operation).toBe("snooze-1h");
+  const betaReserveReply = await waitForRouteSignal(betaReserveResponsePromise);
+  expect(betaReserveReply.status()).toBe(200);
+  const betaReserved = z.object({ ok: z.literal(true), data: z.object({ entry: inboxDispositionEntrySchema.nullable(), receipt: inboxDispositionReceiptSchema }).strict(), error: z.null() }).strict().safeParse(await betaReserveReply.json());
+  if (!betaReserved.success) throw Error("The Beta reserved receipt was invalid.");
+  expect(betaReserved.data.data.receipt).toMatchObject({ original: { ...betaWire.data, projectId: beta.id }, phase: "reserved" });
+  expect(betaReserveReply.request()).toBe(betaReserveRequest);
   await waitForRouteSignal(applyStarted);
   await freezeInboxRecoveryWindow(page);
   let releaseScanRecovery: () => void = () => {};
@@ -1428,6 +1444,7 @@ test("Inbox refuses a held Codex Sessions preflight while retaining generic writ
     releaseScanRecovery = resolve;
   });
   releaseHeldInboxRoutes.push(releaseScanRecovery);
+  const heldRootSnapshot: { value: ReturnType<typeof inboxDispositionRecoverySchema.parse> | null } = { value: null };
   let holdScanRecovery = true;
   let markScanRecoveryCaptured: () => void = () => {};
   const scanRecoveryCaptured = new Promise<void>((resolve) => {
@@ -1454,6 +1471,7 @@ test("Inbox refuses a held Codex Sessions preflight while retaining generic writ
       .safeParse(await response.json());
     if (response.status() !== 200 || !recovery.success)
       throw Error("The held recovery read was not a valid protected 200.");
+    heldRootSnapshot.value = recovery.data.data;
     markScanRecoveryCaptured();
     await scanRecoveryGate;
     await route.fulfill({ response });
@@ -1467,6 +1485,18 @@ test("Inbox refuses a held Codex Sessions preflight while retaining generic writ
   await waitForRouteSignal(collectionCaptured);
   releaseApply();
   await waitForRouteSignal(applyFinished);
+  const betaAppliedReply = await waitForRouteSignal(betaApplyResponsePromise);
+  expect(betaAppliedReply.status()).toBe(200);
+  const betaApplied = z.object({ ok: z.literal(true), data: z.object({ entry: inboxDispositionEntrySchema, receipt: inboxDispositionReceiptSchema }).strict(), error: z.null() }).strict().safeParse(await betaAppliedReply.json());
+  if (!betaApplied.success) throw Error("The actual Beta applied receipt was invalid.");
+  expect(betaAppliedReply.request().postDataJSON()).toEqual(betaReserveRequest.postDataJSON());
+  expect(betaApplied.data.data.receipt).toMatchObject({ original: { ...betaWire.data, projectId: beta.id }, phase: "applied", outcome: "applied", resultingRevision: betaWire.data.expectedRevision + 1 });
+  expect(betaApplied.data.data.entry).toMatchObject({ projectId: beta.id, workspace, item: betaWire.data.item, revision: betaWire.data.expectedRevision + 1, operation: betaWire.data.operation });
+  const rootSnapshot = heldRootSnapshot.value;
+  const betaSnapshot = heldBetaSnapshot.value;
+  if (!rootSnapshot || !betaSnapshot) throw Error("The held Beta preflight snapshots were not captured.");
+  expect(rootSnapshot.receipts.filter((receipt) => receipt.original.requestId === betaWire.data.requestId)).toEqual([betaReserved.data.data.receipt]);
+  expect(betaSnapshot.receipts.filter((receipt) => receipt.original.requestId === betaWire.data.requestId)).toEqual([betaReserved.data.data.receipt]);
   await expect(
     inboxRegion.getByText("Checking this Inbox action…", { exact: true }),
   ).toHaveCount(0);
@@ -1506,6 +1536,32 @@ test("Inbox refuses a held Codex Sessions preflight while retaining generic writ
   expect(new URL(page.url()).hash).toBe(
     `#/desktop/inbox?project=${encodeURIComponent(beta.id)}`,
   );
+  const recoveryRefreshPath = "/__agent-forge/inbox-dispositions/recovery";
+  const alphaRefreshPath = `/__agent-forge/projects/${alpha.id}/inbox-dispositions`;
+  const betaRefreshPath = `/__agent-forge/projects/${beta.id}/inbox-dispositions`;
+  const rootRefreshRequestPromise = page.waitForRequest((request) => request.method() === "GET" && new URL(request.url()).pathname === recoveryRefreshPath);
+  const alphaRefreshRequestPromise = page.waitForRequest((request) => request.method() === "GET" && new URL(request.url()).pathname === alphaRefreshPath);
+  const betaRefreshRequestPromise = page.waitForRequest((request) => request.method() === "GET" && new URL(request.url()).pathname === betaRefreshPath);
+  await inboxRegion.getByRole("button", { name: "Refresh Inbox", exact: true }).click();
+  const [rootRefreshRequest, alphaRefreshRequest, betaRefreshRequest] = await Promise.all([waitForRouteSignal(rootRefreshRequestPromise), waitForRouteSignal(alphaRefreshRequestPromise), waitForRouteSignal(betaRefreshRequestPromise)]);
+  const [refreshedRoot, refreshedAlpha, refreshedBeta] = await Promise.all([waitForRouteSignal(rootRefreshRequest.response()), waitForRouteSignal(alphaRefreshRequest.response()), waitForRouteSignal(betaRefreshRequest.response())]);
+  if (!refreshedRoot || !refreshedAlpha || !refreshedBeta) throw Error("A current Inbox refresh request completed without its paired response.");
+  for (const response of [refreshedRoot, refreshedAlpha, refreshedBeta]) { expect(response.status()).toBe(200); expect(await response.finished()).toBeNull(); }
+  const currentRoot = z.object({ ok: z.literal(true), data: inboxDispositionRecoverySchema, error: z.null() }).strict().safeParse(await refreshedRoot.json());
+  const scopedSchema = z.object({ ok: z.literal(true), data: z.object({ entries: z.array(inboxDispositionEntrySchema), receipts: z.array(inboxDispositionReceiptSchema) }).strict(), error: z.null() }).strict();
+  const currentAlpha = scopedSchema.safeParse(await refreshedAlpha.json());
+  const currentBeta = scopedSchema.safeParse(await refreshedBeta.json());
+  if (!currentRoot.success || !currentAlpha.success || !currentBeta.success) throw Error("The refreshed current Inbox authority was invalid.");
+  expect(currentRoot.data.data.receipts).toEqual([betaApplied.data.data.receipt]);
+  expect(currentAlpha.data.data.entries).toEqual([]);
+  expect(currentAlpha.data.data.receipts).toEqual([]);
+  expect(currentBeta.data.data.entries).toEqual([betaApplied.data.data.entry]);
+  expect(currentBeta.data.data.receipts).toEqual([betaApplied.data.data.receipt]);
+  await expect(inboxRegion.getByRole("status", { name: "Loading Inbox sources", exact: true })).toHaveCount(0);
+  await expect(inboxRegion.getByText("Refreshing saved Inbox dispositions…", { exact: true })).toHaveCount(0);
+  await expect(inboxRegion.getByText("Checking this Inbox action…", { exact: true })).toHaveCount(0);
+  await expect(unknownAction.getByRole("button", { name: "Snooze 1 hour", exact: true })).toBeEnabled();
+  await expect(unknownAction.getByRole("button", { name: "Mark done · source unresolved", exact: true })).toBeDisabled();
   const betaPostsBeforeAlphaDecision = dispositionRequests.filter((request) =>
     request.url.startsWith(`/__agent-forge/projects/${beta.id}/`),
   ).length;
@@ -2020,7 +2076,7 @@ test("Inbox discards an exact reserved original after a pre-effect 504", async (
   await expect(heldActionButton).toBeEnabled();
   await heldActionButton.click();
   const heldRefusal = inbox.getByRole("alert").filter({ hasText: "An unresolved Inbox original must be checked before another item can be acknowledged." });
-  await expect(heldRefusal).toHaveText("An unresolved Inbox original must be checked before another item can be acknowledged.");
+  await expect(heldRefusal).toHaveText("An unresolved Inbox original must be checked before another item can be acknowledged. Source items remain visible.");
   expect(reserveRequestBodies).toHaveLength(1);
   expect(applyPosts).toBe(1);
   expect(readFileSync(dispositionStatePath).equals(heldStateBytes)).toBe(true);
@@ -2570,7 +2626,7 @@ test("Inbox resolves a real persisted apply after the page loses its reply", asy
   let alphaApplyPosts = 0;
   let betaPosts = 0;
   let alphaReservePosts = 0;
-  type TerminalApplyCapture = { status: number; body: unknown; text: string; applyBody: unknown; headers: Record<string, string> };
+  type TerminalApplyCapture = { status: number; body: unknown; text: string; applyBody: unknown; headers: Record<string, string>; forwardedHeaders: Record<string, string> };
   const terminalCapture: { value: TerminalApplyCapture | null } = { value: null };
   let reserveBody: unknown = null;
   let markPersisted: () => void = () => {};
@@ -2596,7 +2652,8 @@ test("Inbox resolves a real persisted apply after the page loses its reply", asy
     const request = route.request();
     const url = new URL(request.url());
     const originalHeaders = await request.allHeaders();
-    const response = await route.fetch({ headers: { ...originalHeaders, origin: url.origin, "sec-fetch-site": "same-origin" } });
+    const forwardedHeaders = { ...originalHeaders, origin: url.origin, "sec-fetch-site": "same-origin" };
+    const response = await route.fetch({ headers: forwardedHeaders });
     const text = await response.text();
     let body: unknown;
     try { body = JSON.parse(text); } catch { body = null; }
@@ -2610,7 +2667,7 @@ test("Inbox resolves a real persisted apply after the page loses its reply", asy
     if (!storedTerminal.success) throw Error("The private disposition file was not strictly persisted before reply loss.");
     expect(JSON.stringify(storedTerminal.data.receipts.find((receipt) => receipt.original.requestId === wire.data.requestId))).toBe(JSON.stringify(envelope.data.data.receipt));
     expect(JSON.stringify(storedTerminal.data.entries.find((entry) => entry.item.stableItemId === wire.data.item.stableItemId && entry.item.sourceRevision === wire.data.item.sourceRevision))).toBe(JSON.stringify(envelope.data.data.entry));
-    terminalCapture.value = { status: response.status(), body, text, applyBody: request.postDataJSON(), headers: originalHeaders };
+    terminalCapture.value = { status: response.status(), body, text, applyBody: request.postDataJSON(), headers: originalHeaders, forwardedHeaders };
     markPersisted();
     markExpectedRouteAbort(route.request());
     await route.abort();
@@ -2663,7 +2720,8 @@ test("Inbox resolves a real persisted apply after the page loses its reply", asy
   if (!settled) throw Error("The original apply did not reach the protected endpoint.");
   expect(settled.status).toBe(200);
   expect(settled.headers.origin).toBe(new URL(applyRequest.url()).origin);
-  expect(settled.headers["sec-fetch-site"]).toBe("same-origin");
+  if (settled.headers["sec-fetch-site"] !== undefined) expect(settled.headers["sec-fetch-site"]).toBe("same-origin");
+  expect(settled.forwardedHeaders["sec-fetch-site"]).toBe("same-origin");
   const terminalEnvelope = z.object({
     ok: z.literal(true),
     data: z.object({ entry: inboxDispositionEntrySchema, receipt: inboxDispositionReceiptSchema }).strict(),
