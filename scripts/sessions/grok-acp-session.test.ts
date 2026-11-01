@@ -1,12 +1,23 @@
-import { resolve } from "node:path";
 import { expect, test, vi } from "bun:test";
-import type { ChildExit } from "../executors/types";
+import { resolve } from "node:path";
 import type { InteractiveSuperviseOptions } from "../executors/supervisor";
-import { createGrokAcpSessionActor, type GrokActorSnapshot, type GrokStartResult } from "./grok-acp-session";
+import type { ChildExit } from "../executors/types";
 import { ACP_WIRE_LIMITS } from "./acp-wire";
+import {
+  createGrokAcpSessionActor,
+  type GrokActorSnapshot,
+  type GrokStartResult,
+} from "./grok-acp-session";
 
-function isOpened(snapshot: GrokActorSnapshot, result: GrokStartResult): boolean {
-  return result.kind === "opened" && snapshot.state === "opened" && snapshot.handle === result.handle;
+function isOpened(
+  snapshot: GrokActorSnapshot,
+  result: GrokStartResult,
+): boolean {
+  return (
+    result.kind === "opened" &&
+    snapshot.state === "opened" &&
+    snapshot.handle === result.handle
+  );
 }
 
 test("valid raw initialize and session/new frames admit the current owned handle", async () => {
@@ -18,7 +29,9 @@ test("valid raw initialize and session/new frames admit the current owned handle
   let launchEnv: Record<string, string> = {};
   let stopCalls = 0;
   let resolveDone: (exit: ChildExit) => void = () => undefined;
-  const done = new Promise<ChildExit>((resolveDonePromise) => { resolveDone = resolveDonePromise; });
+  const done = new Promise<ChildExit>((resolveDonePromise) => {
+    resolveDone = resolveDonePromise;
+  });
   const actor = createGrokAcpSessionActor({
     executable: fakeExecutable,
     cwd: fakeCwd,
@@ -33,40 +46,77 @@ test("valid raw initialize and session/new frames admit the current owned handle
         done,
         stop: async () => {
           stopCalls += 1;
-          resolveDone({ exitCode: 0, timedOut: false, stopped: true, ownedTreeReleased: true, stderr: "" });
+          resolveDone({
+            exitCode: 0,
+            timedOut: false,
+            stopped: true,
+            ownedTreeReleased: true,
+            stderr: "",
+          });
         },
         write: async (wire) => {
           writes.push(wire);
           let request: { id: number; method: string };
-          try { request = JSON.parse(wire) as { id: number; method: string }; }
-          catch { return; }
-          const result = request.method === "initialize" ? { protocolVersion: 1 } : { sessionId: "inert-session-1" };
-          options.onLine(JSON.stringify({ jsonrpc: "2.0", id: request.id, result }));
+          try {
+            request = JSON.parse(wire) as { id: number; method: string };
+          } catch {
+            return;
+          }
+          const result =
+            request.method === "initialize"
+              ? { protocolVersion: 1 }
+              : { sessionId: "inert-session-1" };
+          options.onLine(
+            JSON.stringify({ jsonrpc: "2.0", id: request.id, result }),
+          );
         },
         end: async () => undefined,
       };
     },
   });
   const parse = (wire: string | undefined): unknown => {
-    try { return JSON.parse(wire ?? "null"); } catch { return null; }
+    try {
+      return JSON.parse(wire ?? "null");
+    } catch {
+      return null;
+    }
   };
   let result: GrokStartResult | null = null;
   let snapshot: GrokActorSnapshot | null = null;
   try {
     result = await actor.startAndOpen();
     snapshot = actor.snapshot();
-    const exactRequests = writes.length === 2 &&
-      JSON.stringify(parse(writes[0])) === JSON.stringify({
-        jsonrpc: "2.0", id: 1, method: "initialize",
-        params: { protocolVersion: 1, clientCapabilities: {}, clientInfo: { name: "agent-forge-harness", version: "1" } },
-      }) &&
-      JSON.stringify(parse(writes[1])) === JSON.stringify({
-        jsonrpc: "2.0", id: 2, method: "session/new",
-        params: { cwd: fakeCwd, mcpServers: [] },
-      });
-    const launchContract = JSON.stringify(launchCommand) === JSON.stringify([
-      fakeExecutable, "--no-auto-update", "agent", "stdio",
-    ]) && launchCwd === fakeCwd && launchEnv.PATH === "C:/safe/bin" && launchEnv.AGENT_FORGE_ADAPTER === "1";
+    const exactRequests =
+      writes.length === 2 &&
+      JSON.stringify(parse(writes[0])) ===
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "initialize",
+          params: {
+            protocolVersion: 1,
+            clientCapabilities: {},
+            clientInfo: { name: "agent-forge-harness", version: "1" },
+          },
+        }) &&
+      JSON.stringify(parse(writes[1])) ===
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: 2,
+          method: "session/new",
+          params: { cwd: fakeCwd, mcpServers: [] },
+        });
+    const launchContract =
+      JSON.stringify(launchCommand) ===
+        JSON.stringify([
+          fakeExecutable,
+          "--no-auto-update",
+          "agent",
+          "stdio",
+        ]) &&
+      launchCwd === fakeCwd &&
+      launchEnv.PATH === "C:/safe/bin" &&
+      launchEnv.AGENT_FORGE_ADAPTER === "1";
     expect(exactRequests).toBe(true);
     expect(launchContract).toBe(true);
   } finally {
@@ -74,9 +124,10 @@ test("valid raw initialize and session/new frames admit the current owned handle
     await done;
   }
   expect(stopCalls).toBe(1);
-  expect(result !== null && snapshot !== null && isOpened(snapshot, result)).toBe(true);
+  expect(
+    result !== null && snapshot !== null && isOpened(snapshot, result),
+  ).toBe(true);
 });
-
 
 type FakePlan = {
   initResult?: unknown;
@@ -108,19 +159,36 @@ function actorFixture(plan: FakePlan = {}) {
   let outputError: () => void = () => undefined;
   let resolveDone: (exit: ChildExit) => void = () => undefined;
   let rejectDone: (error: Error) => void = () => undefined;
-  const done = new Promise<ChildExit>((resolveDonePromise, rejectDonePromise) => { resolveDone = resolveDonePromise; rejectDone = rejectDonePromise; });
+  const done = new Promise<ChildExit>(
+    (resolveDonePromise, rejectDonePromise) => {
+      resolveDone = resolveDonePromise;
+      rejectDone = rejectDonePromise;
+    },
+  );
   let resolvePid: (pid: number) => void = () => undefined;
-  const providerPid = plan.deferPid ? new Promise<number>((resolvePidPromise) => { resolvePid = resolvePidPromise; }) : Promise.resolve(52);
+  const providerPid = plan.deferPid
+    ? new Promise<number>((resolvePidPromise) => {
+        resolvePid = resolvePidPromise;
+      })
+    : Promise.resolve(52);
   let releaseWrite: () => void = () => undefined;
   let heldWrite: Promise<void> | null = null;
   let resolveHeld: () => void = () => undefined;
-  const heldSignal = new Promise<void>((resolveSignal) => { resolveHeld = resolveSignal; });
+  const heldSignal = new Promise<void>((resolveSignal) => {
+    resolveHeld = resolveSignal;
+  });
   let resolveOwnerReady: () => void = () => undefined;
-  const ownerReady = new Promise<void>((resolveSignal) => { resolveOwnerReady = resolveSignal; });
+  const ownerReady = new Promise<void>((resolveSignal) => {
+    resolveOwnerReady = resolveSignal;
+  });
   let resolveInitEntry: () => void = () => undefined;
   let resolveOpenEntry: () => void = () => undefined;
-  const initEntry = new Promise<void>((resolveSignal) => { resolveInitEntry = resolveSignal; });
-  const openEntry = new Promise<void>((resolveSignal) => { resolveOpenEntry = resolveSignal; });
+  const initEntry = new Promise<void>((resolveSignal) => {
+    resolveInitEntry = resolveSignal;
+  });
+  const openEntry = new Promise<void>((resolveSignal) => {
+    resolveOpenEntry = resolveSignal;
+  });
   let writeReleased = false;
   const actor = createGrokAcpSessionActor({
     executable: resolve("fixture", "grok.exe"),
@@ -139,7 +207,14 @@ function actorFixture(plan: FakePlan = {}) {
         stop: async () => {
           stopCalls += 1;
           if (plan.rejectStop) throw new Error("private stop failure");
-          if (!plan.holdStop) resolveDone({ exitCode: 0, timedOut: false, stopped: true, ownedTreeReleased: true, stderr: "" });
+          if (!plan.holdStop)
+            resolveDone({
+              exitCode: 0,
+              timedOut: false,
+              stopped: true,
+              ownedTreeReleased: true,
+              stderr: "",
+            });
         },
         write: async (wire) => {
           writes.push(wire);
@@ -147,7 +222,14 @@ function actorFixture(plan: FakePlan = {}) {
           let request: { id: number; method: string } | null = null;
           try {
             const parsed: unknown = JSON.parse(wire);
-            if (typeof parsed === "object" && parsed !== null && "id" in parsed && typeof parsed.id === "number" && "method" in parsed && typeof parsed.method === "string")
+            if (
+              typeof parsed === "object" &&
+              parsed !== null &&
+              "id" in parsed &&
+              typeof parsed.id === "number" &&
+              "method" in parsed &&
+              typeof parsed.method === "string"
+            )
               request = { id: parsed.id, method: parsed.method };
           } catch {
             return;
@@ -157,18 +239,56 @@ function actorFixture(plan: FakePlan = {}) {
           if (request.method === "session/new") resolveOpenEntry();
           if (plan.skipResponse === request.method) return;
           const isInitialize = request.method === "initialize";
-          if ((isInitialize && plan.initUpdate) || (!isInitialize && plan.openUpdate)) {
-            options.onLine(JSON.stringify({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "foreign", update: { sessionUpdate: "agent_message_chunk" } } }));
+          if (
+            (isInitialize && plan.initUpdate) ||
+            (!isInitialize && plan.openUpdate)
+          ) {
+            options.onLine(
+              JSON.stringify({
+                jsonrpc: "2.0",
+                method: "session/update",
+                params: {
+                  sessionId: "foreign",
+                  update: { sessionUpdate: "agent_message_chunk" },
+                },
+              }),
+            );
             return;
           }
           const stage = isInitialize ? "initialize" : "session/new";
           const id = isInitialize
             ? (plan.initResponseId?.(request.id) ?? request.id)
             : (plan.openResponseId?.(request.id) ?? request.id);
-          if (plan.malformedAt === stage) { options.onLine("{"); return; }
-          if (plan.permissionAt === stage) { options.onLine(JSON.stringify({ jsonrpc: "2.0", id: 99, method: "session/request_permission", params: {} })); return; }
-          if ((isInitialize && plan.initError) || (!isInitialize && plan.openError)) {
-            options.onLine(JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32000, message: "private error", data: { secret: "private" } } }));
+          if (plan.malformedAt === stage) {
+            options.onLine("{");
+            return;
+          }
+          if (plan.permissionAt === stage) {
+            options.onLine(
+              JSON.stringify({
+                jsonrpc: "2.0",
+                id: 99,
+                method: "session/request_permission",
+                params: {},
+              }),
+            );
+            return;
+          }
+          if (
+            (isInitialize && plan.initError) ||
+            (!isInitialize && plan.openError)
+          ) {
+            options.onLine(
+              JSON.stringify({
+                jsonrpc: "2.0",
+                id,
+                error: {
+                  code: -32000,
+                  message: "private error",
+                  data: { secret: "private" },
+                },
+              }),
+            );
             return;
           }
           const result = isInitialize
@@ -177,7 +297,13 @@ function actorFixture(plan: FakePlan = {}) {
           const raw = JSON.stringify({ jsonrpc: "2.0", id, result });
           if (plan.holdWriteAt === stage) {
             if (plan.earlyResponse) options.onLine(raw);
-            heldWrite = new Promise<void>((resolveWrite) => { releaseWrite = () => { if (writeReleased) throw new Error("write released twice"); writeReleased = true; resolveWrite(); }; });
+            heldWrite = new Promise<void>((resolveWrite) => {
+              releaseWrite = () => {
+                if (writeReleased) throw new Error("write released twice");
+                writeReleased = true;
+                resolveWrite();
+              };
+            });
             resolveHeld();
             return heldWrite;
           }
@@ -200,7 +326,8 @@ function actorFixture(plan: FakePlan = {}) {
     resolvePid: () => resolvePid(52),
     releaseWrite: () => releaseWrite(),
     waitForHeldWrite: () => heldSignal,
-    waitForWrite: (stage: "initialize" | "session/new") => stage === "initialize" ? initEntry : openEntry,
+    waitForWrite: (stage: "initialize" | "session/new") =>
+      stage === "initialize" ? initEntry : openEntry,
     writeHeld: () => heldWrite !== null,
     rejectDone: (error: Error) => rejectDone(error),
     done,
@@ -234,12 +361,18 @@ test("concurrent start is singleflight and opened calls reuse the same handle", 
   if (firstSnapshot.state === "opened" && secondSnapshot.state === "opened")
     expect(firstSnapshot.handle).toBe(secondSnapshot.handle);
   expect(Object.isFrozen(firstSnapshot)).toBe(true);
-  try { Object.assign(firstSnapshot, { state: "cold" }); } catch { /* frozen snapshot */ }
+  try {
+    Object.assign(firstSnapshot, { state: "cold" });
+  } catch {
+    /* frozen snapshot */
+  }
   expect(fixture.actor.snapshot().state).toBe("opened");
   if (a.kind === "opened") {
     expect(a.handle.authentication).toBe("unknown");
     expect(a.handle.identity).toBe("unverified");
-    expect(JSON.stringify({ result: a, snapshot: fixture.actor.snapshot() })).not.toContain("Grok");
+    expect(
+      JSON.stringify({ result: a, snapshot: fixture.actor.snapshot() }),
+    ).not.toContain("Grok");
   }
   expect(await fixture.actor.startAndOpen()).toBe(a);
   await fixture.actor.close();
@@ -247,17 +380,30 @@ test("concurrent start is singleflight and opened calls reuse the same handle", 
 });
 
 test("session ID applies the harness code-unit bound without trimming or UUID assumptions", async () => {
-  const valid = await openedFixture({ openResult: { sessionId: " spaced id " } });
+  const valid = await openedFixture({
+    openResult: { sessionId: " spaced id " },
+  });
   expect(valid.result.kind).toBe("opened");
   await valid.actor.close();
   await valid.done;
-  const boundary = await openedFixture({ openResult: { sessionId: "x".repeat(200) } });
+  const boundary = await openedFixture({
+    openResult: { sessionId: "x".repeat(200) },
+  });
   expect(boundary.result.kind).toBe("opened");
   await boundary.actor.close();
   await boundary.done;
-  for (const sessionId of ["", "x".repeat(201), "bad\u0000id", "bad\uD800", "bad\uDC00"]) {
+  for (const sessionId of [
+    "",
+    "x".repeat(201),
+    "bad\u0000id",
+    "bad\uD800",
+    "bad\uDC00",
+  ]) {
     const invalidId = await openedFixture({ openResult: { sessionId } });
-    expect(invalidId.result).toMatchObject({ kind: "failed", reason: "session-open-rejected" });
+    expect(invalidId.result).toMatchObject({
+      kind: "failed",
+      reason: "session-open-rejected",
+    });
     expect(invalidId.snapshot.state).not.toBe("opened");
     await invalidId.actor.close();
     await invalidId.done;
@@ -269,7 +415,15 @@ test("initialize rejects errors, mismatched typed IDs, unsupported versions, mal
     { initError: true },
     { initResponseId: (id) => String(id) },
     { initResult: { protocolVersion: 2 } },
-    { initResult: { protocolVersion: 1, authMethods: [{ id: "dup", name: "A" }, { id: "dup", name: "B" }] } },
+    {
+      initResult: {
+        protocolVersion: 1,
+        authMethods: [
+          { id: "dup", name: "A" },
+          { id: "dup", name: "B" },
+        ],
+      },
+    },
     { initUpdate: true },
     { malformedAt: "initialize" },
     { permissionAt: "initialize" },
@@ -307,9 +461,20 @@ test("session/new rejects errors, mismatched typed IDs, malformed results, and u
 test("late unsolicited frames and process exit invalidate an opened handle", async () => {
   const late = await openedFixture();
   expect(late.result.kind).toBe("opened");
-  late.line(JSON.stringify({ jsonrpc: "2.0", method: "session/update", params: { sessionId: "foreign", update: { sessionUpdate: "agent_message_chunk" } } }));
+  late.line(
+    JSON.stringify({
+      jsonrpc: "2.0",
+      method: "session/update",
+      params: {
+        sessionId: "foreign",
+        update: { sessionUpdate: "agent_message_chunk" },
+      },
+    }),
+  );
   expect(late.actor.snapshot().state).not.toBe("opened");
-  late.line(JSON.stringify({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } }));
+  late.line(
+    JSON.stringify({ jsonrpc: "2.0", id: 1, result: { protocolVersion: 1 } }),
+  );
   expect(late.actor.snapshot().state).not.toBe("opened");
   await late.actor.close();
   await late.done;
@@ -331,7 +496,13 @@ test("cleanup retains the same owner until its done result proves tree release",
   expect(fixture.actor.snapshot().state).toBe("cleanup-pending");
   expect((await fixture.actor.startAndOpen()).kind).toBe("failed");
   expect(fixture.spawnCalls()).toBe(1);
-  fixture.finish({ exitCode: 0, timedOut: false, stopped: true, ownedTreeReleased: true, stderr: "" });
+  fixture.finish({
+    exitCode: 0,
+    timedOut: false,
+    stopped: true,
+    ownedTreeReleased: true,
+    stderr: "",
+  });
   await fixture.done;
   expect(fixture.actor.snapshot().state).toBe("closed");
   expect(await fixture.actor.close()).toEqual({ kind: "released" });
@@ -340,7 +511,9 @@ test("cleanup retains the same owner until its done result proves tree release",
 test("write failure and output overflow fail closed without provider details", async () => {
   const writeFailure = await openedFixture({ failWrite: true });
   expect(writeFailure.result.kind).toBe("failed");
-  expect(JSON.stringify(writeFailure.result)).not.toContain("inert write rejection");
+  expect(JSON.stringify(writeFailure.result)).not.toContain(
+    "inert write rejection",
+  );
   await writeFailure.actor.close();
   await writeFailure.done;
 
@@ -350,7 +523,9 @@ test("write failure and output overflow fail closed without provider details", a
   rejectedDone.rejectDone(new Error("private teardown detail"));
   await rejectedDone.done.catch(() => undefined);
   expect(rejectedDone.actor.snapshot().state).toBe("cleanup-pending");
-  expect(JSON.stringify(rejectedDone.actor.snapshot())).not.toContain("private teardown detail");
+  expect(JSON.stringify(rejectedDone.actor.snapshot())).not.toContain(
+    "private teardown detail",
+  );
 
   const overflow = actorFixture({ skipResponse: "initialize" });
   const started = overflow.actor.startAndOpen();
@@ -366,40 +541,63 @@ test("write failure and output overflow fail closed without provider details", a
 test("spawn refusal remains fixed and does not invent an owner", async () => {
   const fixture = actorFixture({ spawnFailure: true });
   const result = await fixture.actor.startAndOpen();
-  expect(result).toMatchObject({ kind: "failed", reason: "spawn-failed", cleanup: { kind: "released" } });
+  expect(result).toMatchObject({
+    kind: "failed",
+    reason: "spawn-failed",
+    cleanup: { kind: "released" },
+  });
   expect(JSON.stringify(result)).not.toContain("private spawn detail");
   expect(fixture.spawnCalls()).toBe(1);
   expect(fixture.stopCalls()).toBe(0);
   expect(fixture.actor.snapshot().state).toBe("closed");
 });
 
-
 test("factory captures mutable owner options once before start", async () => {
   const originalExecutable = resolve("captured-fixture", "grok.exe");
   const originalCwd = resolve("captured-fixture", "repo");
   const originalPath = "captured-path";
   let ownerOptions: Parameters<typeof createGrokAcpSessionActor>[0];
-  const launchHolder: { current: InteractiveSuperviseOptions | null } = { current: null };
+  const launchHolder: { current: InteractiveSuperviseOptions | null } = {
+    current: null,
+  };
   const writes: string[] = [];
   let doneResolve: (exit: ChildExit) => void = () => undefined;
-  const done = new Promise<ChildExit>((resolveDone) => { doneResolve = resolveDone; });
+  const done = new Promise<ChildExit>((resolveDone) => {
+    doneResolve = resolveDone;
+  });
   const originalSupervisor = (options: InteractiveSuperviseOptions) => {
     launchHolder.current = options;
     return {
-      pid: 71, providerPid: Promise.resolve(72), done,
-      stop: async () => doneResolve({ exitCode: 0, timedOut: false, stopped: true, ownedTreeReleased: true, stderr: "" }),
+      pid: 71,
+      providerPid: Promise.resolve(72),
+      done,
+      stop: async () =>
+        doneResolve({
+          exitCode: 0,
+          timedOut: false,
+          stopped: true,
+          ownedTreeReleased: true,
+          stderr: "",
+        }),
       write: async (wire: string) => {
         writes.push(wire);
         const request = JSON.parse(wire) as { id: number; method: string };
-        const result = request.method === "initialize" ? { protocolVersion: 1 } : { sessionId: "captured-session" };
+        const result =
+          request.method === "initialize"
+            ? { protocolVersion: 1 }
+            : { sessionId: "captured-session" };
         if (request.method === "initialize") {
           ownerOptions.executable = resolve("handshake-mutated", "other.exe");
           ownerOptions.cwd = resolve("handshake-mutated", "other-repo");
           ownerOptions.env.PATH = "handshake-mutated";
           ownerOptions.env.AGENT_FORGE_ADAPTER = "handshake-mutated";
-          ownerOptions.supervise = () => { throw new Error("replacement supervisor must not run"); };
+          ownerOptions.supervise = () => {
+            throw new Error("replacement supervisor must not run");
+          };
         }
-        options.onLine(JSON.stringify({ jsonrpc: "2.0", id: request.id, result }));
+        options.onLine(
+          JSON.stringify({ jsonrpc: "2.0", id: request.id, result }),
+        );
       },
       end: async () => undefined,
     };
@@ -415,13 +613,20 @@ test("factory captures mutable owner options once before start", async () => {
   ownerOptions.cwd = resolve("prestart-mutated", "other-repo");
   ownerOptions.env.PATH = "prestart-mutated";
   ownerOptions.env.AGENT_FORGE_ADAPTER = "prestart-mutated";
-  ownerOptions.supervise = () => { throw new Error("replacement supervisor must not run"); };
+  ownerOptions.supervise = () => {
+    throw new Error("replacement supervisor must not run");
+  };
 
   const result = await actor.startAndOpen();
   expect(result.kind).toBe("opened");
   const launch = launchHolder.current;
   if (launch === null) throw new Error("captured supervisor did not run");
-  expect(launch.command).toEqual([originalExecutable, "--no-auto-update", "agent", "stdio"]);
+  expect(launch.command).toEqual([
+    originalExecutable,
+    "--no-auto-update",
+    "agent",
+    "stdio",
+  ]);
   expect(launch.cwd).toBe(originalCwd);
   expect(launch.env.PATH).toBe(originalPath);
   expect(launch.env.AGENT_FORGE_ADAPTER).toBe("captured");
@@ -429,7 +634,9 @@ test("factory captures mutable owner options once before start", async () => {
   expect(launch.maxStdinBytes).toBe(1_048_576);
   expect(launch.stdinTimeoutMs).toBe(5_000);
   expect(launch.maxLineBytes).toBe(ACP_WIRE_LIMITS.lineBytes);
-  expect((JSON.parse(writes[1]!) as { params: { cwd: string } }).params.cwd).toBe(originalCwd);
+  expect(
+    (JSON.parse(writes[1]!) as { params: { cwd: string } }).params.cwd,
+  ).toBe(originalCwd);
   await actor.close();
   await done;
 });
@@ -451,14 +658,24 @@ test("held writes cannot be bypassed or hang after invalidation at either protoc
     await early.done;
 
     for (const event of ["wrong-frame", "close", "done"] as const) {
-      const held = actorFixture({ holdWriteAt: phase, earlyResponse: event !== "wrong-frame" });
+      const held = actorFixture({
+        holdWriteAt: phase,
+        earlyResponse: event !== "wrong-frame",
+      });
       const started = held.actor.startAndOpen();
       await held.waitForHeldWrite();
       expect(held.writeHeld()).toBe(true);
       expect(held.actor.snapshot().state).not.toBe("opened");
-      if (event === "wrong-frame") held.line(JSON.stringify({ jsonrpc: "2.0", id: 999, result: {} }));
+      if (event === "wrong-frame")
+        held.line(JSON.stringify({ jsonrpc: "2.0", id: 999, result: {} }));
       if (event === "close") await held.actor.close();
-      if (event === "done") held.finish({ exitCode: null, timedOut: false, stopped: false, stderr: "" });
+      if (event === "done")
+        held.finish({
+          exitCode: null,
+          timedOut: false,
+          stopped: false,
+          stderr: "",
+        });
       const failed = await started;
       expect(failed.kind).toBe("failed");
       held.releaseWrite();
@@ -481,7 +698,13 @@ test("deferred provider PID races close and premature exit without spawning a re
   closed.resolvePid();
   expect(closed.spawnCalls()).toBe(1);
   expect(closed.actor.snapshot().state).toBe("cleanup-pending");
-  closed.finish({ exitCode: 0, timedOut: false, stopped: true, ownedTreeReleased: true, stderr: "" });
+  closed.finish({
+    exitCode: 0,
+    timedOut: false,
+    stopped: true,
+    ownedTreeReleased: true,
+    stderr: "",
+  });
   await closed.done;
   expect(closed.actor.snapshot().state).toBe("closed");
 
@@ -502,7 +725,9 @@ test("one monotonic deadline preserves only the remaining time for session/new",
   vi.useFakeTimers();
   let monotonic = 400;
   let wallClock = 2_000_000;
-  const nowSpy = vi.spyOn(performance, "now").mockImplementation(() => monotonic);
+  const nowSpy = vi
+    .spyOn(performance, "now")
+    .mockImplementation(() => monotonic);
   const wallSpy = vi.spyOn(Date, "now").mockImplementation(() => wallClock);
   try {
     const fixture = actorFixture({
@@ -526,7 +751,10 @@ test("one monotonic deadline preserves only the remaining time for session/new",
     monotonic += 1;
     wallClock -= 10_000_000;
     vi.advanceTimersByTime(1);
-    expect(await started).toMatchObject({ kind: "failed", reason: "handshake-timeout" });
+    expect(await started).toMatchObject({
+      kind: "failed",
+      reason: "handshake-timeout",
+    });
     expect(fixture.actor.snapshot().state).not.toBe("opened");
     expect(fixture.writes.length).toBe(2);
     await fixture.actor.close();
@@ -553,13 +781,16 @@ test("a rejected unreleased owner remains unknown after late PID resolution", as
   expect(fixture.stopCalls()).toBe(1);
 });
 
-
 test("done settles ownership proof once and never upgrades an unreleased result", async () => {
   const pending = actorFixture({ holdStop: true });
   expect((await pending.actor.startAndOpen()).kind).toBe("opened");
   expect(await pending.actor.close()).toEqual({ kind: "pending" });
   const releasedExit: ChildExit = {
-    exitCode: 0, timedOut: false, stopped: true, ownedTreeReleased: true, stderr: "",
+    exitCode: 0,
+    timedOut: false,
+    stopped: true,
+    ownedTreeReleased: true,
+    stderr: "",
   };
   pending.finish(releasedExit);
   await pending.done;
@@ -568,7 +799,10 @@ test("done settles ownership proof once and never upgrades an unreleased result"
   const unknown = actorFixture({ holdStop: true });
   expect((await unknown.actor.startAndOpen()).kind).toBe("opened");
   const unreleasedExit: ChildExit = {
-    exitCode: 0, timedOut: false, stopped: true, stderr: "",
+    exitCode: 0,
+    timedOut: false,
+    stopped: true,
+    stderr: "",
   };
   unknown.finish(unreleasedExit);
   await unknown.done;
@@ -582,19 +816,33 @@ test("done settles ownership proof once and never upgrades an unreleased result"
 test("initialize timeout, raw line cap, and rejected stop preserve bounded ownership", async () => {
   vi.useFakeTimers();
   let monotonic = 900;
-  const nowSpy = vi.spyOn(performance, "now").mockImplementation(() => monotonic);
+  const nowSpy = vi
+    .spyOn(performance, "now")
+    .mockImplementation(() => monotonic);
   try {
-    const initTimeout = actorFixture({ skipResponse: "initialize", holdStop: true });
+    const initTimeout = actorFixture({
+      skipResponse: "initialize",
+      holdStop: true,
+    });
     const starting = initTimeout.actor.startAndOpen();
     await initTimeout.waitForWrite("initialize");
     monotonic += 30_000;
     vi.advanceTimersByTime(30_000);
-    expect(await starting).toMatchObject({ kind: "failed", reason: "handshake-timeout", cleanup: { kind: "pending" } });
+    expect(await starting).toMatchObject({
+      kind: "failed",
+      reason: "handshake-timeout",
+      cleanup: { kind: "pending" },
+    });
     expect(initTimeout.stopCalls()).toBe(1);
     expect(initTimeout.actor.snapshot().state).toBe("cleanup-pending");
     await initTimeout.actor.close();
     expect(initTimeout.stopCalls()).toBe(1);
-    initTimeout.finish({ exitCode: null, timedOut: true, stopped: true, stderr: "" });
+    initTimeout.finish({
+      exitCode: null,
+      timedOut: true,
+      stopped: true,
+      stderr: "",
+    });
     await initTimeout.done;
 
     const oversize = actorFixture({ skipResponse: "initialize" });
@@ -612,7 +860,12 @@ test("initialize timeout, raw line cap, and rejected stop preserve bounded owner
     expect(await stopRejected.actor.dispose()).toEqual({ kind: "pending" });
     expect(stopRejected.stopCalls()).toBe(1);
     expect(stopRejected.actor.snapshot().state).toBe("cleanup-pending");
-    stopRejected.finish({ exitCode: 0, timedOut: false, stopped: true, stderr: "" });
+    stopRejected.finish({
+      exitCode: 0,
+      timedOut: false,
+      stopped: true,
+      stderr: "",
+    });
     await stopRejected.done;
     expect(stopRejected.actor.snapshot().state).toBe("cleanup-pending");
   } finally {

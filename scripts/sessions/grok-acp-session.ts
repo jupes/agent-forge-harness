@@ -1,26 +1,32 @@
 import { isAbsolute, resolve as resolvePath } from "node:path";
 import {
+  type InteractiveSupervised,
+  type InteractiveSuperviseOptions,
+  supervise,
+} from "../executors/supervisor";
+import type { ChildExit } from "../executors/types";
+import {
   ACP_WIRE_LIMITS,
   type AcpRpcId,
   type AcpServerFrame,
   decodeAcpServerFrame,
   encodeAcpClientRequest,
 } from "./acp-wire";
-import { reduceGrokInitialize, type GrokConnectionState } from "./grok-acp-initialize";
 import {
-  supervise,
-  type InteractiveSuperviseOptions,
-  type InteractiveSupervised,
-} from "../executors/supervisor";
-import type { ChildExit } from "../executors/types";
+  type GrokConnectionState,
+  reduceGrokInitialize,
+} from "./grok-acp-initialize";
 
 const PROTOCOL_DEADLINE_MS = 30_000;
 const INTERACTIVE_LIFETIME_MS = 30 * 60_000;
 const MAX_STDIN_BYTES = 1_048_576;
 const STDIN_TIMEOUT_MS = 5_000;
 const SESSION_ID_MAX_CODE_UNITS = 200;
-const invalid = () => new Error("The private Grok ACP session did not match its owned protocol.");
-type SupervisorOwner = (options: InteractiveSuperviseOptions) => InteractiveSupervised;
+const invalid = () =>
+  new Error("The private Grok ACP session did not match its owned protocol.");
+type SupervisorOwner = (
+  options: InteractiveSuperviseOptions,
+) => InteractiveSupervised;
 type RpcMethod = "initialize" | "session/new";
 type PendingRpc = {
   id: AcpRpcId;
@@ -74,10 +80,12 @@ function sameRpcId(left: AcpRpcId, right: AcpRpcId): boolean {
 }
 
 function isSessionId(value: unknown): value is string {
-  return typeof value === "string" &&
+  return (
+    typeof value === "string" &&
     value.length >= 1 &&
     value.length <= SESSION_ID_MAX_CODE_UNITS &&
-    !/[\p{Cc}\p{Cs}]/u.test(value);
+    !/[\p{Cc}\p{Cs}]/u.test(value)
+  );
 }
 
 export function createGrokAcpSessionActor(options: {
@@ -100,13 +108,19 @@ export function createGrokAcpSessionActor(options: {
   let nextId = 0;
   let pending: PendingRpc | null = null;
   let failure: FailureCode | null = null;
-  let closeActor: () => Promise<GrokCleanupResult> = async () => ({ kind: "pending" });
+  let closeActor: () => Promise<GrokCleanupResult> = async () => ({
+    kind: "pending",
+  });
   let invalidateSignal: (error: ActorFailure) => void = () => undefined;
-  const invalidation = new Promise<never>((_, reject) => { invalidateSignal = reject; });
+  const invalidation = new Promise<never>((_, reject) => {
+    invalidateSignal = reject;
+  });
   void invalidation.catch(() => undefined);
   let doneSettled = false;
 
-  const publish = (next: GrokActorSnapshot) => { state = Object.freeze({ ...next }); };
+  const publish = (next: GrokActorSnapshot) => {
+    state = Object.freeze({ ...next });
+  };
   const snapshot = (): GrokActorSnapshot => Object.freeze({ ...state });
   const currentState = (): GrokActorSnapshot => state;
   const invalidate = (reason: FailureCode) => {
@@ -130,7 +144,8 @@ export function createGrokAcpSessionActor(options: {
       (result: ChildExit) => {
         if (doneSettled) return;
         doneSettled = true;
-        doneOutcome = result.ownedTreeReleased === true ? "released" : "unknown";
+        doneOutcome =
+          result.ownedTreeReleased === true ? "released" : "unknown";
         currentHandle = null;
         sessionId = null;
         if (pending) {
@@ -139,9 +154,15 @@ export function createGrokAcpSessionActor(options: {
         }
         if (!failure) failure = "provider-exited";
         invalidateSignal(new ActorFailure(failure));
-        publish(doneOutcome === "released"
-          ? { state: "closed", owner: "released" }
-          : { state: "cleanup-pending", owner: "retained", invalidated: true });
+        publish(
+          doneOutcome === "released"
+            ? { state: "closed", owner: "released" }
+            : {
+                state: "cleanup-pending",
+                owner: "retained",
+                invalidated: true,
+              },
+        );
         if (doneOutcome !== "released") void closeActor();
       },
       () => {
@@ -154,7 +175,11 @@ export function createGrokAcpSessionActor(options: {
         pending = null;
         if (!failure) failure = "provider-exited";
         invalidateSignal(new ActorFailure(failure));
-        publish({ state: "cleanup-pending", owner: "retained", invalidated: true });
+        publish({
+          state: "cleanup-pending",
+          owner: "retained",
+          invalidated: true,
+        });
         void closeActor();
       },
     );
@@ -194,13 +219,17 @@ export function createGrokAcpSessionActor(options: {
   };
 
   const allocateId = (): AcpRpcId => {
-    if (!Number.isSafeInteger(nextId + 1)) throw new ActorFailure("invalid-frame");
+    if (!Number.isSafeInteger(nextId + 1))
+      throw new ActorFailure("invalid-frame");
     nextId += 1;
     return nextId;
   };
 
   const assertActive = () => {
-    if (failure || (state.state !== "initializing" && state.state !== "opening"))
+    if (
+      failure ||
+      (state.state !== "initializing" && state.state !== "opening")
+    )
       throw new ActorFailure(failure ?? "provider-exited");
   };
 
@@ -212,12 +241,18 @@ export function createGrokAcpSessionActor(options: {
     return value;
   };
 
-  const withinDeadline = async <T>(work: Promise<T>, deadlineAt: number): Promise<T> => {
+  const withinDeadline = async <T>(
+    work: Promise<T>,
+    deadlineAt: number,
+  ): Promise<T> => {
     const remaining = deadlineAt - performance.now();
     if (remaining <= 0) throw new ActorFailure("handshake-timeout");
     let timer: ReturnType<typeof setTimeout> | undefined;
     const timeout = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new ActorFailure("handshake-timeout")), remaining);
+      timer = setTimeout(
+        () => reject(new ActorFailure("handshake-timeout")),
+        remaining,
+      );
     });
     try {
       const guardedWork = Promise.resolve(work);
@@ -243,7 +278,13 @@ export function createGrokAcpSessionActor(options: {
       resolveFrame = resolve;
       rejectFrame = reject;
     });
-    pending = { id, method, settled: false, resolve: resolveFrame, reject: rejectFrame };
+    pending = {
+      id,
+      method,
+      settled: false,
+      resolve: resolveFrame,
+      reject: rejectFrame,
+    };
     void response.catch(() => undefined);
     const wire = encodeAcpClientRequest({ id, method, params });
     try {
@@ -297,18 +338,22 @@ export function createGrokAcpSessionActor(options: {
 
   const startAndOpen = (): Promise<GrokStartResult> => {
     if (state.state === "initializing" || state.state === "opening") {
-      return startPromise ?? Promise.resolve({
-        kind: "failed",
-        reason: "already-closing",
-        cleanup: { kind: "pending" },
-      });
+      return (
+        startPromise ??
+        Promise.resolve({
+          kind: "failed",
+          reason: "already-closing",
+          cleanup: { kind: "pending" },
+        })
+      );
     }
     if (state.state === "opened" && startPromise) return startPromise;
     if (state.state !== "cold") {
       return Promise.resolve({
         kind: "failed",
         reason: state.state === "closed" ? "closed" : "already-closing",
-        cleanup: state.state === "closed" ? { kind: "released" } : { kind: "pending" },
+        cleanup:
+          state.state === "closed" ? { kind: "released" } : { kind: "pending" },
       });
     }
     if (
@@ -318,8 +363,8 @@ export function createGrokAcpSessionActor(options: {
       resolvePath(cwd) !== cwd ||
       executable.includes("\0") ||
       cwd.includes("\0") ||
-      Object.entries(env).some(([key, value]) =>
-        !key || key.includes("\0") || value.includes("\0"),
+      Object.entries(env).some(
+        ([key, value]) => !key || key.includes("\0") || value.includes("\0"),
       )
     ) {
       state = { state: "closed", owner: "released" };
@@ -342,7 +387,9 @@ export function createGrokAcpSessionActor(options: {
           stdinTimeoutMs: STDIN_TIMEOUT_MS,
           maxLineBytes: ACP_WIRE_LIMITS.lineBytes,
           onLine: readLine,
-          onOutputError() { invalidate("output-limit"); },
+          onOutputError() {
+            invalidate("output-limit");
+          },
         };
         child = supervisor(launch);
         const owned = child;
@@ -350,34 +397,52 @@ export function createGrokAcpSessionActor(options: {
         await awaitLifecycle(Promise.resolve(owned.providerPid));
         assertActive();
         const deadlineAt = performance.now() + PROTOCOL_DEADLINE_MS;
-        const initialize = await send(owned, "initialize", {
-          protocolVersion: 1,
-          clientCapabilities: {},
-          clientInfo: { name: "agent-forge-harness", version: "1" },
-        }, deadlineAt);
+        const initialize = await send(
+          owned,
+          "initialize",
+          {
+            protocolVersion: 1,
+            clientCapabilities: {},
+            clientInfo: { name: "agent-forge-harness", version: "1" },
+          },
+          deadlineAt,
+        );
         assertActive();
-        if (currentState().state !== "initializing") throw new ActorFailure(failure ?? "provider-exited");
-        if ("error" in initialize.frame) throw new ActorFailure("initialize-rejected");
+        if (currentState().state !== "initializing")
+          throw new ActorFailure(failure ?? "provider-exited");
+        if ("error" in initialize.frame)
+          throw new ActorFailure("initialize-rejected");
         const initialized: GrokConnectionState = reduceGrokInitialize(
           { kind: "initialize-pending", requestId: initialize.id },
           initialize.frame,
         );
-        if (initialized.kind !== "initialized") throw new ActorFailure("initialize-rejected");
+        if (initialized.kind !== "initialized")
+          throw new ActorFailure("initialize-rejected");
         assertActive();
         publish({ state: "opening", owner: "retained" });
-        const opened = await send(owned, "session/new", {
-          cwd,
-          mcpServers: [],
-        }, deadlineAt);
+        const opened = await send(
+          owned,
+          "session/new",
+          {
+            cwd,
+            mcpServers: [],
+          },
+          deadlineAt,
+        );
         assertActive();
-        if (currentState().state !== "opening") throw new ActorFailure(failure ?? "provider-exited");
+        if (currentState().state !== "opening")
+          throw new ActorFailure(failure ?? "provider-exited");
         if ("error" in opened.frame || !("result" in opened.frame))
           throw new ActorFailure("session-open-rejected");
         const body = opened.frame.result;
         if (
-          typeof body !== "object" || body === null || Array.isArray(body) ||
-          !("sessionId" in body) || !isSessionId(body.sessionId)
-        ) throw new ActorFailure("session-open-rejected");
+          typeof body !== "object" ||
+          body === null ||
+          Array.isArray(body) ||
+          !("sessionId" in body) ||
+          !isSessionId(body.sessionId)
+        )
+          throw new ActorFailure("session-open-rejected");
         sessionId = body.sessionId;
         const handle = Object.freeze<GrokOpenedHandle>({
           kind: "grok-opened-session",
@@ -390,9 +455,12 @@ export function createGrokAcpSessionActor(options: {
         publish({ state: "opened", owner: "retained", handle });
         return { kind: "opened", handle };
       } catch (error) {
-        const code = error instanceof ActorFailure
-          ? error.code
-          : child ? "provider-exited" : "spawn-failed";
+        const code =
+          error instanceof ActorFailure
+            ? error.code
+            : child
+              ? "provider-exited"
+              : "spawn-failed";
         return await failureResult(code);
       }
     })();
