@@ -2113,3 +2113,88 @@ test("project create reservations preserve legacy catalogs, collide by exact UUI
   expect(catalog.createOperations).toHaveLength(2);
   expect(catalog.projects).toEqual([]);
 });
+
+test("protected project scope preview starts from the current project revision", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  const store = createProjectStore(h.home);
+  const catalog = await store.create(
+    {
+      slug: "scope-preview-causal",
+      name: "Scope Preview Causal",
+      description: "",
+      icon: "S",
+      workspaces: [
+        {
+          root: h.workspace,
+          repositories: [h.workspace],
+          epicIds: ["scope-preview-epic"],
+        },
+      ],
+    },
+    0,
+  );
+  const project = catalog.projects[0];
+  if (!project) throw new Error("scope preview project fixture missing");
+  h.bd.issues.set("scope-preview-epic", {
+    id: "scope-preview-epic",
+    title: "Scope preview epic",
+    issue_type: "epic",
+    priority: 2,
+    status: "open",
+    labels: ["project:scope-preview-causal"],
+    created_at: "2026-10-26T00:00:00.000Z",
+    updated_at: "2026-10-26T00:00:00.000Z",
+  });
+  h.bd.issues.set("scope-preview-task", {
+    id: "scope-preview-task",
+    title: "Scope preview task",
+    issue_type: "task",
+    priority: 2,
+    status: "open",
+    labels: ["project:scope-preview-causal"],
+    dependencies: [
+      {
+        issue_id: "scope-preview-task",
+        depends_on_id: "scope-preview-epic",
+        type: "parent-child",
+      },
+    ],
+    created_at: "2026-10-26T00:00:00.000Z",
+    updated_at: "2026-10-26T00:00:00.000Z",
+  });
+  h.bd.answer = (args) =>
+    args[0] === "export"
+      ? {
+          status: 0,
+          stdout: [...h.bd.issues.values()]
+            .map((issue) => JSON.stringify(issue))
+            .join("\n"),
+          stderr: "",
+        }
+      : undefined;
+
+  const catalogRead = await fetch(`${h.api}/projects`, {
+    headers: h.headers(h.hearth.token),
+  });
+  expect(catalogRead.status).toBe(200);
+  expect(await catalogRead.json()).toEqual({ ok: true, data: catalog, error: null });
+  const existingPreview = await fetch(
+    `${h.api}/projects/create-scope-preview?slug=scope-preview-causal&epicId=scope-preview-epic`,
+    { headers: h.headers(h.hearth.token) },
+  );
+  expect(existingPreview.status).toBe(200);
+  expect(await existingPreview.json()).toMatchObject({
+    ok: true,
+    data: { complete: true, scopeCount: 2 },
+    error: null,
+  });
+  expect(store.read()).toEqual(catalog);
+
+  const preview = await fetch(
+    `${h.api}/projects/${project.id}/settings/scope-preview?revision=${catalog.revision}&epicId=scope-preview-epic`,
+    { headers: h.headers(h.hearth.token) },
+  );
+  expect(preview.status).toBe(200);
+});
+
