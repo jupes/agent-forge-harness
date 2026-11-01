@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import { dirname, join } from "node:path";
-import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { dirname, join, relative, resolve } from "node:path";
+import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { CODEX_CHAT_DECISION_IDENTITIES } from "../../apps/desktop/src/codex-chat-decision-identities";
 import { expect, test, type CDPSession, type Page, type Request, type Route } from "@playwright/test";
 import { z } from "zod";
@@ -25,7 +25,7 @@ import {
 } from "../../types/inbox";
 import { openSettled } from "../e2e/fixtures";
 import { pageToken } from "../e2e/launch-link";
-import { HEARTH_HOME } from "../e2e/servers";
+import { DASHBOARD_URL, HEARTH_HOME } from "../e2e/servers";
 import { workspaceKey } from "../../scripts/projects/scope";
 import { alpha, beta, seedProjects, workspace } from "./project-fixtures";
 
@@ -69,10 +69,25 @@ function isRelevantInboxRequest(request: Request): boolean {
     (request.method() === "POST" && pathname.includes("/sessions/")) ||
     (request.method() === "GET" && pathname.includes("/sessions/") && url.searchParams.has("requestId"));
 }
+function isInitialGlobalRecovery(request: Request): boolean {
+  const url = new URL(request.url());
+  return request.method() === "GET" && url.origin === new URL(DASHBOARD_URL).origin && url.pathname === "/__agent-forge/inbox-dispositions/recovery" && url.search === "";
+}
 function watchRelevantRequests(page: Page) {
-  page.on("request", (request) => { if (isRelevantInboxRequest(request)) ownedRelevantRequests.add(request); });
-  page.on("requestfinished", (request) => { ownedRelevantRequests.delete(request); });
+  page.on("request", (request) => {
+    if (request.isNavigationRequest() && request.frame() === page.mainFrame() && !request.redirectedFrom()) {
+      if (inboxFirstDocumentNavigationSeen) inboxPhysicalWindowOpen = false;
+      else { inboxFirstDocumentNavigationSeen = true; inboxPhysicalWindowOpen = true; }
+    }
+    if (isRelevantInboxRequest(request)) ownedRelevantRequests.add(request);
+    if (isInitialGlobalRecovery(request)) recordInboxPhysical({ phase: inboxRecoveryPhase, time: performance.now(), event: "request-start", correlation: "unknown" });
+  });
+  page.on("requestfinished", (request) => {
+    if (isInitialGlobalRecovery(request)) recordInboxPhysical({ phase: inboxRecoveryPhase, time: performance.now(), event: "request-finished", correlation: "unknown" });
+    ownedRelevantRequests.delete(request);
+  });
   page.on("requestfailed", (request) => {
+    if (isInitialGlobalRecovery(request)) recordInboxPhysical({ phase: inboxRecoveryPhase, time: performance.now(), event: "request-failed", correlation: "unknown" });
     if (!ownedRelevantRequests.delete(request)) return;
     if (expectedRouteAborts.delete(request)) { observedExpectedRouteAborts.add(request); return; }
     const failure = request.failure();
@@ -80,6 +95,7 @@ function watchRelevantRequests(page: Page) {
   });
   page.on("response", (response) => {
     const request = response.request();
+    if (isInitialGlobalRecovery(request)) recordInboxPhysical({ phase: inboxRecoveryPhase, time: performance.now(), event: "response", status: response.status(), correlation: "unknown" });
     if (!ownedRelevantRequests.has(request)) return;
     let task!: Promise<void>;
     let finishTerminal!: () => void;
@@ -211,8 +227,227 @@ async function openDecisionTrace(page: Page, provider: "codex" | "gemini", appro
 const writeJournalKey = "agent-forge.desktop-bead-writes.v1";
 const writeJournalEntrySchema = z.object({ key: z.string(), projectId: z.string(), workspace: z.string(), action: z.string(), beadId: z.string(), title: z.string(), createdId: z.string().nullable(), stage: z.string(), phase: z.literal("unknown"), message: z.string() }).strict();
 const writeJournalSchema = z.object({ version: z.literal(1), entries: z.array(writeJournalEntrySchema) }).strict();
-const dispositionStatePath = join(HEARTH_HOME, "inbox-dispositions", "state.json");
+const dispositionDirectoryPath = join(HEARTH_HOME, "inbox-dispositions");
+const dispositionStatePath = join(dispositionDirectoryPath, "state.json");
 const dispositionMarkerPath = join(HEARTH_HOME, "projects", "inbox-dispositions.initialized");
+let priorDispositionDirectoryExisted: "absent" | "normal-directory" | "other" | null = null;
+let dispositionSnapshotCaptured = false;
+let sessionBaselineCaptured = false;
+let codexControlSnapshotCaptured = false;
+let fixtureMutationArmed = false;
+type InboxRecoveryPhase = "document-navigation" | "case2-initial-navigation" | "case4-initial-navigation" | "codex-beta-snooze" | "gemini-explicit-refresh" | "unknown";
+type InboxPhysicalEvent = {
+  phase: InboxRecoveryPhase;
+  time: number;
+  event: "request-start" | "response" | "request-finished" | "request-failed";
+  correlation: "unknown";
+  status?: number;
+};
+let inboxRecoveryPhysical: InboxPhysicalEvent[] = [];
+let inboxRecoveryOverflow = false;
+type InboxBrowserEvent = { ordinal: number; phase: InboxRecoveryPhase; time: number; event: "phase" | "fetch-start" | "signal-abort" | "headers" | "fetch-rejection"; signalPresence?: "absent" | "null" | "present" | "unknown"; initialAborted?: boolean | null; signalReason?: "unknown"; status?: number; contentLength?: "missing" | "invalid" | "over-cap" | "declared-within-cap"; rejection?: "abort-error" | "unknown" };
+const inboxBrowserEventSchema = z.object({ ordinal: z.number().int().nonnegative(), phase: z.enum(["document-navigation", "case2-initial-navigation", "case4-initial-navigation", "codex-beta-snooze", "gemini-explicit-refresh", "unknown"]), time: z.number().finite(), event: z.enum(["phase", "fetch-start", "signal-abort", "headers", "fetch-rejection"]), signalPresence: z.enum(["absent", "null", "present", "unknown"]).optional(), initialAborted: z.boolean().nullable().optional(), signalReason: z.literal("unknown").optional(), status: z.number().int().optional(), contentLength: z.enum(["missing", "invalid", "over-cap", "declared-within-cap"]).optional(), rejection: z.enum(["abort-error", "unknown"]).optional() }).strict();
+const inboxPhysicalEventSchema = z.object({ phase: z.enum(["document-navigation", "case2-initial-navigation", "case4-initial-navigation", "codex-beta-snooze", "gemini-explicit-refresh", "unknown"]), time: z.number().finite(), event: z.enum(["request-start", "response", "request-finished", "request-failed"]), correlation: z.literal("unknown"), status: z.number().int().optional() }).strict();
+let inboxRecoveryBrowserSnapshot: { state: "active" | "disabled" | "frozen" | "unknown"; events: unknown[]; overflow: boolean; instrumentationFailed: boolean; physical: InboxPhysicalEvent[]; physicalOverflow: boolean; windowOutcome: "normal-endpoint" | "cleanup-prefix" | "missing-document"; metadataMissing: boolean } | null = null;
+let inboxFirstDocumentNavigationSeen = false;
+let inboxPhysicalWindowOpen = false;
+let inboxRecoveryPhase: InboxRecoveryPhase = "document-navigation";
+function recordInboxPhysical(event: InboxPhysicalEvent) {
+  if (!inboxPhysicalWindowOpen) return;
+  if (inboxRecoveryPhysical.length >= 16) {
+    inboxRecoveryOverflow = true;
+    return;
+  }
+  inboxRecoveryPhysical.push(event);
+}
+type InitialRecoveryCapture = {
+  qualify(): Promise<void>;
+  close(): void;
+};
+function observeInitialRecovery(
+  page: Page,
+  phase: "case2-initial-navigation" | "case4-initial-navigation",
+): InitialRecoveryCapture {
+  inboxRecoveryPhase = phase;
+  const started = new Set<Request>();
+  const responses: Array<{ response: import("@playwright/test").Response; request: Request }> = [];
+  const terminal = new Set<Request>();
+  const failed = new Set<Request>();
+  const matches = isInitialGlobalRecovery;
+  const onStarted = (request: Request) => { if (matches(request)) started.add(request); };
+  const onResponse = (response: import("@playwright/test").Response) => {
+    if (matches(response.request())) responses.push({ response, request: response.request() });
+  };
+  const onFinished = (request: Request) => {
+    if (matches(request)) terminal.add(request);
+  };
+  const onFailed = (request: Request) => {
+    if (matches(request)) { terminal.add(request); failed.add(request); }
+  };
+  page.on("request", onStarted);
+  page.on("response", onResponse);
+  page.on("requestfinished", onFinished);
+  page.on("requestfailed", onFailed);
+  const close = () => {
+    page.off("request", onStarted);
+    page.off("response", onResponse);
+    page.off("requestfinished", onFinished);
+    page.off("requestfailed", onFailed);
+  };
+  ownedTraceClosers.push(close);
+  return {
+    close,
+    async qualify() {
+      close();
+      const found = responses.filter((item) => terminal.has(item.request));
+      if (started.size !== 1 || responses.length !== 1 || found.length !== 1 || terminal.size !== 1 || failed.size !== 0 || found[0]!.request !== [...started][0])
+        throw Error("Initial global recovery did not have one exact started, responded, successful terminal request.");
+      const response = found[0]!.response;
+      if (response.status() !== 200)
+        throw Error("Initial global recovery was not HTTP 200.");
+      const parsed = z.object({
+        ok: z.literal(true),
+        data: inboxDispositionRecoverySchema,
+        error: z.null(),
+      }).strict().safeParse(await response.json());
+      if (!parsed.success)
+        throw Error("Initial global recovery did not contain the strict current schema.");
+    },
+  };
+}
+async function installInboxRecoveryObserver(page: Page) {
+  await page.addInitScript(() => {
+    type BrowserEvent = {
+      ordinal: number;
+      phase: InboxRecoveryPhase;
+      time: number;
+      event: "phase" | "fetch-start" | "signal-abort" | "headers" | "fetch-rejection";
+      initialAborted?: boolean | null;
+      signalPresence?: "absent" | "null" | "present" | "unknown";
+      signalReason?: "unknown";
+      status?: number;
+      contentLength?: "missing" | "invalid" | "over-cap" | "declared-within-cap";
+      rejection?: "abort-error" | "unknown";
+    };
+    type Host = Window & {
+      __afInboxEvents?: BrowserEvent[];
+      __afInboxOverflow?: boolean;
+      __afInboxOrdinal?: number;
+      __afInboxPhase?: InboxRecoveryPhase;
+      __afInboxSetPhase?: (phase: InboxRecoveryPhase) => void;
+      __afInboxRestore?: () => "restored" | "changed" | "mismatch";
+      __afInboxWindowState?: "active" | "disabled" | "frozen" | "unknown";
+      __afInboxFreeze?: () => void;
+      __afInboxInstrumentationFailed?: boolean;
+      __afInboxPreviousSnapshot?: unknown;
+    };
+    const host = window as Host;
+    const original = window.fetch;
+    const listenerScope = new AbortController();
+    const events: BrowserEvent[] = [];
+    let state: "active" | "disabled" | "frozen" | "unknown" = "active";
+    let previousSnapshot: unknown = null;
+    try {
+      if (sessionStorage.getItem("__afInboxTraceClaimed") !== null) {
+        state = "disabled";
+        const saved = sessionStorage.getItem("__afInboxTraceSnapshot");
+        if (saved === null || saved.length > 8192) state = "unknown";
+        else previousSnapshot = JSON.parse(saved);
+      } else {
+        sessionStorage.setItem("__afInboxTraceClaimed", "1");
+        sessionStorage.setItem("__afInboxTraceSnapshot", JSON.stringify({ events: [], overflow: false, instrumentationFailed: false }));
+      }
+    } catch { state = "unknown"; previousSnapshot = null; }
+    host.__afInboxEvents = events;
+    host.__afInboxOverflow = false;
+    host.__afInboxOrdinal = 0;
+    host.__afInboxPhase = "document-navigation";
+    host.__afInboxWindowState = state;
+    host.__afInboxInstrumentationFailed = state === "unknown";
+    host.__afInboxPreviousSnapshot = previousSnapshot;
+    const failObservation = () => { try { host.__afInboxInstrumentationFailed = true; sessionStorage.setItem("__afInboxTraceSnapshot", JSON.stringify({ events, overflow: host.__afInboxOverflow ?? true, instrumentationFailed: true })); } catch { try { sessionStorage.removeItem("__afInboxTraceSnapshot"); } catch { /* Missing prior snapshot remains inconclusive. */ } } };
+    host.__afInboxFreeze = () => { if (host.__afInboxWindowState === "active") host.__afInboxWindowState = "frozen"; };
+    const persistSnapshot = () => { try { sessionStorage.setItem("__afInboxTraceSnapshot", JSON.stringify({ events, overflow: host.__afInboxOverflow ?? true, instrumentationFailed: host.__afInboxInstrumentationFailed ?? true })); } catch { failObservation(); } };
+    const record = (entry: BrowserEvent) => {
+      if (host.__afInboxWindowState !== "active") return;
+      if (events.length >= 16) { host.__afInboxOverflow = true; persistSnapshot(); return; }
+      events.push(entry);
+      persistSnapshot();
+    };
+    host.__afInboxSetPhase = (phase) => {
+      host.__afInboxPhase = phase;
+      record({ ordinal: host.__afInboxOrdinal ?? 0, phase, time: performance.now(), event: "phase" });
+    };
+    window.addEventListener("pagehide", () => host.__afInboxFreeze?.(), { once: true, signal: listenerScope.signal });
+    const wrapped = new Proxy(original, {
+      apply(target, thisArg, args: Parameters<typeof fetch>) {
+        const input = args[0];
+        const init = args[1];
+        let match = false;
+        let signal: AbortSignal | null | undefined;
+        let signalPresence: "absent" | "null" | "present" | "unknown" = "absent";
+        let initialAborted: boolean | null = null;
+        try {
+          const url = new URL(input instanceof Request ? input.url : input instanceof URL ? input.href : input, location.href);
+          const method = init?.method ?? (input instanceof Request ? input.method : "GET");
+          match = method.toUpperCase() === "GET" &&
+            url.origin === location.origin &&
+            url.pathname === "/__agent-forge/inbox-dispositions/recovery" &&
+            url.search === "";
+        } catch { /* Match failure must not change fetch behavior. */ }
+        try {
+          if (init?.signal === undefined) signal = input instanceof Request ? input.signal : undefined;
+          else signal = init.signal;
+          if (signal === undefined) signalPresence = "absent";
+          else if (signal === null) signalPresence = "null";
+          else { signalPresence = "present"; initialAborted = signal.aborted; }
+        } catch { signalPresence = "unknown"; initialAborted = null; signal = undefined; }
+        const promise = Reflect.apply(target, thisArg, args);
+        if (!match || state !== "active") return promise;
+        try {
+          const ordinal = (host.__afInboxOrdinal ?? 0) + 1;
+          host.__afInboxOrdinal = ordinal;
+          const phase = host.__afInboxPhase ?? "unknown";
+          record({ ordinal, phase, time: performance.now(), event: "fetch-start", signalPresence, initialAborted });
+          signal?.addEventListener("abort", () => {
+            try { record({ ordinal, phase, time: performance.now(), event: "signal-abort", signalReason: "unknown" }); } catch { failObservation(); }
+          }, { once: true, signal: listenerScope.signal });
+          void Promise.resolve(promise).then((response) => {
+            try {
+              const length = response.headers.get("content-length");
+              const category = length === null ? "missing" : /^\d+$/.test(length) ? Number(length) > 4259840 ? "over-cap" : "declared-within-cap" : "invalid";
+              record({ ordinal, phase, time: performance.now(), event: "headers", status: response.status, contentLength: category });
+            } catch { failObservation(); }
+          }, (error: unknown) => {
+            try { record({ ordinal, phase, time: performance.now(), event: "fetch-rejection", rejection: error instanceof DOMException && error.name === "AbortError" ? "abort-error" : "unknown" }); } catch { failObservation(); }
+          }).catch(() => { failObservation(); });
+        } catch { failObservation(); }
+        return promise;
+      },
+    });
+    window.fetch = wrapped;
+    host.__afInboxRestore = () => {
+      listenerScope.abort();
+      if (window.fetch === original) return "changed";
+      if (window.fetch !== wrapped) return "mismatch";
+      window.fetch = original;
+      return "restored";
+    };
+  });
+}
+async function freezeInboxRecoveryWindow(page: Page) {
+  if (page.isClosed()) return;
+  const observed = await page.evaluate(() => { const host = window as Window & { __afInboxEvents?: unknown[]; __afInboxOverflow?: boolean; __afInboxWindowState?: "active" | "disabled" | "frozen" | "unknown"; __afInboxFreeze?: () => void; __afInboxInstrumentationFailed?: boolean }; host.__afInboxFreeze?.(); return { state: host.__afInboxWindowState ?? "unknown", events: host.__afInboxEvents ? host.__afInboxEvents.slice(0, 17) : null, overflow: host.__afInboxOverflow ?? null, instrumentationFailed: host.__afInboxInstrumentationFailed ?? true }; });
+  inboxRecoveryBrowserSnapshot = { state: observed.state, events: observed.events ?? [], overflow: observed.overflow ?? true, instrumentationFailed: observed.instrumentationFailed, physical: inboxRecoveryPhysical.slice(0, 16), physicalOverflow: inboxRecoveryOverflow, windowOutcome: "normal-endpoint", metadataMissing: observed.events === null || !inboxFirstDocumentNavigationSeen };
+}
+async function markInboxRecoveryPhase(page: Page, phase: "codex-beta-snooze" | "gemini-explicit-refresh") {
+  inboxRecoveryPhase = phase;
+  await page.evaluate((value) => {
+    const host = window as Window & { __afInboxSetPhase?: (tag: string) => void };
+    if (typeof host.__afInboxSetPhase !== "function") throw Error("Inbox passive phase marker is missing.");
+    host.__afInboxSetPhase(value);
+  }, phase);
+}
 let priorDispositionState: Buffer | null = null;
 let priorDispositionMarker: Buffer | null = null;
 const sessionsPath = join(HEARTH_HOME, "sessions", "registry.json");
@@ -385,31 +620,117 @@ function isPermissionDispositionRequest(body: unknown): boolean {
   );
 }
 
-test.beforeEach(({ page }) => {
+test.beforeEach(async ({ page }) => {
+  sessionBaselineCaptured = false;
+  codexControlSnapshotCaptured = false;
+  dispositionSnapshotCaptured = false;
+  fixtureMutationArmed = false;
+  priorSessions = new Set();
+  priorCodexControl = null;
+  priorDispositionState = null;
+  priorDispositionMarker = null;
+  priorDispositionDirectoryExisted = null;
+  savedGeminiControl = null;
+  geminiControlCaptured = false;
+  inboxRecoveryBrowserSnapshot = null;
+  inboxFirstDocumentNavigationSeen = false;
+  inboxPhysicalWindowOpen = false;
   resetOwnedRouteFailure();
   if (ownedRelevantRequests.size || pendingResponseFinishes.size || completedRouteFailures.size || expectedRouteAborts.size || pendingCleanupObservers.size || cleanupOperationFailures.size) throw Error("Previous Inbox request, response, or route failure state did not settle.");
   watchRelevantRequests(page);
+  inboxRecoveryPhysical = [];
+  inboxRecoveryOverflow = false;
+  inboxRecoveryPhase = "document-navigation";
+  await installInboxRecoveryObserver(page);
   if (pendingRouteTasks.size) throw Error("Previous Inbox route work did not settle.");
   if (ownedCdpSessions.length) throw Error("Previous Inbox CDP session did not detach.");
   if (ownedRoutes.length) throw Error("Previous Inbox routes did not detach.");
-  priorSessions = new Set(sessions().map((session) => session.id));
+  try {
+    const registry = ownedCodingSessionSchema.array().parse(JSON.parse(readFileSync(sessionsPath, "utf8")).records);
+    priorSessions = new Set(registry.map((session) => session.id));
+  } catch (error) {
+    if (!(error && typeof error === "object" && "code" in error && error.code === "ENOENT")) throw error;
+    priorSessions = new Set();
+  }
+  sessionBaselineCaptured = true;
   priorCodexControl = existsSync(codexControlPath) ? readFileSync(codexControlPath) : null;
+  codexControlSnapshotCaptured = true;
+  try {
+    const priorDirectory = lstatSync(dispositionDirectoryPath);
+    priorDispositionDirectoryExisted = priorDirectory.isDirectory() && !priorDirectory.isSymbolicLink() ? "normal-directory" : "other";
+    if (priorDispositionDirectoryExisted === "other") throw Error("Prior Inbox disposition leaf has an invalid type; fixture writes are refused.");
+  } catch (error) {
+    if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") priorDispositionDirectoryExisted = "absent";
+    else throw error;
+  }
   priorDispositionState = existsSync(dispositionStatePath)
     ? readFileSync(dispositionStatePath)
     : null;
   priorDispositionMarker = existsSync(dispositionMarkerPath)
     ? readFileSync(dispositionMarkerPath)
     : null;
+  dispositionSnapshotCaptured = true;
+  fixtureMutationArmed = true;
   seedProjects();
   writeFileSync(
     join(HEARTH_HOME, "codex-chat-fixture-mode.json"),
     JSON.stringify("approval-command"),
   );
 });
-
-test.afterEach(async ({ page }) => {
+test.afterEach(async ({ page }, testInfo) => {
   const cleanupErrors = new Set<unknown>();
   const cleanupDeadline = performance.now() + 5_000;
+  const captureAndAttach = async () => {
+    let observed: { state: "active" | "disabled" | "frozen" | "unknown"; events: unknown[] | null; overflow: boolean | null; instrumentationFailed: boolean; windowOutcome: "cleanup-prefix" | "missing-document"; metadataMissing: boolean; restore: "restored" | "changed" | "mismatch" | null } | null = null;
+    let captureUnavailable = false;
+    if (!page.isClosed()) {
+      try {
+        observed = await page.evaluate((physicalAvailable) => {
+          const host = window as Window & { __afInboxEvents?: unknown[]; __afInboxOverflow?: boolean; __afInboxRestore?: () => "restored" | "changed" | "mismatch"; __afInboxWindowState?: "active" | "disabled" | "frozen" | "unknown"; __afInboxFreeze?: () => void; __afInboxInstrumentationFailed?: boolean; __afInboxPreviousSnapshot?: unknown };
+          const state = host.__afInboxWindowState ?? "unknown";
+          const previous = host.__afInboxPreviousSnapshot;
+          let previousEvents: unknown[] | null = null;
+          let previousOverflow: boolean | null = null;
+          let previousInstrumentationFailed: boolean | null = null;
+          let previousShapeValid = false;
+          if (typeof previous === "object" && previous !== null) {
+            previousShapeValid = Object.keys(previous).sort().join(",") === "events,instrumentationFailed,overflow";
+            if ("events" in previous && Array.isArray(previous.events)) previousEvents = previous.events.slice(0, 17);
+            if ("overflow" in previous && typeof previous.overflow === "boolean") previousOverflow = previous.overflow;
+            if ("instrumentationFailed" in previous && typeof previous.instrumentationFailed === "boolean") previousInstrumentationFailed = previous.instrumentationFailed;
+          }
+          const usingPreviousDocument = state === "disabled";
+          if (!usingPreviousDocument) host.__afInboxFreeze?.();
+          const events = usingPreviousDocument ? previousEvents : host.__afInboxEvents ? host.__afInboxEvents.slice(0, 17) : null;
+          const overflow = usingPreviousDocument ? previousOverflow : host.__afInboxOverflow ?? null;
+          const instrumentationFailed = usingPreviousDocument ? previousInstrumentationFailed : host.__afInboxInstrumentationFailed ?? true;
+          const windowOutcome = usingPreviousDocument ? events === null ? "missing-document" : "cleanup-prefix" : physicalAvailable ? "cleanup-prefix" : "missing-document";
+          const observedState = usingPreviousDocument && events !== null ? "frozen" : state;
+          const restore = typeof host.__afInboxRestore === "function" ? host.__afInboxRestore() : null;
+          return { state: observedState, events, overflow, instrumentationFailed: instrumentationFailed ?? true, windowOutcome, metadataMissing: events === null || overflow === null || instrumentationFailed === null || usingPreviousDocument && !previousShapeValid || !physicalAvailable, restore };
+        }, inboxFirstDocumentNavigationSeen);
+      } catch { captureUnavailable = true; }
+    }
+    if (!inboxRecoveryBrowserSnapshot && observed) inboxRecoveryBrowserSnapshot = { state: observed.state, events: observed.events ?? [], overflow: observed.overflow ?? true, instrumentationFailed: observed.instrumentationFailed, physical: inboxRecoveryPhysical.slice(0, 16), physicalOverflow: inboxRecoveryOverflow, windowOutcome: observed.windowOutcome, metadataMissing: observed.metadataMissing };
+    if (!inboxRecoveryBrowserSnapshot) inboxRecoveryBrowserSnapshot = { state: "unknown", events: [], overflow: true, instrumentationFailed: true, physical: inboxRecoveryPhysical.slice(0, 16), physicalOverflow: inboxRecoveryOverflow, windowOutcome: "missing-document", metadataMissing: true };
+    const restoreFailure = Boolean(observed && observed.restore !== "restored");
+    const rawEvents = inboxRecoveryBrowserSnapshot.events;
+    const parsedEvents = rawEvents.slice(0, 16).map((event) => inboxBrowserEventSchema.safeParse(event));
+    const browserEvents = parsedEvents.every((result) => result.success) ? parsedEvents.map((result) => result.success ? result.data : null) : [];
+    const rawPhysical = inboxRecoveryBrowserSnapshot.physical;
+    const parsedPhysical = rawPhysical.slice(0, 16).map((event) => inboxPhysicalEventSchema.safeParse(event));
+    const physicalEvents = parsedPhysical.every((result) => result.success) ? parsedPhysical.map((result) => result.success ? result.data : null) : [];
+    const targetPhase = inboxRecoveryPhase === "codex-beta-snooze" || inboxRecoveryPhase === "gemini-explicit-refresh" ? inboxRecoveryPhase : null;
+    const boundedAndValid = browserEvents.length === rawEvents.length && physicalEvents.length === rawPhysical.length && rawEvents.length <= 16 && rawPhysical.length <= 16;
+    const noOverflow = !inboxRecoveryBrowserSnapshot.overflow && !inboxRecoveryBrowserSnapshot.physicalOverflow;
+    const noInstrumentationFailure = !inboxRecoveryBrowserSnapshot.instrumentationFailed;
+    const coverageComplete = inboxRecoveryBrowserSnapshot.windowOutcome === "normal-endpoint" && inboxRecoveryBrowserSnapshot.state === "frozen" && targetPhase !== null && browserEvents.some((event) => event?.event === "phase" && event.phase === targetPhase) && !inboxRecoveryBrowserSnapshot.metadataMissing && boundedAndValid && noOverflow && noInstrumentationFailure;
+    const trace = { version: 1, window: "first injected document only; physical diagnostics stop at the next main-frame document request; later documents are not collected", expectedTargetPhase: targetPhase ?? "none", windowOutcome: inboxRecoveryBrowserSnapshot.windowOutcome, coverageComplete, state: inboxRecoveryBrowserSnapshot.state, browser: browserEvents, physical: physicalEvents, overflow: !noOverflow || rawEvents.length > 16 || rawPhysical.length > 16, metadataValid: boundedAndValid, metadataMissing: inboxRecoveryBrowserSnapshot.metadataMissing || !boundedAndValid, instrumentationFailed: !noInstrumentationFailure, wrapperOwnership: observed ? observed.restore ?? "missing" : "page-closed", correlation: "unknown", causalClassification: "inconclusive", abortsRemainFatal: true };
+    if (testInfo.status !== testInfo.expectedStatus) await testInfo.attach("inbox-recovery-passive-trace.json", { body: Buffer.from(JSON.stringify(trace)), contentType: "application/json" });
+    if (captureUnavailable) throw Error("Inbox trace document became unavailable during cleanup capture.");
+    if (restoreFailure) throw Error("Inbox passive fetch wrapper ownership is missing or changed before cleanup.");
+  };
+  try { await withinCleanupDeadline(captureAndAttach(), cleanupDeadline, "Inbox trace capture, validation, restoration, and attachment"); } catch (error) { cleanupErrors.add(error); }
   let sessionChoiceInvalidated = true;
   let routeRemovalComplete = true;
   let cdpSessionsDetached = true;
@@ -459,17 +780,19 @@ test.afterEach(async ({ page }) => {
     try { await withinCleanupDeadline(session.detach(), cleanupDeadline, "Owned CDP detach"); }
     catch (error) { cleanupErrors.add(error); cdpSessionsDetached = false; ownedCdpSessions.push(session); }
   }
-  let sessionsSettled = true;
+  let sessionsSettled = fixtureMutationArmed && sessionBaselineCaptured;
   let newSessions: ReturnType<typeof sessions> = [];
-  try {
-    newSessions = ownedCodingSessionSchema
-      .array()
-      .parse(JSON.parse(readFileSync(sessionsPath, "utf8")).records)
-      .filter((item) => !priorSessions.has(item.id));
-  } catch (error) {
-    sessionsSettled = false;
-    cleanupErrors.add(error);
-  }
+  if (fixtureMutationArmed && sessionBaselineCaptured) {
+    try {
+      newSessions = ownedCodingSessionSchema
+        .array()
+        .parse(JSON.parse(readFileSync(sessionsPath, "utf8")).records)
+        .filter((item) => !priorSessions.has(item.id));
+    } catch (error) {
+      sessionsSettled = false;
+      cleanupErrors.add(error);
+    }
+  } else if (fixtureMutationArmed) cleanupErrors.add(Error("Provider cleanup skipped because the session baseline was not captured before fixture mutation."));
   for (const session of newSessions) {
     try {
       const active = savedSession(session.id).turns.find((turn) =>
@@ -525,15 +848,18 @@ test.afterEach(async ({ page }) => {
   if (expectedRouteAborts.size) cleanupErrors.add(Error("An intentional route abort did not reach a terminal requestfailed event."));
   const routesQuiesced = pendingRouteTasks.size === 0 && ownedRelevantRequests.size === 0 && pendingResponseFinishes.size === 0 && expectedRouteAborts.size === 0 && sessionChoiceInvalidated && routeRemovalComplete && cdpSessionsDetached && ownedRoutes.length === 0 && ownedCdpSessions.length === 0 && cleanupOperationsSettled;
   if (!routesQuiesced) cleanupErrors.add(Error("Owned route/network work remains active; private fixture bytes will not be restored."));
-  try {
-    if (sessionsSettled && routesQuiesced) {
-      if (priorCodexControl) writeFileSync(codexControlPath, priorCodexControl);
-      else if (existsSync(codexControlPath)) unlinkSync(codexControlPath);
-    } else cleanupErrors.add(Error("Codex private control restoration was skipped because route work or its session did not settle."));
-  } catch (error) { cleanupErrors.add(error); }
+  if (fixtureMutationArmed) {
+    try {
+      if (codexControlSnapshotCaptured && sessionsSettled && routesQuiesced) {
+        if (priorCodexControl) writeFileSync(codexControlPath, priorCodexControl);
+        else if (existsSync(codexControlPath)) unlinkSync(codexControlPath);
+      } else cleanupErrors.add(Error("Codex private control restoration was skipped because its snapshot, route work, or session did not settle."));
+    } catch (error) { cleanupErrors.add(error); }
+  }
   priorCodexControl = null;
+  codexControlSnapshotCaptured = false;
   try {
-    if (geminiControlCaptured && sessionsSettled && routesQuiesced) {
+    if (geminiControlCaptured && fixtureMutationArmed && sessionsSettled && routesQuiesced) {
       if (savedGeminiControl)
         writeFileSync(geminiControlPath, savedGeminiControl);
       else if (existsSync(geminiControlPath)) unlinkSync(geminiControlPath);
@@ -541,28 +867,64 @@ test.afterEach(async ({ page }) => {
   } catch (error) {
     cleanupErrors.add(error);
   } finally {
-    if (geminiControlCaptured && (!sessionsSettled || !routesQuiesced)) cleanupErrors.add(Error("Gemini private control restoration was skipped because route work or its session did not settle."));
+    if (geminiControlCaptured && fixtureMutationArmed && (!sessionsSettled || !routesQuiesced)) cleanupErrors.add(Error("Gemini private control restoration was skipped because route work or its session did not settle."));
     savedGeminiControl = null;
     geminiControlCaptured = false;
   }
-  if (routesQuiesced && sessionsSettled) {
-    for (const [path, bytes] of [
-      [dispositionStatePath, priorDispositionState],
-      [dispositionMarkerPath, priorDispositionMarker],
-    ] as const) {
+  const dispositionLeafWasCreatedByCase = dispositionSnapshotCaptured && priorDispositionDirectoryExisted === "absent";
+  if (fixtureMutationArmed) {
+    if (!dispositionSnapshotCaptured) cleanupErrors.add(Error("Inbox disposition restoration skipped because its complete prior snapshot was not captured; private bytes were preserved."));
+    else if (routesQuiesced && sessionsSettled) {
+      let currentLeafSafe = false;
+      let currentLeafExists = false;
       try {
-        if (bytes !== null) {
-          mkdirSync(dirname(path), { recursive: true });
-          writeFileSync(path, bytes);
-        } else if (existsSync(path)) unlinkSync(path);
-      } catch (error) {
-        cleanupErrors.add(error);
+        if (relative(resolve(HEARTH_HOME), resolve(dispositionDirectoryPath)) !== "inbox-dispositions") throw Error("Inbox disposition leaf escaped the fixture home.");
+        try {
+          const leaf = lstatSync(dispositionDirectoryPath);
+          if (!leaf.isDirectory() || leaf.isSymbolicLink()) throw Error("Current Inbox disposition leaf is not a normal non-reparse directory; private state traversal was refused.");
+          currentLeafSafe = true;
+          currentLeafExists = true;
+        } catch (error) {
+          if (error && typeof error === "object" && "code" in error && error.code === "ENOENT" && priorDispositionDirectoryExisted === "absent") currentLeafSafe = true;
+          else if (error && typeof error === "object" && "code" in error && error.code === "ENOENT") throw Error("Previously existing Inbox disposition leaf is missing; private state traversal was refused.");
+          else throw error;
+        }
+      } catch (error) { cleanupErrors.add(error); }
+      let dispositionStateRestored = false;
+      if (currentLeafSafe) {
+        try {
+          if (!currentLeafExists && priorDispositionState === null) dispositionStateRestored = true;
+          else if (!currentLeafExists) throw Error("Inbox disposition state cannot be restored through a missing leaf.");
+          else if (priorDispositionState !== null) { writeFileSync(dispositionStatePath, priorDispositionState); dispositionStateRestored = true; }
+          else { if (existsSync(dispositionStatePath)) unlinkSync(dispositionStatePath); dispositionStateRestored = true; }
+        } catch (error) { cleanupErrors.add(error); }
       }
-    }
+      let dispositionMarkerRestored = false;
+      try {
+        if (priorDispositionMarker !== null) { mkdirSync(dirname(dispositionMarkerPath), { recursive: true }); writeFileSync(dispositionMarkerPath, priorDispositionMarker); }
+        else if (existsSync(dispositionMarkerPath)) unlinkSync(dispositionMarkerPath);
+        dispositionMarkerRestored = true;
+      } catch (error) { cleanupErrors.add(error); }
+      const dispositionFilesRestored = dispositionStateRestored && dispositionMarkerRestored;
+      if (dispositionFilesRestored && dispositionLeafWasCreatedByCase && currentLeafExists) {
+        try {
+          const leaf = lstatSync(dispositionDirectoryPath);
+          if (!leaf.isDirectory() || leaf.isSymbolicLink()) throw Error("New Inbox disposition leaf is not a normal non-reparse directory.");
+          if (readdirSync(dispositionDirectoryPath).length !== 0) throw Error("New Inbox disposition leaf is not empty.");
+          rmdirSync(dispositionDirectoryPath);
+          try { lstatSync(dispositionDirectoryPath); throw Error("New Inbox disposition leaf remained after removal."); } catch (error) { if (!(error && typeof error === "object" && "code" in error && error.code === "ENOENT")) throw error; }
+        } catch (error) { cleanupErrors.add(error); }
+      }
+    } else cleanupErrors.add(Error("Private fixture restoration was skipped because owned route or provider-session work remained active."));
   }
-  else cleanupErrors.add(Error("Private fixture restoration was skipped because owned route or provider-session work remained active."));
   priorDispositionState = null;
   priorDispositionMarker = null;
+  priorDispositionDirectoryExisted = null;
+  dispositionSnapshotCaptured = false;
+  sessionBaselineCaptured = false;
+  fixtureMutationArmed = false;
+  priorSessions = new Set();
+  inboxRecoveryBrowserSnapshot = null;
   observedExpectedRouteAborts.clear();
   if (cleanupOperationsSettled) cleanupOperationFailures.clear();
   if (cleanupErrors.size === 1) throw [...cleanupErrors][0];
@@ -1055,10 +1417,12 @@ test("Inbox refuses a held Codex Sessions preflight while retaining generic writ
       await route.continue();
     },
   );
+  await markInboxRecoveryPhase(page, "codex-beta-snooze");
   await betaAction
     .getByRole("button", { name: "Snooze 1 hour", exact: true })
     .click();
   await waitForRouteSignal(applyStarted);
+  await freezeInboxRecoveryWindow(page);
   let releaseScanRecovery: () => void = () => {};
   const scanRecoveryGate = new Promise<void>((resolve) => {
     releaseScanRecovery = resolve;
@@ -1602,7 +1966,9 @@ test("Inbox discards an exact reserved original after a pre-effect 504", async (
       }),
     });
   });
+  const initialRecovery = observeInitialRecovery(page, "case2-initial-navigation");
   await openSettled(page, "/index.html#/desktop/inbox?project=" + encodeURIComponent(alpha.id));
+  await initialRecovery.qualify(); initialRecovery.close();
   const inbox = page.getByRole("region", { name: "Inbox", exact: true });
   const action = inbox.locator('.af-inbox-project[aria-label="Alpha"] .af-inbox-card').filter({
     has: page.getByRole("heading", { name: "Review comment outcome", exact: true }),
@@ -1709,10 +2075,10 @@ test("Inbox binds Gemini options to its exact offer and recovers a held original
   page,
 }) => {
   test.setTimeout(60_000);
-  geminiControlCaptured = true;
   savedGeminiControl = existsSync(geminiControlPath)
     ? readFileSync(geminiControlPath)
     : null;
+  geminiControlCaptured = true;
   writeFileSync(geminiControlPath, JSON.stringify({ mode: "permission-tree" }));
   await page.addInitScript(
     ({ key, projectId, workspace: root }) => {
@@ -2057,8 +2423,10 @@ test("Inbox binds Gemini options to its exact offer and recovers a held original
   const staleRead = page.waitForResponse((response) =>
     response.request().method() === "GET" && new URL(response.url()).pathname === staleReadPath && new URL(response.url()).search === "",
   );
+  await markInboxRecoveryPhase(page, "gemini-explicit-refresh");
   await inbox.getByRole("button", { name: "Refresh Inbox", exact: true }).click();
   const staleResponse = await waitForRouteSignal(staleRead);
+  await freezeInboxRecoveryWindow(page);
   expect(staleResponse.status()).toBe(503);
   await expect(geminiCard).toHaveCount(1);
   await expect(geminiCard.locator(".af-inbox-card-meta")).toContainText("Check required");
@@ -2247,7 +2615,9 @@ test("Inbox resolves a real persisted apply after the page loses its reply", asy
     markExpectedRouteAbort(route.request());
     await route.abort();
   });
+  const initialRecovery = observeInitialRecovery(page, "case4-initial-navigation");
   await openSettled(page, "/index.html#/desktop/inbox?project=" + encodeURIComponent(beta.id));
+  await initialRecovery.qualify(); initialRecovery.close();
   const inbox = page.getByRole("region", { name: "Inbox", exact: true });
   const alphaProject = inbox.locator('.af-inbox-project[aria-label="Alpha"]');
   const betaProject = inbox.locator('.af-inbox-project[aria-label="Beta"]');
