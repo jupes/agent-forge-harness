@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import type { ConversationFrame } from "../../../types/conversation";
-import type { InboxCurrentPermissionItem } from "./inbox-model";
 import { exactTerminalPermissionJoin, withInboxReadSlot } from "./inbox-client";
+import type { InboxCurrentPermissionItem } from "./inbox-model";
 
 test("the shared inbox read slot caps concurrent protected reads at four", async () => {
   let active = 0;
@@ -39,7 +39,14 @@ const codexPermission: InboxCurrentPermissionItem = {
   observedAt: "2026-10-31T12:00:00.000Z",
   approval: {
     provider: "codex",
-    value: { id: "offer-a", kind: "command", command: "bun test", cwd: "C:/work/a", reason: "Review", availableDecisions: ["accept"] },
+    value: {
+      id: "offer-a",
+      kind: "command",
+      command: "bun test",
+      cwd: "C:/work/a",
+      reason: "Review",
+      availableDecisions: ["accept"],
+    },
   },
 };
 const codexOffer = {
@@ -57,7 +64,10 @@ const codexOffer = {
   reason: "Review",
   availableDecisions: ["accept"] as const,
 };
-const codexFrame = (seq: number, event: ConversationFrame["event"]): ConversationFrame => ({
+const codexFrame = (
+  seq: number,
+  event: ConversationFrame["event"],
+): ConversationFrame => ({
   seq,
   turnId: "turn-a",
   at: "2026-10-31T12:00:00.000Z",
@@ -65,12 +75,71 @@ const codexFrame = (seq: number, event: ConversationFrame["event"]): Conversatio
 });
 
 test("Codex Done proof requires the exact original offer and its own resolved event", () => {
-  const offer = codexFrame(1, { kind: "coding-chat", provider: "codex", version: "0.1", event: { kind: "approval-request", approval: codexOffer } });
-  const resolved = codexFrame(2, { kind: "coding-chat", provider: "codex", version: "0.1", event: { kind: "approval-resolved", approvalId: "offer-a", source: "serverRequest/resolved" } });
-  expect(exactTerminalPermissionJoin(codexPermission, [offer, resolved], "0.1")).toBe(true);
-  expect(exactTerminalPermissionJoin(codexPermission, [offer], "0.1")).toBe(false);
-  expect(exactTerminalPermissionJoin(codexPermission, [offer, codexFrame(2, { kind: "coding-chat", provider: "codex", version: "0.1", event: { kind: "approval-resolved", approvalId: "offer-other", source: "turn/completed" } })], "0.1")).toBe(false);
-  expect(exactTerminalPermissionJoin(codexPermission, [codexFrame(1, { kind: "coding-chat-decision", provider: "codex", version: "0.1", requestHash: "a".repeat(64), receipt: { projectId: "project-a", sessionId: "session-a", requestId: "request-a", turnRequestId: "turn-a", approvalId: "offer-a", decision: "accept", state: "recorded", recordedAt: "2026-10-31T12:00:00.000Z" } })], "0.1")).toBe(false);
+  const offer = codexFrame(1, {
+    kind: "coding-chat",
+    provider: "codex",
+    version: "0.1",
+    event: { kind: "approval-request", approval: codexOffer },
+  });
+  const resolved = codexFrame(2, {
+    kind: "coding-chat",
+    provider: "codex",
+    version: "0.1",
+    event: {
+      kind: "approval-resolved",
+      approvalId: "offer-a",
+      source: "serverRequest/resolved",
+    },
+  });
+  expect(
+    exactTerminalPermissionJoin(codexPermission, [offer, resolved], "0.1"),
+  ).toBe(true);
+  expect(exactTerminalPermissionJoin(codexPermission, [offer], "0.1")).toBe(
+    false,
+  );
+  expect(
+    exactTerminalPermissionJoin(
+      codexPermission,
+      [
+        offer,
+        codexFrame(2, {
+          kind: "coding-chat",
+          provider: "codex",
+          version: "0.1",
+          event: {
+            kind: "approval-resolved",
+            approvalId: "offer-other",
+            source: "turn/completed",
+          },
+        }),
+      ],
+      "0.1",
+    ),
+  ).toBe(false);
+  expect(
+    exactTerminalPermissionJoin(
+      codexPermission,
+      [
+        codexFrame(1, {
+          kind: "coding-chat-decision",
+          provider: "codex",
+          version: "0.1",
+          requestHash: "a".repeat(64),
+          receipt: {
+            projectId: "project-a",
+            sessionId: "session-a",
+            requestId: "request-a",
+            turnRequestId: "turn-a",
+            approvalId: "offer-a",
+            decision: "accept",
+            state: "recorded",
+            recordedAt: "2026-10-31T12:00:00.000Z",
+          },
+        }),
+      ],
+      "0.1",
+    ),
+  ).toBe(false);
 });
 
 const geminiPermission: InboxCurrentPermissionItem = {
@@ -81,23 +150,97 @@ const geminiPermission: InboxCurrentPermissionItem = {
   key: "permission-g",
   approval: {
     provider: "gemini",
-    value: { id: "offer-g", detail: { json: "{\"tool\":\"read_file\"}", truncated: false }, detailsComplete: true, options: [{ optionId: "allow_once", name: "Allow once", kind: "allow_once" }] },
+    value: {
+      id: "offer-g",
+      detail: { json: '{"tool":"read_file"}', truncated: false },
+      detailsComplete: true,
+      options: [
+        { optionId: "allow_once", name: "Allow once", kind: "allow_once" },
+      ],
+    },
   },
 };
-const geminiFrame = (seq: number, event: Extract<ConversationFrame["event"], { kind: "coding-gemini-chat" }> ["event"]): ConversationFrame => ({
+const geminiFrame = (
+  seq: number,
+  event: Extract<
+    ConversationFrame["event"],
+    { kind: "coding-gemini-chat" }
+  >["event"],
+): ConversationFrame => ({
   seq,
   turnId: "turn-a",
   at: "2026-10-31T12:00:00.000Z",
-  event: { kind: "coding-gemini-chat", provider: "gemini", version: "0.65.0", event },
+  event: {
+    kind: "coding-gemini-chat",
+    provider: "gemini",
+    version: "0.65.0",
+    event,
+  },
 });
 
 test("Gemini Done proof binds the opaque offer to its exact tool completion or native result", () => {
-  const offer = geminiFrame(1, { kind: "approval-offer", id: "offer-g", requestId: "turn-a", rpcId: "rpc-g", toolCallId: "tool-g" });
-  const tool = geminiFrame(2, { kind: "tool", toolCallId: "tool-g", status: "completed", detail: { json: "{}", truncated: false }, scope: "turn", requestId: "turn-a" });
-  const result = geminiFrame(3, { kind: "result", requestId: "turn-a", stopReason: "end_turn", usage: null });
-  expect(exactTerminalPermissionJoin(geminiPermission, [offer, tool], "0.65.0")).toBe(true);
-  expect(exactTerminalPermissionJoin(geminiPermission, [offer, result], "0.65.0")).toBe(true);
-  expect(exactTerminalPermissionJoin(geminiPermission, [offer, geminiFrame(2, { kind: "tool", toolCallId: "other-tool", status: "completed", detail: { json: "{}", truncated: false }, scope: "turn", requestId: "turn-a" })], "0.65.0")).toBe(false);
-  expect(exactTerminalPermissionJoin(geminiPermission, [offer, geminiFrame(2, { kind: "tool", toolCallId: "tool-g", status: "completed", detail: { json: "{}", truncated: false }, scope: "native-session", requestId: null })], "0.65.0")).toBe(false);
-  expect(exactTerminalPermissionJoin(geminiPermission, [offer], "0.65.0")).toBe(false);
+  const offer = geminiFrame(1, {
+    kind: "approval-offer",
+    id: "offer-g",
+    requestId: "turn-a",
+    rpcId: "rpc-g",
+    toolCallId: "tool-g",
+  });
+  const tool = geminiFrame(2, {
+    kind: "tool",
+    toolCallId: "tool-g",
+    status: "completed",
+    detail: { json: "{}", truncated: false },
+    scope: "turn",
+    requestId: "turn-a",
+  });
+  const result = geminiFrame(3, {
+    kind: "result",
+    requestId: "turn-a",
+    stopReason: "end_turn",
+    usage: null,
+  });
+  expect(
+    exactTerminalPermissionJoin(geminiPermission, [offer, tool], "0.65.0"),
+  ).toBe(true);
+  expect(
+    exactTerminalPermissionJoin(geminiPermission, [offer, result], "0.65.0"),
+  ).toBe(true);
+  expect(
+    exactTerminalPermissionJoin(
+      geminiPermission,
+      [
+        offer,
+        geminiFrame(2, {
+          kind: "tool",
+          toolCallId: "other-tool",
+          status: "completed",
+          detail: { json: "{}", truncated: false },
+          scope: "turn",
+          requestId: "turn-a",
+        }),
+      ],
+      "0.65.0",
+    ),
+  ).toBe(false);
+  expect(
+    exactTerminalPermissionJoin(
+      geminiPermission,
+      [
+        offer,
+        geminiFrame(2, {
+          kind: "tool",
+          toolCallId: "tool-g",
+          status: "completed",
+          detail: { json: "{}", truncated: false },
+          scope: "native-session",
+          requestId: null,
+        }),
+      ],
+      "0.65.0",
+    ),
+  ).toBe(false);
+  expect(exactTerminalPermissionJoin(geminiPermission, [offer], "0.65.0")).toBe(
+    false,
+  );
 });

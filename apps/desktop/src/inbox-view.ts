@@ -1,9 +1,12 @@
+import { workspaceKey } from "../../../scripts/projects/scope";
 import type { InboxDispositionEntry } from "../../../types/inbox";
 import { INBOX_SOURCE_KINDS } from "../../../types/inbox";
-import type { InboxCurrentPermissionItem, InboxPermissionItem } from "./inbox-model";
 import type { InboxTerminalPermissionProof } from "./inbox-client";
 import type { InboxDispositionHistory } from "./inbox-dispositions-owner";
-import { workspaceKey } from "../../../scripts/projects/scope";
+import type {
+  InboxCurrentPermissionItem,
+  InboxPermissionItem,
+} from "./inbox-model";
 
 export type InboxSourceKind = (typeof INBOX_SOURCE_KINDS)[number];
 export type InboxSourceState =
@@ -17,16 +20,21 @@ export function hasExactPermissionTerminalProof(
   snapshotGeneration: number,
   proofs: readonly InboxTerminalPermissionProof[],
 ): boolean {
-  return item.snapshotGeneration === snapshotGeneration && proofs.some((proof) =>
-    proof.permissionKey === item.key &&
-    proof.snapshotGeneration === snapshotGeneration &&
-    proof.projectId === item.projectId &&
-    proof.workspace === item.workspace &&
-    proof.provider === item.provider &&
-    proof.sessionId === item.sessionId &&
-    proof.acceptedTurnId === item.acceptedTurnId &&
-    proof.offerId === item.offerId &&
-    proof.complete && proof.resolved,
+  return (
+    item.snapshotGeneration === snapshotGeneration &&
+    proofs.some(
+      (proof) =>
+        proof.permissionKey === item.key &&
+        proof.snapshotGeneration === snapshotGeneration &&
+        proof.projectId === item.projectId &&
+        proof.workspace === item.workspace &&
+        proof.provider === item.provider &&
+        proof.sessionId === item.sessionId &&
+        proof.acceptedTurnId === item.acceptedTurnId &&
+        proof.offerId === item.offerId &&
+        proof.complete &&
+        proof.resolved,
+    )
   );
 }
 
@@ -51,19 +59,28 @@ export function mergeInboxDispositionHistory(
       merged.set(item.original.requestId, item);
       continue;
     }
-    if (JSON.stringify(prior.original) !== JSON.stringify(item.original)) continue;
+    if (JSON.stringify(prior.original) !== JSON.stringify(item.original))
+      continue;
     if (
-      prior.receipt && item.receipt && prior.receipt.phase !== "reserved" &&
+      prior.receipt &&
+      item.receipt &&
+      prior.receipt.phase !== "reserved" &&
       JSON.stringify(prior.receipt) !== JSON.stringify(item.receipt)
-    ) continue;
-    if (dispositionHistoryRank(item.state) > dispositionHistoryRank(prior.state)) {
+    )
+      continue;
+    if (
+      dispositionHistoryRank(item.state) > dispositionHistoryRank(prior.state)
+    ) {
       merged.set(item.original.requestId, item);
       continue;
     }
     if (
-      dispositionHistoryRank(item.state) === dispositionHistoryRank(prior.state) &&
-      !prior.receipt && item.receipt
-    ) merged.set(item.original.requestId, item);
+      dispositionHistoryRank(item.state) ===
+        dispositionHistoryRank(prior.state) &&
+      !prior.receipt &&
+      item.receipt
+    )
+      merged.set(item.original.requestId, item);
   }
   return [...merged.values()];
 }
@@ -73,13 +90,14 @@ export function mergeInboxDispositionEntries(
   incoming: readonly InboxDispositionEntry[],
 ): InboxDispositionEntry[] {
   const merged = new Map<string, InboxDispositionEntry>();
-  const identity = (entry: InboxDispositionEntry) => JSON.stringify([
-    entry.projectId,
-    entry.workspace,
-    entry.item.sourceKind,
-    entry.item.stableItemId,
-    entry.item.sourceRevision,
-  ]);
+  const identity = (entry: InboxDispositionEntry) =>
+    JSON.stringify([
+      entry.projectId,
+      entry.workspace,
+      entry.item.sourceKind,
+      entry.item.stableItemId,
+      entry.item.sourceRevision,
+    ]);
   for (const entry of current) merged.set(identity(entry), entry);
   for (const entry of incoming) {
     const key = identity(entry);
@@ -144,7 +162,9 @@ const identity = (card: InboxCard) =>
   ]);
 
 /** Hashes the complete canonical tuple and source revision into a bounded app identity. */
-export async function bindInboxCardIdentity(card: InboxCard): Promise<InboxCard> {
+export async function bindInboxCardIdentity(
+  card: InboxCard,
+): Promise<InboxCard> {
   const canonicalTuple = JSON.stringify([
     workspaceKey(card.workspace),
     card.projectId,
@@ -152,7 +172,10 @@ export async function bindInboxCardIdentity(card: InboxCard): Promise<InboxCard>
     card.stableItemId,
   ]);
   const digest = async (value: string) => {
-    const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+    const bytes = await crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(value),
+    );
     return [...new Uint8Array(bytes)]
       .map((byte) => byte.toString(16).padStart(2, "0"))
       .join("");
@@ -162,7 +185,10 @@ export async function bindInboxCardIdentity(card: InboxCard): Promise<InboxCard>
   return { ...card, key: stableItemId, stableItemId, sourceRevision };
 }
 
-function dispositionFor(card: InboxCard, entries: readonly InboxDispositionEntry[]) {
+function dispositionFor(
+  card: InboxCard,
+  entries: readonly InboxDispositionEntry[],
+) {
   return entries.find(
     (entry) =>
       entry.projectId === card.projectId &&
@@ -182,7 +208,10 @@ export function projectInbox(input: {
 }): InboxProjection {
   const deduped = new Map<string, InboxCard>();
   for (const card of input.cards) {
-    const key = JSON.stringify([identity(card), card.notice ? "notice" : "action"]);
+    const key = JSON.stringify([
+      identity(card),
+      card.notice ? "notice" : "action",
+    ]);
     const prior = deduped.get(key);
     if (!prior || card.observedAt > prior.observedAt) deduped.set(key, card);
   }
@@ -225,15 +254,15 @@ export function projectInbox(input: {
     ...notices.map(identity),
   ]);
   const verifiedIdentities = new Set([
-    ...visible.filter(({ card }) => card.sourceState === "current").map(({ card }) => identity(card)),
+    ...visible
+      .filter(({ card }) => card.sourceState === "current")
+      .map(({ card }) => identity(card)),
     ...notices.filter((card) => card.sourceState === "current").map(identity),
   ]);
   const unreported = INBOX_SOURCE_KINDS.filter(
     (kind) => !input.coverage.some((entry) => entry.sourceKind === kind),
   );
-  const incomplete = input.coverage.some(
-    (entry) => entry.state !== "current",
-  );
+  const incomplete = input.coverage.some((entry) => entry.state !== "current");
   return {
     cards: visible.map(({ card }) => card),
     notices,

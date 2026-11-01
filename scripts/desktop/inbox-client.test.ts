@@ -170,15 +170,20 @@ test("Inbox permission discovery stays read-only and synchronously invalidates s
     expect(approvalDtos).toEqual([approvalPage, noPendingApprovals]);
     expect(historyReadUrls).toEqual([historyPath]);
     expect(client.snapshot()).toMatchObject({ loading: false });
-    expect(client.snapshot().items.map((entry) => entry.key)).toEqual([priorItemKey]);
-    expect(client.snapshot().coverage).toContainEqual(expect.objectContaining({
-      projectId: FIXTURE_PROJECT_ID,
-      workspace,
-      sessionId,
-      provider: "gemini",
-      state: "unavailable",
-      reason: "The exact original permission history could not be verified; the prior row remains visible without Done authority.",
-    }));
+    expect(client.snapshot().items.map((entry) => entry.key)).toEqual([
+      priorItemKey,
+    ]);
+    expect(client.snapshot().coverage).toContainEqual(
+      expect.objectContaining({
+        projectId: FIXTURE_PROJECT_ID,
+        workspace,
+        sessionId,
+        provider: "gemini",
+        state: "unavailable",
+        reason:
+          "The exact original permission history could not be verified; the prior row remains visible without Done authority.",
+      }),
+    );
     expect(client.permissionResolutions()).toEqual([]);
     expect(client.currentSelection()).toBeNull();
   } finally {

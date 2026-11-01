@@ -2,13 +2,20 @@ import { expect, test } from "bun:test";
 import { toChildArray } from "preact";
 import { InboxPermissionChoices } from "./Inbox";
 
-function clickChoice(view: ReturnType<typeof InboxPermissionChoices>, index: number) {
+function clickChoice(
+  view: ReturnType<typeof InboxPermissionChoices>,
+  index: number,
+) {
   const children = toChildArray(view.props.children);
   const choice = children[index];
   if (!choice || typeof choice !== "object" || !("props" in choice))
     throw Error("The permission view has no button choice.");
   const buttonProps = choice.props;
-  if (!buttonProps || typeof buttonProps !== "object" || !("onClick" in buttonProps))
+  if (
+    !buttonProps ||
+    typeof buttonProps !== "object" ||
+    !("onClick" in buttonProps)
+  )
     throw Error("The permission choice has no click action.");
   if (typeof buttonProps.onClick !== "function")
     throw Error("The permission choice action is unavailable.");
@@ -31,7 +38,10 @@ test("the Codex permission subview exposes only current offered choices and forw
   expect(toChildArray(current.props.children)).toHaveLength(2);
   clickChoice(current, 0);
   clickChoice(current, 1);
-  expect(chosen).toEqual([["codex-offer-1", "accept"], ["codex-offer-1", "decline"]]);
+  expect(chosen).toEqual([
+    ["codex-offer-1", "accept"],
+    ["codex-offer-1", "decline"],
+  ]);
 
   const stale = InboxPermissionChoices({
     label: "Codex permission decisions",
@@ -41,7 +51,10 @@ test("the Codex permission subview exposes only current offered choices and forw
     onChoose: (offerId, value) => chosen.push([offerId, value]),
   });
   expect(toChildArray(stale.props.children)).toHaveLength(0);
-  expect(chosen).toEqual([["codex-offer-1", "accept"], ["codex-offer-1", "decline"]]);
+  expect(chosen).toEqual([
+    ["codex-offer-1", "accept"],
+    ["codex-offer-1", "decline"],
+  ]);
 });
 
 test("the Gemini permission subview forwards the offered option identity unchanged", () => {

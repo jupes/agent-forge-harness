@@ -2,10 +2,13 @@ import { operatorRead } from "../../../docs/js/operator";
 import { pageReads, readOperatorRoute } from "../../../docs/js/use-stream";
 import { workspaceKey } from "../../../scripts/projects/scope";
 import { codexChatApprovalPageSchema } from "../../../scripts/sessions/codex-chat-owned-protocol";
-import { geminiChatApprovalPageSchema } from "../../../scripts/sessions/gemini-chat-owned-protocol";
 import { ownedCodingPageSchema } from "../../../scripts/sessions/codex-owned-journal";
-import type { ConversationFrame, ConversationPage } from "../../../types/conversation";
+import { geminiChatApprovalPageSchema } from "../../../scripts/sessions/gemini-chat-owned-protocol";
 import type { OwnedCodingSessionRecord } from "../../../types/codex-owned-task";
+import type {
+  ConversationFrame,
+  ConversationPage,
+} from "../../../types/conversation";
 import type { ProjectsHome } from "../../../types/project-summary";
 import type { ChatDecisionActivation } from "./chat-decision-owners";
 import type { CodexChatDecisionIdentity } from "./codex-chat-decision-identities";
@@ -28,9 +31,7 @@ const MAX_PERMISSION_SESSIONS = 256;
 const READ_CONCURRENCY = 4;
 let activeReads = 0;
 const readQueue: Array<() => void> = [];
-export async function withInboxReadSlot<T>(
-  work: () => Promise<T>,
-): Promise<T> {
+export async function withInboxReadSlot<T>(work: () => Promise<T>): Promise<T> {
   if (activeReads >= READ_CONCURRENCY)
     await new Promise<void>((resolve) => readQueue.push(resolve));
   else activeReads++;
@@ -44,7 +45,12 @@ export async function withInboxReadSlot<T>(
 }
 const approvalPath = (projectId: string, sessionId: string) =>
   `/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/approvals`;
-const conversationPagePath = (projectId: string, sessionId: string, after: number, requestId: string) =>
+const conversationPagePath = (
+  projectId: string,
+  sessionId: string,
+  after: number,
+  requestId: string,
+) =>
   `/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}?after=${after}&limit=100&requestId=${encodeURIComponent(requestId)}`;
 const MAX_CONVERSATION_PAGES = 200;
 
@@ -97,17 +103,22 @@ export function exactTerminalPermissionJoin(
   version: string,
 ): boolean {
   if (candidate.approval.provider === "codex") {
-    const offers = frames.filter((frame) =>
-      frame.turnId === candidate.acceptedTurnId &&
-      frame.event.kind === "coding-chat" &&
-      frame.event.version === version &&
-      frame.event.event.kind === "approval-request" &&
-      frame.event.event.approval.id === candidate.offerId,
+    const offers = frames.filter(
+      (frame) =>
+        frame.turnId === candidate.acceptedTurnId &&
+        frame.event.kind === "coding-chat" &&
+        frame.event.version === version &&
+        frame.event.event.kind === "approval-request" &&
+        frame.event.event.approval.id === candidate.offerId,
     );
     if (offers.length !== 1) return false;
     const offer = offers[0];
     if (!offer) return false;
-    if (offer.event.kind !== "coding-chat" || offer.event.event.kind !== "approval-request") return false;
+    if (
+      offer.event.kind !== "coding-chat" ||
+      offer.event.event.kind !== "approval-request"
+    )
+      return false;
     const offered = offer.event.event.approval;
     const current = candidate.approval.value;
     if (
@@ -115,47 +126,58 @@ export function exactTerminalPermissionJoin(
       offered.command !== current.command ||
       offered.cwd !== current.cwd ||
       offered.reason !== current.reason ||
-      JSON.stringify(offered.availableDecisions) !== JSON.stringify(current.availableDecisions)
-    ) return false;
-    const resolutions = frames.filter((frame) =>
-      frame.seq > offer.seq &&
-      frame.turnId === candidate.acceptedTurnId &&
-      frame.event.kind === "coding-chat" &&
-      frame.event.version === version &&
-      frame.event.event.kind === "approval-resolved" &&
-      frame.event.event.approvalId === candidate.offerId &&
-      (frame.event.event.source === "serverRequest/resolved" ||
-        frame.event.event.source === "turn/completed"),
+      JSON.stringify(offered.availableDecisions) !==
+        JSON.stringify(current.availableDecisions)
+    )
+      return false;
+    const resolutions = frames.filter(
+      (frame) =>
+        frame.seq > offer.seq &&
+        frame.turnId === candidate.acceptedTurnId &&
+        frame.event.kind === "coding-chat" &&
+        frame.event.version === version &&
+        frame.event.event.kind === "approval-resolved" &&
+        frame.event.event.approvalId === candidate.offerId &&
+        (frame.event.event.source === "serverRequest/resolved" ||
+          frame.event.event.source === "turn/completed"),
     );
     return resolutions.length === 1;
   }
 
   if (version !== "0.65.0") return false;
 
-  const offers = frames.filter((frame) =>
-    frame.turnId === candidate.acceptedTurnId &&
-    frame.event.kind === "coding-gemini-chat" &&
-    frame.event.version === "0.65.0" &&
-    frame.event.event.kind === "approval-offer" &&
-    frame.event.event.requestId === candidate.acceptedTurnId &&
-    frame.event.event.id === candidate.offerId,
+  const offers = frames.filter(
+    (frame) =>
+      frame.turnId === candidate.acceptedTurnId &&
+      frame.event.kind === "coding-gemini-chat" &&
+      frame.event.version === "0.65.0" &&
+      frame.event.event.kind === "approval-offer" &&
+      frame.event.event.requestId === candidate.acceptedTurnId &&
+      frame.event.event.id === candidate.offerId,
   );
   if (offers.length !== 1) return false;
   const offer = offers[0];
-  if (!offer || offer.event.kind !== "coding-gemini-chat" || offer.event.event.kind !== "approval-offer") return false;
+  if (
+    !offer ||
+    offer.event.kind !== "coding-gemini-chat" ||
+    offer.event.event.kind !== "approval-offer"
+  )
+    return false;
   const toolCallId = offer.event.event.toolCallId;
-  return frames.some((frame) =>
-    frame.seq > offer.seq &&
-    frame.turnId === candidate.acceptedTurnId &&
-    frame.event.kind === "coding-gemini-chat" &&
-    frame.event.version === "0.65.0" &&
-    ((frame.event.event.kind === "tool" &&
-      frame.event.event.scope === "turn" &&
-      frame.event.event.requestId === candidate.acceptedTurnId &&
-      frame.event.event.toolCallId === toolCallId &&
-      (frame.event.event.status === "completed" || frame.event.event.status === "failed")) ||
-      (frame.event.event.kind === "result" &&
-        frame.event.event.requestId === candidate.acceptedTurnId)),
+  return frames.some(
+    (frame) =>
+      frame.seq > offer.seq &&
+      frame.turnId === candidate.acceptedTurnId &&
+      frame.event.kind === "coding-gemini-chat" &&
+      frame.event.version === "0.65.0" &&
+      ((frame.event.event.kind === "tool" &&
+        frame.event.event.scope === "turn" &&
+        frame.event.event.requestId === candidate.acceptedTurnId &&
+        frame.event.event.toolCallId === toolCallId &&
+        (frame.event.event.status === "completed" ||
+          frame.event.event.status === "failed")) ||
+        (frame.event.event.kind === "result" &&
+          frame.event.event.requestId === candidate.acceptedTurnId)),
   );
 }
 
@@ -176,10 +198,20 @@ async function readCompletePermissionConversation(
   const frames: ConversationFrame[] = [];
   const seenSequences = new Set<number>();
   for (let index = 0; index < MAX_CONVERSATION_PAGES; index++) {
-    const parsed = ownedCodingPageSchema.safeParse(await withInboxReadSlot(() =>
-      read(conversationPagePath(input.projectId, input.sessionId, after, input.acceptedTurnId)),
-    ));
-    if (!parsed.success) throw Error("The protected session history page was incomplete.");
+    const parsed = ownedCodingPageSchema.safeParse(
+      await withInboxReadSlot(() =>
+        read(
+          conversationPagePath(
+            input.projectId,
+            input.sessionId,
+            after,
+            input.acceptedTurnId,
+          ),
+        ),
+      ),
+    );
+    if (!parsed.success)
+      throw Error("The protected session history page was incomplete.");
     const page = parsed.data;
     if (
       page.projectId !== input.projectId ||
@@ -188,12 +220,19 @@ async function readCompletePermissionConversation(
       page.binding.sessionId !== input.sessionId ||
       page.binding.provider !== input.provider ||
       page.request?.requestId !== input.acceptedTurnId
-    ) throw Error("The protected session history did not match its exact Inbox source.");
+    )
+      throw Error(
+        "The protected session history did not match its exact Inbox source.",
+      );
     if (revision === null) {
       revision = page.revision;
       lastSequence = page.lastSequence;
       bindingVersion = page.binding.version;
-    } else if (page.revision !== revision || page.lastSequence !== lastSequence || page.binding.version !== bindingVersion) {
+    } else if (
+      page.revision !== revision ||
+      page.lastSequence !== lastSequence ||
+      page.binding.version !== bindingVersion
+    ) {
       throw Error("The protected session history changed while paging.");
     }
     let previousSequence = after;
@@ -205,7 +244,9 @@ async function readCompletePermissionConversation(
       frames.push(frame);
     }
     if (page.frames.length > 0 && page.nextCursor !== page.frames.at(-1)?.seq)
-      throw Error("The protected session history cursor did not match its final frame.");
+      throw Error(
+        "The protected session history cursor did not match its final frame.",
+      );
     if (page.more) {
       if (page.frames.length === 0 || page.nextCursor <= after)
         throw Error("The protected session history cursor did not advance.");
@@ -213,9 +254,16 @@ async function readCompletePermissionConversation(
       continue;
     }
     if (page.nextCursor !== page.lastSequence)
-      throw Error("The protected session history did not reach its terminal sequence.");
-    if (frames.length !== page.lastSequence || frames.some((frame, index) => frame.seq !== index + 1))
-      throw Error("The protected session history did not contain every source sequence.");
+      throw Error(
+        "The protected session history did not reach its terminal sequence.",
+      );
+    if (
+      frames.length !== page.lastSequence ||
+      frames.some((frame, index) => frame.seq !== index + 1)
+    )
+      throw Error(
+        "The protected session history did not contain every source sequence.",
+      );
     return { page, frames };
   }
   throw Error("The protected session history exceeded its page bound.");
@@ -498,7 +546,8 @@ export function createInboxClient(deps: {
               provider: null,
               state: "partial",
               observedAt: now(),
-              reason: "The bounded session scan did not inspect every source session.",
+              reason:
+                "The bounded session scan did not inspect every source session.",
             });
           }
       }
@@ -558,7 +607,10 @@ export function createInboxClient(deps: {
             if (provider === "codex") {
               const page = codexChatApprovalPageSchema.parse(rawPage);
               if (
-                (page.receipt && (page.pending.length > 0 || page.receipt.projectId !== project.id || page.receipt.sessionId !== record.id)) ||
+                (page.receipt &&
+                  (page.pending.length > 0 ||
+                    page.receipt.projectId !== project.id ||
+                    page.receipt.sessionId !== record.id)) ||
                 new Set(page.pending.map((item) => item.approval.id)).size !==
                   page.pending.length
               )
@@ -573,7 +625,10 @@ export function createInboxClient(deps: {
             } else {
               const page = geminiChatApprovalPageSchema.parse(rawPage);
               if (
-                (page.receipt && (page.pending.length > 0 || page.receipt.projectId !== project.id || page.receipt.sessionId !== record.id)) ||
+                (page.receipt &&
+                  (page.pending.length > 0 ||
+                    page.receipt.projectId !== project.id ||
+                    page.receipt.sessionId !== record.id)) ||
                 new Set(page.pending.map((item) => item.approval.id)).size !==
                   page.pending.length
               )
@@ -628,7 +683,8 @@ export function createInboxClient(deps: {
             const historical = [...knownPermissionItems.values()].filter(
               (item) =>
                 item.projectId === project.id &&
-                workspaceKey(item.workspace) === workspaceKey(summary.workspace) &&
+                workspaceKey(item.workspace) ===
+                  workspaceKey(summary.workspace) &&
                 item.sessionId === record.id &&
                 item.provider === provider &&
                 !pendingKeys.has(item.key),
@@ -643,14 +699,29 @@ export function createInboxClient(deps: {
               for (const [acceptedTurnId, candidates] of byTurn) {
                 try {
                   const history = await readCompletePermissionConversation(
-                    { projectId: project.id, workspace: summary.workspace, provider, sessionId: record.id, acceptedTurnId },
+                    {
+                      projectId: project.id,
+                      workspace: summary.workspace,
+                      provider,
+                      sessionId: record.id,
+                      acceptedTurnId,
+                    },
                     read,
                   );
                   if (current !== generation || disposed) return [];
                   for (const prior of candidates) {
-                    const resolved = exactTerminalPermissionJoin(prior, history.frames, history.page.binding?.version ?? "");
+                    const resolved = exactTerminalPermissionJoin(
+                      prior,
+                      history.frames,
+                      history.page.binding?.version ?? "",
+                    );
                     if (!resolved) continue;
-                    items.push({ ...prior, snapshotGeneration: current, actionable: false, observedAt });
+                    items.push({
+                      ...prior,
+                      snapshotGeneration: current,
+                      actionable: false,
+                      observedAt,
+                    });
                     verifiedResolutions.push({
                       permissionKey: prior.key,
                       projectId: prior.projectId,
@@ -666,7 +737,12 @@ export function createInboxClient(deps: {
                       resolved: true,
                     });
                   }
-                  if (candidates.some((item) => !items.some((candidate) => candidate.key === item.key)))
+                  if (
+                    candidates.some(
+                      (item) =>
+                        !items.some((candidate) => candidate.key === item.key),
+                    )
+                  )
                     coverage.push({
                       projectId: project.id,
                       workspace: summary.workspace,
@@ -674,7 +750,8 @@ export function createInboxClient(deps: {
                       provider,
                       state: "partial",
                       observedAt,
-                      reason: "An original permission remains visible because its exact terminal source join was not confirmed.",
+                      reason:
+                        "An original permission remains visible because its exact terminal source join was not confirmed.",
                     });
                 } catch {
                   coverage.push({
@@ -684,7 +761,8 @@ export function createInboxClient(deps: {
                     provider,
                     state: "unavailable",
                     observedAt,
-                    reason: "The exact original permission history could not be verified; the prior row remains visible without Done authority.",
+                    reason:
+                      "The exact original permission history could not be verified; the prior row remains visible without Done authority.",
                   });
                 }
               }
@@ -709,10 +787,27 @@ export function createInboxClient(deps: {
       if (current !== generation || disposed) return;
       const freshItems = results.flat();
       const freshKeys = new Set(freshItems.map((item) => item.key));
-      const listedSessionKeys = new Set(boundedSessions.map(({ project, record }) => JSON.stringify([project.id, record.id])));
+      const listedSessionKeys = new Set(
+        boundedSessions.map(({ project, record }) =>
+          JSON.stringify([project.id, record.id]),
+        ),
+      );
       for (const prior of previousItems) {
-        if (freshKeys.has(prior.key) || listedSessionKeys.has(JSON.stringify([prior.projectId, prior.sessionId]))) continue;
-        if (!coverage.some((entry) => entry.projectId === prior.projectId && entry.sessionId === prior.sessionId && entry.state !== "current"))
+        if (
+          freshKeys.has(prior.key) ||
+          listedSessionKeys.has(
+            JSON.stringify([prior.projectId, prior.sessionId]),
+          )
+        )
+          continue;
+        if (
+          !coverage.some(
+            (entry) =>
+              entry.projectId === prior.projectId &&
+              entry.sessionId === prior.sessionId &&
+              entry.state !== "current",
+          )
+        )
           coverage.push({
             projectId: prior.projectId,
             workspace: prior.workspace,
@@ -720,7 +815,8 @@ export function createInboxClient(deps: {
             provider: prior.provider,
             state: "partial",
             observedAt,
-            reason: "The original session is no longer present in the current session inventory; its permission outcome remains unverified.",
+            reason:
+              "The original session is no longer present in the current session inventory; its permission outcome remains unverified.",
           });
       }
       const retainedStale = previousItems.filter((item) => {

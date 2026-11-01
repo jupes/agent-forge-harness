@@ -87,7 +87,13 @@ test("a fresh exact bead read adds check context but never resolves an unknown w
   expect(noticeCard?.canCheck).toBe(true);
   expect(noticeCard?.stableItemId).toMatch(/^sha256:[a-f0-9]{64}$/);
   expect(noticeCard?.stableItemId.length).toBeLessThanOrEqual(200);
-  expect(actionCard).toMatchObject({ sourceState: "current", resolved: false, canSnooze: true, canCheck: false, notice: false });
+  expect(actionCard).toMatchObject({
+    sourceState: "current",
+    resolved: false,
+    canSnooze: true,
+    canCheck: false,
+    notice: false,
+  });
   expect(actionCard?.stableItemId).toBe(noticeCard?.stableItemId);
   expect(actionCard?.sourceRevision).toBe(noticeCard?.sourceRevision);
 });
@@ -132,12 +138,24 @@ test("scope mismatch retains an unavailable notice without reading a foreign pro
       { ...notice, workspace: "C:/work/foreign" },
     ],
     projects,
-    read: async () => { reads++; return page(); },
+    read: async () => {
+      reads++;
+      return page();
+    },
   });
   expect(reads).toBe(0);
   expect(snapshot.cards).toHaveLength(1);
-  expect(snapshot.cards[0]).toMatchObject({ notice: true, sourceState: "unavailable", resolved: false, canSnooze: false, canCheck: true });
+  expect(snapshot.cards[0]).toMatchObject({
+    notice: true,
+    sourceState: "unavailable",
+    resolved: false,
+    canSnooze: false,
+    canCheck: true,
+  });
   expect(snapshot.coverage).toEqual([
-    expect.objectContaining({ sourceKind: "unknown-bead-write", state: "unavailable" }),
+    expect.objectContaining({
+      sourceKind: "unknown-bead-write",
+      state: "unavailable",
+    }),
   ]);
 });

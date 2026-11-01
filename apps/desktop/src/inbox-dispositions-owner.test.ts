@@ -178,7 +178,9 @@ test("acknowledgment reserves first and applies only while the exact fresh Done 
 test("an A→B→A route generation change during delayed reserve keeps the original held and never applies", async () => {
   const finishReserve: DeferredResponse = {};
   let reserveStarted: (() => void) | undefined;
-  const started = new Promise<void>((resolve) => { reserveStarted = resolve; });
+  const started = new Promise<void>((resolve) => {
+    reserveStarted = resolve;
+  });
   let routeHash = "#/desktop/inbox";
   let routeGeneration = 1;
   const capturedGeneration = routeGeneration;
@@ -190,15 +192,27 @@ test("an A→B→A route generation change during delayed reserve keeps the orig
       const value = inboxDispositionOriginalSchema.parse(body);
       if (url.endsWith("/requests")) {
         reserveStarted?.();
-        return new Promise<Response>((resolve) => { finishReserve.resolve = resolve; });
+        return new Promise<Response>((resolve) => {
+          finishReserve.resolve = resolve;
+        });
       }
       return envelope({
-        entry: { projectId, workspace, item: value.item, revision: 1, operation: value.operation, updatedAt: "2026-10-31T18:01:00.000Z" },
+        entry: {
+          projectId,
+          workspace,
+          item: value.item,
+          revision: 1,
+          operation: value.operation,
+          updatedAt: "2026-10-31T18:01:00.000Z",
+        },
         receipt: receiptFor(value, "applied"),
       });
     },
     async () => envelope({ entries: [], receipts: [] }),
-    () => routeHash === "#/desktop/inbox" && routeGeneration === capturedGeneration ? snapshot : null,
+    () =>
+      routeHash === "#/desktop/inbox" && routeGeneration === capturedGeneration
+        ? snapshot
+        : null,
     ["77c37127-1c22-4a2a-8e7d-69cc74ff1298"],
   );
   await owner.refresh();
@@ -210,11 +224,18 @@ test("an A→B→A route generation change during delayed reserve keeps the orig
   routeGeneration++;
   const resolve = finishReserve.resolve;
   if (!resolve) throw Error("Expected a delayed Inbox reservation.");
-  resolve(envelope({ entry: null, receipt: receiptFor(original("77c37127-1c22-4a2a-8e7d-69cc74ff1298")) }));
+  resolve(
+    envelope({
+      entry: null,
+      receipt: receiptFor(original("77c37127-1c22-4a2a-8e7d-69cc74ff1298")),
+    }),
+  );
   expect(await pending).toMatchObject({ state: "not-sent" });
   expect(posted).toHaveLength(1);
   expect(posted[0]).toMatch(/\/requests$/);
-  expect(owner.view().holds.map((item) => item.requestId)).toEqual(["77c37127-1c22-4a2a-8e7d-69cc74ff1298"]);
+  expect(owner.view().holds.map((item) => item.requestId)).toEqual([
+    "77c37127-1c22-4a2a-8e7d-69cc74ff1298",
+  ]);
 });
 
 test("reserve-only unknown needs GET-only 404 review and a separate distinct request id", async () => {
@@ -1054,7 +1075,10 @@ test("a reserve review during refresh revokes old permission without superseding
     state: "reviewed",
   });
   expect(owner.canStartReviewedNewIntent(id, proof())).toBe(true);
-  owner.activate({ ...activation, sourceGeneration: activation.sourceGeneration + 1 });
+  owner.activate({
+    ...activation,
+    sourceGeneration: activation.sourceGeneration + 1,
+  });
   expect(owner.canStartReviewedNewIntent(id, proof())).toBe(false);
 });
 

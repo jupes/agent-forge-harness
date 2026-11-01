@@ -1,8 +1,21 @@
 import { expect, test } from "bun:test";
-import type { InboxDispositionEntry, InboxDispositionReceipt, InboxDispositionStoredOriginal } from "../../../types/inbox";
-import { bindInboxCardIdentity, hasExactPermissionTerminalProof, mergeInboxDispositionEntries, mergeInboxDispositionHistory, projectInbox, type InboxCard, type InboxCoverage, type InboxFilters } from "./inbox-view";
-import type { InboxCurrentPermissionItem } from "./inbox-model";
+import type {
+  InboxDispositionEntry,
+  InboxDispositionReceipt,
+  InboxDispositionStoredOriginal,
+} from "../../../types/inbox";
 import type { InboxDispositionHistory } from "./inbox-dispositions-owner";
+import type { InboxCurrentPermissionItem } from "./inbox-model";
+import {
+  bindInboxCardIdentity,
+  hasExactPermissionTerminalProof,
+  type InboxCard,
+  type InboxCoverage,
+  type InboxFilters,
+  mergeInboxDispositionEntries,
+  mergeInboxDispositionHistory,
+  projectInbox,
+} from "./inbox-view";
 
 const card = (patch: Partial<InboxCard> = {}): InboxCard => ({
   key: "permission-a",
@@ -47,7 +60,11 @@ const snooze = (item: InboxCard, until: string): InboxDispositionEntry => ({
 });
 
 test("orders newest first and filters by exact project and source kind", () => {
-  const older = card({ key: "older", stableItemId: "offer-older", observedAt: "2026-10-31T11:00:00.000Z" });
+  const older = card({
+    key: "older",
+    stableItemId: "offer-older",
+    observedAt: "2026-10-31T11:00:00.000Z",
+  });
   const other = card({
     key: "other",
     projectId: "project-b",
@@ -62,7 +79,11 @@ test("orders newest first and filters by exact project and source kind", () => {
     filters,
     now,
   });
-  expect(all.cards.map((item) => item.key)).toEqual(["other", "permission-a", "older"]);
+  expect(all.cards.map((item) => item.key)).toEqual([
+    "other",
+    "permission-a",
+    "older",
+  ]);
   const filtered = projectInbox({
     cards: [older, other, card()],
     dispositions: [],
@@ -70,7 +91,10 @@ test("orders newest first and filters by exact project and source kind", () => {
     filters: { ...filters, projectId: "project-a", sourceKind: "permission" },
     now,
   });
-  expect(filtered.cards.map((item) => item.key)).toEqual(["permission-a", "older"]);
+  expect(filtered.cards.map((item) => item.key)).toEqual([
+    "permission-a",
+    "older",
+  ]);
 });
 
 test("keeps snoozed action cards in the Snoozed bucket and only hides fresh resolved Done", () => {
@@ -103,8 +127,24 @@ test("keeps snoozed action cards in the Snoozed bucket and only hides fresh reso
     operation: "done",
     updatedAt: now,
   };
-  expect(projectInbox({ cards: [item], dispositions: [done], coverage, filters, now }).cards).toEqual([item]);
-  expect(projectInbox({ cards: [card({ resolved: true })], dispositions: [done], coverage, filters, now }).cards).toEqual([]);
+  expect(
+    projectInbox({
+      cards: [item],
+      dispositions: [done],
+      coverage,
+      filters,
+      now,
+    }).cards,
+  ).toEqual([item]);
+  expect(
+    projectInbox({
+      cards: [card({ resolved: true })],
+      dispositions: [done],
+      coverage,
+      filters,
+      now,
+    }).cards,
+  ).toEqual([]);
 });
 
 test("leaves unknown outcome notices visible while their action card is snoozed", () => {
@@ -118,7 +158,14 @@ test("leaves unknown outcome notices visible while their action card is snoozed"
     canCheck: true,
     canSnooze: false,
   });
-  const action = { ...notice, key: "write-1:action", title: "Review comment outcome", notice: false, canCheck: false, canSnooze: true };
+  const action = {
+    ...notice,
+    key: "write-1:action",
+    title: "Review comment outcome",
+    notice: false,
+    canCheck: false,
+    canSnooze: true,
+  };
   const snoozed = projectInbox({
     cards: [notice, action],
     dispositions: [snooze(action, "2026-10-31T13:00:00.000Z")],
@@ -142,9 +189,15 @@ test("leaves unknown outcome notices visible while their action card is snoozed"
 });
 
 test("stable identity is independent from source version and keeps permission sessions distinct", async () => {
-  const base = card({ stableItemId: JSON.stringify(["codex", "session-a", "turn-a", "offer-a"]), sourceRevision: "version-a" });
+  const base = card({
+    stableItemId: JSON.stringify(["codex", "session-a", "turn-a", "offer-a"]),
+    sourceRevision: "version-a",
+  });
   const changedVersion = { ...base, sourceRevision: "version-b" };
-  const otherSession = { ...base, stableItemId: JSON.stringify(["codex", "session-b", "turn-a", "offer-a"]) };
+  const otherSession = {
+    ...base,
+    stableItemId: JSON.stringify(["codex", "session-b", "turn-a", "offer-a"]),
+  };
   const first = await bindInboxCardIdentity(base);
   const nextVersion = await bindInboxCardIdentity(changedVersion);
   const other = await bindInboxCardIdentity(otherSession);
@@ -207,7 +260,13 @@ test("distinguishes retained rows from source-checked rows when coverage is part
   const projection = projectInbox({
     cards: [card({ sourceState: "unavailable", canSnooze: false })],
     dispositions: [],
-    coverage: [{ sourceKind: "permission", state: "unavailable", reason: "Protected source is unavailable." }],
+    coverage: [
+      {
+        sourceKind: "permission",
+        state: "unavailable",
+        reason: "Protected source is unavailable.",
+      },
+    ],
     filters,
     now,
   });
@@ -218,55 +277,156 @@ test("distinguishes retained rows from source-checked rows when coverage is part
 
 test("Done proof is exact to the original permission address and current snapshot", () => {
   const permission: InboxCurrentPermissionItem = {
-    kind: "permission", state: "current", complete: true, projectId: "project-a", workspace: "C:/work/a",
-    provider: "codex", sessionId: "session-a", acceptedTurnId: "turn-a", offerId: "offer-a",
-    key: "permission-a", actionable: false, snapshotGeneration: 8, observedAt: now,
-    approval: { provider: "codex", value: { id: "offer-a", kind: "command", command: "bun test", cwd: "C:/work/a", availableDecisions: ["accept"], reason: null } },
+    kind: "permission",
+    state: "current",
+    complete: true,
+    projectId: "project-a",
+    workspace: "C:/work/a",
+    provider: "codex",
+    sessionId: "session-a",
+    acceptedTurnId: "turn-a",
+    offerId: "offer-a",
+    key: "permission-a",
+    actionable: false,
+    snapshotGeneration: 8,
+    observedAt: now,
+    approval: {
+      provider: "codex",
+      value: {
+        id: "offer-a",
+        kind: "command",
+        command: "bun test",
+        cwd: "C:/work/a",
+        availableDecisions: ["accept"],
+        reason: null,
+      },
+    },
   };
   const proof = {
-    permissionKey: "permission-a", projectId: "project-a", workspace: "C:/work/a", provider: "codex" as const,
-    sessionId: "session-a", acceptedTurnId: "turn-a", offerId: "offer-a", snapshotGeneration: 8,
-    conversationRevision: 4, lastSequence: 3, complete: true as const, resolved: true as const,
+    permissionKey: "permission-a",
+    projectId: "project-a",
+    workspace: "C:/work/a",
+    provider: "codex" as const,
+    sessionId: "session-a",
+    acceptedTurnId: "turn-a",
+    offerId: "offer-a",
+    snapshotGeneration: 8,
+    conversationRevision: 4,
+    lastSequence: 3,
+    complete: true as const,
+    resolved: true as const,
   };
   expect(hasExactPermissionTerminalProof(permission, 8, [proof])).toBe(true);
   expect(hasExactPermissionTerminalProof(permission, 7, [proof])).toBe(false);
-  expect(hasExactPermissionTerminalProof(permission, 8, [{ ...proof, sessionId: "session-b" }])).toBe(false);
-  expect(hasExactPermissionTerminalProof(permission, 8, [{ ...proof, offerId: "offer-b" }])).toBe(false);
-  expect(hasExactPermissionTerminalProof(permission, 8, [{ ...proof, projectId: "project-b" }])).toBe(false);
+  expect(
+    hasExactPermissionTerminalProof(permission, 8, [
+      { ...proof, sessionId: "session-b" },
+    ]),
+  ).toBe(false);
+  expect(
+    hasExactPermissionTerminalProof(permission, 8, [
+      { ...proof, offerId: "offer-b" },
+    ]),
+  ).toBe(false);
+  expect(
+    hasExactPermissionTerminalProof(permission, 8, [
+      { ...proof, projectId: "project-b" },
+    ]),
+  ).toBe(false);
 });
 
 test("disposition history only advances from unknown to reserved to terminal", () => {
   const original: InboxDispositionStoredOriginal = {
-    requestId: "77c37127-1c22-4a2a-8e7d-69cc74ff1290", projectId: "project-a", expectedCatalogRevision: 2,
-    workspace: "C:/work/a", item: { sourceKind: "unknown-bead-write", stableItemId: "write-a", sourceRevision: "write:1" },
-    expectedRevision: 0, operation: "snooze-1h",
+    requestId: "77c37127-1c22-4a2a-8e7d-69cc74ff1290",
+    projectId: "project-a",
+    expectedCatalogRevision: 2,
+    workspace: "C:/work/a",
+    item: {
+      sourceKind: "unknown-bead-write",
+      stableItemId: "write-a",
+      sourceRevision: "write:1",
+    },
+    expectedRevision: 0,
+    operation: "snooze-1h",
   };
-  const unknown: InboxDispositionHistory = { original, state: "reserve-unknown" };
-  const reserved: InboxDispositionReceipt = { original, phase: "reserved", reservedAt: now };
+  const unknown: InboxDispositionHistory = {
+    original,
+    state: "reserve-unknown",
+  };
+  const reserved: InboxDispositionReceipt = {
+    original,
+    phase: "reserved",
+    reservedAt: now,
+  };
   const applied: InboxDispositionReceipt = {
-    original, phase: "applied", reservedAt: now, settledAt: "2026-10-31T12:31:00.000Z", outcome: "applied",
-    resultingRevision: 1, resultingValue: "snooze-1h", snoozedUntil: "2026-10-31T13:31:00.000Z",
+    original,
+    phase: "applied",
+    reservedAt: now,
+    settledAt: "2026-10-31T12:31:00.000Z",
+    outcome: "applied",
+    resultingRevision: 1,
+    resultingValue: "snooze-1h",
+    snoozedUntil: "2026-10-31T13:31:00.000Z",
   };
-  const persisted = mergeInboxDispositionHistory([unknown], [{ original, state: "persisted-reserved", receipt: reserved }]);
-  expect(persisted[0]).toMatchObject({ state: "persisted-reserved", receipt: { phase: "reserved" } });
-  const mayHaveApplied: InboxDispositionHistory = { original, state: "apply-unknown" };
-  expect(mergeInboxDispositionHistory([mayHaveApplied], persisted)[0]).toMatchObject({ state: "apply-unknown" });
-  const mayHaveDiscarded: InboxDispositionHistory = { original, state: "discard-unknown" };
-  expect(mergeInboxDispositionHistory([mayHaveDiscarded], persisted)[0]).toMatchObject({ state: "discard-unknown" });
-  const terminal = mergeInboxDispositionHistory(persisted, [{ original, state: "terminal", receipt: applied }]);
-  expect(terminal[0]).toMatchObject({ state: "terminal", receipt: { phase: "applied" } });
-  expect(mergeInboxDispositionHistory(terminal, [unknown])[0]).toMatchObject({ state: "terminal", receipt: { phase: "applied" } });
-  expect(mergeInboxDispositionHistory(terminal, [{ original: { ...original, operation: "done" }, state: "terminal" }])).toEqual(terminal);
+  const persisted = mergeInboxDispositionHistory(
+    [unknown],
+    [{ original, state: "persisted-reserved", receipt: reserved }],
+  );
+  expect(persisted[0]).toMatchObject({
+    state: "persisted-reserved",
+    receipt: { phase: "reserved" },
+  });
+  const mayHaveApplied: InboxDispositionHistory = {
+    original,
+    state: "apply-unknown",
+  };
+  expect(
+    mergeInboxDispositionHistory([mayHaveApplied], persisted)[0],
+  ).toMatchObject({ state: "apply-unknown" });
+  const mayHaveDiscarded: InboxDispositionHistory = {
+    original,
+    state: "discard-unknown",
+  };
+  expect(
+    mergeInboxDispositionHistory([mayHaveDiscarded], persisted)[0],
+  ).toMatchObject({ state: "discard-unknown" });
+  const terminal = mergeInboxDispositionHistory(persisted, [
+    { original, state: "terminal", receipt: applied },
+  ]);
+  expect(terminal[0]).toMatchObject({
+    state: "terminal",
+    receipt: { phase: "applied" },
+  });
+  expect(mergeInboxDispositionHistory(terminal, [unknown])[0]).toMatchObject({
+    state: "terminal",
+    receipt: { phase: "applied" },
+  });
+  expect(
+    mergeInboxDispositionHistory(terminal, [
+      { original: { ...original, operation: "done" }, state: "terminal" },
+    ]),
+  ).toEqual(terminal);
 });
 
 test("an older background collection cannot replace a newer disposition revision", () => {
   const older: InboxDispositionEntry = {
-    projectId: "project-a", workspace: "C:/work/a",
-    item: { sourceKind: "permission", stableItemId: "offer-a", sourceRevision: "offer-revision-a" },
-    revision: 3, operation: "snooze-1h", updatedAt: now, snoozedUntil: "2026-10-31T13:00:00.000Z",
+    projectId: "project-a",
+    workspace: "C:/work/a",
+    item: {
+      sourceKind: "permission",
+      stableItemId: "offer-a",
+      sourceRevision: "offer-revision-a",
+    },
+    revision: 3,
+    operation: "snooze-1h",
+    updatedAt: now,
+    snoozedUntil: "2026-10-31T13:00:00.000Z",
   };
   const newer: InboxDispositionEntry = {
-    ...older, revision: 4, updatedAt: "2026-10-31T12:31:00.000Z", snoozedUntil: "2026-10-31T13:31:00.000Z",
+    ...older,
+    revision: 4,
+    updatedAt: "2026-10-31T12:31:00.000Z",
+    snoozedUntil: "2026-10-31T13:31:00.000Z",
   };
   expect(mergeInboxDispositionEntries([newer], [older])).toEqual([newer]);
   expect(mergeInboxDispositionEntries([older], [newer])).toEqual([newer]);
