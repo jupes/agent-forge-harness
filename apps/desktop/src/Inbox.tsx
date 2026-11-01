@@ -14,10 +14,7 @@ import type {
   InboxFilters,
   InboxSourceKind,
 } from "./inbox-view";
-import {
-  bindInboxCardIdentity,
-  projectInbox,
-} from "./inbox-view";
+import { bindInboxCardIdentity, projectInbox } from "./inbox-view";
 import { desktopHref } from "./navigation";
 import type { DesktopBeadWrites } from "./use-bead-writes";
 import "./inbox.css";
@@ -683,7 +680,9 @@ export function PermissionOrDispositionCard({
             <dl class="af-inbox-request-details">
               <dt>Requested command</dt>
               <dd>
-                <code>{permission.approval.value.command ?? "Not provided"}</code>
+                <code>
+                  {permission.approval.value.command ?? "Not provided"}
+                </code>
               </dd>
               <dt>Working directory</dt>
               <dd>
@@ -703,12 +702,14 @@ export function PermissionOrDispositionCard({
               <summary>Review native permission details</summary>
               <pre>
                 {permission.approval.value.detail.json}
-                {permission.approval.value.detail.truncated ? " (truncated)" : ""}
+                {permission.approval.value.detail.truncated
+                  ? " (truncated)"
+                  : ""}
               </pre>
               {!permission.approval.value.detailsComplete && (
                 <p role="status">
-                  Complete details are unavailable. This permission item
-                  remains read-only.
+                  Complete details are unavailable. This permission item remains
+                  read-only.
                 </p>
               )}
             </details>

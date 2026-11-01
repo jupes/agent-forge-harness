@@ -156,8 +156,13 @@ test("still applies Snooze and Done dispositions to non-permission items", () =>
   });
   const snoozed = snooze(action, "2026-10-31T13:00:00.000Z");
   expect(
-    projectInbox({ cards: [action], dispositions: [snoozed], coverage, filters, now })
-      .cards,
+    projectInbox({
+      cards: [action],
+      dispositions: [snoozed],
+      coverage,
+      filters,
+      now,
+    }).cards,
   ).toEqual([]);
   expect(
     projectInbox({
@@ -188,7 +193,13 @@ test("still applies Snooze and Done dispositions to non-permission items", () =>
     updatedAt: now,
   };
   expect(
-    projectInbox({ cards: [resolved], dispositions: [done], coverage, filters, now }),
+    projectInbox({
+      cards: [resolved],
+      dispositions: [done],
+      coverage,
+      filters,
+      now,
+    }),
   ).toMatchObject({ cards: [], visibleCount: 0 });
 });
 

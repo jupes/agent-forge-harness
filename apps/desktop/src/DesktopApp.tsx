@@ -1808,11 +1808,13 @@ export function DesktopApp(): JSX.Element {
         item.original.requestId === requestId &&
         item.original.item.sourceKind === "permission",
     ) ||
-    ackOwner.view().history.some(
-      (item) =>
-        item.original.requestId === requestId &&
-        item.original.item.sourceKind === "permission",
-    );
+    ackOwner
+      .view()
+      .history.some(
+        (item) =>
+          item.original.requestId === requestId &&
+          item.original.item.sourceKind === "permission",
+      );
   const hydrateDispositionOriginal = async (requestId: string) => {
     const shown = dispositionState.history.find(
       (item) => item.original.requestId === requestId,
