@@ -293,15 +293,9 @@ export function parseProjectCatalog(value: unknown): ProjectCatalog {
           return (
             project.id === item.projectId &&
             project.slug === item.original.slug &&
-            project.name === item.original.name &&
-            project.description === item.original.description &&
-            project.icon === item.original.icon &&
             Object.hasOwn(project, "keeperSmith") ===
               Object.hasOwn(item.original, "keeperSmith") &&
             project.keeperSmith === item.original.keeperSmith &&
-            Object.hasOwn(project, "color") ===
-              Object.hasOwn(item.original, "color") &&
-            project.color === item.original.color &&
             originalScope !== undefined &&
             createdScope !== undefined &&
             comparableCheckout(createdScope.root) ===

@@ -793,7 +793,7 @@ test("bounded project color IDs are hash-bound and survive exact create readback
   const saved = JSON.parse(readFileSync(file, "utf8")) as {
     projects: Array<Record<string, unknown>>;
   };
-  saved.projects[0]!.color = "blue";
+  saved.projects[0]!.color = "purple";
   const corrupted = JSON.stringify(saved);
   writeOwnerOnly(file, corrupted);
   expect(() => store.read()).toThrow();
