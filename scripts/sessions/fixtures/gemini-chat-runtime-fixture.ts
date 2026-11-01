@@ -5,49 +5,150 @@ import {
   publishProbeFailure,
 } from "./gemini-chat-probe-witness";
 
-type InputPhase = "before-reader" | "reader-created" | "read-bytes" | "newline-seen" | "json-parsed" | "wire-record-attempted";
-type InputTerminal = { terminal: "exception"; phase: InputPhase; error: unknown } | { terminal: "eof"; phase: InputPhase };
-const inputPhases: ReadonlySet<string> = new Set(["before-reader", "reader-created", "read-bytes", "newline-seen", "json-parsed", "wire-record-attempted"]);
-const errorNames: ReadonlySet<string> = new Set(["Error", "TypeError", "SyntaxError", "RangeError", "DOMException"]);
-const errorCodes: ReadonlySet<string> = new Set(["EACCES", "EPERM", "ENOENT", "EPIPE", "EBADF", "EINVAL"]);
+type InputPhase =
+  | "before-reader"
+  | "reader-created"
+  | "read-bytes"
+  | "newline-seen"
+  | "json-parsed"
+  | "wire-record-attempted";
+type InputTerminal =
+  | { terminal: "exception"; phase: InputPhase; error: unknown }
+  | { terminal: "eof"; phase: InputPhase };
+const inputPhases: ReadonlySet<string> = new Set([
+  "before-reader",
+  "reader-created",
+  "read-bytes",
+  "newline-seen",
+  "json-parsed",
+  "wire-record-attempted",
+]);
+const errorNames: ReadonlySet<string> = new Set([
+  "Error",
+  "TypeError",
+  "SyntaxError",
+  "RangeError",
+  "DOMException",
+]);
+const errorCodes: ReadonlySet<string> = new Set([
+  "EACCES",
+  "EPERM",
+  "ENOENT",
+  "EPIPE",
+  "EBADF",
+  "EINVAL",
+]);
 function safeErrorName(error: unknown): string {
   try {
-    if ((typeof error === "object" && error !== null) || typeof error === "function") {
+    if (
+      (typeof error === "object" && error !== null) ||
+      typeof error === "function"
+    ) {
       const descriptor = Object.getOwnPropertyDescriptor(error, "name");
-      if (descriptor) return "value" in descriptor && typeof descriptor.value === "string" && errorNames.has(descriptor.value) ? descriptor.value : "other";
+      if (descriptor)
+        return "value" in descriptor &&
+          typeof descriptor.value === "string" &&
+          errorNames.has(descriptor.value)
+          ? descriptor.value
+          : "other";
     }
     if (error instanceof DOMException) return "DOMException";
     if (error instanceof TypeError) return "TypeError";
     if (error instanceof SyntaxError) return "SyntaxError";
     if (error instanceof RangeError) return "RangeError";
     return error instanceof Error ? "Error" : "other";
-  } catch { return "other"; }
+  } catch {
+    return "other";
+  }
 }
 function safeErrorCode(error: unknown): string {
-  if ((typeof error !== "object" && typeof error !== "function") || error === null) return "none";
+  if (
+    (typeof error !== "object" && typeof error !== "function") ||
+    error === null
+  )
+    return "none";
   try {
     const descriptor = Object.getOwnPropertyDescriptor(error, "code");
     if (!descriptor) return "none";
-    if (!("value" in descriptor) || typeof descriptor.value !== "string") return "other";
+    if (!("value" in descriptor) || typeof descriptor.value !== "string")
+      return "other";
     return errorCodes.has(descriptor.value) ? descriptor.value : "other";
-  } catch { return "other"; }
+  } catch {
+    return "other";
+  }
 }
 export function projectGeminiChatInputTerminalRow(value: unknown) {
   const invalid = { state: "invalid" as const };
   try {
-    if (typeof value !== "object" || value === null || Array.isArray(value)) return invalid;
-    const row = value as Record<string, unknown>, keys = Object.keys(row);
-    if (keys.length !== 5 || keys.some((key) => !["kind", "phase", "terminal", "errorName", "errorCode"].includes(key))) return invalid;
+    if (typeof value !== "object" || value === null || Array.isArray(value))
+      return invalid;
+    const row = value as Record<string, unknown>,
+      keys = Object.keys(row);
+    if (
+      keys.length !== 5 ||
+      keys.some(
+        (key) =>
+          !["kind", "phase", "terminal", "errorName", "errorCode"].includes(
+            key,
+          ),
+      )
+    )
+      return invalid;
     const field = (key: string) => Object.getOwnPropertyDescriptor(row, key);
-    const read = (key: string) => { const descriptor = field(key); return descriptor && "value" in descriptor ? descriptor.value : undefined; };
-    const phase = read("phase"), terminal = read("terminal"), errorName = read("errorName"), errorCode = read("errorCode");
-    if (read("kind") !== "input-terminal" || typeof phase !== "string" || !inputPhases.has(phase) || (terminal !== "exception" && terminal !== "eof") || typeof errorName !== "string" || (errorName !== "none" && errorName !== "other" && !errorNames.has(errorName)) || typeof errorCode !== "string" || (errorCode !== "none" && errorCode !== "other" && !errorCodes.has(errorCode)) || (terminal === "eof" && (errorName !== "none" || errorCode !== "none")) || (terminal === "exception" && errorName === "none")) return invalid;
-    return { state: "observed" as const, phase, terminal, errorName, errorCode };
-  } catch { return invalid; }
+    const read = (key: string) => {
+      const descriptor = field(key);
+      return descriptor && "value" in descriptor ? descriptor.value : undefined;
+    };
+    const phase = read("phase"),
+      terminal = read("terminal"),
+      errorName = read("errorName"),
+      errorCode = read("errorCode");
+    if (
+      read("kind") !== "input-terminal" ||
+      typeof phase !== "string" ||
+      !inputPhases.has(phase) ||
+      (terminal !== "exception" && terminal !== "eof") ||
+      typeof errorName !== "string" ||
+      (errorName !== "none" &&
+        errorName !== "other" &&
+        !errorNames.has(errorName)) ||
+      typeof errorCode !== "string" ||
+      (errorCode !== "none" &&
+        errorCode !== "other" &&
+        !errorCodes.has(errorCode)) ||
+      (terminal === "eof" && (errorName !== "none" || errorCode !== "none")) ||
+      (terminal === "exception" && errorName === "none")
+    )
+      return invalid;
+    return {
+      state: "observed" as const,
+      phase,
+      terminal,
+      errorName,
+      errorCode,
+    };
+  } catch {
+    return invalid;
+  }
 }
-export function observeGeminiChatInputTerminal(input: InputTerminal, append: (row: unknown) => void): void {
-  const terminal = input.terminal, phase = input.phase, error = terminal === "exception" ? input.error : undefined;
-  try { append({ kind: "input-terminal", phase, terminal, errorName: terminal === "exception" ? safeErrorName(error) : "none", errorCode: terminal === "exception" ? safeErrorCode(error) : "none" }); } catch { /* Best-effort diagnostics never replace the observed outcome. */ }
+export function observeGeminiChatInputTerminal(
+  input: InputTerminal,
+  append: (row: unknown) => void,
+): void {
+  const terminal = input.terminal,
+    phase = input.phase,
+    error = terminal === "exception" ? input.error : undefined;
+  try {
+    append({
+      kind: "input-terminal",
+      phase,
+      terminal,
+      errorName: terminal === "exception" ? safeErrorName(error) : "none",
+      errorCode: terminal === "exception" ? safeErrorCode(error) : "none",
+    });
+  } catch {
+    /* Best-effort diagnostics never replace the observed outcome. */
+  }
   if (terminal === "exception") throw error;
 }
 
@@ -152,8 +253,9 @@ export async function runGeminiChatFixture() {
     adapter: process.env.AGENT_FORGE_ADAPTER,
     smith: process.env.AGENT_FORGE_SMITH,
   });
-    let inputPhase: InputPhase = "before-reader", firstWireRecorded = false;
-    try {
+  let inputPhase: InputPhase = "before-reader",
+    firstWireRecorded = false;
+  try {
     const emit = (value: unknown) => console.log(JSON.stringify(value));
     const reply = (id: unknown, result: unknown) =>
       emit({ jsonrpc: "2.0", id, result });
@@ -177,7 +279,10 @@ export async function runGeminiChatFixture() {
       } catch {
         throw Error("Invalid client fixture JSON");
       }
-      if (!firstWireRecorded) { inputPhase = "json-parsed"; inputPhase = "wire-record-attempted"; }
+      if (!firstWireRecorded) {
+        inputPhase = "json-parsed";
+        inputPhase = "wire-record-attempted";
+      }
       record({ kind: "wire", value });
       if (!firstWireRecorded) firstWireRecorded = true;
       const params = value.params;
@@ -250,7 +355,10 @@ export async function runGeminiChatFixture() {
           emit({
             jsonrpc: "2.0",
             id: promptId,
-            error: { code: -32000, message: "Synthetic authentication required" },
+            error: {
+              code: -32000,
+              message: "Synthetic authentication required",
+            },
           });
           return;
         }
@@ -322,10 +430,19 @@ export async function runGeminiChatFixture() {
     for (;;) {
       const { done, value } = await reader.read();
       if (done) {
-        if (!firstWireRecorded) observeGeminiChatInputTerminal({ terminal: "eof", phase: inputPhase }, record);
+        if (!firstWireRecorded)
+          observeGeminiChatInputTerminal(
+            { terminal: "eof", phase: inputPhase },
+            record,
+          );
         break;
       }
-      if (!firstWireRecorded && inputPhase === "reader-created" && value.byteLength > 0) inputPhase = "read-bytes";
+      if (
+        !firstWireRecorded &&
+        inputPhase === "reader-created" &&
+        value.byteLength > 0
+      )
+        inputPhase = "read-bytes";
       buffer += decoder.decode(value, { stream: true });
       for (;;) {
         const newline = buffer.indexOf("\n");
@@ -336,8 +453,12 @@ export async function runGeminiChatFixture() {
         if (line.trim()) handle(line);
       }
     }
-    } catch (error) {
-      if (!firstWireRecorded) observeGeminiChatInputTerminal({ terminal: "exception", phase: inputPhase, error }, record);
-      throw error;
-    }
+  } catch (error) {
+    if (!firstWireRecorded)
+      observeGeminiChatInputTerminal(
+        { terminal: "exception", phase: inputPhase, error },
+        record,
+      );
+    throw error;
   }
+}
