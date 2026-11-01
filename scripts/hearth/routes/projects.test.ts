@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import type { ProjectCatalog } from "../../../types/projects";
 import { resolveCheckout } from "../../ledger/workspace";
@@ -2112,4 +2113,95 @@ test("project create reservations preserve legacy catalogs, collide by exact UUI
   expect(catalog.revision).toBe(4);
   expect(catalog.createOperations).toHaveLength(2);
   expect(catalog.projects).toEqual([]);
+});
+
+
+test("GET /projects/:id/settings/repositories reads only the selected registered checkout through the protected hearth", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+
+  const checkout = join(h.root, "settings-repository-fixture");
+  mkdirSync(checkout, { recursive: true });
+  const initialized = spawnSync("git", ["init", "--quiet", checkout], {
+    cwd: h.root,
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 10_000,
+  });
+  if (initialized.status !== 0)
+    throw new Error("isolated repository fixture failed: " + initialized.stderr);
+  const canonical = realpathSync.native(checkout);
+  const registryRoot = join(h.home, "project-create-registry");
+  mkdirSync(registryRoot, { recursive: true });
+  writeFileSync(
+    join(registryRoot, "approved-repositories.json"),
+    JSON.stringify({
+      version: 1,
+      repositories: [
+        {
+          name: "settings-repository-fixture",
+          path: canonical,
+          key: workspaceKey(canonical),
+          originalRequestId: "a45b3815-cf25-4b2e-bab7-90b21e7732fd",
+          source: "folder",
+        },
+      ],
+    }),
+  );
+
+  const catalog = await createProjectStore(h.home).create(
+    {
+      slug: "settings-repository-fixture",
+      name: "Settings repository fixture",
+      description: "",
+      icon: "S",
+      workspaces: [
+        {
+          root: h.workspace,
+          repositories: [canonical],
+          epicIds: ["alpha-epic"],
+        },
+      ],
+    },
+    0,
+  );
+  const project = catalog.projects[0];
+  if (!project) throw new Error("project fixture was not created");
+
+  const catalogRead = await fetch(h.api + "/projects", {
+    headers: h.headers(h.hearth.token),
+  });
+  expect(catalogRead.status).toBe(200);
+  expect(await catalogRead.json()).toMatchObject({
+    ok: true,
+    data: { revision: catalog.revision, projects: [{ id: project.id }] },
+    error: null,
+  });
+
+  const response = await fetch(
+    h.api + "/projects/" + project.id + "/settings/repositories",
+    { headers: h.headers(h.hearth.token) },
+  );
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual({
+    ok: true,
+    data: {
+      projectId: project.id,
+      catalogRevision: catalog.revision,
+      repositories: [
+        {
+          workspaceRoot: h.workspace,
+          repositories: [
+            {
+              path: canonical,
+              access: "approved",
+              name: "settings-repository-fixture",
+              worktrees: [],
+            },
+          ],
+        },
+      ],
+    },
+    error: null,
+  });
 });
