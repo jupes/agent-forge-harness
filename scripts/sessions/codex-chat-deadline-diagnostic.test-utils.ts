@@ -180,6 +180,7 @@ function observeNativePromise<T>(
 ): "observed" | "sync-value" | "not-observed" {
   try {
     if (typeof value !== "object" || value === null) return "sync-value";
+    if (Array.isArray(value)) return "sync-value";
     const prototype = Object.getPrototypeOf(value);
     if (prototype !== nativePromisePrototype) {
       let isPromise = false;
