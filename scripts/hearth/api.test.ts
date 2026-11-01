@@ -111,7 +111,11 @@ import {
   hashProjectCreateRequest,
   projectCatalogPath,
 } from "../projects/store";
-import { FIXTURE_PROJECT_ID, projectCatalogFixture } from "../projects/testing";
+import {
+  FIXTURE_PROJECT_ID,
+  projectCatalogFixture,
+  projectFixture,
+} from "../projects/testing";
 import type { ProviderInspector } from "../providers/inspect";
 import { providerLoginFile } from "../providers/login";
 import type {
@@ -918,6 +922,8 @@ const API_PROJECT_CREATE_RESERVE_ID = "3eed32cc-a41d-49b7-b895-9236743781fd";
 const API_PROJECT_CREATE_COMMIT_ID = "a506e878-f16f-492f-8e2b-d2d35e2cf11f";
 const API_PROJECT_CREATE_RETIRE_ID = "61a2f73e-a0fd-4d9f-928d-38e5cf398c1b";
 const API_PROJECT_CREATE_READ_ID = "8de54683-b2d1-45a4-907e-6a1bfcb40221";
+const API_PROJECT_REPOSITORIES_READ_ID =
+  "project-9a2b7c4d-1e63-4f8a-9b21-6d0c5e3f7a84";
 const API_REPOSITORY_PICK_ID = "4c1656b0-9e1a-4d92-aabc-75d4b4ba9a01";
 const API_REPOSITORY_REGISTER_ID = "4c1656b0-9e1a-4d92-aabc-75d4b4ba9a02";
 const API_REPOSITORY_CLONE_RESERVE_ID = "4c1656b0-9e1a-4d92-aabc-75d4b4ba9a03";
@@ -944,6 +950,56 @@ function apiProjectCreateOriginal(slug: string, root = "") {
       },
     ],
   };
+}
+
+function seedProjectRepositoriesReadFixture(h: TestHearth): {
+  path: string;
+  revision: number;
+} {
+  const store = createProjectStore(h.home);
+  const before = store.read();
+  const original = before.projects.find(
+    (project) => project.id === FIXTURE_PROJECT_ID,
+  );
+  if (!original) throw new Error("shared project fixture is missing");
+  const repositoryPath = join(h.home, "api-read-unregistered-repository");
+  if (existsSync(repositoryPath))
+    throw new Error("unregistered repository fixture unexpectedly exists");
+  const fixture = projectFixture(h.workspace, {
+    id: API_PROJECT_REPOSITORIES_READ_ID,
+    slug: "api-read-unregistered",
+    workspaces: [
+      {
+        root: h.workspace,
+        repositories: [repositoryPath],
+        epicIds: ["alpha-epic"],
+      },
+    ],
+  });
+  if (
+    before.projects.some(
+      (project) => project.id === fixture.id || project.slug === fixture.slug,
+    )
+  )
+    throw new Error("repository read fixture identity is not unique");
+  writeOwnerOnly(
+    projectCatalogPath(h.home),
+    JSON.stringify({ ...before, projects: [...before.projects, fixture] }),
+  );
+  const after = store.read();
+  const afterOriginal = after.projects.find(
+    (project) => project.id === FIXTURE_PROJECT_ID,
+  );
+  expect(after.revision).toBe(before.revision);
+  expect(after.projects.slice(0, before.projects.length)).toEqual(
+    before.projects,
+  );
+  expect(JSON.stringify(afterOriginal)).toBe(JSON.stringify(original));
+  expect(JSON.stringify(after.createOperations)).toBe(
+    JSON.stringify(before.createOperations),
+  );
+  expect(after.projects.at(-1)).toEqual(fixture);
+  return { path: repositoryPath, revision: after.revision };
 }
 
 function seedProjectCreateScope(h: TestHearth, slug: string): void {
@@ -4304,6 +4360,8 @@ const READS: Record<string, string> = {
   "GET /projects/:id/council/reviews/:requestId": `/projects/${FIXTURE_PROJECT_ID}/council/reviews/${API_PROJECT_CREATE_READ_ID}`,
   "GET /projects/:id/council/reviews/:requestId/run": `/projects/${FIXTURE_PROJECT_ID}/council/reviews/${API_PROJECT_CREATE_READ_ID}/run`,
   "GET /projects/create-options": "/projects/create-options",
+  "GET /projects/:id/settings/repositories":
+    "/projects/" + API_PROJECT_REPOSITORIES_READ_ID + "/settings/repositories",
   "GET /projects/create-scope-preview":
     "/projects/create-scope-preview?slug=alpha&epicId=alpha-epic",
   "GET /projects/:id/settings/scope-preview":
@@ -5374,6 +5432,7 @@ describe("a read row or the stream while another connection holds the write lock
     await seedForkReadChild(h);
     await seedForkReadSourceReview(h);
     await seedForkReadOriginal(h);
+    seedProjectRepositoriesReadFixture(h);
     const rows = h.hearth.routes.filter(
       (route) => route.kind === "read" || route.kind === "stream",
     );
@@ -6491,6 +6550,7 @@ describe("every read row (iterating the table)", () => {
     );
     projectCouncilPaths(await seedProjectCouncilReadOriginal(h));
     await seedCheckpointReviewRead(h);
+    const projectRepositoryFixture = seedProjectRepositoriesReadFixture(h);
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");
     for (const row of rows) {
@@ -6514,6 +6574,19 @@ describe("every read row (iterating the table)", () => {
         ok: true,
         error: null,
       });
+      if (key(row) === "GET /projects/:id/settings/repositories")
+        expect(body.data).toEqual({
+          projectId: API_PROJECT_REPOSITORIES_READ_ID,
+          catalogRevision: projectRepositoryFixture.revision,
+          repositories: [
+            {
+              workspaceRoot: h.workspace,
+              repositories: [
+                { path: projectRepositoryFixture.path, access: "unregistered" },
+              ],
+            },
+          ],
+        });
       expect(response.headers.get("cache-control")).toBe("no-store");
     }
   });
@@ -6549,6 +6622,7 @@ describe("every read row (iterating the table)", () => {
       "api-project-read",
     );
     projectCouncilPaths(await seedProjectCouncilReadOriginal(h));
+    seedProjectRepositoriesReadFixture(h);
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
     if (rows.length === 0) throw new Error("the table has no read rows");
     const refused: Array<[string, Record<string, string>]> = [

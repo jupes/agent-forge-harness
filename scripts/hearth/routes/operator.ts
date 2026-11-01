@@ -425,6 +425,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
   });
   const {
     projects,
+    projectRepositoriesRead,
     createOptionsRead,
     scopePreview,
     settingsScopePreview,
@@ -572,6 +573,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     counts,
     scoreboard,
     projects,
+    projectRepositoriesRead,
     createOptionsRead,
     scopePreview,
     settingsScopePreview,

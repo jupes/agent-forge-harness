@@ -234,6 +234,199 @@ test("general metadata updates advance one revision and preserve project and cre
   expect(Object.hasOwn(legacyUpdated, "createOperations")).toBe(false);
 });
 
+test("a created project keeps its private original through General edits and exact replay", async () => {
+  const { home, input } = fixture();
+  let tick = 0;
+  const now = () => new Date(Date.UTC(2026, 10, 1, 0, 0, tick++));
+  const store = createProjectStore(home, now);
+  const requestId = "63a53f91-3ac3-4cf6-8be0-c929cdf864a7";
+  const scope = { hash: "a".repeat(64), count: 1 };
+  const checkoutPath = join(home, "checkout");
+  mkdirSync(join(checkoutPath, ".git"), { recursive: true });
+  const canonicalCheckout = resolveCheckout(checkoutPath).workspace;
+  const original = {
+    ...input,
+    keeperSmith: "claude-master",
+    color: "blue" as const,
+    workspaces: [
+      {
+        root: canonicalCheckout,
+        repositories: [canonicalCheckout],
+        epicIds: input.workspaces[0]!.epicIds,
+      },
+    ],
+  };
+  expect(original.workspaces[0]?.root).toBe(canonicalCheckout);
+  expect(original.workspaces[0]?.repositories).toEqual([canonicalCheckout]);
+  const validateScope = async () => scope;
+  const validateKeeperSmith = (name: string) =>
+    expect(name).toBe("claude-master");
+
+  const reserved = await store.reserveCreate({
+    requestId,
+    original,
+    expectedCatalogRevision: 0,
+    preflightScope: scope,
+    validateScope,
+    validateKeeperSmith,
+  });
+  expect(reserved.created).toBe(true);
+  expect(reserved.catalog).toMatchObject({ revision: 0, projects: [] });
+  expect(reserved.operation).toMatchObject({
+    requestId,
+    original,
+    state: "reserved",
+    projectId: null,
+    createdRevision: null,
+  });
+  const reservedReader = createProjectStore(home, now);
+  expect(reservedReader.read()).toEqual(reserved.catalog);
+  expect(reservedReader.readCreate(requestId)).toEqual(reserved.operation);
+
+  const created = await store.commitCreate({
+    requestId,
+    requestHash: reserved.operation.requestHash,
+    reviewedScopeHash: reserved.operation.scopeHash,
+    preflightScope: scope,
+    validateScope,
+    validateKeeperSmith,
+  });
+  expect(created.catalog.revision).toBe(1);
+  expect(created.catalog.projects).toHaveLength(1);
+  expect(created.operation).toMatchObject({
+    requestId,
+    requestHash: reserved.operation.requestHash,
+    original,
+    state: "created",
+    projectId: expect.any(String),
+    createdRevision: 1,
+  });
+  const createdProject = created.catalog.projects[0];
+  if (!createdProject) throw new Error("created project missing");
+  expect(createdProject).toMatchObject({
+    slug: original.slug,
+    color: "blue",
+    keeperSmith: "claude-master",
+    workspaces: original.workspaces,
+  });
+  const createdReader = createProjectStore(home, now);
+  expect(createdReader.read()).toEqual(created.catalog);
+  expect(createdReader.readCreate(requestId)).toEqual(created.operation);
+  const serializedOperations = () => {
+    const saved = JSON.parse(
+      readFileSync(projectCatalogPath(home), "utf8"),
+    ) as {
+      createOperations?: unknown[];
+    };
+    return JSON.stringify(saved.createOperations);
+  };
+  const savedOperations = serializedOperations();
+
+  const edited = await store.updateGeneral(
+    createdProject.id,
+    createdReader.read().revision,
+    {
+      name: "Alpha revised",
+      description: "Updated description",
+      icon: "B",
+      color: "green",
+    },
+  );
+  expect(edited.revision).toBe(created.catalog.revision + 1);
+  expect(edited.projects).toHaveLength(1);
+  const editedProject = edited.projects[0];
+  if (!editedProject) throw new Error("edited project missing");
+  expect(editedProject).toMatchObject({
+    id: createdProject.id,
+    slug: createdProject.slug,
+    name: "Alpha revised",
+    description: "Updated description",
+    icon: "B",
+    color: "green",
+    workspaces: createdProject.workspaces,
+    keeperSmith: createdProject.keeperSmith,
+    pinned: createdProject.pinned,
+    archived: createdProject.archived,
+    createdAt: createdProject.createdAt,
+    updatedAt: expect.any(String),
+  });
+  expect(editedProject.updatedAt).not.toBe(createdProject.updatedAt);
+  expect(serializedOperations()).toBe(savedOperations);
+  const editedReader = createProjectStore(home, now);
+  expect(editedReader.read()).toEqual(edited);
+  expect(editedReader.readCreate(requestId)).toEqual(created.operation);
+
+  const replay = await store.commitCreate({
+    requestId,
+    requestHash: reserved.operation.requestHash,
+    reviewedScopeHash: reserved.operation.scopeHash,
+    preflightScope: scope,
+    validateScope: async () => {
+      throw new Error("created replay must not validate scope again");
+    },
+    validateKeeperSmith: () => {
+      throw new Error("created replay must not validate Keeper again");
+    },
+  });
+  expect(replay.operation).toEqual(created.operation);
+  expect(replay.catalog).toEqual(editedReader.read());
+  expect(replay.catalog.revision).toBe(edited.revision);
+  expect(replay.catalog.projects).toHaveLength(1);
+  expect(replay.catalog.projects[0]).toEqual(editedProject);
+  expect(serializedOperations()).toBe(savedOperations);
+
+  const colorCleared = await store.updateGeneral(
+    createdProject.id,
+    replay.catalog.revision,
+    {
+      name: editedProject.name,
+      description: editedProject.description,
+      icon: editedProject.icon,
+    },
+  );
+  expect(colorCleared.revision).toBe(replay.catalog.revision + 1);
+  const clearedProject = colorCleared.projects[0];
+  if (!clearedProject) throw new Error("cleared project missing");
+  expect(Object.hasOwn(clearedProject, "color")).toBe(false);
+  expect(clearedProject).toMatchObject({
+    id: createdProject.id,
+    slug: createdProject.slug,
+    workspaces: createdProject.workspaces,
+    keeperSmith: createdProject.keeperSmith,
+    pinned: createdProject.pinned,
+    archived: createdProject.archived,
+    createdAt: createdProject.createdAt,
+  });
+  expect(serializedOperations()).toBe(savedOperations);
+  const clearedReader = createProjectStore(home, now);
+  expect(clearedReader.read()).toEqual(colorCleared);
+  expect(clearedReader.readCreate(requestId)).toEqual(created.operation);
+  expect(serializedOperations()).toBe(savedOperations);
+
+  const clearedReplay = await store.commitCreate({
+    requestId,
+    requestHash: reserved.operation.requestHash,
+    reviewedScopeHash: reserved.operation.scopeHash,
+    preflightScope: scope,
+    validateScope: async () => {
+      throw new Error(
+        "created replay after color clearing must not validate scope again",
+      );
+    },
+    validateKeeperSmith: () => {
+      throw new Error(
+        "created replay after color clearing must not validate Keeper again",
+      );
+    },
+  });
+  expect(clearedReplay.operation).toEqual(created.operation);
+  expect(clearedReplay.catalog).toEqual(colorCleared);
+  expect(clearedReplay.catalog.revision).toBe(colorCleared.revision);
+  expect(clearedReplay.catalog.projects).toEqual([clearedProject]);
+  expect(serializedOperations()).toBe(savedOperations);
+  expect(clearedReader.readCreate(requestId)).toEqual(created.operation);
+});
+
 test("create identity hashes bind the UUID and expected semantic revision", async () => {
   const { store, input } = fixture();
   const firstId = "cf2ca2e2-a2d1-42bb-b9b4-1517c3db434e";
@@ -606,7 +799,7 @@ test("bounded project color IDs are hash-bound and survive exact create readback
   const saved = JSON.parse(readFileSync(file, "utf8")) as {
     projects: Array<Record<string, unknown>>;
   };
-  saved.projects[0]!.color = "blue";
+  saved.projects[0]!.color = "purple";
   const corrupted = JSON.stringify(saved);
   writeOwnerOnly(file, corrupted);
   expect(() => store.read()).toThrow();
