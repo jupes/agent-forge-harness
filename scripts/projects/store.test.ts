@@ -241,11 +241,23 @@ test("a created project keeps its private original through General edits and exa
   const store = createProjectStore(home, now);
   const requestId = "63a53f91-3ac3-4cf6-8be0-c929cdf864a7";
   const scope = { hash: "a".repeat(64), count: 1 };
+  const checkoutPath = join(home, "checkout");
+  mkdirSync(join(checkoutPath, ".git"), { recursive: true });
+  const canonicalCheckout = resolveCheckout(checkoutPath).workspace;
   const original = {
     ...input,
     keeperSmith: "claude-master",
     color: "blue" as const,
+    workspaces: [
+      {
+        root: canonicalCheckout,
+        repositories: [canonicalCheckout],
+        epicIds: input.workspaces[0]!.epicIds,
+      },
+    ],
   };
+  expect(original.workspaces[0]?.root).toBe(canonicalCheckout);
+  expect(original.workspaces[0]?.repositories).toEqual([canonicalCheckout]);
   const validateScope = async () => scope;
   const validateKeeperSmith = (name: string) =>
     expect(name).toBe("claude-master");
@@ -386,6 +398,26 @@ test("a created project keeps its private original through General edits and exa
   expect(serializedOperations()).toBe(savedOperations);
   const clearedReader = createProjectStore(home, now);
   expect(clearedReader.read()).toEqual(colorCleared);
+  expect(clearedReader.readCreate(requestId)).toEqual(created.operation);
+  expect(serializedOperations()).toBe(savedOperations);
+
+  const clearedReplay = await store.commitCreate({
+    requestId,
+    requestHash: reserved.operation.requestHash,
+    reviewedScopeHash: reserved.operation.scopeHash,
+    preflightScope: scope,
+    validateScope: async () => {
+      throw new Error("created replay after color clearing must not validate scope again");
+    },
+    validateKeeperSmith: () => {
+      throw new Error("created replay after color clearing must not validate Keeper again");
+    },
+  });
+  expect(clearedReplay.operation).toEqual(created.operation);
+  expect(clearedReplay.catalog).toEqual(colorCleared);
+  expect(clearedReplay.catalog.revision).toBe(colorCleared.revision);
+  expect(clearedReplay.catalog.projects).toEqual([clearedProject]);
+  expect(serializedOperations()).toBe(savedOperations);
   expect(clearedReader.readCreate(requestId)).toEqual(created.operation);
 });
 
