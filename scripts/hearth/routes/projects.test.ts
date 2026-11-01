@@ -1,6 +1,14 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { spawnSync } from "node:child_process";
+import {
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  writeFileSync,
+} from "node:fs";
+import { basename, join } from "node:path";
+import type { WorktreeEntry } from "../../../types/beads";
 import type { ProjectCatalog } from "../../../types/projects";
 import { resolveCheckout } from "../../ledger/workspace";
 import { workspaceKey } from "../../projects/scope";
@@ -8,6 +16,7 @@ import { createProjectStore } from "../../projects/store";
 import { withQueueLock } from "../../scheduler/queue-lock";
 import { startTestHearth, type TestHearth } from "../testing";
 import { writeOwnerOnly } from "../token";
+import { projectRoutes } from "./projects";
 
 const opened: TestHearth[] = [];
 afterEach(async () => {
@@ -20,6 +29,28 @@ function deferred<T>() {
     resolve = done;
   });
   return { promise, resolve };
+}
+
+type ProjectRepositoriesRoute = ReturnType<
+  typeof projectRoutes
+>["projectRepositoriesRead"];
+
+async function readProjectRepositories(
+  route: ProjectRepositoriesRoute,
+  id: string,
+): Promise<{ status: number; data?: unknown; error?: string }> {
+  const validation = route.validate({
+    params: { id },
+    query: new URLSearchParams(),
+    headers: {},
+    body: undefined,
+  });
+  if (!validation.ok) return { status: 400, error: validation.error };
+  return route.read(validation.value);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 test("projects load through the hearth and audited preferences survive a fresh read", async () => {
@@ -2112,4 +2143,708 @@ test("project create reservations preserve legacy catalogs, collide by exact UUI
   expect(catalog.revision).toBe(4);
   expect(catalog.createOperations).toHaveLength(2);
   expect(catalog.projects).toEqual([]);
+});
+
+test("GET /projects/:id/settings/repositories reads only the selected registered checkout through the protected hearth", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  const servedGit = spawnSync("git", ["init", "--quiet", h.root], {
+    cwd: h.root,
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 10_000,
+  });
+  if (servedGit.status !== 0)
+    throw new Error(
+      "isolated served checkout fixture failed: " + servedGit.stderr,
+    );
+
+  const checkout = join(h.root, "settings-repository-fixture");
+  mkdirSync(checkout, { recursive: true });
+  const initialized = spawnSync("git", ["init", "--quiet", checkout], {
+    cwd: h.root,
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 10_000,
+  });
+  if (initialized.status !== 0)
+    throw new Error(
+      "isolated repository fixture failed: " + initialized.stderr,
+    );
+  const canonical = realpathSync.native(checkout);
+  const registryRoot = join(h.home, "project-create-registry");
+  mkdirSync(registryRoot, { recursive: true });
+  writeFileSync(
+    join(registryRoot, "approved-repositories.json"),
+    JSON.stringify({
+      version: 1,
+      repositories: [
+        {
+          name: "settings-repository-fixture",
+          path: canonical,
+          key: workspaceKey(canonical),
+          originalRequestId: "a45b3815-cf25-4b2e-bab7-90b21e7732fd",
+          source: "folder",
+        },
+      ],
+    }),
+  );
+
+  const catalog = await createProjectStore(h.home).create(
+    {
+      slug: "settings-repository-fixture",
+      name: "Settings repository fixture",
+      description: "",
+      icon: "S",
+      workspaces: [
+        {
+          root: h.workspace,
+          repositories: [canonical, h.workspace],
+          epicIds: ["alpha-epic"],
+        },
+      ],
+    },
+    0,
+  );
+  const project = catalog.projects[0];
+  if (!project) throw new Error("project fixture was not created");
+  const persistedProject = createProjectStore(h.home)
+    .read()
+    .projects.find((candidate) => candidate.id === project.id);
+  const persistedRepositories = persistedProject?.workspaces[0]?.repositories;
+  if (!persistedRepositories || persistedRepositories.length !== 2)
+    throw new Error("persisted project repository fixture missing");
+
+  const catalogRead = await fetch(h.api + "/projects", {
+    headers: h.headers(h.hearth.token),
+  });
+  expect(catalogRead.status).toBe(200);
+  expect(await catalogRead.json()).toMatchObject({
+    ok: true,
+    data: { revision: catalog.revision, projects: [{ id: project.id }] },
+    error: null,
+  });
+
+  const privateResponse = await fetch(
+    h.api + "/projects/" + project.id + "/settings/repositories",
+    { headers: h.headers() },
+  );
+  expect(privateResponse.status).toBe(403);
+  const response = await fetch(
+    h.api + "/projects/" + project.id + "/settings/repositories",
+    { headers: h.headers(h.hearth.token) },
+  );
+  expect(response.status).toBe(200);
+  expect(await response.json()).toEqual({
+    ok: true,
+    data: {
+      projectId: project.id,
+      catalogRevision: catalog.revision,
+      repositories: [
+        {
+          workspaceRoot: h.workspace,
+          repositories: [
+            {
+              path: persistedRepositories[0]!,
+              access: "approved",
+              name: "settings-repository-fixture",
+              worktrees: [],
+            },
+            {
+              path: persistedRepositories[1]!,
+              access: "served",
+              name: basename(realpathSync.native(h.workspace)),
+              worktrees: [],
+            },
+          ],
+        },
+      ],
+    },
+    error: null,
+  });
+});
+
+test("project repository read resolves and requires the listed linked checkout", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  const main = join(h.root, "linked-main-fixture");
+  const linked = join(h.root, "linked-checkout-fixture");
+  mkdirSync(main, { recursive: true });
+  const runGit = (args: string[]) => {
+    const result = spawnSync("git", ["-C", main, ...args], {
+      cwd: h.root,
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 10_000,
+    });
+    if (result.status !== 0)
+      throw new Error(
+        "isolated linked-worktree fixture failed: " + result.stderr,
+      );
+  };
+  runGit(["init", "--quiet"]);
+  writeFileSync(join(main, "fixture.txt"), "fixture");
+  runGit(["add", "fixture.txt"]);
+  runGit([
+    "-c",
+    "user.name=Fixture",
+    "-c",
+    "user.email=fixture@example.invalid",
+    "commit",
+    "--quiet",
+    "-m",
+    "fixture",
+  ]);
+  runGit(["worktree", "add", "--quiet", "-b", "settings-feature", linked]);
+  const canonicalLinked = realpathSync.native(linked);
+  const canonicalMain = realpathSync.native(main);
+  const registryRoot = join(h.home, "linked-project-registry");
+  mkdirSync(registryRoot, { recursive: true });
+  writeFileSync(
+    join(registryRoot, "approved-repositories.json"),
+    JSON.stringify({
+      version: 1,
+      repositories: [
+        {
+          name: "linked-checkout-fixture",
+          path: canonicalLinked,
+          key: workspaceKey(canonicalLinked),
+          originalRequestId: "d45b3815-cf25-4b2e-bab7-90b21e7732fd",
+          source: "folder",
+        },
+      ],
+    }),
+  );
+  const store = createProjectStore(h.home);
+  const catalog = await store.create(
+    {
+      slug: "linked-project-fixture",
+      name: "Linked project fixture",
+      description: "",
+      icon: "L",
+      workspaces: [
+        {
+          root: h.workspace,
+          repositories: [canonicalLinked],
+          epicIds: ["alpha-epic"],
+        },
+      ],
+    },
+    0,
+  );
+  const project = catalog.projects[0];
+  if (!project) throw new Error("linked project fixture missing");
+  const persistedCatalog = store.read();
+  const persistedProject = persistedCatalog.projects.find(
+    (candidate) => candidate.id === project.id,
+  );
+  if (!persistedProject)
+    throw new Error("persisted linked project fixture missing");
+  persistedProject.workspaces[0]!.repositories = [canonicalLinked];
+  writeFileSync(
+    join(h.home, "projects", "catalog.json"),
+    JSON.stringify(persistedCatalog),
+  );
+  const preservedProject = store
+    .read()
+    .projects.find((candidate) => candidate.id === project.id);
+  expect(preservedProject?.workspaces[0]?.repositories).toEqual([
+    canonicalLinked,
+  ]);
+
+  const route = projectRoutes(h.home, {
+    root: h.root,
+    workspace: h.workspace,
+    repositoryManifestRoot: registryRoot,
+    loadScope: async () => {
+      throw new Error("unused project scope reader");
+    },
+  }).projectRepositoriesRead;
+  const linkedRead = await readProjectRepositories(route, project.id);
+  expect(linkedRead.status).toBe(200);
+  const data = linkedRead.data;
+  if (!isRecord(data) || !Array.isArray(data["repositories"]))
+    throw new Error("linked repository response is malformed");
+  const row: unknown = data["repositories"][0];
+  if (!isRecord(row) || !Array.isArray(row["repositories"]))
+    throw new Error("linked repository row is malformed");
+  const linkedRepository: unknown = row["repositories"][0];
+  if (
+    !isRecord(linkedRepository) ||
+    !Array.isArray(linkedRepository["worktrees"])
+  )
+    throw new Error("linked repository member is malformed");
+  const linkedWorktree: unknown = linkedRepository["worktrees"][0];
+  if (!isRecord(linkedWorktree) || typeof linkedWorktree["path"] !== "string")
+    throw new Error("linked worktree row is malformed");
+  expect(linkedRepository).toMatchObject({
+    path: canonicalLinked,
+    access: "approved",
+    worktrees: [
+      {
+        kind: "other",
+        branch: "settings-feature",
+        missing: false,
+      },
+    ],
+  });
+  expect(workspaceKey(linkedWorktree["path"])).toBe(
+    workspaceKey(canonicalLinked),
+  );
+  expect(linkedWorktree).not.toHaveProperty("id");
+  expect(linkedWorktree).not.toHaveProperty("createdAt");
+
+  const entry = (
+    path: string,
+    kind: WorktreeEntry["kind"],
+    branch: string | null,
+    missing: boolean,
+  ): WorktreeEntry => ({
+    path,
+    kind,
+    branch,
+    head: "private-head",
+    detached: false,
+    locked: false,
+    prunable: false,
+    missing,
+  });
+  const injectedRoute = (mode: "absent" | "duplicate-missing") =>
+    projectRoutes(h.home, {
+      root: h.root,
+      workspace: h.workspace,
+      repositoryManifestRoot: registryRoot,
+      listProjectWorktrees: () => ({
+        ok: true,
+        entries: [
+          entry(canonicalMain, "main", "main", false),
+          ...(mode === "absent"
+            ? []
+            : [entry(canonicalLinked, "other", "settings-feature", false)]),
+          ...(mode === "duplicate-missing"
+            ? [entry(canonicalLinked, "other", "settings-feature", true)]
+            : []),
+        ],
+      }),
+      loadScope: async () => {
+        throw new Error("unused project scope reader");
+      },
+    }).projectRepositoriesRead;
+  expect(
+    (await readProjectRepositories(injectedRoute("absent"), project.id)).status,
+  ).toBe(503);
+  expect(
+    (
+      await readProjectRepositories(
+        injectedRoute("duplicate-missing"),
+        project.id,
+      )
+    ).status,
+  ).toBe(503);
+});
+
+test("project repository worktree totals and response bytes are bounded", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  const checkouts = ["settings-limit-one", "settings-limit-two"].map((name) => {
+    const path = join(h.root, name);
+    mkdirSync(path, { recursive: true });
+    const initialized = spawnSync("git", ["init", "--quiet", path], {
+      cwd: h.root,
+      encoding: "utf8",
+      windowsHide: true,
+      timeout: 10_000,
+    });
+    if (initialized.status !== 0)
+      throw new Error(
+        "isolated repository fixture failed: " + initialized.stderr,
+      );
+    return realpathSync.native(path);
+  });
+  const registryRoot = join(h.home, "settings-limit-registry");
+  mkdirSync(registryRoot, { recursive: true });
+  writeFileSync(
+    join(registryRoot, "approved-repositories.json"),
+    JSON.stringify({
+      version: 1,
+      repositories: checkouts.map((path, index) => ({
+        name: "settings-limit-" + index,
+        path,
+        key: workspaceKey(path),
+        originalRequestId:
+          (index ? "e45b3815" : "f45b3815") + "-cf25-4b2e-bab7-90b21e7732fd",
+        source: "folder",
+      })),
+    }),
+  );
+  const catalog = await createProjectStore(h.home).create(
+    {
+      slug: "settings-limit-project",
+      name: "Settings limit project",
+      description: "",
+      icon: "B",
+      workspaces: [
+        { root: h.workspace, repositories: checkouts, epicIds: ["alpha-epic"] },
+      ],
+    },
+    0,
+  );
+  const project = catalog.projects[0];
+  if (!project) throw new Error("settings limit project fixture missing");
+  let count = 2048;
+  let largeFields = false;
+  const entry = (path: string, kind: WorktreeEntry["kind"]): WorktreeEntry => ({
+    path,
+    kind,
+    branch: null,
+    head: "private-head",
+    detached: false,
+    locked: false,
+    prunable: false,
+    missing: false,
+  });
+  const route = projectRoutes(h.home, {
+    root: h.root,
+    workspace: h.workspace,
+    repositoryManifestRoot: registryRoot,
+    listProjectWorktrees: (main) => ({
+      ok: true,
+      entries: [
+        entry(main, "main"),
+        ...Array.from({ length: count }, (_, index) =>
+          entry(largeFields ? "p".repeat(1024) : "fixture/" + index, "trees"),
+        ).map((row) =>
+          largeFields ? { ...row, branch: "b".repeat(1024) } : row,
+        ),
+      ],
+    }),
+    loadScope: async () => {
+      throw new Error("unused project scope reader");
+    },
+  }).projectRepositoriesRead;
+
+  const exactTotal = await readProjectRepositories(route, project.id);
+  expect(exactTotal.status).toBe(200);
+  expect(
+    (
+      exactTotal.data as {
+        repositories: Array<{ repositories: Array<{ worktrees: unknown[] }> }>;
+      }
+    ).repositories[0]?.repositories.reduce(
+      (sum, repository) => sum + repository.worktrees.length,
+      0,
+    ),
+  ).toBe(4096);
+  count = 2049;
+  expect((await readProjectRepositories(route, project.id)).status).toBe(503);
+  count = 260;
+  largeFields = true;
+  expect((await readProjectRepositories(route, project.id)).status).toBe(503);
+});
+
+test("project repository read is bounded to registered membership and fails closed on incomplete Git facts", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  const checkout = join(h.root, "settings-read-repository");
+  mkdirSync(checkout, { recursive: true });
+  const initialized = spawnSync("git", ["init", "--quiet", checkout], {
+    cwd: h.root,
+    encoding: "utf8",
+    windowsHide: true,
+    timeout: 10_000,
+  });
+  if (initialized.status !== 0)
+    throw new Error(
+      "isolated repository fixture failed: " + initialized.stderr,
+    );
+  const canonical = realpathSync.native(checkout);
+  const registryRoot = join(h.home, "project-create-registry");
+  mkdirSync(registryRoot, { recursive: true });
+  const registryPath = join(registryRoot, "approved-repositories.json");
+  const unselectedRegisteredPath = join(h.root, "registered-but-not-a-member");
+  const registration = {
+    name: "settings-read-repository",
+    path: canonical,
+    key: workspaceKey(canonical),
+    originalRequestId: "a45b3815-cf25-4b2e-bab7-90b21e7732fd",
+    source: "folder",
+  } as const;
+  const notSelectedRegistration = {
+    name: "not-selected",
+    path: unselectedRegisteredPath,
+    key: workspaceKey(unselectedRegisteredPath),
+    originalRequestId: "b45b3815-cf25-4b2e-bab7-90b21e7732fd",
+    source: "folder",
+  } as const;
+  const validRegistry = JSON.stringify({
+    version: 1,
+    repositories: [registration, notSelectedRegistration],
+  });
+  writeFileSync(registryPath, validRegistry);
+  const unregisteredPath = join(h.root, "not-registered-and-absent");
+  const store = createProjectStore(h.home);
+  const catalog = await store.create(
+    {
+      slug: "settings-read-project",
+      name: "Settings read project",
+      description: "",
+      icon: "S",
+      workspaces: [
+        {
+          root: h.workspace,
+          repositories: [canonical, unregisteredPath],
+          epicIds: ["alpha-epic"],
+        },
+      ],
+    },
+    0,
+  );
+  const project = catalog.projects[0];
+  if (!project) throw new Error("project fixture was not created");
+  const persistedCatalog = store.read();
+  const persistedProject = persistedCatalog.projects.find(
+    (candidate) => candidate.id === project.id,
+  );
+  if (!persistedProject)
+    throw new Error("persisted bounded project fixture missing");
+  const approvedMemberPath = persistedProject.workspaces[0]?.repositories[0];
+  if (!approvedMemberPath)
+    throw new Error("approved project member fixture missing");
+  persistedProject.workspaces[0]!.repositories = [
+    approvedMemberPath,
+    unregisteredPath,
+  ];
+  writeFileSync(
+    join(h.home, "projects", "catalog.json"),
+    JSON.stringify(persistedCatalog),
+  );
+  const exactMembers = store
+    .read()
+    .projects.find((candidate) => candidate.id === project.id)
+    ?.workspaces[0]?.repositories;
+  expect(exactMembers).toEqual([approvedMemberPath, unregisteredPath]);
+  expect(exactMembers).not.toContain(workspaceKey(h.workspace));
+  const calls: string[] = [];
+  let listingMode:
+    | "complete"
+    | "main-only"
+    | "error"
+    | "throw"
+    | "empty"
+    | "wrong-main"
+    | "mismatched-main" = "complete";
+  const mainEntry = (main: string): WorktreeEntry => ({
+    path: main,
+    kind: "main",
+    branch: "main",
+    head: "private-head",
+    detached: false,
+    locked: false,
+    prunable: false,
+    missing: false,
+  });
+  const cachedTree = (main: string): WorktreeEntry => ({
+    path: join(main, "trees", "cached-worktree"),
+    kind: "trees",
+    branch: null,
+    head: "private-head",
+    detached: false,
+    locked: false,
+    prunable: false,
+    missing: true,
+    id: "abc123",
+    createdAt: "2026-10-30T12:00:00.000Z",
+    beadId: "private-bead",
+    sessionId: "private-session",
+  });
+  const route = projectRoutes(h.home, {
+    root: h.root,
+    workspace: h.workspace,
+    repositoryManifestRoot: registryRoot,
+    listProjectWorktrees: (main) => {
+      calls.push(main);
+      if (listingMode === "error")
+        return { ok: false, error: "private git failure" };
+      if (listingMode === "throw") throw new Error("private thrown failure");
+      if (listingMode === "empty") return { ok: true, entries: [] };
+      if (listingMode === "wrong-main")
+        return { ok: true, entries: [{ ...mainEntry(main), kind: "other" }] };
+      if (listingMode === "mismatched-main")
+        return {
+          ok: true,
+          entries: [{ ...mainEntry(unselectedRegisteredPath), kind: "main" }],
+        };
+      if (listingMode === "main-only")
+        return { ok: true, entries: [mainEntry(main)] };
+      return { ok: true, entries: [mainEntry(main), cachedTree(main)] };
+    },
+    loadScope: async () => {
+      throw new Error("unused project scope reader");
+    },
+  }).projectRepositoriesRead;
+
+  const success = await readProjectRepositories(route, project.id);
+  expect(success.status).toBe(200);
+  expect(success.data).toEqual({
+    projectId: project.id,
+    catalogRevision: catalog.revision,
+    repositories: [
+      {
+        workspaceRoot: h.workspace,
+        repositories: [
+          {
+            path: approvedMemberPath,
+            access: "approved",
+            name: registration.name,
+            worktrees: [
+              {
+                path: join(canonical, "trees", "cached-worktree"),
+                kind: "trees",
+                branch: null,
+                missing: true,
+                id: "abc123",
+                createdAt: "2026-10-30T12:00:00.000Z",
+              },
+            ],
+          },
+          { path: unregisteredPath, access: "unregistered" },
+        ],
+      },
+    ],
+  });
+  expect(calls).toHaveLength(1);
+  expect(workspaceKey(calls[0] ?? "")).toBe(workspaceKey(canonical));
+  expect(JSON.stringify(success.data)).not.toContain("private-head");
+  expect(JSON.stringify(success.data)).not.toContain("private-bead");
+  expect(JSON.stringify(success.data)).not.toContain("private-session");
+  expect(JSON.stringify(success.data)).not.toContain(unselectedRegisteredPath);
+  expect(JSON.stringify(success.data)).not.toContain('"access":"served"');
+  expect(calls).not.toContain(unselectedRegisteredPath);
+
+  listingMode = "main-only";
+  const genuineEmptyWorktrees = await readProjectRepositories(
+    route,
+    project.id,
+  );
+  expect(genuineEmptyWorktrees.status).toBe(200);
+  expect(genuineEmptyWorktrees.data).toMatchObject({
+    repositories: [
+      {
+        repositories: [
+          { path: approvedMemberPath, access: "approved", worktrees: [] },
+          { path: unregisteredPath, access: "unregistered" },
+        ],
+      },
+    ],
+  });
+  for (const mode of [
+    "error",
+    "throw",
+    "empty",
+    "wrong-main",
+    "mismatched-main",
+  ] as const) {
+    listingMode = mode;
+    const unavailable = await readProjectRepositories(route, project.id);
+    expect(unavailable.status).toBe(503);
+    expect(unavailable.error).not.toContain("private");
+  }
+
+  const invalidId = await readProjectRepositories(route, "not-a-project-id");
+  expect(invalidId.status).toBe(400);
+  const absentId = await readProjectRepositories(
+    route,
+    "project-00000000-0000-4000-8000-000000000000",
+  );
+  expect(absentId.status).toBe(404);
+
+  listingMode = "complete";
+  const malformedCatalogPath = join(h.home, "projects", "catalog.json");
+  const savedCatalog = readFileSync(malformedCatalogPath, "utf8");
+  writeFileSync(malformedCatalogPath, "{malformed");
+  expect((await readProjectRepositories(route, project.id)).status).toBe(503);
+  writeFileSync(malformedCatalogPath, savedCatalog);
+
+  writeFileSync(registryPath, "{malformed");
+  expect((await readProjectRepositories(route, project.id)).status).toBe(503);
+  writeFileSync(
+    registryPath,
+    JSON.stringify({
+      version: 1,
+      repositories: [{ ...registration, key: registration.key + "-forged" }],
+    }),
+  );
+  expect((await readProjectRepositories(route, project.id)).status).toBe(503);
+  const alternateSpelling = registration.path + "/";
+  expect(workspaceKey(alternateSpelling)).toBe(workspaceKey(registration.path));
+  writeFileSync(
+    registryPath,
+    JSON.stringify({
+      version: 1,
+      repositories: [
+        registration,
+        { ...registration, path: alternateSpelling },
+      ],
+    }),
+  );
+  expect(
+    store.read().projects.find((candidate) => candidate.id === project.id)
+      ?.workspaces[0]?.repositories,
+  ).toEqual([approvedMemberPath, unregisteredPath]);
+  expect((await readProjectRepositories(route, project.id)).status).toBe(503);
+  writeFileSync(registryPath, validRegistry);
+
+  const invalidCheckout = join(h.root, "registered-invalid-git-checkout");
+  mkdirSync(join(invalidCheckout, ".git"), { recursive: true });
+  const invalidRegistration = {
+    name: "invalid-git-checkout",
+    path: invalidCheckout,
+    key: workspaceKey(invalidCheckout),
+    originalRequestId: "c45b3815-cf25-4b2e-bab7-90b21e7732fd",
+    source: "folder",
+  } as const;
+  writeFileSync(
+    registryPath,
+    JSON.stringify({
+      version: 1,
+      repositories: [registration, invalidRegistration],
+    }),
+  );
+  const invalidGitCatalog = JSON.parse(savedCatalog) as ProjectCatalog;
+  const invalidGitProject = invalidGitCatalog.projects.find(
+    (candidate) => candidate.id === project.id,
+  );
+  if (!invalidGitProject) throw new Error("saved project fixture missing");
+  invalidGitProject.workspaces[0]!.repositories = [invalidCheckout];
+  writeFileSync(malformedCatalogPath, JSON.stringify(invalidGitCatalog));
+  const callsBeforeInvalidGit = calls.length;
+  expect((await readProjectRepositories(route, project.id)).status).toBe(503);
+  expect(calls).toHaveLength(callsBeforeInvalidGit);
+  writeFileSync(malformedCatalogPath, savedCatalog);
+  writeFileSync(registryPath, validRegistry);
+
+  const duplicateCatalog = JSON.parse(savedCatalog) as ProjectCatalog;
+  const duplicateProject = duplicateCatalog.projects.find(
+    (candidate) => candidate.id === project.id,
+  );
+  if (!duplicateProject) throw new Error("saved project fixture missing");
+  const duplicateMemberPath = approvedMemberPath + "/";
+  expect(workspaceKey(duplicateMemberPath)).toBe(
+    workspaceKey(approvedMemberPath),
+  );
+  duplicateProject.workspaces[0]!.repositories.push(duplicateMemberPath);
+  writeFileSync(malformedCatalogPath, JSON.stringify(duplicateCatalog));
+  const duplicateRead = store
+    .read()
+    .projects.find((candidate) => candidate.id === project.id);
+  expect(duplicateRead?.workspaces[0]?.repositories).toEqual([
+    approvedMemberPath,
+    unregisteredPath,
+    duplicateMemberPath,
+  ]);
+  expect((await readProjectRepositories(route, project.id)).status).toBe(503);
+  writeFileSync(malformedCatalogPath, savedCatalog);
+
+  renameSync(checkout, checkout + ".gone");
+  expect((await readProjectRepositories(route, project.id)).status).toBe(503);
 });
