@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { mkdirSync, readFileSync, realpathSync, renameSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import type { ProjectCatalog } from "../../../types/projects";
 import type { WorktreeEntry } from "../../../types/beads";
 import { resolveCheckout } from "../../ledger/workspace";
@@ -2197,6 +2197,12 @@ test("GET /projects/:id/settings/repositories reads only the selected registered
   );
   const project = catalog.projects[0];
   if (!project) throw new Error("project fixture was not created");
+  const persistedProject = createProjectStore(h.home).read().projects.find(
+    (candidate) => candidate.id === project.id,
+  );
+  const persistedRepositories = persistedProject?.workspaces[0]?.repositories;
+  if (!persistedRepositories || persistedRepositories.length !== 2)
+    throw new Error("persisted project repository fixture missing");
 
   const catalogRead = await fetch(h.api + "/projects", {
     headers: h.headers(h.hearth.token),
@@ -2228,15 +2234,15 @@ test("GET /projects/:id/settings/repositories reads only the selected registered
           workspaceRoot: h.workspace,
           repositories: [
             {
-              path: canonical,
+              path: persistedRepositories[0]!,
               access: "approved",
               name: "settings-repository-fixture",
               worktrees: [],
             },
             {
-              path: h.workspace,
+              path: persistedRepositories[1]!,
               access: "served",
-              name: h.workspace.split(/[\\/]/).at(-1),
+              name: basename(realpathSync.native(h.workspace)),
               worktrees: [],
             },
           ],
@@ -2495,7 +2501,8 @@ test("project repository read is bounded to registered membership and fails clos
   });
   writeFileSync(registryPath, validRegistry);
   const unregisteredPath = join(h.root, "not-registered-and-absent");
-  const catalog = await createProjectStore(h.home).create(
+  const store = createProjectStore(h.home);
+  const catalog = await store.create(
     {
       slug: "settings-read-project",
       name: "Settings read project",
@@ -2513,6 +2520,20 @@ test("project repository read is bounded to registered membership and fails clos
   );
   const project = catalog.projects[0];
   if (!project) throw new Error("project fixture was not created");
+  const persistedCatalog = store.read();
+  const persistedProject = persistedCatalog.projects.find(
+    (candidate) => candidate.id === project.id,
+  );
+  if (!persistedProject) throw new Error("persisted bounded project fixture missing");
+  const approvedMemberPath = persistedProject.workspaces[0]?.repositories[0];
+  if (!approvedMemberPath) throw new Error("approved project member fixture missing");
+  persistedProject.workspaces[0]!.repositories = [approvedMemberPath, unregisteredPath];
+  writeFileSync(join(h.home, "projects", "catalog.json"), JSON.stringify(persistedCatalog));
+  const exactMembers = store.read().projects.find(
+    (candidate) => candidate.id === project.id,
+  )?.workspaces[0]?.repositories;
+  expect(exactMembers).toEqual([approvedMemberPath, unregisteredPath]);
+  expect(exactMembers).not.toContain(workspaceKey(h.workspace));
   const calls: string[] = [];
   let listingMode:
     | "complete"
@@ -2578,7 +2599,7 @@ test("project repository read is bounded to registered membership and fails clos
         workspaceRoot: h.workspace,
         repositories: [
           {
-            path: canonical,
+            path: approvedMemberPath,
             access: "approved",
             name: registration.name,
             worktrees: [
@@ -2641,10 +2662,14 @@ test("project repository read is bounded to registered membership and fails clos
     repositories: [{ ...registration, key: registration.key + "-forged" }],
   }));
   expect((await readProjectRepositories(route, project.id)).status).toBe(503);
+  const alternateSpelling = registration.path + "/";
+  expect(workspaceKey(alternateSpelling)).toBe(workspaceKey(registration.path));
   writeFileSync(registryPath, JSON.stringify({
     version: 1,
-    repositories: [registration, registration],
+    repositories: [registration, { ...registration, path: alternateSpelling }],
   }));
+  expect(store.read().projects.find((candidate) => candidate.id === project.id)
+    ?.workspaces[0]?.repositories).toEqual([approvedMemberPath, unregisteredPath]);
   expect((await readProjectRepositories(route, project.id)).status).toBe(503);
   writeFileSync(registryPath, validRegistry);
 
@@ -2679,8 +2704,18 @@ test("project repository read is bounded to registered membership and fails clos
     (candidate) => candidate.id === project.id,
   );
   if (!duplicateProject) throw new Error("saved project fixture missing");
-  duplicateProject.workspaces[0]!.repositories.push(canonical);
+  const duplicateMemberPath = approvedMemberPath + "/";
+  expect(workspaceKey(duplicateMemberPath)).toBe(workspaceKey(approvedMemberPath));
+  duplicateProject.workspaces[0]!.repositories.push(duplicateMemberPath);
   writeFileSync(malformedCatalogPath, JSON.stringify(duplicateCatalog));
+  const duplicateRead = store.read().projects.find(
+    (candidate) => candidate.id === project.id,
+  );
+  expect(duplicateRead?.workspaces[0]?.repositories).toEqual([
+    approvedMemberPath,
+    unregisteredPath,
+    duplicateMemberPath,
+  ]);
   expect((await readProjectRepositories(route, project.id)).status).toBe(503);
   writeFileSync(malformedCatalogPath, savedCatalog);
 
