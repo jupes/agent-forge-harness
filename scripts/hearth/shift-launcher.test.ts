@@ -81,6 +81,272 @@ function record(
   };
 }
 
+type KernelStat = {
+  pid: number;
+  state: string;
+  ppid: number;
+  pgrp: number;
+  starttime: string;
+};
+type KernelRead =
+  | { kind: "stat"; value: KernelStat }
+  | { kind: "absent" }
+  | { kind: "unknown" };
+
+function parseKernelStat(raw: string, requestedPid: number): KernelStat | undefined {
+  if (raw.length > 4096) return undefined;
+  const close = raw.lastIndexOf(")");
+  const prefix = raw.slice(0, raw.indexOf(" "));
+  const line = raw.endsWith("\n") ? raw.slice(0, -1) : raw;
+  const fields = line.slice(close + 2).split(/\s+/);
+  if (
+    close < 0 ||
+    !line.startsWith(`${requestedPid} (`) ||
+    line.slice(close, close + 2) !== ") " ||
+    line.includes("\n") ||
+    line.includes("\r") ||
+    prefix !== String(requestedPid) ||
+    fields.length !== 50
+  )
+    return undefined;
+  const [state, ppidText, pgrpText] = fields;
+  const starttimeText = fields[19];
+  if (!state || state.length !== 1 || !"RSDZTWtXxKWPI".includes(state))
+    return undefined;
+  if (fields.slice(1).some((field) => !/^-?\d+$/.test(field)))
+    return undefined;
+  const ppid = Number(ppidText);
+  const pgrp = Number(pgrpText);
+  if (
+    !Number.isSafeInteger(ppid) ||
+    ppid < 0 ||
+    !Number.isSafeInteger(pgrp) ||
+    pgrp < 0 ||
+    !starttimeText ||
+    !/^(0|[1-9]\d*)$/.test(starttimeText)
+  )
+    return undefined;
+  return { pid: requestedPid, state, ppid, pgrp, starttime: starttimeText };
+}
+
+function kernelReadError(error: unknown): "absent" | "unknown" {
+  return error instanceof Error &&
+    "code" in error &&
+    (error.code === "ENOENT" || error.code === "ESRCH")
+    ? "absent"
+    : "unknown";
+}
+
+function readKernelStat(pid: number): KernelRead {
+  if (process.platform !== "linux" || !Number.isSafeInteger(pid) || pid <= 0)
+    return { kind: "unknown" };
+  try {
+    const value = parseKernelStat(readFileSync(`/proc/${pid}/stat`, "utf8"), pid);
+    return value ? { kind: "stat", value } : { kind: "unknown" };
+  } catch (error) {
+    return { kind: kernelReadError(error) };
+  }
+}
+
+function postStopDisposition(
+  read: KernelRead,
+  identity: KernelStat,
+): "absent" | "same-generation-zombie" | "active" | "unknown" | "reused" | "wrong-group" {
+  if (read.kind === "absent") return "absent";
+  if (read.kind === "unknown") return "unknown";
+  if (read.value.pid !== identity.pid || read.value.starttime !== identity.starttime)
+    return "reused";
+  if (read.value.pgrp !== identity.pgrp) return "wrong-group";
+  return read.value.state === "Z" ? "same-generation-zombie" : "active";
+}
+
+function preStopIdentity(
+  read: KernelRead,
+  pid: number,
+  group: number,
+  parent?: number,
+): KernelStat | undefined {
+  if (read.kind !== "stat") return undefined;
+  const { value } = read;
+  return value.pid === pid &&
+    value.state !== "Z" &&
+    value.state !== "X" &&
+    value.state !== "x" &&
+    value.pgrp === group &&
+    (parent === undefined || value.ppid === parent)
+    ? value
+    : undefined;
+}
+
+function preStopDisposition(
+  read: KernelRead,
+  pid: number,
+  group: number,
+  parent?: number,
+): "active" | "absent" | "unknown" | "zombie" | "wrong-group" | "wrong-parent" {
+  if (read.kind === "absent") return "absent";
+  if (read.kind === "unknown") return "unknown";
+  if (read.value.pid !== pid) return "unknown";
+  if (read.value.state === "Z") return "zombie";
+  if (read.value.pgrp !== group) return "wrong-group";
+  if (parent !== undefined && read.value.ppid !== parent) return "wrong-parent";
+  return read.value.state === "X" || read.value.state === "x" ? "unknown" : "active";
+}
+
+describe("Linux proc stat identity classification", () => {
+  const stat = (
+    pid: number,
+    comm: string,
+    state: string,
+    ppid: number,
+    pgrp: number,
+    starttime: number,
+    wideCounter = "0",
+  ) => {
+    const fields = Array.from({ length: 50 }, () => "0");
+    fields[0] = state;
+    fields[1] = String(ppid);
+    fields[2] = String(pgrp);
+    fields[19] = String(starttime);
+    fields[23] = wideCounter;
+    return `${pid} (${comm}) ${fields.join(" ")}`;
+  };
+  test("keeps only the captured generation and group, and fails closed on unknown identity", () => {
+    const original = parseKernelStat(
+      stat(41, "worker (child)", "S", 30, 41, 900),
+      41,
+    );
+    expect(original).toBeDefined();
+    if (!original) throw new Error("fixture did not parse");
+    expect(original).toMatchObject({
+      pid: 41,
+      state: "S",
+      ppid: 30,
+      pgrp: 41,
+      starttime: "900",
+    });
+    expect(postStopDisposition({ kind: "absent" }, original)).toBe("absent");
+    expect(
+      postStopDisposition(
+        { kind: "stat", value: { ...original, state: "Z" } },
+        original,
+      ),
+    ).toBe("same-generation-zombie");
+    expect(
+      postStopDisposition(
+        { kind: "stat", value: { ...original, state: "S" } },
+        original,
+      ),
+    ).toBe("active");
+    expect(
+      postStopDisposition(
+        { kind: "stat", value: { ...original, starttime: "901", state: "Z" } },
+        original,
+      ),
+    ).toBe("reused");
+    expect(
+      postStopDisposition(
+        { kind: "stat", value: { ...original, pgrp: 99, state: "Z" } },
+        original,
+      ),
+    ).toBe("wrong-group");
+    expect(postStopDisposition({ kind: "unknown" }, original)).toBe("unknown");
+    expect(
+      parseKernelStat(stat(42, "worker", "S", 30, 41, 900), 41),
+    ).toBeUndefined();
+    expect(parseKernelStat("41 (truncated) S 30 41", 41)).toBeUndefined();
+    expect(
+      parseKernelStat(stat(41, "worker", "?", 30, 41, 900), 41),
+    ).toBeUndefined();
+    expect(
+      parseKernelStat(
+        stat(41, "worker", "S", 30, 41, 900).replace(" 0 0", " nope 0"),
+        41,
+      ),
+    ).toBeUndefined();
+    expect(
+      parseKernelStat(
+        stat(41, "worker", "S", 30, 41, 900, "18446744073709551615"),
+        41,
+      ),
+    ).toBeDefined();
+    expect(
+      parseKernelStat(
+        stat(41, "worker", "S", 30, 41, 900).replace("41 (", "4.1e1 ("),
+        41,
+      ),
+    ).toBeUndefined();
+    expect(
+      parseKernelStat(
+        stat(41, "worker", "S", 30, 41, 900).replace("41 (", "0x29 ("),
+        41,
+      ),
+    ).toBeUndefined();
+    expect(
+      parseKernelStat(
+        stat(41, "worker", "S", 30, 41, 900).replace(") S ", ") S Z "),
+        41,
+      ),
+    ).toBeUndefined();
+    expect(
+      parseKernelStat(
+        stat(41, "worker", "S", 30, 41, 900).replace(") S ", ") SD "),
+        41,
+      ),
+    ).toBeUndefined();
+    expect(
+      parseKernelStat(
+        stat(41, "worker", "S", 30, 41, 900).replace(" (", " ["),
+        41,
+      ),
+    ).toBeUndefined();
+    expect(
+      parseKernelStat(
+        stat(41, "worker", "S", 30, 41, 900).replace(") ", ")x "),
+        41,
+      ),
+    ).toBeUndefined();
+    const starttimeField = (value: string) => {
+      const raw = stat(41, "worker", "S", 30, 41, 900);
+      const fields = raw.slice(raw.lastIndexOf(")") + 2).split(" ");
+      fields[19] = value;
+      return `${raw.slice(0, raw.lastIndexOf(")") + 2)}${fields.join(" ")}`;
+    };
+    expect(parseKernelStat(starttimeField("1e3"), 41)).toBeUndefined();
+    expect(parseKernelStat(starttimeField("0x3e8"), 41)).toBeUndefined();
+    const firstLargeStarttime = parseKernelStat(
+      starttimeField("9007199254740992"),
+      41,
+    );
+    const nextLargeStarttime = parseKernelStat(
+      starttimeField("9007199254740993"),
+      41,
+    );
+    expect(firstLargeStarttime?.starttime).toBe("9007199254740992");
+    expect(nextLargeStarttime?.starttime).toBe("9007199254740993");
+    if (!firstLargeStarttime || !nextLargeStarttime)
+      throw new Error("large starttime fixture did not parse");
+    expect(
+      postStopDisposition(
+        { kind: "stat", value: { ...nextLargeStarttime, state: "Z" } },
+        firstLargeStarttime,
+      ),
+    ).toBe("reused");
+    expect(parseKernelStat("x".repeat(4097), 41)).toBeUndefined();
+    expect(kernelReadError(Object.assign(new Error(), { code: "ENOENT" }))).toBe("absent");
+    expect(kernelReadError(Object.assign(new Error(), { code: "ESRCH" }))).toBe("absent");
+    expect(kernelReadError(Object.assign(new Error(), { code: "EACCES" }))).toBe("unknown");
+    expect(kernelReadError(new Error("read failure"))).toBe("unknown");
+    expect(kernelReadError("read failure")).toBe("unknown");
+    const live = { kind: "stat" as const, value: original };
+    expect(preStopIdentity(live, 41, 41, 30)).toEqual(original);
+    expect(preStopIdentity({ kind: "stat", value: { ...original, state: "Z" } }, 41, 41, 30)).toBeUndefined();
+    expect(preStopIdentity({ kind: "stat", value: { ...original, pgrp: 99 } }, 41, 41, 30)).toBeUndefined();
+    expect(preStopIdentity({ kind: "stat", value: { ...original, ppid: 31 } }, 41, 41, 30)).toBeUndefined();
+    expect(preStopIdentity({ kind: "unknown" }, 41, 41, 30)).toBeUndefined();
+  });
+});
+
 /** Wait for `read` to give a value, polling, for at most `ms`. */
 async function until<T>(
   read: () => T | undefined | Promise<T | undefined>,
@@ -699,10 +965,73 @@ describe("a shift started through a hearth, with the real launcher and a stand-i
     expect(processAlive(child.pid)).toBe(true);
     expect(processAlive(grandchild)).toBe(true);
 
+    const linux = process.platform === "linux";
+    const rootReadBefore = linux ? readKernelStat(child.pid) : undefined;
+    const descendantReadBefore = linux ? readKernelStat(grandchild) : undefined;
+    const rootBeforeResult = linux
+      ? preStopDisposition(rootReadBefore ?? { kind: "unknown" }, child.pid, child.pid)
+      : undefined;
+    const descendantBeforeResult = linux
+      ? preStopDisposition(
+          descendantReadBefore ?? { kind: "unknown" },
+          grandchild,
+          child.pid,
+          child.pid,
+        )
+      : undefined;
+    if (linux) {
+      console.info(
+        JSON.stringify({
+          diagnostic: "shift-stop-kernel-identity.v1",
+          phase: "before-stop",
+          root: rootBeforeResult,
+          descendant: descendantBeforeResult,
+          descendantSameGroup:
+            rootReadBefore?.kind === "stat" &&
+            descendantReadBefore?.kind === "stat"
+              ? rootReadBefore.value.pgrp === descendantReadBefore.value.pgrp
+              : null,
+        }),
+      );
+    }
+    const rootBefore = linux
+      ? preStopIdentity(rootReadBefore ?? { kind: "unknown" }, child.pid, child.pid)
+      : undefined;
+    const descendantBefore = linux
+      ? preStopIdentity(
+          descendantReadBefore ?? { kind: "unknown" },
+          grandchild,
+          child.pid,
+          child.pid,
+        )
+      : undefined;
+    if (linux) {
+      expect(rootBeforeResult).toBe("active");
+      expect(descendantBeforeResult).toBe("active");
+      expect([rootBefore, descendantBefore].every(Boolean)).toBe(true);
+    }
+
     await child.stop();
     await child.done;
-    expect(processAlive(child.pid)).toBe(false);
-    expect(processAlive(grandchild)).toBe(false);
+    if (linux && rootBefore && descendantBefore) {
+      const rootAfter = postStopDisposition(readKernelStat(child.pid), rootBefore);
+      const descendantAfter = postStopDisposition(
+        readKernelStat(grandchild),
+        descendantBefore,
+      );
+      console.info(
+        JSON.stringify({
+          diagnostic: "shift-stop-kernel-identity.v1",
+          root: rootAfter,
+          descendant: descendantAfter,
+        }),
+      );
+      expect(["absent", "same-generation-zombie"]).toContain(rootAfter);
+      expect(["absent", "same-generation-zombie"]).toContain(descendantAfter);
+    } else {
+      expect(processAlive(child.pid)).toBe(false);
+      expect(processAlive(grandchild)).toBe(false);
+    }
     expect(readShiftRecord(join(h.home, SHIFTS_DIR), id)?.state).toBe(
       "running",
     );
