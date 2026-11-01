@@ -2,6 +2,10 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+  observeGeminiChatInputTerminal,
+  projectGeminiChatInputTerminalRow,
+} from "../../sessions/fixtures/gemini-chat-runtime-fixture";
 import { geminiChatPrivateFrameSchema } from "../../sessions/gemini-chat-owned-journal";
 import {
   emitGeminiChatWitnessFailureFactsAndRethrow,
@@ -279,6 +283,179 @@ test("runtime projection distinguishes terminal outcomes and keeps absent or amb
     "PRIVATE native error",
   ])
     expect(serialized).not.toContain(value);
+});
+
+test("first input-terminal EOF after read-bytes requires a safe summary projection", () => {
+  const summary = summarizeGeminiChatWitnessText(
+    JSON.stringify([
+      { kind: "start" },
+      {
+        kind: "input-terminal",
+        phase: "read-bytes",
+        terminal: "eof",
+        errorName: "none",
+        errorCode: "none",
+      },
+    ]),
+  );
+
+  expect(summary.state).toBe("ok");
+  expect(summary.kinds).toMatchObject({ start: 1, wire: 0 });
+  expect("inputTerminal" in summary).toBe(true);
+  expect(summary.inputTerminal).toEqual({
+    state: "observed",
+    phase: "read-bytes",
+    terminal: "eof",
+    errorName: "none",
+    errorCode: "none",
+  });
+});
+
+test("input-terminal observations preserve errors and expose only allowlisted categories", () => {
+  const original = Object.assign(new Error("PRIVATE-MESSAGE"), {
+    code: "EPIPE",
+    stack: "PRIVATE-STACK C:\\PRIVATE-PATH",
+    input: "PRIVATE-ACP-PROMPT",
+    requestId: "PRIVATE-ID",
+  });
+  let row: unknown,
+    calls = 0,
+    caught: unknown;
+  try {
+    observeGeminiChatInputTerminal(
+      {
+        terminal: "exception",
+        phase: "wire-record-attempted",
+        error: original,
+      },
+      (value) => {
+        calls++;
+        row = value;
+        throw Error("PRIVATE-SINK");
+      },
+    );
+  } catch (error) {
+    caught = error;
+  }
+  expect(caught).toBe(original);
+  expect(calls).toBe(1);
+  const facts = projectGeminiChatInputTerminalRow(row);
+  expect(facts).toEqual({
+    state: "observed",
+    phase: "wire-record-attempted",
+    terminal: "exception",
+    errorName: "Error",
+    errorCode: "EPIPE",
+  });
+  const serialized = JSON.stringify(facts);
+  for (const value of [
+    "PRIVATE-MESSAGE",
+    "PRIVATE-STACK",
+    "PRIVATE-PATH",
+    "PRIVATE-ACP-PROMPT",
+    "PRIVATE-ID",
+    "PRIVATE-SINK",
+  ])
+    expect(serialized).not.toContain(value);
+});
+
+test("unknown and hostile exception properties collapse to fixed categories", () => {
+  const hostile = Object.defineProperties(new Error("PRIVATE"), {
+    name: {
+      get() {
+        throw Error("PRIVATE-NAME");
+      },
+    },
+    code: {
+      get() {
+        throw Error("PRIVATE-CODE");
+      },
+    },
+  });
+  let row: unknown;
+  try {
+    observeGeminiChatInputTerminal(
+      { terminal: "exception", phase: "read-bytes", error: hostile },
+      (value) => {
+        row = value;
+      },
+    );
+  } catch {}
+  expect(projectGeminiChatInputTerminalRow(row)).toMatchObject({
+    state: "observed",
+    errorName: "other",
+    errorCode: "other",
+  });
+  const accessor = Object.defineProperty(
+    {
+      kind: "input-terminal",
+      phase: "read-bytes",
+      terminal: "eof",
+      errorName: "none",
+      errorCode: "none",
+    },
+    "phase",
+    {
+      get() {
+        throw Error("PRIVATE-PHASE");
+      },
+    },
+  );
+  expect(projectGeminiChatInputTerminalRow(accessor)).toEqual({
+    state: "invalid",
+  });
+});
+
+test("input-terminal summaries distinguish absence, unique rows, ambiguity and unreadable logs", () => {
+  const row = {
+    kind: "input-terminal",
+    phase: "read-bytes",
+    terminal: "eof",
+    errorName: "none",
+    errorCode: "none",
+  };
+  const summary = (rows: unknown[]) =>
+    summarizeGeminiChatWitnessText(JSON.stringify(rows)).inputTerminal;
+  expect(summary([])).toEqual({ state: "not-reported" });
+  expect(summary([row])).toMatchObject({
+    state: "observed",
+    phase: "read-bytes",
+    terminal: "eof",
+  });
+  expect(summary([row, row])).toEqual({ state: "invalid" });
+  expect(summary([{ ...row, phase: "PRIVATE-PHASE" }])).toEqual({
+    state: "invalid",
+  });
+  expect(
+    summarizeGeminiChatWitnessText("[]", 256 * 1024 + 1).inputTerminal,
+  ).toEqual({ state: "unknown" });
+  expect(
+    summarizeGeminiChatWitnessText('[{"kind":"input-terminal"}', 25)
+      .inputTerminal,
+  ).toEqual({ state: "unknown" });
+});
+
+test("EOF observer failure keeps normal completion and attempts one terminal row", () => {
+  let calls = 0,
+    row: unknown;
+  expect(() =>
+    observeGeminiChatInputTerminal(
+      { terminal: "eof", phase: "read-bytes" },
+      (value) => {
+        calls++;
+        row = value;
+        throw Error("PRIVATE-SINK");
+      },
+    ),
+  ).not.toThrow();
+  expect(calls).toBe(1);
+  expect(projectGeminiChatInputTerminalRow(row)).toEqual({
+    state: "observed",
+    phase: "read-bytes",
+    terminal: "eof",
+    errorName: "none",
+    errorCode: "none",
+  });
 });
 
 test("bounded Gemini witness summaries expose counts and a marker bit only", () => {
