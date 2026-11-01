@@ -2631,7 +2631,12 @@ test("project repository read is bounded to registered membership and fails clos
   const genuineEmptyWorktrees = await readProjectRepositories(route, project.id);
   expect(genuineEmptyWorktrees.status).toBe(200);
   expect(genuineEmptyWorktrees.data).toMatchObject({
-    repositories: [{ repositories: [{ worktrees: [] }] }],
+    repositories: [{
+      repositories: [
+        { path: approvedMemberPath, access: "approved", worktrees: [] },
+        { path: unregisteredPath, access: "unregistered" },
+      ],
+    }],
   });
   for (const mode of ["error", "throw", "empty", "wrong-main", "mismatched-main"] as const) {
     listingMode = mode;
