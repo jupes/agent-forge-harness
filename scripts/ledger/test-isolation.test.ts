@@ -82,16 +82,58 @@ const SPAWNS =
   /Bun\.spawn|Bun\.\$|child_process|StdioClientTransport|\{[^}]*\$[^}]*\}\s*from\s*["']bun["']/;
 
 /**
- * How many re-run files run at the same time, each in a `bun test` of its own:
- * a quarter of the machine's threads, at least 2 and at most 4. On a 16-thread
+ * How many re-run files run at once in their own `bun test`: Windows uses
+ * three workers from 2 to 15 logical CPUs and four at 16 or more; other
+ * platforms keep the quarter-CPU formula bounded from two to four. All use
+ * two workers below two CPUs. On a 16-thread
  * machine, with two other full runs going, the 62 files took 144 to 153 s one
  * after another in one `bun test`, and 46 to 51 s four at a time (wwj5). One
  * after another, the re-run went past the test's 180 s limit in full runs.
  */
-const RERUN_WORKERS = Math.min(
-  4,
-  Math.max(2, Math.floor(availableParallelism() / 4)),
+const isolationRerunWorkerCount = (
+  platform: NodeJS.Platform,
+  cpuCount: number,
+): number => {
+  if (cpuCount < 2) return 2;
+  if (platform === "win32" && cpuCount < 16) return 3;
+  return Math.min(4, Math.max(2, Math.floor(cpuCount / 4)));
+};
+
+const RERUN_WORKERS = isolationRerunWorkerCount(
+  process.platform,
+  availableParallelism(),
 );
+
+test("Windows home-isolation worker policy uses three slots at two logical CPUs", () => {
+  expect(isolationRerunWorkerCount("win32", 2)).toBe(3);
+});
+
+const workerPolicyCases: ReadonlyArray<
+  readonly [NodeJS.Platform, number, number]
+> = [
+  ["win32", 0, 2],
+  ["win32", 1, 2],
+  ["win32", 2, 3],
+  ["win32", 4, 3],
+  ["win32", 8, 3],
+  ["win32", 12, 3],
+  ["win32", 16, 4],
+  ["win32", 64, 4],
+  ["linux", 0, 2],
+  ["linux", 1, 2],
+  ["linux", 2, 2],
+  ["linux", 4, 2],
+  ["linux", 8, 2],
+  ["linux", 12, 3],
+  ["linux", 16, 4],
+  ["linux", 64, 4],
+];
+
+for (const [platform, cpuCount, expected] of workerPolicyCases) {
+  test(`worker policy ${platform} at ${cpuCount} CPUs`, () => {
+    expect(isolationRerunWorkerCount(platform, cpuCount)).toBe(expected);
+  });
+}
 
 /**
  * Only the aggregate coordinator budget, not an individual test or native

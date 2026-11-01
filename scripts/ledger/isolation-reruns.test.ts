@@ -990,3 +990,173 @@ test("an already-authorized grant gap may start late but remains the same owned 
     await work;
   }
 });
+
+test("three-worker reruns hold the fourth, refill FIFO, and retain indexed failures", async () => {
+  const append = "scripts/ledger/append.test.ts";
+  const files = [
+    "a.test.ts",
+    append,
+    "b.test.ts",
+    "c.test.ts",
+    "d.test.ts",
+    "e.test.ts",
+  ];
+  const started: string[] = [];
+  const settled: string[] = [];
+  const progress: IsolationRerunProgress[] = [];
+  const gates = new Map<
+    string,
+    { promise: Promise<void>; release: () => void }
+  >();
+  for (const file of files) {
+    let release = () => {};
+    const promise = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    gates.set(file, { promise, release });
+  }
+
+  let signalThree = () => {};
+  let signalFourth = () => {};
+  let signalFifth = () => {};
+  const threeStarted = new Promise<void>((resolve) => {
+    signalThree = resolve;
+  });
+  const fourthStarted = new Promise<void>((resolve) => {
+    signalFourth = resolve;
+  });
+  const fifthStarted = new Promise<void>((resolve) => {
+    signalFifth = resolve;
+  });
+  const ordinary = new Error("ordinary callback identity");
+  let active = 0;
+  let maximum = 0;
+  const work = settleIsolationReruns(
+    files,
+    3,
+    async (file) => {
+      started.push(file);
+      const gate = gates.get(file);
+      if (!gate) throw new Error(`Missing gate for ${file}`);
+      if (file === append) {
+        expect(active).toBe(0);
+        await gate.promise;
+        settled.push(file);
+        return file;
+      }
+      active++;
+      maximum = Math.max(maximum, active);
+      if (active === 3) signalThree();
+      if (file === "d.test.ts") signalFourth();
+      if (file === "e.test.ts") signalFifth();
+      try {
+        await gate.promise;
+        if (file === "b.test.ts") throw ordinary;
+        return file;
+      } finally {
+        active--;
+        settled.push(file);
+      }
+    },
+    (event) => progress.push(event),
+  );
+
+  try {
+    expect(started).toEqual([append]);
+    expect(progress[0]).toMatchObject({
+      event: "started",
+      phase: "exclusive",
+      file: append,
+      activeCount: 1,
+      pendingCount: 5,
+    });
+    gates.get(append)!.release();
+    await threeStarted;
+    expect(started).toEqual([append, "a.test.ts", "b.test.ts", "c.test.ts"]);
+    expect(maximum).toBe(3);
+    expect(progress.at(-1)).toMatchObject({
+      event: "started",
+      phase: "parallel",
+      file: "c.test.ts",
+      activeCount: 3,
+      pendingCount: 2,
+    });
+
+    gates.get("c.test.ts")!.release();
+    await fourthStarted;
+    expect(started).toEqual([
+      append,
+      "a.test.ts",
+      "b.test.ts",
+      "c.test.ts",
+      "d.test.ts",
+    ]);
+    gates.get("b.test.ts")!.release();
+    await fifthStarted;
+    expect(started).toEqual([
+      append,
+      "a.test.ts",
+      "b.test.ts",
+      "c.test.ts",
+      "d.test.ts",
+      "e.test.ts",
+    ]);
+
+    gates.get("e.test.ts")!.release();
+    gates.get("d.test.ts")!.release();
+    gates.get("a.test.ts")!.release();
+    const results = await work;
+    expect(started).toEqual([
+      append,
+      "a.test.ts",
+      "b.test.ts",
+      "c.test.ts",
+      "d.test.ts",
+      "e.test.ts",
+    ]);
+    expect(settled).toEqual([
+      append,
+      "c.test.ts",
+      "b.test.ts",
+      "e.test.ts",
+      "d.test.ts",
+      "a.test.ts",
+    ]);
+    expect(maximum).toBe(3);
+    expect(active).toBe(0);
+    expect(results.map((result) => result.status)).toEqual([
+      "fulfilled",
+      "fulfilled",
+      "rejected",
+      "fulfilled",
+      "fulfilled",
+      "fulfilled",
+    ]);
+    expect(
+      results.map((result) =>
+        result.status === "fulfilled" ? result.value : result.reason,
+      ),
+    ).toEqual([
+      "a.test.ts",
+      append,
+      ordinary,
+      "c.test.ts",
+      "d.test.ts",
+      "e.test.ts",
+    ]);
+    const ordinaryResult = results[2];
+    if (ordinaryResult?.status !== "rejected")
+      throw new Error("Expected ordinary callback rejection.");
+    expect(ordinaryResult.reason).toBe(ordinary);
+    expect(progress.at(-1)).toMatchObject({
+      event: "complete",
+      phase: "complete",
+      completed: files.length,
+      activeCount: 0,
+      pendingCount: 0,
+    });
+  } finally {
+    for (const gate of gates.values()) gate.release();
+    await work;
+  }
+});
