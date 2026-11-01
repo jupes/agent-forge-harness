@@ -108,6 +108,7 @@ export function createGrokAcpSessionActor(options: {
 
   const publish = (next: GrokActorSnapshot) => { state = Object.freeze({ ...next }); };
   const snapshot = (): GrokActorSnapshot => Object.freeze({ ...state });
+  const currentState = (): GrokActorSnapshot => state;
   const invalidate = (reason: FailureCode) => {
     if (state.state === "closed") return;
     failure ??= reason;
@@ -355,7 +356,7 @@ export function createGrokAcpSessionActor(options: {
           clientInfo: { name: "agent-forge-harness", version: "1" },
         }, deadlineAt);
         assertActive();
-        if (state.state !== "initializing") throw new ActorFailure(failure ?? "provider-exited");
+        if (currentState().state !== "initializing") throw new ActorFailure(failure ?? "provider-exited");
         if ("error" in initialize.frame) throw new ActorFailure("initialize-rejected");
         const initialized: GrokConnectionState = reduceGrokInitialize(
           { kind: "initialize-pending", requestId: initialize.id },
@@ -369,7 +370,7 @@ export function createGrokAcpSessionActor(options: {
           mcpServers: [],
         }, deadlineAt);
         assertActive();
-        if (state.state !== "opening") throw new ActorFailure(failure ?? "provider-exited");
+        if (currentState().state !== "opening") throw new ActorFailure(failure ?? "provider-exited");
         if ("error" in opened.frame || !("result" in opened.frame))
           throw new ActorFailure("session-open-rejected");
         const body = opened.frame.result;
@@ -378,7 +379,7 @@ export function createGrokAcpSessionActor(options: {
           !("sessionId" in body) || !isSessionId(body.sessionId)
         ) throw new ActorFailure("session-open-rejected");
         sessionId = body.sessionId;
-        const handle: GrokOpenedHandle = Object.freeze({
+        const handle = Object.freeze<GrokOpenedHandle>({
           kind: "grok-opened-session",
           authentication: "unknown",
           identity: "unverified",
