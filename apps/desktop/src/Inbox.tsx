@@ -367,7 +367,7 @@ export function Inbox(props: InboxProps) {
                 <InboxDispositionHistoryActions
                   sourceKind={original.item.sourceKind}
                   requestId={original.requestId}
-                  state={history?.state}
+                  {...(history ? { state: history.state } : {})}
                   reserved={reserved}
                   checked={checked}
                   loading={props.dispositionLoading}

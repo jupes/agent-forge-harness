@@ -176,6 +176,16 @@ function text(node: VNode): string {
 }
 const buttons = (node: VNode) =>
   nodes(node).filter((item) => item.type === Button);
+const property = (node: VNode, name: string): unknown =>
+  Object.entries(node.props).find(([key]) => key === name)?.[1];
+const stringProperty = (node: VNode, name: string): string | undefined => {
+  const value = property(node, name);
+  return typeof value === "string" ? value : undefined;
+};
+const booleanProperty = (node: VNode, name: string): boolean | undefined => {
+  const value = property(node, name);
+  return typeof value === "boolean" ? value : undefined;
+};
 const sessionHref = (item: InboxPermissionItem) =>
   desktopHref({
     destination: "sessions",
@@ -195,7 +205,7 @@ test(
       expect(text(row)).toContain("Open session");
       expect(buttons(row)).toHaveLength(0);
       expect(
-        nodes(row).find((item) => item.type === "a")?.props.href,
+        (() => { const anchor = nodes(row).find((item) => item.type === "a"); return anchor ? stringProperty(anchor, "href") : undefined; })(),
       ).toBe(sessionHref(permission));
     }
     expect(text(view(card(currentPermission)))).toContain("bun test");
@@ -224,7 +234,7 @@ test(
 
     const payloadOnly = view(card(currentPermission, "unknown-bead-write"));
     expect(buttons(payloadOnly)).toHaveLength(0);
-    expect(nodes(payloadOnly).find((item) => item.type === "a")?.props.href).toBe(
+    expect((() => { const anchor = nodes(payloadOnly).find((item) => item.type === "a"); return anchor ? stringProperty(anchor, "href") : undefined; })()).toBe(
       sessionHref(currentPermission),
     );
   },
@@ -277,9 +287,9 @@ test(
       "Review unconfirmed reservation",
     ]);
     for (const button of unknownButtons) {
-      const click = button.props.onClick;
+      const click = property(button, "onClick");
       expect(typeof click).toBe("function");
-      if (typeof click === "function") await click();
+      if (typeof click === "function") await Reflect.apply(click, undefined, []);
     }
     expect(calls).toEqual([
       "check:request-unknown",
@@ -302,9 +312,9 @@ test(
       "Discard checked reservation",
     ]);
     for (const button of reservedButtons) {
-      const click = button.props.onClick;
+      const click = property(button, "onClick");
       expect(typeof click).toBe("function");
-      if (typeof click === "function") await click();
+      if (typeof click === "function") await Reflect.apply(click, undefined, []);
     }
     expect(calls).toEqual([
       "check:request-reserved",
@@ -323,11 +333,11 @@ test(
       "Snooze 1 hour",
       "Mark done · source unresolved",
     ]);
-    expect(controls[1]?.props.disabled).toBe(true);
-    expect(controls[1]?.props.onClick).toBeUndefined();
-    const snooze = controls[0]?.props.onClick;
+    expect(controls[1] ? booleanProperty(controls[1], "disabled") : undefined).toBe(true);
+    expect(controls[1] ? property(controls[1], "onClick") : undefined).toBeUndefined();
+    const snooze = controls[0] ? property(controls[0], "onClick") : undefined;
     expect(typeof snooze).toBe("function");
-    if (typeof snooze === "function") await snooze();
+    if (typeof snooze === "function") await Reflect.apply(snooze, undefined, []);
     expect(acknowledged).toEqual([
       { card: item, operation: "snooze-1h" },
     ]);
@@ -343,9 +353,9 @@ test(
       (button) => text(button) === "Mark done",
     );
     expect(done).toBeDefined();
-    const click = done?.props.onClick;
+    const click = done ? property(done, "onClick") : undefined;
     expect(typeof click).toBe("function");
-    if (typeof click === "function") await click();
+    if (typeof click === "function") await Reflect.apply(click, undefined, []);
     expect(acknowledged).toEqual([{ card: item, operation: "done" }]);
   },
 );
