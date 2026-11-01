@@ -1,6 +1,7 @@
 import { closeSync, fstatSync, openSync, readSync } from "node:fs";
 import type { GeminiChatPrivateFrame } from "../../../types/gemini-owned-chat";
 import { geminiChatPrivateFrameSchema } from "../../sessions/gemini-chat-owned-journal";
+import { projectGeminiChatInputTerminalRow } from "../../sessions/fixtures/gemini-chat-runtime-fixture";
 
 const MAX_LOG_BYTES = 256 * 1024;
 const MAX_ROWS = 256;
@@ -51,6 +52,7 @@ export interface GeminiChatWitnessSummary {
     other: number | null;
   };
   promptMarkerMatched: boolean;
+  inputTerminal: ReturnType<typeof projectGeminiChatInputTerminalRow> | { state: "not-reported" | "unknown" };
 }
 
 type ProtectedTurn = {
@@ -241,6 +243,7 @@ function empty(
       other: null,
     },
     promptMarkerMatched: false,
+    inputTerminal: { state: "unknown" },
   };
 }
 
@@ -279,7 +282,8 @@ export function summarizeGeminiChatWitnessText(
     sessionCancel: 0,
     other: 0,
   };
-  let promptMarkerMatched = false;
+  let promptMarkerMatched = false, inputTerminalRows = 0;
+  let inputTerminal: GeminiChatWitnessSummary["inputTerminal"] = { state: "not-reported" };
   for (const row of parsed) {
     if (typeof row !== "object" || row === null || Array.isArray(row))
       return empty("invalid", "wrong-shape", bytes);
@@ -291,6 +295,11 @@ export function summarizeGeminiChatWitnessText(
       kinds.other++;
     else kinds[kind as keyof typeof kinds]++;
 
+    if (kind === "input-terminal") {
+      const projected = projectGeminiChatInputTerminalRow(row);
+      inputTerminal = ++inputTerminalRows > 1 || projected.state === "invalid" ? { state: "invalid" } : projected;
+      continue;
+    }
     if (kind !== "wire") continue;
     const value = "value" in row ? row.value : undefined;
     if (
@@ -337,6 +346,7 @@ export function summarizeGeminiChatWitnessText(
     kinds,
     methods,
     promptMarkerMatched,
+    inputTerminal,
   };
 }
 
