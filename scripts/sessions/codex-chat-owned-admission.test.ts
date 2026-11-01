@@ -27,14 +27,14 @@ import { workspaceKey } from "../projects/scope";
 import { createProjectStore } from "../projects/store";
 import { scratchDirs } from "../test-scratch";
 import { createCodexChatApprovalBroker } from "./codex-chat-approval-broker";
-import { resolveCodexChatForkSource } from "./codex-chat-fork-source";
-import { createCodexOwnedChatService } from "./codex-chat-owned-admission";
-import { createCodexChatOwnedTransport } from "./codex-chat-owned-transport";
 import {
   createDeadlineObserver,
   emitCodexDeadlineFailureAndRethrow,
   projectCodexDeadlineFacts,
 } from "./codex-chat-deadline-diagnostic.test-utils";
+import { resolveCodexChatForkSource } from "./codex-chat-fork-source";
+import { createCodexOwnedChatService } from "./codex-chat-owned-admission";
+import { createCodexChatOwnedTransport } from "./codex-chat-owned-transport";
 import { foldCodexChatOwnerRelease } from "./codex-chat-owner-release";
 import { createCodexChatRuntime } from "./codex-chat-runtime";
 import {
@@ -2574,7 +2574,12 @@ test.each([
   if (action === "deadline")
     f.runtime.run = (input, persist, signal, callbacks) =>
       diagnosticObserver.observeRuntime(() =>
-        run(input, (event) => diagnosticObserver.tapPersist(event, persist), signal, callbacks),
+        run(
+          input,
+          (event) => diagnosticObserver.tapPersist(event, persist),
+          signal,
+          callbacks,
+        ),
       );
   try {
     let service = f.open();
@@ -2615,7 +2620,8 @@ test.each([
     reopenedReadSucceeded = true;
     if (action === "deadline") {
       diagnosticFacts = projectCodexDeadlineFacts({
-        observer: diagnosticObserver.snapshot(), page,
+        observer: diagnosticObserver.snapshot(),
+        page,
         originalRequestId: f.request.requestId,
       });
       reopenedFacts = diagnosticFacts.reopened;
@@ -2660,7 +2666,8 @@ test.each([
   } catch (error) {
     if (action !== "deadline") throw error;
     const current = projectCodexDeadlineFacts({
-      observer: diagnosticObserver.snapshot(), page: null,
+      observer: diagnosticObserver.snapshot(),
+      page: null,
       originalRequestId: f.request.requestId,
     });
     if (reopenedReadAttempted && !reopenedReadSucceeded)
@@ -2670,8 +2677,8 @@ test.each([
       terminalPersist: current.terminalPersist,
       reopened: reopenedFacts,
     };
-    emitCodexDeadlineFailureAndRethrow(
-      error, diagnosticFacts, (row) => process.stderr.write(row),
+    emitCodexDeadlineFailureAndRethrow(error, diagnosticFacts, (row) =>
+      process.stderr.write(row),
     );
   } finally {
     releaseFinalSave();
