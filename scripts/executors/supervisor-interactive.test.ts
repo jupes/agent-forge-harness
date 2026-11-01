@@ -410,7 +410,9 @@ test("a non-reader cannot accept unlimited buffered input across settled writes"
     const f = tree("blocked", 2000, 1024, undefined, 5000, undefined, gate);
     handle = f.handle;
     const endedBeforeAnnouncement = () => {
-      throw new Error("The interactive fixture ended before child announcement.");
+      throw new Error(
+        "The interactive fixture ended before child announcement.",
+      );
     };
     const announcement = Promise.race([
       f.childPid(),
@@ -440,8 +442,7 @@ test("a non-reader cannot accept unlimited buffered input across settled writes"
   } finally {
     await attempt(() => writeFileSync(release, "child"));
     const ownedHandle = handle;
-    if (ownedHandle)
-      await attempt(() => ownedHandle.stop("fixture cleanup"));
+    if (ownedHandle) await attempt(() => ownedHandle.stop("fixture cleanup"));
     await attempt(() => {
       if (child !== null && alive(child)) killTree(child);
     });
