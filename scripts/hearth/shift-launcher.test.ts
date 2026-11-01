@@ -93,7 +93,10 @@ type KernelRead =
   | { kind: "absent" }
   | { kind: "unknown" };
 
-function parseKernelStat(raw: string, requestedPid: number): KernelStat | undefined {
+function parseKernelStat(
+  raw: string,
+  requestedPid: number,
+): KernelStat | undefined {
   if (raw.length > 4096) return undefined;
   const close = raw.lastIndexOf(")");
   const prefix = raw.slice(0, raw.indexOf(" "));
@@ -113,8 +116,7 @@ function parseKernelStat(raw: string, requestedPid: number): KernelStat | undefi
   const starttimeText = fields[19];
   if (!state || state.length !== 1 || !"RSDZTWtXxKWPI".includes(state))
     return undefined;
-  if (fields.slice(1).some((field) => !/^-?\d+$/.test(field)))
-    return undefined;
+  if (fields.slice(1).some((field) => !/^-?\d+$/.test(field))) return undefined;
   const ppid = Number(ppidText);
   const pgrp = Number(pgrpText);
   if (
@@ -141,7 +143,10 @@ function readKernelStat(pid: number): KernelRead {
   if (process.platform !== "linux" || !Number.isSafeInteger(pid) || pid <= 0)
     return { kind: "unknown" };
   try {
-    const value = parseKernelStat(readFileSync(`/proc/${pid}/stat`, "utf8"), pid);
+    const value = parseKernelStat(
+      readFileSync(`/proc/${pid}/stat`, "utf8"),
+      pid,
+    );
     return value ? { kind: "stat", value } : { kind: "unknown" };
   } catch (error) {
     return { kind: kernelReadError(error) };
@@ -151,10 +156,19 @@ function readKernelStat(pid: number): KernelRead {
 function postStopDisposition(
   read: KernelRead,
   identity: KernelStat,
-): "absent" | "same-generation-zombie" | "active" | "unknown" | "reused" | "wrong-group" {
+):
+  | "absent"
+  | "same-generation-zombie"
+  | "active"
+  | "unknown"
+  | "reused"
+  | "wrong-group" {
   if (read.kind === "absent") return "absent";
   if (read.kind === "unknown") return "unknown";
-  if (read.value.pid !== identity.pid || read.value.starttime !== identity.starttime)
+  if (
+    read.value.pid !== identity.pid ||
+    read.value.starttime !== identity.starttime
+  )
     return "reused";
   if (read.value.pgrp !== identity.pgrp) return "wrong-group";
   return read.value.state === "Z" ? "same-generation-zombie" : "active";
@@ -190,7 +204,9 @@ function preStopDisposition(
   if (read.value.state === "Z") return "zombie";
   if (read.value.pgrp !== group) return "wrong-group";
   if (parent !== undefined && read.value.ppid !== parent) return "wrong-parent";
-  return read.value.state === "X" || read.value.state === "x" ? "unknown" : "active";
+  return read.value.state === "X" || read.value.state === "x"
+    ? "unknown"
+    : "active";
 }
 
 describe("Linux proc stat identity classification", () => {
@@ -333,16 +349,43 @@ describe("Linux proc stat identity classification", () => {
       ),
     ).toBe("reused");
     expect(parseKernelStat("x".repeat(4097), 41)).toBeUndefined();
-    expect(kernelReadError(Object.assign(new Error(), { code: "ENOENT" }))).toBe("absent");
-    expect(kernelReadError(Object.assign(new Error(), { code: "ESRCH" }))).toBe("absent");
-    expect(kernelReadError(Object.assign(new Error(), { code: "EACCES" }))).toBe("unknown");
+    expect(
+      kernelReadError(Object.assign(new Error(), { code: "ENOENT" })),
+    ).toBe("absent");
+    expect(kernelReadError(Object.assign(new Error(), { code: "ESRCH" }))).toBe(
+      "absent",
+    );
+    expect(
+      kernelReadError(Object.assign(new Error(), { code: "EACCES" })),
+    ).toBe("unknown");
     expect(kernelReadError(new Error("read failure"))).toBe("unknown");
     expect(kernelReadError("read failure")).toBe("unknown");
     const live = { kind: "stat" as const, value: original };
     expect(preStopIdentity(live, 41, 41, 30)).toEqual(original);
-    expect(preStopIdentity({ kind: "stat", value: { ...original, state: "Z" } }, 41, 41, 30)).toBeUndefined();
-    expect(preStopIdentity({ kind: "stat", value: { ...original, pgrp: 99 } }, 41, 41, 30)).toBeUndefined();
-    expect(preStopIdentity({ kind: "stat", value: { ...original, ppid: 31 } }, 41, 41, 30)).toBeUndefined();
+    expect(
+      preStopIdentity(
+        { kind: "stat", value: { ...original, state: "Z" } },
+        41,
+        41,
+        30,
+      ),
+    ).toBeUndefined();
+    expect(
+      preStopIdentity(
+        { kind: "stat", value: { ...original, pgrp: 99 } },
+        41,
+        41,
+        30,
+      ),
+    ).toBeUndefined();
+    expect(
+      preStopIdentity(
+        { kind: "stat", value: { ...original, ppid: 31 } },
+        41,
+        41,
+        30,
+      ),
+    ).toBeUndefined();
     expect(preStopIdentity({ kind: "unknown" }, 41, 41, 30)).toBeUndefined();
   });
 });
@@ -969,7 +1012,11 @@ describe("a shift started through a hearth, with the real launcher and a stand-i
     const rootReadBefore = linux ? readKernelStat(child.pid) : undefined;
     const descendantReadBefore = linux ? readKernelStat(grandchild) : undefined;
     const rootBeforeResult = linux
-      ? preStopDisposition(rootReadBefore ?? { kind: "unknown" }, child.pid, child.pid)
+      ? preStopDisposition(
+          rootReadBefore ?? { kind: "unknown" },
+          child.pid,
+          child.pid,
+        )
       : undefined;
     const descendantBeforeResult = linux
       ? preStopDisposition(
@@ -995,7 +1042,11 @@ describe("a shift started through a hearth, with the real launcher and a stand-i
       );
     }
     const rootBefore = linux
-      ? preStopIdentity(rootReadBefore ?? { kind: "unknown" }, child.pid, child.pid)
+      ? preStopIdentity(
+          rootReadBefore ?? { kind: "unknown" },
+          child.pid,
+          child.pid,
+        )
       : undefined;
     const descendantBefore = linux
       ? preStopIdentity(
@@ -1014,7 +1065,10 @@ describe("a shift started through a hearth, with the real launcher and a stand-i
     await child.stop();
     await child.done;
     if (linux && rootBefore && descendantBefore) {
-      const rootAfter = postStopDisposition(readKernelStat(child.pid), rootBefore);
+      const rootAfter = postStopDisposition(
+        readKernelStat(child.pid),
+        rootBefore,
+      );
       const descendantAfter = postStopDisposition(
         readKernelStat(grandchild),
         descendantBefore,
