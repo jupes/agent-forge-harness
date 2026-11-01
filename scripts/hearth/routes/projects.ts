@@ -1,14 +1,14 @@
 import { createHash } from "node:crypto";
-import { existsSync, lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  readFileSync,
+  realpathSync,
+  statSync,
+} from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { z } from "zod";
 import type { WorktreeEntry } from "../../../types/beads";
-import {
-  gitRun,
-  listWorktrees,
-  mainCheckoutOf,
-  type Listed,
-} from "../../scheduler/worktrees";
 import type {
   ProjectCatalog,
   ProjectPreferences,
@@ -50,6 +50,12 @@ import {
   isProjectId,
   ProjectStoreError,
 } from "../../projects/store";
+import {
+  gitRun,
+  type Listed,
+  listWorktrees,
+  mainCheckoutOf,
+} from "../../scheduler/worktrees";
 import type {
   ActionContext,
   ActionRoute,
@@ -352,23 +358,34 @@ const projectWorktreeFactSchema = z
   })
   .strict();
 const projectRepositoryMemberSchema = z.discriminatedUnion("access", [
-  z.object({ path: z.string().min(1).max(1024), access: z.literal("unregistered") }).strict(),
-  z.object({
-    path: z.string().min(1).max(1024),
-    access: z.enum(["served", "approved"]),
-    name: z.string().min(1).max(80),
-    worktrees: z.array(projectWorktreeFactSchema).max(4096),
-  }).strict(),
+  z
+    .object({
+      path: z.string().min(1).max(1024),
+      access: z.literal("unregistered"),
+    })
+    .strict(),
+  z
+    .object({
+      path: z.string().min(1).max(1024),
+      access: z.enum(["served", "approved"]),
+      name: z.string().min(1).max(80),
+      worktrees: z.array(projectWorktreeFactSchema).max(4096),
+    })
+    .strict(),
 ]);
-const projectRepositoryRowSchema = z.object({
-  workspaceRoot: z.string().min(1).max(1024),
-  repositories: z.array(projectRepositoryMemberSchema).max(128),
-}).strict();
-const projectRepositoriesDataSchema = z.object({
-  projectId: z.string().min(1).max(128),
-  catalogRevision: z.number().int().nonnegative().safe(),
-  repositories: z.array(projectRepositoryRowSchema).max(100),
-}).strict();
+const projectRepositoryRowSchema = z
+  .object({
+    workspaceRoot: z.string().min(1).max(1024),
+    repositories: z.array(projectRepositoryMemberSchema).max(128),
+  })
+  .strict();
+const projectRepositoriesDataSchema = z
+  .object({
+    projectId: z.string().min(1).max(128),
+    catalogRevision: z.number().int().nonnegative().safe(),
+    repositories: z.array(projectRepositoryRowSchema).max(100),
+  })
+  .strict();
 
 function unavailableProjectRepositories(): ProjectStoreError {
   return new ProjectStoreError(
@@ -422,7 +439,10 @@ function projectWorktreeFacts(
   if (mainEntries.length !== 1) throw unavailableProjectRepositories();
   const listedMain = mainEntries[0];
   if (!listedMain) throw unavailableProjectRepositories();
-  const canonicalListedMain = freshProjectRepositoryPath(listedMain.path, mainKey);
+  const canonicalListedMain = freshProjectRepositoryPath(
+    listedMain.path,
+    mainKey,
+  );
   if (workspaceKey(canonicalListedMain) !== workspaceKey(main))
     throw unavailableProjectRepositories();
   const matchingCheckoutEntries = listed.entries.filter(
@@ -1101,9 +1121,13 @@ export function projectRoutes(
       if (!checked.success) throw unavailableProjectRepositories();
       const worktreeCount = checked.data.repositories.reduce(
         (total, workspace) =>
-          total + workspace.repositories.reduce(
+          total +
+          workspace.repositories.reduce(
             (members, repository) =>
-              members + (repository.access === "unregistered" ? 0 : repository.worktrees.length),
+              members +
+              (repository.access === "unregistered"
+                ? 0
+                : repository.worktrees.length),
             0,
           ),
         0,
