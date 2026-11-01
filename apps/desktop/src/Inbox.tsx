@@ -159,7 +159,10 @@ export function Inbox(props: InboxProps) {
     const unsubscribe = clients.map((client) =>
       client.subscribe(() => paint((value) => value + 1)),
     );
-    return () => unsubscribe.forEach((remove) => { remove(); });
+    return () =>
+      unsubscribe.forEach((remove) => {
+        remove();
+      });
   }, [props.decisionOwners]);
   const now = Date.now();
   const nextSnoozeExpiry = props.dispositions
