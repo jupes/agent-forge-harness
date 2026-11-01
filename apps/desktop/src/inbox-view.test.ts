@@ -97,54 +97,55 @@ test("orders newest first and filters by exact project and source kind", () => {
   ]);
 });
 
-test("keeps snoozed action cards in the Snoozed bucket and only hides fresh resolved Done", () => {
+test("keeps permission rows visible despite matching saved Snooze and Done dispositions", () => {
   const item = card();
-  const snoozed = projectInbox({
+  const savedSnooze = snooze(item, "2026-10-31T13:00:00.000Z");
+  const needsYou = projectInbox({
     cards: [item],
-    dispositions: [snooze(item, "2026-10-31T13:00:00.000Z")],
+    dispositions: [savedSnooze],
     coverage,
     filters,
     now,
   });
-  expect(snoozed.cards).toEqual([]);
+  expect(needsYou.cards).toEqual([item]);
+  expect(needsYou.visibleCount).toBe(1);
+
   const snoozedBucket = projectInbox({
     cards: [item],
-    dispositions: [snooze(item, "2026-10-31T13:00:00.000Z")],
+    dispositions: [savedSnooze],
     coverage,
     filters: { ...filters, bucket: "snoozed" },
     now,
   });
-  expect(snoozedBucket.cards).toEqual([item]);
-  const done: InboxDispositionEntry = {
-    projectId: item.projectId,
-    workspace: item.workspace,
+  expect(snoozedBucket.cards).toEqual([]);
+  expect(snoozedBucket.visibleCount).toBe(0);
+
+  const resolved = card({
+    key: "permission-done",
+    stableItemId: "offer-done",
+    resolved: true,
+  });
+  const savedDone: InboxDispositionEntry = {
+    projectId: resolved.projectId,
+    workspace: resolved.workspace,
     item: {
-      sourceKind: item.sourceKind,
-      stableItemId: item.stableItemId,
-      sourceRevision: item.sourceRevision,
+      sourceKind: resolved.sourceKind,
+      stableItemId: resolved.stableItemId,
+      sourceRevision: resolved.sourceRevision,
     },
     revision: 1,
     operation: "done",
     updatedAt: now,
   };
-  expect(
-    projectInbox({
-      cards: [item],
-      dispositions: [done],
-      coverage,
-      filters,
-      now,
-    }).cards,
-  ).toEqual([item]);
-  expect(
-    projectInbox({
-      cards: [card({ resolved: true })],
-      dispositions: [done],
-      coverage,
-      filters,
-      now,
-    }).cards,
-  ).toEqual([]);
+  const doneProjection = projectInbox({
+    cards: [resolved],
+    dispositions: [savedDone],
+    coverage,
+    filters,
+    now,
+  });
+  expect(doneProjection.cards).toEqual([resolved]);
+  expect(doneProjection.visibleCount).toBe(1);
 });
 
 test("leaves unknown outcome notices visible while their action card is snoozed", () => {
