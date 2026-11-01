@@ -237,7 +237,7 @@ export function Inbox(props: InboxProps) {
               <div class="af-inbox-actions">
                 <Button variant="ghost" disabled={props.dispositionLoading} onClick={() => void props.onCheckOriginal(original.requestId)}>Check exact original</Button>
                 {history?.state === "reserve-unknown" && <Button variant="ghost" disabled={props.dispositionLoading} onClick={() => void props.onReviewOriginal(original.requestId)}>Review unconfirmed reservation</Button>}
-                {reserved && <Button variant="ghost" disabled={props.dispositionLoading || !checked} title={checked ? undefined : "Check this exact original before discarding its reservation."} onClick={() => void props.onDiscardOriginal(original.requestId)}>Discard checked reservation</Button>}
+                {reserved && <Button variant="ghost" disabled={props.dispositionLoading || !checked} {...(checked ? {} : { title: "Check this exact original before discarding its reservation." })} onClick={() => void props.onDiscardOriginal(original.requestId)}>Discard checked reservation</Button>}
               </div>
             </article>;
           })}

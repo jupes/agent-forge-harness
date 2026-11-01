@@ -488,12 +488,12 @@ export function createInboxClient(deps: {
           reason: "The bounded cross-project session scan reached its limit.",
         });
         const skippedProjectIds = new Set<string>();
-        for (const skippedProject of sessionsToRead.slice(MAX_PERMISSION_SESSIONS).map((entry) => entry.project))
-          if (!skippedProjectIds.has(skippedProject.id)) {
-            skippedProjectIds.add(skippedProject.id);
+        for (const skipped of sessionsToRead.slice(MAX_PERMISSION_SESSIONS))
+          if (!skippedProjectIds.has(skipped.project.id)) {
+            skippedProjectIds.add(skipped.project.id);
             coverage.push({
-              projectId: skippedProject.id,
-              workspace: skippedProject.summary.workspace,
+              projectId: skipped.project.id,
+              workspace: skipped.summary.workspace,
               sessionId: null,
               provider: null,
               state: "partial",

@@ -43,6 +43,7 @@ export async function readInboxWriteSources(input: {
   const relevant = input.notices.filter((notice) => notice.phase !== "sending");
   const scopes = new Map<string, { projectId: string; workspace: string }>();
   for (const notice of relevant) {
+    if (notice.phase === "sending") continue;
     const project = input.projects.find((item) => item.id === notice.projectId);
     if (!project || !project.workspaces.some((scope) =>
       workspaceKey(scope.root) === workspaceKey(notice.workspace))) continue;
@@ -73,6 +74,7 @@ export async function readInboxWriteSources(input: {
       reason: journalCurrent ? "The retained write journal is current and contains no outcomes." : "The retained write journal could not be verified.",
     });
   for (const notice of relevant) {
+    if (notice.phase === "sending") continue;
     const project = input.projects.find((item) => item.id === notice.projectId);
     const inScope = project?.workspaces.some((scope) =>
       workspaceKey(scope.root) === workspaceKey(notice.workspace));
@@ -108,7 +110,7 @@ export async function readInboxWriteSources(input: {
       sourceState: state,
       resolved: false,
       canSnooze: false,
-      canCheck: notice.phase !== "sending",
+      canCheck: true,
       checkHref: desktopHref({
         projectId: notice.projectId,
         destination: "beads",

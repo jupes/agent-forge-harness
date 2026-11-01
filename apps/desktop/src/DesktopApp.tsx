@@ -1475,12 +1475,13 @@ export function DesktopApp(): JSX.Element {
       const selected = inbox.selectedPermission();
       const selection = inbox.currentSelection();
       const exact = snapshot.items.find((item) => item.key === permission.key);
+      const exactCurrent = exact?.kind === "permission" && exact.state === "current" ? exact : null;
       const sessionProject = sessions.project(card.projectId);
       const session = sessionProject.records.find((item) => item.id === permission.sessionId);
-      reviewedPermissionSourceIsCurrent = !snapshot.loading && exact?.state === "current" && exact.snapshotGeneration === snapshot.generation &&
-        exact.projectId === card.projectId && exact.workspace === card.workspace && exact.provider === permission.provider &&
-        exact.sessionId === permission.sessionId && exact.acceptedTurnId === permission.acceptedTurnId &&
-        exact.offerId === permission.offerId && JSON.stringify(exact.approval) === JSON.stringify(permission.approval) &&
+      reviewedPermissionSourceIsCurrent = permission.state === "current" && !snapshot.loading && exactCurrent?.snapshotGeneration === snapshot.generation &&
+        exactCurrent.projectId === card.projectId && exactCurrent.workspace === card.workspace && exactCurrent.provider === permission.provider &&
+        exactCurrent.sessionId === permission.sessionId && exactCurrent.acceptedTurnId === permission.acceptedTurnId &&
+        exactCurrent.offerId === permission.offerId && JSON.stringify(exactCurrent.approval) === JSON.stringify(permission.approval) &&
         selected?.key === permission.key && !!selection &&
         selection.selectionGeneration === selection.currentSelectionGeneration &&
         selection.selectionGeneration === dispositionSelectionGeneration.current &&
@@ -1517,7 +1518,7 @@ export function DesktopApp(): JSX.Element {
           item.state === "current" &&
           item.snapshotGeneration === permissionSnapshot.generation,
       );
-      if (exact && card.permission.state === "current") {
+      if (exact && exact.kind === "permission" && exact.state === "current" && card.permission.state === "current") {
         inbox.selectPermission(exact.key);
         const selected = inbox.selectedPermission();
         const selection = inbox.currentSelection();
@@ -1708,7 +1709,7 @@ export function DesktopApp(): JSX.Element {
       checkedOriginals: exactReserved
         ? [...new Set([...state.checkedOriginals, requestId])]
         : state.checkedOriginals.filter((id) => id !== requestId),
-      error: result.state === "confirmed" ? "" : result.message,
+      error: result.state === "confirmed" ? "" : result.state === "missing" ? "The exact saved original is missing; its hold remains visible." : result.message,
     }));
     return exactReserved;
     } catch {
@@ -1740,7 +1741,7 @@ export function DesktopApp(): JSX.Element {
       history: mergeInboxDispositionHistory(state.history, view.history),
       holds: mergeInboxDispositionHistory(state.history, view.history).filter((item) => item.state !== "terminal").map((item) => item.original),
       checkedOriginals: state.checkedOriginals.filter((id) => id !== requestId),
-      error: result.state === "confirmed" ? "" : result.message,
+      error: result.state === "confirmed" ? "" : result.state === "missing" ? "The exact reservation is missing; its hold remains visible." : result.message,
     }));
     } catch {
       setDispositionState((state) => ({ ...state, error: "The checked reservation could not be discarded. Its hold remains visible." }));

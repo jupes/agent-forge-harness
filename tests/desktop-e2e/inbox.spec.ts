@@ -544,12 +544,12 @@ test("Inbox reviews an unknown permission acknowledgment through both existing r
   let inboxApprovalReads = 0;
   let nativeDecisionPosts = 0;
   const requests: Array<{ requestId: unknown; body: unknown }> = [];
-  let discardRequest: { url: string; body: unknown } | null = null;
+  const discardRequests: Array<{ url: string; body: unknown }> = [];
   page.on("request", (request) => {
     const url = new URL(request.url());
     if (url.pathname.endsWith(`/sessions/${session.id}/approvals`) && request.method() === "GET") inboxApprovalReads++;
     if (url.pathname.endsWith("/approval-decisions") && request.method() === "POST") nativeDecisionPosts++;
-    if (request.method() === "POST" && url.pathname.endsWith(`/requests/${String(requests[1]?.requestId)}/discard`)) discardRequest = { url: url.pathname, body: request.postDataJSON() };
+    if (request.method() === "POST" && url.pathname.endsWith(`/requests/${String(requests[1]?.requestId)}/discard`)) discardRequests.push({ url: url.pathname, body: request.postDataJSON() });
   });
   let loseFirstReserve = true;
   let applyBody: unknown = null;
@@ -625,8 +625,11 @@ test("Inbox reviews an unknown permission acknowledgment through both existing r
   await persistedOriginal.getByRole("button", { name: "Discard checked reservation", exact: true }).click();
   const discardedResponse = await discardFinished;
   await expect(persistedOriginal.getByRole("button", { name: "Discard checked reservation", exact: true })).toHaveCount(0);
-  expect(discardRequest?.url).toBe(`/__agent-forge/projects/${alpha.id}/inbox-dispositions/requests/${persistedRequestId}/discard`);
-  const discardOriginal = inboxDispositionOriginalSchema.strict().safeParse(discardRequest?.body);
+  expect(discardRequests).toHaveLength(1);
+  const discardRequest = discardRequests[0];
+  if (!discardRequest) throw Error("The exact discard request was not captured.");
+  expect(discardRequest.url).toBe(`/__agent-forge/projects/${alpha.id}/inbox-dispositions/requests/${persistedRequestId}/discard`);
+  const discardOriginal = inboxDispositionOriginalSchema.strict().safeParse(discardRequest.body);
   expect(discardOriginal.success).toBe(true);
   if (!discardOriginal.success || !reservedOriginal.success) throw Error("The discard request did not preserve the exact original.");
   expect(discardOriginal.data).toEqual(reservedOriginal.data);

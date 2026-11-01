@@ -221,7 +221,7 @@ test("Done proof is exact to the original permission address and current snapsho
     kind: "permission", state: "current", complete: true, projectId: "project-a", workspace: "C:/work/a",
     provider: "codex", sessionId: "session-a", acceptedTurnId: "turn-a", offerId: "offer-a",
     key: "permission-a", actionable: false, snapshotGeneration: 8, observedAt: now,
-    approval: { provider: "codex", value: { id: "offer-a", kind: "command", command: "bun test", cwd: "C:/work/a", availableDecisions: ["accept"] } },
+    approval: { provider: "codex", value: { id: "offer-a", kind: "command", command: "bun test", cwd: "C:/work/a", availableDecisions: ["accept"], reason: null } },
   };
   const proof = {
     permissionKey: "permission-a", projectId: "project-a", workspace: "C:/work/a", provider: "codex" as const,
