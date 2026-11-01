@@ -4306,6 +4306,8 @@ const READS: Record<string, string> = {
   "GET /projects/create-options": "/projects/create-options",
   "GET /projects/create-scope-preview":
     "/projects/create-scope-preview?slug=alpha&epicId=alpha-epic",
+  "GET /projects/:id/settings/scope-preview":
+    "/projects/" + FIXTURE_PROJECT_ID + "/settings/scope-preview?revision=1&epicId=alpha-epic",
   "GET /projects/create-reservations": "/projects/create-reservations",
   "GET /projects/create-reservations/:requestId": `/projects/create-reservations/${API_PROJECT_CREATE_READ_ID}`,
   "GET /projects/repository-selections/:requestId": `/projects/repository-selections/${API_REPOSITORY_PICK_ID}`,
