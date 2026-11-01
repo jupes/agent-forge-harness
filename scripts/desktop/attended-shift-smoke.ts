@@ -16,6 +16,16 @@ export type PackagedStopLabel =
   | "before-restart"
   | "after-recovery"
   | "finally-cleanup";
+type PackagedRecoveryPhase =
+  | "restart-start"
+  | "needs-recovery-wait"
+  | "recover-click"
+  | "terminal-wait";
+type PackagedRecoveryFailureCategory =
+  | "runtime-evaluate-exception"
+  | "cdp-command-timeout"
+  | "cdp-command-error"
+  | "other";
 type StopWitness = {
   phase: WindowsJobSettlementFailurePhase;
   generationFailure: WindowsJobSettlementGenerationFailureWitness | null;
@@ -513,22 +523,52 @@ export async function verifyAttendedProjectShifts(
     await stop("before-restart");
     await gone(claude.pid);
     await gone(claude.childPid);
-    current = await start();
-    await tools.waitForPage(
-      current,
-      originalPhase(claudeShiftId, "needs-recovery"),
-      "The packaged restarted host did not retain the original interrupted shift.",
-    );
-    await click(
-      current,
-      "Recover original shift",
-      `.af-shift-row[data-shift="${claudeShiftId}"]`,
-    );
-    await tools.waitForPage(
-      current,
-      originalPhase(claudeShiftId, "stopped"),
-      "Explicit packaged recovery did not settle the original owned work.",
-    );
+    let recoveryPhase: PackagedRecoveryPhase = "restart-start";
+    try {
+      recoveryPhase = "restart-start";
+      current = await start();
+      recoveryPhase = "needs-recovery-wait";
+      await tools.waitForPage(
+        current,
+        originalPhase(claudeShiftId, "needs-recovery"),
+        "The packaged restarted host did not retain the original interrupted shift.",
+      );
+      recoveryPhase = "recover-click";
+      await click(
+        current,
+        "Recover original shift",
+        `.af-shift-row[data-shift="${claudeShiftId}"]`,
+      );
+      recoveryPhase = "terminal-wait";
+      await tools.waitForPage(
+        current,
+        originalPhase(claudeShiftId, "stopped"),
+        "Explicit packaged recovery did not settle the original owned work.",
+      );
+    } catch (error) {
+      try {
+        let category: PackagedRecoveryFailureCategory = "other";
+        if (error instanceof Error) {
+          if (error.message === "WebView evaluation failed.")
+            category = "runtime-evaluate-exception";
+          else if (error.message === "WebView command timed out.")
+            category = "cdp-command-timeout";
+          else if (error.message === "WebView command failed.")
+            category = "cdp-command-error";
+        }
+        console.error(
+          JSON.stringify({
+            kind: "packaged-attended-recovery-phase",
+            phase: recoveryPhase,
+            outcome: "failed",
+            category,
+          }),
+        );
+      } catch {
+        // Failure metadata must not replace the original recovery error.
+      }
+      throw error;
+    }
     const after = providerRecord.parse(
       JSON.parse(readFileSync(join(STATE, "claude.json"), "utf8")),
     );
