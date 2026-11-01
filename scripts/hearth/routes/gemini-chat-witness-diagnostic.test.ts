@@ -281,6 +281,25 @@ test("runtime projection distinguishes terminal outcomes and keeps absent or amb
     expect(serialized).not.toContain(value);
 });
 
+test("first input-terminal EOF after read-bytes requires a safe summary projection", () => {
+  const summary = summarizeGeminiChatWitnessText(
+    JSON.stringify([
+      { kind: "start" },
+      {
+        kind: "input-terminal",
+        phase: "read-bytes",
+        terminal: "eof",
+        errorName: "none",
+        errorCode: "none",
+      },
+    ]),
+  );
+
+  expect(summary.state).toBe("ok");
+  expect(summary.kinds).toMatchObject({ start: 1, wire: 0 });
+  expect("inputTerminal" in summary).toBe(true);
+});
+
 test("bounded Gemini witness summaries expose counts and a marker bit only", () => {
   const privateValues = [
     "PRIVATE-ACP-PROMPT",
