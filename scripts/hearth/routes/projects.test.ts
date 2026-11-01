@@ -1,6 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
-import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   existsSync,
   mkdirSync,
