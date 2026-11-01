@@ -1,16 +1,20 @@
-import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { expect, test } from "@playwright/test";
+import { createHash, randomUUID } from "node:crypto";
+import { dirname, join } from "node:path";
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { CODEX_CHAT_DECISION_IDENTITIES } from "../../apps/desktop/src/codex-chat-decision-identities";
+import { expect, test, type CDPSession, type Page, type Request, type Route } from "@playwright/test";
 import { z } from "zod";
 import { GEMINI_CHAT_DECISION_IDENTITIES } from "../../apps/desktop/src/gemini-chat-decision-identities";
 import { OPERATOR_HEADER } from "../../scripts/hearth/paths";
 import {
   codexChatApprovalPageSchema,
   codexChatDecisionReceiptSchema,
+  codexChatDecisionRequestSchema,
+  CODEX_FILE_DETAILS_UNAVAILABLE,
 } from "../../scripts/sessions/codex-chat-owned-protocol";
 import { ownedCodingStateSchema } from "../../scripts/sessions/codex-owned-journal";
 import { ownedCodingSessionSchema } from "../../scripts/sessions/codex-owned-wire-protocol";
-import { geminiChatApprovalPageSchema } from "../../scripts/sessions/gemini-chat-owned-protocol";
+import { geminiChatApprovalPageSchema, geminiChatDecisionReceiptSchema, geminiChatDecisionRequestSchema } from "../../scripts/sessions/gemini-chat-owned-protocol";
 import {
   inboxDispositionEntrySchema,
   inboxDispositionOriginalSchema,
@@ -21,10 +25,182 @@ import {
 import { openSettled } from "../e2e/fixtures";
 import { pageToken } from "../e2e/launch-link";
 import { HEARTH_HOME } from "../e2e/servers";
+import { workspaceKey } from "../../scripts/projects/scope";
 import { alpha, beta, seedProjects, workspace } from "./project-fixtures";
 
+const pendingRouteTasks = new Set<Promise<void>>();
+const completedRouteFailures = new Set<unknown>();
+const ownedRelevantRequests = new Set<Request>();
+const pendingResponseFinishes = new Set<Promise<void>>();
+const pendingCleanupObservers = new Set<Promise<void>>();
+const cleanupOperationFailures = new Set<unknown>();
+const expectedRouteAborts = new Set<Request>();
+const observedExpectedRouteAborts = new Set<Request>();
+let rejectPendingTerminalRoute: ((error: unknown) => void) | null = null;
+const ownedRoutes: Array<{ page: Page; matcher: string; handler: (route: Route) => Promise<void> }> = [];
+const ownedCdpSessions: CDPSession[] = [];
+const ownedTraceClosers: Array<() => void> = [];
+let invalidateHeldChoiceSession: ((page: Page, deadline: number) => Promise<void>) | null = null;
+let rejectOwnedRouteFailure: (error: unknown) => void = () => {};
+let ownedRouteFailure: Promise<never>;
+function resetOwnedRouteFailure() {
+  ownedRouteFailure = new Promise<never>((_resolve, reject) => { rejectOwnedRouteFailure = reject; });
+  void ownedRouteFailure.catch(() => {});
+}
+function waitForRouteSignal<T>(signal: Promise<T>): Promise<T> {
+  return Promise.race([signal, ownedRouteFailure]);
+}
+resetOwnedRouteFailure();
+
+function recordOwnedFailure(error: unknown) {
+  completedRouteFailures.add(error);
+  rejectOwnedRouteFailure(error);
+  rejectPendingTerminalRoute?.(error);
+}
+function isRelevantInboxRequest(request: Request): boolean {
+  const url = new URL(request.url());
+  const pathname = url.pathname;
+  return pathname === "/__agent-forge/inbox-dispositions/recovery" ||
+    pathname.includes("/inbox-dispositions") ||
+    pathname.endsWith("/approvals") ||
+    pathname.endsWith("/approval-decisions") ||
+    (request.method() === "POST" && pathname.includes("/sessions/")) ||
+    (request.method() === "GET" && pathname.includes("/sessions/") && url.searchParams.has("requestId"));
+}
+function watchRelevantRequests(page: Page) {
+  page.on("request", (request) => { if (isRelevantInboxRequest(request)) ownedRelevantRequests.add(request); });
+  page.on("requestfinished", (request) => { ownedRelevantRequests.delete(request); });
+  page.on("requestfailed", (request) => {
+    if (!ownedRelevantRequests.delete(request)) return;
+    if (expectedRouteAborts.delete(request)) { observedExpectedRouteAborts.add(request); return; }
+    const failure = request.failure();
+    recordOwnedFailure(Error("Relevant Inbox request failed: " + request.method() + " " + request.url() + " " + (failure?.errorText ?? "unknown network failure")));
+  });
+  page.on("response", (response) => {
+    const request = response.request();
+    if (!ownedRelevantRequests.has(request)) return;
+    let task!: Promise<void>;
+    task = response.finished().then((error) => {
+      if (error !== null) recordOwnedFailure(Error("Relevant Inbox response did not finish: " + request.url() + " " + error));
+    }).catch((error: unknown) => { recordOwnedFailure(error); }).finally(() => { pendingResponseFinishes.delete(task); });
+    pendingResponseFinishes.add(task);
+  });
+}
+async function withinCleanupDeadline<T>(operation: Promise<T>, deadline: number, label: string): Promise<T> {
+  const observer = operation.then(() => undefined, (error: unknown) => { cleanupOperationFailures.add(error); });
+  pendingCleanupObservers.add(observer);
+  void observer.then(() => pendingCleanupObservers.delete(observer));
+  const remaining = deadline - performance.now();
+  if (remaining <= 0) throw Error(label + " exceeded the shared cleanup deadline.");
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([operation, new Promise<T>((_resolve, reject) => { timer = setTimeout(() => reject(Error(label + " exceeded the shared cleanup deadline.")), remaining); })]);
+  } finally { if (timer) clearTimeout(timer); }
+}
+function markExpectedRouteAbort(request: Request) { expectedRouteAborts.add(request); }
+async function leaveSessionsForCleanup(page: Page, deadline: number): Promise<void> {
+  if (page.isClosed()) throw Error("Page unavailable before invalidating the held Sessions decision.");
+  const timeout = Math.max(1, deadline - performance.now());
+  await page.getByRole("navigation", { name: "Global", exact: true }).getByRole("link", { name: "Inbox", exact: true }).click({ timeout });
+  await expect(page.getByRole("region", { name: "Inbox", exact: true }).getByRole("heading", { name: "Inbox", exact: true })).toBeVisible({ timeout: Math.max(1, deadline - performance.now()) });
+}
+
+async function ownRoute(page: Page, matcher: string, handler: (route: Route) => Promise<void>): Promise<void> {
+  const ownedHandler = (route: Route): Promise<void> => {
+    let task!: Promise<void>;
+    task = (async () => {
+      try { await handler(route); }
+      catch (error) { recordOwnedFailure(error); throw error; }
+      finally { pendingRouteTasks.delete(task); }
+    })();
+    pendingRouteTasks.add(task);
+    return task;
+  };
+  ownedRoutes.push({ page, matcher, handler: ownedHandler });
+  await page.route(matcher, ownedHandler);
+}
+
+async function fetchProtected(route: Route) {
+  const request = route.request();
+  const requestUrl = new URL(request.url());
+  const originalHeaders = await request.allHeaders();
+  return route.fetch({ headers: { ...originalHeaders, Origin: requestUrl.origin, "Sec-Fetch-Site": "same-origin" } });
+}
+
+type DecisionInitiator = { module: string; functionName: string };
+function createDecisionTrace(cdp: CDPSession, provider: "codex" | "gemini", approvalsPath: string, appOrigin: string) {
+  const moduleName = provider === "codex" ? "codex-chat-decisions.ts" : "gemini-chat-decisions.ts";
+  const expectedPathname = new URL("/@fs/" + join(process.cwd(), "apps", "desktop", "src", moduleName).split(String.fromCharCode(92)).join("/"), appOrigin).pathname;
+  const frameSchema = z.object({ functionName: z.string(), url: z.string() }).passthrough();
+  const stackSchema = z.object({ callFrames: z.array(frameSchema).max(64), parent: z.unknown().optional() }).passthrough();
+  const phaseEvents: Array<{ method: string; pathname: string; search: string; initiator: DecisionInitiator | null }> = [];
+  let active = false;
+  let totalMatchingRequests = 0;
+  let overflow = false;
+  const close = () => { active = false; };
+  ownedTraceClosers.push(close);
+  cdp.on("Network.requestWillBeSent", (event) => {
+    if (!active) return;
+    const url = new URL(event.request.url);
+    if (event.request.method !== "GET" || url.origin !== appOrigin || url.pathname !== approvalsPath || url.search !== "") return;
+    totalMatchingRequests++;
+    let stack: unknown = event.initiator.stack;
+    let decisionFrame: DecisionInitiator | null = null;
+    let depth = 0;
+    while (stack && depth < 8) {
+      const parsed = stackSchema.safeParse(stack);
+      if (!parsed.success) { overflow = true; break; }
+      for (const frame of parsed.data.callFrames) {
+        const frameUrl = new URL(frame.url, appOrigin);
+        if (frameUrl.origin === appOrigin && frameUrl.pathname === expectedPathname && frame.functionName === "decide")
+          decisionFrame = { module: frameUrl.pathname, functionName: frame.functionName };
+      }
+      stack = parsed.data.parent;
+      depth++;
+    }
+    if (stack) overflow = true;
+    if (phaseEvents.length < 8) phaseEvents.push({ method: event.request.method, pathname: url.pathname, search: url.search, initiator: decisionFrame });
+    else overflow = true;
+  });
+  return {
+    phaseEvents,
+    begin() { phaseEvents.length = 0; totalMatchingRequests = 0; overflow = false; active = true; },
+    end() { active = false; },
+    verify(heldRequest: Request, browserReads: number) {
+      if (active) throw Error("Decision preflight trace must be sealed before verification.");
+      if (overflow) throw Error("Decision preflight trace exceeded bounds and is inconclusive.");
+      expect(totalMatchingRequests).toBe(1);
+      expect(phaseEvents).toHaveLength(1);
+      expect(phaseEvents[0]).toEqual({ method: "GET", pathname: approvalsPath, search: "", initiator: { module: expectedPathname, functionName: "decide" } });
+      expect(browserReads).toBe(1);
+      expect(heldRequest.method()).toBe("GET");
+      const heldUrl = new URL(heldRequest.url());
+      expect(heldUrl.origin).toBe(appOrigin);
+      expect(heldUrl.pathname).toBe(approvalsPath);
+      expect(heldUrl.search).toBe("");
+    },
+    detach() { close(); },
+  };
+}
+async function openDecisionTrace(page: Page, provider: "codex" | "gemini", approvalsPath: string) {
+  const cdp = await page.context().newCDPSession(page);
+  ownedCdpSessions.push(cdp);
+  await cdp.send("Debugger.enable");
+  await cdp.send("Debugger.setAsyncCallStackDepth", { maxDepth: 16 });
+  await cdp.send("Network.enable");
+  return createDecisionTrace(cdp, provider, approvalsPath, new URL(page.url()).origin);
+}
+
 const writeJournalKey = "agent-forge.desktop-bead-writes.v1";
+const writeJournalEntrySchema = z.object({ key: z.string(), projectId: z.string(), workspace: z.string(), action: z.string(), beadId: z.string(), title: z.string(), createdId: z.string().nullable(), stage: z.string(), phase: z.literal("unknown"), message: z.string() }).strict();
+const writeJournalSchema = z.object({ version: z.literal(1), entries: z.array(writeJournalEntrySchema) }).strict();
+const dispositionStatePath = join(HEARTH_HOME, "inbox-dispositions", "state.json");
+const dispositionMarkerPath = join(HEARTH_HOME, "projects", "inbox-dispositions.initialized");
+let priorDispositionState: Buffer | null = null;
+let priorDispositionMarker: Buffer | null = null;
 const sessionsPath = join(HEARTH_HOME, "sessions", "registry.json");
+const codexControlPath = join(HEARTH_HOME, "codex-chat-fixture-mode.json");
+let priorCodexControl: Buffer | null = null;
 const geminiControlPath = join(
   HEARTH_HOME,
   "gemini-chat-fixture-calls.json.control",
@@ -53,7 +229,128 @@ function savedSession(id: string) {
   );
 }
 
-function isPermissionDoneRequest(body: unknown): boolean {
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function canonicalPermissionItem(input: {
+  provider: "codex" | "gemini";
+  projectId: string;
+  sessionId: string;
+  turnRequestId: string;
+  offerId: string;
+  approval: unknown;
+}) {
+  const sourceIdentity = JSON.stringify([
+    input.provider,
+    input.sessionId,
+    input.turnRequestId,
+    input.offerId,
+  ]);
+  const stableItemId = `sha256:${sha256(
+    JSON.stringify([
+      workspaceKey(workspace),
+      input.projectId,
+      "permission",
+      sourceIdentity,
+    ]),
+  )}`;
+  const permissionApproval = { provider: input.provider, value: input.approval };
+  const sourceRevision = `sha256:${sha256(
+    JSON.stringify([
+      "permission",
+      JSON.stringify(permissionApproval),
+    ]),
+  )}`;
+  return {
+    sourceKind: "permission" as const,
+    stableItemId,
+    sourceRevision,
+  };
+}
+
+function legacyPermissionStore(input: {
+  projectId: string;
+  item: ReturnType<typeof canonicalPermissionItem>;
+  operation: "done" | "snooze-1h";
+  hold?: boolean;
+}) {
+  const stamp = new Date();
+  const reservedAt = new Date(stamp.getTime() - 2_000).toISOString();
+  const settledAt = new Date(stamp.getTime() - 1_000).toISOString();
+  const storedOriginal = {
+    requestId: randomUUID(),
+    expectedCatalogRevision: 1,
+    workspace,
+    item: input.item,
+    expectedRevision: 0,
+    operation: input.operation,
+    projectId: input.projectId,
+  };
+  const snoozedUntil =
+    input.operation === "snooze-1h"
+      ? new Date(Date.parse(settledAt) + 60 * 60 * 1000).toISOString()
+      : undefined;
+  const receipt = inboxDispositionReceiptSchema.parse({
+    original: storedOriginal,
+    phase: "applied",
+    reservedAt,
+    settledAt,
+    outcome: "applied",
+    resultingRevision: 1,
+    resultingValue: input.operation,
+    ...(snoozedUntil ? { snoozedUntil } : {}),
+  });
+  const entry = inboxDispositionEntrySchema.parse({
+    projectId: input.projectId,
+    workspace,
+    item: input.item,
+    revision: 1,
+    operation: input.operation,
+    updatedAt: settledAt,
+    ...(snoozedUntil ? { snoozedUntil } : {}),
+  });
+  const receipts = [receipt];
+  if (input.hold) {
+    const heldOriginal = {
+      requestId: randomUUID(),
+      expectedCatalogRevision: 1,
+      workspace,
+      item: input.item,
+      expectedRevision: 1,
+      operation: "snooze-1h" as const,
+      projectId: input.projectId,
+    };
+    receipts.push(
+      inboxDispositionReceiptSchema.parse({
+        original: heldOriginal,
+        phase: "reserved",
+        reservedAt: stamp.toISOString(),
+      }),
+    );
+  }
+  return inboxDispositionStoreSchema.parse({
+    version: 1,
+    entries: [entry],
+    receipts,
+  });
+}
+
+function seedPrivateDispositionStore(store: unknown): void {
+  const incoming = inboxDispositionStoreSchema.parse(store);
+  const existing = existsSync(dispositionStatePath)
+    ? inboxDispositionStoreSchema.parse(JSON.parse(readFileSync(dispositionStatePath, "utf8")))
+    : { version: 1 as const, entries: [], receipts: [] };
+  const checked = inboxDispositionStoreSchema.parse({
+    version: 1,
+    entries: [...existing.entries, ...incoming.entries],
+    receipts: [...existing.receipts, ...incoming.receipts],
+  });
+  mkdirSync(dirname(dispositionStatePath), { recursive: true });
+  writeFileSync(dispositionStatePath, `${JSON.stringify(checked, null, 2)}\n`);
+}
+
+function isPermissionDispositionRequest(body: unknown): boolean {
   if (
     typeof body !== "object" ||
     body === null ||
@@ -67,12 +364,25 @@ function isPermissionDoneRequest(body: unknown): boolean {
     item !== null &&
     "sourceKind" in item &&
     item.sourceKind === "permission" &&
-    body.operation === "done"
+    (body.operation === "done" || body.operation === "snooze-1h")
   );
 }
 
-test.beforeEach(() => {
+test.beforeEach(({ page }) => {
+  resetOwnedRouteFailure();
+  if (ownedRelevantRequests.size || pendingResponseFinishes.size || completedRouteFailures.size || expectedRouteAborts.size || pendingCleanupObservers.size || cleanupOperationFailures.size) throw Error("Previous Inbox request, response, or route failure state did not settle.");
+  watchRelevantRequests(page);
+  if (pendingRouteTasks.size) throw Error("Previous Inbox route work did not settle.");
+  if (ownedCdpSessions.length) throw Error("Previous Inbox CDP session did not detach.");
+  if (ownedRoutes.length) throw Error("Previous Inbox routes did not detach.");
   priorSessions = new Set(sessions().map((session) => session.id));
+  priorCodexControl = existsSync(codexControlPath) ? readFileSync(codexControlPath) : null;
+  priorDispositionState = existsSync(dispositionStatePath)
+    ? readFileSync(dispositionStatePath)
+    : null;
+  priorDispositionMarker = existsSync(dispositionMarkerPath)
+    ? readFileSync(dispositionMarkerPath)
+    : null;
   seedProjects();
   writeFileSync(
     join(HEARTH_HOME, "codex-chat-fixture-mode.json"),
@@ -81,25 +391,58 @@ test.beforeEach(() => {
 });
 
 test.afterEach(async ({ page }) => {
-  const cleanupErrors: unknown[] = [];
+  const cleanupErrors = new Set<unknown>();
+  const cleanupDeadline = performance.now() + 5_000;
+  let sessionChoiceInvalidated = true;
+  let routeRemovalComplete = true;
+  let cdpSessionsDetached = true;
+  for (const close of ownedTraceClosers.splice(0)) { try { close(); } catch (error) { cleanupErrors.add(error); } }
+  if (invalidateHeldChoiceSession) {
+    try { await invalidateHeldChoiceSession(page, cleanupDeadline); }
+    catch (error) { cleanupErrors.add(error); sessionChoiceInvalidated = false; }
+    finally { invalidateHeldChoiceSession = null; }
+  }
   try {
     releaseHeldDispositionRead?.();
   } catch (error) {
-    cleanupErrors.push(error);
+    cleanupErrors.add(error);
   }
   releaseHeldDispositionRead = null;
   for (const release of releaseHeldInboxRoutes.splice(0)) {
     try {
       release();
     } catch (error) {
-      cleanupErrors.push(error);
+      cleanupErrors.add(error);
     }
   }
-  try {
-    await page.unrouteAll({ behavior: "ignoreErrors" });
-  } catch (error) {
-    cleanupErrors.push(error);
+  const drainRoutes = async () => {
+    while (pendingRouteTasks.size || ownedRelevantRequests.size || pendingResponseFinishes.size) {
+      const remaining = cleanupDeadline - performance.now();
+      if (remaining <= 0) throw Error("Owned routes exceeded the shared cleanup deadline.");
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      let pollTimer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<{ timeout: true }>((resolve) => { timer = setTimeout(() => resolve({ timeout: true }), remaining); });
+      const tasks = [...pendingRouteTasks, ...pendingResponseFinishes];
+      const settled = tasks.length ? Promise.allSettled(tasks).then((results) => ({ timeout: false as const, results })) : new Promise<{ timeout: false; results: PromiseSettledResult<void>[] }>(() => {});
+      const poll = new Promise<{ timeout: false; results: PromiseSettledResult<void>[] }>((resolve) => { pollTimer = setTimeout(() => resolve({ timeout: false, results: [] }), Math.min(25, remaining)); });
+      const result = await Promise.race([timeout, settled, poll]);
+      if (timer) clearTimeout(timer);
+      if (pollTimer) clearTimeout(pollTimer);
+      if (result.timeout) throw Error("Owned routes did not quiesce before cleanup deadline.");
+      for (const item of result.results) if (item.status === "rejected") cleanupErrors.add(item.reason);
+    }
+  };
+  try { await drainRoutes(); } catch (error) { cleanupErrors.add(error); }
+  for (const owned of ownedRoutes.splice(0).reverse()) {
+    try { await withinCleanupDeadline(owned.page.unroute(owned.matcher, owned.handler), cleanupDeadline, "Owned route removal"); }
+    catch (error) { cleanupErrors.add(error); routeRemovalComplete = false; ownedRoutes.push(owned); }
   }
+  try { await drainRoutes(); } catch (error) { cleanupErrors.add(error); }
+  for (const session of ownedCdpSessions.splice(0)) {
+    try { await withinCleanupDeadline(session.detach(), cleanupDeadline, "Owned CDP detach"); }
+    catch (error) { cleanupErrors.add(error); cdpSessionsDetached = false; ownedCdpSessions.push(session); }
+  }
+  let sessionsSettled = true;
   let newSessions: ReturnType<typeof sessions> = [];
   try {
     newSessions = ownedCodingSessionSchema
@@ -107,7 +450,8 @@ test.afterEach(async ({ page }) => {
       .parse(JSON.parse(readFileSync(sessionsPath, "utf8")).records)
       .filter((item) => !priorSessions.has(item.id));
   } catch (error) {
-    cleanupErrors.push(error);
+    sessionsSettled = false;
+    cleanupErrors.add(error);
   }
   for (const session of newSessions) {
     try {
@@ -115,8 +459,8 @@ test.afterEach(async ({ page }) => {
         ["accepted", "running", "cancelling"].includes(turn.phase),
       );
       if (!active) continue;
-      const token = await pageToken(page);
-      await page.evaluate(
+      const token = await withinCleanupDeadline(pageToken(page), cleanupDeadline, "Provider stop token");
+      await withinCleanupDeadline(page.evaluate(
         async ({ projectId, sessionId, requestId, token, header }) => {
           await fetch(
             `/__agent-forge/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/stop`,
@@ -134,41 +478,81 @@ test.afterEach(async ({ page }) => {
           token,
           header: OPERATOR_HEADER,
         },
-      );
+      ), cleanupDeadline, "Provider stop request");
+      const remainingSessionTime = cleanupDeadline - performance.now();
+      if (remainingSessionTime <= 0) throw Error("Provider session stop exceeded the shared cleanup deadline.");
       await expect
-        .poll(() =>
-          savedSession(session.id).turns.some((turn) =>
-            ["accepted", "running", "cancelling"].includes(turn.phase),
-          ),
+        .poll(
+          () => savedSession(session.id).turns.some((turn) => ["accepted", "running", "cancelling"].includes(turn.phase)),
+          { timeout: remainingSessionTime },
         )
         .toBe(false);
     } catch (error) {
-      cleanupErrors.push(error);
+      sessionsSettled = false;
+      cleanupErrors.add(error);
     }
   }
+  try { await drainRoutes(); } catch (error) { cleanupErrors.add(error); }
+  for (const failure of completedRouteFailures) cleanupErrors.add(failure);
+  completedRouteFailures.clear();
+  for (const failure of cleanupOperationFailures) cleanupErrors.add(failure);
+  const cleanupOperationsSettled = pendingCleanupObservers.size === 0;
+  if (!cleanupOperationsSettled) cleanupErrors.add(Error("Started cleanup operations remain pending; timeout did not cancel them."));
+  rejectPendingTerminalRoute = null;
+  if (expectedRouteAborts.size) cleanupErrors.add(Error("An intentional route abort did not reach a terminal requestfailed event."));
+  const routesQuiesced = pendingRouteTasks.size === 0 && ownedRelevantRequests.size === 0 && pendingResponseFinishes.size === 0 && expectedRouteAborts.size === 0 && sessionChoiceInvalidated && routeRemovalComplete && cdpSessionsDetached && ownedRoutes.length === 0 && ownedCdpSessions.length === 0 && cleanupOperationsSettled;
+  if (!routesQuiesced) cleanupErrors.add(Error("Owned route/network work remains active; private fixture bytes will not be restored."));
   try {
-    if (geminiControlCaptured) {
+    if (sessionsSettled && routesQuiesced) {
+      if (priorCodexControl) writeFileSync(codexControlPath, priorCodexControl);
+      else if (existsSync(codexControlPath)) unlinkSync(codexControlPath);
+    } else cleanupErrors.add(Error("Codex private control restoration was skipped because route work or its session did not settle."));
+  } catch (error) { cleanupErrors.add(error); }
+  priorCodexControl = null;
+  try {
+    if (geminiControlCaptured && sessionsSettled && routesQuiesced) {
       if (savedGeminiControl)
         writeFileSync(geminiControlPath, savedGeminiControl);
       else if (existsSync(geminiControlPath)) unlinkSync(geminiControlPath);
     }
   } catch (error) {
-    cleanupErrors.push(error);
+    cleanupErrors.add(error);
   } finally {
+    if (geminiControlCaptured && (!sessionsSettled || !routesQuiesced)) cleanupErrors.add(Error("Gemini private control restoration was skipped because route work or its session did not settle."));
     savedGeminiControl = null;
     geminiControlCaptured = false;
   }
-  if (cleanupErrors.length === 1) throw cleanupErrors[0];
-  if (cleanupErrors.length > 1)
-    throw new AggregateError(cleanupErrors, "Inbox test cleanup failed.");
+  if (routesQuiesced && sessionsSettled) {
+    for (const [path, bytes] of [
+      [dispositionStatePath, priorDispositionState],
+      [dispositionMarkerPath, priorDispositionMarker],
+    ] as const) {
+      try {
+        if (bytes !== null) {
+          mkdirSync(dirname(path), { recursive: true });
+          writeFileSync(path, bytes);
+        } else if (existsSync(path)) unlinkSync(path);
+      } catch (error) {
+        cleanupErrors.add(error);
+      }
+    }
+  }
+  else cleanupErrors.add(Error("Private fixture restoration was skipped because owned route or provider-session work remained active."));
+  priorDispositionState = null;
+  priorDispositionMarker = null;
+  observedExpectedRouteAborts.clear();
+  if (cleanupOperationsSettled) cleanupOperationFailures.clear();
+  if (cleanupErrors.size === 1) throw [...cleanupErrors][0];
+  if (cleanupErrors.size > 1) throw new AggregateError([...cleanupErrors], "Inbox test cleanup failed.");
 });
-test("Inbox offers the current permission inline beside retained unknown writes", async ({
+test("Inbox refuses a held Codex Sessions preflight while retaining generic writes", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 1100, height: 700 });
   await page.addInitScript(
     ({ key, entries }) => {
-      localStorage.setItem(key, JSON.stringify({ version: 1, entries }));
+      if (localStorage.getItem(key) === null)
+        localStorage.setItem(key, JSON.stringify({ version: 1, entries }));
     },
     {
       key: writeJournalKey,
@@ -296,14 +680,9 @@ test("Inbox offers the current permission inline beside retained unknown writes"
     throw Error(
       "The protected setup approvals read was not a valid 200 fixture.",
     );
-  expect(
-    setupEnvelope.data.data.pending.some(
-      (pending) =>
-        pending.turnRequestId === session.requestId &&
-        pending.approval.id === originalEvent.approval.id &&
-        pending.approval.availableDecisions.includes("accept"),
-    ),
-  ).toBe(true);
+  const originalPending = setupEnvelope.data.data.pending.filter((pending) => pending.turnRequestId === session.requestId && pending.approval.id === originalEvent.approval.id);
+  expect(originalPending).toHaveLength(1);
+  expect(originalPending[0]?.approval.availableDecisions).toContain("accept");
 
   let firstRecoveryRead = true;
   let markRecoveryReadStarted: () => void = () => {};
@@ -319,14 +698,15 @@ test("Inbox offers the current permission inline beside retained unknown writes"
     markRecoveryReadFinished = resolve;
   });
   releaseHeldDispositionRead = releaseRecoveryRead;
-  await page.route("**/inbox-dispositions/recovery", async (route) => {
+  await ownRoute(page, "**/inbox-dispositions/recovery", async (route) => {
     if (firstRecoveryRead) {
       firstRecoveryRead = false;
       markRecoveryReadStarted();
       await recoveryReadGate;
       await route.continue();
       const completed = await route.request().response();
-      await completed?.finished();
+      if (!completed) throw Error("The owned route completed without a response.");
+      expect(await completed.finished()).toBeNull();
       markRecoveryReadFinished();
       return;
     }
@@ -383,12 +763,60 @@ test("Inbox offers the current permission inline beside retained unknown writes"
     )
       recoveryResponses++;
   });
-  inboxNavigationStarted = true;
+  const inboxIdentityBefore = await page.evaluate(
+    (key) => localStorage.getItem(key),
+    CODEX_CHAT_DECISION_IDENTITIES,
+  );
+  let heldPreflightCount = 0;
+  let captureChoicePreflight = false;
+  let heldRequest: Request | null = null;
+  let markPreflightHeld: () => void = () => {};
+  const preflightHeld = new Promise<void>((resolve) => { markPreflightHeld = resolve; });
+  let releasePreflight: () => void = () => {};
+  const preflightGate = new Promise<void>((resolve) => { releasePreflight = resolve; });
+  releaseHeldInboxRoutes.push(releasePreflight);
+  const trace = await openDecisionTrace(page, "codex", approvalsPath);
+  const choicePreflightResponse = page.waitForResponse((response) => response.request() === heldRequest);
+  await ownRoute(page, "**/sessions/" + session.id + "/approvals", async (route) => {
+    const url = new URL(route.request().url());
+    if (captureChoicePreflight && route.request().method() === "GET" && url.pathname === approvalsPath && url.search === "") {
+      captureChoicePreflight = false;
+      heldPreflightCount++;
+      heldRequest = route.request();
+      markPreflightHeld();
+      await preflightGate;
+    }
+    await route.continue();
+  });
+  let choiceWindowReads = 0;
+  let choicePhaseActive = false;
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (choicePhaseActive && request.method() === "GET" && url.pathname === approvalsPath && url.search === "") choiceWindowReads++;
+  });
+  const actualChoicePreflight = page.waitForRequest((request) => request.method() === "GET" && new URL(request.url()).pathname === approvalsPath && new URL(request.url()).search === "");
+  invalidateHeldChoiceSession = leaveSessionsForCleanup;
+  trace.begin();
+  choicePhaseActive = true;
+  captureChoicePreflight = true;
+  await conversation.getByRole("button", { name: "Allow once", exact: true }).click();
+  const choiceRequest = await waitForRouteSignal(actualChoicePreflight);
+  await waitForRouteSignal(preflightHeld);
+  expect(heldPreflightCount).toBe(1);
+  expect(heldRequest).toBe(choiceRequest);
+
+  const nativeApprovalsDuringChoice = page.getByRole("region", { name: "Native Codex approvals", exact: true });
+  await expect(nativeApprovalsDuringChoice.getByRole("status").filter({ hasText: "Recording the original decision intent…" })).toBeVisible();
+  await expect(nativeApprovalsDuringChoice.getByRole("button", { name: "Allow once", exact: true })).toBeDisabled();
+  trace.end();
+  choicePhaseActive = false;
+  trace.verify(choiceRequest, choiceWindowReads);
   await page
     .getByRole("navigation", { name: "Global", exact: true })
     .getByRole("link", { name: "Inbox", exact: true })
     .click();
-  await recoveryReadStarted;
+  invalidateHeldChoiceSession = null;
+  await waitForRouteSignal(recoveryReadStarted);
 
   await expect(
     page
@@ -396,6 +824,23 @@ test("Inbox offers the current permission inline beside retained unknown writes"
       .getByRole("heading", { name: "Inbox", exact: true }),
   ).toBeVisible();
   const inboxRegion = page.getByRole("region", { name: "Inbox", exact: true });
+  releasePreflight();
+  const choiceReply = await waitForRouteSignal(choicePreflightResponse);
+  expect(choiceReply.request()).toBe(choiceRequest);
+  expect(await choiceReply.finished()).toBeNull();
+  expect(choiceReply.status()).toBe(200);
+  const choiceReplyEnvelope = z
+    .object({
+      ok: z.literal(true),
+      data: codexChatApprovalPageSchema,
+      error: z.null(),
+    })
+    .strict()
+    .safeParse(await choiceReply.json());
+  if (!choiceReplyEnvelope.success)
+    throw Error("The held Codex Sessions preflight did not release its strict original reply.");
+  expect(choiceReplyEnvelope.data.data.pending).toEqual(originalPending);
+  expect(heldPreflightCount).toBe(1);
   const alphaNotice = inboxRegion.locator(".af-inbox-notice").filter({
     has: page.getByRole("heading", {
       name: "Fixture unknown write",
@@ -414,19 +859,32 @@ test("Inbox offers the current permission inline beside retained unknown writes"
   await expect(
     betaNotice.getByText("Outcome unknown", { exact: true }),
   ).toBeVisible();
+  const originalJournalBytes = await page.evaluate((key) => localStorage.getItem(key), writeJournalKey);
+  const originalJournal = writeJournalSchema.safeParse(originalJournalBytes ? JSON.parse(originalJournalBytes) : null);
+  expect(originalJournal.success).toBe(true);
+  if (!originalJournal.success) throw Error("The absent-only unknown journal seed was invalid.");
+  expect(originalJournal.data.entries).toHaveLength(2);
+  expect(originalJournal.data.entries).toEqual(expect.arrayContaining([
+    { key: "inbox-write-fixture", projectId: alpha.id, workspace, action: "comment", beadId: "alpha-epic", title: "Fixture unknown write", createdId: null, stage: "write", phase: "unknown", message: "Outcome unknown: check the bead before doing anything else. This write will not be repeated automatically." },
+    { key: "inbox-beta-write-fixture", projectId: beta.id, workspace, action: "comment", beadId: "beta-epic", title: "Fixture Beta unknown write", createdId: null, stage: "write", phase: "unknown", message: "Outcome unknown: check the Beta bead before doing anything else. This write will not be repeated automatically." },
+  ]));
   await expect(
     page.getByRole("link", { name: "Check alpha-epic", exact: true }),
   ).toBeVisible();
   expect(decisionPosts).toBe(0);
 
-  // The original RED assertion remains on the same valid fixture path, now with the inline action present.
   await expect(
     page.getByRole("button", { name: "Allow once", exact: true }),
-  ).toBeVisible();
-
-  // Prove this route consumed the protected source read itself, apart from setup.
+  ).toHaveCount(0);
   await expect.poll(() => appApprovalReads).toBeGreaterThan(0);
   expect(decisionPosts).toBe(0);
+  expect(dispositionWrites).toBe(0);
+  expect(
+    await page.evaluate(
+      (key) => localStorage.getItem(key),
+      CODEX_CHAT_DECISION_IDENTITIES,
+    ),
+  ).toBe(inboxIdentityBefore);
 
   const codexPermissionCard = inboxRegion.locator(".af-inbox-card").filter({
     has: page.getByRole("heading", {
@@ -434,12 +892,27 @@ test("Inbox offers the current permission inline beside retained unknown writes"
       exact: true,
     }),
   });
+  await expect(codexPermissionCard.getByRole("button")).toHaveCount(0);
   await expect(
-    codexPermissionCard.getByRole("button", {
-      name: "Mark done · source unresolved",
-      exact: true,
-    }),
-  ).toBeDisabled();
+    codexPermissionCard.getByRole("link", { name: "Open session", exact: true }),
+  ).toHaveAttribute(
+    "href",
+    `#/desktop/project/${encodeURIComponent(alpha.id)}/sessions?selectionKind=session&selectionId=${encodeURIComponent(session.id)}`,
+  );
+  releaseRecoveryRead();
+  releaseHeldDispositionRead = null;
+  await waitForRouteSignal(recoveryReadFinished);
+  await codexPermissionCard.getByRole("link", { name: "Open session", exact: true }).click();
+  const earlyReturnedConversation = page.getByRole("region", { name: "Session conversation", exact: true });
+  const earlyNativeApprovals = page.getByRole("region", { name: "Native Codex approvals", exact: true });
+  await expect(earlyNativeApprovals.getByRole("status").filter({ hasText: "Recording the original decision intent…" })).toHaveCount(0);
+  await expect(earlyNativeApprovals.getByRole("button", { name: "Refresh native approvals", exact: true })).toBeEnabled();
+  expect(decisionPosts).toBe(0);
+  expect(dispositionRequests).toHaveLength(0);
+  expect(await page.evaluate((key) => localStorage.getItem(key), CODEX_CHAT_DECISION_IDENTITIES)).toBe(inboxIdentityBefore);
+  await page.getByRole("navigation", { name: "Global", exact: true }).getByRole("link", { name: "Inbox", exact: true }).click();
+  await expect(page.getByRole("region", { name: "Inbox", exact: true }).getByRole("heading", { name: "Inbox", exact: true })).toBeVisible();
+
   const outcomeNotice = inboxRegion.getByRole("heading", {
     name: "Write outcomes to check",
     exact: true,
@@ -497,7 +970,7 @@ test("Inbox offers the current permission inline beside retained unknown writes"
   const collectionFinished = new Promise<void>((resolve) => {
     markCollectionFinished = resolve;
   });
-  await page.route(
+  await ownRoute(page,
     `**/projects/${beta.id}/inbox-dispositions`,
     async (route) => {
       if (route.request().method() === "POST" && holdBetaApply) {
@@ -505,7 +978,8 @@ test("Inbox offers the current permission inline beside retained unknown writes"
         await applyGate;
         await route.continue();
         const completed = await route.request().response();
-        await completed?.finished();
+        if (!completed) throw Error("The owned route completed without a response.");
+      expect(await completed.finished()).toBeNull();
         holdBetaApply = false;
         markApplyFinished();
         return;
@@ -549,7 +1023,8 @@ test("Inbox offers the current permission inline beside retained unknown writes"
         await collectionGate;
         await route.fulfill({ response });
         const completed = await route.request().response();
-        await completed?.finished();
+        if (!completed) throw Error("The owned route completed without a response.");
+      expect(await completed.finished()).toBeNull();
         markCollectionFinished();
         return;
       }
@@ -559,7 +1034,7 @@ test("Inbox offers the current permission inline beside retained unknown writes"
   await betaAction
     .getByRole("button", { name: "Snooze 1 hour", exact: true })
     .click();
-  await applyStarted;
+  await waitForRouteSignal(applyStarted);
   let releaseScanRecovery: () => void = () => {};
   const scanRecoveryGate = new Promise<void>((resolve) => {
     releaseScanRecovery = resolve;
@@ -570,7 +1045,7 @@ test("Inbox offers the current permission inline beside retained unknown writes"
   const scanRecoveryCaptured = new Promise<void>((resolve) => {
     markScanRecoveryCaptured = resolve;
   });
-  await page.route("**/inbox-dispositions/recovery", async (route) => {
+  await ownRoute(page, "**/inbox-dispositions/recovery", async (route) => {
     if (!holdScanRecovery) return route.continue();
     holdScanRecovery = false;
     const requestUrl = new URL(route.request().url());
@@ -599,16 +1074,16 @@ test("Inbox offers the current permission inline beside retained unknown writes"
   await inboxRegion
     .getByRole("button", { name: "Refresh Inbox", exact: true })
     .click();
-  await scanRecoveryCaptured;
+  await waitForRouteSignal(scanRecoveryCaptured);
   releaseScanRecovery();
-  await collectionCaptured;
+  await waitForRouteSignal(collectionCaptured);
   releaseApply();
-  await applyFinished;
+  await waitForRouteSignal(applyFinished);
   await expect(
     inboxRegion.getByText("Checking this Inbox action…", { exact: true }),
   ).toHaveCount(0);
   releaseCollection();
-  await collectionFinished;
+  await waitForRouteSignal(collectionFinished);
   await expect(
     inboxRegion.getByText("Refreshing saved Inbox dispositions…", {
       exact: true,
@@ -634,85 +1109,87 @@ test("Inbox offers the current permission inline beside retained unknown writes"
         ).length,
     )
     .toBeGreaterThan(betaPostsBeforeSelection);
+  await page.evaluate((projectId) => {
+    location.hash = `/desktop/inbox?project=${encodeURIComponent(projectId)}`;
+  }, beta.id);
+  await expect(
+    page.getByRole("link", { name: "Choose project: Beta", exact: true }),
+  ).toBeVisible();
+  expect(new URL(page.url()).hash).toBe(
+    `#/desktop/inbox?project=${encodeURIComponent(beta.id)}`,
+  );
   const betaPostsBeforeAlphaDecision = dispositionRequests.filter((request) =>
     request.url.startsWith(`/__agent-forge/projects/${beta.id}/`),
   ).length;
   const alphaPostsBeforeCrossScopeAction = dispositionRequests.filter(
     (request) => request.url.startsWith(`/__agent-forge/projects/${alpha.id}/`),
   ).length;
+  const alphaReserveRequest = page.waitForRequest(
+    (request) =>
+      request.method() === "POST" &&
+      new URL(request.url()).pathname ===
+        `/__agent-forge/projects/${alpha.id}/inbox-dispositions/requests`,
+  );
+  const alphaApplyResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === "POST" &&
+      new URL(response.url()).pathname ===
+        `/__agent-forge/projects/${alpha.id}/inbox-dispositions`,
+  );
+  await expect(unknownAction.getByRole("button", { name: "Mark done · source unresolved", exact: true })).toBeDisabled();
   await unknownAction
     .getByRole("button", { name: "Snooze 1 hour", exact: true })
     .click();
-  await expect
-    .poll(
-      () =>
-        dispositionRequests.filter((request) =>
-          request.url.startsWith(`/__agent-forge/projects/${alpha.id}/`),
-        ).length,
-    )
-    .toBeGreaterThan(alphaPostsBeforeCrossScopeAction);
+  const alphaReserve = await waitForRouteSignal(alphaReserveRequest);
+  const alphaWire = inboxDispositionOriginalSchema.strict().safeParse(
+    alphaReserve.postDataJSON(),
+  );
+  expect(alphaWire.success).toBe(true);
+  if (!alphaWire.success) throw Error("The Alpha reserve original was invalid.");
+  expect(Object.keys(alphaWire.data).sort()).toEqual(
+    ["expectedCatalogRevision", "expectedRevision", "item", "operation", "requestId", "workspace"].sort(),
+  );
+  expect(alphaWire.data.workspace).toBe(workspace);
+  expect(alphaWire.data.item.sourceKind).toBe("unknown-bead-write");
+  expect(alphaWire.data.operation).toBe("snooze-1h");
+  const alphaApply = await waitForRouteSignal(alphaApplyResponse);
+  expect(alphaReserve.url()).toBe(new URL(alphaReserve.url()).origin + "/__agent-forge/projects/" + alpha.id + "/inbox-dispositions/requests");
+  expect(alphaApply.url()).toBe(new URL(alphaApply.url()).origin + "/__agent-forge/projects/" + alpha.id + "/inbox-dispositions");
+  expect(alphaApply.status()).toBe(200);
+  const alphaRecord = z
+    .object({
+      ok: z.literal(true),
+      data: z.object({ entry: inboxDispositionEntrySchema, receipt: inboxDispositionReceiptSchema }).strict(),
+      error: z.null(),
+    })
+    .strict()
+    .safeParse(await alphaApply.json());
+  expect(alphaRecord.success).toBe(true);
+  if (!alphaRecord.success) throw Error("The Alpha apply receipt was invalid.");
+  expect(alphaApply.request().postDataJSON()).toEqual(alphaReserve.postDataJSON());
+  expect(alphaRecord.data.data.receipt.original).toEqual({
+    ...alphaWire.data,
+    projectId: alpha.id,
+  });
+  expect(alphaRecord.data.data.entry).toMatchObject({
+    projectId: alpha.id,
+    workspace,
+    item: alphaWire.data.item,
+    revision: alphaWire.data.expectedRevision + 1,
+    operation: "snooze-1h",
+  });
+  await expect(alphaNotice.getByText("Outcome unknown", { exact: true })).toBeVisible();
   expect(
     dispositionRequests.filter((request) =>
       request.url.startsWith(`/__agent-forge/projects/${beta.id}/`),
     ),
   ).toHaveLength(betaPostsBeforeAlphaDecision);
-  await codexPermissionCard
-    .getByRole("button", { name: "Refresh exact offer", exact: true })
-    .click();
-  const allowOnce = codexPermissionCard.getByRole("button", {
-    name: "Allow once",
-    exact: true,
-  });
-  await expect(allowOnce).toBeEnabled();
-  const decisionPath = `/__agent-forge/projects/${alpha.id}/sessions/${session.id}/approval-decisions`;
-  const decisionResponse = page.waitForResponse(
-    (response) =>
-      response.request().method() === "POST" &&
-      new URL(response.url()).pathname === decisionPath,
-  );
-  await inboxRegion
-    .getByRole("button", { name: "Allow once", exact: true })
-    .click();
-  const recordedDecision = await decisionResponse;
-  expect(recordedDecision.status()).toBe(200);
-  const receiptEnvelope = z
-    .object({
-      ok: z.literal(true),
-      data: codexChatDecisionReceiptSchema,
-      error: z.null(),
-    })
-    .strict()
-    .safeParse(await recordedDecision.json());
-  if (!receiptEnvelope.success)
-    throw Error("The protected Codex decision receipt was malformed.");
-  expect(receiptEnvelope.data.data).toMatchObject({
-    projectId: alpha.id,
-    sessionId: session.id,
-    requestId: session.requestId,
-    approvalId: originalEvent.approval.id,
-    decision: "accept",
-  });
-  await expect.poll(() => decisionPosts).toBe(1);
-  expect(decisionRequests).toHaveLength(1);
-  expect(decisionRequests[0]).toMatchObject({
-    url: `/__agent-forge/projects/${alpha.id}/sessions/${session.id}/approval-decisions`,
-    body: {
-      requestId: session.requestId,
-      approvalId: originalEvent.approval.id,
-      decision: "accept",
-    },
-  });
-  await inboxRegion
-    .getByRole("button", { name: "Refresh Inbox", exact: true })
-    .click();
-  await expect.poll(() => codexHistoryReads).toBeGreaterThan(0);
-  const markDone = codexPermissionCard.getByRole("button", {
-    name: "Mark done",
-    exact: true,
-  });
-  await expect(markDone).toBeEnabled();
+  expect(alphaPostsBeforeCrossScopeAction).toBe(0);
+  expect(decisionPosts).toBe(0);
+  expect(decisionRequests).toHaveLength(0);
 
   const reserveRequests: Array<{ requestId: unknown; body: unknown }> = [];
+  let lostFirstReserveRequest: Request | null = null;
   let loseFirstReserve = true;
   const reservePattern = `**/projects/${alpha.id}/inbox-dispositions/requests`;
   const loseReserveOnce = async (route: import("@playwright/test").Route) => {
@@ -724,13 +1201,15 @@ test("Inbox offers the current permission inline beside retained unknown writes"
         : null;
     reserveRequests.push({ requestId, body });
     if (loseFirstReserve) {
+      lostFirstReserveRequest = route.request();
       loseFirstReserve = false;
+      markExpectedRouteAbort(route.request());
       await route.abort();
       return;
     }
     await route.continue();
   };
-  await page.route(reservePattern, loseReserveOnce);
+  await ownRoute(page, reservePattern, loseReserveOnce);
   await buckets.getByRole("button", { name: "Snoozed", exact: true }).click();
   await unknownAction
     .getByRole("button", { name: "Snooze 1 hour", exact: true })
@@ -745,6 +1224,8 @@ test("Inbox offers the current permission inline beside retained unknown writes"
       exact: true,
     }),
   ).toBeVisible();
+  if (!lostFirstReserveRequest) throw Error("The deliberately aborted reserve request was not captured.");
+  expect(observedExpectedRouteAborts.has(lostFirstReserveRequest)).toBe(true);
   await actionHistory
     .getByRole("button", {
       name: "Review unconfirmed reservation",
@@ -818,7 +1299,7 @@ test("Inbox offers the current permission inline beside retained unknown writes"
   ).toHaveCount(0);
   releaseRecoveryRead();
   releaseHeldDispositionRead = null;
-  await recoveryReadFinished;
+  await waitForRouteSignal(recoveryReadFinished);
   const returnedBuckets = returnedInbox.getByRole("group", {
     name: "Inbox bucket",
     exact: true,
@@ -832,7 +1313,7 @@ test("Inbox offers the current permission inline beside retained unknown writes"
       .getByRole("heading", { name: "Review comment outcome", exact: true }),
   ).toBeVisible();
   await expect(
-    returnedInbox.getByText("Outcome unknown", { exact: true }),
+    returnedInbox.locator(".af-inbox-notice").filter({ has: page.getByRole("heading", { name: "Fixture unknown write", exact: true }) }).getByText("Outcome unknown", { exact: true }),
   ).toBeVisible();
   await returnedBuckets
     .getByRole("button", { name: "Needs you", exact: true })
@@ -851,8 +1332,8 @@ test("Inbox offers the current permission inline beside retained unknown writes"
   await expect(
     inboxRegion.getByRole("link", { name: "Check alpha-epic", exact: true }),
   ).toBeVisible();
-  expect(decisionPosts).toBe(1);
-  await inboxRegion
+  expect(decisionPosts).toBe(0);
+  await alphaNotice
     .getByRole("button", {
       name: "I checked this write · dismiss",
       exact: true,
@@ -861,378 +1342,343 @@ test("Inbox offers the current permission inline beside retained unknown writes"
   await expect(
     alphaNotice.getByText("Outcome unknown", { exact: true }),
   ).toHaveCount(0);
+  const dismissedJournalBytes = await page.evaluate(
+    (key) => localStorage.getItem(key),
+    writeJournalKey,
+  );
+  const dismissedJournal = writeJournalSchema.safeParse(dismissedJournalBytes ? JSON.parse(dismissedJournalBytes) : null);
+  expect(dismissedJournal.success).toBe(true);
+  if (!dismissedJournal.success) throw Error("The dismissed write journal was invalid.");
+  const retainedBetaJournal = dismissedJournal.data.entries.find((entry) => entry.key === "inbox-beta-write-fixture");
+  expect(retainedBetaJournal).toEqual({ key: "inbox-beta-write-fixture", projectId: beta.id, workspace, action: "comment", beadId: "beta-epic", title: "Fixture Beta unknown write", createdId: null, stage: "write", phase: "unknown", message: "Outcome unknown: check the Beta bead before doing anything else. This write will not be repeated automatically." });
+  expect(dismissedJournal.data.entries).toEqual([retainedBetaJournal]);
+  const requestCountBeforeReload = dispositionRequests.length;
+  await page.reload();
+  const reloadedInbox = page.getByRole("region", { name: "Inbox", exact: true });
+  await expect(reloadedInbox.getByRole("heading", { name: "Inbox", exact: true })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Choose project: Beta", exact: true })).toBeVisible();
+  await expect(
+    reloadedInbox.getByRole("heading", { name: "Fixture unknown write", exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    reloadedInbox.getByRole("heading", { name: "Fixture Beta unknown write", exact: true }),
+  ).toBeVisible();
+  expect(
+    await page.evaluate((key) => localStorage.getItem(key), writeJournalKey),
+  ).toBe(dismissedJournalBytes);
+  expect(dispositionRequests).toHaveLength(requestCountBeforeReload);
+
+  await expect(codexPermissionCard.getByRole("button")).toHaveCount(0);
+  expect(decisionPosts).toBe(0);
+  const codexItem = canonicalPermissionItem({ provider: "codex", projectId: alpha.id, sessionId: session.id, turnRequestId: session.requestId, offerId: originalEvent.approval.id, approval: originalEvent.approval });
+  const codexLegacyStore = legacyPermissionStore({ projectId: alpha.id, item: codexItem, operation: "done", hold: true });
+  seedPrivateDispositionStore(codexLegacyStore);
+  const codexHeldOriginal = codexLegacyStore.receipts.find((receipt) => receipt.phase === "reserved")?.original;
+  const codexDoneReceipt = codexLegacyStore.receipts.find((receipt) => receipt.phase === "applied");
+  if (!codexHeldOriginal || !codexDoneReceipt) throw Error("The canonical Codex legacy permission records were absent.");
+  expect(codexDoneReceipt.original).toMatchObject({ projectId: alpha.id, workspace, item: codexItem, expectedRevision: 0, operation: "done" });
+  expect(codexHeldOriginal).toMatchObject({ projectId: alpha.id, workspace, item: codexItem, expectedRevision: 1, operation: "snooze-1h" });
+  const heldStoreBytes = readFileSync(dispositionStatePath);
+  await page.evaluate((hash) => { location.hash = hash; }, "/desktop/inbox?project=" + encodeURIComponent(alpha.id));
+  const alphaInbox = page.getByRole("region", { name: "Inbox", exact: true });
+  await alphaInbox.getByRole("button", { name: "Refresh Inbox", exact: true }).click();
+  const codexCard = alphaInbox.locator(".af-inbox-card").filter({ has: page.getByRole("heading", { name: "Command permission", exact: true }) });
+  await expect(codexCard).toHaveCount(1);
+  await expect(codexCard.getByRole("button")).toHaveCount(0);
+  await expect(codexCard.getByRole("link", { name: "Open session", exact: true })).toHaveAttribute("href", "#/desktop/project/" + encodeURIComponent(alpha.id) + "/sessions?selectionKind=session&selectionId=" + encodeURIComponent(session.id));
+  const alphaHistory = alphaInbox.getByRole("region", { name: "Inbox action history", exact: true });
+  const codexHistoryRow = alphaHistory.locator("article").filter({ hasText: codexHeldOriginal.requestId });
+  await expect(codexHistoryRow.getByText("Server receipt: reserved", { exact: true })).toBeVisible();
+  await expect(codexHistoryRow.getByText("snooze-1h", { exact: false })).toBeVisible();
+  await expect(codexHistoryRow.getByRole("button")).toHaveCount(0);
+  const alphaBucket = alphaInbox.getByRole("group", { name: "Inbox bucket", exact: true });
+  await alphaBucket.getByRole("button", { name: "Snoozed", exact: true }).click();
+  await expect(codexCard).toHaveCount(0);
+  await alphaBucket.getByRole("button", { name: "Needs you", exact: true }).click();
+  await expect(codexCard).toHaveCount(1);
+  await page.evaluate((hash) => { location.hash = hash; }, "/desktop/inbox?project=" + encodeURIComponent(beta.id));
+  const betaInbox = page.getByRole("region", { name: "Inbox", exact: true });
+  await betaInbox.getByRole("button", { name: "Refresh Inbox", exact: true }).click();
+  const betaBucket = betaInbox.getByRole("group", { name: "Inbox bucket", exact: true });
+  await betaBucket.getByRole("button", { name: "Snoozed", exact: true }).click();
+  const betaHoldCard = betaInbox.locator('.af-inbox-project[aria-label="Beta"] .af-inbox-card').filter({ has: page.getByRole("heading", { name: "Review comment outcome", exact: true }) });
+  await expect(betaHoldCard.getByRole("button", { name: "Snooze 1 hour", exact: true })).toBeEnabled();
+  const dispositionPostsBeforeHeldAction = dispositionRequests.length;
+  await expect(betaInbox.getByRole("alert")).toHaveCount(0);
+  await betaHoldCard.getByRole("button", { name: "Snooze 1 hour", exact: true }).click();
+  const globalHoldRefusal = betaInbox.getByRole("alert").filter({ hasText: "An unresolved Inbox original must be checked before another item can be acknowledged." });
+  await expect(globalHoldRefusal).toHaveCount(1);
+  await expect(globalHoldRefusal).toHaveText("An unresolved Inbox original must be checked before another item can be acknowledged.");
+  expect(dispositionRequests).toHaveLength(dispositionPostsBeforeHeldAction);
+  expect(dispositionRequests.some((request) => isPermissionDispositionRequest(request.body))).toBe(false);
+  expect(readFileSync(dispositionStatePath).equals(heldStoreBytes)).toBe(true);
+  expect(decisionPosts).toBe(0);
+  expect(await page.evaluate((key) => localStorage.getItem(key), CODEX_CHAT_DECISION_IDENTITIES)).toBe(inboxIdentityBefore);
+  await page.evaluate((hash) => { location.hash = hash; }, "/desktop/inbox?project=" + encodeURIComponent(alpha.id));
+  const returnedPermissionInbox = page.getByRole("region", { name: "Inbox", exact: true });
+  const returnedCodexCard = returnedPermissionInbox.locator(".af-inbox-card").filter({ has: page.getByRole("heading", { name: "Command permission", exact: true }) });
+  await expect(returnedCodexCard).toHaveCount(1);
+  await returnedCodexCard.getByRole("link", { name: "Open session", exact: true }).click();
+  const returnedConversation = page.getByRole("region", { name: "Session conversation", exact: true });
+  const returnedApprovals = page.getByRole("region", { name: "Native Codex approvals", exact: true });
+  await expect(returnedApprovals.getByRole("status").filter({ hasText: "Recording the original decision intent…" })).toHaveCount(0);
+  const refreshNative = returnedApprovals.getByRole("button", { name: "Refresh native approvals", exact: true });
+  await expect(refreshNative).toBeEnabled();
+  expect(decisionPosts).toBe(0);
+  expect(dispositionRequests.some((request) => isPermissionDispositionRequest(request.body))).toBe(false);
+  expect(await page.evaluate((key) => localStorage.getItem(key), CODEX_CHAT_DECISION_IDENTITIES)).toBe(inboxIdentityBefore);
+  trace.detach();
+  await page.unroute("**/sessions/" + session.id + "/approvals");
+  const positiveRefresh = page.waitForResponse((response) => response.request().method() === "GET" && new URL(response.url()).pathname === approvalsPath && new URL(response.url()).search === "");
+  await refreshNative.click();
+  const positiveRead = await waitForRouteSignal(positiveRefresh);
+  expect(positiveRead.status()).toBe(200);
+  const positivePage = z.object({ ok: z.literal(true), data: codexChatApprovalPageSchema, error: z.null() }).strict().safeParse(await positiveRead.json());
+  expect(positivePage.success).toBe(true);
+  if (!positivePage.success) throw Error("The separately refreshed Codex original was invalid.");
+  expect(positivePage.data.data.pending).toContainEqual(expect.objectContaining({ turnRequestId: session.requestId, approval: originalEvent.approval }));
+  const sessionDecisionRequest = page.waitForRequest((request) => request.method() === "POST" && new URL(request.url()).pathname === "/__agent-forge/projects/" + alpha.id + "/sessions/" + session.id + "/approval-decisions");
+  const sessionDecision = page.waitForResponse((response) => response.request().method() === "POST" && new URL(response.url()).pathname === "/__agent-forge/projects/" + alpha.id + "/sessions/" + session.id + "/approval-decisions");
+  await returnedConversation.getByRole("button", { name: "Allow once", exact: true }).click();
+  const actualDecisionRequest = await waitForRouteSignal(sessionDecisionRequest);
+  const nativeDecisionWire = codexChatDecisionRequestSchema.strict().safeParse(actualDecisionRequest.postDataJSON());
+  expect(nativeDecisionWire.success).toBe(true);
+  if (!nativeDecisionWire.success) throw Error("The positive Codex request was invalid.");
+  expect(nativeDecisionWire.data).toMatchObject({ turnRequestId: session.requestId, approvalId: originalEvent.approval.id, decision: "accept" });
+  expect(nativeDecisionWire.data.requestId).not.toBe(session.requestId);
+  expect(z.string().uuid().safeParse(nativeDecisionWire.data.requestId).success).toBe(true);
+  const sessionDecisionReply = await waitForRouteSignal(sessionDecision);
+  expect(sessionDecisionReply.request()).toBe(actualDecisionRequest);
+  expect(sessionDecisionReply.status()).toBe(200);
+  const sessionDecisionEnvelope = z.object({ ok: z.literal(true), data: codexChatDecisionReceiptSchema, error: z.null() }).strict().safeParse(await sessionDecisionReply.json());
+  expect(sessionDecisionEnvelope.success).toBe(true);
+  if (!sessionDecisionEnvelope.success) throw Error("The positive Codex receipt was invalid.");
+  expect(sessionDecisionEnvelope.data.data).toEqual({ ...nativeDecisionWire.data, projectId: alpha.id, sessionId: session.id, state: "recorded", recordedAt: expect.any(String) });
   expect(decisionPosts).toBe(1);
-
-  const dispositionsBeforeHeldDone = dispositionRequests.length;
-  await markDone.click();
-  await expect(inboxRegion.getByRole("alert").last()).toBeVisible();
-  expect(dispositionRequests).toHaveLength(dispositionsBeforeHeldDone);
-  expect(
-    dispositionRequests.some((request) =>
-      isPermissionDoneRequest(request.body),
-    ),
-  ).toBe(false);
-
-  const betaActionAfterHold = betaProject.locator(".af-inbox-card").filter({
-    has: page.getByRole("heading", {
-      name: "Review comment outcome",
-      exact: true,
-    }),
+  expect(decisionRequests[0]?.body).toEqual(nativeDecisionWire.data);
+  expect(decisionRequests[0]?.url).toBe("/__agent-forge/projects/" + alpha.id + "/sessions/" + session.id + "/approval-decisions");
+  // Consumer-only retained-identity fixture joined to the real R1 offer; it is not proof of native delivery.
+  const heldCodexIdentity = codexChatDecisionRequestSchema.parse({ requestId: randomUUID(), turnRequestId: session.requestId, approvalId: originalEvent.approval.id, decision: "accept" });
+  const heldCodexRecord = codexChatDecisionRequestSchema.extend({ projectId: z.string(), sessionId: z.string() }).strict().parse({ ...heldCodexIdentity, projectId: alpha.id, sessionId: session.id });
+  const heldCodexBytes = JSON.stringify({ version: 1, records: [heldCodexRecord] });
+  await page.evaluate(({ key, bytes }) => localStorage.setItem(key, bytes), { key: CODEX_CHAT_DECISION_IDENTITIES, bytes: heldCodexBytes });
+  expect(await page.evaluate((key) => localStorage.getItem(key), CODEX_CHAT_DECISION_IDENTITIES)).toBe(heldCodexBytes);
+  await page.evaluate((hash) => { location.hash = hash; }, "/desktop/inbox?project=" + encodeURIComponent(alpha.id));
+  const heldInbox = page.getByRole("region", { name: "Inbox", exact: true });
+  await heldInbox.getByRole("button", { name: "Refresh Inbox", exact: true }).click();
+  const heldCodexCard = heldInbox.locator(".af-inbox-card").filter({ has: page.getByRole("heading", { name: "Original permission decision held", exact: true }) });
+  await expect(heldCodexCard).toHaveCount(1);
+  await expect(heldCodexCard.getByText("Original permission is held. No replacement decision will be sent.", { exact: true })).toBeVisible();
+  await expect(heldCodexCard.getByRole("button")).toHaveCount(0);
+  await expect(heldCodexCard.getByRole("link", { name: "Open session", exact: true })).toHaveAttribute("href", "#/desktop/project/" + encodeURIComponent(alpha.id) + "/sessions?selectionKind=session&selectionId=" + encodeURIComponent(session.id));
+  expect(await page.evaluate((key) => localStorage.getItem(key), CODEX_CHAT_DECISION_IDENTITIES)).toBe(heldCodexBytes);
+  await page.evaluate((hash) => { location.hash = hash; }, "/desktop/project/" + alpha.id + "/sessions");
+  await page.getByRole("button", { name: "New session", exact: true }).click();
+  const fileDialog = page.getByRole("dialog", { name: "New session · Alpha", exact: true });
+  await fileDialog.getByRole("button", { name: /Cx · Codex/ }).click();
+  await fileDialog.getByRole("combobox", { name: "Session mode", exact: true }).selectOption("chat");
+  await expect(fileDialog.getByRole("combobox", { name: "Session smith", exact: true })).toHaveValue("codex-journeyman");
+  await fileDialog.getByRole("combobox", { name: "Session effort", exact: true }).selectOption("");
+  await fileDialog.getByRole("textbox", { name: "Session prompt", exact: true }).fill("Inbox Codex unavailable file permission fixture");
+  await fileDialog.getByRole("button", { name: "Check supported options", exact: true }).click();
+  await expect(fileDialog.getByRole("button", { name: "Start", exact: true })).toBeEnabled();
+  writeFileSync(join(HEARTH_HOME, "codex-chat-fixture-mode.json"), JSON.stringify("approval-file"));
+  await fileDialog.getByRole("button", { name: "Start", exact: true }).click();
+  await expect.poll(() => sessions().filter((item) => !priorSessions.has(item.id)).length).toBe(2);
+  const fileSession = sessions().find((item) => item.id !== session.id && !priorSessions.has(item.id));
+  if (!fileSession) throw Error("The strict Codex file permission session was absent.");
+  const fileSetup = await page.evaluate(async ({ projectId, sessionId, token, header }) => {
+    const response = await fetch("/__agent-forge/projects/" + encodeURIComponent(projectId) + "/sessions/" + encodeURIComponent(sessionId) + "/approvals", { headers: { [header]: token } });
+    let body: unknown; try { body = await response.json(); } catch { body = null; }
+    return { status: response.status, body };
+  }, { projectId: alpha.id, sessionId: fileSession.id, token: await pageToken(page), header: OPERATOR_HEADER });
+  const filePage = z.object({ ok: z.literal(true), data: codexChatApprovalPageSchema, error: z.null() }).strict().safeParse(fileSetup.body);
+  expect(fileSetup.status).toBe(200);
+  expect(filePage.success).toBe(true);
+  if (!filePage.success) throw Error("The Codex file approval response was not strict.");
+  const fileOffer = filePage.data.data.pending.find((item) => item.turnRequestId === fileSession.requestId);
+  expect(fileOffer).toBeDefined();
+  if (!fileOffer) throw Error("The exact Codex file offer was missing.");
+  expect(fileOffer.approval.kind).toBe("file-change");
+  expect(fileOffer.detailsUnavailableReason).toBe(CODEX_FILE_DETAILS_UNAVAILABLE);
+  expect(fileOffer.approval.availableDecisions).not.toContain("accept");
+  const fileR1 = savedSession(fileSession.id).frames.find((frame) => frame.turnId === fileSession.requestId && frame.event.kind === "coding-chat" && frame.event.event.kind === "approval-request");
+  expect(fileR1).toBeDefined();
+  if (!fileR1 || fileR1.event.kind !== "coding-chat" || fileR1.event.event.kind !== "approval-request") throw Error("The exact Codex file R1 frame was absent.");
+  expect(fileOffer.turnRequestId).toBe(fileSession.requestId);
+  expect(fileOffer.approval).toEqual(fileR1.event.event.approval);
+  await page.getByRole("navigation", { name: "Global", exact: true }).getByRole("link", { name: "Inbox", exact: true }).click();
+  const fileInbox = page.getByRole("region", { name: "Inbox", exact: true });
+  await fileInbox.getByRole("button", { name: "Refresh Inbox", exact: true }).click();
+  const fileCard = fileInbox.locator(".af-inbox-card").filter({ has: page.getByRole("heading", { name: "File permission", exact: true }) });
+  await expect(fileCard).toHaveCount(1);
+  await expect(fileCard.getByRole("button")).toHaveCount(0);
+  await expect(fileCard.getByRole("link", { name: "Open session", exact: true })).toHaveAttribute("href", "#/desktop/project/" + encodeURIComponent(alpha.id) + "/sessions?selectionKind=session&selectionId=" + encodeURIComponent(fileSession.id));
+  await expect(fileCard.getByText("File permission", { exact: true })).toBeVisible();
+  const fileApprovalsPath = "/__agent-forge/projects/" + alpha.id + "/sessions/" + fileSession.id + "/approvals";
+  await ownRoute(page, "**/sessions/" + fileSession.id + "/approvals", async (route) => {
+    if (route.request().method() === "GET" && new URL(route.request().url()).pathname === fileApprovalsPath && new URL(route.request().url()).search === "") await route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ ok: false, data: null, error: "Fixture source temporarily unavailable." }) });
+    else await route.continue();
   });
-  await buckets.getByRole("button", { name: "Snoozed", exact: true }).click();
-  const betaPostsBeforeGlobalHold = dispositionRequests.filter((request) =>
-    request.url.startsWith(`/__agent-forge/projects/${beta.id}/`),
-  ).length;
-  await betaActionAfterHold
-    .getByRole("button", { name: "Snooze 1 hour", exact: true })
-    .click();
-  await expect(inboxRegion.getByRole("alert").last()).toBeVisible();
-  expect(
-    dispositionRequests.filter((request) =>
-      request.url.startsWith(`/__agent-forge/projects/${beta.id}/`),
-    ),
-  ).toHaveLength(betaPostsBeforeGlobalHold);
+  const fileStaleRead = page.waitForResponse((response) => response.request().method() === "GET" && new URL(response.url()).pathname === fileApprovalsPath && new URL(response.url()).search === "");
+  await fileInbox.getByRole("button", { name: "Refresh Inbox", exact: true }).click();
+  const fileStaleResponse = await waitForRouteSignal(fileStaleRead);
+  expect(fileStaleResponse.status()).toBe(503);
+  await expect(fileCard).toHaveCount(1);
+  await expect(fileCard.locator(".af-inbox-card-meta")).toContainText("Check required");
+  await expect(fileCard.getByRole("button")).toHaveCount(0);
+  expect(await page.evaluate((key) => localStorage.getItem(key), CODEX_CHAT_DECISION_IDENTITIES)).toBe(heldCodexBytes);
+  expect(decisionPosts).toBe(1);
+  expect(dispositionRequests.some((request) => isPermissionDispositionRequest(request.body))).toBe(false);
+
 });
 
-test("Inbox reviews an unknown permission acknowledgment through both existing read owners", async ({
-  page,
-}) => {
-  await openSettled(page, `/index.html#/desktop/project/${alpha.id}/sessions`);
-  await page.getByRole("button", { name: "New session", exact: true }).click();
-  const dialog = page.getByRole("dialog", {
-    name: "New session · Alpha",
-    exact: true,
-  });
-  await dialog.getByRole("button", { name: /Cx · Codex/ }).click();
-  await dialog
-    .getByRole("combobox", { name: "Session mode", exact: true })
-    .selectOption("chat");
-  await dialog
-    .getByRole("combobox", { name: "Session effort", exact: true })
-    .selectOption("");
-  await dialog
-    .getByRole("textbox", { name: "Session prompt", exact: true })
-    .fill("Inbox permission acknowledgment recovery fixture");
-  await dialog
-    .getByRole("button", { name: "Check supported options", exact: true })
-    .click();
-  await expect(
-    dialog.getByRole("button", { name: "Start", exact: true }),
-  ).toBeEnabled();
-  await dialog.getByRole("button", { name: "Start", exact: true }).click();
-  const conversation = page.getByRole("region", {
-    name: "Session conversation",
-    exact: true,
-  });
-  await expect(
-    conversation.getByRole("button", { name: "Allow once", exact: true }),
-  ).toBeVisible();
-  await expect
-    .poll(
-      () =>
-        sessions().filter((session) => !priorSessions.has(session.id)).length,
-    )
-    .toBe(1);
-  const session = sessions().find(
-    (candidate) => !priorSessions.has(candidate.id),
-  );
-  if (!session)
-    throw Error("The permission acknowledgment fixture session is absent.");
-  const token = await pageToken(page);
-  const setup = await page.evaluate(
-    async ({ projectId, sessionId, token, header }) => {
-      const response = await fetch(
-        `/__agent-forge/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/approvals`,
-        { headers: { [header]: token } },
-      );
-      let body: unknown;
-      try {
-        body = await response.json();
-      } catch {
-        body = null;
-      }
-      return { status: response.status, body };
+test("Inbox discards an exact reserved original after a pre-effect 504", async ({ page }) => {
+  await page.addInitScript(
+    ({ key, entry }) => {
+      if (localStorage.getItem(key) === null)
+        localStorage.setItem(key, JSON.stringify({ version: 1, entries: [entry] }));
     },
     {
-      projectId: alpha.id,
-      sessionId: session.id,
-      token,
-      header: OPERATOR_HEADER,
+      key: writeJournalKey,
+      entry: {
+        key: "pre-effect-unknown",
+        projectId: alpha.id,
+        workspace,
+        action: "comment",
+        beadId: "alpha-epic",
+        title: "Pre-effect unknown write",
+        createdId: null,
+        stage: "write",
+        phase: "unknown",
+        message: "Outcome unknown; check before repeating.",
+      },
     },
   );
-  const setupPage = z
-    .object({
-      ok: z.literal(true),
-      data: codexChatApprovalPageSchema,
-      error: z.null(),
-    })
-    .strict()
-    .safeParse(setup.body);
-  if (
-    setup.status !== 200 ||
-    !setupPage.success ||
-    !setupPage.data.data.pending.some(
-      (offer) => offer.turnRequestId === session.requestId,
-    )
-  )
-    throw Error(
-      "The protected setup read did not confirm the original pending permission.",
-    );
-
-  let inboxApprovalReads = 0;
-  let nativeDecisionPosts = 0;
-  const requests: Array<{ requestId: unknown; body: unknown }> = [];
-  const discardRequests: Array<{ url: string; body: unknown }> = [];
+  let applyPosts = 0;
+  let reserveRequestBodies: unknown[] = [];
+  let applyBody: unknown;
+  const applyPath = "/__agent-forge/projects/" + alpha.id + "/inbox-dispositions";
   page.on("request", (request) => {
     const url = new URL(request.url());
-    if (
-      url.pathname.endsWith(`/sessions/${session.id}/approvals`) &&
-      request.method() === "GET"
-    )
-      inboxApprovalReads++;
-    if (
-      url.pathname.endsWith("/approval-decisions") &&
-      request.method() === "POST"
-    )
-      nativeDecisionPosts++;
-    if (
-      request.method() === "POST" &&
-      url.pathname.endsWith(
-        `/requests/${String(requests[1]?.requestId)}/discard`,
-      )
-    )
-      discardRequests.push({ url: url.pathname, body: request.postDataJSON() });
+    if (request.method() === "POST" && url.pathname === "/__agent-forge/projects/" + alpha.id + "/inbox-dispositions/requests") reserveRequestBodies.push(request.postDataJSON());
   });
-  let loseFirstReserve = true;
-  let applyBody: unknown = null;
-  let applyPath = "";
-  let markApplyStarted: () => void = () => {};
-  let markApplyFinished: () => void = () => {};
-  const applyStarted = new Promise<void>((resolve) => {
-    markApplyStarted = resolve;
+  await ownRoute(page, "**/projects/" + alpha.id + "/inbox-dispositions", async (route) => {
+    if (route.request().method() !== "POST" || new URL(route.request().url()).pathname !== applyPath)
+      return route.continue();
+    applyPosts++;
+    applyBody = route.request().postDataJSON();
+    await route.fulfill({
+      status: 504,
+      contentType: "application/json",
+      body: JSON.stringify({
+        ok: false,
+        data: null,
+        error: "Fixture timeout before the apply reached the server.",
+      }),
+    });
   });
-  const applyFinished = new Promise<void>((resolve) => {
-    markApplyFinished = resolve;
-  });
-  await page.route(
-    `**/projects/${alpha.id}/inbox-dispositions`,
-    async (route) => {
-      if (
-        route.request().method() !== "POST" ||
-        !route.request().url().endsWith("/inbox-dispositions")
-      )
-        return route.fallback();
-      applyBody = route.request().postDataJSON();
-      applyPath = new URL(route.request().url()).pathname;
-      markApplyStarted();
-      await route.abort();
-      markApplyFinished();
-    },
-  );
-  await page.route(
-    `**/projects/${alpha.id}/inbox-dispositions/requests`,
-    async (route) => {
-      if (route.request().method() !== "POST") return route.continue();
-      const body = route.request().postDataJSON();
-      const requestId =
-        typeof body === "object" && body !== null && "requestId" in body
-          ? body.requestId
-          : null;
-      requests.push({ requestId, body });
-      if (loseFirstReserve) {
-        loseFirstReserve = false;
-        await route.abort();
-        return;
-      }
-      await route.continue();
-    },
-  );
-  await page
-    .getByRole("navigation", { name: "Global", exact: true })
-    .getByRole("link", { name: "Inbox", exact: true })
-    .click();
+  await openSettled(page, "/index.html#/desktop/inbox?project=" + encodeURIComponent(alpha.id));
   const inbox = page.getByRole("region", { name: "Inbox", exact: true });
-  const permission = inbox.locator(".af-inbox-card").filter({
-    has: page.getByRole("heading", {
-      name: "Command permission",
-      exact: true,
-    }),
+  const action = inbox.locator('.af-inbox-project[aria-label="Alpha"] .af-inbox-card').filter({
+    has: page.getByRole("heading", { name: "Review comment outcome", exact: true }),
   });
-  await expect(
-    permission.getByRole("button", { name: "Snooze 1 hour", exact: true }),
-  ).toBeVisible();
-  await permission
-    .getByRole("button", { name: "Snooze 1 hour", exact: true })
-    .click();
-  const history = inbox.getByRole("region", {
-    name: "Inbox action history",
-    exact: true,
-  });
-  await expect(
-    history.getByRole("button", {
-      name: "Review unconfirmed reservation",
-      exact: true,
-    }),
-  ).toBeVisible();
-  await history
-    .getByRole("button", {
-      name: "Review unconfirmed reservation",
-      exact: true,
-    })
-    .click();
-  await expect(
-    inbox.getByText(/A new Inbox acknowledgment may be reviewed separately\./),
-  ).toBeVisible();
-  await expect.poll(() => inboxApprovalReads).toBeGreaterThan(0);
-  expect(nativeDecisionPosts).toBe(0);
-  await permission
-    .getByRole("button", { name: "Snooze 1 hour", exact: true })
-    .click();
-  await expect.poll(() => requests.length).toBe(2);
-  expect(requests[0]?.requestId).not.toBe(requests[1]?.requestId);
-  expect(z.string().uuid().safeParse(requests[1]?.requestId).success).toBe(
-    true,
+  const reserveRequestPromise = page.waitForRequest((request) =>
+    request.method() === "POST" &&
+    new URL(request.url()).pathname === "/__agent-forge/projects/" + alpha.id + "/inbox-dispositions/requests",
   );
-  expect(nativeDecisionPosts).toBe(0);
-  const persistedRequestId = String(requests[1]?.requestId);
-  await applyStarted;
-  await applyFinished;
-  await expect(history.getByText(/reserve-unknown/)).toBeVisible();
-  expect(applyPath).toBe(
-    `/__agent-forge/projects/${alpha.id}/inbox-dispositions`,
+  const reserveResponsePromise = page.waitForResponse((response) =>
+    response.request().method() === "POST" &&
+    new URL(response.url()).pathname === "/__agent-forge/projects/" + alpha.id + "/inbox-dispositions/requests",
   );
-  const reservedOriginal = inboxDispositionOriginalSchema
-    .strict()
-    .safeParse(requests[1]?.body);
-  const appliedOriginal = inboxDispositionOriginalSchema
-    .strict()
-    .safeParse(applyBody);
-  expect(reservedOriginal.success).toBe(true);
-  expect(appliedOriginal.success).toBe(true);
-  expect(applyBody).toEqual(requests[1]?.body);
-  const exactReserve = await page.evaluate(
-    async ({ projectId, requestId, token, header }) => {
-      const response = await fetch(
-        `/__agent-forge/projects/${encodeURIComponent(projectId)}/inbox-dispositions/requests/${encodeURIComponent(requestId)}`,
-        { headers: { [header]: token } },
-      );
-      let body: unknown;
-      try {
-        body = await response.json();
-      } catch {
-        body = null;
-      }
-      return { status: response.status, body };
-    },
-    {
-      projectId: alpha.id,
-      requestId: persistedRequestId,
-      token,
-      header: OPERATOR_HEADER,
-    },
+  const applyResponsePromise = page.waitForResponse((response) =>
+    response.request().method() === "POST" && new URL(response.url()).pathname === applyPath,
   );
-  const reserveEnvelope = z
-    .object({
-      ok: z.literal(true),
-      data: z
-        .object({
-          entry: inboxDispositionEntrySchema.nullable(),
-          receipt: inboxDispositionReceiptSchema,
-        })
-        .strict(),
-      error: z.null(),
-    })
-    .strict()
-    .safeParse(exactReserve.body);
-  expect(exactReserve.status).toBe(200);
+  await action.getByRole("button", { name: "Snooze 1 hour", exact: true }).click();
+  const reserveRequest = await waitForRouteSignal(reserveRequestPromise);
+  const reserveWire = inboxDispositionOriginalSchema.strict().safeParse(reserveRequest.postDataJSON());
+  expect(reserveWire.success).toBe(true);
+  if (!reserveWire.success) throw Error("The pre-effect reserve original was invalid.");
+  expect(reserveWire.data.item.sourceKind).toBe("unknown-bead-write");
+  expect(reserveWire.data.operation).toBe("snooze-1h");
+  const reserveResponse = await waitForRouteSignal(reserveResponsePromise);
+  expect(reserveResponse.status()).toBe(200);
+  const reserveEnvelope = z.object({
+    ok: z.literal(true),
+    data: z.object({ entry: inboxDispositionEntrySchema.nullable(), receipt: inboxDispositionReceiptSchema }).strict(),
+    error: z.null(),
+  }).strict().safeParse(await reserveResponse.json());
   expect(reserveEnvelope.success).toBe(true);
-  if (!reserveEnvelope.success || !reservedOriginal.success)
-    throw Error(
-      "The exact original reservation could not be verified before reload.",
-    );
+  if (!reserveEnvelope.success) throw Error("The exact reservation receipt was invalid.");
   expect(reserveEnvelope.data.data.receipt.phase).toBe("reserved");
-  expect(reserveEnvelope.data.data.receipt.original).toMatchObject({
-    ...reservedOriginal.data,
-    projectId: alpha.id,
-  });
+  const applyResponse = await waitForRouteSignal(applyResponsePromise);
+  expect(applyResponse.status()).toBe(504);
+  expect(applyPosts).toBe(1);
+  const applyWire = inboxDispositionOriginalSchema.strict().safeParse(applyBody);
+  expect(applyWire.success).toBe(true);
+  if (!applyWire.success) throw Error("The pre-effect apply body was invalid.");
+  expect(applyWire.data).toEqual(reserveWire.data);
+  await expect(inbox.getByText("Outcome unknown", { exact: true })).toBeVisible();
+  expect(reserveRequestBodies).toHaveLength(1);
+  expect(reserveRequestBodies[0]).toEqual(reserveWire.data);
+  const heldStateBytes = readFileSync(dispositionStatePath);
+  const heldState = inboxDispositionStoreSchema.strict().parse(JSON.parse(heldStateBytes.toString("utf8")));
+  const heldReceipt = heldState.receipts.find((receipt) => receipt.original.requestId === reserveWire.data.requestId);
+  expect(heldReceipt).toEqual(reserveEnvelope.data.data.receipt);
+  expect(heldReceipt?.original).toEqual({ ...reserveWire.data, projectId: alpha.id });
+  const heldActionButton = action.getByRole("button", { name: "Snooze 1 hour", exact: true });
+  await expect(heldActionButton).toBeEnabled();
+  await heldActionButton.click();
+  const heldRefusal = inbox.getByRole("alert").filter({ hasText: "An unresolved Inbox original must be checked before another item can be acknowledged." });
+  await expect(heldRefusal).toHaveText("An unresolved Inbox original must be checked before another item can be acknowledged.");
+  expect(reserveRequestBodies).toHaveLength(1);
+  expect(applyPosts).toBe(1);
+  expect(readFileSync(dispositionStatePath).equals(heldStateBytes)).toBe(true);
+  expect(inboxDispositionStoreSchema.strict().parse(JSON.parse(readFileSync(dispositionStatePath, "utf8"))).receipts.find((receipt) => receipt.original.requestId === reserveWire.data.requestId)).toEqual(heldReceipt);
+
   await page.reload();
-  const reloadedInbox = page.getByRole("region", {
-    name: "Inbox",
-    exact: true,
-  });
-  const persistedOriginal = reloadedInbox
-    .getByRole("region", { name: "Inbox action history", exact: true })
-    .locator("article")
-    .filter({ hasText: `Request ${persistedRequestId}` });
-  await expect(
-    persistedOriginal.getByRole("button", {
-      name: "Check exact original",
-      exact: true,
-    }),
-  ).toBeVisible();
-  await persistedOriginal
-    .getByRole("button", { name: "Check exact original", exact: true })
-    .click();
-  await expect(
-    persistedOriginal.getByRole("button", {
-      name: "Discard checked reservation",
-      exact: true,
-    }),
-  ).toBeEnabled();
-  const discardFinished = page.waitForResponse(
-    (response) =>
-      response.request().method() === "POST" &&
-      response.url().endsWith(`/requests/${persistedRequestId}/discard`),
+  const reloadedInbox = page.getByRole("region", { name: "Inbox", exact: true });
+  await expect(reloadedInbox.getByRole("heading", { name: "Inbox", exact: true })).toBeVisible();
+  const history = reloadedInbox.getByRole("region", { name: "Inbox action history", exact: true });
+  const originalRow = history.locator("article").filter({ hasText: reserveWire.data.requestId });
+  const originalRead = page.waitForResponse((response) =>
+    response.request().method() === "GET" &&
+    new URL(response.url()).pathname === "/__agent-forge/projects/" + alpha.id + "/inbox-dispositions/requests/" + reserveWire.data.requestId,
   );
-  await persistedOriginal
-    .getByRole("button", { name: "Discard checked reservation", exact: true })
-    .click();
-  const discardedResponse = await discardFinished;
-  await expect(
-    persistedOriginal.getByRole("button", {
-      name: "Discard checked reservation",
-      exact: true,
-    }),
-  ).toHaveCount(0);
-  expect(discardRequests).toHaveLength(1);
-  const discardRequest = discardRequests[0];
-  if (!discardRequest)
-    throw Error("The exact discard request was not captured.");
-  expect(discardRequest.url).toBe(
-    `/__agent-forge/projects/${alpha.id}/inbox-dispositions/requests/${persistedRequestId}/discard`,
-  );
-  const discardOriginal = inboxDispositionOriginalSchema
-    .strict()
-    .safeParse(discardRequest.body);
-  expect(discardOriginal.success).toBe(true);
-  if (!discardOriginal.success || !reservedOriginal.success)
-    throw Error("The discard request did not preserve the exact original.");
-  expect(discardOriginal.data).toEqual(reservedOriginal.data);
-  expect(discardOriginal.data.requestId).toBe(persistedRequestId);
-  expect(discardedResponse.status()).toBe(200);
-  const discardedEnvelope = z
-    .object({
-      ok: z.literal(true),
-      data: z
-        .object({
-          entry: inboxDispositionEntrySchema.nullable(),
-          receipt: inboxDispositionReceiptSchema,
-        })
-        .strict(),
-      error: z.null(),
-    })
-    .strict()
-    .safeParse(await discardedResponse.json());
-  expect(discardedEnvelope.success).toBe(true);
-  if (!discardedEnvelope.success)
-    throw Error("The discard reply did not match its strict success schema.");
-  expect(discardedEnvelope.data.data.receipt).toMatchObject({
-    original: { ...discardOriginal.data, projectId: alpha.id },
+  await originalRow.getByRole("button", { name: "Check exact original", exact: true }).click();
+  const exactResponse = await waitForRouteSignal(originalRead);
+  expect(exactResponse.status()).toBe(200);
+  const exactEnvelope = z.object({
+    ok: z.literal(true),
+    data: z.object({ entry: inboxDispositionEntrySchema.nullable(), receipt: inboxDispositionReceiptSchema }).strict(),
+    error: z.null(),
+  }).strict().safeParse(await exactResponse.json());
+  expect(exactEnvelope.success).toBe(true);
+  if (!exactEnvelope.success) throw Error("The exact original read was invalid.");
+  expect(exactEnvelope.data.data.receipt).toEqual(reserveEnvelope.data.data.receipt);
+  expect(exactEnvelope.data.data.receipt.original).toEqual({ ...reserveWire.data, projectId: alpha.id });
+  const discardPath = "/__agent-forge/projects/" + alpha.id + "/inbox-dispositions/requests/" + reserveWire.data.requestId + "/discard";
+  const discardRequestPromise = page.waitForRequest((request) => request.method() === "POST" && new URL(request.url()).pathname === discardPath);
+  const discardResponsePromise = page.waitForResponse((response) => response.request().method() === "POST" && new URL(response.url()).pathname === discardPath);
+  await originalRow.getByRole("button", { name: "Discard checked reservation", exact: true }).click();
+  const discardRequest = await waitForRouteSignal(discardRequestPromise);
+  expect(discardRequest.postDataJSON()).toEqual(reserveWire.data);
+  const discardResponse = await waitForRouteSignal(discardResponsePromise);
+  expect(discardResponse.status()).toBe(200);
+  const discardEnvelope = z.object({
+    ok: z.literal(true),
+    data: z.object({ entry: inboxDispositionEntrySchema.nullable(), receipt: inboxDispositionReceiptSchema }).strict(),
+    error: z.null(),
+  }).strict().safeParse(await discardResponse.json());
+  expect(discardEnvelope.success).toBe(true);
+  if (!discardEnvelope.success) throw Error("The discard receipt was invalid.");
+  expect(discardEnvelope.data.data.receipt).toMatchObject({
+    original: { ...reserveWire.data, projectId: alpha.id },
     phase: "refused",
     outcome: "refused",
     refusalCode: "discarded",
   });
-  expect(nativeDecisionPosts).toBe(0);
+  expect(applyPosts).toBe(1);
 });
 
 test("Inbox binds Gemini options to its exact offer and recovers a held original without resending", async ({
@@ -1245,30 +1691,17 @@ test("Inbox binds Gemini options to its exact offer and recovers a held original
     : null;
   writeFileSync(geminiControlPath, JSON.stringify({ mode: "permission-tree" }));
   await page.addInitScript(
-    ({ key, projectId, workspace: root }) =>
-      localStorage.setItem(
-        key,
-        JSON.stringify({
-          version: 1,
-          entries: [
-            {
-              key: "beta-context-write",
-              projectId,
-              workspace: root,
-              action: "comment",
-              beadId: "beta-epic",
-              title: "Beta context write",
-              createdId: null,
-              stage: "write",
-              phase: "unknown",
-              message: "Outcome unknown; check before repeating.",
-            },
-          ],
-        }),
-      ),
+    ({ key, projectId, workspace: root }) => {
+      if (localStorage.getItem(key) === null)
+        localStorage.setItem(key, JSON.stringify({ version: 1, entries: [{
+          key: "beta-context-write", projectId, workspace: root, action: "comment",
+          beadId: "beta-epic", title: "Beta context write", createdId: null,
+          stage: "write", phase: "unknown", message: "Outcome unknown; check before repeating.",
+        }] }));
+    },
     { key: writeJournalKey, projectId: beta.id, workspace },
   );
-  await page.route("**/__agent-forge/smiths", async (route) => {
+  await ownRoute(page, "**/__agent-forge/smiths", async (route) => {
     const request = route.request();
     const response = await route.fetch({
       headers: {
@@ -1454,543 +1887,616 @@ test("Inbox binds Gemini options to its exact offer and recovers a held original
     options: savedPermission.options,
   });
 
-  const approvalsPattern = `**/sessions/${session.id}/approvals**`;
-  let decisionPosts = 0;
-  let betaDispositionPosts = 0;
-  let betaDispositionWriteCount = 0;
-  let alphaDispositionPosts = 0;
-  let originalReceiptReads = 0;
-  const decisionRequests: Array<{ url: string; body: unknown }> = [];
+  const item = canonicalPermissionItem({
+    provider: "gemini",
+    projectId: alpha.id,
+    sessionId: session.id,
+    turnRequestId: session.requestId,
+    offerId: offer.approval.id,
+    approval: offer.approval,
+  });
+  const geminiLegacyStore = legacyPermissionStore({ projectId: alpha.id, item, operation: "snooze-1h", hold: true });
+  seedPrivateDispositionStore(geminiLegacyStore);
+  const geminiDoneReceipt = geminiLegacyStore.receipts.find((receipt) => receipt.phase === "applied");
+  const geminiHeldReceipt = geminiLegacyStore.receipts.find((receipt) => receipt.phase === "reserved");
+  expect(geminiDoneReceipt?.original).toMatchObject({ projectId: alpha.id, workspace, item, expectedRevision: 0, operation: "snooze-1h" });
+  expect(geminiHeldReceipt?.original).toMatchObject({ projectId: alpha.id, workspace, item, expectedRevision: 1, operation: "snooze-1h" });
+  if (!geminiHeldReceipt) throw Error("The canonical Gemini held receipt was absent.");
+  let nativeDecisionPosts = 0;
+  let permissionDispositionPosts = 0;
+  const requests: Array<{ url: string; body: unknown }> = [];
   page.on("request", (request) => {
     const url = new URL(request.url());
-    if (
-      request.method() === "POST" &&
-      url.pathname.endsWith("/approval-decisions")
-    ) {
-      decisionPosts++;
-      decisionRequests.push({
-        url: url.pathname,
-        body: request.postDataJSON(),
-      });
+    if (request.method() === "POST" && url.pathname.endsWith("/approval-decisions")) {
+      nativeDecisionPosts++;
+      requests.push({ url: url.pathname, body: request.postDataJSON() });
     }
-    if (
-      request.method() === "POST" &&
-      url.pathname.startsWith(
-        "/__agent-forge/projects/" + beta.id + "/inbox-dispositions",
-      )
-    )
-      betaDispositionWriteCount++;
-    if (
-      request.method() === "POST" &&
-      url.pathname.endsWith("/inbox-dispositions/requests")
-    ) {
-      if (url.pathname.startsWith(`/__agent-forge/projects/${beta.id}/`))
-        betaDispositionPosts++;
-      if (url.pathname.startsWith(`/__agent-forge/projects/${alpha.id}/`))
-        alphaDispositionPosts++;
-    }
-    if (
-      request.method() === "GET" &&
-      url.pathname.endsWith(`/sessions/${session.id}/approvals`) &&
-      url.searchParams.has("requestId")
-    )
-      originalReceiptReads++;
+    if (request.method() === "POST" && url.pathname.includes("/inbox-dispositions"))
+      permissionDispositionPosts++;
   });
-  await openSettled(
-    page,
-    `/index.html#/desktop/inbox?project=${encodeURIComponent(beta.id)}`,
-  );
-  const inbox = page.getByRole("region", { name: "Inbox", exact: true });
-  const betaContext = inbox.locator('.af-inbox-project[aria-label="Beta"]');
-  const betaWriteCard = betaContext.locator(".af-inbox-card").filter({
-    has: page.getByRole("heading", {
-      name: "Review comment outcome",
-      exact: true,
-    }),
-  });
-  await expect(
-    betaWriteCard.getByRole("button", { name: "Snooze 1 hour", exact: true }),
-  ).toBeVisible();
-  const betaReserveRequest = page.waitForRequest((request) => {
-    const url = new URL(request.url());
-    return (
-      request.method() === "POST" &&
-      url.pathname ===
-        "/__agent-forge/projects/" + beta.id + "/inbox-dispositions/requests"
-    );
-  });
-  const betaApplyResponse = page.waitForResponse((response) => {
-    const url = new URL(response.url());
-    return (
-      response.request().method() === "POST" &&
-      url.pathname ===
-        "/__agent-forge/projects/" + beta.id + "/inbox-dispositions"
-    );
-  });
-  await betaWriteCard
-    .getByRole("button", { name: "Snooze 1 hour", exact: true })
-    .click();
-  const betaReserve = await betaReserveRequest;
-  const betaSnoozeOriginal = inboxDispositionOriginalSchema.safeParse(
-    betaReserve.postDataJSON(),
-  );
-  if (!betaSnoozeOriginal.success)
-    throw Error(
-      "The Beta snooze reservation did not match its strict original.",
-    );
-  const betaSnoozeReply = await betaApplyResponse;
-  await betaSnoozeReply.finished();
-  const betaSnoozeEnvelope = z
-    .object({
-      ok: z.literal(true),
-      data: z
-        .object({
-          entry: inboxDispositionEntrySchema.nullable(),
-          receipt: inboxDispositionReceiptSchema,
-        })
-        .strict(),
-      error: z.null(),
-    })
-    .strict()
-    .safeParse(await betaSnoozeReply.json());
-  if (!betaSnoozeEnvelope.success || !betaSnoozeEnvelope.data.data.entry)
-    throw Error(
-      "The Beta snooze returned no strict applied entry and receipt.",
-    );
-  const betaSnoozeRecord = betaSnoozeEnvelope.data.data;
-  expect(betaSnoozeReply.status()).toBe(200);
-  expect(betaSnoozeOriginal.data.workspace).toBe(workspace);
-  expect(betaSnoozeOriginal.data.operation).toBe("snooze-1h");
-  expect(betaSnoozeOriginal.data.item.sourceKind).toBe("unknown-bead-write");
-  expect(betaSnoozeRecord.receipt.phase).toBe("applied");
-  expect(betaSnoozeRecord.receipt.outcome).toBe("applied");
-  expect(betaSnoozeRecord.receipt.resultingValue).toBe("snooze-1h");
-  expect(betaSnoozeRecord.receipt.original).toEqual({
-    ...betaSnoozeOriginal.data,
-    projectId: beta.id,
-  });
-  expect(betaSnoozeRecord.entry).toMatchObject({
-    projectId: beta.id,
-    workspace: betaSnoozeOriginal.data.workspace,
-    item: betaSnoozeOriginal.data.item,
-    revision: betaSnoozeRecord.receipt.resultingRevision,
-    operation: "snooze-1h",
-  });
-  await expect.poll(() => betaDispositionPosts).toBe(1);
-  await expect(betaWriteCard).toHaveCount(0);
-  const betaPostsBeforeAlphaDecision = betaDispositionPosts;
-  const betaWritesAfterSnooze = betaDispositionWriteCount;
-  const sessionReplayPosts: string[] = [];
-  const recordSessionReplay = (request: import("@playwright/test").Request) => {
-    const url = new URL(request.url());
-    if (
-      request.method() === "POST" &&
-      url.pathname.startsWith(
-        "/__agent-forge/projects/" + alpha.id + "/sessions",
-      )
-    )
-      sessionReplayPosts.push(url.pathname);
-  };
-  page.on("request", recordSessionReplay);
-  await page.reload();
-  await expect(
-    inbox.getByRole("heading", { name: "Inbox", exact: true }),
-  ).toBeVisible();
-  await expect(
-    page.getByRole("link", { name: "Choose project: Beta", exact: true }),
-  ).toBeVisible();
-  await expect(betaWriteCard).toHaveCount(0);
-  const reloadedGemini = savedSession(session.id);
-  expect(reloadedGemini.projectId).toBe(alpha.id);
-  expect(reloadedGemini.conversationId).toBe(session.id);
-  expect(reloadedGemini.turns[0]?.requestId).toBe(session.requestId);
-  const reloadedR1 = reloadedGemini.frames.filter(
-    (frame) => frame.turnId === session.requestId,
-  );
-  const reloadedPermission = reloadedR1.find(
-    (frame) =>
-      frame.event.kind === "coding-gemini-chat" &&
-      frame.event.event.kind === "permission",
-  );
-  const reloadedOffer = reloadedR1.find(
-    (frame) =>
-      frame.event.kind === "coding-gemini-chat" &&
-      frame.event.event.kind === "approval-offer",
-  );
-  if (
-    reloadedPermission?.event.kind !== "coding-gemini-chat" ||
-    reloadedPermission.event.event.kind !== "permission" ||
-    reloadedOffer?.event.kind !== "coding-gemini-chat" ||
-    reloadedOffer.event.event.kind !== "approval-offer"
-  )
-    throw Error(
-      "The same durable Gemini R1 offer pair did not survive reload.",
-    );
-  expect(reloadedPermission.event).toEqual(savedPermissionEvent);
-  expect(reloadedOffer.event).toEqual(savedOfferEvent);
-  expect(reloadedPermission.seq).toBe(savedPermissionFrame.seq);
-  expect(reloadedOffer.seq).toBe(savedOfferFrame.seq);
-  expect(reloadedPermission.seq).toBeLessThan(reloadedOffer.seq);
-  const geminiCard = inbox.locator(".af-inbox-card").filter({
-    has: page.getByRole("heading", {
-      name: "Gemini permission",
-      exact: true,
-    }),
-  });
-  const approvalsPath =
-    "/__agent-forge/projects/" +
-    alpha.id +
-    "/sessions/" +
-    session.id +
-    "/approvals";
-  const reactivateResponse = page.waitForResponse((response) => {
-    const url = new URL(response.url());
-    return (
-      response.request().method() === "GET" &&
-      url.pathname === approvalsPath &&
-      url.search === ""
-    );
-  });
-  const refreshOffer = geminiCard.getByRole("button", {
-    name: "Refresh exact offer",
-    exact: true,
-  });
-  await expect(refreshOffer).toBeEnabled();
-  await refreshOffer.click();
-  const refreshedOfferResponse = await reactivateResponse;
-  await refreshedOfferResponse.finished();
-  const refreshedOfferEnvelope = z
-    .object({
-      ok: z.literal(true),
-      data: geminiChatApprovalPageSchema,
-      error: z.null(),
-    })
-    .strict()
-    .safeParse(await refreshedOfferResponse.json());
-  if (
-    refreshedOfferResponse.status() !== 200 ||
-    !refreshedOfferEnvelope.success ||
-    refreshedOfferEnvelope.data.data.receipt !== null ||
-    refreshedOfferEnvelope.data.data.pending.length !== 1 ||
-    JSON.stringify(refreshedOfferEnvelope.data.data.pending[0]) !==
-      JSON.stringify(offer)
-  )
-    throw Error(
-      "The exact durable Gemini R1 offer did not refresh successfully.",
-    );
-  await expect(
-    geminiCard.getByRole("button", { name: "Allow once", exact: true }),
-  ).toBeEnabled();
-  page.off("request", recordSessionReplay);
-  expect(sessionReplayPosts).toEqual([]);
-  expect(betaDispositionWriteCount).toBe(betaWritesAfterSnooze);
-  await expect(
-    geminiCard.getByRole("button", {
-      name: "Mark done · source unresolved",
-      exact: true,
-    }),
-  ).toBeDisabled();
-
-  const identityBytesBeforeForeignDecision = await page.evaluate(
+  const identityBytesBefore = await page.evaluate(
     (key) => localStorage.getItem(key),
     GEMINI_CHAT_DECISION_IDENTITIES,
   );
-  const foreignTurn = "ffffffff-ffff-4fff-8fff-ffffffffffff";
-  const expectedApprovalsSearch = "";
-  const foreignReadUrls: string[] = [];
-  let markForeignResponseSettled: () => void = () => {};
-  const foreignResponseSettled = new Promise<void>((resolve) => {
-    markForeignResponseSettled = resolve;
-  });
-  const foreignPayload = {
-    ok: true,
-    data: {
-      pending: [{ ...offer, turnRequestId: foreignTurn }],
-      receipt: null,
-    },
-    error: null,
-  };
-  const checkedForeignPayload = z
-    .object({
-      ok: z.literal(true),
-      data: geminiChatApprovalPageSchema,
-      error: z.null(),
-    })
-    .strict()
-    .safeParse(foreignPayload);
-  if (!checkedForeignPayload.success)
-    throw Error(
-      "The foreign-turn fixture did not match the strict approval schema.",
-    );
-  const foreignHandler = async (route: import("@playwright/test").Route) => {
-    if (route.request().method() !== "GET") return route.continue();
+  const approvalsPath = "/__agent-forge/projects/" + alpha.id + "/sessions/" + session.id + "/approvals";
+  let captureChoicePreflight = false;
+  let heldPreflightCount = 0;
+  let heldRequest: Request | null = null;
+  let markPreflightHeld: () => void = () => {};
+  const preflightHeld = new Promise<void>((resolve) => { markPreflightHeld = resolve; });
+  let releasePreflight: () => void = () => {};
+  const preflightGate = new Promise<void>((resolve) => { releasePreflight = resolve; });
+  releaseHeldInboxRoutes.push(releasePreflight);
+  const trace = await openDecisionTrace(page, "gemini", approvalsPath);
+  const choiceReplyPromise = page.waitForResponse((response) => response.request() === heldRequest);
+  await ownRoute(page, "**/sessions/" + session.id + "/approvals", async (route) => {
     const url = new URL(route.request().url());
-    foreignReadUrls.push(url.pathname + url.search);
-    if (
-      url.pathname !== approvalsPath ||
-      url.search !== expectedApprovalsSearch
-    )
-      return route.continue();
-    await route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify(foreignPayload),
-    });
-    markForeignResponseSettled();
-  };
-  const decisionPreflightRequest = page.waitForRequest((request) => {
+    if (captureChoicePreflight && route.request().method() === "GET" && url.pathname === approvalsPath && url.search === "") {
+      captureChoicePreflight = false;
+      heldPreflightCount++;
+      heldRequest = route.request();
+      markPreflightHeld();
+      await preflightGate;
+    }
+    await route.continue();
+  });
+  let choiceWindowReads = 0;
+  let choicePhaseActive = false;
+  page.on("request", (request) => {
     const url = new URL(request.url());
-    return (
-      request.method() === "GET" &&
-      url.pathname === approvalsPath &&
-      url.search === expectedApprovalsSearch
-    );
+    if (choicePhaseActive && request.method() === "GET" && url.pathname === approvalsPath && url.search === "") choiceWindowReads++;
   });
-  const decisionPreflightResponse = page.waitForResponse((response) => {
-    const url = new URL(response.url());
-    return (
-      response.request().method() === "GET" &&
-      url.pathname === approvalsPath &&
-      url.search === expectedApprovalsSearch
-    );
-  });
-  await page.route(approvalsPattern, foreignHandler);
-  await geminiCard
-    .getByRole("button", { name: "Allow once", exact: true })
+  const actualChoicePreflight = page.waitForRequest((request) => request.method() === "GET" && new URL(request.url()).pathname === approvalsPath && new URL(request.url()).search === "");
+  invalidateHeldChoiceSession = leaveSessionsForCleanup;
+  trace.begin();
+  choicePhaseActive = true;
+  captureChoicePreflight = true;
+  await sessionConversation.getByRole("button", { name: "Allow once", exact: true }).click();
+  const choiceRequest = await waitForRouteSignal(actualChoicePreflight);
+  await waitForRouteSignal(preflightHeld);
+  expect(heldPreflightCount).toBe(1);
+  expect(heldRequest).toBe(choiceRequest);
+  const nativePermissionsDuringChoice = page.getByRole("region", { name: "Native Gemini permissions", exact: true });
+  await expect(nativePermissionsDuringChoice.getByRole("status").filter({ hasText: "Recording the original decision intent…" })).toBeVisible();
+  await expect(nativePermissionsDuringChoice.getByRole("button", { name: "Allow once", exact: true })).toBeDisabled();
+  trace.end();
+  choicePhaseActive = false;
+  trace.verify(choiceRequest, choiceWindowReads);
+  await page
+    .getByRole("navigation", { name: "Global", exact: true })
+    .getByRole("link", { name: "Inbox", exact: true })
     .click();
-  const decisionPreflight = await decisionPreflightRequest;
+  invalidateHeldChoiceSession = null;
+  const inbox = page.getByRole("region", { name: "Inbox", exact: true });
+  await expect(inbox.getByRole("heading", { name: "Inbox", exact: true })).toBeVisible();
+  releasePreflight();
+  const choiceReply = await waitForRouteSignal(choiceReplyPromise);
+  expect(choiceReply.request()).toBe(choiceRequest);
+  expect(await choiceReply.finished()).toBeNull();
+  expect(choiceReply.status()).toBe(200);
+  const choiceEnvelope = z.object({
+    ok: z.literal(true),
+    data: geminiChatApprovalPageSchema,
+    error: z.null(),
+  }).strict().safeParse(await choiceReply.json());
+  expect(choiceEnvelope.success).toBe(true);
+  if (!choiceEnvelope.success) throw Error("The held Gemini preflight reply was invalid.");
+  expect(choiceEnvelope.data.data.pending).toEqual([offer]);
+  expect(heldPreflightCount).toBe(1);
+  const geminiCard = inbox.locator(".af-inbox-card").filter({
+    has: page.getByRole("heading", { name: "Gemini permission", exact: true }),
+  });
+  await expect(geminiCard).toHaveCount(1);
+  await expect(geminiCard.getByRole("button")).toHaveCount(0);
+  await expect(geminiCard.getByRole("link", { name: "Open session", exact: true })).toHaveAttribute(
+    "href",
+    "#/desktop/project/" + encodeURIComponent(alpha.id) + "/sessions?selectionKind=session&selectionId=" + encodeURIComponent(session.id),
+  );
+  const geminiDisclosure = geminiCard.locator("details").filter({ has: geminiCard.getByText("Review native permission details", { exact: true }) });
+  await expect(geminiDisclosure.locator("summary")).toBeVisible();
+  await expect(geminiDisclosure).not.toHaveAttribute("open", "");
+  const history = inbox.getByRole("region", { name: "Inbox action history", exact: true });
+  const geminiHeldRow = history.locator("article").filter({ hasText: geminiHeldReceipt.original.requestId });
+  await expect(geminiHeldRow.getByText("Server receipt: reserved", { exact: true })).toBeVisible();
+  await expect(geminiHeldRow.getByRole("button")).toHaveCount(0);
+  await expect(history.getByText("This original permission record remains retained and read-only.", { exact: true })).toBeVisible();
+  await expect(history.getByRole("button")).toHaveCount(0);
+  const needsYouCount = await inbox.locator(".af-inbox-queue .af-inbox-section-heading p").innerText();
+  const bucket = inbox.getByRole("group", { name: "Inbox bucket", exact: true });
+  await bucket.getByRole("button", { name: "Snoozed", exact: true }).click();
+  await expect(geminiCard).toHaveCount(0);
+  await bucket.getByRole("button", { name: "Needs you", exact: true }).click();
+  await expect(geminiCard).toHaveCount(1);
+  expect(await inbox.locator(".af-inbox-queue .af-inbox-section-heading p").innerText()).toBe(needsYouCount);
+  expect(nativeDecisionPosts).toBe(0);
+  expect(requests).toHaveLength(0);
+  expect(permissionDispositionPosts).toBe(0);
   expect(
-    new URL(decisionPreflight.url()).pathname +
-      new URL(decisionPreflight.url()).search,
-  ).toBe(approvalsPath + expectedApprovalsSearch);
-  const foreignResponse = await decisionPreflightResponse;
-  await foreignResponse.finished();
-  await foreignResponseSettled;
-  const foreignEnvelope = z
-    .object({
-      ok: z.literal(true),
-      data: geminiChatApprovalPageSchema,
-      error: z.null(),
-    })
-    .strict()
-    .safeParse(await foreignResponse.json());
-  if (foreignResponse.status() !== 200 || !foreignEnvelope.success)
-    throw Error(
-      "The decision preflight did not return the strict foreign approval page.",
-    );
-  expect(foreignEnvelope.data.data.pending).toEqual([
-    { ...offer, turnRequestId: foreignTurn },
-  ]);
-  await expect(
-    geminiCard.getByText(
-      "The original approval decision could not be completed or verified. Saved data was kept; check the original receipt.",
-      { exact: true },
-    ),
-  ).toBeVisible();
-  expect(foreignReadUrls).toEqual([approvalsPath + expectedApprovalsSearch]);
-  expect(
-    await page.evaluate(
-      (key) => localStorage.getItem(key),
-      GEMINI_CHAT_DECISION_IDENTITIES,
-    ),
-  ).toBe(identityBytesBeforeForeignDecision);
-  expect(decisionPosts).toBe(0);
-  expect(decisionRequests).toHaveLength(0);
-  expect(alphaDispositionPosts).toBe(0);
-  expect(betaDispositionWriteCount).toBe(betaWritesAfterSnooze);
-  await page.unroute(approvalsPattern, foreignHandler);
-  await inbox
-    .getByRole("button", { name: "Refresh Inbox", exact: true })
-    .click();
-  const retryRefreshResponse = page.waitForResponse((response) => {
-    const url = new URL(response.url());
-    return (
-      response.request().method() === "GET" &&
-      url.pathname === approvalsPath &&
-      url.search === ""
-    );
-  });
-  await geminiCard
-    .getByRole("button", { name: "Refresh exact offer", exact: true })
-    .click();
-  const retryOfferResponse = await retryRefreshResponse;
-  await retryOfferResponse.finished();
-  const retryOfferEnvelope = z
-    .object({
-      ok: z.literal(true),
-      data: geminiChatApprovalPageSchema,
-      error: z.null(),
-    })
-    .strict()
-    .safeParse(await retryOfferResponse.json());
-  if (
-    retryOfferResponse.status() !== 200 ||
-    !retryOfferEnvelope.success ||
-    retryOfferEnvelope.data.data.receipt !== null ||
-    retryOfferEnvelope.data.data.pending.length !== 1 ||
-    JSON.stringify(retryOfferEnvelope.data.data.pending[0]) !==
-      JSON.stringify(offer)
-  )
-    throw Error(
-      "The same durable Gemini R1 offer did not refresh before retry.",
-    );
-  await expect(
-    geminiCard.getByRole("button", { name: "Allow once", exact: true }),
-  ).toBeEnabled();
+    await page.evaluate((key) => localStorage.getItem(key), GEMINI_CHAT_DECISION_IDENTITIES),
+  ).toBe(identityBytesBefore);
 
-  const decisionPattern = `**/sessions/${session.id}/approval-decisions`;
-  const lostReply = async (route: import("@playwright/test").Route) => {
-    await route.fetch();
-    await route.fulfill({
-      status: 503,
-      contentType: "application/json",
-      body: JSON.stringify({
-        ok: false,
-        data: null,
-        error: "The fixture reply was lost after dispatch.",
-      }),
-    });
-  };
-  await page.route(decisionPattern, lostReply);
-  await geminiCard
-    .getByRole("button", { name: offer.approval.options[0]!.name, exact: true })
-    .click();
-  await expect.poll(() => decisionPosts).toBe(1);
-  expect(decisionRequests).toHaveLength(1);
-  expect(decisionRequests[0]?.url).toBe(
-    `/__agent-forge/projects/${alpha.id}/sessions/${session.id}/approval-decisions`,
-  );
-  const geminiDecision = z
-    .object({
-      requestId: z.string().uuid(),
-      turnRequestId: z.literal(session.requestId),
-      approvalId: z.literal(offer.approval.id),
-      optionId: z.literal(offer.approval.options[0]!.optionId),
-    })
-    .strict()
-    .safeParse(decisionRequests[0]?.body);
-  if (!geminiDecision.success)
-    throw Error(
-      "The Gemini wire request did not preserve the exact offered option.",
-    );
-  expect(decisionRequests[0]?.url).toBe(
-    `/__agent-forge/projects/${alpha.id}/sessions/${session.id}/approval-decisions`,
-  );
-  expect(betaDispositionPosts).toBe(betaPostsBeforeAlphaDecision);
-  expect(alphaDispositionPosts).toBe(0);
-  await expect(
-    geminiCard.getByText(
-      "Original decision held; no replacement will be sent.",
-      { exact: true },
-    ),
-  ).toBeVisible();
-  await page.unroute(decisionPattern, lostReply);
-  await inbox
-    .getByRole("button", { name: "Refresh Inbox", exact: true })
-    .click();
-  const heldCard = inbox.locator(".af-inbox-card").filter({
-    has: page.getByRole("heading", {
-      name: "Original permission decision held",
-      exact: true,
-    }),
+  const staleReadPath = approvalsPath;
+  let makeSourceStale = true;
+  await ownRoute(page, "**/sessions/" + session.id + "/approvals", async (route) => {
+    const url = new URL(route.request().url());
+    if (makeSourceStale && route.request().method() === "GET" && url.pathname === staleReadPath && url.search === "") {
+      makeSourceStale = false;
+      await route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ ok: false, data: null, error: "Fixture source temporarily unavailable." }),
+      });
+      return;
+    }
+    await route.continue();
   });
-  await expect(
-    heldCard.getByRole("button", {
-      name: "Check original decision",
-      exact: true,
-    }),
-  ).toBeVisible();
-  await heldCard
-    .getByRole("button", { name: "Check original decision", exact: true })
-    .click();
-  await expect.poll(() => originalReceiptReads).toBeGreaterThan(0);
-  expect(decisionPosts).toBe(1);
-  await expect(
-    geminiCard.getByRole("button", { name: "Mark done", exact: true }),
-  ).toBeEnabled();
-  const terminalDone = page.waitForRequest(
-    (request) =>
-      request.method() === "POST" &&
-      new URL(request.url()).pathname ===
-        `/__agent-forge/projects/${alpha.id}/inbox-dispositions/requests`,
+  const staleRead = page.waitForResponse((response) =>
+    response.request().method() === "GET" && new URL(response.url()).pathname === staleReadPath && new URL(response.url()).search === "",
   );
-  const terminalApply = page.waitForRequest(
-    (request) =>
-      request.method() === "POST" &&
-      new URL(request.url()).pathname ===
-        `/__agent-forge/projects/${alpha.id}/inbox-dispositions` &&
-      request.postDataJSON().operation === "done",
-  );
-  await geminiCard
-    .getByRole("button", { name: "Mark done", exact: true })
-    .click();
-  const terminalDoneRequest = await terminalDone;
-  const terminalApplyRequest = await terminalApply;
-  expect(terminalApplyRequest.postDataJSON()).toEqual(
-    terminalDoneRequest.postDataJSON(),
-  );
-  expect(terminalApplyRequest.postDataJSON().requestId).toBe(
-    terminalDoneRequest.postDataJSON().requestId,
-  );
-  const terminalDoneBody = terminalDoneRequest.postDataJSON();
-  const doneOriginal = inboxDispositionOriginalSchema
-    .strict()
-    .safeParse(terminalDoneBody);
-  expect(doneOriginal.success).toBe(true);
-  if (!doneOriginal.success)
-    throw Error(
-      "The positive Done request did not match the strict original schema.",
-    );
-  expect(Object.keys(doneOriginal.data).sort()).toEqual(
-    [
-      "expectedCatalogRevision",
-      "expectedRevision",
-      "item",
-      "operation",
-      "requestId",
-      "workspace",
-    ].sort(),
-  );
-  expect(Object.keys(doneOriginal.data.item).sort()).toEqual(
-    ["sourceKind", "sourceRevision", "stableItemId"].sort(),
-  );
-  expect(doneOriginal.data.item.sourceKind).toBe("permission");
-  expect(doneOriginal.data.operation).toBe("done");
-  const terminalDoneResponse = await terminalApplyRequest.response();
-  expect(terminalDoneResponse?.status()).toBe(200);
-  await terminalDoneResponse?.finished();
-  const doneEnvelope = z
-    .object({
-      ok: z.literal(true),
-      data: z
-        .object({
-          entry: inboxDispositionEntrySchema.nullable(),
-          receipt: inboxDispositionReceiptSchema,
-        })
-        .strict(),
-      error: z.null(),
-    })
-    .strict()
-    .safeParse(await terminalDoneResponse?.json());
-  expect(doneEnvelope.success).toBe(true);
-  if (!doneEnvelope.success || !doneOriginal.success)
-    throw Error("The Done reply was not a strict success envelope.");
-  expect(doneEnvelope.data.data.receipt).toMatchObject({
-    original: { ...doneOriginal.data, projectId: alpha.id },
-    phase: "applied",
-    outcome: "applied",
-    resultingValue: "done",
+  await inbox.getByRole("button", { name: "Refresh Inbox", exact: true }).click();
+  const staleResponse = await waitForRouteSignal(staleRead);
+  expect(staleResponse.status()).toBe(503);
+  await expect(geminiCard).toHaveCount(1);
+  await expect(geminiCard.locator(".af-inbox-card-meta")).toContainText("Check required");
+  await expect(geminiCard.getByRole("button")).toHaveCount(0);
+  await expect(history.getByText("This original permission record remains retained and read-only.", { exact: true })).toBeVisible();
+  expect(nativeDecisionPosts).toBe(0);
+  expect(permissionDispositionPosts).toBe(0);
+  expect(await page.evaluate((key) => localStorage.getItem(key), GEMINI_CHAT_DECISION_IDENTITIES)).toBe(identityBytesBefore);
+  await page.unroute("**/sessions/" + session.id + "/approvals");
+  await ownRoute(page, "**/sessions/" + session.id + "/approvals", async (route) => {
+    const response = await fetchProtected(route);
+    let raw: unknown;
+    try { raw = await response.json(); } catch { raw = null; }
+    const current = z.object({ ok: z.literal(true), data: geminiChatApprovalPageSchema, error: z.null() }).strict().safeParse(raw);
+    if (response.status() !== 200 || !current.success) throw Error("The incomplete-state fixture did not start from a strict current R1 response.");
+    const sourceOffer = current.data.data.pending.find((item) => item.turnRequestId === session.requestId && item.approval.id === offer.approval.id);
+    if (!sourceOffer) throw Error("The incomplete-state projection lost the exact R1 offer.");
+    const incompleteOffer = { ...sourceOffer, approval: { ...sourceOffer.approval, detailsComplete: false, options: sourceOffer.approval.options.filter((option) => option.kind !== "allow_once") } };
+    const projected = geminiChatApprovalPageSchema.safeParse({ pending: [incompleteOffer], receipt: null });
+    if (!projected.success) throw Error("The incomplete-state projection was not a legal strict provider page.");
+    await route.fulfill({ response, body: JSON.stringify({ ok: true, data: projected.data, error: null }) });
   });
-  expect(doneEnvelope.data.data.entry).not.toBeNull();
-  expect(doneEnvelope.data.data.entry).toMatchObject({
+  const incompleteRead = page.waitForResponse((response) => response.request().method() === "GET" && new URL(response.url()).pathname === approvalsPath && new URL(response.url()).search === "");
+  await inbox.getByRole("button", { name: "Refresh Inbox", exact: true }).click();
+  const incompleteReply = await waitForRouteSignal(incompleteRead);
+  expect(incompleteReply.status()).toBe(200);
+  const incompleteEnvelope = z.object({ ok: z.literal(true), data: geminiChatApprovalPageSchema, error: z.null() }).strict().safeParse(await incompleteReply.json());
+  expect(incompleteEnvelope.success).toBe(true);
+  if (!incompleteEnvelope.success) throw Error("The incomplete Gemini response did not match its strict protocol.");
+  expect(incompleteEnvelope.data.data.pending).toEqual([{ ...offer, approval: { ...offer.approval, detailsComplete: false, options: offer.approval.options.filter((option) => option.kind !== "allow_once") } }]);
+  await geminiDisclosure.locator("summary").click();
+  await expect(geminiDisclosure).toHaveAttribute("open", "");
+  await expect(geminiDisclosure.getByText("Complete details are unavailable. This permission item remains read-only.", { exact: true })).toBeVisible();
+  await expect(geminiCard.getByRole("button")).toHaveCount(0);
+  expect(nativeDecisionPosts).toBe(0);
+  expect(permissionDispositionPosts).toBe(0);
+  expect(await page.evaluate((key) => localStorage.getItem(key), GEMINI_CHAT_DECISION_IDENTITIES)).toBe(identityBytesBefore);
+  await geminiCard.getByRole("link", { name: "Open session", exact: true }).click();
+  const returnedConversation = page.getByRole("region", { name: "Session conversation", exact: true });
+  const nativePermissions = page.getByRole("region", { name: "Native Gemini permissions", exact: true });
+  await expect(nativePermissions.getByRole("status").filter({ hasText: "Recording the original decision intent…" })).toHaveCount(0);
+  const refreshNative = nativePermissions.getByRole("button", { name: "Refresh native permissions", exact: true });
+  await expect(refreshNative).toBeEnabled();
+  expect(nativeDecisionPosts).toBe(0);
+  expect(permissionDispositionPosts).toBe(0);
+  expect(await page.evaluate((key) => localStorage.getItem(key), GEMINI_CHAT_DECISION_IDENTITIES)).toBe(identityBytesBefore);
+  trace.detach();
+  await page.unroute("**/sessions/" + session.id + "/approvals");
+  const positiveRefresh = page.waitForResponse((response) => response.request().method() === "GET" && new URL(response.url()).pathname === approvalsPath && new URL(response.url()).search === "");
+  await refreshNative.click();
+  const positiveRead = await waitForRouteSignal(positiveRefresh);
+  expect(positiveRead.status()).toBe(200);
+  const positivePage = z.object({ ok: z.literal(true), data: geminiChatApprovalPageSchema, error: z.null() }).strict().safeParse(await positiveRead.json());
+  expect(positivePage.success).toBe(true);
+  if (!positivePage.success) throw Error("The separately refreshed Gemini original was invalid.");
+  expect(positivePage.data.data.pending).toEqual([offer]);
+  const allowOption = offer.approval.options.find((option) => option.kind === "allow_once");
+  if (!allowOption) throw Error("The exact R1 offer has no allow_once option.");
+  const nativeDecisionRequest = page.waitForRequest((request) => request.method() === "POST" && new URL(request.url()).pathname === "/__agent-forge/projects/" + alpha.id + "/sessions/" + session.id + "/approval-decisions");
+  const nativeDecision = page.waitForResponse((response) => response.request().method() === "POST" && new URL(response.url()).pathname === "/__agent-forge/projects/" + alpha.id + "/sessions/" + session.id + "/approval-decisions");
+  await returnedConversation.getByRole("button", { name: "Allow once", exact: true }).click();
+  const actualDecisionRequest = await waitForRouteSignal(nativeDecisionRequest);
+  const nativeWire = geminiChatDecisionRequestSchema.strict().safeParse(actualDecisionRequest.postDataJSON());
+  expect(nativeWire.success).toBe(true);
+  if (!nativeWire.success) throw Error("The positive Gemini request was invalid.");
+  expect(nativeWire.data).toMatchObject({ turnRequestId: session.requestId, approvalId: offer.approval.id, optionId: allowOption.optionId });
+  expect(nativeWire.data.requestId).not.toBe(session.requestId);
+  expect(z.string().uuid().safeParse(nativeWire.data.requestId).success).toBe(true);
+  const nativeReply = await waitForRouteSignal(nativeDecision);
+  expect(nativeReply.request()).toBe(actualDecisionRequest);
+  expect(nativeReply.status()).toBe(200);
+  const nativeEnvelope = z.object({ ok: z.literal(true), data: geminiChatDecisionReceiptSchema, error: z.null() }).strict().safeParse(await nativeReply.json());
+  expect(nativeEnvelope.success).toBe(true);
+  if (!nativeEnvelope.success) throw Error("The positive Gemini receipt was invalid.");
+  expect(nativeEnvelope.data.data).toEqual({ ...nativeWire.data, projectId: alpha.id, sessionId: session.id, state: "recorded", recordedAt: expect.any(String) });
+  expect(nativeDecisionPosts).toBe(1);
+  expect(requests[0]?.body).toEqual(nativeWire.data);
+  expect(permissionDispositionPosts).toBe(0);
+  // Consumer-only retained-identity fixture joined to the real R1 offer; it is not proof of native delivery.
+  const heldIdentity = geminiChatDecisionRequestSchema.extend({ projectId: z.string(), sessionId: z.string() }).strict().parse({ ...nativeWire.data, requestId: randomUUID(), projectId: alpha.id, sessionId: session.id });
+  const heldIdentityBytes = JSON.stringify({ version: 1, records: [heldIdentity] });
+  await page.evaluate(({ key, bytes }) => localStorage.setItem(key, bytes), { key: GEMINI_CHAT_DECISION_IDENTITIES, bytes: heldIdentityBytes });
+  expect(await page.evaluate((key) => localStorage.getItem(key), GEMINI_CHAT_DECISION_IDENTITIES)).toBe(heldIdentityBytes);
+  await page.evaluate((hash) => { location.hash = hash; }, "/desktop/inbox?project=" + encodeURIComponent(alpha.id));
+  const heldInbox = page.getByRole("region", { name: "Inbox", exact: true });
+  await heldInbox.getByRole("button", { name: "Refresh Inbox", exact: true }).click();
+  const heldCard = heldInbox.locator(".af-inbox-card").filter({ has: page.getByRole("heading", { name: "Original permission decision held", exact: true }) });
+  await expect(heldCard).toHaveCount(1);
+  await expect(heldCard.getByText("Original permission is held. No replacement decision will be sent.", { exact: true })).toBeVisible();
+  await expect(heldCard.getByRole("button")).toHaveCount(0);
+  await expect(heldCard.getByRole("link", { name: "Open session", exact: true })).toHaveAttribute("href", "#/desktop/project/" + encodeURIComponent(alpha.id) + "/sessions?selectionKind=session&selectionId=" + encodeURIComponent(session.id));
+  const heldBucket = heldInbox.getByRole("group", { name: "Inbox bucket", exact: true });
+  const heldCount = await heldInbox.locator(".af-inbox-queue .af-inbox-section-heading p").innerText();
+  await heldBucket.getByRole("button", { name: "Snoozed", exact: true }).click();
+  await expect(heldCard).toHaveCount(0);
+  await heldBucket.getByRole("button", { name: "Needs you", exact: true }).click();
+  await expect(heldCard).toHaveCount(1);
+  expect(await heldInbox.locator(".af-inbox-queue .af-inbox-section-heading p").innerText()).toBe(heldCount);
+  expect(await page.evaluate((key) => localStorage.getItem(key), GEMINI_CHAT_DECISION_IDENTITIES)).toBe(heldIdentityBytes);
+  expect(nativeDecisionPosts).toBe(1);
+  expect(permissionDispositionPosts).toBe(0);
+
+});
+
+test("Inbox resolves a real persisted apply after the page loses its reply", async ({ page }) => {
+  await page.addInitScript(
+    ({ key, entries }) => {
+      if (localStorage.getItem(key) === null)
+        localStorage.setItem(key, JSON.stringify({ version: 1, entries }));
+    },
+    {
+      key: writeJournalKey,
+      entries: [
+        {
+          key: "terminal-alpha-unknown",
+          projectId: alpha.id,
+          workspace,
+          action: "comment",
+          beadId: "alpha-epic",
+          title: "Terminal Alpha unknown write",
+          createdId: null,
+          stage: "write",
+          phase: "unknown",
+          message: "Outcome unknown; check before repeating.",
+        },
+        {
+          key: "terminal-beta-unknown",
+          projectId: beta.id,
+          workspace,
+          action: "comment",
+          beadId: "beta-epic",
+          title: "Terminal Beta unknown write",
+          createdId: null,
+          stage: "write",
+          phase: "unknown",
+          message: "Outcome unknown; check before repeating.",
+        },
+      ],
+    },
+  );
+  let alphaApplyPosts = 0;
+  let betaPosts = 0;
+  let alphaReservePosts = 0;
+  type TerminalApplyCapture = { status: number; body: unknown; text: string; applyBody: unknown; headers: Record<string, string> };
+  const terminalCapture: { value: TerminalApplyCapture | null } = { value: null };
+  let reserveBody: unknown = null;
+  let markPersisted: () => void = () => {};
+  const persisted = new Promise<void>((resolve, reject) => {
+    markPersisted = resolve;
+    rejectPendingTerminalRoute = reject;
+  });
+  void persisted.catch(() => {});
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (request.method() === "POST" && url.pathname === "/__agent-forge/projects/" + alpha.id + "/inbox-dispositions/requests") {
+      alphaReservePosts++;
+      reserveBody = request.postDataJSON();
+    }
+    if (request.method() === "POST" && url.pathname === "/__agent-forge/projects/" + alpha.id + "/inbox-dispositions")
+      alphaApplyPosts++;
+    if (request.method() === "POST" && url.pathname.startsWith("/__agent-forge/projects/" + beta.id + "/inbox-dispositions"))
+      betaPosts++;
+  });
+  const applyPath = "/__agent-forge/projects/" + alpha.id + "/inbox-dispositions";
+  await ownRoute(page, "**/projects/" + alpha.id + "/inbox-dispositions", async (route) => {
+    if (route.request().method() !== "POST" || new URL(route.request().url()).pathname !== applyPath) return route.continue();
+    const request = route.request();
+    const url = new URL(request.url());
+    const originalHeaders = await request.allHeaders();
+    const response = await route.fetch({ headers: { ...originalHeaders, origin: url.origin, "sec-fetch-site": "same-origin" } });
+    const text = await response.text();
+    let body: unknown;
+    try { body = JSON.parse(text); } catch { body = null; }
+    const envelope = z.object({ ok: z.literal(true), data: z.object({ entry: inboxDispositionEntrySchema, receipt: inboxDispositionReceiptSchema }).strict(), error: z.null() }).strict().safeParse(body);
+    const wire = inboxDispositionOriginalSchema.strict().safeParse(request.postDataJSON());
+    if (response.status() !== 200 || !envelope.success || !wire.success || envelope.data.data.receipt.phase !== "applied" || JSON.stringify(envelope.data.data.receipt.original) !== JSON.stringify({ ...wire.data, projectId: alpha.id }))
+      throw Error("The protected apply did not persist the exact paired terminal200 before reply loss.");
+    expect(envelope.data.data.receipt).toMatchObject({ outcome: "applied", resultingValue: wire.data.operation, resultingRevision: wire.data.expectedRevision + 1 });
+    expect(envelope.data.data.entry).toMatchObject({ projectId: alpha.id, workspace, item: wire.data.item, revision: wire.data.expectedRevision + 1, operation: wire.data.operation });
+    const storedTerminal = inboxDispositionStoreSchema.strict().safeParse(JSON.parse(readFileSync(dispositionStatePath, "utf8")));
+    if (!storedTerminal.success) throw Error("The private disposition file was not strictly persisted before reply loss.");
+    expect(JSON.stringify(storedTerminal.data.receipts.find((receipt) => receipt.original.requestId === wire.data.requestId))).toBe(JSON.stringify(envelope.data.data.receipt));
+    expect(JSON.stringify(storedTerminal.data.entries.find((entry) => entry.item.stableItemId === wire.data.item.stableItemId && entry.item.sourceRevision === wire.data.item.sourceRevision))).toBe(JSON.stringify(envelope.data.data.entry));
+    terminalCapture.value = { status: response.status(), body, text, applyBody: request.postDataJSON(), headers: originalHeaders };
+    markPersisted();
+    markExpectedRouteAbort(route.request());
+    await route.abort();
+  });
+  await openSettled(page, "/index.html#/desktop/inbox?project=" + encodeURIComponent(beta.id));
+  const inbox = page.getByRole("region", { name: "Inbox", exact: true });
+  const alphaProject = inbox.locator('.af-inbox-project[aria-label="Alpha"]');
+  const betaProject = inbox.locator('.af-inbox-project[aria-label="Beta"]');
+  const alphaCard = alphaProject.locator(".af-inbox-card").filter({
+    has: page.getByRole("heading", { name: "Review comment outcome", exact: true }),
+  });
+  const betaCard = betaProject.locator(".af-inbox-card").filter({
+    has: page.getByRole("heading", { name: "Review comment outcome", exact: true }),
+  });
+  const reservePromise = page.waitForRequest((request) =>
+    request.method() === "POST" && new URL(request.url()).pathname === "/__agent-forge/projects/" + alpha.id + "/inbox-dispositions/requests",
+  );
+  const reserveReplyPromise = page.waitForResponse((response) =>
+    response.request().method() === "POST" && new URL(response.url()).pathname === "/__agent-forge/projects/" + alpha.id + "/inbox-dispositions/requests",
+  );
+  const applyPromise = page.waitForRequest((request) => request.method() === "POST" && new URL(request.url()).pathname === applyPath);
+  const lostApplyReplyPromise = page.waitForEvent("requestfailed", (request) => request.method() === "POST" && new URL(request.url()).pathname === applyPath);
+  await alphaCard.getByRole("button", { name: "Snooze 1 hour", exact: true }).click();
+  const reserveRequest = await waitForRouteSignal(reservePromise);
+  reserveBody = reserveRequest.postDataJSON();
+  const reserveWire = inboxDispositionOriginalSchema.strict().safeParse(reserveBody);
+  expect(reserveWire.success).toBe(true);
+  if (!reserveWire.success) throw Error("The real terminal reserve body was invalid.");
+  expect(reserveWire.data.item.sourceKind).toBe("unknown-bead-write");
+  expect(reserveWire.data.operation).toBe("snooze-1h");
+  const reserveReply = await waitForRouteSignal(reserveReplyPromise);
+  expect(reserveReply.status()).toBe(200);
+  const reserveEnvelope = z.object({
+    ok: z.literal(true),
+    data: z.object({ entry: inboxDispositionEntrySchema.nullable(), receipt: inboxDispositionReceiptSchema }).strict(),
+    error: z.null(),
+  }).strict().safeParse(await reserveReply.json());
+  expect(reserveEnvelope.success).toBe(true);
+  if (!reserveEnvelope.success) throw Error("The real terminal reservation receipt was invalid.");
+  const applyRequest = await waitForRouteSignal(applyPromise);
+  expect(applyRequest.postDataJSON()).toEqual(reserveRequest.postDataJSON());
+  await waitForRouteSignal(persisted);
+  const lostApplyReply = await waitForRouteSignal(lostApplyReplyPromise);
+  expect(lostApplyReply).toBe(applyRequest);
+  expect(observedExpectedRouteAborts.has(lostApplyReply)).toBe(true);
+  rejectPendingTerminalRoute = null;
+  const settled = terminalCapture.value;
+  if (!settled) throw Error("The original apply did not reach the protected endpoint.");
+  expect(settled.status).toBe(200);
+  expect(settled.headers.origin).toBe(new URL(applyRequest.url()).origin);
+  expect(settled.headers["sec-fetch-site"]).toBe("same-origin");
+  const terminalEnvelope = z.object({
+    ok: z.literal(true),
+    data: z.object({ entry: inboxDispositionEntrySchema, receipt: inboxDispositionReceiptSchema }).strict(),
+    error: z.null(),
+  }).strict().safeParse(settled.body);
+  expect(terminalEnvelope.success).toBe(true);
+  if (!terminalEnvelope.success) throw Error("The actual terminal receipt was invalid.");
+  expect(terminalEnvelope.data.data.receipt.phase).toBe("applied");
+  expect(terminalEnvelope.data.data.receipt.original).toEqual({ ...reserveWire.data, projectId: alpha.id });
+  expect(terminalEnvelope.data.data.entry).toMatchObject({
     projectId: alpha.id,
     workspace,
-    item: doneOriginal.data.item,
-    revision: doneOriginal.data.expectedRevision + 1,
-    operation: "done",
+    item: reserveWire.data.item,
+    revision: reserveWire.data.expectedRevision + 1,
+    operation: "snooze-1h",
   });
-  await expect(
-    geminiCard.getByRole("heading", { name: "Gemini permission", exact: true }),
-  ).toHaveCount(0);
-  expect(decisionPosts).toBe(1);
+  expect(terminalEnvelope.data.data.receipt).toMatchObject({
+    outcome: "applied",
+    resultingValue: "snooze-1h",
+    resultingRevision: reserveWire.data.expectedRevision + 1,
+  });
+  expect(settled.text).toContain('"phase":"applied"');
+  expect(alphaApplyPosts).toBe(1);
+  expect(betaPosts).toBe(0);
+  const alphaNotice = inbox.locator(".af-inbox-notice").filter({ has: page.getByRole("heading", { name: "Terminal Alpha unknown write", exact: true }) });
+  const betaNotice = inbox.locator(".af-inbox-notice").filter({ has: page.getByRole("heading", { name: "Terminal Beta unknown write", exact: true }) });
+  const sourceJournalBytes = await page.evaluate((key) => localStorage.getItem(key), writeJournalKey);
+  const strictSourceJournal = writeJournalSchema.safeParse(sourceJournalBytes ? JSON.parse(sourceJournalBytes) : null);
+  expect(strictSourceJournal.success).toBe(true);
+  if (!strictSourceJournal.success) throw Error("The terminal unknown-write journal was invalid.");
+  await expect(alphaNotice.getByText("Outcome unknown", { exact: true })).toBeVisible();
+  await expect(betaNotice.getByText("Outcome unknown", { exact: true })).toBeVisible();
+  await expect(alphaCard.getByRole("button", { name: "Mark done · source unresolved", exact: true })).toBeDisabled();
+  await expect(betaCard.getByRole("button", { name: "Mark done · source unresolved", exact: true })).toBeDisabled();
+  const recoveryPath = "/__agent-forge/inbox-dispositions/recovery";
+  type AuthorityCapture = { request: Request; response: Awaited<ReturnType<typeof fetchProtected>>; data: unknown };
+  let releaseInitialRecovery: () => void = () => {};
+  let releaseCallbackRecovery: () => void = () => {};
+  let markRecoveryHeld: () => void = () => {};
+  const initialRecoveryGate = new Promise<void>((resolve) => { releaseInitialRecovery = resolve; });
+  const callbackRecoveryGate = new Promise<void>((resolve) => { releaseCallbackRecovery = resolve; });
+  const recoveryHeld = new Promise<void>((resolve) => { markRecoveryHeld = resolve; });
+  releaseHeldInboxRoutes.push(() => { releaseInitialRecovery(); releaseCallbackRecovery(); });
+  const rootInventoryCaptures: Array<AuthorityCapture | null> = [null, null];
+  let recoveryReadsWhileHeld = 0;
+  let markCallbackRecoveryHeld: () => void = () => {};
+  const callbackRecoveryHeld = new Promise<void>((resolve) => { markCallbackRecoveryHeld = resolve; });
+  await ownRoute(page, "**/inbox-dispositions/recovery", async (route) => {
+    const response = await fetchProtected(route);
+    const raw = await response.json();
+    const parsed = z.object({ ok: z.literal(true), data: inboxDispositionRecoverySchema, error: z.null() }).strict().safeParse(raw);
+    if (response.status() !== 200 || !parsed.success) throw Error("The actual root inventory response was not strict current authority.");
+    const ordinal = ++recoveryReadsWhileHeld;
+    if (ordinal === 1) {
+      rootInventoryCaptures[0] = { request: route.request(), response, data: parsed.data.data };
+      markRecoveryHeld();
+      await initialRecoveryGate;
+    } else if (ordinal === 2) {
+      rootInventoryCaptures[1] = { request: route.request(), response, data: parsed.data.data };
+      markCallbackRecoveryHeld();
+      await callbackRecoveryGate;
+    }
+    await route.fulfill({ response, body: JSON.stringify(raw) });
+  });
+  const betaCollectionPath = "/__agent-forge/projects/" + beta.id + "/inbox-dispositions";
+  let releaseCollection: () => void = () => {};
+  let markCollectionHeld: () => void = () => {};
+  const collectionGate = new Promise<void>((resolve) => { releaseCollection = resolve; });
+  const collectionHeld = new Promise<void>((resolve) => { markCollectionHeld = resolve; });
+  releaseHeldInboxRoutes.push(releaseCollection);
+  let betaCollectionReads = 0;
+  const betaCollectionCapture: { value: AuthorityCapture | null } = { value: null };
+  await ownRoute(page, "**/projects/" + beta.id + "/inbox-dispositions", async (route) => {
+    if (route.request().method() !== "GET" || new URL(route.request().url()).pathname !== betaCollectionPath) return route.continue();
+    const response = await fetchProtected(route);
+    const raw = await response.json();
+    const parsed = z.object({ ok: z.literal(true), data: z.object({ entries: z.array(inboxDispositionEntrySchema), receipts: z.array(inboxDispositionReceiptSchema) }).strict(), error: z.null() }).strict().safeParse(raw);
+    if (response.status() !== 200 || !parsed.success) throw Error("The actual scoped collection was not strict current authority.");
+    betaCollectionReads++;
+    if (betaCollectionReads === 1) {
+      betaCollectionCapture.value = { request: route.request(), response, data: parsed.data.data };
+      markCollectionHeld();
+      await collectionGate;
+    }
+    await route.fulfill({ response, body: JSON.stringify(raw) });
+  });
+  const betaCollectionResponse = page.waitForResponse((response) => response.request().method() === "GET" && new URL(response.url()).pathname === betaCollectionPath);
+  const betaReservePromise = page.waitForRequest((request) => request.method() === "POST" && new URL(request.url()).pathname === "/__agent-forge/projects/" + beta.id + "/inbox-dispositions/requests");
+  const betaReserveResponse = page.waitForResponse((response) => response.request().method() === "POST" && new URL(response.url()).pathname === "/__agent-forge/projects/" + beta.id + "/inbox-dispositions/requests");
+  const betaApplyPromise = page.waitForResponse((response) => response.request().method() === "POST" && new URL(response.url()).pathname === "/__agent-forge/projects/" + beta.id + "/inbox-dispositions");
+  const recoveryResponse = page.waitForResponse((response) => response.request() === rootInventoryCaptures[0]?.request);
+  const callbackRecoveryResponse = page.waitForResponse((response) => response.request() === rootInventoryCaptures[1]?.request);
+  await page.reload();
+  const reloadedInbox = page.getByRole("region", { name: "Inbox", exact: true });
+  await expect(reloadedInbox.getByRole("heading", { name: "Inbox", exact: true })).toBeVisible();
+  await waitForRouteSignal(recoveryHeld);
+  const pendingBeta = reloadedInbox.locator('.af-inbox-project[aria-label="Beta"] .af-inbox-card').filter({ has: page.getByRole("heading", { name: "Review comment outcome", exact: true }) });
+  expect(alphaApplyPosts).toBe(1);
+  expect(alphaReservePosts).toBe(1);
+  expect(betaPosts).toBe(0);
+  const sameIntentBetaAction = pendingBeta.getByRole("button", { name: "Snooze 1 hour", exact: true });
+  await expect(sameIntentBetaAction).toBeEnabled();
+  await sameIntentBetaAction.click();
+  await expect(reloadedInbox.getByRole("status").filter({ hasText: "Checking this Inbox action…" })).toBeVisible();
+  await waitForRouteSignal(callbackRecoveryHeld);
+  await expect(sameIntentBetaAction).toBeDisabled();
+  expect(alphaApplyPosts).toBe(1);
+  expect(alphaReservePosts).toBe(1);
+  expect(betaPosts).toBe(0);
+  const initialRootCapture = rootInventoryCaptures[0];
+  const callbackRootCapture = rootInventoryCaptures[1];
+  if (!initialRootCapture || !callbackRootCapture) throw Error("The two initial current root responses were not captured.");
+  expect(recoveryReadsWhileHeld).toBe(2);
+  for (const capture of [initialRootCapture, callbackRootCapture]) {
+    expect(capture.request.method()).toBe("GET");
+    expect(new URL(capture.request.url()).pathname).toBe(recoveryPath);
+    expect(capture.response.status()).toBe(200);
+  }
+  const rootInventoryProofBytes = [JSON.stringify(initialRootCapture.data), JSON.stringify(callbackRootCapture.data)];
+  expect(rootInventoryProofBytes[1]).toBe(rootInventoryProofBytes[0]);
+  for (const capture of [initialRootCapture, callbackRootCapture]) {
+    const inventory = inboxDispositionRecoverySchema.strict().safeParse(capture.data);
+    expect(inventory.success).toBe(true);
+    if (!inventory.success) throw Error("A frozen global inventory did not match the strict recovery schema.");
+    const alphaReceipts = inventory.data.receipts.filter((receipt) => receipt.original.requestId === reserveWire.data.requestId);
+    expect(alphaReceipts).toHaveLength(1);
+    expect(alphaReceipts[0]).toEqual(terminalEnvelope.data.data.receipt);
+  }
+  expect(alphaApplyPosts).toBe(1);
+  expect(alphaReservePosts).toBe(1);
+  expect(betaPosts).toBe(0);
+  releaseInitialRecovery();
+  releaseCallbackRecovery();
+  await waitForRouteSignal(collectionHeld);
+  expect(betaCollectionReads).toBe(1);
+  const heldBetaCollection = betaCollectionCapture.value;
+  if (!heldBetaCollection) throw Error("The actual Beta callback collection response was not captured.");
+  expect(heldBetaCollection.request.method()).toBe("GET");
+  expect(heldBetaCollection.request.url()).toContain(betaCollectionPath);
+  expect(new URL(heldBetaCollection.request.url()).pathname).toBe(betaCollectionPath);
+  expect(heldBetaCollection.response.status()).toBe(200);
+  const betaCollectionProofBytes = JSON.stringify(heldBetaCollection.data);
+  expect(alphaApplyPosts).toBe(1);
+  expect(alphaReservePosts).toBe(1);
+  expect(betaPosts).toBe(0);
+  releaseCollection();
+  const betaCollectionReply = await waitForRouteSignal(betaCollectionResponse);
+  expect(betaCollectionReply.request()).toBe(heldBetaCollection.request);
+  expect(betaCollectionReply.status()).toBe(200);
+  expect(await betaCollectionReply.finished()).toBeNull();
+  const betaCollectionEnvelope = z.object({ ok: z.literal(true), data: z.object({ entries: z.array(inboxDispositionEntrySchema), receipts: z.array(inboxDispositionReceiptSchema) }).strict(), error: z.null() }).strict().safeParse(await betaCollectionReply.json());
+  expect(betaCollectionEnvelope.success).toBe(true);
+  if (!betaCollectionEnvelope.success) throw Error("The actual Beta scoped collection was invalid.");
+  expect(JSON.stringify(betaCollectionEnvelope.data.data)).toBe(betaCollectionProofBytes);
+  const recoveryReply = await waitForRouteSignal(recoveryResponse);
+  expect(recoveryReply.request()).toBe(initialRootCapture.request);
+  expect(recoveryReply.status()).toBe(200);
+  expect(await recoveryReply.finished()).toBeNull();
+  const rootEnvelope = z.object({ ok: z.literal(true), data: inboxDispositionRecoverySchema, error: z.null() }).strict().safeParse(await recoveryReply.json());
+  expect(rootEnvelope.success).toBe(true);
+  if (!rootEnvelope.success) throw Error("The actual root inventory did not parse.");
+  expect(JSON.stringify(rootEnvelope.data.data)).toBe(rootInventoryProofBytes[0]);
+  const callbackRecoveryReply = await waitForRouteSignal(callbackRecoveryResponse);
+  expect(callbackRecoveryReply.request()).toBe(callbackRootCapture.request);
+  expect(callbackRecoveryReply.status()).toBe(200);
+  expect(await callbackRecoveryReply.finished()).toBeNull();
+  const callbackRootEnvelope = z.object({ ok: z.literal(true), data: inboxDispositionRecoverySchema, error: z.null() }).strict().safeParse(await callbackRecoveryReply.json());
+  expect(callbackRootEnvelope.success).toBe(true);
+  if (!callbackRootEnvelope.success) throw Error("The actual callback root inventory did not parse.");
+  expect(JSON.stringify(callbackRootEnvelope.data.data)).toBe(rootInventoryProofBytes[1]);
+  expect(alphaApplyPosts).toBe(1);
+  expect(alphaReservePosts).toBe(1);
+  const betaReserve = await waitForRouteSignal(betaReservePromise);
+  const betaWire = inboxDispositionOriginalSchema.strict().safeParse(betaReserve.postDataJSON());
+  expect(betaWire.success).toBe(true);
+  if (!betaWire.success) throw Error("The same-intent Beta original was invalid.");
+  expect(betaWire.data.item.sourceKind).toBe("unknown-bead-write");
+  expect(new URL(betaReserve.url()).pathname).toBe("/__agent-forge/projects/" + beta.id + "/inbox-dispositions/requests");
+  expect(betaWire.data.workspace).toBe(workspace);
+  expect(betaWire.data.operation).toBe("snooze-1h");
+  expect(z.string().uuid().safeParse(betaWire.data.requestId).success).toBe(true);
+  expect(betaWire.data.requestId).not.toBe(reserveWire.data.requestId);
+  const betaReserveReply = await waitForRouteSignal(betaReserveResponse);
+  expect(betaReserveReply.request()).toBe(betaReserve);
+  expect(betaReserveReply.status()).toBe(200);
+  const betaReservedEnvelope = z.object({ ok: z.literal(true), data: z.object({ entry: inboxDispositionEntrySchema.nullable(), receipt: inboxDispositionReceiptSchema }).strict(), error: z.null() }).strict().safeParse(await betaReserveReply.json());
+  expect(betaReservedEnvelope.success).toBe(true);
+  if (!betaReservedEnvelope.success) throw Error("The same-intent Beta reservation receipt was invalid.");
+  expect(betaReservedEnvelope.data.data.receipt.phase).toBe("reserved");
+  expect(betaReservedEnvelope.data.data.receipt.original).toEqual({ ...betaWire.data, projectId: beta.id });
+  const betaApply = await waitForRouteSignal(betaApplyPromise);
+  expect(new URL(betaApply.url()).pathname).toBe("/__agent-forge/projects/" + beta.id + "/inbox-dispositions");
+  expect(betaApply.status()).toBe(200);
+  await expect(reloadedInbox.getByRole("status").filter({ hasText: "Checking this Inbox action…" })).toHaveCount(0);
+  expect(betaApply.request().postDataJSON()).toEqual(betaReserve.postDataJSON());
+  const betaApplyEnvelope = z.object({ ok: z.literal(true), data: z.object({ entry: inboxDispositionEntrySchema, receipt: inboxDispositionReceiptSchema }).strict(), error: z.null() }).strict().safeParse(await betaApply.json());
+  expect(betaApplyEnvelope.success).toBe(true);
+  if (!betaApplyEnvelope.success) throw Error("The same-intent Beta terminal receipt was invalid.");
+  expect(betaApplyEnvelope.data.data.receipt).toMatchObject({ outcome: "applied", resultingValue: betaWire.data.operation, resultingRevision: betaWire.data.expectedRevision + 1 });
+  expect(betaApplyEnvelope.data.data.receipt.phase).toBe("applied");
+  expect(betaApplyEnvelope.data.data.receipt.original).toEqual({ ...betaWire.data, projectId: beta.id });
+  expect(betaApplyEnvelope.data.data.entry).toMatchObject({ projectId: beta.id, workspace, item: betaWire.data.item, revision: betaWire.data.expectedRevision + 1, operation: betaWire.data.operation });
+  expect(betaPosts).toBe(2);
+  expect(alphaApplyPosts).toBe(1);
+  expect(alphaReservePosts).toBe(1);
+  const alphaCollectionResponse = page.waitForResponse((response) => response.request().method() === "GET" && new URL(response.url()).pathname === "/__agent-forge/projects/" + alpha.id + "/inbox-dispositions");
+  await page.evaluate((hash) => { location.hash = hash; }, "/desktop/inbox?project=" + encodeURIComponent(alpha.id));
+  const alphaInbox = page.getByRole("region", { name: "Inbox", exact: true });
+  await expect(alphaInbox.getByRole("heading", { name: "Inbox", exact: true })).toBeVisible();
+  await alphaInbox.getByRole("button", { name: "Refresh Inbox", exact: true }).click();
+  const alphaCollectionReply = await waitForRouteSignal(alphaCollectionResponse);
+  expect(alphaCollectionReply.request().method()).toBe("GET");
+  expect(alphaCollectionReply.status()).toBe(200);
+  const collectionEnvelope = z.object({ ok: z.literal(true), data: z.object({ entries: z.array(inboxDispositionEntrySchema), receipts: z.array(inboxDispositionReceiptSchema) }).strict(), error: z.null() }).strict().safeParse(await alphaCollectionReply.json());
+  expect(collectionEnvelope.success).toBe(true);
+  if (!collectionEnvelope.success) throw Error("The exact Alpha collection read was invalid.");
+  const persistedEntry = collectionEnvelope.data.data.entries.find((entry) => entry.item.stableItemId === reserveWire.data.item.stableItemId && entry.item.sourceRevision === reserveWire.data.item.sourceRevision);
+  expect(persistedEntry).toBeDefined();
+  if (!persistedEntry) throw Error("The Alpha collection omitted the applied entry.");
+  expect(JSON.stringify(persistedEntry)).toBe(JSON.stringify(terminalEnvelope.data.data.entry));
+  expect(JSON.stringify(collectionEnvelope.data.data.receipts.find((receipt) => receipt.original.requestId === reserveWire.data.requestId))).toBe(JSON.stringify(terminalEnvelope.data.data.receipt));
+  expect(await page.evaluate((key) => localStorage.getItem(key), writeJournalKey)).toBe(sourceJournalBytes);
+  expect(alphaApplyPosts).toBe(1);
+  expect(alphaReservePosts).toBe(1);
+  expect(betaPosts).toBe(2);
+
+  await expect(alphaNotice.getByText("Outcome unknown", { exact: true })).toBeVisible();
+  await expect(betaNotice.getByText("Outcome unknown", { exact: true })).toBeVisible();
+  expect(await page.evaluate((key) => localStorage.getItem(key), writeJournalKey)).toBe(sourceJournalBytes);
 });
