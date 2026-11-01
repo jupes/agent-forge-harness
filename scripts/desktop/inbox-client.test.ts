@@ -90,6 +90,11 @@ test("Inbox permission discovery stays read-only and synchronously invalidates s
   let blockRead = false,
     announceRead: (() => void) | null = null,
     heldReads = 0;
+  const approvalPath = `/projects/${encodeURIComponent(FIXTURE_PROJECT_ID)}/sessions/${encodeURIComponent(sessionId)}/approvals`;
+  const historyPath = `/projects/${encodeURIComponent(FIXTURE_PROJECT_ID)}/sessions/${encodeURIComponent(sessionId)}?after=0&limit=100&requestId=${encodeURIComponent(turnRequestId)}`;
+  const approvalReadUrls: string[] = [];
+  const approvalDtos: unknown[] = [];
+  const historyReadUrls: string[] = [];
   const approvalGate: { resolve?: (value: unknown) => void } = {};
   const readStarted = new Promise<void>((resolve) => {
     announceRead = resolve;
@@ -100,18 +105,30 @@ test("Inbox permission discovery stays read-only and synchronously invalidates s
       heldReads++;
       return null;
     },
-    read: async () => {
-      if (!blockRead) return approvalPage;
-      announceRead?.();
-      return new Promise((resolve) => {
-        approvalGate.resolve = resolve;
-      });
+    read: async (path) => {
+      if (path === approvalPath) {
+        approvalReadUrls.push(path);
+        if (!blockRead) {
+          approvalDtos.push(approvalPage);
+          return approvalPage;
+        }
+        announceRead?.();
+        return new Promise((resolve) => {
+          approvalGate.resolve = (value) => {
+            approvalDtos.push(value);
+            resolve(value);
+          };
+        });
+      }
+      historyReadUrls.push(path);
+      throw Error("The historical permission fixture is unavailable.");
     },
   });
   const input = { home, homeCurrent: true, sessions: sessionsSource() };
   try {
     await client.refresh(input);
     const [item] = client.snapshot().items;
+    const priorItemKey = item!.key;
     expect(item).toMatchObject({
       state: "current",
       projectId: FIXTURE_PROJECT_ID,
@@ -145,9 +162,24 @@ test("Inbox permission discovery stays read-only and synchronously invalidates s
     const resolveApprovalRead = approvalGate.resolve;
     if (!resolveApprovalRead)
       throw Error("The protected approval read was not pending.");
-    resolveApprovalRead({ pending: [], receipt: null });
+    const noPendingApprovals = { pending: [], receipt: null };
+    resolveApprovalRead(noPendingApprovals);
     await refreshing;
-    expect(client.snapshot().items).toEqual([]);
+    expect(noPendingApprovals.pending).toEqual([]);
+    expect(approvalReadUrls).toEqual([approvalPath, approvalPath]);
+    expect(approvalDtos).toEqual([approvalPage, noPendingApprovals]);
+    expect(historyReadUrls).toEqual([historyPath]);
+    expect(client.snapshot()).toMatchObject({ loading: false });
+    expect(client.snapshot().items.map((entry) => entry.key)).toEqual([priorItemKey]);
+    expect(client.snapshot().coverage).toContainEqual(expect.objectContaining({
+      projectId: FIXTURE_PROJECT_ID,
+      workspace,
+      sessionId,
+      provider: "gemini",
+      state: "unavailable",
+      reason: "The exact original permission history could not be verified; the prior row remains visible without Done authority.",
+    }));
+    expect(client.permissionResolutions()).toEqual([]);
     expect(client.currentSelection()).toBeNull();
   } finally {
     client.dispose();

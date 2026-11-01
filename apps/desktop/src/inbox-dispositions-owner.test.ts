@@ -1049,6 +1049,10 @@ test("a reserve review during refresh revokes old permission without superseding
     collectionReady: true,
     recoveryReady: true,
   });
+  expect(owner.canStartReviewedNewIntent(id, proof())).toBe(false);
+  expect(await owner.reviewReserveUnknown(original(id), proof())).toEqual({
+    state: "reviewed",
+  });
   expect(owner.canStartReviewedNewIntent(id, proof())).toBe(true);
   owner.activate({ ...activation, sourceGeneration: activation.sourceGeneration + 1 });
   expect(owner.canStartReviewedNewIntent(id, proof())).toBe(false);
