@@ -13,6 +13,7 @@ import {
   CODEX_FILE_DETAILS_UNAVAILABLE,
 } from "../../scripts/sessions/codex-chat-owned-protocol";
 import { ownedCodingStateSchema } from "../../scripts/sessions/codex-owned-journal";
+import { conversationReceiptSchema } from "../../scripts/conversations/protocol";
 import { ownedCodingSessionSchema } from "../../scripts/sessions/codex-owned-wire-protocol";
 import { geminiChatApprovalPageSchema, geminiChatDecisionReceiptSchema, geminiChatDecisionRequestSchema } from "../../scripts/sessions/gemini-chat-owned-protocol";
 import {
@@ -60,6 +61,7 @@ function recordOwnedFailure(error: unknown) {
 function isRelevantInboxRequest(request: Request): boolean {
   const url = new URL(request.url());
   const pathname = url.pathname;
+  if (!pathname.startsWith("/__agent-forge/")) return false;
   return pathname === "/__agent-forge/inbox-dispositions/recovery" ||
     pathname.includes("/inbox-dispositions") ||
     pathname.endsWith("/approvals") ||
@@ -80,9 +82,24 @@ function watchRelevantRequests(page: Page) {
     const request = response.request();
     if (!ownedRelevantRequests.has(request)) return;
     let task!: Promise<void>;
-    task = response.finished().then((error) => {
+    let finishTerminal!: () => void;
+    const terminalRequest = new Promise<void>((resolve) => { finishTerminal = resolve; });
+    const onRequestFinished = (completed: Request) => {
+      if (completed === request) finishTerminal();
+    };
+    const onRequestFailed = (failed: Request) => {
+      if (failed === request) finishTerminal();
+    };
+    page.on("requestfinished", onRequestFinished);
+    page.on("requestfailed", onRequestFailed);
+    const finished = response.finished().then((error) => {
       if (error !== null) recordOwnedFailure(Error("Relevant Inbox response did not finish: " + request.url() + " " + error));
-    }).catch((error: unknown) => { recordOwnedFailure(error); }).finally(() => { pendingResponseFinishes.delete(task); });
+    });
+    task = Promise.race([finished, terminalRequest]).then(() => undefined).catch((error: unknown) => { recordOwnedFailure(error); }).finally(() => {
+      page.off("requestfinished", onRequestFinished);
+      page.off("requestfailed", onRequestFailed);
+      pendingResponseFinishes.delete(task);
+    });
     pendingResponseFinishes.add(task);
   });
 }
@@ -460,9 +477,9 @@ test.afterEach(async ({ page }) => {
       );
       if (!active) continue;
       const token = await withinCleanupDeadline(pageToken(page), cleanupDeadline, "Provider stop token");
-      await withinCleanupDeadline(page.evaluate(
+      const stopResult = await withinCleanupDeadline(page.evaluate(
         async ({ projectId, sessionId, requestId, token, header }) => {
-          await fetch(
+          const response = await fetch(
             `/__agent-forge/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/stop`,
             {
               method: "POST",
@@ -470,6 +487,7 @@ test.afterEach(async ({ page }) => {
               body: JSON.stringify({ requestId }),
             },
           );
+          return { status: response.status, body: await response.text() };
         },
         {
           projectId: session.projectId,
@@ -479,6 +497,11 @@ test.afterEach(async ({ page }) => {
           header: OPERATOR_HEADER,
         },
       ), cleanupDeadline, "Provider stop request");
+      let stopBody: unknown = null;
+      try { stopBody = JSON.parse(stopResult.body); } catch {}
+      const stopEnvelope = z.object({ ok: z.literal(true), data: conversationReceiptSchema, error: z.null() }).strict().safeParse(stopBody);
+      if (stopResult.status !== 200 || !stopEnvelope.success || stopEnvelope.data.data.conversationId !== session.id || stopEnvelope.data.data.turn.requestId !== active.requestId)
+        throw Error("Provider Stop did not return its exact finite conversation receipt.");
       const remainingSessionTime = cleanupDeadline - performance.now();
       if (remainingSessionTime <= 0) throw Error("Provider session stop exceeded the shared cleanup deadline.");
       await expect
@@ -811,6 +834,7 @@ test("Inbox refuses a held Codex Sessions preflight while retaining generic writ
   trace.end();
   choicePhaseActive = false;
   trace.verify(choiceRequest, choiceWindowReads);
+  inboxNavigationStarted = true;
   await page
     .getByRole("navigation", { name: "Global", exact: true })
     .getByRole("link", { name: "Inbox", exact: true })
@@ -1992,7 +2016,7 @@ test("Inbox binds Gemini options to its exact offer and recovers a held original
     "href",
     "#/desktop/project/" + encodeURIComponent(alpha.id) + "/sessions?selectionKind=session&selectionId=" + encodeURIComponent(session.id),
   );
-  const geminiDisclosure = geminiCard.locator("details").filter({ has: geminiCard.getByText("Review native permission details", { exact: true }) });
+  const geminiDisclosure = geminiCard.locator("details").filter({ hasText: "Review native permission details" });
   await expect(geminiDisclosure.locator("summary")).toBeVisible();
   await expect(geminiDisclosure).not.toHaveAttribute("open", "");
   const history = inbox.getByRole("region", { name: "Inbox action history", exact: true });
