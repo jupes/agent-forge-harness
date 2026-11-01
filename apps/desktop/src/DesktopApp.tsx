@@ -4,8 +4,9 @@ import { Button } from "../../../docs/js/ds/Button";
 import { Dialog } from "../../../docs/js/ds/Dialog";
 import { EmptyState } from "../../../docs/js/ds/EmptyState";
 import { COMMANDS } from "../../../docs/js/generated/commands";
-import { operatorRead } from "../../../docs/js/operator";
+import { operatorPost, operatorRead } from "../../../docs/js/operator";
 import { projectBeadsPageSchema } from "../../../scripts/projects/beads-protocol";
+import type { InboxDispositionEntry } from "../../../types/inbox";
 import {
   appStream,
   pageReads,
@@ -13,6 +14,7 @@ import {
 } from "../../../docs/js/use-stream";
 import type { KeeperProposal } from "../../../types/keeper-proposal";
 import { BeadWriteNotices, NewBeadForm } from "./BeadWrites";
+import { Inbox } from "./Inbox";
 import { CommandPalette } from "./CommandPalette";
 import { ConnectionBanner, useDesktopRecovery } from "./ConnectionBanner";
 import { chatDecisionAuthorityScopeIsCurrent } from "./chat-decision-authority";
@@ -44,7 +46,17 @@ import {
   forgeRunDraftMatches,
   forgeRunPreparationHold,
 } from "./forge-run-prefill";
-import { createInboxClient, type InboxClient } from "./inbox-client";
+import { createInboxClient, type InboxClient, withInboxReadSlot } from "./inbox-client";
+import { createInboxDispositionsClient } from "./inbox-dispositions-client";
+import {
+  createInboxDispositionsOwner,
+  type InboxDispositionActivation,
+  type InboxDispositionHistory,
+  type InboxDispositionSourceProof,
+} from "./inbox-dispositions-owner";
+import { readInboxWriteSources } from "./inbox-write-source";
+import type { InboxWriteSourceSnapshot } from "./inbox-write-source";
+import { bindInboxCardIdentity, mergeInboxDispositionEntries, mergeInboxDispositionHistory, type InboxCard } from "./inbox-view";
 import { KeeperConversation, KeeperScope } from "./KeeperConversation";
 import { KeeperShiftReviewDialog } from "./KeeperShiftReviewDialog";
 import type { ProposalState } from "./keeper-proposals-client";
@@ -1027,6 +1039,901 @@ export function DesktopApp(): JSX.Element {
     });
   const inbox = inboxClient.current;
   const [, setInboxRevision] = useState(0);
+  const latestInboxContext = useRef({
+    route,
+    home: projects.data,
+    homeCurrent: !projects.loading && !projects.error,
+    writesAllowed,
+    routeGeneration: forgeRouteGeneration.current,
+    routeHash: window.location.hash,
+  });
+  latestInboxContext.current = {
+    route,
+    home: projects.data,
+    homeCurrent: !projects.loading && !projects.error,
+    writesAllowed,
+    routeGeneration: forgeRouteGeneration.current,
+    routeHash: window.location.hash,
+  };
+  const dispositionActivation = useRef<InboxDispositionActivation | null>(null);
+  const dispositionCandidate = useRef<InboxCard | null>(null);
+  const dispositionSelectionGeneration = useRef<number | null>(null);
+  const dispositionFence = useRef<{
+    activation: InboxDispositionActivation;
+    routeGeneration: number;
+    routeHash: string;
+    catalogRevision: number;
+    home: typeof projects.data;
+  } | null>(null);
+  const dispositionExpectedRevision = useRef(0);
+  const latestInboxSourceGeneration = useRef(0);
+  const dispositionGeneration = useRef(0);
+  const dispositionsClient = useRef<ReturnType<typeof createInboxDispositionsClient> | null>(null);
+  const dispositionsOwner = useRef<ReturnType<typeof createInboxDispositionsOwner> | null>(null);
+  if (!dispositionsClient.current)
+    dispositionsClient.current = createInboxDispositionsClient({
+      read: operatorRead,
+      post: operatorPost,
+      requestId: () => crypto.randomUUID(),
+    });
+  const durableDispositionsClient = dispositionsClient.current;
+  if (!durableDispositionsClient) throw Error("The app-root Inbox disposition client is unavailable.");
+  if (!dispositionsOwner.current)
+    dispositionsOwner.current = createInboxDispositionsOwner({
+      client: durableDispositionsClient,
+      currentSnapshot: () => {
+        const activation = dispositionActivation.current;
+        const context = latestInboxContext.current;
+        const actualRoute = desktopRoute(window.location.hash);
+        const fence = dispositionFence.current;
+        const project = context.home?.catalog.projects.find(
+          (item) => item.id === activation?.scope.projectId,
+        );
+        if (
+          !activation ||
+          !fence ||
+          fence.activation !== activation ||
+          activation.sourceGeneration !== latestInboxSourceGeneration.current ||
+          context.routeGeneration !== fence.routeGeneration ||
+          forgeRouteGeneration.current !== fence.routeGeneration ||
+          context.routeHash !== fence.routeHash ||
+          window.location.hash !== fence.routeHash ||
+          context.route.destination !== "inbox" ||
+          actualRoute.destination !== "inbox" ||
+          !context.homeCurrent ||
+          !project ||
+          context.home?.catalog.revision !== fence.catalogRevision ||
+          context.home !== fence.home ||
+          activation.writable !== (context.writesAllowed && !project.archived) ||
+          !project.workspaces.some((scope) => scope.root === activation.scope.workspace)
+        ) return null;
+        const candidate = dispositionCandidate.current;
+        const sources: InboxDispositionSourceProof[] = [];
+        if (candidate && candidate.projectId === activation.scope.projectId && candidate.workspace === activation.scope.workspace) {
+          if (candidate.permissionKey && candidate.permission) {
+            const permissionSnapshot = inbox.snapshot();
+            const selection = inbox.currentSelection();
+            const selected = inbox.selectedPermission();
+            const exact = permissionSnapshot.items.find((item) => item.key === candidate.permissionKey);
+            const sessionProject = sessions.project(candidate.projectId);
+            const session = sessionProject.records.find((item) => item.id === candidate.permission?.sessionId);
+            const sourceProof = inbox.permissionResolutions().find((proof) =>
+              proof.permissionKey === candidate.permissionKey &&
+              proof.snapshotGeneration === permissionSnapshot.generation &&
+              proof.projectId === candidate.projectId &&
+              proof.workspace === candidate.workspace &&
+              proof.provider === candidate.permission?.provider &&
+              proof.sessionId === candidate.permission?.sessionId &&
+              proof.acceptedTurnId === candidate.permission?.acceptedTurnId &&
+              proof.offerId === candidate.permission?.offerId &&
+              proof.complete && proof.resolved,
+            );
+            if (
+              permissionSnapshot.loading ||
+              !exact || exact.state !== "current" || exact.snapshotGeneration !== permissionSnapshot.generation ||
+              exact.projectId !== candidate.permission.projectId || exact.workspace !== candidate.permission.workspace ||
+              exact.provider !== candidate.permission.provider || exact.sessionId !== candidate.permission.sessionId ||
+              exact.acceptedTurnId !== candidate.permission.acceptedTurnId || exact.offerId !== candidate.permission.offerId ||
+              exact.state !== candidate.permission.state || exact.actionable !== candidate.permission.actionable ||
+              JSON.stringify(exact.approval) !== JSON.stringify(candidate.permission.approval) ||
+              !selection || selection.selectionGeneration !== selection.currentSelectionGeneration ||
+              selection.selectionGeneration !== dispositionSelectionGeneration.current ||
+              selected?.key !== candidate.permissionKey || selected.state !== "current" ||
+              sessionProject.loading || !sessionProject.loaded || !!sessionProject.error ||
+              !session || session.mode !== "chat" || session.provider !== candidate.permission.provider ||
+              session.workspace !== candidate.workspace ||
+              (candidate.permission ? candidate.resolved && !sourceProof : false)
+            ) return { activation, sources };
+            const ownerView = ackOwner.view();
+            const existingEntry = ownerView.entries.find((entry) =>
+              entry.projectId === candidate.projectId && entry.workspace === candidate.workspace &&
+              entry.item.sourceKind === candidate.sourceKind && entry.item.stableItemId === candidate.stableItemId &&
+              entry.item.sourceRevision === candidate.sourceRevision,
+            );
+            const existingReceipt = ownerView.receipts.find((receipt) =>
+              receipt.original.projectId === candidate.projectId && receipt.original.workspace === candidate.workspace &&
+              receipt.original.item.sourceKind === candidate.sourceKind && receipt.original.item.stableItemId === candidate.stableItemId &&
+              receipt.original.item.sourceRevision === candidate.sourceRevision,
+            );
+            const expectedRevision = existingEntry?.revision ?? existingReceipt?.resultingRevision ?? 0;
+            if (expectedRevision !== dispositionExpectedRevision.current) return { activation, sources };
+            sources.push({
+              scope: { projectId: candidate.projectId, workspace: candidate.workspace },
+              item: { sourceKind: candidate.sourceKind, stableItemId: candidate.stableItemId, sourceRevision: candidate.sourceRevision },
+              sourceGeneration: activation.sourceGeneration,
+              catalogRevision: fence.catalogRevision,
+              expectedRevision,
+              complete: true,
+              fresh: true,
+              resolved: !!sourceProof && candidate.resolved,
+            });
+          } else if (candidate.sourceKind === "unknown-bead-write") {
+            const currentNotices = beadWrites.client.notices();
+            const currentProblem = beadWrites.client.problem();
+            const signature = JSON.stringify([currentNotices, currentProblem]);
+            const liveNotice = currentNotices.find((notice) =>
+              notice.key === candidate.unknownWriteKey &&
+              notice.projectId === candidate.projectId &&
+              notice.workspace === candidate.workspace,
+            );
+            const currentWrites = inboxWriteSourcesRef.current;
+            const currentRow = currentWrites.cards.find((item) =>
+              item.unknownWriteKey === candidate.unknownWriteKey &&
+              item.projectId === candidate.projectId &&
+              item.workspace === candidate.workspace &&
+              item.sourceKind === candidate.sourceKind &&
+              item.stableItemId === candidate.stableItemId &&
+              item.sourceRevision === candidate.sourceRevision &&
+              !item.notice,
+            );
+            if (
+              currentProblem || !liveNotice || !currentRow || currentRow.sourceState !== "current" ||
+              currentWrites.sourceGeneration !== activation.sourceGeneration ||
+              currentWrites.catalogRevision !== fence.catalogRevision ||
+              currentWrites.routeGeneration !== fence.routeGeneration ||
+              currentWrites.noticeSignature !== signature ||
+              currentWrites.coverage.some((entry) => entry.sourceKind === "unknown-bead-write" && entry.state !== "current")
+            ) return { activation, sources };
+            const ownerView = ackOwner.view();
+            const existingEntry = ownerView.entries.find((entry) =>
+              entry.projectId === candidate.projectId && entry.workspace === candidate.workspace &&
+              entry.item.sourceKind === candidate.sourceKind && entry.item.stableItemId === candidate.stableItemId &&
+              entry.item.sourceRevision === candidate.sourceRevision,
+            );
+            const existingReceipt = ownerView.receipts.find((receipt) =>
+              receipt.original.projectId === candidate.projectId && receipt.original.workspace === candidate.workspace &&
+              receipt.original.item.sourceKind === candidate.sourceKind && receipt.original.item.stableItemId === candidate.stableItemId &&
+              receipt.original.item.sourceRevision === candidate.sourceRevision,
+            );
+            const expectedRevision = existingEntry?.revision ?? existingReceipt?.resultingRevision ?? 0;
+            if (expectedRevision !== dispositionExpectedRevision.current) return { activation, sources };
+            sources.push({
+              scope: { projectId: candidate.projectId, workspace: candidate.workspace },
+              item: { sourceKind: candidate.sourceKind, stableItemId: candidate.stableItemId, sourceRevision: candidate.sourceRevision },
+              sourceGeneration: activation.sourceGeneration,
+              catalogRevision: fence.catalogRevision,
+              expectedRevision,
+              complete: true,
+              fresh: true,
+              resolved: false,
+            });
+          }
+        }
+        return {
+          activation,
+          sources,
+        };
+      },
+    });
+  const ackOwner = dispositionsOwner.current;
+  if (!ackOwner) throw Error("The app-root Inbox disposition owner is unavailable.");
+  const [inboxWriteSources, setInboxWriteSources] = useState<InboxWriteSourceSnapshot>({ cards: [], coverage: [], membership: new Map<string, boolean | null>(), sourceGeneration: 0, catalogRevision: null, routeGeneration: 0, noticeSignature: "" });
+  const inboxWriteSourcesRef = useRef(inboxWriteSources);
+  inboxWriteSourcesRef.current = inboxWriteSources;
+  const [inboxWriteLoading, setInboxWriteLoading] = useState(false);
+  const [inboxWriteError, setInboxWriteError] = useState("");
+  const [dispositionState, setDispositionState] = useState<{
+    entries: InboxDispositionEntry[];
+    history: InboxDispositionHistory[];
+    holds: InboxDispositionHistory["original"][];
+    checkedOriginals: string[];
+    loading: boolean;
+    refreshing: boolean;
+    error: string;
+  }>({ entries: [], history: [], holds: [], checkedOriginals: [], loading: false, refreshing: false, error: "" });
+  const [, setDispositionRevision] = useState(0);
+  const dispositionReadGeneration = useRef(0);
+  const dispositionOperationGeneration = useRef(0);
+  const publishDispositionOwnerState = () => {
+    const view = ackOwner.view();
+    const activation = dispositionActivation.current;
+    const fence = dispositionFence.current;
+    const context = latestInboxContext.current;
+    const currentRoute = desktopRoute(window.location.hash);
+    const collectionCurrent = !!activation && !!fence && !!view.scope &&
+      fence.activation === activation && view.collectionReady && view.scope.projectId === activation.scope.projectId &&
+      view.scope.workspace === activation.scope.workspace && activation.sourceGeneration === latestInboxSourceGeneration.current &&
+      context.homeCurrent && context.home === fence.home && context.home?.catalog.revision === fence.catalogRevision &&
+      context.route.destination === "inbox" && currentRoute.destination === "inbox" &&
+      context.routeHash === fence.routeHash && window.location.hash === fence.routeHash &&
+      context.routeGeneration === fence.routeGeneration && forgeRouteGeneration.current === fence.routeGeneration;
+    setDispositionState((state) => {
+      const entries = collectionCurrent && view.scope
+        ? mergeInboxDispositionEntries(state.entries, view.entries)
+        : state.entries;
+      const history = mergeInboxDispositionHistory(state.history, view.history);
+      return {
+        ...state,
+        entries,
+        history,
+        holds: history.filter((item) => item.state !== "terminal").map((item) => item.original),
+        checkedOriginals: state.checkedOriginals.filter((id) => history.some((item) => item.original.requestId === id && item.state === "persisted-reserved")),
+      };
+    });
+  };
+  const writeNotices = beadWrites.client.notices();
+  const writeJournalProblem = beadWrites.client.problem();
+  const writeNoticeSignature = JSON.stringify([writeNotices, writeJournalProblem]);
+  const activateDispositionScope = (
+    projectId: string,
+    workspace: string,
+    sourceGeneration: number,
+    writable: boolean,
+  ) => {
+    const activation: InboxDispositionActivation = {
+      scope: { projectId, workspace },
+      generation: ++dispositionGeneration.current,
+      sourceGeneration,
+      writable,
+    };
+    dispositionActivation.current = activation;
+    dispositionSelectionGeneration.current = null;
+    const context = latestInboxContext.current;
+    dispositionFence.current = {
+      activation,
+      routeGeneration: forgeRouteGeneration.current,
+      routeHash: window.location.hash,
+      catalogRevision: context.home?.catalog.revision ?? -1,
+      home: context.home,
+    };
+    setDispositionState((state) => ({ ...state, checkedOriginals: [] }));
+    ackOwner.activate(activation);
+    return activation;
+  };
+  const refreshDispositionCollections = async () => {
+    const context = latestInboxContext.current;
+    if (context.route.destination !== "inbox" || !context.home) return;
+    const home = context.home;
+    const routeGeneration = forgeRouteGeneration.current;
+    const routeHash = window.location.hash;
+    const binding = durableDispositionsClient.bindingIdentity;
+    const readGeneration = ++dispositionReadGeneration.current;
+    const operationGeneration = dispositionOperationGeneration.current;
+    const current = () =>
+      readGeneration === dispositionReadGeneration.current &&
+      operationGeneration === dispositionOperationGeneration.current &&
+      routeGeneration === forgeRouteGeneration.current &&
+      routeHash === window.location.hash &&
+      latestInboxContext.current.route.destination === "inbox" &&
+      latestInboxContext.current.home === home &&
+      latestInboxContext.current.homeCurrent &&
+      latestInboxContext.current.home?.catalog.revision === home.catalog.revision &&
+      durableDispositionsClient.bindingIdentity === binding;
+    setDispositionState((state) => ({ ...state, refreshing: true, error: "" }));
+    const scopes = home.catalog.projects.flatMap((project) =>
+      project.workspaces.map((scope) => ({ projectId: project.id, workspace: scope.root })),
+    );
+    try {
+      const recovery = await withInboxReadSlot(() => durableDispositionsClient.recovery());
+      if (!current()) {
+        if (readGeneration === dispositionReadGeneration.current) setDispositionState((state) => ({ ...state, refreshing: false }));
+        return;
+      }
+      if (recovery.state !== "confirmed") throw Error("The global Inbox recovery inventory is unavailable.");
+      const collections = await Promise.all(scopes.map(async (scope) => ({
+        scope,
+        result: await withInboxReadSlot(() => durableDispositionsClient.collection(scope)),
+      })));
+      if (!current()) {
+        if (readGeneration === dispositionReadGeneration.current) setDispositionState((state) => ({ ...state, refreshing: false }));
+        return;
+      }
+      const entries: InboxDispositionEntry[] = [];
+      for (const { scope, result } of collections) {
+        if (result.state !== "confirmed") throw Error("A complete scoped Inbox collection is unavailable.");
+        const globalReceipts = recovery.value.filter((receipt) => receipt.original.projectId === scope.projectId && receipt.original.workspace === scope.workspace);
+        if (globalReceipts.length !== result.value.receipts.length || result.value.receipts.some((receipt) => {
+          const matching = globalReceipts.find((item) => item.original.requestId === receipt.original.requestId);
+          return !matching || JSON.stringify(matching) !== JSON.stringify(receipt);
+        })) throw Error("The global and scoped Inbox recovery records disagree.");
+        entries.push(...result.value.entries);
+      }
+      const receiptHistory: InboxDispositionHistory[] = recovery.value.map((receipt) => ({
+        original: receipt.original,
+        state: receipt.phase === "reserved" ? "persisted-reserved" : "terminal",
+        receipt,
+      }));
+      if (!current()) return;
+      const ownerView = ackOwner.view();
+      setDispositionState((state) => {
+        const history = mergeInboxDispositionHistory(state.history, [...ownerView.history, ...receiptHistory]);
+        return {
+          ...state,
+          entries: mergeInboxDispositionEntries(state.entries, entries),
+          history,
+          holds: history.filter((item) => item.state !== "terminal").map((item) => item.original),
+          checkedOriginals: state.checkedOriginals.filter((id) => history.some((item) => item.original.requestId === id && item.state === "persisted-reserved")),
+          refreshing: false,
+          error: "",
+        };
+      });
+      setDispositionRevision((value) => value + 1);
+    } catch (error) {
+      if (!current()) return;
+      publishDispositionOwnerState();
+      setDispositionState((state) => ({ ...state, refreshing: false, error: error instanceof Error ? error.message : "Durable Inbox dispositions could not be read." }));
+    }
+  };
+  const refreshInboxWriteSources = async () => {
+    const sourceGeneration = ++latestInboxSourceGeneration.current;
+    const notices = beadWrites.client.notices();
+    const problem = beadWrites.client.problem();
+    const noticeSignature = JSON.stringify([notices, problem]);
+    setInboxWriteLoading(true);
+    setInboxWriteError("");
+    try {
+      const result = await readInboxWriteSources({
+        notices,
+        projects: projects.data?.catalog.projects ?? [],
+        journalCurrent: !problem,
+        sourceGeneration,
+        catalogRevision: projects.data?.catalog.revision ?? null,
+        routeGeneration: forgeRouteGeneration.current,
+        noticeSignature,
+      });
+      if (sourceGeneration !== latestInboxSourceGeneration.current) return;
+      inboxWriteSourcesRef.current = result;
+      setInboxWriteSources(result);
+      setInboxWriteError("");
+    } catch {
+      if (sourceGeneration === latestInboxSourceGeneration.current)
+        setInboxWriteError("Retained bead write sources could not be read.");
+    } finally {
+      if (sourceGeneration === latestInboxSourceGeneration.current)
+        setInboxWriteLoading(false);
+    }
+  };
+  const performInboxAcknowledgement = async (
+    card: InboxCard,
+    operation: "done" | "snooze-1h",
+  ) => {
+    dispositionReadGeneration.current++;
+    dispositionOperationGeneration.current++;
+    const context = latestInboxContext.current;
+    const home = context.home;
+    const actualRoute = desktopRoute(window.location.hash);
+    const project = home?.catalog.projects.find((item) => item.id === card.projectId);
+    if (
+      actualRoute.destination !== "inbox" ||
+      context.route.destination !== "inbox" ||
+      !home ||
+      !project ||
+      !project.workspaces.some((scope) => scope.root === card.workspace) ||
+      !Number.isSafeInteger(home.catalog.revision) ||
+      (operation === "done" && (!card.resolved || card.sourceKind === "unknown-bead-write" && card.notice))
+    ) return;
+
+    const ownerBefore = ackOwner.view();
+    const activeBefore = dispositionActivation.current;
+    const fenceBefore = dispositionFence.current;
+    const noticesBefore = beadWrites.client.notices();
+    const problemBefore = beadWrites.client.problem();
+    const writesBefore = inboxWriteSourcesRef.current;
+    const reviewedOriginal = ownerBefore.history.find((item) =>
+          item.state === "reserve-unknown" &&
+          item.original.item.sourceKind === card.sourceKind &&
+          item.original.projectId === card.projectId &&
+          item.original.workspace === card.workspace &&
+          item.original.item.stableItemId === card.stableItemId &&
+          item.original.item.sourceRevision === card.sourceRevision,
+        )?.original;
+    const reviewedEntry = ownerBefore.entries.find((entry) =>
+      entry.projectId === card.projectId && entry.workspace === card.workspace &&
+      entry.item.sourceKind === card.sourceKind && entry.item.stableItemId === card.stableItemId &&
+      entry.item.sourceRevision === card.sourceRevision,
+    );
+    const reviewedReceipt = ownerBefore.receipts.find((receipt) =>
+      receipt.original.projectId === card.projectId && receipt.original.workspace === card.workspace &&
+      receipt.original.item.sourceKind === card.sourceKind && receipt.original.item.stableItemId === card.stableItemId &&
+      receipt.original.item.sourceRevision === card.sourceRevision,
+    );
+    const reviewedExpectedRevision = reviewedEntry?.revision ?? reviewedReceipt?.resultingRevision ?? 0;
+    const reviewedProof: InboxDispositionSourceProof = {
+      scope: { projectId: card.projectId, workspace: card.workspace },
+      item: { sourceKind: card.sourceKind, stableItemId: card.stableItemId, sourceRevision: card.sourceRevision },
+      sourceGeneration: activeBefore?.sourceGeneration ?? -1,
+      catalogRevision: home.catalog.revision,
+      expectedRevision: reviewedExpectedRevision,
+      complete: true,
+      fresh: true,
+      resolved: false,
+    };
+    const reviewedWriteSourceIsCurrent = card.sourceKind === "unknown-bead-write" &&
+      writesBefore.sourceGeneration === activeBefore?.sourceGeneration &&
+      writesBefore.catalogRevision === home?.catalog.revision &&
+      writesBefore.routeGeneration === forgeRouteGeneration.current &&
+      writesBefore.noticeSignature === JSON.stringify([noticesBefore, problemBefore]) && !problemBefore &&
+      writesBefore.cards.some((item) =>
+        !item.notice && item.sourceKind === card.sourceKind && item.unknownWriteKey === card.unknownWriteKey &&
+        item.projectId === card.projectId && item.workspace === card.workspace && item.sourceState === "current" &&
+        item.stableItemId === card.stableItemId && item.sourceRevision === card.sourceRevision,
+      );
+    let reviewedPermissionSourceIsCurrent = false;
+    if (card.sourceKind === "permission" && card.permission) {
+      const permission = card.permission;
+      const snapshot = inbox.snapshot();
+      const selected = inbox.selectedPermission();
+      const selection = inbox.currentSelection();
+      const exact = snapshot.items.find((item) => item.key === permission.key);
+      const sessionProject = sessions.project(card.projectId);
+      const session = sessionProject.records.find((item) => item.id === permission.sessionId);
+      reviewedPermissionSourceIsCurrent = !snapshot.loading && exact?.state === "current" && exact.snapshotGeneration === snapshot.generation &&
+        exact.projectId === card.projectId && exact.workspace === card.workspace && exact.provider === permission.provider &&
+        exact.sessionId === permission.sessionId && exact.acceptedTurnId === permission.acceptedTurnId &&
+        exact.offerId === permission.offerId && JSON.stringify(exact.approval) === JSON.stringify(permission.approval) &&
+        selected?.key === permission.key && !!selection &&
+        selection.selectionGeneration === selection.currentSelectionGeneration &&
+        selection.selectionGeneration === dispositionSelectionGeneration.current &&
+        sessionProject.loaded && !sessionProject.loading && !sessionProject.error &&
+        !!session && session.provider === permission.provider && session.workspace === card.workspace;
+    }
+    const reviewedSourceIsCurrent = !!reviewedOriginal && !!activeBefore && !!fenceBefore &&
+      activeBefore.scope.projectId === card.projectId && activeBefore.scope.workspace === card.workspace &&
+      activeBefore.sourceGeneration === latestInboxSourceGeneration.current &&
+      (reviewedWriteSourceIsCurrent || reviewedPermissionSourceIsCurrent) &&
+      fenceBefore.activation === activeBefore && fenceBefore.home === home &&
+      fenceBefore.catalogRevision === home.catalog.revision && fenceBefore.routeGeneration === forgeRouteGeneration.current &&
+      fenceBefore.routeHash === window.location.hash && context.route.destination === "inbox" &&
+      context.homeCurrent && activeBefore.writable === (context.writesAllowed && !project.archived);
+    const reuseReviewedIntent = !!reviewedOriginal && reviewedSourceIsCurrent &&
+      ackOwner.canStartReviewedNewIntent(reviewedOriginal.requestId, reviewedProof);
+    const sourceGeneration = reuseReviewedIntent
+      ? activeBefore!.sourceGeneration
+      : ++latestInboxSourceGeneration.current;
+
+    let fresh = false;
+    let freshResolved = false;
+    if (card.permission) {
+      await inbox.refresh({
+        home,
+        homeCurrent: !projects.loading && !projects.error,
+        sessions,
+      });
+      if (sourceGeneration !== latestInboxSourceGeneration.current) return;
+      const permissionSnapshot = inbox.snapshot();
+      const exact = permissionSnapshot.items.find(
+        (item) =>
+          item.key === card.permission?.key &&
+          item.state === "current" &&
+          item.snapshotGeneration === permissionSnapshot.generation,
+      );
+      if (exact && card.permission.state === "current") {
+        inbox.selectPermission(exact.key);
+        const selected = inbox.selectedPermission();
+        const selection = inbox.currentSelection();
+        const sessionProject = sessions.project(card.projectId);
+        const session = sessionProject.records.find((item) => item.id === card.permission?.sessionId);
+        fresh = !permissionSnapshot.loading &&
+          JSON.stringify(exact.approval) === JSON.stringify(card.permission.approval) &&
+          exact.projectId === card.permission.projectId && exact.workspace === card.permission.workspace &&
+          exact.provider === card.permission.provider && exact.sessionId === card.permission.sessionId &&
+          exact.acceptedTurnId === card.permission.acceptedTurnId && exact.offerId === card.permission.offerId &&
+          selected?.key === card.permission.key && !!selection &&
+          selection.selectionGeneration === selection.currentSelectionGeneration &&
+          sessionProject.loaded && !sessionProject.loading && !sessionProject.error &&
+          !!session && session.provider === card.permission.provider && session.workspace === card.workspace;
+        freshResolved = inbox.permissionResolutions().some((proof) =>
+          proof.permissionKey === card.permission?.key &&
+          proof.snapshotGeneration === permissionSnapshot.generation &&
+          proof.projectId === card.projectId && proof.workspace === card.workspace &&
+          proof.provider === card.permission?.provider && proof.sessionId === card.permission?.sessionId &&
+          proof.acceptedTurnId === card.permission?.acceptedTurnId && proof.offerId === card.permission?.offerId &&
+          proof.complete && proof.resolved,
+        );
+      }
+      if (operation === "done" && !freshResolved) fresh = false;
+    } else {
+      const currentNotices = beadWrites.client.notices();
+      const currentProblem = beadWrites.client.problem();
+      const noticeSignature = JSON.stringify([currentNotices, currentProblem]);
+      const freshWrites = reuseReviewedIntent
+        ? writesBefore
+        : await readInboxWriteSources({
+            notices: currentNotices,
+            projects: home.catalog.projects,
+            journalCurrent: !currentProblem,
+            sourceGeneration,
+            catalogRevision: home.catalog.revision,
+            routeGeneration: forgeRouteGeneration.current,
+            noticeSignature,
+          });
+      if (sourceGeneration !== latestInboxSourceGeneration.current) return;
+      if (!reuseReviewedIntent) {
+        inboxWriteSourcesRef.current = freshWrites;
+        setInboxWriteSources(freshWrites);
+      }
+      const currentWrite = freshWrites.cards.find(
+        (item) =>
+          item.unknownWriteKey === card.unknownWriteKey &&
+          item.sourceRevision === card.sourceRevision &&
+          item.projectId === card.projectId &&
+          item.workspace === card.workspace,
+      );
+      fresh = currentWrite?.sourceState === "current" &&
+        currentWrite.stableItemId === card.stableItemId;
+    }
+    if (!fresh || sourceGeneration !== latestInboxSourceGeneration.current) return;
+
+    dispositionCandidate.current = card;
+    const activation = reuseReviewedIntent
+      ? activeBefore!
+      : activateDispositionScope(
+          card.projectId,
+          card.workspace,
+          sourceGeneration,
+          context.writesAllowed && !project.archived,
+        );
+    dispositionSelectionGeneration.current = card.permission
+      ? inbox.currentSelection()?.selectionGeneration ?? null
+      : null;
+    const loaded = await ackOwner.refresh();
+    if (
+      !loaded.collectionReady ||
+      !loaded.recoveryReady ||
+      loaded.error ||
+      dispositionActivation.current !== activation ||
+      desktopRoute(window.location.hash).destination !== "inbox"
+    ) return;
+    const priorEntry = loaded.entries.find(
+      (entry) =>
+        entry.projectId === card.projectId &&
+        entry.workspace === card.workspace &&
+        entry.item.sourceKind === card.sourceKind &&
+        entry.item.stableItemId === card.stableItemId &&
+        entry.item.sourceRevision === card.sourceRevision,
+    );
+    const priorReceipt = loaded.receipts.find(
+      (receipt) =>
+        receipt.original.projectId === card.projectId &&
+        receipt.original.workspace === card.workspace &&
+        receipt.original.item.sourceKind === card.sourceKind &&
+        receipt.original.item.stableItemId === card.stableItemId &&
+        receipt.original.item.sourceRevision === card.sourceRevision,
+    );
+    const proof: InboxDispositionSourceProof = {
+      scope: { projectId: card.projectId, workspace: card.workspace },
+      item: {
+        sourceKind: card.sourceKind,
+        stableItemId: card.stableItemId,
+        sourceRevision: card.sourceRevision,
+      },
+      sourceGeneration,
+      catalogRevision: home.catalog.revision,
+      expectedRevision: priorEntry?.revision ?? priorReceipt?.resultingRevision ?? 0,
+      complete: fresh,
+      fresh,
+      resolved: operation === "done" && card.resolved && freshResolved && fresh,
+    };
+    dispositionExpectedRevision.current = proof.expectedRevision;
+    const result = await ackOwner.acknowledge(proof, operation);
+    if (result.state === "confirmed") {
+      const ownerView = ackOwner.view();
+      setDispositionState((state) => {
+        const entries = mergeInboxDispositionEntries(state.entries, result.value.entry ? [result.value.entry] : []);
+        const history = mergeInboxDispositionHistory(state.history, ownerView.history);
+        return { ...state, entries, history, holds: history.filter((item) => item.state !== "terminal").map((item) => item.original), checkedOriginals: [] };
+      });
+      setDispositionRevision((value) => value + 1);
+    } else {
+      setDispositionState((state) => ({
+        ...state,
+        error: result.state === "missing"
+          ? "The durable Inbox record could not be read back. The item remains visible."
+          : result.message,
+      }));
+    }
+  };
+  const hydrateDispositionOriginal = async (requestId: string) => {
+    const shown = dispositionState.history.find((item) => item.original.requestId === requestId);
+    const context = latestInboxContext.current;
+    const home = context.home;
+    const routeGeneration = forgeRouteGeneration.current;
+    const routeHash = window.location.hash;
+    const project = home?.catalog.projects.find((item) => item.id === shown?.original.projectId);
+    if (!shown || shown.state === "terminal" || !home || !context.homeCurrent || !project ||
+      !project.workspaces.some((scope) => scope.root === shown.original.workspace) ||
+      context.route.destination !== "inbox" || desktopRoute(routeHash).destination !== "inbox") {
+      setDispositionState((state) => ({ ...state, error: "This exact original is unavailable in the current verified Inbox scope. Its retained record remains visible." }));
+      return null;
+    }
+    const active = dispositionActivation.current;
+    const fence = dispositionFence.current;
+    const ownerBefore = ackOwner.view();
+    const sameLiveScope = !!active && !!fence && fence.activation === active &&
+      active.scope.projectId === shown.original.projectId && active.scope.workspace === shown.original.workspace &&
+      active.sourceGeneration === latestInboxSourceGeneration.current && fence.home === home &&
+      fence.catalogRevision === home.catalog.revision && fence.routeGeneration === routeGeneration &&
+      fence.routeHash === routeHash && fence.routeGeneration === forgeRouteGeneration.current &&
+      fence.routeHash === window.location.hash && context.homeCurrent;
+    const sourceGeneration = sameLiveScope ? active.sourceGeneration : ++latestInboxSourceGeneration.current;
+    const activation = sameLiveScope ? active : activateDispositionScope(
+      shown.original.projectId,
+      shown.original.workspace,
+      sourceGeneration,
+      context.writesAllowed && !project.archived,
+    );
+    const ownerAlreadyHydrated = sameLiveScope && ownerBefore.collectionReady && ownerBefore.recoveryReady &&
+      ownerBefore.history.some((item) => item.original.requestId === requestId && JSON.stringify(item.original) === JSON.stringify(shown.original));
+    const loaded = ownerAlreadyHydrated ? ownerBefore : await ackOwner.refresh();
+    const currentRoute = desktopRoute(window.location.hash);
+    const ownerHistory = ackOwner.view().history.find((item) => item.original.requestId === requestId);
+    if (!loaded.collectionReady || !loaded.recoveryReady || loaded.error ||
+      dispositionActivation.current !== activation || sourceGeneration !== latestInboxSourceGeneration.current ||
+      routeGeneration !== forgeRouteGeneration.current || routeHash !== window.location.hash ||
+      currentRoute.destination !== "inbox" || latestInboxContext.current.home !== home ||
+      latestInboxContext.current.home?.catalog.revision !== home.catalog.revision ||
+      !ownerHistory || JSON.stringify(ownerHistory.original) !== JSON.stringify(shown.original)) {
+      setDispositionState((state) => ({ ...state, error: "The exact retained original could not be reloaded in its verified scope. It remains visible." }));
+      return null;
+    }
+    return { original: shown.original, history: ownerHistory, routeGeneration, routeHash };
+  };
+  const checkDispositionOriginal = async (requestId: string): Promise<boolean> => {
+    dispositionReadGeneration.current++;
+    dispositionOperationGeneration.current++;
+    setDispositionState((state) => ({ ...state, loading: true, refreshing: false, error: "" }));
+    try {
+    const hydrated = await hydrateDispositionOriginal(requestId);
+    if (!hydrated) return false;
+    const { original, routeGeneration, routeHash } = hydrated;
+    const result = await ackOwner.checkOriginal(requestId);
+    if (routeGeneration !== forgeRouteGeneration.current || routeHash !== window.location.hash ||
+      JSON.stringify(result.state === "confirmed" ? result.value.receipt.original : original) !== JSON.stringify(original)) return false;
+    const view = ackOwner.view();
+    const exactReserved = result.state === "confirmed" && result.value.receipt.original.requestId === requestId && result.value.receipt.phase === "reserved";
+    setDispositionState((state) => ({
+      ...state,
+      history: mergeInboxDispositionHistory(state.history, view.history),
+      holds: mergeInboxDispositionHistory(state.history, view.history).filter((item) => item.state !== "terminal").map((item) => item.original),
+      checkedOriginals: exactReserved
+        ? [...new Set([...state.checkedOriginals, requestId])]
+        : state.checkedOriginals.filter((id) => id !== requestId),
+      error: result.state === "confirmed" ? "" : result.message,
+    }));
+    return exactReserved;
+    } catch {
+      setDispositionState((state) => ({ ...state, error: "The exact original could not be checked. Its hold remains visible." }));
+      return false;
+    } finally {
+      publishDispositionOwnerState();
+      setDispositionState((state) => ({ ...state, loading: false }));
+      dispositionOperationGeneration.current++;
+    }
+  };
+  const discardDispositionOriginal = async (requestId: string) => {
+    dispositionReadGeneration.current++;
+    dispositionOperationGeneration.current++;
+    setDispositionState((state) => ({ ...state, loading: true, refreshing: false, error: "" }));
+    try {
+    const hydrated = await hydrateDispositionOriginal(requestId);
+    if (!hydrated) return;
+    const original = hydrated.original;
+    const history = ackOwner.view().history.find((item) => item.original.requestId === requestId);
+    if (!history || JSON.stringify(history.original) !== JSON.stringify(original) || history.state !== "persisted-reserved" || !dispositionState.checkedOriginals.includes(requestId) || desktopRoute(window.location.hash).destination !== "inbox") {
+      setDispositionState((state) => ({ ...state, error: "Only this checked, exact persisted reservation can be discarded; the original remains visible." }));
+      return;
+    }
+    const result = await ackOwner.discard(original);
+    const view = ackOwner.view();
+    setDispositionState((state) => ({
+      ...state,
+      history: mergeInboxDispositionHistory(state.history, view.history),
+      holds: mergeInboxDispositionHistory(state.history, view.history).filter((item) => item.state !== "terminal").map((item) => item.original),
+      checkedOriginals: state.checkedOriginals.filter((id) => id !== requestId),
+      error: result.state === "confirmed" ? "" : result.message,
+    }));
+    } catch {
+      setDispositionState((state) => ({ ...state, error: "The checked reservation could not be discarded. Its hold remains visible." }));
+    } finally {
+      publishDispositionOwnerState();
+      setDispositionState((state) => ({ ...state, loading: false }));
+      dispositionOperationGeneration.current++;
+    }
+  };
+  const reviewDispositionOriginal = async (requestId: string) => {
+    dispositionReadGeneration.current++;
+    dispositionOperationGeneration.current++;
+    setDispositionState((state) => ({ ...state, loading: true, refreshing: false, error: "" }));
+    try {
+    const hydrated = await hydrateDispositionOriginal(requestId);
+    if (!hydrated) return;
+    const { original, routeGeneration, routeHash } = hydrated;
+    const context = latestInboxContext.current;
+    const project = context.home?.catalog.projects.find((item) => item.id === original?.projectId);
+    const history = ackOwner.view().history.find((item) => item.original.requestId === requestId);
+    if (!original || !history || JSON.stringify(history.original) !== JSON.stringify(original) || history.state !== "reserve-unknown") {
+      setDispositionState((state) => ({ ...state, error: "Only an exact unconfirmed reservation can be reviewed for a separate acknowledgment. The original remains visible." }));
+      return;
+    }
+    if (context.route.destination !== "inbox" || !context.homeCurrent || !context.home || !project || !project.workspaces.some((scope) => scope.root === original.workspace)) {
+      setDispositionState((state) => ({ ...state, error: "This original belongs to a project/workspace that is not currently verified. It remains held and visible." }));
+      return;
+    }
+    const sourceGeneration = ++latestInboxSourceGeneration.current;
+    let card: InboxCard | undefined;
+    if (original.item.sourceKind === "unknown-bead-write") {
+      const currentNotices = beadWrites.client.notices();
+      const currentProblem = beadWrites.client.problem();
+      const noticeSignature = JSON.stringify([currentNotices, currentProblem]);
+      const freshWrites = await readInboxWriteSources({
+        notices: currentNotices,
+        projects: context.home.catalog.projects,
+        journalCurrent: !currentProblem,
+        sourceGeneration,
+        catalogRevision: context.home.catalog.revision,
+        routeGeneration,
+        noticeSignature,
+      });
+      if (sourceGeneration !== latestInboxSourceGeneration.current || routeGeneration !== forgeRouteGeneration.current || routeHash !== window.location.hash) return;
+      inboxWriteSourcesRef.current = freshWrites;
+      setInboxWriteSources(freshWrites);
+      card = freshWrites.cards.find((item) =>
+        !item.notice && item.sourceKind === original.item.sourceKind && item.projectId === original.projectId &&
+        item.workspace === original.workspace && item.stableItemId === original.item.stableItemId &&
+        item.sourceRevision === original.item.sourceRevision && item.sourceState === "current",
+      );
+    } else if (original.item.sourceKind === "permission") {
+      await inbox.refresh({ home: context.home, homeCurrent: true, sessions });
+      if (sourceGeneration !== latestInboxSourceGeneration.current || routeGeneration !== forgeRouteGeneration.current || routeHash !== window.location.hash) return;
+      const snapshot = inbox.snapshot();
+      let tuple: (typeof snapshot.items)[number] | undefined;
+      let verifiedCard: InboxCard | undefined;
+      for (const item of snapshot.items) {
+        if (item.kind !== "permission" || item.state !== "current" || item.projectId !== original.projectId || item.workspace !== original.workspace) continue;
+        const verified = await bindInboxCardIdentity({
+          key: "", projectId: item.projectId, workspace: item.workspace, projectName: project.name,
+          sourceKind: "permission", stableItemId: JSON.stringify([item.provider, item.sessionId, item.acceptedTurnId, item.offerId]),
+          sourceRevision: JSON.stringify(item.approval), title: "", detail: "", observedAt: item.observedAt,
+          sourceState: "current", resolved: false, canSnooze: item.actionable, canCheck: false,
+          permissionProvider: item.provider, permission: item, permissionKey: item.key, notice: false,
+        });
+        if (sourceGeneration !== latestInboxSourceGeneration.current || routeGeneration !== forgeRouteGeneration.current || routeHash !== window.location.hash) return;
+        if (verified.stableItemId === original.item.stableItemId && verified.sourceRevision === original.item.sourceRevision) { tuple = item; verifiedCard = verified; break; }
+      }
+      if (tuple && verifiedCard && !snapshot.loading && inbox.selectPermission(tuple.key)) {
+        const selected = inbox.selectedPermission();
+        const selection = inbox.currentSelection();
+        const sessionProject = sessions.project(tuple.projectId);
+        const session = sessionProject.records.find((item) => item.id === tuple.sessionId);
+        if (selected?.key === tuple.key && !!selection && selection.selectionGeneration === selection.currentSelectionGeneration &&
+          selection.projectId === tuple.projectId && selection.workspace === tuple.workspace && selection.sessionId === tuple.sessionId &&
+          selection.provider === tuple.provider && sessionProject.loaded && !sessionProject.loading && !sessionProject.error &&
+          session?.provider === tuple.provider && session.workspace === tuple.workspace) {
+          const activation = inbox.selectedActivation();
+          if (activation) {
+            dispositionSelectionGeneration.current = selection.selectionGeneration;
+            if (tuple.provider === "codex") {
+              chatDecisionOwners.gemini.activate(null);
+              chatDecisionOwners.codex.activate(activation);
+              await chatDecisionOwners.codex.refreshPending();
+              if (sourceGeneration !== latestInboxSourceGeneration.current || routeGeneration !== forgeRouteGeneration.current || routeHash !== window.location.hash) return;
+              const native = chatDecisionOwners.codex.view();
+              if (!native?.pending.some((offer) => offer.approval.id === tuple.offerId && offer.turnRequestId === tuple.acceptedTurnId)) return;
+              if (sourceGeneration !== latestInboxSourceGeneration.current || routeGeneration !== forgeRouteGeneration.current || routeHash !== window.location.hash) return;
+              card = verifiedCard;
+            } else {
+              chatDecisionOwners.codex.activate(null);
+              chatDecisionOwners.gemini.activate(activation);
+              await chatDecisionOwners.gemini.refreshPending();
+              if (sourceGeneration !== latestInboxSourceGeneration.current || routeGeneration !== forgeRouteGeneration.current || routeHash !== window.location.hash) return;
+              const native = chatDecisionOwners.gemini.view();
+              if (!native?.pending.some((offer) => offer.approval.id === tuple.offerId && offer.turnRequestId === tuple.acceptedTurnId)) return;
+              if (sourceGeneration !== latestInboxSourceGeneration.current || routeGeneration !== forgeRouteGeneration.current || routeHash !== window.location.hash) return;
+              card = verifiedCard;
+            }
+          }
+        }
+      }
+    }
+    if (!card) {
+      setDispositionState((state) => ({ ...state, error: "The exact original source could not be verified by its existing read owner. No replacement acknowledgment was sent; the original remains held." }));
+      return;
+    }
+    dispositionCandidate.current = card;
+    const activation = activateDispositionScope(original.projectId, original.workspace, sourceGeneration, context.writesAllowed && !project.archived);
+    if (card.permission) {
+      const selection = inbox.currentSelection();
+      if (!selection || selection.selectionGeneration !== selection.currentSelectionGeneration || inbox.selectedPermission()?.key !== card.permissionKey) {
+        setDispositionState((state) => ({ ...state, error: "The exact permission selection changed before review. The original remains held." }));
+        return;
+      }
+      dispositionSelectionGeneration.current = selection.selectionGeneration;
+    }
+    const loaded = await ackOwner.refresh();
+    if (!loaded.collectionReady || !loaded.recoveryReady || loaded.error || dispositionActivation.current !== activation || routeGeneration !== forgeRouteGeneration.current || routeHash !== window.location.hash) return;
+    const priorEntry = loaded.entries.find((entry) => entry.projectId === original.projectId && entry.workspace === original.workspace && entry.item.sourceKind === original.item.sourceKind && entry.item.stableItemId === original.item.stableItemId && entry.item.sourceRevision === original.item.sourceRevision);
+    const priorReceipt = loaded.receipts.find((receipt) => receipt.original.projectId === original.projectId && receipt.original.workspace === original.workspace && receipt.original.item.sourceKind === original.item.sourceKind && receipt.original.item.stableItemId === original.item.stableItemId && receipt.original.item.sourceRevision === original.item.sourceRevision);
+    dispositionExpectedRevision.current = priorEntry?.revision ?? priorReceipt?.resultingRevision ?? 0;
+    const proof: InboxDispositionSourceProof = {
+      scope: { projectId: original.projectId, workspace: original.workspace },
+      item: { ...original.item },
+      sourceGeneration: activation.sourceGeneration,
+      catalogRevision: context.home.catalog.revision,
+      expectedRevision: dispositionExpectedRevision.current,
+      complete: true,
+      fresh: true,
+      resolved: false,
+    };
+    const result = await ackOwner.reviewReserveUnknown(original, proof);
+    if (routeGeneration !== forgeRouteGeneration.current || routeHash !== window.location.hash) return;
+    const view = ackOwner.view();
+    setDispositionState((state) => {
+      const history = mergeInboxDispositionHistory(state.history, view.history);
+      return { ...state, history, holds: history.filter((item) => item.state !== "terminal").map((item) => item.original), error: result.state === "reviewed" ? "The exact reserved original is absent and its source revision is still current. A new Inbox acknowledgment may be reviewed separately." : "The original remains held because its complete source proof could not be verified." };
+    });
+    } catch {
+      setDispositionState((state) => ({ ...state, error: "The original remains held because its complete source proof could not be verified." }));
+    } finally {
+      publishDispositionOwnerState();
+      setDispositionState((state) => ({ ...state, loading: false }));
+      dispositionOperationGeneration.current++;
+    }
+  };
+  const acknowledgeInboxCard = async (
+    card: InboxCard,
+    operation: "done" | "snooze-1h",
+  ) => {
+    setDispositionState((state) => ({ ...state, loading: true, refreshing: false, error: "" }));
+    try {
+      await performInboxAcknowledgement(card, operation);
+    } catch {
+      setDispositionState((state) => ({
+        ...state,
+        error: "The source or durable disposition could not be verified. The item remains visible.",
+      }));
+    } finally {
+      publishDispositionOwnerState();
+      setDispositionState((state) => ({ ...state, loading: false }));
+      dispositionOperationGeneration.current++;
+    }
+  };
+  const activateInboxPermission = (key: string) => {
+    if (!inbox.selectPermission(key)) return;
+    const item = inbox.selectedPermission();
+    const activation = inbox.selectedActivation();
+    if (!item || !activation) return;
+    if (item.provider === "codex") {
+      chatDecisionOwners.gemini.activate(null);
+      chatDecisionOwners.codex.activate(activation);
+      if (item.state === "held") {
+        void chatDecisionOwners.codex.checkOriginal().then(() => {
+          if (inbox.selectedPermission()?.key !== key || desktopRoute(window.location.hash).destination !== "inbox") return;
+          latestInboxSourceGeneration.current++;
+          void inbox.refresh({ home: projects.data ?? null, homeCurrent: !projects.loading && !projects.error, sessions });
+        });
+      } else if (item.actionable) void chatDecisionOwners.codex.refreshPending();
+    } else {
+      chatDecisionOwners.codex.activate(null);
+      chatDecisionOwners.gemini.activate(activation);
+      if (item.state === "held") {
+        void chatDecisionOwners.gemini.checkOriginal().then(() => {
+          if (inbox.selectedPermission()?.key !== key || desktopRoute(window.location.hash).destination !== "inbox") return;
+          latestInboxSourceGeneration.current++;
+          void inbox.refresh({ home: projects.data ?? null, homeCurrent: !projects.loading && !projects.error, sessions });
+        });
+      } else if (item.actionable) void chatDecisionOwners.gemini.refreshPending();
+    }
+  };
   useEffect(
     () => inbox.subscribe(() => setInboxRevision((value) => value + 1)),
     [inbox],
@@ -1034,12 +1941,20 @@ export function DesktopApp(): JSX.Element {
   useEffect(() => {
     inbox.syncRoute(route);
     if (route.destination !== "inbox") return;
-    const refresh = () =>
+    const refresh = () => {
+      latestInboxSourceGeneration.current++;
       void inbox.refresh({
         home: projects.data ?? null,
         homeCurrent: !projects.loading && !projects.error,
         sessions,
+      }).then(() => {
+        const first = inbox.snapshot().items.find(
+          (item) => item.state === "current" && item.actionable,
+        );
+      if (first) activateInboxPermission(first.key);
       });
+      void refreshInboxWriteSources();
+    };
     refresh();
     return appStream().watch(
       ["operator.action", "session.started", "session.ended"],
@@ -1053,7 +1968,16 @@ export function DesktopApp(): JSX.Element {
     projects.error,
     sessions,
   ]);
+  useEffect(() => {
+    if (route.destination !== "inbox") return;
+    void refreshInboxWriteSources();
+  }, [route.destination, projects.data, writeNoticeSignature]);
+  useEffect(() => {
+    if (route.destination !== "inbox" || !projects.data) return;
+    void refreshDispositionCollections();
+  }, [route.destination, projects.data]);
   useEffect(() => () => inbox.dispose(), [inbox]);
+  useEffect(() => () => ackOwner.dispose(), [ackOwner]);
   useEffect(() => {
     sessions.activate(project?.id ?? null, selectedOwnedSession);
   }, [sessions, project?.id, selectedOwnedSession]);
@@ -2686,7 +3610,40 @@ export function DesktopApp(): JSX.Element {
             workspace={providers.data?.workspace ?? null}
           />
         ) : route.destination === "inbox" ? (
-          <BeadWriteNotices writes={beadWrites} inbox />
+          <Inbox
+            permission={inbox.snapshot()}
+            permissionResolutions={inbox.permissionResolutions()}
+            writeCards={inboxWriteSources.cards}
+            writeCoverage={inboxWriteSources.coverage}
+            home={projects.data ?? null}
+            writes={beadWrites}
+            decisionOwners={chatDecisionOwners}
+            dispositions={dispositionState.entries}
+            dispositionLoading={dispositionState.loading}
+            dispositionRefreshing={dispositionState.refreshing}
+            dispositionError={dispositionState.error}
+            dispositionWritable={writesAllowed}
+            history={dispositionState.history}
+            holds={dispositionState.holds}
+            checkedOriginals={dispositionState.checkedOriginals}
+            onSelectPermission={activateInboxPermission}
+            onAcknowledge={acknowledgeInboxCard}
+            onCheckOriginal={checkDispositionOriginal}
+            onDiscardOriginal={discardDispositionOriginal}
+            onReviewOriginal={reviewDispositionOriginal}
+            onRetry={() => {
+              latestInboxSourceGeneration.current++;
+              void inbox.refresh({
+                home: projects.data ?? null,
+                homeCurrent: !projects.loading && !projects.error,
+                sessions,
+              });
+              void refreshInboxWriteSources();
+              void refreshDispositionCollections();
+            }}
+            loading={inbox.snapshot().loading || inboxWriteLoading}
+            error={inboxWriteError}
+          />
         ) : global ? (
           <EmptyState
             title={`${name} unavailable`}

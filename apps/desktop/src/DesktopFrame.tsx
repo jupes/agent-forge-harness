@@ -193,10 +193,10 @@ export function DesktopFrame({
           <a
             class="af-desktop-chip"
             href={desktopHref(navigateGlobal(route, "inbox"))}
-            title="Inbox; waiting count unavailable"
+            title="Inbox; waiting count unavailable because source coverage is partial"
           >
             <Icon name="tray" />
-            <span class="af-desktop-compact-label">Inbox</span>
+            <span class="af-desktop-compact-label">Inbox · —</span>
           </a>
         </div>
       </header>

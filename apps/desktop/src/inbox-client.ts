@@ -3,6 +3,8 @@ import { pageReads, readOperatorRoute } from "../../../docs/js/use-stream";
 import { workspaceKey } from "../../../scripts/projects/scope";
 import { codexChatApprovalPageSchema } from "../../../scripts/sessions/codex-chat-owned-protocol";
 import { geminiChatApprovalPageSchema } from "../../../scripts/sessions/gemini-chat-owned-protocol";
+import { ownedCodingPageSchema } from "../../../scripts/sessions/codex-owned-journal";
+import type { ConversationFrame, ConversationPage } from "../../../types/conversation";
 import type { OwnedCodingSessionRecord } from "../../../types/codex-owned-task";
 import type { ProjectsHome } from "../../../types/project-summary";
 import type { ChatDecisionActivation } from "./chat-decision-owners";
@@ -26,7 +28,9 @@ const MAX_PERMISSION_SESSIONS = 256;
 const READ_CONCURRENCY = 4;
 let activeReads = 0;
 const readQueue: Array<() => void> = [];
-async function withReadSlot<T>(work: () => Promise<T>): Promise<T> {
+export async function withInboxReadSlot<T>(
+  work: () => Promise<T>,
+): Promise<T> {
   if (activeReads >= READ_CONCURRENCY)
     await new Promise<void>((resolve) => readQueue.push(resolve));
   else activeReads++;
@@ -40,6 +44,9 @@ async function withReadSlot<T>(work: () => Promise<T>): Promise<T> {
 }
 const approvalPath = (projectId: string, sessionId: string) =>
   `/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}/approvals`;
+const conversationPagePath = (projectId: string, sessionId: string, after: number, requestId: string) =>
+  `/projects/${encodeURIComponent(projectId)}/sessions/${encodeURIComponent(sessionId)}?after=${after}&limit=100&requestId=${encodeURIComponent(requestId)}`;
+const MAX_CONVERSATION_PAGES = 200;
 
 type HeldIdentity = CodexChatDecisionIdentity | GeminiChatDecisionIdentity;
 type InboxSessionSource = Pick<SessionsClient, "refresh"> & {
@@ -54,6 +61,7 @@ type InboxOwnedSession = Extract<
 
 export interface InboxClient {
   snapshot(): InboxPermissionSnapshot;
+  permissionResolutions(): readonly InboxTerminalPermissionProof[];
   selectedPermission(): InboxPermissionItem | null;
   selectedActivation(): Omit<ChatDecisionActivation, "generation"> | null;
   currentSelection(): InboxPermissionSelection | null;
@@ -66,6 +74,151 @@ export interface InboxClient {
   }): Promise<void>;
   subscribe(listener: () => void): () => void;
   dispose(): void;
+}
+
+export interface InboxTerminalPermissionProof {
+  permissionKey: string;
+  projectId: string;
+  workspace: string;
+  provider: InboxPermissionProvider;
+  sessionId: string;
+  acceptedTurnId: string;
+  offerId: string;
+  snapshotGeneration: number;
+  conversationRevision: number;
+  lastSequence: number;
+  complete: true;
+  resolved: true;
+}
+
+export function exactTerminalPermissionJoin(
+  candidate: InboxCurrentPermissionItem,
+  frames: readonly ConversationFrame[],
+  version: string,
+): boolean {
+  if (candidate.approval.provider === "codex") {
+    const offers = frames.filter((frame) =>
+      frame.turnId === candidate.acceptedTurnId &&
+      frame.event.kind === "coding-chat" &&
+      frame.event.version === version &&
+      frame.event.event.kind === "approval-request" &&
+      frame.event.event.approval.id === candidate.offerId,
+    );
+    if (offers.length !== 1) return false;
+    const offer = offers[0];
+    if (!offer) return false;
+    if (offer.event.kind !== "coding-chat" || offer.event.event.kind !== "approval-request") return false;
+    const offered = offer.event.event.approval;
+    const current = candidate.approval.value;
+    if (
+      offered.kind !== current.kind ||
+      offered.command !== current.command ||
+      offered.cwd !== current.cwd ||
+      offered.reason !== current.reason ||
+      JSON.stringify(offered.availableDecisions) !== JSON.stringify(current.availableDecisions)
+    ) return false;
+    const resolutions = frames.filter((frame) =>
+      frame.seq > offer.seq &&
+      frame.turnId === candidate.acceptedTurnId &&
+      frame.event.kind === "coding-chat" &&
+      frame.event.version === version &&
+      frame.event.event.kind === "approval-resolved" &&
+      frame.event.event.approvalId === candidate.offerId &&
+      (frame.event.event.source === "serverRequest/resolved" ||
+        frame.event.event.source === "turn/completed"),
+    );
+    return resolutions.length === 1;
+  }
+
+  if (version !== "0.65.0") return false;
+
+  const offers = frames.filter((frame) =>
+    frame.turnId === candidate.acceptedTurnId &&
+    frame.event.kind === "coding-gemini-chat" &&
+    frame.event.version === "0.65.0" &&
+    frame.event.event.kind === "approval-offer" &&
+    frame.event.event.requestId === candidate.acceptedTurnId &&
+    frame.event.event.id === candidate.offerId,
+  );
+  if (offers.length !== 1) return false;
+  const offer = offers[0];
+  if (!offer || offer.event.kind !== "coding-gemini-chat" || offer.event.event.kind !== "approval-offer") return false;
+  const toolCallId = offer.event.event.toolCallId;
+  return frames.some((frame) =>
+    frame.seq > offer.seq &&
+    frame.turnId === candidate.acceptedTurnId &&
+    frame.event.kind === "coding-gemini-chat" &&
+    frame.event.version === "0.65.0" &&
+    ((frame.event.event.kind === "tool" &&
+      frame.event.event.scope === "turn" &&
+      frame.event.event.requestId === candidate.acceptedTurnId &&
+      frame.event.event.toolCallId === toolCallId &&
+      (frame.event.event.status === "completed" || frame.event.event.status === "failed")) ||
+      (frame.event.event.kind === "result" &&
+        frame.event.event.requestId === candidate.acceptedTurnId)),
+  );
+}
+
+async function readCompletePermissionConversation(
+  input: {
+    projectId: string;
+    sessionId: string;
+    acceptedTurnId: string;
+    provider: InboxPermissionProvider;
+    workspace: string;
+  },
+  read: (path: string) => Promise<unknown>,
+): Promise<{ page: ConversationPage; frames: readonly ConversationFrame[] }> {
+  let after = 0;
+  let revision: number | null = null;
+  let lastSequence: number | null = null;
+  let bindingVersion: string | null = null;
+  const frames: ConversationFrame[] = [];
+  const seenSequences = new Set<number>();
+  for (let index = 0; index < MAX_CONVERSATION_PAGES; index++) {
+    const parsed = ownedCodingPageSchema.safeParse(await withInboxReadSlot(() =>
+      read(conversationPagePath(input.projectId, input.sessionId, after, input.acceptedTurnId)),
+    ));
+    if (!parsed.success) throw Error("The protected session history page was incomplete.");
+    const page = parsed.data;
+    if (
+      page.projectId !== input.projectId ||
+      page.conversationId !== input.sessionId ||
+      !page.binding ||
+      page.binding.sessionId !== input.sessionId ||
+      page.binding.provider !== input.provider ||
+      page.request?.requestId !== input.acceptedTurnId
+    ) throw Error("The protected session history did not match its exact Inbox source.");
+    if (revision === null) {
+      revision = page.revision;
+      lastSequence = page.lastSequence;
+      bindingVersion = page.binding.version;
+    } else if (page.revision !== revision || page.lastSequence !== lastSequence || page.binding.version !== bindingVersion) {
+      throw Error("The protected session history changed while paging.");
+    }
+    let previousSequence = after;
+    for (const frame of page.frames) {
+      if (frame.seq <= previousSequence || seenSequences.has(frame.seq))
+        throw Error("The protected session history cursor repeated a frame.");
+      previousSequence = frame.seq;
+      seenSequences.add(frame.seq);
+      frames.push(frame);
+    }
+    if (page.frames.length > 0 && page.nextCursor !== page.frames.at(-1)?.seq)
+      throw Error("The protected session history cursor did not match its final frame.");
+    if (page.more) {
+      if (page.frames.length === 0 || page.nextCursor <= after)
+        throw Error("The protected session history cursor did not advance.");
+      after = page.nextCursor;
+      continue;
+    }
+    if (page.nextCursor !== page.lastSequence)
+      throw Error("The protected session history did not reach its terminal sequence.");
+    if (frames.length !== page.lastSequence || frames.some((frame, index) => frame.seq !== index + 1))
+      throw Error("The protected session history did not contain every source sequence.");
+    return { page, frames };
+  }
+  throw Error("The protected session history exceeded its page bound.");
 }
 
 async function boundedMap<T, R>(
@@ -106,6 +259,7 @@ export function createInboxClient(deps: {
     selectionGeneration = 0,
     selectedKey: string | null = null,
     routeIdentity = "",
+    permissionResolutions: readonly InboxTerminalPermissionProof[] = [],
     snapshot: InboxPermissionSnapshot = {
       generation,
       loading: false,
@@ -113,6 +267,7 @@ export function createInboxClient(deps: {
       coverage: [],
       observedAt: null,
     };
+  const knownPermissionItems = new Map<string, InboxCurrentPermissionItem>();
   const tell = () => {
     if (!disposed) for (const listener of [...listeners]) listener();
   };
@@ -123,6 +278,7 @@ export function createInboxClient(deps: {
   const now = deps.now ?? (() => new Date().toISOString());
   const client: InboxClient = {
     snapshot: () => snapshot,
+    permissionResolutions: () => permissionResolutions,
     selectedPermission() {
       if (!client.currentSelection() || !selectedKey) return null;
       return snapshot.items.find((item) => item.key === selectedKey) ?? null;
@@ -176,20 +332,23 @@ export function createInboxClient(deps: {
       const next = `${route.destination}|${route.projectId ?? ""}|${route.selection?.kind ?? ""}|${route.selection?.id ?? ""}`;
       if (next === routeIdentity) return;
       routeIdentity = next;
+      permissionResolutions = [];
       selectionGeneration++;
       selectedKey = null;
       tell();
     },
     async refresh({ home, homeCurrent, sessions }) {
+      const previousItems = snapshot.items;
       const current = ++generation;
+      permissionResolutions = [];
       selectionGeneration++;
       selectedKey = null;
       const requestedAt = now();
       snapshot = {
         generation: current,
         loading: true,
-        items: [],
-        coverage: [],
+        items: previousItems,
+        coverage: snapshot.coverage,
         observedAt: requestedAt,
       };
       tell();
@@ -199,7 +358,7 @@ export function createInboxClient(deps: {
           snapshot = {
             generation: current,
             loading: false,
-            items: [],
+            items: previousItems,
             coverage: [
               {
                 projectId: "",
@@ -263,7 +422,7 @@ export function createInboxClient(deps: {
         async (project) => {
           try {
             if (current !== generation || disposed) return null;
-            await withReadSlot(() =>
+            await withInboxReadSlot(() =>
               current === generation && !disposed
                 ? sessions.refresh(project.id)
                 : Promise.resolve(),
@@ -318,7 +477,7 @@ export function createInboxClient(deps: {
           entry.records.map((record) => ({ ...entry, record })),
         );
       const boundedSessions = sessionsToRead.slice(0, MAX_PERMISSION_SESSIONS);
-      if (sessionsToRead.length > boundedSessions.length)
+      if (sessionsToRead.length > boundedSessions.length) {
         coverage.push({
           projectId: "",
           workspace: "",
@@ -328,8 +487,24 @@ export function createInboxClient(deps: {
           observedAt: now(),
           reason: "The bounded cross-project session scan reached its limit.",
         });
+        const skippedProjectIds = new Set<string>();
+        for (const skippedProject of sessionsToRead.slice(MAX_PERMISSION_SESSIONS).map((entry) => entry.project))
+          if (!skippedProjectIds.has(skippedProject.id)) {
+            skippedProjectIds.add(skippedProject.id);
+            coverage.push({
+              projectId: skippedProject.id,
+              workspace: skippedProject.summary.workspace,
+              sessionId: null,
+              provider: null,
+              state: "partial",
+              observedAt: now(),
+              reason: "The bounded session scan did not inspect every source session.",
+            });
+          }
+      }
 
       const observedAt = now();
+      const verifiedResolutions: InboxTerminalPermissionProof[] = [];
       const results = await boundedMap(
         boundedSessions,
         READ_CONCURRENCY,
@@ -368,7 +543,7 @@ export function createInboxClient(deps: {
             )
               throw Error("Held decision identity did not match the session.");
             if (current !== generation || disposed) return [];
-            const rawPage = await withReadSlot(() =>
+            const rawPage = await withInboxReadSlot(() =>
               current === generation && !disposed
                 ? read(approvalPath(project.id, record.id))
                 : Promise.resolve(null),
@@ -383,7 +558,7 @@ export function createInboxClient(deps: {
             if (provider === "codex") {
               const page = codexChatApprovalPageSchema.parse(rawPage);
               if (
-                page.receipt ||
+                (page.receipt && (page.pending.length > 0 || page.receipt.projectId !== project.id || page.receipt.sessionId !== record.id)) ||
                 new Set(page.pending.map((item) => item.approval.id)).size !==
                   page.pending.length
               )
@@ -398,7 +573,7 @@ export function createInboxClient(deps: {
             } else {
               const page = geminiChatApprovalPageSchema.parse(rawPage);
               if (
-                page.receipt ||
+                (page.receipt && (page.pending.length > 0 || page.receipt.projectId !== project.id || page.receipt.sessionId !== record.id)) ||
                 new Set(page.pending.map((item) => item.approval.id)).size !==
                   page.pending.length
               )
@@ -435,7 +610,7 @@ export function createInboxClient(deps: {
                 acceptedTurnId: source.acceptedTurnId,
                 offerId: source.offerId,
               };
-              items.push({
+              const item: InboxCurrentPermissionItem = {
                 ...address,
                 kind: "permission",
                 state: "current",
@@ -445,7 +620,74 @@ export function createInboxClient(deps: {
                 snapshotGeneration: current,
                 observedAt,
                 approval: source.approval,
-              });
+              };
+              items.push(item);
+              knownPermissionItems.set(item.key, item);
+            }
+            const pendingKeys = new Set(items.map((item) => item.key));
+            const historical = [...knownPermissionItems.values()].filter(
+              (item) =>
+                item.projectId === project.id &&
+                workspaceKey(item.workspace) === workspaceKey(summary.workspace) &&
+                item.sessionId === record.id &&
+                item.provider === provider &&
+                !pendingKeys.has(item.key),
+            );
+            if (historical.length > 0) {
+              const byTurn = new Map<string, InboxCurrentPermissionItem[]>();
+              for (const prior of historical) {
+                const group = byTurn.get(prior.acceptedTurnId) ?? [];
+                group.push(prior);
+                byTurn.set(prior.acceptedTurnId, group);
+              }
+              for (const [acceptedTurnId, candidates] of byTurn) {
+                try {
+                  const history = await readCompletePermissionConversation(
+                    { projectId: project.id, workspace: summary.workspace, provider, sessionId: record.id, acceptedTurnId },
+                    read,
+                  );
+                  if (current !== generation || disposed) return [];
+                  for (const prior of candidates) {
+                    const resolved = exactTerminalPermissionJoin(prior, history.frames, history.page.binding?.version ?? "");
+                    if (!resolved) continue;
+                    items.push({ ...prior, snapshotGeneration: current, actionable: false, observedAt });
+                    verifiedResolutions.push({
+                      permissionKey: prior.key,
+                      projectId: prior.projectId,
+                      workspace: prior.workspace,
+                      provider: prior.provider,
+                      sessionId: prior.sessionId,
+                      acceptedTurnId: prior.acceptedTurnId,
+                      offerId: prior.offerId,
+                      snapshotGeneration: current,
+                      conversationRevision: history.page.revision,
+                      lastSequence: history.page.lastSequence,
+                      complete: true,
+                      resolved: true,
+                    });
+                  }
+                  if (candidates.some((item) => !items.some((candidate) => candidate.key === item.key)))
+                    coverage.push({
+                      projectId: project.id,
+                      workspace: summary.workspace,
+                      sessionId: record.id,
+                      provider,
+                      state: "partial",
+                      observedAt,
+                      reason: "An original permission remains visible because its exact terminal source join was not confirmed.",
+                    });
+                } catch {
+                  coverage.push({
+                    projectId: project.id,
+                    workspace: summary.workspace,
+                    sessionId: record.id,
+                    provider,
+                    state: "unavailable",
+                    observedAt,
+                    reason: "The exact original permission history could not be verified; the prior row remains visible without Done authority.",
+                  });
+                }
+              }
             }
             return items;
           } catch {
@@ -465,7 +707,33 @@ export function createInboxClient(deps: {
         },
       );
       if (current !== generation || disposed) return;
-      const items = results.flat();
+      const freshItems = results.flat();
+      const freshKeys = new Set(freshItems.map((item) => item.key));
+      const listedSessionKeys = new Set(boundedSessions.map(({ project, record }) => JSON.stringify([project.id, record.id])));
+      for (const prior of previousItems) {
+        if (freshKeys.has(prior.key) || listedSessionKeys.has(JSON.stringify([prior.projectId, prior.sessionId]))) continue;
+        if (!coverage.some((entry) => entry.projectId === prior.projectId && entry.sessionId === prior.sessionId && entry.state !== "current"))
+          coverage.push({
+            projectId: prior.projectId,
+            workspace: prior.workspace,
+            sessionId: prior.sessionId,
+            provider: prior.provider,
+            state: "partial",
+            observedAt,
+            reason: "The original session is no longer present in the current session inventory; its permission outcome remains unverified.",
+          });
+      }
+      const retainedStale = previousItems.filter((item) => {
+        if (freshKeys.has(item.key)) return false;
+        const scoped = coverage.filter(
+          (entry) =>
+            entry.projectId === item.projectId &&
+            workspaceKey(entry.workspace) === workspaceKey(item.workspace) &&
+            (entry.sessionId === null || entry.sessionId === item.sessionId),
+        );
+        return scoped.some((entry) => entry.state !== "current");
+      });
+      const items = [...freshItems, ...retainedStale];
       if (new Set(items.map((item) => item.key)).size !== items.length) {
         snapshot = {
           generation: current,
@@ -495,6 +763,7 @@ export function createInboxClient(deps: {
           observedAt,
         };
       }
+      permissionResolutions = verifiedResolutions;
       tell();
     },
     subscribe(listener) {
@@ -507,6 +776,8 @@ export function createInboxClient(deps: {
       selectionGeneration++;
       selectedKey = null;
       listeners.clear();
+      knownPermissionItems.clear();
+      permissionResolutions = [];
       snapshot = {
         generation,
         loading: false,
