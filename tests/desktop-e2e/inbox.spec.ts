@@ -1655,9 +1655,38 @@ test("Inbox refuses a held Codex Sessions preflight while retaining generic writ
   };
   await ownRoute(page, reservePattern, loseReserveOnce);
   await buckets.getByRole("button", { name: "Snoozed", exact: true }).click();
+  await expect(inboxRegion.getByText("Checking this Inbox action…", { exact: true })).toHaveCount(0);
+  const postFirstRootRequestPromise = page.waitForRequest((request) => request.method() === "GET" && new URL(request.url()).pathname === recoveryRefreshPath);
+  const postFirstAlphaRequestPromise = page.waitForRequest((request) => request.method() === "GET" && new URL(request.url()).pathname === alphaRefreshPath);
+  const postFirstBetaRequestPromise = page.waitForRequest((request) => request.method() === "GET" && new URL(request.url()).pathname === betaRefreshPath);
+  await inboxRegion.getByRole("button", { name: "Refresh Inbox", exact: true }).click();
+  const [postFirstRootRequest, postFirstAlphaRequest, postFirstBetaRequest] = await Promise.all([waitForRouteSignal(postFirstRootRequestPromise), waitForRouteSignal(postFirstAlphaRequestPromise), waitForRouteSignal(postFirstBetaRequestPromise)]);
+  const [postFirstRootResponse, postFirstAlphaResponse, postFirstBetaResponse] = await Promise.all([waitForRouteSignal(postFirstRootRequest.response()), waitForRouteSignal(postFirstAlphaRequest.response()), waitForRouteSignal(postFirstBetaRequest.response())]);
+  if (!postFirstRootResponse || !postFirstAlphaResponse || !postFirstBetaResponse) throw Error("A refreshed Inbox request completed without its response.");
+  for (const response of [postFirstRootResponse, postFirstAlphaResponse, postFirstBetaResponse]) { expect(response.status()).toBe(200); expect(await response.finished()).toBeNull(); }
+  const postFirstRoot = z.object({ ok: z.literal(true), data: inboxDispositionRecoverySchema, error: z.null() }).strict().safeParse(await postFirstRootResponse.json());
+  const postFirstAlpha = scopedSchema.safeParse(await postFirstAlphaResponse.json());
+  const postFirstBeta = scopedSchema.safeParse(await postFirstBetaResponse.json());
+  if (!postFirstRoot.success || !postFirstAlpha.success || !postFirstBeta.success) throw Error("The refreshed Inbox authority was invalid.");
+  expect(postFirstRoot.data.data.receipts).toHaveLength(2);
+  expect(postFirstRoot.data.data.receipts).toEqual(expect.arrayContaining([alphaRecord.data.data.receipt, betaApplied.data.data.receipt]));
+  expect(postFirstAlpha.data.data.entries).toEqual([alphaRecord.data.data.entry]);
+  expect(postFirstAlpha.data.data.receipts).toEqual([alphaRecord.data.data.receipt]);
+  expect(postFirstBeta.data.data.entries).toEqual([betaApplied.data.data.entry]);
+  expect(postFirstBeta.data.data.receipts).toEqual([betaApplied.data.data.receipt]);
+  await expect(inboxRegion.getByRole("status", { name: "Loading Inbox sources", exact: true })).toHaveCount(0);
+  await expect(inboxRegion.getByText("Refreshing saved Inbox dispositions…", { exact: true })).toHaveCount(0);
+  await expect(inboxRegion.getByText("Checking this Inbox action…", { exact: true })).toHaveCount(0);
+  await expect(unknownAction.getByRole("button", { name: "Snooze 1 hour", exact: true })).toBeEnabled();
+  await expect(unknownAction.getByRole("button", { name: "Mark done · source unresolved", exact: true })).toBeDisabled();
+  const lostReserveFailure = page.waitForEvent("requestfailed", (request) => request.method() === "POST" && new URL(request.url()).pathname === `/__agent-forge/projects/${alpha.id}/inbox-dispositions/requests`);
   await unknownAction
     .getByRole("button", { name: "Snooze 1 hour", exact: true })
     .click();
+  const failedReserveRequest = await waitForRouteSignal(lostReserveFailure);
+  if (!lostFirstReserveRequest) throw Error("The deliberately aborted reserve request was not captured.");
+  expect(failedReserveRequest).toBe(lostFirstReserveRequest);
+  expect(observedExpectedRouteAborts.has(failedReserveRequest)).toBe(true);
   const actionHistory = inboxRegion.getByRole("region", {
     name: "Inbox action history",
     exact: true,
@@ -1668,8 +1697,6 @@ test("Inbox refuses a held Codex Sessions preflight while retaining generic writ
       exact: true,
     }),
   ).toBeVisible();
-  if (!lostFirstReserveRequest) throw Error("The deliberately aborted reserve request was not captured.");
-  expect(observedExpectedRouteAborts.has(lostFirstReserveRequest)).toBe(true);
   await actionHistory
     .getByRole("button", {
       name: "Review unconfirmed reservation",
@@ -1852,7 +1879,7 @@ test("Inbox refuses a held Codex Sessions preflight while retaining generic writ
   await betaHoldCard.getByRole("button", { name: "Snooze 1 hour", exact: true }).click();
   const globalHoldRefusal = betaInbox.getByRole("alert").filter({ hasText: "An unresolved Inbox original must be checked before another item can be acknowledged." });
   await expect(globalHoldRefusal).toHaveCount(1);
-  await expect(globalHoldRefusal).toHaveText("An unresolved Inbox original must be checked before another item can be acknowledged.");
+  await expect(globalHoldRefusal).toHaveText("An unresolved Inbox original must be checked before another item can be acknowledged. Source items remain visible.");
   expect(dispositionRequests).toHaveLength(dispositionPostsBeforeHeldAction);
   expect(dispositionRequests.some((request) => isPermissionDispositionRequest(request.body))).toBe(false);
   expect(readFileSync(dispositionStatePath).equals(heldStoreBytes)).toBe(true);
