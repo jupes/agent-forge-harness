@@ -1743,8 +1743,8 @@ test("Inbox refuses a held Codex Sessions preflight while retaining generic writ
   expect(
     await inboxRegion
       .locator(".af-inbox-card")
-      .evaluate((element) => getComputedStyle(element).transitionDuration),
-  ).toBe("0s");
+      .evaluateAll((elements) => elements.map((element) => getComputedStyle(element).transitionDuration)),
+  ).toEqual(["0s", "0s"]);
 
   const globalNav = page.getByRole("navigation", {
     name: "Global",
