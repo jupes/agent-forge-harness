@@ -31,6 +31,8 @@ import { BD_STAND_IN_STATE, HEARTH_HOME } from "../e2e/servers";
 import { seedObservationEvents } from "./observed-session-fixtures";
 import { alpha, beta, seedProjects, workspace } from "./project-fixtures";
 
+test.use({ channel: "chromium" });
+
 const owned = new Map<string, string>();
 const posts: string[] = [];
 const releases: Array<() => void> = [];
@@ -355,6 +357,19 @@ async function forwardRun(route: Route) {
 }
 const href = (project = alpha.id, slug: string | null = null) =>
   `/index.html${runsHref(project, slug)}`;
+
+test.beforeAll(async ({ browser }, testInfo) => {
+  const observedBrowserVersion = browser.version();
+  await testInfo.attach("runs-fixed-runtime.json", {
+    body: JSON.stringify({
+      requestedChannel: "chromium",
+      observedBrowserVersion,
+      expectedBrowserVersion: "153.0.8010.12",
+    }),
+    contentType: "application/json",
+  });
+  expect(observedBrowserVersion).toBe("153.0.8010.12");
+});
 
 test.beforeEach(({ page }) => {
   seedProjects();
