@@ -55,7 +55,16 @@ import {
   writeFileSync,
 } from "fs";
 import { availableParallelism, homedir, tmpdir } from "os";
-import { basename, dirname, join, relative, resolve, sep } from "path";
+import {
+  basename,
+  dirname,
+  join,
+  relative,
+  resolve,
+  sep,
+  win32 as win32Path,
+} from "path";
+import { buildChildEnv } from "../executors/env";
 import { INTERACTIVE_START_MAX_BYTES } from "../executors/interactive-bootstrap";
 import { interactiveLifetimeMs } from "../executors/interactive-lifetime";
 import { type InteractiveSupervised, supervise } from "../executors/supervisor";
@@ -546,6 +555,116 @@ async function runOwnedProcess(
   }
 }
 
+type IsolationEnvironment = Record<string, string | undefined>;
+
+const HOME_CONTEXT_KEYS = [
+  "HOME",
+  "USERPROFILE",
+  "APPDATA",
+  "LOCALAPPDATA",
+  "XDG_CONFIG_HOME",
+] as const;
+
+const ISOLATION_TEST_FLAGS = [
+  "AGENT_FORGE_RUN_FORK_NATIVE_WITNESS",
+  "AGENT_FORGE_RUN_VISIBLE_TERMINAL_FIXTURE",
+  "AGENT_FORGE_TEST_PROBE_DIAGNOSTICS",
+  "AGENT_FORGE_SHIFT_TEST_CLEANUP_TRACE",
+] as const;
+
+const OWNED_TEST_TEMP = "AGENT_FORGE_TEST_TEMP";
+const INVALID_OWNED_TEST_TEMP_CONTEXT =
+  "The Windows test temp marker does not match its owned temp context.";
+
+function ownedWindowsTestTemp(
+  source: IsolationEnvironment,
+  preloadEnvironment: IsolationEnvironment,
+  platform: NodeJS.Platform,
+): string | null {
+  if (platform !== "win32") return null;
+  const marker = source[OWNED_TEST_TEMP];
+  if (marker === undefined) return null;
+  if (
+    marker.trim().length === 0 ||
+    !win32Path.isAbsolute(marker) ||
+    source.TEMP !== marker ||
+    source.TMP !== marker ||
+    preloadEnvironment[OWNED_TEST_TEMP] !== marker ||
+    preloadEnvironment.TEMP !== marker ||
+    preloadEnvironment.TMP !== marker
+  )
+    throw new Error(INVALID_OWNED_TEST_TEMP_CONTEXT);
+  return marker;
+}
+
+function removeEnvironmentValue(
+  env: Record<string, string>,
+  name: string,
+): void {
+  const normalized = name.toLowerCase();
+  for (const key of Object.keys(env)) {
+    if (key.toLowerCase() === normalized) delete env[key];
+  }
+}
+
+function setEnvironmentValue(
+  env: Record<string, string>,
+  name: string,
+  value: string,
+): void {
+  removeEnvironmentValue(env, name);
+  env[name] = value;
+}
+
+function buildSafeIsolationEnvironment(
+  source: IsolationEnvironment,
+): Record<string, string> {
+  const env = buildChildEnv(source, []);
+  const ownedTemp = ownedWindowsTestTemp(source, process.env, process.platform);
+  if (ownedTemp !== null) {
+    setEnvironmentValue(env, "TEMP", ownedTemp);
+    setEnvironmentValue(env, "TMP", ownedTemp);
+    setEnvironmentValue(env, OWNED_TEST_TEMP, ownedTemp);
+  }
+  const ci = source.CI;
+  if (ci !== undefined) setEnvironmentValue(env, "CI", ci);
+  for (const flag of ISOLATION_TEST_FLAGS) {
+    if (source[flag] === "1") setEnvironmentValue(env, flag, "1");
+  }
+  const isolationHome = source[ISOLATION_HOME];
+  if (isolationHome !== undefined)
+    setEnvironmentValue(env, ISOLATION_HOME, isolationHome);
+  return env;
+}
+
+function buildScratchRerunEnvironment(
+  source: IsolationEnvironment,
+  scratch: string,
+): Record<string, string> {
+  const env = buildSafeIsolationEnvironment(source);
+  removeEnvironmentValue(env, "AGENT_FORGE_HOME");
+  for (const key of HOME_CONTEXT_KEYS) removeEnvironmentValue(env, key);
+  removeEnvironmentValue(env, ISOLATION_HOME);
+  const home = join(scratch, ".agent-forge");
+  for (const key of HOME_CONTEXT_KEYS) setEnvironmentValue(env, key, scratch);
+  setEnvironmentValue(env, ISOLATION_HOME, home);
+  return env;
+}
+
+function buildNativeFixtureEnvironment(
+  source: IsolationEnvironment,
+): Record<string, string> {
+  const home = source.AGENT_FORGE_HOME;
+  if (home === undefined || home.trim().length === 0)
+    throw new Error(
+      "The test preload did not provide its owned Agent Forge home.",
+    );
+  const env = buildSafeIsolationEnvironment(source);
+  setEnvironmentValue(env, "AGENT_FORGE_HOME", home);
+  for (const key of HOME_CONTEXT_KEYS) setEnvironmentValue(env, key, home);
+  return env;
+}
+
 /** Preflight the exact target envelope; never filter keys to satisfy bootstrap bounds. */
 function validateInteractiveEnvelope(
   command: string[],
@@ -828,14 +947,7 @@ async function rerunWithScratchHome(files: string[]): Promise<Rerun> {
   const scratch = mkdtempSync(join(tmpdir(), "ledger isolation home "));
   try {
     const home = join(scratch, ".agent-forge");
-    const env: Record<string, string> = {};
-    for (const [key, value] of Object.entries(process.env)) {
-      if (value === undefined || key === "AGENT_FORGE_HOME") continue;
-      env[key] = value;
-    }
-    env.HOME = scratch;
-    env.USERPROFILE = scratch;
-    env[ISOLATION_HOME] = home;
+    const env = buildScratchRerunEnvironment(process.env, scratch);
 
     const child = Bun.spawn([process.execPath, "test", ...files], {
       cwd: REPO,
@@ -984,6 +1096,222 @@ async function withFixtureOwner<T>(
 }
 
 describe("the test suite and the ledger under the user's home", () => {
+  test("scratch rerun environments keep required runtime inputs and drop ambient metadata", () => {
+    const source: IsolationEnvironment = {
+      PATH: process.env.PATH,
+      PATHEXT: process.env.PATHEXT,
+      SystemRoot: process.env.SystemRoot,
+      ComSpec: process.env.ComSpec,
+      TEMP: process.env.TEMP,
+      TMP: process.env.TMP,
+      UserProfile: "ambient-profile",
+      hOmE: "ambient-home",
+      AppData: "ambient-appdata",
+      localAppData: "ambient-local-appdata",
+      Xdg_Config_Home: "ambient-xdg-config",
+      Agent_Forge_Home: "ambient-agent-forge-home",
+      [ISOLATION_HOME]: "ambient-probe-home",
+      CI: "",
+      AGENT_FORGE_RUN_FORK_NATIVE_WITNESS: "1",
+      AGENT_FORGE_RUN_VISIBLE_TERMINAL_FIXTURE: "true",
+      AGENT_FORGE_TEST_PROBE_DIAGNOSTICS: "1",
+      AGENT_FORGE_SHIFT_TEST_CLEANUP_TRACE: "0",
+      GITHUB_ACTIONS: "runner-metadata",
+      GITHUB_TOKEN: "fixture-secret",
+      NODE_OPTIONS: "fixture-options",
+      NODE_PATH: "fixture-module-path",
+      BUN_OPTIONS: "fixture-bun-options",
+      AGENT_FORGE_ADAPTER: "1",
+      AGENT_FORGE_BEAD_ID: "fixture-bead",
+      AGENT_FORGE_SMITH: "fixture-smith",
+      FORGE_SLUG: "fixture-run",
+      AGENT_FORGE_PARENT_SESSION: "fixture-session",
+      AGENT_FORGE_SCRATCH_TRACKER: "fixture-tracker",
+    };
+    for (let index = 0; index < 129; index++)
+      source["AGENT_FORGE_INERT_" + index] = "metadata";
+    const scratch = join(tmpdir(), "ledger isolation validation");
+    const env = buildScratchRerunEnvironment(source, scratch);
+
+    expect(() =>
+      validateInteractiveEnvelope([process.execPath, "test"], REPO, env),
+    ).not.toThrow();
+    expect(Object.keys(env).length).toBeLessThanOrEqual(128);
+    expect(env.AGENT_FORGE_HOME).toBeUndefined();
+    for (const key of HOME_CONTEXT_KEYS) expect(env[key]).toBe(scratch);
+    expect(env[ISOLATION_HOME]).toBe(join(scratch, ".agent-forge"));
+    for (const name of [...HOME_CONTEXT_KEYS, ISOLATION_HOME]) {
+      expect(
+        Object.keys(env).filter(
+          (key) => key.toLowerCase() === name.toLowerCase(),
+        ),
+      ).toEqual([name]);
+    }
+    for (const name of [
+      "PATH",
+      "PATHEXT",
+      "SystemRoot",
+      "ComSpec",
+      "TEMP",
+      "TMP",
+    ])
+      if (source[name] !== undefined) expect(env[name]).toBe(source[name]);
+    expect(env.CI).toBe("");
+    expect(env.AGENT_FORGE_RUN_FORK_NATIVE_WITNESS).toBe("1");
+    expect(env.AGENT_FORGE_RUN_VISIBLE_TERMINAL_FIXTURE).toBeUndefined();
+    expect(env.AGENT_FORGE_TEST_PROBE_DIAGNOSTICS).toBe("1");
+    expect(env.AGENT_FORGE_SHIFT_TEST_CLEANUP_TRACE).toBeUndefined();
+    expect(
+      Object.keys(env).filter((name) => name.startsWith("AGENT_FORGE_INERT_")),
+    ).toEqual([]);
+    for (const name of [
+      "GITHUB_ACTIONS",
+      "GITHUB_TOKEN",
+      "NODE_OPTIONS",
+      "NODE_PATH",
+      "BUN_OPTIONS",
+      "AGENT_FORGE_ADAPTER",
+      "AGENT_FORGE_BEAD_ID",
+      "AGENT_FORGE_SMITH",
+      "FORGE_SLUG",
+      "AGENT_FORGE_PARENT_SESSION",
+      "AGENT_FORGE_SCRATCH_TRACKER",
+    ])
+      expect(env[name]).toBeUndefined();
+  });
+
+  test("native fixture environments retain only the test preload's owned home and probe", () => {
+    const home = process.env.AGENT_FORGE_HOME;
+    if (home === undefined || home.trim().length === 0)
+      throw new Error("The ledger test preload must provide its owned home.");
+    const ownedTemp = "C:\\agent-forge test temp";
+    const owner: IsolationEnvironment = {
+      [OWNED_TEST_TEMP]: ownedTemp,
+      TEMP: ownedTemp,
+      TMP: ownedTemp,
+    };
+    expect(ownedWindowsTestTemp(owner, owner, "win32")).toBe(ownedTemp);
+    const foreignTemp = "C:\\foreign test temp";
+    const foreignOwner: IsolationEnvironment = {
+      [OWNED_TEST_TEMP]: foreignTemp,
+      TEMP: foreignTemp,
+      TMP: foreignTemp,
+    };
+    const invalidContexts: Array<[IsolationEnvironment, IsolationEnvironment]> =
+      [
+        [{ ...owner, [OWNED_TEST_TEMP]: " " }, owner],
+        [foreignOwner, owner],
+        [{ ...owner, TEMP: foreignTemp }, owner],
+        [{ ...owner, TMP: foreignTemp }, owner],
+        [owner, { ...owner, TEMP: foreignTemp }],
+        [owner, { ...owner, TMP: foreignTemp }],
+        [
+          {
+            [OWNED_TEST_TEMP]: "relative-temp",
+            TEMP: "relative-temp",
+            TMP: "relative-temp",
+          },
+          owner,
+        ],
+      ];
+    for (const [source, preload] of invalidContexts)
+      expect(() => ownedWindowsTestTemp(source, preload, "win32")).toThrow(
+        INVALID_OWNED_TEST_TEMP_CONTEXT,
+      );
+    expect(
+      ownedWindowsTestTemp({ TEMP: ownedTemp, TMP: ownedTemp }, owner, "win32"),
+    ).toBeNull();
+    const absentMarkerEnv = buildSafeIsolationEnvironment({
+      TEMP: ownedTemp,
+      TMP: ownedTemp,
+    });
+    expect(absentMarkerEnv[OWNED_TEST_TEMP]).toBeUndefined();
+    expect(
+      ownedWindowsTestTemp(
+        { ...owner, [OWNED_TEST_TEMP]: " " },
+        owner,
+        "linux",
+      ),
+    ).toBeNull();
+    if (process.platform === "win32") {
+      expect(process.env[OWNED_TEST_TEMP]).toEqual(expect.any(String));
+      expect(() => buildSafeIsolationEnvironment(foreignOwner)).toThrow(
+        INVALID_OWNED_TEST_TEMP_CONTEXT,
+      );
+    }
+    const source: IsolationEnvironment = {
+      PATH: process.env.PATH,
+      PATHEXT: process.env.PATHEXT,
+      SystemRoot: process.env.SystemRoot,
+      ComSpec: process.env.ComSpec,
+      TEMP: process.env.TEMP,
+      Temp: "C:\\ambient temp alias",
+      TMP: process.env.TMP,
+      tMp: "C:\\ambient tmp alias",
+      [OWNED_TEST_TEMP]: process.env[OWNED_TEST_TEMP],
+      agent_forge_test_temp: "C:\\ambient marker alias",
+      AGENT_FORGE_HOME: home,
+      Agent_Forge_Home: "ambient-agent-forge-home",
+      HOME: "ambient-home",
+      UserProfile: "ambient-profile",
+      APPDATA: "ambient-appdata",
+      LocalAppData: "ambient-local-appdata",
+      Xdg_Config_Home: "ambient-xdg-config",
+      [ISOLATION_HOME]: process.env[ISOLATION_HOME],
+      CI: process.env.CI,
+      AGENT_FORGE_TEST_PROBE_DIAGNOSTICS: "1",
+      GITHUB_TOKEN: "fixture-secret",
+      AGENT_FORGE_SCRATCH_TRACKER: "fixture-tracker",
+    };
+    const env = buildNativeFixtureEnvironment(source);
+
+    if (process.platform === "win32") {
+      expect([env.TEMP, env.TMP, env[OWNED_TEST_TEMP]]).toEqual([
+        process.env[OWNED_TEST_TEMP],
+        process.env[OWNED_TEST_TEMP],
+        process.env[OWNED_TEST_TEMP],
+      ]);
+      for (const name of ["TEMP", "TMP", OWNED_TEST_TEMP])
+        expect(
+          Object.keys(env).filter(
+            (key) => key.toLowerCase() === name.toLowerCase(),
+          ),
+        ).toEqual([name]);
+    } else {
+      expect(env[OWNED_TEST_TEMP]).toBeUndefined();
+    }
+
+    expect(() =>
+      buildNativeFixtureEnvironment({
+        ...source,
+        AGENT_FORGE_HOME: undefined,
+      }),
+    ).toThrow("The test preload did not provide its owned Agent Forge home.");
+    expect(() =>
+      buildNativeFixtureEnvironment({ ...source, AGENT_FORGE_HOME: " " }),
+    ).toThrow("The test preload did not provide its owned Agent Forge home.");
+
+    expect(env.AGENT_FORGE_HOME).toBe(home);
+    for (const key of HOME_CONTEXT_KEYS) expect(env[key]).toBe(home);
+    for (const name of ["AGENT_FORGE_HOME", ...HOME_CONTEXT_KEYS]) {
+      expect(
+        Object.keys(env).filter(
+          (key) => key.toLowerCase() === name.toLowerCase(),
+        ),
+      ).toEqual([name]);
+    }
+    expect(env[ISOLATION_HOME]).toBe(source[ISOLATION_HOME]);
+    expect(env.CI).toBe(source.CI);
+    expect(env.AGENT_FORGE_TEST_PROBE_DIAGNOSTICS).toBe("1");
+    expect(env.GITHUB_TOKEN).toBeUndefined();
+    expect(env.AGENT_FORGE_SCRATCH_TRACKER).toBeUndefined();
+    const withoutProbe = buildNativeFixtureEnvironment({
+      ...source,
+      [ISOLATION_HOME]: undefined,
+    });
+    expect(withoutProbe[ISOLATION_HOME]).toBeUndefined();
+  });
+
   test("in the test process the default ledger is a temp directory, not the OS home", () => {
     const home = resolve(ledgerHome());
     expect(home.startsWith(resolve(tmpdir()) + sep)).toBe(true);
@@ -1036,14 +1364,7 @@ describe("the test suite and the ledger under the user's home", () => {
       try {
         scratch = mkdtempSync(join(tmpdir(), "ledger isolation home "));
         const home = join(scratch, ".agent-forge");
-        const env: Record<string, string> = {};
-        for (const [key, value] of Object.entries(process.env)) {
-          if (value === undefined || key === "AGENT_FORGE_HOME") continue;
-          env[key] = value;
-        }
-        env.HOME = scratch;
-        env.USERPROFILE = scratch;
-        env[ISOLATION_HOME] = home;
+        const env = buildScratchRerunEnvironment(process.env, scratch);
 
         const files = spawningTestFiles();
         expect(
@@ -1154,11 +1475,7 @@ describe("the test suite and the ledger under the user's home", () => {
         const outcome = await runOwnedProcess(
           [process.execPath, "-e", script],
           REPO,
-          Object.fromEntries(
-            Object.entries(process.env).filter(
-              (entry): entry is [string, string] => entry[1] !== undefined,
-            ),
-          ),
+          buildNativeFixtureEnvironment(process.env),
           control,
           state,
           {
@@ -1202,11 +1519,7 @@ describe("the test suite and the ledger under the user's home", () => {
     const descendant = new Promise<number>((resolve) => {
       descendantResolve = resolve;
     });
-    const env = Object.fromEntries(
-      Object.entries(process.env).filter(
-        (entry): entry is [string, string] => entry[1] !== undefined,
-      ),
-    );
+    const env = buildNativeFixtureEnvironment(process.env);
     await withFixtureOwner(
       async () => {
         const outcome = await runOwnedProcess(
