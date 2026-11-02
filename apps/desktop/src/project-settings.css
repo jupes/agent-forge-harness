@@ -86,3 +86,75 @@
     transition-duration: 0.01ms;
   }
 }
+
+.af-project-repositories {
+  display: grid;
+  gap: var(--space-4);
+  min-width: 0;
+}
+.af-project-repositories-heading h3,
+.af-project-repositories-workspace h4,
+.af-project-repositories-member h5 {
+  margin: 0;
+  font-weight: var(--font-heading-weight);
+}
+.af-project-repositories-heading p,
+.af-project-repositories-provenance {
+  color: var(--color-neutral-300);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+.af-project-repositories-workspaces {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+}
+.af-project-repositories-workspace {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+  padding: var(--space-4);
+  border: 1px solid var(--color-divider);
+  border-radius: var(--radius-md);
+}
+.af-project-repositories-members,
+.af-project-repositories-worktrees {
+  display: grid;
+  gap: var(--space-3);
+  min-width: 0;
+  margin: 0;
+  padding-inline-start: var(--space-5);
+}
+.af-project-repositories-member {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.af-project-repositories-member dl {
+  display: grid;
+  gap: var(--space-2);
+  margin: var(--space-3) 0;
+}
+.af-project-repositories-member dl > div {
+  display: grid;
+  grid-template-columns: minmax(100px, 0.35fr) minmax(0, 1fr);
+  gap: var(--space-3);
+}
+.af-project-repositories-member dt {
+  color: var(--color-neutral-300);
+}
+.af-project-repositories-member dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.af-project-repositories-workspace > p {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+@media (max-width: 600px) {
+  .af-project-repositories-member dl > div {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
