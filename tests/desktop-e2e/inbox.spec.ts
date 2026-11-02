@@ -1970,29 +1970,82 @@ test("Inbox refuses a held Codex Sessions preflight while retaining generic writ
   await expect(fileDialog.getByRole("button", { name: "Start", exact: true })).toBeEnabled();
   writeFileSync(join(HEARTH_HOME, "codex-chat-fixture-mode.json"), JSON.stringify("approval-file"));
   await fileDialog.getByRole("button", { name: "Start", exact: true }).click();
-  await expect.poll(() => sessions().filter((item) => !priorSessions.has(item.id)).length).toBe(2);
+  await expect.poll(() => {
+    const candidates = sessions().filter((item) => !priorSessions.has(item.id));
+    const candidate = candidates.find((item) => item.id !== session.id);
+    if (candidates.length !== 2 || !candidate) return false;
+    try {
+      return savedSession(candidate.id).frames.some((frame) =>
+        frame.turnId === candidate.requestId &&
+        frame.event.kind === "coding-chat" &&
+        frame.event.event.kind === "approval-request" &&
+        frame.event.event.approval.kind === "file-change",
+      );
+    } catch { return false; }
+  }).toBe(true);
+
   const fileSession = sessions().find((item) => item.id !== session.id && !priorSessions.has(item.id));
   if (!fileSession) throw Error("The strict Codex file permission session was absent.");
-  const fileSetup = await page.evaluate(async ({ projectId, sessionId, token, header }) => {
-    const response = await fetch("/__agent-forge/projects/" + encodeURIComponent(projectId) + "/sessions/" + encodeURIComponent(sessionId) + "/approvals", { headers: { [header]: token } });
-    let body: unknown; try { body = await response.json(); } catch { body = null; }
-    return { status: response.status, body };
-  }, { projectId: alpha.id, sessionId: fileSession.id, token: await pageToken(page), header: OPERATOR_HEADER });
-  const filePage = z.object({ ok: z.literal(true), data: codexChatApprovalPageSchema, error: z.null() }).strict().safeParse(fileSetup.body);
-  expect(fileSetup.status).toBe(200);
-  expect(filePage.success).toBe(true);
-  if (!filePage.success) throw Error("The Codex file approval response was not strict.");
-  const fileOffer = filePage.data.data.pending.find((item) => item.turnRequestId === fileSession.requestId);
+  const fileR1 = savedSession(fileSession.id).frames.find((frame) => frame.turnId === fileSession.requestId && frame.event.kind === "coding-chat" && frame.event.event.kind === "approval-request");
+  expect(fileR1).toBeDefined();
+  if (!fileR1 || fileR1.event.kind !== "coding-chat" || fileR1.event.event.kind !== "approval-request") throw Error("The exact Codex file R1 frame was absent.");
+  const fileApproval = fileR1.event.event.approval;
+
+  const fileToken = await pageToken(page);
+  let filePage: z.infer<typeof codexChatApprovalPageSchema> | null = null;
+  let fileOffer: z.infer<typeof codexChatApprovalPageSchema>["pending"][number] | undefined;
+  let fileReadFailure: Error | null = null;
+  let fileReadCount = 0;
+  const failFileRead = (error: unknown): never => {
+    fileReadFailure = error instanceof Error ? error : Error("The Codex file approval read failed.");
+    throw fileReadFailure;
+  };
+  await expect.poll(async () => {
+    if (fileReadFailure) throw fileReadFailure;
+    if (fileReadCount === 8) return failFileRead(Error("The strict Codex file approval read exceeded eight GETs."));
+    fileReadCount += 1;
+    try {
+      const fileSetup = await page.evaluate(async ({ projectId, sessionId, token, header }) => {
+        const path = "/__agent-forge/projects/" + encodeURIComponent(projectId) + "/sessions/" + encodeURIComponent(sessionId) + "/approvals";
+        const response = await fetch(path, { headers: { [header]: token } });
+        let body: unknown;
+        try { body = await response.json(); } catch { body = null; }
+        return { status: response.status, body };
+      }, { projectId: alpha.id, sessionId: fileSession.id, token: fileToken, header: OPERATOR_HEADER });
+      if (fileSetup.status !== 200) return failFileRead(Error("The Codex file approval read was not HTTP 200."));
+      const parsed = z.object({ ok: z.literal(true), data: codexChatApprovalPageSchema, error: z.null() }).strict().safeParse(fileSetup.body);
+      if (!parsed.success) return failFileRead(Error("The Codex file approval response was not strict."));
+      const observedPage = parsed.data.data;
+      filePage = observedPage;
+      fileOffer = observedPage.pending.find((item) =>
+        item.turnRequestId === fileSession.requestId &&
+        item.approval.id === fileApproval.id &&
+        item.approval.kind === fileApproval.kind,
+      );
+      return fileOffer !== undefined;
+    } catch (error) { return failFileRead(error); }
+  }, { timeout: 45_000 }).toBe(true);
+  if (!filePage) throw Error("The strict Codex file approval page was absent.");
   expect(fileOffer).toBeDefined();
   if (!fileOffer) throw Error("The exact Codex file offer was missing.");
   expect(fileOffer.approval.kind).toBe("file-change");
   expect(fileOffer.detailsUnavailableReason).toBe(CODEX_FILE_DETAILS_UNAVAILABLE);
   expect(fileOffer.approval.availableDecisions).not.toContain("accept");
-  const fileR1 = savedSession(fileSession.id).frames.find((frame) => frame.turnId === fileSession.requestId && frame.event.kind === "coding-chat" && frame.event.event.kind === "approval-request");
-  expect(fileR1).toBeDefined();
-  if (!fileR1 || fileR1.event.kind !== "coding-chat" || fileR1.event.event.kind !== "approval-request") throw Error("The exact Codex file R1 frame was absent.");
   expect(fileOffer.turnRequestId).toBe(fileSession.requestId);
-  expect(fileOffer.approval).toEqual(fileR1.event.event.approval);
+  expect(fileOffer).toEqual({
+    turnRequestId: fileSession.requestId,
+    actionable: true,
+    detailsUnavailableReason: CODEX_FILE_DETAILS_UNAVAILABLE,
+    approval: {
+      id: fileR1.event.event.approval.id,
+      kind: fileR1.event.event.approval.kind,
+      command: fileR1.event.event.approval.command,
+      cwd: fileR1.event.event.approval.cwd,
+      reason: fileR1.event.event.approval.reason,
+      availableDecisions: fileR1.event.event.approval.availableDecisions.filter((decision) => decision !== "accept"),
+    },
+  });
+
   await page.getByRole("navigation", { name: "Global", exact: true }).getByRole("link", { name: "Inbox", exact: true }).click();
   const fileInbox = page.getByRole("region", { name: "Inbox", exact: true });
   await fileInbox.getByRole("button", { name: "Refresh Inbox", exact: true }).click();
