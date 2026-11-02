@@ -1887,6 +1887,9 @@ test("Inbox refuses a held Codex Sessions preflight while retaining generic writ
   expect(await page.evaluate((key) => localStorage.getItem(key), CODEX_CHAT_DECISION_IDENTITIES)).toBe(inboxIdentityBefore);
   await page.evaluate((hash) => { location.hash = hash; }, "/desktop/inbox?project=" + encodeURIComponent(alpha.id));
   const returnedPermissionInbox = page.getByRole("region", { name: "Inbox", exact: true });
+  await returnedPermissionInbox
+    .getByRole("group", { name: "Inbox bucket", exact: true })
+    .getByRole("button", { name: "Needs you", exact: true }).click();
   const returnedCodexCard = returnedPermissionInbox.locator(".af-inbox-card").filter({ has: page.getByRole("heading", { name: "Command permission", exact: true }) });
   await expect(returnedCodexCard).toHaveCount(1);
   await returnedCodexCard.getByRole("link", { name: "Open session", exact: true }).click();
