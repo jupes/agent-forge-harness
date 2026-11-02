@@ -997,6 +997,10 @@ export function DesktopApp(): JSX.Element {
     writesAllowed,
   );
   const [composerOpen, setComposerOpen] = useState(false);
+  const closeComposer = () => {
+    if (project) sessions.cancelWaitingStart(project.id);
+    setComposerOpen(false);
+  };
   const [forgeRunReview, setForgeRunReview] = useState<{
     projectId: string;
     workspace: string;
@@ -2680,7 +2684,7 @@ export function DesktopApp(): JSX.Element {
         open={composerOpen && Boolean(project)}
         title={`New session · ${project?.name ?? ""}`}
         titleId="af-session-composer-title"
-        onClose={() => setComposerOpen(false)}
+        onClose={closeComposer}
         returnFocusRef={composerOpener}
         class="af-session-dialog"
         initialFocus="content"
@@ -2693,7 +2697,7 @@ export function DesktopApp(): JSX.Element {
             client={sessions}
             keeper={keeper}
             writesAllowed={writesAllowed}
-            onCancel={() => setComposerOpen(false)}
+            onCancel={closeComposer}
             onOpenOriginal={(id) => {
               setComposerOpen(false);
               window.location.hash = desktopHref({
