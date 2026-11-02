@@ -56,12 +56,21 @@ async function installIdentityFetchBarrier(
     holdResponse: boolean;
     previewPath: string | null;
     initiallyArmed: boolean;
+    dispatchStartOnFetch?: boolean;
+    requireEmpty?: boolean;
   },
 ) {
   const bindingName = `__agentForgeIdentityCapture_${randomUUID().replaceAll("-", "")}`;
   const controllerName = `${bindingName}_controller`;
   const identityPath = `/__agent-forge/projects/${projectId}/session-start-identities`;
   const captureId = randomUUID();
+  let startDispatched = false;
+  let startDispatchCount = 0;
+  let startDialogCount = 0;
+  let startButtonCount = 0;
+  let startButtonEnabled = false;
+  let startDispatchError: string | null = null;
+
   let observed = false;
   let observedReads = 0;
   let held = false;
@@ -137,6 +146,31 @@ async function installIdentityFetchBarrier(
           if (!armed || raw.armed !== true || captureStarted || captureSeen)
             return false;
           captureStarted = true;
+          if (options.dispatchStartOnFetch) {
+            startDispatched = raw.startDispatched === true;
+            startDispatchCount =
+              typeof raw.startDispatchCount === "number"
+                ? raw.startDispatchCount
+                : 0;
+            startDialogCount =
+              typeof raw.startDialogCount === "number"
+                ? raw.startDialogCount
+                : 0;
+            startButtonCount =
+              typeof raw.startButtonCount === "number"
+                ? raw.startButtonCount
+                : 0;
+            startButtonEnabled = raw.startButtonEnabled === true;
+            if (
+              !startDispatched ||
+              startDispatchCount !== 1 ||
+              startDialogCount !== 1 ||
+              startButtonCount !== 1 ||
+              !startButtonEnabled
+            )
+              startDispatchError =
+                "The unique open composer Start was not enabled and dispatched exactly once at identity fetch entry.";
+          }
           armProofTimeout();
           return true;
         }
@@ -203,7 +237,8 @@ async function installIdentityFetchBarrier(
           if (
             !envelope.success ||
             envelope.data.data.scope.projectId !== projectId ||
-            envelope.data.data.scope.workspace !== workspace
+            envelope.data.data.scope.workspace !== workspace ||
+            (options.requireEmpty && envelope.data.data.identities.length !== 0)
           )
             return invalid();
           if (expected.requestId !== undefined) {
@@ -258,6 +293,7 @@ async function installIdentityFetchBarrier(
         let releaseRequested = false;
         let releaseCurrentHold: (() => void) | null = null;
         let cancelCurrentClone: (() => void) | null = null;
+        let dispatchStartOnFetch = false;
 
         const boundedCloneText = async (response: Response) => {
           let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
@@ -411,7 +447,46 @@ async function installIdentityFetchBarrier(
               claimed = true;
               armed = false;
               hold = config.holdResponse;
-              void notifyBounded("claimed", { armed: true }).catch(() => {});
+              if (dispatchStartOnFetch) {
+                const dialogs = [
+                  ...document.querySelectorAll(
+                    'dialog[open][aria-labelledby="af-session-composer-title"]',
+                  ),
+                ];
+                const dialog = dialogs.length === 1 ? dialogs[0] : null;
+                const buttons = [
+                  ...(dialog?.querySelectorAll("button") ?? []),
+                ].filter(
+                  (candidate) => candidate.textContent?.trim() === "Start",
+                );
+                const button = buttons.length === 1 ? buttons[0] : null;
+                const enabled =
+                  !!button &&
+                  !button.disabled &&
+                  button.getClientRects().length > 0;
+                if (!enabled || !button) {
+                  void notifyBounded("claimed", {
+                    armed: true,
+                    startDispatched: false,
+                    startDispatchCount: 0,
+                    startDialogCount: dialogs.length,
+                    startButtonCount: buttons.length,
+                    startButtonEnabled: false,
+                  }).catch(() => {});
+                } else {
+                  button.click();
+                  void notifyBounded("claimed", {
+                    armed: true,
+                    startDispatched: true,
+                    startDispatchCount: 1,
+                    startDialogCount: dialogs.length,
+                    startButtonCount: buttons.length,
+                    startButtonEnabled: true,
+                  }).catch(() => {});
+                }
+              } else {
+                void notifyBounded("claimed", { armed: true }).catch(() => {});
+              }
             }
           } catch {
             capture = false;
@@ -529,6 +604,12 @@ async function installIdentityFetchBarrier(
         };
 
         const controller = {
+          armStart() {
+            if (disposed || !active) return;
+            armed = true;
+            claimed = false;
+            dispatchStartOnFetch = true;
+          },
           arm() {
             if (disposed || !active) return;
             armed = true;
@@ -594,7 +675,9 @@ async function installIdentityFetchBarrier(
     throw error;
   }
 
-  const invokeController = (method: "arm" | "release" | "dispose") =>
+  const invokeController = (
+    method: "arm" | "armStart" | "release" | "dispose",
+  ) =>
     withinCleanupBound(
       page.evaluate(
         ({ controllerName, method }) => {
@@ -621,6 +704,24 @@ async function installIdentityFetchBarrier(
     },
     get settledRead() {
       return settledRead;
+    },
+    armStartClick() {
+      if (!active || disposed)
+        return Promise.reject(new Error("Capture is inactive."));
+      options.dispatchStartOnFetch = true;
+      armed = true;
+      armProofTimeout();
+      return invokeController("armStart");
+    },
+    get startDispatchProof() {
+      return {
+        dispatched: startDispatched,
+        dispatchCount: startDispatchCount,
+        dialogCount: startDialogCount,
+        buttonCount: startButtonCount,
+        buttonEnabled: startButtonEnabled,
+        error: startDispatchError,
+      };
     },
     arm() {
       if (!active || disposed)
@@ -722,5 +823,25 @@ export async function holdNextVerifiedIdentityRead(
       state: "reserved",
     },
     { holdResponse: true, previewPath: null, initiallyArmed: false },
+  );
+}
+
+/** Hold the next real empty identity page and dispatch an enabled Start at fetch entry. */
+export async function holdNextEmptyIdentityReadWithStart(
+  page: Page,
+  projectId: string,
+  workspace: string,
+) {
+  return installIdentityFetchBarrier(
+    page,
+    projectId,
+    workspace,
+    {},
+    {
+      holdResponse: true,
+      previewPath: null,
+      initiallyArmed: false,
+      requireEmpty: true,
+    },
   );
 }

@@ -1,6 +1,6 @@
 import { readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
-import { expect, test } from "@playwright/test";
+import { expect, type Request, test } from "@playwright/test";
 import { workspaceKey } from "../../scripts/projects/scope";
 import { FIXTURE_PROJECT_ID } from "../../scripts/projects/testing";
 import { ownedCodingStateSchema } from "../../scripts/sessions/codex-owned-journal";
@@ -9,9 +9,107 @@ import { sessionWorktreeReceiptSchema } from "../../scripts/sessions/worktree-pr
 import type { ConversationState } from "../../types/conversation";
 import type { OwnedSessionRecord } from "../../types/owned-session";
 import type { SessionWorktreeReceipt } from "../../types/session-worktrees";
+import { holdNextEmptyIdentityReadWithStart } from "../desktop-e2e/session-start-refresh-barrier";
 import { openSettled } from "../e2e/fixtures";
 import { HEARTH_HOME } from "../e2e/servers";
 import { CALLS, fixturePlan } from "./environment";
+
+test("Escape cancels a waiting Start while the validated identity response is held", async ({
+  page,
+}) => {
+  const plan = fixturePlan();
+  await openSettled(
+    page,
+    "/index.html#/desktop/project/" +
+      encodeURIComponent(FIXTURE_PROJECT_ID) +
+      "/sessions",
+  );
+  await page.getByRole("button", { name: "New session", exact: true }).click();
+  const dialog = page.getByRole("dialog", {
+    name: "New session · Alpha",
+    exact: true,
+  });
+  await dialog
+    .getByRole("textbox", { name: "Session prompt", exact: true })
+    .fill("Cancel while the current server page is held");
+  await dialog
+    .getByRole("combobox", { name: "Session effort", exact: true })
+    .selectOption("");
+  await dialog
+    .getByRole("button", { name: "Check supported options", exact: true })
+    .click();
+  await expect(
+    dialog.getByRole("region", { name: "Equivalent session command" }),
+  ).toContainText("--model");
+  await expect(
+    dialog.getByRole("button", { name: "Start", exact: true }),
+  ).toBeEnabled();
+
+  const heldIdentityRead = await holdNextEmptyIdentityReadWithStart(
+    page,
+    FIXTURE_PROJECT_ID,
+    workspaceKey(plan.root),
+  );
+  const protectedPosts: string[] = [];
+  const recordProtectedPost = (request: Request) => {
+    if (
+      request.method() === "POST" &&
+      request.url().includes("/projects/" + FIXTURE_PROJECT_ID + "/")
+    )
+      protectedPosts.push(new URL(request.url()).pathname);
+  };
+  page.on("request", recordProtectedPost);
+  try {
+    await heldIdentityRead.armStartClick();
+    await dialog
+      .getByRole("button", { name: "Check server", exact: true })
+      .click();
+    await expect.poll(() => heldIdentityRead.isHeld).toBe(true);
+    expect(heldIdentityRead.startDispatchProof).toEqual({
+      dispatched: true,
+      dispatchCount: 1,
+      dialogCount: 1,
+      buttonCount: 1,
+      buttonEnabled: true,
+      error: null,
+    });
+    await page.keyboard.press("Escape");
+    await expect(dialog).not.toBeVisible();
+    expect(protectedPosts).toEqual([]);
+    heldIdentityRead.release();
+    await heldIdentityRead.settledRead;
+
+    await page
+      .getByRole("button", { name: "New session", exact: true })
+      .click();
+    const reopened = page.getByRole("dialog", {
+      name: "New session · Alpha",
+      exact: true,
+    });
+    await expect(
+      reopened.getByText(
+        "No server-owned Start identity is recorded for this workspace.",
+        { exact: true },
+      ),
+    ).toBeVisible();
+    await expect(
+      reopened.getByRole("button", { name: "Check server", exact: true }),
+    ).toBeEnabled();
+    await expect(
+      reopened.getByRole("button", {
+        name: "Check supported options",
+        exact: true,
+      }),
+    ).toBeEnabled();
+    await expect(
+      reopened.getByRole("button", { name: "Start", exact: true }),
+    ).toBeDisabled();
+    await expect.poll(() => protectedPosts.length).toBe(0);
+  } finally {
+    page.off("request", recordProtectedPost);
+    await heldIdentityRead.dispose();
+  }
+});
 
 test("a lost explicit creation is reconciled once before Preview and Start run in the actual new branch and directory", async ({
   page,
@@ -145,7 +243,58 @@ test("a lost explicit creation is reconciled once before Preview and Start run i
   await expect(
     dialog.getByRole("region", { name: "Equivalent session command" }),
   ).toContainText("--model");
-  await dialog.getByRole("button", { name: "Start", exact: true }).click();
+  await expect(
+    dialog.getByRole("button", { name: "Start", exact: true }),
+  ).toBeEnabled();
+  const heldIdentityRead = await holdNextEmptyIdentityReadWithStart(
+    page,
+    FIXTURE_PROJECT_ID,
+    workspaceKey(plan.root),
+  );
+  const protectedPosts: string[] = [];
+  const recordProtectedPost = (request: Request) => {
+    if (
+      request.method() === "POST" &&
+      request.url().includes("/projects/" + FIXTURE_PROJECT_ID + "/")
+    )
+      protectedPosts.push(new URL(request.url()).pathname);
+  };
+  page.on("request", recordProtectedPost);
+  try {
+    await heldIdentityRead.armStartClick();
+    await dialog
+      .getByRole("button", { name: "Check server", exact: true })
+      .click();
+    await expect.poll(() => heldIdentityRead.isHeld).toBe(true);
+    expect(heldIdentityRead.startDispatchProof).toEqual({
+      dispatched: true,
+      dispatchCount: 1,
+      dialogCount: 1,
+      buttonCount: 1,
+      buttonEnabled: true,
+      error: null,
+    });
+    expect(protectedPosts).toEqual([]);
+    heldIdentityRead.release();
+    await heldIdentityRead.settledRead;
+    await expect(
+      page.getByRole("article", { name: "Session reply", exact: true }),
+    ).toContainText("Coding reply 🌱");
+    await expect.poll(() => protectedPosts.length).toBe(2);
+    expect(
+      protectedPosts.filter((path) =>
+        path.includes("session-start-identities"),
+      ),
+    ).toHaveLength(1);
+    expect(
+      protectedPosts.filter(
+        (path) => !path.includes("session-start-identities"),
+      ),
+    ).toHaveLength(1);
+  } finally {
+    page.off("request", recordProtectedPost);
+    await heldIdentityRead.dispose();
+  }
   await expect(
     page.getByRole("article", { name: "Session reply", exact: true }),
   ).toContainText("Coding reply 🌱");
