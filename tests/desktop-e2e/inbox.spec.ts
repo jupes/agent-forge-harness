@@ -235,7 +235,7 @@ let dispositionSnapshotCaptured = false;
 let sessionBaselineCaptured = false;
 let codexControlSnapshotCaptured = false;
 let fixtureMutationArmed = false;
-type InboxRecoveryPhase = "document-navigation" | "case2-initial-navigation" | "case4-initial-navigation" | "codex-beta-snooze" | "gemini-explicit-refresh" | "unknown";
+type InboxRecoveryPhase = "document-navigation" | "case2-initial-navigation" | "case2-post504-public-refresh" | "case4-initial-navigation" | "codex-beta-snooze" | "gemini-explicit-refresh" | "unknown";
 type InboxPhysicalEvent = {
   phase: InboxRecoveryPhase;
   time: number;
@@ -246,8 +246,8 @@ type InboxPhysicalEvent = {
 let inboxRecoveryPhysical: InboxPhysicalEvent[] = [];
 let inboxRecoveryOverflow = false;
 type InboxBrowserEvent = { ordinal: number; phase: InboxRecoveryPhase; time: number; event: "phase" | "fetch-start" | "signal-abort" | "headers" | "fetch-rejection"; signalPresence?: "absent" | "null" | "present" | "unknown"; initialAborted?: boolean | null; signalReason?: "unknown"; status?: number; contentLength?: "missing" | "invalid" | "over-cap" | "declared-within-cap"; rejection?: "abort-error" | "unknown" };
-const inboxBrowserEventSchema = z.object({ ordinal: z.number().int().nonnegative(), phase: z.enum(["document-navigation", "case2-initial-navigation", "case4-initial-navigation", "codex-beta-snooze", "gemini-explicit-refresh", "unknown"]), time: z.number().finite(), event: z.enum(["phase", "fetch-start", "signal-abort", "headers", "fetch-rejection"]), signalPresence: z.enum(["absent", "null", "present", "unknown"]).optional(), initialAborted: z.boolean().nullable().optional(), signalReason: z.literal("unknown").optional(), status: z.number().int().optional(), contentLength: z.enum(["missing", "invalid", "over-cap", "declared-within-cap"]).optional(), rejection: z.enum(["abort-error", "unknown"]).optional() }).strict();
-const inboxPhysicalEventSchema = z.object({ phase: z.enum(["document-navigation", "case2-initial-navigation", "case4-initial-navigation", "codex-beta-snooze", "gemini-explicit-refresh", "unknown"]), time: z.number().finite(), event: z.enum(["request-start", "response", "request-finished", "request-failed"]), correlation: z.literal("unknown"), status: z.number().int().optional() }).strict();
+const inboxBrowserEventSchema = z.object({ ordinal: z.number().int().nonnegative(), phase: z.enum(["document-navigation", "case2-initial-navigation", "case2-post504-public-refresh", "case4-initial-navigation", "codex-beta-snooze", "gemini-explicit-refresh", "unknown"]), time: z.number().finite(), event: z.enum(["phase", "fetch-start", "signal-abort", "headers", "fetch-rejection"]), signalPresence: z.enum(["absent", "null", "present", "unknown"]).optional(), initialAborted: z.boolean().nullable().optional(), signalReason: z.literal("unknown").optional(), status: z.number().int().optional(), contentLength: z.enum(["missing", "invalid", "over-cap", "declared-within-cap"]).optional(), rejection: z.enum(["abort-error", "unknown"]).optional() }).strict();
+const inboxPhysicalEventSchema = z.object({ phase: z.enum(["document-navigation", "case2-initial-navigation", "case2-post504-public-refresh", "case4-initial-navigation", "codex-beta-snooze", "gemini-explicit-refresh", "unknown"]), time: z.number().finite(), event: z.enum(["request-start", "response", "request-finished", "request-failed"]), correlation: z.literal("unknown"), status: z.number().int().optional() }).strict();
 let inboxRecoveryBrowserSnapshot: { state: "active" | "disabled" | "frozen" | "unknown"; events: unknown[]; overflow: boolean; instrumentationFailed: boolean; physical: InboxPhysicalEvent[]; physicalOverflow: boolean; windowOutcome: "normal-endpoint" | "cleanup-prefix" | "missing-document"; metadataMissing: boolean } | null = null;
 let inboxFirstDocumentNavigationSeen = false;
 let inboxPhysicalWindowOpen = false;
@@ -266,7 +266,7 @@ type InitialRecoveryCapture = {
 };
 function observeInitialRecovery(
   page: Page,
-  phase: "case2-initial-navigation" | "case4-initial-navigation",
+  phase: "case2-initial-navigation" | "case2-post504-public-refresh" | "case4-initial-navigation",
 ): InitialRecoveryCapture {
   inboxRecoveryPhase = phase;
   const started = new Set<Request>();
@@ -440,7 +440,7 @@ async function freezeInboxRecoveryWindow(page: Page) {
   const observed = await page.evaluate(() => { const host = window as Window & { __afInboxEvents?: unknown[]; __afInboxOverflow?: boolean; __afInboxWindowState?: "active" | "disabled" | "frozen" | "unknown"; __afInboxFreeze?: () => void; __afInboxInstrumentationFailed?: boolean }; host.__afInboxFreeze?.(); return { state: host.__afInboxWindowState ?? "unknown", events: host.__afInboxEvents ? host.__afInboxEvents.slice(0, 17) : null, overflow: host.__afInboxOverflow ?? null, instrumentationFailed: host.__afInboxInstrumentationFailed ?? true }; });
   inboxRecoveryBrowserSnapshot = { state: observed.state, events: observed.events ?? [], overflow: observed.overflow ?? true, instrumentationFailed: observed.instrumentationFailed, physical: inboxRecoveryPhysical.slice(0, 16), physicalOverflow: inboxRecoveryOverflow, windowOutcome: "normal-endpoint", metadataMissing: observed.events === null || !inboxFirstDocumentNavigationSeen };
 }
-async function markInboxRecoveryPhase(page: Page, phase: "codex-beta-snooze" | "gemini-explicit-refresh") {
+async function markInboxRecoveryPhase(page: Page, phase: "case2-post504-public-refresh" | "codex-beta-snooze" | "gemini-explicit-refresh") {
   inboxRecoveryPhase = phase;
   await page.evaluate((value) => {
     const host = window as Window & { __afInboxSetPhase?: (tag: string) => void };
@@ -1910,7 +1910,19 @@ test("Inbox refuses a held Codex Sessions preflight while retaining generic writ
   const positivePage = z.object({ ok: z.literal(true), data: codexChatApprovalPageSchema, error: z.null() }).strict().safeParse(await positiveRead.json());
   expect(positivePage.success).toBe(true);
   if (!positivePage.success) throw Error("The separately refreshed Codex original was invalid.");
-  expect(positivePage.data.data.pending).toContainEqual(expect.objectContaining({ turnRequestId: session.requestId, approval: originalEvent.approval }));
+  expect(positivePage.data.data.pending).toContainEqual({
+    turnRequestId: session.requestId,
+    actionable: true,
+    detailsUnavailableReason: null,
+    approval: {
+      id: originalEvent.approval.id,
+      kind: originalEvent.approval.kind,
+      command: originalEvent.approval.command,
+      cwd: originalEvent.approval.cwd,
+      reason: originalEvent.approval.reason,
+      availableDecisions: originalEvent.approval.availableDecisions,
+    },
+  });
   const sessionDecisionRequest = page.waitForRequest((request) => request.method() === "POST" && new URL(request.url()).pathname === "/__agent-forge/projects/" + alpha.id + "/sessions/" + session.id + "/approval-decisions");
   const sessionDecision = page.waitForResponse((response) => response.request().method() === "POST" && new URL(response.url()).pathname === "/__agent-forge/projects/" + alpha.id + "/sessions/" + session.id + "/approval-decisions");
   await returnedConversation.getByRole("button", { name: "Allow once", exact: true }).click();
@@ -2102,6 +2114,21 @@ test("Inbox discards an exact reserved original after a pre-effect 504", async (
   const heldReceipt = heldState.receipts.find((receipt) => receipt.original.requestId === reserveWire.data.requestId);
   expect(heldReceipt).toEqual(reserveEnvelope.data.data.receipt);
   expect(heldReceipt?.original).toEqual({ ...reserveWire.data, projectId: alpha.id });
+  await expect(inbox.getByText("Checking this Inbox action…", { exact: true })).toHaveCount(0);
+  await markInboxRecoveryPhase(page, "case2-post504-public-refresh");
+  const post504Recovery = observeInitialRecovery(page, "case2-post504-public-refresh");
+  const post504RecoveryResponse = page.waitForResponse((response) => isInitialGlobalRecovery(response.request()));
+  const refreshInboxButton = inbox.getByRole("button", { name: "Refresh Inbox", exact: true });
+  await refreshInboxButton.click();
+  await waitForRouteSignal(post504RecoveryResponse);
+  await expect(inbox.getByText("Refreshing saved Inbox dispositions…", { exact: true })).toHaveCount(0);
+  await expect(inbox.getByRole("status", { name: "Loading Inbox sources", exact: true })).toHaveCount(0);
+  await expect(inbox.getByText("Checking this Inbox action…", { exact: true })).toHaveCount(0);
+  await expect(refreshInboxButton).toBeEnabled();
+  await post504Recovery.qualify();
+  post504Recovery.close();
+  const recoveredOriginalRow = inbox.getByRole("region", { name: "Inbox action history", exact: true }).locator("article").filter({ hasText: reserveWire.data.requestId });
+  await expect(recoveredOriginalRow.getByText("Server receipt: reserved", { exact: true })).toBeVisible();
   const heldActionButton = action.getByRole("button", { name: "Snooze 1 hour", exact: true });
   await expect(heldActionButton).toBeEnabled();
   await heldActionButton.click();
