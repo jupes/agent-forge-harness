@@ -60,10 +60,11 @@ test("Escape cancels a waiting Start while the validated identity response is he
   };
   page.on("request", recordProtectedPost);
   try {
-    await heldIdentityRead.armStartClick();
-    await dialog
-      .getByRole("button", { name: "Check server", exact: true })
-      .click();
+    const firstArm = heldIdentityRead.armStartClick();
+    await expect(heldIdentityRead.armStartClick()).rejects.toThrow(
+      "Capture is inactive or already armed.",
+    );
+    await firstArm;
     await expect.poll(() => heldIdentityRead.isHeld).toBe(true);
     expect(heldIdentityRead.startDispatchProof).toEqual({
       dispatched: true,
@@ -262,9 +263,6 @@ test("a lost explicit creation is reconciled once before Preview and Start run i
   page.on("request", recordProtectedPost);
   try {
     await heldIdentityRead.armStartClick();
-    await dialog
-      .getByRole("button", { name: "Check server", exact: true })
-      .click();
     await expect.poll(() => heldIdentityRead.isHeld).toBe(true);
     expect(heldIdentityRead.startDispatchProof).toEqual({
       dispatched: true,
