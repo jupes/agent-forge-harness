@@ -283,7 +283,7 @@ async function protectedRead(page: Page, path: string) {
     { path, token, header: OPERATOR_HEADER },
   );
 }
-async function matchesRunDetailPage(response: Response, after: number) {
+function matchesRunDetailPage(response: Response, after: number) {
   const url = new URL(response.url());
   if (
     url.pathname !==
@@ -291,7 +291,7 @@ async function matchesRunDetailPage(response: Response, after: number) {
     url.search !== `?after=${after}&limit=100`
   )
     return false;
-  return (await response.finished()) === null;
+  return true;
 }
 function runDetailFromEnvelope(body: unknown) {
   if (

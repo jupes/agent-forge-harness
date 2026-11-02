@@ -387,9 +387,46 @@ async function gone(pid: number) {
 }
 
 test("a non-reader cannot accept unlimited buffered input across settled writes", async () => {
-  const f = tree("blocked", 2000, 1024);
-  const child = await f.childPid();
+  const gateDir = mkdtempSync(join(tmpdir(), "agent-forge-child-ready-"));
+  const gate = join(gateDir, "child");
+  const started = gate + ".started";
+  const release = gate + ".release";
+  const acknowledged = gate + ".ack";
+  let handle: ReturnType<typeof tree>["handle"] | undefined;
+  let child: number | null = null;
+  let failed = false;
+  let failure: unknown;
+  let cleanupFailed = false;
+  let cleanupFailure: unknown;
+  const attempt = async (action: () => void | Promise<void>) => {
+    try {
+      await action();
+    } catch (error) {
+      if (!cleanupFailed) cleanupFailure = error;
+      cleanupFailed = true;
+    }
+  };
   try {
+    const f = tree("blocked", 2000, 1024, undefined, 5000, undefined, gate);
+    handle = f.handle;
+    const endedBeforeAnnouncement = () => {
+      throw new Error(
+        "The interactive fixture ended before child announcement.",
+      );
+    };
+    const announcement = Promise.race([
+      f.childPid(),
+      f.handle.done.then(endedBeforeAnnouncement, (error) => {
+        throw error;
+      }),
+    ]);
+    void announcement.catch(() => undefined);
+    expect(await markerAppears(started, 5000)).toBe(true);
+    writeFileSync(release, "child");
+    child = await announcement;
+    expect(readFileSync(acknowledged, "utf8")).toBe("ready");
+    expect(alive(child)).toBe(true);
+
     // Windows may acknowledge buffering before the child reads. The cap remains cumulative.
     await f.handle.write("x".repeat(512));
     await f.handle.write("x".repeat(512));
@@ -399,12 +436,27 @@ test("a non-reader cannot accept unlimited buffered input across settled writes"
     expect(exit.timedOut).toBe(false);
     expect(await gone(f.handle.pid)).toBe(true);
     expect(await gone(child)).toBe(true);
+  } catch (error) {
+    failed = true;
+    failure = error;
   } finally {
-    await f.handle.stop("fixture cleanup");
-    if (alive(child)) killTree(child);
+    await attempt(() => writeFileSync(release, "child"));
+    const ownedHandle = handle;
+    if (ownedHandle) await attempt(() => ownedHandle.stop("fixture cleanup"));
+    await attempt(() => {
+      if (child !== null && alive(child)) killTree(child);
+    });
+    for (const marker of [started, release, acknowledged])
+      await attempt(() => {
+        if (existsSync(marker)) unlinkSync(marker);
+      });
+    await attempt(() => rmdirSync(gateDir));
   }
+  if (cleanupFailed)
+    console.error('{"kind":"interactive-readiness-cleanup-refusal"}');
+  if (failed) throw failure;
+  if (cleanupFailed) throw cleanupFailure;
 });
-
 test("a saturated pipe has a deadline even when the host accepts earlier buffering", async () => {
   const f = tree("blocked", 200, 16 * 1024 * 1024);
   const child = await f.childPid();

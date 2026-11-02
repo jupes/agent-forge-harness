@@ -64,6 +64,7 @@ import type {
   ShiftLauncher,
   ShiftLaunchSpec,
 } from "./shift-launcher";
+import { rethrowWindowsSidLookupFailure } from "./windows-acl-lookup-diagnostic";
 import {
   cleanupEvidenceJson,
   GEMINI_PREVIEW_DIAGNOSTIC_CASE,
@@ -396,16 +397,43 @@ export interface TestHearthOptions {
 const SYSTEM32 = join(process.env["SystemRoot"] ?? "C:\\Windows", "System32");
 
 /** A program in System32 by its absolute path, with argv only; throws unless it exits 0. */
-export function system32(program: string, args: string[]): string {
+export function system32(
+  program: string,
+  args: string[],
+  diagnosticAlias?: string,
+): string {
+  const startedAt =
+    diagnosticAlias === undefined ? undefined : process.hrtime.bigint();
   const result = Bun.spawnSync([join(SYSTEM32, program), ...args], {
     stdout: "pipe",
     stderr: "pipe",
     timeout: 30_000,
   });
-  if (result.exitCode !== 0)
-    throw new Error(
-      `${program} exited ${result.exitCode}: ${result.stdout.toString()}${result.stderr.toString()}`,
+  if (result.exitCode !== 0) {
+    const error = new Error(
+      program +
+        " exited " +
+        result.exitCode +
+        ": " +
+        result.stdout.toString() +
+        result.stderr.toString(),
     );
+    if (diagnosticAlias !== undefined && startedAt !== undefined) {
+      return rethrowWindowsSidLookupFailure(
+        error,
+        {
+          failed: true,
+          alias: diagnosticAlias,
+          elapsedMs: Number(process.hrtime.bigint() - startedAt) / 1_000_000,
+          result,
+        },
+        (row) => {
+          process.stderr.write(row);
+        },
+      );
+    }
+    throw error;
+  }
   return result.stdout.toString();
 }
 
@@ -439,12 +467,16 @@ function sddlAliasSid(alias: string): string {
   const known = SDDL_ALIASES[alias] ?? resolvedAliases.get(alias);
   if (known !== undefined) return known;
   if (!/^[A-Z]{2}$/.test(alias)) return alias;
-  const sid = system32("WindowsPowerShell\\v1.0\\powershell.exe", [
-    "-NoProfile",
-    "-NonInteractive",
-    "-Command",
-    `(New-Object System.Security.AccessControl.RawSecurityDescriptor 'D:(A;;FA;;;${alias})').DiscretionaryAcl[0].SecurityIdentifier.Value`,
-  ]).trim();
+  const sid = system32(
+    "WindowsPowerShell\\v1.0\\powershell.exe",
+    [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      `(New-Object System.Security.AccessControl.RawSecurityDescriptor 'D:(A;;FA;;;${alias})').DiscretionaryAcl[0].SecurityIdentifier.Value`,
+    ],
+    alias,
+  ).trim();
   if (!/^S-1-\d+(?:-\d+)+$/.test(sid))
     throw new Error(`Windows read the SDDL alias ${alias} as no SID`);
   resolvedAliases.set(alias, sid);
