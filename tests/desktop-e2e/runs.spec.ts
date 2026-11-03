@@ -11,8 +11,10 @@ import { dirname, join } from "node:path";
 import {
   expect,
   type Page,
+  type Request as PlaywrightRequest,
   type Response,
   type Route,
+  type TestInfo,
   test,
 } from "@playwright/test";
 import { runsHref } from "../../apps/desktop/src/project-runs-model";
@@ -30,6 +32,8 @@ import { pageToken } from "../e2e/launch-link";
 import { BD_STAND_IN_STATE, HEARTH_HOME } from "../e2e/servers";
 import { seedObservationEvents } from "./observed-session-fixtures";
 import { alpha, beta, seedProjects, workspace } from "./project-fixtures";
+
+test.use({ channel: "chromium" });
 
 const owned = new Map<string, string>();
 const posts: string[] = [];
@@ -50,6 +54,353 @@ type RunsFilterEffectGate = {
 type RunsFilterEffectGateWindow = Window & {
   __runsFilterEffectGate?: RunsFilterEffectGate;
 };
+type RunsAbortCallsite = { callsite: string | null };
+type RunsAbortBrowserObserver = {
+  (signal: AbortSignal): RunsAbortCallsite;
+  armTarget(): void;
+  snapshot(): {
+    records: Array<{ stack: string | null }>;
+    overflow: boolean;
+    phase: "off" | "control" | "target";
+    realm: "current-page-document";
+    coverage: "target-phase" | "phase-gap";
+    targetSignalCorrelation: "UNPROVEN";
+    emptyRecordsInterpretation: "not-evidence-of-no-abort";
+  };
+  dispose(): void;
+};
+type RunsAbortObserverWindow = Window & {
+  __runs107AbortProvenanceControlObserver?: RunsAbortBrowserObserver;
+};
+type RunsAbortRequestFacts = {
+  response: boolean;
+  finished: boolean;
+  failure: "none" | "aborted" | "other" | "unreported";
+};
+const runsAbortCleanups = new WeakMap<Page, () => Promise<void>>();
+
+function createRunsAbortObserver(page: Page, expectedPath: string) {
+  let active = false,
+    origin = "",
+    after = 0,
+    matches = 0,
+    duplicate = false,
+    overflow = false,
+    eventCount = 0,
+    navigation = false;
+  const states = new Map<PlaywrightRequest, RunsAbortRequestFacts>();
+  const tick = () => {
+    if (eventCount < 8) eventCount++;
+    else overflow = true;
+  };
+  const onRequest = (request: PlaywrightRequest) => {
+    if (!active) return;
+    try {
+      const url = new URL(request.url());
+      if (
+        request.method() !== "GET" ||
+        url.origin !== origin ||
+        url.pathname !== expectedPath ||
+        url.search !== "?after=" + after + "&limit=100"
+      )
+        return;
+      if (states.has(request)) return;
+      matches++;
+      if (matches > 1) duplicate = true;
+      if (states.size >= 2) {
+        overflow = true;
+        return;
+      }
+      states.set(request, {
+        response: false,
+        finished: false,
+        failure: "none",
+      });
+      tick();
+    } catch {
+      overflow = true;
+    }
+  };
+  const onResponse = (response: Response) => {
+    try {
+      const facts = states.get(response.request());
+      if (!active || !facts) return;
+      tick();
+      facts.response = true;
+    } catch {
+      overflow = true;
+    }
+  };
+  const onFinished = (request: PlaywrightRequest) => {
+    const facts = states.get(request);
+    if (!active || !facts) return;
+    tick();
+    facts.finished = true;
+  };
+  const onFailed = (request: PlaywrightRequest) => {
+    const facts = states.get(request);
+    if (!active || !facts) return;
+    tick();
+    try {
+      const errorText = request.failure()?.errorText;
+      facts.failure =
+        errorText === undefined
+          ? "unreported"
+          : errorText.includes("ERR_ABORTED")
+            ? "aborted"
+            : "other";
+    } catch {
+      facts.failure = "unreported";
+    }
+  };
+  const onNavigation = (frame: import("@playwright/test").Frame) => {
+    if (!active || frame !== page.mainFrame()) return;
+    tick();
+    navigation = true;
+  };
+  page.on("request", onRequest);
+  page.on("response", onResponse);
+  page.on("requestfinished", onFinished);
+  page.on("requestfailed", onFailed);
+  page.on("framenavigated", onNavigation);
+  let disposed = false;
+  const dispose = async () => {
+    if (disposed) return;
+    disposed = true;
+    active = false;
+    try {
+      page.off("request", onRequest);
+      page.off("response", onResponse);
+      page.off("requestfinished", onFinished);
+      page.off("requestfailed", onFailed);
+      page.off("framenavigated", onNavigation);
+    } catch {}
+    try {
+      await withinRunsDeadline(
+        page.evaluate(() => {
+          const observer = Reflect.get(
+            window,
+            "__runs107AbortProvenanceControlObserver",
+          );
+          if (observer && typeof observer.dispose === "function")
+            observer.dispose();
+        }),
+        500,
+      );
+    } catch {}
+  };
+  runsAbortCleanups.set(page, dispose);
+  return {
+    install: () =>
+      page.addInitScript(() => {
+        const host = window as RunsAbortObserverWindow;
+        let phase: "off" | "control" | "target" = "off";
+        let control: RunsAbortCallsite = { callsite: null };
+        const records: Array<{ stack: string | null }> = [];
+        let overflow = false;
+        const descriptor = Object.getOwnPropertyDescriptor(
+          AbortController.prototype,
+          "abort",
+        );
+        const original = descriptor?.value as
+          | AbortController["abort"]
+          | undefined;
+        const wrapped = function (
+          this: AbortController,
+          ...args: Parameters<AbortController["abort"]>
+        ) {
+          if (!original) return;
+          const result = Reflect.apply(original, this, args);
+          try {
+            if (phase === "off") return result;
+            const raw = new Error().stack;
+            const frames =
+              typeof raw === "string"
+                ? raw
+                    .split("\n")
+                    .slice(2, 6)
+                    .map((frame) =>
+                      frame
+                        .replace(/\b[a-z][a-z\d+.-]*:[^\s)]+/gi, "[redacted]")
+                        .slice(0, 128),
+                    )
+                : [];
+            const stack = frames.length
+              ? frames.join("\n").slice(0, 512)
+              : null;
+            if (phase === "control" && stack?.includes("controlledAbortProbe"))
+              control.callsite = "controlledAbortProbe";
+            else if (phase === "target") {
+              if (records.length < 8) records.push({ stack });
+              else overflow = true;
+            }
+          } catch {
+            if (phase === "target") overflow = true;
+          }
+          return result;
+        };
+        if (descriptor && original)
+          Object.defineProperty(AbortController.prototype, "abort", {
+            ...descriptor,
+            value: wrapped,
+          });
+        const observer = Object.assign(
+          (_signal: AbortSignal) => {
+            phase = "control";
+            control = { callsite: null };
+            return control;
+          },
+          {
+            armTarget() {
+              phase = "target";
+            },
+            snapshot() {
+              return {
+                records: records.slice(),
+                overflow,
+                phase,
+                realm: "current-page-document",
+                coverage: phase === "target" ? "target-phase" : "phase-gap",
+                targetSignalCorrelation: "UNPROVEN",
+                emptyRecordsInterpretation: "not-evidence-of-no-abort",
+              };
+            },
+            dispose() {
+              phase = "off";
+              if (
+                descriptor &&
+                Object.getOwnPropertyDescriptor(
+                  AbortController.prototype,
+                  "abort",
+                )?.value === wrapped
+              )
+                Object.defineProperty(
+                  AbortController.prototype,
+                  "abort",
+                  descriptor,
+                );
+              if (host.__runs107AbortProvenanceControlObserver === observer)
+                delete host.__runs107AbortProvenanceControlObserver;
+            },
+          },
+        ) as RunsAbortBrowserObserver;
+        host.__runs107AbortProvenanceControlObserver = observer;
+      }),
+    arm(afterValue: number) {
+      after = afterValue;
+      try {
+        origin = new URL(page.url()).origin;
+      } catch {
+        overflow = true;
+      }
+      active = true;
+    },
+    facts(request: PlaywrightRequest) {
+      const selected = states.get(request);
+      return {
+        matches,
+        duplicate,
+        overflow,
+        eventCount,
+        navigation,
+        selectedTracked: !!selected,
+        response: selected?.response ?? false,
+        finished: selected?.finished ?? false,
+        failure: selected?.failure ?? "unreported",
+      };
+    },
+    dispose,
+  };
+}
+
+async function withinRunsDeadline<T>(
+  promise: Promise<T>,
+  milliseconds: number,
+) {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => resolve(undefined), milliseconds);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function attachRunsAbortFailure(
+  page: Page,
+  testInfo: TestInfo,
+  response: Response,
+  observer: ReturnType<typeof createRunsAbortObserver>,
+) {
+  try {
+    let browser: unknown;
+    try {
+      browser = await withinRunsDeadline(
+        page.evaluate(() => {
+          try {
+            return (
+              Reflect.get(
+                window,
+                "__runs107AbortProvenanceControlObserver",
+              )?.snapshot?.() ?? null
+            );
+          } catch {
+            return null;
+          }
+        }),
+        500,
+      );
+    } catch {
+      browser = undefined;
+    }
+    let finished = "unavailable";
+    try {
+      finished =
+        (await withinRunsDeadline(
+          response.finished().then(
+            (error) => (error === null ? "complete" : "error"),
+            () => "error",
+          ),
+          500,
+        )) ?? "timeout";
+    } catch {
+      finished = "unavailable";
+    }
+    const body = JSON.stringify({
+      read: "rejected",
+      observation:
+        "successful AbortController.abort calls in the current page realm only",
+      targetSignalCorrelation: "UNPROVEN",
+      browser: browser ?? {
+        available: false,
+        phase: "unavailable",
+        realm: "unavailable",
+        coverage: "phase-gap",
+        targetSignalCorrelation: "UNPROVEN",
+        emptyRecordsInterpretation: "not-evidence-of-no-abort",
+        records: [],
+        overflow: true,
+      },
+      request: observer.facts(response.request()),
+      finished,
+    });
+    const boundedBody =
+      Buffer.byteLength(body) <= 8192
+        ? body
+        : JSON.stringify({ truncated: true });
+    await withinRunsDeadline(
+      testInfo.attach("runs-abort-provenance.json", {
+        body: boundedBody,
+        contentType: "application/json",
+      }),
+      500,
+    );
+  } catch {}
+}
 function dispatches() {
   return (
     [
@@ -283,7 +634,7 @@ async function protectedRead(page: Page, path: string) {
     { path, token, header: OPERATOR_HEADER },
   );
 }
-async function matchesRunDetailPage(response: Response, after: number) {
+function matchesRunDetailPage(response: Response, after: number) {
   const url = new URL(response.url());
   if (
     url.pathname !==
@@ -291,7 +642,7 @@ async function matchesRunDetailPage(response: Response, after: number) {
     url.search !== `?after=${after}&limit=100`
   )
     return false;
-  return (await response.finished()) === null;
+  return true;
 }
 function runDetailFromEnvelope(body: unknown) {
   if (
@@ -356,6 +707,19 @@ async function forwardRun(route: Route) {
 const href = (project = alpha.id, slug: string | null = null) =>
   `/index.html${runsHref(project, slug)}`;
 
+test.beforeAll(async ({ browser }, testInfo) => {
+  const observedBrowserVersion = browser.version();
+  await testInfo.attach("runs-fixed-runtime.json", {
+    body: JSON.stringify({
+      requestedChannel: "chromium",
+      observedBrowserVersion,
+      expectedBrowserVersion: "153.0.8010.12",
+    }),
+    contentType: "application/json",
+  });
+  expect(observedBrowserVersion).toBe("153.0.8010.12");
+});
+
 test.beforeEach(({ page }) => {
   seedProjects();
   fixture = seedRuns();
@@ -375,6 +739,8 @@ test.beforeEach(({ page }) => {
   });
 });
 test.afterEach(async ({ page }) => {
+  await runsAbortCleanups.get(page)?.();
+  runsAbortCleanups.delete(page);
   for (const release of releases.splice(0)) release();
   await page.unrouteAll({ behavior: "ignoreErrors" });
   for (const path of [...owned.keys()]) remove(path);
@@ -760,8 +1126,13 @@ test("recorded run sessions page in the served project and open only admitted me
 
 test("a changed run-session admission key keeps the old page stale and disables metadata links and paging", async ({
   page,
-}) => {
+}, testInfo) => {
   const sessions = recordRunSessions(fixture.primary, 101);
+  const abortObserver = createRunsAbortObserver(
+    page,
+    "/__agent-forge/projects/" + alpha.id + "/runs/" + fixture.primary,
+  );
+  await abortObserver.install();
   const initialPageResponse = page.waitForResponse((response) =>
     matchesRunDetailPage(response, 0),
   );
@@ -801,14 +1172,53 @@ test("a changed run-session admission key keeps the old page stale and disables 
   const changedHistory = availableHistory(changedDetail, 0);
   expect(changedHistory.membershipKey).not.toBe(initialHistory.membershipKey);
 
+  const abortControl = await page.evaluate(() => {
+    const controller = new AbortController();
+    const signal = AbortSignal.any([controller.signal]);
+    const read = Reflect.get(
+      window,
+      "__runs107AbortProvenanceControlObserver",
+    )?.(signal);
+    const controlledAbortProbe = () => controller.abort();
+    controlledAbortProbe();
+    return read ?? null;
+  });
+  expect(abortControl).toMatchObject({ callsite: "controlledAbortProbe" });
+  await page.evaluate(() => {
+    const observer = Reflect.get(
+      window,
+      "__runs107AbortProvenanceControlObserver",
+    );
+    if (typeof observer === "function") observer.armTarget();
+  });
+  abortObserver.arm(nextAfter);
+
   const nextPageResponse = page.waitForResponse((response) =>
     matchesRunDetailPage(response, nextAfter),
   );
   await history
     .getByRole("button", { name: "Load more recorded sessions" })
     .click();
-  const nextDetail = await runDetailResponse(await nextPageResponse);
-  const nextHistory = availableHistory(nextDetail, nextAfter);
+  const selectedResponse = await nextPageResponse;
+  let nextHistory: ReturnType<typeof availableHistory>;
+  try {
+    const nextDetail = await runDetailResponse(selectedResponse);
+    nextHistory = availableHistory(nextDetail, nextAfter);
+  } catch (originalError) {
+    try {
+      await attachRunsAbortFailure(
+        page,
+        testInfo,
+        selectedResponse,
+        abortObserver,
+      );
+    } catch {}
+    throw originalError;
+  } finally {
+    try {
+      await abortObserver.dispose();
+    } catch {}
+  }
   expect(nextHistory.membershipKey).toBe(changedHistory.membershipKey);
   expect(nextHistory.membershipKey).not.toBe(initialHistory.membershipKey);
 

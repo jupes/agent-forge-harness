@@ -56,18 +56,29 @@ async function installIdentityFetchBarrier(
     holdResponse: boolean;
     previewPath: string | null;
     initiallyArmed: boolean;
+    dispatchStartOnPublicCheck?: boolean;
+    requireEmpty?: boolean;
   },
 ) {
   const bindingName = `__agentForgeIdentityCapture_${randomUUID().replaceAll("-", "")}`;
   const controllerName = `${bindingName}_controller`;
   const identityPath = `/__agent-forge/projects/${projectId}/session-start-identities`;
   const captureId = randomUUID();
+  let startDispatched = false;
+  let startDispatchCount = 0;
+  let startDialogCount = 0;
+  let startButtonCount = 0;
+  let startButtonEnabled = false;
+  let startDispatchError: string | null = null;
+  let startArmGeneration = 0;
+
   let observed = false;
   let observedReads = 0;
   let held = false;
   let active = true;
   let disposed = false;
   let armed = false;
+  let startArmClaimed = false;
   let captureStarted = false;
   let captureSeen = false;
   let captureValid = false;
@@ -121,8 +132,10 @@ async function installIdentityFetchBarrier(
           !active ||
           disposed ||
           proofFinished ||
-          source.frame !== page.mainFrame() ||
           !isRecord(raw) ||
+          (options.dispatchStartOnPublicCheck &&
+            raw.generation !== startArmGeneration) ||
+          source.frame !== page.mainFrame() ||
           raw.captureId !== captureId ||
           typeof raw.kind !== "string"
         )
@@ -162,6 +175,27 @@ async function installIdentityFetchBarrier(
         captureStarted = true;
         captureSeen = true;
         armProofTimeout();
+        if (options.dispatchStartOnPublicCheck) {
+          startDispatched = raw.startDispatched === true;
+          startDispatchCount =
+            typeof raw.startDispatchCount === "number"
+              ? raw.startDispatchCount
+              : 0;
+          startDialogCount =
+            typeof raw.startDialogCount === "number" ? raw.startDialogCount : 0;
+          startButtonCount =
+            typeof raw.startButtonCount === "number" ? raw.startButtonCount : 0;
+          startButtonEnabled = raw.startButtonEnabled === true;
+          if (
+            !startDispatched ||
+            startDispatchCount !== 1 ||
+            startDialogCount !== 1 ||
+            startButtonCount !== 1 ||
+            !startButtonEnabled
+          )
+            startDispatchError =
+              "The unique enabled Start was not clicked after the public Check server handler.";
+        }
 
         const invalid = () => {
           failProof("The actual browser identity response failed validation.");
@@ -203,7 +237,8 @@ async function installIdentityFetchBarrier(
           if (
             !envelope.success ||
             envelope.data.data.scope.projectId !== projectId ||
-            envelope.data.data.scope.workspace !== workspace
+            envelope.data.data.scope.workspace !== workspace ||
+            (options.requireEmpty && envelope.data.data.identities.length !== 0)
           )
             return invalid();
           if (expected.requestId !== undefined) {
@@ -258,6 +293,32 @@ async function installIdentityFetchBarrier(
         let releaseRequested = false;
         let releaseCurrentHold: (() => void) | null = null;
         let cancelCurrentClone: (() => void) | null = null;
+        let dispatchStartOnPublicCheck = false;
+        let startArmGeneration = 0,
+          startDispatchCount = 0;
+        let startDialogCount = 0,
+          startButtonCount = 0;
+        let startButtonEnabled = false,
+          startDispatched = false;
+        let startListener: ((event: MouseEvent) => void) | null = null;
+        const composerSelector =
+          'dialog[open][aria-labelledby="af-session-composer-title"]';
+        const composerDialogs = () => [
+          ...document.querySelectorAll(composerSelector),
+        ];
+        const namedButtons = (dialog: Element | null, label: string) =>
+          [...(dialog?.querySelectorAll("button") ?? [])].filter(
+            (button) => button.textContent?.trim() === label,
+          );
+        const visible = (button: Element | null) =>
+          !!button &&
+          button.getClientRects().length > 0 &&
+          getComputedStyle(button).visibility !== "hidden";
+        const clearStartListeners = () => {
+          if (startListener)
+            document.removeEventListener("click", startListener, true);
+          startListener = null;
+        };
 
         const boundedCloneText = async (response: Response) => {
           let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
@@ -331,7 +392,14 @@ async function installIdentityFetchBarrier(
             Reflect.apply(binding, window, [payload]) as Promise<unknown>,
           );
         const notify = (kind: string, extra: Record<string, unknown> = {}) =>
-          callBinding({ kind, captureId: config.captureId, ...extra });
+          callBinding({
+            kind,
+            captureId: config.captureId,
+            ...(dispatchStartOnPublicCheck
+              ? { generation: startArmGeneration }
+              : {}),
+            ...extra,
+          });
         const withinBound = <T>(promise: Promise<T>, boundMs: number) => {
           let timerId: number | undefined;
           const timeout = new Promise<undefined>((resolve) => {
@@ -358,6 +426,15 @@ async function installIdentityFetchBarrier(
             requestUrl,
             responseUrl: response.url,
             status: response.status,
+            ...(dispatchStartOnPublicCheck
+              ? {
+                  startDispatched,
+                  startDispatchCount,
+                  startDialogCount,
+                  startButtonCount,
+                  startButtonEnabled,
+                }
+              : {}),
             ...clone,
           });
         };
@@ -524,11 +601,93 @@ async function installIdentityFetchBarrier(
 
         const restoreOwned = () => {
           active = false;
+          clearStartListeners();
           if (window.fetch === wrapper) window.fetch = previousFetch;
           Reflect.deleteProperty(window, config.controllerName);
         };
 
         const controller = {
+          armStart(generation: number) {
+            if (disposed || !active) return;
+            clearStartListeners();
+            startArmGeneration = generation;
+            startDispatched = startButtonEnabled = false;
+            startDispatchCount = startDialogCount = startButtonCount = 0;
+            dispatchStartOnPublicCheck = true;
+            claimed = armed = false;
+            const dialogs = composerDialogs();
+            const dialog = dialogs.length === 1 ? (dialogs[0] ?? null) : null;
+            const checks = namedButtons(dialog, "Check server");
+            const check = checks.length === 1 ? checks[0] : null;
+            if (!check || check.disabled || !visible(check)) {
+              void notifyBounded("capture-failed", { armed: true }).catch(
+                () => {},
+              );
+              return;
+            }
+            const checkButton = check;
+            startListener = (event: MouseEvent) => {
+              if (
+                event.target !== checkButton ||
+                !active ||
+                disposed ||
+                startArmGeneration !== generation
+              )
+                return;
+              document.removeEventListener("click", startListener!, true);
+              startListener = null;
+              armed = true;
+              claimed = false;
+              void notifyBounded("armed", { armed: true }).catch(() => {});
+              queueMicrotask(() => {
+                if (
+                  !active ||
+                  disposed ||
+                  releaseRequested ||
+                  window.fetch !== wrapper ||
+                  Reflect.get(window, config.controllerName) !== controller ||
+                  startArmGeneration !== generation
+                )
+                  return;
+                const currentDialogs = composerDialogs();
+                const currentDialog =
+                  currentDialogs.length === 1
+                    ? (currentDialogs[0] ?? null)
+                    : null;
+                const currentButtons = namedButtons(currentDialog, "Start");
+                startDialogCount = currentDialogs.length;
+                startButtonCount = currentButtons.length;
+                const startButton = currentButtons[0];
+                if (
+                  currentButtons.length !== 1 ||
+                  !startButton ||
+                  startButton.disabled ||
+                  !visible(startButton)
+                )
+                  return;
+                startListener = (startEvent: MouseEvent) => {
+                  if (
+                    startEvent.target !== startButton ||
+                    !active ||
+                    disposed ||
+                    startArmGeneration !== generation
+                  )
+                    return;
+                  startButtonEnabled =
+                    !startButton.disabled && visible(startButton);
+                  startDispatchCount++;
+                  startDispatched =
+                    startDispatchCount === 1 && startButtonEnabled;
+                  document.removeEventListener("click", startListener!, true);
+                  startListener = null;
+                };
+                document.addEventListener("click", startListener, true);
+                startButton.click();
+              });
+            };
+            document.addEventListener("click", startListener, true);
+            checkButton.click();
+          },
           arm() {
             if (disposed || !active) return;
             armed = true;
@@ -540,6 +699,8 @@ async function installIdentityFetchBarrier(
           },
           dispose() {
             disposed = true;
+            startArmGeneration++;
+            clearStartListeners();
             active = false;
             releaseRequested = true;
             cancelCurrentClone?.();
@@ -594,17 +755,24 @@ async function installIdentityFetchBarrier(
     throw error;
   }
 
-  const invokeController = (method: "arm" | "release" | "dispose") =>
+  const invokeController = (
+    method: "arm" | "armStart" | "release" | "dispose",
+    generation = 0,
+  ) =>
     withinCleanupBound(
       page.evaluate(
-        ({ controllerName, method }) => {
+        ({ controllerName, method, generation }) => {
           const controller = Reflect.get(window, controllerName);
           if (typeof controller !== "object" || controller === null) return;
           const callable = Reflect.get(controller, method);
           if (typeof callable === "function")
-            Reflect.apply(callable, controller, []);
+            Reflect.apply(
+              callable,
+              controller,
+              method === "armStart" ? [generation] : [],
+            );
         },
-        { controllerName, method },
+        { controllerName, method, generation },
       ),
     );
 
@@ -621,6 +789,35 @@ async function installIdentityFetchBarrier(
     },
     get settledRead() {
       return settledRead;
+    },
+    armStartClick() {
+      if (!active || disposed || startArmClaimed)
+        return Promise.reject(
+          new Error("Capture is inactive or already armed."),
+        );
+      startArmClaimed = true;
+      options.dispatchStartOnPublicCheck = true;
+      startArmGeneration++;
+      startDispatched = startButtonEnabled = false;
+      startDispatchCount = startDialogCount = startButtonCount = 0;
+      startDispatchError = null;
+      armProofTimeout();
+      return invokeController("armStart", startArmGeneration).catch(
+        (error: unknown) => {
+          failProof("The public Check server click could not be armed.");
+          throw error;
+        },
+      );
+    },
+    get startDispatchProof() {
+      return {
+        dispatched: startDispatched,
+        dispatchCount: startDispatchCount,
+        dialogCount: startDialogCount,
+        buttonCount: startButtonCount,
+        buttonEnabled: startButtonEnabled,
+        error: startDispatchError,
+      };
     },
     arm() {
       if (!active || disposed)
@@ -722,5 +919,25 @@ export async function holdNextVerifiedIdentityRead(
       state: "reserved",
     },
     { holdResponse: true, previewPath: null, initiallyArmed: false },
+  );
+}
+
+/** Hold the next real empty identity page after the public Check server click queues an enabled Start. */
+export async function holdNextEmptyIdentityReadWithStart(
+  page: Page,
+  projectId: string,
+  workspace: string,
+) {
+  return installIdentityFetchBarrier(
+    page,
+    projectId,
+    workspace,
+    {},
+    {
+      holdResponse: true,
+      previewPath: null,
+      initiallyArmed: false,
+      requireEmpty: true,
+    },
   );
 }
