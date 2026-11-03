@@ -8,7 +8,7 @@ import {
 } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { z } from "zod";
-import type { WorktreeEntry } from "../../../types/beads";
+import type { BeadsIssue, WorktreeEntry } from "../../../types/beads";
 import type {
   ProjectCatalog,
   ProjectPreferences,
@@ -39,6 +39,11 @@ import {
   projectRepositoriesDataSchema,
   projectWorktreeFactSchema,
 } from "../../projects/project-repositories-protocol";
+import {
+  type ProjectScopePreviewSettingsQuery,
+  projectScopePreviewSettingsQuerySchema,
+  projectScopePreviewSettingsSchema,
+} from "../../projects/project-scope-preview-protocol";
 import {
   createRepositoryOnboarding,
   type RepositoryOnboardingOptions,
@@ -147,6 +152,13 @@ interface ProjectRepositoryOption {
   key: string;
   name: string;
   served: boolean;
+}
+
+function unavailableScopePreview(): ProjectStoreError {
+  return new ProjectStoreError(
+    503,
+    "The complete project scope preview is unavailable. Refresh before trying again.",
+  );
 }
 
 function unavailableProjectOptions(): ProjectStoreError {
@@ -388,6 +400,18 @@ function projectWorktreeFacts(
   repositoryPath: string,
   reader: typeof listWorktrees,
 ): Array<z.infer<typeof projectWorktreeFactSchema>> {
+  const gitIdentity = gitRun(
+    ["rev-parse", "--show-toplevel"],
+    repositoryPath,
+    5_000,
+  );
+  const reportedTop = gitIdentity.stdout.trim();
+  if (
+    gitIdentity.status !== 0 ||
+    !reportedTop ||
+    workspaceKey(reportedTop) !== workspaceKey(repositoryPath)
+  )
+    throw unavailableProjectRepositories();
   const reportedMain = mainCheckoutOf(repositoryPath, gitRun);
   if (reportedMain === null) throw unavailableProjectRepositories();
   const mainKey = workspaceKey(reportedMain);
@@ -493,6 +517,34 @@ function projectScopePreviewInput(
   return { ok: true, value: parsed.data };
 }
 
+function settingsScopePreviewInput(
+  request: RouteRequest,
+): ValidationResult<ProjectScopePreviewSettingsQuery & { id: string }> {
+  const id = request.params["id"];
+  const allowed = new Set(["revision", "epicId"]);
+  if (
+    !isProjectId(id) ||
+    [...request.query.keys()].some((name) => !allowed.has(name))
+  )
+    return fail("The project scope preview query is invalid.");
+  const revisions = request.query.getAll("revision");
+  const rawRevision = revisions[0];
+  if (
+    revisions.length !== 1 ||
+    rawRevision === undefined ||
+    !/^(0|[1-9][0-9]*)$/.test(rawRevision)
+  )
+    return fail("The project scope preview query is invalid.");
+  const revision = Number(rawRevision);
+  const parsed = projectScopePreviewSettingsQuerySchema.safeParse({
+    revision,
+    epicIds: request.query.getAll("epicId"),
+  });
+  return parsed.success
+    ? { ok: true, value: { id, ...parsed.data } }
+    : fail("The project scope preview query is invalid.");
+}
+
 function registeredRepositoryOptions(
   root: string,
   registryRoot?: string,
@@ -517,6 +569,39 @@ function registeredRepositoryOptions(
     }
   }
   return allowed;
+}
+
+function scopeProof(
+  slug: string,
+  workspace: string,
+  epicIds: string[],
+  issues: readonly BeadsIssue[],
+): { hash: string; count: number } {
+  const epics = new Set(
+    issues.filter((issue) => issue.type === "epic").map((issue) => issue.id),
+  );
+  if (epicIds.some((id) => !epics.has(id)))
+    throw new ProjectStoreError(
+      409,
+      "A selected epic is missing from the current tracker read. Refresh project scope.",
+    );
+  const members = selectProjectBeads(
+    { slug, workspaces: [{ root: workspace, repositories: [], epicIds }] },
+    workspace,
+    issues,
+  )
+    .map((issue) => issue.id)
+    .sort();
+  const proof = JSON.stringify({
+    workspace,
+    slug,
+    epicIds: [...epicIds].sort(),
+    members,
+  });
+  return {
+    hash: createHash("sha256").update(proof).digest("hex"),
+    count: members.length,
+  };
 }
 
 function checkedScope(
@@ -576,33 +661,12 @@ function checkedScope(
       503,
       "The complete live project scope is unavailable. Refresh before reserving this project.",
     );
-  const epics = new Set(
-    snapshot.source.issues
-      .filter((issue) => issue.type === "epic")
-      .map((issue) => issue.id),
-  );
-  if (scope.epicIds.some((id) => !epics.has(id)))
-    throw new ProjectStoreError(
-      409,
-      "A selected epic is missing from the current tracker read. Refresh project scope.",
-    );
-  const members = selectProjectBeads(
-    { slug: original.slug, workspaces: [scope] },
-    snapshot.source.workspace,
+  return scopeProof(
+    original.slug,
+    served,
+    scope.epicIds,
     snapshot.source.issues,
-  )
-    .map((issue) => issue.id)
-    .sort();
-  const proof = JSON.stringify({
-    workspace: served,
-    slug: original.slug,
-    epicIds: [...scope.epicIds].sort(),
-    members,
-  });
-  return {
-    hash: createHash("sha256").update(proof).digest("hex"),
-    count: members.length,
-  };
+  );
 }
 
 function preferenceChange(
@@ -1186,6 +1250,141 @@ export function projectRoutes(
         return result.data;
       }),
   };
+  const settingsScopePreview: ReadRoute<
+    ProjectScopePreviewSettingsQuery & { id: string }
+  > = {
+    kind: "read",
+    method: "GET",
+    path: "/projects/:id/settings/scope-preview",
+    operatorOnly: true,
+    validate: settingsScopePreviewInput,
+    read: ({ id, revision, epicIds }) =>
+      reply(async () => {
+        try {
+          const snapshot = await createOptions.loadScope();
+          if (
+            !isRecord(snapshot) ||
+            !isRecord(snapshot.catalog) ||
+            !Array.isArray(snapshot.catalog["projects"]) ||
+            typeof snapshot.catalog["revision"] !== "number" ||
+            !Number.isSafeInteger(snapshot.catalog["revision"]) ||
+            snapshot.catalog["revision"] < 0
+          )
+            throw unavailableScopePreview();
+          const catalog = snapshot.catalog as ProjectCatalog;
+          const found = catalog.projects.find(
+            (candidate) => isRecord(candidate) && candidate["id"] === id,
+          );
+          if (!found)
+            throw new ProjectStoreError(404, "The project was not found.");
+          if (
+            !isRecord(found) ||
+            typeof found["slug"] !== "string" ||
+            !Array.isArray(found["workspaces"])
+          )
+            throw unavailableScopePreview();
+          if (catalog.revision !== revision)
+            throw new ProjectStoreError(
+              409,
+              "The project catalog changed. Refresh before previewing scope.",
+            );
+          const scopes = found["workspaces"];
+          if (scopes.length !== 1)
+            throw new ProjectStoreError(
+              409,
+              "This preview supports only one project workspace.",
+            );
+          const scope = scopes[0];
+          if (
+            !isRecord(scope) ||
+            typeof scope["root"] !== "string" ||
+            !Array.isArray(scope["epicIds"]) ||
+            !scope["epicIds"].every((value) => typeof value === "string")
+          )
+            throw unavailableScopePreview();
+          const served = resolveCheckout(createOptions.root).workspace;
+          const servedKey = workspaceKey(served);
+          if (
+            workspaceKey(scope["root"]) !== servedKey ||
+            workspaceKey(createOptions.workspace) !== servedKey
+          )
+            throw new ProjectStoreError(
+              409,
+              "This preview supports only the project workspace served by this hearth.",
+            );
+          const source = snapshot.source;
+          if (!isRecord(source) || typeof source["workspace"] !== "string")
+            throw unavailableScopePreview();
+          if (workspaceKey(source["workspace"]) !== servedKey)
+            throw new ProjectStoreError(
+              409,
+              "The project snapshot does not match this hearth workspace.",
+            );
+          const issues = source["issues"];
+          if (
+            issues === null ||
+            !Array.isArray(issues) ||
+            typeof source["asOf"] !== "string" ||
+            !Number.isFinite(Date.parse(source["asOf"])) ||
+            new Set(
+              issues.map((issue) => (isRecord(issue) ? issue["id"] : null)),
+            ).size !== issues.length ||
+            issues.some(
+              (issue) =>
+                !isRecord(issue) ||
+                typeof issue["id"] !== "string" ||
+                !["epic", "feature", "task", "bug", "chore"].includes(
+                  String(issue["type"]),
+                ) ||
+                typeof issue["title"] !== "string" ||
+                !["open", "in_progress", "closed", "blocked"].includes(
+                  String(issue["status"]),
+                ) ||
+                (issue["labels"] !== undefined &&
+                  (!Array.isArray(issue["labels"]) ||
+                    issue["labels"].some(
+                      (label) => typeof label !== "string",
+                    ))) ||
+                (issue["parent"] !== undefined &&
+                  typeof issue["parent"] !== "string"),
+            )
+          )
+            throw unavailableScopePreview();
+          const proof = scopeProof(
+            found["slug"],
+            servedKey,
+            epicIds,
+            issues as BeadsIssue[],
+          );
+          const result = projectScopePreviewSettingsSchema.safeParse({
+            complete: true,
+            projectId: id,
+            catalogRevision: catalog.revision,
+            workspaceKey: servedKey,
+            slug: found["slug"],
+            epicIds: [...epicIds].sort(),
+            scopeCount: proof.count,
+            scopeHash: proof.hash,
+            sourceAsOf: source["asOf"],
+          });
+          if (!result.success) throw unavailableScopePreview();
+          if (
+            Buffer.byteLength(JSON.stringify(result.data), "utf8") >
+            MAX_PROJECT_CREATE_OPTIONS_BYTES
+          )
+            throw unavailableScopePreview();
+          return result.data;
+        } catch (error) {
+          if (
+            error instanceof ProjectStoreError &&
+            (error.status === 404 || error.status === 409)
+          )
+            throw error;
+          throw unavailableScopePreview();
+        }
+      }),
+  };
+
   const preferences: ActionRoute<PreferenceChange> = {
     kind: "action",
     method: "POST",
@@ -1411,6 +1610,7 @@ export function projectRoutes(
     projectRepositoriesRead,
     createOptionsRead,
     scopePreview,
+    settingsScopePreview,
     preferences,
     generalSettings,
     createList,

@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { expect, test } from "@playwright/test";
+import { expect, type Route, test } from "@playwright/test";
 import { OPERATOR_HEADER } from "../../scripts/hearth/paths";
 import { openSettled, reloadSettled } from "../e2e/fixtures";
 import { HEARTH_HOME } from "../e2e/servers";
@@ -356,33 +356,92 @@ test("reviewed brief uses the standing conversation, recovers its original, and 
     join(HEARTH_HOME, "keeper-fixture-mode.json"),
     JSON.stringify("brief"),
   );
-  await page.route("**/keeper/briefs", (route) =>
-    route.request().method() === "GET"
-      ? route.abort("failed")
-      : route.continue(),
-  );
-  await recoveredPanel
-    .getByRole("button", { name: "Review another brief" })
-    .click();
-  await recoveredPanel
-    .getByRole("button", { name: "Send reviewed brief" })
-    .click();
-  await expect(panel).toContainText("brief read could not be verified");
-  await expect(card).toHaveAttribute("data-brief-id", latest ?? "");
-  await expect
-    .poll(() => rawState(alpha.id).turns?.at(-1)?.phase)
-    .toBe("completed");
-  // Keep the synthetic failure through the terminal stream update and its
-  // coalesced read; otherwise that queued read can heal before the retry click.
-  await expect(recoveredPanel).toHaveAttribute("aria-busy", "false");
-  await expect(
-    panel.getByRole("button", { name: "Retry brief read", exact: true }),
-  ).toBeVisible();
-  await page.unroute("**/keeper/briefs");
-  await recoveredPanel
-    .getByRole("button", { name: "Retry brief read", exact: true })
-    .click();
-  await expect(card).not.toHaveAttribute("data-brief-id", latest ?? "");
+  let preGestureBriefAborts = 0;
+  let postGestureBriefReads = 0;
+  await page.evaluate(() => {
+    const gesture = {
+      opened: false,
+      listener: (event: MouseEvent) => {
+        if (!event.isTrusted || !(event.target instanceof Element)) return;
+        const button = event.target.closest("button");
+        if (
+          button?.textContent?.trim() === "Retry brief read" &&
+          button.closest('[aria-label="Keeper brief"]')
+        )
+          gesture.opened = true;
+      },
+    };
+    document.addEventListener("click", gesture.listener, true);
+    Reflect.set(window, "__keeperBriefRetryGesture", gesture);
+  });
+  const briefFaultRoute = async (route: Route) => {
+    if (route.request().method() !== "GET") return route.continue();
+    const opened = await page.evaluate(() => {
+      const gesture = Reflect.get(window, "__keeperBriefRetryGesture") as
+        | { opened: boolean }
+        | undefined;
+      return gesture?.opened === true;
+    });
+    if (!opened) {
+      preGestureBriefAborts++;
+      return route.abort("failed");
+    }
+    postGestureBriefReads++;
+    return route.continue();
+  };
+  await page.route("**/keeper/briefs", briefFaultRoute);
+  try {
+    await recoveredPanel
+      .getByRole("button", { name: "Review another brief" })
+      .click();
+    await recoveredPanel
+      .getByRole("button", { name: "Send reviewed brief" })
+      .click();
+    await expect(panel).toContainText("brief read could not be verified");
+    await expect(card).toHaveAttribute("data-brief-id", latest ?? "");
+    await expect
+      .poll(() => rawState(alpha.id).turns?.at(-1)?.phase)
+      .toBe("completed");
+    // Keep the synthetic failure through the terminal stream update and its
+    // coalesced read; otherwise that queued read can heal before the retry click.
+    await expect(recoveredPanel).toHaveAttribute("aria-busy", "false");
+    await expect(
+      panel.getByRole("button", { name: "Retry brief read", exact: true }),
+    ).toBeVisible();
+    expect(preGestureBriefAborts).toBeGreaterThan(0);
+    expect(
+      await page.evaluate(() => {
+        const gesture = Reflect.get(window, "__keeperBriefRetryGesture") as
+          | { opened: boolean }
+          | undefined;
+        return gesture?.opened === true;
+      }),
+    ).toBe(false);
+    await recoveredPanel
+      .getByRole("button", { name: "Retry brief read", exact: true })
+      .click();
+    expect(
+      await page.evaluate(() => {
+        const gesture = Reflect.get(window, "__keeperBriefRetryGesture") as
+          | { opened: boolean }
+          | undefined;
+        return gesture?.opened === true;
+      }),
+    ).toBe(true);
+    await expect(card).not.toHaveAttribute("data-brief-id", latest ?? "");
+    expect(postGestureBriefReads).toBeGreaterThan(0);
+  } finally {
+    await page.unroute("**/keeper/briefs", briefFaultRoute);
+    await page.evaluate(() => {
+      const gesture = Reflect.get(window, "__keeperBriefRetryGesture") as
+        | { listener: (event: MouseEvent) => void }
+        | undefined;
+      if (gesture) {
+        document.removeEventListener("click", gesture.listener, true);
+        Reflect.deleteProperty(window, "__keeperBriefRetryGesture");
+      }
+    });
+  }
   await card
     .getByRole("link", { name: "Ask a follow-up", exact: true })
     .click();

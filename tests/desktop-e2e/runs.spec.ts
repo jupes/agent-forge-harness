@@ -12,15 +12,20 @@ import {
   expect,
   type Page,
   type Request as PlaywrightRequest,
-  type Response,
+  type Response as PlaywrightResponse,
   type Route,
   type TestInfo,
   test,
 } from "@playwright/test";
 import { runsHref } from "../../apps/desktop/src/project-runs-model";
+
+// Keep the fixed read bound local; hearth-read uses import.meta under Playwright.
+const READ_TIMEOUT_MS = 45_000;
+
 import type { ForgeState } from "../../scripts/forge/phases";
 import { OPERATOR_HEADER } from "../../scripts/hearth/paths";
 import {
+  MAX_PROJECT_RUN_BYTES,
   projectRunArtifactSchema,
   projectRunDetailSchema,
   projectRunsPageSchema,
@@ -78,7 +83,1063 @@ type RunsAbortRequestFacts = {
   failure: "none" | "aborted" | "other" | "unreported";
 };
 const runsAbortCleanups = new WeakMap<Page, () => Promise<void>>();
+type RunsBodyCapture = {
+  status: number;
+  url: string;
+  redirected: boolean;
+  text: string;
+};
+type RunsBodyOracle = {
+  arm(id: string, url: string, budget: number): void;
+  take(id: string): Promise<RunsBodyCapture>;
+  complete(id: string): void;
+  dispose(): void;
+};
+type RunsBodyOracleWindow = Window & {
+  __runs1074BodyOracle?: RunsBodyOracle;
+};
+type RunsBodyCleanup = {
+  handle: import("@playwright/test").JSHandle<RunsBodyOracle>;
+  cleanup(): Promise<void>;
+};
+const runsBodyCleanups = new WeakMap<Page, RunsBodyCleanup>();
 
+async function attemptRunsCleanups(cleanups: Array<() => unknown>) {
+  const failures: unknown[] = [];
+  for (const cleanup of cleanups) {
+    try {
+      await cleanup();
+    } catch (error) {
+      failures.push(error);
+    }
+  }
+  if (failures.length)
+    throw new AggregateError(failures, "Runs observer cleanup failed");
+}
+function throwRunsFailure(primary: unknown, additional: unknown[]): never {
+  if (additional.length)
+    throw new AggregateError(
+      [primary, ...additional],
+      "Runs primary and secondary failures",
+    );
+  throw primary;
+}
+async function installRunsBodyOracle(config: {
+  mode: "install" | "controls";
+  maxBytes: number;
+  timeoutMs: number;
+  fixtureBody?: unknown;
+}) {
+  type BrowserFetch = Window["fetch"];
+  const cancelReader = (phase: Phase) => {
+    const reader = phase.reader;
+    if (!reader) return;
+    phase.reader = undefined;
+    try {
+      const cancellation = reader.cancel();
+      void cancellation.catch((error: unknown) =>
+        phase.cleanupErrors.push(error),
+      );
+    } catch (error) {
+      phase.cleanupErrors.push(error);
+    }
+    try {
+      reader.releaseLock();
+    } catch (error) {
+      phase.cleanupErrors.push(error);
+    }
+  };
+  type Phase = {
+    id: string;
+    url: string;
+    deadline: number;
+    matches: number;
+    taking: boolean;
+    validated: boolean;
+    error?: unknown;
+    capture?: RunsBodyCapture;
+    task?: Promise<RunsBodyCapture>;
+    ready: Promise<void>;
+    notify(): void;
+    failure: Promise<never>;
+    rejectFailure(error: unknown): void;
+    reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+    cleanupErrors: unknown[];
+    timerCleared: boolean;
+    timer?: number;
+  };
+  type Host = {
+    fetch: BrowserFetch;
+    __runs1074BodyOracle?: RunsBodyOracle;
+  };
+  function restoreOwned<T>(owner: T, installed: T, restore: () => void) {
+    if (owner !== installed) throw Error("Runs fetch ownership changed");
+    restore();
+  }
+  function create(delegate: BrowserFetch, maxBytes: number, timeoutMs: number) {
+    let current: Phase | undefined;
+    let previous: Phase | undefined;
+    let disposed = false;
+    const fail = (phase: Phase, error: unknown) => {
+      if (phase.error) return;
+      phase.error = error;
+      phase.notify();
+      phase.rejectFailure(error);
+      cancelReader(phase);
+    };
+    const readClone = async (phase: Phase, response: Response) => {
+      if (disposed || phase !== current)
+        throw Error("Runs body response arrived in a retired phase");
+      if (response.redirected || response.url !== phase.url)
+        throw Error("Runs body response URL changed");
+      if (response.status !== 200)
+        throw Error("Runs body response was not HTTP 200");
+      const reader = response.clone().body?.getReader();
+      if (!reader) throw Error("Runs body response had no clone stream");
+      phase.reader = reader;
+      const chunks: Uint8Array[] = [];
+      let size = 0;
+      let eof = false;
+      try {
+        while (true) {
+          if (phase.error) throw phase.error;
+          if (Date.now() >= phase.deadline)
+            throw Error("Runs body capture timed out");
+          const part = await reader.read();
+          if (phase.error || disposed)
+            throw phase.error ?? Error("Runs observer is disposed");
+          if (part.done) {
+            eof = true;
+            break;
+          }
+          size += part.value.byteLength;
+          if (size > maxBytes)
+            throw Error("Runs body response exceeded its byte limit");
+          chunks.push(part.value);
+        }
+        const bytes = new Uint8Array(size);
+        let offset = 0;
+        for (const chunk of chunks) {
+          bytes.set(chunk, offset);
+          offset += chunk.byteLength;
+        }
+        return {
+          status: response.status,
+          url: response.url,
+          redirected: response.redirected,
+          text: new TextDecoder("utf-8", { fatal: true }).decode(bytes),
+        };
+      } catch (error) {
+        fail(phase, error);
+        throw error;
+      } finally {
+        if (phase.reader === reader) {
+          if (eof) {
+            phase.reader = undefined;
+            try {
+              reader.releaseLock();
+            } catch (error) {
+              phase.cleanupErrors.push(error);
+            }
+          } else if (!phase.error) {
+            fail(phase, Error("Runs clone read did not reach EOF"));
+          }
+        }
+      }
+    };
+    const wrapped = function (
+      this: unknown,
+      ...args: Parameters<BrowserFetch>
+    ) {
+      let requestUrl = "";
+      let method = "";
+      try {
+        const input = args[0];
+        requestUrl =
+          input instanceof Request
+            ? input.url
+            : new URL(String(input), location.href).href;
+        method = (
+          args[1]?.method ?? (input instanceof Request ? input.method : "GET")
+        ).toUpperCase();
+      } catch {}
+      const phase =
+        current?.url === requestUrl && method === "GET"
+          ? current
+          : previous?.url === requestUrl && method === "GET"
+            ? previous
+            : undefined;
+      const promise = Reflect.apply(delegate, this, args);
+      if (!phase) return promise;
+      phase.matches++;
+      if (phase.matches > 1) {
+        fail(phase, Error("Duplicate Runs body request"));
+      } else if (disposed || phase !== current || phase.validated) {
+        fail(phase, Error("Late Runs body request"));
+      } else {
+        void promise.then(
+          (response) => {
+            if (disposed || phase !== current || phase.error) {
+              fail(phase, Error("Late Runs body response"));
+              return;
+            }
+            phase.task = readClone(phase, response);
+            void phase.task.then(
+              (capture) => {
+                if (disposed || phase !== current || phase.error) {
+                  fail(
+                    phase,
+                    Error("Runs body capture completed after disposal"),
+                  );
+                  return;
+                }
+                phase.capture = capture;
+                phase.notify();
+              },
+              (error: unknown) => fail(phase, error),
+            );
+          },
+          (error: unknown) => fail(phase, error),
+        );
+      }
+      return promise;
+    };
+    const makePhase = (id: string, url: string, budget: number): Phase => {
+      let notify = () => {};
+      let rejectFailure!: (error: unknown) => void;
+      const ready = new Promise<void>((resolve) => (notify = resolve));
+      const failure = new Promise<never>(
+        (_, reject) => (rejectFailure = reject),
+      );
+      void failure.catch(() => {});
+      const duration = Math.min(timeoutMs, budget);
+      if (!Number.isFinite(duration) || duration <= 0)
+        throw Error("Runs body budget must be finite and positive");
+      const phase: Phase = {
+        id,
+        url,
+        deadline: Date.now() + duration,
+        matches: 0,
+        taking: false,
+        validated: false,
+        ready,
+        notify,
+        failure,
+        reader: undefined,
+        cleanupErrors: [],
+        timerCleared: false,
+        rejectFailure,
+      };
+      phase.timer = window.setTimeout(
+        () => fail(phase, Error("Runs body capture timed out")),
+        duration,
+      );
+      return phase;
+    };
+    return {
+      wrapped,
+      arm(id: string, url: string, budget: number) {
+        if (disposed) throw Error("Runs body observer is disposed");
+        if (current && !current.validated)
+          throw Error("Previous Runs body phase is not fully validated");
+        if (previous)
+          throw Error("Runs body observer supports only two sequential phases");
+        if (current?.error) throw current.error;
+        if (current?.id === id) throw Error("Runs body phase id was reused");
+        const target = new URL(url);
+        if (target.origin !== location.origin)
+          throw Error("Runs body target must be same-origin");
+        const next = makePhase(id, target.href, budget);
+        if (current) previous = current;
+        current = next;
+      },
+      async take(id: string) {
+        const phase = current;
+        if (
+          disposed ||
+          !phase ||
+          phase.id !== id ||
+          phase.taking ||
+          phase.validated
+        )
+          throw Error(
+            "Runs body phase is absent, active, complete, or disposed",
+          );
+        phase.taking = true;
+        await Promise.race([phase.ready, phase.failure]);
+        if (disposed || phase.error)
+          throw phase.error ?? Error("Runs body observer is disposed");
+        if (phase.matches !== 1 || !phase.task)
+          throw Error("Runs body target was absent or ambiguous");
+        const capture = await Promise.race([phase.task, phase.failure]);
+        if (disposed || phase.error || phase !== current)
+          throw phase.error ?? Error("Runs body phase changed during capture");
+        phase.capture = capture;
+        return capture;
+      },
+      complete(id: string) {
+        const phase = current;
+        if (
+          disposed ||
+          !phase ||
+          phase.id !== id ||
+          !phase.taking ||
+          phase.validated
+        )
+          throw Error("Runs body phase cannot be completed");
+        if (Date.now() >= phase.deadline)
+          fail(phase, Error("Runs body validation timed out"));
+        if (phase.error) throw phase.error;
+        if (phase.cleanupErrors.length)
+          throw new AggregateError(
+            phase.cleanupErrors,
+            "Runs body cleanup failed before validation",
+          );
+        if (phase.matches !== 1 || !phase.capture)
+          throw Error("Runs body capture was not validated");
+        phase.validated = true;
+        if (phase.timer !== undefined && !phase.timerCleared) {
+          clearTimeout(phase.timer);
+          phase.timerCleared = true;
+        }
+      },
+      dispose() {
+        disposed = true;
+        const errors: unknown[] = [];
+        for (const phase of [previous, current]) {
+          if (!phase) continue;
+          if (!phase.validated && !phase.error)
+            fail(phase, Error("Runs body observer was disposed while active"));
+          if (phase.timer !== undefined && !phase.timerCleared) {
+            clearTimeout(phase.timer);
+            phase.timerCleared = true;
+          }
+          if (phase.reader) cancelReader(phase);
+          if (phase.error) errors.push(phase.error);
+          errors.push(...phase.cleanupErrors);
+        }
+        if (errors.length)
+          throw new AggregateError(errors, "Runs body observer cleanup failed");
+      },
+    };
+  }
+  const installOn = (host: Host, delegate: BrowserFetch): RunsBodyOracle => {
+    if (host.__runs1074BodyOracle)
+      throw Error("Runs body oracle already installed");
+    const engine = create(delegate, config.maxBytes, config.timeoutMs);
+    const original = delegate;
+    const wrapper = engine.wrapped as BrowserFetch;
+    const handle: RunsBodyOracle = {
+      arm: engine.arm,
+      take: engine.take,
+      complete: engine.complete,
+      dispose() {
+        const errors: unknown[] = [];
+        try {
+          engine.dispose();
+        } catch (error) {
+          errors.push(error);
+        }
+        try {
+          restoreOwned(host.fetch, wrapper, () => {
+            host.fetch = original;
+          });
+        } catch (error) {
+          errors.push(error);
+        }
+        if (host.__runs1074BodyOracle === handle)
+          delete host.__runs1074BodyOracle;
+        else errors.push(Error("Runs body oracle ownership changed"));
+        if (errors.length)
+          throw new AggregateError(errors, "Runs body cleanup failed");
+      },
+    };
+    host.fetch = wrapper;
+    host.__runs1074BodyOracle = handle;
+    return handle;
+  };
+  const response = (url: string, body: BodyInit, status = 200) => {
+    const value = new Response(body, { status });
+    Object.defineProperty(value, "url", { value: url });
+    return value;
+  };
+  const assert = (value: unknown, message: string) => {
+    if (!value) throw Error(message);
+  };
+  const errorMessage = (error: unknown): string =>
+    error instanceof AggregateError
+      ? error.errors.map(errorMessage).join(" ")
+      : error instanceof Error
+        ? error.message
+        : String(error);
+  type CloneFacts = {
+    cancelCalls: number;
+    releaseCalls: number;
+    readCalls: number;
+    cloneBody: ReadableStream<Uint8Array> | null;
+    cancelFailure?: Error;
+    releaseFailure?: Error;
+    onRead?: (count: number) => void;
+  };
+  const instrumentNativeClone = (fixture: Response, facts: CloneFacts) => {
+    const originalClone = fixture.clone.bind(fixture);
+    Object.defineProperty(fixture, "clone", {
+      value: () => {
+        const cloned = originalClone();
+        const body = cloned.body;
+        facts.cloneBody = body;
+        if (body) {
+          const getReader = body.getReader.bind(body);
+          Object.defineProperty(body, "getReader", {
+            value: () => {
+              const reader = getReader();
+              return new Proxy(reader, {
+                get(target, property) {
+                  if (property === "read")
+                    return () => {
+                      facts.readCalls++;
+                      const result = target.read();
+                      facts.onRead?.(facts.readCalls);
+                      return result;
+                    };
+                  if (property === "cancel")
+                    return () => {
+                      facts.cancelCalls++;
+                      const actual = target.cancel();
+                      if (facts.cancelFailure) {
+                        void actual.catch(() => {});
+                        return Promise.reject(facts.cancelFailure);
+                      }
+                      return actual;
+                    };
+                  if (property === "releaseLock")
+                    return () => {
+                      facts.releaseCalls++;
+                      target.releaseLock();
+                      if (facts.releaseFailure) throw facts.releaseFailure;
+                    };
+                  return Reflect.get(target, property, target);
+                },
+              });
+            },
+          });
+        }
+        return cloned;
+      },
+    });
+  };
+  if (config.mode === "controls") {
+    const endpoint = new URL("/__runs-oracle-control", location.href).href;
+    let calls = 0;
+    const answer = response(
+      endpoint,
+      JSON.stringify(config.fixtureBody ?? { ok: true }),
+    );
+    let seenThis: unknown;
+    let seenArgs: Parameters<BrowserFetch> | undefined;
+    const expected = Promise.resolve(answer);
+    const delegate = function (
+      this: Window,
+      ...args: Parameters<BrowserFetch>
+    ) {
+      calls++;
+      seenThis = this;
+      seenArgs = args;
+      return expected;
+    } as BrowserFetch;
+    const engine = create(delegate, config.maxBytes, config.timeoutMs);
+    engine.arm("success", endpoint, config.timeoutMs);
+    const signal = new AbortController().signal;
+    const request = new Request(endpoint, { method: "POST", signal });
+    const requestSignal = request.signal;
+    const init = { method: "GET", signal };
+    const thisValue = {} as Window;
+    const returned = Reflect.apply(engine.wrapped, thisValue, [request, init]);
+    assert(returned === expected, "Fetch promise identity changed");
+    assert(
+      seenThis === thisValue &&
+        seenArgs?.[0] === request &&
+        seenArgs[1] === init,
+      "Fetch this or argument identity changed",
+    );
+    const original = await returned;
+    assert(
+      calls === 1 && original === answer,
+      "Fetch invocation or Response identity changed",
+    );
+    const capture = await engine.take("success");
+    engine.complete("success");
+    assert(
+      capture.text === JSON.stringify(config.fixtureBody ?? { ok: true }),
+      "Same-response capture changed raw text",
+    );
+    assert(
+      request.signal === requestSignal && init.signal === signal,
+      "Fetch signal identity changed",
+    );
+    engine.dispose();
+
+    const unrelatedUrl = new URL("/unrelated", location.href).href;
+    let interleavedCalls = 0;
+    const interleaved = create(
+      ((input) => {
+        interleavedCalls++;
+        const url =
+          input instanceof Request
+            ? input.url
+            : new URL(String(input), location.href).href;
+        return Promise.resolve(
+          response(url, url === endpoint ? '{"ok":true}' : '{"ignored":true}'),
+        );
+      }) as BrowserFetch,
+      config.maxBytes,
+      config.timeoutMs,
+    );
+    interleaved.arm("interleave", endpoint, config.timeoutMs);
+    await interleaved.wrapped(unrelatedUrl);
+    await interleaved.wrapped(new Request(unrelatedUrl, { method: "POST" }));
+    const override = new Request(endpoint, { method: "POST" });
+    await interleaved.wrapped(override, { method: "GET" });
+    const interleavedCapture = await interleaved.take("interleave");
+    interleaved.complete("interleave");
+    assert(
+      interleavedCalls === 3 && interleavedCapture.url === endpoint,
+      "Unrelated call or effective method handling failed",
+    );
+    interleaved.dispose();
+
+    const reason = Error("control rejection");
+    const rejectedPromise = Promise.reject(reason);
+    void rejectedPromise.catch(() => {});
+    const rejected = create(
+      (() => rejectedPromise) as BrowserFetch,
+      config.maxBytes,
+      config.timeoutMs,
+    );
+    rejected.arm("rejection", endpoint, config.timeoutMs);
+    const rejectedReturn = rejected.wrapped(endpoint);
+    assert(
+      rejectedReturn === rejectedPromise,
+      "Rejected promise identity changed",
+    );
+    let sameReason = false;
+    try {
+      await rejectedReturn;
+    } catch (error) {
+      sameReason = error === reason;
+    }
+    let observerRejected = false;
+    try {
+      await rejected.take("rejection");
+    } catch {
+      observerRejected = true;
+    }
+    assert(
+      sameReason && observerRejected,
+      "Original rejection changed or was hidden",
+    );
+    try {
+      rejected.dispose();
+    } catch {}
+
+    const zero = create(delegate, config.maxBytes, 5);
+    zero.arm("zero", endpoint, 5);
+    await zero.wrapped(unrelatedUrl);
+    let zeroReason = "";
+    try {
+      await zero.take("zero");
+    } catch (error) {
+      zeroReason = error instanceof Error ? error.message : String(error);
+    }
+    assert(
+      zeroReason.includes("timed out"),
+      "Zero-match phase failed for the wrong reason",
+    );
+    try {
+      zero.dispose();
+    } catch {}
+
+    const stalled = new ReadableStream<Uint8Array>({ start() {} });
+    const stalledResponse = response(endpoint, stalled);
+    const slow = create(
+      (() => Promise.resolve(stalledResponse)) as BrowserFetch,
+      config.maxBytes,
+      10,
+    );
+    slow.arm("duplicate", endpoint, 10);
+    slow.wrapped(endpoint);
+    await Promise.resolve();
+    slow.wrapped(endpoint);
+    let duplicateReason = "";
+    try {
+      await slow.take("duplicate");
+    } catch (error) {
+      duplicateReason = error instanceof Error ? error.message : String(error);
+    }
+    assert(
+      duplicateReason.includes("Duplicate"),
+      "Pending duplicate failed for the wrong reason",
+    );
+    try {
+      slow.dispose();
+    } catch {}
+
+    const oldUrl = endpoint + "?phase=old";
+    const newUrl = endpoint + "?phase=new";
+    const phases = create(
+      ((input) => {
+        const url =
+          input instanceof Request
+            ? input.url
+            : new URL(String(input), location.href).href;
+        return Promise.resolve(response(url, JSON.stringify({ url })));
+      }) as BrowserFetch,
+      config.maxBytes,
+      config.timeoutMs,
+    );
+    phases.arm("old", oldUrl, config.timeoutMs);
+    const firstResponse = phases.wrapped(oldUrl);
+    const firstCapture = await phases.take("old");
+    let prematureArmRejected = false;
+    try {
+      phases.arm("premature", endpoint + "?phase=premature", config.timeoutMs);
+    } catch {
+      prematureArmRejected = true;
+    }
+    assert(
+      prematureArmRejected,
+      "Observer accepted a new phase before validation",
+    );
+    phases.complete("old");
+    assert(
+      (await firstResponse).url === oldUrl && firstCapture.url === oldUrl,
+      "First phase did not capture its forwarded response",
+    );
+    let invalidUrlRejected = false;
+    let invalidBudgetRejected = false;
+    try {
+      phases.arm("bad-url", "https://example.invalid/runs", config.timeoutMs);
+    } catch {
+      invalidUrlRejected = true;
+    }
+    try {
+      phases.arm("bad-budget", endpoint + "?phase=bad-budget", 0);
+    } catch {
+      invalidBudgetRejected = true;
+    }
+    assert(
+      invalidUrlRejected && invalidBudgetRejected,
+      "Invalid second phase was accepted",
+    );
+    phases.arm("new", newUrl, config.timeoutMs);
+    phases.wrapped(oldUrl);
+    phases.wrapped(newUrl);
+    const secondCapture = await phases.take("new");
+    phases.complete("new");
+    assert(
+      secondCapture.url === newUrl,
+      "Second phase did not capture its own response",
+    );
+    const terminal = create(
+      (() => Promise.resolve(response(endpoint, "{}"))) as BrowserFetch,
+      config.maxBytes,
+      config.timeoutMs,
+    );
+    terminal.arm("terminal", endpoint, config.timeoutMs);
+    terminal.wrapped(endpoint);
+    await terminal.take("terminal");
+    terminal.complete("terminal");
+    terminal.wrapped(endpoint);
+    let terminalAuditReason = "";
+    try {
+      terminal.dispose();
+    } catch (error) {
+      terminalAuditReason = errorMessage(error);
+    }
+    assert(
+      terminalAuditReason.includes("Duplicate"),
+      "Post-validation duplicate escaped terminal audit",
+    );
+    let terminalDuplicateReason = "";
+    try {
+      phases.dispose();
+    } catch (error) {
+      terminalDuplicateReason = errorMessage(error);
+    }
+    assert(
+      terminalDuplicateReason.includes("Duplicate"),
+      "Duplicate after successful validation was not audited",
+    );
+
+    let finishLate!: (value: Response) => void;
+    let lateCloneStarts = 0;
+    const lateUrl = endpoint + "?phase=late";
+    const latePromise = new Promise<Response>((resolve) => {
+      finishLate = resolve;
+    });
+    const late = create(
+      (() => latePromise) as BrowserFetch,
+      config.maxBytes,
+      config.timeoutMs,
+    );
+    late.arm("late", lateUrl, config.timeoutMs);
+    late.wrapped(lateUrl);
+    const lateResponse = response(
+      lateUrl,
+      new ReadableStream<Uint8Array>({ start() {} }),
+    );
+    const originalClone = lateResponse.clone.bind(lateResponse);
+    Object.defineProperty(lateResponse, "clone", {
+      value: () => {
+        lateCloneStarts++;
+        return originalClone();
+      },
+    });
+    try {
+      late.dispose();
+    } catch {}
+    finishLate(lateResponse);
+    await Promise.resolve();
+    await Promise.resolve();
+    try {
+      late.dispose();
+    } catch {}
+    assert(lateCloneStarts === 0, "Disposed phase started a late clone reader");
+    let disposedArmRejected = false;
+    try {
+      late.arm("after-dispose", lateUrl, config.timeoutMs);
+    } catch {
+      disposedArmRejected = true;
+    }
+    assert(disposedArmRejected, "Disposed observer accepted another phase");
+    const failures: Array<[string, Response, number]> = [
+      ["non200", response(endpoint, "{}", 503), config.maxBytes],
+      ["malformed-json", response(endpoint, "not-json"), config.maxBytes],
+      ["truncated-json", response(endpoint, "{"), config.maxBytes],
+      [
+        "invalid-utf8",
+        response(endpoint, new Uint8Array([255])),
+        config.maxBytes,
+      ],
+      ["oversize", response(endpoint, "123456"), 4],
+      [
+        "body-rejection",
+        response(
+          endpoint,
+          new ReadableStream({
+            start(controller) {
+              controller.error(Error("fixture body error"));
+            },
+          }),
+        ),
+        config.maxBytes,
+      ],
+      [
+        "stall",
+        response(endpoint, new ReadableStream<Uint8Array>({ start() {} })),
+        config.maxBytes,
+      ],
+    ];
+    for (const [name, fixtureResponse, bound] of failures) {
+      const controlTimeout = name === "stall" ? 8 : 1000;
+      const facts: CloneFacts = {
+        cancelCalls: 0,
+        releaseCalls: 0,
+        readCalls: 0,
+        cloneBody: null,
+      };
+      if (name === "oversize") {
+        facts.cancelFailure = Error("observed cancel cleanup failure");
+        facts.releaseFailure = Error("observed release cleanup failure");
+      }
+      instrumentNativeClone(fixtureResponse, facts);
+      const failed = create(
+        (() => Promise.resolve(fixtureResponse)) as BrowserFetch,
+        bound,
+        controlTimeout,
+      );
+      failed.arm(name, endpoint, controlTimeout);
+      failed.wrapped(endpoint);
+      let observed: unknown;
+      try {
+        const result = await failed.take(name);
+        if (name === "malformed-json" || name === "truncated-json")
+          JSON.parse(result.text);
+      } catch (error) {
+        observed = error;
+      }
+      const message =
+        observed instanceof Error ? observed.message : String(observed);
+      const expected =
+        name === "non200"
+          ? message.includes("HTTP 200")
+          : name === "malformed-json" || name === "truncated-json"
+            ? observed instanceof SyntaxError
+            : name === "invalid-utf8"
+              ? observed instanceof TypeError
+              : name === "oversize"
+                ? message.includes("byte limit")
+                : name === "body-rejection"
+                  ? message.includes("fixture body error")
+                  : message.includes("timed out");
+      assert(
+        expected,
+        name + " did not fail for its expected reason: " + message,
+      );
+      if (
+        name === "invalid-utf8" ||
+        name === "oversize" ||
+        name === "body-rejection" ||
+        name === "stall"
+      )
+        assert(
+          facts.releaseCalls === 1 && facts.cloneBody?.locked === false,
+          name + " did not release its actual clone reader lock",
+        );
+      if (name === "oversize" || name === "body-rejection" || name === "stall")
+        assert(
+          facts.cancelCalls === 1,
+          name + " did not cancel its actual clone reader",
+        );
+      let cleanupFailure: unknown;
+      if (name === "oversize") {
+        await Promise.resolve();
+        assert(
+          (await fixtureResponse.text()) === "123456",
+          "Clone cancellation changed the original response",
+        );
+      }
+      try {
+        failed.dispose();
+      } catch (error) {
+        cleanupFailure = error;
+      }
+      if (name === "oversize")
+        assert(
+          errorMessage(cleanupFailure).includes("byte limit") &&
+            errorMessage(cleanupFailure).includes(
+              "observed cancel cleanup failure",
+            ) &&
+            errorMessage(cleanupFailure).includes(
+              "observed release cleanup failure",
+            ),
+          "Primary body and observed cleanup failures were not retained",
+        );
+    }
+
+    const timerResponse = response(endpoint, "{}");
+    const timerEngine = create(
+      (() => Promise.resolve(timerResponse)) as BrowserFetch,
+      config.maxBytes,
+      100,
+    );
+    timerEngine.arm("timer-control", endpoint, 100);
+    timerEngine.wrapped(endpoint);
+    await timerEngine.take("timer-control");
+    timerEngine.complete("timer-control");
+    await new Promise<void>((resolve) => window.setTimeout(resolve, 125));
+    let timerCleanupError: unknown;
+    try {
+      timerEngine.dispose();
+    } catch (error) {
+      timerCleanupError = error;
+    }
+    assert(
+      !timerCleanupError,
+      "Completed phase timer fired after its deadline was cleared",
+    );
+
+    let pendingReadStarted!: () => void;
+    const pendingRead = new Promise<void>((resolve) => {
+      pendingReadStarted = resolve;
+    });
+    const activeUrl = endpoint + "?phase=active-dispose";
+    const activeFixture = response(
+      activeUrl,
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode('{"ok":'));
+        },
+      }),
+    );
+    const activeFacts: CloneFacts = {
+      cancelCalls: 0,
+      releaseCalls: 0,
+      readCalls: 0,
+      cloneBody: null,
+      onRead(count) {
+        if (count === 2) pendingReadStarted();
+      },
+    };
+    instrumentNativeClone(activeFixture, activeFacts);
+    const activeEngine = create(
+      (() => Promise.resolve(activeFixture)) as BrowserFetch,
+      config.maxBytes,
+      1000,
+    );
+    activeEngine.arm("active-dispose", activeUrl, 1000);
+    const activeResponse = activeEngine.wrapped(activeUrl);
+    const activeTake = activeEngine.take("active-dispose");
+    await activeResponse;
+    let pendingReadTimeout: number | undefined;
+    try {
+      await Promise.race([
+        pendingRead,
+        new Promise<void>((_, reject) => {
+          pendingReadTimeout = window.setTimeout(
+            () => reject(Error("Active clone read control timed out")),
+            1000,
+          );
+        }),
+      ]);
+    } finally {
+      if (pendingReadTimeout !== undefined)
+        window.clearTimeout(pendingReadTimeout);
+    }
+    try {
+      activeEngine.dispose();
+    } catch {}
+    let activeTakeFailure: unknown;
+    try {
+      await activeTake;
+    } catch (error) {
+      activeTakeFailure = error;
+    }
+    let postDisposeTakeRejected = false;
+    try {
+      await activeEngine.take("active-dispose");
+    } catch {
+      postDisposeTakeRejected = true;
+    }
+    let postDisposeCompleteRejected = false;
+    try {
+      activeEngine.complete("active-dispose");
+    } catch {
+      postDisposeCompleteRejected = true;
+    }
+    assert(
+      errorMessage(activeTakeFailure).includes("disposed while active") &&
+        postDisposeTakeRejected &&
+        postDisposeCompleteRejected,
+      "Active disposal did not settle observer work or reject post-disposal calls",
+    );
+    assert(
+      activeFacts.readCalls === 2 &&
+        activeFacts.cancelCalls === 1 &&
+        activeFacts.releaseCalls === 1 &&
+        activeFacts.cloneBody?.locked === false &&
+        activeFixture.body?.locked === false,
+      "Active cancellation became EOF or leaked the owned reader lock",
+    );
+
+    const globalFetch = window.fetch;
+    const inertHost: Host = { fetch: delegate };
+    const installed = installOn(inertHost, delegate);
+    installed.arm("installed", endpoint, config.timeoutMs);
+    const installedPromise = inertHost.fetch(endpoint);
+    const installedCapture = await installed.take("installed");
+    installed.complete("installed");
+    assert(
+      (await installedPromise) === answer &&
+        installedCapture.text === capture.text,
+      "Shared installer changed forwarding or capture",
+    );
+    installed.dispose();
+    assert(
+      inertHost.fetch === delegate && !inertHost.__runs1074BodyOracle,
+      "Owned inert cleanup did not restore both globals",
+    );
+    assert(
+      window.fetch === globalFetch,
+      "Inert install changed the real page fetch",
+    );
+    const foreignHost: Host = { fetch: delegate };
+    let foreignDisposed = false;
+    const ownedHandle = installOn(foreignHost, delegate);
+    const foreignFetch = (() => Promise.resolve(answer)) as BrowserFetch;
+    const foreignOracle: RunsBodyOracle = {
+      arm() {},
+      async take() {
+        return capture;
+      },
+      complete() {},
+      dispose() {
+        foreignDisposed = true;
+      },
+    };
+    foreignHost.fetch = foreignFetch;
+    foreignHost.__runs1074BodyOracle = foreignOracle;
+    let ownershipRejected = false;
+    try {
+      ownedHandle.dispose();
+    } catch {
+      ownershipRejected = true;
+    }
+    assert(
+      ownershipRejected &&
+        foreignHost.fetch === foreignFetch &&
+        foreignHost.__runs1074BodyOracle === foreignOracle &&
+        !foreignDisposed &&
+        window.fetch === globalFetch,
+      "Owned cleanup overwrote or disposed a foreign owner",
+    );
+    return { text: capture.text };
+  }
+
+  return installOn(window as RunsBodyOracleWindow, window.fetch);
+}
+async function readRunsBodyCapture(
+  page: Page,
+  response: PlaywrightResponse,
+  id: string,
+  validate: (detail: ProjectRunDetail) => void,
+  testInfo: TestInfo,
+) {
+  const request = response.request();
+  expect(request.method()).toBe("GET");
+  expect(request.url()).toBe(response.url());
+  expect(request.frame()).toBe(page.mainFrame());
+  const capture = await page.evaluate(async (phaseId) => {
+    const oracle = (window as RunsBodyOracleWindow).__runs1074BodyOracle;
+    if (!oracle) throw Error("Runs body oracle was not installed");
+    return oracle.take(phaseId);
+  }, id);
+  try {
+    expect(response.status()).toBe(200);
+    expect(capture.status).toBe(response.status());
+    expect(capture.url).toBe(response.url());
+    expect(capture.redirected).toBe(false);
+    const detail = runDetailFromEnvelope(JSON.parse(capture.text) as unknown);
+    validate(detail);
+    await page.evaluate((phaseId) => {
+      const oracle = (window as RunsBodyOracleWindow).__runs1074BodyOracle;
+      if (!oracle) throw Error("Runs body oracle was not installed");
+      oracle.complete(phaseId);
+    }, id);
+    return detail;
+  } catch (primaryError) {
+    const failures: unknown[] = [primaryError];
+    try {
+      await testInfo.attach("runs-body-" + id + "-failure.json", {
+        body: JSON.stringify({
+          id,
+          status: capture.status,
+          url: capture.url,
+          redirected: capture.redirected,
+          text: capture.text,
+          error:
+            primaryError instanceof Error
+              ? primaryError.message
+              : String(primaryError),
+        }),
+        contentType: "application/json",
+      });
+    } catch (error) {
+      failures.push(error);
+    }
+    throwRunsFailure(primaryError, failures.slice(1));
+  }
+}
 function createRunsAbortObserver(page: Page, expectedPath: string) {
   let active = false,
     origin = "",
@@ -121,7 +1182,7 @@ function createRunsAbortObserver(page: Page, expectedPath: string) {
       overflow = true;
     }
   };
-  const onResponse = (response: Response) => {
+  const onResponse = (response: PlaywrightResponse) => {
     try {
       const facts = states.get(response.request());
       if (!active || !facts) return;
@@ -333,7 +1394,7 @@ async function withinRunsDeadline<T>(
 async function attachRunsAbortFailure(
   page: Page,
   testInfo: TestInfo,
-  response: Response,
+  response: PlaywrightResponse,
   observer: ReturnType<typeof createRunsAbortObserver>,
 ) {
   try {
@@ -634,7 +1695,7 @@ async function protectedRead(page: Page, path: string) {
     { path, token, header: OPERATOR_HEADER },
   );
 }
-function matchesRunDetailPage(response: Response, after: number) {
+function matchesRunDetailPage(response: PlaywrightResponse, after: number) {
   const url = new URL(response.url());
   if (
     url.pathname !==
@@ -656,7 +1717,7 @@ function runDetailFromEnvelope(body: unknown) {
     throw Error("Missing protected Run detail response");
   return projectRunDetailSchema.parse(body.data);
 }
-async function runDetailResponse(response: Response) {
+async function runDetailResponse(response: PlaywrightResponse) {
   expect(response.status()).toBe(200);
   let body: unknown;
   try {
@@ -665,6 +1726,13 @@ async function runDetailResponse(response: Response) {
     throw Error("Incomplete protected Run detail response");
   }
   return runDetailFromEnvelope(body);
+}
+function assertRunMembership(
+  history: ReturnType<typeof availableHistory>,
+  expected: string,
+) {
+  if (history.membershipKey !== expected)
+    throw Error("Recorded-session page did not match verified membership");
 }
 function availableHistory(detail: ProjectRunDetail, after: number) {
   const history = detail.sessionHistory;
@@ -739,15 +1807,52 @@ test.beforeEach(({ page }) => {
   });
 });
 test.afterEach(async ({ page }) => {
-  await runsAbortCleanups.get(page)?.();
+  const errors: unknown[] = [];
+  try {
+    await attemptRunsCleanups([
+      () => runsBodyCleanups.get(page)?.cleanup(),
+      () => runsAbortCleanups.get(page)?.(),
+    ]);
+  } catch (error) {
+    errors.push(error);
+  }
+  runsBodyCleanups.delete(page);
   runsAbortCleanups.delete(page);
-  for (const release of releases.splice(0)) release();
-  await page.unrouteAll({ behavior: "ignoreErrors" });
-  for (const path of [...owned.keys()]) remove(path);
-  expect(posts).toEqual([]);
-  expect(dispatches()).toEqual(beforeDispatches);
+  for (const release of releases.splice(0)) {
+    try {
+      release();
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  try {
+    await page.unrouteAll({ behavior: "ignoreErrors" });
+  } catch (error) {
+    errors.push(error);
+  }
+  for (const path of [...owned.keys()]) {
+    try {
+      remove(path);
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  try {
+    expect(posts).toEqual([]);
+  } catch (error) {
+    errors.push(error);
+  }
+  try {
+    expect(dispatches()).toEqual(beforeDispatches);
+  } catch (error) {
+    errors.push(error);
+  }
+  if (errors.length)
+    throw new AggregateError(
+      errors,
+      "Runs observer and fixture cleanup failed",
+    );
 });
-
 function checkpoint(
   id: string,
   issueType: "feature" | "task",
@@ -1172,6 +2277,89 @@ test("a changed run-session admission key keeps the old page stale and disables 
   const changedHistory = availableHistory(changedDetail, 0);
   expect(changedHistory.membershipKey).not.toBe(initialHistory.membershipKey);
 
+  const controlResult = await page.evaluate(installRunsBodyOracle, {
+    mode: "controls" as const,
+    maxBytes: MAX_PROJECT_RUN_BYTES + 1024,
+    timeoutMs: READ_TIMEOUT_MS,
+    fixtureBody: changedRead.body,
+  });
+  if (
+    !controlResult ||
+    typeof controlResult !== "object" ||
+    !("text" in controlResult) ||
+    typeof controlResult.text !== "string"
+  )
+    throw Error("Runs browser-body controls did not return their capture");
+  const controlDetail = runDetailFromEnvelope(
+    JSON.parse(controlResult.text) as unknown,
+  );
+  const controlHistory = availableHistory(controlDetail, 0);
+  expect(controlHistory.membershipKey).toBe(changedHistory.membershipKey);
+  let wrongMembershipRejected = false;
+  try {
+    assertRunMembership(controlHistory, "wrong-membership");
+  } catch {
+    wrongMembershipRejected = true;
+  }
+  expect(wrongMembershipRejected).toBe(true);
+  expect(controlHistory.membershipKey).not.toBe(initialHistory.membershipKey);
+  expect(() => availableHistory(controlDetail, nextAfter)).toThrow();
+  expect(() => runDetailFromEnvelope({ ok: true, data: {} })).toThrow();
+  expect(() => runDetailFromEnvelope({ ok: false, data: null })).toThrow();
+  let secondCleanupAttempted = false;
+  let cleanupControlError: unknown;
+  const firstCleanupFailure = Error("owned observer cleanup control");
+  const secondCleanupFailure = Error("JSHandle cleanup control");
+  try {
+    await attemptRunsCleanups([
+      () => {
+        throw firstCleanupFailure;
+      },
+      () => {
+        secondCleanupAttempted = true;
+        throw secondCleanupFailure;
+      },
+    ]);
+  } catch (error) {
+    cleanupControlError = error;
+  }
+  expect(secondCleanupAttempted).toBe(true);
+  expect(cleanupControlError).toBeInstanceOf(AggregateError);
+  if (!(cleanupControlError instanceof AggregateError))
+    throw Error("Dual cleanup failures were not retained");
+  expect(cleanupControlError.errors).toEqual([
+    firstCleanupFailure,
+    secondCleanupFailure,
+  ]);
+  const primaryFailure = Error("primary validation failure");
+  const secondaryFailure = Error("evidence attachment failure");
+  let retainedFailure: unknown;
+  try {
+    throwRunsFailure(primaryFailure, [secondaryFailure]);
+  } catch (error) {
+    retainedFailure = error;
+  }
+  expect(retainedFailure).toBeInstanceOf(AggregateError);
+  if (!(retainedFailure instanceof AggregateError))
+    throw Error("Primary failure was not retained");
+  expect(retainedFailure.errors).toEqual([primaryFailure, secondaryFailure]);
+  const bodyHandle = (await page.evaluateHandle(installRunsBodyOracle, {
+    mode: "install" as const,
+    maxBytes: MAX_PROJECT_RUN_BYTES + 1024,
+    timeoutMs: READ_TIMEOUT_MS,
+  })) as import("@playwright/test").JSHandle<RunsBodyOracle>;
+  runsBodyCleanups.set(page, {
+    handle: bodyHandle,
+    async cleanup() {
+      await attemptRunsCleanups([
+        async () => {
+          await bodyHandle.evaluate((oracle) => oracle.dispose());
+        },
+        () => bodyHandle.dispose(),
+      ]);
+    },
+  });
+
   const abortControl = await page.evaluate(() => {
     const controller = new AbortController();
     const signal = AbortSignal.any([controller.signal]);
@@ -1192,6 +2380,25 @@ test("a changed run-session admission key keeps the old page stale and disables 
     if (typeof observer === "function") observer.armTarget();
   });
   abortObserver.arm(nextAfter);
+  const changedPageUrl = new URL(
+    "/__agent-forge/projects/" +
+      alpha.id +
+      "/runs/" +
+      fixture.primary +
+      "?after=" +
+      nextAfter +
+      "&limit=100",
+    page.url(),
+  ).href;
+  const changedPhaseTimeout = READ_TIMEOUT_MS;
+  await page.evaluate(
+    ({ id, url, budget }) => {
+      const oracle = (window as RunsBodyOracleWindow).__runs1074BodyOracle;
+      if (!oracle) throw Error("Runs body oracle was not installed");
+      oracle.arm(id, url, budget);
+    },
+    { id: "changed-page", url: changedPageUrl, budget: changedPhaseTimeout },
+  );
 
   const nextPageResponse = page.waitForResponse((response) =>
     matchesRunDetailPage(response, nextAfter),
@@ -1200,10 +2407,22 @@ test("a changed run-session admission key keeps the old page stale and disables 
     .getByRole("button", { name: "Load more recorded sessions" })
     .click();
   const selectedResponse = await nextPageResponse;
-  let nextHistory: ReturnType<typeof availableHistory>;
+  let nextHistory: ReturnType<typeof availableHistory> | undefined;
   try {
-    const nextDetail = await runDetailResponse(selectedResponse);
-    nextHistory = availableHistory(nextDetail, nextAfter);
+    await readRunsBodyCapture(
+      page,
+      selectedResponse,
+      "changed-page",
+      (detail) => {
+        const historyPage = availableHistory(detail, nextAfter);
+        nextHistory = historyPage;
+        assertRunMembership(historyPage, changedHistory.membershipKey);
+        expect(historyPage.membershipKey).not.toBe(
+          initialHistory.membershipKey,
+        );
+      },
+      testInfo,
+    );
   } catch (originalError) {
     try {
       await attachRunsAbortFailure(
@@ -1214,12 +2433,9 @@ test("a changed run-session admission key keeps the old page stale and disables 
       );
     } catch {}
     throw originalError;
-  } finally {
-    try {
-      await abortObserver.dispose();
-    } catch {}
   }
-  expect(nextHistory.membershipKey).toBe(changedHistory.membershipKey);
+  if (!nextHistory) throw Error("Changed page body was not validated");
+  assertRunMembership(nextHistory, changedHistory.membershipKey);
   expect(nextHistory.membershipKey).not.toBe(initialHistory.membershipKey);
 
   await expect(history).toContainText(
@@ -1256,15 +2472,62 @@ test("a changed run-session admission key keeps the old page stale and disables 
   const recoveredPageResponse = page.waitForResponse((response) =>
     matchesRunDetailPage(response, refreshedHistory.nextAfter),
   );
+  const recoveredPageUrl = new URL(
+    "/__agent-forge/projects/" +
+      alpha.id +
+      "/runs/" +
+      fixture.primary +
+      "?after=" +
+      refreshedHistory.nextAfter +
+      "&limit=100",
+    page.url(),
+  ).href;
+  const recoveredPhaseTimeout = READ_TIMEOUT_MS;
+  await page.evaluate(
+    ({ id, url, budget }) => {
+      const oracle = (window as RunsBodyOracleWindow).__runs1074BodyOracle;
+      if (!oracle) throw Error("Runs body oracle was not installed");
+      oracle.arm(id, url, budget);
+    },
+    {
+      id: "recovered-page",
+      url: recoveredPageUrl,
+      budget: recoveredPhaseTimeout,
+    },
+  );
   await history
     .getByRole("button", { name: "Load more recorded sessions" })
     .click();
-  const recoveredDetail = await runDetailResponse(await recoveredPageResponse);
-  const recoveredHistory = availableHistory(
-    recoveredDetail,
-    refreshedHistory.nextAfter,
-  );
-  expect(recoveredHistory.membershipKey).toBe(changedHistory.membershipKey);
+  const recoveredResponse = await recoveredPageResponse;
+  let recoveredHistory: ReturnType<typeof availableHistory> | undefined;
+  try {
+    await readRunsBodyCapture(
+      page,
+      recoveredResponse,
+      "recovered-page",
+      (detail) => {
+        const historyPage = availableHistory(
+          detail,
+          refreshedHistory.nextAfter,
+        );
+        recoveredHistory = historyPage;
+        assertRunMembership(historyPage, changedHistory.membershipKey);
+      },
+      testInfo,
+    );
+  } catch (originalError) {
+    try {
+      await attachRunsAbortFailure(
+        page,
+        testInfo,
+        recoveredResponse,
+        abortObserver,
+      );
+    } catch {}
+    throw originalError;
+  }
+  if (!recoveredHistory) throw Error("Recovered page body was not validated");
+  assertRunMembership(recoveredHistory, changedHistory.membershipKey);
   await expect(
     history.getByText(sessions[100]!, { exact: true }),
   ).toBeVisible();
