@@ -1214,10 +1214,6 @@ test("a changed run-session admission key keeps the old page stale and disables 
       );
     } catch {}
     throw originalError;
-  } finally {
-    try {
-      await abortObserver.dispose();
-    } catch {}
   }
   expect(nextHistory.membershipKey).toBe(changedHistory.membershipKey);
   expect(nextHistory.membershipKey).not.toBe(initialHistory.membershipKey);
@@ -1259,7 +1255,25 @@ test("a changed run-session admission key keeps the old page stale and disables 
   await history
     .getByRole("button", { name: "Load more recorded sessions" })
     .click();
-  const recoveredDetail = await runDetailResponse(await recoveredPageResponse);
+  const recoveredResponse = await recoveredPageResponse;
+  let recoveredDetail: ProjectRunDetail;
+  try {
+    recoveredDetail = await runDetailResponse(recoveredResponse);
+  } catch (originalError) {
+    try {
+      await attachRunsAbortFailure(
+        page,
+        testInfo,
+        recoveredResponse,
+        abortObserver,
+      );
+    } catch {}
+    throw originalError;
+  } finally {
+    try {
+      await abortObserver.dispose();
+    } catch {}
+  }
   const recoveredHistory = availableHistory(
     recoveredDetail,
     refreshedHistory.nextAfter,
