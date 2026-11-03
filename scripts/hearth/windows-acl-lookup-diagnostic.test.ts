@@ -4,6 +4,11 @@ import {
   rethrowWindowsSidLookupFailure,
   type WindowsSidLookupDiagnosticInput,
 } from "./windows-acl-lookup-diagnostic";
+import {
+  PWSH_7_EXECUTABLE,
+  resolveSddlAliasRuntime,
+  validateSddlAliasRuntime,
+} from "./windows-sddl-alias-runtime";
 
 const MISSING = Symbol("missing");
 const SECRET = "must-not-appear";
@@ -230,4 +235,55 @@ test("rethrows the original error if row serialization throws", () => {
     Object.defineProperty(JSON, "stringify", descriptor);
   }
   expect(caught).toBe(original);
+});
+
+test("defaults to the system32 PowerShell runtime without probing PowerShell 7", () => {
+  const candidates: string[] = [];
+  expect(validateSddlAliasRuntime(undefined)).toBe("system32");
+  expect(
+    resolveSddlAliasRuntime(undefined, (path) => {
+      candidates.push(path);
+      return false;
+    }),
+  ).toBe("system32");
+  expect(candidates).toEqual([]);
+});
+
+test("selects only the fixed PowerShell 7 runtime for the exact enum", () => {
+  const candidates: string[] = [];
+  expect(validateSddlAliasRuntime("pwsh-7")).toBe("pwsh-7");
+  expect(PWSH_7_EXECUTABLE).toBe("C:\\Program Files\\PowerShell\\7\\pwsh.exe");
+  expect(
+    resolveSddlAliasRuntime("pwsh-7", (path) => {
+      candidates.push(path);
+      return true;
+    }),
+  ).toBe("pwsh-7");
+  expect(candidates).toEqual([PWSH_7_EXECUTABLE]);
+});
+
+test("fails closed when the selected fixed PowerShell 7 path is absent", () => {
+  const candidates: string[] = [];
+  expect(() =>
+    resolveSddlAliasRuntime("pwsh-7", (path) => {
+      candidates.push(path);
+      return false;
+    }),
+  ).toThrow(
+    "The fixed PowerShell 7 executable for SDDL alias lookup does not exist.",
+  );
+  expect(candidates).toEqual([PWSH_7_EXECUTABLE]);
+});
+
+test("rejects every other defined selector without checking an executable", () => {
+  const candidates: string[] = [];
+  for (const value of ["", "1", "true", " ", "C:\\custom\\pwsh.exe"]) {
+    expect(() =>
+      resolveSddlAliasRuntime(value, (path) => {
+        candidates.push(path);
+        return true;
+      }),
+    ).toThrow("AGENT_FORGE_TEST_SDDL_ALIAS_RUNTIME must be unset or pwsh-7.");
+  }
+  expect(candidates).toEqual([]);
 });

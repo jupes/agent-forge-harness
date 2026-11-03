@@ -68,6 +68,10 @@ import { buildChildEnv } from "../executors/env";
 import { INTERACTIVE_START_MAX_BYTES } from "../executors/interactive-bootstrap";
 import { interactiveLifetimeMs } from "../executors/interactive-lifetime";
 import { type InteractiveSupervised, supervise } from "../executors/supervisor";
+import {
+  SDDL_ALIAS_RUNTIME_ENV,
+  validateSddlAliasRuntime,
+} from "../hearth/windows-sddl-alias-runtime";
 import { createImportGraphSession } from "../import-graph";
 import { ISOLATION_HOME } from "./isolation-probe";
 import {
@@ -619,6 +623,9 @@ function setEnvironmentValue(
 function buildSafeIsolationEnvironment(
   source: IsolationEnvironment,
 ): Record<string, string> {
+  const sddlAliasRuntime = validateSddlAliasRuntime(
+    source[SDDL_ALIAS_RUNTIME_ENV],
+  );
   const env = buildChildEnv(source, []);
   const ownedTemp = ownedWindowsTestTemp(source, process.env, process.platform);
   if (ownedTemp !== null) {
@@ -631,6 +638,8 @@ function buildSafeIsolationEnvironment(
   for (const flag of ISOLATION_TEST_FLAGS) {
     if (source[flag] === "1") setEnvironmentValue(env, flag, "1");
   }
+  if (sddlAliasRuntime === "pwsh-7")
+    setEnvironmentValue(env, SDDL_ALIAS_RUNTIME_ENV, sddlAliasRuntime);
   const isolationHome = source[ISOLATION_HOME];
   if (isolationHome !== undefined)
     setEnvironmentValue(env, ISOLATION_HOME, isolationHome);
@@ -1115,6 +1124,7 @@ describe("the test suite and the ledger under the user's home", () => {
       AGENT_FORGE_RUN_FORK_NATIVE_WITNESS: "1",
       AGENT_FORGE_RUN_VISIBLE_TERMINAL_FIXTURE: "true",
       AGENT_FORGE_TEST_PROBE_DIAGNOSTICS: "1",
+      AGENT_FORGE_TEST_SDDL_ALIAS_RUNTIME: "pwsh-7",
       AGENT_FORGE_SHIFT_TEST_CLEANUP_TRACE: "0",
       GITHUB_ACTIONS: "runner-metadata",
       GITHUB_TOKEN: "fixture-secret",
@@ -1132,6 +1142,9 @@ describe("the test suite and the ledger under the user's home", () => {
       source["AGENT_FORGE_INERT_" + index] = "metadata";
     const scratch = join(tmpdir(), "ledger isolation validation");
     const env = buildScratchRerunEnvironment(source, scratch);
+    expect(buildSafeIsolationEnvironment(source)[SDDL_ALIAS_RUNTIME_ENV]).toBe(
+      "pwsh-7",
+    );
 
     expect(() =>
       validateInteractiveEnvelope([process.execPath, "test"], REPO, env),
@@ -1160,6 +1173,7 @@ describe("the test suite and the ledger under the user's home", () => {
     expect(env.AGENT_FORGE_RUN_FORK_NATIVE_WITNESS).toBe("1");
     expect(env.AGENT_FORGE_RUN_VISIBLE_TERMINAL_FIXTURE).toBeUndefined();
     expect(env.AGENT_FORGE_TEST_PROBE_DIAGNOSTICS).toBe("1");
+    expect(env.AGENT_FORGE_TEST_SDDL_ALIAS_RUNTIME).toBe("pwsh-7");
     expect(env.AGENT_FORGE_SHIFT_TEST_CLEANUP_TRACE).toBeUndefined();
     expect(
       Object.keys(env).filter((name) => name.startsWith("AGENT_FORGE_INERT_")),
@@ -1260,10 +1274,23 @@ describe("the test suite and the ledger under the user's home", () => {
       [ISOLATION_HOME]: process.env[ISOLATION_HOME],
       CI: process.env.CI,
       AGENT_FORGE_TEST_PROBE_DIAGNOSTICS: "1",
+      [SDDL_ALIAS_RUNTIME_ENV]: "pwsh-7",
       GITHUB_TOKEN: "fixture-secret",
       AGENT_FORGE_SCRATCH_TRACKER: "fixture-tracker",
     };
     const env = buildNativeFixtureEnvironment(source);
+    expect(env[SDDL_ALIAS_RUNTIME_ENV]).toBe("pwsh-7");
+    for (const runtime of ["", "1", "true", " ", "C:\\custom\\pwsh.exe"]) {
+      const invalidSource = {
+        ...source,
+        [SDDL_ALIAS_RUNTIME_ENV]: runtime,
+      };
+      expect(() => buildSafeIsolationEnvironment(invalidSource)).toThrow();
+      expect(() =>
+        buildScratchRerunEnvironment(invalidSource, "scratch"),
+      ).toThrow();
+      expect(() => buildNativeFixtureEnvironment(invalidSource)).toThrow();
+    }
 
     if (process.platform === "win32") {
       expect([env.TEMP, env.TMP, env[OWNED_TEST_TEMP]]).toEqual([

@@ -64,6 +64,7 @@ jobs:
       - run: bun test scripts --timeout 15000
         env:
           AGENT_FORGE_TEST_PROBE_DIAGNOSTICS: "1"
+          AGENT_FORGE_TEST_SDDL_ALIAS_RUNTIME: "pwsh-7"
 
   # The browser suites (tests/e2e and tests/desktop-e2e). Their configs start
   # the hearth and dashboard; see tests/e2e/AGENTS.md for the isolated fixtures
