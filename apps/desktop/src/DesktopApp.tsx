@@ -116,6 +116,7 @@ import { useKeeperShiftReviews } from "./use-keeper-shift-reviews";
 import { useProjectActivity } from "./use-project-activity";
 import { useProjectCreate } from "./use-project-create";
 import { useProjectGeneralSettings } from "./use-project-general-settings";
+import { useProjectRepositories } from "./use-project-repositories";
 import { useProjectRuns } from "./use-project-runs";
 import { useProjectShifts } from "./use-project-shifts";
 import { useProjects } from "./use-projects";
@@ -369,6 +370,13 @@ export function DesktopApp(): JSX.Element {
     if (settingsCatalog && route.projectId)
       projectGeneralSettings.owner.adopt(route.projectId, settingsCatalog);
   }, [projectGeneralSettings.owner, route.projectId, settingsCatalog]);
+  const repositoryProjectId =
+    route.destination === "project-settings" ? (project?.id ?? null) : null;
+  const projectRepositories = useProjectRepositories(
+    repositoryProjectId,
+    repositoryProjectId === null ? null : (settingsCatalog?.revision ?? null),
+    projects.refreshProjectHome,
+  );
   const summary = projects.data?.summaries.find(
     (item) => item.projectId === project?.id,
   );
@@ -2290,6 +2298,9 @@ export function DesktopApp(): JSX.Element {
             owner={projectGeneralSettings.owner}
             state={projectGeneralSettings}
             onRefresh={projects.reload}
+            repositories={projectRepositories}
+            onRefreshRepositories={projectRepositories.refresh}
+            onReconcileRepositories={projectRepositories.reconcile}
           />
         ) : route.destination === "providers" ? (
           <Providers

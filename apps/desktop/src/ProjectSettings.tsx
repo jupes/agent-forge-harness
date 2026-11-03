@@ -1,5 +1,6 @@
 import type { JSX } from "preact";
 import { Button } from "../../../docs/js/ds/Button";
+import type { ProjectRepositoryMember } from "../../../scripts/projects/project-repositories-protocol";
 import { PROJECT_COLOR_IDS, type ProjectRecord } from "../../../types/projects";
 import type {
   GeneralCatalog,
@@ -7,8 +8,197 @@ import type {
   GeneralSettingsSnapshot,
   ProjectGeneralSettingsOwner,
 } from "./project-general-settings-client";
+import type { ProjectRepositoriesSnapshot } from "./project-repositories-client";
 import "./project-settings.css";
 
+interface RepositoriesProps {
+  projectId: string;
+  state: ProjectRepositoriesSnapshot;
+  onRefresh(): void;
+  onReconcile(): void;
+}
+
+function repositoryAccessLabel(member: ProjectRepositoryMember): string {
+  if (member.access === "served") return "Served checkout";
+  if (member.access === "approved") return "Approved checkout";
+  return "Unregistered repository path";
+}
+
+function RepositoriesAndWorktrees({
+  projectId,
+  state,
+  onRefresh,
+  onReconcile,
+}: RepositoriesProps): JSX.Element {
+  return (
+    <section
+      class="af-project-repositories"
+      aria-labelledby="af-project-repositories-title"
+    >
+      <header class="af-project-repositories-heading">
+        <h3 id="af-project-repositories-title">Repositories and worktrees</h3>
+        <p>
+          Reported repository membership and worktree facts for project{" "}
+          <code>{projectId}</code> at catalog revision{" "}
+          {state.requestedRevision ?? "unavailable"}.
+        </p>
+      </header>
+      {state.phase === "idle" && (
+        <p role="status">
+          Select a current project to inspect its repositories.
+        </p>
+      )}
+      {state.phase === "loading" && (
+        <p role="status">Loading repositories and worktrees…</p>
+      )}
+      {state.phase === "reconciling-catalog" && (
+        <p role="status">
+          Refreshing the project catalog before loading repository details…
+        </p>
+      )}
+      {state.phase === "error" && (
+        <div>
+          <p role="alert">
+            Repository details could not be loaded: {state.error}
+          </p>
+          <Button onClick={onRefresh}>Retry repository refresh</Button>
+        </div>
+      )}
+      {state.phase === "catalog-mismatch" && (
+        <div>
+          {state.responseRevision !== null && (
+            <p role="alert">
+              The repository response is at catalog revision{" "}
+              {state.responseRevision}; the selected project view is at revision{" "}
+              {state.requestedRevision}.
+            </p>
+          )}
+          {state.error && <p role="alert">{state.error}</p>}
+          <Button onClick={onReconcile}>Refresh project catalog</Button>
+        </div>
+      )}
+      {state.phase === "ready" && state.data && (
+        <>
+          <p class="af-project-repositories-provenance" role="status">
+            Repository facts read for project {state.data.projectId} at catalog
+            revision {state.data.catalogRevision}.
+          </p>
+          {state.data.repositories.length === 0 ? (
+            <p role="status">No workspaces are reported for this project.</p>
+          ) : (
+            <div class="af-project-repositories-workspaces">
+              {state.data.repositories.map((workspace, workspaceIndex) => (
+                <section
+                  class="af-project-repositories-workspace"
+                  key={workspace.workspaceRoot + ":" + workspaceIndex}
+                  aria-label={"Workspace " + workspace.workspaceRoot}
+                >
+                  <h4>Workspace</h4>
+                  <p>
+                    Root: <code>{workspace.workspaceRoot}</code>
+                  </p>
+                  {workspace.repositories.length === 0 ? (
+                    <p role="status">
+                      No repository paths are reported for this workspace.
+                    </p>
+                  ) : (
+                    <ul class="af-project-repositories-members">
+                      {workspace.repositories.map((member) => (
+                        <li
+                          class="af-project-repositories-member"
+                          key={member.path + ":" + member.access}
+                        >
+                          <h5>
+                            {member.access === "unregistered"
+                              ? "Unregistered repository path"
+                              : member.name}
+                          </h5>
+                          <p>{repositoryAccessLabel(member)}</p>
+                          <p>
+                            Path: <code>{member.path}</code>
+                          </p>
+                          {member.access === "unregistered" ? (
+                            <p role="status">
+                              No worktree facts are reported for this path.
+                            </p>
+                          ) : member.worktrees.length === 0 ? (
+                            <p role="status">
+                              No worktrees are reported for this repository.
+                            </p>
+                          ) : (
+                            <ul class="af-project-repositories-worktrees">
+                              {member.worktrees.map((worktree) => (
+                                <li
+                                  key={
+                                    worktree.path +
+                                    ":" +
+                                    (worktree.id ?? worktree.kind)
+                                  }
+                                >
+                                  <dl>
+                                    <div>
+                                      <dt>Worktree path</dt>
+                                      <dd>
+                                        <code>{worktree.path}</code>
+                                      </dd>
+                                    </div>
+                                    <div>
+                                      <dt>Kind</dt>
+                                      <dd>{worktree.kind}</dd>
+                                    </div>
+                                    <div>
+                                      <dt>Reported status</dt>
+                                      <dd>
+                                        {worktree.missing
+                                          ? "Reported missing"
+                                          : "Reported present"}
+                                      </dd>
+                                    </div>
+                                    {worktree.branch !== null && (
+                                      <div>
+                                        <dt>Branch</dt>
+                                        <dd>
+                                          <code>{worktree.branch}</code>
+                                        </dd>
+                                      </div>
+                                    )}
+                                    {worktree.id !== undefined && (
+                                      <div>
+                                        <dt>Worktree id</dt>
+                                        <dd>
+                                          <code>{worktree.id}</code>
+                                        </dd>
+                                      </div>
+                                    )}
+                                    {worktree.createdAt !== undefined && (
+                                      <div>
+                                        <dt>Reported creation time</dt>
+                                        <dd>
+                                          <time dateTime={worktree.createdAt}>
+                                            {worktree.createdAt}
+                                          </time>
+                                        </dd>
+                                      </div>
+                                    )}
+                                  </dl>
+                                </li>
+                              ))}
+                            </ul>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </section>
+              ))}
+            </div>
+          )}
+          <Button onClick={onRefresh}>Refresh repository facts</Button>
+        </>
+      )}
+    </section>
+  );
+}
 interface Props {
   projectId: string | null;
   project: ProjectRecord | null;
@@ -21,6 +211,9 @@ interface Props {
   owner: ProjectGeneralSettingsOwner;
   state: GeneralSettingsSnapshot;
   onRefresh(): void;
+  repositories: ProjectRepositoriesSnapshot;
+  onRefreshRepositories(): void;
+  onReconcileRepositories(): void;
 }
 
 export function ProjectSettings({
@@ -35,6 +228,9 @@ export function ProjectSettings({
   owner,
   state,
   onRefresh,
+  repositories,
+  onRefreshRepositories,
+  onReconcileRepositories,
 }: Props): JSX.Element {
   const refreshCurrent = () => {
     if (projectId) void owner.review(projectId).finally(onRefresh);
@@ -346,6 +542,12 @@ export function ProjectSettings({
           </button>
         </form>
       </section>
+      <RepositoriesAndWorktrees
+        projectId={project.id}
+        state={repositories}
+        onRefresh={() => void onRefreshRepositories()}
+        onReconcile={() => void onReconcileRepositories()}
+      />
     </section>
   );
 }
