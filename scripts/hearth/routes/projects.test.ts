@@ -3529,7 +3529,7 @@ test("project repository read is bounded to registered membership and fails clos
   expect((await readProjectRepositories(route, project.id)).status).toBe(503);
   writeFileSync(registryPath, validRegistry);
 
-  const invalidCheckout = join(h.root, "registered-invalid-git-checkout");
+  const invalidCheckout = join(canonical, "registered-invalid-git-checkout");
   mkdirSync(join(invalidCheckout, ".git"), { recursive: true });
   const invalidRegistration = {
     name: "invalid-git-checkout",

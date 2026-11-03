@@ -400,6 +400,18 @@ function projectWorktreeFacts(
   repositoryPath: string,
   reader: typeof listWorktrees,
 ): Array<z.infer<typeof projectWorktreeFactSchema>> {
+  const gitIdentity = gitRun(
+    ["rev-parse", "--show-toplevel"],
+    repositoryPath,
+    5_000,
+  );
+  const reportedTop = gitIdentity.stdout.trim();
+  if (
+    gitIdentity.status !== 0 ||
+    !reportedTop ||
+    workspaceKey(reportedTop) !== workspaceKey(repositoryPath)
+  )
+    throw unavailableProjectRepositories();
   const reportedMain = mainCheckoutOf(repositoryPath, gitRun);
   if (reportedMain === null) throw unavailableProjectRepositories();
   const mainKey = workspaceKey(reportedMain);
