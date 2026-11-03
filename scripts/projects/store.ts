@@ -293,15 +293,9 @@ export function parseProjectCatalog(value: unknown): ProjectCatalog {
           return (
             project.id === item.projectId &&
             project.slug === item.original.slug &&
-            project.name === item.original.name &&
-            project.description === item.original.description &&
-            project.icon === item.original.icon &&
             Object.hasOwn(project, "keeperSmith") ===
               Object.hasOwn(item.original, "keeperSmith") &&
             project.keeperSmith === item.original.keeperSmith &&
-            Object.hasOwn(project, "color") ===
-              Object.hasOwn(item.original, "color") &&
-            project.color === item.original.color &&
             originalScope !== undefined &&
             createdScope !== undefined &&
             comparableCheckout(createdScope.root) ===
@@ -332,6 +326,11 @@ export function parseProjectCatalog(value: unknown): ProjectCatalog {
 
 export function projectCatalogPath(home: string): string {
   return join(home, "projects", "catalog.json");
+}
+
+/** Shared lock for catalog and project-owned private state mutations. */
+export function projectWriteLockPath(home: string): string {
+  return join(home, "projects", "write.lock.db");
 }
 
 /** One machine catalog above workspaces; catalog reads never inspect workspace paths. */
@@ -367,7 +366,7 @@ export function createProjectStore(
       throw new ProjectStoreError(400, "Expected a project catalog revision.");
     ensurePrivateHome(home);
     const result = await withQueueLock(
-      join(home, "projects", "write.lock.db"),
+      projectWriteLockPath(home),
       async () => {
         const catalog = read();
         if (catalog.revision !== expectedRevision)
@@ -398,7 +397,7 @@ export function createProjectStore(
   ): Promise<ProjectCatalog> => {
     ensurePrivateHome(home);
     const result = await withQueueLock(
-      join(home, "projects", "write.lock.db"),
+      projectWriteLockPath(home),
       async () => {
         const catalog = read();
         const next = parseProjectCatalog(await update(catalog));

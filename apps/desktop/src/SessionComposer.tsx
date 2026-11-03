@@ -42,21 +42,32 @@ export interface SessionComposerProps {
   onOpenOriginal?(id: string): void;
 }
 export function SessionComposer(props: SessionComposerProps) {
+  const scopedProps = {
+    ...props,
+    onCancel() {
+      props.client.cancelWaitingStart(props.project.id);
+      props.onCancel();
+    },
+  };
+  useEffect(
+    () => () => props.client.cancelWaitingStart(props.project.id),
+    [props.client, props.project.id],
+  );
   const view = props.client.project(props.project.id);
   return view.composerProvider === "gemini" ? (
     view.geminiMode === "chat" ? (
-      <GeminiChatComposer {...props} />
+      <GeminiChatComposer {...scopedProps} />
     ) : (
-      <GeminiTaskComposer {...props} />
+      <GeminiTaskComposer {...scopedProps} />
     )
   ) : view.composerProvider === "codex" ? (
     view.codexMode === "chat" ? (
-      <CodexChatComposer {...props} />
+      <CodexChatComposer {...scopedProps} />
     ) : (
-      <CodexTaskComposer {...props} />
+      <CodexTaskComposer {...scopedProps} />
     )
   ) : (
-    <ClaudeSessionComposer {...props} />
+    <ClaudeSessionComposer {...scopedProps} />
   );
 }
 

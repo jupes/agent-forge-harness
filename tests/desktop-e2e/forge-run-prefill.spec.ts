@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { expect, test } from "@playwright/test";
+import { expect, type Request, test } from "@playwright/test";
 import { runsHref } from "../../apps/desktop/src/project-runs-model";
 import type { ConversationState } from "../../types/conversation";
 import type { OwnedSessionRecord } from "../../types/owned-session";
@@ -10,6 +10,9 @@ import { alpha, beta, seedProjects } from "./project-fixtures";
 
 const protectedPosts: string[] = [];
 let releaseIdentityRead: (() => void) | undefined;
+let attendedDiagnosticCapture: (() => Promise<void>) | undefined;
+let attendedDiagnosticCleanup: (() => Promise<void>) | undefined;
+let attendedRequestObserver: ((request: Request) => void) | undefined;
 const explicitStartTitle =
   "an attended prompt uses ordinary Preview and one identity-bound Start after a lost reply";
 const explicitStartPosts = () => [
@@ -56,6 +59,9 @@ test.beforeEach(({ page }) => {
   seedProjects();
   protectedPosts.length = 0;
   releaseIdentityRead = undefined;
+  attendedDiagnosticCapture = undefined;
+  attendedDiagnosticCleanup = undefined;
+  attendedRequestObserver = undefined;
   page.on("request", (request) => {
     const pathname = new URL(request.url()).pathname;
     if (request.method() === "POST" && pathname.startsWith("/__agent-forge/"))
@@ -64,11 +70,48 @@ test.beforeEach(({ page }) => {
 });
 
 test.afterEach(async ({ page }, testInfo) => {
+  const cleanupErrors: Error[] = [];
+  if (testInfo.title === explicitStartTitle) {
+    try {
+      await attendedDiagnosticCapture?.();
+    } catch {
+      cleanupErrors.push(new Error("diagnostic snapshot capture failed"));
+    }
+    try {
+      await attendedDiagnosticCleanup?.();
+    } catch (error) {
+      cleanupErrors.push(
+        error instanceof Error ? error : new Error("diagnostic cleanup failed"),
+      );
+    }
+    try {
+      if (attendedRequestObserver) page.off("request", attendedRequestObserver);
+    } catch {
+      cleanupErrors.push(new Error("request observer removal failed"));
+    }
+    attendedDiagnosticCapture = undefined;
+    attendedDiagnosticCleanup = undefined;
+    attendedRequestObserver = undefined;
+  }
   releaseIdentityRead?.();
   await page.unrouteAll({ behavior: "ignoreErrors" });
-  expect(protectedPosts).toEqual(
-    testInfo.title === explicitStartTitle ? explicitStartPosts() : [],
-  );
+  try {
+    expect(protectedPosts).toEqual(
+      testInfo.title === explicitStartTitle ? explicitStartPosts() : [],
+    );
+  } catch (error) {
+    cleanupErrors.push(
+      error instanceof Error
+        ? error
+        : new Error("protected-post assertion failed"),
+    );
+  }
+  if (cleanupErrors.length === 1) throw cleanupErrors[0];
+  if (cleanupErrors.length > 1)
+    throw new AggregateError(
+      cleanupErrors,
+      "Attended Start diagnostics cleanup failed",
+    );
 });
 
 test("New forge run opens attended preparation only after the scoped Runs read", async ({
@@ -517,7 +560,252 @@ test("A-to-B-to-A navigation invalidates an open Run review", async ({
 
 test("an attended prompt uses ordinary Preview and one identity-bound Start after a lost reply", async ({
   page,
-}) => {
+}, testInfo) => {
+  const attendedStreamModuleUrls: string[] = [];
+  attendedRequestObserver = (request) => {
+    try {
+      const url = new URL(request.url());
+      const origin = new URL(request.frame().url()).origin;
+      if (
+        url.origin === origin &&
+        ["/js/use-stream.ts", "/docs/js/use-stream.ts"].includes(
+          url.pathname,
+        ) &&
+        attendedStreamModuleUrls.length < 33
+      )
+        attendedStreamModuleUrls.push(url.href);
+    } catch {
+      // An unrecognized module URL leaves stream-cause evidence unknown.
+    }
+  };
+  page.on("request", attendedRequestObserver);
+  await page.addInitScript((identityPath) => {
+    type Observation = Record<string, unknown>;
+    const limit = 32;
+    const identities: Observation[] = [];
+    const stream: Observation[] = [];
+    const starts: Observation[] = [];
+    const markers: Observation[] = [];
+    const disposers: Array<() => void> = [];
+    let overflow = false;
+    const total = () =>
+      identities.length + stream.length + starts.length + markers.length;
+    const add = (target: Observation[], item: Observation) => {
+      if (total() >= limit) overflow = true;
+      else target.push(item);
+    };
+    const composerDialog = () => {
+      const dialogs = document.querySelectorAll(
+        'dialog.af-session-dialog[open][aria-labelledby="af-session-composer-title"]',
+      );
+      return dialogs.length === 1 ? dialogs[0] : null;
+    };
+    const ui = () => {
+      const dialog = composerDialog();
+      const statuses = [
+        ...(dialog?.querySelectorAll("[role=status]") ?? []),
+      ].map((node) => node.textContent ?? "");
+      const button = [...(dialog?.querySelectorAll("button") ?? [])].find(
+        (candidate) => candidate.textContent?.trim() === "Start",
+      );
+      return {
+        identitySection: !!dialog?.querySelector(".af-start-identities"),
+        checking: statuses.some((status) =>
+          status.includes("Checking the server-owned identity page"),
+        ),
+        statusWarning: statuses.some((status) =>
+          /failed|unavailable|could not/i.test(status),
+        ),
+        startDisabled: button?.disabled ?? null,
+      };
+    };
+    const callerTags = () => {
+      const stack = new Error().stack ?? "";
+      const known = [
+        "session-start-identity-server",
+        "session-client",
+        "use-sessions",
+        "operator",
+      ].filter((name) => stack.includes(name));
+      return known.join(",") || "unknown";
+    };
+    const originalFetch = window.fetch;
+    const wrappedFetch = Object.assign(function (
+      this: typeof window,
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) {
+      let matches = false;
+      try {
+        const url = input instanceof Request ? input.url : String(input);
+        const method =
+          init?.method ?? (input instanceof Request ? input.method : "GET");
+        const parsed = new URL(url, location.href);
+        matches =
+          parsed.origin === location.origin &&
+          method.toUpperCase() === "GET" &&
+          parsed.pathname === identityPath &&
+          parsed.search === "";
+      } catch {
+        // Unrecognized fetch input is delegated without observation.
+      }
+      if (!matches) return originalFetch.call(this, input, init);
+      const item: Observation = {
+        stage: "request-start",
+        startedAt: performance.now(),
+        callerTags: callerTags(),
+        requestUi: ui(),
+      };
+      add(identities, item);
+      const pending = originalFetch.call(this, input, init);
+      // This records response headers only; the app owns the unchanged body read.
+      void pending
+        .then(
+          (response) => {
+            item.headerStage = "headers-received";
+            item.headersAt = performance.now();
+            item.status = response.status;
+            item.headerUi = ui();
+          },
+          () => {
+            item.headerStage = "transport-error";
+            item.transportErrorAt = performance.now();
+            item.headerUi = ui();
+          },
+        )
+        .catch(() => undefined);
+      return pending;
+    }, originalFetch);
+    const click = (event: MouseEvent) => {
+      if (!(event.target instanceof Element)) return;
+      const button = event.target.closest("button");
+      const dialog = composerDialog();
+      if (
+        button?.textContent?.trim() === "Start" &&
+        dialog &&
+        button.closest("dialog.af-session-dialog") === dialog
+      )
+        add(starts, { at: performance.now(), startUi: ui() });
+    };
+    document.addEventListener("click", click, true);
+    window.fetch = wrappedFetch;
+    const diagnostic = {
+      mark(label: string) {
+        add(markers, { label, at: performance.now(), ...ui() });
+      },
+      // WatchReason is batch-level evidence, not the event payload or cause.
+      streamEvent(kind: string, reason: "events" | "resync") {
+        add(stream, { kind, reason, at: performance.now(), ...ui() });
+      },
+      admissionReady() {
+        if (overflow) return false;
+        const baseline = markers
+          .filter((item) => item.label === "before-preview")
+          .at(-1)?.at;
+        if (typeof baseline !== "number") return false;
+        const events = stream.filter(
+          (item) =>
+            item.kind === "operator.action" &&
+            item.reason === "events" &&
+            typeof item.at === "number" &&
+            item.at > baseline,
+        );
+        const reads = identities.filter(
+          (item) =>
+            typeof item.startedAt === "number" && item.startedAt > baseline,
+        );
+        const read = reads.at(-1);
+        const action = events.at(-1);
+        if (
+          !read ||
+          !action ||
+          typeof read.startedAt !== "number" ||
+          typeof read.headersAt !== "number" ||
+          typeof action.at !== "number" ||
+          action.at >= read.startedAt
+        )
+          return false;
+        if (
+          read.headerStage !== "headers-received" ||
+          read.status !== 200 ||
+          read.headersAt < read.startedAt
+        )
+          return false;
+        const requestUi = read.requestUi as { checking?: unknown } | null;
+        const headerUi = read.headerUi as { checking?: unknown } | null;
+        const current = ui();
+        return (
+          (requestUi?.checking === true || headerUi?.checking === true) &&
+          current.identitySection &&
+          !current.checking &&
+          !current.statusWarning &&
+          current.startDisabled === false
+        );
+      },
+      addDisposer(dispose: () => void) {
+        disposers.push(dispose);
+      },
+      snapshot() {
+        return { identities, stream, starts, markers, overflow, cleanupErrors };
+      },
+      cleanup() {
+        for (const dispose of disposers.splice(0))
+          try {
+            dispose();
+          } catch {
+            cleanupErrors.push("watch-dispose");
+          }
+        try {
+          document.removeEventListener("click", click, true);
+        } catch {
+          cleanupErrors.push("click-listener-remove");
+        }
+        try {
+          if (window.fetch === wrappedFetch) window.fetch = originalFetch;
+        } catch {
+          cleanupErrors.push("fetch-restore");
+        }
+        try {
+          if (
+            Reflect.get(window, "__cla5_96_attended_diagnostic") === diagnostic
+          )
+            Reflect.deleteProperty(window, "__cla5_96_attended_diagnostic");
+        } catch {
+          cleanupErrors.push("diagnostic-global-remove");
+        }
+        return cleanupErrors;
+      },
+    };
+    const cleanupErrors: string[] = [];
+    Object.defineProperty(window, "__cla5_96_attended_diagnostic", {
+      configurable: true,
+      value: diagnostic,
+    });
+  }, `/__agent-forge/projects/${alpha.id}/session-start-identities`);
+  attendedDiagnosticCleanup = async () => {
+    const errors = await page.evaluate(() => {
+      const state = Reflect.get(window, "__cla5_96_attended_diagnostic") as {
+        cleanup(): string[];
+      };
+      return state.cleanup();
+    });
+    if (errors.length)
+      throw new Error(`diagnostic cleanup failed: ${errors.join(",")}`);
+  };
+  attendedDiagnosticCapture = async () => {
+    const snapshot: unknown = await page.evaluate(() => {
+      const state = Reflect.get(window, "__cla5_96_attended_diagnostic") as {
+        snapshot(): unknown;
+      };
+      return state.snapshot();
+    });
+    const body = JSON.stringify(snapshot, null, 2);
+    if (body !== undefined)
+      await testInfo.attach("attended-start-diagnostic", {
+        body,
+        contentType: "application/json",
+      });
+  };
   const beforeStarts = starts();
   const beforeRecords = records().length;
   writeFileSync(
@@ -525,6 +813,85 @@ test("an attended prompt uses ordinary Preview and one identity-bound Start afte
     JSON.stringify("normal"),
   );
   await openRuns(page);
+  const streamObserved = await page.evaluate(async (requestUrls) => {
+    const modulePaths = ["/js/use-stream.ts", "/docs/js/use-stream.ts"];
+    const matches = (value: string) => {
+      try {
+        const url = new URL(value);
+        return (
+          url.origin === location.origin && modulePaths.includes(url.pathname)
+        );
+      } catch {
+        return false;
+      }
+    };
+    if (requestUrls.length > 32) return false;
+    const requested = [...new Set(requestUrls.filter(matches))];
+    let url = requested.length === 1 ? requested[0] : undefined;
+    if (requested.length === 0) {
+      const loaded = [
+        ...new Set(
+          performance
+            .getEntriesByType("resource")
+            .filter(
+              (entry) =>
+                "initiatorType" in entry &&
+                entry.initiatorType === "script" &&
+                matches(entry.name),
+            )
+            .map((entry) => entry.name),
+        ),
+      ];
+      if (loaded.length === 1) url = loaded[0];
+    }
+    if (!url) return false;
+    type ObservedKind = "operator.action" | "session.started" | "session.ended";
+    type StreamModule = {
+      appStream(): {
+        getState(): { status: string };
+        watch(
+          kinds: readonly ObservedKind[],
+          callback: (reason: "events" | "resync") => void,
+        ): () => void;
+      };
+    };
+    const state = Reflect.get(window, "__cla5_96_attended_diagnostic") as {
+      streamEvent(kind: ObservedKind, reason: "events" | "resync"): void;
+      addDisposer(dispose: () => void): void;
+      mark(label: string): void;
+    };
+    try {
+      const module = (await import(url)) as StreamModule;
+      const client = module.appStream();
+      if (
+        typeof client.getState !== "function" ||
+        client.getState().status !== "live"
+      ) {
+        state.mark("stream-not-live");
+        return false;
+      }
+      for (const kind of [
+        "operator.action",
+        "session.started",
+        "session.ended",
+      ] as const)
+        state.addDisposer(
+          client.watch([kind], (reason) => state.streamEvent(kind, reason)),
+        );
+      state.mark("stream-observer-ready");
+      return true;
+    } catch {
+      state.mark("stream-module-import-failed");
+      return false;
+    }
+  }, attendedStreamModuleUrls);
+  if (!streamObserved)
+    await page.evaluate(() => {
+      const state = Reflect.get(window, "__cla5_96_attended_diagnostic") as {
+        mark(label: string): void;
+      };
+      state.mark("stream-module-url-unavailable");
+    });
   await launchPreparation(page);
   const preparation = page.getByRole("dialog");
   await preparation
@@ -536,6 +903,12 @@ test("an attended prompt uses ordinary Preview and one identity-bound Start afte
   await preparation
     .getByRole("button", { name: "Continue to Claude composer" })
     .click();
+  await page.evaluate(() => {
+    const state = Reflect.get(window, "__cla5_96_attended_diagnostic") as {
+      mark(label: string): void;
+    };
+    state.mark("after-preview-composer-open");
+  });
 
   const composer = page.getByRole("dialog", { name: "New session · Alpha" });
   const expectedPrompt = "/forgemaster --full One reviewed request";
@@ -543,10 +916,26 @@ test("an attended prompt uses ordinary Preview and one identity-bound Start afte
     composer.getByLabel("Session prompt", { exact: true }),
   ).toHaveValue(expectedPrompt);
   await composer.getByLabel("Session effort", { exact: true }).selectOption("");
+  await page.evaluate(() => {
+    const state = Reflect.get(window, "__cla5_96_attended_diagnostic") as {
+      mark(label: string): void;
+    };
+    state.mark("before-preview");
+  });
   await composer
     .getByRole("button", { name: "Check supported options", exact: true })
     .click();
   const start = composer.getByRole("button", { name: "Start", exact: true });
+  await expect
+    .poll(() =>
+      page.evaluate(() => {
+        const state = Reflect.get(window, "__cla5_96_attended_diagnostic") as {
+          admissionReady(): boolean;
+        };
+        return state.admissionReady();
+      }),
+    )
+    .toBe(true);
   await expect(start).toBeEnabled();
 
   let holdRecovery = false;
@@ -585,6 +974,12 @@ test("an attended prompt uses ordinary Preview and one identity-bound Start afte
     },
   );
   const allowedStartPosts = explicitStartPosts();
+  await page.evaluate(() => {
+    const state = Reflect.get(window, "__cla5_96_attended_diagnostic") as {
+      mark(label: string): void;
+    };
+    state.mark("before-start-click");
+  });
   await start.click();
   await expect.poll(() => recoveryReadHeld).toBe(true);
   await expect.poll(() => starts()).toBe(beforeStarts + 1);
