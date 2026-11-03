@@ -98,6 +98,15 @@ type CdpMessage = {
   result?: unknown;
 };
 type CdpTarget = { webSocketDebuggerUrl: string; type: string };
+type ProjectSettingsObservation = {
+  projectId: string;
+  state: "ready" | "empty" | "error" | "loading" | "unreported";
+  served: boolean;
+  getCount: number;
+  postCount: number;
+  otherMethodCount: number;
+  responseStatus: number | null;
+};
 type ProcessIdentity = {
   pid: number;
   parentPid: number;
@@ -292,6 +301,7 @@ process.stderr.write("Native fixture Git is read-only and has no forwarding path
   let windowVisible = false;
   let cspErrors = 0;
   let smokeError: Error | undefined;
+  let projectSettings: ProjectSettingsObservation | undefined;
   let failureScreenshot: string | undefined;
   let focusOutline:
     | { specifiedCssPx: number; computedCssPx: number }
@@ -675,6 +685,17 @@ process.stderr.write("Native fixture Git is read-only and has no forwarding path
         },
       },
     );
+    const projectSettingsObservation: ProjectSettingsObservation = {
+      projectId: "",
+      state: "unreported",
+      served: false,
+      getCount: 0,
+      postCount: 0,
+      otherMethodCount: 0,
+      responseStatus: null,
+    };
+    projectSettings = projectSettingsObservation;
+    await verifyProjectSettings(socket, project.id, projectSettingsObservation);
     await evaluate(socket, `location.hash = '#/desktop/projects'`);
     await waitForPage(
       socket,
@@ -844,6 +865,7 @@ process.stderr.write("Native fixture Git is read-only and has no forwarding path
           windowVisible,
           ...(checks ?? {}),
           cspErrors,
+          ...(projectSettings ? { projectSettings } : {}),
           ...(failureScreenshot ? { screenshot: failureScreenshot } : {}),
         },
       }),
@@ -896,6 +918,7 @@ process.stderr.write("Native fixture Git is read-only and has no forwarding path
           keeperBriefTested: true,
           keeperProposalsTested: true,
           keeperSessionReviewTested: true,
+          projectSettings,
           keeperSessionReviewFocus: keeperReviewFocus,
           observedSessionIneligibleTested: true,
           scopedObservedSessionDetailsTested: true,
@@ -2268,6 +2291,123 @@ ${nativeWindowLocator}
   throw new Error("The native app did not open a visible window.");
 }
 
+async function verifyProjectSettings(
+  socket: WebSocket,
+  projectId: string,
+  observation: ProjectSettingsObservation,
+): Promise<void> {
+  const endpoint =
+    (await pageOrigin(socket)) +
+    "/__agent-forge/projects/" +
+    encodeURIComponent(projectId) +
+    "/settings/repositories";
+  const requestIds = new Map<string, Set<string>>();
+  const matchesEndpoint = (value: unknown): boolean => {
+    try {
+      const url = new URL(String(value));
+      return url.origin + url.pathname === endpoint;
+    } catch {
+      return false;
+    }
+  };
+  let dom: Record<string, unknown> | undefined;
+  const observe = (event: MessageEvent): void => {
+    const message = parseCdpMessage(String(event.data));
+    const params = asRecord(message?.params);
+    const requestId = params?.requestId;
+    if (typeof requestId !== "string") return;
+    if (message?.method === "Network.requestWillBeSent") {
+      const request = asRecord(params?.request);
+      if (!matchesEndpoint(request?.url)) return;
+      const method =
+        typeof request?.method === "string"
+          ? request.method.toUpperCase()
+          : "UNKNOWN";
+      requestIds.set(
+        method,
+        (requestIds.get(method) ?? new Set<string>()).add(requestId),
+      );
+      observation.getCount = requestIds.get("GET")?.size ?? 0;
+      observation.postCount = requestIds.get("POST")?.size ?? 0;
+      observation.otherMethodCount = [...requestIds].reduce(
+        (n, [m, ids]) => n + (m === "GET" || m === "POST" ? 0 : ids.size),
+        0,
+      );
+    } else if (message?.method === "Network.responseReceived") {
+      const response = asRecord(params?.response);
+      if (
+        requestIds.get("GET")?.has(requestId) &&
+        matchesEndpoint(response?.url) &&
+        typeof response?.status === "number"
+      )
+        observation.responseStatus = response.status;
+    }
+  };
+  const hash =
+    "#/desktop/project/" + encodeURIComponent(projectId) + "/project-settings";
+  const expression = `(() => {
+    const region = document.querySelector(".af-project-repositories");
+    const projectId = region
+      ?.querySelector(".af-project-repositories-heading code")
+      ?.textContent?.trim() ?? "";
+    const content = region?.textContent ?? "";
+    let state = "unreported";
+    if (region?.querySelector("[role=alert]")) state = "error";
+    else if (region?.querySelector(".af-project-repositories-provenance"))
+      state = "ready";
+    else if (/Loading|Refreshing/.test(content)) state = "loading";
+    else if (/No workspaces/.test(content)) state = "empty";
+    return {
+      projectId,
+      state,
+      served: content.includes("Served checkout"),
+      identityMatches:
+        location.hash === __SETTINGS_HASH__ &&
+        decodeURIComponent(location.hash.split("/")[3] ?? "") === projectId,
+    };
+  })()`.replace("__SETTINGS_HASH__", JSON.stringify(hash));
+  socket.addEventListener("message", observe);
+  try {
+    await evaluate(socket, "location.hash=" + JSON.stringify(hash));
+    const deadline = Date.now() + waitLimitMs;
+    while (Date.now() < deadline) {
+      dom = asRecord(await evaluate(socket, expression));
+      observation.projectId =
+        typeof dom?.projectId === "string" ? dom.projectId : "";
+      const state = dom?.state;
+      observation.state =
+        state === "ready" ||
+        state === "empty" ||
+        state === "error" ||
+        state === "loading"
+          ? state
+          : "unreported";
+      observation.served = dom?.served === true;
+      if (
+        observation.state !== "loading" &&
+        observation.state !== "unreported" &&
+        observation.responseStatus !== null
+      )
+        break;
+      await delay(100);
+    }
+    const status = observation.responseStatus;
+    const success =
+      dom?.identityMatches === true &&
+      observation.state === "ready" &&
+      observation.served &&
+      observation.getCount === 1 &&
+      observation.postCount === 0 &&
+      observation.otherMethodCount === 0 &&
+      typeof status === "number" &&
+      Number.isInteger(status) &&
+      status >= 200 &&
+      status <= 299;
+    if (!success) throw new Error("Native project Settings probe failed.");
+  } finally {
+    socket.removeEventListener("message", observe);
+  }
+}
 async function pageOrigin(socket: WebSocket): Promise<string> {
   const result = await cdp(socket, "Runtime.evaluate", {
     expression: "location.origin",
