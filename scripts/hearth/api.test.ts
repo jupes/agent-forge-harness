@@ -6994,14 +6994,22 @@ describe("every read row (iterating the table)", () => {
     ];
     for (const row of rows) {
       const path = READS[key(row)] ?? "";
-      for (const [label, headers] of refused) {
-        const response = await get(h, path, headers);
+      const denied = await Promise.allSettled(
+        refused.map(async ([label, headers]) => {
+          const response = await get(h, path, headers);
+          const body = await envelope(response);
+          return { label, response, body };
+        }),
+      );
+      for (const outcome of denied) {
+        if (outcome.status === "rejected") throw outcome.reason;
+        const { label, response, body } = outcome.value;
         expect({ row: key(row), label, status: response.status }).toEqual({
           row: key(row),
           label,
           status: 403,
         });
-        expect((await envelope(response)).ok).toBe(false);
+        expect(body.ok).toBe(false);
       }
       // A browser on the same origin sends no Origin on a GET; its fetch metadata is the declaration.
       const browser = await get(h, path, {
