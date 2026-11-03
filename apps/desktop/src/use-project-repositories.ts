@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "preact/hooks";
+import { operatorRead } from "../../../docs/js/operator";
 import { pageReads, readOperatorRoute } from "../../../docs/js/use-stream";
 import type { ProjectsHome } from "../../../types/project-summary";
 import {
@@ -18,7 +19,7 @@ export function useProjectRepositories(
     read: (id) =>
       readOperatorRoute<unknown>(
         "/projects/" + encodeURIComponent(id) + "/settings/repositories",
-        pageReads(),
+        { ...pageReads(), fetch: operatorRead },
       ),
   });
   const owner = ownerRef.current;

@@ -1,6 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
+import { OPERATOR_HEADER } from "../../scripts/hearth/paths";
 import type { ProjectRepositoriesData } from "../../scripts/projects/project-repositories-protocol";
 import { openSettled } from "../e2e/fixtures";
 import {
@@ -62,6 +63,7 @@ test("project General settings loads the selected fixture fields", async ({
   let postCount = 0;
   let catalogReads = 0;
   let repositoryReads = 0;
+  const operatorHeaderPresence: boolean[] = [];
   await page.route("**/__agent-forge/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -75,7 +77,17 @@ test("project General settings loads the selected fixture fields", async ({
       url.pathname ===
         "/__agent-forge/projects/" + alpha.id + "/settings/repositories"
     ) {
+      const operatorHeaderPresent = Boolean(request.headers()[OPERATOR_HEADER]);
+      operatorHeaderPresence.push(operatorHeaderPresent);
       repositoryReads++;
+      if (!operatorHeaderPresent) {
+        await route.fulfill({
+          status: 403,
+          contentType: "application/json",
+          body: '{"ok":false,"data":null,"error":"Fixture operator header is required."}',
+        });
+        return;
+      }
       await route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -113,6 +125,7 @@ test("project General settings loads the selected fixture fields", async ({
     page,
     `/index.html#/desktop/project/${alpha.id}/project-settings`,
   );
+  expect(operatorHeaderPresence).toEqual([true]);
   const summaryResponse = await summaryResponsePromise;
   expect(summaryResponse.status()).toBe(200);
   const summaryEnvelope = await summaryResponse.json();
