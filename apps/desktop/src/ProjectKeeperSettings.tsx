@@ -35,7 +35,7 @@ export function ProjectKeeperSettings({
         Choose the default Smith for future Keeper work. Existing conversations
         and reviewed selections keep their saved Smith.
       </p>
-      <p class="af-project-settings-provenance">
+      <p class="af-project-keeper-provenance">
         Source: project catalog · revision{" "}
         {state?.catalog?.revision ?? "unavailable"}
       </p>

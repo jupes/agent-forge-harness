@@ -1,25 +1,49 @@
-import { readFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { expect, test } from "@playwright/test";
 import { openSettled, reloadSettled } from "../e2e/fixtures";
 import { HEARTH_HOME } from "../e2e/servers";
-import { alpha, seedKeeper, seedProjects } from "./project-fixtures";
+import {
+  alpha,
+  catalogFile,
+  catalog as fixtureCatalog,
+  seedKeeper,
+  seedProjects,
+} from "./project-fixtures";
 
 test("Keeper default saves, reloads and conflicts while retaining the existing conversation", async ({
   page,
 }) => {
+  const keeperProjectId = `project-${randomUUID()}`;
   seedProjects();
-  seedKeeper([
-    {
-      kind: "process",
-      pid: 123,
-      smith: "claude-master",
-      requestedModel: "fixture",
-      requestedEffort: "high",
-    },
-    { kind: "text", text: "Retained Keeper answer" },
-  ]);
-  const journal = join(HEARTH_HOME, "conversations", `keeper-${alpha.id}.json`);
+  writeFileSync(
+    catalogFile,
+    JSON.stringify({
+      ...fixtureCatalog,
+      projects: fixtureCatalog.projects.map((project) =>
+        project.id === alpha.id ? { ...project, id: keeperProjectId } : project,
+      ),
+    }),
+  );
+  seedKeeper(
+    [
+      {
+        kind: "process",
+        pid: 123,
+        smith: "claude-master",
+        requestedModel: "fixture",
+        requestedEffort: "high",
+      },
+      { kind: "text", text: "Retained Keeper answer" },
+    ],
+    keeperProjectId,
+  );
+  const journal = join(
+    HEARTH_HOME,
+    "conversations",
+    `keeper-${keeperProjectId}.json`,
+  );
   const original = readFileSync(journal, "utf8");
   let posts = 0;
   page.on("request", (request) => {
@@ -31,7 +55,7 @@ test("Keeper default saves, reloads and conflicts while retaining the existing c
   });
   await openSettled(
     page,
-    `/index.html#/desktop/project/${alpha.id}/project-settings`,
+    `/index.html#/desktop/project/${keeperProjectId}/project-settings`,
   );
   const section = page.getByRole("region", {
     name: "Forge Keeper",
