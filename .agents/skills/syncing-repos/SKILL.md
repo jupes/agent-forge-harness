@@ -1,20 +1,11 @@
 ---
 name: syncing-repos
-description: Multi-repo git operations — init, reset, status, branch management, refresh (rebase), stacked rebase. JSON output for agent consumption.
+description: Clone, inspect, refresh, reset, or manage branches across registered Forge sub-repos. Use for single-repo or multi-repo synchronization.
 ---
 
 # syncing-repos
 
 Manages multiple sub-repos registered in **local** `repos/repos.json` (gitignored; bootstrap from `repos/repos.json.example`). All operations emit JSON so agents can parse results.
-
-## When to Use
-
-- Cloning repos for the first time (`init`)
-- Pulling latest changes across all repos (`refresh`)
-- Creating feature branches across repos for an epic (`branch create`)
-- Cleaning up merged branches (`branch cleanup`)
-- Checking sync status of all repos (`status`)
-- Rebasing stacked branches
 
 ## CLI Usage
 
@@ -149,3 +140,7 @@ On failure:
 `"checks"` is optional here. It is what the quality gate runs for a Forge run that builds in the
 repository, each `"argv"` without a shell; without it the gate refuses such a run. The add-repo skill
 says how to write it, including the Windows limit on `.cmd` shims.
+
+## Completion
+
+Inspect the top-level ok flag and each repository result. Report failures and skips separately, and verify the requested branch or sync state for each target.

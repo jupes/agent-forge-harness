@@ -1,6 +1,6 @@
 ---
 name: git-guardrails-claude-code
-description: Set up Claude Code git safety guardrails that block dangerous git commands before execution. Use when the user asks to prevent git push, hard reset, git clean, destructive checkout/restore, or branch deletion from Claude Code hooks.
+description: Install or review a Claude Code hook for blocking selected Git commands. Use when the user requests Git safety guardrails.
 ---
 
 # git-guardrails-claude-code
@@ -8,6 +8,11 @@ description: Set up Claude Code git safety guardrails that block dangerous git c
 Guide a user through installing a Claude Code `PreToolUse` hook that blocks dangerous git commands before they execute.
 
 This Agent Forge port is guidance-first: do not install hooks, edit `.claude/settings.json`, edit `~/.claude/settings.json`, or create executable hook files unless the user explicitly asks for installation in the current task.
+
+The bundled reference needs Bash, jq, and grep. Its regex matching is a convenience guard,
+not a shell parser or security boundary; aliases and alternate command forms can bypass it.
+Test candidate commands as JSON input without executing them. Prefer an existing repository
+hook when it already implements the requested policy.
 
 ## What gets blocked
 
@@ -27,7 +32,7 @@ When a command is blocked, the hook exits with code `2` and prints a message exp
 
 ### 1. Confirm scope
 
-Ask the user where they want the guardrail installed:
+Use the requested scope. If no scope is specified, ask whether the guardrail belongs in the project or globally:
 
 - **Project only**: `.claude/settings.json` with the hook script under `.claude/hooks/block-dangerous-git.sh`
 - **Global**: `~/.claude/settings.json` with the hook script under `~/.claude/hooks/block-dangerous-git.sh`
@@ -100,7 +105,7 @@ Do not replace an existing `hooks.PreToolUse` array. Append the new command hook
 
 ### 4. Customize intentionally
 
-Ask whether the user wants to add or remove blocked patterns before installation. Keep the defaults unless the user chooses a different policy.
+Use the requested blocked-command policy. Explain the defaults and ask only if they conflict with the repository's workflow; ordinary push is required by Forge session completion.
 
 Common customizations:
 

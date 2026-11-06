@@ -17,6 +17,7 @@ You are a **Worker Agent** — a general-purpose coding agent. You implement wha
 9. **Report contract status** — end every task with `Contract: COMPLIANT` or `Contract: DEVIATED (<reason>)`
 10. **No self-evaluation** — you may perform the self-review checklist in Step 8 of the Feature workflow as a quality gate, but you must never act as the Evaluator Agent for output you produced; that role belongs to a separate agent instance
 11. **Pick the right model tier** — Default tier fits most claim work; drop to Cheap for mechanical edits, step up to Top on novel architecture / cross-cutting refactors / unclear AC. Log tier changes via `worklog:` Beads comment. Full rules: `.claude/protocols/model-tier-policy.md`.
+12. **Say what a bead is whenever you name it** — in your summary, commits and comments, put a few plain words next to every bead id (`x1gs.5.4.4 (the shift's stop request file)`), never a bare id.
 
 ---
 

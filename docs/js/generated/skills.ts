@@ -8,170 +8,171 @@ import type { SkillEntry } from "../../../scripts/dashboard/commands-catalog";
 export const SKILLS: readonly SkillEntry[] = [
   {
     name: "add-repo",
-    summary: "Register a new sub-repo in the knowledge base.",
+    summary:
+      "Register a repository with Forge, clone it, and configure knowledge and verification commands.",
   },
   {
     name: "add-unit-tests",
     summary:
-      "Add focused Bun unit tests for mission-critical behavior and edge cases — not blanket coverage.",
+      "Add focused regression tests for critical behavior and edge cases.",
   },
   {
     name: "authoring-agent-skills",
     summary:
-      "Meta-skill for creating Agent Forge skills under .claude/skills/ with SKILL.md, optional references/ and scripts/, and Bun scaffolds.",
+      "Create or revise Forge skills, including discovery descriptions, workflows, references, and executable helpers.",
   },
   {
     name: "beads-priority-assignment",
     summary:
-      "Choose Beads issue priority (P0–P4, numeric, or named) from urgency, impact, and risk when creating or triaging work.",
+      "Choose Beads priority from urgency, impact, and deferral risk when creating an issue or changing its priority.",
   },
   {
     name: "caveman",
     summary:
-      "Ultra-compressed communication mode that preserves technical accuracy while dropping filler.",
+      "Use compressed prose when the user requests caveman mode. Preserve precise technical details and return to normal prose when requested.",
   },
   {
     name: "design-an-interface",
     summary:
-      "Generate multiple radically different interface designs before implementation.",
+      "Compare distinct API, module, CLI, or data-contract designs before implementation.",
   },
   {
     name: "domain-model",
     summary:
-      "Stress-test a plan against existing domain language, code behavior, and durable decisions.",
+      "Stress-test a plan against domain terminology, code behavior, and existing decisions.",
   },
   {
     name: "edit-article",
     summary:
-      "Edit and improve article drafts by confirming a heading-based section plan, dependency order, then rewriting section by section with short paragraphs.",
+      "Revise article drafts for structure, clarity, and flow while preserving the author's meaning and requested style.",
   },
   {
     name: "forge-implement",
     summary:
-      "Phase 3 of the Forge pipeline. Execute the plan's Beads tasks with red-green-refactor TDD, committing per checkpoint and pausing at each natural stopping point…",
+      "Execute a Forge plan's Beads checkpoints with TDD and verification.",
   },
   {
     name: "forge-plan",
     summary:
-      "Phase 2 of the Forge pipeline. Turn a research document into an implementation plan that is built around Beads issues and TDD. Reads plans/research/<slug>.md…",
+      "Turn Forge research into a validated implementation plan and Beads dependency graph.",
   },
   {
     name: "forge-research",
     summary:
-      "Phase 1 of the Forge pipeline. Gather real context from the codebase, answer everything the code can answer through exploration, then grill the user one…",
+      "Investigate a feature before planning, resolve product unknowns, and save grounded research.",
   },
   {
     name: "forge-ship",
     summary:
-      "Phase 4 of the Forge pipeline. Summarize the whole workload — what was built, which Beads issues closed, a before/after, and a step-by-step walkthrough the…",
+      "Verify and ship a completed Forge run with a walkthrough, pushed branch, and PR.",
   },
   {
     name: "git-guardrails-claude-code",
     summary:
-      "Set up Claude Code git safety guardrails that block dangerous git commands before execution.",
+      "Install or review a Claude Code hook for blocking selected Git commands.",
   },
   {
     name: "github-triage",
-    summary: "Triage GitHub issues through gh and a label-based state machine.",
+    summary:
+      "Triage GitHub Issues using workflow labels and durable agent briefs.",
   },
   {
     name: "grill-me",
     summary:
-      "Relentlessly stress-test a plan or design through a one-question-at-a-time interview that researches available context first and includes a recommended answer…",
+      "Challenge a plan through an evidence-first interview, one decision at a time.",
   },
   {
     name: "improve-codebase-architecture",
     summary:
-      "Surface architectural friction and propose deepening opportunities that improve testability and AI-navigability.",
+      "Identify architectural friction and compare refactoring opportunities.",
   },
   {
     name: "initiative-status-report",
-    summary:
-      "Generate structured weekly status reports covering initiatives, progress, blockers, risks, and KPIs.",
+    summary: "Summarize multiple initiatives as a Markdown portfolio digest.",
   },
   {
     name: "migrate-to-shoehorn",
     summary:
-      "Migrate test files from `as` assertions to @total-typescript/shoehorn helpers.",
+      "Replace unsafe TypeScript test-fixture assertions with Shoehorn helpers.",
   },
   {
     name: "obsidian-vault",
     summary:
-      "Search, create, and manage notes in an explicit Obsidian vault with title-case filenames, wikilinks, index notes, backlinks, and safe vault-root confirmation.",
+      "Find, create, update, or organize notes in the user's identified Obsidian vault, preserving its links and conventions.",
   },
   {
     name: "pr-description",
+    summary: "Write or validate a Forge PR body using the canonical template.",
+  },
+  {
+    name: "project-status-report",
     summary:
-      "Canonical PR description template for every PR shipped from this harness, with a validator that enforces the required sections.",
+      "Create a polished project-status PDF for a manager or director from Beads, user notes, and attached documents.",
   },
   {
     name: "qa",
-    summary:
-      "Run a conversational QA session where the user reports bugs or issues, and file durable Beads issues using project domain language.",
+    summary: "Capture user-reported QA problems as durable Beads issues.",
   },
   {
     name: "request-refactor-plan",
-    summary:
-      "Create a Beads-first refactor plan through detailed interview, repo verification, alternatives, scope boundaries, testing decisions, and tiny working…",
+    summary: "Plan a refactor as verified, incremental Beads work.",
   },
   {
     name: "review-plan",
     summary:
-      "Fact-check an implementation plan against the real codebase and first-party documentation, flagging inaccuracies with what / why / evidence and a severity tier.",
+      "Fact-check a plan from a file, Beads issue, or chat against code and primary documentation.",
   },
   {
     name: "scaffold-exercises",
     summary:
-      "Scaffold course exercise directories with numbered sections, exercise variants, required readmes, and repo-specific validation.",
+      "Create course exercise stubs or rename existing exercises while preserving the course's numbering, variants, and validation rules.",
   },
   {
     name: "setup-pre-commit",
-    summary:
-      "Set up repository-local Husky pre-commit hooks with lint-staged, Prettier, and optional typecheck/test gates.",
+    summary: "Configure repository-local Husky and lint-staged hooks.",
   },
   {
     name: "syncing-repos",
     summary:
-      "Multi-repo git operations — init, reset, status, branch management, refresh (rebase), stacked rebase. JSON output for agent consumption.",
+      "Clone, inspect, refresh, reset, or manage branches across registered Forge sub-repos.",
   },
   {
     name: "tdd",
-    summary:
-      "Run red-green-refactor in vertical slices, emphasizing behavior-first tests and harness quality gates.",
+    summary: "Implement behavior in red-green-refactor slices.",
   },
   {
     name: "to-issues",
     summary:
-      "Break a plan/PRD into independent vertical-slice Beads issues with explicit dependencies.",
+      "Decompose a plan or PRD into independently verifiable Beads tasks with dependencies.",
   },
   {
     name: "to-prd",
     summary:
-      "Synthesize current context into a PRD and file it as a Beads feature/epic issue.",
+      "Synthesize a feature brief or PRD from existing context and file it in Beads.",
   },
   {
     name: "triage-issue",
     summary:
-      "Investigate a reported problem, diagnose root cause, and file a Beads issue with a behavior-level TDD fix plan.",
+      "Investigate a bug and record its diagnosis and fix plan in Beads.",
   },
   {
     name: "ubiquitous-language",
     summary:
-      "Extract a DDD-style domain glossary from conversation context, choosing canonical terms and flagging ambiguity.",
+      "Extract or refine a domain glossary from conversation and existing terminology.",
   },
   {
     name: "ui-originality-criteria",
     summary:
-      "Grade and steer UI work using Anthropic-style design dimensions—coherence, originality, craft, and usability—for generators and evaluators.",
+      "Evaluate or guide UI design through coherence, originality, craft, and usability. Use during visual design or product UI review.",
   },
   {
     name: "ui-screenshot",
     summary:
-      "Auto-capture UI screenshots for PRs using Playwright MCP browser tools.",
+      "Capture verified desktop and mobile UI screenshots for review or a PR.",
   },
   {
     name: "zoom-out",
     summary:
-      "Produce a higher-level architecture and context map for unfamiliar code.",
+      "Map an unfamiliar file, feature, or module to its callers, dependencies, and system behavior.",
   },
 ];

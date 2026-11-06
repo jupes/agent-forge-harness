@@ -31,7 +31,10 @@ copyright and permission notice below applies to all of them.
 - `ubiquitous-language`
 - `zoom-out`
 
-In addition, `authoring-agent-skills` folds in concepts from Matt Pocock's `write-a-skill`.
+In addition, `authoring-agent-skills` folds in concepts from Matt Pocock's `write-a-skill`
+and [writing-for-agents](https://github.com/mattpocock/skills/tree/main/skills/productivity/writing-for-agents).
+The latter informed the November 2026 review of skill descriptions, reference routing,
+and completion criteria across this collection.
 
 Skills **not** derived from that source (e.g. `forge-research`, `forge-plan`, `forge-implement`,
 `forge-ship`, `add-repo`, `syncing-repos`, `beads-priority-assignment`, `add-unit-tests`,

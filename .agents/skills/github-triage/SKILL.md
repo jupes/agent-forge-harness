@@ -1,6 +1,6 @@
 ---
 name: github-triage
-description: Triage GitHub issues through gh and a label-based state machine. Use when the user intentionally wants GitHub issue triage, incoming bug or feature review, issue workflow labels, needs-info follow-up, or ready-for-agent briefs.
+description: Triage GitHub Issues using workflow labels and durable agent briefs. Use for GitHub issue review or reporter follow-up; use qa or triage-issue for Beads.
 ---
 
 # github-triage
@@ -11,8 +11,8 @@ For Agent Forge harness work, keep Beads as the local work tracker. During GitHu
 
 ## Hard Rules
 
-1. Use `gh` for all GitHub reads and writes. Infer the repository from `gh repo view` or `git remote`.
-2. Do not mutate GitHub until the maintainer has approved the exact action. Mutations include labels, issue comments, issue creation, issue closure, and assignee or milestone changes.
+1. Prefer connected GitHub tools when they support the operation; otherwise use `gh`. Resolve the repository from the request or verified remote.
+2. Apply only authorized GitHub changes. Existing explicit direction counts as approval; request missing authority after preparing the concrete change. Posting comments requires explicit messaging authorization.
 3. Before any mutation, show the intended label changes, comment body, and close/reopen action if any.
 4. Every GitHub issue or comment created by the agent must start with this disclaimer, before any other content:
 
@@ -149,7 +149,7 @@ When the maintainer explicitly asks to move an issue to a state, do not require 
 
 1. Read the current issue and labels.
 2. Preview what will be added, removed, posted, and closed.
-3. Ask for confirmation if the requested action would post a comment or close the issue.
+3. Check that the instruction authorizes each proposed action; ask only for additional actions outside that scope.
 4. Apply the transition after approval.
 
 If moving to `ready-for-agent` without a full specification session, ask whether to write a brief agent brief now or leave the issue in `needs-triage` until a durable brief exists.
@@ -185,3 +185,7 @@ When an issue has existing AI triage notes or an agent brief:
 3. Check whether the reporter has answered outstanding questions.
 4. Present the maintainer with what changed since the last triage note.
 5. Continue from the last unresolved question instead of restarting the triage.
+
+## Completion
+
+Every requested issue is reviewed, changed with authorization, or waiting on a named input. Re-read changed issues to verify state, labels, and authorized comments.

@@ -684,12 +684,14 @@ describe("the forge-plan documents show a file map the parser reads", () => {
       "utf8",
     );
   const skill = (): string => document("SKILL.md");
+  const template = (): string => document("references", "plan-template.md");
   const example = (): string => document("references", "example-plan.md");
 
   test("the template passes exactly as written: its Files blocks hold `**`, the map of a task nobody narrowed", () => {
-    const blocks = fencedBlocks(skill()).filter((block) =>
-      FILES_HEADING.test(block),
-    );
+    const blocks = [
+      template(),
+      ...fencedBlocks(skill()).filter((block) => FILES_HEADING.test(block)),
+    ];
     // The plan template (one map per checkpoint) and the task description.
     expect(blocks).toHaveLength(2);
     // A block with checkpoints is the plan template; the other is one description.
@@ -704,7 +706,9 @@ describe("the forge-plan documents show a file map the parser reads", () => {
   });
 
   test("the template names the complexity label with the bench names and nothing else", () => {
-    const named = [...skill().matchAll(COMPLEXITY)].map((match) => match[1]);
+    const named = [...(skill() + template()).matchAll(COMPLEXITY)].map(
+      (match) => match[1],
+    );
     expect(named.length).toBeGreaterThan(0);
     for (const value of named) {
       const values = (value ?? "").replace(/[<>]/g, "").split("|");

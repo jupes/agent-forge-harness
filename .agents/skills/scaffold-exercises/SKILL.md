@@ -1,17 +1,11 @@
 ---
 name: scaffold-exercises
-description: Scaffold course exercise directories with numbered sections, exercise variants, required readmes, and repo-specific validation. Use when creating exercise stubs, adding a course section, or safely renaming exercises.
+description: Create course exercise stubs or rename existing exercises while preserving the course's numbering, variants, and validation rules.
 ---
 
 # scaffold-exercises
 
 Create course exercise directory structures that match the owning repository's documented conventions, then validate them with that repository's configured checks.
-
-## When to use
-
-- User asks to scaffold exercises, exercise stubs, or a new course section.
-- User provides a course plan with numbered sections and exercises.
-- User wants to move, renumber, or rename exercise directories safely.
 
 ## Before scaffolding
 
@@ -21,6 +15,8 @@ Create course exercise directory structures that match the owning repository's d
 4. Confirm the owning repo's validation command. Use `pnpm ai-hero-cli internal lint` only when that repo documents it; otherwise use the local lint, test, or validation script.
 
 ## Directory naming
+
+Use these defaults only when the owning course has no established format; existing conventions take precedence.
 
 - Sections live under `exercises/` as `XX-section-name/`, for example `01-retrieval-skill-building/`.
 - Exercises live inside a section as `XX.YY-exercise-name/`, for example `01.03-retrieval-with-bm25/`.

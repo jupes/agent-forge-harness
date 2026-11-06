@@ -1,6 +1,6 @@
 ---
 name: ui-originality-criteria
-description: Grade and steer UI work using Anthropic-style design dimensions—coherence, originality, craft, and usability—for generators and evaluators.
+description: Evaluate or guide UI design through coherence, originality, craft, and usability. Use during visual design or product UI review.
 ---
 
 # ui-originality-criteria
@@ -60,7 +60,7 @@ When **both** generator and evaluator see these criteria, bias feedback toward *
 ## Generator rules
 
 1. Pick **one** clear visual metaphor (e.g. “mission control”, “workshop”, “terminal calm”) and thread it through nav, surfaces, and accents.
-2. **Avoid** the banned patterns in Originality unless the spec explicitly demands them.
+2. Choose patterns that fit the audience, brand, and task; justify distinctive choices through usability rather than novelty alone.
 3. After a first pass, self-check against all four bullets in writing before requesting evaluator review.
 
 ---
@@ -78,3 +78,7 @@ When **both** generator and evaluator see these criteria, bias feedback toward *
 - Anthropic article (full context): https://www.anthropic.com/engineering/harness-design-long-running-apps  
 - Harness evaluator rubric: `.claude/protocols/evaluation-rubric.md`  
 - Example dashboard applying this lens: `docs/index.html` (Agent Forge static dashboard — NASA retro / space-console theme)
+
+## Completion
+
+Assess all four dimensions against the rendered UI and audience. Each finding cites observable evidence and a practical correction; record untested states.

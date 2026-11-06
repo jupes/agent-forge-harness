@@ -1,6 +1,6 @@
 ---
 name: add-repo
-description: Register a new sub-repo in the knowledge base.
+description: Register a repository with Forge, clone it, and configure knowledge and verification commands. Use when adding a sub-repo to the harness.
 ---
 
 # add-repo
@@ -8,10 +8,6 @@ description: Register a new sub-repo in the knowledge base.
 Adds a new sub-repo to the harness: updates **local** `repos/repos.json` (gitignored), clones, generates knowledge YAML.
 
 If `repos/repos.json` is missing, copy `repos/repos.json.example` to `repos/repos.json` and edit entries there. Do not commit `repos/repos.json`.
-
-## When to Use
-
-- Bringing a new repository under Agent Forge management
 
 ## Steps
 
@@ -29,7 +25,7 @@ If already exists: report and stop.
 
 ### 3. Update repos.json
 
-Add: `{"name":"<name>","url":"<url>","defaultBranch":"main"}`
+Add: `{"name":"<name>","url":"<url>","defaultBranch":"<verified-default-branch>"}`
 
 For a dormant or reference-only repository, add `"archived": true`: it stays registered, and
 all-repos runs skip it unless it is named (see the syncing-repos skill, *Archived repos*).
@@ -51,7 +47,7 @@ bun run repo init --repo <repo-name> --human
 A Forge run that builds in this repository is gated from the harness
 (`bun run quality-gate --correlation <checkout>/<pointer>`). The gate runs the `"checks"` list on the
 repository's entry, in the run's checkout. Each check is a `"name"` and an `"argv"`: the program,
-then its arguments. Ask the user which commands the repository's own checks are, and add them to
+then its arguments. Discover checks from its manifest, CI, and contribution guide; ask only when those disagree or are absent. Add them to
 the entry:
 
 ```json
@@ -85,3 +81,7 @@ the entry:
   the run's correlation and verdicts there. If the repository tracks files under
   `.tmp/work/run-correlations` or `.tmp/work/evaluations`, the gate refuses to run.
 - If the entry has no `"checks"` list, the gate refuses the run and names the entry to fill in.
+
+## Completion
+
+The registry names the verified default branch and checks; the clone exists; knowledge generation succeeded or its failure is reported. Re-read the registry and report the resolved checkout.

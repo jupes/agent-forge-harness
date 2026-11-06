@@ -1,6 +1,6 @@
 ---
 name: request-refactor-plan
-description: Create a Beads-first refactor plan through detailed interview, repo verification, alternatives, scope boundaries, testing decisions, and tiny working increments. Use when the user wants to plan a refactor, write a refactoring RFC, or turn a risky change into safe incremental work.
+description: Plan a refactor as verified, incremental Beads work. Use for a refactoring RFC or an implementation plan for a selected architectural change.
 ---
 
 # request-refactor-plan
@@ -13,7 +13,7 @@ Do not implement the refactor while using this skill. Do not create an issue unt
 
 ### 1. Start with the user's problem
 
-Ask for a long, detailed description of the problem, why it matters now, observed symptoms, affected workflows, current solution ideas, rejected approaches, constraints, risks, and success criteria. Keep interviewing until you can restate the problem and desired outcome in the user's language.
+Summarize the supplied problem, affected behavior, constraints, and success criteria. Research available context before asking one focused question about a missing decision; finish when the desired outcome and scope are explicit.
 
 ### 2. Load context before code
 
@@ -74,7 +74,7 @@ Use Martin Fowler's refactoring advice as the standard: each step should be smal
 
 ### 9. Prepare the durable Beads issue
 
-Use Beads as the default tracker. Choose an explicit priority (`P0` through `P4`, or the numeric equivalent). If priority is unclear, apply `.claude/skills/beads-priority-assignment/SKILL.md` and ask the user to confirm.
+Use Beads as the default tracker. Choose an explicit priority (`P0` through `P4`, or the numeric equivalent). If priority is unclear, apply `.claude/skills/beads-priority-assignment/SKILL.md` and record the rubric's rationale.
 
 Create the issue only after the user approves the plan:
 
@@ -127,3 +127,7 @@ List the cleanup, features, rewrites, migrations, and adjacent problems that are
 Record open questions, assumptions, rollout notes, follow-up issue ideas, or risks that the implementer should keep visible.
 
 </refactor-plan-template>
+
+## Completion
+
+The plan names preserved behavior, alternatives, verification per increment, and scope boundaries. Read back its Beads record when filing is authorized.

@@ -1,17 +1,11 @@
 ---
 name: grill-me
-description: Relentlessly stress-test a plan or design through a one-question-at-a-time interview that researches available context first and includes a recommended answer with every question. Use when the user asks to "grill me", wants a plan/design challenged, or needs decisions resolved before implementation.
+description: Challenge a plan through an evidence-first interview, one decision at a time. Use when the user asks to be grilled or wants unresolved design choices examined.
 ---
 
 # grill-me
 
 Interview the user relentlessly about a plan, design, or implementation direction until there is shared understanding. Walk the decision tree branch by branch, resolve dependencies between decisions in order, and keep pressure on vague or untested assumptions.
-
-## When to Use
-
-- The user says "grill me" or asks to be challenged on a plan/design.
-- A feature plan, architecture decision, PRD, or implementation approach needs stress-testing before work starts.
-- The next useful step is not coding yet, but reducing ambiguity and surfacing missing decisions.
 
 ## Ground Rules
 

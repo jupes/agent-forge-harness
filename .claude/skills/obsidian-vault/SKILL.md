@@ -1,6 +1,6 @@
 ---
 name: obsidian-vault
-description: Search, create, and manage notes in an explicit Obsidian vault with title-case filenames, wikilinks, index notes, backlinks, and safe vault-root confirmation.
+description: Find, create, update, or organize notes in the user's identified Obsidian vault, preserving its links and conventions.
 ---
 
 # obsidian-vault
@@ -14,7 +14,7 @@ Use this skill when the user wants to find, create, update, or organize notes in
   - A vault path provided directly by the user.
   - A documented repo setting or project config that clearly names the vault root.
   - An environment variable such as `OBSIDIAN_VAULT_ROOT`, after confirming it points to the intended vault.
-- Before creating or editing notes outside the current repository, state the resolved vault root and ask the user for explicit confirmation.
+- State the resolved vault root before writes. An explicit request naming that vault authorizes the requested edits; ask when the intended root or write scope is ambiguous.
 - Do not modify an actual vault while porting or testing this skill unless the user has requested a vault operation and confirmed the root.
 
 ## Vault Conventions
@@ -32,7 +32,7 @@ Use this skill when the user wants to find, create, update, or organize notes in
 2. Use `Glob` to list markdown notes under the vault root, for example `**/*.md`.
 3. Use `rg` for content searches scoped to the vault root.
 4. Use `ReadFile` to inspect candidate notes before proposing edits.
-5. Avoid shell `find` and `grep`; use Cursor-native `Glob`, `rg`, and `ReadFile` unless the user explicitly asks for shell commands.
+5. Use the host's file tools or `rg --files` and `rg`; scope every search to the resolved vault.
 
 Common searches:
 
@@ -62,7 +62,11 @@ Common searches:
 
 ## Backlinks And Indexes
 
-- To find backlinks, search for the exact wikilink form: `[[Note Title]]`.
+- To find backlinks, search for `[[Note Title` and inspect exact, aliased (`|`), heading (`#`), and block (`#^`) links before changing them.
 - To discover indexes, search filenames for `Index` and inspect likely matches.
 - Index notes should stay lightweight: a heading plus a list of `[[wikilinks]]` is usually enough.
 - Prefer connecting notes through wikilinks and index notes over creating new folders.
+
+## Completion
+
+Read back changed notes and verify their links and affected backlinks. For search-only requests, return relevant matches without modifying the vault.

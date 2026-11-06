@@ -1,6 +1,6 @@
 ---
 name: tdd
-description: Run red-green-refactor in vertical slices, emphasizing behavior-first tests and harness quality gates.
+description: Implement behavior in red-green-refactor slices. Use for test-driven feature or bug work, or when a Forge plan calls for TDD.
 ---
 
 # tdd
@@ -84,8 +84,10 @@ If a sub-repo defines different commands, follow that sub-repo's `AGENTS.md`.
 
 Use beads to track TDD slices:
 
+Choose priority with [beads-priority-assignment](../beads-priority-assignment/SKILL.md) before creating work. Reuse an existing issue when it already owns the outcome.
+
 ```bash
-bd create --type task --title "TDD slice: <behavior>" --description "<expected behavior and test scope>" --priority 2 --repo .
+bd create --type task --title "TDD slice: <behavior>" --description "<expected behavior and test scope>" --priority <priority> --repo .
 bd comments add <id> "worklog: red->green completed for <behavior>"
 ```
 
@@ -93,11 +95,11 @@ bd comments add <id> "worklog: red->green completed for <behavior>"
 
 Bundled with this skill (self-contained — no external repos required):
 
-- [tests.md](tests.md) — concrete good vs. bad test examples
-- [interface-design.md](interface-design.md) — designing interfaces for testability
-- [deep-modules.md](deep-modules.md) — small interface, deep implementation
-- [mocking.md](mocking.md) — mock only at system boundaries
-- [refactoring.md](refactoring.md) — refactor candidates after green
+- [tests.md](tests.md) — read when choosing assertions or reviewing test quality
+- [interface-design.md](interface-design.md) — read when the public contract is difficult to test
+- [deep-modules.md](deep-modules.md) — read when deciding where behavior belongs
+- [mocking.md](mocking.md) — read when isolating external dependencies
+- [refactoring.md](refactoring.md) — read when selecting a refactor after tests pass
 
 ## Attribution
 
@@ -114,3 +116,7 @@ gates). Original work © 2026 Matt Pocock, MIT License:
 > furnished to do so, subject to the following conditions: The above copyright notice and this
 > permission notice shall be included in all copies or substantial portions of the Software.
 > THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
+
+## Completion
+
+Each implemented behavior has a test observed failing for the intended reason before the fix, then passing. Record relevant regression-check results.

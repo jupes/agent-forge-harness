@@ -1,6 +1,6 @@
 ---
 name: qa
-description: Run a conversational QA session where the user reports bugs or issues, and file durable Beads issues using project domain language. Use when the user wants to report bugs, do QA, file issues conversationally, or mentions a QA session.
+description: Capture user-reported QA problems as durable Beads issues. Use for a conversational bug-reporting session; use triage-issue for diagnosis.
 ---
 
 # QA Session
@@ -122,7 +122,7 @@ bd dep add <blocked-id> <blocker-id>   # the blocked issue first: it depends on 
 - Maximize parallelism without splitting apart behavior that must be fixed together.
 
 #### Rules for all issue bodies
-- Reproduction steps are mandatory. If you cannot determine them, ask the user.
+- Record known reproduction steps. For intermittent reports, label reproduction gaps and preserve observed evidence; ask only for details needed to make the issue actionable.
 - Do not use file paths, line numbers, or internal function names as primary evidence.
 - Describe behaviors, not code.
 - Use the project's domain language from `knowledge/` and lightweight exploration.
@@ -133,3 +133,7 @@ After filing, share the Beads IDs, summarize any blocking relationships, and ask
 
 ### 6. Continue the session
 Keep going until the user says they are done. Treat each reported issue independently and avoid batching multiple user reports into one filing step unless the breakdown decision explicitly calls for it.
+
+## Completion
+
+Each reported problem is filed or linked to an existing issue, with expected behavior, reproduction evidence or an explicit gap, impact, and priority. Read back IDs and dependencies.

@@ -1,6 +1,6 @@
 ---
 name: review-plan
-description: Fact-check an implementation plan against the real codebase and first-party documentation, flagging inaccuracies with what / why / evidence and a severity tier. Use when the user wants a plan reviewed or validated for accuracy, runs /review-plan, or wants a plan checked against real code before implementing. Accepts a Beads issue, a filesystem path, or a plan pasted into chat.
+description: Fact-check a plan from a file, Beads issue, or chat against code and primary documentation. Use for plan accuracy review before implementation.
 ---
 
 # review-plan
@@ -12,12 +12,6 @@ Review a **plan** (not code) for **inaccuracies**, grounding every finding in th
 This is distinct from [[review]] (which reviews a code diff) and [[domain-model]] (which stress-tests
 plan language against DDD/decisions). This skill answers one question: **does what the plan claims
 about the system actually hold up against ground truth?**
-
-## When to Use
-
-- The user runs `/review-plan <bead | path | (pasted plan)>` or asks to validate a plan's accuracy.
-- Before implementing a plan (e.g. a `forge-plan` / `plans/drafts/*.md` output), to catch false
-  premises early.
 
 ## Step 1 — Resolve the input → the plan text
 
@@ -107,7 +101,7 @@ Source: <path | bead id | chat> · Reviewed: <date>
 - <claim the codebase/docs couldn't settle, and why>
 ```
 
-Verdict guide: **UNSOUND** if any Blocker; **NEEDS REVISION** if any High; else **SOUND** (Medium/Low only).
+Verdict guide: **UNSOUND** if any Blocker; **NEEDS REVISION** if any High or Medium; **SOUND** only with zero Blocker, High, and Medium findings. This matches the Forge planning gate.
 
 If the plan came from a Beads issue, log it: `bd comments add <id> "review: plan <verdict> — <#B>/<#H>/<#M>/<#L>"`.
 

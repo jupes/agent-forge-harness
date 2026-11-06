@@ -1,6 +1,6 @@
 ---
 name: design-an-interface
-description: Generate multiple radically different interface designs before implementation. Use when designing an API, module boundary, command surface, data contract, or when the user says "design it twice".
+description: Compare distinct API, module, CLI, or data-contract designs before implementation. Use for interface alternatives or a design-it-twice request.
 ---
 
 # design-an-interface
@@ -8,13 +8,6 @@ description: Generate multiple radically different interface designs before impl
 Design an interface before building it. This skill adapts the "Design It Twice" practice from *A Philosophy of Software Design*: the first plausible interface is rarely the best one, so produce several different shapes, compare them, and synthesize a recommendation.
 
 This is a design-only workflow. Do not edit implementation files, add tests, or scaffold code while using this skill unless the user explicitly starts a separate implementation task.
-
-## When to use
-
-- A user asks to design an API, module, CLI, protocol, data shape, hook, component props interface, or agent contract.
-- A Beads issue or alignment document calls for interface design before coding.
-- The current implementation path feels unclear because multiple public shapes could work.
-- The user mentions "design it twice" or asks for alternatives/trade-offs.
 
 ## Context first
 
@@ -140,3 +133,7 @@ Good interface designs:
 - Choosing the easiest implementation when the caller-facing shape is weaker.
 - Treating comparison as a checklist instead of reasoning through trade-offs.
 - Implementing, scaffolding, or changing production code during the design workflow.
+
+## Completion
+
+Each alternative has a different caller contract, realistic usage, and trade-offs; the recommendation accounts for every stated requirement.

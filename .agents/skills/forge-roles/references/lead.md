@@ -189,7 +189,7 @@ After workers complete, for each contract:
 
 ## Output Format
 
-After all work completes, report:
+After all work completes, report. Every bead id you name, here and in briefs, PR text and handoffs, gets a few plain words next to it (`x1gs.5.4.4 (the shift's stop request file)`); a bare id means nothing to the owner.
 
 ```
 ## Lead Agent Summary

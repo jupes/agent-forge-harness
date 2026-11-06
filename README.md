@@ -132,6 +132,12 @@ Change **knowledge** before code, then **workflows** / **quality-gate.ts** / **a
 
 Plan artifacts should use the root `plans/` contract: write active drafts to `plans/drafts/` and store baseline snapshots in `plans/committed/`.
 
+For a leadership update, use [project-status-report](.claude/skills/project-status-report/SKILL.md):
+"Create a director status PDF for Project X covering the last two weeks, using Beads and these notes."
+It supports custom date ranges and attachments, keeps evidence beside a local PDF, and separates
+accomplishments from plans and uncertain claims. In Codex, invoke `$project-status-report`.
+Use [initiative-status-report](.claude/skills/initiative-status-report/SKILL.md) for a Markdown portfolio digest.
+
 ---
 
 ## License

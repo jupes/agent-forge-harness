@@ -1,6 +1,6 @@
 ---
 name: pr-description
-description: Canonical PR description template for every PR shipped from this harness, with a validator that enforces the required sections. Use when opening or editing a PR (the /ship and /forge-ship steps), or when asked for the standard PR format or to check a PR body.
+description: Write or validate a Forge PR body using the canonical template. Use when creating or editing a PR, or checking its description.
 ---
 
 # pr-description
@@ -12,28 +12,7 @@ validate it before `gh pr create`.
 The template lives at [references/pr-template.md](references/pr-template.md) — edit that file to
 change the standard; everything else references it.
 
-## When to Use
-
-- Any time a PR is opened or its body edited from this harness.
-- When the user asks for "the PR format / template" or to check that a PR body conforms.
-
-## Required sections
-
-Every PR body MUST contain these H2 headings, each filled (no leftover placeholders):
-
-| Section | Holds |
-|---------|-------|
-| `## What Changed` | The change in plain language + concrete edits |
-| `## Why It's Needed` | Motivation: the problem, need, or bug it addresses |
-| `## How It Was Tested` | Gates run, automated suites, manual steps |
-| `## Test Evidence` | Real proof — pasted command output / counts, not a claim |
-| `## Risk & Rollback` | Blast radius and the undo path |
-| `## Linked Issues & AC Trace` | `Closes <beads-id>` + acceptance-criterion → evidence table |
-
-The first four are the harness baseline (what / why / how-tested / evidence). **Risk & Rollback**
-and **Linked Issues & AC Trace** are the harness additions — they make a PR reviewable (knowable
-blast radius) and traceable (every acceptance criterion mapped to evidence), matching the
-Beads-first, test-evidence rules in `CLAUDE.md`.
+Read [the canonical template](references/pr-template.md) before drafting or checking a body; it defines every required section.
 
 ## Process
 
@@ -59,9 +38,9 @@ required section is missing or left as a placeholder. Fix and re-run until `ok: 
 ### 3. Open or update the PR
 
 ```bash
-gh pr create --base <base> --title "<title>" --body "$(cat .tmp/work/pr-body.md)"
+gh pr create --base <base> --title "<title>" --body-file .tmp/work/pr-body.md
 # or, on an existing PR:
-gh pr edit <n> --body "$(cat .tmp/work/pr-body.md)"
+gh pr edit <n> --body-file .tmp/work/pr-body.md
 ```
 
 To check a PR that already exists:

@@ -1,6 +1,6 @@
 ---
 name: zoom-out
-description: Produce a higher-level architecture and context map for unfamiliar code. Use when you need to understand how a file, module, feature, or issue fits into the bigger picture, including relevant modules, callers, callees, dependencies, and next context.
+description: Map an unfamiliar file, feature, or module to its callers, dependencies, and system behavior. Use when broader code context is needed.
 ---
 
 # zoom-out
@@ -85,3 +85,7 @@ Keep the response concise and actionable. Use this shape:
 ```
 
 Do not turn the zoom-out into a full implementation plan unless the user asks for one. The output should make the surrounding architecture legible enough for the next coding or review step.
+
+## Completion
+
+Connect the focus to an entrypoint, callers, dependencies, side effects, and tests, with verified file references and explicit unknowns.
