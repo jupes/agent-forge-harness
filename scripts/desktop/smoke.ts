@@ -1980,17 +1980,35 @@ async function runBounded(
     cmd: command,
     stdin: "ignore",
     stdout: "ignore",
-    stderr: "ignore",
+    stderr: "pipe",
   });
+  const diagnostic = (async () => {
+    let tail = Buffer.alloc(0);
+    const reader = child.stderr.getReader();
+    try {
+      while (true) {
+        const chunk = await reader.read();
+        if (chunk.done) return tail.toString();
+        tail = Buffer.concat([tail, Buffer.from(chunk.value)]).subarray(-4000);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+  })();
   let timedOut = false;
   const timer = setTimeout(() => {
     timedOut = true;
     child.kill();
   }, timeoutMs);
-  const status = await child.exited;
-  clearTimeout(timer);
-  if (timedOut) throw new Error(errorMessage);
-  if (status !== 0) throw new Error(errorMessage);
+  try {
+    const [status, stderr] = await Promise.all([child.exited, diagnostic]);
+    if (timedOut || status !== 0)
+      throw new Error(
+        `${errorMessage} ${timedOut ? "Timed out." : `Exit ${status}.`}${stderr ? ` ${stderr}` : ""}`,
+      );
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function availablePort(): Promise<number> {

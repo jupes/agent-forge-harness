@@ -154,6 +154,13 @@ function addTail(previous: string, next: string): string {
   return (previous + next).slice(-8192);
 }
 
+export function parseCompiledHearthPort(output: string): number | null {
+  const match =
+    /(?:^|\n)hearth listening on http:\/\/127\.0\.0\.1:(\d+)\r?\n/.exec(output);
+  const port = Number(match?.[1]);
+  return Number.isSafeInteger(port) && port > 0 && port <= 65535 ? port : null;
+}
+
 async function startHost(
   binary: string,
   root: string,
@@ -215,15 +222,10 @@ async function startHost(
     (chunk) => {
       host.stdout = addTail(host.stdout, chunk);
       startupText = addTail(startupText, chunk);
-      const match = /hearth listening on http:\/\/127\.0\.0\.1:(\d+)/.exec(
-        startupText,
-      );
-      if (match) {
-        const port = Number(match[1]);
-        if (Number.isSafeInteger(port) && port > 0) {
-          host.port = port;
-          readyResolve?.(port);
-        }
+      const port = parseCompiledHearthPort(startupText);
+      if (port !== null && host.port === null) {
+        host.port = port;
+        readyResolve?.(port);
       }
     },
     outputAbort.signal,
@@ -1287,7 +1289,10 @@ export async function runKeeperShiftCompiledProof(
     );
     expect(await portCanBind(portB)).toBe(true);
   } catch (error) {
-    primaryError = error;
+    primaryError = new Error(
+      `Keeper compiled proof failed (${JSON.stringify(owned.map((host) => ({ pid: host.pid, port: host.port, exitCode: host.exitCode, stderr: host.stderr.slice(-1000) })))}): ${error instanceof Error ? error.message : String(error)}`,
+      { cause: error },
+    );
   }
 
   const cleanupErrors: unknown[] = [];

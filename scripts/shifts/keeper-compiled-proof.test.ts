@@ -29,9 +29,28 @@ import {
 import {
   keeperStartFailureDiagnostic,
   keeperWaitFacts,
+  parseCompiledHearthPort,
   physicalKeeperProofRoot,
 } from "./keeper-compiled-proof";
 import { projectShiftRequestHash } from "./registry";
+
+test("compiled hearth startup waits for the complete port announcement", () => {
+  const line = "hearth listening on http://127.0.0.1:56810\n";
+  for (let length = 0; length < line.length; length++)
+    expect(parseCompiledHearthPort(line.slice(0, length))).toBeNull();
+  expect(parseCompiledHearthPort(line.replace("\n", "\r"))).toBeNull();
+  expect(parseCompiledHearthPort(line)).toBe(56810);
+  expect(
+    parseCompiledHearthPort(`other log\n${line.replace("\n", "\r\n")}`),
+  ).toBe(56810);
+  for (const invalid of [
+    line.replace("56810", "0"),
+    line.replace("56810", "65536"),
+    line.replace("56810", "56810extra"),
+    `foreign ${line}`,
+  ])
+    expect(parseCompiledHearthPort(invalid)).toBeNull();
+});
 
 type AttemptEvidenceContext = {
   intent: ProjectShiftIntent;

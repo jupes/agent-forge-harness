@@ -247,6 +247,85 @@ test("interactive supervision exchanges multiple private stdin frames before exp
   }
 });
 
+for (const acknowledgement of ["accepted", "rejected", "deadline"] as const)
+  test(`interactive EOF acknowledgement after child exit: ${acknowledgement}`, async () => {
+    let acknowledge = () => {};
+    let observeExit = () => {};
+    const exited = new Promise<void>((resolve) => {
+      observeExit = resolve;
+    });
+    const lines: string[] = [];
+    const handle = supervise({
+      windowsHide: true,
+      command: [process.execPath, fake],
+      cwd: import.meta.dir,
+      env: buildChildEnv(process.env, []),
+      stdinMode: "interactive",
+      stdinTimeoutMs: 2000,
+      timeoutMs: 5000,
+      onLine: (line) => lines.push(line),
+      spawn(command, options) {
+        const proc = Bun.spawn(command, options);
+        const end = proc.stdin.end.bind(proc.stdin);
+        const delayedEnd = () =>
+          new Promise<number>((resolve, reject) => {
+            Promise.resolve(end()).then((bytes) => {
+              acknowledge = () =>
+                acknowledgement === "rejected"
+                  ? reject(new Error("Fixture EOF rejection"))
+                  : resolve(bytes);
+              void proc.exited.then(observeExit);
+            }, reject);
+          });
+        const stdin = new Proxy(
+          {},
+          {
+            get(_target, key) {
+              if (key === "end") return delayedEnd;
+              const value = Reflect.get(proc.stdin, key, proc.stdin);
+              return typeof value === "function"
+                ? value.bind(proc.stdin)
+                : value;
+            },
+          },
+        );
+        return new Proxy(proc, {
+          get(target, key) {
+            if (key === "stdin") return stdin;
+            const value = Reflect.get(target, key, target);
+            return typeof value === "function" ? value.bind(target) : value;
+          },
+        });
+      },
+    });
+    try {
+      await handle.write("private frame\n");
+      const ending = handle.end();
+      void ending.catch(() => undefined);
+      await exited;
+      if (acknowledgement !== "deadline") acknowledge();
+      if (acknowledgement === "accepted") await ending;
+      else
+        await expect(ending).rejects.toThrow(
+          acknowledgement === "rejected" ? "pipe is closed" : "write deadline",
+        );
+      expect(await handle.done).toMatchObject({
+        exitCode: 0,
+        stopped: false,
+        timedOut: false,
+        ownedTreeReleased: true,
+      });
+      expect(lines).toEqual([
+        JSON.stringify({ received: "private frame" }),
+        JSON.stringify({ ended: true }),
+      ]);
+      await expect(handle.write("late")).rejects.toThrow("closed");
+    } finally {
+      acknowledge();
+      await handle.stop("fixture cleanup");
+    }
+  });
+
 function tree(
   mode: "blocked" | "exit-tree",
   stdinTimeoutMs = 2000,
