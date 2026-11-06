@@ -20,7 +20,7 @@ export interface ProjectRecord {
   description: string;
   icon: string;
   workspaces: ProjectWorkspace[];
-  /** Explicit configured Keeper choice; absent on legacy projects. */
+  /** Default for future unsaved Keeper work; absent means inherit configuration. */
   keeperSmith?: string;
   /** Optional bounded presentation token; absent on legacy projects. */
   color?: ProjectColor;

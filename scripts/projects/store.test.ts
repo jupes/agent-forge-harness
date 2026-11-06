@@ -577,15 +577,29 @@ test("an explicit project Keeper Smith is bound to the saved original and commit
     }),
   ).rejects.toMatchObject({ status: 409 });
 
-  const file = projectCatalogPath(home);
-  const saved = JSON.parse(readFileSync(file, "utf8")) as {
-    projects: Array<Record<string, unknown>>;
-  };
-  saved.projects[0]!.keeperSmith = "codex-journeyman";
-  const corrupted = JSON.stringify(saved);
-  writeOwnerOnly(file, corrupted);
-  expect(() => store.read()).toThrow();
-  expect(readFileSync(file, "utf8")).toBe(corrupted);
+  const originalOperation = JSON.stringify(store.readCreate(requestId));
+  if (!committedProject) throw Error("missing committed project");
+  const changed = await store.updateKeeper(
+    committedProject.id,
+    committed.catalog.revision,
+    { keeperSmith: "codex-journeyman" },
+    () => {},
+  );
+  expect(createProjectStore(home).read().projects[0]?.keeperSmith).toBe(
+    "codex-journeyman",
+  );
+  expect(JSON.stringify(store.readCreate(requestId))).toBe(originalOperation);
+  const replay = await store.commitCreate({
+    requestId,
+    requestHash: explicitHash,
+    reviewedScopeHash: reservation.operation.scopeHash,
+    preflightScope: { hash: reservation.operation.scopeHash, count: 0 },
+    validateScope: async () => {
+      throw Error("created replay does not revalidate");
+    },
+  });
+  expect(replay.catalog).toEqual(changed);
+  expect(JSON.stringify(replay.operation)).toBe(originalOperation);
 });
 
 test("a legacy original commits on the direct store path without a Keeper field", async () => {
@@ -982,4 +996,49 @@ test("a modified saved create original is a corrupt catalog and is never repaire
     }),
   ).rejects.toThrow();
   expect(readFileSync(file, "utf8")).toBe(corrupted);
+});
+
+test("Keeper defaults persist with revision conflicts and configured validation", async () => {
+  const { home, store, input } = fixture();
+  const created = await store.create(input, 0);
+  const project = created.projects[0]!;
+  const seen: string[] = [];
+  const updated = await store.updateKeeper(
+    project.id,
+    1,
+    { keeperSmith: "codex-journeyman" },
+    (name) => {
+      seen.push(name);
+    },
+  );
+  expect(seen).toEqual(["codex-journeyman"]);
+  expect(updated.revision).toBe(2);
+  expect(createProjectStore(home).read().projects[0]?.keeperSmith).toBe(
+    "codex-journeyman",
+  );
+  expect(updated.projects[0]).toMatchObject({
+    name: project.name,
+    workspaces: project.workspaces,
+  });
+  await expect(
+    store.updateKeeper(
+      project.id,
+      1,
+      { keeperSmith: "claude-master" },
+      () => {},
+    ),
+  ).rejects.toMatchObject({ status: 409 });
+  await expect(
+    store.updateKeeper(project.id, 2, { keeperSmith: "unknown" }, () => {
+      throw Error("unconfigured");
+    }),
+  ).rejects.toThrow("unconfigured");
+  expect(store.read()).toEqual(updated);
+  await expect(
+    store.updateKeeper(project.id, 2, { keeperSmith: "" }, () => {}),
+  ).rejects.toMatchObject({ status: 400 });
+  const inherited = await store.updateKeeper(project.id, 2, {}, () => {
+    throw Error("no explicit selection");
+  });
+  expect(Object.hasOwn(inherited.projects[0]!, "keeperSmith")).toBe(false);
 });

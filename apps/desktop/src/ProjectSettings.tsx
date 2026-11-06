@@ -2,6 +2,7 @@ import type { JSX } from "preact";
 import { Button } from "../../../docs/js/ds/Button";
 import type { ProjectRepositoryMember } from "../../../scripts/projects/project-repositories-protocol";
 import { PROJECT_COLOR_IDS, type ProjectRecord } from "../../../types/projects";
+import { ProjectKeeperSettings } from "./ProjectKeeperSettings";
 import type {
   GeneralCatalog,
   GeneralDraft,
@@ -9,6 +10,8 @@ import type {
   ProjectGeneralSettingsOwner,
 } from "./project-general-settings-client";
 import type { ProjectRepositoriesSnapshot } from "./project-repositories-client";
+import type { useProjectKeeperSettings } from "./use-project-keeper-settings";
+import type { SmithsController } from "./use-smiths";
 import "./project-settings.css";
 
 interface RepositoriesProps {
@@ -210,6 +213,8 @@ interface Props {
   writesAllowed: boolean;
   owner: ProjectGeneralSettingsOwner;
   state: GeneralSettingsSnapshot;
+  keeperSettings: ReturnType<typeof useProjectKeeperSettings>;
+  smiths: SmithsController;
   onRefresh(): void;
   repositories: ProjectRepositoriesSnapshot;
   onRefreshRepositories(): void;
@@ -228,6 +233,8 @@ export function ProjectSettings({
   owner,
   state,
   onRefresh,
+  keeperSettings,
+  smiths,
   repositories,
   onRefreshRepositories,
   onReconcileRepositories,
@@ -542,6 +549,13 @@ export function ProjectSettings({
           </button>
         </form>
       </section>
+      <ProjectKeeperSettings
+        projectId={project.id}
+        archived={project.archived}
+        writesAllowed={writesAllowed}
+        settings={keeperSettings}
+        smiths={smiths}
+      />
       <RepositoriesAndWorktrees
         projectId={project.id}
         state={repositories}
