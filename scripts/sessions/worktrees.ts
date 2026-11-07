@@ -18,12 +18,8 @@ import { withProjectAdmission } from "../projects/admission";
 import { workspaceKey } from "../projects/scope";
 import { isProjectId } from "../projects/store";
 import { withQueueLock } from "../scheduler/queue-lock";
-import {
-  createWorktree,
-  type GitRun,
-  gitRun,
-  listWorktrees,
-} from "../scheduler/worktrees";
+import { createLockedWorktree as createWorktree } from "../scheduler/worktree-registry-lock";
+import { type GitRun, gitRun, listWorktrees } from "../scheduler/worktrees";
 import {
   sessionWorktreeReceiptSchema,
   sessionWorktreeRequestSchema,

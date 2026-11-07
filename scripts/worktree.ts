@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+
 /**
  * worktree.ts — Git worktrees for parallel work, over the registry in
  * scripts/scheduler/worktrees.ts.
@@ -17,11 +18,13 @@
 
 import type { WorktreeResult } from "../types/beads";
 import {
-  createWorktree,
+  createLockedWorktree as createWorktree,
+  removeLockedWorktree as removeWorktree,
+} from "./scheduler/worktree-registry-lock";
+import {
   gitRun,
   listWorktrees,
   mainCheckoutOf,
-  removeWorktree,
   STASH_WARNING,
 } from "./scheduler/worktrees";
 

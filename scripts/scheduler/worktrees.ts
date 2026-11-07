@@ -18,12 +18,17 @@
 import { spawnSync } from "node:child_process";
 import type { Dir, Dirent, Stats } from "node:fs";
 import {
+  closeSync,
+  constants,
   existsSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
   opendirSync,
+  openSync,
   readdirSync,
   readFileSync,
+  readSync,
   realpathSync,
   renameSync,
   rmSync,
@@ -31,7 +36,15 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  posix,
+  resolve,
+  win32,
+} from "node:path";
 import type {
   WorktreeEntry,
   WorktreeKind,
@@ -43,10 +56,12 @@ import {
   parseState,
   runSlugFromFilename,
 } from "../forge/runs";
+import { hasDuplicateObjectKeys } from "../json-object-keys";
 import { readSessionMirror } from "../ledger/identity";
 import { parseBeadsIssueId } from "../run-correlation";
 import { redactSecrets } from "../secret-patterns";
 import { resetSpawnClock } from "../spawn-clock";
+import { canonicalTrustedDirectory } from "../trusted-directory";
 
 // ── git ─────────────────────────────────────────────────────────────────────
 
@@ -137,7 +152,7 @@ function said(result: GitResult): string {
  * filesystem transaction: a concurrent path replacement after inspection
  * remains outside this guard.
  */
-function worktreeInspectionRefusal(root: string): string | null {
+export function worktreeInspectionRefusal(root: string): string | null {
   const pending: Array<{ path: string; depth: number }> = [
     { path: root, depth: 0 },
   ];
@@ -386,6 +401,167 @@ const WORKTREE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/;
 /** A cache larger than this is not read: reading it would hold up the hearth. */
 const MAX_CACHE_BYTES = 1_000_000;
 
+/** Native lexical identity only: POSIX backslashes/spaces are data, never aliases. */
+export function registryPathKey(
+  path: string,
+  platform: "win32" | "posix" = process.platform === "win32"
+    ? "win32"
+    : "posix",
+): string {
+  return platform === "win32"
+    ? win32.resolve(path).toLowerCase()
+    : posix.resolve(path);
+}
+
+/** Complete registry snapshot, not repository/activity authority. Invalid/legacy entries refuse. */
+export function readStrictWorktreeRegistry(
+  main: string,
+): Outcome<WorktreeRecord[]> {
+  const file = cacheFile(main),
+    parent = dirname(file);
+  let descriptor: number | undefined;
+  try {
+    const parentBefore = lstatSync(parent);
+    if (!parentBefore.isDirectory() || parentBefore.isSymbolicLink())
+      return no("Worktree registry directory is unsafe");
+    let before: Stats;
+    try {
+      before = lstatSync(file);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      const after = lstatSync(parent);
+      if (parentBefore.dev !== after.dev || parentBefore.ino !== after.ino)
+        return no("Worktree registry directory changed");
+      try {
+        lstatSync(file);
+      } catch (again) {
+        if ((again as NodeJS.ErrnoException).code === "ENOENT")
+          return { ok: true, value: [] };
+        throw again;
+      }
+      return no("Worktree registry appeared during inspection");
+    }
+    if (
+      !before.isFile() ||
+      before.isSymbolicLink() ||
+      before.nlink !== 1 ||
+      before.size > MAX_CACHE_BYTES
+    )
+      return no(
+        "Worktree registry is unsafe or exceeds its complete-read limit",
+      );
+    descriptor = openSync(
+      file,
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+    );
+    const opened = fstatSync(descriptor);
+    const same = (a: Stats, b: Stats) =>
+      a.dev === b.dev &&
+      a.ino === b.ino &&
+      a.size === b.size &&
+      a.mtimeMs === b.mtimeMs &&
+      a.ctimeMs === b.ctimeMs;
+    if (!same(before, opened) || !opened.isFile() || opened.nlink !== 1)
+      return no("Worktree registry identity changed");
+    const buffer = Buffer.alloc(MAX_CACHE_BYTES + 1);
+    let size = 0;
+    for (;;) {
+      const count = readSync(
+        descriptor,
+        buffer,
+        size,
+        buffer.length - size,
+        null,
+      );
+      size += count;
+      if (size > MAX_CACHE_BYTES)
+        return no("Worktree registry exceeds its complete-read limit");
+      if (count === 0) break;
+    }
+    if (!same(opened, fstatSync(descriptor)) || !same(opened, lstatSync(file)))
+      return no("Worktree registry changed during inspection");
+    const parentAfter = lstatSync(parent);
+    if (
+      !parentAfter.isDirectory() ||
+      parentAfter.isSymbolicLink() ||
+      parentBefore.dev !== parentAfter.dev ||
+      parentBefore.ino !== parentAfter.ino
+    )
+      return no("Worktree registry directory changed");
+    const source = new TextDecoder("utf-8", { fatal: true }).decode(
+      buffer.subarray(0, size),
+    );
+    const parsed: unknown = JSON.parse(source);
+    if (
+      hasDuplicateObjectKeys(source) ||
+      !parsed ||
+      typeof parsed !== "object" ||
+      Array.isArray(parsed) ||
+      Object.keys(parsed).length !== 1 ||
+      !Object.hasOwn(parsed, "worktrees")
+    )
+      return no("Worktree registry has an unsupported shape");
+    const rows = (parsed as { worktrees: unknown }).worktrees;
+    if (!Array.isArray(rows) || rows.length > 4096)
+      return no("Worktree registry is incomplete or unsupported");
+    const ids = new Set<string>(),
+      paths = new Set<string>();
+    const result: WorktreeRecord[] = [];
+    for (const row of rows) {
+      if (
+        !row ||
+        typeof row !== "object" ||
+        Array.isArray(row) ||
+        Object.keys(row).some(
+          (key) =>
+            ![
+              "id",
+              "path",
+              "branch",
+              "createdAt",
+              "beadId",
+              "ownerSessionId",
+            ].includes(key),
+        )
+      )
+        return no("Worktree registry contains an unsupported record");
+      const r = row as Partial<WorktreeRecord>;
+      if (
+        typeof r.id !== "string" ||
+        !WORKTREE_ID.test(r.id) ||
+        typeof r.path !== "string" ||
+        !isAbsolute(r.path) ||
+        r.path
+          .split(process.platform === "win32" ? /[\\/]/ : /\//)
+          .some((part) => part === "." || part === "..") ||
+        registryPathKey(r.path) !==
+          registryPathKey(join(main, "trees", r.id)) ||
+        typeof r.branch !== "string" ||
+        r.branch.length === 0 ||
+        r.branch.length > 256 ||
+        /[\s\p{Cc}]/u.test(r.branch) ||
+        typeof r.createdAt !== "string" ||
+        !Number.isFinite(Date.parse(r.createdAt)) ||
+        new Date(r.createdAt).toISOString() !== r.createdAt ||
+        (Object.hasOwn(r, "beadId") && !isBead(r.beadId)) ||
+        (Object.hasOwn(r, "ownerSessionId") && !isSessionId(r.ownerSessionId))
+      )
+        return no("Worktree registry contains invalid ownership or identity");
+      const key = registryPathKey(r.path);
+      if (ids.has(r.id) || paths.has(key))
+        return no("Worktree registry contains duplicate identities");
+      ids.add(r.id);
+      paths.add(key);
+      result.push(row as WorktreeRecord);
+    }
+    return { ok: true, value: result };
+  } catch {
+    return no("Worktree registry could not be completely verified");
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
+}
+
 type CacheRead =
   | {
       ok: true;
@@ -429,12 +605,39 @@ function loadCache(main: string): CacheRead {
     };
   }
   const list = (parsed as { worktrees?: unknown } | null)?.worktrees;
-  if (!Array.isArray(list)) return { ok: true, records: [], others: [] };
+  if (
+    !parsed ||
+    typeof parsed !== "object" ||
+    Array.isArray(parsed) ||
+    Object.keys(parsed).length !== 1 ||
+    !Array.isArray(list) ||
+    hasDuplicateObjectKeys(text)
+  )
+    return {
+      ok: false,
+      error: `${file} has an unsupported shape; it is not written over`,
+    };
   const records: WorktreeRecord[] = [];
   const others: unknown[] = [];
   for (const item of list) {
     const r = item as Partial<WorktreeRecord> | null;
     if (
+      !r ||
+      typeof r !== "object" ||
+      Array.isArray(r) ||
+      Object.keys(r).some(
+        (key) =>
+          ![
+            "id",
+            "path",
+            "branch",
+            "createdAt",
+            "beadId",
+            "ownerSessionId",
+          ].includes(key),
+      ) ||
+      (Object.hasOwn(r, "beadId") && !isBead(r.beadId)) ||
+      (Object.hasOwn(r, "ownerSessionId") && !isSessionId(r.ownerSessionId)) ||
       typeof r?.id !== "string" ||
       !WORKTREE_ID.test(r.id) ||
       typeof r.path !== "string" ||
@@ -468,8 +671,9 @@ export function readCache(main: string): WorktreeRecord[] {
 /**
  * Change the cache: read it again right before the write, so a record
  * another process wrote meanwhile is kept, and replace the file whole
- * through a temporary one. Two writers in the same millisecond can still
- * lose one record; there is no lock.
+ * through a temporary one. Production callers hold the repository-family
+ * registry lock across Git and this publication; noncooperating writers remain
+ * outside that lock and can still race it.
  */
 function updateCache(
   main: string,
@@ -848,7 +1052,7 @@ export function createWorktree(
 export function removeWorktree(
   main: string,
   id: string,
-  options: { force: boolean },
+  options: { force: boolean; expectedRecord?: WorktreeRecord },
   partial: Partial<RegistryDeps> = {},
 ): Outcome<WorktreeRecord> {
   const deps = withDefaults(partial);
@@ -856,12 +1060,53 @@ export function removeWorktree(
   if (!top.ok) return top;
   if (top.top === null) return no(`${main} is not the top of a git repository`);
   const root = top.top;
-  const record = readCache(root).find((r) => r.id === id);
+  const reviewed = options.expectedRecord;
+  if (reviewed && options.force)
+    return no("Reviewed cleanup never forces removal");
+  const strict = reviewed ? readStrictWorktreeRegistry(root) : null;
+  if (strict && !strict.ok) return strict;
+  const record = (strict?.ok ? strict.value : readCache(root)).find(
+    (r) => r.id === id,
+  );
   if (!record)
     return no(
       `no worktree with the id "${id}" was made by bun run worktree; only those are removed`,
     );
+  const sameReviewed = (value: WorktreeRecord | undefined) =>
+    value !== undefined &&
+    (
+      ["id", "path", "branch", "createdAt", "beadId", "ownerSessionId"] as const
+    ).every((key) => value[key] === reviewed?.[key]);
+  if (reviewed && !sameReviewed(record))
+    return no("The reviewed worktree registry identity changed");
+  const directoryPins = () =>
+    [root, join(root, "trees"), record.path].map((path) => {
+      if (
+        registryPathKey(canonicalTrustedDirectory(path)) !==
+        registryPathKey(path)
+      )
+        throw Error("Reviewed cleanup path is not canonical");
+      const found = lstatSync(path);
+      if (!found.isDirectory() || found.isSymbolicLink())
+        throw Error("Reviewed cleanup path is unsafe");
+      return `${found.dev}:${found.ino}`;
+    });
+  let pins: string[] | null = null;
+  if (reviewed) {
+    try {
+      pins = directoryPins();
+    } catch {
+      return no("Reviewed cleanup requires plain canonical worktree ancestry");
+    }
+  }
   const drop = (): Outcome<WorktreeRecord> => {
+    if (reviewed) {
+      const fresh = readStrictWorktreeRegistry(root);
+      if (!fresh.ok || !sameReviewed(fresh.value.find((row) => row.id === id)))
+        return no(
+          "Git removal may have completed but registry identity changed; saved records were retained",
+        );
+    }
     const dropped = updateCache(root, (records) =>
       records.filter((r) => r.id !== id),
     );
@@ -879,10 +1124,40 @@ export function removeWorktree(
 
   const before = listedNow();
   if (!before.ok) return before;
-  if (!before.value) return drop();
+  if (!before.value)
+    return reviewed
+      ? no(
+          "The reviewed worktree is no longer listed by Git; its registry record was retained",
+        )
+      : drop();
+  if (reviewed) {
+    const status = deps.git(
+      [
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+        "--ignored=matching",
+      ],
+      record.path,
+      READ_MS,
+    );
+    if (status.status !== 0 || status.stdout !== "")
+      return no(
+        "The reviewed worktree is dirty or its complete status could not be verified; ignored and untracked data were retained",
+      );
+  }
   const inspectionRefusal = worktreeInspectionRefusal(record.path);
   if (inspectionRefusal !== null)
     return no(`git worktree remove refused: ${inspectionRefusal}`);
+  if (pins) {
+    try {
+      if (JSON.stringify(pins) !== JSON.stringify(directoryPins()))
+        return no("Reviewed cleanup directory identity changed");
+    } catch {
+      return no("Reviewed cleanup directory identity could not be rechecked");
+    }
+  }
   const removed = deps.git(
     [
       "worktree",
@@ -896,7 +1171,7 @@ export function removeWorktree(
   );
   if (removed.status === 0) return drop();
   const after = listedNow();
-  if (after.ok && !after.value) return drop();
+  if (after.ok && !after.value && !reviewed) return drop();
   return no(
     `git worktree remove refused ${record.path}: ${said(removed)}${options.force ? "" : " (it has changes or is locked; nothing was removed. --force discards them)"}`,
   );
