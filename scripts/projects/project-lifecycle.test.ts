@@ -19,7 +19,10 @@ import {
   projectShiftFlags,
 } from "../shifts/registry";
 import { withProjectAdmission } from "./admission";
-import { readProjectLifecycleInventory } from "./lifecycle-inventory";
+import {
+  readProjectActivityInventory,
+  readProjectLifecycleInventory,
+} from "./lifecycle-inventory";
 import { createProjectStore } from "./store";
 
 test("a stopped Shift must settle every owned attempt and malformed evidence remains unknown without PID probes", async () => {
@@ -269,6 +272,13 @@ test("complete lifecycle reads distinguish safely empty, active, settled and unr
         0,
       ),
       project = catalog.projects[0]!;
+    expect(readProjectLifecycleInventory(home, root, project).state).toBe(
+      "archive-required",
+    );
+    expect(readProjectActivityInventory(home, root, project)).toEqual({
+      state: "eligible",
+      reasons: [],
+    });
     await projects.preferences(project.id, 1, { archived: true });
     project.archived = true;
     expect(readProjectLifecycleInventory(home, root, project)).toEqual({

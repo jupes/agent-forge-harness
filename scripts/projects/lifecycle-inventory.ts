@@ -39,6 +39,15 @@ export function readProjectLifecycleInventory(
       state: "archive-required",
       reasons: ["Archive the project before deleting its record."],
     };
+  return readProjectActivityInventory(home, root, project);
+}
+
+/** Complete named ownership read shared by lifecycle and cleanup; archive is a separate policy. */
+export function readProjectActivityInventory(
+  home: string,
+  root: string,
+  project: ProjectRecord,
+): Inventory {
   const started = performance.now(),
     reasons: string[] = [],
     unknown: string[] = [];
