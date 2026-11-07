@@ -14,6 +14,7 @@ import {
 } from "../hearth/home-guard";
 import { writeOwnerOnly } from "../hearth/token";
 import { resolveCheckout } from "../ledger/workspace";
+import { withProjectAdmission } from "../projects/admission";
 import { workspaceKey } from "../projects/scope";
 import { isProjectId } from "../projects/store";
 import { withQueueLock } from "../scheduler/queue-lock";
@@ -137,6 +138,9 @@ function checked(home: string) {
   if (readHomeFile(directory).problem !== null)
     unavailable("The worktree receipt directory is not private.");
   return { file, lock };
+}
+export function readSessionWorktreeInventory(home: string) {
+  return readJournal(home).records;
 }
 function readJournal(home: string): Journal {
   const { file } = checked(home);
@@ -452,7 +456,9 @@ export function createSessionWorktreeService(options: Options) {
             receipt: null,
           };
           state.records.push(record);
-          save(options.home, state);
+          await withProjectAdmission(options.home, projectId, () =>
+            save(options.home, state),
+          );
           let attempted = false;
           const observedGit: GitRun = (args, cwd, timeout) => {
             if (args[0] === "worktree" && args[1] === "add") attempted = true;

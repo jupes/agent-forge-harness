@@ -197,6 +197,88 @@ function active(original: ProjectCouncilOriginal): boolean {
   return ["reserved", "dispatch-claimed", "running"].includes(original.state);
 }
 
+/** Validates complete, host-enumerated private journals without taking a domain mutex. */
+export function readProjectCouncilInventory(
+  home: string,
+  files: readonly string[],
+  projectId: string,
+): ProjectCouncilOriginal[] {
+  const records: ProjectCouncilOriginal[] = [];
+  for (const file of files) {
+    const found = readHomeFileBounded(home, file, MAX_BOUNDED_HOME_FILE_BYTES);
+    if (
+      found.problem !== null ||
+      found.text === null ||
+      Buffer.byteLength(found.text) > PROJECT_COUNCIL_MAX_JOURNAL_BYTES
+    )
+      throw new ConversationError(503, "Council inventory is unavailable.");
+    let raw: unknown;
+    try {
+      raw = JSON.parse(found.text);
+    } catch {
+      throw new ConversationError(503, "Council inventory is invalid.");
+    }
+    if (
+      !raw ||
+      typeof raw !== "object" ||
+      Array.isArray(raw) ||
+      Object.keys(raw).length !== 2 ||
+      !("version" in raw) ||
+      raw.version !== 1 ||
+      !("records" in raw) ||
+      !Array.isArray(raw.records) ||
+      raw.records.length > PROJECT_COUNCIL_MAX_ORIGINALS
+    )
+      throw new ConversationError(503, "Council inventory is invalid.");
+    const checked = raw.records.map(checkedRecord);
+    if (checked.some((row) => row === null))
+      throw new ConversationError(
+        503,
+        "Council inventory failed verification.",
+      );
+    const first = checked[0];
+    if (first) {
+      const expected = join(
+        home,
+        directoryName,
+        `${digest(`${first.binding.workspace}\0${first.binding.projectId}`)}.json`,
+      );
+      if (
+        file !== expected ||
+        checked.some(
+          (row) =>
+            row?.binding.workspace !== first.binding.workspace ||
+            row.binding.projectId !== first.binding.projectId,
+        )
+      )
+        throw new ConversationError(
+          503,
+          "Council inventory association is invalid.",
+        );
+      // Reuse every size, uniqueness and original invariant from the canonical reader.
+      const store = createProjectCouncilOriginalStore({
+        home,
+        workspace: first.binding.workspace,
+        projectId: first.binding.projectId,
+        withQueueLock: async () => {
+          throw Error("Inventory must never acquire a domain mutex");
+        },
+      });
+      records.push(
+        ...store
+          .inventory()
+          .filter((row) => row.binding.projectId === projectId),
+      );
+    }
+  }
+  if (new Set(records.map((row) => row.requestId)).size !== records.length)
+    throw new ConversationError(
+      503,
+      "Council inventory contains duplicate identities.",
+    );
+  return records;
+}
+
 function sameBinding(
   a: ProjectCouncilBinding,
   b: ProjectCouncilBinding,
@@ -213,6 +295,7 @@ export function createProjectCouncilOriginalStore(options: {
   workspace: string;
   projectId: string;
   withQueueLock: ProjectCouncilQueueLock;
+  admit?: import("../projects/project-lifecycle-protocol").ProjectAdmissionFence;
 }) {
   if (!options.workspace || options.workspace.length > 1024)
     throw new ConversationError(400, "Expected a trusted Council workspace.");
@@ -406,6 +489,7 @@ export function createProjectCouncilOriginalStore(options: {
   }
 
   return {
+    inventory: () => structuredClone(readState().records),
     /** Check for the singleton before expensive or mutable source preparation. */
     findActive(
       projectId: string,
@@ -426,7 +510,7 @@ export function createProjectCouncilOriginalStore(options: {
       listing: string[];
       options: ProjectCouncilOriginal["options"];
     }) {
-      return locked((state) => {
+      return locked(async (state) => {
         const existing = matchingActive(
           state,
           input.binding.projectId,
@@ -465,7 +549,9 @@ export function createProjectCouncilOriginalStore(options: {
             "The prepared Council original failed strict verification and was not saved.",
           );
         state.records.push(original);
-        saveState(state);
+        if (options.admit)
+          await options.admit(options.projectId, () => saveState(state));
+        else saveState(state);
         return { original: structuredClone(original), created: true };
       });
     },
@@ -635,7 +721,9 @@ export function createProjectCouncilOriginalStore(options: {
         original.state = "dispatch-claimed";
         original.dispatchClaimedAt = new Date().toISOString();
         original.updatedAt = original.dispatchClaimedAt;
-        saveState(state);
+        if (options.admit)
+          await options.admit(projectId, () => saveState(state));
+        else saveState(state);
         return { original: structuredClone(original), created: true };
       });
     },

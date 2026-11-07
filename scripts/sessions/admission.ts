@@ -20,6 +20,7 @@ import type {
 } from "../conversations/transport";
 import type { InitialStartAttempt } from "../identities/preaccept-not-sent-proof";
 import { resolveCheckout } from "../ledger/workspace";
+import { withProjectAdmission } from "../projects/admission";
 import { workspaceKey } from "../projects/scope";
 import { requireOrdinarySession } from "./managed-origin";
 import { canonicalSessionInput, prepareReviewedSession } from "./preparation";
@@ -192,6 +193,7 @@ export function createOwnedSessionService(options: Options) {
           );
           return metadata;
         },
+        (publish) => withProjectAdmission(options.home, projectId, publish),
       );
       if (closed)
         throw new ConversationError(

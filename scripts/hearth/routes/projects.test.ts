@@ -12,6 +12,7 @@ import {
 import { basename, join } from "node:path";
 import type { WorktreeEntry } from "../../../types/beads";
 import type { ProjectCatalog } from "../../../types/projects";
+import { createConversationStore } from "../../conversations/store";
 import { resolveCheckout } from "../../ledger/workspace";
 import { projectScopePreviewSettingsQuerySchema } from "../../projects/project-scope-preview-protocol";
 import { workspaceKey } from "../../projects/scope";
@@ -23,6 +24,108 @@ import { writeOwnerOnly } from "../token";
 import { projectRoutes } from "./projects";
 
 const opened: TestHearth[] = [];
+
+test("project lifecycle routes preserve history, refuse active turns, and recover exact deletion after catalog removal", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  const store = createProjectStore(h.home),
+    catalog = await store.create(
+      {
+        slug: "lifecycle",
+        name: "Lifecycle",
+        description: "",
+        icon: "L",
+        workspaces: [
+          {
+            root: h.workspace,
+            repositories: [h.workspace],
+            epicIds: ["alpha-epic"],
+          },
+        ],
+      },
+      0,
+    ),
+    id = catalog.projects[0]!.id;
+  const action = async (path: string, body: unknown) =>
+    fetch(`${h.api}/projects/${id}/settings/${path}`, {
+      method: "POST",
+      headers: h.headers(h.hearth.token),
+      body: JSON.stringify(body),
+    });
+  const request = {
+    requestId: "50000000-0000-4000-8000-000000000001",
+    expectedRevision: 2,
+    confirmName: "Lifecycle",
+  };
+  expect(
+    (await action("archived", { expectedRevision: 1, archived: true })).status,
+  ).toBe(200);
+  const conversations = createConversationStore(h.home),
+    requestId = "50000000-0000-4000-8000-000000000002",
+    owner = "50000000-0000-4000-8000-000000000003";
+  await conversations.accept(id, {
+    requestId,
+    expectedRevision: 0,
+    text: "Retained history",
+    about: [],
+  });
+  expect((await action("deletion", request)).status).toBe(409);
+  expect(store.read().revision).toBe(2);
+  await conversations.start(id, requestId, owner);
+  await conversations.append(id, requestId, owner, {
+    kind: "identity",
+    provider: "claude",
+    sessionId: "fixture-settled",
+    version: "fixture-1",
+  });
+  await conversations.finish(id, requestId, owner, "completed", null);
+  const history = conversations.read(id),
+    refused = await action("deletion", {
+      ...request,
+      confirmName: "Wrong name",
+    });
+  expect(refused.status).toBe(409);
+  const status = await fetch(`${h.api}/projects/${id}/settings/deletion`, {
+    headers: h.headers(h.hearth.token),
+  });
+  expect(status.status).toBe(200);
+  expect(await status.json()).toMatchObject({
+    ok: true,
+    data: { state: "eligible", catalogRevision: 2 },
+  });
+  const deleted = await action("deletion", request);
+  expect(deleted.status).toBe(200);
+  const receipt = await deleted.json();
+  expect(receipt).toMatchObject({
+    ok: true,
+    data: { projectId: id, requestId: request.requestId, deletedRevision: 3 },
+  });
+  expect(store.read().projects).toEqual([]);
+  expect(conversations.read(id)).toEqual(history);
+  const read = await fetch(
+    `${h.api}/projects/${id}/settings/deletion/${request.requestId}`,
+    { headers: h.headers(h.hearth.token) },
+  );
+  expect(read.status).toBe(200);
+  expect(await read.json()).toEqual(receipt);
+  expect(await (await action("deletion", request)).json()).toEqual(receipt);
+  expect(store.read().revision).toBe(3);
+  const publicRead = await fetch(`${h.api}/projects`, {
+    headers: h.headers(h.hearth.token),
+  });
+  const text = await publicRead.text();
+  expect(text).not.toContain("deletedProjects");
+  expect(text).not.toContain(request.requestId);
+  expect(
+    h
+      .events(["operator.action"])
+      .filter(
+        (event) =>
+          event.kind === "operator.action" &&
+          event.payload.action === "project.delete",
+      ),
+  ).toHaveLength(4);
+});
 
 function directScopePreview(
   h: TestHearth,

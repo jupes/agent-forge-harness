@@ -18,6 +18,7 @@ import {
   markKnownPreacceptPreparationRefusal,
 } from "../identities/preaccept-not-sent-proof";
 import { resolveCheckout } from "../ledger/workspace";
+import { withProjectAdmission } from "../projects/admission";
 import { workspaceKey } from "../projects/scope";
 import { preparedCodexChatSchema } from "./codex-app-server-protocol";
 import { createCodexChatApprovalBroker } from "./codex-chat-approval-broker";
@@ -323,6 +324,7 @@ export function createCodexOwnedChatService(options: Options) {
           await options.validateScope(projectId, metadata, request.about ?? []);
           return metadata;
         },
+        (publish) => withProjectAdmission(options.home, projectId, publish),
       );
       requireOrdinarySession(session);
       const { effort, attachments, ...selection } = request.launch;

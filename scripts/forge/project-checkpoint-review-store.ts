@@ -99,6 +99,63 @@ function isActive(state: ProjectCheckpointReviewStoredState): boolean {
   return state === "prepared" || state === "dispatching" || state === "unknown";
 }
 
+export function readProjectCheckpointReviewInventory(
+  home: string,
+  files: readonly string[],
+  projectId: string,
+): StoredRecord[] {
+  const all: StoredRecord[] = [];
+  const store = createProjectCheckpointReviewStore({
+    home,
+    withQueueLock: async () => {
+      throw Error("Inventory must not acquire a domain mutex");
+    },
+  });
+  for (const file of files) {
+    const found = readHomeFileBounded(
+      home,
+      file,
+      PROJECT_CHECKPOINT_REVIEW_MAX_JOURNAL_BYTES,
+    );
+    if (found.problem !== null || found.text === null) return failClosed();
+    let raw: unknown;
+    try {
+      raw = JSON.parse(found.text);
+    } catch {
+      return failClosed();
+    }
+    if (
+      !isRecord(raw) ||
+      Object.keys(raw).length !== 3 ||
+      raw.version !== 1 ||
+      !Array.isArray(raw.records) ||
+      raw.records.length > PROJECT_CHECKPOINT_REVIEW_MAX_JOURNAL_RECORDS
+    )
+      return failClosed();
+    if (raw.records.length === 0) {
+      if (raw.activeRequestId !== null) return failClosed();
+      continue;
+    }
+    const first = verifyRecord(raw.records[0]);
+    if (!first) return failClosed();
+    const key = hash(
+      JSON.stringify([
+        workspaceKey(first.scope.workspacePath),
+        first.scope.beadId,
+      ]),
+    );
+    if (file !== join(home, DIRECTORY, `${key}.json`)) return failClosed();
+    all.push(
+      ...store
+        .inventory(first.scope)
+        .filter((row) => row.scope.projectId === projectId),
+    );
+  }
+  if (new Set(all.map((row) => row.original.requestId)).size !== all.length)
+    return failClosed();
+  return all;
+}
+
 function isStoredState(
   value: unknown,
 ): value is ProjectCheckpointReviewStoredState {
@@ -230,6 +287,7 @@ function verifyRecord(value: unknown): StoredRecord | null {
 
 export function createProjectCheckpointReviewStore(options: {
   home: string;
+  admit?: import("../projects/project-lifecycle-protocol").ProjectAdmissionFence;
   withQueueLock: ProjectCheckpointReviewQueueLock;
   now?: () => Date;
 }) {
@@ -464,6 +522,8 @@ export function createProjectCheckpointReviewStore(options: {
   }
 
   return {
+    inventory: (scope: ProjectCheckpointReviewScope) =>
+      structuredClone(readJournal(scope).records),
     async prepare(
       original: ProjectCheckpointReviewOriginal,
       auditEventId: number,
@@ -481,7 +541,7 @@ export function createProjectCheckpointReviewStore(options: {
       const saved = parsed.data;
       const scope = scopeOf(saved);
       const preparedAt = isoNow(now);
-      return locked(scope, (journal) => {
+      return locked(scope, async (journal) => {
         const existing = journal.records.find(
           (record) => record.original.requestId === saved.requestId,
         );
@@ -519,7 +579,11 @@ export function createProjectCheckpointReviewStore(options: {
         };
         journal.records.push(record);
         journal.activeRequestId = saved.requestId;
-        saveJournal(scope, journal);
+        if (options.admit)
+          await options.admit(scope.projectId, () =>
+            saveJournal(scope, journal),
+          );
+        else saveJournal(scope, journal);
         return {
           created: true,
           ...readFor(record),
@@ -548,7 +612,7 @@ export function createProjectCheckpointReviewStore(options: {
       intentHash: string,
       auditEventId: number,
     ) {
-      return locked(scope, (journal) => {
+      return locked(scope, async (journal) => {
         const record = requireRecord(journal, scope, requestId, intentHash);
         if (
           record.state !== "prepared" ||
@@ -567,7 +631,11 @@ export function createProjectCheckpointReviewStore(options: {
           auditEventId,
           updatedAt,
         );
-        saveJournal(scope, journal);
+        if (options.admit)
+          await options.admit(scope.projectId, () =>
+            saveJournal(scope, journal),
+          );
+        else saveJournal(scope, journal);
         const permit: ProjectCheckpointReviewClaimPermit = Object.freeze({
           token: randomUUID(),
           scope: structuredClone(scope),

@@ -135,6 +135,7 @@ type JournalState = {
 
 export interface RestartIdentityJournalOptions<TProof = never>
   extends HomeCheckOptions {
+  admit?: import("../projects/project-lifecycle-protocol").ProjectAdmissionFence;
   /** Existing ACL helper injection seam; production leaves this unset. */
   acl?: WindowsAcl;
   /** Trusted server reader; invoked before reacquiring the journal lock for admission. */
@@ -835,6 +836,39 @@ function appendRow(state: JournalState, stored: StoredEvent): void {
   state.bytes += bytesOf(stored.text);
 }
 
+/** Complete authenticated read for lifecycle checks; never creates a mutex or takes a domain lease. */
+export function readRestartIdentityInventory(
+  profileHomeInput: string,
+  projectId: string,
+  options: HomeCheckOptions = {},
+): RestartIdentityRow[] {
+  try {
+    const home = canonicalTrustedDirectory(profileHomeInput),
+      homeIdentity = assertDirectory(home, undefined, options),
+      directory = join(home, DIRECTORY);
+    const identity = stableDirectoryIdentity(directory);
+    if (!identity) {
+      assertDirectory(home, homeIdentity, options);
+      return [];
+    }
+    assertDirectory(directory, identity, options);
+    const lock = assertPrivateFile(
+      join(directory, LOCK_FILE),
+      undefined,
+      1n,
+      options,
+    );
+    const state = scan(directory, lock, options);
+    assertDirectory(directory, identity, options);
+    assertDirectory(home, homeIdentity, options);
+    return [...state.rows.values()].filter(
+      (row) => row.address.projectId === projectId,
+    );
+  } catch {
+    throw unavailable();
+  }
+}
+
 export function createRestartIdentityJournal<TProof = never>(
   profileHomeInput: string,
   options: RestartIdentityJournalOptions<TProof> = {},
@@ -922,7 +956,7 @@ export function createRestartIdentityJournal<TProof = never>(
   return {
     reserve(raw) {
       const input = validateInput(raw);
-      return withState((state) => {
+      return withState(async (state) => {
         const existing = state.rows.get(input.requestId);
         if (existing !== undefined) {
           if (!exactRow(existing, input) || existing.state === "retired")
@@ -935,7 +969,11 @@ export function createRestartIdentityJournal<TProof = never>(
         )
           throw conflict();
         const row: RestartIdentityRow = { ...input, state: "reserved" };
-        return commit(state, "reserve", row);
+        return options.admit
+          ? options.admit(input.address.projectId, () =>
+              commit(state, "reserve", row),
+            )
+          : commit(state, "reserve", row);
       });
     },
     list(rawScope) {
@@ -974,7 +1012,13 @@ export function createRestartIdentityJournal<TProof = never>(
     },
     async beginAttempt(raw) {
       const input = validateInput(raw);
-      return withState((state) => {
+      return withState(async (state) => {
+        const attempt = (row: RestartIdentityRow, generation: number) =>
+          options.admit
+            ? options.admit(input.address.projectId, () =>
+                commit(state, "attempt", row, generation),
+              )
+            : Promise.resolve(commit(state, "attempt", row, generation));
         const existing = state.rows.get(input.requestId);
         if (existing !== undefined) {
           if (!exactRow(existing, input) || existing.state === "retired")
@@ -988,9 +1032,7 @@ export function createRestartIdentityJournal<TProof = never>(
           if (existing.state === "not-sent") {
             const attemptGeneration =
               (state.generations.get(input.requestId) ?? 0) + 1;
-            const row = commit(
-              state,
-              "attempt",
+            const row = await attempt(
               { ...existing, state: "attempted" },
               attemptGeneration,
             );
@@ -998,9 +1040,7 @@ export function createRestartIdentityJournal<TProof = never>(
           }
           const attemptGeneration = 1;
           return {
-            row: commit(
-              state,
-              "attempt",
+            row: await attempt(
               { ...existing, state: "attempted" },
               attemptGeneration,
             ),
@@ -1015,9 +1055,7 @@ export function createRestartIdentityJournal<TProof = never>(
           throw conflict();
         const attemptGeneration = 1;
         return {
-          row: commit(
-            state,
-            "attempt",
+          row: await attempt(
             { ...input, state: "attempted" },
             attemptGeneration,
           ),

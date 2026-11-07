@@ -267,6 +267,7 @@ const shiftUncertain =
 export function createKeeperProposalStore(
   home: string,
   now: () => Date = () => new Date(),
+  admit?: import("../projects/project-lifecycle-protocol").ProjectAdmissionFence,
 ) {
   const inflight = new Set<string>();
   const lease = (projectId: string) =>
@@ -524,7 +525,8 @@ export function createKeeperProposalStore(
             state.records.push(record);
             state.sessionStarts.push(intent);
             state.revision++;
-            save(state);
+            if (admit) await admit(input.projectId, () => save(state));
+            else save(state);
             prior = { record, intent };
           } else if (prior.record.phase === "done")
             return { revision: state.revision, ...prior };
@@ -535,7 +537,8 @@ export function createKeeperProposalStore(
               updatedAt: now().toISOString(),
             });
             state.revision++;
-            save(state);
+            if (admit) await admit(input.projectId, () => save(state));
+            else save(state);
           }
           let outcome: KeeperProposalExecution;
           try {
@@ -741,7 +744,8 @@ export function createKeeperProposalStore(
           next.records.push(record);
           next.shiftStarts.push(intent);
           next.revision++;
-          save(next);
+          if (admit) await admit(input.projectId, () => save(next));
+          else save(next);
           let outcome: KeeperProposalExecution;
           try {
             const parsed = keeperProposalExecutionSchema.safeParse(
@@ -884,7 +888,9 @@ export function createKeeperProposalStore(
           if (operation === "approve") beforeAdmission?.();
           state.records.push(record);
           state.revision++;
-          save(state);
+          if (operation === "approve" && admit)
+            await admit(input.projectId, () => save(state));
+          else save(state);
           if (operation === "approve") {
             let outcome: KeeperProposalExecution;
             try {
@@ -924,6 +930,7 @@ export function createKeeperProposalStore(
   };
   return {
     read,
+    inventory: (projectId: string) => structuredClone(raw(projectId)),
     readSessionStart,
     readShiftStart,
     startSession,

@@ -11,6 +11,7 @@ import { parseSessionSend } from "../../conversations/protocol";
 import { isConversationRequestId } from "../../conversations/store";
 import { buildChildEnv } from "../../executors/env";
 import type { AppendResult } from "../../ledger/append";
+import { withProjectAdmission } from "../../projects/admission";
 import { workspaceKey } from "../../projects/scope";
 import {
   createProjectStore,
@@ -174,6 +175,7 @@ export function createOwnedSessionRoutes(
     },
   });
   const terminal = createSessionTerminalHandoff({
+    admit: (id, publish) => withProjectAdmission(home, id, publish),
     home,
     root: deps.root,
     ...(terminalLauncher ? { launch: terminalLauncher } : {}),

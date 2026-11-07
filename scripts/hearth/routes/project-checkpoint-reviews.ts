@@ -17,6 +17,7 @@ import {
 } from "../../forge/project-checkpoint-review-store";
 import { isValidSlug } from "../../forge/runs";
 import type { AppendResult } from "../../ledger/append";
+import { withProjectAdmission } from "../../projects/admission";
 import { isProjectId, ProjectStoreError } from "../../projects/store";
 import type {
   ActionRoute,
@@ -78,6 +79,7 @@ export function createProjectCheckpointReviewRoutes(options: {
 }) {
   const store = createProjectCheckpointReviewStore({
     home: options.home,
+    admit: (id, publish) => withProjectAdmission(options.home, id, publish),
     withQueueLock: options.queueLock,
   });
   const service = createProjectCheckpointReviewService({

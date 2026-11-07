@@ -30,6 +30,7 @@ import {
   type RestartIdentityRow,
 } from "../identities/restart-index";
 import { resolveCheckout } from "../ledger/workspace";
+import { withProjectAdmission } from "../projects/admission";
 import { workspaceKey } from "../projects/scope";
 import { createOwnedSessionService, type SessionRuntime } from "./admission";
 import {
@@ -146,6 +147,7 @@ export function createOwnedCodingSessionService(options: {
   const registry = createSessionRegistry(options.home);
   const workspace = workspaceKey(resolveCheckout(options.root).workspace);
   const identities = createRestartIdentityJournal(options.home, {
+    admit: (id, publish) => withProjectAdmission(options.home, id, publish),
     verifyAdmission(input) {
       const proof = readVerifiedOriginalStart({
         home: options.home,

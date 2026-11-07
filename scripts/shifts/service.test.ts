@@ -10,7 +10,9 @@ import {
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { ensurePrivateHome } from "../hearth/home-guard";
-import { FIXTURE_PROJECT_ID } from "../projects/testing";
+import { writeOwnerOnly } from "../hearth/token";
+import { projectCatalogPath } from "../projects/store";
+import { FIXTURE_PROJECT_ID, projectCatalogFixture } from "../projects/testing";
 import { projectShiftReceiptSchema } from "./protocol";
 import {
   createProjectShiftRegistry,
@@ -39,6 +41,13 @@ function fixture() {
     workspace = join(root, "workspace");
   ensurePrivateHome(home);
   mkdirSync(join(workspace, ".git"), { recursive: true });
+  writeOwnerOnly(
+    projectCatalogPath(home),
+    JSON.stringify({
+      ...projectCatalogFixture(workspace),
+      revision: request.expectedCatalogRevision,
+    }),
+  );
   return { home, root: workspace };
 }
 const request = {

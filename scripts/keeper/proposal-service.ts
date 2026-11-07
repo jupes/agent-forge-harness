@@ -16,6 +16,7 @@ import { BEAD_TEXT_LIMITS } from "../hearth/routes/beads";
 import type { ProjectSnapshot } from "../hearth/routes/project-summaries";
 import { isBeadId } from "../hearth/tracker-write";
 import { validateOperatorEnvelope } from "../hearth/validate";
+import { withProjectAdmission } from "../projects/admission";
 import { selectProjectBeads, workspaceKey } from "../projects/scope";
 import { createProjectStore } from "../projects/store";
 import { checkSmith } from "../scheduler/queue";
@@ -65,7 +66,11 @@ class DispatchProblem extends Error {
 
 /** Explicit owner review is the only path from untrusted intent to a closed operator call. */
 export function createKeeperProposalService(options: Options) {
-  const journal = createKeeperProposalStore(options.home),
+  const journal = createKeeperProposalStore(
+      options.home,
+      undefined,
+      (id, publish) => withProjectAdmission(options.home, id, publish),
+    ),
     conversations = createConversationStore(options.home);
   let closed = false;
   const active = new Set<Promise<unknown>>();

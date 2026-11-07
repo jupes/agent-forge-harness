@@ -51,6 +51,7 @@ import {
 import { keeperContinuationSchema } from "../keeper/recovery-protocol";
 import { type KeeperRuntime, prepareKeeper } from "../keeper/recovery-runtime";
 import { resolveCheckout } from "../ledger/workspace";
+import { withProjectAdmission } from "../projects/admission";
 import { assertProjectCliCostAdmission } from "../projects/project-budget-policy";
 import { workspaceKey } from "../projects/scope";
 import {
@@ -613,17 +614,19 @@ export function createConversationService(options: ConversationOptions) {
                 409,
                 "The project, Keeper selection or conversation changed while preparing the brief. Refresh and review again.",
               );
-            return store.reserveKeeperBrief(
-              projectId,
-              {
-                expectedRevision: reservation.expectedRevision,
-                origin,
-                selection,
-                text: keeperBriefPrompt(snapshotResult.data),
-                about: [],
-                snapshot: snapshotResult.data,
-              },
-              () => !closed,
+            return withProjectAdmission(options.home, projectId, () =>
+              store.reserveKeeperBrief(
+                projectId,
+                {
+                  expectedRevision: reservation.expectedRevision,
+                  origin,
+                  selection,
+                  text: keeperBriefPrompt(snapshotResult.data),
+                  about: [],
+                  snapshot: snapshotResult.data,
+                },
+                () => !closed,
+              ),
             );
           },
           { waitMs: 300 },
@@ -897,11 +900,17 @@ export function createConversationService(options: ConversationOptions) {
                 .turns.some((turn) => turn.requestId === reference.requestId)
             )
               assertProjectCliCostAdmission(projectFor(projectId));
-            const result = await store.acceptKeeperBrief(
-              projectId,
-              reference,
-              currentBinding,
-            );
+            const acceptBrief = () =>
+              store.acceptKeeperBrief(projectId, reference, currentBinding);
+            const result = store
+              .read(projectId)
+              .turns.some((turn) => turn.requestId === reference.requestId)
+              ? await acceptBrief()
+              : await withProjectAdmission(
+                  options.home,
+                  projectId,
+                  acceptBrief,
+                );
             if (!result.created) {
               admitted = true;
               accept(result.receipt);
@@ -1685,7 +1694,13 @@ export function createConversationService(options: ConversationOptions) {
               }
             }
             markInitialStartAcceptEntered(initialStartAttempt);
-            const accepted = await store.accept(projectId, input);
+            const accepted = store
+              .read(projectId)
+              .turns.some((turn) => turn.requestId === input.requestId)
+              ? await store.accept(projectId, input)
+              : await withProjectAdmission(options.home, projectId, () =>
+                  store.accept(projectId, input),
+                );
             if (accepted.turn.phase !== "accepted") {
               admitted = true;
               accept(accepted);
