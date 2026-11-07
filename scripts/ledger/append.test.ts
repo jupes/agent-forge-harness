@@ -66,6 +66,64 @@ const toolCall: LedgerEventInput = {
 const APPEND_10K_BOUND_MS = process.platform === "win32" ? 60_000 : 20_000;
 
 describe("appendEvent", () => {
+  test("cleanup operator audit preserves exact family UUID and digest without request content", () => {
+    const path = tempLedger();
+    const requestId = "12345678-1234-4234-8234-123456789abc";
+    const inputHash = "ab".repeat(32);
+    const payload = {
+      action: "project.worktree.cleanup",
+      surface: "ui" as const,
+      target: "project-12345678-1234-4234-8234-123456789abc",
+      family: "project-worktree-cleanup",
+      requestId,
+      inputHash,
+      requestContent: "private cleanup review content",
+    };
+    const appended = appendEvent(
+      { kind: "operator.action", workspace: "w", payload },
+      { path },
+    );
+    expect(appended.ok).toBe(true);
+    if (!appended.ok || !("id" in appended))
+      throw Error("Expected stored audit");
+    const event = queryEvents(
+      { afterId: appended.id - 1, limit: 1 },
+      { path },
+    )[0];
+    expect(event?.id).toBe(appended.id);
+    const { requestContent: _content, ...expected } = payload;
+    expect(event?.payload).toEqual(expected);
+    expect(
+      appendEvent(
+        {
+          kind: "operator.action",
+          workspace: "w",
+          payload: { ...payload, family: "unknown-cleanup-family" },
+        },
+        { path },
+      ).ok,
+    ).toBe(true);
+    const { family: _family, ...withoutFamily } = expected;
+    expect(queryEvents({}, { path })[1]?.payload).toEqual(withoutFamily);
+    for (const invalid of [
+      { ...payload, requestId: "INVALID-UUID" },
+      { ...payload, inputHash: "invalid-digest" },
+    ]) {
+      expect(
+        appendEvent(
+          { kind: "operator.action", workspace: "w", payload: invalid },
+          { path },
+        ).ok,
+      ).toBe(false);
+    }
+    const stored = rawRows(path);
+    expect(stored).toHaveLength(2);
+    expect(JSON.stringify(stored)).not.toContain(payload.requestContent);
+    expect(JSON.stringify(stored)).not.toContain("unknown-cleanup-family");
+    expect(JSON.stringify(stored)).not.toContain("INVALID-UUID");
+    expect(JSON.stringify(stored)).not.toContain("invalid-digest");
+  });
+
   test("an appended event is read back with the id, ulid and executor it was stored with", () => {
     const path = tempLedger();
     const appended = appendEvent(toolCall, { path });
