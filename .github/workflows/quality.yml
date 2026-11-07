@@ -129,6 +129,15 @@ jobs:
           name: desktop-playwright-test-results-${{ matrix.shard }}
           path: test-results/
           retention-days: 14
+      # Upload only the controlled visualization fixtures; no local GUI capture is required.
+      - name: Upload Beads work-map screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: beads-work-map-${{ matrix.shard }}
+          path: test-results/work-map-evidence/*.png
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Run desktop temporary Git worktree journey
         if: matrix.shard == 1
         timeout-minutes: 4

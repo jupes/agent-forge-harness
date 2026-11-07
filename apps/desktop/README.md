@@ -1,5 +1,8 @@
 # Windows desktop app
 
+For the graphical Beads tree/dependency view, local browser/native launch commands
+and a manual smoke checklist, see [Beads work map](docs/beads-work-map.md).
+
 The desktop uses a Tauri 2 window around the Preact desktop frame.
 Building requires Bun 1.4.2, Rust 1.99.1 (the version validated for this build), and
 Visual Studio C++ Build Tools with the MSVC toolchain and Windows SDK. Running

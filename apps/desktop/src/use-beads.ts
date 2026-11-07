@@ -23,7 +23,11 @@ export function useBeads(
     typeof startLiveRead<ProjectBeadsPage>
   > | null>(null);
   useEffect(() => {
-    setState({ data: null, error: null, loading: projectId !== null });
+    setState((previous) => ({
+      data: previous.data?.projectId === projectId ? previous.data : null,
+      error: null,
+      loading: projectId !== null,
+    }));
     if (!projectId) return;
     const read = startLiveRead<ProjectBeadsPage>({
       load: async () => {
