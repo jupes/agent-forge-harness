@@ -68,6 +68,7 @@ test("project Council reads catalog authority after the awaited tracker snapshot
 test.each([
   null,
   0.1,
+  0.5,
 ])("a project Council review reserves against the current project and daily budget before dispatch: %s", async (dailyCap) => {
   const h = await startTestHearth();
   opened.push(h);
@@ -290,6 +291,42 @@ test.each([
   expect(h.commands.calls).toEqual([]);
   expect(existsSync(join(h.root, "council-runs"))).toBe(false);
   expect(h.events(["council.run.started", "council.run.finished"])).toEqual([]);
+  if (dailyCap === 0.5) {
+    const budget = createProjectBudgetStore(h.home);
+    const original = exactRead.data.original;
+    // A failed dispatch claim can retain this allocation while the original stays reserved.
+    await budget.reserve(
+      FIXTURE_PROJECT_ID,
+      original.requestId,
+      original.intentHash,
+      original.options.maxUsd,
+    );
+    expect(budget.status(FIXTURE_PROJECT_ID).reservedUsd).toBe(0.25);
+    const retired = await fetch(
+      `${h.api}/projects/${FIXTURE_PROJECT_ID}/council/reviews/${metadata.requestId}/retire`,
+      {
+        method: "POST",
+        headers: h.headers(h.hearth.token),
+        body: JSON.stringify({ intentHash: metadata.intentHash }),
+      },
+    );
+    expect(retired.status).toBe(200);
+    expect(await retired.json()).toMatchObject({
+      ok: true,
+      data: { phase: "retired" },
+    });
+    expect(budget.status(FIXTURE_PROJECT_ID)).toMatchObject({
+      reservedUsd: 0,
+      reportedUsd: 0,
+      unknownCount: 0,
+    });
+    expect(h.commands.calls).toEqual([]);
+    expect(existsSync(join(h.root, "council-runs"))).toBe(false);
+    expect(h.events(["council.run.started", "council.run.finished"])).toEqual(
+      [],
+    );
+    return;
+  }
   if (dailyCap !== null) {
     const commit = await fetch(
       `${h.api}/projects/${FIXTURE_PROJECT_ID}/council/reviews/${metadata.requestId}/commit`,

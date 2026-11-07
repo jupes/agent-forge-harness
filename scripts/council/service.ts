@@ -1326,10 +1326,12 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
     requestId: string,
     intentHash: string,
   ) {
+    const budget = options.projectBudget;
     const original = await projectStore(workspace, projectId).retire(
       projectId,
       requestId,
       intentHash,
+      budget ? (proof) => budget.retireUnsent(proof) : undefined,
     );
     return projectReceipt(original);
   }
