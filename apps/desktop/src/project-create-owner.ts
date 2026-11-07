@@ -323,6 +323,8 @@ export function createProjectCreateOwner(deps: {
             const original = local?.request.original;
             if (!original)
               throw Error("A reserved project original is unverified.");
+            // Protected uncertainty owns this UUID; local retry proof cannot override it.
+            seen.add(row.requestId);
             entries.push({
               identity: null,
               local,

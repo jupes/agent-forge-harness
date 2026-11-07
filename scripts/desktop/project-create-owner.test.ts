@@ -685,3 +685,70 @@ test("the local hash is canonical and binds the exact frozen reservation", async
     await projectCreateRequestHash(reordered),
   );
 });
+
+test("contradictory protected recovery keeps one unknown original instead of a retryable duplicate", async () => {
+  let mismatch = false;
+  const { owner, identities, writes } = fixture([], {
+    original: (_id, current) =>
+      mismatch
+        ? {
+            ...current,
+            original: { ...current.original, name: "Different original" },
+          }
+        : current,
+  });
+  await owner.recover();
+  expect(await owner.reserve(original, preview)).toBe(true);
+  await owner.recover();
+  const local = identities.list()[0];
+  if (!local) throw Error("Missing local fixture original");
+  await identities.update(requestId, local.requestHash, "not-sent");
+  const retained = structuredClone(identities.list());
+  mismatch = true;
+  await owner.recover();
+  const entries = owner.get().entries;
+  expect(entries).toHaveLength(1);
+  expect(entries[0]).toMatchObject({ phase: "unknown", identity: null });
+  expect(entries[0]?.local?.request.requestId).toBe(requestId);
+  expect(entries[0]?.original).toEqual(original);
+  expect(entries.some((entry) => entry.phase === "not-sent")).toBe(false);
+  expect(await owner.retryReservation(requestId)).toBe(false);
+  expect(writes.map((write) => write.kind)).toEqual(["reserve"]);
+  expect(identities.list()).toEqual(retained);
+  owner.dispose();
+});
+
+test.each([
+  "hash",
+  "UUID",
+  "unreadable",
+] as const)("protected %s contradictions retain one unknown original and prohibit reservation replay", async (failure) => {
+  let contradict = false;
+  const { owner, identities, writes } = fixture([], {
+    original: (_id, current) => {
+      if (!contradict) return current;
+      if (failure === "unreadable") throw Error("Protected read unavailable");
+      return failure === "hash"
+        ? { ...current, requestHash: "f".repeat(64) }
+        : { ...current, requestId: "ab847e06-4f01-4dd3-a425-47bf9053e099" };
+    },
+  });
+  await owner.recover();
+  expect(await owner.reserve(original, preview)).toBe(true);
+  await owner.recover();
+  const local = identities.list()[0];
+  if (!local) throw Error("Missing local fixture original");
+  await identities.update(requestId, local.requestHash, "not-sent");
+  const retained = structuredClone(identities.list());
+  contradict = true;
+  await owner.recover();
+  const entries = owner.get().entries;
+  expect(entries).toHaveLength(1);
+  expect(entries[0]).toMatchObject({ phase: "unknown", identity: null });
+  expect(entries[0]?.local?.request.requestId).toBe(requestId);
+  expect(entries[0]?.original).toEqual(original);
+  expect(await owner.retryReservation(requestId)).toBe(false);
+  expect(writes.map((write) => write.kind)).toEqual(["reserve"]);
+  expect(identities.list()).toEqual(retained);
+  owner.dispose();
+});
