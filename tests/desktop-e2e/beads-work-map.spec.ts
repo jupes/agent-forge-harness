@@ -173,6 +173,32 @@ test("work map expands real hierarchy, navigates dependencies and retains the di
     await expect(map).toContainText("Dependency cycle: 2 beads");
     await expect(map).toContainText("1 open prerequisite reference");
     await expect(map).toContainText("Prerequisite to dependent work");
+    const normalArrow = map
+      .locator(".af-workmap-edge-blocks:not(.af-workmap-edge-cycle)")
+      .first();
+    const cycleArrow = map.locator(".af-workmap-edge-cycle").first();
+    await expect
+      .poll(() =>
+        normalArrow.evaluate((element) =>
+          getComputedStyle(element).getPropertyValue("marker-end"),
+        ),
+      )
+      .not.toBe("none");
+    await expect
+      .poll(() =>
+        cycleArrow.evaluate((element) =>
+          getComputedStyle(element).getPropertyValue("marker-end"),
+        ),
+      )
+      .not.toBe("none");
+    await expect(
+      map
+        .locator(".af-workmap-edge-relates")
+        .first()
+        .evaluate((element) =>
+          getComputedStyle(element).getPropertyValue("marker-end"),
+        ),
+    ).resolves.toBe("none");
     await map
       .getByRole("button", { name: "Zoom graph out", exact: true })
       .click();

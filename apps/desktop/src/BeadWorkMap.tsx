@@ -526,7 +526,7 @@ function DependencyGraph({ map, ...actions }: Actions & { map: WorkMapModel }) {
                         key={`${edge.type}:${edge.from}:${edge.to}`}
                         d={path}
                         class={`af-workmap-edge af-workmap-edge-${edge.type}${edge.cyclic ? " af-workmap-edge-cycle" : ""}`}
-                        markerEnd={
+                        marker-end={
                           edge.type === "relates"
                             ? undefined
                             : `url(#${marker}${edge.cyclic ? "-cycle" : ""})`
