@@ -13,6 +13,7 @@ import {
   ownedCodingStartReceiptSchema,
 } from "../../../scripts/sessions/codex-owned-wire-protocol";
 import { sessionStartReceiptSchema } from "../../../scripts/sessions/protocol";
+import type { WorktreeEntry } from "../../../types/beads";
 import type {
   OwnedCodingSessionRecord as OwnedSessionRecord,
   OwnedSessionStartInput,
@@ -24,6 +25,8 @@ import type {
   ConversationReceipt,
   ConversationTurn,
 } from "../../../types/conversation";
+import type { SmithsView } from "../../../types/hearth";
+import type { ProjectRecord } from "../../../types/projects";
 import type { SessionAttachment } from "../../../types/session-launch";
 import type { SessionStartRequest as ClaudeSessionStartRequest } from "../../../types/session-requests";
 import type {
@@ -34,23 +37,33 @@ import type { SessionMessage } from "../../../types/session-turn";
 import type { SessionWorktreeRequest } from "../../../types/session-worktrees";
 import {
   type CodexChatComposerDraft,
+  chooseCodexChatSmith,
+  codexChatStartBody,
   newCodexChatDraft,
 } from "./codex-chat-composer";
 import {
   type CodexTaskComposerDraft,
+  chooseCodexTaskSmith,
+  codexTaskStartBody,
   newCodexTaskDraft,
 } from "./codex-session-composer";
 import {
+  chooseGeminiChatSmith,
   type GeminiChatComposerDraft,
+  geminiChatStartBody,
   newGeminiChatDraft,
 } from "./gemini-chat-composer";
 import {
+  chooseGeminiTaskSmith,
   type GeminiTaskComposerDraft,
+  geminiTaskStartBody,
   newGeminiTaskDraft,
 } from "./gemini-task-composer";
 import {
+  initializeClaudeDraft,
   newSessionDraft,
   type SessionComposerDraft,
+  sessionStartBody,
   validateSessionAttachments,
 } from "./session-composer";
 import type {
@@ -67,6 +80,44 @@ import { createSessionWorktreeClient } from "./session-worktree-client";
 const listSchema = z.array(ownedCodingSessionSchema).max(1000);
 const active = (phase: string) =>
   ["accepted", "running", "cancelling"].includes(phase);
+type ComposerDefaults = Pick<ProjectRecord, "id"> &
+  Partial<
+    Pick<
+      ProjectRecord,
+      | "workspaces"
+      | "claudeSessionSmith"
+      | "codexSessionSmith"
+      | "geminiSessionSmith"
+      | "sessionWhere"
+      | "sessionRunAs"
+    >
+  >;
+type ProviderDraftKey =
+  | "codexComposer"
+  | "codexChatComposer"
+  | "geminiComposer"
+  | "geminiChatComposer";
+const providerDraftKey = (
+  provider: "codex" | "gemini",
+  mode: "chat" | "task",
+): ProviderDraftKey =>
+  provider === "codex"
+    ? mode === "chat"
+      ? "codexChatComposer"
+      : "codexComposer"
+    : mode === "chat"
+      ? "geminiChatComposer"
+      : "geminiComposer";
+const defaultsHeld = (entry: SessionProjectView) =>
+  Boolean(
+    entry.pendingStart ||
+      entry.starting ||
+      entry.startIdentity ||
+      entry.startIdentityError ||
+      entry.legacyIdentityHint ||
+      entry.legacyIdentityError ||
+      entry.legacyIdentityUnavailable,
+  );
 const held = (turn: ConversationTurn) =>
   active(turn.phase) || turn.phase === "unknown";
 const freezeDeep = <T>(value: T): T => {
@@ -196,6 +247,22 @@ export function createSessionsClient(deps: {
     }
   >();
   const timers = deps.timers ?? REAL_TIMERS;
+  const composerBaselines = new Map<string, string>();
+  const providerBaselines = new Map<
+    string,
+    Partial<Record<ProviderDraftKey, string>>
+  >();
+  const explicitModes = new Map<string, Set<"codex" | "gemini">>();
+  const composerStarts = new Map<
+    string,
+    {
+      requestId: string;
+      draft: SessionComposerDraft;
+      provider: "claude" | "codex" | "gemini";
+      mode: "chat" | "task";
+      options: string | null;
+    }
+  >();
   let selected: OwnedSessionView | null = null,
     connection: { close(): void } | null = null,
     timer: unknown = null,
@@ -922,6 +989,21 @@ export function createSessionsClient(deps: {
             record.provider === identity.provider))
       ) {
         if (view.pendingStart) {
+          const captureKey = entry.projectId;
+          const capture = composerStarts.get(captureKey);
+          const captured =
+            capture?.requestId === turn.requestId ? capture : undefined;
+          const unchanged =
+            captured &&
+            JSON.stringify(captured.draft) === JSON.stringify(view.composer) &&
+            view.composerProvider === captured.provider &&
+            (captured.provider === "claude" ||
+              (view[
+                captured.provider === "codex" ? "codexMode" : "geminiMode"
+              ] === captured.mode &&
+                JSON.stringify(
+                  view[providerDraftKey(captured.provider, captured.mode)],
+                ) === captured.options));
           view.composer = {
             ...view.composer,
             ...(view.composer.prompt === view.pendingStart.launch.prompt
@@ -936,6 +1018,20 @@ export function createSessionsClient(deps: {
               ? { about: [] }
               : {}),
           };
+          if (unchanged) {
+            composerBaselines.set(
+              entry.projectId,
+              JSON.stringify(view.composer),
+            );
+            if (captured.provider !== "claude") {
+              const baselines = providerBaselines.get(entry.projectId) ?? {};
+              baselines[providerDraftKey(captured.provider, captured.mode)] =
+                captured.options ?? "";
+              providerBaselines.set(entry.projectId, baselines);
+              explicitModes.get(entry.projectId)?.delete(captured.provider);
+            }
+          }
+          composerStarts.delete(captureKey);
         }
         view.pendingStart = null;
         view.lastStarted = record.id;
@@ -1150,6 +1246,53 @@ export function createSessionsClient(deps: {
     const entry = project(projectId),
       input = entry.pendingStart;
     if (!input || entry.starting || disposed || !deps.canWrite()) return;
+    const captureKey = projectId;
+    if (
+      !retry &&
+      composerStarts.get(captureKey)?.requestId !== input.requestId
+    ) {
+      try {
+        composerStarts.delete(captureKey);
+        const snapshot = structuredClone(entry.composer);
+        const provider = startProvider(input),
+          mode = input.launch.mode;
+        if (
+          entry.composerProvider !== provider ||
+          (provider === "claude"
+            ? snapshot.mode !== mode
+            : entry[provider === "codex" ? "codexMode" : "geminiMode"] !== mode)
+        )
+          throw Error("Unrelated draft");
+        const body =
+          provider === "claude"
+            ? sessionStartBody(snapshot)
+            : provider === "codex"
+              ? mode === "chat"
+                ? codexChatStartBody(snapshot, entry.codexChatComposer)
+                : codexTaskStartBody(snapshot, entry.codexComposer)
+              : mode === "chat"
+                ? geminiChatStartBody(snapshot, entry.geminiChatComposer)
+                : geminiTaskStartBody(snapshot, entry.geminiComposer);
+        if (
+          canonicalOwnedSessionStart({
+            ...body,
+            requestId: input.requestId,
+          }) === canonicalOwnedSessionStart(input)
+        )
+          composerStarts.set(captureKey, {
+            requestId: input.requestId,
+            draft: snapshot,
+            provider,
+            mode,
+            options:
+              provider === "claude"
+                ? null
+                : JSON.stringify(entry[providerDraftKey(provider, mode)]),
+          });
+      } catch {
+        /* An unrelated or incomplete draft cannot become a fresh baseline. */
+      }
+    }
     entry.starting = true;
     entry.notice = "Starting the original session request…";
     tell();
@@ -1213,6 +1356,7 @@ export function createSessionsClient(deps: {
           await deps.identities.release(entry.startIdentity);
           entry.startIdentity = null;
           entry.pendingStart = null;
+          composerStarts.delete(projectId);
         } catch {
           entry.startIdentityError =
             "The unsent original Start identity could not be cleared durably. Check it before starting another session.";
@@ -1382,6 +1526,7 @@ export function createSessionsClient(deps: {
             identity.requestId === requestId && identity.state === "retired",
         ) === true;
       if (confirmed && entry.pendingStart?.requestId === requestId) {
+        composerStarts.delete(projectId);
         entry.pendingStart = null;
         if (entry.startIdentity?.requestId === requestId)
           entry.startIdentity = null;
@@ -1528,6 +1673,190 @@ export function createSessionsClient(deps: {
         listeners.delete(listener);
       };
     },
+    prepareComposerDefaults(record: ComposerDefaults) {
+      const entry = project(record.id),
+        draft = entry.composer;
+      if (
+        disposed ||
+        defaultsHeld(entry) ||
+        draft.prompt ||
+        draft.attachments.length ||
+        draft.about.length ||
+        (draft.initialized &&
+          composerBaselines.get(record.id) !== JSON.stringify(draft))
+      )
+        return;
+      for (const key of [
+        "codexComposer",
+        "codexChatComposer",
+        "geminiComposer",
+        "geminiChatComposer",
+      ] as const)
+        if (
+          entry[key].initialized &&
+          providerBaselines.get(record.id)?.[key] !== JSON.stringify(entry[key])
+        )
+          return;
+      entry.composer = {
+        ...draft,
+        mode: record.sessionRunAs ?? "chat",
+        where: record.sessionWhere ?? "main",
+        ...(draft.where !== (record.sessionWhere ?? "main") ||
+        (record.sessionWhere ?? "main") !== "main"
+          ? { worktree: "", createdWorktree: null, branch: "" }
+          : {}),
+      };
+      for (const provider of ["codex", "gemini"] as const) {
+        const mode = entry[provider === "codex" ? "codexMode" : "geminiMode"],
+          key = providerDraftKey(provider, mode);
+        if (
+          !explicitModes.get(record.id)?.has(provider) &&
+          (!entry[key].initialized ||
+            providerBaselines.get(record.id)?.[key] ===
+              JSON.stringify(entry[key]))
+        )
+          entry[provider === "codex" ? "codexMode" : "geminiMode"] =
+            record.sessionRunAs ?? "task";
+      }
+      if (entry.composer.initialized)
+        composerBaselines.set(record.id, JSON.stringify(entry.composer));
+      tell();
+    },
+    initializeProviderComposer(
+      record: ComposerDefaults,
+      smiths: SmithsView,
+      provider: "codex" | "gemini",
+      mode: "task" | "chat",
+    ) {
+      if (disposed) return;
+      const entry = project(record.id),
+        key = providerDraftKey(provider, mode),
+        options = entry[key];
+      if (
+        entry.pendingStart ||
+        entry.starting ||
+        (options.initialized && defaultsHeld(entry)) ||
+        (options.initialized &&
+          (providerBaselines.get(record.id)?.[key] !==
+            JSON.stringify(options) ||
+            composerBaselines.get(record.id) !==
+              JSON.stringify(entry.composer)))
+      )
+        return;
+      const saved =
+        record[
+          provider === "codex" ? "codexSessionSmith" : "geminiSessionSmith"
+        ];
+      const selected = saved
+        ? smiths.smiths.find(
+            (item) =>
+              item.name === saved && item.enabled && item.provider === provider,
+          )
+        : (smiths.smiths.find(
+            (item) =>
+              item.name === smiths.defaultSmith &&
+              item.enabled &&
+              item.provider === provider,
+          ) ??
+          smiths.smiths.find(
+            (item) => item.enabled && item.provider === provider,
+          ));
+      // An unavailable project choice remains named and cannot silently inherit another Smith.
+      if (provider === "codex") {
+        if (mode === "chat")
+          entry.codexChatComposer = selected
+            ? chooseCodexChatSmith(entry.codexChatComposer, selected)
+            : {
+                ...entry.codexChatComposer,
+                initialized: true,
+                smith: saved ?? "",
+                model: "",
+                effort: "",
+              };
+        else
+          entry.codexComposer = selected
+            ? chooseCodexTaskSmith(entry.codexComposer, selected)
+            : {
+                ...entry.codexComposer,
+                initialized: true,
+                smith: saved ?? "",
+                model: "",
+                effort: "",
+              };
+      } else {
+        if (mode === "chat")
+          entry.geminiChatComposer = selected
+            ? saved
+              ? chooseGeminiChatSmith(entry.geminiChatComposer, selected)
+              : {
+                  ...entry.geminiChatComposer,
+                  initialized: true,
+                  smith: selected.name,
+                  model: "",
+                }
+            : {
+                ...entry.geminiChatComposer,
+                initialized: true,
+                smith: saved ?? "",
+                model: "",
+              };
+        else
+          entry.geminiComposer = selected
+            ? saved
+              ? chooseGeminiTaskSmith(entry.geminiComposer, selected)
+              : {
+                  ...entry.geminiComposer,
+                  initialized: true,
+                  smith: selected.name,
+                  model: "",
+                }
+            : {
+                ...entry.geminiComposer,
+                initialized: true,
+                smith: saved ?? "",
+                model: "",
+              };
+      }
+      const baselines = providerBaselines.get(record.id) ?? {};
+      baselines[key] = JSON.stringify(entry[key]);
+      providerBaselines.set(record.id, baselines);
+      tell();
+    },
+    initializeComposer(
+      record: ComposerDefaults,
+      smiths: SmithsView,
+      worktrees: WorktreeEntry[],
+    ) {
+      if (disposed) return;
+      const entry = project(record.id),
+        draft = entry.composer;
+      if (!record.workspaces) return;
+      if (
+        entry.pendingStart ||
+        entry.starting ||
+        (draft.initialized && defaultsHeld(entry))
+      )
+        return;
+      if (
+        draft.initialized &&
+        composerBaselines.get(record.id) !== JSON.stringify(draft)
+      )
+        return;
+      entry.composer = initializeClaudeDraft(
+        draft,
+        { ...record, workspaces: record.workspaces },
+        smiths,
+        worktrees,
+      );
+      if (
+        entry.composer.prompt ||
+        entry.composer.attachments.length ||
+        entry.composer.about.length
+      )
+        composerBaselines.delete(record.id);
+      else composerBaselines.set(record.id, JSON.stringify(entry.composer));
+      tell();
+    },
     editComposer(projectId: string, update: Partial<SessionComposerDraft>) {
       project(projectId).composer = {
         ...project(projectId).composer,
@@ -1543,6 +1872,10 @@ export function createSessionsClient(deps: {
       tell();
     },
     chooseCodexMode(projectId: string, mode: "task" | "chat") {
+      const modes =
+        explicitModes.get(projectId) ?? new Set<"codex" | "gemini">();
+      modes.add("codex");
+      explicitModes.set(projectId, modes);
       project(projectId).codexMode = mode;
       tell();
     },
@@ -1577,6 +1910,10 @@ export function createSessionsClient(deps: {
       tell();
     },
     chooseGeminiMode(projectId: string, mode: "task" | "chat") {
+      const modes =
+        explicitModes.get(projectId) ?? new Set<"codex" | "gemini">();
+      modes.add("gemini");
+      explicitModes.set(projectId, modes);
       project(projectId).geminiMode = mode;
       tell();
     },
@@ -1956,6 +2293,10 @@ export function createSessionsClient(deps: {
       }
     },
     dispose() {
+      composerStarts.clear();
+      composerBaselines.clear();
+      providerBaselines.clear();
+      explicitModes.clear();
       for (const [projectId, intent] of startIntents) {
         if (intent.phase !== "waiting") continue;
         intent.cancelled = true;

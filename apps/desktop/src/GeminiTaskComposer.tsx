@@ -19,6 +19,7 @@ import { providerUsageLabel, readinessLabel } from "./providers-model";
 import type { SessionComposerProps } from "./SessionComposer";
 import { SessionStartIdentityControls } from "./SessionStartIdentityControls";
 import { chooseSessionSmith, sessionAttachments } from "./session-composer";
+import { sessionStartFormReady } from "./session-composer-owner";
 
 /** Explicit scoped native Gemini CLI Tasks; untouched native defaults remain omitted. */
 export function GeminiTaskComposer({
@@ -65,47 +66,8 @@ export function GeminiTaskComposer({
         if (!Array.isArray(smiths.smiths) || !Array.isArray(worktrees))
           throw Error("Unverified choices");
         setSettings({ smiths, worktrees });
-        const current = client.project(project.id);
-        if (!current.composer.initialized) {
-          const original = current.composer,
-            selected = smiths.smiths.find(
-              (smith) => smith.name === smiths.defaultSmith,
-            );
-          const preserved =
-            selected?.enabled && selected.provider === "claude"
-              ? chooseSessionSmith(original, selected)
-              : original;
-          client.editComposer(project.id, {
-            ...preserved,
-            initialized: true,
-            repository:
-              original.repository ||
-              project.workspaces.flatMap((scope) => scope.repositories)[0] ||
-              "",
-            worktree:
-              original.worktree ||
-              worktrees.find((tree) => tree.kind === "main" && !tree.missing)
-                ?.path ||
-              "",
-          });
-        }
-        if (!current.geminiComposer.initialized) {
-          const selected =
-            smiths.smiths.find(
-              (smith) =>
-                smith.name === smiths.defaultSmith &&
-                smith.enabled &&
-                smith.provider === "gemini",
-            ) ??
-            smiths.smiths.find(
-              (smith) => smith.enabled && smith.provider === "gemini",
-            );
-          editOptions(
-            selected
-              ? { initialized: true, smith: selected.name }
-              : { initialized: true },
-          );
-        }
+        client.initializeComposer(project, smiths, worktrees);
+        client.initializeProviderComposer(project, smiths, "gemini", "task");
       })
       .catch(() => {
         if (active)
@@ -171,10 +133,7 @@ export function GeminiTaskComposer({
   const busy = checking || attaching || view.starting;
   const pending =
     !!view.pendingStart || !!view.startIdentity || !!view.startIdentityError;
-  const identityReady =
-    !!view.identityPage &&
-    !view.identityLoading &&
-    view.identityGeneration !== null;
+  const identityReady = sessionStartFormReady(view);
   let recoveryInput: OwnedSessionStartInput | null = null;
   let validation =
     "Check supported options before starting. This check starts no model.";
@@ -636,6 +595,12 @@ export function GeminiTaskComposer({
             }}
           >
             <option value="">Choose an enabled Gemini smith</option>
+            {options.smith &&
+              (!source?.enabled || source.provider !== "gemini") && (
+                <option value={options.smith} disabled>
+                  {options.smith} (unavailable)
+                </option>
+              )}
             {settings?.smiths.smiths.map((smith) => (
               <option
                 key={smith.name}

@@ -19,6 +19,7 @@ import { providerUsageLabel, readinessLabel } from "./providers-model";
 import type { SessionComposerProps } from "./SessionComposer";
 import { SessionStartIdentityControls } from "./SessionStartIdentityControls";
 import { chooseSessionSmith, sessionAttachments } from "./session-composer";
+import { sessionStartFormReady } from "./session-composer-owner";
 
 /** Native exec Task controls. Claude option drafts and the sealed Keeper remain separate. */
 export function CodexTaskComposer({
@@ -68,47 +69,8 @@ export function CodexTaskComposer({
         if (!Array.isArray(smiths.smiths) || !Array.isArray(worktrees))
           throw Error("Unverified choices");
         setSettings({ smiths, worktrees });
-        const current = client.project(project.id);
-        if (!current.composer.initialized) {
-          const original = current.composer,
-            selected = smiths.smiths.find(
-              (smith) => smith.name === smiths.defaultSmith,
-            );
-          const preserved =
-            selected?.enabled && selected.provider === "claude"
-              ? chooseSessionSmith(original, selected)
-              : original;
-          client.editComposer(project.id, {
-            ...preserved,
-            initialized: true,
-            repository:
-              original.repository ||
-              project.workspaces.flatMap((scope) => scope.repositories)[0] ||
-              "",
-            worktree:
-              original.worktree ||
-              worktrees.find((tree) => tree.kind === "main" && !tree.missing)
-                ?.path ||
-              "",
-          });
-        }
-        if (!current.codexComposer.initialized) {
-          const selected =
-            smiths.smiths.find(
-              (smith) =>
-                smith.name === smiths.defaultSmith &&
-                smith.enabled &&
-                smith.provider === "codex",
-            ) ??
-            smiths.smiths.find(
-              (smith) => smith.enabled && smith.provider === "codex",
-            );
-          editOptions(
-            selected
-              ? chooseCodexTaskSmith(current.codexComposer, selected)
-              : { initialized: true },
-          );
-        }
+        client.initializeComposer(project, smiths, worktrees);
+        client.initializeProviderComposer(project, smiths, "codex", "task");
       })
       .catch(() => {
         if (active)
@@ -171,10 +133,7 @@ export function CodexTaskComposer({
   const busy = checking || attaching || view.starting;
   const pending =
     !!view.pendingStart || !!view.startIdentity || !!view.startIdentityError;
-  const identityReady =
-    !!view.identityPage &&
-    !view.identityLoading &&
-    view.identityGeneration !== null;
+  const identityReady = sessionStartFormReady(view);
   let serialized: SerializedCodexTask | null = null,
     recoveryInput: OwnedSessionStartInput | null = null,
     validation =
@@ -628,6 +587,12 @@ export function CodexTaskComposer({
             }}
           >
             <option value="">Choose an enabled Codex smith</option>
+            {options.smith &&
+              (!source?.enabled || source.provider !== "codex") && (
+                <option value={options.smith} disabled>
+                  {options.smith} (unavailable)
+                </option>
+              )}
             {settings?.smiths.smiths.map((smith) => (
               <option
                 key={smith.name}

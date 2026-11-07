@@ -20,6 +20,7 @@ import {
   projectCreateReserveSchema,
   projectCreateRetireSchema,
 } from "../../../scripts/projects/create-protocol";
+import { projectDefaultsSchema } from "../../../scripts/projects/project-defaults-protocol";
 import { keeperAutonomySchema } from "../../../scripts/projects/project-keeper-protocol";
 import {
   approvedRepositorySchema,
@@ -65,6 +66,11 @@ const projectRecordSchema = z
       .max(16),
     keeperSmith: z.string().min(1).max(1024).optional(),
     keeperAutonomy: keeperAutonomySchema.optional(),
+    claudeSessionSmith: projectDefaultsSchema.shape.claudeSessionSmith,
+    codexSessionSmith: projectDefaultsSchema.shape.codexSessionSmith,
+    geminiSessionSmith: projectDefaultsSchema.shape.geminiSessionSmith,
+    sessionWhere: projectDefaultsSchema.shape.sessionWhere,
+    sessionRunAs: projectDefaultsSchema.shape.sessionRunAs,
     color: z.enum(PROJECT_COLOR_IDS).optional(),
     pinned: z.boolean(),
     archived: z.boolean(),

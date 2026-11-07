@@ -38,8 +38,10 @@ import { geminiTaskLaunchFromStart } from "../../scripts/sessions/gemini-owned-p
 import { preparedGeminiTaskSchema } from "../../scripts/sessions/gemini-task-runtime-protocol";
 import { sessionTurnSnapshotSchema } from "../../scripts/sessions/turn-protocol";
 import type { OwnedCodingSessionRecord } from "../../types/codex-owned-task";
+import type { SmithsView } from "../../types/hearth";
 import type { OwnedSessionRecord } from "../../types/owned-session";
 import type { SessionStartRequest } from "../../types/session-requests";
+import { projectFixture } from "../projects/testing";
 import { sessionStartFixture } from "./session-start-fixture";
 
 const projectId = "project-a5832fa0-7a21-403b-8184-44892f0d8d86",
@@ -2324,6 +2326,183 @@ test("proposal admission cannot adopt a valid managed Shift receipt into ordinar
   ).toBe(false);
   expect(client.project(projectId).records).toEqual([]);
   client.dispose();
+});
+
+test.each([
+  "unchanged",
+  "edited",
+  "unrelated",
+] as const)("confirmed Start permits the next default only for its unchanged draft: %s", async (change) => {
+  const source = await sourceValidOriginal(sixStartInputs[1]);
+  let admitted = false;
+  const client = createSessionsClient({
+    identities: sessionStartFixture().identities,
+    canWrite: () => true,
+    requestId: () => requestId,
+    list: async () => (admitted ? [source.session] : []),
+    read: async () => ({
+      ...page,
+      request: source.originalTurn,
+      turns: [source.originalTurn],
+      frames: [{ seq: 1, turnId: requestId, at, event: source.event }],
+    }),
+    post: async () => ({ state: "unknown", message: "Lost response" }),
+    stream: () => () => ({ close() {} }),
+  });
+  const project = {
+    ...projectFixture("/repo"),
+    id: projectId,
+    claudeSessionSmith: "global",
+  };
+  const smiths: SmithsView = {
+    defaultSmith: "global",
+    benches: { low: [], medium: [], high: [] },
+    smiths: [
+      {
+        name: "global",
+        provider: "claude",
+        model: "global-model",
+        effort: "medium",
+        enabled: true,
+        tags: [],
+      },
+    ],
+  };
+  try {
+    client.editComposer(projectId, {
+      ...sharedDraft,
+      initialized: true,
+      mode: "chat",
+      smith: "claude-chat",
+      model: "sonnet",
+      ...(change === "unrelated" ? { prompt: "Retained separate draft" } : {}),
+    });
+    await client.start(projectId, sixStartInputs[1].input);
+    if (change === "edited")
+      client.editComposer(projectId, {
+        smith: "manual",
+        model: "manual-model",
+        prompt: "Next private draft",
+      });
+    const before = structuredClone(client.project(projectId).composer);
+    client.initializeComposer(project, smiths, []);
+    expect(client.project(projectId).composer).toEqual(before);
+    admitted = true;
+    await client.refresh(projectId);
+    await Bun.sleep(0);
+    expect(client.project(projectId).pendingStart).toBeNull();
+    client.initializeComposer(project, smiths, []);
+    expect(client.project(projectId).composer.smith).toBe(
+      change === "unchanged" ? "global" : before.smith,
+    );
+    expect(source.original.smith).toBe("claude-chat");
+  } finally {
+    client.dispose();
+  }
+});
+
+test.each(
+  sixStartInputs
+    .slice(2)
+    .flatMap((item) => [false, true].map((edited) => ({ item, edited }))),
+)("confirmed provider Starts release defaults only for the exact unchanged draft: %o", async ({
+  item,
+  edited,
+}) => {
+  const source = await sourceValidOriginal(item);
+  let admitted = false;
+  const client = createSessionsClient({
+    identities: sessionStartFixture().identities,
+    canWrite: () => true,
+    requestId: () => requestId,
+    list: async () => (admitted ? [source.session] : []),
+    read: async () => ({
+      ...page,
+      request: source.originalTurn,
+      turns: [source.originalTurn],
+      frames: [{ seq: 1, turnId: requestId, at, event: source.event }],
+    }),
+    post: async () => ({ state: "unknown", message: "Lost response" }),
+    stream: () => () => ({ close() {} }),
+  });
+  const provider = source.session.provider;
+  if (provider === "claude") throw Error("Provider fixture required");
+  const mode = source.original.launch.mode;
+  const project = {
+    ...projectFixture("/repo"),
+    id: projectId,
+    codexSessionSmith: "next",
+    geminiSessionSmith: "next",
+  };
+  const smiths: SmithsView = {
+    defaultSmith: "next",
+    benches: { low: [], medium: [], high: [] },
+    smiths: [
+      {
+        name: "next",
+        provider,
+        model: "next-model",
+        effort: "medium",
+        enabled: true,
+        tags: [],
+      },
+    ],
+  };
+  try {
+    client.chooseComposerProvider(projectId, provider);
+    client.editComposer(projectId, { ...sharedDraft, initialized: true });
+    const launch = source.original.launch;
+    if (provider === "codex") {
+      client.chooseCodexMode(projectId, mode);
+      const options = {
+        initialized: true,
+        smith: source.original.smith,
+        model: launch.model ?? "",
+        sandbox: "read-only" as const,
+      };
+      if (mode === "chat") client.editCodexChatComposer(projectId, options);
+      else client.editCodexComposer(projectId, options);
+    } else {
+      client.chooseGeminiMode(projectId, mode);
+      const options = {
+        initialized: true,
+        smith: source.original.smith,
+        model: launch.model ?? "",
+      };
+      if (mode === "chat") client.editGeminiChatComposer(projectId, options);
+      else client.editGeminiComposer(projectId, options);
+    }
+    await client.start(projectId, item.input);
+    if (edited) {
+      if (provider === "codex") {
+        if (mode === "chat")
+          client.editCodexChatComposer(projectId, { model: "private" });
+        else client.editCodexComposer(projectId, { model: "private" });
+      } else {
+        if (mode === "chat")
+          client.editGeminiChatComposer(projectId, { model: "private" });
+        else client.editGeminiComposer(projectId, { model: "private" });
+      }
+    }
+    admitted = true;
+    await client.refresh(projectId);
+    await Bun.sleep(0);
+    expect(client.project(projectId).pendingStart).toBeNull();
+    client.initializeProviderComposer(project, smiths, provider, mode);
+    const view = client.project(projectId);
+    const options =
+      provider === "codex"
+        ? mode === "chat"
+          ? view.codexChatComposer
+          : view.codexComposer
+        : mode === "chat"
+          ? view.geminiChatComposer
+          : view.geminiComposer;
+    expect(options.model).toBe(edited ? "private" : "next-model");
+    expect(source.original.smith).toBe(item.input.smith);
+  } finally {
+    client.dispose();
+  }
 });
 
 test("lost Start responses retain the immutable original until its actual admitted turn is found; reads never start another provider", async () => {

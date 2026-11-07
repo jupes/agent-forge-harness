@@ -1560,7 +1560,7 @@ async function composer(
       );
       await expect(
         dialog.getByRole("button", { name: "Start", exact: true }),
-      ).toBeDisabled();
+      ).toBeEnabled();
     }
   } finally {
     await identityRead?.release();
@@ -3055,7 +3055,7 @@ test("Codex Chat reviews native options, allows one actual command and resumes i
     );
     await expect(
       dialog.getByRole("button", { name: "Start", exact: true }),
-    ).toBeDisabled();
+    ).toBeEnabled();
   } finally {
     await identityRead.release();
     await identityRead.dispose();
@@ -3699,7 +3699,7 @@ test("a synchronous draft edit before the next paint cannot dispatch an unreview
     ).toContainText("Checking the server-owned identity page");
     await expect(
       dialog.getByRole("button", { name: "Start", exact: true }),
-    ).toBeDisabled();
+    ).toBeEnabled();
   } finally {
     await identityRead.release();
     await identityRead.dispose();

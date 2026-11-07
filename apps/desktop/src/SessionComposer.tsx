@@ -20,11 +20,15 @@ import { SessionStartIdentityControls } from "./SessionStartIdentityControls";
 import type { SessionsClient } from "./session-client";
 import {
   chooseSessionSmith,
+  initializeClaudeDraft,
   sessionAttachments,
   sessionStartBody,
   validateSessionAttachments,
 } from "./session-composer";
-import type { SessionComposerOwner } from "./session-composer-owner";
+import {
+  type SessionComposerOwner,
+  sessionStartFormReady,
+} from "./session-composer-owner";
 import "./session.css";
 import { CodexChatComposer } from "./CodexChatComposer";
 import { CodexTaskComposer } from "./CodexTaskComposer";
@@ -155,34 +159,15 @@ export function ClaudeSessionComposer({
         if (client.initializeComposer) {
           client.initializeComposer(project, smiths, worktrees);
         } else if (!client.project(project.id).composer.initialized) {
-          const original = client.project(project.id).composer,
-            selected = smiths.smiths.find(
-              (item) => item.name === smiths.defaultSmith,
-            );
-          const repository =
-            [
-              ...new Set(
-                project.workspaces.flatMap((scope) => scope.repositories),
-              ),
-            ][0] ?? "";
-          const main = worktrees.find(
-            (item) => item.kind === "main" && !item.missing,
+          client.editComposer(
+            project.id,
+            initializeClaudeDraft(
+              client.project(project.id).composer,
+              project,
+              smiths,
+              worktrees,
+            ),
           );
-          const options =
-            selected?.enabled && selected.provider === "claude"
-              ? chooseSessionSmith(original, selected)
-              : {
-                  ...original,
-                  smith: smiths.defaultSmith,
-                  model: selected?.model ?? "",
-                  effort: selected?.effort ?? "",
-                };
-          client.editComposer(project.id, {
-            ...options,
-            initialized: true,
-            repository,
-            worktree: main?.path ?? "",
-          });
         }
       } catch {
         if (current)
@@ -279,11 +264,7 @@ export function ClaudeSessionComposer({
   }
   const busy = checking || attaching || view.starting;
   const identityReady =
-    client.purpose === "keeper-proposal" ||
-    (!!view.identityPage &&
-      !view.identityLoading &&
-      view.identityGeneration !== null &&
-      view.identityGeneration !== undefined);
+    client.purpose === "keeper-proposal" || sessionStartFormReady(view);
   const canStart =
     claudeReadiness?.authentication.mode !== "signed-out" &&
     writesAllowed &&
@@ -848,6 +829,21 @@ export function ClaudeSessionComposer({
       </fieldset>
       <fieldset disabled={view.inputLocked}>
         <legend>Smith preset</legend>
+        {client.purpose === "ordinary-session" && (
+          <p>
+            New-draft default source:{" "}
+            {project.claudeSessionSmith
+              ? `project Settings (${project.claudeSessionSmith})`
+              : "configured selection"}
+            . Your current draft keeps its reviewed selection.
+          </p>
+        )}
+        {draft.smith && !selectedSmith && (
+          <p role="status">
+            The selected Smith is unavailable. Choose an enabled Claude Smith
+            before starting.
+          </p>
+        )}
         <label>
           Source smith
           <select
@@ -872,6 +868,11 @@ export function ClaudeSessionComposer({
             }}
           >
             <option value="">Choose a smith…</option>
+            {draft.smith && !selectedSmith && (
+              <option value={draft.smith} disabled>
+                {draft.smith} (unavailable)
+              </option>
+            )}
             {settings?.smiths.smiths.map((item) => (
               <option
                 key={item.name}

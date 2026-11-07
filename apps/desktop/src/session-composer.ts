@@ -1,6 +1,8 @@
 import { sessionAttachmentSchema } from "../../../scripts/sessions/claude-launch";
+import type { WorktreeEntry } from "../../../types/beads";
 import type { ConversationObject } from "../../../types/conversation";
-import type { Smith } from "../../../types/hearth";
+import type { Smith, SmithsView } from "../../../types/hearth";
+import type { ProjectRecord } from "../../../types/projects";
 import type {
   ClaudeEffort,
   SessionAttachment,
@@ -73,6 +75,34 @@ export function chooseSessionSmith(
     effort: smith.effort,
   };
 }
+export function initializeClaudeDraft(
+  draft: SessionComposerDraft,
+  project: Pick<ProjectRecord, "id" | "workspaces" | "claudeSessionSmith">,
+  smiths: SmithsView,
+  worktrees: WorktreeEntry[],
+): SessionComposerDraft {
+  const name = project.claudeSessionSmith ?? smiths.defaultSmith;
+  const selected = smiths.smiths.find((item) => item.name === name);
+  const options =
+    selected?.enabled && selected.provider === "claude"
+      ? chooseSessionSmith(draft, selected)
+      : { ...draft, smith: name, model: "", effort: "", custom: false };
+  return {
+    ...options,
+    initialized: true,
+    repository:
+      draft.repository ||
+      project.workspaces.flatMap((scope) => scope.repositories)[0] ||
+      "",
+    worktree:
+      draft.worktree ||
+      (draft.where === "main"
+        ? worktrees.find((item) => item.kind === "main" && !item.missing)?.path
+        : "") ||
+      "",
+  };
+}
+
 export function sessionStartBody(
   draft: SessionComposerDraft,
 ): Omit<SessionStartRequest, "requestId"> {

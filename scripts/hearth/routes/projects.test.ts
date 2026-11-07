@@ -16,6 +16,7 @@ import { resolveCheckout } from "../../ledger/workspace";
 import { projectScopePreviewSettingsQuerySchema } from "../../projects/project-scope-preview-protocol";
 import { workspaceKey } from "../../projects/scope";
 import { createProjectStore, projectCatalogPath } from "../../projects/store";
+import { projectCatalogFixture } from "../../projects/testing";
 import { withQueueLock } from "../../scheduler/queue-lock";
 import { startTestHearth, type TestHearth } from "../testing";
 import { writeOwnerOnly } from "../token";
@@ -3582,6 +3583,80 @@ test("project repository read is bounded to registered membership and fails clos
 
   renameSync(checkout, checkout + ".gone");
   expect((await readProjectRepositories(route, project.id)).status).toBe(503);
+});
+
+test("session default save validates enabled Claude Smiths and clears inheritance independently", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  const catalog = projectCatalogFixture(h.workspace);
+  catalog.projects[0]!.keeperAutonomy = "suggest-only";
+  writeOwnerOnly(projectCatalogPath(h.home), JSON.stringify(catalog));
+  const directory = join(h.configHome, ".agent-forge");
+  mkdirSync(directory, { recursive: true });
+  writeFileSync(
+    join(directory, "config.toml"),
+    "[smiths.claude-master]\nenabled = false\n",
+  );
+  const path =
+    h.api + "/projects/" + catalog.projects[0]!.id + "/settings/defaults";
+  const save = (revision: number, defaults: unknown) =>
+    fetch(path, {
+      method: "POST",
+      headers: h.headers(h.hearth.token),
+      body: JSON.stringify({ expectedRevision: revision, defaults }),
+    });
+  for (const name of ["unknown", "claude-master", "codex-journeyman"])
+    expect((await save(1, { claudeSessionSmith: name })).status).toBe(400);
+  const store = createProjectStore(h.home);
+  expect(store.read()).toEqual(catalog);
+  expect(
+    (await save(1, { claudeSessionSmith: "claude-journeyman" })).status,
+  ).toBe(200);
+  expect(store.read().projects[0]).toMatchObject({
+    claudeSessionSmith: "claude-journeyman",
+    keeperAutonomy: "suggest-only",
+  });
+  expect((await save(1, {})).status).toBe(409);
+  expect((await save(2, {})).status).toBe(200);
+  expect(store.read().projects[0]?.claudeSessionSmith).toBeUndefined();
+  for (const defaults of [
+    { codexSessionSmith: "claude-journeyman" },
+    { geminiSessionSmith: "codex-journeyman" },
+    { sessionWhere: "arbitrary" },
+    { sessionRunAs: "administrator" },
+  ])
+    expect((await save(3, defaults)).status).toBe(400);
+  expect(
+    (
+      await save(3, {
+        codexSessionSmith: "codex-journeyman",
+        sessionWhere: "new",
+        sessionRunAs: "chat",
+      })
+    ).status,
+  ).toBe(200);
+  expect(
+    (await save(4, { claudeSessionSmith: "claude-journeyman" })).status,
+  ).toBe(200);
+  expect(store.read().projects[0]).toMatchObject({
+    codexSessionSmith: "codex-journeyman",
+    sessionWhere: "new",
+    sessionRunAs: "chat",
+  });
+  expect(
+    (
+      await save(5, {
+        codexSessionSmith: null,
+        sessionWhere: null,
+        sessionRunAs: null,
+      })
+    ).status,
+  ).toBe(200);
+  expect(store.read().projects[0]?.codexSessionSmith).toBeUndefined();
+  expect(store.read().projects[0]?.sessionWhere).toBeUndefined();
+  expect(store.read().projects[0]?.claudeSessionSmith).toBe(
+    "claude-journeyman",
+  );
 });
 
 test("Keeper default save rejects unconfigured and disabled Smiths without changing the catalog", async () => {

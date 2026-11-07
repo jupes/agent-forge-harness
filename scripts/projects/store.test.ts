@@ -580,10 +580,16 @@ test("an explicit project Keeper Smith is bound to the saved original and commit
 
   const originalOperation = JSON.stringify(store.readCreate(requestId));
   if (!committedProject) throw Error("missing committed project");
-  const changed = await store.updateKeeper(
+  const keeperChanged = await store.updateKeeper(
     committedProject.id,
     committed.catalog.revision,
     { keeperSmith: "codex-journeyman", keeperAutonomy: "suggest-only" },
+    () => {},
+  );
+  const changed = await store.updateDefaults(
+    committedProject.id,
+    keeperChanged.revision,
+    { claudeSessionSmith: "claude-master" },
     () => {},
   );
   expect(createProjectStore(home).read().projects[0]?.keeperSmith).toBe(
@@ -1041,6 +1047,86 @@ test("Keeper autonomy persists without changing Smith or immutable creation hist
   );
   expect(createProjectStore(home).read().projects[0]?.keeperAutonomy).toBe(
     "propose-for-approval",
+  );
+});
+test("Claude session defaults persist and clear independently of Keeper settings", async () => {
+  const { home, store, input } = fixture();
+  const created = await store.create(input, 0),
+    project = created.projects[0]!;
+  await store.updateKeeper(
+    project.id,
+    1,
+    { keeperSmith: "claude-master", keeperAutonomy: "suggest-only" },
+    () => {},
+  );
+  const changed = await store.updateDefaults(
+    project.id,
+    2,
+    { claudeSessionSmith: "claude-journeyman" },
+    () => {},
+  );
+  expect(createProjectStore(home).read().projects[0]).toMatchObject({
+    claudeSessionSmith: "claude-journeyman",
+    keeperSmith: "claude-master",
+    keeperAutonomy: "suggest-only",
+  });
+  await expect(
+    store.updateDefaults(project.id, 2, {}, () => {}),
+  ).rejects.toMatchObject({ status: 409 });
+  await store.updateDefaults(project.id, changed.revision, {}, () => {});
+  expect(store.read().projects[0]?.claudeSessionSmith).toBeUndefined();
+  expect(store.read().projects[0]?.keeperSmith).toBe("claude-master");
+});
+test("provider and launch defaults preserve omitted fields and clear only explicit fields", async () => {
+  const { store, input } = fixture();
+  const created = await store.create(input, 0),
+    id = created.projects[0]!.id;
+  const checked: string[] = [];
+  await store.updateDefaults(
+    id,
+    1,
+    {
+      claudeSessionSmith: "claude-master",
+      codexSessionSmith: "codex-journeyman",
+      geminiSessionSmith: "gemini-journeyman",
+      sessionWhere: "new",
+      sessionRunAs: "task",
+    },
+    (name, provider) => {
+      checked.push(`${provider}:${name}`);
+    },
+  );
+  expect(checked).toEqual([
+    "claude:claude-master",
+    "codex:codex-journeyman",
+    "gemini:gemini-journeyman",
+  ]);
+  await store.updateDefaults(
+    id,
+    2,
+    { claudeSessionSmith: "claude-journeyman" },
+    () => {},
+  );
+  expect(store.read().projects[0]).toMatchObject({
+    codexSessionSmith: "codex-journeyman",
+    sessionWhere: "new",
+    sessionRunAs: "task",
+  });
+  await store.updateDefaults(
+    id,
+    3,
+    { codexSessionSmith: null, sessionRunAs: null },
+    () => {},
+  );
+  expect(store.read().projects[0]?.codexSessionSmith).toBeUndefined();
+  expect(store.read().projects[0]?.sessionRunAs).toBeUndefined();
+  expect(store.read().projects[0]?.claudeSessionSmith).toBe(
+    "claude-journeyman",
+  );
+  await store.updateDefaults(id, 4, {}, () => {});
+  expect(store.read().projects[0]?.claudeSessionSmith).toBeUndefined();
+  expect(store.read().projects[0]?.geminiSessionSmith).toBe(
+    "gemini-journeyman",
   );
 });
 

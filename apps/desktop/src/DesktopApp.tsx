@@ -115,6 +115,7 @@ import { useKeeperSessionReviews } from "./use-keeper-session-reviews";
 import { useKeeperShiftReviews } from "./use-keeper-shift-reviews";
 import { useProjectActivity } from "./use-project-activity";
 import { useProjectCreate } from "./use-project-create";
+import { useProjectDefaults } from "./use-project-defaults";
 import { useProjectGeneralSettings } from "./use-project-general-settings";
 import { useProjectKeeperSettings } from "./use-project-keeper-settings";
 import { useProjectRepositories } from "./use-project-repositories";
@@ -354,6 +355,7 @@ export function DesktopApp(): JSX.Element {
     projects.refreshProjectHome,
   );
   const keeperSettings = useProjectKeeperSettings(projects.refreshProjectHome);
+  const defaultsSettings = useProjectDefaults(projects.refreshProjectHome);
   const settingsCatalog = projects.data?.catalog ?? null;
   const providers = useProviders();
   const projectCreate = useProjectCreate(
@@ -378,6 +380,10 @@ export function DesktopApp(): JSX.Element {
     if (settingsCatalog && route.projectId)
       keeperSettings.owner.adopt(route.projectId, settingsCatalog);
   }, [keeperSettings.owner, route.projectId, settingsCatalog]);
+  useEffect(() => {
+    if (settingsCatalog && route.projectId)
+      defaultsSettings.owner.adopt(route.projectId, settingsCatalog);
+  }, [defaultsSettings.owner, route.projectId, settingsCatalog]);
   const repositoryProjectId =
     route.destination === "project-settings" ? (project?.id ?? null) : null;
   const projectRepositories = useProjectRepositories(
@@ -1226,6 +1232,7 @@ export function DesktopApp(): JSX.Element {
   };
   const openSession = (beadId?: string) => {
     if (!project || project.archived) return;
+    sessions.prepareComposerDefaults(project);
     composerOpener.current =
       document.activeElement instanceof HTMLElement
         ? document.activeElement
@@ -2041,6 +2048,7 @@ export function DesktopApp(): JSX.Element {
       writesAllowed &&
       !project.archived
     ) {
+      sessions.prepareComposerDefaults(project);
       sessions.editComposer(project.id, { prompt: `${intent.name} ` });
       openSession();
       handled = true;
@@ -2306,6 +2314,7 @@ export function DesktopApp(): JSX.Element {
             owner={projectGeneralSettings.owner}
             state={projectGeneralSettings}
             keeperSettings={keeperSettings}
+            defaultsSettings={defaultsSettings}
             smiths={smiths}
             onRefresh={projects.reload}
             repositories={projectRepositories}

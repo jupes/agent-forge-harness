@@ -3407,6 +3407,36 @@ const ACTIONS: Record<string, ActionFixture> = {
       });
     },
   },
+  "POST /projects/:id/settings/defaults": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/settings/defaults`,
+      body: {
+        expectedRevision: 1,
+        defaults: { claudeSessionSmith: "claude-master" },
+      },
+      status: 200,
+      target: FIXTURE_PROJECT_ID,
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/settings/defaults`,
+      body: { expectedRevision: 1, defaults: { claudeSessionSmith: "" } },
+    },
+    prepare: async (h) => {
+      writeOwnerOnly(
+        projectCatalogPath(h.home),
+        JSON.stringify(projectCatalogFixture(h.workspace)),
+      );
+    },
+    captureBefore: (h) => createProjectStore(h.home).read().projects,
+    happened: async (h) => {
+      expect(createProjectStore(h.home).read()).toMatchObject({
+        revision: 2,
+        projects: [
+          { id: FIXTURE_PROJECT_ID, claudeSessionSmith: "claude-master" },
+        ],
+      });
+    },
+  },
   "POST /projects/:id/settings/keeper": {
     valid: {
       path: `/projects/${FIXTURE_PROJECT_ID}/settings/keeper`,
