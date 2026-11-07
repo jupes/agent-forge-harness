@@ -90,7 +90,7 @@ import {
   SHIFTS_DIR,
   shiftIdInUse,
 } from "./shift-store";
-import { createWorktree } from "./worktrees";
+import { createLockedWorktree as createWorktree } from "./worktree-registry-lock";
 
 const range = ([low, high]: readonly [number, number]): string =>
   `${low}-${high}`;
