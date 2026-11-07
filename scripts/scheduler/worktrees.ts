@@ -668,6 +668,35 @@ export function readCache(main: string): WorktreeRecord[] {
   return read.ok ? read.records : [];
 }
 
+function physicalRegistryPathKey(path: string): string | null {
+  try {
+    return registryPathKey(realpathSync.native(path));
+  } catch {
+    return null;
+  }
+}
+
+/** Opaque extension rows retain their identity even when legacy listing ignores them. */
+function identityInUse(
+  rows: readonly unknown[],
+  id: string,
+  path: string,
+): boolean {
+  const key = registryPathKey(path);
+  const physical = physicalRegistryPathKey(path);
+  return rows.some((row) => {
+    if (!row || typeof row !== "object" || Array.isArray(row)) return false;
+    const held = row as { id?: unknown; path?: unknown };
+    return (
+      held.id === id ||
+      (typeof held.path === "string" &&
+        (registryPathKey(held.path) === key ||
+          (physical !== null &&
+            physicalRegistryPathKey(held.path) === physical)))
+    );
+  });
+}
+
 /**
  * Change the cache: read it again right before the write, so a record
  * another process wrote meanwhile is kept, and replace the file whole
@@ -677,17 +706,22 @@ export function readCache(main: string): WorktreeRecord[] {
  */
 function updateCache(
   main: string,
-  change: (records: WorktreeRecord[]) => WorktreeRecord[],
+  change: (
+    records: WorktreeRecord[],
+    others: readonly unknown[],
+  ) => Outcome<WorktreeRecord[]>,
 ): Outcome<void> {
   const read = loadCache(main);
   if (!read.ok) return no(read.error);
   const file = cacheFile(main);
   const temporary = `${file}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`;
   try {
+    const changed = change(read.records, read.others);
+    if (!changed.ok) return changed;
     mkdirSync(join(main, "trees"), { recursive: true });
     writeFileSync(
       temporary,
-      `${JSON.stringify({ worktrees: [...change(read.records), ...read.others] }, null, 2)}\n`,
+      `${JSON.stringify({ worktrees: [...changed.value, ...read.others] }, null, 2)}\n`,
     );
     renameSync(temporary, file);
   } catch (error) {
@@ -1024,6 +1058,11 @@ function createWorktreeAttempt(
   if (!cache.ok) return no(cache.error);
   const id = deps.newId();
   if (!WORKTREE_ID.test(id)) return no("a worktree id must be a plain name");
+  const path = `${root}/trees/${id}`;
+  if (identityInUse([...cache.records, ...cache.others], id, path))
+    return no(
+      "the worktree id or target path is already retained in the registry",
+    );
   if (!ignoredHere(root, `trees/${id}`, deps.git))
     return no(
       "trees/ is not ignored by this repository's own .gitignore: add `trees/` there before making worktrees in it",
@@ -1046,7 +1085,6 @@ function createWorktreeAttempt(
   const mirror = deps.readMirror(from);
   const sessionId =
     request.sessionId ?? (isSessionId(mirror) ? mirror : undefined);
-  const path = `${root}/trees/${id}`;
   onAttempt({ id, path, branch: request.branch, startCommit: sha });
   const added = deps.git(
     ["worktree", "add", "-b", request.branch, "--", path, sha],
@@ -1066,7 +1104,11 @@ function createWorktreeAttempt(
     ...(request.beadId !== undefined ? { beadId: request.beadId } : {}),
     ...(sessionId !== undefined ? { ownerSessionId: sessionId } : {}),
   };
-  const recorded = updateCache(root, (records) => [...records, record]);
+  const recorded = updateCache(root, (records, others) =>
+    identityInUse([...records, ...others], id, path)
+      ? no("the worktree id or target path became retained before publication")
+      : { ok: true, value: [...records, record] },
+  );
   if (!recorded.ok)
     return no(
       `the worktree ${path} was made, but not recorded: ${recorded.error}`,
@@ -1141,9 +1183,10 @@ export function removeWorktree(
           "Git removal may have completed but registry identity changed; saved records were retained",
         );
     }
-    const dropped = updateCache(root, (records) =>
-      records.filter((r) => r.id !== id),
-    );
+    const dropped = updateCache(root, (records) => ({
+      ok: true,
+      value: records.filter((r) => r.id !== id),
+    }));
     return dropped.ok ? { ok: true, value: record } : dropped;
   };
   const listedNow = (): Outcome<boolean> => {

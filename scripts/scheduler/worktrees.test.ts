@@ -612,6 +612,113 @@ describe("createWorktree", () => {
     );
   });
 
+  test("a retained cached id refuses creation before any Git mutation", () => {
+    const dir = repo();
+    const cached = {
+      id: "retained",
+      path: `${top(dir)}/trees/retained`,
+      branch: "feat/previous",
+      createdAt: "2026-11-07T00:00:00.000Z",
+    };
+    const cache = join(dir, "trees", ".state.json");
+    const original = `${JSON.stringify({ worktrees: [cached] })}\n`;
+    mkdirSync(join(dir, "trees"));
+    writeFileSync(cache, original);
+    const mutations: string[][] = [];
+    const recordingGit: GitRun = (args, cwd, timeoutMs) => {
+      if (args[0] === "worktree" || args[0] === "branch") {
+        mutations.push([...args]);
+        return { status: 0, stdout: "", stderr: "" };
+      }
+      return gitRun(args, cwd, timeoutMs);
+    };
+    const refused = createWorktree(
+      dir,
+      dir,
+      { branch: "feat/new-owner" },
+      deps({ git: recordingGit, newId: () => cached.id }),
+    );
+    expect(mutations).toEqual([]);
+    expect(refused).toMatchObject({ ok: false, state: "refused" });
+    expect(readFileSync(cache, "utf8")).toBe(original);
+    expect(existsSync(cached.path)).toBe(false);
+  });
+
+  test("a late cache identity collision preserves foreign rows and partial work", () => {
+    const dir = repo();
+    const path = `${top(dir)}/trees/late-id`;
+    const cache = join(dir, "trees", ".state.json");
+    const startCommit = git(dir, "rev-parse", "HEAD");
+    const old = {
+      id: "previous",
+      path: `${top(dir)}/trees/previous`,
+      branch: "feat/previous",
+      createdAt: "2026-11-07T00:00:00.000Z",
+    };
+    const foreign = { id: "foreign", path, extensionVersion: 2 };
+    const published = `${JSON.stringify({ worktrees: [old, foreign] })}\n`;
+    let adds = 0;
+    const racingGit: GitRun = (args, cwd, timeoutMs) => {
+      if (args[0] !== "worktree" || args[1] !== "add")
+        return gitRun(args, cwd, timeoutMs);
+      adds++;
+      mkdirSync(path, { recursive: true });
+      writeFileSync(join(path, "partial.txt"), "preserve partial work");
+      writeFileSync(cache, published);
+      return { status: 0, stdout: "", stderr: "" };
+    };
+    const result = createWorktree(
+      dir,
+      dir,
+      { branch: "feat/late-owner" },
+      deps({ git: racingGit, newId: () => "late-id" }),
+    );
+    expect(adds).toBe(1);
+    expect(result).toMatchObject({
+      ok: false,
+      state: "unconfirmed",
+      attempt: { id: "late-id", path, branch: "feat/late-owner", startCommit },
+    });
+    expect(readFileSync(cache, "utf8")).toBe(published);
+    expect(readFileSync(join(path, "partial.txt"), "utf8")).toBe(
+      "preserve partial work",
+    );
+  });
+
+  test.skipIf(process.platform === "win32")(
+    "a literal backslash sibling does not retain a POSIX target path",
+    () => {
+      const dir = repo();
+      const cache = join(dir, "trees", ".state.json");
+      const foreign = {
+        id: "foreign-extension",
+        path: join(dir, "trees\\literal-id"),
+        extensionVersion: 2,
+      };
+      mkdirSync(join(dir, "trees"));
+      writeFileSync(cache, JSON.stringify({ worktrees: [foreign] }));
+      let adds = 0;
+      const fakeGit: GitRun = (args, cwd, timeoutMs) => {
+        if (args[0] !== "worktree" || args[1] !== "add")
+          return gitRun(args, cwd, timeoutMs);
+        adds++;
+        return { status: 0, stdout: "", stderr: "" };
+      };
+      const created = createWorktree(
+        dir,
+        dir,
+        { branch: "feat/literal-sibling" },
+        deps({ git: fakeGit, newId: () => "literal-id" }),
+      );
+      expect(created).toMatchObject({ ok: true, state: "created" });
+      expect(adds).toBe(1);
+      const saved = readFileSync(cache, "utf8");
+      expect(saved).toContain(JSON.stringify(foreign.path));
+      expect(saved).toContain('"foreign-extension"');
+      expect(saved).toContain('"extensionVersion": 2');
+    },
+  );
+
   test("a failed add preserves a foreign branch created after the absent check", () => {
     const dir = repo();
     const branch = "feat/late-foreign";
