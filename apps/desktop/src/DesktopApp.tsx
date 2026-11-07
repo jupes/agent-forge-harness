@@ -79,6 +79,7 @@ import {
   emptyActivityFilters,
   parseActivityFilters,
 } from "./project-activity-model";
+import { projectBudgetsSpec } from "./project-budgets-client";
 import {
   createProjectCheckpointReviewOwner,
   type ProjectCheckpointReviewOwner,
@@ -358,6 +359,10 @@ export function DesktopApp(): JSX.Element {
   );
   const keeperSettings = useProjectKeeperSettings(projects.refreshProjectHome);
   const defaultsSettings = useProjectDefaults(projects.refreshProjectHome);
+  const budgetsSettings = useProjectValueSettings(
+    projectBudgetsSpec,
+    projects.refreshProjectHome,
+  );
   const notificationsSettings = useProjectValueSettings(
     projectNotificationsSpec,
     projects.refreshProjectHome,
@@ -390,6 +395,10 @@ export function DesktopApp(): JSX.Element {
     if (settingsCatalog && route.projectId)
       defaultsSettings.owner.adopt(route.projectId, settingsCatalog);
   }, [defaultsSettings.owner, route.projectId, settingsCatalog]);
+  useEffect(() => {
+    if (settingsCatalog && route.projectId)
+      budgetsSettings.owner.adopt(route.projectId, settingsCatalog);
+  }, [budgetsSettings.owner, route.projectId, settingsCatalog]);
   useEffect(() => {
     if (settingsCatalog && route.projectId)
       notificationsSettings.owner.adopt(route.projectId, settingsCatalog);
@@ -2325,6 +2334,7 @@ export function DesktopApp(): JSX.Element {
             state={projectGeneralSettings}
             keeperSettings={keeperSettings}
             defaultsSettings={defaultsSettings}
+            budgetsSettings={budgetsSettings}
             notificationsSettings={notificationsSettings}
             smiths={smiths}
             onRefresh={projects.reload}

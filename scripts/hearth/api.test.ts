@@ -3407,6 +3407,42 @@ const ACTIONS: Record<string, ActionFixture> = {
       });
     },
   },
+  "POST /projects/:id/settings/budgets": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/settings/budgets`,
+      body: {
+        expectedRevision: 1,
+        budgets: { shiftSpendCapUsd: null, dailyApiKeyCapUsd: null },
+      },
+      status: 200,
+      target: FIXTURE_PROJECT_ID,
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/settings/budgets`,
+      body: {
+        expectedRevision: 1,
+        budgets: { shiftSpendCapUsd: 0, dailyApiKeyCapUsd: null },
+      },
+    },
+    prepare: async (h) => {
+      writeOwnerOnly(
+        projectCatalogPath(h.home),
+        JSON.stringify(projectCatalogFixture(h.workspace)),
+      );
+    },
+    captureBefore: (h) => createProjectStore(h.home).read().projects,
+    happened: async (h) => {
+      expect(createProjectStore(h.home).read()).toMatchObject({
+        revision: 2,
+        projects: [
+          {
+            id: FIXTURE_PROJECT_ID,
+            budgets: { shiftSpendCapUsd: null, dailyApiKeyCapUsd: null },
+          },
+        ],
+      });
+    },
+  },
   "POST /projects/:id/settings/notifications": {
     valid: {
       path: `/projects/${FIXTURE_PROJECT_ID}/settings/notifications`,
@@ -4804,6 +4840,7 @@ const ACTIONS: Record<string, ActionFixture> = {
 
 /** A concrete path per read row; a row with none fails the suite. */
 const READS: Record<string, string> = {
+  "GET /projects/:id/settings/budgets": `/projects/${FIXTURE_PROJECT_ID}/settings/budgets`,
   "GET /projects/:id/inbox-dispositions": `/projects/${FIXTURE_PROJECT_ID}/inbox-dispositions`,
   "GET /projects/:id/inbox-dispositions/requests/:requestId": `/projects/${FIXTURE_PROJECT_ID}/inbox-dispositions/requests/${API_INBOX_READ_ID}`,
   "GET /inbox-dispositions/recovery": "/inbox-dispositions/recovery",

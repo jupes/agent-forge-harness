@@ -51,6 +51,7 @@ import {
 import { keeperContinuationSchema } from "../keeper/recovery-protocol";
 import { type KeeperRuntime, prepareKeeper } from "../keeper/recovery-runtime";
 import { resolveCheckout } from "../ledger/workspace";
+import { assertProjectCliCostAdmission } from "../projects/project-budget-policy";
 import { workspaceKey } from "../projects/scope";
 import {
   createProjectStore,
@@ -890,6 +891,12 @@ export function createConversationService(options: ConversationOptions) {
                 409,
                 "The project scope or Keeper selection changed during readiness. The reviewed original has been kept.",
               );
+            if (
+              !store
+                .read(projectId)
+                .turns.some((turn) => turn.requestId === reference.requestId)
+            )
+              assertProjectCliCostAdmission(projectFor(projectId));
             const result = await store.acceptKeeperBrief(
               projectId,
               reference,
@@ -1657,7 +1664,6 @@ export function createConversationService(options: ConversationOptions) {
                 503,
                 "The hearth closed during source preparation. No turn was accepted.",
               );
-            markInitialStartAcceptEntered(initialStartAttempt);
             const turnProject = options.address
               ? project
               : {
@@ -1666,6 +1672,19 @@ export function createConversationService(options: ConversationOptions) {
                     projectFor(projectId).keeperAutonomy ??
                     "propose-for-approval",
                 };
+            if (
+              !store
+                .read(projectId)
+                .turns.some((turn) => turn.requestId === input.requestId)
+            ) {
+              try {
+                assertProjectCliCostAdmission(projectFor(projectId));
+              } catch (error) {
+                noteInitialStartPreparationRefusal(initialStartAttempt, error);
+                throw error;
+              }
+            }
+            markInitialStartAcceptEntered(initialStartAttempt);
             const accepted = await store.accept(projectId, input);
             if (accepted.turn.phase !== "accepted") {
               admitted = true;

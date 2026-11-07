@@ -44,6 +44,7 @@ import {
 } from "../keeper/recovery-runtime";
 import { type AppendResult, appendEvent } from "../ledger/append";
 import { resolveCheckout } from "../ledger/workspace";
+import { createProjectBudgetStore } from "../projects/project-budget-store";
 import {
   createRepositoryOnboarding,
   type RepositoryOnboardingOptions,
@@ -350,7 +351,9 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
   if (existing && (await isHealthy(existing))) return reusedHearth(existing);
   if (existing) releaseLock(lockFile, existing.pid);
 
+  const projectBudget = createProjectBudgetStore(home);
   const service = createCouncilService({
+    projectBudget,
     workspaceRoot: root,
     reviewHome: home,
     withQueueLock,

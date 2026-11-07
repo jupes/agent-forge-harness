@@ -123,6 +123,8 @@ export type CouncilServiceJob = {
 };
 
 export type CouncilServiceOptions = {
+  /** Injected by the project host; no storage or ledger import enters this subtree. */
+  projectBudget?: import("../projects/project-budgets-protocol").ProjectCouncilBudget;
   workspaceRoot?: string;
   harnessRoot?: string;
   runsRoot?: string;
@@ -1149,6 +1151,16 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
           // Keep the dispatch claim: a missing terminal write is uncertainty, not NotSent.
         }
       }
+      try {
+        await options.projectBudget?.settle(
+          original.binding.projectId,
+          original.requestId,
+          original.intentHash,
+          job.persistenceStatus === "saved" ? (job.run ?? null) : null,
+        );
+      } catch {
+        // A missing settlement retains the full durable liability; never guess it free.
+      }
       publish();
       const result = snapshot(job);
       active.delete(original.runId);
@@ -1376,6 +1388,12 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
                 throw new Error(
                   "The reviewed Council run identity is already owned by another run.",
                 );
+              await options.projectBudget?.reserve(
+                projectId,
+                candidate.requestId,
+                candidate.intentHash,
+                candidate.options.maxUsd,
+              );
             },
           );
           if (!claimed.created)

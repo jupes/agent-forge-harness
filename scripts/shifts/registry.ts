@@ -330,7 +330,7 @@ export function createProjectShiftRegistry(options: {
       raw: ProjectShiftStartRequest,
       prepare: (
         reviewed: ProjectShiftStartRequest,
-      ) => Promise<{ shiftId: string }>,
+      ) => Promise<{ shiftId: string; scopeHash?: string }>,
     ): Promise<{ intent: ProjectShiftIntent; created: boolean }> {
       project(projectId);
       const request = parsedRequest(raw),
@@ -362,6 +362,9 @@ export function createProjectShiftRegistry(options: {
           shiftId: trusted.shiftId,
           request,
           requestHash,
+          ...(trusted.scopeHash !== undefined
+            ? { scopeHash: trusted.scopeHash }
+            : {}),
           createdAt: new Date().toISOString(),
           attemptedAt: null,
           executionStartedAt: null,
