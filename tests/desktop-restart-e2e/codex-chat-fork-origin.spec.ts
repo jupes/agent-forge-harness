@@ -431,63 +431,84 @@ async function openNewSession(
   identityRead.arm();
   page.on("request", observePreviewRequest);
   await page.route(readMatcher, readHandler);
+  const heldStartWrites: string[] = [];
+  const observeHeldStart = (request: Request) => {
+    const url = new URL(request.url());
+    if (
+      request.method() === "POST" &&
+      url.origin === expectedOrigin &&
+      [
+        `/__agent-forge/projects/${forkProject.id}/session-start-identities`,
+        `/__agent-forge/projects/${forkProject.id}/sessions`,
+      ].includes(url.pathname)
+    )
+      heldStartWrites.push(url.pathname);
+  };
+  page.on("request", observeHeldStart);
   facts.stage = "preview-pending";
-  gateReads = true;
   try {
-    await dialog
-      .getByRole("button", { name: "Check supported options", exact: true })
-      .click();
-    const preview = await previewResponse;
-    facts.timingMs.previewResponse = Math.round(performance.now() - startedAt);
-    expect(preview.status()).toBe(200);
-    previewCompleted = true;
-    await expect.poll(identityRead.held).toBe(true);
-    facts.identityGetCount = identityRead.heldReadCount();
-    facts.identityStatus = 200;
-    facts.identityValid = true;
-    facts.identityScopeMatched = true;
-    facts.stage = "identity-read-held";
-    facts.timingMs.identityRead = Math.round(performance.now() - startedAt);
-    expect(facts.identityStatus).toBe(200);
-    expect(facts.identityValid).toBe(true);
-    expect(facts.identityScopeMatched).toBe(true);
-    if (facts.sessionGetCount > 0) {
-      await sessionsRead;
-      expect(facts.sessionStatus).toBe(200);
-      expect(facts.sessionValid).toBe(true);
+    gateReads = true;
+    try {
+      await dialog
+        .getByRole("button", { name: "Check supported options", exact: true })
+        .click();
+      const preview = await previewResponse;
+      facts.timingMs.previewResponse = Math.round(performance.now() - startedAt);
+      expect(preview.status()).toBe(200);
+      previewCompleted = true;
+      await expect.poll(identityRead.held).toBe(true);
+      facts.identityGetCount = identityRead.heldReadCount();
+      facts.identityStatus = 200;
+      facts.identityValid = true;
+      facts.identityScopeMatched = true;
+      facts.stage = "identity-read-held";
+      facts.timingMs.identityRead = Math.round(performance.now() - startedAt);
+      expect(facts.identityStatus).toBe(200);
+      expect(facts.identityValid).toBe(true);
+      expect(facts.identityScopeMatched).toBe(true);
+      if (facts.sessionGetCount > 0) {
+        await sessionsRead;
+        expect(facts.sessionStatus).toBe(200);
+        expect(facts.sessionValid).toBe(true);
+      }
+      const starts = dialog.getByRole("button", { name: "Start", exact: true });
+      await expect(
+        dialog
+          .getByRole("status")
+          .filter({ hasText: "Checking the server-owned identity page…" }),
+      ).toBeVisible();
+      await expect(starts).toBeEnabled();
+      facts.checkingVisible = true;
+      // Activation is available; the owner still drains the protected read before admission.
+      facts.startDisabledWhileHeld = false;
+      expect(heldStartWrites).toEqual([]);
+      facts.errorVisibleWhileHeld =
+        (await dialog.getByRole("alert").count()) > 0 ||
+        (await dialog.locator(".af-session-warning").count()) > 0;
+      facts.timingMs.heldUiObserved = Math.round(performance.now() - startedAt);
+    } finally {
+      gateReads = false;
+      facts.timingMs.readsReleased = Math.round(performance.now() - startedAt);
+      facts.stage = "reads-released";
+      await identityRead.release();
+      await identityRead.dispose();
+      await page.unroute(readMatcher, readHandler);
+      page.off("request", observePreviewRequest);
     }
-    const starts = dialog.getByRole("button", { name: "Start", exact: true });
     await expect(
       dialog
+        .getByRole("region", { name: "Original Start requests", exact: true })
         .getByRole("status")
         .filter({ hasText: "Checking the server-owned identity page…" }),
-    ).toBeVisible();
-    await expect(starts).toBeDisabled();
-    facts.checkingVisible = true;
-    facts.startDisabledWhileHeld = true;
-    facts.errorVisibleWhileHeld =
-      (await dialog.getByRole("alert").count()) > 0 ||
-      (await dialog.locator(".af-session-warning").count()) > 0;
-    facts.timingMs.heldUiObserved = Math.round(performance.now() - startedAt);
+    ).toBeHidden();
+    await expect(
+      dialog.getByRole("button", { name: "Start", exact: true }),
+    ).toBeEnabled();
+    facts.timingMs.readyAfterReads = Math.round(performance.now() - startedAt);
+    expect(heldStartWrites).toEqual([]);
   } finally {
-    gateReads = false;
-    facts.timingMs.readsReleased = Math.round(performance.now() - startedAt);
-    facts.stage = "reads-released";
-    await identityRead.release();
-    await identityRead.dispose();
-    await page.unroute(readMatcher, readHandler);
-    page.off("request", observePreviewRequest);
+    page.off("request", observeHeldStart);
   }
-  await expect(
-    dialog
-      .getByRole("region", { name: "Original Start requests", exact: true })
-      .getByRole("status")
-      .filter({ hasText: "Checking the server-owned identity page…" }),
-  ).toBeHidden();
-  await expect(
-    dialog.getByRole("button", { name: "Start", exact: true }),
-  ).toBeEnabled();
-  facts.timingMs.readyAfterReads = Math.round(performance.now() - startedAt);
   const before = new Set(rows().map((item) => item.id));
   const reservePath = `/__agent-forge/projects/${forkProject.id}/session-start-identities`;
   const startPath = `/__agent-forge/projects/${forkProject.id}/sessions`;
