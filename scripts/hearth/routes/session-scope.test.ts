@@ -12,7 +12,10 @@ import type { OwnedSessionMetadata } from "../../../types/owned-session";
 import { createProjectStore } from "../../projects/store";
 import type { GitRun } from "../../scheduler/worktrees";
 import type { ProjectSnapshot } from "./project-summaries";
-import { createSessionScopeValidator } from "./session-scope";
+import {
+  createSessionScopeValidator,
+  sessionFilesystemContains,
+} from "./session-scope";
 
 const folders: string[] = [];
 afterEach(() => {
@@ -111,6 +114,25 @@ async function fixture(rootName = "repo") {
     },
   };
 }
+
+test("Session containment uses native separator boundaries for POSIX literals and Windows roots", () => {
+  const cases: Array<[string, string, "posix" | "win32", boolean]> = [
+    ["/repo/trees/a\\b", "/repo/trees/a\\b/src", "posix", true],
+    ["/repo/trees/a\\b", "/repo/trees/a\\b\\src", "posix", false],
+    ["/", "/repo/a\\b", "posix", true],
+    ["/repo", "/repository/src", "posix", false],
+    ["/repo", "/repo/child/../../outside", "posix", false],
+    ["C:\\Repo", "c:/repo/src", "win32", true],
+    ["C:/", "c:/repo/src", "win32", true],
+    ["C:/", "D:/repo/src", "win32", false],
+    ["C:/repo", "C:/repository/src", "win32", false],
+    ["C:/repo", "C:/repo/child/../../outside", "win32", false],
+    ["//server/share/", "\\\\SERVER\\SHARE\\child", "win32", true],
+    ["//server/share/", "//server/share2/child", "win32", false],
+  ];
+  for (const [root, path, platform, expected] of cases)
+    expect(sessionFilesystemContains(root, path, platform)).toBe(expected);
+});
 
 test("session admission checks current project, registered worktree and bead scope before accepting context", async () => {
   const f = await fixture();

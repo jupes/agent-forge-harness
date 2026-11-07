@@ -1,11 +1,10 @@
 import { realpathSync, statSync } from "node:fs";
-import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { ConversationObject } from "../../../types/conversation";
 import type { OwnedSessionMetadata } from "../../../types/owned-session";
 import type { ClaudeSessionLaunch } from "../../../types/session-launch";
 import { ConversationError } from "../../conversations/error";
 import { selectProjectBeads } from "../../projects/scope";
-import { listWorktrees } from "../../scheduler/worktrees";
+import { listWorktrees, registryPathKey } from "../../scheduler/worktrees";
 import {
   createSessionRegistry,
   sameSessionFilesystemPath,
@@ -19,13 +18,18 @@ function refuse(reason: string): never {
   throw new ConversationError(409, `${reason} No new turn was accepted.`);
 }
 
-function insideWorktree(root: string, path: string): boolean {
-  const remainder = relative(root, path);
-  return (
-    !isAbsolute(remainder) &&
-    remainder !== ".." &&
-    !remainder.startsWith(`..${sep}`)
-  );
+export function sessionFilesystemContains(
+  root: string,
+  path: string,
+  platform: "win32" | "posix" = process.platform === "win32"
+    ? "win32"
+    : "posix",
+): boolean {
+  const parent = registryPathKey(root, platform),
+    candidate = registryPathKey(path, platform),
+    separator = platform === "win32" ? "\\" : "/",
+    boundary = parent.endsWith(separator) ? parent : parent + separator;
+  return candidate === parent || candidate.startsWith(boundary);
 }
 
 /** Shared current project/repository authority for Start and explicit worktree creation. */
@@ -140,12 +144,12 @@ export function createSessionScopeValidator(
     }
     if (launch?.extraDirectories)
       for (const path of launch.extraDirectories) {
-        if (!insideWorktree(canonical, resolve(path)))
+        if (!sessionFilesystemContains(canonical, path))
           refuse("Extra directories must remain inside the checked worktree.");
         try {
           if (
             !statSync(path).isDirectory() ||
-            !insideWorktree(canonical, realpathSync.native(path))
+            !sessionFilesystemContains(canonical, realpathSync.native(path))
           )
             refuse(
               "An extra directory is linked outside the checked worktree.",
