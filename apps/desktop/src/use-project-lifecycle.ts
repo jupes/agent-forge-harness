@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "preact/hooks";
-import { operatorPost } from "../../../docs/js/operator";
+import { operatorPost, operatorRead } from "../../../docs/js/operator";
 import { pageReads, readOperatorRoute } from "../../../docs/js/use-stream";
 import { ProjectLifecycleOwner } from "./project-lifecycle-client";
 
@@ -8,7 +8,8 @@ export function useProjectLifecycle(refresh: () => Promise<unknown>) {
   const refreshRef = useRef(refresh);
   refreshRef.current = refresh;
   held.current ??= new ProjectLifecycleOwner({
-    read: (url) => readOperatorRoute<unknown>(url, pageReads()),
+    read: (url) =>
+      readOperatorRoute<unknown>(url, { ...pageReads(), fetch: operatorRead }),
     post: operatorPost,
     withLock: async (work) => {
       if (!navigator.locks)

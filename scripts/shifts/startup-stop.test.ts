@@ -14,7 +14,8 @@ import {
   type ShiftChildExit,
 } from "../hearth/shift-launcher";
 import { writeOwnerOnly } from "../hearth/token";
-import { FIXTURE_PROJECT_ID } from "../projects/testing";
+import { projectCatalogPath } from "../projects/store";
+import { FIXTURE_PROJECT_ID, projectCatalogFixture } from "../projects/testing";
 import { writeShiftRecord } from "../scheduler/shift-store";
 import { scratchDirs } from "../test-scratch";
 import { executeOriginalProjectShift } from "./execution";
@@ -47,6 +48,13 @@ function fixture() {
     shiftsDir = join(home, "shifts");
   mkdirSync(join(root, ".git"));
   ensurePrivateHome(home);
+  writeOwnerOnly(
+    projectCatalogPath(home),
+    JSON.stringify({
+      ...projectCatalogFixture(root),
+      revision: request.expectedCatalogRevision,
+    }),
+  );
   return { root, home, shiftsDir, workspace: root };
 }
 
