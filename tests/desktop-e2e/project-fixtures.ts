@@ -3,8 +3,8 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { resolveCheckout } from "../../scripts/ledger/workspace";
 import { projectFixture } from "../../scripts/projects/testing";
-import type { ProjectCatalog } from "../../types/projects";
 import type { ConversationEvent } from "../../types/conversation";
+import type { ProjectCatalog } from "../../types/projects";
 import { withStateLock, writeState } from "../e2e/bd-stand-in-state";
 import { BD_STAND_IN_STATE, bunPath, HEARTH_HOME } from "../e2e/servers";
 
@@ -50,8 +50,15 @@ export function seedProjects(): void {
 }
 
 /** A recorded private conversation fixture, written by the real guarded store; never a model turn. */
-export function seedKeeper(events: Exclude<ConversationEvent, { kind: "user" }>[]): void {
-  const result = spawnSync(bunPath(), ["-e", `
+export function seedKeeper(
+  events: Exclude<ConversationEvent, { kind: "user" }>[],
+  projectId = alpha.id,
+): void {
+  const result = spawnSync(
+    bunPath(),
+    [
+      "-e",
+      `
     import { randomUUID } from "node:crypto";
     import { createConversationStore } from "./scripts/conversations/store";
     import { eventSchema } from "./scripts/conversations/protocol";
@@ -64,8 +71,18 @@ export function seedKeeper(events: Exclude<ConversationEvent, { kind: "user" }>[
     await store.append(id,requestId,owner,{kind:"identity",provider:"claude",sessionId:randomUUID(),version:"recorded-fixture"});
     for (const event of raw) { const parsed=eventSchema.parse(event); if(parsed.kind==="user")throw new Error("Unexpected fixture user event");await store.append(id,requestId,owner,parsed); }
     await store.finish(id,requestId,owner,"completed",null);
-  `, alpha.id, JSON.stringify(events)], { env: { ...process.env, AGENT_FORGE_HOME: HEARTH_HOME }, encoding: "utf8", timeout: 15_000 });
-  if (result.status !== 0) throw new Error(`Private conversation fixture failed: ${result.stderr}`);
+  `,
+      projectId,
+      JSON.stringify(events),
+    ],
+    {
+      env: { ...process.env, AGENT_FORGE_HOME: HEARTH_HOME },
+      encoding: "utf8",
+      timeout: 15_000,
+    },
+  );
+  if (result.status !== 0)
+    throw new Error(`Private conversation fixture failed: ${result.stderr}`);
 }
 
 /** Only metadata in the run's isolated ledger; no provider or tracker process is started. */

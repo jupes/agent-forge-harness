@@ -559,6 +559,13 @@ export function supervise(
   let inputFrames = 0;
   let inputEnded = false;
   let endPromise: Promise<void> | null = null;
+  const settleInputOnExit = async () => {
+    // EOF can reach the child before the pipe acknowledges it. Normal exit
+    // must not reject that pending acknowledgement and abort valid capture.
+    // enqueueInput retains its write deadline; Stop still fails it immediately.
+    if (!interrupted && endPromise) await endPromise.catch(() => undefined);
+    failInput(new Error("Interactive stdin is closed."));
+  };
   const enqueueInput = (
     bytes: number,
     action: () => number | Promise<number>,
@@ -750,7 +757,7 @@ export function supervise(
         // Windows retains an owned job handle; POSIX descendants keep their process group alive.
         if (process.platform === "win32") startWindowsStopSettlement();
         else killExitedProcessGroup(proc.pid);
-        failInput(new Error("Interactive stdin is closed."));
+        await settleInputOnExit();
       }
       await awaitWindowsStopSettlement();
       if (

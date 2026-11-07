@@ -25,6 +25,10 @@ import {
   type ProjectGeneralSettings,
   projectGeneralSettingsSchema,
 } from "./project-general-protocol";
+import {
+  type ProjectKeeperSettings,
+  projectKeeperSettingsSchema,
+} from "./project-keeper-protocol";
 
 export const PROJECT_STORE_VERSION = 1;
 export const isProjectId = (value: unknown): value is string =>
@@ -293,9 +297,6 @@ export function parseProjectCatalog(value: unknown): ProjectCatalog {
           return (
             project.id === item.projectId &&
             project.slug === item.original.slug &&
-            Object.hasOwn(project, "keeperSmith") ===
-              Object.hasOwn(item.original, "keeperSmith") &&
-            project.keeperSmith === item.original.keeperSmith &&
             originalScope !== undefined &&
             createdScope !== undefined &&
             comparableCheckout(createdScope.root) ===
@@ -565,6 +566,46 @@ export function createProjectStore(
           ? { createOperations: catalog.createOperations }
           : {}),
       }));
+    },
+    async updateKeeper(
+      id: string,
+      expectedRevision: number,
+      keeper: ProjectKeeperSettings,
+      validateKeeperSmith: (name: string) => void,
+    ): Promise<ProjectCatalog> {
+      const checked = projectKeeperSettingsSchema.safeParse(keeper);
+      if (!isProjectId(id) || !checked.success)
+        throw new ProjectStoreError(
+          400,
+          "Expected a project id and valid Keeper settings.",
+        );
+      return change(expectedRevision, (catalog) => {
+        const project = catalog.projects.find((item) => item.id === id);
+        if (!project)
+          throw new ProjectStoreError(
+            404,
+            "This project is no longer in the catalog.",
+          );
+        if (project.archived)
+          throw new ProjectStoreError(
+            409,
+            "Unarchive this project before changing its Keeper default.",
+          );
+        const { keeperSmith } = checked.data;
+        if (keeperSmith !== undefined) validateKeeperSmith(keeperSmith);
+        return {
+          projects: catalog.projects.map((item) => {
+            if (item.id !== id) return item;
+            const updated = { ...item, updatedAt: now().toISOString() };
+            delete updated.keeperSmith;
+            if (keeperSmith !== undefined) updated.keeperSmith = keeperSmith;
+            return updated;
+          }),
+          ...(catalog.createOperations !== undefined
+            ? { createOperations: catalog.createOperations }
+            : {}),
+        };
+      });
     },
     async updateGeneral(
       id: string,

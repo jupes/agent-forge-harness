@@ -36,6 +36,10 @@ import {
   projectGeneralSettingsRequestSchema,
 } from "../../projects/project-general-protocol";
 import {
+  type ProjectKeeperSettings,
+  projectKeeperSettingsRequestSchema,
+} from "../../projects/project-keeper-protocol";
+import {
   projectRepositoriesDataSchema,
   projectWorktreeFactSchema,
 } from "../../projects/project-repositories-protocol";
@@ -1397,6 +1401,32 @@ export function projectRoutes(
         publicCatalog(await store.preferences(id, revision, patch)),
       ),
   };
+  const keeperSettings: ActionRoute<{
+    id: string;
+    expectedRevision: number;
+    keeper: ProjectKeeperSettings;
+  }> = {
+    kind: "action",
+    method: "POST",
+    path: "/projects/:id/settings/keeper",
+    action: "project.settings.keeper",
+    validate: (request) => {
+      const id = request.params["id"];
+      const parsed = projectKeeperSettingsRequestSchema.safeParse(request.body);
+      return isProjectId(id) && parsed.success
+        ? { ok: true, value: { id, ...parsed.data } }
+        : fail("Expected a project id and valid Keeper settings.");
+    },
+    subject: ({ id }) => ({ target: id }),
+    effect: async ({ id, expectedRevision, keeper }) =>
+      reply(async () =>
+        publicCatalog(
+          await store.updateKeeper(id, expectedRevision, keeper, (name) =>
+            validateConfiguredKeeperSmith(name, createOptions),
+          ),
+        ),
+      ),
+  };
   const generalSettings: ActionRoute<GeneralSettingsChange> = {
     kind: "action",
     method: "POST",
@@ -1613,6 +1643,7 @@ export function projectRoutes(
     settingsScopePreview,
     preferences,
     generalSettings,
+    keeperSettings,
     createList,
     createOriginal,
     repositorySelectionRead,

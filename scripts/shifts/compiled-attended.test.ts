@@ -224,7 +224,14 @@ test("the actual compiled production hearth executes attended input through fixe
       request.requestId,
       row.id,
     );
-    expect(page.turns[0]?.phase).toBe("completed");
+    expect(
+      page.turns[0]?.phase,
+      JSON.stringify({
+        provider: providerKind,
+        observation: envelope.data.observation,
+        page,
+      }),
+    ).toBe("completed");
     expect(page.controllable).toBe(false);
     const log =
       providerKind === "claude"

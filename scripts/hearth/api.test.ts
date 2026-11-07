@@ -3407,6 +3407,31 @@ const ACTIONS: Record<string, ActionFixture> = {
       });
     },
   },
+  "POST /projects/:id/settings/keeper": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/settings/keeper`,
+      body: { expectedRevision: 1, keeper: { keeperSmith: "claude-master" } },
+      status: 200,
+      target: FIXTURE_PROJECT_ID,
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/settings/keeper`,
+      body: { expectedRevision: 1, keeper: { keeperSmith: "" } },
+    },
+    prepare: async (h) => {
+      writeOwnerOnly(
+        projectCatalogPath(h.home),
+        JSON.stringify(projectCatalogFixture(h.workspace)),
+      );
+    },
+    captureBefore: (h) => createProjectStore(h.home).read().projects,
+    happened: async (h) => {
+      expect(createProjectStore(h.home).read()).toMatchObject({
+        revision: 2,
+        projects: [{ id: FIXTURE_PROJECT_ID, keeperSmith: "claude-master" }],
+      });
+    },
+  },
   "POST /projects/:id/settings/general": {
     valid: {
       path: `/projects/${FIXTURE_PROJECT_ID}/settings/general`,

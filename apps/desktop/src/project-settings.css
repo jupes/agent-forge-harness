@@ -11,7 +11,8 @@
   font-weight: var(--font-heading-weight);
 }
 .af-project-settings-heading p,
-.af-project-settings-provenance {
+.af-project-settings-provenance,
+.af-project-keeper-provenance {
   color: var(--color-neutral-300);
   font-size: 13px;
 }
@@ -157,4 +158,18 @@
   .af-project-repositories-member dl > div {
     grid-template-columns: minmax(0, 1fr);
   }
+}
+
+.af-project-keeper {
+  display: grid;
+  gap: var(--space-4);
+  margin-block: var(--space-8);
+  padding-block: var(--space-6);
+  border-block: 1px solid var(--color-divider);
+}
+.af-project-keeper > p {
+  margin: 0;
+}
+.af-project-keeper > button {
+  justify-self: start;
 }

@@ -116,6 +116,7 @@ import { useKeeperShiftReviews } from "./use-keeper-shift-reviews";
 import { useProjectActivity } from "./use-project-activity";
 import { useProjectCreate } from "./use-project-create";
 import { useProjectGeneralSettings } from "./use-project-general-settings";
+import { useProjectKeeperSettings } from "./use-project-keeper-settings";
 import { useProjectRepositories } from "./use-project-repositories";
 import { useProjectRuns } from "./use-project-runs";
 import { useProjectShifts } from "./use-project-shifts";
@@ -352,6 +353,7 @@ export function DesktopApp(): JSX.Element {
   const projectGeneralSettings = useProjectGeneralSettings(
     projects.refreshProjectHome,
   );
+  const keeperSettings = useProjectKeeperSettings(projects.refreshProjectHome);
   const settingsCatalog = projects.data?.catalog ?? null;
   const providers = useProviders();
   const projectCreate = useProjectCreate(
@@ -360,7 +362,9 @@ export function DesktopApp(): JSX.Element {
     projects.refreshProjectHome,
   );
   const smiths = useSmiths(
-    route.destination === "smiths" || paletteOpen,
+    route.destination === "smiths" ||
+      route.destination === "project-settings" ||
+      paletteOpen,
     providers.data?.workspace ?? null,
   );
   const project = settingsCatalog?.projects.find(
@@ -370,6 +374,10 @@ export function DesktopApp(): JSX.Element {
     if (settingsCatalog && route.projectId)
       projectGeneralSettings.owner.adopt(route.projectId, settingsCatalog);
   }, [projectGeneralSettings.owner, route.projectId, settingsCatalog]);
+  useEffect(() => {
+    if (settingsCatalog && route.projectId)
+      keeperSettings.owner.adopt(route.projectId, settingsCatalog);
+  }, [keeperSettings.owner, route.projectId, settingsCatalog]);
   const repositoryProjectId =
     route.destination === "project-settings" ? (project?.id ?? null) : null;
   const projectRepositories = useProjectRepositories(
@@ -2297,6 +2305,8 @@ export function DesktopApp(): JSX.Element {
             writesAllowed={writesAllowed}
             owner={projectGeneralSettings.owner}
             state={projectGeneralSettings}
+            keeperSettings={keeperSettings}
+            smiths={smiths}
             onRefresh={projects.reload}
             repositories={projectRepositories}
             onRefreshRepositories={projectRepositories.refresh}

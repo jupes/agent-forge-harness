@@ -3583,3 +3583,64 @@ test("project repository read is bounded to registered membership and fails clos
   renameSync(checkout, checkout + ".gone");
   expect((await readProjectRepositories(route, project.id)).status).toBe(503);
 });
+
+test("Keeper default save rejects unconfigured and disabled Smiths without changing the catalog", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  const store = createProjectStore(h.home);
+  const created = await store.create(
+    {
+      slug: "keeper-settings",
+      name: "Keeper",
+      description: "",
+      icon: "K",
+      workspaces: [
+        {
+          root: h.workspace,
+          repositories: [h.workspace],
+          epicIds: ["alpha-epic"],
+        },
+      ],
+    },
+    0,
+  );
+  const id = created.projects[0]!.id;
+  const configDirectory = join(h.configHome, ".agent-forge");
+  mkdirSync(configDirectory, { recursive: true });
+  writeFileSync(
+    join(configDirectory, "config.toml"),
+    "[smiths.claude-master]\nenabled = false\n",
+  );
+  for (const name of ["not-configured", "claude-master"]) {
+    const response = await fetch(
+      h.api + "/projects/" + id + "/settings/keeper",
+      {
+        method: "POST",
+        headers: h.headers(h.hearth.token),
+        body: JSON.stringify({
+          expectedRevision: 1,
+          keeper: { keeperSmith: name },
+        }),
+      },
+    );
+    expect(response.status).toBe(400);
+    expect(store.read()).toEqual(created);
+  }
+  const response = await fetch(h.api + "/projects/" + id + "/settings/keeper", {
+    method: "POST",
+    headers: h.headers(h.hearth.token),
+    body: JSON.stringify({
+      expectedRevision: 1,
+      keeper: { keeperSmith: "codex-journeyman" },
+    }),
+  });
+  expect(response.status).toBe(200);
+  expect(store.read().projects[0]?.keeperSmith).toBe("codex-journeyman");
+  const stale = await fetch(h.api + "/projects/" + id + "/settings/keeper", {
+    method: "POST",
+    headers: h.headers(h.hearth.token),
+    body: JSON.stringify({ expectedRevision: 1, keeper: {} }),
+  });
+  expect(stale.status).toBe(409);
+  expect(store.read().revision).toBe(2);
+});
