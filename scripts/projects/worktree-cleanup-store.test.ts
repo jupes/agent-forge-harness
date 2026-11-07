@@ -101,3 +101,46 @@ test("terminal cleanup originals remain readable without unresolved ownership", 
   expect(readWorktreeCleanupInventory(f.home)).toEqual([terminal]);
   expect(readFileSync(f.file, "utf8")).toBe(bytes);
 });
+
+test("confirmed cleanup originals require direct reviewed success evidence", () => {
+  const f = fixture();
+  const confirmed = {
+    ...f.row,
+    phase: "confirmed" as const,
+    endedAt: "2026-11-07T00:00:01.000Z",
+    reason: null,
+    outcome: "reviewed-remove-returned-ok" as const,
+  };
+  f.seed(confirmed);
+  expect(readWorktreeCleanupInventory(f.home)).toEqual([confirmed]);
+  for (const invalid of [
+    {
+      ...confirmed,
+      original: {
+        ...confirmed.original,
+        audit: { ...confirmed.original.audit, ulid: "8" + "0".repeat(25) },
+      },
+    },
+    { ...confirmed, attemptedAt: null },
+    { ...confirmed, endedAt: null },
+    { ...confirmed, endedAt: "2026-11-06T23:59:59.000Z" },
+    { ...confirmed, reason: "Unconfirmed" },
+    { ...confirmed, outcome: null },
+    { ...confirmed, outcome: "unverified" },
+  ]) {
+    f.seed(invalid);
+    expect(() => readWorktreeCleanupInventory(f.home)).toThrow();
+  }
+  const otherPhases = [
+    f.row,
+    { ...f.row, phase: "reserved" as const, attemptedAt: null, reason: null },
+    { ...f.row, phase: "attempted" as const, reason: null },
+    { ...f.row, phase: "refused" as const, attemptedAt: null, endedAt: stamp },
+  ];
+  for (const row of otherPhases) {
+    f.seed(row);
+    expect(readWorktreeCleanupInventory(f.home)).toEqual([row]);
+    f.seed({ ...row, outcome: confirmed.outcome });
+    expect(() => readWorktreeCleanupInventory(f.home)).toThrow();
+  }
+});

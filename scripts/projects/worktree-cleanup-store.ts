@@ -26,7 +26,7 @@ const original = z
     audit: z
       .object({
         eventId: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
-        ulid: z.string().regex(/^[0-9A-HJKMNP-TV-Z]{26}$/),
+        ulid: z.string().regex(/^[0-7][0-9A-HJKMNP-TV-Z]{25}$/),
         ts: stamp,
       })
       .strict(),
@@ -48,18 +48,27 @@ const original = z
 const row = z
   .object({
     original,
-    // Confirmed remains unsupported until its direct-result evidence contract is implemented.
-    phase: z.enum(["reserved", "attempted", "unknown", "refused"]),
+    // Only the trusted direct-result marker can settle a confirmed original.
+    phase: z.enum(["reserved", "attempted", "unknown", "refused", "confirmed"]),
     attemptedAt: stamp.nullable(),
     endedAt: stamp.nullable(),
     reason: z.string().min(1).max(1000).nullable(),
-    outcome: z.null(),
+    outcome: z.literal("reviewed-remove-returned-ok").nullable(),
   })
   .strict()
   .refine((entry) => {
     const created = Date.parse(entry.original.createdAt);
     if (entry.attemptedAt !== null && Date.parse(entry.attemptedAt) < created)
       return false;
+    if (entry.phase === "confirmed")
+      return (
+        entry.attemptedAt !== null &&
+        entry.endedAt !== null &&
+        Date.parse(entry.endedAt) >= Date.parse(entry.attemptedAt) &&
+        entry.reason === null &&
+        entry.outcome === "reviewed-remove-returned-ok"
+      );
+    if (entry.outcome !== null) return false;
     if (entry.phase === "refused")
       return (
         entry.attemptedAt === null &&
