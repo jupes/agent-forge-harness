@@ -8,6 +8,7 @@ import type {
   SessionStartIdentityPage,
 } from "../../../types/session-start-identities";
 import { createSessionsClient } from "./session-client";
+import { sessionStartFormReady } from "./session-composer-owner";
 import { sessionStartHash } from "./session-start-identities";
 import type { VerifiedSessionIdentityScope } from "./session-start-identity-server";
 
@@ -163,6 +164,37 @@ async function ready(h: ReturnType<typeof harness>) {
 }
 
 describe("SessionsClient Start identity reads", () => {
+  for (const outcome of ["success", "failure", "retarget"] as const) {
+    it(`keeps a verified form activatable during refresh while the owner gates ${outcome} before any reserve`, async () => {
+      const h = harness(),
+        held = deferred<SessionStartIdentityPage>();
+      expect(sessionStartFormReady(h.client.project(baseScope.projectId))).toBe(
+        false,
+      );
+      await ready(h);
+      h.queueRead(() => held.promise);
+      const reading = h.client.refreshIdentities(baseScope.projectId),
+        view = h.client.project(baseScope.projectId);
+      expect(view.identityLoading).toBe(true);
+      expect(sessionStartFormReady(view)).toBe(true);
+      const starting = h.client.start(baseScope.projectId, makeInput());
+      await Bun.sleep(0);
+      expect(h.reserves).toBe(0);
+      expect(h.posts).toEqual([]);
+      if (outcome === "retarget") {
+        h.setScope({ ...baseScope, generation: 2 });
+        h.client.identityScopeChanged();
+      }
+      if (outcome === "failure")
+        held.reject(Error("The refreshed page was unavailable"));
+      else held.resolve(makePage(baseScope));
+      await reading;
+      await starting;
+      expect(h.reserves).toBe(outcome === "success" ? 1 : 0);
+      expect(h.posts).toEqual(outcome === "success" ? ["start"] : []);
+      h.client.dispose();
+    });
+  }
   it("preserves the uncancelled reentrant Start intent until the actual held current read settles", async () => {
     const h = harness();
     const first = makeInput("captured before the read");

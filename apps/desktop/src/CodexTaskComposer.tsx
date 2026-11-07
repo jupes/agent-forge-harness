@@ -19,6 +19,7 @@ import { providerUsageLabel, readinessLabel } from "./providers-model";
 import type { SessionComposerProps } from "./SessionComposer";
 import { SessionStartIdentityControls } from "./SessionStartIdentityControls";
 import { chooseSessionSmith, sessionAttachments } from "./session-composer";
+import { sessionStartFormReady } from "./session-composer-owner";
 
 /** Native exec Task controls. Claude option drafts and the sealed Keeper remain separate. */
 export function CodexTaskComposer({
@@ -132,10 +133,7 @@ export function CodexTaskComposer({
   const busy = checking || attaching || view.starting;
   const pending =
     !!view.pendingStart || !!view.startIdentity || !!view.startIdentityError;
-  const identityReady =
-    !!view.identityPage &&
-    !view.identityLoading &&
-    view.identityGeneration !== null;
+  const identityReady = sessionStartFormReady(view);
   let serialized: SerializedCodexTask | null = null,
     recoveryInput: OwnedSessionStartInput | null = null,
     validation =
