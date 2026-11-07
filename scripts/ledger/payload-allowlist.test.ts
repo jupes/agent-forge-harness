@@ -244,13 +244,16 @@ test("Smith create actions retain only their fixed identity metadata", () => {
   });
 });
 
-test("project create actions keep only bounded original correlation metadata", () => {
+test.each([
+  "project-create",
+  "project-knowledge-refresh",
+])("project actions keep only bounded original correlation metadata: %s", (family) => {
   expect(
     stripPayload("operator.action", {
       action: "project.create.reserve",
       surface: "api",
       target: "private project slug",
-      family: "project-create",
+      family,
       requestId: "122d0b56-96f3-4818-8789-6ab562c092e8",
       inputHash: "a".repeat(64),
       original: { name: "private original" },
@@ -261,7 +264,7 @@ test("project create actions keep only bounded original correlation metadata", (
     action: "project.create.reserve",
     surface: "api",
     target: "private project slug",
-    family: "project-create",
+    family,
     requestId: "122d0b56-96f3-4818-8789-6ab562c092e8",
     inputHash: "a".repeat(64),
   });

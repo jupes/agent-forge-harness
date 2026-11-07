@@ -103,6 +103,9 @@ import { keeperSessionStartReceiptSchema } from "../keeper/session-start-protoco
 import { keeperShiftStartRequestSchema } from "../keeper/shift-start-protocol";
 import { type AppendResult, appendEvent } from "../ledger/append";
 import { setSessionModel } from "../ledger/session-models";
+import { knowledgeReceiptSchema } from "../projects/knowledge-protocol";
+import type { createKnowledgeService } from "../projects/knowledge-service";
+import { knowledgeOperationHash } from "../projects/knowledge-store";
 import {
   repositoryCloneSchema,
   repositorySelectionSchema,
@@ -246,7 +249,16 @@ afterEach(async () => {
 });
 
 async function start(options: TestHearthOptions = {}): Promise<TestHearth> {
-  const hearth = await startTestHearth(options);
+  const knowledgeEffects: string[] = [];
+  const hearth = await startTestHearth({
+    ...options,
+    api: {
+      ...options.api,
+      projectKnowledge:
+        options.api?.projectKnowledge ?? apiKnowledgeService(knowledgeEffects),
+    },
+  });
+  apiKnowledgeEffects.set(hearth, knowledgeEffects);
   open.push(hearth);
   writeOwnerOnly(
     projectCatalogPath(hearth.home),
@@ -1115,6 +1127,102 @@ interface ActionFixture {
     answer: unknown,
     before?: ProjectCatalog["projects"],
   ): Promise<void>;
+}
+
+const API_KNOWLEDGE_REQUEST = {
+  requestId: "90000000-0000-4000-8000-000000000001",
+  expectedRevision: 1,
+  repositoryKey: "a".repeat(64),
+};
+const apiKnowledgeEffects = new WeakMap<TestHearth, string[]>();
+function apiKnowledgeReceipt(projectId: string, requestId: string) {
+  return knowledgeReceiptSchema.parse({
+    projectId,
+    requestId,
+    requestHash: knowledgeOperationHash(projectId, {
+      ...API_KNOWLEDGE_REQUEST,
+      requestId,
+    }),
+    repositoryKey: API_KNOWLEDGE_REQUEST.repositoryKey,
+    state: "candidate-saved",
+    sourceCommit: "b".repeat(40),
+    evidenceHash: "c".repeat(64),
+    candidateHash: "d".repeat(64),
+    confirmedAt: null,
+    message: "Inert action-table fixture",
+    retainedExtensions: [],
+  });
+}
+function apiKnowledgeService(
+  effects: string[],
+): ReturnType<typeof createKnowledgeService> {
+  return {
+    status: (projectId) => ({
+      projectId,
+      catalogRevision: 1,
+      repositoryKey: API_KNOWLEDGE_REQUEST.repositoryKey,
+      name: "fixture",
+      state: "missing",
+      ageDays: null,
+      freshness: "missing",
+      asOf: new Date().toISOString(),
+      archived: false,
+    }),
+    receipt: apiKnowledgeReceipt,
+    refresh: async (projectId, request) => {
+      effects.push("refresh:" + request.requestId);
+      return apiKnowledgeReceipt(projectId, request.requestId);
+    },
+    publish: async (projectId, requestId) => {
+      effects.push("publish:" + requestId);
+      return apiKnowledgeReceipt(projectId, requestId);
+    },
+    retire: async (projectId, requestId) => {
+      effects.push("retire:" + requestId);
+      return apiKnowledgeReceipt(projectId, requestId);
+    },
+  };
+}
+function knowledgeActionFixture(
+  operation: "refresh" | "publish" | "retire",
+): ActionFixture {
+  const path =
+      `/projects/${FIXTURE_PROJECT_ID}/settings/knowledge` +
+      (operation === "refresh"
+        ? ""
+        : `/${API_KNOWLEDGE_REQUEST.requestId}/${operation}`),
+    receipt = apiKnowledgeReceipt(
+      FIXTURE_PROJECT_ID,
+      API_KNOWLEDGE_REQUEST.requestId,
+    );
+  return {
+    valid: {
+      path,
+      body:
+        operation === "refresh"
+          ? API_KNOWLEDGE_REQUEST
+          : { requestHash: receipt.requestHash },
+      status: 200,
+      target: FIXTURE_PROJECT_ID,
+      audit: {
+        family: "project-knowledge-refresh",
+        requestId: API_KNOWLEDGE_REQUEST.requestId,
+        inputHash: receipt.requestHash,
+      },
+    },
+    invalid: { path, body: { outputPath: "/foreign" } },
+    happened: async (h, answer) => {
+      expect(apiKnowledgeEffects.get(h)?.at(-1)).toBe(
+        operation + ":" + API_KNOWLEDGE_REQUEST.requestId,
+      );
+      expect(answer).toMatchObject({
+        projectId: FIXTURE_PROJECT_ID,
+        requestId: API_KNOWLEDGE_REQUEST.requestId,
+        requestHash: receipt.requestHash,
+        state: "candidate-saved",
+      });
+    },
+  };
 }
 
 const API_PROJECT_CREATE_RESERVE_ID = "3eed32cc-a41d-49b7-b895-9236743781fd";
@@ -3525,6 +3633,11 @@ const ACTIONS: Record<string, ActionFixture> = {
       });
     },
   },
+  "POST /projects/:id/settings/knowledge": knowledgeActionFixture("refresh"),
+  "POST /projects/:id/settings/knowledge/:requestId/publish":
+    knowledgeActionFixture("publish"),
+  "POST /projects/:id/settings/knowledge/:requestId/retire":
+    knowledgeActionFixture("retire"),
   "POST /projects/:id/settings/notifications": {
     valid: {
       path: `/projects/${FIXTURE_PROJECT_ID}/settings/notifications`,
@@ -4922,6 +5035,8 @@ const ACTIONS: Record<string, ActionFixture> = {
 
 /** A concrete path per read row; a row with none fails the suite. */
 const READS: Record<string, string> = {
+  "GET /projects/:id/settings/knowledge": `/projects/${FIXTURE_PROJECT_ID}/settings/knowledge`,
+  "GET /projects/:id/settings/knowledge/:requestId": `/projects/${FIXTURE_PROJECT_ID}/settings/knowledge/${API_KNOWLEDGE_REQUEST.requestId}`,
   "GET /projects/:id/settings/deletion": `/projects/${FIXTURE_PROJECT_ID}/settings/deletion`,
   "GET /projects/:id/settings/deletion/:requestId":
     "/projects/project-40000000-0000-4000-8000-000000000099/settings/deletion/40000000-0000-4000-8000-000000000001",
