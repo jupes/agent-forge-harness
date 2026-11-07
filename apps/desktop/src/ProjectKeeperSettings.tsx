@@ -21,6 +21,9 @@ export function ProjectKeeperSettings({
   const inspection = config?.data;
   const saved = state?.catalog?.keeperSmith;
   const draft = state?.draft ?? saved ?? "";
+  const savedAutonomy =
+    state?.catalog?.keeperAutonomy ?? "propose-for-approval";
+  const autonomy = state?.autonomyDraft ?? savedAutonomy;
   const available = Boolean(inspection && !config?.error && !config?.loading);
   const enabled = inspection?.smiths.filter((smith) => smith.enabled) ?? [];
   const missing = Boolean(
@@ -42,6 +45,15 @@ export function ProjectKeeperSettings({
       <p>
         Saved project default:{" "}
         <strong>{saved ?? "Inherit configured default"}</strong>
+      </p>
+      <p>
+        Saved autonomy:{" "}
+        <strong>
+          {savedAutonomy === "suggest-only"
+            ? "Suggest only"
+            : "Propose actions for my approval"}
+        </strong>
+        {!state?.catalog?.keeperAutonomy && " · source: default policy"}
       </p>
       {!saved && (
         <p>
@@ -100,6 +112,31 @@ export function ProjectKeeperSettings({
         }}
       >
         <label>
+          Keeper autonomy
+          <select
+            value={autonomy}
+            disabled={!editable || !state?.catalog}
+            onChange={(event) =>
+              settings.owner.setAutonomyDraft(
+                projectId,
+                event.currentTarget.value === "suggest-only"
+                  ? "suggest-only"
+                  : "propose-for-approval",
+              )
+            }
+          >
+            <option value="suggest-only">Suggest only</option>
+            <option value="propose-for-approval">
+              Propose actions for my approval
+            </option>
+          </select>
+        </label>
+        <p>
+          Suggest only keeps recommendations readable and blocks new proposal
+          approvals and Starts. Already approved work and saved originals
+          continue. Propose mode always requires your approval.
+        </p>
+        <label>
           Keeper Smith
           <select
             value={draft}
@@ -133,12 +170,12 @@ export function ProjectKeeperSettings({
             missing ||
             !state?.catalog ||
             state.needsReview ||
-            state.draft === null
+            (state.draft === null && state.autonomyDraft === null)
           }
         >
           {settings.busy === projectId
             ? "Saving or checking…"
-            : "Save Keeper default"}
+            : "Save Keeper settings"}
         </button>
       </form>
     </section>

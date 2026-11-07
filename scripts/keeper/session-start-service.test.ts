@@ -323,6 +323,9 @@ test("the verified proposal binds the edited full Start to its original owned tu
     expect(receipt.receipt?.turn.requestId).toBe(start.requestId);
     if (!receipt.session) throw new Error("No correlated session");
     await waitOwnedTurn(h, receipt.session, start.requestId);
+    const changedPolicy = projectCatalogFixture(h.workspace);
+    changedPolicy.projects[0]!.keeperAutonomy = "suggest-only";
+    writeOwnerOnly(projectCatalogPath(h.home), JSON.stringify(changedPolicy));
     const restarted = createKeeperSessionStartService({
       ...options,
       prepare: async () => {
@@ -336,6 +339,10 @@ test("the verified proposal binds the edited full Start to its original owned tu
     );
     expect(observed.receipt?.turn.phase).toBe("completed");
     expect(observed.original).toEqual(body);
+    expect(
+      (await restarted.start(FIXTURE_PROJECT_ID, proposal.id, body, 2))
+        .original,
+    ).toEqual(body);
     expect(fake.runs).toHaveLength(1);
     expect(prepared).toBe(1);
     await restarted.close();
@@ -667,6 +674,60 @@ test("a changed source during fresh preparation refuses admission without reserv
       (await createKeeperProposalStore(h.home).read(FIXTURE_PROJECT_ID))
         .records,
     ).toEqual([]);
+  } finally {
+    await service.close();
+    await sessions.close();
+    await h.close();
+  }
+});
+
+test.each([
+  "before",
+  "during",
+] as const)("Suggest-only set %s session preparation refuses fresh admission", async (moment) => {
+  const h = await startTestHearth();
+  const fake = fakeSessionRuntime();
+  const sessions = createOwnedSessionService({
+    home: h.home,
+    root: h.root,
+    runtime: fake.runtime,
+    validateScope: async () => {},
+  });
+  const suggestOnly = () => {
+    const catalog = projectCatalogFixture(h.workspace);
+    catalog.projects[0]!.keeperAutonomy = "suggest-only";
+    writeOwnerOnly(projectCatalogPath(h.home), JSON.stringify(catalog));
+  };
+  const service = createKeeperSessionStartService({
+    home: h.home,
+    root: h.root,
+    sessions,
+    prepare: async () => {
+      await Promise.resolve();
+      if (moment === "during") suggestOnly();
+    },
+  });
+  try {
+    const proposal = await seedKeeperSessionStartSource(h);
+    if (moment === "before") suggestOnly();
+    await expect(
+      service.start(
+        FIXTURE_PROJECT_ID,
+        proposal.id,
+        {
+          sourceHash: proposal.sourceHash,
+          expectedRevision: 0,
+          start: sessionStartFixture(h),
+        },
+        1,
+      ),
+    ).rejects.toThrow("Suggest only");
+    expect(
+      (await createKeeperProposalStore(h.home).read(FIXTURE_PROJECT_ID))
+        .records,
+    ).toEqual([]);
+    expect(createSessionRegistry(h.home).list(FIXTURE_PROJECT_ID)).toEqual([]);
+    expect(fake.runs).toEqual([]);
   } finally {
     await service.close();
     await sessions.close();

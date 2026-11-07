@@ -174,6 +174,7 @@ function validProject(value: unknown): value is ProjectRecord {
       "icon",
       "workspaces",
       "keeperSmith",
+      "keeperAutonomy",
       "color",
       "pinned",
       "archived",
@@ -183,6 +184,9 @@ function validProject(value: unknown): value is ProjectRecord {
     isProjectId(value["id"]) &&
     typeof value["pinned"] === "boolean" &&
     typeof value["archived"] === "boolean" &&
+    (!Object.hasOwn(value, "keeperAutonomy") ||
+      value["keeperAutonomy"] === "suggest-only" ||
+      value["keeperAutonomy"] === "propose-for-approval") &&
     time(value["createdAt"]) &&
     time(value["updatedAt"]) &&
     validNew(value)
@@ -591,7 +595,7 @@ export function createProjectStore(
             409,
             "Unarchive this project before changing its Keeper default.",
           );
-        const { keeperSmith } = checked.data;
+        const { keeperSmith, keeperAutonomy } = checked.data;
         if (keeperSmith !== undefined) validateKeeperSmith(keeperSmith);
         return {
           projects: catalog.projects.map((item) => {
@@ -599,6 +603,9 @@ export function createProjectStore(
             const updated = { ...item, updatedAt: now().toISOString() };
             delete updated.keeperSmith;
             if (keeperSmith !== undefined) updated.keeperSmith = keeperSmith;
+            // Older Smith-only clients must never reset a saved Suggest-only policy.
+            if (keeperAutonomy !== undefined)
+              updated.keeperAutonomy = keeperAutonomy;
             return updated;
           }),
           ...(catalog.createOperations !== undefined

@@ -40,6 +40,51 @@ async function fixture() {
   return { home, root, projectId };
 }
 
+test("Keeper turn snapshots current autonomy after preflight and keeps it for active execution", async () => {
+  const { home, root, projectId } = await fixture();
+  let mode: string | undefined;
+  let retained: string | undefined;
+  let ran = false;
+  const projects = createProjectStore(home);
+  const service = createConversationService({
+    home,
+    root,
+    transport: {
+      provider: "claude",
+      async check() {
+        await projects.updateKeeper(
+          projectId,
+          1,
+          { keeperAutonomy: "suggest-only" },
+          () => {},
+        );
+      },
+      async run(request) {
+        mode = request.project.keeperAutonomy;
+        await projects.updateKeeper(
+          projectId,
+          2,
+          { keeperAutonomy: "propose-for-approval" },
+          () => {},
+        );
+        retained = request.project.keeperAutonomy;
+        ran = true;
+        return { phase: "completed", reason: null };
+      },
+    },
+  });
+  cleanup.push(() => service.close());
+  await service.send(projectId, {
+    requestId: randomUUID(),
+    expectedRevision: 0,
+    text: "Explain current work",
+    about: [],
+  });
+  await until(async () => ran);
+  expect(mode).toBe("suggest-only");
+  expect(retained).toBe("suggest-only");
+});
+
 test("context without a trusted validator is refused, and membership lost during preflight is rechecked before admission", async () => {
   const { home, root, projectId } = await fixture();
   let starts = 0;

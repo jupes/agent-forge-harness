@@ -1,7 +1,13 @@
 import { z } from "zod";
 
+export const keeperAutonomySchema = z.enum([
+  "suggest-only",
+  "propose-for-approval",
+]);
+
 export const projectKeeperSettingsSchema = z
   .object({
+    keeperAutonomy: keeperAutonomySchema.optional(),
     keeperSmith: z
       .string()
       .min(1)

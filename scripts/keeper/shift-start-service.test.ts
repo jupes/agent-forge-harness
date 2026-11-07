@@ -18,7 +18,10 @@ import { writeOwnerOnly } from "../hearth/token";
 import { projectCatalogPath } from "../projects/store";
 import { FIXTURE_PROJECT_ID, projectCatalogFixture } from "../projects/testing";
 import { projectShiftRequestHash } from "../shifts/registry";
-import { keeperProposalFile } from "./proposal-store";
+import {
+  createKeeperProposalStore,
+  keeperProposalFile,
+} from "./proposal-store";
 import { keeperProposals } from "./proposals";
 import { createKeeperShiftStartService } from "./shift-start-service";
 
@@ -152,6 +155,40 @@ function receipt(
   };
 }
 
+test("Suggest-only refuses a new Keeper Shift without a durable intent or start", async () => {
+  const f = await fixture();
+  f.catalog.projects[0]!.keeperAutonomy = "suggest-only";
+  writeOwnerOnly(projectCatalogPath(f.home), JSON.stringify(f.catalog));
+  let starts = 0;
+  const service = createKeeperShiftStartService({
+    home: f.home,
+    root: f.workspace,
+    shifts: {
+      start: async () => {
+        starts++;
+        throw Error("Must not dispatch");
+      },
+      read: () => {
+        throw Error("No saved Shift");
+      },
+    },
+  });
+  try {
+    await expect(
+      service.start(FIXTURE_PROJECT_ID, f.proposal.id, f.body, 12),
+    ).rejects.toThrow("Suggest only");
+    expect(starts).toBe(0);
+    await expect(
+      createKeeperProposalStore(f.home).readShiftStart(
+        FIXTURE_PROJECT_ID,
+        f.proposal.id,
+      ),
+    ).resolves.toBeNull();
+  } finally {
+    await service.close();
+  }
+});
+
 test("a reviewed Keeper Shift binds the edited original to one canonical start and exact retries only inspect", async () => {
   const f = await fixture();
   let starts = 0,
@@ -211,6 +248,8 @@ test("a reviewed Keeper Shift binds the edited original to one canonical start a
     const savedBytes = readFileSync(
       keeperProposalFile(f.home, FIXTURE_PROJECT_ID),
     );
+    f.catalog.projects[0]!.keeperAutonomy = "suggest-only";
+    writeOwnerOnly(projectCatalogPath(f.home), JSON.stringify(f.catalog));
     const inspected = await service.read(
       FIXTURE_PROJECT_ID,
       f.proposal.id,
