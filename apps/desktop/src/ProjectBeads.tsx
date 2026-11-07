@@ -8,6 +8,7 @@ import type {
   ProjectBead,
   ProjectBeadsPage,
 } from "../../../types/project-beads";
+import { BeadWorkMap } from "./BeadWorkMap";
 import { BeadWriteActions } from "./BeadWrites";
 import {
   BEAD_VIEWS,
@@ -79,6 +80,9 @@ export function ProjectBeads({
   onNew?: (() => void) | undefined;
 }) {
   const [filters, setFilters] = useState(newBeadFilters),
+    [presentation, setPresentation] = useState<
+      "list" | "tree" | "dependencies"
+    >("list"),
     [copy, setCopy] = useState("");
   const rows = page?.beads ?? [],
     filtered = filterBeads(rows, filters);
@@ -169,6 +173,24 @@ export function ProjectBeads({
           </button>
         ))}
       </div>
+      <fieldset class="af-beads-presentations">
+        <legend>Presentation</legend>
+        {(
+          [
+            ["list", "List"],
+            ["tree", "Tree"],
+            ["dependencies", "Dependency graph"],
+          ] as const
+        ).map(([id, label]) => (
+          <Button
+            key={id}
+            aria-pressed={presentation === id}
+            onClick={() => setPresentation(id)}
+          >
+            {label}
+          </Button>
+        ))}
+      </fieldset>
       <div class="af-beads-toolbar">
         <label class="af-beads-search">
           Search
@@ -200,6 +222,12 @@ export function ProjectBeads({
           <select
             aria-label="Group beads by"
             value={filters.group}
+            disabled={presentation !== "list"}
+            title={
+              presentation !== "list"
+                ? "Grouping applies to the List presentation"
+                : undefined
+            }
             onChange={(event) => {
               const value = event.currentTarget.value;
               if (value === "none" || value === "epic" || value === "status")
@@ -245,6 +273,19 @@ export function ProjectBeads({
               : `No ${BEAD_VIEWS.find(([id]) => id === filters.view)?.[1].toLowerCase()} beads`
           }
           hint="Try another view or reset the filters."
+        />
+      ) : page && presentation !== "list" ? (
+        <BeadWorkMap
+          key={projectId}
+          projectId={projectId}
+          page={page}
+          matchedIds={filtered.map((bead) => bead.id)}
+          presentation={presentation}
+          loading={loading}
+          error={error}
+          selectedId={selectedId}
+          onSelect={onSelect}
+          onOpen={onOpen}
         />
       ) : filters.view === "epics" ? (
         <div class="af-beads-epics">
@@ -396,8 +437,10 @@ export function ProjectBeads({
         ))
       )}
       <p class="af-beads-meta">
-        Select a title to inspect. Enter or double-click opens the bead
-        full-width. A dash means not reported.
+        {presentation === "list"
+          ? "Select a title to inspect. Enter or double-click opens the bead full-width."
+          : "Select a bead or press Enter to inspect. Use Open or double-click for its full page."}{" "}
+        A dash means not reported.
       </p>
     </section>
   );
