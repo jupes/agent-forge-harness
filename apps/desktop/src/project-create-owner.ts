@@ -154,6 +154,12 @@ export function createProjectCreateOwner(deps: {
   const listeners = new Set<() => void>();
   let disposed = false;
   let generation = 0;
+  let unconfirmedCreation: {
+    requestId: string;
+    requestHash: string;
+    original: ProjectCreateOriginal;
+    notice: string;
+  } | null = null;
   const scope = deps.workspace ? workspaceKey(deps.workspace) : null;
   const currentScopeMatches = () =>
     Boolean(scope && workspaceKey(deps.currentWorkspace() ?? "") === scope);
@@ -231,6 +237,9 @@ export function createProjectCreateOwner(deps: {
   const recover = async () => {
     if (disposed || state.busy) return;
     const current = ++generation;
+    const heldNotice = unconfirmedCreation,
+      priorNotice = state.notice;
+    let recoveredCreation: ProjectCreateIdentity | null = null;
     state.phase = "loading";
     state.error = "";
     emit();
@@ -296,6 +305,14 @@ export function createProjectCreateOwner(deps: {
             throw Error("The protected project original did not match.");
           const saved = await deps.identities.observe(identity);
           if (disposed || current !== generation) return;
+          if (
+            identity.state === "created" &&
+            heldNotice &&
+            identity.requestId === heldNotice.requestId &&
+            identity.requestHash === heldNotice.requestHash &&
+            exactOriginal(identity.original, heldNotice.original)
+          )
+            recoveredCreation = identity;
           seen.add(identity.requestId);
           if (identity.state === "reserved")
             entries.push({
@@ -358,6 +375,18 @@ export function createProjectCreateOwner(deps: {
           current,
         );
         return;
+      }
+      // Only the exact request that owns the still-current unknown notice may heal it.
+      if (
+        recoveredCreation &&
+        heldNotice &&
+        heldNotice === unconfirmedCreation &&
+        state.notice === priorNotice &&
+        priorNotice === heldNotice.notice
+      ) {
+        state.notice =
+          "Project creation is verified. Refresh Projects before opening it; no second create was sent.";
+        unconfirmedCreation = null;
       }
       state.entries = entries;
       state.phase = "ready";
@@ -889,10 +918,20 @@ export function createProjectCreateOwner(deps: {
         state.notice = "Project creation was read back from the hearth.";
         return verified.projectId;
       } catch {
+        if (disposed || current !== generation) return null;
         state.notice =
           creation.phase === "confirmed"
             ? "Project creation is verified, but the fresh Projects view is unavailable. Refresh Projects before opening it; no second create was sent."
             : "The create outcome could not be verified. Check this same original; no replacement is available.";
+        unconfirmedCreation =
+          creation.phase === "unverified"
+            ? {
+                requestId: identity.requestId,
+                requestHash: identity.requestHash,
+                original: structuredClone(entry.original),
+                notice: state.notice,
+              }
+            : null;
         return null;
       } finally {
         if (!disposed && current === generation) {

@@ -831,3 +831,50 @@ test("an unreadable protected created original remains unconfirmed and never ope
   expect(writes.map((write) => write.kind)).toEqual(["reserve", "commit"]);
   owner.dispose();
 });
+
+test.each([
+  false,
+  true,
+])("a later exact created recovery honors its notice ownership (newer review: %s)", async (newerReview) => {
+  let protectedUnavailable = true;
+  const { owner, identities, writes } = fixture([], {
+    commitReply: "unknown",
+    original: (_id, current) => {
+      if (current.state === "created" && protectedUnavailable)
+        throw Error("Protected read temporarily unavailable");
+      return current;
+    },
+  });
+  const opened: string[] = [];
+  await owner.recover();
+  expect(await owner.reserve(original, preview)).toBe(true);
+  await owner.recover();
+  const held = identities.list()[0];
+  if (!held) throw Error("Missing saved creation original");
+  expect(
+    await owner.commit(requestId, (created) => opened.push(created.projectId)),
+  ).toBeNull();
+  await owner.recover();
+  expect(owner.get().notice).toContain("could not be verified");
+  expect(identities.list()).toMatchObject([{ state: "unknown" }]);
+  if (newerReview) expect(await owner.preview(original)).toEqual(preview);
+  const priorNotice = owner.get().notice;
+  protectedUnavailable = false;
+  await owner.recover();
+  expect(identities.list()).toMatchObject([
+    {
+      request: held.request,
+      requestHash: held.requestHash,
+      state: "created",
+    },
+  ]);
+  expect(owner.get().entries).toEqual([]);
+  expect(opened).toEqual([]);
+  expect(writes.map((write) => write.kind)).toEqual(["reserve", "commit"]);
+  if (newerReview) expect(owner.get().notice).toBe(priorNotice);
+  else {
+    expect(owner.get().notice).toContain("Project creation is verified");
+    expect(owner.get().notice).toContain("before opening");
+  }
+  owner.dispose();
+});
