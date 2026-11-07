@@ -263,3 +263,69 @@ test.each([
     client.dispose();
   }
 });
+
+test.each([
+  "task",
+  "chat",
+] as const)("an empty recovery form loads provider choices once while its original identity stays held: %s", (mode) => {
+  const { project, client } = fixture();
+  const configured: SmithsView = {
+    ...smiths,
+    smiths: [
+      ...smiths.smiths,
+      {
+        name: "cx",
+        provider: "codex",
+        model: "cx-model",
+        effort: "medium",
+        enabled: true,
+        tags: [],
+      },
+      {
+        name: "gm",
+        provider: "gemini",
+        model: "gm-model",
+        effort: "medium",
+        enabled: true,
+        tags: [],
+      },
+    ],
+  };
+  const defaults = {
+    ...project,
+    codexSessionSmith: "cx",
+    geminiSessionSmith: "gm",
+  };
+  const view = client.project(project.id);
+  try {
+    view.startIdentityError = "The initial identity GET was unavailable";
+    client.initializeComposer(defaults, configured, []);
+    client.initializeProviderComposer(defaults, configured, "codex", mode);
+    client.initializeProviderComposer(defaults, configured, "gemini", mode);
+    expect(view.composer.smith).toBe("project-choice");
+    expect(
+      (mode === "chat" ? view.codexChatComposer : view.codexComposer).smith,
+    ).toBe("cx");
+    expect(
+      (mode === "chat" ? view.geminiChatComposer : view.geminiComposer).smith,
+    ).toBe("gm");
+    expect(view.startIdentityError).toContain("unavailable");
+    const before = structuredClone(view);
+    client.initializeComposer(
+      { ...defaults, claudeSessionSmith: "global" },
+      configured,
+      [],
+    );
+    client.initializeProviderComposer(
+      { ...defaults, codexSessionSmith: "missing" },
+      configured,
+      "codex",
+      mode,
+    );
+    expect(view.composer).toEqual(before.composer);
+    expect(view.codexComposer).toEqual(before.codexComposer);
+    expect(view.codexChatComposer).toEqual(before.codexChatComposer);
+  } finally {
+    client.dispose();
+  }
+});
