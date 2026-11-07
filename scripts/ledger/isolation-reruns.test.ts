@@ -66,23 +66,94 @@ test("the timed append file runs alone before bounded parallel home-safety work"
   );
 });
 
+test("packaged hearth compilation and timed append each settle alone before every parallel file runs once", async () => {
+  const compiled = "scripts/hearth/codex-sync-compiled.test.ts",
+    append = "scripts/ledger/append.test.ts",
+    files = ["a.test.ts", compiled, append, "b.test.ts"];
+  const started: string[] = [],
+    active = new Set<string>();
+  let releaseCompile = () => {},
+    releaseAppend = () => {},
+    releaseParallel = () => {},
+    appendEntered = () => {},
+    parallelEntered = () => {};
+  const compileGate = new Promise<void>((resolve) => {
+      releaseCompile = resolve;
+    }),
+    appendGate = new Promise<void>((resolve) => {
+      releaseAppend = resolve;
+    }),
+    parallelGate = new Promise<void>((resolve) => {
+      releaseParallel = resolve;
+    }),
+    appendReady = new Promise<void>((resolve) => {
+      appendEntered = resolve;
+    }),
+    parallelReady = new Promise<void>((resolve) => {
+      parallelEntered = resolve;
+    });
+  const work = settleIsolationReruns(files, 2, async (file) => {
+    started.push(file);
+    if (file === compiled || file === append) expect(active.size).toBe(0);
+    else {
+      expect(active.has(compiled)).toBe(false);
+      expect(active.has(append)).toBe(false);
+    }
+    active.add(file);
+    if (file === compiled) await compileGate;
+    else if (file === append) {
+      appendEntered();
+      await appendGate;
+    } else {
+      if (active.size === 2) parallelEntered();
+      await parallelGate;
+    }
+    active.delete(file);
+    return file;
+  });
+  try {
+    expect(started).toEqual([compiled]);
+    releaseCompile();
+    await appendReady;
+    expect(started).toEqual([compiled, append]);
+    releaseAppend();
+    await parallelReady;
+    expect(started).toEqual([compiled, append, "a.test.ts", "b.test.ts"]);
+  } finally {
+    releaseCompile();
+    releaseAppend();
+    releaseParallel();
+  }
+  expect(await work).toEqual(
+    files.map((value) => ({ status: "fulfilled", value })),
+  );
+  expect(new Set(started).size).toBe(files.length);
+  expect(active.size).toBe(0);
+});
+
 test("a failed exclusive or parallel file cannot hide failures or prevent the remaining files from running", async () => {
   const files = [
     "a.test.ts",
     "scripts/ledger/append.test.ts",
+    "scripts/hearth/codex-sync-compiled.test.ts",
     "b.test.ts",
     "c.test.ts",
   ];
   const started: string[] = [];
   const results = await settleIsolationReruns(files, 2, async (file) => {
     started.push(file);
-    if (file === "scripts/ledger/append.test.ts" || file === "b.test.ts")
+    if (
+      file === "scripts/ledger/append.test.ts" ||
+      file === "scripts/hearth/codex-sync-compiled.test.ts" ||
+      file === "b.test.ts"
+    )
       throw new Error(file);
     return file;
   });
   expect(new Set(started).size).toBe(files.length);
   expect(results.map((result) => result.status)).toEqual([
     "fulfilled",
+    "rejected",
     "rejected",
     "rejected",
     "fulfilled",
