@@ -4,6 +4,10 @@ import { dirname, join } from "node:path";
 import type { GitRun } from "../scheduler/worktrees";
 import { scratchDirs } from "../test-scratch";
 import {
+  prepareKnowledgePublication,
+  publishKnowledgeCandidate,
+} from "./knowledge-publication";
+import {
   collectKnowledgeSource,
   createKnowledgeGit,
   readKnowledgeTarget,
@@ -99,6 +103,30 @@ function fixture() {
     },
   };
 }
+
+test("knowledge publication creates only fixed parents and atomically verifies the exact candidate without erasing a later editor", () => {
+  const f = fixture(),
+    target = resolveKnowledgeTarget(f.main, f.git),
+    original = readKnowledgeTarget(target).snapshot;
+  const before = prepareKnowledgePublication(target, original);
+  expect(before.bytes).toBeNull();
+  const candidate = "overview:\n  name: alpha\n";
+  const confirmed = publishKnowledgeCandidate(target, before, candidate);
+  expect(confirmed.bytes).toBe(candidate);
+  expect(readFileSync(target.file, "utf8")).toBe(candidate);
+  writeFileSync(target.file, "editor: retained\n");
+  expect(() =>
+    publishKnowledgeCandidate(target, confirmed, candidate),
+  ).toThrow();
+  expect(readFileSync(target.file, "utf8")).toBe("editor: retained\n");
+  expect(() =>
+    publishKnowledgeCandidate(
+      { ...target, file: join(f.main, "outside.yaml") },
+      confirmed,
+      candidate,
+    ),
+  ).toThrow();
+});
 test("known credential paths and Windows private-directory case variants are excluded before reading bytes", () => {
   const f = fixture(),
     privatePaths = [

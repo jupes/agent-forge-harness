@@ -331,6 +331,14 @@ export function verifyKnowledgeTarget(target: KnowledgeTarget) {
     throw Error("The original served repository authority changed");
 }
 
+/** Restart evidence only; these labels never mint a filesystem capability. */
+export function knowledgeTargetSeal(target: KnowledgeTarget): string {
+  verifyKnowledgeTarget(target);
+  const context = targets.get(target);
+  if (!context) throw Error("Knowledge target was not minted by this host");
+  return JSON.stringify(context.authority);
+}
+
 export function readKnowledgeTarget(
   target: KnowledgeTarget,
   now: number = Date.now(),

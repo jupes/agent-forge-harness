@@ -124,6 +124,19 @@ export const knowledgeRefreshRequestSchema = z
 export type KnowledgeRefreshRequest = z.infer<
   typeof knowledgeRefreshRequestSchema
 >;
+export function canonicalKnowledgeRefresh(
+  projectId: string,
+  request: KnowledgeRefreshRequest,
+): string {
+  return JSON.stringify({
+    family: "project-knowledge-refresh",
+    version: 1,
+    projectId,
+    requestId: request.requestId,
+    expectedRevision: request.expectedRevision,
+    repositoryKey: request.repositoryKey,
+  });
+}
 export const knowledgeReceiptSchema = z
   .object({
     projectId: z.string().regex(/^project-[a-f0-9-]{36}$/),
@@ -145,7 +158,7 @@ export const knowledgeReceiptSchema = z
     candidateHash: hash.nullable(),
     confirmedAt: z.iso.datetime().nullable(),
     message: z.string().min(1).max(1000),
-    retainedExtensions: z.array(z.string().min(1).max(256)).max(100),
+    retainedExtensions: z.array(z.string().min(1).max(512)).max(100),
   })
   .strict();
 export type KnowledgeReceipt = z.infer<typeof knowledgeReceiptSchema>;

@@ -17,6 +17,7 @@ import { observeProjectShift } from "../shifts/observations";
 import { createProjectShiftRegistry } from "../shifts/registry";
 import { readProjectShiftEvidence } from "../shifts/service";
 import { canonicalProjectShiftStart } from "../shifts/start-input";
+import { readKnowledgeInventory } from "./knowledge-store";
 import type { ProjectDeletionStatus } from "./project-lifecycle-protocol";
 import { workspaceKey } from "./scope";
 import { isProjectId } from "./store";
@@ -92,6 +93,19 @@ export function readProjectLifecycleInventory(
   const identities = source("Session Start identities", () =>
     readRestartIdentityInventory(home, project.id),
   );
+  const knowledge = source("Knowledge refresh ownership", () =>
+    readKnowledgeInventory(home),
+  );
+  if (
+    knowledge?.some(
+      (row) =>
+        row.original.projectId === project.id &&
+        !["confirmed", "failed"].includes(row.receipt.state),
+    )
+  )
+    reasons.push(
+      "A project knowledge generation or publication remains active or unresolved.",
+    );
   const sessions = source("Session ownership", () =>
     createSessionRegistry(home).listAll(project.id),
   );

@@ -325,6 +325,9 @@ export function createKnowledgeGenerator(options: GeneratorOptions) {
     return profile;
   };
   return {
+    revalidate(ready: PreparedKnowledgeGenerator): void {
+      validate(ready);
+    },
     async prepare(name: string): Promise<PreparedKnowledgeGenerator> {
       const selected = select(name),
         executable = runtime.executable(),
