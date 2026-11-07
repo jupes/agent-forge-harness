@@ -332,17 +332,90 @@ describe("reserve and release, in the ledger", () => {
     expect(deps.held().map((r) => r.beadId)).toEqual([A]);
   });
 
+  test("a duplicate legacy map never claims coverage of an unheld glob", async () => {
+    const deps = rig();
+    const worktree = comparablePath("c:/repo/trees/legacy");
+    expect(
+      appendEvent(
+        {
+          kind: "reservation.acquired",
+          workspace: deps.workspace,
+          beadId: A,
+          payload: { worktree, globs: ["src/a.ts", "src/a.ts"] },
+        },
+        { path: deps.ledgerPath },
+      ),
+    ).toMatchObject({ ok: true });
+    const before = deps.held();
+    let appends = 0;
+    const outcome = await reserve(
+      { beadId: A, worktree, globs: ["src/a.ts", "src/b.ts"] },
+      {
+        ...deps,
+        appendEvent(event) {
+          appends++;
+          return appendEvent(event, { path: deps.ledgerPath });
+        },
+      },
+    );
+    expect(outcome).toMatchObject({ ok: false, kind: "conflict" });
+    expect(appends).toBe(0);
+    expect(deps.held()).toEqual(before);
+  });
+
+  test("an exact legacy coverage set is idempotent and releases its original globs", async () => {
+    const deps = rig();
+    const worktree = comparablePath("c:/repo/trees/legacy-release");
+    const globs = ["src/a.ts", "src/a.ts"];
+    expect(
+      appendEvent(
+        {
+          kind: "reservation.acquired",
+          workspace: deps.workspace,
+          beadId: A,
+          payload: { worktree, globs },
+        },
+        { path: deps.ledgerPath },
+      ),
+    ).toMatchObject({ ok: true });
+    expect(
+      await reserve({ beadId: A, worktree, globs: ["src/a.ts"] }, deps),
+    ).toMatchObject({ ok: true, value: { already: true } });
+    let released: unknown;
+    expect(
+      await release(
+        { beadId: A, worktree },
+        {
+          ...deps,
+          appendEvent(event) {
+            released = event;
+            return appendEvent(event, { path: deps.ledgerPath });
+          },
+        },
+      ),
+    ).toMatchObject({ ok: true });
+    expect(released).toMatchObject({
+      kind: "reservation.released",
+      payload: { worktree, globs },
+    });
+    expect(deps.held()).toEqual([]);
+  });
+
   test("the same reservation again is already held; the same bead and worktree with other globs is a conflict", async () => {
     const deps = rig();
     const request = {
       beadId: A,
       worktree: "c:/repo/trees/a",
-      globs: ["src/**"],
+      globs: ["src/**", "docs/**"],
     };
     await reserve(request, deps);
     expect(
       await reserve(
-        { ...request, worktree: WIN ? "C:/Repo/trees/a" : "c:/repo//trees/a/" },
+        {
+          ...request,
+          worktree: WIN ? "C:/Repo/trees/a" : "c:/repo//trees/a/",
+          globs: ["docs/**", "src/**"],
+        },
         deps,
       ),
     ).toMatchObject({ ok: true, value: { already: true } });
@@ -385,13 +458,22 @@ describe("reserve and release, in the ledger", () => {
   });
 
   test("an id, a session, a worktree or a glob that is not one is invalid, and nothing is written", async () => {
-    const deps = rig();
+    let appends = 0;
+    const fixture = rig();
+    const deps = {
+      ...fixture,
+      appendEvent(event: Parameters<typeof appendEvent>[0]) {
+        appends++;
+        return appendEvent(event, { path: fixture.ledgerPath });
+      },
+    };
     const good = { beadId: A, worktree: "c:/repo/trees/a", globs: ["src/**"] };
     for (const bad of [
       { ...good, beadId: "not a bead" },
       { ...good, sessionId: `ghp_${"a1B2c3D4e5".repeat(4)}` },
       { ...good, worktree: "" },
       { ...good, globs: [] },
+      { ...good, globs: ["src/**", "src/**"] },
       { ...good, globs: ["/etc/passwd"] },
       { ...good, globs: ["../outside"] },
       { ...good, globs: ["a b"] },
@@ -404,6 +486,7 @@ describe("reserve and release, in the ledger", () => {
       });
     }
     expect(deps.held()).toEqual([]);
+    expect(appends).toBe(0);
   });
 
   test("a ledger that will not store the event is a failure, and nothing is held", async () => {
