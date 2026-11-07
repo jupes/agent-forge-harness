@@ -239,15 +239,19 @@ export function createProjectBudgetStore(home: string, now = () => new Date()) {
         if (row.hash !== hash)
           throw new ConversationError(409, "Budget receipt identity changed.");
         if (row.state === "settled") return;
-        if (
-          result &&
-          !result.costIsEstimate &&
-          result.actualCostUsd !== null &&
-          Number.isFinite(result.actualCostUsd) &&
-          result.actualCostUsd >= 0
-        ) {
-          row.actual = micro(result.actualCostUsd);
-          row.actualUsd = result.actualCostUsd;
+        const actualUsd =
+          result?.costIsEstimate === false ? result.actualCostUsd : null;
+        let actual: number | null = null;
+        if (typeof actualUsd === "number") {
+          try {
+            actual = micro(actualUsd);
+          } catch {
+            // Unsupported evidence retains the original admission liability.
+          }
+        }
+        if (actual !== null && typeof actualUsd === "number") {
+          row.actual = actual;
+          row.actualUsd = actualUsd;
           row.estimated = null;
           row.state = "settled";
         } else {

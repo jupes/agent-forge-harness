@@ -127,3 +127,80 @@ test("daily project allocations serialize, survive restart, retain unknown liabi
     rmSync(home, { recursive: true, force: true });
   }
 });
+
+test.each([
+  ["overflow", 10_000_000_000],
+  ["NaN", Number.NaN],
+  ["infinite", Number.POSITIVE_INFINITY],
+  ["negative", -1],
+  ["missing actual", null],
+  ["missing flag", 2],
+  ["missing result", null],
+] as const)("unsupported %s actual cost remains a durable unknown liability", async (kind, actualCostUsd) => {
+  const home = mkdtempSync(join(tmpdir(), "forge-project-budget-overflow-"));
+  let at = new Date("2026-11-07T12:00:00.000Z");
+  try {
+    const projects = createProjectStore(home);
+    const { slug, name, description, icon, workspaces } = projectFixture(home);
+    const created = await projects.create(
+      { slug, name, description, icon, workspaces },
+      0,
+    );
+    const id = created.projects[0]!.id;
+    await projects.updateBudgets(id, 1, {
+      shiftSpendCapUsd: null,
+      dailyApiKeyCapUsd: 5,
+    });
+    const budget = createProjectBudgetStore(home, () => at);
+    const requestId = "00000000-0000-4000-8000-000000000011";
+    const hash = "a".repeat(64);
+    await budget.reserve(id, requestId, hash, 3);
+    const result = {
+      actualCostUsd,
+      usageEstimatedCostUsd: null,
+      costIsEstimate: false,
+    };
+    if (kind === "missing flag")
+      Reflect.deleteProperty(result, "costIsEstimate");
+    await budget.settle(
+      id,
+      requestId,
+      hash,
+      kind === "missing result" ? null : result,
+    );
+    at = new Date("2026-11-08T00:00:00.000Z");
+    const restarted = createProjectBudgetStore(home, () => at);
+    expect(restarted.status(id)).toMatchObject({
+      reservedUsd: 3,
+      reportedUsd: 0,
+      estimatedUsd: 0,
+      unknownCount: 1,
+    });
+    await expect(
+      restarted.reserve(id, "00000000-0000-4000-8000-000000000012", hash, 1),
+    ).rejects.toThrow("unreported");
+    const boundaryUsd = 9_007_199_254.74099;
+    await restarted.settle(id, requestId, hash, {
+      actualCostUsd: boundaryUsd,
+      usageEstimatedCostUsd: null,
+      costIsEstimate: false,
+    });
+    at = new Date("2026-11-07T23:59:00.000Z");
+    expect(restarted.status(id)).toMatchObject({
+      reservedUsd: 0,
+      reportedUsd: boundaryUsd,
+      estimatedUsd: 0,
+      unknownCount: 0,
+    });
+    await restarted.settle(id, requestId, hash, {
+      actualCostUsd: 10_000_000_000,
+      usageEstimatedCostUsd: null,
+      costIsEstimate: false,
+    });
+    expect(
+      createProjectBudgetStore(home, () => at).status(id).reportedUsd,
+    ).toBe(boundaryUsd);
+  } finally {
+    rmSync(home, { recursive: true, force: true });
+  }
+});
