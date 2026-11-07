@@ -127,14 +127,19 @@ export function ProjectKnowledgeSettings({
                 Check or publish saved candidate
               </Button>
             )}
-          {receipt?.state === "candidate-saved" && (
-            <Button
-              disabled={!writable}
-              onClick={() => void knowledge.owner.recover(id, "retire")}
-            >
-              Retire never-published candidate
-            </Button>
-          )}
+          {receipt &&
+            ["candidate-saved", "generation-completed"].includes(
+              receipt.state,
+            ) && (
+              <Button
+                disabled={!writable}
+                onClick={() => void knowledge.owner.recover(id, "retire")}
+              >
+                {receipt.state === "generation-completed"
+                  ? "Retire completed generation"
+                  : "Retire never-published candidate"}
+              </Button>
+            )}
         </div>
       )}
       {receipt && (

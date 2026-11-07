@@ -94,7 +94,36 @@ const rowSchema = z
   .strict()
   .refine((row) => {
     const { original: o, receipt: r } = row;
+    const validPhase = (() => {
+      switch (r.state) {
+        case "reserved":
+          return row.generationVerifiedAt === null;
+        case "attempted":
+          // Valid v1 completion markers may precede the explicit public phase.
+          return row.candidate === null;
+        case "generation-completed":
+          return row.generationVerifiedAt !== null && row.candidate === null;
+        case "candidate-saved":
+          return row.candidate !== null && row.publicationAttemptedAt === null;
+        case "publishing":
+          return (
+            row.publication !== null && row.publicationAttemptedAt !== null
+          );
+        case "confirmed":
+          return row.candidate !== null;
+        case "failed":
+          return (
+            row.generationVerifiedAt !== null &&
+            row.publicationAttemptedAt === null
+          );
+        case "unknown":
+          return true;
+        default:
+          return false;
+      }
+    })();
     return (
+      validPhase &&
       row.sealHash === knowledgeDigest(JSON.stringify(o)) &&
       r.projectId === o.projectId &&
       r.requestId === o.request.requestId &&
@@ -119,13 +148,7 @@ const rowSchema = z
           row.publication === null &&
           row.publicationAttemptedAt === null
         : row.candidateSavedAt !== null && row.generationVerifiedAt !== null) &&
-      (r.state !== "publishing" ||
-        (row.publication !== null && row.publicationAttemptedAt !== null)) &&
-      (r.state !== "candidate-saved" || row.publicationAttemptedAt === null) &&
-      (r.state !== "failed" ||
-        (row.generationVerifiedAt !== null &&
-          row.publicationAttemptedAt === null)) &&
-      r.state !== "refused"
+      (row.publicationAttemptedAt === null || row.publication !== null)
     );
   });
 const stateSchema = z
@@ -147,6 +170,17 @@ export type KnowledgeOriginal = z.infer<typeof originalSchema>;
 export const checkedKnowledgeOriginal = (value: unknown): KnowledgeOriginal =>
   originalSchema.parse(value);
 export type KnowledgeRow = z.infer<typeof rowSchema>;
+/** Project valid v1 completion evidence without rewriting its saved original. */
+export function knowledgeReceiptForRow(row: KnowledgeRow) {
+  return row.receipt.state === "attempted" && row.generationVerifiedAt !== null
+    ? knowledgeReceiptSchema.parse({
+        ...row.receipt,
+        state: "generation-completed",
+        message:
+          "Generation completed, but no candidate was saved. This original may be explicitly retired; generation will not be repeated.",
+      })
+    : row.receipt;
+}
 type KnowledgeState = z.infer<typeof stateSchema>;
 const MAX_BYTES = 8 * 1024 * 1024,
   RESERVE_BYTES = 6 * KNOWLEDGE_LIMITS.documentBytes + 65536;

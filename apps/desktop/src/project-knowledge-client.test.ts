@@ -48,8 +48,23 @@ function fixture() {
             throw Error("not found");
           })())
         : status,
-    post: async (_url: string, body: unknown) => {
+    post: async (url: string, body: unknown) => {
       posts++;
+      if (url.endsWith("/retire")) {
+        const requestId = url.split("/").at(-2),
+          previous = requestId ? receipts.get(requestId) : undefined;
+        if (!previous) throw Error("Missing exact retirement fixture");
+        expect(body).toEqual({ requestHash: previous.requestHash });
+        const retired: KnowledgeReceipt = {
+          ...previous,
+          state: "failed",
+          message: "Completed generation explicitly retired",
+        };
+        receipts.set(previous.requestId, retired);
+        return new Response(
+          JSON.stringify({ ok: true, data: retired, error: null }),
+        );
+      }
       if (mode === "not-sent") throw new NotSent("No token");
       if (mode === "refused")
         return new Response('{"ok":false,"error":"Changed project"}', {
@@ -77,6 +92,16 @@ function fixture() {
           confirmedAt: null,
           message: "Original reserved; attempt is unconfirmed",
         };
+      if (mode === "generation-completed")
+        saved = {
+          ...saved,
+          state: "generation-completed",
+          candidateHash: null,
+          confirmedAt: null,
+          message: "Generation completed without a saved candidate",
+        };
+      if (mode === "missing-hash") saved = { ...saved, candidateHash: null };
+      if (mode === "missing-time") saved = { ...saved, confirmedAt: null };
       if (mode === "mismatched")
         saved = { ...saved, requestHash: "f".repeat(64) };
       receipts.set(request.requestId, saved);
@@ -114,6 +139,41 @@ test("knowledge unknown delivery restores exact metadata and read-only recovery 
   await reopened.checkOriginal(id);
   expect(reopened.snapshot().receipts[id]?.state).toBe("confirmed");
   expect(reopened.snapshot().pending[id]).toBeUndefined();
+  expect(f.posts()).toBe(1);
+});
+
+test("completed generation survives reload, cannot publish, and can explicitly retire its exact original", async () => {
+  const f = fixture();
+  await f.owner.inspect(id);
+  f.setMode("generation-completed");
+  await f.owner.refresh(id);
+  const reopened = new ProjectKnowledgeOwner(f.deps);
+  await reopened.checkOriginal(id);
+  expect(reopened.snapshot().pending[id]?.requestId).toBe(uuid);
+  expect(reopened.snapshot().receipts[id]?.state).toBe("generation-completed");
+  await reopened.recover(id, "publish");
+  expect(f.posts()).toBe(1);
+  await reopened.recover(id, "retire");
+  expect(f.posts()).toBe(2);
+  expect(reopened.snapshot().receipts[id]?.state).toBe("failed");
+  expect(reopened.snapshot().pending[id]).toBeUndefined();
+});
+
+test.each([
+  "missing-hash",
+  "missing-time",
+])("malformed terminal receipt retains its original through response and reload readback: %s", async (mode) => {
+  const f = fixture();
+  await f.owner.inspect(id);
+  f.setMode(mode);
+  await f.owner.refresh(id);
+  const original = f.owner.snapshot().pending[id];
+  expect(original?.requestId).toBe(uuid);
+  expect(f.owner.snapshot().receipts[id]).toBeUndefined();
+  const reopened = new ProjectKnowledgeOwner(f.deps);
+  await reopened.checkOriginal(id);
+  expect(reopened.snapshot().pending[id]).toEqual(original);
+  expect(reopened.snapshot().receipts[id]).toBeUndefined();
   expect(f.posts()).toBe(1);
 });
 test("knowledge shared pending identity prevents a second tab from dispatching and confirmed truth survives storage cleanup failure", async () => {

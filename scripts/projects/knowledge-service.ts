@@ -32,6 +32,7 @@ import {
   type KnowledgeOriginal,
   type KnowledgeRow,
   knowledgeOperationHash,
+  knowledgeReceiptForRow,
 } from "./knowledge-store";
 import { assertProjectCliCostAdmission } from "./project-budget-policy";
 import { workspaceKey } from "./scope";
@@ -181,7 +182,7 @@ export function createKnowledgeService(options: Options) {
         row.candidate === null ||
         !pending(row)
       )
-        return row.receipt;
+        return knowledgeReceiptForRow(row);
       try {
         const repository = target();
         if (
@@ -200,7 +201,7 @@ export function createKnowledgeService(options: Options) {
           row.receipt.message =
             "The exact saved candidate bytes are present in the verified knowledge file.";
           save();
-          return row.receipt;
+          return knowledgeReceiptForRow(row);
         }
         const ready = await generator.prepare(row.original.smith.name);
         if (
@@ -261,11 +262,11 @@ export function createKnowledgeService(options: Options) {
             : "Publication was refused because its reviewed authority, source, generator or output could not be revalidated. The saved candidate was retained.";
         save();
       }
-      return row.receipt;
+      return knowledgeReceiptForRow(row);
     });
   const api = {
     receipt(projectId: string, requestId: string) {
-      return requireOriginal(projectId, requestId).receipt;
+      return knowledgeReceiptForRow(requireOriginal(projectId, requestId));
     },
     status(projectId: string) {
       const repository = target(),
@@ -306,19 +307,22 @@ export function createKnowledgeService(options: Options) {
             404,
             "No saved knowledge refresh original was found",
           );
-        if (row.receipt.state === "failed") return row.receipt;
+        if (row.receipt.state === "failed") return knowledgeReceiptForRow(row);
         if (
-          row.receipt.state !== "candidate-saved" ||
+          (row.receipt.state !== "candidate-saved" &&
+            knowledgeReceiptForRow(row).state !== "generation-completed") ||
           row.publicationAttemptedAt !== null
         )
           conflict(
-            "Only a saved candidate with no publication attempt may be retired. Unresolved generation or publication must remain held.",
+            "Only verified completed generation or a saved candidate with no publication attempt may be retired. Unresolved generation or publication must remain held.",
           );
         row.receipt.state = "failed";
         row.receipt.message =
-          "The never-published candidate was explicitly retired. The prior repository file was retained.";
+          row.candidate === null
+            ? "The completed generation without a saved candidate was explicitly retired. The repository file was retained."
+            : "The never-published candidate was explicitly retired. The prior repository file was retained.";
         save();
-        return row.receipt;
+        return knowledgeReceiptForRow(row);
       });
     },
     async refresh(projectId: string, input: KnowledgeRefreshRequest) {
@@ -328,7 +332,7 @@ export function createKnowledgeService(options: Options) {
       if (previous) {
         if (previous.original.requestHash !== requestHash)
           conflict("This knowledge UUID belongs to another immutable original");
-        return previous.receipt;
+        return knowledgeReceiptForRow(previous);
       }
       const { repository, project, prior, source, ready } = await (async () => {
         try {
@@ -429,7 +433,9 @@ export function createKnowledgeService(options: Options) {
         });
       });
       if (!admitted)
-        return requireOriginal(projectId, request.requestId).receipt;
+        return knowledgeReceiptForRow(
+          requireOriginal(projectId, request.requestId),
+        );
       try {
         const generated = await generator.generate(ready, source);
         await store.locked(async (state, save) => {
@@ -441,6 +447,9 @@ export function createKnowledgeService(options: Options) {
           )
             conflict("The saved knowledge generation owner changed");
           row.generationVerifiedAt = now().toISOString();
+          row.receipt.state = "generation-completed";
+          row.receipt.message =
+            "Generation completed. No candidate or repository output has been saved yet.";
           save();
         });
         const candidate = buildKnowledgeYaml({
@@ -455,7 +464,8 @@ export function createKnowledgeService(options: Options) {
           const row = store.find(state, projectId, request.requestId);
           if (
             !row ||
-            row.receipt.state !== "attempted" ||
+            row.receipt.state !== "generation-completed" ||
+            row.generationVerifiedAt === null ||
             row.original.requestHash !== requestHash
           )
             conflict("The saved knowledge generation owner changed");
@@ -476,7 +486,10 @@ export function createKnowledgeService(options: Options) {
               503,
               "Knowledge original unavailable; no generation retry is allowed",
             );
-          if (row.receipt.state === "attempted") {
+          if (
+            row.receipt.state === "attempted" ||
+            row.receipt.state === "generation-completed"
+          ) {
             row.receipt.state =
               row.generationVerifiedAt === null ? "unknown" : "failed";
             row.receipt.message =
@@ -485,7 +498,7 @@ export function createKnowledgeService(options: Options) {
                 : "Generation completed, but a complete supported candidate could not be saved. The repository file was retained. This original will not run again; review the source or legacy knowledge before a new explicit refresh.";
             save();
           }
-          return row.receipt;
+          return knowledgeReceiptForRow(row);
         });
       }
       return publish(projectId, request.requestId);
@@ -512,7 +525,7 @@ export function createKnowledgeService(options: Options) {
           saved.original.requestHash ===
             knowledgeOperationHash(projectId, request)
         )
-          return saved.receipt;
+          return knowledgeReceiptForRow(saved);
         throw error;
       }
     },

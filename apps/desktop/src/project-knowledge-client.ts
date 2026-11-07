@@ -330,7 +330,7 @@ export class ProjectKnowledgeOwner {
       receipt.requestId !== original.requestId ||
       receipt.requestHash !== original.requestHash ||
       (operation === "retire"
-        ? receipt.state !== "candidate-saved"
+        ? !["candidate-saved", "generation-completed"].includes(receipt.state)
         : receipt.candidateHash === null ||
           !["candidate-saved", "unknown", "publishing"].includes(receipt.state))
     )

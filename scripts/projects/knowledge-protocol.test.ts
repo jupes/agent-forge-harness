@@ -3,6 +3,7 @@ import { parse } from "yaml";
 import {
   buildKnowledgeYaml,
   generatedKnowledgeSchema,
+  knowledgeReceiptSchema,
   knowledgeRefreshRequestSchema,
 } from "./knowledge-protocol";
 
@@ -46,6 +47,92 @@ const generated = {
   ],
   recent_changes: ["abcdef0: observed fixture commit"],
 };
+const confirmedReceipt = {
+  projectId: "project-10000000-0000-4000-8000-000000000001",
+  requestId: "10000000-0000-4000-8000-000000000002",
+  requestHash: "a".repeat(64),
+  repositoryKey: "b".repeat(64),
+  state: "confirmed",
+  sourceCommit: "c".repeat(40),
+  evidenceHash: "d".repeat(64),
+  candidateHash: "e".repeat(64),
+  confirmedAt: "2026-11-07T00:00:00.000Z",
+  message: "Exact candidate confirmed.",
+  retainedExtensions: [],
+};
+test("a confirmed knowledge receipt requires the exact candidate hash as evidence", () => {
+  expect(knowledgeReceiptSchema.safeParse(confirmedReceipt).success).toBe(true);
+  expect(
+    knowledgeReceiptSchema.safeParse({
+      ...confirmedReceipt,
+      candidateHash: null,
+    }).success,
+  ).toBe(false);
+});
+
+test("knowledge receipt phases require compatible candidate and confirmation evidence", () => {
+  expect(
+    knowledgeReceiptSchema.safeParse({
+      ...confirmedReceipt,
+      confirmedAt: null,
+    }).success,
+  ).toBe(false);
+  for (const state of ["reserved", "attempted", "generation-completed"]) {
+    const receipt = {
+      ...confirmedReceipt,
+      state,
+      candidateHash: null,
+      confirmedAt: null,
+    };
+    expect(knowledgeReceiptSchema.safeParse(receipt).success).toBe(true);
+    expect(
+      knowledgeReceiptSchema.safeParse({
+        ...receipt,
+        candidateHash: confirmedReceipt.candidateHash,
+      }).success,
+    ).toBe(false);
+    expect(
+      knowledgeReceiptSchema.safeParse({
+        ...receipt,
+        confirmedAt: confirmedReceipt.confirmedAt,
+      }).success,
+    ).toBe(false);
+  }
+  for (const state of ["candidate-saved", "publishing"]) {
+    const receipt = { ...confirmedReceipt, state, confirmedAt: null };
+    expect(knowledgeReceiptSchema.safeParse(receipt).success).toBe(true);
+    expect(
+      knowledgeReceiptSchema.safeParse({
+        ...receipt,
+        candidateHash: null,
+      }).success,
+    ).toBe(false);
+    expect(
+      knowledgeReceiptSchema.safeParse({
+        ...receipt,
+        confirmedAt: confirmedReceipt.confirmedAt,
+      }).success,
+    ).toBe(false);
+  }
+  for (const state of ["unknown", "failed", "refused"]) {
+    for (const candidateHash of [null, confirmedReceipt.candidateHash])
+      expect(
+        knowledgeReceiptSchema.safeParse({
+          ...confirmedReceipt,
+          state,
+          candidateHash,
+          confirmedAt: null,
+        }).success,
+      ).toBe(true);
+    expect(
+      knowledgeReceiptSchema.safeParse({
+        ...confirmedReceipt,
+        state,
+      }).success,
+    ).toBe(false);
+  }
+});
+
 test("knowledge refresh accepts identity metadata only and generates all canonical sections with server provenance", () => {
   expect(
     knowledgeRefreshRequestSchema.safeParse({

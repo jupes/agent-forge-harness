@@ -146,6 +146,7 @@ export const knowledgeReceiptSchema = z
     state: z.enum([
       "reserved",
       "attempted",
+      "generation-completed",
       "candidate-saved",
       "publishing",
       "confirmed",
@@ -160,7 +161,19 @@ export const knowledgeReceiptSchema = z
     message: z.string().min(1).max(1000),
     retainedExtensions: z.array(z.string().min(1).max(512)).max(100),
   })
-  .strict();
+  .strict()
+  .refine((receipt) => {
+    if (receipt.state === "confirmed")
+      return receipt.candidateHash !== null && receipt.confirmedAt !== null;
+    if (receipt.confirmedAt !== null) return false;
+    if (["candidate-saved", "publishing"].includes(receipt.state))
+      return receipt.candidateHash !== null;
+    if (
+      ["reserved", "attempted", "generation-completed"].includes(receipt.state)
+    )
+      return receipt.candidateHash === null;
+    return true;
+  });
 export type KnowledgeReceipt = z.infer<typeof knowledgeReceiptSchema>;
 export const knowledgeStatusSchema = z
   .object({
