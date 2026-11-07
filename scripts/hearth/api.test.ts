@@ -3407,6 +3407,44 @@ const ACTIONS: Record<string, ActionFixture> = {
       });
     },
   },
+  "POST /projects/:id/settings/notifications": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/settings/notifications`,
+      body: {
+        expectedRevision: 1,
+        notifications: {
+          "stopped-shift": false,
+          "failed-gate": true,
+          "council-verdict": false,
+          "bead-approval": true,
+        },
+      },
+      status: 200,
+      target: FIXTURE_PROJECT_ID,
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/settings/notifications`,
+      body: { expectedRevision: 1, notifications: { "failed-gate": "yes" } },
+    },
+    prepare: async (h) => {
+      writeOwnerOnly(
+        projectCatalogPath(h.home),
+        JSON.stringify(projectCatalogFixture(h.workspace)),
+      );
+    },
+    captureBefore: (h) => createProjectStore(h.home).read().projects,
+    happened: async (h) => {
+      expect(createProjectStore(h.home).read()).toMatchObject({
+        revision: 2,
+        projects: [
+          {
+            id: FIXTURE_PROJECT_ID,
+            notifications: { "failed-gate": true, "bead-approval": true },
+          },
+        ],
+      });
+    },
+  },
   "POST /projects/:id/settings/defaults": {
     valid: {
       path: `/projects/${FIXTURE_PROJECT_ID}/settings/defaults`,

@@ -1,9 +1,11 @@
 import type { JSX } from "preact";
 import { Button } from "../../../docs/js/ds/Button";
+import type { ProjectNotifications } from "../../../scripts/projects/project-notifications-protocol";
 import type { ProjectRepositoryMember } from "../../../scripts/projects/project-repositories-protocol";
 import { PROJECT_COLOR_IDS, type ProjectRecord } from "../../../types/projects";
 import { ProjectDefaultsSettings } from "./ProjectDefaultsSettings";
 import { ProjectKeeperSettings } from "./ProjectKeeperSettings";
+import { ProjectNotificationsSettings } from "./ProjectNotificationsSettings";
 import type {
   GeneralCatalog,
   GeneralDraft,
@@ -13,6 +15,7 @@ import type {
 import type { ProjectRepositoriesSnapshot } from "./project-repositories-client";
 import type { useProjectDefaults } from "./use-project-defaults";
 import type { useProjectKeeperSettings } from "./use-project-keeper-settings";
+import type { useProjectValueSettings } from "./use-project-value-settings";
 import type { SmithsController } from "./use-smiths";
 import "./project-settings.css";
 
@@ -217,6 +220,9 @@ interface Props {
   state: GeneralSettingsSnapshot;
   keeperSettings: ReturnType<typeof useProjectKeeperSettings>;
   defaultsSettings: ReturnType<typeof useProjectDefaults>;
+  notificationsSettings: ReturnType<
+    typeof useProjectValueSettings<ProjectNotifications>
+  >;
   smiths: SmithsController;
   onRefresh(): void;
   repositories: ProjectRepositoriesSnapshot;
@@ -238,6 +244,7 @@ export function ProjectSettings({
   onRefresh,
   keeperSettings,
   defaultsSettings,
+  notificationsSettings,
   smiths,
   repositories,
   onRefreshRepositories,
@@ -572,6 +579,12 @@ export function ProjectSettings({
         state={repositories}
         onRefresh={() => void onRefreshRepositories()}
         onReconcile={() => void onReconcileRepositories()}
+      />
+      <ProjectNotificationsSettings
+        projectId={project.id}
+        archived={project.archived}
+        writesAllowed={writesAllowed}
+        settings={notificationsSettings}
       />
     </section>
   );

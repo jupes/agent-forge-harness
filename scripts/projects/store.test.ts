@@ -586,11 +586,21 @@ test("an explicit project Keeper Smith is bound to the saved original and commit
     { keeperSmith: "codex-journeyman", keeperAutonomy: "suggest-only" },
     () => {},
   );
-  const changed = await store.updateDefaults(
+  const defaultsChanged = await store.updateDefaults(
     committedProject.id,
     keeperChanged.revision,
     { claudeSessionSmith: "claude-master" },
     () => {},
+  );
+  const changed = await store.updateNotifications(
+    committedProject.id,
+    defaultsChanged.revision,
+    {
+      "stopped-shift": false,
+      "failed-gate": true,
+      "council-verdict": false,
+      "bead-approval": true,
+    },
   );
   expect(createProjectStore(home).read().projects[0]?.keeperSmith).toBe(
     "codex-journeyman",

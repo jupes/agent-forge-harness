@@ -22,6 +22,7 @@ import {
 } from "../../../scripts/projects/create-protocol";
 import { projectDefaultsSchema } from "../../../scripts/projects/project-defaults-protocol";
 import { keeperAutonomySchema } from "../../../scripts/projects/project-keeper-protocol";
+import { projectNotificationsSchema } from "../../../scripts/projects/project-notifications-protocol";
 import {
   approvedRepositorySchema,
   projectRepositoryNameSchema,
@@ -66,6 +67,7 @@ const projectRecordSchema = z
       .max(16),
     keeperSmith: z.string().min(1).max(1024).optional(),
     keeperAutonomy: keeperAutonomySchema.optional(),
+    notifications: projectNotificationsSchema.optional(),
     claudeSessionSmith: projectDefaultsSchema.shape.claudeSessionSmith,
     codexSessionSmith: projectDefaultsSchema.shape.codexSessionSmith,
     geminiSessionSmith: projectDefaultsSchema.shape.geminiSessionSmith,
