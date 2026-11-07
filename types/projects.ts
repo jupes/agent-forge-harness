@@ -2,6 +2,12 @@
 export const PROJECT_COLOR_IDS = ["default", "green", "blue"] as const;
 export type ProjectColor = (typeof PROJECT_COLOR_IDS)[number];
 export type KeeperAutonomy = "suggest-only" | "propose-for-approval";
+export interface ProjectNotificationPreferences {
+  "stopped-shift": boolean;
+  "failed-gate": boolean;
+  "council-verdict": boolean;
+  "bead-approval": boolean;
+}
 
 export interface ProjectWorkspace {
   /** Canonical ledger workspace, not a linked worktree. */
@@ -31,6 +37,8 @@ export interface ProjectRecord {
   geminiSessionSmith?: string;
   sessionWhere?: "main" | "existing" | "new";
   sessionRunAs?: "chat" | "task";
+  /** OS interruption preferences only; never suppresses Activity or approval authority. */
+  notifications?: ProjectNotificationPreferences;
   /** Optional bounded presentation token; absent on legacy projects. */
   color?: ProjectColor;
   pinned: boolean;

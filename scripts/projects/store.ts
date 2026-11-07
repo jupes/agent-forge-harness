@@ -36,6 +36,10 @@ import {
   type ProjectKeeperSettings,
   projectKeeperSettingsSchema,
 } from "./project-keeper-protocol";
+import {
+  type ProjectNotifications,
+  projectNotificationsSchema,
+} from "./project-notifications-protocol";
 
 export const PROJECT_STORE_VERSION = 1;
 export const isProjectId = (value: unknown): value is string =>
@@ -187,6 +191,7 @@ function validProject(value: unknown): value is ProjectRecord {
       "geminiSessionSmith",
       "sessionWhere",
       "sessionRunAs",
+      "notifications",
       "color",
       "pinned",
       "archived",
@@ -197,6 +202,8 @@ function validProject(value: unknown): value is ProjectRecord {
     typeof value["pinned"] === "boolean" &&
     typeof value["archived"] === "boolean" &&
     validProjectDefaults(value) &&
+    (!Object.hasOwn(value, "notifications") ||
+      projectNotificationsSchema.safeParse(value["notifications"]).success) &&
     (!Object.hasOwn(value, "keeperAutonomy") ||
       value["keeperAutonomy"] === "suggest-only" ||
       value["keeperAutonomy"] === "propose-for-approval") &&
@@ -621,6 +628,45 @@ export function createProjectStore(
               updated.keeperAutonomy = keeperAutonomy;
             return updated;
           }),
+          ...(catalog.createOperations !== undefined
+            ? { createOperations: catalog.createOperations }
+            : {}),
+        };
+      });
+    },
+    async updateNotifications(
+      id: string,
+      expectedRevision: number,
+      notifications: ProjectNotifications,
+    ): Promise<ProjectCatalog> {
+      const checked = projectNotificationsSchema.safeParse(notifications);
+      if (!isProjectId(id) || !checked.success)
+        throw new ProjectStoreError(
+          400,
+          "Expected a project id and complete notification preferences.",
+        );
+      return change(expectedRevision, (catalog) => {
+        const project = catalog.projects.find((item) => item.id === id);
+        if (!project)
+          throw new ProjectStoreError(
+            404,
+            "This project is no longer in the catalog.",
+          );
+        if (project.archived)
+          throw new ProjectStoreError(
+            409,
+            "Unarchive this project before changing notifications.",
+          );
+        return {
+          projects: catalog.projects.map((item) =>
+            item.id === id
+              ? {
+                  ...item,
+                  notifications: checked.data,
+                  updatedAt: now().toISOString(),
+                }
+              : item,
+          ),
           ...(catalog.createOperations !== undefined
             ? { createOperations: catalog.createOperations }
             : {}),

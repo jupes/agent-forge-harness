@@ -44,6 +44,10 @@ import {
   projectKeeperSettingsRequestSchema,
 } from "../../projects/project-keeper-protocol";
 import {
+  type ProjectNotifications,
+  projectNotificationsRequestSchema,
+} from "../../projects/project-notifications-protocol";
+import {
   projectRepositoriesDataSchema,
   projectWorktreeFactSchema,
 } from "../../projects/project-repositories-protocol";
@@ -1417,6 +1421,30 @@ export function projectRoutes(
         publicCatalog(await store.preferences(id, revision, patch)),
       ),
   };
+  const notificationsSettings: ActionRoute<{
+    id: string;
+    expectedRevision: number;
+    notifications: ProjectNotifications;
+  }> = {
+    kind: "action",
+    method: "POST",
+    path: "/projects/:id/settings/notifications",
+    action: "project.settings.notifications",
+    validate: (request) => {
+      const id = request.params["id"],
+        parsed = projectNotificationsRequestSchema.safeParse(request.body);
+      return isProjectId(id) && parsed.success
+        ? { ok: true, value: { id, ...parsed.data } }
+        : fail("Expected a project id and complete notification preferences.");
+    },
+    subject: ({ id }) => ({ target: id }),
+    effect: async ({ id, expectedRevision, notifications }) =>
+      reply(async () =>
+        publicCatalog(
+          await store.updateNotifications(id, expectedRevision, notifications),
+        ),
+      ),
+  };
   const defaultsSettings: ActionRoute<{
     id: string;
     expectedRevision: number;
@@ -1691,6 +1719,7 @@ export function projectRoutes(
     generalSettings,
     keeperSettings,
     defaultsSettings,
+    notificationsSettings,
     createList,
     createOriginal,
     repositorySelectionRead,

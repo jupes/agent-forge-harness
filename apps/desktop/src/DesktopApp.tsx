@@ -98,6 +98,7 @@ import {
 } from "./project-council-return";
 import type { VerifiedProjectCreate } from "./project-create-owner";
 import { generalCatalogForProject } from "./project-general-settings-client";
+import { projectNotificationsSpec } from "./project-notifications-client";
 import { parseRunFilters, runsHref } from "./project-runs-model";
 import { ClaudeSessionComposer, SessionComposer } from "./SessionComposer";
 import { SessionConversation } from "./SessionConversation";
@@ -121,6 +122,7 @@ import { useProjectKeeperSettings } from "./use-project-keeper-settings";
 import { useProjectRepositories } from "./use-project-repositories";
 import { useProjectRuns } from "./use-project-runs";
 import { useProjectShifts } from "./use-project-shifts";
+import { useProjectValueSettings } from "./use-project-value-settings";
 import { useProjects } from "./use-projects";
 import { useProviders } from "./use-providers";
 import { useSessionLibrary } from "./use-session-library";
@@ -356,6 +358,10 @@ export function DesktopApp(): JSX.Element {
   );
   const keeperSettings = useProjectKeeperSettings(projects.refreshProjectHome);
   const defaultsSettings = useProjectDefaults(projects.refreshProjectHome);
+  const notificationsSettings = useProjectValueSettings(
+    projectNotificationsSpec,
+    projects.refreshProjectHome,
+  );
   const settingsCatalog = projects.data?.catalog ?? null;
   const providers = useProviders();
   const projectCreate = useProjectCreate(
@@ -384,6 +390,10 @@ export function DesktopApp(): JSX.Element {
     if (settingsCatalog && route.projectId)
       defaultsSettings.owner.adopt(route.projectId, settingsCatalog);
   }, [defaultsSettings.owner, route.projectId, settingsCatalog]);
+  useEffect(() => {
+    if (settingsCatalog && route.projectId)
+      notificationsSettings.owner.adopt(route.projectId, settingsCatalog);
+  }, [notificationsSettings.owner, route.projectId, settingsCatalog]);
   const repositoryProjectId =
     route.destination === "project-settings" ? (project?.id ?? null) : null;
   const projectRepositories = useProjectRepositories(
@@ -2315,6 +2325,7 @@ export function DesktopApp(): JSX.Element {
             state={projectGeneralSettings}
             keeperSettings={keeperSettings}
             defaultsSettings={defaultsSettings}
+            notificationsSettings={notificationsSettings}
             smiths={smiths}
             onRefresh={projects.reload}
             repositories={projectRepositories}
