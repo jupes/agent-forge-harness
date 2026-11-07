@@ -22,6 +22,10 @@ import { resolveCheckout } from "../ledger/workspace";
 import { withQueueLock } from "../scheduler/queue-lock";
 import { MAX_PROJECT_CREATE_OPERATIONS } from "./create-protocol";
 import {
+  type ProjectDefaults,
+  projectDefaultsSchema,
+} from "./project-defaults-protocol";
+import {
   type ProjectGeneralSettings,
   projectGeneralSettingsSchema,
 } from "./project-general-protocol";
@@ -175,6 +179,7 @@ function validProject(value: unknown): value is ProjectRecord {
       "workspaces",
       "keeperSmith",
       "keeperAutonomy",
+      "claudeSessionSmith",
       "color",
       "pinned",
       "archived",
@@ -184,6 +189,11 @@ function validProject(value: unknown): value is ProjectRecord {
     isProjectId(value["id"]) &&
     typeof value["pinned"] === "boolean" &&
     typeof value["archived"] === "boolean" &&
+    projectDefaultsSchema.safeParse(
+      Object.hasOwn(value, "claudeSessionSmith")
+        ? { claudeSessionSmith: value["claudeSessionSmith"] }
+        : {},
+    ).success &&
     (!Object.hasOwn(value, "keeperAutonomy") ||
       value["keeperAutonomy"] === "suggest-only" ||
       value["keeperAutonomy"] === "propose-for-approval") &&
@@ -606,6 +616,47 @@ export function createProjectStore(
             // Older Smith-only clients must never reset a saved Suggest-only policy.
             if (keeperAutonomy !== undefined)
               updated.keeperAutonomy = keeperAutonomy;
+            return updated;
+          }),
+          ...(catalog.createOperations !== undefined
+            ? { createOperations: catalog.createOperations }
+            : {}),
+        };
+      });
+    },
+    async updateDefaults(
+      id: string,
+      expectedRevision: number,
+      defaults: ProjectDefaults,
+      validateSmith: (name: string) => void,
+    ): Promise<ProjectCatalog> {
+      const checked = projectDefaultsSchema.safeParse(defaults);
+      if (!isProjectId(id) || !checked.success)
+        throw new ProjectStoreError(
+          400,
+          "Expected a project id and valid session defaults.",
+        );
+      return change(expectedRevision, (catalog) => {
+        const project = catalog.projects.find((item) => item.id === id);
+        if (!project)
+          throw new ProjectStoreError(
+            404,
+            "This project is no longer in the catalog.",
+          );
+        if (project.archived)
+          throw new ProjectStoreError(
+            409,
+            "Unarchive this project before changing its defaults.",
+          );
+        const { claudeSessionSmith } = checked.data;
+        if (claudeSessionSmith !== undefined) validateSmith(claudeSessionSmith);
+        return {
+          projects: catalog.projects.map((item) => {
+            if (item.id !== id) return item;
+            const updated = { ...item, updatedAt: now().toISOString() };
+            delete updated.claudeSessionSmith;
+            if (claudeSessionSmith !== undefined)
+              updated.claudeSessionSmith = claudeSessionSmith;
             return updated;
           }),
           ...(catalog.createOperations !== undefined

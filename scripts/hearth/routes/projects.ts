@@ -32,6 +32,10 @@ import {
   projectCreateRetireSchema,
 } from "../../projects/create-protocol";
 import {
+  type ProjectDefaults,
+  projectDefaultsRequestSchema,
+} from "../../projects/project-defaults-protocol";
+import {
   type ProjectGeneralSettings,
   projectGeneralSettingsRequestSchema,
 } from "../../projects/project-general-protocol";
@@ -114,10 +118,12 @@ export interface ProjectCreateRouteOptions {
   loadScope(): Promise<ProjectSnapshot>;
 }
 
-function validateConfiguredKeeperSmith(
+function validateConfiguredProjectSmith(
   name: string,
   options: ProjectCreateRouteOptions,
+  provider?: "claude",
 ): void {
+  const label = provider === "claude" ? "Claude session" : "Keeper";
   let config: ReturnType<typeof loadConfig>["config"];
   try {
     config = loadConfig({
@@ -128,7 +134,7 @@ function validateConfiguredKeeperSmith(
   } catch {
     throw new ProjectStoreError(
       503,
-      "The configured Keeper Smiths could not be verified. Check configuration before changing projects.",
+      `The configured ${label} Smiths could not be verified. Check configuration before changing projects.`,
     );
   }
   const smith = Object.hasOwn(config.smiths, name)
@@ -137,10 +143,18 @@ function validateConfiguredKeeperSmith(
   if (!smith)
     throw new ProjectStoreError(
       400,
-      "The selected Keeper Smith is not configured.",
+      `The selected ${label} Smith is not configured.`,
     );
   if (!smith.enabled)
-    throw new ProjectStoreError(400, "The selected Keeper Smith is disabled.");
+    throw new ProjectStoreError(
+      400,
+      `The selected ${label} Smith is disabled.`,
+    );
+  if (provider && smith.provider !== provider)
+    throw new ProjectStoreError(
+      400,
+      "Select an enabled Claude Smith for session defaults.",
+    );
 }
 
 function publicCatalog(catalog: ProjectCatalog) {
@@ -1401,6 +1415,32 @@ export function projectRoutes(
         publicCatalog(await store.preferences(id, revision, patch)),
       ),
   };
+  const defaultsSettings: ActionRoute<{
+    id: string;
+    expectedRevision: number;
+    defaults: ProjectDefaults;
+  }> = {
+    kind: "action",
+    method: "POST",
+    path: "/projects/:id/settings/defaults",
+    action: "project.settings.defaults",
+    validate: (request) => {
+      const id = request.params["id"],
+        parsed = projectDefaultsRequestSchema.safeParse(request.body);
+      return isProjectId(id) && parsed.success
+        ? { ok: true, value: { id, ...parsed.data } }
+        : fail("Expected a project id and valid session defaults.");
+    },
+    subject: ({ id }) => ({ target: id }),
+    effect: async ({ id, expectedRevision, defaults }) =>
+      reply(async () =>
+        publicCatalog(
+          await store.updateDefaults(id, expectedRevision, defaults, (name) =>
+            validateConfiguredProjectSmith(name, createOptions, "claude"),
+          ),
+        ),
+      ),
+  };
   const keeperSettings: ActionRoute<{
     id: string;
     expectedRevision: number;
@@ -1422,7 +1462,7 @@ export function projectRoutes(
       reply(async () =>
         publicCatalog(
           await store.updateKeeper(id, expectedRevision, keeper, (name) =>
-            validateConfiguredKeeperSmith(name, createOptions),
+            validateConfiguredProjectSmith(name, createOptions),
           ),
         ),
       ),
@@ -1543,7 +1583,7 @@ export function projectRoutes(
                 createOptions,
               ),
             validateKeeperSmith: (name) =>
-              validateConfiguredKeeperSmith(name, createOptions),
+              validateConfiguredProjectSmith(name, createOptions),
           });
           if (!result.created) responseStatus = 200;
           return result.operation;
@@ -1605,7 +1645,7 @@ export function projectRoutes(
               createOptions,
             ),
           validateKeeperSmith: (name) =>
-            validateConfiguredKeeperSmith(name, createOptions),
+            validateConfiguredProjectSmith(name, createOptions),
         });
         return {
           operation: result.operation,
@@ -1644,6 +1684,7 @@ export function projectRoutes(
     preferences,
     generalSettings,
     keeperSettings,
+    defaultsSettings,
     createList,
     createOriginal,
     repositorySelectionRead,

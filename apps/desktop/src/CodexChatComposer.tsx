@@ -68,30 +68,8 @@ export function CodexChatComposer({
         if (!Array.isArray(smiths.smiths) || !Array.isArray(worktrees))
           throw Error("Unverified choices");
         setSettings({ smiths, worktrees });
+        client.initializeComposer(project, smiths, worktrees);
         const current = client.project(project.id);
-        if (!current.composer.initialized) {
-          const original = current.composer,
-            selected = smiths.smiths.find(
-              (smith) => smith.name === smiths.defaultSmith,
-            );
-          const preserved =
-            selected?.enabled && selected.provider === "claude"
-              ? chooseSessionSmith(original, selected)
-              : original;
-          client.editComposer(project.id, {
-            ...preserved,
-            initialized: true,
-            repository:
-              original.repository ||
-              project.workspaces.flatMap((scope) => scope.repositories)[0] ||
-              "",
-            worktree:
-              original.worktree ||
-              worktrees.find((tree) => tree.kind === "main" && !tree.missing)
-                ?.path ||
-              "",
-          });
-        }
         if (!current.codexChatComposer.initialized) {
           const selected =
             smiths.smiths.find(

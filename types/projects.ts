@@ -25,6 +25,8 @@ export interface ProjectRecord {
   keeperSmith?: string;
   /** Applies to new Keeper proposal approvals; absence keeps the legacy approval mode. */
   keeperAutonomy?: KeeperAutonomy;
+  /** Prefill for fresh ordinary Claude session drafts; absent inherits configuration. */
+  claudeSessionSmith?: string;
   /** Optional bounded presentation token; absent on legacy projects. */
   color?: ProjectColor;
   pinned: boolean;

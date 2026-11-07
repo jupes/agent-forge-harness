@@ -5,6 +5,7 @@ import { projectCatalogFixture } from "../projects/testing";
 test("project creation catalog reads accept saved autonomy and reject invalid modes", async () => {
   const catalog = projectCatalogFixture("/fixture");
   catalog.projects[0]!.keeperAutonomy = "suggest-only";
+  catalog.projects[0]!.claudeSessionSmith = "claude-journeyman";
   let data: unknown = catalog;
   const api = createProjectCreateApi({
     read: async () => Response.json({ ok: true, data, error: null }),
@@ -14,6 +15,9 @@ test("project creation catalog reads accept saved autonomy and reject invalid mo
   });
   expect((await api.catalog()).projects[0]?.keeperAutonomy).toBe(
     "suggest-only",
+  );
+  expect((await api.catalog()).projects[0]?.claudeSessionSmith).toBe(
+    "claude-journeyman",
   );
   data = {
     ...catalog,

@@ -13,6 +13,7 @@ import {
   ownedCodingStartReceiptSchema,
 } from "../../../scripts/sessions/codex-owned-wire-protocol";
 import { sessionStartReceiptSchema } from "../../../scripts/sessions/protocol";
+import type { WorktreeEntry } from "../../../types/beads";
 import type {
   OwnedCodingSessionRecord as OwnedSessionRecord,
   OwnedSessionStartInput,
@@ -24,6 +25,8 @@ import type {
   ConversationReceipt,
   ConversationTurn,
 } from "../../../types/conversation";
+import type { SmithsView } from "../../../types/hearth";
+import type { ProjectRecord } from "../../../types/projects";
 import type { SessionAttachment } from "../../../types/session-launch";
 import type { SessionStartRequest as ClaudeSessionStartRequest } from "../../../types/session-requests";
 import type {
@@ -49,8 +52,10 @@ import {
   newGeminiTaskDraft,
 } from "./gemini-task-composer";
 import {
+  initializeClaudeDraft,
   newSessionDraft,
   type SessionComposerDraft,
+  sessionStartBody,
   validateSessionAttachments,
 } from "./session-composer";
 import type {
@@ -196,6 +201,11 @@ export function createSessionsClient(deps: {
     }
   >();
   const timers = deps.timers ?? REAL_TIMERS;
+  const composerBaselines = new Map<string, string>();
+  const composerStarts = new Map<
+    string,
+    { requestId: string; draft: SessionComposerDraft }
+  >();
   let selected: OwnedSessionView | null = null,
     connection: { close(): void } | null = null,
     timer: unknown = null,
@@ -922,6 +932,13 @@ export function createSessionsClient(deps: {
             record.provider === identity.provider))
       ) {
         if (view.pendingStart) {
+          const captureKey = entry.projectId;
+          const capture = composerStarts.get(captureKey);
+          const captured =
+            capture?.requestId === turn.requestId ? capture.draft : undefined;
+          const unchanged =
+            captured &&
+            JSON.stringify(captured) === JSON.stringify(view.composer);
           view.composer = {
             ...view.composer,
             ...(view.composer.prompt === view.pendingStart.launch.prompt
@@ -936,6 +953,12 @@ export function createSessionsClient(deps: {
               ? { about: [] }
               : {}),
           };
+          if (unchanged)
+            composerBaselines.set(
+              entry.projectId,
+              JSON.stringify(view.composer),
+            );
+          composerStarts.delete(captureKey);
         }
         view.pendingStart = null;
         view.lastStarted = record.id;
@@ -1150,6 +1173,29 @@ export function createSessionsClient(deps: {
     const entry = project(projectId),
       input = entry.pendingStart;
     if (!input || entry.starting || disposed || !deps.canWrite()) return;
+    const captureKey = projectId;
+    if (
+      !retry &&
+      startProvider(input) === "claude" &&
+      composerStarts.get(captureKey)?.requestId !== input.requestId
+    ) {
+      try {
+        composerStarts.delete(captureKey);
+        const snapshot = structuredClone(entry.composer);
+        if (
+          canonicalOwnedSessionStart({
+            ...sessionStartBody(snapshot),
+            requestId: input.requestId,
+          }) === canonicalOwnedSessionStart(input)
+        )
+          composerStarts.set(captureKey, {
+            requestId: input.requestId,
+            draft: snapshot,
+          });
+      } catch {
+        /* An unrelated or incomplete draft cannot become a fresh baseline. */
+      }
+    }
     entry.starting = true;
     entry.notice = "Starting the original session request…";
     tell();
@@ -1213,6 +1259,7 @@ export function createSessionsClient(deps: {
           await deps.identities.release(entry.startIdentity);
           entry.startIdentity = null;
           entry.pendingStart = null;
+          composerStarts.delete(projectId);
         } catch {
           entry.startIdentityError =
             "The unsent original Start identity could not be cleared durably. Check it before starting another session.";
@@ -1382,6 +1429,7 @@ export function createSessionsClient(deps: {
             identity.requestId === requestId && identity.state === "retired",
         ) === true;
       if (confirmed && entry.pendingStart?.requestId === requestId) {
+        composerStarts.delete(projectId);
         entry.pendingStart = null;
         if (entry.startIdentity?.requestId === requestId)
           entry.startIdentity = null;
@@ -1527,6 +1575,46 @@ export function createSessionsClient(deps: {
       return () => {
         listeners.delete(listener);
       };
+    },
+    initializeComposer(
+      record: Pick<ProjectRecord, "id"> &
+        Partial<Pick<ProjectRecord, "workspaces" | "claudeSessionSmith">>,
+      smiths: SmithsView,
+      worktrees: WorktreeEntry[],
+    ) {
+      if (disposed) return;
+      const entry = project(record.id),
+        draft = entry.composer;
+      if (!record.workspaces) return;
+      if (
+        entry.pendingStart ||
+        entry.starting ||
+        entry.startIdentity ||
+        entry.startIdentityError ||
+        entry.legacyIdentityHint ||
+        entry.legacyIdentityError ||
+        entry.legacyIdentityUnavailable
+      )
+        return;
+      if (
+        draft.initialized &&
+        composerBaselines.get(record.id) !== JSON.stringify(draft)
+      )
+        return;
+      entry.composer = initializeClaudeDraft(
+        draft,
+        { ...record, workspaces: record.workspaces },
+        smiths,
+        worktrees,
+      );
+      if (
+        entry.composer.prompt ||
+        entry.composer.attachments.length ||
+        entry.composer.about.length
+      )
+        composerBaselines.delete(record.id);
+      else composerBaselines.set(record.id, JSON.stringify(entry.composer));
+      tell();
     },
     editComposer(projectId: string, update: Partial<SessionComposerDraft>) {
       project(projectId).composer = {
@@ -1956,6 +2044,8 @@ export function createSessionsClient(deps: {
       }
     },
     dispose() {
+      composerStarts.clear();
+      composerBaselines.clear();
       for (const [projectId, intent] of startIntents) {
         if (intent.phase !== "waiting") continue;
         intent.cancelled = true;

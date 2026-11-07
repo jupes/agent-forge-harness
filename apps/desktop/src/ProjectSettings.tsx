@@ -2,6 +2,7 @@ import type { JSX } from "preact";
 import { Button } from "../../../docs/js/ds/Button";
 import type { ProjectRepositoryMember } from "../../../scripts/projects/project-repositories-protocol";
 import { PROJECT_COLOR_IDS, type ProjectRecord } from "../../../types/projects";
+import { ProjectDefaultsSettings } from "./ProjectDefaultsSettings";
 import { ProjectKeeperSettings } from "./ProjectKeeperSettings";
 import type {
   GeneralCatalog,
@@ -10,6 +11,7 @@ import type {
   ProjectGeneralSettingsOwner,
 } from "./project-general-settings-client";
 import type { ProjectRepositoriesSnapshot } from "./project-repositories-client";
+import type { useProjectDefaults } from "./use-project-defaults";
 import type { useProjectKeeperSettings } from "./use-project-keeper-settings";
 import type { SmithsController } from "./use-smiths";
 import "./project-settings.css";
@@ -214,6 +216,7 @@ interface Props {
   owner: ProjectGeneralSettingsOwner;
   state: GeneralSettingsSnapshot;
   keeperSettings: ReturnType<typeof useProjectKeeperSettings>;
+  defaultsSettings: ReturnType<typeof useProjectDefaults>;
   smiths: SmithsController;
   onRefresh(): void;
   repositories: ProjectRepositoriesSnapshot;
@@ -234,6 +237,7 @@ export function ProjectSettings({
   state,
   onRefresh,
   keeperSettings,
+  defaultsSettings,
   smiths,
   repositories,
   onRefreshRepositories,
@@ -554,6 +558,13 @@ export function ProjectSettings({
         archived={project.archived}
         writesAllowed={writesAllowed}
         settings={keeperSettings}
+        smiths={smiths}
+      />
+      <ProjectDefaultsSettings
+        projectId={project.id}
+        archived={project.archived}
+        writesAllowed={writesAllowed}
+        settings={defaultsSettings}
         smiths={smiths}
       />
       <RepositoriesAndWorktrees

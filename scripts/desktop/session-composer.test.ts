@@ -1,11 +1,62 @@
 import { expect, test } from "bun:test";
 import {
   chooseSessionSmith,
+  initializeClaudeDraft,
   newSessionDraft,
   sessionAttachments,
   sessionStartBody,
   validateSessionAttachments,
 } from "../../apps/desktop/src/session-composer";
+import type { SmithsView } from "../../types/hearth";
+
+test("fresh Claude drafts use the project default and never replace an unavailable saved choice", () => {
+  const smiths: SmithsView = {
+    defaultSmith: "global",
+    benches: { low: [], medium: [], high: [] },
+    smiths: [
+      {
+        name: "global",
+        provider: "claude",
+        model: "global-model",
+        effort: "medium",
+        enabled: true,
+        tags: [],
+      },
+      {
+        name: "project-choice",
+        provider: "claude",
+        model: "project-model",
+        effort: "high",
+        enabled: true,
+        tags: [],
+      },
+    ],
+  };
+  const project = {
+    id: "demo",
+    workspaces: [],
+    claudeSessionSmith: "project-choice",
+  };
+  expect(
+    initializeClaudeDraft(newSessionDraft(), project, smiths, []).smith,
+  ).toBe("project-choice");
+  expect(
+    initializeClaudeDraft(
+      newSessionDraft(),
+      { ...project, claudeSessionSmith: "missing" },
+      smiths,
+      [],
+    ),
+  ).toMatchObject({ smith: "missing", model: "" });
+  expect(
+    initializeClaudeDraft(
+      newSessionDraft(),
+      { id: "demo", workspaces: [] },
+      smiths,
+      [],
+    ).smith,
+  ).toBe("global");
+});
 
 test("smith defaults retain unsupported effort until the user explicitly selects CLI default, and Chat omits Task-only limits", () => {
   const selected = chooseSessionSmith(newSessionDraft(), {
