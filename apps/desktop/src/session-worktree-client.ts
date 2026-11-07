@@ -43,11 +43,16 @@ export function createSessionWorktreeClient(deps: {
     }
     return value;
   };
-  const accept = (projectId: string, raw: unknown) => {
+  const accept = async (projectId: string, raw: unknown) => {
     const entry = get(projectId),
       parsed = sessionWorktreeReceiptSchema.safeParse(raw),
       original = entry.original;
     if (entry.receipt && entry.receipt.state !== "unknown") return true;
+    const reject = () => {
+      entry.notice =
+        "The worktree receipt could not be verified. Keep the original request and check it again.";
+      return false;
+    };
     if (
       !parsed.success ||
       !original ||
@@ -57,21 +62,51 @@ export function createSessionWorktreeClient(deps: {
         workspaceKey(original.repository) ||
       parsed.data.baseRef !== original.baseRef ||
       parsed.data.branch !== original.branch
-    ) {
-      entry.notice =
-        "The worktree receipt could not be verified. Keep the original request and check it again.";
-      return false;
-    }
-    // A delayed uncertain response cannot undo a confirmed terminal receipt.
-    if (
-      entry.receipt?.state !== "created" &&
-      entry.receipt?.state !== "refused"
     )
-      entry.receipt = parsed.data;
+      return reject();
+    const candidate = parsed.data;
+    if (candidate.worktree) {
+      let expectedId: string | null = null;
+      try {
+        const digest = await crypto.subtle.digest(
+          "SHA-256",
+          new TextEncoder().encode(projectId + "\0" + original.requestId),
+        );
+        expectedId =
+          "sw-" +
+          [...new Uint8Array(digest)]
+            .map((byte) => byte.toString(16).padStart(2, "0"))
+            .join("")
+            .slice(0, 28);
+      } catch {
+        /* Missing browser crypto leaves the receipt unverified. */
+      }
+      // Derivation yields: a newer original or terminal receipt owns the entry now.
+      if (entry.original !== original) return false;
+      if (entry.receipt && entry.receipt.state !== "unknown") return true;
+      if (candidate.worktree.id !== expectedId) return reject();
+    }
+    const held = entry.receipt;
+    if (
+      held &&
+      (held.resolvedCommit !== candidate.resolvedCommit ||
+        (held.worktree &&
+          // The producer may omit its worktree only for a terminal pre-add refusal.
+          !(candidate.state === "refused" && candidate.worktree === null) &&
+          (!candidate.worktree ||
+            held.worktree.id !== candidate.worktree.id ||
+            workspaceKey(held.worktree.path) !==
+              workspaceKey(candidate.worktree.path) ||
+            held.worktree.branch !== candidate.worktree.branch ||
+            held.worktree.createdAt !== candidate.worktree.createdAt)))
+    )
+      return reject();
+    // First verified plan fields become immutable, including before a worktree exists.
+    entry.receipt = candidate;
     entry.notice =
-      entry.receipt?.state === "created"
+      candidate.state === "created"
         ? "Worktree created. Review its path before checking session options."
-        : (entry.receipt?.reason ??
+        : (candidate.reason ??
           "The original worktree request is still uncertain.");
     return true;
   };
@@ -99,12 +134,13 @@ export function createSessionWorktreeClient(deps: {
       };
     }
     entry.posting = false;
-    if (entry.original?.requestId !== original.requestId) return;
-    if (outcome.state === "done") accept(projectId, outcome.data);
+    if (entry.original !== original) return;
+    if (outcome.state === "done") await accept(projectId, outcome.data);
     else if (!entry.receipt || entry.receipt.state === "unknown") {
-      entry.notice = outcome.message;
+      entry.notice = entry.receipt?.reason ?? outcome.message;
       // A preflight refusal has no durable Git intent; a fresh explicit action is safe.
-      if (outcome.state === "refused" && !retry) entry.original = null;
+      if (outcome.state === "refused" && !retry && !entry.receipt)
+        entry.original = null;
     }
     deps.changed();
   };
@@ -140,7 +176,7 @@ export function createSessionWorktreeClient(deps: {
       try {
         const raw = await deps.read(projectId, original.requestId);
         if (entry.original?.requestId === original.requestId)
-          accept(projectId, raw);
+          await accept(projectId, raw);
       } catch {
         if (!entry.receipt || entry.receipt.state === "unknown")
           entry.notice =
