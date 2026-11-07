@@ -396,31 +396,44 @@ export function createProjectCreateOwner(deps: {
   const verifiedCreated = async (
     expected: ProjectCreateIdentity,
     current: number,
-  ) => {
+  ): Promise<{
+    identity: ProjectCreateIdentity;
+    opening: "current" | "unavailable";
+  } | null> => {
     const [identity, catalog] = await Promise.all([
       deps.api.original(expected.requestId),
-      deps.api.catalog(),
+      deps.api.catalog().catch(() => null),
     ]);
     if (disposed || current !== generation) return null;
     if (!currentScopeMatches()) return null;
-    const project = catalog.projects.find(
-      (item) => item.id === expected.projectId,
-    );
-    const original = project ? catalogOriginal(project) : null;
     if (
       identity.state !== "created" ||
+      expected.state !== "created" ||
+      !identity.projectId ||
+      identity.projectId !== expected.projectId ||
+      identity.createdRevision !== expected.createdRevision ||
       identity.requestId !== expected.requestId ||
       identity.requestHash !== expected.requestHash ||
-      !exactOriginal(identity.original, expected.original) ||
-      !project ||
-      !original ||
-      !exactOriginal(original, expected.original) ||
-      catalog.revision < identity.createdRevision!
+      !exactOriginal(identity.original, expected.original)
     )
       return null;
     await deps.identities.observe(identity);
     if (disposed || current !== generation) return null;
-    return identity;
+    // A current catalog edit cannot undo the exact durable creation receipt.
+    const project = catalog?.projects.find(
+      (item) => item.id === identity.projectId,
+    );
+    return {
+      identity,
+      opening:
+        currentScopeMatches() &&
+        catalog &&
+        project &&
+        catalog.revision >= identity.createdRevision! &&
+        exactOriginal(catalogOriginal(project), identity.original)
+          ? "current"
+          : "unavailable",
+    };
   };
 
   const reserveWithIdentity = async (
@@ -777,7 +790,12 @@ export function createProjectCreateOwner(deps: {
       state.notice = "Checking the reviewed project scope before create…";
       const current = ++generation;
       emit();
-      let creationVerified = false;
+      let creation:
+        | { phase: "unverified" }
+        | {
+            phase: "confirmed";
+            identity: ProjectCreateIdentity;
+          } = { phase: "unverified" };
       try {
         const uncertain = await deps.identities.update(
           identity.requestId,
@@ -825,12 +843,22 @@ export function createProjectCreateOwner(deps: {
           result.state === "confirmed"
             ? result.value
             : await deps.api.original(identity.requestId).catch(() => null);
-        if (!expected || expected.requestHash !== identity.requestHash)
+        if (
+          !expected ||
+          expected.requestId !== identity.requestId ||
+          expected.requestHash !== identity.requestHash ||
+          !exactOriginal(expected.original, entry.original)
+        )
           throw Error("The create outcome is not verified.");
-        const verified = await verifiedCreated(expected, current);
+        const proof = await verifiedCreated(expected, current);
+        const verified = proof?.identity;
         if (!verified?.projectId)
           throw Error("The project receipt is not verified.");
-        creationVerified = true;
+        creation = { phase: "confirmed", identity: verified };
+        if (proof?.opening !== "current")
+          throw Error(
+            "The current project no longer matches the creation original.",
+          );
         const freshHome = await deps.api.refreshProjectHome();
         if (disposed || current !== generation || !currentScopeMatches())
           return null;
@@ -861,9 +889,10 @@ export function createProjectCreateOwner(deps: {
         state.notice = "Project creation was read back from the hearth.";
         return verified.projectId;
       } catch {
-        state.notice = creationVerified
-          ? "Project creation is verified, but the fresh Projects view is unavailable. Refresh Projects before opening it; no second create was sent."
-          : "The create outcome could not be verified. Check this same original; no replacement is available.";
+        state.notice =
+          creation.phase === "confirmed"
+            ? "Project creation is verified, but the fresh Projects view is unavailable. Refresh Projects before opening it; no second create was sent."
+            : "The create outcome could not be verified. Check this same original; no replacement is available.";
         return null;
       } finally {
         if (!disposed && current === generation) {
