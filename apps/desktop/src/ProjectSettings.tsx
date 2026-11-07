@@ -1,8 +1,10 @@
 import type { JSX } from "preact";
 import { Button } from "../../../docs/js/ds/Button";
+import type { ProjectBudgets } from "../../../scripts/projects/project-budgets-protocol";
 import type { ProjectNotifications } from "../../../scripts/projects/project-notifications-protocol";
 import type { ProjectRepositoryMember } from "../../../scripts/projects/project-repositories-protocol";
 import { PROJECT_COLOR_IDS, type ProjectRecord } from "../../../types/projects";
+import { ProjectBudgetsSettings } from "./ProjectBudgetsSettings";
 import { ProjectDefaultsSettings } from "./ProjectDefaultsSettings";
 import { ProjectKeeperSettings } from "./ProjectKeeperSettings";
 import { ProjectNotificationsSettings } from "./ProjectNotificationsSettings";
@@ -220,6 +222,7 @@ interface Props {
   state: GeneralSettingsSnapshot;
   keeperSettings: ReturnType<typeof useProjectKeeperSettings>;
   defaultsSettings: ReturnType<typeof useProjectDefaults>;
+  budgetsSettings: ReturnType<typeof useProjectValueSettings<ProjectBudgets>>;
   notificationsSettings: ReturnType<
     typeof useProjectValueSettings<ProjectNotifications>
   >;
@@ -244,6 +247,7 @@ export function ProjectSettings({
   onRefresh,
   keeperSettings,
   defaultsSettings,
+  budgetsSettings,
   notificationsSettings,
   smiths,
   repositories,
@@ -585,6 +589,12 @@ export function ProjectSettings({
         archived={project.archived}
         writesAllowed={writesAllowed}
         settings={notificationsSettings}
+      />
+      <ProjectBudgetsSettings
+        projectId={project.id}
+        archived={project.archived}
+        writesAllowed={writesAllowed}
+        settings={budgetsSettings}
       />
     </section>
   );

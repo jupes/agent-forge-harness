@@ -7,6 +7,7 @@ test("project creation catalog reads accept saved autonomy and reject invalid mo
   const catalog = projectCatalogFixture("/fixture");
   catalog.projects[0]!.keeperAutonomy = "suggest-only";
   catalog.projects[0]!.claudeSessionSmith = "claude-journeyman";
+  catalog.projects[0]!.budgets = { shiftSpendCapUsd: 5, dailyApiKeyCapUsd: 10 };
   catalog.projects[0]!.notifications = {
     ...NO_PROJECT_NOTIFICATIONS,
     "failed-gate": true,

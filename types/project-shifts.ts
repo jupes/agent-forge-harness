@@ -27,7 +27,7 @@ export interface ProjectShiftIntent {
   request: ProjectShiftStartRequest;
   requestHash: string;
   /** Server-captured admission membership; absent on historical originals, which keep strict revision guards. */
-  scopeHash?: string;
+  scopeHash?: string | undefined;
   createdAt: string;
   attemptedAt: string | null;
   /** Additive v1 field: absent on older originals; a marker never proves a provider turn. */

@@ -40,6 +40,90 @@ async function fixture() {
   return { home, root, projectId };
 }
 
+test("daily protection refuses a fresh Keeper turn before admission when CLI cost authentication is unsupported", async () => {
+  const { home, root, projectId } = await fixture();
+  const projects = createProjectStore(home);
+  let calls = 0;
+  const service = createConversationService({
+    home,
+    root,
+    transport: {
+      provider: "claude",
+      check: async () => {},
+      run: async () => {
+        calls++;
+        return { phase: "completed", reason: null };
+      },
+    },
+  });
+  cleanup.push(() => service.close());
+  await projects.updateBudgets(projectId, 1, {
+    shiftSpendCapUsd: null,
+    dailyApiKeyCapUsd: 5,
+  });
+  await expect(
+    service.send(projectId, {
+      requestId: randomUUID(),
+      expectedRevision: 0,
+      text: "Do work",
+      about: [],
+    }),
+  ).rejects.toThrow("cannot verify");
+  expect(calls).toBe(0);
+  expect(createConversationStore(home).read(projectId).turns).toEqual([]);
+});
+
+test("enabling daily protection preserves an admitted Keeper turn and exact replay but refuses the next turn", async () => {
+  const { home, root, projectId } = await fixture();
+  const projects = createProjectStore(home);
+  let calls = 0;
+  const service = createConversationService({
+    home,
+    root,
+    transport: {
+      provider: "claude",
+      check: async () => {},
+      run: async (_request, sink) => {
+        calls++;
+        await projects.updateBudgets(projectId, 1, {
+          shiftSpendCapUsd: null,
+          dailyApiKeyCapUsd: 5,
+        });
+        await sink({
+          kind: "identity",
+          provider: "claude",
+          sessionId: "actual-admitted-fixture",
+          version: "fixture",
+        });
+        return { phase: "completed", reason: null };
+      },
+    },
+  });
+  cleanup.push(() => service.close());
+  const input = {
+    requestId: randomUUID(),
+    expectedRevision: 0,
+    text: "Already admitted",
+    about: [],
+  };
+  await service.send(projectId, input);
+  await service.settled(projectId);
+  expect(createConversationStore(home).read(projectId).turns[0]?.phase).toBe(
+    "completed",
+  );
+  await service.send(projectId, input);
+  expect(calls).toBe(1);
+  await expect(
+    service.send(projectId, {
+      requestId: randomUUID(),
+      expectedRevision: createConversationStore(home).read(projectId).revision,
+      text: "New paid turn",
+      about: [],
+    }),
+  ).rejects.toThrow("cannot verify");
+  expect(calls).toBe(1);
+});
+
 test("Keeper turn snapshots current autonomy after preflight and keeps it for active execution", async () => {
   const { home, root, projectId } = await fixture();
   let mode: string | undefined;

@@ -35,7 +35,6 @@ import {
   createCouncilService,
 } from "../council/service";
 import { loadDashboardServerEnvironment } from "../dashboard/server-environment";
-import { createProjectBudgetStore } from "../projects/project-budget-store";
 import { ownInterrupts } from "../executors/supervisor";
 import { createClaudeConversationTransport } from "../keeper/claude-transport";
 import { createKeeperOperatorPost } from "../keeper/operator-post";
@@ -45,6 +44,7 @@ import {
 } from "../keeper/recovery-runtime";
 import { type AppendResult, appendEvent } from "../ledger/append";
 import { resolveCheckout } from "../ledger/workspace";
+import { createProjectBudgetStore } from "../projects/project-budget-store";
 import {
   createRepositoryOnboarding,
   type RepositoryOnboardingOptions,

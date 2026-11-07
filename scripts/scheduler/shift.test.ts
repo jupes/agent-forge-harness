@@ -937,6 +937,31 @@ describe("forge:shift — the loop, on a fake adapter", () => {
     expect(r.labels("t-3")).toEqual(["queue:queued"]);
   });
 
+  test.each([
+    true,
+    false,
+  ])("project admission cap checks every repair and retains reported/unpriced cost: %s", async (reported) => {
+    const seen: Array<{ spentUsd: number; unpriced: number; attempt: number }> =
+      [];
+    const r = rig(
+      [queued("t-1"), queued("t-2")],
+      () => ({ after: 10, exit: 1, ...(reported ? { costUsd: 0.6 } : {}) }),
+      {
+        beforeAttempt: async (state) => {
+          seen.push(state);
+          return state.unpriced === 0 && state.spentUsd < 0.5;
+        },
+      },
+    );
+    const done = await shift(r, { concurrency: 1, repairs: 3, maxUsd: 10 });
+    expect(r.fake.runs).toHaveLength(1);
+    expect(seen.map((item) => item.attempt)).toEqual([1, 2]);
+    expect(done.reason).toBe("budget");
+    expect(done.record.spentUsd).toBe(reported ? 0.6 : 0);
+    expect(done.record.unpriced).toBe(reported ? 0 : 1);
+    expect(r.labels("t-2")).toEqual(["queue:queued"]);
+  });
+
   test("a busy host admits nothing: the shift waits rather than drain, and ends at its time", async () => {
     // The shift's clock reaches its time once the host has been found busy
     // three times, not after 200 ms of the wall clock: on a loaded runner

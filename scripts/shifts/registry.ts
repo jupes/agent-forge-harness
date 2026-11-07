@@ -362,7 +362,9 @@ export function createProjectShiftRegistry(options: {
           shiftId: trusted.shiftId,
           request,
           requestHash,
-          ...(trusted.scopeHash !== undefined ? {scopeHash: trusted.scopeHash} : {}),
+          ...(trusted.scopeHash !== undefined
+            ? { scopeHash: trusted.scopeHash }
+            : {}),
           createdAt: new Date().toISOString(),
           attemptedAt: null,
           executionStartedAt: null,

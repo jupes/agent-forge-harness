@@ -22,6 +22,10 @@ import { resolveCheckout } from "../ledger/workspace";
 import { withQueueLock } from "../scheduler/queue-lock";
 import { MAX_PROJECT_CREATE_OPERATIONS } from "./create-protocol";
 import {
+  type ProjectBudgets,
+  projectBudgetsSchema,
+} from "./project-budgets-protocol";
+import {
   applyProjectDefaults,
   PROJECT_DEFAULT_KEYS,
   type ProjectDefaultsChange,
@@ -40,7 +44,6 @@ import {
   type ProjectNotifications,
   projectNotificationsSchema,
 } from "./project-notifications-protocol";
-import {type ProjectBudgets, projectBudgetsSchema} from "./project-budgets-protocol";
 
 export const PROJECT_STORE_VERSION = 1;
 export const isProjectId = (value: unknown): value is string =>
@@ -204,7 +207,8 @@ function validProject(value: unknown): value is ProjectRecord {
     typeof value["pinned"] === "boolean" &&
     typeof value["archived"] === "boolean" &&
     validProjectDefaults(value) &&
-    (!Object.hasOwn(value, "budgets") || projectBudgetsSchema.safeParse(value["budgets"]).success) &&
+    (!Object.hasOwn(value, "budgets") ||
+      projectBudgetsSchema.safeParse(value["budgets"]).success) &&
     (!Object.hasOwn(value, "notifications") ||
       projectNotificationsSchema.safeParse(value["notifications"]).success) &&
     (!Object.hasOwn(value, "keeperAutonomy") ||
@@ -637,14 +641,39 @@ export function createProjectStore(
         };
       });
     },
-    async updateBudgets(id: string, expectedRevision: number, budgets: ProjectBudgets): Promise<ProjectCatalog> {
+    async updateBudgets(
+      id: string,
+      expectedRevision: number,
+      budgets: ProjectBudgets,
+    ): Promise<ProjectCatalog> {
       const checked = projectBudgetsSchema.safeParse(budgets);
-      if (!isProjectId(id) || !checked.success) throw new ProjectStoreError(400, "Expected a project id and complete bounded budget settings.");
-      return change(expectedRevision, catalog => {
-        const project = catalog.projects.find(item => item.id === id);
-        if(!project) throw new ProjectStoreError(404, "Project unavailable.");
-        if(project.archived) throw new ProjectStoreError(409, "Unarchive this project before changing budgets.");
-        return {projects: catalog.projects.map(item => item.id === id ? {...item, budgets: checked.data, updatedAt: now().toISOString()} : item), ...(catalog.createOperations !== undefined ? {createOperations: catalog.createOperations} : {})};
+      if (!isProjectId(id) || !checked.success)
+        throw new ProjectStoreError(
+          400,
+          "Expected a project id and complete bounded budget settings.",
+        );
+      return change(expectedRevision, (catalog) => {
+        const project = catalog.projects.find((item) => item.id === id);
+        if (!project) throw new ProjectStoreError(404, "Project unavailable.");
+        if (project.archived)
+          throw new ProjectStoreError(
+            409,
+            "Unarchive this project before changing budgets.",
+          );
+        return {
+          projects: catalog.projects.map((item) =>
+            item.id === id
+              ? {
+                  ...item,
+                  budgets: checked.data,
+                  updatedAt: now().toISOString(),
+                }
+              : item,
+          ),
+          ...(catalog.createOperations !== undefined
+            ? { createOperations: catalog.createOperations }
+            : {}),
+        };
       });
     },
     async updateNotifications(

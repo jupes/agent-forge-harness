@@ -3585,6 +3585,51 @@ test("project repository read is bounded to registered membership and fails clos
   expect((await readProjectRepositories(route, project.id)).status).toBe(503);
 });
 
+test("project budget settings persist and read scoped admission costs without inventing provider spend", async () => {
+  const h = await startTestHearth();
+  opened.push(h);
+  const catalog = projectCatalogFixture(h.workspace),
+    id = catalog.projects[0]!.id;
+  writeOwnerOnly(projectCatalogPath(h.home), JSON.stringify(catalog));
+  const path = `${h.api}/projects/${id}/settings/budgets`;
+  const save = (expectedRevision: number, budgets: unknown) =>
+    fetch(path, {
+      method: "POST",
+      headers: h.headers(h.hearth.token),
+      body: JSON.stringify({ expectedRevision, budgets }),
+    });
+  expect(
+    (await save(1, { shiftSpendCapUsd: 5, dailyApiKeyCapUsd: 10 })).status,
+  ).toBe(200);
+  const read = await fetch(path, { headers: h.headers(h.hearth.token) });
+  expect(read.status).toBe(200);
+  expect(await read.json()).toMatchObject({
+    ok: true,
+    data: {
+      projectId: id,
+      dailyCapUsd: 10,
+      reportedUsd: 0,
+      estimatedUsd: 0,
+      reservedUsd: 0,
+      unknownCount: 0,
+    },
+    error: null,
+  });
+  expect(
+    (await save(1, { shiftSpendCapUsd: null, dailyApiKeyCapUsd: null })).status,
+  ).toBe(409);
+  expect(
+    (await save(2, { shiftSpendCapUsd: -1, dailyApiKeyCapUsd: null })).status,
+  ).toBe(400);
+  expect(
+    (await save(2, { shiftSpendCapUsd: null, dailyApiKeyCapUsd: null })).status,
+  ).toBe(200);
+  expect(createProjectStore(h.home).read().projects[0]?.budgets).toEqual({
+    shiftSpendCapUsd: null,
+    dailyApiKeyCapUsd: null,
+  });
+});
+
 test("session default save validates enabled Claude Smiths and clears inheritance independently", async () => {
   const h = await startTestHearth();
   opened.push(h);

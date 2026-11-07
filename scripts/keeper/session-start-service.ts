@@ -322,7 +322,7 @@ export function createKeeperSessionStartService(options: Options) {
               "This hearth closed during session review. No Start was admitted.",
             );
           readable(projectId);
-          assertKeeperProposalAdmission(options.home, projectId);
+          assertKeeperProposalAdmission(options.home, projectId, true);
           return {
             proposal: sourceFor(projectId, proposalId, request.data.sourceHash),
             workspace,

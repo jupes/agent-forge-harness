@@ -258,7 +258,7 @@ export function createKeeperShiftStartService(options: Options) {
             request.data.sourceHash,
           );
           readable(projectId, false);
-          assertKeeperProposalAdmission(options.home, projectId);
+          assertKeeperProposalAdmission(options.home, projectId, true);
           return { proposal, workspace };
         },
         async execute(intent): Promise<KeeperProposalExecution> {

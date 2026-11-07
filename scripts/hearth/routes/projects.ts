@@ -31,6 +31,12 @@ import {
   projectCreateReserveSchema,
   projectCreateRetireSchema,
 } from "../../projects/create-protocol";
+import { createProjectBudgetStore } from "../../projects/project-budget-store";
+import {
+  type ProjectBudgets,
+  projectBudgetStatusSchema,
+  projectBudgetsRequestSchema,
+} from "../../projects/project-budgets-protocol";
 import {
   type ProjectDefaultsChange,
   projectDefaultsRequestSchema,
@@ -1196,6 +1202,22 @@ export function projectRoutes(
       throw unavailableProjectRepositories();
     }
   };
+  const projectBudgetRead: ReadRoute<{ id: string }> = {
+    kind: "read",
+    method: "GET",
+    path: "/projects/:id/settings/budgets",
+    operatorOnly: true,
+    validate: (request) =>
+      isProjectId(request.params["id"]) && request.query.size === 0
+        ? { ok: true, value: { id: request.params["id"] } }
+        : fail("Expected a project id and no query parameters."),
+    read: ({ id }) =>
+      reply(() =>
+        projectBudgetStatusSchema.parse(
+          createProjectBudgetStore(home).status(id),
+        ),
+      ),
+  };
   const projectRepositoriesRead: ReadRoute<{ id: string }> = {
     kind: "read",
     method: "GET",
@@ -1419,6 +1441,28 @@ export function projectRoutes(
     effect: async ({ id, revision, patch }) =>
       reply(async () =>
         publicCatalog(await store.preferences(id, revision, patch)),
+      ),
+  };
+  const budgetsSettings: ActionRoute<{
+    id: string;
+    expectedRevision: number;
+    budgets: ProjectBudgets;
+  }> = {
+    kind: "action",
+    method: "POST",
+    path: "/projects/:id/settings/budgets",
+    action: "project.settings.budgets",
+    validate: (request) => {
+      const id = request.params["id"],
+        parsed = projectBudgetsRequestSchema.safeParse(request.body);
+      return isProjectId(id) && parsed.success
+        ? { ok: true, value: { id, ...parsed.data } }
+        : fail("Expected a project id and complete bounded budget settings.");
+    },
+    subject: ({ id }) => ({ target: id }),
+    effect: async ({ id, expectedRevision, budgets }) =>
+      reply(async () =>
+        publicCatalog(await store.updateBudgets(id, expectedRevision, budgets)),
       ),
   };
   const notificationsSettings: ActionRoute<{
@@ -1712,6 +1756,7 @@ export function projectRoutes(
   return {
     projects,
     projectRepositoriesRead,
+    projectBudgetRead,
     createOptionsRead,
     scopePreview,
     settingsScopePreview,
@@ -1720,6 +1765,7 @@ export function projectRoutes(
     keeperSettings,
     defaultsSettings,
     notificationsSettings,
+    budgetsSettings,
     createList,
     createOriginal,
     repositorySelectionRead,

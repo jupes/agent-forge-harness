@@ -3,11 +3,11 @@ import type { ProjectShiftStartRequest } from "../../types/project-shifts";
 import type { ProjectCatalog } from "../../types/projects";
 import type { LoadedConfig } from "../config/load";
 import { ConversationError } from "../conversations/error";
+import { assertProjectCliCostAdmission } from "../projects/project-budget-policy";
 import { selectProjectBeads, workspaceKey } from "../projects/scope";
 import { projectShiftOptions } from "../projects/shift-options";
 import type { ProjectSources } from "../projects/summary";
 import type { QueueDeps } from "../scheduler/queue";
-import { assertProjectCliCostAdmission } from "../projects/project-budget-policy";
 import { projectShiftScopeHash } from "./scope-authority";
 
 function withinEpic(
@@ -54,14 +54,24 @@ export function createProjectShiftScopeValidator(options: {
         409,
         "This project is archived. Existing owned shift controls remain available.",
       );
-    if (scopeHash !== undefined ? projectShiftScopeHash(project) !== scopeHash : request.expectedCatalogRevision !== catalog.revision)
+    if (
+      scopeHash !== undefined
+        ? projectShiftScopeHash(project) !== scopeHash
+        : request.expectedCatalogRevision !== catalog.revision
+    )
       throw new ConversationError(
         409,
         "The project catalog changed. Review the current shift options before starting.",
       );
     assertProjectCliCostAdmission(project);
-    if(project.budgets?.shiftSpendCapUsd != null && request.options.maxUsd > project.budgets.shiftSpendCapUsd)
-      throw new ConversationError(409, "The reviewed Shift max USD exceeds the current project admission cap.");
+    if (
+      project.budgets?.shiftSpendCapUsd != null &&
+      request.options.maxUsd > project.budgets.shiftSpendCapUsd
+    )
+      throw new ConversationError(
+        409,
+        "The reviewed Shift max USD exceeds the current project admission cap.",
+      );
     const choices = projectShiftOptions(
       project,
       source,
@@ -111,9 +121,9 @@ export function createProjectShiftScopeValidator(options: {
     async validateStart(
       projectId: string,
       request: ProjectShiftStartRequest,
-    ): Promise<{scopeHash: string}> {
-      const {project} = await validate(projectId, request);
-      return {scopeHash: projectShiftScopeHash(project)};
+    ): Promise<{ scopeHash: string }> {
+      const { project } = await validate(projectId, request);
+      return { scopeHash: projectShiftScopeHash(project) };
     },
     beforeStart(
       projectId: string,
@@ -122,7 +132,11 @@ export function createProjectShiftScopeValidator(options: {
     ): NonNullable<QueueDeps["beforeStart"]> {
       return async (id, shown) => {
         try {
-          const { project, source } = await validate(projectId, request, scopeHash);
+          const { project, source } = await validate(
+            projectId,
+            request,
+            scopeHash,
+          );
           if (
             !Array.isArray(shown["labels"]) ||
             !shown["labels"].includes(`project:${project.slug}`) ||

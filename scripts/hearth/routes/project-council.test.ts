@@ -10,6 +10,7 @@ import {
   projectCouncilReserveRequestSchema,
 } from "../../../types/project-council";
 import { projectCouncilRunReadSchema } from "../../../types/project-council-run-read";
+import { createProjectBudgetStore } from "../../projects/project-budget-store";
 import { workspaceKey } from "../../projects/scope";
 import { createProjectStore, projectCatalogPath } from "../../projects/store";
 import {
@@ -64,13 +65,18 @@ test("project Council reads catalog authority after the awaited tracker snapshot
   expect(await response.json()).toMatchObject({ ok: false });
 });
 
-test("a project Council review reserves against the current project and advertised inert profile without starting a run", async () => {
+test.each([
+  null,
+  0.1,
+])("a project Council review reserves against the current project and daily budget before dispatch: %s", async (dailyCap) => {
   const h = await startTestHearth();
   opened.push(h);
-  writeOwnerOnly(
-    projectCatalogPath(h.home),
-    JSON.stringify(projectCatalogFixture(h.workspace)),
-  );
+  const catalog = projectCatalogFixture(h.workspace);
+  catalog.projects[0]!.budgets = {
+    shiftSpendCapUsd: null,
+    dailyApiKeyCapUsd: dailyCap,
+  };
+  writeOwnerOnly(projectCatalogPath(h.home), JSON.stringify(catalog));
 
   const profileResponse = await fetch(`${h.api}/council-api/profiles`);
   expect(profileResponse.status).toBe(200);
@@ -284,6 +290,26 @@ test("a project Council review reserves against the current project and advertis
   expect(h.commands.calls).toEqual([]);
   expect(existsSync(join(h.root, "council-runs"))).toBe(false);
   expect(h.events(["council.run.started", "council.run.finished"])).toEqual([]);
+  if (dailyCap !== null) {
+    const commit = await fetch(
+      `${h.api}/projects/${FIXTURE_PROJECT_ID}/council/reviews/${metadata.requestId}/commit`,
+      {
+        method: "POST",
+        headers: h.headers(h.hearth.token),
+        body: JSON.stringify({ intentHash: metadata.intentHash }),
+      },
+    );
+    expect(commit.ok).toBe(false);
+    expect(JSON.stringify(await commit.json())).toContain(
+      "budget is exhausted",
+    );
+    expect(
+      createProjectBudgetStore(h.home).status(FIXTURE_PROJECT_ID).reservedUsd,
+    ).toBe(0);
+    expect(h.events(["council.run.started", "council.run.finished"])).toEqual(
+      [],
+    );
+  }
 });
 
 test("project Council reserves the selected deep-discussion profile explicitly", async () => {
@@ -456,10 +482,12 @@ test("a completed project Council Bead review posts its verdict once and replays
     if (verb === "comments") return { exitCode: 0, stdout: "[]", stderr: "" };
     return { exitCode: 2, stdout: "", stderr: "not arranged" };
   };
-  writeOwnerOnly(
-    projectCatalogPath(h.home),
-    JSON.stringify(projectCatalogFixture(h.workspace)),
-  );
+  const budgetedCatalog = projectCatalogFixture(h.workspace);
+  budgetedCatalog.projects[0]!.budgets = {
+    shiftSpendCapUsd: null,
+    dailyApiKeyCapUsd: 10,
+  };
+  writeOwnerOnly(projectCatalogPath(h.home), JSON.stringify(budgetedCatalog));
   const profileResponse = await fetch(`${h.api}/council-api/profiles`);
   expect(profileResponse.status).toBe(200);
   const profileEnvelope: unknown = await profileResponse.json();
@@ -647,6 +675,28 @@ test("a completed project Council Bead review posts its verdict once and replays
       "The inert Council run did not finish before the deadline.",
     );
   const run = completedJob.run;
+  const budgetOwner = createProjectBudgetStore(h.home);
+  const budgetDeadline = Date.now() + 2000;
+  let costs = budgetOwner.status(FIXTURE_PROJECT_ID);
+  while (
+    costs.unknownCount === 0 &&
+    costs.reservedUsd > 0 &&
+    Date.now() < budgetDeadline
+  ) {
+    await Bun.sleep(10);
+    costs = budgetOwner.status(FIXTURE_PROJECT_ID);
+  }
+  if (!run.costIsEstimate && run.actualCostUsd !== null)
+    expect(costs).toMatchObject({
+      reportedUsd: run.actualCostUsd,
+      reservedUsd: 0,
+      unknownCount: 0,
+    });
+  else
+    expect(costs).toMatchObject({
+      reservedUsd: original.options.maxUsd,
+      unknownCount: 1,
+    });
   expect(completed.provenance).toMatchObject({ requestId, intentHash });
   expect(run.context).toEqual({
     source: original.context.source,

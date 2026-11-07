@@ -93,7 +93,10 @@ export const projectShiftIntentSchema: z.ZodType<ProjectShiftIntent> = z
     shiftId: word.regex(/^shift-\d{8}-\d{6}-[0-9a-f]{4}$/),
     request: projectShiftStartSchema,
     requestHash: z.string().regex(/^[a-f0-9]{64}$/),
-    scopeHash: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+    scopeHash: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .optional(),
     createdAt: z.iso.datetime(),
     attemptedAt: z.iso.datetime().nullable(),
     executionStartedAt: z.iso.datetime().nullable().optional(),
