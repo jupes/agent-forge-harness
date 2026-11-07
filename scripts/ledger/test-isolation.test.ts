@@ -184,8 +184,8 @@ interface FailedRerun {
 
 /**
  * Run each file in its own `bun test` with `env`, `RERUN_WORKERS` at a time.
- * The timed append file gets an exclusive phase first: Windows CI stored all
- * 10,000 rows but exceeded its unchanged 60s bound under concurrent disk work.
+ * Packaged hearth compilation and timed append each get an exclusive phase
+ * before parallel work. Their test and process deadlines remain unchanged.
  * Every file still runs with the scratch home, so a default home written by
  * any of them is still found; running them apart also names the file that
  * failed. The `./` makes bun take the path as a file, not a name filter.

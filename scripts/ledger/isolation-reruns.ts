@@ -1,5 +1,8 @@
-/** The timed durable-append file needs its own disk phase in the home-safety rerun. */
-const EXCLUSIVE = new Set(["scripts/ledger/append.test.ts"]);
+/** Keep packaged hearth compilation and timed durable append apart from concurrent rerun work. */
+const EXCLUSIVE = new Set([
+  "scripts/ledger/append.test.ts",
+  "scripts/hearth/codex-sync-compiled.test.ts",
+]);
 const diagnosticName = (file: string) => {
   const clean = file.replace(/[\p{Cc}\p{Cs}]/gu, "?");
   return clean.length > 160 ? clean.slice(0, 157) + "..." : clean;
