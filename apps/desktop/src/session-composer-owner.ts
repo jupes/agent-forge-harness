@@ -6,6 +6,18 @@ import type { SessionProjectView } from "./session-client";
 import type { SessionComposerDraft } from "./session-composer";
 import type { createSessionWorktreeClient } from "./session-worktree-client";
 
+/** A verified page can receive an explicit Start intent during refresh. The owner drains and revalidates it before any reservation. */
+export function sessionStartFormReady(view: {
+  identityPage?: SessionProjectView["identityPage"] | undefined;
+  identityGeneration?: number | null | undefined;
+}): boolean {
+  return Boolean(
+    view.identityPage &&
+      view.identityGeneration !== null &&
+      view.identityGeneration !== undefined,
+  );
+}
+
 /** One form; ordinary and proposal starts retain separate immutable action owners. */
 export interface SessionComposerOwner {
   purpose: "ordinary-session" | "keeper-proposal";
