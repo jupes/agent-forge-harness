@@ -84,6 +84,7 @@ async function installIdentityFetchBarrier(
   let captureValid = false;
   let proofFinished = false;
   let proofTimer: ReturnType<typeof setTimeout> | undefined;
+  let proofDeadlineAt = 0;
   let proofResolve: () => void = () => {};
   let proofReject: (error: Error) => void = () => {};
   const settledRead = new Promise<void>((resolve, reject) => {
@@ -111,6 +112,7 @@ async function installIdentityFetchBarrier(
   };
   const armProofTimeout = () => {
     clearProofTimer();
+    proofDeadlineAt = Date.now() + PROOF_TIMEOUT_MS;
     proofTimer = setTimeout(
       () => failProof("The browser identity witness did not settle in time."),
       PROOF_TIMEOUT_MS,
@@ -140,6 +142,7 @@ async function installIdentityFetchBarrier(
           typeof raw.kind !== "string"
         )
           return false;
+        if (raw.kind === "check-ready") return true;
         if (raw.kind === "armed") {
           if (captureSeen || raw.armed !== true) return false;
           armed = true;
@@ -301,6 +304,8 @@ async function installIdentityFetchBarrier(
         let startButtonEnabled = false,
           startDispatched = false;
         let startListener: ((event: MouseEvent) => void) | null = null;
+        let checkObserver: MutationObserver | null = null;
+        let checkWaitTimer: number | undefined;
         const composerSelector =
           'dialog[open][aria-labelledby="af-session-composer-title"]';
         const composerDialogs = () => [
@@ -315,6 +320,10 @@ async function installIdentityFetchBarrier(
           button.getClientRects().length > 0 &&
           getComputedStyle(button).visibility !== "hidden";
         const clearStartListeners = () => {
+          if (checkWaitTimer !== undefined) window.clearTimeout(checkWaitTimer);
+          checkWaitTimer = undefined;
+          checkObserver?.disconnect();
+          checkObserver = null;
           if (startListener)
             document.removeEventListener("click", startListener, true);
           startListener = null;
@@ -607,7 +616,7 @@ async function installIdentityFetchBarrier(
         };
 
         const controller = {
-          armStart(generation: number) {
+          armStart(generation: number, deadlineAt: number) {
             if (disposed || !active) return;
             clearStartListeners();
             startArmGeneration = generation;
@@ -619,74 +628,162 @@ async function installIdentityFetchBarrier(
             const dialog = dialogs.length === 1 ? (dialogs[0] ?? null) : null;
             const checks = namedButtons(dialog, "Check server");
             const check = checks.length === 1 ? checks[0] : null;
-            if (!check || check.disabled || !visible(check)) {
+            if (!check || !visible(check)) {
               void notifyBounded("capture-failed", { armed: true }).catch(
                 () => {},
               );
               return;
             }
             const checkButton = check;
-            startListener = (event: MouseEvent) => {
+            let checkingActivation = false;
+            const activateCheck = async () => {
+              if (checkingActivation) return;
               if (
-                event.target !== checkButton ||
                 !active ||
                 disposed ||
-                startArmGeneration !== generation
-              )
+                releaseRequested ||
+                startArmGeneration !== generation ||
+                Date.now() >= deadlineAt ||
+                window.fetch !== wrapper ||
+                Reflect.get(window, config.controllerName) !== controller
+              ) {
+                clearStartListeners();
                 return;
-              document.removeEventListener("click", startListener!, true);
-              startListener = null;
-              armed = true;
-              claimed = false;
-              void notifyBounded("armed", { armed: true }).catch(() => {});
-              queueMicrotask(() => {
+              }
+              const currentDialogs = composerDialogs();
+              if (
+                currentDialogs.length !== 1 ||
+                currentDialogs[0] !== dialog ||
+                !visible(checkButton)
+              ) {
+                clearStartListeners();
+                void notifyBounded("capture-failed", { armed: true }).catch(
+                  () => {},
+                );
+                return;
+              }
+              // A read already underway must finish before the public control
+              // can start the single witnessed refresh. No extra GET is issued.
+              if (checkButton.disabled) return;
+              checkingActivation = true;
+              const permitted = await notifyBounded("check-ready").catch(
+                () => false,
+              );
+              checkingActivation = false;
+              if (permitted !== true) {
+                restoreOwned();
+                return;
+              }
+              if (
+                !active ||
+                disposed ||
+                releaseRequested ||
+                startArmGeneration !== generation ||
+                Date.now() >= deadlineAt ||
+                window.fetch !== wrapper ||
+                Reflect.get(window, config.controllerName) !== controller
+              ) {
+                clearStartListeners();
+                return;
+              }
+              if (
+                composerDialogs().length !== 1 ||
+                composerDialogs()[0] !== dialog ||
+                !visible(checkButton)
+              ) {
+                restoreOwned();
+                return;
+              }
+              if (checkButton.disabled) return;
+              if (checkWaitTimer !== undefined)
+                window.clearTimeout(checkWaitTimer);
+              checkWaitTimer = undefined;
+              checkObserver?.disconnect();
+              checkObserver = null;
+              startListener = (event: MouseEvent) => {
                 if (
+                  event.target !== checkButton ||
                   !active ||
                   disposed ||
-                  releaseRequested ||
-                  window.fetch !== wrapper ||
-                  Reflect.get(window, config.controllerName) !== controller ||
                   startArmGeneration !== generation
                 )
                   return;
-                const currentDialogs = composerDialogs();
-                const currentDialog =
-                  currentDialogs.length === 1
-                    ? (currentDialogs[0] ?? null)
-                    : null;
-                const currentButtons = namedButtons(currentDialog, "Start");
-                startDialogCount = currentDialogs.length;
-                startButtonCount = currentButtons.length;
-                const startButton = currentButtons[0];
-                if (
-                  currentButtons.length !== 1 ||
-                  !startButton ||
-                  startButton.disabled ||
-                  !visible(startButton)
-                )
-                  return;
-                startListener = (startEvent: MouseEvent) => {
+                document.removeEventListener("click", startListener!, true);
+                startListener = null;
+                armed = true;
+                claimed = false;
+                void notifyBounded("armed", { armed: true }).catch(() => {});
+                queueMicrotask(() => {
                   if (
-                    startEvent.target !== startButton ||
                     !active ||
                     disposed ||
+                    releaseRequested ||
+                    window.fetch !== wrapper ||
+                    Reflect.get(window, config.controllerName) !== controller ||
                     startArmGeneration !== generation
                   )
                     return;
-                  startButtonEnabled =
-                    !startButton.disabled && visible(startButton);
-                  startDispatchCount++;
-                  startDispatched =
-                    startDispatchCount === 1 && startButtonEnabled;
-                  document.removeEventListener("click", startListener!, true);
-                  startListener = null;
-                };
-                document.addEventListener("click", startListener, true);
-                startButton.click();
-              });
+                  const currentDialogs = composerDialogs();
+                  const currentDialog =
+                    currentDialogs.length === 1
+                      ? (currentDialogs[0] ?? null)
+                      : null;
+                  const currentButtons = namedButtons(currentDialog, "Start");
+                  startDialogCount = currentDialogs.length;
+                  startButtonCount = currentButtons.length;
+                  const startButton = currentButtons[0];
+                  if (
+                    currentButtons.length !== 1 ||
+                    !startButton ||
+                    startButton.disabled ||
+                    !visible(startButton)
+                  )
+                    return;
+                  startListener = (startEvent: MouseEvent) => {
+                    if (
+                      startEvent.target !== startButton ||
+                      !active ||
+                      disposed ||
+                      startArmGeneration !== generation
+                    )
+                      return;
+                    startButtonEnabled =
+                      !startButton.disabled && visible(startButton);
+                    startDispatchCount++;
+                    startDispatched =
+                      startDispatchCount === 1 && startButtonEnabled;
+                    document.removeEventListener("click", startListener!, true);
+                    startListener = null;
+                  };
+                  document.addEventListener("click", startListener, true);
+                  startButton.click();
+                });
+              };
+              document.addEventListener("click", startListener, true);
+              checkButton.click();
             };
-            document.addEventListener("click", startListener, true);
-            checkButton.click();
+            checkObserver = new MutationObserver(activateCheck);
+            if (!Number.isFinite(deadlineAt) || deadlineAt <= Date.now()) {
+              clearStartListeners();
+              return;
+            }
+            checkWaitTimer = window.setTimeout(
+              () => {
+                clearStartListeners();
+                void notifyBounded("capture-failed", { armed: true }).catch(
+                  () => {},
+                );
+                restoreOwned();
+              },
+              Math.max(0, deadlineAt - Date.now()),
+            );
+            checkObserver.observe(document.documentElement, {
+              attributes: true,
+              attributeFilter: ["disabled"],
+              childList: true,
+              subtree: true,
+            });
+            activateCheck();
           },
           arm() {
             if (disposed || !active) return;
@@ -761,7 +858,7 @@ async function installIdentityFetchBarrier(
   ) =>
     withinCleanupBound(
       page.evaluate(
-        ({ controllerName, method, generation }) => {
+        ({ controllerName, method, generation, deadlineAt }) => {
           const controller = Reflect.get(window, controllerName);
           if (typeof controller !== "object" || controller === null) return;
           const callable = Reflect.get(controller, method);
@@ -769,10 +866,10 @@ async function installIdentityFetchBarrier(
             Reflect.apply(
               callable,
               controller,
-              method === "armStart" ? [generation] : [],
+              method === "armStart" ? [generation, deadlineAt] : [],
             );
         },
-        { controllerName, method, generation },
+        { controllerName, method, generation, deadlineAt: proofDeadlineAt },
       ),
     );
 

@@ -57,6 +57,41 @@ export function readTerminalHandoffInventory(
   const attempts: TerminalHandoffAttempt[] = [];
   for (const directory of directories) {
     const file = join(directory, "attempts.json");
+    const parent = lstatSync(directory);
+    if (
+      !parent.isDirectory() ||
+      parent.isSymbolicLink() ||
+      readHomeFile(directory).problem !== null
+    )
+      throw unavailable();
+    try {
+      lstatSync(file);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT")
+        throw unavailable();
+      // Ordinary read/send checks create a private lock-only namespace before
+      // any handoff exists. Only guarded, stable absence is an empty journal.
+      const absent = readSessionTranscript(home, file),
+        after = lstatSync(directory);
+      if (
+        absent.problem !== null ||
+        absent.text !== null ||
+        !after.isDirectory() ||
+        after.isSymbolicLink() ||
+        after.dev !== parent.dev ||
+        after.ino !== parent.ino ||
+        readHomeFile(directory).problem !== null
+      )
+        throw unavailable();
+      try {
+        lstatSync(file);
+        throw unavailable();
+      } catch (changed) {
+        if ((changed as NodeJS.ErrnoException).code !== "ENOENT")
+          throw unavailable();
+      }
+      continue;
+    }
     for (const [path, folder] of [
       [directory, true],
       [file, false],
