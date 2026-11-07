@@ -154,10 +154,15 @@ export function readWorktreeCleanupInventory(home: string) {
   return parsed.records;
 }
 
+export type CleanupRow = z.infer<typeof row>;
+export interface WorktreeCleanupLease {
+  read(): CleanupRow[];
+}
+
 /** Host-only lease; the callback receives no persistence or removal capability. */
 export async function withWorktreeCleanupLease<T>(
   home: string,
-  work: () => Promise<T>,
+  work: (scope: WorktreeCleanupLease) => Promise<T>,
   controls: { persist?: typeof writeOwnerOnly } = {},
 ): Promise<T> {
   const persist = controls.persist ?? writeOwnerOnly;
@@ -220,8 +225,19 @@ export async function withWorktreeCleanupLease<T>(
         lockIdentity() !== lockPin
       )
         throw Error("Cleanup lease identity changed");
-      readWorktreeCleanupInventory(home);
-      return await work();
+      const baseline = readWorktreeCleanupInventory(home);
+      let active = true;
+      const scope = Object.freeze({
+        read: () => {
+          if (!active) throw Error("Cleanup lease has ended");
+          return structuredClone(baseline);
+        },
+      });
+      try {
+        return await work(scope);
+      } finally {
+        active = false;
+      }
     },
     { waitMs: 1000 },
   );

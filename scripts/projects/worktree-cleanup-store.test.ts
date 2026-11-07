@@ -33,6 +33,41 @@ afterEach(() => {
   scratch.cleanup();
 });
 
+function auditedOriginal(
+  home: string,
+  projectId: string,
+  request: CleanupRequest,
+) {
+  const requestHash = createHash("sha256")
+    .update(canonicalCleanupRequest(projectId, request))
+    .digest("hex");
+  const audit = appendEvent(
+    {
+      kind: "operator.action",
+      workspace: request.repository,
+      beadId: request.expectedRecord.beadId,
+      payload: {
+        action: "project.worktree.cleanup",
+        surface: "ui",
+        target: projectId,
+        family: "project-worktree-cleanup",
+        requestId: request.requestId,
+        inputHash: requestHash,
+      },
+    },
+    { path: join(home, "ledger.db"), now: () => new Date(stamp) },
+  );
+  if (!audit.ok || !("id" in audit)) throw Error("Expected a stored audit");
+  return {
+    version: 1 as const,
+    projectId,
+    request,
+    requestHash,
+    createdAt: stamp,
+    audit: { eventId: audit.id, ulid: audit.ulid, ts: stamp },
+  };
+}
+
 function fixture() {
   const home = canonicalTrustedDirectory(scratch.make("cleanup-store-"));
   ensurePrivateHome(home);
@@ -53,34 +88,7 @@ function fixture() {
     },
     expectedHead: "a".repeat(40),
   };
-  const requestHash = createHash("sha256")
-    .update(canonicalCleanupRequest(projectId, request))
-    .digest("hex");
-  const audit = appendEvent(
-    {
-      kind: "operator.action",
-      workspace: repository,
-      beadId: request.expectedRecord.beadId,
-      payload: {
-        action: "project.worktree.cleanup",
-        surface: "ui",
-        target: projectId,
-        family: "project-worktree-cleanup",
-        requestId: request.requestId,
-        inputHash: requestHash,
-      },
-    },
-    { path: join(home, "ledger.db"), now: () => new Date(stamp) },
-  );
-  if (!audit.ok || !("id" in audit)) throw Error("Expected a stored audit");
-  const original = {
-    version: 1 as const,
-    projectId,
-    request,
-    requestHash,
-    createdAt: stamp,
-    audit: { eventId: audit.id, ulid: audit.ulid, ts: stamp },
-  };
+  const original = auditedOriginal(home, projectId, request);
   const row = {
     original,
     phase: "unknown" as const,
@@ -347,4 +355,70 @@ test("cleanup callback failure releases its lease for safe reopening", async () 
       readWorktreeCleanupInventory(f.home),
     ),
   ).toEqual([f.row]);
+});
+
+test("cleanup lease snapshots cannot alter or outlive their ownership", async () => {
+  const f = fixture();
+  f.seed(f.row);
+  const bytes = readFileSync(f.file, "utf8");
+  let escaped: () => ReturnType<typeof readWorktreeCleanupInventory> = () => {
+    throw Error("Scope not captured");
+  };
+  await withWorktreeCleanupLease(f.home, async (scope) => {
+    expect(Object.isFrozen(scope)).toBe(true);
+    escaped = scope.read;
+    const copy = scope.read();
+    const row = copy[0];
+    if (!row) throw Error("Expected complete cleanup original");
+    row.original.request.expectedRecord.branch = "changed";
+    row.original.audit.eventId = 999;
+    row.phase = "reserved";
+    expect(scope.read()).toEqual([f.row]);
+    expect(readFileSync(f.file, "utf8")).toBe(bytes);
+  });
+  expect(escaped).toThrow("lease");
+  await expect(
+    withWorktreeCleanupLease(f.home, async (scope) => {
+      escaped = scope.read;
+      throw Error("Callback failed");
+    }),
+  ).rejects.toThrow("Callback failed");
+  expect(escaped).toThrow("lease");
+  expect(readWorktreeCleanupInventory(f.home)).toEqual([f.row]);
+});
+
+test("cleanup raw inventory preserves global native originals and rejects duplicate UUIDs", () => {
+  const f = fixture();
+  const request = f.row.original.request;
+  const project = "project-b1000000-0000-4000-8000-000000000001";
+  const other = (repository: string, requestId: string) => ({
+    ...f.row,
+    original: auditedOriginal(f.home, project, {
+      ...request,
+      repository,
+      requestId,
+      expectedRecord: {
+        ...request.expectedRecord,
+        path: join(repository, "trees", request.expectedRecord.id),
+      },
+    }),
+  });
+  const literalRoot = request.repository + String.fromCharCode(92) + "literal";
+  const literal = other(literalRoot, "a1000000-0000-4000-8000-000000000003");
+  const nested = other(
+    request.repository + "/literal",
+    "a1000000-0000-4000-8000-000000000004",
+  );
+  const write = (records: unknown[]) =>
+    writeOwnerOnly(f.file, JSON.stringify({ version: 1, records }));
+  write([f.row, literal, nested]);
+  expect(readWorktreeCleanupInventory(f.home)).toEqual([
+    f.row,
+    literal,
+    nested,
+  ]);
+  write([f.row, other(literalRoot, request.requestId)]);
+  const bytes = readFileSync(f.file, "utf8");
+  expect(() => readWorktreeCleanupInventory(f.home)).toThrow();
+  expect(readFileSync(f.file, "utf8")).toBe(bytes);
 });
