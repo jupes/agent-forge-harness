@@ -5,6 +5,7 @@ import { scratchDirs } from "../test-scratch";
 import {
   type GitRun,
   readStrictWorktreeRegistry,
+  registryPathKey,
   removeWorktree,
 } from "./worktrees";
 
@@ -41,11 +42,32 @@ test("strict cleanup inventory retains complete ownership and refuses ambiguous 
     { worktrees: [{ ...f.row, ownerSessionId: "invalid session" }] },
     { worktrees: [{ ...f.row, createdAt: "unknown" }] },
     { worktrees: [{ ...f.row, path: f.main }] },
+    { worktrees: [{ ...f.row, path: `${f.row.path} ` }] },
+    {
+      worktrees: [
+        { ...f.row, path: join(f.main, "trees", "x") + "/../" + f.row.id },
+      ],
+    },
     { worktrees: [{ ...f.row, unknown: true }] },
   ]) {
     f.save(value);
     expect(readStrictWorktreeRegistry(f.main).ok).toBe(false);
   }
+});
+
+test("registry path comparison preserves platform-native path data", () => {
+  expect(registryPathKey("/tmp/main\\trees\\id", "posix")).not.toBe(
+    registryPathKey("/tmp/main/trees/id", "posix"),
+  );
+  expect(registryPathKey("/tmp/main/trees/id ", "posix")).not.toBe(
+    registryPathKey("/tmp/main/trees/id", "posix"),
+  );
+  expect(registryPathKey("C:/main/trees/id ", "win32")).not.toBe(
+    registryPathKey("C:/main/trees/id", "win32"),
+  );
+  expect(registryPathKey("C:/Main/trees/id", "win32")).toBe(
+    registryPathKey("c:\\main\\trees\\id", "win32"),
+  );
 });
 
 test("strict registry refuses an outside path even when a child alias resolves to it", () => {

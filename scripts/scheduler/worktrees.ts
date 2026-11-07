@@ -36,7 +36,15 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { basename, dirname, isAbsolute, join, resolve } from "node:path";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  posix,
+  resolve,
+  win32,
+} from "node:path";
 import type {
   WorktreeEntry,
   WorktreeKind,
@@ -393,6 +401,18 @@ const WORKTREE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,31}$/;
 /** A cache larger than this is not read: reading it would hold up the hearth. */
 const MAX_CACHE_BYTES = 1_000_000;
 
+/** Native lexical identity only: POSIX backslashes/spaces are data, never aliases. */
+export function registryPathKey(
+  path: string,
+  platform: "win32" | "posix" = process.platform === "win32"
+    ? "win32"
+    : "posix",
+): string {
+  return platform === "win32"
+    ? win32.resolve(path).toLowerCase()
+    : posix.resolve(path);
+}
+
 /** Complete registry snapshot, not repository/activity authority. Invalid/legacy entries refuse. */
 export function readStrictWorktreeRegistry(
   main: string,
@@ -511,8 +531,11 @@ export function readStrictWorktreeRegistry(
         !WORKTREE_ID.test(r.id) ||
         typeof r.path !== "string" ||
         !isAbsolute(r.path) ||
-        comparableCheckout(r.path) !==
-          comparableCheckout(join(main, "trees", r.id)) ||
+        r.path
+          .split(process.platform === "win32" ? /[\\/]/ : /\//)
+          .some((part) => part === "." || part === "..") ||
+        registryPathKey(r.path) !==
+          registryPathKey(join(main, "trees", r.id)) ||
         typeof r.branch !== "string" ||
         r.branch.length === 0 ||
         r.branch.length > 256 ||
@@ -524,7 +547,7 @@ export function readStrictWorktreeRegistry(
         (Object.hasOwn(r, "ownerSessionId") && !isSessionId(r.ownerSessionId))
       )
         return no("Worktree registry contains invalid ownership or identity");
-      const key = comparableCheckout(r.path);
+      const key = registryPathKey(r.path);
       if (ids.has(r.id) || paths.has(key))
         return no("Worktree registry contains duplicate identities");
       ids.add(r.id);
@@ -1059,8 +1082,8 @@ export function removeWorktree(
   const directoryPins = () =>
     [root, join(root, "trees"), record.path].map((path) => {
       if (
-        comparableCheckout(canonicalTrustedDirectory(path)) !==
-        comparableCheckout(resolve(path))
+        registryPathKey(canonicalTrustedDirectory(path)) !==
+        registryPathKey(path)
       )
         throw Error("Reviewed cleanup path is not canonical");
       const found = lstatSync(path);
