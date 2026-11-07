@@ -64,7 +64,7 @@ export function projectShiftOptions(
       for: { value: duration(config.forMs), source: origin("for") },
       concurrency: { value: config.concurrency, source: origin("concurrency") },
       maxBeads: { value: config.maxBeads, source: origin("max_beads") },
-      maxUsd: { value: config.maxUsd, source: origin("max_usd") },
+      maxUsd: { value: Math.min(config.maxUsd, project.budgets?.shiftSpendCapUsd ?? config.maxUsd), source: project.budgets?.shiftSpendCapUsd != null && project.budgets.shiftSpendCapUsd <= config.maxUsd ? "project Settings" : origin("max_usd") },
       repairs: { value: config.repairs, source: origin("repairs") },
       base: { value: SHIFT_DEFAULTS.base, source: "shift CLI" },
       runTimeout: { value: null, source: "remaining shift time" },
@@ -73,7 +73,7 @@ export function projectShiftOptions(
       durationMs: [...SHIFT_LIMITS.forMs],
       concurrency: [...SHIFT_LIMITS.concurrency],
       maxBeads: [...SHIFT_LIMITS.maxBeads],
-      maxUsd: SHIFT_MAX_USD,
+      maxUsd: Math.min(SHIFT_MAX_USD, project.budgets?.shiftSpendCapUsd ?? SHIFT_MAX_USD),
       repairs: [...SHIFT_LIMITS.repairs],
     },
     epics: members

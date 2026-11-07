@@ -52,6 +52,7 @@ import { keeperContinuationSchema } from "../keeper/recovery-protocol";
 import { type KeeperRuntime, prepareKeeper } from "../keeper/recovery-runtime";
 import { resolveCheckout } from "../ledger/workspace";
 import { workspaceKey } from "../projects/scope";
+import { assertProjectCliCostAdmission } from "../projects/project-budget-policy";
 import {
   createProjectStore,
   hashProjectCreateRequest,
@@ -890,6 +891,7 @@ export function createConversationService(options: ConversationOptions) {
                 409,
                 "The project scope or Keeper selection changed during readiness. The reviewed original has been kept.",
               );
+            if (!store.read(projectId).turns.some(turn => turn.requestId === reference.requestId)) assertProjectCliCostAdmission(current.project);
             const result = await store.acceptKeeperBrief(
               projectId,
               reference,
@@ -1666,6 +1668,7 @@ export function createConversationService(options: ConversationOptions) {
                     projectFor(projectId).keeperAutonomy ??
                     "propose-for-approval",
                 };
+            if (!store.read(projectId).turns.some(turn => turn.requestId === input.requestId)) assertProjectCliCostAdmission(projectFor(projectId));
             const accepted = await store.accept(projectId, input);
             if (accepted.turn.phase !== "accepted") {
               admitted = true;

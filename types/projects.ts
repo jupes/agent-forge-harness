@@ -39,6 +39,8 @@ export interface ProjectRecord {
   sessionRunAs?: "chat" | "task";
   /** OS interruption preferences only; never suppresses Activity or approval authority. */
   notifications?: ProjectNotificationPreferences;
+  /** Local admission limits, never an account balance or guaranteed billed total. */
+  budgets?: {shiftSpendCapUsd: number | null; dailyApiKeyCapUsd: number | null};
   /** Optional bounded presentation token; absent on legacy projects. */
   color?: ProjectColor;
   pinned: boolean;

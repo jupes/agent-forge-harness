@@ -43,6 +43,7 @@ export function sameProjectShiftOriginal(
     a.createdAt === b.createdAt &&
     a.attemptedAt === b.attemptedAt &&
     a.requestHash === b.requestHash &&
+    a.scopeHash === b.scopeHash &&
     canonicalProjectShiftStart(a.projectId, a.workspace, a.request) ===
       canonicalProjectShiftStart(b.projectId, b.workspace, b.request)
   );

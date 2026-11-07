@@ -35,6 +35,7 @@ import {
   createCouncilService,
 } from "../council/service";
 import { loadDashboardServerEnvironment } from "../dashboard/server-environment";
+import { createProjectBudgetStore } from "../projects/project-budget-store";
 import { ownInterrupts } from "../executors/supervisor";
 import { createClaudeConversationTransport } from "../keeper/claude-transport";
 import { createKeeperOperatorPost } from "../keeper/operator-post";
@@ -350,7 +351,9 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
   if (existing && (await isHealthy(existing))) return reusedHearth(existing);
   if (existing) releaseLock(lockFile, existing.pid);
 
+  const projectBudget = createProjectBudgetStore(home);
   const service = createCouncilService({
+    projectBudget,
     workspaceRoot: root,
     reviewHome: home,
     withQueueLock,

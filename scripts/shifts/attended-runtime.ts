@@ -14,6 +14,8 @@ import { readHomeFile, readSessionTranscript } from "../hearth/home-guard";
 import { projectSnapshotReader } from "../hearth/routes/project-summaries";
 import { resolveCheckout } from "../ledger/workspace";
 import { workspaceKey } from "../projects/scope";
+import { createProjectStore } from "../projects/store";
+import { assertProjectCliCostAdmission } from "../projects/project-budget-policy";
 import { smithFor } from "../scheduler/queue";
 import { runShift, type ShiftDeps } from "../scheduler/shift";
 import {
@@ -247,7 +249,7 @@ export function createAttendedProjectShiftExecutionRuntime(options: {
           400,
           "The original reviewed shift bounds are invalid.",
         );
-      const beforeStart = scope.beforeStart(intent.projectId, intent.request);
+      const beforeStart = scope.beforeStart(intent.projectId, intent.request, intent.scopeHash);
       const interrupt = interruptShift(
         { say: () => {}, exit: (code) => process.exit(code) },
         () => ({
@@ -260,6 +262,13 @@ export function createAttendedProjectShiftExecutionRuntime(options: {
           ...base,
           shiftId: intent.shiftId,
           signal: interrupt.signal,
+          async beforeAttempt({spentUsd, unpriced}) {
+            const project = createProjectStore(options.home).read().projects.find(row => row.id === intent.projectId);
+            if(!project) return false;
+            try {assertProjectCliCostAdmission(project);} catch {return false;}
+            const cap = project.budgets?.shiftSpendCapUsd;
+            return cap == null || (unpriced === 0 && spentUsd < Math.min(cap,intent.request.options.maxUsd));
+          },
           exec: {
             env: environment,
             ...(options.configHome ? { home: options.configHome } : {}),
@@ -323,6 +332,7 @@ export function createAttendedProjectShiftExecutionRuntime(options: {
                   intent.projectId,
                   intent.request,
                   actual.beadId,
+                  intent.scopeHash,
                 );
                 if (signal.aborted) throw new PrivateCaptureError();
                 const entry = currentAttempt(

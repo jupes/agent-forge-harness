@@ -91,7 +91,7 @@ export function createProjectShiftService(options: {
   validateStart(
     projectId: string,
     request: ProjectShiftStartRequest,
-  ): Promise<void>;
+  ): Promise<void | {scopeHash: string}>;
   runtime?: ProjectShiftRuntime;
 }) {
   const registry = createProjectShiftRegistry(options);
@@ -223,9 +223,9 @@ export function createProjectShiftService(options: {
           open();
           if (options.runtime?.attended !== true)
             throw new ConversationError(503, ATTENDED_SHIFT_UNAVAILABLE);
-          await options.validateStart(projectId, reviewed);
+          const authority = await options.validateStart(projectId, reviewed);
           open();
-          return { shiftId: options.runtime.mint() };
+          return { shiftId: options.runtime.mint(), ...(authority ? {scopeHash: authority.scopeHash} : {}) };
         },
       );
       // An exact retry can observe an intent left at any crash point, but can never launch it again.

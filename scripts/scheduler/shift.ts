@@ -305,6 +305,8 @@ export interface Attempt {
 }
 
 export interface ShiftDeps {
+  /** Project-only admission check before every attempt, including repairs. Existing executions are not cancelled. */
+  beforeAttempt?(snapshot: {spentUsd: number; unpriced: number; beadId: string; attempt: number}): Promise<boolean>;
   /** Desktop project admission: rechecked under canonical queue ownership before each new start, never for owned cleanup. */
   beforeStart?: QueueDeps["beforeStart"];
   /** The checkout the shift runs for: its config and its tracker. */
@@ -670,6 +672,7 @@ export async function runShift(
     (event: LedgerEventInput): AppendResult =>
       append({ ...event, runId });
   let privateCaptureFailed = false;
+  let projectBudgetStopped = false;
   const queueFor = (runId: string) =>
     createQueue({
       beforeStart: async (id, shown) => {
@@ -1032,6 +1035,10 @@ export async function runShift(
     try {
       for (let attempt = 1; attempt <= options.repairs + 1; attempt++) {
         if (stopping()) break;
+        if (projectBudgetStopped || (deps.beforeAttempt && !(await deps.beforeAttempt({spentUsd: record.spentUsd, unpriced: record.unpriced, beadId: entry.beadId, attempt})))) {
+          projectBudgetStopped = true;
+          throw Error("The project admission budget refused another attempt. No new private input was delivered.");
+        }
         const left = deadline - clock();
         if (left <= 0) {
           deadlineHit = true;
@@ -1343,6 +1350,7 @@ export async function runShift(
         slots.size < options.concurrency &&
         admitted < options.maxBeads &&
         record.spentUsd < options.maxUsd &&
+        !projectBudgetStopped &&
         clock() < deadline &&
         !privateCaptureFailed &&
         !deps.signal?.aborted
@@ -1396,7 +1404,7 @@ export async function runShift(
           break;
         }
         // Stopped while the host was sampled or the queue read: start nothing.
-        if (deps.signal?.aborted || privateCaptureFailed) break;
+        if (deps.signal?.aborted || privateCaptureFailed || projectBudgetStopped) break;
         await admit(next);
       }
       if (reason !== null) break;
@@ -1410,7 +1418,8 @@ export async function runShift(
       }
 
       if (slots.size === 0) {
-        if (admitted >= options.maxBeads) reason = "count";
+        if (projectBudgetStopped) reason = "budget";
+        else if (admitted >= options.maxBeads) reason = "count";
         else if (record.spentUsd >= options.maxUsd) reason = "budget";
         else if (nothingEligible && !hostBusy) reason = "drained";
         if (reason !== null) break;
