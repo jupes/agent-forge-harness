@@ -1733,7 +1733,9 @@ export function createSessionsClient(deps: {
         key = providerDraftKey(provider, mode),
         options = entry[key];
       if (
-        defaultsHeld(entry) ||
+        entry.pendingStart ||
+        entry.starting ||
+        (options.initialized && defaultsHeld(entry)) ||
         (options.initialized &&
           (providerBaselines.get(record.id)?.[key] !==
             JSON.stringify(options) ||
@@ -1832,11 +1834,7 @@ export function createSessionsClient(deps: {
       if (
         entry.pendingStart ||
         entry.starting ||
-        entry.startIdentity ||
-        entry.startIdentityError ||
-        entry.legacyIdentityHint ||
-        entry.legacyIdentityError ||
-        entry.legacyIdentityUnavailable
+        (draft.initialized && defaultsHeld(entry))
       )
         return;
       if (
