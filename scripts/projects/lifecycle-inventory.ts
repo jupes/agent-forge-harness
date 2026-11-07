@@ -468,7 +468,8 @@ export function readProjectActivityInventory(
       if (row.original.projectId !== project.id) continue;
       if (row.phase === "unknown")
         unknown.push("A worktree cleanup outcome is unknown.");
-      else reasons.push("A worktree cleanup original remains unresolved.");
+      else if (row.phase === "reserved" || row.phase === "attempted")
+        reasons.push("A worktree cleanup original remains unresolved.");
     }
   });
   source("Worktree creation receipts", () => {

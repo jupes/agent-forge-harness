@@ -48,24 +48,31 @@ const original = z
 const row = z
   .object({
     original,
-    // Terminal variants remain unsupported/unknown until their evidence contract is implemented.
-    phase: z.enum(["reserved", "attempted", "unknown"]),
+    // Confirmed remains unsupported until its direct-result evidence contract is implemented.
+    phase: z.enum(["reserved", "attempted", "unknown", "refused"]),
     attemptedAt: stamp.nullable(),
-    endedAt: z.null(),
+    endedAt: stamp.nullable(),
     reason: z.string().min(1).max(1000).nullable(),
     outcome: z.null(),
   })
   .strict()
-  .refine(
-    (entry) =>
-      (entry.attemptedAt === null ||
-        Date.parse(entry.attemptedAt) >=
-          Date.parse(entry.original.createdAt)) &&
-      (entry.phase === "unknown"
-        ? entry.reason !== null
-        : entry.reason === null &&
-          (entry.phase === "reserved") === (entry.attemptedAt === null)),
-  );
+  .refine((entry) => {
+    const created = Date.parse(entry.original.createdAt);
+    if (entry.attemptedAt !== null && Date.parse(entry.attemptedAt) < created)
+      return false;
+    if (entry.phase === "refused")
+      return (
+        entry.attemptedAt === null &&
+        entry.endedAt !== null &&
+        Date.parse(entry.endedAt) >= created &&
+        entry.reason !== null
+      );
+    if (entry.endedAt !== null) return false;
+    return entry.phase === "unknown"
+      ? entry.reason !== null
+      : entry.reason === null &&
+          (entry.phase === "reserved") === (entry.attemptedAt === null);
+  });
 const journal = z
   .object({ version: z.literal(1), records: z.array(row).max(1000) })
   .strict()
