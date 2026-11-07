@@ -1,5 +1,6 @@
 import { afterEach, expect, test } from "bun:test";
 import {
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   realpathSync,
@@ -8,6 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import type { OwnedSessionMetadata } from "../../../types/owned-session";
 import { createProjectStore } from "../../projects/store";
 import type { GitRun } from "../../scheduler/worktrees";
@@ -245,6 +247,15 @@ test.skipIf(process.platform === "win32")(
           };
         }
       };
+      const inode = (path: Parameters<typeof lstatSync>[0]) => {
+        const info = lstatSync(path);
+        return {
+          dev: String(info.dev),
+          ino: String(info.ino),
+          directory: info.isDirectory(),
+          linked: info.isSymbolicLink(),
+        };
+      };
       throw Error(
         "POSIX containment fixture rejected: " +
           JSON.stringify({
@@ -253,6 +264,42 @@ test.skipIf(process.platform === "win32")(
             nativeLiteral: probe(() => realpathSync.native(literal)),
             regularLiteral: probe(() => realpathSync(literal)),
             nativeInside: probe(() => realpathSync.native(inside)),
+            nativeLiteralBuffer: probe(() =>
+              realpathSync.native(Buffer.from(literal)),
+            ),
+            regularLiteralBuffer: probe(() =>
+              realpathSync(Buffer.from(literal)),
+            ),
+            nativeInsideBuffer: probe(() =>
+              realpathSync.native(Buffer.from(inside)),
+            ),
+            regularInsideBuffer: probe(() => realpathSync(Buffer.from(inside))),
+            nativeLiteralUrl: probe(() =>
+              realpathSync.native(pathToFileURL(literal)),
+            ),
+            regularLiteralUrl: probe(() =>
+              realpathSync(pathToFileURL(literal)),
+            ),
+            nativeInsideUrl: probe(() =>
+              realpathSync.native(pathToFileURL(inside)),
+            ),
+            regularInsideUrl: probe(() => realpathSync(pathToFileURL(inside))),
+            nativeLiteralBytes: probe(() =>
+              realpathSync
+                .native(literal, { encoding: "buffer" })
+                .toString("utf8"),
+            ),
+            nativeInsideBytes: probe(() =>
+              realpathSync
+                .native(inside, { encoding: "buffer" })
+                .toString("utf8"),
+            ),
+            literalInode: probe(() => inode(literal)),
+            nestedInode: probe(() => inode(nested)),
+            insideInode: probe(() => inode(inside)),
+            literalBufferInode: probe(() => inode(Buffer.from(literal))),
+            nestedBufferInode: probe(() => inode(Buffer.from(nested))),
+            insideBufferInode: probe(() => inode(Buffer.from(inside))),
             literalContains: probe(() =>
               sessionFilesystemContains(literal, inside),
             ),
