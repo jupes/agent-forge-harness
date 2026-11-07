@@ -1658,6 +1658,14 @@ export function createConversationService(options: ConversationOptions) {
                 "The hearth closed during source preparation. No turn was accepted.",
               );
             markInitialStartAcceptEntered(initialStartAttempt);
+            const turnProject = options.address
+              ? project
+              : {
+                  ...project,
+                  keeperAutonomy:
+                    projectFor(projectId).keeperAutonomy ??
+                    "propose-for-approval",
+                };
             const accepted = await store.accept(projectId, input);
             if (accepted.turn.phase !== "accepted") {
               admitted = true;
@@ -1681,7 +1689,7 @@ export function createConversationService(options: ConversationOptions) {
                 : input;
               const result = await selected.transport.run(
                 {
-                  project,
+                  project: turnProject,
                   root: options.root,
                   input: retained
                     ? { ...turnInput, text: retained + turnInput.text }

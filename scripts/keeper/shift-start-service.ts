@@ -18,6 +18,7 @@ import { createProjectStore } from "../projects/store";
 import { projectShiftReceiptSchema } from "../shifts/protocol";
 import type { createProjectShiftService } from "../shifts/service";
 import { canonicalProjectShiftStart } from "../shifts/start-input";
+import { assertKeeperProposalAdmission } from "./autonomy";
 import { createKeeperProposalStore } from "./proposal-store";
 import { keeperProposals } from "./proposals";
 import {
@@ -257,6 +258,7 @@ export function createKeeperShiftStartService(options: Options) {
             request.data.sourceHash,
           );
           readable(projectId, false);
+          assertKeeperProposalAdmission(options.home, projectId);
           return { proposal, workspace };
         },
         async execute(intent): Promise<KeeperProposalExecution> {

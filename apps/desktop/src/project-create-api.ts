@@ -20,6 +20,7 @@ import {
   projectCreateReserveSchema,
   projectCreateRetireSchema,
 } from "../../../scripts/projects/create-protocol";
+import { keeperAutonomySchema } from "../../../scripts/projects/project-keeper-protocol";
 import {
   approvedRepositorySchema,
   projectRepositoryNameSchema,
@@ -63,6 +64,7 @@ const projectRecordSchema = z
       .min(1)
       .max(16),
     keeperSmith: z.string().min(1).max(1024).optional(),
+    keeperAutonomy: keeperAutonomySchema.optional(),
     color: z.enum(PROJECT_COLOR_IDS).optional(),
     pinned: z.boolean(),
     archived: z.boolean(),

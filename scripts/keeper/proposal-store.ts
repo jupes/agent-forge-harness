@@ -787,6 +787,7 @@ export function createKeeperProposalStore(
     input: ReviewInput,
     operation: "approve" | "dismiss",
     execute?: () => Promise<KeeperProposalExecution>,
+    beforeAdmission?: () => void,
   ): Promise<KeeperProposalReceipt> => {
     const source = keeperProposalSchema.safeParse(input.proposal),
       draft = keeperProposalDraftSchema.safeParse(
@@ -880,6 +881,7 @@ export function createKeeperProposalStore(
                 : "Approval recorded. Waiting for the action's confirmed outcome.",
             objects: [],
           };
+          if (operation === "approve") beforeAdmission?.();
           state.records.push(record);
           state.revision++;
           save(state);
@@ -929,7 +931,8 @@ export function createKeeperProposalStore(
     approve: (
       input: ReviewInput,
       execute: () => Promise<KeeperProposalExecution>,
-    ) => change(input, "approve", execute),
+      beforeAdmission?: () => void,
+    ) => change(input, "approve", execute, beforeAdmission),
     dismiss: (input: ReviewInput) => change(input, "dismiss"),
   };
 }

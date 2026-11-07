@@ -1,6 +1,7 @@
 /** Hearth-level project contract. Records contain metadata, never provider credentials. */
 export const PROJECT_COLOR_IDS = ["default", "green", "blue"] as const;
 export type ProjectColor = (typeof PROJECT_COLOR_IDS)[number];
+export type KeeperAutonomy = "suggest-only" | "propose-for-approval";
 
 export interface ProjectWorkspace {
   /** Canonical ledger workspace, not a linked worktree. */
@@ -22,6 +23,8 @@ export interface ProjectRecord {
   workspaces: ProjectWorkspace[];
   /** Default for future unsaved Keeper work; absent means inherit configuration. */
   keeperSmith?: string;
+  /** Applies to new Keeper proposal approvals; absence keeps the legacy approval mode. */
+  keeperAutonomy?: KeeperAutonomy;
   /** Optional bounded presentation token; absent on legacy projects. */
   color?: ProjectColor;
   pinned: boolean;

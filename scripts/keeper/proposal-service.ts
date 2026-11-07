@@ -20,6 +20,7 @@ import { selectProjectBeads, workspaceKey } from "../projects/scope";
 import { createProjectStore } from "../projects/store";
 import { checkSmith } from "../scheduler/queue";
 import { operatorMoves } from "../scheduler/queue-table";
+import { assertKeeperProposalAdmission } from "./autonomy";
 import type { KeeperOperatorCall, KeeperOperatorPost } from "./operator-post";
 import {
   keeperProposalApprovalSchema,
@@ -427,6 +428,7 @@ export function createKeeperProposalService(options: Options) {
       if (record) reason = "This card already has a recorded review.";
       else
         try {
+          assertKeeperProposalAdmission(options.home, projectId);
           await validateDraft(projectId, proposal.draft, scope);
           available = true;
         } catch (error) {
@@ -443,13 +445,14 @@ export function createKeeperProposalService(options: Options) {
           /* An unavailable audit read does not erase the private result. */
         }
       const destinationAvailable =
-        (proposal.draft.action.kind === "start-session" &&
+        (record !== null || scope.project.keeperAutonomy !== "suggest-only") &&
+        ((proposal.draft.action.kind === "start-session" &&
           proposal.draft.action.provider === "claude" &&
           !!options.sessionStarts) ||
-        (!!options.post &&
-          !["start-session", "start-shift", "send-to-council"].includes(
-            proposal.draft.action.kind,
-          ));
+          (!!options.post &&
+            !["start-session", "start-shift", "send-to-council"].includes(
+              proposal.draft.action.kind,
+            )));
       proposals.push({
         proposal,
         record,
@@ -546,15 +549,19 @@ export function createKeeperProposalService(options: Options) {
       auditEventId,
     };
     if (dismiss) return journal.dismiss(request);
-    return journal.approve(request, async () => {
-      const controller = new AbortController();
-      controllers.add(controller);
-      try {
-        return await execute(projectId, draft, controller.signal);
-      } finally {
-        controllers.delete(controller);
-      }
-    });
+    return journal.approve(
+      request,
+      async () => {
+        const controller = new AbortController();
+        controllers.add(controller);
+        try {
+          return await execute(projectId, draft, controller.signal);
+        } finally {
+          controllers.delete(controller);
+        }
+      },
+      () => assertKeeperProposalAdmission(options.home, projectId),
+    );
   };
   const review = (
     projectId: string,

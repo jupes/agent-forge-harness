@@ -13,6 +13,7 @@ import { canonicalOwnedSessionStart } from "../sessions/codex-owned-protocol";
 import { sessionStartIdentityPageSchema } from "../sessions/identity-protocol";
 import { canonicalSessionInput } from "../sessions/preparation";
 import { sessionStartReceiptSchema } from "../sessions/protocol";
+import { assertKeeperProposalAdmission } from "./autonomy";
 import { createKeeperProposalStore } from "./proposal-store";
 import { keeperProposals } from "./proposals";
 import {
@@ -321,6 +322,7 @@ export function createKeeperSessionStartService(options: Options) {
               "This hearth closed during session review. No Start was admitted.",
             );
           readable(projectId);
+          assertKeeperProposalAdmission(options.home, projectId);
           return {
             proposal: sourceFor(projectId, proposalId, request.data.sourceHash),
             workspace,

@@ -1,18 +1,25 @@
 import { NotSent, type OperatorPost } from "../../../docs/js/operator";
 import { projectKeeperSettingsSchema } from "../../../scripts/projects/project-keeper-protocol";
+import type { KeeperAutonomy } from "../../../types/projects";
 import { validatedGeneralCatalog } from "./project-general-settings-client";
 
 interface KeeperCatalog {
   revision: number;
   keeperSmith?: string | undefined;
+  keeperAutonomy?: KeeperAutonomy | undefined;
 }
 interface KeeperProject {
   catalog: KeeperCatalog | null;
   draft: string | null;
+  autonomyDraft: KeeperAutonomy | null;
   message: string;
   needsReview: boolean;
   checked: boolean;
 }
+const sameKeeper = (left: KeeperCatalog, right: KeeperCatalog) =>
+  left.keeperSmith === right.keeperSmith &&
+  (left.keeperAutonomy ?? "propose-for-approval") ===
+    (right.keeperAutonomy ?? "propose-for-approval");
 interface Snapshot {
   projects: Record<string, KeeperProject>;
   busy: string | null;
@@ -28,17 +35,29 @@ function projection(raw: unknown, id: string): KeeperCatalog {
   const general = validatedGeneralCatalog(raw, id);
   // The shared projection validates the envelope and unique project identity first.
   const rows = (
-    raw as { projects: Array<{ id: string; keeperSmith?: unknown }> }
+    raw as {
+      projects: Array<{
+        id: string;
+        keeperSmith?: unknown;
+        keeperAutonomy?: unknown;
+      }>;
+    }
   ).projects;
   const item = rows.find((row) => row.id === id);
-  const keeper = projectKeeperSettingsSchema.parse(
-    item?.keeperSmith === undefined ? {} : { keeperSmith: item.keeperSmith },
-  );
+  const keeper = projectKeeperSettingsSchema.parse({
+    ...(item?.keeperSmith === undefined
+      ? {}
+      : { keeperSmith: item.keeperSmith }),
+    ...(item?.keeperAutonomy === undefined
+      ? {}
+      : { keeperAutonomy: item.keeperAutonomy }),
+  });
   return { revision: general.revision, ...keeper };
 }
 const empty = (): KeeperProject => ({
   catalog: null,
   draft: null,
+  autonomyDraft: null,
   message: "",
   needsReview: false,
   checked: false,
@@ -88,9 +107,9 @@ export class ProjectKeeperSettingsOwner {
       if (prior?.catalog && catalog.revision < prior.catalog.revision) return;
       const changed =
         prior?.catalog &&
-        prior.draft !== null &&
+        (prior.draft !== null || prior.autonomyDraft !== null) &&
         (catalog.revision !== prior.catalog.revision ||
-          catalog.keeperSmith !== prior.catalog.keeperSmith);
+          !sameKeeper(catalog, prior.catalog));
       this.update(id, {
         catalog,
         ...(changed
@@ -123,6 +142,9 @@ export class ProjectKeeperSettingsOwner {
   }
   setDraft(id: string, draft: string) {
     if (!this.value.busy) this.update(id, { draft });
+  }
+  setAutonomyDraft(id: string, autonomyDraft: KeeperAutonomy) {
+    if (!this.value.busy) this.update(id, { autonomyDraft });
   }
   confirmReview(id: string) {
     if (this.value.projects[id]?.checked && !this.value.busy)
@@ -171,7 +193,7 @@ export class ProjectKeeperSettingsOwner {
       this.value.busy ||
       !view?.catalog ||
       view.needsReview ||
-      view.draft === null
+      (view.draft === null && view.autonomyDraft === null)
     )
       return;
     if (Object.keys(this.pending).some((key) => key !== id)) {
@@ -181,14 +203,23 @@ export class ProjectKeeperSettingsOwner {
       });
       return;
     }
-    const keeper = projectKeeperSettingsSchema.safeParse(
-      view.draft ? { keeperSmith: view.draft } : {},
-    );
+    const smith = view.draft ?? view.catalog.keeperSmith;
+    const keeper = projectKeeperSettingsSchema.safeParse({
+      ...(smith ? { keeperSmith: smith } : {}),
+      ...(view.autonomyDraft === null
+        ? {}
+        : { keeperAutonomy: view.autonomyDraft }),
+    });
     if (!keeper.success) {
-      this.update(id, { message: "Select a valid configured Smith." });
+      this.update(id, { message: "Select valid Keeper settings." });
       return;
     }
     const original = view.catalog;
+    const intended = {
+      ...original,
+      ...keeper.data,
+      keeperSmith: keeper.data.keeperSmith,
+    };
     this.value.busy = id;
     this.emit();
     let sent = false;
@@ -198,7 +229,7 @@ export class ProjectKeeperSettingsOwner {
       const current = projection(await this.deps.read(), id);
       if (
         current.revision !== original.revision ||
-        current.keeperSmith !== original.keeperSmith
+        !sameKeeper(current, original)
       ) {
         this.update(id, {
           catalog: current,
@@ -258,7 +289,7 @@ export class ProjectKeeperSettingsOwner {
       const receipt = projection(envelope.data, id);
       if (
         receipt.revision !== original.revision + 1 ||
-        receipt.keeperSmith !== keeper.data.keeperSmith
+        !sameKeeper(receipt, intended)
       )
         throw Error(
           "Save answer did not match the intended revision and Keeper",
@@ -284,10 +315,11 @@ export class ProjectKeeperSettingsOwner {
           )
         )
           throw Error("Stale readback");
-        const changed = readback.keeperSmith !== keeper.data.keeperSmith;
+        const changed = !sameKeeper(readback, intended);
         this.update(id, {
           catalog: readback,
           draft: changed ? view.draft : null,
+          autonomyDraft: changed ? view.autonomyDraft : null,
           needsReview: changed,
           checked: changed,
           message: `Keeper settings read at revision ${readback.revision}.${changed ? " Values changed after the accepted save; compare and review again." : ""}`,

@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { writeOwnerOnly } from "../hearth/token";
 import { resolveCheckout } from "../ledger/workspace";
 import { projectCreateOriginalSchema } from "./create-protocol";
+import { keeperAutonomySchema } from "./project-keeper-protocol";
 import {
   createProjectStore,
   hashProjectCreateRequest,
@@ -582,7 +583,7 @@ test("an explicit project Keeper Smith is bound to the saved original and commit
   const changed = await store.updateKeeper(
     committedProject.id,
     committed.catalog.revision,
-    { keeperSmith: "codex-journeyman" },
+    { keeperSmith: "codex-journeyman", keeperAutonomy: "suggest-only" },
     () => {},
   );
   expect(createProjectStore(home).read().projects[0]?.keeperSmith).toBe(
@@ -996,6 +997,51 @@ test("a modified saved create original is a corrupt catalog and is never repaire
     }),
   ).rejects.toThrow();
   expect(readFileSync(file, "utf8")).toBe(corrupted);
+});
+
+test("Keeper autonomy persists without changing Smith or immutable creation history", async () => {
+  const { home, store, input } = fixture();
+  const created = await store.create(input, 0);
+  const project = created.projects[0]!;
+  const saved = await store.updateKeeper(
+    project.id,
+    1,
+    {
+      keeperSmith: "claude-master",
+      keeperAutonomy: "suggest-only",
+    },
+    () => {},
+  );
+  expect(createProjectStore(home).read().projects[0]?.keeperAutonomy).toBe(
+    "suggest-only",
+  );
+  expect(saved.projects[0]?.keeperSmith).toBe("claude-master");
+  await store.updateKeeper(
+    project.id,
+    2,
+    { keeperSmith: "codex-journeyman" },
+    () => {},
+  );
+  expect(store.read().projects[0]?.keeperAutonomy).toBe("suggest-only");
+  await expect(
+    store.updateKeeper(
+      project.id,
+      2,
+      { keeperAutonomy: "propose-for-approval" },
+      () => {},
+    ),
+  ).rejects.toMatchObject({ status: 409 });
+  expect(keeperAutonomySchema.safeParse("automatic").success).toBe(false);
+  expect(store.read().revision).toBe(3);
+  await store.updateKeeper(
+    project.id,
+    3,
+    { keeperSmith: "codex-journeyman", keeperAutonomy: "propose-for-approval" },
+    () => {},
+  );
+  expect(createProjectStore(home).read().projects[0]?.keeperAutonomy).toBe(
+    "propose-for-approval",
+  );
 });
 
 test("Keeper defaults persist with revision conflicts and configured validation", async () => {

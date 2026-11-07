@@ -3631,11 +3631,24 @@ test("Keeper default save rejects unconfigured and disabled Smiths without chang
     headers: h.headers(h.hearth.token),
     body: JSON.stringify({
       expectedRevision: 1,
-      keeper: { keeperSmith: "codex-journeyman" },
+      keeper: {
+        keeperSmith: "codex-journeyman",
+        keeperAutonomy: "suggest-only",
+      },
     }),
   });
   expect(response.status).toBe(200);
   expect(store.read().projects[0]?.keeperSmith).toBe("codex-journeyman");
+  expect(store.read().projects[0]?.keeperAutonomy).toBe("suggest-only");
+  const invalid = await fetch(h.api + "/projects/" + id + "/settings/keeper", {
+    method: "POST",
+    headers: h.headers(h.hearth.token),
+    body: JSON.stringify({
+      expectedRevision: 2,
+      keeper: { keeperAutonomy: "automatic" },
+    }),
+  });
+  expect(invalid.status).toBe(400);
   const stale = await fetch(h.api + "/projects/" + id + "/settings/keeper", {
     method: "POST",
     headers: h.headers(h.hearth.token),

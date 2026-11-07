@@ -70,8 +70,13 @@ test("Keeper default saves, reloads and conflicts while retaining the existing c
   await expect(choice).toBeFocused();
   await expect(choice).toHaveCSS("outline-style", "solid");
   await choice.selectOption("codex-journeyman");
+  const autonomy = section.getByRole("combobox", {
+    name: "Keeper autonomy",
+    exact: true,
+  });
+  await autonomy.selectOption("suggest-only");
   await section
-    .getByRole("button", { name: "Save Keeper default", exact: true })
+    .getByRole("button", { name: "Save Keeper settings", exact: true })
     .click();
   await expect(section.getByRole("status")).toContainText(
     "Keeper settings read at revision 2",
@@ -80,6 +85,8 @@ test("Keeper default saves, reloads and conflicts while retaining the existing c
   expect(readFileSync(journal, "utf8")).toBe(original);
   await reloadSettled(page);
   await expect(choice).toHaveValue("codex-journeyman");
+  await expect(autonomy).toHaveValue("suggest-only");
+  await expect(section).toContainText("Saved autonomy: Suggest only");
   await expect(section).toContainText(
     "Saved project default: codex-journeyman",
   );
@@ -97,12 +104,12 @@ test("Keeper default saves, reloads and conflicts while retaining the existing c
   );
   await choice.selectOption("claude-master");
   await section
-    .getByRole("button", { name: "Save Keeper default", exact: true })
+    .getByRole("button", { name: "Save Keeper settings", exact: true })
     .click();
   await expect(section).toContainText("The project changed before saving");
   await expect(choice).toHaveValue("claude-master");
   await expect(
-    section.getByRole("button", { name: "Save Keeper default", exact: true }),
+    section.getByRole("button", { name: "Save Keeper settings", exact: true }),
   ).toBeDisabled();
   expect(readFileSync(journal, "utf8")).toBe(original);
   await section.scrollIntoViewIfNeeded();

@@ -3410,7 +3410,13 @@ const ACTIONS: Record<string, ActionFixture> = {
   "POST /projects/:id/settings/keeper": {
     valid: {
       path: `/projects/${FIXTURE_PROJECT_ID}/settings/keeper`,
-      body: { expectedRevision: 1, keeper: { keeperSmith: "claude-master" } },
+      body: {
+        expectedRevision: 1,
+        keeper: {
+          keeperSmith: "claude-master",
+          keeperAutonomy: "suggest-only",
+        },
+      },
       status: 200,
       target: FIXTURE_PROJECT_ID,
     },
@@ -3428,7 +3434,13 @@ const ACTIONS: Record<string, ActionFixture> = {
     happened: async (h) => {
       expect(createProjectStore(h.home).read()).toMatchObject({
         revision: 2,
-        projects: [{ id: FIXTURE_PROJECT_ID, keeperSmith: "claude-master" }],
+        projects: [
+          {
+            id: FIXTURE_PROJECT_ID,
+            keeperSmith: "claude-master",
+            keeperAutonomy: "suggest-only",
+          },
+        ],
       });
     },
   },

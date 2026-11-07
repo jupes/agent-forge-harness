@@ -1,8 +1,13 @@
 import { expect, test } from "bun:test";
+import type { KeeperAutonomy } from "../../../types/projects";
 import { ProjectKeeperSettingsOwner } from "./project-keeper-settings-client";
 
 const id = "project-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-const catalog = (revision: number, keeperSmith = "claude-master") => ({
+const catalog = (
+  revision: number,
+  keeperSmith = "claude-master",
+  keeperAutonomy?: KeeperAutonomy,
+) => ({
   version: 1,
   revision,
   projects: [
@@ -13,8 +18,34 @@ const catalog = (revision: number, keeperSmith = "claude-master") => ({
       icon: "D",
       updatedAt: "2026-11-06T00:00:00.000Z",
       keeperSmith,
+      ...(keeperAutonomy ? { keeperAutonomy } : {}),
     },
   ],
+});
+test("autonomy-only edit preserves the saved Smith and verifies both receipt fields", async () => {
+  let current = catalog(1);
+  const owner = new ProjectKeeperSettingsOwner({
+    read: async () => current,
+    post: async (_path, body) => {
+      expect(body).toEqual({
+        expectedRevision: 1,
+        keeper: {
+          keeperSmith: "claude-master",
+          keeperAutonomy: "suggest-only",
+        },
+      });
+      current = catalog(2, "claude-master", "suggest-only");
+      return Response.json({ ok: true, data: current, error: null });
+    },
+  });
+  owner.adopt(id, current);
+  owner.setAutonomyDraft(id, "suggest-only");
+  await owner.save(id);
+  expect(owner.snapshot().projects[id]?.catalog?.keeperAutonomy).toBe(
+    "suggest-only",
+  );
+  expect(owner.snapshot().projects[id]?.autonomyDraft).toBeNull();
+  expect(owner.snapshot().projects[id]?.needsReview).toBe(false);
 });
 test("Keeper save reads current state and verifies its receipt before readback", async () => {
   let current = catalog(1);
@@ -77,10 +108,11 @@ test("Keeper lost response survives reload as unknown and a matching read proves
   const owner = new ProjectKeeperSettingsOwner(deps);
   owner.adopt(id, current);
   owner.setDraft(id, "codex-journeyman");
+  owner.setAutonomyDraft(id, "suggest-only");
   await owner.save(id);
   expect(pending[id]).toBe(1);
   expect(posts).toBe(1);
-  current = catalog(2, "codex-journeyman");
+  current = catalog(2, "codex-journeyman", "suggest-only");
   const reopened = new ProjectKeeperSettingsOwner(deps);
   await reopened.review(id);
   expect(reopened.snapshot().projects[id]?.message).toContain(
@@ -106,6 +138,30 @@ test("Keeper malformed success never becomes a confirmed save", async () => {
     "outcome is unknown",
   );
   expect(owner.snapshot().projects[id]?.needsReview).toBe(true);
+});
+test.each([
+  "propose-for-approval",
+  "automatic",
+])("autonomy save refuses a mismatched or invalid receipt mode: %s", async (mode) => {
+  const owner = new ProjectKeeperSettingsOwner({
+    read: async () => catalog(1),
+    post: async () =>
+      Response.json({
+        ok: true,
+        data: {
+          ...catalog(2),
+          projects: [{ ...catalog(2).projects[0], keeperAutonomy: mode }],
+        },
+        error: null,
+      }),
+  });
+  owner.adopt(id, catalog(1));
+  owner.setAutonomyDraft(id, "suggest-only");
+  await owner.save(id);
+  expect(owner.snapshot().projects[id]?.needsReview).toBe(true);
+  expect(owner.snapshot().projects[id]?.message).toContain(
+    "outcome is unknown",
+  );
 });
 
 test("a refused new intent retains an earlier unresolved Keeper request", async () => {
