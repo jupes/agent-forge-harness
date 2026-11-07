@@ -21,6 +21,7 @@ import { readKnowledgeInventory } from "./knowledge-store";
 import type { ProjectDeletionStatus } from "./project-lifecycle-protocol";
 import { workspaceKey } from "./scope";
 import { isProjectId } from "./store";
+import { readWorktreeCleanupInventory } from "./worktree-cleanup-store";
 
 type Inventory = Pick<ProjectDeletionStatus, "state" | "reasons">;
 const activeTurn = (state: ConversationState) =>
@@ -461,6 +462,14 @@ export function readProjectActivityInventory(
       reasons.push(
         "A native terminal handoff is open or its outcome is unknown.",
       );
+  });
+  source("Worktree cleanup originals", () => {
+    for (const row of readWorktreeCleanupInventory(home)) {
+      if (row.original.projectId !== project.id) continue;
+      if (row.phase === "unknown")
+        unknown.push("A worktree cleanup outcome is unknown.");
+      else reasons.push("A worktree cleanup original remains unresolved.");
+    }
   });
   source("Worktree creation receipts", () => {
     if (
