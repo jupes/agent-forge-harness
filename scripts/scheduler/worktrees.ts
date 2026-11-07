@@ -1129,17 +1129,33 @@ function createWorktreeAttempt(
 export function removeWorktree(
   main: string,
   id: string,
-  options: { force: boolean; expectedRecord?: WorktreeRecord },
+  options: {
+    force: boolean;
+    expectedRecord?: WorktreeRecord;
+    expectedHead?: string;
+  },
   partial: Partial<RegistryDeps> = {},
 ): Outcome<WorktreeRecord> {
+  const requestedRecord = options.expectedRecord;
+  const reviewed = requestedRecord ? { ...requestedRecord } : undefined;
+  const expectedHead = options.expectedHead;
+  const force = options.force;
+  const commit = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/;
+  if (
+    ("expectedRecord" in options || "expectedHead" in options) &&
+    (!reviewed ||
+      force !== false ||
+      typeof expectedHead !== "string" ||
+      !commit.test(expectedHead))
+  )
+    return no(
+      "Reviewed cleanup requires an exact record and commit, and never forces removal",
+    );
   const deps = withDefaults(partial);
   const top = topOf(main, deps.git);
   if (!top.ok) return top;
   if (top.top === null) return no(`${main} is not the top of a git repository`);
   const root = top.top;
-  const reviewed = options.expectedRecord;
-  if (reviewed && options.force)
-    return no("Reviewed cleanup never forces removal");
   const strict = reviewed ? readStrictWorktreeRegistry(root) : null;
   if (strict && !strict.ok) return strict;
   const record = (strict?.ok ? strict.value : readCache(root)).find(
@@ -1191,6 +1207,78 @@ export function removeWorktree(
     return dropped.ok ? { ok: true, value: record } : dropped;
   };
   const listedNow = (): Outcome<boolean> => {
+    if (reviewed) {
+      const result = deps.git(
+        ["worktree", "list", "--porcelain", "-z"],
+        root,
+        READ_MS,
+      );
+      const output = result.stdout;
+      if (
+        result.status !== 0 ||
+        output.length > MAX_CACHE_BYTES ||
+        !output.endsWith("\0\0")
+      )
+        return no("The reviewed Git worktree inventory is incomplete");
+      const malformed = output
+        .slice(0, -2)
+        .split("\0\0")
+        .some((block) => {
+          const fields = block.split("\0");
+          const keys = fields.map((field) => field.split(" ", 1)[0]);
+          const bare = keys.includes("bare"),
+            detached = keys.includes("detached");
+          return (
+            !fields[0]?.startsWith("worktree ") ||
+            new Set(keys).size !== keys.length ||
+            fields.some((field) => {
+              const split = field.indexOf(" "),
+                key = split < 0 ? field : field.slice(0, split);
+              const value = split < 0 ? "" : field.slice(split + 1);
+              if (key === "worktree") return !isAbsolute(value);
+              if (key === "HEAD") return !commit.test(value);
+              if (key === "branch")
+                return !value.startsWith("refs/heads/") || value.length <= 11;
+              if (key === "bare" || key === "detached") return split >= 0;
+              return key !== "locked" && key !== "prunable";
+            }) ||
+            (bare
+              ? keys.includes("HEAD") || keys.includes("branch") || detached
+              : !keys.includes("HEAD") || keys.includes("branch") === detached)
+          );
+        });
+      if (malformed)
+        return no("The reviewed Git worktree inventory is malformed");
+      const matches = parsePorcelainZ(output).filter(
+        (row) => registryPathKey(row.path) === registryPathKey(record.path),
+      );
+      const found = matches[0];
+      if (
+        matches.length !== 1 ||
+        !found ||
+        found.bare ||
+        found.detached ||
+        found.locked ||
+        found.prunable ||
+        found.branch !== reviewed.branch ||
+        found.head !== expectedHead
+      )
+        return no("The reviewed worktree branch or commit changed");
+      const head = deps.git(
+        ["rev-parse", "--verify", "HEAD"],
+        record.path,
+        READ_MS,
+      );
+      if (
+        head.status !== 0 ||
+        head.stdout.length > 128 ||
+        head.stdout.trim() !== expectedHead
+      )
+        return no(
+          "The reviewed worktree HEAD could not be independently verified",
+        );
+      return { ok: true, value: true };
+    }
     const listed = gitWorktrees(root, deps.git);
     if (!listed.ok) return listed;
     const key = comparablePath(record.path);
@@ -1236,11 +1324,20 @@ export function removeWorktree(
       return no("Reviewed cleanup directory identity could not be rechecked");
     }
   }
+  if (reviewed) {
+    const fresh = readStrictWorktreeRegistry(root);
+    if (!fresh.ok || !sameReviewed(fresh.value.find((row) => row.id === id)))
+      return no(
+        "The reviewed worktree registry identity changed before removal",
+      );
+    const finalIdentity = listedNow();
+    if (!finalIdentity.ok) return finalIdentity;
+  }
   const removed = deps.git(
     [
       "worktree",
       "remove",
-      ...(options.force ? ["--force"] : []),
+      ...(reviewed ? [] : force ? ["--force"] : []),
       "--",
       record.path,
     ],
@@ -1251,7 +1348,7 @@ export function removeWorktree(
   const after = listedNow();
   if (after.ok && !after.value && !reviewed) return drop();
   return no(
-    `git worktree remove refused ${record.path}: ${said(removed)}${options.force ? "" : " (it has changes or is locked; nothing was removed. --force discards them)"}`,
+    `git worktree remove refused ${record.path}: ${said(removed)}${force ? "" : " (it has changes or is locked; nothing was removed. --force discards them)"}`,
   );
 }
 

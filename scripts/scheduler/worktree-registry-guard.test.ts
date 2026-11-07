@@ -1,5 +1,12 @@
 import { afterEach, expect, test } from "bun:test";
-import { mkdirSync, realpathSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { scratchDirs } from "../test-scratch";
 import {
@@ -25,6 +32,251 @@ function fixture() {
     writeFileSync(join(main, "trees", ".state.json"), JSON.stringify(value));
   return { main, row, save };
 }
+test.each([
+  "branch",
+  "commit",
+  "foreign",
+] as const)("reviewed cleanup refuses clean-status %s drift before Git removal", (drift) => {
+  const f = fixture();
+  mkdirSync(f.row.path);
+  f.save({ worktrees: [f.row] });
+  const userFile = join(f.row.path, "owned.txt"),
+    external = join(f.main, "external.txt"),
+    cache = join(f.main, "trees", ".state.json");
+  writeFileSync(userFile, "retained tracked work");
+  writeFileSync(external, "retained external work");
+  const cacheBytes = readFileSync(cache, "utf8"),
+    cacheIdentity = lstatSync(cache, { bigint: true });
+  const expectedHead = "a".repeat(40);
+  let branch = f.row.branch,
+    head = expectedHead,
+    removals = 0;
+  let foreign = false;
+  const asked: string[][] = [];
+  const git: GitRun = (args) => {
+    asked.push([...args]);
+    if (args.includes("--show-toplevel"))
+      return { status: 0, stdout: f.main, stderr: "" };
+    if (args[0] === "status") {
+      if (drift === "branch") branch = "feat/switched";
+      else if (drift === "commit") head = "b".repeat(40);
+      else foreign = true;
+      return { status: 0, stdout: "", stderr: "" };
+    }
+    if (args[1] === "list")
+      return {
+        status: 0,
+        stdout:
+          `worktree ${f.row.path}\0HEAD ${head}\0branch refs/heads/${branch}\0\0` +
+          (foreign ? "worktree /foreign\0\0" : ""),
+        stderr: "",
+      };
+    if (args[0] === "rev-parse" && args.at(-1) === "HEAD")
+      return { status: 0, stdout: head, stderr: "" };
+    if (args[1] === "remove") {
+      removals++;
+      return { status: 0, stdout: "", stderr: "" };
+    }
+    throw Error("Unexpected fake Git call");
+  };
+  const reviewed = { force: false, expectedRecord: f.row, expectedHead };
+  const result = removeWorktree(f.main, f.row.id, reviewed, { git });
+  expect(removals).toBe(0);
+  expect(result.ok).toBe(false);
+  expect(readFileSync(cache, "utf8")).toBe(cacheBytes);
+  const after = lstatSync(cache, { bigint: true });
+  expect([after.dev, after.ino]).toEqual([
+    cacheIdentity.dev,
+    cacheIdentity.ino,
+  ]);
+  expect(readFileSync(userFile, "utf8")).toBe("retained tracked work");
+  expect(readFileSync(external, "utf8")).toBe("retained external work");
+  expect(
+    asked.some(
+      ([command, action]) =>
+        command === "branch" ||
+        command === "stash" ||
+        (command === "worktree" && action === "prune"),
+    ),
+  ).toBe(false);
+});
+
+test.each([
+  "initial identity",
+  "status force",
+] as const)("reviewed cleanup does not adopt mutable %s options", (mutation) => {
+  const f = fixture();
+  mkdirSync(f.row.path);
+  f.save({ worktrees: [f.row] });
+  const reviewed = {
+    force: false,
+    expectedRecord: f.row,
+    expectedHead: "a".repeat(40),
+  };
+  const cache = join(f.main, "trees", ".state.json");
+  let expectedCache = readFileSync(cache, "utf8");
+  let branch = f.row.branch,
+    head = reviewed.expectedHead,
+    removals = 0,
+    forced = false;
+  const git: GitRun = (args) => {
+    if (args.includes("--show-toplevel")) {
+      if (mutation === "initial identity") {
+        branch = reviewed.expectedRecord.branch = "feat/substitute";
+        head = reviewed.expectedHead = "b".repeat(40);
+        f.save({ worktrees: [reviewed.expectedRecord] });
+        expectedCache = readFileSync(cache, "utf8");
+      }
+      return { status: 0, stdout: f.main, stderr: "" };
+    }
+    if (args[0] === "status") {
+      if (mutation === "status force") reviewed.force = true;
+      return { status: 0, stdout: "", stderr: "" };
+    }
+    if (args[1] === "list")
+      return {
+        status: 0,
+        stdout: `worktree ${f.row.path}\0HEAD ${head}\0branch refs/heads/${branch}\0\0`,
+        stderr: "",
+      };
+    if (args[0] === "rev-parse" && args.at(-1) === "HEAD")
+      return { status: 0, stdout: head, stderr: "" };
+    if (args[1] === "remove") {
+      removals++;
+      forced = args.includes("--force");
+      return { status: 0, stdout: "", stderr: "" };
+    }
+    throw Error("Unexpected fake Git call");
+  };
+  const result = removeWorktree(f.main, f.row.id, reviewed, { git });
+  expect(forced).toBe(false);
+  if (mutation === "initial identity") {
+    expect(removals).toBe(0);
+    expect(result.ok).toBe(false);
+    expect(readFileSync(cache, "utf8")).toBe(expectedCache);
+  }
+});
+
+test("reviewed cleanup validates complete Git evidence and explicit review options", () => {
+  const f = fixture();
+  mkdirSync(f.row.path);
+  f.save({ worktrees: [f.row] });
+  const cache = join(f.main, "trees", ".state.json");
+  const head = "a".repeat(40);
+  const inventory = (value = head) =>
+    `worktree ${f.row.path}\0HEAD ${value}\0branch refs/heads/${f.row.branch}\0\0`;
+  let listing = inventory(),
+    directHead = head,
+    removals = 0;
+  let listStatus: number | null = 0;
+  let onStatus = () => {};
+  let retainedCache = readFileSync(cache, "utf8");
+  const git: GitRun = (args) => {
+    if (args.includes("--show-toplevel"))
+      return { status: 0, stdout: f.main, stderr: "" };
+    if (args[1] === "list")
+      return { status: listStatus, stdout: listing, stderr: "" };
+    if (args[0] === "status") {
+      onStatus();
+      return { status: 0, stdout: "", stderr: "" };
+    }
+    if (args[0] === "rev-parse" && args.at(-1) === "HEAD")
+      return { status: 0, stdout: directHead, stderr: "" };
+    if (args[1] === "remove") {
+      removals++;
+      expect(args).not.toContain("--force");
+      return { status: 0, stdout: "", stderr: "" };
+    }
+    throw Error("Unexpected fake Git call");
+  };
+  const reviewed = { force: false, expectedRecord: f.row, expectedHead: head };
+  const refuse = (
+    label: string,
+    options: Parameters<typeof removeWorktree>[2] = reviewed,
+  ) => {
+    const result = removeWorktree(f.main, f.row.id, options, { git });
+    expect({ label, ok: result.ok, removals }).toEqual({
+      label,
+      ok: false,
+      removals: 0,
+    });
+    expect(readFileSync(cache, "utf8")).toBe(retainedCache);
+  };
+  const invalidOptions: Parameters<typeof removeWorktree>[2][] = [
+    { force: false, expectedHead: head },
+    { force: false, expectedRecord: f.row },
+    { ...reviewed, force: true },
+    ...[
+      "",
+      "a".repeat(39),
+      "a".repeat(41),
+      "a".repeat(63),
+      "a".repeat(65),
+      "A".repeat(40),
+      "g".repeat(40),
+    ].map((expectedHead) => ({ ...reviewed, expectedHead })),
+  ];
+  invalidOptions.forEach((options, index) => {
+    refuse(`invalid options ${index}`, options);
+  });
+  const invalidInventories = [
+    "",
+    inventory().slice(0, -1),
+    inventory() + inventory(),
+    inventory().replace(`HEAD ${head}\0`, ""),
+    inventory().replace(`HEAD ${head}\0`, `HEAD ${head}\0HEAD ${head}\0`),
+    inventory().replace(`branch refs/heads/${f.row.branch}\0`, ""),
+    inventory().replace(`branch refs/heads/${f.row.branch}`, "detached"),
+    inventory().replace(
+      `HEAD ${head}\0branch refs/heads/${f.row.branch}`,
+      "bare",
+    ),
+    inventory().replace("\0\0", "\0locked review\0\0"),
+    inventory().replace("\0\0", "\0prunable missing\0\0"),
+    inventory().replace("\0\0", "\0unsupported evidence\0\0"),
+    inventory() + "worktree /foreign\0\0",
+    inventory() +
+      `worktree relative\0HEAD ${head}\0branch refs/heads/foreign\0\0`,
+    inventory() + `worktree /foreign\0bare\0branch refs/heads/foreign\0\0`,
+  ];
+  invalidInventories.forEach((value, index) => {
+    listing = value;
+    refuse(`invalid inventory ${index}`);
+  });
+  listing = inventory();
+  for (const status of [1, null]) {
+    listStatus = status;
+    refuse(`failed inventory ${status}`);
+  }
+  listStatus = 0;
+  directHead = "b".repeat(40);
+  refuse("independent HEAD disagrees");
+  directHead = head;
+  onStatus = () => {
+    directHead = "b".repeat(40);
+  };
+  refuse("independent HEAD advances during clean status");
+  directHead = head;
+  onStatus = () => {
+    f.save({ worktrees: [{ ...f.row, branch: "feat/replacement" }] });
+    retainedCache = readFileSync(cache, "utf8");
+  };
+  refuse("registry changes during clean status");
+  onStatus = () => {};
+  for (const width of [40, 64]) {
+    f.save({ worktrees: [f.row] });
+    const expectedHead = "a".repeat(width);
+    listing = inventory(expectedHead);
+    directHead = expectedHead;
+    const before = removals;
+    expect(
+      removeWorktree(f.main, f.row.id, { ...reviewed, expectedHead }, { git })
+        .ok,
+    ).toBe(true);
+    expect(removals).toBe(before + 1);
+  }
+});
+
 test("strict cleanup inventory retains complete ownership and refuses ambiguous registry data", () => {
   const f = fixture();
   expect(readStrictWorktreeRegistry(f.main)).toEqual({ ok: true, value: [] });
@@ -93,7 +345,7 @@ test("strict registry refuses an outside path even when a child alias resolves t
     removeWorktree(
       f.main,
       f.row.id,
-      { force: false, expectedRecord: f.row },
+      { force: false, expectedRecord: f.row, expectedHead: "a".repeat(40) },
       { git },
     ).ok,
   ).toBe(false);
@@ -110,6 +362,8 @@ test("reviewed cleanup refuses missing, changed, ignored-dirty targets before an
   const git: GitRun = (args) => {
     if (args.includes("--show-toplevel"))
       return { status: 0, stdout: f.main, stderr: "" };
+    if (args[0] === "rev-parse" && args.at(-1) === "HEAD")
+      return { status: 0, stdout: "a".repeat(40), stderr: "" };
     if (args[0] === "status") {
       expect(args).toContain("--ignored=matching");
       expect(args).toContain("--untracked-files=all");
@@ -133,7 +387,7 @@ test("reviewed cleanup refuses missing, changed, ignored-dirty targets before an
     removeWorktree(
       f.main,
       f.row.id,
-      { force: false, expectedRecord: f.row },
+      { force: false, expectedRecord: f.row, expectedHead: "a".repeat(40) },
       { git },
     );
   listed = false;
