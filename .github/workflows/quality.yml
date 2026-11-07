@@ -36,11 +36,6 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - run: bun run lint
-      - name: Diagnose native path admission
-        timeout-minutes: 1
-        run: |
-          bun test scripts/native-realpath.test.ts scripts/hearth/routes/session-scope.test.ts scripts/council/project-original-store.test.ts --timeout 15000
-          bun test scripts/scheduler/worktrees.test.ts --test-name-pattern "a literal backslash sibling does not retain a POSIX target path" --timeout 15000
       - run: bun test scripts apps/desktop/src --timeout 15000
 
   # The unit gates again on Windows, where the owner and the command center
