@@ -1,9 +1,17 @@
 import { afterEach, expect, test } from "bun:test";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readdirSync, readFileSync } from "node:fs";
+import {
+  existsSync,
+  linkSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+} from "node:fs";
 import { join } from "node:path";
+import type { TerminalHandoffAttempt } from "../../types/session-terminal-handoff";
 import type { SessionTurnSnapshot } from "../../types/session-turn";
 import { ConversationError } from "../conversations/error";
+import { writeOwnerOnly } from "../hearth/token";
 import {
   type launchWindowsConsole,
   type NativeConsoleChild,
@@ -12,7 +20,10 @@ import {
   NativeConsoleNotStartedError,
 } from "../providers/native-console";
 import { scratchDirs } from "../test-scratch";
-import { createSessionTerminalHandoff } from "./terminal-handoff";
+import {
+  createSessionTerminalHandoff,
+  readTerminalHandoffInventory,
+} from "./terminal-handoff";
 
 const scratch = scratchDirs();
 const services: Array<ReturnType<typeof createSessionTerminalHandoff>> = [];
@@ -84,6 +95,45 @@ function fixture(launch?: typeof launchWindowsConsole) {
     service,
   };
 }
+
+test("terminal inventory accepts a protected initialized namespace without a journal and preserves malformed or active evidence", async () => {
+  const f = fixture(() => {
+    throw Error("No native launcher is permitted in this inventory case");
+  });
+  expect(await f.service.read(f.projectId, f.sessionId)).toEqual({
+    attempt: null,
+  });
+  expect(
+    await f.service.send(f.projectId, f.sessionId, async () => "sent"),
+  ).toBe("sent");
+  const parent = join(f.home, "session-terminal-handoffs"),
+    name = readdirSync(parent)[0];
+  if (!name || !/^[a-f0-9]{32}$/.test(name))
+    throw Error("Expected one protected fixture namespace");
+  const namespace = join(parent, name),
+    file = join(namespace, "attempts.json"),
+    before = readdirSync(namespace).sort();
+  expect(existsSync(file)).toBe(false);
+  expect(before.length).toBeGreaterThan(0);
+  expect(readTerminalHandoffInventory(f.home, [namespace])).toEqual([]);
+  expect(readdirSync(namespace).sort()).toEqual(before);
+  writeOwnerOnly(file, "{malformed");
+  expect(() => readTerminalHandoffInventory(f.home, [namespace])).toThrow();
+  const attempt: TerminalHandoffAttempt = {
+    projectId: f.projectId,
+    sessionId: f.sessionId,
+    turnRequestId: f.turnRequestId,
+    requestId: randomUUID(),
+    phase: "opening",
+    startedAt: new Date().toISOString(),
+    endedAt: null,
+    auditEventId: 1,
+  };
+  writeOwnerOnly(file, JSON.stringify({ version: 1, attempts: [attempt] }));
+  expect(readTerminalHandoffInventory(f.home, [namespace])).toEqual([attempt]);
+  linkSync(file, join(namespace, "linked-copy.json"));
+  expect(() => readTerminalHandoffInventory(f.home, [namespace])).toThrow();
+});
 
 test("an opened terminal is not replayed after service restart and holds app sends", async () => {
   const invoked: NativeConsoleLaunchOptions[] = [];
