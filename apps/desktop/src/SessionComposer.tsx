@@ -25,7 +25,10 @@ import {
   sessionStartBody,
   validateSessionAttachments,
 } from "./session-composer";
-import type { SessionComposerOwner } from "./session-composer-owner";
+import {
+  type SessionComposerOwner,
+  sessionStartFormReady,
+} from "./session-composer-owner";
 import "./session.css";
 import { CodexChatComposer } from "./CodexChatComposer";
 import { CodexTaskComposer } from "./CodexTaskComposer";
@@ -261,11 +264,7 @@ export function ClaudeSessionComposer({
   }
   const busy = checking || attaching || view.starting;
   const identityReady =
-    client.purpose === "keeper-proposal" ||
-    (!!view.identityPage &&
-      !view.identityLoading &&
-      view.identityGeneration !== null &&
-      view.identityGeneration !== undefined);
+    client.purpose === "keeper-proposal" || sessionStartFormReady(view);
   const canStart =
     claudeReadiness?.authentication.mode !== "signed-out" &&
     writesAllowed &&

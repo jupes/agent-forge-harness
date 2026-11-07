@@ -19,6 +19,7 @@ import { providerUsageLabel, readinessLabel } from "./providers-model";
 import type { SessionComposerProps } from "./SessionComposer";
 import { SessionStartIdentityControls } from "./SessionStartIdentityControls";
 import { chooseSessionSmith, sessionAttachments } from "./session-composer";
+import { sessionStartFormReady } from "./session-composer-owner";
 
 /** Explicit scoped native Gemini CLI Tasks; untouched native defaults remain omitted. */
 export function GeminiTaskComposer({
@@ -132,10 +133,7 @@ export function GeminiTaskComposer({
   const busy = checking || attaching || view.starting;
   const pending =
     !!view.pendingStart || !!view.startIdentity || !!view.startIdentityError;
-  const identityReady =
-    !!view.identityPage &&
-    !view.identityLoading &&
-    view.identityGeneration !== null;
+  const identityReady = sessionStartFormReady(view);
   let recoveryInput: OwnedSessionStartInput | null = null;
   let validation =
     "Check supported options before starting. This check starts no model.";
