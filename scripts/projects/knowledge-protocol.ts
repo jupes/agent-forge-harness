@@ -162,6 +162,20 @@ export const knowledgeReceiptSchema = z
   })
   .strict();
 export type KnowledgeReceipt = z.infer<typeof knowledgeReceiptSchema>;
+export const knowledgeStatusSchema = z
+  .object({
+    projectId: z.string().regex(/^project-[a-f0-9-]{36}$/),
+    catalogRevision: revision,
+    repositoryKey: hash,
+    name: z.string().min(1).max(80),
+    state: z.enum(["missing", "present"]),
+    ageDays: z.number().int().nonnegative().nullable(),
+    freshness: z.enum(["missing", "current", "aging", "stale"]),
+    asOf: z.iso.datetime(),
+    archived: z.boolean(),
+  })
+  .strict();
+export type KnowledgeStatus = z.infer<typeof knowledgeStatusSchema>;
 
 const record = (value: unknown): value is Record<string, unknown> =>
   Boolean(value) &&

@@ -50,6 +50,7 @@ interface Options {
   >;
   smithName?: (project: ProjectRecord) => string;
   publish?: typeof publishKnowledgeCandidate;
+  store?: ReturnType<typeof createKnowledgeStore>;
   now?: () => Date;
 }
 const same = (a: unknown, b: unknown) =>
@@ -60,7 +61,7 @@ function conflict(message: string): never {
   throw new ConversationError(409, message);
 }
 export function createKnowledgeService(options: Options) {
-  const store = createKnowledgeStore(options.home),
+  const store = options.store ?? createKnowledgeStore(options.home),
     projects = createProjectStore(options.home),
     now = options.now ?? (() => new Date());
   const generator =
@@ -262,7 +263,7 @@ export function createKnowledgeService(options: Options) {
       }
       return row.receipt;
     });
-  return {
+  const api = {
     receipt(projectId: string, requestId: string) {
       return requireOriginal(projectId, requestId).receipt;
     },
@@ -329,21 +330,32 @@ export function createKnowledgeService(options: Options) {
           conflict("This knowledge UUID belongs to another immutable original");
         return previous.receipt;
       }
-      const repository = target();
-      if (request.repositoryKey !== repository.repositoryKey)
-        conflict(
-          "The selected repository is not this host's served repository",
-        );
-      const { project } = projectAt(
-          projectId,
-          repository,
-          request.expectedRevision,
-        ),
-        prior = readKnowledgeTarget(repository),
-        source = collectKnowledgeSource(repository, options.git),
-        ready: PreparedKnowledgeGenerator = await generator.prepare(
-          nameOf(project),
-        );
+      const { repository, project, prior, source, ready } = await (async () => {
+        try {
+          const repository = target();
+          if (request.repositoryKey !== repository.repositoryKey)
+            conflict(
+              "The selected repository is not this host's served repository",
+            );
+          const { project } = projectAt(
+              projectId,
+              repository,
+              request.expectedRevision,
+            ),
+            prior = readKnowledgeTarget(repository),
+            source = collectKnowledgeSource(repository, options.git),
+            ready: PreparedKnowledgeGenerator = await generator.prepare(
+              nameOf(project),
+            );
+          return { repository, project, prior, source, ready };
+        } catch (error) {
+          if (error instanceof ConversationError) throw error;
+          throw new ConversationError(
+            409,
+            "The served source or required tool-free Claude CLI profile is unavailable. No new knowledge original was reserved and no model was dispatched. Check repository access, the enabled Claude Keeper Smith and installed CLI capabilities before trying a new reviewed request.",
+          );
+        }
+      })();
       const original = checkedKnowledgeOriginal({
         projectId,
         request,
@@ -388,6 +400,7 @@ export function createKnowledgeService(options: Options) {
             candidate: null,
             publication: null,
             attemptedAt: null,
+            generationVerifiedAt: null,
             candidateSavedAt: null,
             publicationAttemptedAt: null,
             receipt: knowledgeReceiptSchema.parse({
@@ -418,15 +431,26 @@ export function createKnowledgeService(options: Options) {
       if (!admitted)
         return requireOriginal(projectId, request.requestId).receipt;
       try {
-        const generated = await generator.generate(ready, source),
-          candidate = buildKnowledgeYaml({
-            generated,
-            prior: prior.prior,
-            name: repository.name,
-            sourceCommit: source.sourceCommit,
-            evidenceHash: source.evidenceHash,
-            generatedAt: now().toISOString(),
-          });
+        const generated = await generator.generate(ready, source);
+        await store.locked(async (state, save) => {
+          const row = store.find(state, projectId, request.requestId);
+          if (
+            !row ||
+            row.receipt.state !== "attempted" ||
+            row.original.requestHash !== requestHash
+          )
+            conflict("The saved knowledge generation owner changed");
+          row.generationVerifiedAt = now().toISOString();
+          save();
+        });
+        const candidate = buildKnowledgeYaml({
+          generated,
+          prior: prior.prior,
+          name: repository.name,
+          sourceCommit: source.sourceCommit,
+          evidenceHash: source.evidenceHash,
+          generatedAt: now().toISOString(),
+        });
         await store.locked(async (state, save) => {
           const row = store.find(state, projectId, request.requestId);
           if (
@@ -453,15 +477,44 @@ export function createKnowledgeService(options: Options) {
               "Knowledge original unavailable; no generation retry is allowed",
             );
           if (row.receipt.state === "attempted") {
-            row.receipt.state = "unknown";
+            row.receipt.state =
+              row.generationVerifiedAt === null ? "unknown" : "failed";
             row.receipt.message =
-              "Generation or candidate persistence could not be confirmed. No repository output was authorized, and the model will not be run again for this original.";
+              row.generationVerifiedAt === null
+                ? "Generation or candidate persistence could not be confirmed. No repository output was authorized, and the model will not be run again for this original."
+                : "Generation completed, but a complete supported candidate could not be saved. The repository file was retained. This original will not run again; review the source or legacy knowledge before a new explicit refresh.";
             save();
           }
           return row.receipt;
         });
       }
       return publish(projectId, request.requestId);
+    },
+  };
+  return {
+    ...api,
+    async refresh(projectId: string, input: KnowledgeRefreshRequest) {
+      const request = knowledgeRefreshRequestSchema.parse(input);
+      try {
+        return await api.refresh(projectId, request);
+      } catch (error) {
+        let saved: KnowledgeRow | undefined;
+        try {
+          saved = store.read(projectId, request.requestId);
+        } catch {
+          throw new ConversationError(
+            503,
+            "The saved knowledge owner could not be read. Retain this exact original; no generation or publication will be repeated automatically.",
+          );
+        }
+        if (
+          saved &&
+          saved.original.requestHash ===
+            knowledgeOperationHash(projectId, request)
+        )
+          return saved.receipt;
+        throw error;
+      }
     },
   };
 }

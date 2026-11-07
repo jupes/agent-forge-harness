@@ -26,6 +26,7 @@ import type { KeeperOperatorPost } from "../../keeper/operator-post";
 import type { KeeperRuntime } from "../../keeper/recovery-runtime";
 import type { AppendResult } from "../../ledger/append";
 import { latestEventId, queryEvents } from "../../ledger/query";
+import type { createKnowledgeService } from "../../projects/knowledge-service";
 import type { createRepositoryOnboarding } from "../../projects/repository-onboarding";
 import { createProjectStore } from "../../projects/store";
 import type { ProviderInspector } from "../../providers/inspect";
@@ -79,6 +80,7 @@ import { projectBeadWriteRoutes } from "./project-bead-writes";
 import { projectBeadsRoute } from "./project-beads";
 import { createProjectCheckpointReviewRoutes } from "./project-checkpoint-reviews";
 import { createProjectCouncilRoutes } from "./project-council";
+import { createProjectKnowledgeRoutes } from "./project-knowledge";
 import { projectOverviewRoute } from "./project-overview";
 import { createProjectRunRoutes } from "./project-runs";
 import { projectShiftOptionsRoute, projectShiftRoutes } from "./project-shifts";
@@ -103,6 +105,7 @@ import { smithVerificationRoute } from "./smith-verification";
 type CouncilService = ReturnType<typeof createCouncilService>;
 
 export interface OperatorDeps extends ReadDeps {
+  projectKnowledge: ReturnType<typeof createKnowledgeService>;
   providerInspector: ProviderInspector;
   providerLogin: ProviderLoginService;
   sessionTerminalEnvironment?: Record<string, string | undefined>;
@@ -414,6 +417,7 @@ export interface OperatorTable {
 }
 
 export function operatorRoutes(deps: OperatorDeps): OperatorTable {
+  const knowledge = createProjectKnowledgeRoutes(deps.projectKnowledge);
   const { sessions, runs, run, events, reservations, scoreboard } =
     ledgerReads(deps);
   const { queue, smiths, config, worktrees, eligibility, readEligible } =
@@ -588,6 +592,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     scoreboard,
     projects,
     ...inboxDispositions.reads,
+    ...knowledge.reads,
     projectRepositoriesRead,
     projectBudgetRead,
     deletionStatus,
@@ -679,6 +684,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       conversations.events,
       ownedSessions.events,
       ...actions(deps),
+      ...knowledge.actions,
       ...inboxDispositions.actions,
       ...smithCreates.actions,
       ...smithEdits.actions,

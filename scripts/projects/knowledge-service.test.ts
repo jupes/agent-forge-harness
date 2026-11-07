@@ -1,6 +1,13 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  realpathSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
+import { ConversationError } from "../conversations/error";
 import { ensurePrivateHome } from "../hearth/home-guard";
 import { writeOwnerOnly } from "../hearth/token";
 import { withQueueLock } from "../scheduler/queue-lock";
@@ -62,7 +69,7 @@ const generated = {
   recent_changes: [],
 };
 function fixture() {
-  const base = scratch.make("knowledge-service-"),
+  const base = realpathSync.native(scratch.make("knowledge-service-")),
     root = join(base, "alpha"),
     home = join(base, "home");
   mkdirSync(join(root, ".git"), { recursive: true });
@@ -421,4 +428,100 @@ test("a profile change after parent anchors are saved can retire the never-attem
   expect(after?.publication).toEqual(before?.publication);
   expect(after?.publicationAttemptedAt).toBeNull();
   expect(f.calls()).toBe(1);
+});
+
+test("an unavailable pre-reservation CLI profile is a known refusal without a saved generation owner", async () => {
+  const f = fixture(),
+    service = createKnowledgeService({
+      ...f.options,
+      generator: {
+        ...f.options.generator,
+        prepare: async () => {
+          throw Error("unsupported CLI profile");
+        },
+      },
+    });
+  await expect(
+    service.refresh(FIXTURE_PROJECT_ID, f.request),
+  ).rejects.toMatchObject({ status: 409 });
+  expect(
+    createKnowledgeStore(f.home).read(FIXTURE_PROJECT_ID, f.request.requestId),
+  ).toBeUndefined();
+  expect(f.calls()).toBe(0);
+  expect(existsSync(f.target.file)).toBe(false);
+});
+
+test.each([
+  2, 5,
+])("a journal capacity refusal after durable reservation returns its saved receipt instead of nondelivery: write %s", async (failAt) => {
+  const f = fixture(),
+    actual = createKnowledgeStore(f.home);
+  let writes = 0;
+  const store: ReturnType<typeof createKnowledgeStore> = {
+    ...actual,
+    locked: (work) =>
+      actual.locked((state, save) =>
+        work(state, () => {
+          if (++writes >= failAt)
+            throw new ConversationError(
+              409,
+              "journal candidate capacity exhausted",
+            );
+          save();
+        }),
+      ),
+  };
+  const service = createKnowledgeService({ ...f.options, store });
+  const receipt = await service.refresh(FIXTURE_PROJECT_ID, f.request);
+  expect(receipt.state).toBe(failAt === 2 ? "reserved" : "candidate-saved");
+  expect(actual.read(FIXTURE_PROJECT_ID, f.request.requestId)?.receipt).toEqual(
+    receipt,
+  );
+  expect(f.calls()).toBe(failAt === 2 ? 0 : 1);
+  expect(existsSync(f.target.file)).toBe(false);
+  expect(await service.refresh(FIXTURE_PROJECT_ID, f.request)).toEqual(receipt);
+  expect(f.calls()).toBe(failAt === 2 ? 0 : 1);
+});
+
+test("verified generation with an oversized document is a known failed refresh and never changes output or automatically repeats the model", async () => {
+  const f = fixture();
+  let oversized = true;
+  const service = createKnowledgeService({
+    ...f.options,
+    generator: {
+      ...f.options.generator,
+      generate: async () => ({
+        ...(await f.options.generator.generate()),
+        overview: {
+          ...generated.overview,
+          description: oversized
+            ? "line\n".repeat(500)
+            : generated.overview.description,
+        },
+      }),
+    },
+  });
+  const receipt = await service.refresh(FIXTURE_PROJECT_ID, f.request);
+  expect(receipt.state).toBe("failed");
+  expect(existsSync(f.target.file)).toBe(false);
+  expect(f.calls()).toBe(1);
+  const row = createKnowledgeStore(f.home).read(
+    FIXTURE_PROJECT_ID,
+    f.request.requestId,
+  );
+  expect(row?.generationVerifiedAt).toBeString();
+  expect(row?.candidate).toBeNull();
+  expect(row?.publicationAttemptedAt).toBeNull();
+  expect(await service.refresh(FIXTURE_PROJECT_ID, f.request)).toEqual(receipt);
+  expect(f.calls()).toBe(1);
+  oversized = false;
+  expect(
+    (
+      await service.refresh(FIXTURE_PROJECT_ID, {
+        ...f.request,
+        requestId: "10000000-0000-4000-8000-000000000002",
+      })
+    ).state,
+  ).toBe("confirmed");
+  expect(f.calls()).toBe(2);
 });

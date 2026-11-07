@@ -45,6 +45,7 @@ import {
 } from "../keeper/recovery-runtime";
 import { type AppendResult, appendEvent } from "../ledger/append";
 import { resolveCheckout } from "../ledger/workspace";
+import { createKnowledgeService } from "../projects/knowledge-service";
 import { createProjectBudgetStore } from "../projects/project-budget-store";
 import {
   createRepositoryOnboarding,
@@ -204,6 +205,7 @@ export function hearthCouncilRunner(
 }
 
 export interface OperatorApiOverrides {
+  projectKnowledge?: ReturnType<typeof createKnowledgeService>;
   /** Trusted fixture/embedding source; never an HTTP field. */
   forgeGateLogRoot?: string;
   /** Trusted repository registry root; absent defaults to localStateRoot(root). */
@@ -555,6 +557,16 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
     };
   }
   const table = operatorRoutes({
+    projectKnowledge:
+      options.api?.projectKnowledge ??
+      createKnowledgeService({
+        root,
+        home,
+        ...(options.api?.configHome
+          ? { configHome: options.api.configHome }
+          : {}),
+        operatorToken: expectedToken,
+      }),
     projectHome: home,
     projectRepositoryRegistryRoot: options.api?.projectRepositoryRegistryRoot,
     projectRepositoryOnboarding:

@@ -86,6 +86,8 @@ const rowSchema = z
     candidate: z.string().max(KNOWLEDGE_LIMITS.documentBytes).nullable(),
     publication: snapshotSchema.nullable(),
     attemptedAt: z.iso.datetime().nullable(),
+    // Validated noninteractive result completion; never native descendant-release evidence.
+    generationVerifiedAt: z.iso.datetime().nullable(),
     candidateSavedAt: z.iso.datetime().nullable(),
     publicationAttemptedAt: z.iso.datetime().nullable(),
   })
@@ -111,16 +113,18 @@ const rowSchema = z
       (r.state === "reserved"
         ? row.attemptedAt === null
         : row.attemptedAt !== null) &&
+      (row.generationVerifiedAt === null || row.attemptedAt !== null) &&
       (row.candidate === null
         ? row.candidateSavedAt === null &&
           row.publication === null &&
           row.publicationAttemptedAt === null
-        : row.candidateSavedAt !== null) &&
+        : row.candidateSavedAt !== null && row.generationVerifiedAt !== null) &&
       (r.state !== "publishing" ||
         (row.publication !== null && row.publicationAttemptedAt !== null)) &&
       (r.state !== "candidate-saved" || row.publicationAttemptedAt === null) &&
       (r.state !== "failed" ||
-        (row.candidate !== null && row.publicationAttemptedAt === null)) &&
+        (row.generationVerifiedAt !== null &&
+          row.publicationAttemptedAt === null)) &&
       r.state !== "refused"
     );
   });

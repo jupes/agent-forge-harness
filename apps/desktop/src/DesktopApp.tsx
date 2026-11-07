@@ -65,6 +65,7 @@ import {
   ProjectActivityInspector,
 } from "./ProjectActivity";
 import { BeadPanel, beadHref, ProjectBeads } from "./ProjectBeads";
+import { ProjectKnowledgeSettings } from "./ProjectKnowledgeSettings";
 import { ProjectLifecycleSettings } from "./ProjectLifecycleSettings";
 import { ProjectOverview } from "./ProjectOverview";
 import { ProjectReviews } from "./ProjectReviews";
@@ -122,6 +123,7 @@ import { useProjectCreate } from "./use-project-create";
 import { useProjectDefaults } from "./use-project-defaults";
 import { useProjectGeneralSettings } from "./use-project-general-settings";
 import { useProjectKeeperSettings } from "./use-project-keeper-settings";
+import { useProjectKnowledge } from "./use-project-knowledge";
 import { useProjectLifecycle } from "./use-project-lifecycle";
 import { useProjectRepositories } from "./use-project-repositories";
 import { useProjectRuns } from "./use-project-runs";
@@ -367,6 +369,7 @@ export function DesktopApp(): JSX.Element {
     projects.refreshProjectHome,
   );
   const lifecycle = useProjectLifecycle(projects.refreshProjectHome);
+  const knowledge = useProjectKnowledge();
   const budgetsSettings = useProjectValueSettings(
     projectBudgetsSpec,
     projects.refreshProjectHome,
@@ -2355,6 +2358,15 @@ export function DesktopApp(): JSX.Element {
               onRefreshRepositories={projectRepositories.refresh}
               onReconcileRepositories={projectRepositories.reconcile}
             />
+            {route.projectId && (
+              <ProjectKnowledgeSettings
+                id={route.projectId}
+                project={project ?? null}
+                revision={settingsCatalog?.revision ?? null}
+                writesAllowed={writesAllowed}
+                knowledge={knowledge}
+              />
+            )}
             {route.projectId && (
               <ProjectLifecycleSettings
                 id={route.projectId}
