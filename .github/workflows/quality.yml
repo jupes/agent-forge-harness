@@ -36,6 +36,9 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
       - run: bun run lint
+      - name: Diagnose native path admission
+        timeout-minutes: 1
+        run: bun test scripts/hearth/routes/session-scope.test.ts --timeout 15000
       - run: bun test scripts apps/desktop/src --timeout 15000
 
   # The unit gates again on Windows, where the owner and the command center

@@ -205,17 +205,13 @@ test.skipIf(process.platform === "win32")(
       sibling = `${literal}\\src`;
     mkdirSync(inside);
     mkdirSync(sibling);
-    await expect(
-      f.validate(f.project.id, metadata, []),
-    ).resolves.toBeUndefined();
-    await expect(
-      f.validate(f.project.id, metadata, [], {
-        mode: "chat",
-        model: "sonnet",
-        prompt: "Private",
-        extraDirectories: [inside],
-      }),
-    ).resolves.toBeUndefined();
+    await f.validate(f.project.id, metadata, []);
+    await f.validate(f.project.id, metadata, [], {
+      mode: "chat",
+      model: "sonnet",
+      prompt: "Private",
+      extraDirectories: [inside],
+    });
     await expect(
       f.validate(f.project.id, metadata, [], {
         mode: "chat",
