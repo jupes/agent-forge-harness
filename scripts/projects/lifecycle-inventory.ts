@@ -46,13 +46,15 @@ export function readProjectLifecycleInventory(
 export function readProjectActivityInventory(
   home: string,
   root: string,
-  project: ProjectRecord,
+  project: Pick<ProjectRecord, "id">,
+  sharedBudget?: () => void,
 ): Inventory {
   const started = performance.now(),
     reasons: string[] = [],
     unknown: string[] = [];
   let inspected = 0;
   const bounded = () => {
+    sharedBudget?.();
     if (++inspected > 4096 || performance.now() - started > 2000)
       throw Error("Inventory exceeded its complete-read budget");
   };

@@ -842,6 +842,16 @@ export function readRestartIdentityInventory(
   projectId: string,
   options: HomeCheckOptions = {},
 ): RestartIdentityRow[] {
+  return readAllRestartIdentityInventory(profileHomeInput, options).filter(
+    (row) => row.address.projectId === projectId,
+  );
+}
+
+/** Complete authenticated ownership inventory, including projects absent from the catalog. */
+export function readAllRestartIdentityInventory(
+  profileHomeInput: string,
+  options: HomeCheckOptions = {},
+): RestartIdentityRow[] {
   try {
     const home = canonicalTrustedDirectory(profileHomeInput),
       homeIdentity = assertDirectory(home, undefined, options),
@@ -861,9 +871,7 @@ export function readRestartIdentityInventory(
     const state = scan(directory, lock, options);
     assertDirectory(directory, identity, options);
     assertDirectory(home, homeIdentity, options);
-    return [...state.rows.values()].filter(
-      (row) => row.address.projectId === projectId,
-    );
+    return [...state.rows.values()];
   } catch {
     throw unavailable();
   }
