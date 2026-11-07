@@ -19,10 +19,10 @@ afterEach(() => {
   for (const path of folders.splice(0))
     rmSync(path, { recursive: true, force: true });
 });
-async function fixture() {
+async function fixture(rootName = "repo") {
   const base = mkdtempSync(join(tmpdir(), "forge session scope "));
   folders.push(base);
-  let root = join(base, "repo");
+  let root = join(base, rootName);
   const home = join(base, "home");
   mkdirSync(join(root, ".git"), { recursive: true });
   mkdirSync(join(root, "src"));
@@ -60,13 +60,19 @@ async function fixture() {
       problems: [],
     },
   };
+  let worktrees = [root];
   const git: GitRun = (args) =>
     args[0] === "rev-parse"
       ? { status: 0, stdout: root, stderr: "" }
       : args[0] === "worktree"
         ? {
             status: 0,
-            stdout: `worktree ${root}\0HEAD ${"a".repeat(40)}\0branch refs/heads/main\0\0`,
+            stdout: worktrees
+              .map(
+                (path, index) =>
+                  `worktree ${path}\0HEAD ${"a".repeat(40)}\0branch refs/heads/fixture-${index}\0\0`,
+              )
+              .join(""),
             stderr: "",
           }
         : { status: 1, stdout: "", stderr: "unsupported fixture command" };
@@ -93,7 +99,17 @@ async function fixture() {
     },
     async () => snapshot,
   );
-  return { base, root, project, metadata, snapshot, validate };
+  return {
+    base,
+    root,
+    project,
+    metadata,
+    snapshot,
+    validate,
+    listWorktrees(paths: string[]) {
+      worktrees = paths;
+    },
+  };
 }
 
 test("session admission checks current project, registered worktree and bead scope before accepting context", async () => {
@@ -155,3 +171,58 @@ test("extra directories cannot escape the checked worktree through an absolute p
       }),
     ).rejects.toThrow("checked worktree");
 });
+
+test.skipIf(process.platform === "win32")(
+  "POSIX admission distinguishes physical backslash siblings and permits the actual registered literal path",
+  async () => {
+    const f = await fixture("nested/repo"),
+      workspaceAlias = join(f.base, "nested\\repo"),
+      nested = join(f.root, "trees", "a", "b"),
+      literal = join(f.root, "trees", "a\\b");
+    for (const path of [workspaceAlias, nested, literal])
+      mkdirSync(path, { recursive: true });
+    await expect(
+      f.validate(
+        f.project.id,
+        { ...f.metadata, workspace: workspaceAlias },
+        [],
+      ),
+    ).rejects.toThrow("workspace");
+    await expect(
+      f.validate(
+        f.project.id,
+        { ...f.metadata, repository: workspaceAlias },
+        [],
+      ),
+    ).rejects.toThrow("outside");
+    f.listWorktrees([f.root, nested]);
+    await expect(
+      f.validate(f.project.id, { ...f.metadata, worktree: literal }, []),
+    ).rejects.toThrow("Git registry");
+    f.listWorktrees([f.root, literal]);
+    const metadata = { ...f.metadata, worktree: literal },
+      inside = join(literal, "src"),
+      sibling = `${literal}\\src`;
+    mkdirSync(inside);
+    mkdirSync(sibling);
+    await expect(
+      f.validate(f.project.id, metadata, []),
+    ).resolves.toBeUndefined();
+    await expect(
+      f.validate(f.project.id, metadata, [], {
+        mode: "chat",
+        model: "sonnet",
+        prompt: "Private",
+        extraDirectories: [inside],
+      }),
+    ).resolves.toBeUndefined();
+    await expect(
+      f.validate(f.project.id, metadata, [], {
+        mode: "chat",
+        model: "sonnet",
+        prompt: "Private",
+        extraDirectories: [sibling],
+      }),
+    ).rejects.toThrow("checked worktree");
+  },
+);
