@@ -1,3 +1,4 @@
+import { withProjectAdmission } from "../projects/admission";
 /**
  * Hearth — the standalone loopback control-plane server (`bun run hearth`).
  *
@@ -354,6 +355,7 @@ export async function createHearth(options: HearthOptions): Promise<Hearth> {
   const projectBudget = createProjectBudgetStore(home);
   const service = createCouncilService({
     projectBudget,
+    projectAdmission: (id, publish) => withProjectAdmission(home, id, publish),
     workspaceRoot: root,
     reviewHome: home,
     withQueueLock,

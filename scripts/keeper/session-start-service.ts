@@ -6,6 +6,7 @@ import type { SessionStartIdentityPage } from "../../types/session-start-identit
 import { ConversationError } from "../conversations/error";
 import { createConversationStore } from "../conversations/store";
 import { resolveCheckout } from "../ledger/workspace";
+import { withProjectAdmission } from "../projects/admission";
 import { workspaceKey } from "../projects/scope";
 import { createProjectStore } from "../projects/store";
 import type { createOwnedSessionService } from "../sessions/admission";
@@ -37,7 +38,11 @@ interface Options {
 /** One human Start crosses proposal admission; only the existing owned journal dispatches. */
 export function createKeeperSessionStartService(options: Options) {
   const workspace = resolveCheckout(options.root).workspace;
-  const journal = createKeeperProposalStore(options.home);
+  const journal = createKeeperProposalStore(
+    options.home,
+    undefined,
+    (id, publish) => withProjectAdmission(options.home, id, publish),
+  );
   const conversations = createConversationStore(options.home);
   const active = new Set<Promise<unknown>>();
   let closed = false;

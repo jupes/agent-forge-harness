@@ -49,6 +49,46 @@ const unavailable = () =>
     503,
     "The private terminal handoff record is unavailable. Saved data has been kept; check the original request.",
   );
+/** Private complete read used by project lifecycle checks. No directory creation, mutex, or native probe. */
+export function readTerminalHandoffInventory(
+  home: string,
+  directories: readonly string[],
+): TerminalHandoffAttempt[] {
+  const attempts: TerminalHandoffAttempt[] = [];
+  for (const directory of directories) {
+    const file = join(directory, "attempts.json");
+    for (const [path, folder] of [
+      [directory, true],
+      [file, false],
+    ] as const) {
+      const info = lstatSync(path);
+      if (
+        info.isSymbolicLink() ||
+        (folder ? !info.isDirectory() : !info.isFile() || info.nlink !== 1)
+      )
+        throw unavailable();
+    }
+    const found = readSessionTranscript(home, file);
+    if (
+      found.problem !== null ||
+      found.text === null ||
+      Buffer.byteLength(found.text) > 262_144
+    )
+      throw unavailable();
+    let raw: unknown;
+    try {
+      raw = JSON.parse(found.text);
+    } catch {
+      throw unavailable();
+    }
+    const parsed = journalSchema.safeParse(raw);
+    if (!parsed.success) throw unavailable();
+    attempts.push(...parsed.data.attempts);
+  }
+  if (new Set(attempts.map((row) => row.requestId)).size !== attempts.length)
+    throw unavailable();
+  return attempts;
+}
 function canonicalRoot(root: string) {
   let canonical: string;
   try {
@@ -60,6 +100,7 @@ function canonicalRoot(root: string) {
 }
 /** Durable, one-at-a-time native handoffs. The journal never contains command or transcript bytes. */
 export function createSessionTerminalHandoff(options: {
+  admit?: import("../projects/project-lifecycle-protocol").ProjectAdmissionFence;
   home: string;
   root: string;
   candidate(
@@ -343,7 +384,9 @@ export function createSessionTerminalHandoff(options: {
             auditEventId,
           };
           before.attempts.push(row);
-          write(before);
+          if (options.admit)
+            await options.admit(projectId, () => write(before));
+          else write(before);
           let child: NativeConsoleChild;
           try {
             child = (options.launch ?? launchWindowsConsole)({

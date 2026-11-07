@@ -31,6 +31,7 @@ import {
   projectCreateReserveSchema,
   projectCreateRetireSchema,
 } from "../../projects/create-protocol";
+import { readProjectLifecycleInventory } from "../../projects/lifecycle-inventory";
 import { createProjectBudgetStore } from "../../projects/project-budget-store";
 import {
   type ProjectBudgets,
@@ -49,6 +50,11 @@ import {
   type ProjectKeeperSettings,
   projectKeeperSettingsRequestSchema,
 } from "../../projects/project-keeper-protocol";
+import {
+  type ProjectDeletionRequest,
+  projectDeletionRequestSchema,
+  projectDeletionStatusSchema,
+} from "../../projects/project-lifecycle-protocol";
 import {
   type ProjectNotifications,
   projectNotificationsRequestSchema,
@@ -1443,6 +1449,120 @@ export function projectRoutes(
         publicCatalog(await store.preferences(id, revision, patch)),
       ),
   };
+  const archiveSettings: ActionRoute<{
+    id: string;
+    expectedRevision: number;
+    archived: boolean;
+  }> = {
+    kind: "action",
+    method: "POST",
+    path: "/projects/:id/settings/archived",
+    action: "project.settings.archived",
+    validate: (request) => {
+      const id = request.params["id"],
+        parsed = z
+          .object({
+            expectedRevision: z.number().int().nonnegative(),
+            archived: z.boolean(),
+          })
+          .strict()
+          .safeParse(request.body);
+      return isProjectId(id) && parsed.success
+        ? { ok: true, value: { id, ...parsed.data } }
+        : fail(
+            "Expected a project id, catalog revision and archive preference.",
+          );
+    },
+    subject: ({ id }) => ({ target: id }),
+    effect: ({ id, expectedRevision, archived }) =>
+      reply(async () =>
+        publicCatalog(
+          await store.preferences(id, expectedRevision, { archived }),
+        ),
+      ),
+  };
+  const deletionStatus: ReadRoute<{ id: string }> = {
+    kind: "read",
+    method: "GET",
+    path: "/projects/:id/settings/deletion",
+    operatorOnly: true,
+    validate: (request) =>
+      isProjectId(request.params["id"]) && request.query.size === 0
+        ? { ok: true, value: { id: request.params["id"] } }
+        : fail("Expected a project id and no query parameters."),
+    read: ({ id }) =>
+      reply(() => {
+        const catalog = store.read(),
+          project = catalog.projects.find((row) => row.id === id);
+        if (!project)
+          throw new ProjectStoreError(
+            404,
+            "This project is not in the catalog.",
+          );
+        return projectDeletionStatusSchema.parse({
+          projectId: id,
+          catalogRevision: catalog.revision,
+          asOf: new Date().toISOString(),
+          archived: project.archived,
+          ...readProjectLifecycleInventory(home, createOptions.root, project),
+        });
+      }),
+  };
+  const deletionReceipt: ReadRoute<{ id: string; requestId: string }> = {
+    kind: "read",
+    method: "GET",
+    path: "/projects/:id/settings/deletion/:requestId",
+    operatorOnly: true,
+    validate: (request) => {
+      const id = request.params["id"],
+        requestId = request.params["requestId"];
+      return isProjectId(id) &&
+        typeof requestId === "string" &&
+        z.uuid().safeParse(requestId).success &&
+        request.query.size === 0
+        ? { ok: true, value: { id, requestId } }
+        : fail(
+            "Expected an exact project deletion UUID and no query parameters.",
+          );
+    },
+    read: ({ id, requestId }) => reply(() => store.readDeletion(id, requestId)),
+  };
+  const deleteProject: ActionRoute<{
+    id: string;
+    request: ProjectDeletionRequest;
+  }> = {
+    kind: "action",
+    method: "POST",
+    path: "/projects/:id/settings/deletion",
+    action: "project.delete",
+    validate: (request) => {
+      const id = request.params["id"],
+        parsed = projectDeletionRequestSchema.safeParse(request.body);
+      return isProjectId(id) && parsed.success
+        ? { ok: true, value: { id, request: parsed.data } }
+        : fail(
+            "Expected a deletion UUID, reviewed catalog revision and exact project name.",
+          );
+    },
+    subject: ({ id }) => ({ target: id }),
+    effect: ({ id, request }) =>
+      reply(async () => {
+        const result = await store.deleteProject(
+          id,
+          request,
+          async (project) => {
+            const inventory = readProjectLifecycleInventory(
+              home,
+              createOptions.root,
+              project,
+            );
+            if (inventory.state !== "eligible")
+              throw new ProjectStoreError(409, inventory.reasons.join(" "));
+          },
+        );
+        return result.receipt;
+      }),
+  };
   const budgetsSettings: ActionRoute<{
     id: string;
     expectedRevision: number;
@@ -1761,6 +1881,10 @@ export function projectRoutes(
     scopePreview,
     settingsScopePreview,
     preferences,
+    archiveSettings,
+    deletionStatus,
+    deletionReceipt,
+    deleteProject,
     generalSettings,
     keeperSettings,
     defaultsSettings,

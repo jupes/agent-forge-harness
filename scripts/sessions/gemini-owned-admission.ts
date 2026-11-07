@@ -13,6 +13,7 @@ import { createConversationStore } from "../conversations/store";
 import type { ConversationUpdate } from "../conversations/transport";
 import type { InitialStartAttempt } from "../identities/preaccept-not-sent-proof";
 import { resolveCheckout } from "../ledger/workspace";
+import { withProjectAdmission } from "../projects/admission";
 import { workspaceKey } from "../projects/scope";
 import {
   canonicalOwnedSessionStart,
@@ -188,6 +189,7 @@ export function createGeminiOwnedTaskService(options: {
           await options.validateScope(projectId, metadata, request.about ?? []);
           return metadata;
         },
+        (publish) => withProjectAdmission(options.home, projectId, publish),
       );
       initial.set(
         session.id,

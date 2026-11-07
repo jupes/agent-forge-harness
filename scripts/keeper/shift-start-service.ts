@@ -13,6 +13,7 @@ import {
   createConversationStore,
 } from "../conversations/store";
 import { resolveCheckout } from "../ledger/workspace";
+import { withProjectAdmission } from "../projects/admission";
 import { workspaceKey } from "../projects/scope";
 import { createProjectStore } from "../projects/store";
 import { projectShiftReceiptSchema } from "../shifts/protocol";
@@ -36,7 +37,11 @@ interface Options {
 /** One explicit human review binds the saved Keeper source and editable full request to the existing Shift owner. */
 export function createKeeperShiftStartService(options: Options) {
   const workspace = resolveCheckout(options.root).workspace,
-    journal = createKeeperProposalStore(options.home),
+    journal = createKeeperProposalStore(
+      options.home,
+      undefined,
+      (id, publish) => withProjectAdmission(options.home, id, publish),
+    ),
     conversations = createConversationStore(options.home),
     active = new Set<Promise<unknown>>();
   let closed = false;

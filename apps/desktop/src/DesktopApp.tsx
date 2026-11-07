@@ -65,6 +65,7 @@ import {
   ProjectActivityInspector,
 } from "./ProjectActivity";
 import { BeadPanel, beadHref, ProjectBeads } from "./ProjectBeads";
+import { ProjectLifecycleSettings } from "./ProjectLifecycleSettings";
 import { ProjectOverview } from "./ProjectOverview";
 import { ProjectReviews } from "./ProjectReviews";
 import { ProjectRunInspector, ProjectRuns } from "./ProjectRuns";
@@ -99,6 +100,7 @@ import {
 } from "./project-council-return";
 import type { VerifiedProjectCreate } from "./project-create-owner";
 import { generalCatalogForProject } from "./project-general-settings-client";
+import { projectArchiveSpec } from "./project-lifecycle-client";
 import { projectNotificationsSpec } from "./project-notifications-client";
 import { parseRunFilters, runsHref } from "./project-runs-model";
 import { ClaudeSessionComposer, SessionComposer } from "./SessionComposer";
@@ -120,6 +122,7 @@ import { useProjectCreate } from "./use-project-create";
 import { useProjectDefaults } from "./use-project-defaults";
 import { useProjectGeneralSettings } from "./use-project-general-settings";
 import { useProjectKeeperSettings } from "./use-project-keeper-settings";
+import { useProjectLifecycle } from "./use-project-lifecycle";
 import { useProjectRepositories } from "./use-project-repositories";
 import { useProjectRuns } from "./use-project-runs";
 import { useProjectShifts } from "./use-project-shifts";
@@ -359,6 +362,11 @@ export function DesktopApp(): JSX.Element {
   );
   const keeperSettings = useProjectKeeperSettings(projects.refreshProjectHome);
   const defaultsSettings = useProjectDefaults(projects.refreshProjectHome);
+  const archiveSettings = useProjectValueSettings(
+    projectArchiveSpec,
+    projects.refreshProjectHome,
+  );
+  const lifecycle = useProjectLifecycle(projects.refreshProjectHome);
   const budgetsSettings = useProjectValueSettings(
     projectBudgetsSpec,
     projects.refreshProjectHome,
@@ -403,6 +411,10 @@ export function DesktopApp(): JSX.Element {
     if (settingsCatalog && route.projectId)
       notificationsSettings.owner.adopt(route.projectId, settingsCatalog);
   }, [notificationsSettings.owner, route.projectId, settingsCatalog]);
+  useEffect(() => {
+    if (settingsCatalog && route.projectId)
+      archiveSettings.owner.adopt(route.projectId, settingsCatalog);
+  }, [archiveSettings.owner, route.projectId, settingsCatalog]);
   const repositoryProjectId =
     route.destination === "project-settings" ? (project?.id ?? null) : null;
   const projectRepositories = useProjectRepositories(
@@ -2318,30 +2330,41 @@ export function DesktopApp(): JSX.Element {
             }}
           />
         ) : route.destination === "project-settings" ? (
-          <ProjectSettings
-            projectId={route.projectId}
-            project={project ?? null}
-            catalog={generalCatalogForProject(
-              projectGeneralSettings,
-              route.projectId,
+          <>
+            <ProjectSettings
+              projectId={route.projectId}
+              project={project ?? null}
+              catalog={generalCatalogForProject(
+                projectGeneralSettings,
+                route.projectId,
+              )}
+              initialRevision={settingsCatalog?.revision ?? null}
+              loading={projects.loading}
+              error={projects.error}
+              stale={recovery?.connection.phase !== "connected"}
+              writesAllowed={writesAllowed}
+              owner={projectGeneralSettings.owner}
+              state={projectGeneralSettings}
+              keeperSettings={keeperSettings}
+              defaultsSettings={defaultsSettings}
+              budgetsSettings={budgetsSettings}
+              notificationsSettings={notificationsSettings}
+              smiths={smiths}
+              onRefresh={projects.reload}
+              repositories={projectRepositories}
+              onRefreshRepositories={projectRepositories.refresh}
+              onReconcileRepositories={projectRepositories.reconcile}
+            />
+            {route.projectId && (
+              <ProjectLifecycleSettings
+                id={route.projectId}
+                project={project ?? null}
+                writesAllowed={writesAllowed}
+                archive={archiveSettings}
+                lifecycle={lifecycle}
+              />
             )}
-            initialRevision={settingsCatalog?.revision ?? null}
-            loading={projects.loading}
-            error={projects.error}
-            stale={recovery?.connection.phase !== "connected"}
-            writesAllowed={writesAllowed}
-            owner={projectGeneralSettings.owner}
-            state={projectGeneralSettings}
-            keeperSettings={keeperSettings}
-            defaultsSettings={defaultsSettings}
-            budgetsSettings={budgetsSettings}
-            notificationsSettings={notificationsSettings}
-            smiths={smiths}
-            onRefresh={projects.reload}
-            repositories={projectRepositories}
-            onRefreshRepositories={projectRepositories.refresh}
-            onReconcileRepositories={projectRepositories.reconcile}
-          />
+          </>
         ) : route.destination === "providers" ? (
           <Providers
             data={providers.data}

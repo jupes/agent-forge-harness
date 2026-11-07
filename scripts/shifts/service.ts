@@ -8,6 +8,7 @@ import type {
 } from "../../types/project-shifts";
 import { ConversationError } from "../conversations/error";
 import { readSessionTranscript } from "../hearth/home-guard";
+import { withProjectAdmission } from "../projects/admission";
 import {
   isProcessId,
   isShiftId,
@@ -33,7 +34,11 @@ export interface ProjectShiftRuntime {
 }
 
 /** Bounded private evidence by original id; never the global list's truncated, cross-project collection. */
-function evidence(home: string, intent: ProjectShiftIntent) {
+export function readProjectShiftEvidence(
+  home: string,
+  intent: ProjectShiftIntent,
+  checkProcess = true,
+) {
   const dir = join(home, SHIFTS_DIR),
     file = join(dir, `${intent.shiftId}.json`),
     stop = join(dir, `${intent.shiftId}.stop`);
@@ -76,7 +81,7 @@ function evidence(home: string, intent: ProjectShiftIntent) {
     }
     return {
       record,
-      alive: isProcessId(pid) ? processAlive(pid) : false,
+      alive: checkProcess && isProcessId(pid) ? processAlive(pid) : false,
       stopRequested,
     };
   } catch {
@@ -94,7 +99,10 @@ export function createProjectShiftService(options: {
   ): Promise<void> | Promise<{ scopeHash: string }>;
   runtime?: ProjectShiftRuntime;
 }) {
-  const registry = createProjectShiftRegistry(options);
+  const registry = createProjectShiftRegistry({
+    ...options,
+    admit: (id, publish) => withProjectAdmission(options.home, id, publish),
+  });
   const stops = new Map<string, Promise<ProjectShiftReceipt | null>>();
   let closed = false;
   const open = () => {
@@ -105,7 +113,7 @@ export function createProjectShiftService(options: {
       );
   };
   const receipt = (intent: ProjectShiftIntent): ProjectShiftReceipt => {
-    const found = evidence(options.home, intent);
+    const found = readProjectShiftEvidence(options.home, intent);
     const launch = options.runtime
       ?.unrecorded?.()
       .find(
@@ -187,7 +195,10 @@ export function createProjectShiftService(options: {
       const pending = (async () => {
         const marked = await registry.requestStartupStop(intent);
         // A record published during the private write wins; keep its canonical cleanup controls.
-        if (evidence(options.home, marked.intent).record !== undefined) {
+        if (
+          readProjectShiftEvidence(options.home, marked.intent).record !==
+          undefined
+        ) {
           const observed = receipt(marked.intent);
           return observed.observation.actual !== null ? null : observed;
         }
@@ -195,7 +206,8 @@ export function createProjectShiftService(options: {
           const settled = await options.runtime?.stopStarting?.(marked.intent);
           if (
             settled === true &&
-            evidence(options.home, marked.intent).record === undefined
+            readProjectShiftEvidence(options.home, marked.intent).record ===
+              undefined
           ) {
             await registry.completeStartupStop(marked.intent);
           }

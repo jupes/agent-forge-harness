@@ -5,6 +5,7 @@ import type {
   ProjectCatalog,
   ProjectColor,
   ProjectCreateOperation,
+  ProjectDeletion,
   ProjectPreferences,
   ProjectRecord,
   ProjectWorkspace,
@@ -41,6 +42,13 @@ import {
   projectKeeperSettingsSchema,
 } from "./project-keeper-protocol";
 import {
+  canonicalProjectDeletion,
+  type ProjectDeletionReceipt,
+  type ProjectDeletionRequest,
+  projectDeletionReceiptSchema,
+  projectDeletionRequestSchema,
+} from "./project-lifecycle-protocol";
+import {
   type ProjectNotifications,
   projectNotificationsSchema,
 } from "./project-notifications-protocol";
@@ -54,7 +62,7 @@ export const isProjectId = (value: unknown): value is string =>
 
 export class ProjectStoreError extends Error {
   constructor(
-    readonly status: 400 | 404 | 409 | 503,
+    readonly status: 400 | 404 | 409 | 410 | 503,
     message: string,
   ) {
     super(message);
@@ -277,15 +285,95 @@ function validCreateOperation(value: unknown): value is ProjectCreateOperation {
 }
 
 /** Invalid/future records refuse the whole catalog; never silently erase a project. */
+export function hashProjectDeletion(
+  projectId: string,
+  request: ProjectDeletionRequest,
+): string {
+  return createHash("sha256")
+    .update(canonicalProjectDeletion(projectId, request))
+    .digest("hex");
+}
+function validDeletion(value: unknown): value is ProjectDeletion {
+  if (
+    !record(value) ||
+    !keys(value, [
+      "requestId",
+      "requestHash",
+      "expectedRevision",
+      "deletedRevision",
+      "deletedAt",
+      "project",
+    ]) ||
+    !validProject(value["project"])
+  )
+    return false;
+  const project = value["project"],
+    request = projectDeletionRequestSchema.safeParse({
+      requestId: value["requestId"],
+      expectedRevision: value["expectedRevision"],
+      confirmName: project.name,
+    });
+  return (
+    request.success &&
+    project.archived &&
+    digest(value["requestHash"]) &&
+    value["requestHash"] === hashProjectDeletion(project.id, request.data) &&
+    revision(value["deletedRevision"]) &&
+    value["deletedRevision"] === request.data.expectedRevision + 1 &&
+    time(value["deletedAt"])
+  );
+}
+export function projectDeletionReceipt(
+  deletion: ProjectDeletion,
+): ProjectDeletionReceipt {
+  return projectDeletionReceiptSchema.parse({
+    projectId: deletion.project.id,
+    requestId: deletion.requestId,
+    requestHash: deletion.requestHash,
+    name: deletion.project.name,
+    slug: deletion.project.slug,
+    deletedRevision: deletion.deletedRevision,
+    deletedAt: deletion.deletedAt,
+  });
+}
+const slugTaken = (catalog: ProjectCatalog, slug: string) =>
+  catalog.projects.some((project) => project.slug === slug) ||
+  Boolean(catalog.deletedProjects?.some((item) => item.project.slug === slug));
+const requireNotDeleted = (
+  catalog: ProjectCatalog,
+  operation: ProjectCreateOperation,
+) => {
+  if (
+    operation.projectId &&
+    catalog.deletedProjects?.some(
+      (item) => item.project.id === operation.projectId,
+    )
+  )
+    throw new ProjectStoreError(
+      410,
+      "This original created project was deleted. Its original receipt is retained; it will not be recreated.",
+    );
+};
+
 export function parseProjectCatalog(value: unknown): ProjectCatalog {
   if (
     !record(value) ||
-    !keys(value, ["version", "revision", "projects", "createOperations"]) ||
+    !keys(value, [
+      "version",
+      "revision",
+      "projects",
+      "createOperations",
+      "deletedProjects",
+    ]) ||
     value["version"] !== PROJECT_STORE_VERSION ||
     !revision(value["revision"]) ||
     !Array.isArray(value["projects"]) ||
     value["projects"].length > 100 ||
     !value["projects"].every(validProject) ||
+    (value["deletedProjects"] !== undefined &&
+      (!Array.isArray(value["deletedProjects"]) ||
+        value["deletedProjects"].length > MAX_PROJECT_CREATE_OPERATIONS ||
+        !value["deletedProjects"].every(validDeletion))) ||
     (value["createOperations"] !== undefined &&
       (!Array.isArray(value["createOperations"]) ||
         value["createOperations"].length > MAX_PROJECT_CREATE_OPERATIONS ||
@@ -297,9 +385,19 @@ export function parseProjectCatalog(value: unknown): ProjectCatalog {
     );
   }
   const projects = value["projects"];
+  const deletions = value["deletedProjects"] as ProjectDeletion[] | undefined;
+  const retained = [
+    ...projects,
+    ...(deletions ?? []).map((item) => item.project),
+  ];
   if (
-    new Set(projects.map((item) => item.id)).size !== projects.length ||
-    new Set(projects.map((item) => item.slug)).size !== projects.length
+    new Set(retained.map((item) => item.id)).size !== retained.length ||
+    new Set(retained.map((item) => item.slug)).size !== retained.length ||
+    new Set((deletions ?? []).map((item) => item.requestId)).size !==
+      (deletions ?? []).length ||
+    (deletions ?? []).some(
+      (item) => item.deletedRevision > (value["revision"] as number),
+    )
   )
     throw new ProjectStoreError(
       503,
@@ -322,7 +420,7 @@ export function parseProjectCatalog(value: unknown): ProjectCatalog {
           item.createdRevision > currentRevision
         )
           return true;
-        return !projects.some((project) => {
+        return !retained.some((project) => {
           const originalScope = item.original.workspaces[0];
           const createdScope = project.workspaces[0];
           return (
@@ -353,6 +451,7 @@ export function parseProjectCatalog(value: unknown): ProjectCatalog {
     revision: value["revision"],
     projects,
     ...(operations !== undefined ? { createOperations: operations } : {}),
+    ...(deletions !== undefined ? { deletedProjects: deletions } : {}),
   };
 }
 
@@ -407,9 +506,10 @@ export function createProjectStore(
             "Projects changed in another window. Read the catalog again before changing it.",
           );
         const next = parseProjectCatalog({
+          ...catalog,
+          ...update(catalog),
           version: 1,
           revision: catalog.revision + 1,
-          ...update(catalog),
         });
         writeCatalog(next);
         return next;
@@ -432,7 +532,10 @@ export function createProjectStore(
       projectWriteLockPath(home),
       async () => {
         const catalog = read();
-        const next = parseProjectCatalog(await update(catalog));
+        const next = parseProjectCatalog({
+          ...catalog,
+          ...(await update(catalog)),
+        });
         if (serialize(next) === serialize(catalog)) return read();
         writeCatalog(next);
         const confirmed = read();
@@ -503,6 +606,7 @@ export function createProjectStore(
     projects = catalog.projects,
     nextRevision = catalog.revision,
   ): ProjectCatalog => ({
+    ...catalog,
     version: 1,
     revision: nextRevision,
     projects,
@@ -511,6 +615,104 @@ export function createProjectStore(
 
   return {
     read,
+    readDeletion(
+      projectId: string,
+      requestUuid: string,
+    ): ProjectDeletionReceipt {
+      if (!isProjectId(projectId) || !requestId(requestUuid))
+        throw new ProjectStoreError(
+          400,
+          "Expected project and deletion request identities.",
+        );
+      const found = read().deletedProjects?.find(
+        (item) => item.requestId === requestUuid,
+      );
+      if (!found || found.project.id !== projectId)
+        throw new ProjectStoreError(
+          404,
+          "No confirmed deletion receipt matches this project and request.",
+        );
+      return projectDeletionReceipt(found);
+    },
+    async deleteProject(
+      projectId: string,
+      raw: ProjectDeletionRequest,
+      ensureInactive: (project: ProjectRecord) => Promise<void>,
+    ): Promise<{ catalog: ProjectCatalog; receipt: ProjectDeletionReceipt }> {
+      const parsed = projectDeletionRequestSchema.safeParse(raw);
+      if (
+        !isProjectId(projectId) ||
+        !parsed.success ||
+        typeof ensureInactive !== "function"
+      )
+        throw new ProjectStoreError(
+          400,
+          "Expected a project and a confirmed bounded deletion request.",
+        );
+      const request = parsed.data,
+        requestHash = hashProjectDeletion(projectId, request);
+      const catalog = await metadataChange(async (current) => {
+        const prior = current.deletedProjects?.find(
+          (item) => item.requestId === request.requestId,
+        );
+        if (prior) {
+          if (
+            prior.project.id !== projectId ||
+            prior.requestHash !== requestHash
+          )
+            throw new ProjectStoreError(
+              409,
+              "This deletion UUID already names another confirmed request.",
+            );
+          return current;
+        }
+        if (current.revision !== request.expectedRevision)
+          throw new ProjectStoreError(
+            409,
+            "The project catalog changed. Review the archived project before deletion.",
+          );
+        const project = current.projects.find((item) => item.id === projectId);
+        if (!project)
+          throw new ProjectStoreError(
+            404,
+            "This project is no longer in the catalog. Check the original deletion request.",
+          );
+        if (!project.archived)
+          throw new ProjectStoreError(
+            409,
+            "Archive this project before deleting its record.",
+          );
+        if (request.confirmName !== project.name)
+          throw new ProjectStoreError(
+            409,
+            "Type the exact current project name to confirm deletion.",
+          );
+        await ensureInactive(structuredClone(project));
+        const deletion: ProjectDeletion = {
+          requestId: request.requestId,
+          requestHash,
+          expectedRevision: request.expectedRevision,
+          deletedRevision: current.revision + 1,
+          deletedAt: now().toISOString(),
+          project: structuredClone(project),
+        };
+        return {
+          ...current,
+          revision: current.revision + 1,
+          projects: current.projects.filter((item) => item.id !== projectId),
+          deletedProjects: [...(current.deletedProjects ?? []), deletion],
+        };
+      });
+      const deletion = catalog.deletedProjects?.find(
+        (item) => item.requestId === request.requestId,
+      );
+      if (!deletion)
+        throw new ProjectStoreError(
+          503,
+          "The deletion receipt could not be verified. Check the original request; do not repeat it.",
+        );
+      return { catalog, receipt: projectDeletionReceipt(deletion) };
+    },
     /** Trusted producer seam for onboarding. No creation API or UI is exposed here. */
     async create(
       input: NewProject,
@@ -544,7 +746,7 @@ export function createProjectStore(
       }));
       return change(expectedRevision, (catalog) => ({
         projects: (() => {
-          if (catalog.projects.some((item) => item.slug === input.slug))
+          if (slugTaken(catalog, input.slug))
             throw new ProjectStoreError(
               409,
               "A project already uses that slug. Choose another slug.",
@@ -850,7 +1052,9 @@ export function createProjectStore(
             409,
             "This project create UUID is already bound to a different original.",
           );
-        return { catalog: read(), operation: existing, created: false };
+        const catalog = read();
+        requireNotDeleted(catalog, existing);
+        return { catalog, operation: existing, created: false };
       }
       if (!hasUniqueCanonicalRepositories(input.original))
         throw new ProjectStoreError(
@@ -868,6 +1072,7 @@ export function createProjectStore(
               409,
               "This project create UUID is already bound to a different original.",
             );
+          requireNotDeleted(current, raced);
           operation = raced;
           created = false;
           return current;
@@ -877,7 +1082,7 @@ export function createProjectStore(
             409,
             "Projects changed. Read the catalog and review this create again.",
           );
-        if (current.projects.some((item) => item.slug === input.original.slug))
+        if (slugTaken(current, input.original.slug))
           throw new ProjectStoreError(
             409,
             "A project already uses that slug. Choose another name.",
@@ -1015,6 +1220,7 @@ export function createProjectStore(
             "The project create original changed. No project was created.",
           );
         if (found.state === "created") {
+          requireNotDeleted(current, found);
           operation = found;
           return current;
         }
@@ -1033,7 +1239,7 @@ export function createProjectStore(
             409,
             "The project catalog changed after this reservation. Check the original before continuing.",
           );
-        if (current.projects.some((item) => item.slug === found.original.slug))
+        if (slugTaken(current, found.original.slug))
           throw new ProjectStoreError(
             409,
             "A project already uses that slug. Check the saved original before continuing.",

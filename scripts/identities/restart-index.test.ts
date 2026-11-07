@@ -29,6 +29,7 @@ import {
   createRestartIdentityJournal,
   type RestartIdentityInput,
   RestartIdentityJournalError,
+  readRestartIdentityInventory,
 } from "./restart-index";
 
 const scratch = scratchDirs({ tempDir: realpathSync.native(tmpdir()) });
@@ -49,6 +50,48 @@ const request = (
   provider: "claude" as const,
   mode: "task" as const,
   ...overrides,
+});
+
+test("project lifecycle fences every new dispatch generation including not-sent retry, while pure inventory never repairs", async () => {
+  const home = profile(),
+    options = storageOptions(),
+    identity = request();
+  let allowed = true,
+    admissions = 0;
+  const journal = createRestartIdentityJournal(home, {
+    ...options,
+    admit: async (_id, publish) => {
+      admissions++;
+      if (!allowed) throw Error("Project archived");
+      return publish();
+    },
+  });
+  await journal.reserve(identity);
+  const claim = await journal.beginAttempt(identity);
+  await journal.settleNotSent(
+    identity,
+    makePreacceptProof(identity, claim.attemptGeneration),
+  );
+  const directory = join(home, "restart-identities"),
+    files = readdirSync(directory).sort(),
+    before = files.map((name) =>
+      readFileSync(join(directory, name)).toString("base64"),
+    );
+  expect(readRestartIdentityInventory(home, PROJECT, options)).toMatchObject([
+    { state: "not-sent" },
+  ]);
+  expect(readdirSync(directory).sort()).toEqual(files);
+  expect(
+    files.map((name) => readFileSync(join(directory, name)).toString("base64")),
+  ).toEqual(before);
+  allowed = false;
+  await expect(journal.beginAttempt(identity)).rejects.toBeInstanceOf(
+    RestartIdentityJournalError,
+  );
+  expect(readRestartIdentityInventory(home, PROJECT, options)).toMatchObject([
+    { state: "not-sent" },
+  ]);
+  expect(admissions).toBe(3);
 });
 
 function makePreacceptProof(

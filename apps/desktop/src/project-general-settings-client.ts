@@ -65,7 +65,8 @@ export function validatedGeneralCatalog(
     typeof value.revision !== "number" ||
     value.revision < 0 ||
     !Array.isArray(value.projects) ||
-    Object.hasOwn(value, "createOperations")
+    Object.hasOwn(value, "createOperations") ||
+    Object.hasOwn(value, "deletedProjects")
   )
     throw Error("The project catalog response was malformed.");
   const matches = value.projects.filter(

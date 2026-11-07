@@ -59,6 +59,17 @@ export interface ProjectCatalog {
   projects: ProjectRecord[];
   /** Private durable create identities; projected out of every catalog API response. */
   createOperations?: ProjectCreateOperation[];
+  /** Private durable deletion identities; never projected by catalog-list routes. */
+  deletedProjects?: ProjectDeletion[];
+}
+
+export interface ProjectDeletion {
+  requestId: string;
+  requestHash: string;
+  expectedRevision: number;
+  deletedRevision: number;
+  deletedAt: string;
+  project: ProjectRecord;
 }
 
 export type ProjectCreateState =

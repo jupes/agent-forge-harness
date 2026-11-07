@@ -111,6 +111,7 @@ import { workspaceKey } from "../projects/scope";
 import {
   createProjectStore,
   hashProjectCreateRequest,
+  hashProjectDeletion,
   projectCatalogPath,
 } from "../projects/store";
 import {
@@ -1259,6 +1260,33 @@ function seedProjectRepositoriesReadFixture(h: TestHearth): {
     JSON.stringify(before.createOperations),
   );
   expect(after.projects.at(-1)).toEqual(fixture);
+  const deleted = projectFixture(h.workspace, {
+    id: "project-40000000-0000-4000-8000-000000000099",
+    slug: "api-deleted-record",
+    archived: true,
+  });
+  const request = {
+    requestId: "40000000-0000-4000-8000-000000000001",
+    expectedRevision: 0,
+    confirmName: deleted.name,
+  };
+  writeOwnerOnly(
+    projectCatalogPath(h.home),
+    JSON.stringify({
+      ...after,
+      deletedProjects: [
+        ...(after.deletedProjects ?? []),
+        {
+          requestId: request.requestId,
+          requestHash: hashProjectDeletion(deleted.id, request),
+          expectedRevision: 0,
+          deletedRevision: 1,
+          deletedAt: "2026-11-06T00:00:00.000Z",
+          project: deleted,
+        },
+      ],
+    }),
+  );
   return { path: repositoryPath, revision: after.revision };
 }
 
@@ -3443,6 +3471,60 @@ const ACTIONS: Record<string, ActionFixture> = {
       });
     },
   },
+  "POST /projects/:id/settings/archived": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/settings/archived`,
+      body: { expectedRevision: 1, archived: false },
+      status: 200,
+      target: FIXTURE_PROJECT_ID,
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/settings/archived`,
+      body: { expectedRevision: 1, archived: "yes" },
+    },
+    prepare: async (h) => {
+      writeOwnerOnly(
+        projectCatalogPath(h.home),
+        JSON.stringify(projectCatalogFixture(h.workspace)),
+      );
+    },
+    happened: async (h) => {
+      expect(createProjectStore(h.home).read()).toMatchObject({
+        revision: 2,
+        projects: [{ id: FIXTURE_PROJECT_ID, archived: false }],
+      });
+    },
+  },
+  "POST /projects/:id/settings/deletion": {
+    valid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/settings/deletion`,
+      body: {
+        requestId: "40000000-0000-4000-8000-000000000001",
+        expectedRevision: 1,
+        confirmName: "Alpha",
+      },
+      status: 409,
+      target: FIXTURE_PROJECT_ID,
+      ok: false,
+      error: "Archive this project before deleting its record.",
+    },
+    invalid: {
+      path: `/projects/${FIXTURE_PROJECT_ID}/settings/deletion`,
+      body: { requestId: "invalid", expectedRevision: 1, confirmName: "Alpha" },
+    },
+    prepare: async (h) => {
+      writeOwnerOnly(
+        projectCatalogPath(h.home),
+        JSON.stringify(projectCatalogFixture(h.workspace)),
+      );
+    },
+    happened: async (h) => {
+      expect(createProjectStore(h.home).read()).toMatchObject({
+        revision: 1,
+        projects: [{ id: FIXTURE_PROJECT_ID, archived: false }],
+      });
+    },
+  },
   "POST /projects/:id/settings/notifications": {
     valid: {
       path: `/projects/${FIXTURE_PROJECT_ID}/settings/notifications`,
@@ -4840,6 +4922,9 @@ const ACTIONS: Record<string, ActionFixture> = {
 
 /** A concrete path per read row; a row with none fails the suite. */
 const READS: Record<string, string> = {
+  "GET /projects/:id/settings/deletion": `/projects/${FIXTURE_PROJECT_ID}/settings/deletion`,
+  "GET /projects/:id/settings/deletion/:requestId":
+    "/projects/project-40000000-0000-4000-8000-000000000099/settings/deletion/40000000-0000-4000-8000-000000000001",
   "GET /projects/:id/settings/budgets": `/projects/${FIXTURE_PROJECT_ID}/settings/budgets`,
   "GET /projects/:id/inbox-dispositions": `/projects/${FIXTURE_PROJECT_ID}/inbox-dispositions`,
   "GET /projects/:id/inbox-dispositions/requests/:requestId": `/projects/${FIXTURE_PROJECT_ID}/inbox-dispositions/requests/${API_INBOX_READ_ID}`,

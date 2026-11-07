@@ -124,6 +124,7 @@ export type CouncilServiceJob = {
 
 export type CouncilServiceOptions = {
   /** Injected by the project host; no storage or ledger import enters this subtree. */
+  projectAdmission?: import("../projects/project-lifecycle-protocol").ProjectAdmissionFence;
   projectBudget?: import("../projects/project-budgets-protocol").ProjectCouncilBudget;
   workspaceRoot?: string;
   harnessRoot?: string;
@@ -329,6 +330,9 @@ export function createCouncilService(options: CouncilServiceOptions = {}) {
         workspace,
         projectId,
         withQueueLock: options.withQueueLock,
+        ...(options.projectAdmission
+          ? { admit: options.projectAdmission }
+          : {}),
       });
       projectStores.set(storeKey, store);
     }

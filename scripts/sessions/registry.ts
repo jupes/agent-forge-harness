@@ -162,6 +162,7 @@ interface SessionRegistry<Metadata, Record> {
     requestId: string,
     requestHash: string,
     prepare: () => Metadata | Promise<Metadata>,
+    admit?: <T>(publish: () => T | Promise<T>) => Promise<T>,
   ): Promise<Record>;
 }
 interface CodexChatSessionRegistry
@@ -302,6 +303,7 @@ export function createSessionRegistry(
       prepare: () =>
         | OwnedCodingSessionMetadata
         | Promise<OwnedCodingSessionMetadata>,
+      admit?: <T>(publish: () => T | Promise<T>) => Promise<T>,
     ): Promise<OwnedCodingSessionRecord> {
       project(projectId);
       if (
@@ -367,7 +369,8 @@ export function createSessionRegistry(
             "The private session registry is full. Saved Start identities have been kept.",
           );
         try {
-          writeOwnerOnly(file, content);
+          if (admit) await admit(() => writeOwnerOnly(file, content));
+          else writeOwnerOnly(file, content);
         } catch {
           throw new SessionRegistryError(
             503,

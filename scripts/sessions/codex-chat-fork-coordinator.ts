@@ -1,3 +1,4 @@
+import { withProjectAdmission } from "../projects/admission";
 /** Coordinates one exact, durable native Codex Fork and local child adoption. */
 
 import { isAbsolute, relative, resolve, sep } from "node:path";
@@ -285,6 +286,7 @@ export function createCodexChatForkCoordinator(
   const workspace = workspaceKey(resolveCheckout(options.root).workspace),
     registry = createSessionRegistry(options.home, "codex", "chat"),
     journal = createCodexChatForkJournal({
+      admit: (id, publish) => withProjectAdmission(options.home, id, publish),
       home: options.home,
       root: options.root,
       ...(options.now ? { now: options.now } : {}),
