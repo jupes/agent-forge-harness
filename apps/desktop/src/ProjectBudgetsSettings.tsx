@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "preact/hooks";
 import { Button } from "../../../docs/js/ds/Button";
+import { operatorRead } from "../../../docs/js/operator";
 import { pageReads, readOperatorRoute } from "../../../docs/js/use-stream";
 import {
   NO_PROJECT_BUDGETS,
@@ -69,7 +70,7 @@ export function ProjectBudgetsSettings({
       const data = projectBudgetStatusSchema.parse(
         await readOperatorRoute<unknown>(
           `/projects/${encodeURIComponent(projectId)}/settings/budgets`,
-          pageReads(),
+          { ...pageReads(), fetch: operatorRead },
         ),
       );
       if (data.projectId !== projectId) throw Error("Budget scope changed");

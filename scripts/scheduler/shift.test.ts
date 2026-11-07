@@ -937,6 +937,33 @@ describe("forge:shift — the loop, on a fake adapter", () => {
     expect(r.labels("t-3")).toEqual(["queue:queued"]);
   });
 
+  test("project attempt admission rechecks a sibling halt after its own pending check", async () => {
+    let open = (_allowed: boolean) => {};
+    const held = new Promise<boolean>((resolve) => {
+      open = resolve;
+    });
+    let refused = false;
+    const r = rig([queued("t-1"), queued("t-2")], undefined, {
+      beforeAttempt: async ({ beadId }) => {
+        if (beadId === "t-1") return held;
+        refused = true;
+        throw Error("project authority changed");
+      },
+    });
+    const running = shift(r, { concurrency: 2, maxBeads: 2 });
+    try {
+      await until(() => refused && r.labels("t-2").includes("queue:queued"));
+      expect(r.fake.runs).toEqual([]);
+    } finally {
+      open(true);
+    }
+    const done = await running;
+    expect(done.reason).toBe("halted");
+    expect(r.fake.runs).toEqual([]);
+    expect(r.labels("t-1")).toEqual(["queue:queued"]);
+    expect(r.reservations()).toBe(0);
+  });
+
   test.each([
     true,
     false,
@@ -960,6 +987,52 @@ describe("forge:shift — the loop, on a fake adapter", () => {
     expect(done.record.spentUsd).toBe(reported ? 0.6 : 0);
     expect(done.record.unpriced).toBe(reported ? 0 : 1);
     expect(r.labels("t-2")).toEqual(["queue:queued"]);
+  });
+
+  test("project attempt admission errors halt rather than report the admitted bead count", async () => {
+    const r = rig([queued("t-1")], undefined, {
+      beforeAttempt: async () => {
+        throw Error("project authority changed");
+      },
+    });
+    const done = await shift(r, { maxBeads: 1 });
+    expect(done.reason).toBe("halted");
+    expect(r.fake.runs).toEqual([]);
+    expect(r.labels("t-1")).toEqual(["queue:queued"]);
+    expect(r.reservations()).toBe(0);
+  });
+
+  test.each([
+    0, 1,
+  ])("project attempt admission errors stop fresh work while an existing run settles: exit %s", async (exitCode) => {
+    let refused = false;
+    const r = rig([queued("t-1"), queued("t-2"), queued("t-3")], () => "hang", {
+      beforeAttempt: async ({ beadId }) => {
+        if (beadId === "t-2") {
+          refused = true;
+          throw Error("project authority changed");
+        }
+        return true;
+      },
+    });
+    const running = shift(r, { concurrency: 2, repairs: 2 });
+    try {
+      await until(() => refused && r.labels("t-2").includes("queue:queued"));
+      expect(r.fake.runs).toHaveLength(1);
+      expect(r.fake.runs[0]?.endedAt).toBeUndefined();
+      expect(r.labels("t-3")).toEqual(["queue:queued"]);
+    } finally {
+      if (r.fake.runs.length > 0) r.fake.endRun(0, exitCode);
+    }
+    const done = await running;
+    expect(done.reason).toBe("halted");
+    expect(r.fake.runs).toHaveLength(1);
+    expect(r.labels("t-1")).toEqual([
+      exitCode === 0 ? "queue:review" : "queue:queued",
+    ]);
+    expect(r.labels("t-2")).toEqual(["queue:queued"]);
+    expect(r.labels("t-3")).toEqual(["queue:queued"]);
+    expect(r.reservations()).toBe(0);
   });
 
   test("a busy host admits nothing: the shift waits rather than drain, and ends at its time", async () => {
