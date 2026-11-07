@@ -29,11 +29,11 @@
   color: var(--af-muted, #b1b6c7);
   font-size: 12px;
 }
-.af-workmap-caption {
+.af-workmap .af-workmap-caption {
   margin: 8px 20px 14px;
   line-height: 1.6;
 }
-.af-workmap-notice {
+.af-workmap .af-workmap-notice {
   margin: 10px 16px;
   padding: 10px 12px;
   border-left: 3px solid #e4b66c;

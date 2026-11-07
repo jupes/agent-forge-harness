@@ -92,8 +92,9 @@ export function BeadWorkMap({
       ))}
       {map.unavailableBlockers > 0 && (
         <p class="af-workmap-notice">
-          {map.unavailableBlockers} open prerequisite references are outside
-          this project or unavailable. Their identities are not shown.
+          {map.unavailableBlockers} open prerequisite{" "}
+          {map.unavailableBlockers === 1 ? "reference is" : "references are"}{" "}
+          outside this project or unavailable. Their identities are not shown.
         </p>
       )}
       {cycles > 0 && (
@@ -390,7 +391,7 @@ function DependencyGraph({ map, ...actions }: Actions & { map: WorkMapModel }) {
   return (
     <div class="af-workmap-dependencies">
       <div class="af-workmap-legend">
-        <span>→ Prerequisite to blocked work</span>
+        <span>→ Prerequisite to dependent work</span>
         <span>Dashed: requires</span>
         <span>Dotted: related, not blocking</span>
         <span class="af-workmap-cycle">Amber: cycle</span>
@@ -489,17 +490,23 @@ function DependencyGraph({ map, ...actions }: Actions & { map: WorkMapModel }) {
                   focusable="false"
                 >
                   <defs>
-                    <marker
-                      id={marker}
-                      viewBox="0 0 10 10"
-                      refX="9"
-                      refY="5"
-                      markerWidth="7"
-                      markerHeight="7"
-                      orient="auto-start-reverse"
-                    >
-                      <path d="M 0 0 L 10 5 L 0 10 z" fill="context-stroke" />
-                    </marker>
+                    {[
+                      { id: marker, color: "#91a6da" },
+                      { id: `${marker}-cycle`, color: "#efbc6d" },
+                    ].map((arrow) => (
+                      <marker
+                        key={arrow.id}
+                        id={arrow.id}
+                        viewBox="0 0 10 10"
+                        refX="9"
+                        refY="5"
+                        markerWidth="7"
+                        markerHeight="7"
+                        orient="auto-start-reverse"
+                      >
+                        <path d="M 0 0 L 10 5 L 0 10 z" fill={arrow.color} />
+                      </marker>
+                    ))}
                   </defs>
                   {graph.edges.map((edge) => {
                     const from = positions.get(edge.from)!,
@@ -522,7 +529,7 @@ function DependencyGraph({ map, ...actions }: Actions & { map: WorkMapModel }) {
                         markerEnd={
                           edge.type === "relates"
                             ? undefined
-                            : `url(#${marker})`
+                            : `url(#${marker}${edge.cyclic ? "-cycle" : ""})`
                         }
                       />
                     );

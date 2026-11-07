@@ -58,8 +58,8 @@ const sample = (): ProjectBeadsPage => ({
       parent: "map-feature",
       status: "in_progress",
       ready: false,
-      blocked: true,
-      blockers: ["map-design"],
+      blocked: false,
+      blockers: [],
       queue: "running",
     }),
     bead("map-review", {
@@ -171,8 +171,8 @@ test("work map expands real hierarchy, navigates dependencies and retains the di
       .getByRole("button", { name: "Dependency graph", exact: true })
       .click();
     await expect(map).toContainText("Dependency cycle: 2 beads");
-    await expect(map).toContainText("1 open prerequisite references");
-    await expect(map).toContainText("Prerequisite to blocked work");
+    await expect(map).toContainText("1 open prerequisite reference");
+    await expect(map).toContainText("Prerequisite to dependent work");
     await map
       .getByRole("button", { name: "Zoom graph out", exact: true })
       .click();
@@ -192,7 +192,8 @@ test("work map expands real hierarchy, navigates dependencies and retains the di
       page.getByRole("region", { name: "Bead map-design", exact: true }),
     ).toContainText("Controlled work-map bead details");
     await expect(map.getByLabel("Graph zoom")).toHaveText("80%");
-    await page.screenshot({
+    await map.getByRole("button", { name: "Fit diagram", exact: true }).click();
+    await map.screenshot({
       path: "test-results/work-map-evidence/dependencies.png",
     });
     await region

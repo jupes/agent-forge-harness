@@ -12,7 +12,7 @@ a branch, Left to collapse or reach its parent, Enter to inspect. **Open** links
 reach the existing full bead page. Indentation stops growing on very deep trees;
 the actual level remains available to assistive technology and is labelled.
 
-Dependency arrows point **from prerequisite to blocked work**. Solid arrows are
+Dependency arrows point **from prerequisite to dependent work**. Solid arrows are
 `blocks`, dashed arrows are `requires`, dotted lines are non-blocking `relates`.
 Amber identifies cycles. Search retains directly connected context so blockers
 do not disappear; the outline includes those context beads and their ancestors.
@@ -53,6 +53,13 @@ filtered read and connected context. Progress always uses the full scoped data.
 
 The fastest route in an already installed checkout is the desktop renderer in
 your browser. Use **Bun 1.4.2**, the version pinned in the Quality workflow:
+
+Live Beads also requires `bd` on PATH (`bd --version`) and an initialized local
+tracker in the selected checkout. Native packaging bundles its Bun runtime,
+but does not bundle the Beads CLI or your tracker data. If your terminal has an
+older Bun, prepend the chosen 1.4.2 directory to that terminal's PATH before
+starting the app, so its child hearth processes find the same version; no
+system-wide PATH change is needed.
 
 ```powershell
 # From the repository root, with Bun 1.4.2 on PATH:
