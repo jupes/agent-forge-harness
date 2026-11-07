@@ -157,15 +157,20 @@ export function readWorktreeCleanupInventory(home: string) {
 export type CleanupRow = z.infer<typeof row>;
 export interface WorktreeCleanupLease {
   read(): CleanupRow[];
+  write(record: unknown): void;
 }
 
 /** Host-only lease; the callback receives no persistence or removal capability. */
 export async function withWorktreeCleanupLease<T>(
   home: string,
   work: (scope: WorktreeCleanupLease) => Promise<T>,
-  controls: { persist?: typeof writeOwnerOnly } = {},
+  controls: {
+    persist?: typeof writeOwnerOnly;
+    persistJournal?: typeof writeOwnerOnly;
+  } = {},
 ): Promise<T> {
   const persist = controls.persist ?? writeOwnerOnly;
+  const persistJournal = controls.persistJournal ?? writeOwnerOnly;
   const directory = join(home, "project-worktree-cleanup");
   const file = join(directory, "operations.json");
   const lock = join(directory, "write.lock.db");
@@ -216,21 +221,116 @@ export async function withWorktreeCleanupLease<T>(
     return `${info.dev}:${info.ino}`;
   };
   const lockPin = lockIdentity();
+  const assertIdentity = () => {
+    if (
+      directoryIdentity(home) !== homePin ||
+      directoryIdentity(directory) !== directoryPin ||
+      lockIdentity() !== lockPin
+    )
+      throw Error("Cleanup lease identity changed");
+  };
   const result = await withQueueLock(
     lock,
     async () => {
-      if (
-        directoryIdentity(home) !== homePin ||
-        directoryIdentity(directory) !== directoryPin ||
-        lockIdentity() !== lockPin
-      )
-        throw Error("Cleanup lease identity changed");
-      const baseline = readWorktreeCleanupInventory(home);
-      let active = true;
+      assertIdentity();
+      let baseline = readWorktreeCleanupInventory(home);
+      let active = true,
+        poisoned = false,
+        saving = false;
       const scope = Object.freeze({
         read: () => {
-          if (!active) throw Error("Cleanup lease has ended");
+          if (!active || poisoned || saving)
+            throw Error("Cleanup lease is unavailable");
           return structuredClone(baseline);
+        },
+        write: (input: unknown) => {
+          if (!active || poisoned) throw Error("Cleanup lease is unavailable");
+          if (saving) {
+            poisoned = true;
+            throw Error("Reentrant cleanup publication");
+          }
+          saving = true;
+          try {
+            const next = row.parse(input);
+            if (poisoned) throw Error("Cleanup publication is poisoned");
+            const previous = baseline.find(
+              (entry) =>
+                entry.original.request.requestId ===
+                next.original.request.requestId,
+            );
+            if (previous) {
+              if (
+                JSON.stringify(previous.original) !==
+                JSON.stringify(next.original)
+              )
+                throw Error("Cleanup originals and audits are immutable");
+              if (previous.phase === next.phase) {
+                if (JSON.stringify(previous) !== JSON.stringify(next))
+                  throw Error("Cleanup phase evidence is immutable");
+              } else if (
+                !(
+                  (previous.phase === "reserved" &&
+                    ["attempted", "refused", "unknown"].includes(next.phase)) ||
+                  (previous.phase === "attempted" &&
+                    ["confirmed", "unknown"].includes(next.phase))
+                ) ||
+                (next.phase !== "attempted" &&
+                  next.attemptedAt !== previous.attemptedAt)
+              )
+                throw Error("Illegal cleanup phase transition");
+            } else {
+              if (next.phase !== "reserved" && next.phase !== "refused")
+                throw Error(
+                  "New cleanup originals must be reserved or refused",
+                );
+              const target = next.original.request;
+              if (
+                baseline.some((entry) => {
+                  const held = entry.original.request;
+                  return (
+                    entry.phase !== "confirmed" &&
+                    entry.phase !== "refused" &&
+                    registryPathKey(held.repository) ===
+                      registryPathKey(target.repository) &&
+                    (held.expectedRecord.id === target.expectedRecord.id ||
+                      registryPathKey(held.expectedRecord.path) ===
+                        registryPathKey(target.expectedRecord.path))
+                  );
+                })
+              )
+                throw Error("Unresolved cleanup ownership retains this target");
+            }
+            const records = journal.parse({
+              version: 1,
+              records: previous
+                ? baseline.map((entry) => (entry === previous ? next : entry))
+                : [...baseline, next],
+            }).records;
+            const content = JSON.stringify({ version: 1, records });
+            if (Buffer.byteLength(content) > 2 * 1024 * 1024)
+              throw Error("Cleanup history is full");
+            assertIdentity();
+            if (
+              JSON.stringify(readWorktreeCleanupInventory(home)) !==
+              JSON.stringify(baseline)
+            )
+              throw Error("Cleanup history changed before publication");
+            if (poisoned) throw Error("Cleanup publication is poisoned");
+            assertIdentity();
+            persistJournal(file, content);
+            if (poisoned) throw Error("Cleanup publication is poisoned");
+            assertIdentity();
+            const confirmed = readWorktreeCleanupInventory(home);
+            if (JSON.stringify(confirmed) !== JSON.stringify(records))
+              throw Error("Cleanup publication readback is unconfirmed");
+            assertIdentity();
+            baseline = structuredClone(confirmed);
+          } catch (error) {
+            poisoned = true;
+            throw error;
+          } finally {
+            saving = false;
+          }
         },
       });
       try {

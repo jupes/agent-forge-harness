@@ -422,3 +422,40 @@ test("cleanup raw inventory preserves global native originals and rejects duplic
   expect(() => readWorktreeCleanupInventory(f.home)).toThrow();
   expect(readFileSync(f.file, "utf8")).toBe(bytes);
 });
+
+test("cleanup lease publishes durable monotone originals through its scoped writer", async () => {
+  const f = fixture();
+  writeOwnerOnly(f.file, '{"version":1,"records":[]}');
+  const reserved = {
+    ...f.row,
+    phase: "reserved" as const,
+    attemptedAt: null,
+    reason: null,
+  };
+  let escaped = (_record: unknown): void => {
+    throw Error("Writer not captured");
+  };
+  await withWorktreeCleanupLease(f.home, async (scope) => {
+    escaped = scope.write;
+    const copy = structuredClone(reserved);
+    scope.write(copy);
+    copy.original.audit.eventId = 999;
+    expect(scope.read()).toEqual([reserved]);
+    const attempted = {
+      ...reserved,
+      phase: "attempted" as const,
+      attemptedAt: stamp,
+    };
+    scope.write(attempted);
+    const confirmed = {
+      ...attempted,
+      phase: "confirmed" as const,
+      endedAt: stamp,
+      outcome: "reviewed-remove-returned-ok" as const,
+    };
+    scope.write(confirmed);
+    expect(readWorktreeCleanupInventory(f.home)).toEqual([confirmed]);
+  });
+  expect(() => escaped(reserved)).toThrow("lease");
+  expect(readWorktreeCleanupInventory(f.home)[0]?.phase).toBe("confirmed");
+});
