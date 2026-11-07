@@ -69,8 +69,15 @@ export const projectBudgetStatusSchema = z
   })
   .strict();
 export type ProjectBudgetStatus = z.infer<typeof projectBudgetStatusSchema>;
+declare const retirementProofBrand: unique symbol;
+/** Host-only capability minted by the durable Council original owner; never serialized. */
+export type ProjectCouncilRetirementProof = {
+  readonly [retirementProofBrand]: true;
+};
+
 /** Council injects this runtime-neutral seam; it must never import private-home/ledger storage. */
 export interface ProjectCouncilBudget {
+  retireUnsent(proof: ProjectCouncilRetirementProof): Promise<void>;
   reserve(
     projectId: string,
     requestId: string,

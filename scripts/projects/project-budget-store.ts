@@ -2,6 +2,7 @@ import { lstatSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
 import { ConversationError } from "../conversations/error";
+import { readProjectCouncilRetirementProof } from "../council/project-original-store";
 import {
   ensurePrivateHome,
   readHomeFile,
@@ -32,7 +33,7 @@ const allocation = z
       .nullable(),
     actualUsd: z.number().finite().nonnegative().nullable(),
     estimated: z.number().finite().nonnegative().nullable(),
-    state: z.enum(["attempted", "settled", "unknown"]),
+    state: z.enum(["attempted", "settled", "unknown", "retired"]),
   })
   .strict();
 const schema = z
@@ -53,7 +54,8 @@ const schema = z
                 row.actual === micro(row.actualUsd) &&
                 row.estimated === null
               : row.actual === null && row.actualUsd === null) &&
-            (row.state !== "attempted" || row.estimated === null),
+            (!["attempted", "retired"].includes(row.state) ||
+              row.estimated === null),
         )
       );
     } catch {
@@ -124,7 +126,9 @@ export function createProjectBudgetStore(home: string, now = () => new Date()) {
     const today = day();
     const rows = state.records.filter(
       (row) =>
-        row.projectId === id && (row.day === today || row.state !== "settled"),
+        row.projectId === id &&
+        row.state !== "retired" &&
+        (row.day === today || row.state !== "settled"),
     );
     return {
       projectId: id,
@@ -161,6 +165,37 @@ export function createProjectBudgetStore(home: string, now = () => new Date()) {
     return changed.value;
   };
   const hooks: ProjectCouncilBudget = {
+    async retireUnsent(proof) {
+      await mutate((state) => {
+        const identity = readProjectCouncilRetirementProof(proof, home);
+        if (!identity)
+          throw new ConversationError(
+            409,
+            "Budget retirement proof is not authoritative for this home.",
+          );
+        const row = state.records.find(
+          (item) =>
+            item.projectId === identity.projectId &&
+            item.requestId === identity.requestId,
+        );
+        if (!row) return; // No daily protection existed at admission.
+        if (
+          row.hash !== identity.hash ||
+          row.allocation !== micro(identity.allocationUsd)
+        )
+          throw new ConversationError(
+            409,
+            "Budget retirement identity changed.",
+          );
+        if (row.state === "retired") return;
+        if (row.state !== "attempted")
+          throw new ConversationError(
+            409,
+            "Unreported or settled costs cannot be retired as unsent.",
+          );
+        row.state = "retired";
+      });
+    },
     async reserve(id, requestId, hash, allocationUsd) {
       await mutate((state) => {
         const current = project(id);
@@ -181,6 +216,11 @@ export function createProjectBudgetStore(home: string, now = () => new Date()) {
               409,
               "The budget allocation does not match the original Council request.",
             );
+          if (existing.state === "retired")
+            throw new ConversationError(
+              409,
+              "This Council budget original was retired and cannot be readmitted.",
+            );
           return;
         }
         const cap = current.budgets?.dailyApiKeyCapUsd;
@@ -200,6 +240,7 @@ export function createProjectBudgetStore(home: string, now = () => new Date()) {
           .filter(
             (row) =>
               row.projectId === id &&
+              row.state !== "retired" &&
               (row.day === day() || row.state !== "settled"),
           )
           .reduce(
@@ -238,16 +279,20 @@ export function createProjectBudgetStore(home: string, now = () => new Date()) {
         if (!row) return; // The project had no daily protection at admission.
         if (row.hash !== hash)
           throw new ConversationError(409, "Budget receipt identity changed.");
-        if (row.state === "settled") return;
-        if (
-          result &&
-          !result.costIsEstimate &&
-          result.actualCostUsd !== null &&
-          Number.isFinite(result.actualCostUsd) &&
-          result.actualCostUsd >= 0
-        ) {
-          row.actual = micro(result.actualCostUsd);
-          row.actualUsd = result.actualCostUsd;
+        if (row.state === "settled" || row.state === "retired") return;
+        const actualUsd =
+          result?.costIsEstimate === false ? result.actualCostUsd : null;
+        let actual: number | null = null;
+        if (typeof actualUsd === "number") {
+          try {
+            actual = micro(actualUsd);
+          } catch {
+            // Unsupported evidence retains the original admission liability.
+          }
+        }
+        if (actual !== null && typeof actualUsd === "number") {
+          row.actual = actual;
+          row.actualUsd = actualUsd;
           row.estimated = null;
           row.state = "settled";
         } else {

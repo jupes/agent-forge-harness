@@ -20,7 +20,39 @@ import {
   readHomeFileBounded,
 } from "../hearth/home-guard";
 import { writeOwnerOnly } from "../hearth/token";
+import { nativePhysicalPath } from "../native-realpath";
+import type { ProjectCouncilRetirementProof } from "../projects/project-budgets-protocol";
 import { parseCouncilProfileJson } from "./types";
+
+type RetirementIdentity = Readonly<{
+  home: string;
+  store: string;
+  projectId: string;
+  requestId: string;
+  hash: string;
+  allocationUsd: number;
+}>;
+const retirementProofs = new WeakMap<object, RetirementIdentity>();
+function retirementHome(home: string): string {
+  const path = nativePhysicalPath(home),
+    info = lstatSync(path, { bigint: true });
+  if (!info.isDirectory() || readHomeFile(home).problem !== null)
+    throw Error("Unverified retirement home");
+  return `${process.platform === "win32" ? path.toLowerCase() : path}\0${info.dev}:${info.ino}`;
+}
+/** Host verifier reads capability metadata only; it never acquires the original mutex. */
+export function readProjectCouncilRetirementProof(
+  proof: unknown,
+  home: string,
+): RetirementIdentity | null {
+  if (!proof || typeof proof !== "object") return null;
+  const identity = retirementProofs.get(proof);
+  try {
+    return identity?.home === retirementHome(home) ? identity : null;
+  } catch {
+    return null;
+  }
+}
 
 const JOURNAL_VERSION = 1 as const;
 const directoryName = "council-reviews";
@@ -295,6 +327,8 @@ export function createProjectCouncilOriginalStore(options: {
   workspace: string;
   projectId: string;
   withQueueLock: ProjectCouncilQueueLock;
+  /** Trusted host-only persistence seam; never accepted from API input. */
+  persist?: typeof writeOwnerOnly;
   admit?: import("../projects/project-lifecycle-protocol").ProjectAdmissionFence;
 }) {
   if (!options.workspace || options.workspace.length > 1024)
@@ -435,7 +469,7 @@ export function createProjectCouncilOriginalStore(options: {
     mkdirSync(directory, { recursive: true });
     ensurePrivateHome(directory);
     try {
-      writeOwnerOnly(file, text);
+      (options.persist ?? writeOwnerOnly)(file, text);
     } catch {
       throw new ConversationError(
         503,
@@ -653,8 +687,14 @@ export function createProjectCouncilOriginalStore(options: {
         );
       return found;
     },
-    retire(projectId: string, requestId: string, intentHash: string) {
-      return locked((state) => {
+    retire(
+      projectId: string,
+      requestId: string,
+      intentHash: string,
+      account?: (proof: ProjectCouncilRetirementProof) => Promise<void>,
+    ) {
+      return locked(async (state) => {
+        const homeAuthority = retirementHome(options.home);
         const original = state.records.find(
           (item) => item.requestId === requestId,
         );
@@ -676,15 +716,48 @@ export function createProjectCouncilOriginalStore(options: {
             409,
             "The Council original hash does not match.",
           );
-        if (original.state !== "reserved")
+        if (
+          !["reserved", "retired"].includes(original.state) ||
+          original.dispatchClaimedAt !== null
+        )
           throw new ConversationError(
             409,
             "Only an uncommitted Council original can be retired.",
           );
-        original.state = "retired";
-        original.updatedAt = new Date().toISOString();
-        saveState(state);
-        return structuredClone(original);
+        if (original.state === "reserved") {
+          original.state = "retired";
+          original.updatedAt = new Date().toISOString();
+          saveState(state);
+        }
+        const confirmed = readState().records.find(
+          (row) => row.requestId === requestId,
+        );
+        if (
+          !confirmed ||
+          canonical(confirmed) !== canonical(original) ||
+          confirmed.state !== "retired" ||
+          confirmed.dispatchClaimedAt !== null ||
+          retirementHome(options.home) !== homeAuthority
+        )
+          throw new ConversationError(
+            503,
+            "Council retirement could not be verified.",
+          );
+        // No native/provider lifetime evidence is created by this unsent-original capability.
+        const proof = Object.freeze({}) as ProjectCouncilRetirementProof;
+        retirementProofs.set(
+          proof,
+          Object.freeze({
+            home: homeAuthority,
+            store: journalHash,
+            projectId,
+            requestId,
+            hash: confirmed.intentHash,
+            allocationUsd: confirmed.options.maxUsd,
+          }),
+        );
+        await account?.(proof);
+        return structuredClone(confirmed);
       });
     },
     claimDispatch(

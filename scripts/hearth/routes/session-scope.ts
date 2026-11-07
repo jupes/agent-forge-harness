@@ -1,12 +1,15 @@
-import { realpathSync, statSync } from "node:fs";
-import { resolve } from "node:path";
+import { statSync } from "node:fs";
 import type { ConversationObject } from "../../../types/conversation";
 import type { OwnedSessionMetadata } from "../../../types/owned-session";
 import type { ClaudeSessionLaunch } from "../../../types/session-launch";
 import { ConversationError } from "../../conversations/error";
-import { selectProjectBeads, workspaceKey } from "../../projects/scope";
-import { listWorktrees } from "../../scheduler/worktrees";
-import { createSessionRegistry } from "../../sessions/registry";
+import { nativePhysicalPath } from "../../native-realpath";
+import { selectProjectBeads } from "../../projects/scope";
+import { listWorktrees, registryPathKey } from "../../scheduler/worktrees";
+import {
+  createSessionRegistry,
+  sameSessionFilesystemPath,
+} from "../../sessions/registry";
 import { localStateRoot } from "./dev-api";
 import { keeperAboutValidator } from "./keeper-read";
 import type { ReadDeps } from "./operator-reads";
@@ -14,6 +17,20 @@ import type { ProjectSnapshot } from "./project-summaries";
 
 function refuse(reason: string): never {
   throw new ConversationError(409, `${reason} No new turn was accepted.`);
+}
+
+export function sessionFilesystemContains(
+  root: string,
+  path: string,
+  platform: "win32" | "posix" = process.platform === "win32"
+    ? "win32"
+    : "posix",
+): boolean {
+  const parent = registryPathKey(root, platform),
+    candidate = registryPathKey(path, platform),
+    separator = platform === "win32" ? "\\" : "/",
+    boundary = parent.endsWith(separator) ? parent : parent + separator;
+  return candidate === parent || candidate.startsWith(boundary);
 }
 
 /** Shared current project/repository authority for Start and explicit worktree creation. */
@@ -36,27 +53,27 @@ export function createSessionRepositoryScopeValidator(
       );
     if (project.archived)
       refuse("This project is archived. Restore it before starting work.");
-    const scope = project.workspaces.find(
-      (item) => workspaceKey(item.root) === workspaceKey(deps.workspace),
+    const scope = project.workspaces.find((item) =>
+      sameSessionFilesystemPath(item.root, deps.workspace),
     );
     if (
       !scope ||
-      workspaceKey(metadata.workspace) !== workspaceKey(deps.workspace)
+      !sameSessionFilesystemPath(metadata.workspace, deps.workspace)
     )
       refuse("This hearth does not serve the selected project workspace.");
     if (
-      !scope.repositories.some(
-        (path) => workspaceKey(path) === workspaceKey(metadata.repository),
+      !scope.repositories.some((path) =>
+        sameSessionFilesystemPath(path, metadata.repository),
       )
     )
       refuse("The repository is outside this project's current scope.");
     let main: string;
     try {
-      main = realpathSync.native(localStateRoot(deps.root));
+      main = nativePhysicalPath(localStateRoot(deps.root));
     } catch {
       refuse("The served repository is unavailable.");
     }
-    if (workspaceKey(main) !== workspaceKey(metadata.repository))
+    if (!sameSessionFilesystemPath(main, metadata.repository))
       refuse(
         "Open the hearth for that repository before starting its session.",
       );
@@ -102,7 +119,7 @@ export function createSessionScopeValidator(
     const selected = listed.entries.find(
       (entry) =>
         !entry.missing &&
-        workspaceKey(entry.path) === workspaceKey(metadata.worktree),
+        sameSessionFilesystemPath(entry.path, metadata.worktree),
     );
     if (!selected)
       refuse(
@@ -110,23 +127,30 @@ export function createSessionScopeValidator(
       );
     let canonical: string;
     try {
-      if (!statSync(selected.path).isDirectory())
+      if (
+        !statSync(selected.path).isDirectory() ||
+        !statSync(metadata.worktree).isDirectory()
+      )
         refuse("The selected worktree is unavailable.");
-      canonical = realpathSync.native(selected.path);
+      canonical = nativePhysicalPath(selected.path);
+      if (
+        !sameSessionFilesystemPath(
+          nativePhysicalPath(metadata.worktree),
+          canonical,
+        )
+      )
+        refuse("The selected worktree identity changed.");
     } catch {
       refuse("The selected worktree is unavailable.");
     }
     if (launch?.extraDirectories)
       for (const path of launch.extraDirectories) {
-        const candidate = workspaceKey(resolve(path)),
-          root = workspaceKey(canonical);
-        if (candidate !== root && !candidate.startsWith(`${root}/`))
+        if (!sessionFilesystemContains(canonical, path))
           refuse("Extra directories must remain inside the checked worktree.");
         try {
-          const actual = workspaceKey(realpathSync.native(path));
           if (
             !statSync(path).isDirectory() ||
-            (actual !== root && !actual.startsWith(`${root}/`))
+            !sessionFilesystemContains(canonical, nativePhysicalPath(path))
           )
             refuse(
               "An extra directory is linked outside the checked worktree.",
@@ -145,9 +169,9 @@ export function createSessionScopeValidator(
           .find((record) => record.id === reference.id);
         if (
           owned &&
-          workspaceKey(owned.workspace) === workspaceKey(deps.workspace) &&
-          scope.repositories.some(
-            (path) => workspaceKey(path) === workspaceKey(owned.repository),
+          sameSessionFilesystemPath(owned.workspace, deps.workspace) &&
+          scope.repositories.some((path) =>
+            sameSessionFilesystemPath(path, owned.repository),
           )
         )
           continue;

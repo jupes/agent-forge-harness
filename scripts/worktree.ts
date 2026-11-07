@@ -90,8 +90,13 @@ if (command === "create") {
   });
   print(
     created.ok
-      ? { ok: true, worktree: created.value, warnings: [STASH_WARNING] }
-      : { ok: false, error: created.error },
+      ? {
+          ok: true,
+          state: created.state,
+          worktree: created.value,
+          warnings: [STASH_WARNING],
+        }
+      : created,
   );
 } else if (command === "list") {
   const listed = listWorktrees(main);

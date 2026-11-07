@@ -19,6 +19,7 @@ import {
   createSessionRegistry,
   MAX_OWNED_SESSIONS,
   MAX_SESSION_REGISTRY_BYTES,
+  sameSessionFilesystemPath,
   sessionRegistryFile,
 } from "./registry";
 
@@ -27,6 +28,55 @@ afterEach(() => {
   for (const home of homes.splice(0))
     rmSync(home, { recursive: true, force: true });
 });
+
+test("POSIX Session filesystem authority distinguishes a literal backslash sibling from a nested path", () => {
+  expect(
+    sameSessionFilesystemPath("/repo/trees/a\\b", "/repo/trees/a/b", "posix"),
+  ).toBe(false);
+});
+
+test("Session filesystem authority preserves Windows spelling equivalence and legal POSIX backslashes", () => {
+  expect(
+    sameSessionFilesystemPath("C:\\Repo\\Trees\\A", "c:/repo/trees/a", "win32"),
+  ).toBe(true);
+  expect(
+    sameSessionFilesystemPath("/repo/trees/a\\b", "/repo/trees/a\\b", "posix"),
+  ).toBe(true);
+  expect(
+    sameSessionFilesystemPath("/repo/trees/a ", "/repo/trees/a", "posix"),
+  ).toBe(false);
+});
+
+test.skipIf(process.platform === "win32")(
+  "POSIX retained workspace lookup distinguishes literal backslashes without requiring historical paths to exist",
+  async () => {
+    const f = fixture(),
+      nested = join(f.home, "nested", "workspace"),
+      literal = join(f.home, "nested\\workspace");
+    const records = [];
+    for (const workspace of [nested, literal])
+      records.push(
+        await f.registry.reserve(
+          f.projectId,
+          randomUUID(),
+          "e".repeat(64),
+          async () => ({ ...f.metadata, workspace }),
+        ),
+      );
+    const file = sessionRegistryFile(f.home),
+      before = readFileSync(file, "utf8"),
+      restored = createSessionRegistry(f.home);
+    expect(existsSync(nested)).toBe(false);
+    expect(existsSync(literal)).toBe(false);
+    const nestedRecord = records[0],
+      literalRecord = records[1];
+    if (!nestedRecord || !literalRecord)
+      throw Error("Expected both retained workspace fixtures");
+    expect(restored.listWorkspace(nested)).toEqual([nestedRecord]);
+    expect(restored.listWorkspace(literal)).toEqual([literalRecord]);
+    expect(readFileSync(file, "utf8")).toBe(before);
+  },
+);
 
 test("separate processes share one reservation lock and only one prepares the exact Start", async () => {
   const { home, projectId, metadata, registry } = fixture();

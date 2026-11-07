@@ -110,6 +110,8 @@ function fixture(
     ) => Promise<ProjectCreateIdentity> | ProjectCreateIdentity;
     preview?: () => Promise<ProjectScopePreview>;
     commitReply?: "unknown";
+    projectName?: () => string;
+    projectWorkspaces?: () => ProjectCreateOriginal["workspaces"];
     refreshProjectHome?: () => Promise<ProjectsHome>;
   } = {},
 ) {
@@ -141,10 +143,10 @@ function fixture(
   const project = () => ({
     id: createdProjectId,
     slug: original.slug,
-    name: original.name,
+    name: overrides.projectName?.() ?? original.name,
     description: original.description,
     icon: original.icon,
-    workspaces: [
+    workspaces: overrides.projectWorkspaces?.() ?? [
       {
         root: workspace,
         repositories: [workspace],
@@ -684,4 +686,195 @@ test("the local hash is canonical and binds the exact frozen reservation", async
   expect(await projectCreateRequestHash(request)).toBe(
     await projectCreateRequestHash(reordered),
   );
+});
+
+test("contradictory protected recovery keeps one unknown original instead of a retryable duplicate", async () => {
+  let mismatch = false;
+  const { owner, identities, writes } = fixture([], {
+    original: (_id, current) =>
+      mismatch
+        ? {
+            ...current,
+            original: { ...current.original, name: "Different original" },
+          }
+        : current,
+  });
+  await owner.recover();
+  expect(await owner.reserve(original, preview)).toBe(true);
+  await owner.recover();
+  const local = identities.list()[0];
+  if (!local) throw Error("Missing local fixture original");
+  await identities.update(requestId, local.requestHash, "not-sent");
+  const retained = structuredClone(identities.list());
+  mismatch = true;
+  await owner.recover();
+  const entries = owner.get().entries;
+  expect(entries).toHaveLength(1);
+  expect(entries[0]).toMatchObject({ phase: "unknown", identity: null });
+  expect(entries[0]?.local?.request.requestId).toBe(requestId);
+  expect(entries[0]?.original).toEqual(original);
+  expect(entries.some((entry) => entry.phase === "not-sent")).toBe(false);
+  expect(await owner.retryReservation(requestId)).toBe(false);
+  expect(writes.map((write) => write.kind)).toEqual(["reserve"]);
+  expect(identities.list()).toEqual(retained);
+  owner.dispose();
+});
+
+test.each([
+  "hash",
+  "UUID",
+  "unreadable",
+] as const)("protected %s contradictions retain one unknown original and prohibit reservation replay", async (failure) => {
+  let contradict = false;
+  const { owner, identities, writes } = fixture([], {
+    original: (_id, current) => {
+      if (!contradict) return current;
+      if (failure === "unreadable") throw Error("Protected read unavailable");
+      return failure === "hash"
+        ? { ...current, requestHash: "f".repeat(64) }
+        : { ...current, requestId: "ab847e06-4f01-4dd3-a425-47bf9053e099" };
+    },
+  });
+  await owner.recover();
+  expect(await owner.reserve(original, preview)).toBe(true);
+  await owner.recover();
+  const local = identities.list()[0];
+  if (!local) throw Error("Missing local fixture original");
+  await identities.update(requestId, local.requestHash, "not-sent");
+  const retained = structuredClone(identities.list());
+  contradict = true;
+  await owner.recover();
+  const entries = owner.get().entries;
+  expect(entries).toHaveLength(1);
+  expect(entries[0]).toMatchObject({ phase: "unknown", identity: null });
+  expect(entries[0]?.local?.request.requestId).toBe(requestId);
+  expect(entries[0]?.original).toEqual(original);
+  expect(await owner.retryReservation(requestId)).toBe(false);
+  expect(writes.map((write) => write.kind)).toEqual(["reserve"]);
+  expect(identities.list()).toEqual(retained);
+  owner.dispose();
+});
+
+test.each([
+  "name",
+  "scope",
+])("a lost create reply followed by a project %s edit retains confirmed creation truth after recovery without opening", async (field) => {
+  let currentName = original.name;
+  let currentWorkspaces = structuredClone(original.workspaces);
+  const { owner, identities, writes } = fixture([], {
+    commitReply: "unknown",
+    projectName: () => currentName,
+    projectWorkspaces: () => currentWorkspaces,
+    original: (_id, current) => {
+      if (current.state === "created") {
+        if (field === "name") currentName = "Renamed in another tab";
+        else
+          currentWorkspaces = original.workspaces.map((work) => ({
+            ...work,
+            epicIds: ["epic-b"],
+          }));
+      }
+      return current;
+    },
+  });
+  const opened: string[] = [];
+  await owner.recover();
+  expect(await owner.reserve(original, preview)).toBe(true);
+  await owner.recover();
+  const held = identities.list()[0];
+  if (!held) throw Error("Missing saved creation original");
+  expect(
+    await owner.commit(requestId, (created) => opened.push(created.projectId)),
+  ).toBeNull();
+  await owner.recover();
+  if (field === "name") expect(currentName).toBe("Renamed in another tab");
+  else expect(currentWorkspaces[0]?.epicIds).toEqual(["epic-b"]);
+  expect(identities.list()).toMatchObject([
+    {
+      request: held.request,
+      requestHash: held.requestHash,
+      state: "created",
+    },
+  ]);
+  expect(owner.get().entries).toEqual([]);
+  expect(opened).toEqual([]);
+  expect(await owner.commit(requestId)).toBeNull();
+  expect(writes.map((write) => write.kind)).toEqual(["reserve", "commit"]);
+  expect(owner.get().notice).toContain("Project creation is verified");
+  expect(owner.get().notice).toContain("before opening");
+  owner.dispose();
+});
+
+test("an unreadable protected created original remains unconfirmed and never opens", async () => {
+  const { owner, identities, writes } = fixture([], {
+    commitReply: "unknown",
+    original: (_id, current) => {
+      if (current.state === "created")
+        throw Error("Protected read unavailable");
+      return current;
+    },
+  });
+  const opened: string[] = [];
+  await owner.recover();
+  expect(await owner.reserve(original, preview)).toBe(true);
+  await owner.recover();
+  expect(
+    await owner.commit(requestId, (created) => opened.push(created.projectId)),
+  ).toBeNull();
+  await owner.recover();
+  expect(identities.list()).toMatchObject([
+    { state: "unknown", request: { requestId, original } },
+  ]);
+  expect(owner.get().entries).toMatchObject([{ phase: "unknown", original }]);
+  expect(owner.get().notice).toContain("could not be verified");
+  expect(opened).toEqual([]);
+  expect(writes.map((write) => write.kind)).toEqual(["reserve", "commit"]);
+  owner.dispose();
+});
+
+test.each([
+  false,
+  true,
+])("a later exact created recovery honors its notice ownership (newer review: %s)", async (newerReview) => {
+  let protectedUnavailable = true;
+  const { owner, identities, writes } = fixture([], {
+    commitReply: "unknown",
+    original: (_id, current) => {
+      if (current.state === "created" && protectedUnavailable)
+        throw Error("Protected read temporarily unavailable");
+      return current;
+    },
+  });
+  const opened: string[] = [];
+  await owner.recover();
+  expect(await owner.reserve(original, preview)).toBe(true);
+  await owner.recover();
+  const held = identities.list()[0];
+  if (!held) throw Error("Missing saved creation original");
+  expect(
+    await owner.commit(requestId, (created) => opened.push(created.projectId)),
+  ).toBeNull();
+  await owner.recover();
+  expect(owner.get().notice).toContain("could not be verified");
+  expect(identities.list()).toMatchObject([{ state: "unknown" }]);
+  if (newerReview) expect(await owner.preview(original)).toEqual(preview);
+  const priorNotice = owner.get().notice;
+  protectedUnavailable = false;
+  await owner.recover();
+  expect(identities.list()).toMatchObject([
+    {
+      request: held.request,
+      requestHash: held.requestHash,
+      state: "created",
+    },
+  ]);
+  expect(owner.get().entries).toEqual([]);
+  expect(opened).toEqual([]);
+  expect(writes.map((write) => write.kind)).toEqual(["reserve", "commit"]);
+  if (newerReview) expect(owner.get().notice).toBe(priorNotice);
+  else {
+    expect(owner.get().notice).toContain("Project creation is verified");
+    expect(owner.get().notice).toContain("before opening");
+  }
+  owner.dispose();
 });

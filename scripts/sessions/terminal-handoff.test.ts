@@ -42,7 +42,10 @@ function deferred<T>() {
   const promise = new Promise<T>((done) => (resolve = done));
   return { promise, resolve };
 }
-function fixture(launch?: typeof launchWindowsConsole) {
+function fixture(
+  launch?: typeof launchWindowsConsole,
+  admit?: Parameters<typeof createSessionTerminalHandoff>[0]["admit"],
+) {
   const root = scratch.make("terminal-handoff-"),
     home = join(root, "home"),
     projectId = "project-fixture",
@@ -83,6 +86,7 @@ function fixture(launch?: typeof launchWindowsConsole) {
       };
     },
     ...(launch ? { launch } : {}),
+    ...(admit ? { admit } : {}),
   });
   services.push(service);
   return {
@@ -219,6 +223,94 @@ test("an opened terminal is not replayed after service restart and holds app sen
       (await recovered.read(f.projectId, f.sessionId)).attempt?.phase,
     ).toBe("closed");
     expect(stopCalls).toBe(0);
+  } finally {
+    completion.resolve(finish());
+  }
+});
+
+test("shutdown fences a saved terminal opening while admission is pending without waiting for its release", async () => {
+  const entered = deferred<void>(),
+    release = deferred<void>();
+  let launches = 0;
+  const f = fixture(
+    () => {
+      launches++;
+      return {
+        pid: 72,
+        done: Promise.resolve(finish()),
+        stop: async () => finish(),
+      };
+    },
+    async (_projectId, publish) => {
+      const result = await publish();
+      entered.resolve();
+      await release.promise;
+      return result;
+    },
+  );
+  const requestId = randomUUID();
+  const opening = f.service.open(f.projectId, f.sessionId, requestId, 11).then(
+    (value) => ({ kind: "opened" as const, value }),
+    (error: unknown) => ({ kind: "rejected" as const, error }),
+  );
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await entered.promise;
+    const parent = join(f.home, "session-terminal-handoffs"),
+      namespaces = readdirSync(parent).map((name) => join(parent, name));
+    expect(readTerminalHandoffInventory(f.home, namespaces)).toEqual([
+      expect.objectContaining({ requestId, phase: "opening", endedAt: null }),
+    ]);
+    const closed = await Promise.race([
+      f.service.close().then(() => true),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => resolve(false), 1000);
+      }),
+    ]);
+    expect(closed).toBe(true);
+    release.resolve();
+    const outcome = await opening;
+    expect(launches).toBe(0);
+    expect(outcome).toMatchObject({ kind: "rejected", error: { status: 503 } });
+    expect(
+      (await f.service.read(f.projectId, f.sessionId)).attempt,
+    ).toMatchObject({
+      requestId,
+      phase: "refused",
+      endedAt: expect.any(String),
+    });
+    await expect(
+      f.service.open(f.projectId, f.sessionId, requestId, 12),
+    ).resolves.toMatchObject({ phase: "refused", auditEventId: 11 });
+    expect(launches).toBe(0);
+  } finally {
+    clearTimeout(timer);
+    release.resolve();
+    await opening;
+  }
+});
+
+test("reentrant and repeated close share one shutdown promise and stop an owned child once", async () => {
+  const completion = deferred<NativeConsoleExit>();
+  let stops = 0,
+    reentrant: Promise<void> | undefined;
+  const f = fixture(() => ({
+    pid: 73,
+    done: completion.promise,
+    async stop() {
+      stops++;
+      if (stops === 1) reentrant = f.service.close();
+      completion.resolve(finish());
+      return completion.promise;
+    },
+  }));
+  try {
+    await f.service.open(f.projectId, f.sessionId, randomUUID(), 13);
+    const closing = f.service.close();
+    await closing;
+    expect(stops).toBe(1);
+    expect(reentrant).toBe(closing);
+    expect(f.service.close()).toBe(closing);
   } finally {
     completion.resolve(finish());
   }

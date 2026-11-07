@@ -159,7 +159,12 @@ export function createSessionTerminalHandoff(options: {
     { child: NativeConsoleChild; finished: Promise<void> }
   >();
   const unknownRequests = new Set<string>();
-  let closing = false;
+  let lifecycle:
+    | { phase: "accepting" }
+    | { phase: "closing" | "closed"; completion: Promise<void> } = {
+    phase: "accepting",
+  };
+  const accepting = () => lifecycle.phase === "accepting";
   const sessionLock = (projectId: string, sessionId: string) =>
     join(
       directory,
@@ -370,7 +375,7 @@ export function createSessionTerminalHandoff(options: {
               );
             return view(existing);
           }
-          if (closing)
+          if (!accepting())
             throw new ConversationError(
               503,
               "The terminal service is closing. No terminal was opened.",
@@ -387,7 +392,7 @@ export function createSessionTerminalHandoff(options: {
               "This Chat already has an original terminal handoff. Check that request; a new terminal was not opened.",
             );
           const candidate = await options.candidate(projectId, sessionId);
-          if (closing)
+          if (!accepting())
             throw new ConversationError(
               503,
               "The terminal service is closing. No terminal was opened.",
@@ -422,6 +427,21 @@ export function createSessionTerminalHandoff(options: {
           if (options.admit)
             await options.admit(projectId, () => write(before));
           else write(before);
+          if (!accepting()) {
+            // The native call boundary was never crossed for this original.
+            row.phase = "refused";
+            row.endedAt = new Date().toISOString();
+            try {
+              write(before);
+            } catch {
+              unknownRequests.add(requestId);
+              throw unavailable();
+            }
+            throw new ConversationError(
+              503,
+              "The terminal service closed before launch. No terminal was opened.",
+            );
+          }
           let child: NativeConsoleChild;
           try {
             child = (options.launch ?? launchWindowsConsole)({
@@ -465,18 +485,24 @@ export function createSessionTerminalHandoff(options: {
         }),
       );
     },
-    async close() {
-      closing = true;
-      await Promise.allSettled(
-        [...active.values()].map(async ({ child, finished }) => {
-          try {
-            await child.stop();
-          } catch {
-            /* Complete records unknown if native settlement was not confirmed. */
-          }
-          await finished;
-        }),
-      );
+    close() {
+      if (lifecycle.phase !== "accepting") return lifecycle.completion;
+      const children = [...active.values()];
+      const completion: Promise<void> = Promise.resolve().then(async () => {
+        await Promise.allSettled(
+          children.map(async ({ child, finished }) => {
+            try {
+              await child.stop();
+            } catch {
+              /* Complete records unknown if native settlement was not confirmed. */
+            }
+            await finished;
+          }),
+        );
+        lifecycle = { phase: "closed", completion };
+      });
+      lifecycle = { phase: "closing", completion };
+      return completion;
     },
   };
 }

@@ -184,8 +184,10 @@ pull request step), gh (`pr create`, by the shift only) and `bun run pr:check`.
     ignore rules do not cover `trees/<id>`, and the OS home.
   - Branches from the request's `startPoint` when it has one (the shift gives the base commit it
     fetched), else from the HEAD of the checkout it runs in (`bun run worktree`).
-  - If git made the branch and then failed, the branch is deleted. No `git worktree prune`: it would
-    touch other sessions' worktrees.
+  - Creation reports `created` only after Git add and cache publication succeed; pre-add failures are
+    `refused`. Any add or later failure/exception is `unconfirmed`, with immutable id/path/branch/start
+    commit evidence. Partial work is preserved: a branch appearing after the absence check may belong
+    to another writer. Never delete that branch or run `git worktree prune` as compensation.
 - `remove`:
   - Takes only an id from the cache, so the desktop app's and hand-made worktrees are never removed.
   - Without `force`, git refuses a worktree with changes, and the record stays.

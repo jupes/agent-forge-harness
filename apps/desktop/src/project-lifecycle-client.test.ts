@@ -1,7 +1,11 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import { NotSent } from "../../../docs/js/operator";
-import { canonicalProjectDeletion } from "../../../scripts/projects/project-lifecycle-protocol";
+import {
+  canonicalProjectDeletion,
+  projectDeletionReceiptSchema,
+  projectDeletionRequestSchema,
+} from "../../../scripts/projects/project-lifecycle-protocol";
 import { ProjectLifecycleOwner } from "./project-lifecycle-client";
 
 const id = "project-10000000-0000-4000-8000-000000000001",
@@ -237,4 +241,77 @@ test("a confirmed deletion stays confirmed when local cleanup or Projects refres
   expect(owner.snapshot().receipts[id]).toEqual(receipt);
   expect(owner.snapshot().storageError).toBe(true);
   expect(owner.snapshot().message).toContain("confirmed");
+});
+
+test("an open tab retains another project's deletion original after shared cleanup and a NotSent action", async () => {
+  const other = "project-10000000-0000-4000-8000-000000000099",
+    receipts = new Map<string, unknown>(),
+    paths: string[] = [],
+    posts: string[] = [];
+  let metadata: unknown = {},
+    nextUuid = uuid;
+  const deps = {
+    read: async (url: string) => {
+      paths.push(url);
+      if (url.endsWith("/deletion/" + uuid)) {
+        const receipt = receipts.get(uuid);
+        if (!receipt) throw Error("Missing exact receipt");
+        return receipt;
+      }
+      if (url.includes(id) && receipts.has(uuid))
+        throw Error("The deleted project has no eligibility read");
+      return {
+        ...status,
+        projectId: url.includes(other) ? other : id,
+        catalogRevision: receipts.has(uuid) ? 3 : 2,
+      };
+    },
+    post: async (url: string, raw: unknown) => {
+      posts.push(url);
+      if (url.includes(other)) throw new NotSent("No operator session");
+      const request = projectDeletionRequestSchema.parse(raw);
+      receipts.set(request.requestId, {
+        projectId: id,
+        requestId: request.requestId,
+        requestHash: await hash(canonicalProjectDeletion(id, request)),
+        name: "Alpha",
+        slug: "alpha",
+        deletedRevision: 3,
+        deletedAt: "2026-11-06T00:00:01.000Z",
+      });
+      throw Error("Lost reply after commit");
+    },
+    withLock,
+    readPending: () => structuredClone(metadata),
+    writePending: (value: unknown) => {
+      metadata = structuredClone(value);
+    },
+    uuid: () => nextUuid,
+    hash,
+  };
+  const a = new ProjectLifecycleOwner(deps);
+  await a.check(id);
+  await a.remove(id, "Alpha");
+  const held = structuredClone(a.snapshot().pending[id]);
+  expect(held?.requestId).toBe(uuid);
+  const b = new ProjectLifecycleOwner(deps);
+  expect(b.snapshot().pending[id]).toEqual(held);
+  await b.check(id);
+  const confirmed = projectDeletionReceiptSchema.parse(receipts.get(uuid));
+  expect(b.snapshot().receipts[id]).toEqual(confirmed);
+  expect(metadata).toEqual({});
+  expect(a.snapshot().pending[id]).toEqual(held);
+
+  nextUuid = "20000000-0000-4000-8000-000000000003";
+  await a.check(other);
+  await a.remove(other, "Beta");
+  expect(a.snapshot().pending[id]).toEqual(held);
+  expect(a.snapshot().pending[other]).toBeUndefined();
+  expect(a.snapshot().receipts[id]).toBeUndefined();
+  expect(posts).toHaveLength(2);
+  await a.check(id);
+  expect(paths.at(-1)).toContain("/deletion/" + uuid);
+  expect(a.snapshot().receipts[id]).toEqual(confirmed);
+  expect(a.snapshot().pending[id]).toBeUndefined();
+  expect(posts).toHaveLength(2);
 });

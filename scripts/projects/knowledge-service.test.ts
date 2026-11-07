@@ -525,3 +525,195 @@ test("verified generation with an oversized document is a known failed refresh a
   ).toBe("confirmed");
   expect(f.calls()).toBe(2);
 });
+
+test("completed generation without a saved candidate can be explicitly retired after recreation without rerunning its original", async () => {
+  const f = fixture(),
+    completed = createKnowledgeService({
+      ...f.options,
+      generator: {
+        ...f.options.generator,
+        generate: async () => ({
+          ...(await f.options.generator.generate()),
+          overview: {
+            ...generated.overview,
+            description: "line\n".repeat(500),
+          },
+        }),
+      },
+    });
+  expect((await completed.refresh(FIXTURE_PROJECT_ID, f.request)).state).toBe(
+    "failed",
+  );
+  // Retain the valid v1 crash-point shape after verified completion but before a candidate save.
+  const store = createKnowledgeStore(f.home);
+  await store.locked(async (state, save) => {
+    const row = store.find(state, FIXTURE_PROJECT_ID, f.request.requestId);
+    if (!row || row.generationVerifiedAt === null || row.candidate !== null)
+      throw Error("Expected verified generation without candidate fixture");
+    row.receipt.state = "attempted";
+    row.receipt.message =
+      "Generation completed before the candidate was saved.";
+    save();
+  });
+  const file = join(f.home, "knowledge-refresh", "operations.json"),
+    before = readFileSync(file, "utf8"),
+    restored = createKnowledgeService(f.options);
+  expect(await restored.refresh(FIXTURE_PROJECT_ID, f.request)).toMatchObject({
+    requestId: f.request.requestId,
+    state: "generation-completed",
+    candidateHash: null,
+  });
+  expect(readFileSync(file, "utf8")).toBe(before);
+  expect(f.calls()).toBe(1);
+  expect(existsSync(f.target.file)).toBe(false);
+  const retired = await restored.retire(
+    FIXTURE_PROJECT_ID,
+    f.request.requestId,
+  );
+  expect(retired.state).toBe("failed");
+  expect(await restored.refresh(FIXTURE_PROJECT_ID, f.request)).toEqual(
+    retired,
+  );
+  expect(f.calls()).toBe(1);
+  expect(existsSync(f.target.file)).toBe(false);
+  expect(
+    (
+      await restored.refresh(FIXTURE_PROJECT_ID, {
+        ...f.request,
+        requestId: "10000000-0000-4000-8000-000000000002",
+      })
+    ).state,
+  ).toBe("confirmed");
+  expect(f.calls()).toBe(2);
+});
+
+test("candidate persistence cannot resurrect a completed generation retired while its caller was paused", async () => {
+  const f = fixture(),
+    actual = createKnowledgeStore(f.home);
+  let enter = () => {},
+    release = () => {},
+    paused = false;
+  const entered = new Promise<void>((resolve) => {
+      enter = resolve;
+    }),
+    held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+  const store: ReturnType<typeof createKnowledgeStore> = {
+    ...actual,
+    locked: async (work) => {
+      let completed = false;
+      const result = await actual.locked((state, save) =>
+        work(state, () => {
+          save();
+          completed = state.records.some(
+            (row) =>
+              row.original.request.requestId === f.request.requestId &&
+              row.receipt.state === "generation-completed",
+          );
+        }),
+      );
+      if (completed && !paused) {
+        paused = true;
+        enter();
+        await held;
+      }
+      return result;
+    },
+  };
+  const running = createKnowledgeService({ ...f.options, store }).refresh(
+      FIXTURE_PROJECT_ID,
+      f.request,
+    ),
+    recovery = createKnowledgeService(f.options);
+  try {
+    await Promise.race([
+      entered,
+      running.then(() => {
+        throw Error("Generation never reached its durable completed phase");
+      }),
+    ]);
+    expect(
+      recovery.receipt(FIXTURE_PROJECT_ID, f.request.requestId).state,
+    ).toBe("generation-completed");
+    expect(
+      (await recovery.retire(FIXTURE_PROJECT_ID, f.request.requestId)).state,
+    ).toBe("failed");
+  } finally {
+    release();
+  }
+  expect((await running).state).toBe("failed");
+  const row = actual.read(FIXTURE_PROJECT_ID, f.request.requestId);
+  expect(row?.candidate).toBeNull();
+  expect(row?.publicationAttemptedAt).toBeNull();
+  expect(existsSync(f.target.file)).toBe(false);
+  expect(f.calls()).toBe(1);
+});
+
+test("private phase evidence rejects invented completion or publication while retaining held and failed legacy rows", async () => {
+  const f = fixture();
+  f.editDuringGeneration(() =>
+    writeFileSync(join(f.root, "README.md"), "changed source"),
+  );
+  await f.service.refresh(FIXTURE_PROJECT_ID, f.request);
+  const row = createKnowledgeStore(f.home).read(
+    FIXTURE_PROJECT_ID,
+    f.request.requestId,
+  );
+  if (!row?.candidate) throw Error("Expected saved candidate fixture");
+  const empty = {
+      ...row,
+      candidate: null,
+      candidateSavedAt: null,
+      publication: null,
+      publicationAttemptedAt: null,
+      receipt: {
+        ...row.receipt,
+        state: "generation-completed",
+        candidateHash: null,
+      },
+    },
+    file = join(f.home, "knowledge-refresh", "operations.json");
+  for (const valid of [
+    empty,
+    { ...empty, receipt: { ...empty.receipt, state: "attempted" } },
+    { ...empty, receipt: { ...empty.receipt, state: "failed" } },
+    { ...row, receipt: { ...row.receipt, state: "failed" } },
+    { ...row, receipt: { ...row.receipt, state: "unknown" } },
+  ]) {
+    writeOwnerOnly(file, JSON.stringify({ version: 1, records: [valid] }));
+    expect(readKnowledgeInventory(f.home)).toHaveLength(1);
+  }
+  for (const state of ["unknown", "attempted"]) {
+    writeOwnerOnly(
+      file,
+      JSON.stringify({
+        version: 1,
+        records: [
+          {
+            ...empty,
+            generationVerifiedAt: null,
+            receipt: { ...empty.receipt, state },
+          },
+        ],
+      }),
+    );
+    await expect(
+      f.service.retire(FIXTURE_PROJECT_ID, f.request.requestId),
+    ).rejects.toMatchObject({ status: 409 });
+  }
+  for (const invalid of [
+    { ...empty, generationVerifiedAt: null },
+    {
+      ...row,
+      publication: null,
+      publicationAttemptedAt: new Date().toISOString(),
+      receipt: { ...row.receipt, state: "unknown" },
+    },
+  ]) {
+    const bytes = JSON.stringify({ version: 1, records: [invalid] });
+    writeOwnerOnly(file, bytes);
+    expect(() => readKnowledgeInventory(f.home)).toThrow();
+    expect(readFileSync(file, "utf8")).toBe(bytes);
+  }
+});

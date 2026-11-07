@@ -27,6 +27,25 @@ const pendingSchema = z
   )
   .refine((value) => Object.keys(value).length <= 100);
 type Pending = z.infer<typeof pendingSchema>;
+type OriginalSettlement =
+  | { kind: "confirmed"; receipt: ProjectDeletionReceipt }
+  | { kind: "not-admitted" };
+const sameOriginal = (
+  current: Pending[string] | undefined,
+  original: Pending[string],
+) =>
+  current?.requestId === original.requestId &&
+  current.requestHash === original.requestHash &&
+  current.revision === original.revision;
+const confirmsOriginal = (
+  id: string,
+  original: Pending[string],
+  receipt: ProjectDeletionReceipt,
+) =>
+  receipt.projectId === id &&
+  receipt.requestId === original.requestId &&
+  receipt.requestHash === original.requestHash &&
+  receipt.deletedRevision === original.revision + 1;
 export interface ProjectLifecycleView {
   pending: Pending;
   receipts: Record<string, ProjectDeletionReceipt>;
@@ -36,6 +55,33 @@ export interface ProjectLifecycleView {
   messageProjectId: string | null;
   storageError: boolean;
 }
+/** Action feedback belongs to one project; recovery storage health is global. */
+export function projectLifecycleForProject(
+  view: ProjectLifecycleView,
+  id: string,
+) {
+  const pending = view.pending[id] ?? null,
+    candidate = view.receipts[id],
+    status = view.statuses[id];
+  const receipt =
+    candidate?.projectId === id &&
+    (!pending || confirmsOriginal(id, pending, candidate))
+      ? candidate
+      : null;
+  const shared = {
+    message: view.messageProjectId === id ? view.message : "",
+    storageWarning: view.storageError
+      ? "Deletion recovery metadata is unavailable. Restore browser storage and reload before deleting a project."
+      : null,
+    status: status?.projectId === id ? status : null,
+  };
+  if (receipt)
+    return { ...shared, phase: "confirmed" as const, pending, receipt };
+  if (pending)
+    return { ...shared, phase: "held" as const, pending, receipt: null };
+  return { ...shared, phase: "idle" as const, pending: null, receipt: null };
+}
+
 export class ProjectLifecycleOwner {
   private value: ProjectLifecycleView = {
     pending: {},
@@ -82,15 +128,16 @@ export class ProjectLifecycleOwner {
     try {
       return await this.deps.withLock(async () => {
         const fresh = pendingSchema.parse(this.deps.readPending());
-        this.value.pending = fresh;
+        this.value.pending = { ...fresh, ...this.value.pending };
         if (fresh[id]) {
+          this.value.pending = { ...this.value.pending, [id]: fresh[id] };
           this.value.message =
             "Another tab retained a deletion original. Check its exact receipt before doing anything else.";
           return false;
         }
         const next = pendingSchema.parse({ ...fresh, [id]: original });
         this.deps.writePending(next);
-        this.value.pending = next;
+        this.value.pending = { ...next, ...this.value.pending, [id]: original };
         return true;
       });
     } catch (error) {
@@ -98,38 +145,39 @@ export class ProjectLifecycleOwner {
       throw error;
     }
   }
-  private async clear(id: string, original: Pending[string]) {
+  private async clear(
+    id: string,
+    original: Pending[string],
+    settlement: OriginalSettlement,
+  ) {
+    if (
+      settlement.kind === "confirmed" &&
+      !confirmsOriginal(id, original, settlement.receipt)
+    )
+      throw Error("Only the exact confirmed deletion may clear its original");
     await this.deps.withLock(async () => {
-      const fresh = pendingSchema.parse(this.deps.readPending()),
-        current = fresh[id];
-      if (
-        current?.requestId === original.requestId &&
-        current.requestHash === original.requestHash &&
-        current.revision === original.revision
-      ) {
+      const fresh = pendingSchema.parse(this.deps.readPending());
+      if (sameOriginal(fresh[id], original)) {
         delete fresh[id];
         this.deps.writePending(fresh);
       }
-      this.value.pending = fresh;
+      const retained = { ...this.value.pending };
+      if (sameOriginal(retained[id], original)) delete retained[id];
+      // Shared cleanup proves nothing about unrelated originals held here.
+      this.value.pending = { ...fresh, ...retained };
     });
   }
   private async confirm(id: string, raw: unknown) {
     const receipt = projectDeletionReceiptSchema.parse(raw),
       pending = this.value.pending[id];
-    if (
-      !pending ||
-      receipt.projectId !== id ||
-      receipt.requestId !== pending.requestId ||
-      receipt.requestHash !== pending.requestHash ||
-      receipt.deletedRevision !== pending.revision + 1
-    )
+    if (!pending || !confirmsOriginal(id, pending, receipt))
       throw Error("Deletion receipt does not match its saved original");
     // A confirmed durable receipt stays true even if local metadata cleanup fails.
     this.value.receipts = { ...this.value.receipts, [id]: receipt };
     this.value.message =
       "Project record deleted. Repositories, beads, worktrees and provider histories were retained.";
     try {
-      await this.clear(id, pending);
+      await this.clear(id, pending, { kind: "confirmed", receipt });
     } catch {
       this.value.storageError = true;
       this.value.message +=
@@ -271,7 +319,7 @@ export class ProjectLifecycleOwner {
           "Deletion outcome unknown. The original UUID is retained. Check its exact receipt; a new deletion will not be sent.";
       else {
         try {
-          if (claimed) await this.clear(id, claimed);
+          if (claimed) await this.clear(id, claimed, { kind: "not-admitted" });
         } catch {
           this.value.storageError = true;
         }

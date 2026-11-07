@@ -1,7 +1,13 @@
 import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
-import { resolve } from "node:path";
+import {
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { join, resolve } from "node:path";
 import {
   type ProjectCouncilBinding,
   projectCouncilHistorySchema,
@@ -11,6 +17,10 @@ import {
 import { ConversationError } from "../conversations/error";
 import { privateTempDir } from "../hearth/testing";
 import { writeOwnerOnly } from "../hearth/token";
+import { createProjectBudgetStore } from "../projects/project-budget-store";
+import type { ProjectCouncilRetirementProof } from "../projects/project-budgets-protocol";
+import { projectCatalogPath } from "../projects/store";
+import { projectCatalogFixture } from "../projects/testing";
 import { withQueueLock } from "../scheduler/queue-lock";
 import {
   buildContextPack,
@@ -22,6 +32,7 @@ import {
   projectCouncilInputHash,
   projectCouncilIntentHash,
   projectCouncilProfileHash,
+  readProjectCouncilRetirementProof,
 } from "./project-original-store";
 import { providerEndpointSnapshot } from "./providers";
 import { parseCouncilProfileJson } from "./types";
@@ -330,3 +341,227 @@ test("different projects in one workspace have independent retained journals", a
     second.original,
   );
 });
+
+function budgetFor(f: ReturnType<typeof fixture>, cap: number | null = 1) {
+  const catalog = projectCatalogFixture(f.workspace);
+  catalog.projects[0]!.id = f.binding.projectId;
+  catalog.projects[0]!.budgets = {
+    shiftSpendCapUsd: null,
+    dailyApiKeyCapUsd: cap,
+  };
+  writeOwnerOnly(projectCatalogPath(f.home), JSON.stringify(catalog));
+  return createProjectBudgetStore(f.home);
+}
+async function reservedBudget(
+  holdHash?: string,
+  amount = 0.25,
+  cap: number | null = 1,
+) {
+  const f = fixture(),
+    budget = budgetFor(f, cap);
+  const original = (
+    await f.store.reservePrepared(f.prepared("Unsent budget fixture"))
+  ).original;
+  const id = f.binding.projectId,
+    { requestId, intentHash: hash } = original;
+  await budget.reserve(id, requestId, holdHash ?? hash, amount);
+  const retire = (
+    account?: (proof: ProjectCouncilRetirementProof) => Promise<void>,
+  ) => f.store.retire(id, requestId, hash, account);
+  return { ...f, budget, original, retire, id, requestId, hash };
+}
+async function captureRetirement(
+  f: Awaited<ReturnType<typeof reservedBudget>>,
+) {
+  let proof: ProjectCouncilRetirementProof | undefined;
+  await f.retire(async (value) => {
+    proof = value;
+  });
+  if (!proof) throw Error("Expected the durable owner's retirement capability");
+  return proof;
+}
+
+test("retirement capabilities bind home and preserve terminal budget history", async () => {
+  const f = await reservedBudget(),
+    proof = await captureRetirement(f);
+  expect(Object.isFrozen(proof)).toBe(true);
+  for (const invalid of [
+    {},
+    { ...proof },
+    structuredClone(proof),
+    JSON.stringify(proof),
+    new Proxy(proof, {}),
+  ])
+    await expect(
+      Reflect.apply(f.budget.retireUnsent, f.budget, [invalid]),
+    ).rejects.toThrow("proof");
+  const other = fixture(),
+    foreign = budgetFor(other);
+  await foreign.reserve(f.id, f.requestId, f.hash, 0.25);
+  await expect(foreign.retireUnsent(proof)).rejects.toThrow("home");
+  expect(foreign.status(f.id).reservedUsd).toBe(0.25);
+  expect(f.budget.status(f.id).reservedUsd).toBe(0.25);
+  await f.budget.retireUnsent(proof);
+  const file = join(f.home, "project-budgets", "allocations.json"),
+    bytes = readFileSync(file, "utf8");
+  const retired = f.store.read(f.id, f.requestId);
+  await f.retire(f.budget.retireUnsent);
+  expect(f.store.read(f.id, f.requestId)).toEqual(retired);
+  await expect(
+    f.budget.reserve(f.id, f.requestId, f.hash, 0.25),
+  ).rejects.toThrow("retired");
+  await f.budget.settle(f.id, f.requestId, f.hash, {
+    actualCostUsd: 1,
+    usageEstimatedCostUsd: null,
+    costIsEstimate: false,
+  });
+  expect(readFileSync(file, "utf8")).toBe(bytes);
+  const tomorrow = createProjectBudgetStore(
+    f.home,
+    () => new Date(Date.now() + 86_400_000),
+  );
+  expect(tomorrow.status(f.id)).toMatchObject({
+    reservedUsd: 0,
+    reportedUsd: 0,
+    unknownCount: 0,
+  });
+  await tomorrow.reserve(
+    f.id,
+    "00000000-0000-4000-8000-000000000099",
+    "f".repeat(64),
+    1,
+  );
+  expect(tomorrow.status(f.id).reservedUsd).toBe(1);
+});
+
+test("retirement checks exact liability and preserves unknown, settled and no-cap rows", async () => {
+  for (const mismatch of ["hash", "allocation"] as const) {
+    const f = await reservedBudget(
+      mismatch === "hash" ? "f".repeat(64) : undefined,
+      mismatch === "allocation" ? 0.125 : 0.25,
+    );
+    const proof = await captureRetirement(f);
+    await expect(f.budget.retireUnsent(proof)).rejects.toThrow("identity");
+    expect(f.budget.status(f.id).reservedUsd).toBe(
+      mismatch === "allocation" ? 0.125 : 0.25,
+    );
+  }
+  for (const state of ["unknown", "settled"] as const) {
+    const f = await reservedBudget();
+    await f.budget.settle(
+      f.id,
+      f.requestId,
+      f.hash,
+      state === "unknown"
+        ? null
+        : {
+            actualCostUsd: 0.1,
+            usageEstimatedCostUsd: null,
+            costIsEstimate: false,
+          },
+    );
+    const before = f.budget.status(f.id),
+      proof = await captureRetirement(f);
+    await expect(f.budget.retireUnsent(proof)).rejects.toThrow("costs");
+    expect(f.budget.status(f.id)).toMatchObject({
+      reservedUsd: before.reservedUsd,
+      reportedUsd: before.reportedUsd,
+      unknownCount: before.unknownCount,
+    });
+  }
+  const f = await reservedBudget(undefined, 0.25, null);
+  await f.budget.retireUnsent(await captureRetirement(f));
+  expect(f.budget.status(f.id)).toMatchObject({
+    dailyCapUsd: null,
+    reservedUsd: 0,
+    reportedUsd: 0,
+    unknownCount: 0,
+  });
+});
+
+test("accounting failure replays only retirement and dispatch claims stay held", async () => {
+  const f = await reservedBudget();
+  await expect(
+    f.retire(async () => {
+      throw Error("Accounting unavailable");
+    }),
+  ).rejects.toThrow("Accounting unavailable");
+  const terminal = f.store.read(f.id, f.requestId);
+  expect(terminal.state).toBe("retired");
+  expect(f.budget.status(f.id).reservedUsd).toBe(0.25);
+  await f.retire(f.budget.retireUnsent);
+  expect(f.store.read(f.id, f.requestId)).toEqual(terminal);
+  expect(f.budget.status(f.id).reservedUsd).toBe(0);
+  const claimed = await reservedBudget();
+  await claimed.store.claimDispatch(
+    claimed.id,
+    claimed.requestId,
+    claimed.hash,
+    async () => {},
+  );
+  let callbacks = 0;
+  await expect(
+    claimed.retire(async () => {
+      callbacks++;
+    }),
+  ).rejects.toThrow("uncommitted");
+  expect(callbacks).toBe(0);
+  expect(claimed.budget.status(claimed.id).reservedUsd).toBe(0.25);
+});
+
+test("failed durable retirement keeps the original and full budget hold", async () => {
+  const f = await reservedBudget();
+  const failing = createProjectCouncilOriginalStore({
+    home: f.home,
+    workspace: f.workspace,
+    projectId: f.id,
+    withQueueLock,
+    persist: () => {
+      throw Error("Durable write unavailable");
+    },
+  });
+  let callbacks = 0;
+  await expect(
+    failing.retire(f.id, f.requestId, f.hash, async () => {
+      callbacks++;
+    }),
+  ).rejects.toMatchObject({ status: 503 });
+  expect(callbacks).toBe(0);
+  expect(f.store.read(f.id, f.requestId)).toEqual(f.original);
+  expect(f.budget.status(f.id).reservedUsd).toBe(0.25);
+});
+
+test.skipIf(process.platform === "win32")(
+  "retirement authority distinguishes a literal POSIX home from its slash sibling",
+  async () => {
+    const f = fixture();
+    const literal = join(f.home, "a\\b"),
+      nested = join(f.home, "a", "b");
+    mkdirSync(literal, { mode: 0o700 });
+    mkdirSync(nested, { recursive: true, mode: 0o700 });
+    const left = lstatSync(literal, { bigint: true }),
+      right = lstatSync(nested, { bigint: true });
+    expect(left.dev === right.dev && left.ino === right.ino).toBe(false);
+    const store = createProjectCouncilOriginalStore({
+      home: literal,
+      workspace: f.workspace,
+      projectId: f.binding.projectId,
+      withQueueLock,
+    });
+    const original = (
+      await store.reservePrepared(f.prepared("Literal home authority"))
+    ).original;
+    let proof: ProjectCouncilRetirementProof | undefined;
+    await store.retire(
+      f.binding.projectId,
+      original.requestId,
+      original.intentHash,
+      async (value) => {
+        proof = value;
+      },
+    );
+    if (!proof) throw Error("Expected an exact retired home capability");
+    expect(readProjectCouncilRetirementProof(proof, literal)).not.toBeNull();
+    expect(readProjectCouncilRetirementProof(proof, nested)).toBeNull();
+  },
+);

@@ -1,32 +1,30 @@
 import { afterEach, expect, test } from "bun:test";
-import {
-  mkdirSync,
-  mkdtempSync,
-  realpathSync,
-  rmSync,
-  symlinkSync,
-} from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { OwnedSessionMetadata } from "../../../types/owned-session";
+import { nativePhysicalPath } from "../../native-realpath";
 import { createProjectStore } from "../../projects/store";
 import type { GitRun } from "../../scheduler/worktrees";
 import type { ProjectSnapshot } from "./project-summaries";
-import { createSessionScopeValidator } from "./session-scope";
+import {
+  createSessionScopeValidator,
+  sessionFilesystemContains,
+} from "./session-scope";
 
 const folders: string[] = [];
 afterEach(() => {
   for (const path of folders.splice(0))
     rmSync(path, { recursive: true, force: true });
 });
-async function fixture() {
+async function fixture(rootName = "repo") {
   const base = mkdtempSync(join(tmpdir(), "forge session scope "));
   folders.push(base);
-  let root = join(base, "repo");
+  let root = join(base, rootName);
   const home = join(base, "home");
   mkdirSync(join(root, ".git"), { recursive: true });
   mkdirSync(join(root, "src"));
-  root = realpathSync.native(root);
+  root = nativePhysicalPath(root);
   const catalog = await createProjectStore(home).create(
     {
       slug: "alpha",
@@ -60,13 +58,19 @@ async function fixture() {
       problems: [],
     },
   };
+  let worktrees = [root];
   const git: GitRun = (args) =>
     args[0] === "rev-parse"
       ? { status: 0, stdout: root, stderr: "" }
       : args[0] === "worktree"
         ? {
             status: 0,
-            stdout: `worktree ${root}\0HEAD ${"a".repeat(40)}\0branch refs/heads/main\0\0`,
+            stdout: worktrees
+              .map(
+                (path, index) =>
+                  `worktree ${path}\0HEAD ${"a".repeat(40)}\0branch refs/heads/fixture-${index}\0\0`,
+              )
+              .join(""),
             stderr: "",
           }
         : { status: 1, stdout: "", stderr: "unsupported fixture command" };
@@ -93,8 +97,37 @@ async function fixture() {
     },
     async () => snapshot,
   );
-  return { base, root, project, metadata, snapshot, validate };
+  return {
+    base,
+    root,
+    project,
+    metadata,
+    snapshot,
+    validate,
+    listWorktrees(paths: string[]) {
+      worktrees = paths;
+    },
+  };
 }
+
+test("Session containment uses native separator boundaries for POSIX literals and Windows roots", () => {
+  const cases: Array<[string, string, "posix" | "win32", boolean]> = [
+    ["/repo/trees/a\\b", "/repo/trees/a\\b/src", "posix", true],
+    ["/repo/trees/a\\b", "/repo/trees/a\\b\\src", "posix", false],
+    ["/", "/repo/a\\b", "posix", true],
+    ["/repo", "/repository/src", "posix", false],
+    ["/repo", "/repo/child/../../outside", "posix", false],
+    ["C:\\Repo", "c:/repo/src", "win32", true],
+    ["C:/", "c:/repo/src", "win32", true],
+    ["C:/", "D:/repo/src", "win32", false],
+    ["C:/repo", "C:/repository/src", "win32", false],
+    ["C:/repo", "C:/repo/child/../../outside", "win32", false],
+    ["//server/share/", "\\\\SERVER\\SHARE\\child", "win32", true],
+    ["//server/share/", "//server/share2/child", "win32", false],
+  ];
+  for (const [root, path, platform, expected] of cases)
+    expect(sessionFilesystemContains(root, path, platform)).toBe(expected);
+});
 
 test("session admission checks current project, registered worktree and bead scope before accepting context", async () => {
   const f = await fixture();
@@ -142,9 +175,21 @@ test("session admission checks current project, registered worktree and bead sco
 test("extra directories cannot escape the checked worktree through an absolute path or a directory link", async () => {
   const f = await fixture(),
     outside = join(f.base, "outside"),
-    link = join(f.root, "linked");
+    link = join(f.root, "linked"),
+    insideLink = join(f.root, "linked-inside");
   mkdirSync(outside);
   symlinkSync(outside, link, process.platform === "win32" ? "junction" : "dir");
+  symlinkSync(
+    join(f.root, "src"),
+    insideLink,
+    process.platform === "win32" ? "junction" : "dir",
+  );
+  await f.validate(f.project.id, f.metadata, [], {
+    mode: "task",
+    model: "sonnet",
+    prompt: "Private",
+    extraDirectories: [insideLink],
+  });
   for (const path of [outside, link])
     await expect(
       f.validate(f.project.id, f.metadata, [], {
@@ -155,3 +200,54 @@ test("extra directories cannot escape the checked worktree through an absolute p
       }),
     ).rejects.toThrow("checked worktree");
 });
+
+test.skipIf(process.platform === "win32")(
+  "POSIX admission distinguishes physical backslash siblings and permits the actual registered literal path",
+  async () => {
+    const f = await fixture("nested/repo"),
+      workspaceAlias = join(f.base, "nested\\repo"),
+      nested = join(f.root, "trees", "a", "b"),
+      literal = join(f.root, "trees", "a\\b");
+    for (const path of [workspaceAlias, nested, literal])
+      mkdirSync(path, { recursive: true });
+    await expect(
+      f.validate(
+        f.project.id,
+        { ...f.metadata, workspace: workspaceAlias },
+        [],
+      ),
+    ).rejects.toThrow("workspace");
+    await expect(
+      f.validate(
+        f.project.id,
+        { ...f.metadata, repository: workspaceAlias },
+        [],
+      ),
+    ).rejects.toThrow("outside");
+    f.listWorktrees([f.root, nested]);
+    await expect(
+      f.validate(f.project.id, { ...f.metadata, worktree: literal }, []),
+    ).rejects.toThrow("Git registry");
+    f.listWorktrees([f.root, literal]);
+    const metadata = { ...f.metadata, worktree: literal },
+      inside = join(literal, "src"),
+      sibling = `${literal}\\src`;
+    mkdirSync(inside);
+    mkdirSync(sibling);
+    await f.validate(f.project.id, metadata, []);
+    await f.validate(f.project.id, metadata, [], {
+      mode: "chat",
+      model: "sonnet",
+      prompt: "Private",
+      extraDirectories: [inside],
+    });
+    await expect(
+      f.validate(f.project.id, metadata, [], {
+        mode: "chat",
+        model: "sonnet",
+        prompt: "Private",
+        extraDirectories: [sibling],
+      }),
+    ).rejects.toThrow("checked worktree");
+  },
+);

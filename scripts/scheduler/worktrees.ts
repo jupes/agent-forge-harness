@@ -10,8 +10,8 @@
  * leaves in it.
  *
  * git is run with argument arrays, never through a shell, so a path with
- * spaces is one argument. A read writes nothing. A failed Git creation attempts
- * branch cleanup unless a durable caller preserves partial state. A remove never
+ * spaces is one argument. A read writes nothing. Failed Git creation preserves
+ * partial branches and paths whose ownership is unconfirmed. A remove never
  * discards work unless asked to (`force`), and removes only worktrees this module made.
  */
 
@@ -58,6 +58,7 @@ import {
 } from "../forge/runs";
 import { hasDuplicateObjectKeys } from "../json-object-keys";
 import { readSessionMirror } from "../ledger/identity";
+import { nativePhysicalPath } from "../native-realpath";
 import { parseBeadsIssueId } from "../run-correlation";
 import { redactSecrets } from "../secret-patterns";
 import { resetSpawnClock } from "../spawn-clock";
@@ -668,6 +669,35 @@ export function readCache(main: string): WorktreeRecord[] {
   return read.ok ? read.records : [];
 }
 
+function physicalRegistryPathKey(path: string): string | null {
+  try {
+    return registryPathKey(nativePhysicalPath(path));
+  } catch {
+    return null;
+  }
+}
+
+/** Opaque extension rows retain their identity even when legacy listing ignores them. */
+function identityInUse(
+  rows: readonly unknown[],
+  id: string,
+  path: string,
+): boolean {
+  const key = registryPathKey(path);
+  const physical = physicalRegistryPathKey(path);
+  return rows.some((row) => {
+    if (!row || typeof row !== "object" || Array.isArray(row)) return false;
+    const held = row as { id?: unknown; path?: unknown };
+    return (
+      held.id === id ||
+      (typeof held.path === "string" &&
+        (registryPathKey(held.path) === key ||
+          (physical !== null &&
+            physicalRegistryPathKey(held.path) === physical)))
+    );
+  });
+}
+
 /**
  * Change the cache: read it again right before the write, so a record
  * another process wrote meanwhile is kept, and replace the file whole
@@ -677,17 +707,22 @@ export function readCache(main: string): WorktreeRecord[] {
  */
 function updateCache(
   main: string,
-  change: (records: WorktreeRecord[]) => WorktreeRecord[],
+  change: (
+    records: WorktreeRecord[],
+    others: readonly unknown[],
+  ) => Outcome<WorktreeRecord[]>,
 ): Outcome<void> {
   const read = loadCache(main);
   if (!read.ok) return no(read.error);
   const file = cacheFile(main);
   const temporary = `${file}.${process.pid}.${Math.random().toString(16).slice(2)}.tmp`;
   try {
+    const changed = change(read.records, read.others);
+    if (!changed.ok) return changed;
     mkdirSync(join(main, "trees"), { recursive: true });
     writeFileSync(
       temporary,
-      `${JSON.stringify({ worktrees: [...change(read.records), ...read.others] }, null, 2)}\n`,
+      `${JSON.stringify({ worktrees: [...changed.value, ...read.others] }, null, 2)}\n`,
     );
     renameSync(temporary, file);
   } catch (error) {
@@ -857,9 +892,26 @@ function order(a: WorktreeEntry, b: WorktreeEntry): number {
 
 // ── Creating ────────────────────────────────────────────────────────────────
 
+export interface WorktreeCreationAttempt {
+  readonly id: string;
+  readonly path: string;
+  readonly branch: string;
+  readonly startCommit: string;
+}
+
+export type WorktreeCreationOutcome =
+  | { ok: true; state: "created"; value: WorktreeRecord }
+  | { ok: false; state: "refused"; error: string }
+  | {
+      ok: false;
+      state: "unconfirmed";
+      error: string;
+      attempt: WorktreeCreationAttempt;
+    };
+
 export interface CreateRequest {
   branch: string;
-  /** Durable callers reconcile their saved intent; preserve partial creation instead of deleting its branch. */
+  /** Retained for callers; every failed creation now preserves partial work. */
   preserveOnFailure?: true | undefined;
   beadId?: string | undefined;
   /** Defaults to the session mirrored into the checkout the worktree is made from. */
@@ -945,14 +997,44 @@ function ignoredHere(main: string, rel: string, git: GitRun): boolean {
  * main checkout), else at the HEAD of `from`, the checkout the command runs
  * in. Refused before anything is made: a name that is not a new branch, a
  * bead or session id that is not one, a start point that names no commit, a
- * repository that does not ignore `trees/` itself, the OS home. Failed Git
- * creation attempts branch cleanup unless preserveOnFailure is set.
+ * repository that does not ignore `trees/` itself, the OS home. Once Git add
+ * is attempted, any failure is unconfirmed and preserves partial work.
  */
 export function createWorktree(
   main: string,
   from: string,
   request: CreateRequest,
   partial: Partial<RegistryDeps> = {},
+): WorktreeCreationOutcome {
+  let attempt: WorktreeCreationAttempt | undefined;
+  let result: Outcome<WorktreeRecord>;
+  try {
+    result = createWorktreeAttempt(
+      main,
+      from,
+      { ...request },
+      partial,
+      (value) => {
+        attempt = Object.freeze(value);
+      },
+    );
+  } catch (error) {
+    result = no(
+      `worktree creation did not confirm completion: ${error instanceof Error ? error.message : "unknown error"}`,
+    );
+  }
+  if (result.ok) return { ...result, state: "created" };
+  return attempt
+    ? { ...result, state: "unconfirmed", attempt }
+    : { ...result, state: "refused" };
+}
+
+function createWorktreeAttempt(
+  main: string,
+  from: string,
+  request: CreateRequest,
+  partial: Partial<RegistryDeps>,
+  onAttempt: (attempt: WorktreeCreationAttempt) => void,
 ): Outcome<WorktreeRecord> {
   const deps = withDefaults(partial);
   if (request.beadId !== undefined && !isBead(request.beadId))
@@ -977,6 +1059,11 @@ export function createWorktree(
   if (!cache.ok) return no(cache.error);
   const id = deps.newId();
   if (!WORKTREE_ID.test(id)) return no("a worktree id must be a plain name");
+  const path = `${root}/trees/${id}`;
+  if (identityInUse([...cache.records, ...cache.others], id, path))
+    return no(
+      "the worktree id or target path is already retained in the registry",
+    );
   if (!ignoredHere(root, `trees/${id}`, deps.git))
     return no(
       "trees/ is not ignored by this repository's own .gitignore: add `trees/` there before making worktrees in it",
@@ -999,30 +1086,16 @@ export function createWorktree(
   const mirror = deps.readMirror(from);
   const sessionId =
     request.sessionId ?? (isSessionId(mirror) ? mirror : undefined);
-  const path = `${root}/trees/${id}`;
+  onAttempt({ id, path, branch: request.branch, startCommit: sha });
   const added = deps.git(
     ["worktree", "add", "-b", request.branch, "--", path, sha],
     root,
     WRITE_MS,
   );
-  if (added.status !== 0) {
-    if (request.preserveOnFailure)
-      return no(
-        `git worktree add did not confirm creation: ${said(added)} (partial work was preserved for inspection)`,
-      );
-    // git can make the branch and then fail on the directory: take it back.
-    const left = deps.git(
-      ["rev-parse", "--verify", "--quiet", `refs/heads/${request.branch}`],
-      root,
-      READ_MS,
-    );
-    const rolledBack =
-      left.status !== 0 ||
-      deps.git(["branch", "-D", request.branch], root, WRITE_MS).status === 0;
+  if (added.status !== 0)
     return no(
-      `git worktree add failed: ${said(added)}${rolledBack ? "" : ` (the branch ${request.branch} it made could not be deleted)`}`,
+      `git worktree add did not confirm creation: ${said(added)} (partial work was preserved for inspection)`,
     );
-  }
 
   const record: WorktreeRecord = {
     id,
@@ -1032,7 +1105,11 @@ export function createWorktree(
     ...(request.beadId !== undefined ? { beadId: request.beadId } : {}),
     ...(sessionId !== undefined ? { ownerSessionId: sessionId } : {}),
   };
-  const recorded = updateCache(root, (records) => [...records, record]);
+  const recorded = updateCache(root, (records, others) =>
+    identityInUse([...records, ...others], id, path)
+      ? no("the worktree id or target path became retained before publication")
+      : { ok: true, value: [...records, record] },
+  );
   if (!recorded.ok)
     return no(
       `the worktree ${path} was made, but not recorded: ${recorded.error}`,
@@ -1107,9 +1184,10 @@ export function removeWorktree(
           "Git removal may have completed but registry identity changed; saved records were retained",
         );
     }
-    const dropped = updateCache(root, (records) =>
-      records.filter((r) => r.id !== id),
-    );
+    const dropped = updateCache(root, (records) => ({
+      ok: true,
+      value: records.filter((r) => r.id !== id),
+    }));
     return dropped.ok ? { ok: true, value: record } : dropped;
   };
   const listedNow = (): Outcome<boolean> => {

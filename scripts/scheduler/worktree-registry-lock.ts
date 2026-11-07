@@ -100,9 +100,11 @@ export function createLockedWorktree(
   request: CreateRequest,
   deps: Partial<RegistryDeps> = {},
 ) {
-  return withWorktreeRegistryLock(main, () =>
-    createWorktree(main, from, request, deps),
-  );
+  const result = withWorktreeRegistryLock(main, () => ({
+    ok: true as const,
+    value: createWorktree(main, from, request, deps),
+  }));
+  return result.ok ? result.value : { ...result, state: "refused" as const };
 }
 export function removeLockedWorktree(
   main: string,
