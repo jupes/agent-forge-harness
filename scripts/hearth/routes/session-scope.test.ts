@@ -228,12 +228,41 @@ test.skipIf(process.platform === "win32")(
     mkdirSync(inside);
     mkdirSync(sibling);
     await f.validate(f.project.id, metadata, []);
-    await f.validate(f.project.id, metadata, [], {
-      mode: "chat",
-      model: "sonnet",
-      prompt: "Private",
-      extraDirectories: [inside],
-    });
+    try {
+      await f.validate(f.project.id, metadata, [], {
+        mode: "chat",
+        model: "sonnet",
+        prompt: "Private",
+        extraDirectories: [inside],
+      });
+    } catch (error) {
+      const probe = (read: () => unknown) => {
+        try {
+          return read();
+        } catch (failure) {
+          return {
+            error: failure instanceof Error ? failure.message : String(failure),
+          };
+        }
+      };
+      throw Error(
+        "POSIX containment fixture rejected: " +
+          JSON.stringify({
+            literal,
+            inside,
+            nativeLiteral: probe(() => realpathSync.native(literal)),
+            regularLiteral: probe(() => realpathSync(literal)),
+            nativeInside: probe(() => realpathSync.native(inside)),
+            literalContains: probe(() =>
+              sessionFilesystemContains(literal, inside),
+            ),
+            canonicalContains: probe(() =>
+              sessionFilesystemContains(realpathSync.native(literal), inside),
+            ),
+            rejection: error instanceof Error ? error.message : String(error),
+          }),
+      );
+    }
     await expect(
       f.validate(f.project.id, metadata, [], {
         mode: "chat",
