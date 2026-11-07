@@ -10,8 +10,8 @@
  * leaves in it.
  *
  * git is run with argument arrays, never through a shell, so a path with
- * spaces is one argument. A read writes nothing. A failed Git creation attempts
- * branch cleanup unless a durable caller preserves partial state. A remove never
+ * spaces is one argument. A read writes nothing. Failed Git creation preserves
+ * partial branches and paths whose ownership is unconfirmed. A remove never
  * discards work unless asked to (`force`), and removes only worktrees this module made.
  */
 
@@ -857,9 +857,26 @@ function order(a: WorktreeEntry, b: WorktreeEntry): number {
 
 // ── Creating ────────────────────────────────────────────────────────────────
 
+export interface WorktreeCreationAttempt {
+  readonly id: string;
+  readonly path: string;
+  readonly branch: string;
+  readonly startCommit: string;
+}
+
+export type WorktreeCreationOutcome =
+  | { ok: true; state: "created"; value: WorktreeRecord }
+  | { ok: false; state: "refused"; error: string }
+  | {
+      ok: false;
+      state: "unconfirmed";
+      error: string;
+      attempt: WorktreeCreationAttempt;
+    };
+
 export interface CreateRequest {
   branch: string;
-  /** Durable callers reconcile their saved intent; preserve partial creation instead of deleting its branch. */
+  /** Retained for callers; every failed creation now preserves partial work. */
   preserveOnFailure?: true | undefined;
   beadId?: string | undefined;
   /** Defaults to the session mirrored into the checkout the worktree is made from. */
@@ -945,14 +962,44 @@ function ignoredHere(main: string, rel: string, git: GitRun): boolean {
  * main checkout), else at the HEAD of `from`, the checkout the command runs
  * in. Refused before anything is made: a name that is not a new branch, a
  * bead or session id that is not one, a start point that names no commit, a
- * repository that does not ignore `trees/` itself, the OS home. Failed Git
- * creation attempts branch cleanup unless preserveOnFailure is set.
+ * repository that does not ignore `trees/` itself, the OS home. Once Git add
+ * is attempted, any failure is unconfirmed and preserves partial work.
  */
 export function createWorktree(
   main: string,
   from: string,
   request: CreateRequest,
   partial: Partial<RegistryDeps> = {},
+): WorktreeCreationOutcome {
+  let attempt: WorktreeCreationAttempt | undefined;
+  let result: Outcome<WorktreeRecord>;
+  try {
+    result = createWorktreeAttempt(
+      main,
+      from,
+      { ...request },
+      partial,
+      (value) => {
+        attempt = Object.freeze(value);
+      },
+    );
+  } catch (error) {
+    result = no(
+      `worktree creation did not confirm completion: ${error instanceof Error ? error.message : "unknown error"}`,
+    );
+  }
+  if (result.ok) return { ...result, state: "created" };
+  return attempt
+    ? { ...result, state: "unconfirmed", attempt }
+    : { ...result, state: "refused" };
+}
+
+function createWorktreeAttempt(
+  main: string,
+  from: string,
+  request: CreateRequest,
+  partial: Partial<RegistryDeps>,
+  onAttempt: (attempt: WorktreeCreationAttempt) => void,
 ): Outcome<WorktreeRecord> {
   const deps = withDefaults(partial);
   if (request.beadId !== undefined && !isBead(request.beadId))
@@ -1000,29 +1047,16 @@ export function createWorktree(
   const sessionId =
     request.sessionId ?? (isSessionId(mirror) ? mirror : undefined);
   const path = `${root}/trees/${id}`;
+  onAttempt({ id, path, branch: request.branch, startCommit: sha });
   const added = deps.git(
     ["worktree", "add", "-b", request.branch, "--", path, sha],
     root,
     WRITE_MS,
   );
-  if (added.status !== 0) {
-    if (request.preserveOnFailure)
-      return no(
-        `git worktree add did not confirm creation: ${said(added)} (partial work was preserved for inspection)`,
-      );
-    // git can make the branch and then fail on the directory: take it back.
-    const left = deps.git(
-      ["rev-parse", "--verify", "--quiet", `refs/heads/${request.branch}`],
-      root,
-      READ_MS,
-    );
-    const rolledBack =
-      left.status !== 0 ||
-      deps.git(["branch", "-D", request.branch], root, WRITE_MS).status === 0;
+  if (added.status !== 0)
     return no(
-      `git worktree add failed: ${said(added)}${rolledBack ? "" : ` (the branch ${request.branch} it made could not be deleted)`}`,
+      `git worktree add did not confirm creation: ${said(added)} (partial work was preserved for inspection)`,
     );
-  }
 
   const record: WorktreeRecord = {
     id,
