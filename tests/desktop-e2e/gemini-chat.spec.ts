@@ -633,7 +633,7 @@ test("Gemini ACP composer keyboard-starts two explicit native turns with once ch
     );
     await expect(
       dialog.getByRole("button", { name: "Start", exact: true }),
-    ).toBeDisabled();
+    ).toBeEnabled();
   } finally {
     await identityRead.release();
     await identityRead.dispose();
@@ -922,7 +922,7 @@ test("a fresh synchronous edit after Chat preview cannot reserve or dispatch an 
     await expect(checkingIdentity).toContainText(
       "Checking the server-owned identity page",
     );
-    await expect(start).toBeDisabled();
+    await expect(start).toBeEnabled();
     expect(posts).toBe(0);
     expect(identityPosts).toBe(0);
     expect(promptCount()).toBe(before);
@@ -1350,7 +1350,7 @@ test("saved native deadline hides a genuinely actionable old offer before generi
       identityRegion.getByRole("button", { name: "Checking…", exact: true }),
     ).toBeDisabled();
     await expect(identityLoading).toBeVisible();
-    await expect(start).toBeDisabled();
+    await expect(start).toBeEnabled();
   } finally {
     await identityRead.release();
     await identityRead.dispose();

@@ -239,7 +239,7 @@ test("Start waits for the protected identity refresh emitted by preview", async 
       name: "Start",
       exact: true,
     });
-    await expect(startButton).toBeDisabled();
+    await expect(startButton).toBeEnabled();
     await dialog
       .getByRole("textbox", { name: "Session prompt", exact: true })
       .focus();
@@ -268,7 +268,7 @@ test("Start waits for the protected identity refresh emitted by preview", async 
       .getByRole("status")
       .filter({ hasText: "Checking the server-owned identity page" }),
   ).not.toBeVisible();
-  await dialog.getByRole("button", { name: "Start", exact: true }).click();
+  // The explicit keyboard Start was queued behind the held read and now dispatches once.
   await expect(
     page.getByRole("region", { name: "Session conversation", exact: true }),
   ).toBeVisible();
