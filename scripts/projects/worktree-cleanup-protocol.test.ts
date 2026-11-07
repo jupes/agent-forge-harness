@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 import {
-  canonicalCleanupRequest,
   type CleanupRequest,
+  canonicalCleanupRequest,
   cleanupRequestSchema,
 } from "./worktree-cleanup-protocol";
 

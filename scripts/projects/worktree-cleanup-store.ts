@@ -1,9 +1,24 @@
 import { createHash } from "node:crypto";
-import { type BigIntStats, lstatSync } from "node:fs";
+import {
+  type BigIntStats,
+  closeSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+} from "node:fs";
 import { isAbsolute, join } from "node:path";
 import { z } from "zod";
-import { readHomeFile, readHomeFileBounded } from "../hearth/home-guard";
+import { windowsConfigLeafKind } from "../config/transaction-windows";
+import { nativeWindowsAcl } from "../hearth/acl-windows";
+import {
+  posixWriteFinding,
+  readHomeFile,
+  readHomeFileBounded,
+  windowsWriteFinding,
+} from "../hearth/home-guard";
+import { writeOwnerOnly } from "../hearth/token";
 import { hasDuplicateObjectKeys } from "../json-object-keys";
+import { withQueueLock } from "../scheduler/queue-lock";
 import { registryPathKey } from "../scheduler/worktrees";
 import { canonicalTrustedDirectory } from "../trusted-directory";
 import {
@@ -137,4 +152,79 @@ export function readWorktreeCleanupInventory(home: string) {
   )
     throw Error("Cleanup namespace changed during its read");
   return parsed.records;
+}
+
+/** Host-only lease; the callback receives no persistence or removal capability. */
+export async function withWorktreeCleanupLease<T>(
+  home: string,
+  work: () => Promise<T>,
+  controls: { persist?: typeof writeOwnerOnly } = {},
+): Promise<T> {
+  const persist = controls.persist ?? writeOwnerOnly;
+  const directory = join(home, "project-worktree-cleanup");
+  const file = join(directory, "operations.json");
+  const lock = join(directory, "write.lock.db");
+  const directoryIdentity = (path: string) => {
+    const info = lstatSync(path, { bigint: true });
+    if (
+      !info.isDirectory() ||
+      info.isSymbolicLink() ||
+      readHomeFile(path).problem !== null ||
+      registryPathKey(canonicalTrustedDirectory(path)) !== registryPathKey(path)
+    )
+      throw Error("Cleanup lease requires protected canonical directories");
+    return `${info.dev}:${info.ino}`;
+  };
+  const homePin = directoryIdentity(home);
+  let created = false;
+  try {
+    mkdirSync(directory, { mode: 0o700 });
+    created = true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+  }
+  const directoryPin = directoryIdentity(directory);
+  if (created) {
+    persist(file, JSON.stringify({ version: 1, records: [] }));
+    if (readWorktreeCleanupInventory(home).length !== 0)
+      throw Error("Cleanup initialization could not be confirmed");
+  } else readWorktreeCleanupInventory(home);
+  try {
+    closeSync(openSync(lock, "wx", 0o600));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+  }
+  const lockIdentity = () => {
+    const info = lstatSync(lock, { bigint: true });
+    const acl = process.platform === "win32" ? nativeWindowsAcl() : null;
+    if (
+      !info.isFile() ||
+      info.isSymbolicLink() ||
+      info.nlink !== 1n ||
+      info.size > 1024n * 1024n ||
+      (acl
+        ? windowsConfigLeafKind(lock) !== "plain" ||
+          windowsWriteFinding(acl.read(lock), "file", acl.userSid()) !== null
+        : posixWriteFinding(lstatSync(lock), process.getuid?.() ?? -1) !== null)
+    )
+      throw Error("Unsafe cleanup lease file");
+    return `${info.dev}:${info.ino}`;
+  };
+  const lockPin = lockIdentity();
+  const result = await withQueueLock(
+    lock,
+    async () => {
+      if (
+        directoryIdentity(home) !== homePin ||
+        directoryIdentity(directory) !== directoryPin ||
+        lockIdentity() !== lockPin
+      )
+        throw Error("Cleanup lease identity changed");
+      readWorktreeCleanupInventory(home);
+      return await work();
+    },
+    { waitMs: 1000 },
+  );
+  if (!result.ok) throw Error("Cleanup journal is busy or unavailable");
+  return result.value;
 }
