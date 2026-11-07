@@ -1,14 +1,22 @@
 import { NotSent, type OperatorPost } from "../../../docs/js/operator";
-import { projectDefaultsSchema } from "../../../scripts/projects/project-defaults-protocol";
+import {
+  applyProjectDefaults,
+  type ProjectDefaultKey,
+  type ProjectDefaults,
+  type ProjectDefaultsChange,
+  projectDefaultsChangeSchema,
+  projectDefaultsFrom,
+  sameProjectDefaults,
+} from "../../../scripts/projects/project-defaults-protocol";
 import { validatedGeneralCatalog } from "./project-general-settings-client";
 
-interface DefaultsCatalog {
+interface DefaultsCatalog extends ProjectDefaults {
   revision: number;
-  claudeSessionSmith?: string | undefined;
 }
 interface DefaultsProject {
   catalog: DefaultsCatalog | null;
   draft: string | null;
+  extraDraft: ProjectDefaultsChange | null;
   message: string;
   needsReview: boolean;
   checked: boolean;
@@ -31,16 +39,13 @@ function projection(raw: unknown, id: string): DefaultsCatalog {
     raw as { projects: Array<{ id: string; claudeSessionSmith?: unknown }> }
   ).projects;
   const item = rows.find((row) => row.id === id);
-  const keeper = projectDefaultsSchema.parse(
-    item?.claudeSessionSmith === undefined
-      ? {}
-      : { claudeSessionSmith: item.claudeSessionSmith },
-  );
+  const keeper = projectDefaultsFrom(item ?? {});
   return { revision: general.revision, ...keeper };
 }
 const empty = (): DefaultsProject => ({
   catalog: null,
   draft: null,
+  extraDraft: null,
   message: "",
   needsReview: false,
   checked: false,
@@ -90,9 +95,9 @@ export class ProjectDefaultsSettingsOwner {
       if (prior?.catalog && catalog.revision < prior.catalog.revision) return;
       const changed =
         prior?.catalog &&
-        prior.draft !== null &&
+        (prior.draft !== null || prior.extraDraft !== null) &&
         (catalog.revision !== prior.catalog.revision ||
-          catalog.claudeSessionSmith !== prior.catalog.claudeSessionSmith);
+          !sameProjectDefaults(catalog, prior.catalog));
       this.update(id, {
         catalog,
         ...(changed
@@ -125,6 +130,17 @@ export class ProjectDefaultsSettingsOwner {
   }
   setDraft(id: string, draft: string) {
     if (!this.value.busy) this.update(id, { draft });
+  }
+  setDefault(id: string, key: ProjectDefaultKey, value: string | null) {
+    if (this.value.busy) return;
+    const parsed = projectDefaultsChangeSchema.safeParse({ [key]: value });
+    if (!parsed.success) {
+      this.update(id, { message: "Choose a supported session default." });
+      return;
+    }
+    this.update(id, {
+      extraDraft: { ...this.value.projects[id]?.extraDraft, ...parsed.data },
+    });
   }
   confirmReview(id: string) {
     if (this.value.projects[id]?.checked && !this.value.busy)
@@ -173,7 +189,7 @@ export class ProjectDefaultsSettingsOwner {
       this.value.busy ||
       !view?.catalog ||
       view.needsReview ||
-      view.draft === null
+      (view.draft === null && view.extraDraft === null)
     )
       return;
     if (Object.keys(this.pending).some((key) => key !== id)) {
@@ -183,14 +199,18 @@ export class ProjectDefaultsSettingsOwner {
       });
       return;
     }
-    const keeper = projectDefaultsSchema.safeParse(
-      view.draft ? { claudeSessionSmith: view.draft } : {},
-    );
+    const keeper = projectDefaultsChangeSchema.safeParse({
+      ...view.extraDraft,
+      ...(view.draft !== null
+        ? { claudeSessionSmith: view.draft || null }
+        : {}),
+    });
     if (!keeper.success) {
       this.update(id, { message: "Select a valid configured Smith." });
       return;
     }
     const original = view.catalog;
+    const intended = applyProjectDefaults(original, keeper.data);
     this.value.busy = id;
     this.emit();
     let sent = false;
@@ -200,7 +220,7 @@ export class ProjectDefaultsSettingsOwner {
       const current = projection(await this.deps.read(), id);
       if (
         current.revision !== original.revision ||
-        current.claudeSessionSmith !== original.claudeSessionSmith
+        !sameProjectDefaults(current, original)
       ) {
         this.update(id, {
           catalog: current,
@@ -260,7 +280,7 @@ export class ProjectDefaultsSettingsOwner {
       const receipt = projection(envelope.data, id);
       if (
         receipt.revision !== original.revision + 1 ||
-        receipt.claudeSessionSmith !== keeper.data.claudeSessionSmith
+        !sameProjectDefaults(receipt, intended)
       )
         throw Error(
           "Save answer did not match the intended revision and Session defaults",
@@ -286,11 +306,11 @@ export class ProjectDefaultsSettingsOwner {
           )
         )
           throw Error("Stale readback");
-        const changed =
-          readback.claudeSessionSmith !== keeper.data.claudeSessionSmith;
+        const changed = !sameProjectDefaults(readback, intended);
         this.update(id, {
           catalog: readback,
           draft: changed ? view.draft : null,
+          extraDraft: changed ? view.extraDraft : null,
           needsReview: changed,
           checked: changed,
           message: `Session defaults settings read at revision ${readback.revision}.${changed ? " Values changed after the accepted save; compare and review again." : ""}`,

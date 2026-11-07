@@ -32,7 +32,7 @@ import {
   projectCreateRetireSchema,
 } from "../../projects/create-protocol";
 import {
-  type ProjectDefaults,
+  type ProjectDefaultsChange,
   projectDefaultsRequestSchema,
 } from "../../projects/project-defaults-protocol";
 import {
@@ -121,9 +121,11 @@ export interface ProjectCreateRouteOptions {
 function validateConfiguredProjectSmith(
   name: string,
   options: ProjectCreateRouteOptions,
-  provider?: "claude",
+  provider?: "claude" | "codex" | "gemini",
 ): void {
-  const label = provider === "claude" ? "Claude session" : "Keeper";
+  const label = provider
+    ? `${provider === "claude" ? "Claude" : provider === "codex" ? "Codex" : "Gemini"} session`
+    : "Keeper";
   let config: ReturnType<typeof loadConfig>["config"];
   try {
     config = loadConfig({
@@ -153,7 +155,7 @@ function validateConfiguredProjectSmith(
   if (provider && smith.provider !== provider)
     throw new ProjectStoreError(
       400,
-      "Select an enabled Claude Smith for session defaults.",
+      `Select an enabled ${provider} Smith for session defaults.`,
     );
 }
 
@@ -1418,7 +1420,7 @@ export function projectRoutes(
   const defaultsSettings: ActionRoute<{
     id: string;
     expectedRevision: number;
-    defaults: ProjectDefaults;
+    defaults: ProjectDefaultsChange;
   }> = {
     kind: "action",
     method: "POST",
@@ -1435,8 +1437,12 @@ export function projectRoutes(
     effect: async ({ id, expectedRevision, defaults }) =>
       reply(async () =>
         publicCatalog(
-          await store.updateDefaults(id, expectedRevision, defaults, (name) =>
-            validateConfiguredProjectSmith(name, createOptions, "claude"),
+          await store.updateDefaults(
+            id,
+            expectedRevision,
+            defaults,
+            (name, provider) =>
+              validateConfiguredProjectSmith(name, createOptions, provider),
           ),
         ),
       ),

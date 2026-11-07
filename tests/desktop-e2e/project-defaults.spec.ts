@@ -9,7 +9,7 @@ import {
   seedProjects,
 } from "./project-fixtures";
 
-test("project Claude default saves, reloads and prefills a fresh composer without starting work", async ({
+test("project provider and launch defaults save, reload and prefill a fresh composer without starting work", async ({
   page,
 }) => {
   seedProjects();
@@ -38,11 +38,29 @@ test("project Claude default saves, reloads and prefills a fresh composer withou
   await expect(choice).toBeEnabled();
   await choice.selectOption("claude-journeyman");
   await section
+    .getByRole("combobox", { name: "Default Codex Smith", exact: true })
+    .selectOption("codex-journeyman");
+  await section
+    .getByRole("combobox", { name: "Where it runs", exact: true })
+    .selectOption("existing");
+  await section
+    .getByRole("combobox", { name: "Run as", exact: true })
+    .selectOption("task");
+  await section
     .getByRole("button", { name: "Save session defaults", exact: true })
     .click();
   await expect(section.getByRole("status")).toContainText("read at revision 2");
   await reloadSettled(page);
   await expect(choice).toHaveValue("claude-journeyman");
+  await expect(
+    section.getByRole("combobox", { name: "Default Codex Smith", exact: true }),
+  ).toHaveValue("codex-journeyman");
+  await expect(
+    section.getByRole("combobox", { name: "Where it runs", exact: true }),
+  ).toHaveValue("existing");
+  await expect(
+    section.getByRole("combobox", { name: "Run as", exact: true }),
+  ).toHaveValue("task");
   let starts = 0;
   page.on("request", (request) => {
     if (
@@ -61,5 +79,14 @@ test("project Claude default saves, reloads and prefills a fresh composer withou
     dialog.getByRole("combobox", { name: "Session smith", exact: true }),
   ).toHaveValue("claude-journeyman");
   await expect(dialog).toContainText("project Settings (claude-journeyman)");
+  await expect(
+    dialog.getByRole("combobox", {
+      name: "Where the session runs",
+      exact: true,
+    }),
+  ).toHaveValue("existing");
+  await expect(
+    dialog.getByRole("combobox", { name: "Session mode", exact: true }),
+  ).toHaveValue("task");
   expect(starts).toBe(0);
 });

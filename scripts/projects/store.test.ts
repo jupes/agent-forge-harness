@@ -1077,6 +1077,58 @@ test("Claude session defaults persist and clear independently of Keeper settings
   expect(store.read().projects[0]?.claudeSessionSmith).toBeUndefined();
   expect(store.read().projects[0]?.keeperSmith).toBe("claude-master");
 });
+test("provider and launch defaults preserve omitted fields and clear only explicit fields", async () => {
+  const { store, input } = fixture();
+  const created = await store.create(input, 0),
+    id = created.projects[0]!.id;
+  const checked: string[] = [];
+  await store.updateDefaults(
+    id,
+    1,
+    {
+      claudeSessionSmith: "claude-master",
+      codexSessionSmith: "codex-journeyman",
+      geminiSessionSmith: "gemini-journeyman",
+      sessionWhere: "new",
+      sessionRunAs: "task",
+    },
+    (name, provider) => {
+      checked.push(`${provider}:${name}`);
+    },
+  );
+  expect(checked).toEqual([
+    "claude:claude-master",
+    "codex:codex-journeyman",
+    "gemini:gemini-journeyman",
+  ]);
+  await store.updateDefaults(
+    id,
+    2,
+    { claudeSessionSmith: "claude-journeyman" },
+    () => {},
+  );
+  expect(store.read().projects[0]).toMatchObject({
+    codexSessionSmith: "codex-journeyman",
+    sessionWhere: "new",
+    sessionRunAs: "task",
+  });
+  await store.updateDefaults(
+    id,
+    3,
+    { codexSessionSmith: null, sessionRunAs: null },
+    () => {},
+  );
+  expect(store.read().projects[0]?.codexSessionSmith).toBeUndefined();
+  expect(store.read().projects[0]?.sessionRunAs).toBeUndefined();
+  expect(store.read().projects[0]?.claudeSessionSmith).toBe(
+    "claude-journeyman",
+  );
+  await store.updateDefaults(id, 4, {}, () => {});
+  expect(store.read().projects[0]?.claudeSessionSmith).toBeUndefined();
+  expect(store.read().projects[0]?.geminiSessionSmith).toBe(
+    "gemini-journeyman",
+  );
+});
 
 test("Keeper defaults persist with revision conflicts and configured validation", async () => {
   const { home, store, input } = fixture();

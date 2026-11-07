@@ -121,3 +121,145 @@ test("a prefilled private prompt is an existing draft after first initialization
     client.dispose();
   }
 });
+
+test("fresh provider drafts use saved Smiths and launch modes without creating a worktree", () => {
+  const { project, client } = fixture();
+  const configured: SmithsView = {
+    ...smiths,
+    smiths: [
+      ...smiths.smiths,
+      {
+        name: "cx",
+        provider: "codex",
+        model: "cx-model",
+        effort: "high",
+        enabled: true,
+        tags: [],
+      },
+      {
+        name: "gm",
+        provider: "gemini",
+        model: "gm-model",
+        effort: "medium",
+        enabled: true,
+        tags: [],
+      },
+    ],
+  };
+  const defaults = {
+    ...project,
+    codexSessionSmith: "cx",
+    geminiSessionSmith: "gm",
+    sessionWhere: "new" as const,
+    sessionRunAs: "chat" as const,
+  };
+  try {
+    client.prepareComposerDefaults(defaults);
+    client.initializeComposer(defaults, configured, []);
+    client.initializeProviderComposer(defaults, configured, "codex", "chat");
+    client.initializeProviderComposer(defaults, configured, "gemini", "chat");
+    const view = client.project(project.id);
+    expect(view.codexMode).toBe("chat");
+    expect(view.geminiMode).toBe("chat");
+    expect(view.composer.where).toBe("new");
+    expect(view.composer.worktree).toBe("");
+    expect(view.composer.createdWorktree).toBeNull();
+    expect(view.codexChatComposer).toMatchObject({
+      smith: "cx",
+      model: "cx-model",
+      sandbox: "read-only",
+    });
+    expect(view.geminiChatComposer).toMatchObject({
+      smith: "gm",
+      model: "gm-model",
+      approvalMode: "",
+    });
+    client.editCodexChatComposer(project.id, { model: "private-model" });
+    client.editComposer(project.id, { prompt: "Do not replace this draft" });
+    client.prepareComposerDefaults({
+      ...defaults,
+      sessionRunAs: "task",
+      sessionWhere: "main",
+    });
+    client.initializeProviderComposer(
+      { ...defaults, codexSessionSmith: "missing" },
+      configured,
+      "codex",
+      "chat",
+    );
+    expect(view.codexMode).toBe("chat");
+    expect(view.composer.where).toBe("new");
+    expect(view.codexChatComposer.model).toBe("private-model");
+  } finally {
+    client.dispose();
+  }
+});
+
+test("unavailable project choices stay explicit, while pending and sealed drafts retain authority", () => {
+  const { project, client } = fixture();
+  try {
+    const defaults = { ...project, codexSessionSmith: "missing" };
+    client.initializeProviderComposer(defaults, smiths, "codex", "task");
+    expect(client.project(project.id).codexComposer).toMatchObject({
+      smith: "missing",
+      model: "",
+    });
+    client.editGeminiComposer(project.id, {
+      initialized: true,
+      smith: "sealed",
+      model: "original",
+    });
+    client.initializeProviderComposer(
+      { ...project, geminiSessionSmith: "other" },
+      smiths,
+      "gemini",
+      "task",
+    );
+    expect(client.project(project.id).geminiComposer.smith).toBe("sealed");
+    client.project(project.id).starting = true;
+    client.prepareComposerDefaults({ ...project, sessionRunAs: "chat" });
+    expect(client.project(project.id).geminiMode).toBe("task");
+  } finally {
+    client.dispose();
+  }
+});
+
+test.each([
+  "task",
+  "chat",
+] as const)("clearing a pristine Gemini %s default restores the inherited CLI model", (mode) => {
+  const { project, client } = fixture();
+  const configured: SmithsView = {
+    ...smiths,
+    smiths: [
+      ...smiths.smiths,
+      {
+        name: "gm",
+        provider: "gemini",
+        model: "project-model",
+        effort: "medium",
+        enabled: true,
+        tags: [],
+      },
+    ],
+  };
+  try {
+    client.initializeComposer(project, configured, []);
+    client.initializeProviderComposer(
+      { ...project, geminiSessionSmith: "gm" },
+      configured,
+      "gemini",
+      mode,
+    );
+    const view = client.project(project.id);
+    expect(
+      (mode === "chat" ? view.geminiChatComposer : view.geminiComposer).model,
+    ).toBe("project-model");
+    client.initializeProviderComposer(project, configured, "gemini", mode);
+    expect(
+      mode === "chat" ? view.geminiChatComposer : view.geminiComposer,
+    ).toMatchObject({ smith: "gm", model: "" });
+  } finally {
+    client.dispose();
+  }
+});

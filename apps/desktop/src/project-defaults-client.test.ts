@@ -1,8 +1,13 @@
 import { expect, test } from "bun:test";
+import type { ProjectDefaults } from "../../../scripts/projects/project-defaults-protocol";
 import { ProjectDefaultsSettingsOwner } from "./project-defaults-client";
 
 const id = "project-aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-const catalog = (revision: number, claudeSessionSmith = "claude-master") => ({
+const catalog = (
+  revision: number,
+  claudeSessionSmith = "claude-master",
+  other: ProjectDefaults = {},
+) => ({
   version: 1,
   revision,
   projects: [
@@ -13,8 +18,39 @@ const catalog = (revision: number, claudeSessionSmith = "claude-master") => ({
       icon: "D",
       updatedAt: "2026-11-06T00:00:00.000Z",
       claudeSessionSmith,
+      ...other,
     },
   ],
+});
+test("provider and mode edits verify the complete current defaults while retaining omitted fields", async () => {
+  let current = catalog(1);
+  const owner = new ProjectDefaultsSettingsOwner({
+    read: async () => current,
+    post: async (_path, body) => {
+      expect(body).toEqual({
+        expectedRevision: 1,
+        defaults: {
+          codexSessionSmith: "codex-journeyman",
+          sessionWhere: "new",
+        },
+      });
+      current = catalog(2, "claude-master", {
+        codexSessionSmith: "codex-journeyman",
+        sessionWhere: "new",
+      });
+      return Response.json({ ok: true, data: current, error: null });
+    },
+  });
+  owner.adopt(id, current);
+  owner.setDefault(id, "codexSessionSmith", "codex-journeyman");
+  owner.setDefault(id, "sessionWhere", "new");
+  await owner.save(id);
+  expect(owner.snapshot().projects[id]?.catalog).toMatchObject({
+    claudeSessionSmith: "claude-master",
+    codexSessionSmith: "codex-journeyman",
+    sessionWhere: "new",
+  });
+  expect(owner.snapshot().projects[id]?.needsReview).toBe(false);
 });
 test("Session defaults save reads current state and verifies its receipt before readback", async () => {
   let current = catalog(1);

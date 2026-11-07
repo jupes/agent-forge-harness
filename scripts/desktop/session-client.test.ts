@@ -2401,6 +2401,110 @@ test.each([
   }
 });
 
+test.each(
+  sixStartInputs
+    .slice(2)
+    .flatMap((item) => [false, true].map((edited) => ({ item, edited }))),
+)("confirmed provider Starts release defaults only for the exact unchanged draft: %o", async ({
+  item,
+  edited,
+}) => {
+  const source = await sourceValidOriginal(item);
+  let admitted = false;
+  const client = createSessionsClient({
+    identities: sessionStartFixture().identities,
+    canWrite: () => true,
+    requestId: () => requestId,
+    list: async () => (admitted ? [source.session] : []),
+    read: async () => ({
+      ...page,
+      request: source.originalTurn,
+      turns: [source.originalTurn],
+      frames: [{ seq: 1, turnId: requestId, at, event: source.event }],
+    }),
+    post: async () => ({ state: "unknown", message: "Lost response" }),
+    stream: () => () => ({ close() {} }),
+  });
+  const provider = source.session.provider;
+  if (provider === "claude") throw Error("Provider fixture required");
+  const mode = source.original.launch.mode;
+  const project = {
+    ...projectFixture("/repo"),
+    id: projectId,
+    codexSessionSmith: "next",
+    geminiSessionSmith: "next",
+  };
+  const smiths: SmithsView = {
+    defaultSmith: "next",
+    benches: { low: [], medium: [], high: [] },
+    smiths: [
+      {
+        name: "next",
+        provider,
+        model: "next-model",
+        effort: "medium",
+        enabled: true,
+        tags: [],
+      },
+    ],
+  };
+  try {
+    client.chooseComposerProvider(projectId, provider);
+    client.editComposer(projectId, { ...sharedDraft, initialized: true });
+    const launch = source.original.launch;
+    if (provider === "codex") {
+      client.chooseCodexMode(projectId, mode);
+      const options = {
+        initialized: true,
+        smith: source.original.smith,
+        model: launch.model ?? "",
+        sandbox: "read-only" as const,
+      };
+      if (mode === "chat") client.editCodexChatComposer(projectId, options);
+      else client.editCodexComposer(projectId, options);
+    } else {
+      client.chooseGeminiMode(projectId, mode);
+      const options = {
+        initialized: true,
+        smith: source.original.smith,
+        model: launch.model ?? "",
+      };
+      if (mode === "chat") client.editGeminiChatComposer(projectId, options);
+      else client.editGeminiComposer(projectId, options);
+    }
+    await client.start(projectId, item.input);
+    if (edited) {
+      if (provider === "codex") {
+        if (mode === "chat")
+          client.editCodexChatComposer(projectId, { model: "private" });
+        else client.editCodexComposer(projectId, { model: "private" });
+      } else {
+        if (mode === "chat")
+          client.editGeminiChatComposer(projectId, { model: "private" });
+        else client.editGeminiComposer(projectId, { model: "private" });
+      }
+    }
+    admitted = true;
+    await client.refresh(projectId);
+    await Bun.sleep(0);
+    expect(client.project(projectId).pendingStart).toBeNull();
+    client.initializeProviderComposer(project, smiths, provider, mode);
+    const view = client.project(projectId);
+    const options =
+      provider === "codex"
+        ? mode === "chat"
+          ? view.codexChatComposer
+          : view.codexComposer
+        : mode === "chat"
+          ? view.geminiChatComposer
+          : view.geminiComposer;
+    expect(options.model).toBe(edited ? "private" : "next-model");
+    expect(source.original.smith).toBe(item.input.smith);
+  } finally {
+    client.dispose();
+  }
+});
+
 test("lost Start responses retain the immutable original until its actual admitted turn is found; reads never start another provider", async () => {
   const sent: SessionStartRequest[] = [];
   let listed = false,

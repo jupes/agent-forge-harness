@@ -69,24 +69,7 @@ export function CodexChatComposer({
           throw Error("Unverified choices");
         setSettings({ smiths, worktrees });
         client.initializeComposer(project, smiths, worktrees);
-        const current = client.project(project.id);
-        if (!current.codexChatComposer.initialized) {
-          const selected =
-            smiths.smiths.find(
-              (smith) =>
-                smith.name === smiths.defaultSmith &&
-                smith.enabled &&
-                smith.provider === "codex",
-            ) ??
-            smiths.smiths.find(
-              (smith) => smith.enabled && smith.provider === "codex",
-            );
-          editOptions(
-            selected
-              ? chooseCodexChatSmith(current.codexChatComposer, selected)
-              : { initialized: true },
-          );
-        }
+        client.initializeProviderComposer(project, smiths, "codex", "chat");
       })
       .catch(() => {
         if (active)
@@ -617,6 +600,12 @@ export function CodexChatComposer({
             }}
           >
             <option value="">Choose an enabled Codex smith</option>
+            {options.smith &&
+              (!source?.enabled || source.provider !== "codex") && (
+                <option value={options.smith} disabled>
+                  {options.smith} (unavailable)
+                </option>
+              )}
             {settings?.smiths.smiths.map((smith) => (
               <option
                 key={smith.name}

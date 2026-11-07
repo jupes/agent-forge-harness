@@ -22,8 +22,11 @@ import { resolveCheckout } from "../ledger/workspace";
 import { withQueueLock } from "../scheduler/queue-lock";
 import { MAX_PROJECT_CREATE_OPERATIONS } from "./create-protocol";
 import {
-  type ProjectDefaults,
-  projectDefaultsSchema,
+  applyProjectDefaults,
+  PROJECT_DEFAULT_KEYS,
+  type ProjectDefaultsChange,
+  projectDefaultsChangeSchema,
+  validProjectDefaults,
 } from "./project-defaults-protocol";
 import {
   type ProjectGeneralSettings,
@@ -180,6 +183,10 @@ function validProject(value: unknown): value is ProjectRecord {
       "keeperSmith",
       "keeperAutonomy",
       "claudeSessionSmith",
+      "codexSessionSmith",
+      "geminiSessionSmith",
+      "sessionWhere",
+      "sessionRunAs",
       "color",
       "pinned",
       "archived",
@@ -189,11 +196,7 @@ function validProject(value: unknown): value is ProjectRecord {
     isProjectId(value["id"]) &&
     typeof value["pinned"] === "boolean" &&
     typeof value["archived"] === "boolean" &&
-    projectDefaultsSchema.safeParse(
-      Object.hasOwn(value, "claudeSessionSmith")
-        ? { claudeSessionSmith: value["claudeSessionSmith"] }
-        : {},
-    ).success &&
+    validProjectDefaults(value) &&
     (!Object.hasOwn(value, "keeperAutonomy") ||
       value["keeperAutonomy"] === "suggest-only" ||
       value["keeperAutonomy"] === "propose-for-approval") &&
@@ -627,10 +630,13 @@ export function createProjectStore(
     async updateDefaults(
       id: string,
       expectedRevision: number,
-      defaults: ProjectDefaults,
-      validateSmith: (name: string) => void,
+      defaults: ProjectDefaultsChange,
+      validateSmith: (
+        name: string,
+        provider: "claude" | "codex" | "gemini",
+      ) => void,
     ): Promise<ProjectCatalog> {
-      const checked = projectDefaultsSchema.safeParse(defaults);
+      const checked = projectDefaultsChangeSchema.safeParse(defaults);
       if (!isProjectId(id) || !checked.success)
         throw new ProjectStoreError(
           400,
@@ -648,15 +654,20 @@ export function createProjectStore(
             409,
             "Unarchive this project before changing its defaults.",
           );
-        const { claudeSessionSmith } = checked.data;
-        if (claudeSessionSmith !== undefined) validateSmith(claudeSessionSmith);
+        for (const [field, provider] of [
+          ["claudeSessionSmith", "claude"],
+          ["codexSessionSmith", "codex"],
+          ["geminiSessionSmith", "gemini"],
+        ] as const) {
+          const name = checked.data[field];
+          if (typeof name === "string") validateSmith(name, provider);
+        }
         return {
           projects: catalog.projects.map((item) => {
             if (item.id !== id) return item;
             const updated = { ...item, updatedAt: now().toISOString() };
-            delete updated.claudeSessionSmith;
-            if (claudeSessionSmith !== undefined)
-              updated.claudeSessionSmith = claudeSessionSmith;
+            for (const key of PROJECT_DEFAULT_KEYS) delete updated[key];
+            Object.assign(updated, applyProjectDefaults(item, checked.data));
             return updated;
           }),
           ...(catalog.createOperations !== undefined

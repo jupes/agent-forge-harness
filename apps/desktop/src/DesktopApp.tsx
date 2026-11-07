@@ -1232,6 +1232,7 @@ export function DesktopApp(): JSX.Element {
   };
   const openSession = (beadId?: string) => {
     if (!project || project.archived) return;
+    sessions.prepareComposerDefaults(project);
     composerOpener.current =
       document.activeElement instanceof HTMLElement
         ? document.activeElement
@@ -2047,6 +2048,7 @@ export function DesktopApp(): JSX.Element {
       writesAllowed &&
       !project.archived
     ) {
+      sessions.prepareComposerDefaults(project);
       sessions.editComposer(project.id, { prompt: `${intent.name} ` });
       openSession();
       handled = true;

@@ -67,24 +67,7 @@ export function GeminiChatComposer({
           throw Error("Unverified choices");
         setSettings({ smiths, worktrees });
         client.initializeComposer(project, smiths, worktrees);
-        const current = client.project(project.id);
-        if (!current.geminiChatComposer.initialized) {
-          const selected =
-            smiths.smiths.find(
-              (smith) =>
-                smith.name === smiths.defaultSmith &&
-                smith.enabled &&
-                smith.provider === "gemini",
-            ) ??
-            smiths.smiths.find(
-              (smith) => smith.enabled && smith.provider === "gemini",
-            );
-          editOptions(
-            selected
-              ? { initialized: true, smith: selected.name }
-              : { initialized: true },
-          );
-        }
+        client.initializeProviderComposer(project, smiths, "gemini", "chat");
       })
       .catch(() => {
         if (active)
@@ -602,6 +585,12 @@ export function GeminiChatComposer({
             }}
           >
             <option value="">Choose an enabled Gemini smith</option>
+            {options.smith &&
+              (!source?.enabled || source.provider !== "gemini") && (
+                <option value={options.smith} disabled>
+                  {options.smith} (unavailable)
+                </option>
+              )}
             {settings?.smiths.smiths.map((smith) => (
               <option
                 key={smith.name}

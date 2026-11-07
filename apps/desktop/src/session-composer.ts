@@ -96,7 +96,9 @@ export function initializeClaudeDraft(
       "",
     worktree:
       draft.worktree ||
-      worktrees.find((item) => item.kind === "main" && !item.missing)?.path ||
+      (draft.where === "main"
+        ? worktrees.find((item) => item.kind === "main" && !item.missing)?.path
+        : "") ||
       "",
   };
 }

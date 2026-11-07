@@ -69,24 +69,7 @@ export function CodexTaskComposer({
           throw Error("Unverified choices");
         setSettings({ smiths, worktrees });
         client.initializeComposer(project, smiths, worktrees);
-        const current = client.project(project.id);
-        if (!current.codexComposer.initialized) {
-          const selected =
-            smiths.smiths.find(
-              (smith) =>
-                smith.name === smiths.defaultSmith &&
-                smith.enabled &&
-                smith.provider === "codex",
-            ) ??
-            smiths.smiths.find(
-              (smith) => smith.enabled && smith.provider === "codex",
-            );
-          editOptions(
-            selected
-              ? chooseCodexTaskSmith(current.codexComposer, selected)
-              : { initialized: true },
-          );
-        }
+        client.initializeProviderComposer(project, smiths, "codex", "task");
       })
       .catch(() => {
         if (active)
@@ -606,6 +589,12 @@ export function CodexTaskComposer({
             }}
           >
             <option value="">Choose an enabled Codex smith</option>
+            {options.smith &&
+              (!source?.enabled || source.provider !== "codex") && (
+                <option value={options.smith} disabled>
+                  {options.smith} (unavailable)
+                </option>
+              )}
             {settings?.smiths.smiths.map((smith) => (
               <option
                 key={smith.name}

@@ -3619,6 +3619,44 @@ test("session default save validates enabled Claude Smiths and clears inheritanc
   expect((await save(1, {})).status).toBe(409);
   expect((await save(2, {})).status).toBe(200);
   expect(store.read().projects[0]?.claudeSessionSmith).toBeUndefined();
+  for (const defaults of [
+    { codexSessionSmith: "claude-journeyman" },
+    { geminiSessionSmith: "codex-journeyman" },
+    { sessionWhere: "arbitrary" },
+    { sessionRunAs: "administrator" },
+  ])
+    expect((await save(3, defaults)).status).toBe(400);
+  expect(
+    (
+      await save(3, {
+        codexSessionSmith: "codex-journeyman",
+        sessionWhere: "new",
+        sessionRunAs: "chat",
+      })
+    ).status,
+  ).toBe(200);
+  expect(
+    (await save(4, { claudeSessionSmith: "claude-journeyman" })).status,
+  ).toBe(200);
+  expect(store.read().projects[0]).toMatchObject({
+    codexSessionSmith: "codex-journeyman",
+    sessionWhere: "new",
+    sessionRunAs: "chat",
+  });
+  expect(
+    (
+      await save(5, {
+        codexSessionSmith: null,
+        sessionWhere: null,
+        sessionRunAs: null,
+      })
+    ).status,
+  ).toBe(200);
+  expect(store.read().projects[0]?.codexSessionSmith).toBeUndefined();
+  expect(store.read().projects[0]?.sessionWhere).toBeUndefined();
+  expect(store.read().projects[0]?.claudeSessionSmith).toBe(
+    "claude-journeyman",
+  );
 });
 
 test("Keeper default save rejects unconfigured and disabled Smiths without changing the catalog", async () => {

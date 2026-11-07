@@ -1,8 +1,14 @@
 import type { JSX } from "preact";
 import { Button } from "../../../docs/js/ds/Button";
+import type { ProjectDefaultKey } from "../../../scripts/projects/project-defaults-protocol";
 import type { useProjectDefaults } from "./use-project-defaults";
 import type { SmithsController } from "./use-smiths";
 
+const providers = [
+  { provider: "claude", label: "Claude", field: "claudeSessionSmith" },
+  { provider: "codex", label: "Codex", field: "codexSessionSmith" },
+  { provider: "gemini", label: "Gemini", field: "geminiSessionSmith" },
+] as const;
 export function ProjectDefaultsSettings({
   projectId,
   archived,
@@ -18,19 +24,49 @@ export function ProjectDefaultsSettings({
 }): JSX.Element {
   const state = settings.projects[projectId],
     config = smiths.view?.configuration;
-  const saved = state?.catalog?.claudeSessionSmith,
-    draft = state?.draft ?? saved ?? "";
-  const choices =
+  const value = (key: ProjectDefaultKey): string => {
+    if (
+      key === "claudeSessionSmith" &&
+      state?.draft !== null &&
+      state?.draft !== undefined
+    )
+      return state.draft;
+    if (state?.extraDraft && Object.hasOwn(state.extraDraft, key))
+      return state.extraDraft[key] ?? "";
+    return state?.catalog?.[key] ?? "";
+  };
+  const choices = (provider: string) =>
     config?.data?.smiths.filter(
       (item) =>
-        item.enabled && item.provider === "claude" && item.name.length <= 80,
+        item.enabled && item.provider === provider && item.name.length <= 80,
     ) ?? [];
   const available = Boolean(config?.data && !config.error && !config.loading);
-  const missing = Boolean(
-    draft && !choices.some((item) => item.name === draft),
+  const edited = (key: ProjectDefaultKey) =>
+    (key === "claudeSessionSmith" &&
+      state?.draft !== null &&
+      state?.draft !== undefined) ||
+    Boolean(state?.extraDraft && Object.hasOwn(state.extraDraft, key));
+  const needsSmiths = providers.some(
+    ({ field }) => edited(field) && Boolean(value(field)),
+  );
+  const invalid = providers.some(
+    ({ provider, field }) =>
+      edited(field) &&
+      Boolean(value(field)) &&
+      !choices(provider).some((item) => item.name === value(field)),
   );
   const busy = Boolean(settings.busy),
     editable = writesAllowed && !archived && !busy;
+  const dirty = Boolean(
+    state && (state.draft !== null || state.extraDraft !== null),
+  );
+  const canSave =
+    editable &&
+    Boolean(state?.catalog) &&
+    dirty &&
+    !state?.needsReview &&
+    !invalid &&
+    (!needsSmiths || available);
   return (
     <section
       class="af-project-keeper"
@@ -38,24 +74,14 @@ export function ProjectDefaultsSettings({
     >
       <h3 id="project-defaults-heading">Session defaults</h3>
       <p>
-        Choose the Smith to prefill fresh Claude session drafts. You can
-        override it in the composer. Existing drafts, reviewed Starts and
+        Choose the starting selections for fresh ordinary session drafts. You
+        can override them in the composer. Existing drafts, reviewed Starts and
         running sessions retain their selections.
       </p>
       <p>
         Source: project catalog · revision{" "}
         {state?.catalog?.revision ?? "unavailable"}
       </p>
-      <p>
-        Saved Claude default:{" "}
-        <strong>{saved ?? "Inherit configured selection"}</strong>
-      </p>
-      {!saved && (
-        <p>
-          Selection source: configured default when it supports Claude;
-          otherwise choose a Claude Smith in the composer.
-        </p>
-      )}
       {config?.loading && <p role="status">Loading configured Smiths…</p>}
       {config?.error && (
         <p role="alert">
@@ -69,12 +95,6 @@ export function ProjectDefaultsSettings({
         >
           Refresh configured Smiths
         </Button>
-      )}
-      {missing && (
-        <p role="status">
-          The saved selection is unavailable or disabled. Choose an enabled
-          Claude Smith or inherit configuration.
-        </p>
       )}
       {state?.message && (
         <p role="status" aria-live="polite">
@@ -99,44 +119,107 @@ export function ProjectDefaultsSettings({
         class="af-project-settings-form"
         onSubmit={(event) => {
           event.preventDefault();
-          if (editable && available && !missing)
-            void settings.owner.save(projectId);
+          if (canSave) void settings.owner.save(projectId);
         }}
       >
+        {providers.map(({ provider, label, field }) => {
+          const selected = value(field),
+            options = choices(provider);
+          const missing = Boolean(
+            selected &&
+              available &&
+              !options.some((item) => item.name === selected),
+          );
+          return (
+            <div key={provider}>
+              <p>
+                {"Saved " + label + " default: "}
+                <strong>
+                  {state?.catalog?.[field] ?? "Inherit configured selection"}
+                </strong>
+              </p>
+              {missing && (
+                <p role="status">
+                  The {label} selection is unavailable or disabled. Choose
+                  another Smith or inherit configuration before using that
+                  provider.
+                </p>
+              )}
+              <label>
+                {"Default " + label + " Smith"}
+                <select
+                  value={selected}
+                  disabled={!editable || !available}
+                  onChange={(event) =>
+                    settings.owner.setDefault(
+                      projectId,
+                      field,
+                      event.currentTarget.value || null,
+                    )
+                  }
+                >
+                  <option value="">Inherit configured selection</option>
+                  {missing && (
+                    <option value={selected} disabled>
+                      {selected} (unavailable)
+                    </option>
+                  )}
+                  {options.map((item) => (
+                    <option key={item.name} value={item.name}>
+                      {item.name} · {item.model}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+          );
+        })}
         <label>
-          Default Claude Smith
+          Where it runs
           <select
-            value={draft}
-            disabled={!editable || !available}
+            value={value("sessionWhere")}
+            disabled={!editable || !state?.catalog}
             onChange={(event) =>
-              settings.owner.setDraft(projectId, event.currentTarget.value)
+              settings.owner.setDefault(
+                projectId,
+                "sessionWhere",
+                event.currentTarget.value || null,
+              )
             }
           >
-            <option value="">Inherit configured selection</option>
-            {missing && (
-              <option value={draft} disabled>
-                {draft} (unavailable)
-              </option>
-            )}
-            {choices.map((item) => (
-              <option key={item.name} value={item.name}>
-                {item.name} · {item.model}
-              </option>
-            ))}
+            <option value="">Use composer default · main checkout</option>
+            <option value="main">Main checkout</option>
+            <option value="existing">Existing worktree</option>
+            <option value="new">New worktree from a base</option>
           </select>
         </label>
-        <button
-          type="submit"
-          class="af-btn af-btn-primary"
-          disabled={
-            !editable ||
-            !available ||
-            missing ||
-            !state?.catalog ||
-            state.needsReview ||
-            state.draft === null
-          }
-        >
+        <p>
+          New and existing worktrees still require an explicit selection. A new
+          worktree is created only through the reviewed Create worktree action.
+        </p>
+        <label>
+          Run as
+          <select
+            value={value("sessionRunAs")}
+            disabled={!editable || !state?.catalog}
+            onChange={(event) =>
+              settings.owner.setDefault(
+                projectId,
+                "sessionRunAs",
+                event.currentTarget.value || null,
+              )
+            }
+          >
+            <option value="">Use provider composer default</option>
+            <option value="chat">Chat · multi-turn conversation</option>
+            <option value="task">Task · one bounded run</option>
+          </select>
+        </label>
+        <p>
+          Inherited Run as: Chat for Claude, Task for Codex and Gemini. These
+          defaults do not approve work or change provider permissions.
+        </p>
+        <button type="submit" class="af-btn af-btn-primary" disabled={!canSave}>
           {settings.busy === projectId
             ? "Saving or checking…"
             : "Save session defaults"}
