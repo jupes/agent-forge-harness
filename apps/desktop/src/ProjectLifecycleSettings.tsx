@@ -1,8 +1,37 @@
 import { useState } from "preact/hooks";
 import { Button } from "../../../docs/js/ds/Button";
 import type { ProjectRecord } from "../../../types/projects";
+import { projectLifecycleForProject } from "./project-lifecycle-client";
 import type { useProjectLifecycle } from "./use-project-lifecycle";
 import type { useProjectValueSettings } from "./use-project-value-settings";
+
+/** Hook-free projection renderer, also used by the actual Settings surface. */
+export function ProjectLifecycleFeedback({
+  view,
+}: {
+  view: ReturnType<typeof projectLifecycleForProject>;
+}) {
+  return (
+    <>
+      {view.message && (
+        <p role="status" aria-live="polite">
+          {view.message}
+        </p>
+      )}
+      {view.storageWarning && <p role="alert">{view.storageWarning}</p>}
+      {view.receipt && (
+        <p>
+          Deleted {view.receipt.name} · revision {view.receipt.deletedRevision}{" "}
+          ·{" "}
+          <time dateTime={view.receipt.deletedAt}>
+            {new Date(view.receipt.deletedAt).toLocaleString()}
+          </time>
+          . Original UUID: <code>{view.receipt.requestId}</code>.
+        </p>
+      )}
+    </>
+  );
+}
 
 export function ProjectLifecycleSettings({
   id,
@@ -19,10 +48,11 @@ export function ProjectLifecycleSettings({
 }) {
   const [confirmation, setConfirmation] = useState({ id, text: "" }),
     text = confirmation.id === id ? confirmation.text : "";
+  const scoped = projectLifecycleForProject(lifecycle, id);
   const archived = archive.projects[id],
-    receipt = lifecycle.receipts[id],
-    pending = lifecycle.pending[id],
-    status = lifecycle.statuses[id],
+    receipt = scoped.receipt,
+    pending = scoped.pending,
+    status = scoped.status,
     savedArchived = archived?.catalog?.value;
   const editable =
     writesAllowed && !archive.busy && !lifecycle.busy && !pending && !receipt;
@@ -79,20 +109,8 @@ export function ProjectLifecycleSettings({
           </Button>
         </>
       )}
-      <p role="status" aria-live="polite">
-        {lifecycle.messageProjectId === id || lifecycle.storageError
-          ? lifecycle.message
-          : ""}
-      </p>
-      {receipt ? (
-        <p>
-          Deleted {receipt.name} · revision {receipt.deletedRevision} ·{" "}
-          <time dateTime={receipt.deletedAt}>
-            {new Date(receipt.deletedAt).toLocaleString()}
-          </time>
-          . Original UUID: <code>{receipt.requestId}</code>.
-        </p>
-      ) : (
+      <ProjectLifecycleFeedback view={scoped} />
+      {!receipt && (
         <>
           <Button
             disabled={Boolean(lifecycle.busy) || lifecycle.storageError}

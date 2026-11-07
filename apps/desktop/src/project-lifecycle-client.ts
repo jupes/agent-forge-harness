@@ -55,6 +55,33 @@ export interface ProjectLifecycleView {
   messageProjectId: string | null;
   storageError: boolean;
 }
+/** Action feedback belongs to one project; recovery storage health is global. */
+export function projectLifecycleForProject(
+  view: ProjectLifecycleView,
+  id: string,
+) {
+  const pending = view.pending[id] ?? null,
+    candidate = view.receipts[id],
+    status = view.statuses[id];
+  const receipt =
+    candidate?.projectId === id &&
+    (!pending || confirmsOriginal(id, pending, candidate))
+      ? candidate
+      : null;
+  const shared = {
+    message: view.messageProjectId === id ? view.message : "",
+    storageWarning: view.storageError
+      ? "Deletion recovery metadata is unavailable. Restore browser storage and reload before deleting a project."
+      : null,
+    status: status?.projectId === id ? status : null,
+  };
+  if (receipt)
+    return { ...shared, phase: "confirmed" as const, pending, receipt };
+  if (pending)
+    return { ...shared, phase: "held" as const, pending, receipt: null };
+  return { ...shared, phase: "idle" as const, pending: null, receipt: null };
+}
+
 export class ProjectLifecycleOwner {
   private value: ProjectLifecycleView = {
     pending: {},
