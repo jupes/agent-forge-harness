@@ -1,6 +1,12 @@
 import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  lstatSync,
+  mkdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { join, resolve } from "node:path";
 import {
   type ProjectCouncilBinding,
@@ -26,6 +32,7 @@ import {
   projectCouncilInputHash,
   projectCouncilIntentHash,
   projectCouncilProfileHash,
+  readProjectCouncilRetirementProof,
 } from "./project-original-store";
 import { providerEndpointSnapshot } from "./providers";
 import { parseCouncilProfileJson } from "./types";
@@ -523,3 +530,38 @@ test("failed durable retirement keeps the original and full budget hold", async 
   expect(f.store.read(f.id, f.requestId)).toEqual(f.original);
   expect(f.budget.status(f.id).reservedUsd).toBe(0.25);
 });
+
+test.skipIf(process.platform === "win32")(
+  "retirement authority distinguishes a literal POSIX home from its slash sibling",
+  async () => {
+    const f = fixture();
+    const literal = join(f.home, "a\\b"),
+      nested = join(f.home, "a", "b");
+    mkdirSync(literal, { mode: 0o700 });
+    mkdirSync(nested, { recursive: true, mode: 0o700 });
+    const left = lstatSync(literal, { bigint: true }),
+      right = lstatSync(nested, { bigint: true });
+    expect(left.dev === right.dev && left.ino === right.ino).toBe(false);
+    const store = createProjectCouncilOriginalStore({
+      home: literal,
+      workspace: f.workspace,
+      projectId: f.binding.projectId,
+      withQueueLock,
+    });
+    const original = (
+      await store.reservePrepared(f.prepared("Literal home authority"))
+    ).original;
+    let proof: ProjectCouncilRetirementProof | undefined;
+    await store.retire(
+      f.binding.projectId,
+      original.requestId,
+      original.intentHash,
+      async (value) => {
+        proof = value;
+      },
+    );
+    if (!proof) throw Error("Expected an exact retired home capability");
+    expect(readProjectCouncilRetirementProof(proof, literal)).not.toBeNull();
+    expect(readProjectCouncilRetirementProof(proof, nested)).toBeNull();
+  },
+);

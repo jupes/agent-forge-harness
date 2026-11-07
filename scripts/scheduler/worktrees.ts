@@ -58,6 +58,7 @@ import {
 } from "../forge/runs";
 import { hasDuplicateObjectKeys } from "../json-object-keys";
 import { readSessionMirror } from "../ledger/identity";
+import { nativePhysicalPath } from "../native-realpath";
 import { parseBeadsIssueId } from "../run-correlation";
 import { redactSecrets } from "../secret-patterns";
 import { resetSpawnClock } from "../spawn-clock";
@@ -670,7 +671,7 @@ export function readCache(main: string): WorktreeRecord[] {
 
 function physicalRegistryPathKey(path: string): string | null {
   try {
-    return registryPathKey(realpathSync.native(path));
+    return registryPathKey(nativePhysicalPath(path));
   } catch {
     return null;
   }

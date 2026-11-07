@@ -1,8 +1,9 @@
-import { realpathSync, statSync } from "node:fs";
+import { statSync } from "node:fs";
 import type { ConversationObject } from "../../../types/conversation";
 import type { OwnedSessionMetadata } from "../../../types/owned-session";
 import type { ClaudeSessionLaunch } from "../../../types/session-launch";
 import { ConversationError } from "../../conversations/error";
+import { nativePhysicalPath } from "../../native-realpath";
 import { selectProjectBeads } from "../../projects/scope";
 import { listWorktrees, registryPathKey } from "../../scheduler/worktrees";
 import {
@@ -68,7 +69,7 @@ export function createSessionRepositoryScopeValidator(
       refuse("The repository is outside this project's current scope.");
     let main: string;
     try {
-      main = realpathSync.native(localStateRoot(deps.root));
+      main = nativePhysicalPath(localStateRoot(deps.root));
     } catch {
       refuse("The served repository is unavailable.");
     }
@@ -131,10 +132,10 @@ export function createSessionScopeValidator(
         !statSync(metadata.worktree).isDirectory()
       )
         refuse("The selected worktree is unavailable.");
-      canonical = realpathSync.native(selected.path);
+      canonical = nativePhysicalPath(selected.path);
       if (
         !sameSessionFilesystemPath(
-          realpathSync.native(metadata.worktree),
+          nativePhysicalPath(metadata.worktree),
           canonical,
         )
       )
@@ -149,7 +150,7 @@ export function createSessionScopeValidator(
         try {
           if (
             !statSync(path).isDirectory() ||
-            !sessionFilesystemContains(canonical, realpathSync.native(path))
+            !sessionFilesystemContains(canonical, nativePhysicalPath(path))
           )
             refuse(
               "An extra directory is linked outside the checked worktree.",

@@ -695,6 +695,8 @@ describe("createWorktree", () => {
         path: join(dir, "trees\\literal-id"),
         extensionVersion: 2,
       };
+      const target = join(dir, "trees", "literal-id");
+      mkdirSync(foreign.path);
       mkdirSync(join(dir, "trees"));
       writeFileSync(cache, JSON.stringify({ worktrees: [foreign] }));
       let adds = 0;
@@ -702,6 +704,7 @@ describe("createWorktree", () => {
         if (args[0] !== "worktree" || args[1] !== "add")
           return gitRun(args, cwd, timeoutMs);
         adds++;
+        mkdirSync(target);
         return { status: 0, stdout: "", stderr: "" };
       };
       const created = createWorktree(
@@ -712,6 +715,11 @@ describe("createWorktree", () => {
       );
       expect(created).toMatchObject({ ok: true, state: "created" });
       expect(adds).toBe(1);
+      const literal = lstatSync(foreign.path, { bigint: true });
+      const nested = lstatSync(target, { bigint: true });
+      expect(literal.dev === nested.dev && literal.ino === nested.ino).toBe(
+        false,
+      );
       const saved = readFileSync(cache, "utf8");
       expect(saved).toContain(JSON.stringify(foreign.path));
       expect(saved).toContain('"foreign-extension"');

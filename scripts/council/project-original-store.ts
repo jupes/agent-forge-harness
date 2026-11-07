@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { lstatSync, mkdirSync, realpathSync } from "node:fs";
+import { lstatSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
 import {
   PROJECT_COUNCIL_MAX_JOURNAL_BYTES,
@@ -20,6 +20,7 @@ import {
   readHomeFileBounded,
 } from "../hearth/home-guard";
 import { writeOwnerOnly } from "../hearth/token";
+import { nativePhysicalPath } from "../native-realpath";
 import type { ProjectCouncilRetirementProof } from "../projects/project-budgets-protocol";
 import { parseCouncilProfileJson } from "./types";
 
@@ -33,8 +34,8 @@ type RetirementIdentity = Readonly<{
 }>;
 const retirementProofs = new WeakMap<object, RetirementIdentity>();
 function retirementHome(home: string): string {
-  const path = realpathSync.native(home),
-    info = lstatSync(path);
+  const path = nativePhysicalPath(home),
+    info = lstatSync(path, { bigint: true });
   if (!info.isDirectory() || readHomeFile(home).problem !== null)
     throw Error("Unverified retirement home");
   return `${process.platform === "win32" ? path.toLowerCase() : path}\0${info.dev}:${info.ino}`;

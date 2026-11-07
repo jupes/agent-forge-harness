@@ -1,16 +1,9 @@
 import { afterEach, expect, test } from "bun:test";
-import {
-  lstatSync,
-  mkdirSync,
-  mkdtempSync,
-  realpathSync,
-  rmSync,
-  symlinkSync,
-} from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 import type { OwnedSessionMetadata } from "../../../types/owned-session";
+import { nativePhysicalPath } from "../../native-realpath";
 import { createProjectStore } from "../../projects/store";
 import type { GitRun } from "../../scheduler/worktrees";
 import type { ProjectSnapshot } from "./project-summaries";
@@ -31,7 +24,7 @@ async function fixture(rootName = "repo") {
   const home = join(base, "home");
   mkdirSync(join(root, ".git"), { recursive: true });
   mkdirSync(join(root, "src"));
-  root = realpathSync.native(root);
+  root = nativePhysicalPath(root);
   const catalog = await createProjectStore(home).create(
     {
       slug: "alpha",
@@ -182,9 +175,21 @@ test("session admission checks current project, registered worktree and bead sco
 test("extra directories cannot escape the checked worktree through an absolute path or a directory link", async () => {
   const f = await fixture(),
     outside = join(f.base, "outside"),
-    link = join(f.root, "linked");
+    link = join(f.root, "linked"),
+    insideLink = join(f.root, "linked-inside");
   mkdirSync(outside);
   symlinkSync(outside, link, process.platform === "win32" ? "junction" : "dir");
+  symlinkSync(
+    join(f.root, "src"),
+    insideLink,
+    process.platform === "win32" ? "junction" : "dir",
+  );
+  await f.validate(f.project.id, f.metadata, [], {
+    mode: "task",
+    model: "sonnet",
+    prompt: "Private",
+    extraDirectories: [insideLink],
+  });
   for (const path of [outside, link])
     await expect(
       f.validate(f.project.id, f.metadata, [], {
@@ -230,86 +235,12 @@ test.skipIf(process.platform === "win32")(
     mkdirSync(inside);
     mkdirSync(sibling);
     await f.validate(f.project.id, metadata, []);
-    try {
-      await f.validate(f.project.id, metadata, [], {
-        mode: "chat",
-        model: "sonnet",
-        prompt: "Private",
-        extraDirectories: [inside],
-      });
-    } catch (error) {
-      const probe = (read: () => unknown) => {
-        try {
-          return read();
-        } catch (failure) {
-          return {
-            error: failure instanceof Error ? failure.message : String(failure),
-          };
-        }
-      };
-      const inode = (path: Parameters<typeof lstatSync>[0]) => {
-        const info = lstatSync(path);
-        return {
-          dev: String(info.dev),
-          ino: String(info.ino),
-          directory: info.isDirectory(),
-          linked: info.isSymbolicLink(),
-        };
-      };
-      throw Error(
-        "POSIX containment fixture rejected: " +
-          JSON.stringify({
-            literal,
-            inside,
-            nativeLiteral: probe(() => realpathSync.native(literal)),
-            regularLiteral: probe(() => realpathSync(literal)),
-            nativeInside: probe(() => realpathSync.native(inside)),
-            nativeLiteralBuffer: probe(() =>
-              realpathSync.native(Buffer.from(literal)),
-            ),
-            regularLiteralBuffer: probe(() =>
-              realpathSync(Buffer.from(literal)),
-            ),
-            nativeInsideBuffer: probe(() =>
-              realpathSync.native(Buffer.from(inside)),
-            ),
-            regularInsideBuffer: probe(() => realpathSync(Buffer.from(inside))),
-            nativeLiteralUrl: probe(() =>
-              realpathSync.native(pathToFileURL(literal)),
-            ),
-            regularLiteralUrl: probe(() =>
-              realpathSync(pathToFileURL(literal)),
-            ),
-            nativeInsideUrl: probe(() =>
-              realpathSync.native(pathToFileURL(inside)),
-            ),
-            regularInsideUrl: probe(() => realpathSync(pathToFileURL(inside))),
-            nativeLiteralBytes: probe(() =>
-              realpathSync
-                .native(literal, { encoding: "buffer" })
-                .toString("utf8"),
-            ),
-            nativeInsideBytes: probe(() =>
-              realpathSync
-                .native(inside, { encoding: "buffer" })
-                .toString("utf8"),
-            ),
-            literalInode: probe(() => inode(literal)),
-            nestedInode: probe(() => inode(nested)),
-            insideInode: probe(() => inode(inside)),
-            literalBufferInode: probe(() => inode(Buffer.from(literal))),
-            nestedBufferInode: probe(() => inode(Buffer.from(nested))),
-            insideBufferInode: probe(() => inode(Buffer.from(inside))),
-            literalContains: probe(() =>
-              sessionFilesystemContains(literal, inside),
-            ),
-            canonicalContains: probe(() =>
-              sessionFilesystemContains(realpathSync.native(literal), inside),
-            ),
-            rejection: error instanceof Error ? error.message : String(error),
-          }),
-      );
-    }
+    await f.validate(f.project.id, metadata, [], {
+      mode: "chat",
+      model: "sonnet",
+      prompt: "Private",
+      extraDirectories: [inside],
+    });
     await expect(
       f.validate(f.project.id, metadata, [], {
         mode: "chat",
