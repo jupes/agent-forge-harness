@@ -97,9 +97,10 @@ type RunsBodyOracle = {
 };
 type RunsBodyOracleWindow = Window & {
   __runs1074BodyOracle?: RunsBodyOracle;
+  __runs1074InitialBodyCleanup?: () => void;
 };
 type RunsBodyCleanup = {
-  handle: import("@playwright/test").JSHandle<RunsBodyOracle>;
+  handle?: import("@playwright/test").JSHandle<RunsBodyOracle>;
   cleanup(): Promise<void>;
 };
 const runsBodyCleanups = new WeakMap<Page, RunsBodyCleanup>();
@@ -129,6 +130,7 @@ async function installRunsBodyOracle(config: {
   maxBytes: number;
   timeoutMs: number;
   fixtureBody?: unknown;
+  initialArm?: { id: string; path: string };
 }) {
   type BrowserFetch = Window["fetch"];
   const cancelReader = (phase: Phase) => {
@@ -1086,7 +1088,44 @@ async function installRunsBodyOracle(config: {
     return { text: capture.text };
   }
 
-  return installOn(window as RunsBodyOracleWindow, window.fetch);
+  const installed = installOn(window as RunsBodyOracleWindow, window.fetch);
+  if (config.initialArm) {
+    let disposed = false;
+    Object.defineProperty(window, "__runs1074InitialBodyCleanup", {
+      value: () => {
+        if (disposed) return;
+        disposed = true;
+        installed.dispose();
+      },
+      writable: false,
+      configurable: false,
+    });
+    installed.arm(
+      config.initialArm.id,
+      new URL(config.initialArm.path, location.href).href,
+      config.timeoutMs,
+    );
+  }
+  return installed;
+}
+async function installRunsCaptureHandle(page: Page) {
+  const handle = (await page.evaluateHandle(installRunsBodyOracle, {
+    mode: "install" as const,
+    maxBytes: MAX_PROJECT_RUN_BYTES + 1024,
+    timeoutMs: READ_TIMEOUT_MS,
+  })) as import("@playwright/test").JSHandle<RunsBodyOracle>;
+  runsBodyCleanups.set(page, {
+    handle,
+    async cleanup() {
+      await attemptRunsCleanups([
+        async () => {
+          await handle.evaluate((oracle) => oracle.dispose());
+        },
+        () => handle.dispose(),
+      ]);
+    },
+  });
+  return handle;
 }
 async function readRunsBodyCapture(
   page: Page,
@@ -1717,16 +1756,6 @@ function runDetailFromEnvelope(body: unknown) {
     throw Error("Missing protected Run detail response");
   return projectRunDetailSchema.parse(body.data);
 }
-async function runDetailResponse(response: PlaywrightResponse) {
-  expect(response.status()).toBe(200);
-  let body: unknown;
-  try {
-    body = await response.json();
-  } catch {
-    throw Error("Incomplete protected Run detail response");
-  }
-  return runDetailFromEnvelope(body);
-}
 function assertRunMembership(
   history: ReturnType<typeof availableHistory>,
   expected: string,
@@ -2238,12 +2267,38 @@ test("a changed run-session admission key keeps the old page stale and disables 
     "/__agent-forge/projects/" + alpha.id + "/runs/" + fixture.primary,
   );
   await abortObserver.install();
+  runsBodyCleanups.set(page, {
+    async cleanup() {
+      await page.evaluate(() =>
+        (window as RunsBodyOracleWindow).__runs1074InitialBodyCleanup?.(),
+      );
+    },
+  });
+  await page.addInitScript(installRunsBodyOracle, {
+    mode: "install" as const,
+    maxBytes: MAX_PROJECT_RUN_BYTES + 1024,
+    timeoutMs: READ_TIMEOUT_MS,
+    initialArm: {
+      id: "initial-page",
+      path: `/__agent-forge/projects/${alpha.id}/runs/${fixture.primary}?after=0&limit=100`,
+    },
+  });
   const initialPageResponse = page.waitForResponse((response) =>
     matchesRunDetailPage(response, 0),
   );
   await openSettled(page, href(alpha.id, fixture.primary));
-  const initialDetail = await runDetailResponse(await initialPageResponse);
+  const initialDetail = await readRunsBodyCapture(
+    page,
+    await initialPageResponse,
+    "initial-page",
+    (detail) => {
+      availableHistory(detail, 0);
+    },
+    testInfo,
+  );
   const initialHistory = availableHistory(initialDetail, 0);
+  await runsBodyCleanups.get(page)!.cleanup();
+  runsBodyCleanups.delete(page);
   const nextAfter = initialHistory.nextAfter;
   const history = page.getByRole("region", {
     name: "Recorded sessions for this run",
@@ -2343,23 +2398,7 @@ test("a changed run-session admission key keeps the old page stale and disables 
   if (!(retainedFailure instanceof AggregateError))
     throw Error("Primary failure was not retained");
   expect(retainedFailure.errors).toEqual([primaryFailure, secondaryFailure]);
-  const bodyHandle = (await page.evaluateHandle(installRunsBodyOracle, {
-    mode: "install" as const,
-    maxBytes: MAX_PROJECT_RUN_BYTES + 1024,
-    timeoutMs: READ_TIMEOUT_MS,
-  })) as import("@playwright/test").JSHandle<RunsBodyOracle>;
-  runsBodyCleanups.set(page, {
-    handle: bodyHandle,
-    async cleanup() {
-      await attemptRunsCleanups([
-        async () => {
-          await bodyHandle.evaluate((oracle) => oracle.dispose());
-        },
-        () => bodyHandle.dispose(),
-      ]);
-    },
-  });
-
+  await installRunsCaptureHandle(page);
   const abortControl = await page.evaluate(() => {
     const controller = new AbortController();
     const signal = AbortSignal.any([controller.signal]);
@@ -2455,8 +2494,33 @@ test("a changed run-session admission key keeps the old page stale and disables 
   const refreshedPageResponse = page.waitForResponse((response) =>
     matchesRunDetailPage(response, 0),
   );
+  await runsBodyCleanups.get(page)!.cleanup();
+  runsBodyCleanups.delete(page);
+  const bodyHandle = await installRunsCaptureHandle(page);
+  await bodyHandle.evaluate(
+    (oracle, config) => oracle.arm(config.id, config.url, config.budget),
+    {
+      id: "refreshed-page",
+      url: new URL(
+        `/__agent-forge/projects/${alpha.id}/runs/${fixture.primary}?after=0&limit=100`,
+        page.url(),
+      ).href,
+      budget: READ_TIMEOUT_MS,
+    },
+  );
   await page.getByRole("button", { name: "Refresh runs", exact: true }).click();
-  const refreshedDetail = await runDetailResponse(await refreshedPageResponse);
+  const refreshedDetail = await readRunsBodyCapture(
+    page,
+    await refreshedPageResponse,
+    "refreshed-page",
+    (detail) => {
+      assertRunMembership(
+        availableHistory(detail, 0),
+        changedHistory.membershipKey,
+      );
+    },
+    testInfo,
+  );
   const refreshedHistory = availableHistory(refreshedDetail, 0);
   expect(refreshedHistory.membershipKey).toBe(changedHistory.membershipKey);
   await expect(history).not.toContainText(
