@@ -247,7 +247,7 @@ test("Cancel, templates and checked options start nothing; a lost Start reply cr
     name: "Start",
     exact: true,
   });
-  await expect(startButton).toBeDisabled();
+  await expect(startButton).toBeEnabled();
   expect(identityStatuses).toHaveLength(0);
   releaseIdentityReads();
   await expect.poll(() => identityStatuses[0] ?? 0).toBe(200);

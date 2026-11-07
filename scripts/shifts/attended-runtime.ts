@@ -13,7 +13,7 @@ import { PrivateCaptureError } from "../executors/private-capture";
 import { readHomeFile, readSessionTranscript } from "../hearth/home-guard";
 import { projectSnapshotReader } from "../hearth/routes/project-summaries";
 import { resolveCheckout } from "../ledger/workspace";
-import { assertProjectCliCostAdmission } from "../projects/project-budget-policy";
+import { projectShiftAttemptBudgetAllowed } from "../projects/project-budget-policy";
 import { workspaceKey } from "../projects/scope";
 import { createProjectStore } from "../projects/store";
 import { smithFor } from "../scheduler/queue";
@@ -270,17 +270,10 @@ export function createAttendedProjectShiftExecutionRuntime(options: {
             const project = createProjectStore(options.home)
               .read()
               .projects.find((row) => row.id === intent.projectId);
-            if (!project) return false;
-            try {
-              assertProjectCliCostAdmission(project);
-            } catch {
-              return false;
-            }
-            const cap = project.budgets?.shiftSpendCapUsd;
-            return (
-              cap == null ||
-              (unpriced === 0 &&
-                spentUsd < Math.min(cap, intent.request.options.maxUsd))
+            return projectShiftAttemptBudgetAllowed(
+              project,
+              { spentUsd, unpriced },
+              intent.request.options.maxUsd,
             );
           },
           exec: {

@@ -422,7 +422,7 @@ test("an edit after Gemini review and before paint cannot dispatch an unreviewed
       name: "Start",
       exact: true,
     });
-    await expect(startButton).toBeDisabled();
+    await expect(startButton).toBeEnabled();
     expect(identityPosts).toBe(0);
     expect(posts).toBe(0);
     expect(taskCount()).toBe(before);

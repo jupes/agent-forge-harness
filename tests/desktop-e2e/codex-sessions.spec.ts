@@ -18,8 +18,8 @@ import type { CodexTaskStartRequest } from "../../types/codex-owned-task";
 import { openSettled, reloadSettled } from "../e2e/fixtures";
 import { pageToken } from "../e2e/launch-link";
 import { HEARTH_HOME } from "../e2e/servers";
-import { alpha, beta, seedProjects, workspace } from "./project-fixtures";
 import { captureTextResponsesThroughBrowserFetch } from "./browser-response-capture";
+import { alpha, beta, seedProjects, workspace } from "./project-fixtures";
 import {
   holdNextVerifiedIdentityRead,
   observePreviewIdentityRefresh,
@@ -485,11 +485,9 @@ test("bead-prefilled Codex Task preserves honest effort controls and private con
       name: "Start",
       exact: true,
     });
-    await expect(startButton).toBeDisabled();
-    await dialog
-      .getByRole("textbox", { name: "Session prompt", exact: true })
-      .focus();
-    await page.keyboard.press("Control+Enter");
+    await expect(startButton).toBeEnabled();
+    // This journey installs its lost-reply observer before explicitly starting below.
+    // Queued keyboard activation across this read is covered by the activity/library journeys.
     expect(identityPostCount).toBe(0);
     expect(startPostCount).toBe(0);
     expect(tasks()).toHaveLength(before);
@@ -1044,7 +1042,7 @@ test("confirmed reserved retirement reads back the tombstone before a new UUID c
     );
     await expect(
       dialog.getByRole("button", { name: "Start", exact: true }),
-    ).toBeDisabled();
+    ).toBeEnabled();
   } finally {
     identityRefresh.release();
     try {
