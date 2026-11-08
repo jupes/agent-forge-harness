@@ -2612,6 +2612,10 @@ async function confirmationFixture(
     uuid: string;
     review: unknown;
     reply: () => Promise<Response>;
+    receiptReply?: (
+      url: string,
+      limits: { maxBodyBytes: number },
+    ) => Promise<unknown>;
     beforeReview?: () => Promise<void>;
     lockRequested?: () => void;
     afterHash?: (text: string) => Promise<void>;
@@ -2657,6 +2661,10 @@ async function confirmationFixture(
       trace.reviews.push({ url, ...limits });
       await control.beforeReview?.();
       return control.review;
+    },
+    readReceipt: async (url, limits) => {
+      if (!control.receiptReply) throw Error("Unexpected original receipt GET");
+      return control.receiptReply(url, limits);
     },
     withLock: (work) => {
       trace.lockRequests++;
@@ -3940,4 +3948,455 @@ test("strict POST uncertainty keeps the durable full original and never resends 
       ),
     ).toEqual(expected);
   }
+});
+
+test("cross-owner adoption and late receipts preserve dispatched ownership across navigation and a new active original", async () => {
+  const f = await confirmationFixture(inventoryFrom([], null));
+  const next = await nextCleanupOriginalFixture();
+  const selected: CleanupBrowserScope = {
+    projectId,
+    repository: request.repository,
+    worktreeId: request.expectedRecord.id,
+  };
+  const nextScope: CleanupBrowserScope = {
+    projectId: next.projectId,
+    repository: next.request.repository,
+    worktreeId: next.request.expectedRecord.id,
+  };
+  const nextUnknown = cleanupReceiptSchema.parse({
+    ...unknownReceipt,
+    ...next.request,
+    projectId: next.projectId,
+    requestHash: next.requestHash,
+    audit: {
+      eventId: 2,
+      ulid: "01J00000000000000000000001",
+      ts: "2026-11-08T00:00:06.000Z",
+    },
+    attemptedAt: "2026-11-08T00:00:07.000Z",
+  });
+  let live: CleanupBrowserScope | null = selected,
+    writable = true;
+  let scopeCalls = 0,
+    writeCalls = 0;
+  const scopeDescriptor = Object.getOwnPropertyDescriptor(f.control, "scope");
+  const writeDescriptor = Object.getOwnPropertyDescriptor(
+    f.control,
+    "writable",
+  );
+  if (!scopeDescriptor || !writeDescriptor)
+    throw Error("Expected captured authority controls");
+  Object.defineProperty(f.control, "scope", {
+    configurable: true,
+    enumerable: true,
+    get() {
+      scopeCalls++;
+      return live;
+    },
+    set(value: CleanupBrowserScope | null) {
+      live = value;
+    },
+  });
+  Object.defineProperty(f.control, "writable", {
+    configurable: true,
+    enumerable: true,
+    get() {
+      writeCalls++;
+      return writable;
+    },
+    set(value: boolean) {
+      writable = value;
+    },
+  });
+  const reachedA = confirmationGate(),
+    releaseA = confirmationGate();
+  const reachedB = confirmationGate(),
+    releaseB = confirmationGate();
+  const reachedOld = confirmationGate(),
+    releaseOld = confirmationGate();
+  const tasks: Promise<void>[] = [];
+  const reads: Array<{ url: string; maxBodyBytes: number }> = [];
+  const getGateDeltas: number[][] = [];
+  const posted: Array<{
+    raw: Array<[string, string]>;
+    view: CleanupBrowserView;
+  }> = [];
+  const pendingPhases: Array<{
+    post: string;
+    phase: CleanupBrowserView["phase"];
+  }> = [];
+  let waitingPost: "A" | "B" | null = null,
+    timedOut = false;
+  let peerMinted = 0,
+    peerPosts = 0;
+  const peerWrites: string[] = [],
+    peerHashes: string[] = [];
+  let peerHashesAtHold: string[] = [];
+  const peer = new ProjectWorktreeCleanupOwner({
+    ...f.deps,
+    currentScope: () => selected,
+    canWrite: () => true,
+    readReview: async () => review,
+    uuid: () => {
+      peerMinted++;
+      return next.request.requestId;
+    },
+    hash: async (text) => {
+      const digest = await storedHash(text);
+      peerHashes.push(text);
+      return digest;
+    },
+    storage: {
+      getItem: f.deps.storage.getItem,
+      setItem(key, text) {
+        peerWrites.push(key);
+        f.deps.storage.setItem(key, text);
+      },
+    },
+    operatorPost: async () => {
+      peerPosts++;
+      throw Error("Unexpected peer POST");
+    },
+  });
+  f.control.reply = async () => {
+    posted.push({ raw: [...f.saved.entries()], view: f.owner.snapshot() });
+    const first = f.trace.posts.length === 1;
+    waitingPost = first ? "A" : "B";
+    (first ? reachedA : reachedB).open();
+    try {
+      await (first ? releaseA : releaseB).promise;
+    } finally {
+      waitingPost = null;
+    }
+    return new Response(
+      JSON.stringify({
+        ok: true,
+        data: first ? confirmed : nextUnknown,
+        error: null,
+      }),
+    );
+  };
+  f.control.receiptReply = async (url, limits) => {
+    reads.push({ url, ...limits });
+    if (reads.length === 1) {
+      reachedOld.open();
+      await releaseOld.promise;
+      return { ...unknownReceipt, attemptedAt: null };
+    }
+    return confirmed;
+  };
+  const unsubscribe = f.owner.subscribe((view) => {
+    if (waitingPost !== null)
+      pendingPhases.push({ post: waitingPost, phase: view.phase });
+  });
+  const fault = Error("Terminal A persistence failed before saving");
+  const faultViews: CleanupBrowserView[] = [];
+  const faultAuthority: {
+    scope: CleanupBrowserScope | null;
+    writable: boolean;
+  } = { scope: null, writable: true };
+  let initialCounts:
+    | {
+        ownerUUID: number;
+        ownerPOST: number;
+        peerUUID: number;
+        peerPOST: number;
+        waiting: string | null;
+      }
+    | undefined;
+  let peerAtHold: CleanupBrowserView | undefined,
+    inspectedB: CleanupBrowserInspection | undefined;
+  let afterRestore: CleanupBrowserView | undefined,
+    afterFault: CleanupBrowserView | undefined;
+  let afterHeal: CleanupBrowserView | undefined,
+    afterLate: CleanupBrowserView | undefined;
+  let diskAtFault: CleanupBrowserView["inventory"] | undefined;
+  let diskAfterHeal: CleanupBrowserView["inventory"] | undefined;
+  let diskAfterLate: CleanupBrowserView["inventory"] | undefined;
+  let joined: PromiseSettledResult<void>[] = [];
+  const readDisk = () =>
+    readCleanupBrowserInventory(
+      f.saved.get(f.markerKey) ?? null,
+      f.saved.get(f.inventoryKey) ?? null,
+      authorityKey,
+      storedHash,
+    );
+  const watchdog = setTimeout(() => {
+    timedOut = true;
+    for (const gate of [
+      reachedA,
+      releaseA,
+      reachedB,
+      releaseB,
+      reachedOld,
+      releaseOld,
+    ])
+      gate.open();
+  }, 3000);
+  try {
+    const initialInspect = f.owner.inspect(selected);
+    tasks.push(initialInspect);
+    await initialInspect;
+    const actionA = f.owner.confirm();
+    tasks.push(actionA);
+    await reachedA.promise;
+    const peerAction = (async () => {
+      await peer.restore();
+      await peer.inspect(selected);
+      await peer.confirm();
+    })();
+    tasks.push(peerAction);
+    await peerAction;
+    peerAtHold = peer.snapshot();
+    peerHashesAtHold = [...peerHashes];
+    initialCounts = {
+      ownerUUID: f.trace.minted,
+      ownerPOST: f.trace.posts.length,
+      peerUUID: peerMinted,
+      peerPOST: peerPosts,
+      waiting: waitingPost,
+    };
+    live = nextScope;
+    writable = false;
+    f.control.review = next.review;
+    const inspectB = f.owner.inspect(nextScope);
+    tasks.push(inspectB);
+    await inspectB;
+    inspectedB = f.owner.snapshot().inspection;
+    const restoration = f.owner.restore();
+    tasks.push(restoration);
+    await restoration;
+    afterRestore = f.owner.snapshot();
+    const gatesBeforeOld: [number, number] = [scopeCalls, writeCalls];
+    const oldGet = f.owner.checkOriginal(request.requestId);
+    tasks.push(oldGet);
+    await reachedOld.promise;
+    getGateDeltas.push([
+      scopeCalls - gatesBeforeOld[0],
+      writeCalls - gatesBeforeOld[1],
+    ]);
+    f.control.storageAccess = (stage) => {
+      const view = f.owner.snapshot();
+      if (
+        stage === "before-write" &&
+        faultViews.length === 0 &&
+        view.inventory?.records.find(
+          (row) => row.original.request.requestId === request.requestId,
+        )?.receipt?.state === "confirmed"
+      ) {
+        faultViews.push(view);
+        faultAuthority.scope = live;
+        faultAuthority.writable = writable;
+        throw fault;
+      }
+    };
+    releaseA.open();
+    await actionA;
+    afterFault = f.owner.snapshot();
+    diskAtFault = await readDisk();
+    const gatesBeforeHeal: [number, number] = [scopeCalls, writeCalls];
+    const healingGet = f.owner.checkOriginal(request.requestId);
+    tasks.push(healingGet);
+    await healingGet;
+    getGateDeltas.push([
+      scopeCalls - gatesBeforeHeal[0],
+      writeCalls - gatesBeforeHeal[1],
+    ]);
+    afterHeal = f.owner.snapshot();
+    diskAfterHeal = await readDisk();
+    writable = true;
+    f.control.uuid = next.request.requestId;
+    const actionB = f.owner.confirm();
+    tasks.push(actionB);
+    await reachedB.promise;
+    const gatesBeforeLate: [number, number] = [scopeCalls, writeCalls];
+    releaseOld.open();
+    await oldGet;
+    getGateDeltas.push([
+      scopeCalls - gatesBeforeLate[0],
+      writeCalls - gatesBeforeLate[1],
+    ]);
+    afterLate = f.owner.snapshot();
+    diskAfterLate = await readDisk();
+    releaseB.open();
+    await actionB;
+    const peerRefresh = peer.restore();
+    tasks.push(peerRefresh);
+    await peerRefresh;
+  } finally {
+    for (const gate of [
+      reachedA,
+      releaseA,
+      reachedB,
+      releaseB,
+      reachedOld,
+      releaseOld,
+    ])
+      gate.open();
+    joined = await Promise.allSettled(tasks);
+    clearTimeout(watchdog);
+    unsubscribe();
+    delete f.control.storageAccess;
+    delete f.control.receiptReply;
+    Object.defineProperty(f.control, "scope", {
+      ...scopeDescriptor,
+      value: live,
+    });
+    Object.defineProperty(f.control, "writable", {
+      ...writeDescriptor,
+      value: writable,
+    });
+  }
+  expect(timedOut).toBe(false);
+  expect(joined).toHaveLength(9);
+  expect(joined.every((result) => result.status === "fulfilled")).toBe(true);
+  expect(initialCounts).toEqual({
+    ownerUUID: 1,
+    ownerPOST: 1,
+    peerUUID: 0,
+    peerPOST: 0,
+    waiting: "A",
+  });
+  expect(peerAtHold).toMatchObject({
+    inventory: inventoryReceipt(null),
+    storageError: false,
+  });
+  expect(peerMinted).toBe(0);
+  expect(peerPosts).toBe(0);
+  expect(peerWrites).toEqual([]);
+  expect(peerHashesAtHold.length).toBeGreaterThan(0);
+  expect(
+    peerHashesAtHold.every(
+      (text) => text === canonicalCleanupRequest(projectId, request),
+    ),
+  ).toBe(true);
+  expect(peerHashes.length).toBeGreaterThan(0);
+  expect(
+    peerHashes.every((text) =>
+      [
+        canonicalCleanupRequest(projectId, request),
+        canonicalCleanupRequest(next.projectId, next.request),
+      ].includes(text),
+    ),
+  ).toBe(true);
+  expect(inspectedB).toMatchObject({
+    phase: "eligible-review",
+    selection: nextScope,
+    review: next.review,
+  });
+  expect(afterRestore).toMatchObject({
+    phase: "dispatching",
+    inventory: inventoryReceipt(null),
+    inspection: inspectedB,
+  });
+  expect(
+    pendingPhases.filter((event) => event.post === "A").length,
+  ).toBeGreaterThan(0);
+  expect(
+    pendingPhases.filter((event) => event.post === "B").length,
+  ).toBeGreaterThan(0);
+  expect(pendingPhases.every((event) => event.phase === "dispatching")).toBe(
+    true,
+  );
+  expect(faultViews).toHaveLength(1);
+  expect(faultViews[0]).toMatchObject({
+    phase: "dispatching",
+    inventory: inventoryReceipt(confirmed),
+    inspection: inspectedB,
+  });
+  expect(faultAuthority.scope).toEqual(nextScope);
+  expect(faultAuthority.writable).toBe(false);
+  expect(afterFault).toMatchObject({
+    phase: "storage-unavailable",
+    storageError: true,
+    inventory: inventoryReceipt(confirmed),
+    inspection: inspectedB,
+  });
+  expect(diskAtFault).toEqual(inventoryReceipt(null));
+  expect(afterHeal).toMatchObject({
+    phase: "idle",
+    storageError: false,
+    inventory: inventoryReceipt(confirmed),
+    inspection: inspectedB,
+  });
+  expect(diskAfterHeal).toEqual(inventoryReceipt(confirmed));
+  const activeB = inventoryFrom(
+    [
+      { original, receipt: confirmed },
+      { original: next, receipt: null },
+    ],
+    next.request.requestId,
+  );
+  expect(afterLate).toMatchObject({
+    phase: "dispatching",
+    storageError: false,
+    inventory: activeB,
+    inspection: { phase: "review-changed", selection: nextScope, review: null },
+  });
+  expect(diskAfterLate).toEqual(activeB);
+  if (!afterLate) throw Error("Expected completed older A receipt observation");
+  expect(
+    cleanupBrowserForProject(afterLate, next.projectId).active?.original,
+  ).toEqual(next);
+  expect(cleanupBrowserForProject(afterLate, projectId).records).toEqual([
+    { original, receipt: cleanupReceiptSchema.parse(confirmed) },
+  ]);
+  expect(getGateDeltas).toEqual([
+    [0, 0],
+    [0, 0],
+    [0, 0],
+  ]);
+  expect(reads).toEqual(
+    Array.from({ length: 2 }, () => ({
+      url:
+        "/projects/" +
+        projectId +
+        "/settings/worktree-cleanup/" +
+        request.requestId +
+        "?requestHash=" +
+        original.requestHash,
+      maxBodyBytes: 65536,
+    })),
+  );
+  expect(f.trace.posts).toEqual(
+    [original, next].map((held) => ({
+      url: "/projects/" + held.projectId + "/settings/worktree-cleanup",
+      body: held.request,
+      limits: { maxBodyBytes: 65536 },
+    })),
+  );
+  expect(f.trace.minted).toBe(2);
+  expect(posted).toHaveLength(2);
+  for (const [index, pending] of [inventoryReceipt(null), activeB].entries()) {
+    const sent = posted[index];
+    if (!sent) throw Error("Expected captured POST reservation");
+    expect(sent.view).toMatchObject({
+      phase: "dispatching",
+      inventory: pending,
+    });
+    const raw = new Map(sent.raw);
+    expect(
+      await readCleanupBrowserInventory(
+        raw.get(f.markerKey) ?? null,
+        raw.get(f.inventoryKey) ?? null,
+        authorityKey,
+        storedHash,
+      ),
+    ).toEqual(pending);
+  }
+  const final = inventoryFrom(
+    [
+      { original, receipt: confirmed },
+      { original: next, receipt: nextUnknown },
+    ],
+    next.request.requestId,
+  );
+  expect(f.owner.snapshot()).toMatchObject({
+    phase: "retained-unconfirmed",
+    storageError: false,
+    inventory: final,
+    inspection: { phase: "review-changed", selection: nextScope, review: null },
+  });
+  expect(peer.snapshot().inventory).toEqual(final);
+  expect(await readDisk()).toEqual(final);
 });
