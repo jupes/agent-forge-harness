@@ -15,7 +15,9 @@ import {
 } from "../../projects/worktree-cleanup-review-protocol";
 import type { CleanupServiceHost } from "../../projects/worktree-cleanup-service";
 import { type GitRun, registryPathKey } from "../../scheduler/worktrees";
+import type { ReadRoute } from "../api";
 import { readHomeFile } from "../home-guard";
+import { fail } from "./operator-reads";
 import { projectSnapshotReader } from "./project-summaries";
 
 type ReviewHost = Pick<
@@ -189,5 +191,47 @@ export function createProjectWorktreeCleanupReviewReader(
         "Cleanup review observations could not be completely verified.",
       );
     }
+  };
+}
+
+/** The common runner owns protection and envelopes; construction does no host IO. */
+export function createProjectWorktreeCleanupReviewRoute(
+  options: ReviewHost,
+  controls: { git?: GitRun } = {},
+): ReadRoute<{ projectId: string; worktreeId: string }> {
+  const read = createProjectWorktreeCleanupReviewReader(options, controls);
+  return {
+    kind: "read",
+    method: "GET",
+    path: "/projects/:id/settings/worktree-cleanup-review/:worktreeId",
+    operatorOnly: true,
+    validate: (input) => {
+      const selected =
+        cleanupRequestSchema.shape.expectedRecord.shape.id.safeParse(
+          input.params.worktreeId,
+        );
+      return isProjectId(input.params.id) &&
+        selected.success &&
+        input.query.size === 0
+        ? {
+            ok: true,
+            value: { projectId: input.params.id, worktreeId: selected.data },
+          }
+        : fail(
+            "Expected an exact project and worktree id with no query parameters.",
+          );
+    },
+    read: async ({ projectId, worktreeId }) => {
+      try {
+        return { status: 200, data: await read(projectId, worktreeId) };
+      } catch (error) {
+        return error instanceof ProjectStoreError
+          ? { status: error.status, error: error.message }
+          : {
+              status: 503,
+              error: "Cleanup review is unavailable; no removal is authorized.",
+            };
+      }
+    },
   };
 }
