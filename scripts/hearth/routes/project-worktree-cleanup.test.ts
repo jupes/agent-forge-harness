@@ -4,6 +4,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { WorktreeRecord } from "../../../types/beads";
+import { appendEvent } from "../../ledger/append";
 import { openLedger } from "../../ledger/db";
 import { projectCatalogPath } from "../../projects/store";
 import {
@@ -27,7 +28,11 @@ import {
   createProjectShiftRegistry,
   projectShiftFlags,
 } from "../../shifts/registry";
-import { startTestHearth, type TestHearth } from "../testing";
+import {
+  startTestHearth,
+  type TestHearth,
+  type TestHearthOptions,
+} from "../testing";
 import { writeOwnerOnly } from "../token";
 import { validateOperatorEnvelope } from "../validate";
 import { FIXTURE_SHIFT_START, seedProjectShift } from "./project-shift-fixture";
@@ -107,7 +112,7 @@ const opened: TestHearth[] = [];
 afterEach(async () => {
   for (const h of opened.splice(0)) await h.close();
 });
-async function eligibleCleanupFixture() {
+async function eligibleCleanupFixture(api: TestHearthOptions["api"] = {}) {
   const calls: string[][] = [],
     errors: string[] = [],
     exports: string[][] = [];
@@ -151,7 +156,7 @@ async function eligibleCleanupFixture() {
     errors.push("Unexpected Git fixture operation");
     return { status: 1, stdout: "", stderr: "Unexpected fixture operation" };
   };
-  const h = await startTestHearth({ api: { git } });
+  const h = await startTestHearth({ api: { ...api, git } });
   opened.push(h);
   root = h.root;
   writeOwnerOnly(
@@ -398,3 +403,78 @@ async function cleanupReceipt(response: Response) {
   if (!body.ok) throw Error("Expected a verified cleanup receipt");
   return cleanupReceiptSchema.parse(body.data);
 }
+
+test.each([
+  "unrecorded",
+  "mismatched",
+] as const)("cleanup HTTP rejects a reported %s audit locator despite a real matching row", async (kind) => {
+  let ledgerPath = "",
+    canonicalId: number | undefined,
+    reportedId: number | undefined;
+  const callbackErrors: string[] = [];
+  const f = await eligibleCleanupFixture({
+    appendEvent: (event) => {
+      if (!ledgerPath) {
+        callbackErrors.push(
+          "Appender called before private fixture initialization",
+        );
+        return { ok: false, error: "Fixture not initialized" };
+      }
+      let wrongId: number | undefined;
+      if (kind === "mismatched") {
+        const wrong = appendEvent(
+          { ...event, beadId: "unrelated-task" },
+          { path: ledgerPath },
+        );
+        if (!wrong.ok || !("id" in wrong)) {
+          callbackErrors.push("Could not write the mismatched row");
+          return wrong;
+        }
+        wrongId = wrong.id;
+      }
+      const actual = appendEvent(event, { path: ledgerPath });
+      if (!actual.ok || !("id" in actual)) {
+        callbackErrors.push("Could not write the actual matching row");
+        return actual;
+      }
+      canonicalId = actual.id;
+      reportedId = kind === "unrecorded" ? actual.id + 1000 : wrongId;
+      if (reportedId === undefined) {
+        callbackErrors.push("Expected a reported row identity");
+        return { ok: false, error: "No fixture row identity" };
+      }
+      return { ...actual, id: reportedId };
+    },
+  });
+  ledgerPath = f.h.ledger;
+  const request = fixtureReview(f);
+  const response = await postCleanup(f.h, request);
+  expect(callbackErrors).toEqual([]);
+  expect(f.errors).toEqual([]);
+  expect(response.status).toBe(409);
+  expect(await apiEnvelope(response)).toMatchObject({
+    ok: false,
+    data: null,
+    error: expect.any(String),
+  });
+  if (canonicalId === undefined || reportedId === undefined)
+    throw Error("Expected reached audit identities");
+  const events = f.h.events(["operator.action"]);
+  expect(events.find((event) => event.id === canonicalId)).toMatchObject({
+    kind: "operator.action",
+    beadId: request.expectedRecord.beadId,
+    payload: {
+      action: "project.worktree.cleanup",
+      requestId: request.requestId,
+      inputHash: createHash("sha256")
+        .update(canonicalCleanupRequest(FIXTURE_PROJECT_ID, request))
+        .digest("hex"),
+    },
+  });
+  const reported = events.find((event) => event.id === reportedId);
+  if (kind === "unrecorded") expect(reported).toBeUndefined();
+  else expect(reported).toMatchObject({ beadId: "unrelated-task" });
+  expect(f.exports).toHaveLength(1);
+  expect(readWorktreeCleanupInventory(f.h.home)).toEqual([]);
+  expect(f.removals).toEqual([]);
+});
