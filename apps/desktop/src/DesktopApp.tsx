@@ -75,6 +75,10 @@ import { ProjectSettings } from "./ProjectSettings";
 import { ProjectShifts } from "./ProjectShifts";
 import { ProjectsHome } from "./ProjectsHome";
 import { ProjectWorkbench } from "./ProjectWorkbench";
+import {
+  CleanupOriginalRecovery,
+  CleanupSelectedInspection,
+} from "./ProjectWorktreeCleanupSettings";
 import { Providers } from "./Providers";
 import {
   activityHref,
@@ -129,6 +133,7 @@ import { useProjectRepositories } from "./use-project-repositories";
 import { useProjectRuns } from "./use-project-runs";
 import { useProjectShifts } from "./use-project-shifts";
 import { useProjectValueSettings } from "./use-project-value-settings";
+import { useProjectWorktreeCleanup } from "./use-project-worktree-cleanup";
 import { useProjects } from "./use-projects";
 import { useProviders } from "./use-providers";
 import { useSessionLibrary } from "./use-session-library";
@@ -424,6 +429,69 @@ export function DesktopApp(): JSX.Element {
     repositoryProjectId,
     repositoryProjectId === null ? null : (settingsCatalog?.revision ?? null),
     projects.refreshProjectHome,
+  );
+  const cleanupRouteCurrent = sameDesktopRoute(
+    route,
+    desktopRoute(window.location.hash),
+  );
+  const cleanupPresentation = useRef({
+    route,
+    projectId: repositoryProjectId,
+    revision: settingsCatalog?.revision ?? null,
+    refresh: projectRepositories.refresh,
+  });
+  cleanupPresentation.current = {
+    route,
+    projectId: repositoryProjectId,
+    revision: settingsCatalog?.revision ?? null,
+    refresh: projectRepositories.refresh,
+  };
+  const cleanupCatalogRevision = useRef<number | null>(null);
+  const worktreeCleanup = useProjectWorktreeCleanup(
+    {
+      route: window.location.hash,
+      routeGeneration: forgeRouteGeneration.current,
+      projectId: cleanupRouteCurrent ? repositoryProjectId : null,
+      archived: project?.archived ?? false,
+      catalogRevision: settingsCatalog?.revision ?? null,
+      catalogSource: settingsCatalog,
+      catalogReady:
+        cleanupRouteCurrent &&
+        settingsCatalog !== null &&
+        !projects.loading &&
+        !projects.error,
+      repositoryKey: projectRepositories.key,
+      repositoryPhase: projectRepositories.phase,
+      repositoryData: projectRepositories.data,
+      repositoryRequestedRevision: projectRepositories.requestedRevision,
+      repositoryResponseRevision: projectRepositories.responseRevision,
+      connectionPhase: recovery?.connection.phase ?? "stopped",
+      writesAllowed: recovery?.connection.writesAllowed ?? false,
+      connectionBusy: recovery?.busy ?? false,
+      connectionUnknown: recovery?.unknown ?? false,
+    },
+    {
+      refreshCatalog: async () => {
+        const fresh = await projects.refreshProjectHome();
+        cleanupCatalogRevision.current = fresh.catalog.revision;
+      },
+      refreshRepositories: async (id) => {
+        const current = cleanupPresentation.current;
+        const raw = desktopRoute(window.location.hash);
+        if (
+          current.projectId !== id ||
+          raw.projectId !== id ||
+          raw.destination !== "project-settings" ||
+          !sameDesktopRoute(current.route, raw)
+        )
+          return;
+        const revision = cleanupCatalogRevision.current;
+        // A newer revision activates the existing repository producer on adoption.
+        // Never invoke the old revision's refresh while that render is pending.
+        if (revision === null || (current.revision ?? -1) < revision) return;
+        await current.refresh();
+      },
+    },
   );
   const summary = projects.data?.summaries.find(
     (item) => item.projectId === project?.id,
@@ -2248,6 +2316,7 @@ export function DesktopApp(): JSX.Element {
         }
       >
         <ConnectionBanner />
+        <CleanupOriginalRecovery cleanup={worktreeCleanup} />
         {project &&
           route.destination !== "beads" &&
           route.selection?.kind === "bead" && (
@@ -2355,8 +2424,13 @@ export function DesktopApp(): JSX.Element {
               smiths={smiths}
               onRefresh={projects.reload}
               repositories={projectRepositories}
+              cleanup={worktreeCleanup}
               onRefreshRepositories={projectRepositories.refresh}
               onReconcileRepositories={projectRepositories.reconcile}
+            />
+            <CleanupSelectedInspection
+              projectId={route.projectId}
+              cleanup={worktreeCleanup}
             />
             {route.projectId && (
               <ProjectKnowledgeSettings
