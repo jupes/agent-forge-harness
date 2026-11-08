@@ -3661,3 +3661,83 @@ test.each([
     inventory: pending,
   });
 });
+
+test.each([
+  "initial-lock",
+  "reservation-lock",
+  "candidate-hash",
+])("injected %s dependency rejection leaves no verified candidate or dispatch", async (mode) => {
+  const empty = inventoryFrom([], null);
+  const f = await confirmationFixture(empty);
+  await f.owner.inspect(f.control.scope);
+  expect(f.owner.snapshot().inspection.phase).toBe("eligible-review");
+  const saved = [...f.saved.entries()];
+  const requestsBefore = f.trace.lockRequests,
+    entriesBefore = f.trace.lockEntries;
+  const requests: number[] = [],
+    faults: Error[] = [];
+  const rejected: Array<{ text: string; minted: number; writes: number }> = [];
+  const fault = Error("Injected " + mode + " dependency rejection");
+  f.control.lockRequested = () => {
+    const relative = f.trace.lockRequests - requestsBefore;
+    requests.push(relative);
+    if (
+      (mode === "initial-lock" && relative === 1) ||
+      (mode === "reservation-lock" && relative === 2)
+    ) {
+      faults.push(fault);
+      throw fault;
+    }
+  };
+  f.control.afterHash = async (text) => {
+    if (mode !== "candidate-hash") return;
+    rejected.push({
+      text,
+      minted: f.trace.minted,
+      writes: f.trace.writes.length,
+    });
+    faults.push(fault);
+    throw fault;
+  };
+  try {
+    await f.owner.confirm();
+  } finally {
+    delete f.control.lockRequested;
+    delete f.control.afterHash;
+  }
+  expect(faults).toEqual([fault]);
+  expect(requests).toEqual(mode === "initial-lock" ? [1] : [1, 2]);
+  expect(f.trace.lockEntries - entriesBefore).toBe(
+    mode === "initial-lock" ? 0 : mode === "reservation-lock" ? 1 : 2,
+  );
+  const computed =
+    mode === "candidate-hash"
+      ? [
+          {
+            text: canonicalCleanupRequest(projectId, request),
+            minted: 1,
+            writes: 0,
+          },
+        ]
+      : [];
+  expect(rejected).toEqual(computed);
+  expect(f.trace.hashes).toEqual(computed);
+  expect(f.trace.minted).toBe(mode === "candidate-hash" ? 1 : 0);
+  expect(f.trace.posts).toEqual([]);
+  expect(f.trace.writes).toEqual([]);
+  expect(f.owner.snapshot()).toMatchObject({
+    phase: "storage-unavailable",
+    storageError: true,
+    inventory: empty,
+    inspection: { phase: "review-changed", review: null },
+  });
+  expect([...f.saved.entries()]).toEqual(saved);
+  expect(
+    await readCleanupBrowserInventory(
+      f.saved.get(f.markerKey) ?? null,
+      f.saved.get(f.inventoryKey) ?? null,
+      authorityKey,
+      storedHash,
+    ),
+  ).toEqual(empty);
+});
