@@ -290,6 +290,8 @@ export interface CleanupBrowserView {
   readonly phase:
     | "idle"
     | "restoring"
+    | "reserving"
+    | "dispatching"
     | "retained-unconfirmed"
     | "storage-unavailable";
   readonly inventory: CleanupBrowserInventory | null;
@@ -313,6 +315,7 @@ export class ProjectWorktreeCleanupOwner {
   private inspectionEpoch = 0;
   private reviewedEpoch: number | null = null;
   private storageFailureToken: object = {};
+  private confirmationActivity: "reserving" | "dispatching" | null = null;
   private initialized = false;
   private restoring: Promise<void> | null = null;
   private deps: CleanupBrowserDependencies;
@@ -489,15 +492,269 @@ export class ProjectWorktreeCleanupOwner {
       );
     }
   }
+  private activityPhase(fallback: CleanupBrowserView["phase"]) {
+    return this.confirmationActivity ?? fallback;
+  }
+  async confirm(): Promise<void> {
+    const inspection = this.value.inspection;
+    const turn = this.inspectionEpoch;
+    if (
+      this.confirmationActivity !== null ||
+      inspection.phase !== "eligible-review" ||
+      this.reviewedEpoch !== turn
+    )
+      return;
+    this.confirmationActivity = "reserving";
+    const selected = inspection.selection,
+      shown = inspection.review;
+    let consumed = false;
+    const reservation: { original: CleanupBrowserOriginal | null } = {
+      original: null,
+    };
+    const consume = () => {
+      consumed = true;
+      this.publishInspection(turn, {
+        phase: "review-changed",
+        selection: selected,
+        review: null,
+        notice: "Review cleanup again before creating another original.",
+      });
+    };
+    const permitted = (expected?: [string | null, string | null]) => {
+      if (
+        turn !== this.inspectionEpoch ||
+        (!consumed && this.reviewedEpoch !== turn)
+      )
+        return false;
+      const scope = cleanupScopeSchema
+        .nullable()
+        .parse(structuredClone(this.deps.currentScope()));
+      if (turn !== this.inspectionEpoch) return false;
+      const writable = this.deps.canWrite();
+      if (turn !== this.inspectionEpoch) return false;
+      if (expected) this.assertRaw(expected);
+      if (turn !== this.inspectionEpoch) return false;
+      const afterScope = cleanupScopeSchema
+        .nullable()
+        .parse(structuredClone(this.deps.currentScope()));
+      if (turn !== this.inspectionEpoch) return false;
+      const afterWritable = this.deps.canWrite();
+      if (turn !== this.inspectionEpoch) return false;
+      return (
+        writable === true &&
+        afterWritable === true &&
+        sameCleanupScope(scope, selected) &&
+        sameCleanupScope(afterScope, selected)
+      );
+    };
+    try {
+      this.publish({ ...this.value, phase: "reserving" });
+      if (!permitted()) return;
+      await this.restore();
+      if (!permitted() || this.value.storageError) return;
+      const freshReview = await this.readReview(selected);
+      if (!permitted()) return;
+      const placeholder = "00000000-0000-4000-8000-000000000000";
+      const template = cleanupRequestSchema.parse({
+        requestId: placeholder,
+        repository: shown.repository,
+        expectedCatalogRevision: shown.expectedCatalogRevision,
+        expectedHead: shown.expectedHead,
+        expectedRecord: shown.expectedRecord,
+      });
+      if (
+        freshReview.state !== "eligible" ||
+        canonicalCleanupRequest(shown.projectId, {
+          ...freshReview,
+          requestId: placeholder,
+        }) !== canonicalCleanupRequest(shown.projectId, template)
+      )
+        return;
+      const written = await this.changeInventory(
+        async (fresh, known, expected) => {
+          if (!permitted(expected)) return null;
+          const baseline = reconcileCleanupBrowserInventory(known, fresh);
+          if (baseline.activeRequestId !== null) {
+            this.publishInventory(baseline, this.value.storageError);
+            consume();
+            return null;
+          }
+          const capacityOriginal = {
+            projectId: shown.projectId,
+            review: shown,
+            request: template,
+            requestHash: "0".repeat(64),
+          };
+          const capacity = JSON.stringify({
+            ...baseline,
+            records: [
+              ...baseline.records,
+              { original: capacityOriginal, receipt: null },
+            ],
+            activeRequestId: placeholder,
+          });
+          if (
+            baseline.records.length >= 100 ||
+            capacity.length > 1048576 ||
+            new TextEncoder().encode(capacity).byteLength > 1048576
+          )
+            return null;
+          if (!permitted(expected)) return null;
+          const requestId = cleanupRequestSchema.shape.requestId.parse(
+            this.deps.uuid(),
+          );
+          if (
+            !permitted(expected) ||
+            baseline.records.some(
+              (row) => row.original.request.requestId === requestId,
+            )
+          )
+            return null;
+          const request = cleanupRequestSchema.parse({
+            ...template,
+            requestId,
+          });
+          const requestHash = await this.deps.hash(
+            canonicalCleanupRequest(shown.projectId, request),
+          );
+          this.assertRaw(expected);
+          if (!permitted(expected)) return null;
+          const latest = reconcileCleanupBrowserInventory(
+            this.value.inventory ?? baseline,
+            baseline,
+          );
+          const original = freezeCleanupSnapshot(
+            cleanupBrowserOriginalSchema.parse({
+              projectId: shown.projectId,
+              review: shown,
+              request,
+              requestHash,
+            }),
+          );
+          reservation.original = original;
+          return cleanupBrowserInventorySchema.parse({
+            ...latest,
+            records: [...latest.records, { original, receipt: null }],
+            activeRequestId: requestId,
+          });
+        },
+        (candidate, expected) => {
+          if (!permitted(expected))
+            throw Error("Cleanup permission changed before reservation");
+          this.publishInventory(candidate, this.value.storageError);
+          consume();
+          if (!permitted(expected))
+            throw Error("Cleanup permission changed before persistence");
+          const held = reservation.original;
+          const active = this.value.inventory?.records.find(
+            (row) =>
+              row.original.request.requestId ===
+              this.value.inventory?.activeRequestId,
+          );
+          if (
+            !held ||
+            !active ||
+            active.receipt !== null ||
+            !sameCleanupOriginal(active.original, held)
+          )
+            throw Error("The exact cleanup reservation is no longer owned");
+        },
+      );
+      const held = reservation.original;
+      if (!written || !held) return;
+      const dispatchable = () => {
+        if (!permitted(written)) return false;
+        const inventory = this.value.inventory;
+        const row = inventory?.records.find(
+          (record) =>
+            record.original.request.requestId === held.request.requestId,
+        );
+        return (
+          turn === this.inspectionEpoch &&
+          !this.value.storageError &&
+          inventory?.activeRequestId === held.request.requestId &&
+          row?.receipt === null &&
+          sameCleanupOriginal(row.original, held)
+        );
+      };
+      const url =
+        "/projects/" +
+        encodeURIComponent(held.projectId) +
+        "/settings/worktree-cleanup";
+      const body = structuredClone(held.request);
+      this.confirmationActivity = "dispatching";
+      this.publish({ ...this.value, phase: "dispatching" });
+      if (!dispatchable()) return;
+      const response = await this.deps.operatorPost(url, body, {
+        maxBodyBytes: 65536,
+      });
+      if (!response.ok) return;
+      const envelope = z
+        .object({
+          ok: z.literal(true),
+          data: cleanupReceiptSchema,
+          error: z.null(),
+        })
+        .strict()
+        .parse(parseCleanupRaw(await response.text(), 65536));
+      const known = this.value.inventory;
+      const current = known?.records.find(
+        (row) => row.original.request.requestId === held.request.requestId,
+      );
+      if (!known || !current || !sameCleanupOriginal(current.original, held))
+        return;
+      this.publishInventory(
+        settleCleanupBrowserReceipt(
+          known,
+          held.request.requestId,
+          envelope.data,
+        ),
+        this.value.storageError,
+      );
+      await this.changeInventory((fresh, latest) => {
+        const effective = latest.records.find(
+          (row) => row.original.request.requestId === held.request.requestId,
+        );
+        if (
+          !effective ||
+          !sameCleanupOriginal(effective.original, held) ||
+          effective.receipt === null
+        )
+          throw Error("The exact verified cleanup receipt is unavailable");
+        return settleCleanupBrowserReceipt(
+          fresh,
+          held.request.requestId,
+          effective.receipt,
+        );
+      });
+    } catch {
+      // Every uncertain send retains the full original; only receipt recovery can settle it.
+    } finally {
+      consume();
+      this.confirmationActivity = null;
+      this.publish({
+        ...this.value,
+        phase:
+          this.restoring !== null
+            ? "restoring"
+            : this.value.storageError
+              ? "storage-unavailable"
+              : this.value.inventory?.activeRequestId
+                ? "retained-unconfirmed"
+                : "idle",
+      });
+    }
+  }
   private storageUnavailable(finishingRestore = false) {
     this.storageFailureToken = {};
     this.publish({
       ...this.value,
       storageError: true,
-      phase:
+      phase: this.activityPhase(
         !finishingRestore && this.restoring !== null
           ? "restoring"
           : "storage-unavailable",
+      ),
     });
   }
   private publishInventory(
@@ -513,7 +770,7 @@ export class ProjectWorktreeCleanupOwner {
       ...this.value,
       inventory: checked,
       storageError,
-      phase:
+      phase: this.activityPhase(
         !finishingRestore && this.restoring !== null
           ? "restoring"
           : storageError
@@ -521,6 +778,7 @@ export class ProjectWorktreeCleanupOwner {
             : checked.activeRequestId
               ? "retained-unconfirmed"
               : "idle",
+      ),
     });
   }
   private publishVerifiedInventory(
@@ -550,18 +808,31 @@ export class ProjectWorktreeCleanupOwner {
     update: (
       fresh: CleanupBrowserInventory,
       known: CleanupBrowserInventory,
-    ) => CleanupBrowserInventory | Promise<CleanupBrowserInventory>,
+      expected: [string | null, string | null],
+    ) =>
+      | CleanupBrowserInventory
+      | null
+      | Promise<CleanupBrowserInventory | null>,
+    beforeWrite?: (
+      candidate: CleanupBrowserInventory,
+      expected: [string | null, string | null],
+    ) => void,
   ) {
     try {
-      await this.deps.withLock(async () => {
+      return await this.deps.withLock(async () => {
         const token = this.storageFailureToken;
         const expected = this.raw();
         const fresh = await this.readInventory(expected);
         this.assertRaw(expected);
         if (fresh === null)
           throw Error("Initialized cleanup recovery metadata is missing");
-        let candidate = await update(fresh, this.value.inventory ?? fresh);
+        let candidate = await update(
+          fresh,
+          this.value.inventory ?? fresh,
+          expected,
+        );
         this.assertRaw(expected);
+        if (candidate === null) return null;
         candidate = reconcileCleanupBrowserInventory(
           this.value.inventory ?? fresh,
           candidate,
@@ -573,6 +844,7 @@ export class ProjectWorktreeCleanupOwner {
         )
           throw Error("Cleanup recovery metadata exceeds its byte limit");
         this.assertRaw(expected);
+        beforeWrite?.(candidate, expected);
         this.deps.storage.setItem(this.keys[1], serialized);
         const written: [string | null, string | null] = [
           expected[0],
@@ -584,6 +856,7 @@ export class ProjectWorktreeCleanupOwner {
         if (verified === null)
           throw Error("Cleanup recovery write was not verified");
         this.publishVerifiedInventory(verified, token);
+        return written;
       });
     } catch (error) {
       this.storageUnavailable();
@@ -659,7 +932,7 @@ export class ProjectWorktreeCleanupOwner {
     if (this.restoring) return this.restoring;
     const work = Promise.resolve().then(async () => {
       try {
-        this.publish({ ...this.value, phase: "restoring" });
+        this.publish({ ...this.value, phase: this.activityPhase("restoring") });
         await this.deps.withLock(async () => {
           const token = this.storageFailureToken;
           let expected = this.raw();

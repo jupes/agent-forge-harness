@@ -2347,3 +2347,248 @@ test.each([
     })),
   );
 });
+
+test("confirmation durably verifies the full displayed original before one capped POST outside the lock", async () => {
+  const f = ownerFixture();
+  const events: string[] = [],
+    hashInputs: string[] = [];
+  const reviews: Array<{ url: string; maxBodyBytes: number }> = [];
+  const posts: Array<{
+    url: string;
+    body: unknown;
+    limits: unknown;
+    held: boolean;
+    saved: Array<[string, string]>;
+    view: CleanupBrowserView;
+    events: string[];
+    hashes: string[];
+  }> = [];
+  let held = false,
+    minted = 0;
+  const owner: ProjectWorktreeCleanupOwner = new ProjectWorktreeCleanupOwner({
+    ...f.deps,
+    readReview: async (url, limits) => {
+      reviews.push({ url, ...limits });
+      return reviews.length === 1
+        ? review
+        : {
+            ...review,
+            asOf: "2026-11-08T00:00:02.000Z",
+          };
+    },
+    uuid: () => {
+      minted++;
+      return request.requestId;
+    },
+    hash: async (text) => {
+      const value = await storedHash(text);
+      hashInputs.push(text);
+      events.push("hash");
+      return value;
+    },
+    storage: {
+      getItem: f.deps.storage.getItem,
+      setItem(key, text) {
+        events.push(key.endsWith(".marker") ? "marker" : "inventory");
+        f.deps.storage.setItem(key, text);
+      },
+    },
+    withLock: (work) =>
+      f.deps.withLock(async () => {
+        held = true;
+        events.push("acquired");
+        try {
+          return await work();
+        } finally {
+          held = false;
+          events.push("released");
+        }
+      }),
+    operatorPost: async (url, body, limits) => {
+      posts.push({
+        url,
+        body: structuredClone(body),
+        limits,
+        held,
+        saved: [...f.saved.entries()],
+        view: owner.snapshot(),
+        events: [...events],
+        hashes: [...hashInputs],
+      });
+      return new Response(
+        JSON.stringify({ ok: true, data: confirmed, error: null }),
+        {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        },
+      );
+    },
+  });
+  await owner.inspect({
+    projectId,
+    repository: request.repository,
+    worktreeId: request.expectedRecord.id,
+  });
+  expect(owner.snapshot().inspection).toMatchObject({
+    phase: "eligible-review",
+    review,
+  });
+  await owner.confirm();
+  await owner.confirm();
+  expect(posts).toHaveLength(1);
+  const post = posts[0];
+  if (!post) throw Error("Expected one actual operator POST invocation");
+  expect(post).toMatchObject({
+    url: "/projects/" + projectId + "/settings/worktree-cleanup",
+    body: request,
+    limits: { maxBodyBytes: 65536 },
+    held: false,
+    view: { phase: "dispatching", inventory: inventoryReceipt(null) },
+  });
+  const markerEntry = post.saved.find(([key]) => key.endsWith(".marker"));
+  const inventoryEntry = post.saved.find(([key]) => key.endsWith(".inventory"));
+  if (!markerEntry || !inventoryEntry)
+    throw Error("Expected durable original at dispatch");
+  expect(
+    await readCleanupBrowserInventory(
+      markerEntry[1],
+      inventoryEntry[1],
+      authorityKey,
+      storedHash,
+    ),
+  ).toEqual(inventoryReceipt(null));
+  expect(post.hashes).toEqual(
+    Array.from({ length: 2 }, () =>
+      canonicalCleanupRequest(projectId, request),
+    ),
+  );
+  expect(post.events.slice(-5)).toEqual([
+    "acquired",
+    "hash",
+    "inventory",
+    "hash",
+    "released",
+  ]);
+  expect(minted).toBe(1);
+  expect(reviews).toEqual(
+    Array.from({ length: 2 }, () => ({
+      url:
+        "/projects/" +
+        projectId +
+        "/settings/worktree-cleanup-review/" +
+        request.expectedRecord.id,
+      maxBodyBytes: 65536,
+    })),
+  );
+  expect(owner.snapshot()).toMatchObject({
+    phase: "idle",
+    storageError: false,
+    inventory: inventoryReceipt(confirmed),
+    inspection: { phase: "review-changed", review: null },
+  });
+  const finalKeys = [...f.saved.keys()];
+  const markerKey = finalKeys.find((key) => key.endsWith(".marker"));
+  const inventoryKey = finalKeys.find((key) => key.endsWith(".inventory"));
+  if (!markerKey || !inventoryKey)
+    throw Error("Expected retained terminal original");
+  expect(
+    await readCleanupBrowserInventory(
+      f.saved.get(markerKey) ?? null,
+      f.saved.get(inventoryKey) ?? null,
+      authorityKey,
+      storedHash,
+    ),
+  ).toEqual(inventoryReceipt(confirmed));
+  expect(held).toBe(false);
+});
+
+test.each([
+  "scope-from-write",
+  "writes-from-raw",
+])("dispatch refuses one-shot %s drift after the earlier live gate observation", async (mode) => {
+  const f = ownerFixture();
+  let scope: CleanupBrowserScope | null = {
+    projectId,
+    repository: request.repository,
+    worktreeId: request.expectedRecord.id,
+  };
+  let writable = true,
+    triggered = 0,
+    minted = 0;
+  let owner: ProjectWorktreeCleanupOwner | undefined;
+  const posts: Array<{ url: string; body: unknown; limits: unknown }> = [];
+  owner = new ProjectWorktreeCleanupOwner({
+    ...f.deps,
+    currentScope: () => scope,
+    canWrite: () => {
+      if (
+        mode === "scope-from-write" &&
+        !triggered &&
+        owner?.snapshot().phase === "dispatching"
+      ) {
+        triggered++;
+        scope = null;
+      }
+      return writable;
+    },
+    readReview: async () => review,
+    uuid: () => {
+      minted++;
+      return request.requestId;
+    },
+    storage: {
+      getItem(key) {
+        const actual = f.deps.storage.getItem(key);
+        if (
+          mode === "writes-from-raw" &&
+          !triggered &&
+          owner?.snapshot().phase === "dispatching"
+        ) {
+          triggered++;
+          writable = false;
+        }
+        return actual;
+      },
+      setItem: f.deps.storage.setItem,
+    },
+    operatorPost: async (url, body, limits) => {
+      posts.push({ url, body: structuredClone(body), limits });
+      throw Error("Stale POST was invoked after a live gate changed");
+    },
+  });
+  await owner.inspect(scope);
+  expect(owner.snapshot().inspection.phase).toBe("eligible-review");
+  await owner.confirm();
+  expect({ trigger: triggered, POSTs: posts.length }).toEqual({
+    trigger: 1,
+    POSTs: 0,
+  });
+  if (mode === "scope-from-write") expect(scope).toBeNull();
+  else expect(writable).toBe(false);
+  expect(minted).toBe(1);
+  expect(owner.snapshot()).toMatchObject({
+    phase: "retained-unconfirmed",
+    storageError: false,
+    inventory: inventoryReceipt(null),
+    inspection: { phase: "review-changed", review: null },
+  });
+  const markerKey = [...f.saved.keys()].find((key) => key.endsWith(".marker"));
+  const inventoryKey = [...f.saved.keys()].find((key) =>
+    key.endsWith(".inventory"),
+  );
+  if (!markerKey || !inventoryKey)
+    throw Error("Expected full durable reserved original");
+  expect(
+    await readCleanupBrowserInventory(
+      f.saved.get(markerKey) ?? null,
+      f.saved.get(inventoryKey) ?? null,
+      authorityKey,
+      storedHash,
+    ),
+  ).toEqual(inventoryReceipt(null));
+  const saved = [...f.saved.entries()];
+  await owner.confirm();
+  expect(posts).toEqual([]);
+  expect(minted).toBe(1);
+  expect([...f.saved.entries()]).toEqual(saved);
+});
