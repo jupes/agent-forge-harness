@@ -752,9 +752,13 @@ test("cleanup live reads reject foreign roots before GET and reject observed ide
   }
 });
 
-function registryFixture() {
+function registryFixture(
+  beforeLock: () => Promise<void> = async () => undefined,
+) {
   const values = new Map<string, string>();
-  let writes = 0;
+  let writes = 0,
+    notices = 0,
+    lockStarts = 0;
   const surface = {
     get length() {
       return values.size;
@@ -782,6 +786,8 @@ function registryFixture() {
       options: LockOptions | LockGrantedCallback<T>,
       callback?: LockGrantedCallback<T>,
     ): Promise<T> {
+      lockStarts++;
+      await beforeLock();
       return (typeof options === "function" ? options : callback!)(null);
     },
   };
@@ -792,9 +798,18 @@ function registryFixture() {
     web: { storage: () => surface, locks: () => locks, crypto: () => crypto },
     currentScope: () => null,
     canDispatch: () => gate.writesAvailable(),
-    onChange: () => undefined,
+    onChange: () => {
+      notices++;
+    },
   });
-  return { values, registry, gate, writes: () => writes };
+  return {
+    values,
+    registry,
+    gate,
+    writes: () => writes,
+    notices: () => notices,
+    lockStarts: () => lockStarts,
+  };
 }
 
 test("cleanup registry restores real owners once per authority and detects both-key loss without replacing A on B", async () => {
@@ -861,4 +876,76 @@ test("cleanup registry retains eight known owners when their keys vanish and ref
       .authorities.every((entry) => entry.view.storageError),
   ).toBe(true);
   expect(item.writes()).toBe(before);
+});
+
+test("disposed cleanup registry cannot restore or create another authority", async () => {
+  const item = registryFixture();
+  await item.registry.restore();
+  item.registry.dispose();
+  const before = {
+    writes: item.writes(),
+    notices: item.notices(),
+    keys: item.registry.snapshot().authorities.map((entry) => entry.key),
+  };
+  item.gate.publishHealth(item.gate.snapshot().generation, {
+    ...currentHealth,
+    root: "C:/B",
+    pid: 2,
+  });
+  await item.registry.restore();
+  expect({
+    writes: item.writes(),
+    notices: item.notices(),
+    keys: item.registry.snapshot().authorities.map((entry) => entry.key),
+  }).toEqual(before);
+});
+
+test("disposing an in-flight cleanup restore prevents subsequent owner activation, writes and notification", async () => {
+  let entered!: () => void, release!: () => void;
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let first = true;
+  const item = registryFixture(async () => {
+    if (first) {
+      first = false;
+      entered();
+      await held;
+    }
+  });
+  const saved = cleanupAuthorityKey(origin, "C:/Saved");
+  item.values.set(
+    pair("C:/Saved")[0]!,
+    JSON.stringify({ version: 1, authorityKey: saved }),
+  );
+  item.values.set(
+    pair("C:/Saved")[1]!,
+    JSON.stringify({
+      version: 1,
+      authorityKey: saved,
+      records: [],
+      activeRequestId: null,
+    }),
+  );
+  const pending = item.registry.restore();
+  await started;
+  expect(item.lockStarts()).toBe(1);
+  item.registry.dispose();
+  const before = {
+    writes: item.writes(),
+    notices: item.notices(),
+    locks: item.lockStarts(),
+    keys: item.registry.snapshot().authorities.map((entry) => entry.key),
+  };
+  release();
+  await pending;
+  expect({
+    writes: item.writes(),
+    notices: item.notices(),
+    locks: item.lockStarts(),
+    keys: item.registry.snapshot().authorities.map((entry) => entry.key),
+  }).toEqual(before);
 });

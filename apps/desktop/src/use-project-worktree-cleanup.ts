@@ -466,6 +466,11 @@ export function createCleanupOwnerRegistry(deps: {
     leave(): void;
   };
   const entries = new Map<string, Entry>();
+  let lifecycle: "active" | "disposed" = "active";
+  const active = () => lifecycle === "active";
+  const notify = () => {
+    if (active()) deps.onChange();
+  };
   let discoveryWarning: string | null = null;
   const foreign = (entry: Entry) =>
     entry.view.inventory?.records.some(
@@ -484,6 +489,7 @@ export function createCleanupOwnerRegistry(deps: {
         entry.key !== key && entry.view.inventory?.activeRequestId != null,
     );
   const invalidateInspections = () => {
+    if (!active()) return;
     for (const entry of entries.values()) void entry.owner.inspect(null);
   };
   return {
@@ -500,12 +506,13 @@ export function createCleanupOwnerRegistry(deps: {
           owner: entry.owner,
           view: entry.view,
           readsAvailable:
-            deps.gate.snapshot().health?.root === entry.repository,
+            active() && deps.gate.snapshot().health?.root === entry.repository,
           foreignOriginal: foreign(entry),
         })),
       };
     },
     async restore() {
+      if (!active()) return;
       let surface:
         | ReturnType<NonNullable<CleanupWebCapabilities["storage"]>>
         | undefined;
@@ -538,6 +545,7 @@ export function createCleanupOwnerRegistry(deps: {
       );
       discoveryWarning ??= discovered.hold;
       for (const row of discovered.authorities) {
+        if (!active()) return;
         let entry = entries.get(row.key);
         if (!entry) {
           if (entries.size >= 8) {
@@ -551,6 +559,7 @@ export function createCleanupOwnerRegistry(deps: {
           });
           let created!: Entry;
           const writable = () =>
+            active() &&
             warning() === null &&
             capabilities.available &&
             !otherPending(row.key) &&
@@ -574,15 +583,26 @@ export function createCleanupOwnerRegistry(deps: {
                   );
                 return raw;
               },
-              setItem: capabilities.storage.setItem,
+              setItem(key, value) {
+                if (!active()) throw Error("Cleanup recovery is disposed.");
+                capabilities.storage.setItem(key, value);
+              },
             },
-            currentScope: () => deps.currentScope(row.key),
+            withLock<T>(work: () => Promise<T>): Promise<T> {
+              if (!active())
+                return Promise.reject(Error("Cleanup recovery is disposed."));
+              return capabilities.withLock(async () => {
+                if (!active()) throw Error("Cleanup recovery is disposed.");
+                return work();
+              });
+            },
+            currentScope: () => (active() ? deps.currentScope(row.key) : null),
             canWrite: writable,
           });
           const leave = owner.subscribe((view) => {
             created.view = view;
             if (view.inventory !== null) created.hasEvidence = true;
-            deps.onChange();
+            notify();
           });
           created = {
             ...parseCleanupAuthority(row.key, deps.origin),
@@ -599,6 +619,7 @@ export function createCleanupOwnerRegistry(deps: {
         if (row.marker || row.inventory) entry.hasEvidence = true;
       }
       for (const entry of entries.values()) {
+        if (!active()) return;
         entry.allowEmpty =
           discoveryWarning === null &&
           entry.key === currentKey &&
@@ -609,11 +630,16 @@ export function createCleanupOwnerRegistry(deps: {
           entry.allowEmpty = false;
         }
       }
-      deps.onChange();
+      notify();
     },
     dispose() {
-      invalidateInspections();
-      for (const entry of entries.values()) entry.leave();
+      if (!active()) return;
+      lifecycle = "disposed";
+      for (const entry of entries.values()) {
+        entry.allowEmpty = false;
+        void entry.owner.inspect(null);
+        entry.leave();
+      }
     },
   };
 }
