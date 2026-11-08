@@ -352,3 +352,30 @@ export function createCleanupContextGate(invalidateProof: () => void) {
     },
   };
 }
+
+const latestCleanupHealthRead = new WeakMap<
+  ReturnType<typeof createCleanupContextGate>,
+  object
+>();
+
+export async function refreshCleanupHealth(
+  gate: ReturnType<typeof createCleanupContextGate>,
+  readHealth: () => Promise<unknown>,
+) {
+  const expected = gate.snapshot().generation;
+  const token = {};
+  latestCleanupHealthRead.set(gate, token);
+  try {
+    const answer = await readHealth();
+    if (latestCleanupHealthRead.get(gate) !== token) return null;
+    const published = gate.publishHealth(expected, answer);
+    return published === null ? null : gate.snapshot();
+  } catch {
+    if (
+      latestCleanupHealthRead.get(gate) === token &&
+      gate.snapshot().generation === expected
+    )
+      gate.invalidate();
+    return null;
+  }
+}

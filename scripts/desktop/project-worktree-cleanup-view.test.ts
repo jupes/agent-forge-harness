@@ -7,6 +7,7 @@ import {
   createCleanupTransport,
   discoverCleanupAuthorities,
   parseCleanupAuthority,
+  refreshCleanupHealth,
 } from "../../apps/desktop/src/use-project-worktree-cleanup";
 import { createOperatorClient } from "../../docs/js/operator";
 import { API_PREFIX, OPERATOR_HEADER, TOKEN_ROUTE } from "../hearth/paths";
@@ -596,3 +597,62 @@ test("cleanup health drift invalidates old proof but activates its new generatio
   expect(gate.snapshot().context).toBeNull();
   expect(gate.writesAvailable()).toBe(false);
 });
+
+test("cleanup health refresh cannot reopen obsolete generations and matching failures close the gate", async () => {
+  const gate = createCleanupContextGate(() => undefined);
+  gate.adopt(contextFacts);
+  let answer!: (value: unknown) => void;
+  const pending = refreshCleanupHealth(
+    gate,
+    () =>
+      new Promise((resolve) => {
+        answer = resolve;
+      }),
+  );
+  gate.invalidate();
+  answer(currentHealth);
+  expect(await pending).toBeNull();
+  expect(gate.snapshot().open).toBe(false);
+  expect(
+    (await refreshCleanupHealth(gate, async () => currentHealth))?.generation,
+  ).toBe(2);
+  expect(gate.snapshot().open).toBe(true);
+  expect(
+    await refreshCleanupHealth(gate, async () => {
+      throw Error("health unavailable");
+    }),
+  ).toBeNull();
+  expect(gate.snapshot().open).toBe(false);
+  expect(gate.snapshot().generation).toBe(3);
+});
+
+for (const outcome of ["success", "failure"] as const) {
+  test(
+    "older same-generation health " +
+      outcome +
+      " cannot replace or invalidate newer health",
+    async () => {
+      const gate = createCleanupContextGate(() => undefined);
+      gate.adopt(contextFacts);
+      let resolveOld!: (value: unknown) => void;
+      let rejectOld!: (error: Error) => void;
+      const old = refreshCleanupHealth(
+        gate,
+        () =>
+          new Promise((resolve, reject) => {
+            resolveOld = resolve;
+            rejectOld = reject;
+          }),
+      );
+      const newer = { ...currentHealth, pid: 2, root: "C:/Other" };
+      const accepted = await refreshCleanupHealth(gate, async () => newer);
+      const generation = gate.snapshot().generation;
+      expect(accepted?.health).toEqual(newer);
+      if (outcome === "success") resolveOld(currentHealth);
+      else rejectOld(Error("older read failed"));
+      expect(await old).toBeNull();
+      expect(gate.snapshot().health).toEqual(newer);
+      expect(gate.snapshot().generation).toBe(generation);
+    },
+  );
+}
