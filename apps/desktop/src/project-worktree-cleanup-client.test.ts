@@ -2592,3 +2592,170 @@ test.each([
   expect(minted).toBe(1);
   expect([...f.saved.entries()]).toEqual(saved);
 });
+
+async function confirmationFixture(
+  inventory: NonNullable<CleanupBrowserView["inventory"]>,
+) {
+  const f = ownerFixture();
+  await f.owner.restore();
+  const inventoryKey = [...f.saved.keys()].find((key) =>
+    key.endsWith(".inventory"),
+  );
+  const markerKey = [...f.saved.keys()].find((key) => key.endsWith(".marker"));
+  if (!inventoryKey || !markerKey) throw Error("Expected initialized metadata");
+  f.saved.set(inventoryKey, JSON.stringify(inventory));
+  const control: {
+    scope: CleanupBrowserScope | null;
+    writable: boolean;
+    uuid: string;
+    review: unknown;
+    reply: () => Promise<Response>;
+  } = {
+    scope: {
+      projectId,
+      repository: request.repository,
+      worktreeId: request.expectedRecord.id,
+    },
+    writable: true,
+    uuid: request.requestId,
+    review,
+    reply: async () => {
+      throw Error("Controlled uncertain POST response");
+    },
+  };
+  const trace: {
+    minted: number;
+    hashes: Array<{ text: string; minted: number; writes: number }>;
+    writes: string[];
+    posts: Array<{ url: string; body: unknown; limits: unknown }>;
+  } = { minted: 0, hashes: [], writes: [], posts: [] };
+  const owner = new ProjectWorktreeCleanupOwner({
+    ...f.deps,
+    currentScope: () => control.scope,
+    canWrite: () => control.writable,
+    readReview: async () => control.review,
+    uuid: () => {
+      trace.minted++;
+      return control.uuid;
+    },
+    hash: async (text) => {
+      const digest = await storedHash(text);
+      trace.hashes.push({
+        text,
+        minted: trace.minted,
+        writes: trace.writes.length,
+      });
+      return digest;
+    },
+    storage: {
+      getItem: f.deps.storage.getItem,
+      setItem(key, text) {
+        trace.writes.push(key);
+        f.deps.storage.setItem(key, text);
+      },
+    },
+    operatorPost: async (url, body, limits) => {
+      trace.posts.push({ url, body: structuredClone(body), limits });
+      return control.reply();
+    },
+  });
+  await owner.restore();
+  expect(owner.snapshot().inventory).toEqual(inventory);
+  return { ...f, owner, inventoryKey, markerKey, control, trace };
+}
+test.each([
+  "unresolved-other-project",
+  "terminal-history",
+  "duplicate-UUID",
+])("confirmation honors complete %s before candidate allocation", async (mode) => {
+  const next = await nextCleanupOriginalFixture();
+  const nextConfirmed = cleanupReceiptSchema.parse({
+    ...confirmed,
+    ...next.request,
+    projectId: next.projectId,
+    requestHash: next.requestHash,
+    audit: {
+      eventId: 2,
+      ulid: "01J00000000000000000000001",
+      ts: "2026-11-08T00:00:06.000Z",
+    },
+    attemptedAt: "2026-11-08T00:00:07.000Z",
+    endedAt: "2026-11-08T00:00:08.000Z",
+  });
+  const adopting = mode === "unresolved-other-project";
+  const initial =
+    mode === "duplicate-UUID"
+      ? inventoryReceipt(confirmed)
+      : inventoryFrom(
+          [
+            {
+              original: next,
+              receipt: adopting
+                ? {
+                    ...nextConfirmed,
+                    state: "unknown",
+                    reason: "unconfirmed",
+                    endedAt: null,
+                  }
+                : nextConfirmed,
+            },
+          ],
+          adopting ? next.request.requestId : null,
+        );
+  const f = await confirmationFixture(initial);
+  const saved = [...f.saved.entries()];
+  await f.owner.inspect(f.control.scope);
+  expect(f.owner.snapshot().inspection.phase).toBe("eligible-review");
+  await f.owner.confirm();
+  expect(f.owner.snapshot().inspection.phase).toBe("review-changed");
+  expect(f.trace.hashes.length).toBeGreaterThanOrEqual(initial.records.length);
+  const storedInputs = initial.records.map((row) =>
+    canonicalCleanupRequest(row.original.projectId, row.original.request),
+  );
+  expect(
+    f.trace.hashes
+      .filter((entry) => entry.minted === 0)
+      .every((entry) => storedInputs.includes(entry.text)),
+  ).toBe(true);
+  if (mode === "terminal-history") {
+    const expected = inventoryFrom(
+      [...initial.records, { original, receipt: null }],
+      request.requestId,
+    );
+    expect(f.trace.minted).toBe(1);
+    expect(f.trace.posts).toHaveLength(1);
+    expect(f.trace.posts[0]).toMatchObject({
+      body: request,
+      limits: { maxBodyBytes: 65536 },
+    });
+    expect(
+      f.trace.hashes.filter(
+        (entry) => entry.minted === 1 && entry.writes === 0,
+      ),
+    ).toEqual([
+      {
+        text: canonicalCleanupRequest(projectId, request),
+        minted: 1,
+        writes: 0,
+      },
+    ]);
+    expect(f.trace.writes).toEqual([f.inventoryKey]);
+    expect(f.owner.snapshot().inventory).toEqual(expected);
+    expect(
+      await readCleanupBrowserInventory(
+        f.saved.get(f.markerKey) ?? null,
+        f.saved.get(f.inventoryKey) ?? null,
+        authorityKey,
+        storedHash,
+      ),
+    ).toEqual(expected);
+  } else {
+    expect(f.trace.minted).toBe(adopting ? 0 : 1);
+    expect(f.trace.hashes.filter((entry) => entry.minted !== 0)).toEqual([]);
+    expect(f.trace.posts).toEqual([]);
+    expect(f.trace.writes).toEqual([]);
+    expect(f.owner.snapshot().inventory).toEqual(initial);
+    expect([...f.saved.entries()]).toEqual(saved);
+  }
+  expect(f.owner.snapshot().storageError).toBe(false);
+});
