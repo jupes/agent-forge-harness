@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import {
   mkdirSync,
   mkdtempSync,
@@ -12,7 +13,10 @@ import { conversationFile } from "../conversations/paths";
 import { createConversationStore } from "../conversations/store";
 import { ensurePrivateHome } from "../hearth/home-guard";
 import { writeOwnerOnly } from "../hearth/token";
+import { appendEvent } from "../ledger/append";
+import { closeLedger } from "../ledger/db";
 import { resolveCheckout } from "../ledger/workspace";
+import { withQueueLock } from "../scheduler/queue-lock";
 import { runOptions } from "../scheduler/shift-cli-runtime";
 import {
   createProjectShiftRegistry,
@@ -24,6 +28,112 @@ import {
   readProjectLifecycleInventory,
 } from "./lifecycle-inventory";
 import { createProjectStore } from "./store";
+
+test("cleanup journal loss retains lifecycle ownership instead of allowing deletion", async () => {
+  const base = mkdtempSync(join(tmpdir(), "forge-cleanup-lost-journal-")),
+    home = join(base, "home"),
+    root = join(base, "repo"),
+    ledgerPath = join(home, "ledger.db");
+  mkdirSync(join(root, ".git"), { recursive: true });
+  try {
+    const repository = resolveCheckout(root).workspace;
+    const projects = createProjectStore(home);
+    const catalog = await projects.create(
+      {
+        slug: "cleanup",
+        name: "Cleanup",
+        description: "",
+        icon: "C",
+        workspaces: [
+          {
+            root: repository,
+            repositories: [repository],
+            epicIds: ["alpha-epic"],
+          },
+        ],
+      },
+      0,
+    );
+    const project = catalog.projects[0]!;
+    await projects.preferences(project.id, 1, { archived: true });
+    project.archived = true;
+    expect(readProjectLifecycleInventory(home, repository, project).state).toBe(
+      "eligible",
+    );
+    const stamp = "2026-11-07T00:00:00.000Z";
+    const id = "shift-20261107-170000-0001-1";
+    const request = {
+      requestId: "71000000-0000-4000-8000-000000000001",
+      repository,
+      expectedCatalogRevision: 1,
+      expectedRecord: {
+        id,
+        path: join(repository, "trees", id),
+        branch: "shift/shift-20261107-170000-0001/forge-test.1",
+        createdAt: stamp,
+        beadId: "forge-test.1",
+      },
+      expectedHead: "a".repeat(40),
+    };
+    const requestHash = createHash("sha256")
+      .update(
+        JSON.stringify({
+          family: "project-worktree-cleanup",
+          version: 1,
+          projectId: project.id,
+          ...request,
+        }),
+      )
+      .digest("hex");
+    const audit = appendEvent(
+      {
+        kind: "operator.action",
+        workspace: repository,
+        beadId: request.expectedRecord.beadId,
+        payload: {
+          action: "project.worktree.cleanup",
+          surface: "ui",
+          target: project.id,
+          family: "project-worktree-cleanup",
+          requestId: request.requestId,
+          inputHash: requestHash,
+        },
+      },
+      { path: ledgerPath, now: () => new Date(stamp) },
+    );
+    if (!audit.ok || !("id" in audit)) throw Error("Expected a stored audit");
+    const namespace = join(home, "project-worktree-cleanup");
+    const file = join(namespace, "operations.json");
+    const original = {
+      version: 1,
+      projectId: project.id,
+      request,
+      requestHash,
+      createdAt: stamp,
+      audit: { eventId: audit.id, ulid: audit.ulid, ts: stamp },
+    };
+    const row = {
+      original,
+      phase: "unknown",
+      attemptedAt: stamp,
+      endedAt: null,
+      reason: "The prior cleanup outcome is unconfirmed.",
+      outcome: null,
+    };
+    ensurePrivateHome(namespace);
+    writeOwnerOnly(file, JSON.stringify({ version: 1, records: [row] }));
+    const lease = join(namespace, "write.lock.db");
+    expect((await withQueueLock(lease, async () => true)).ok).toBe(true);
+    rmSync(file);
+    expect(readFileSync(lease).length).toBeGreaterThan(0);
+    expect(readProjectLifecycleInventory(home, repository, project).state).toBe(
+      "unknown",
+    );
+  } finally {
+    closeLedger(ledgerPath);
+    rmSync(base, { recursive: true, force: true });
+  }
+});
 
 test("a stopped Shift must settle every owned attempt and malformed evidence remains unknown without PID probes", async () => {
   const base = mkdtempSync(join(tmpdir(), "forge-project-shift-inventory-")),
