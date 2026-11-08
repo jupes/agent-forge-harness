@@ -572,3 +572,27 @@ test("cleanup context compares meaningful facts and closes before synchronous in
     Array.from({ length: observed.length }, (_, index) => index + 1),
   );
 });
+
+test("cleanup health drift invalidates old proof but activates its new generation; raw invalidation and unmount reject late tokens", () => {
+  const gate = createCleanupContextGate(() => undefined);
+  gate.adopt(contextFacts);
+  const first = gate.publishHealth(1, currentHealth);
+  expect(gate.publishHealth(1, { ...currentHealth })).toBe(first);
+  expect(gate.publishHealth(1, { ...currentHealth, pid: 2 })).toBe(2);
+  expect(gate.snapshot().health?.pid).toBe(2);
+  expect(gate.publishHealth(1, currentHealth)).toBeNull();
+  expect(
+    gate.publishHealth(2, { ...currentHealth, pid: 2, apiVersion: 999 }),
+  ).toBe(3);
+  expect(gate.snapshot().open).toBe(true);
+  expect(gate.writesAvailable()).toBe(false);
+  gate.invalidate();
+  expect(gate.publishHealth(3, currentHealth)).toBeNull();
+  gate.adopt({ ...contextFacts, route: "B" });
+  gate.adopt(contextFacts);
+  expect(gate.snapshot().generation).toBe(6);
+  gate.deactivate();
+  expect(gate.publishHealth(6, currentHealth)).toBeNull();
+  expect(gate.snapshot().context).toBeNull();
+  expect(gate.writesAvailable()).toBe(false);
+});
