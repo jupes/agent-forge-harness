@@ -1595,3 +1595,110 @@ test("cleanup confirmation with a fresh changed HEAD consumes the review without
     item.registry.snapshot().authorities[0]?.owner.snapshot().inspection.notice,
   ).toBe("Review cleanup again before creating another original.");
 });
+
+test("late confirmed cleanup A preserves project B's newer eligible review and original A identity", async () => {
+  const first = candidateFixture(),
+    second = candidateFixture(),
+    saved = seedCleanupOriginal(new Map());
+  const projectB = "project-10000000-0000-4000-8000-000000000099";
+  second.scope.projectId = projectB;
+  second.scope.worktreeId = "other";
+  second.facts.projectId = projectB;
+  second.facts.route = "#/projects/" + projectB + "/settings";
+  second.facts.repositoryKey = JSON.stringify([projectB, 1]);
+  second.data.projectId = projectB;
+  second.row.id = "other";
+  second.row.path = "C:/Work/trees/other";
+  second.row.branch = "feat/other";
+  const reviewB: CleanupBrowserOriginal["review"] = {
+    ...saved.original.review,
+    projectId: projectB,
+    worktreeId: "other",
+    expectedRecord: {
+      ...saved.original.review.expectedRecord,
+      id: "other",
+      path: "C:/Work/trees/other",
+      branch: "feat/other",
+    },
+  };
+  const posted: { receipt: CleanupReceipt | null } = { receipt: null };
+  let entered!: () => void, release!: () => void;
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let posts = 0,
+    bReads = 0;
+  const item = registryFixture(undefined, async (url, init) => {
+    if (url.endsWith("/health")) return envelope(currentHealth);
+    if (init?.method === "POST") {
+      posts++;
+      entered();
+      let body: unknown;
+      try {
+        body = JSON.parse(String(init.body));
+      } catch {
+        return new Response("Invalid fake request", { status: 500 });
+      }
+      const request = cleanupRequestSchema.safeParse(body);
+      if (!request.success)
+        return new Response("Invalid fake request", { status: 500 });
+      posted.receipt = cleanupReceiptSchema.parse({
+        ...saved.receipt,
+        ...request.data,
+        requestHash: createHash("sha256")
+          .update(canonicalCleanupRequest(saved.projectId, request.data))
+          .digest("hex"),
+      });
+      await held;
+      return envelope(posted.receipt);
+    }
+    if (url.includes("/settings/worktree-cleanup/"))
+      return envelope(
+        posted.receipt
+          ? {
+              ...posted.receipt,
+              state: "unknown",
+              reason: "The original operation is still in flight.",
+              endedAt: null,
+            }
+          : null,
+      );
+    if (url.includes("/projects/" + projectB + "/")) {
+      bReads++;
+      return envelope(reviewB);
+    }
+    return envelope(saved.original.review);
+  });
+  item.gate.adopt(first.facts);
+  await item.selection.reviewCandidate(first.scope);
+  const confirming = item.selection.confirmReviewed();
+  await started;
+  item.gate.adopt(second.facts);
+  await item.selection.reviewCandidate(second.scope);
+  const owner = item.registry.snapshot().authorities[0]!.owner;
+  expect(bReads).toBe(1);
+  expect(owner.snapshot().inspection.phase).toBe("eligible-review");
+  expect(owner.snapshot().inspection.selection).toEqual(second.scope);
+  expect(item.selection.snapshot().canConfirm).toBe(false);
+  expect(item.registry.snapshot().pending).toBe(true);
+  release();
+  await confirming;
+  const receipt = posted.receipt;
+  if (!receipt)
+    throw Error("The fake server never received cleanup A's original.");
+  expect(owner.snapshot().inspection.phase).toBe("eligible-review");
+  expect(owner.snapshot().inspection.review).toEqual(reviewB);
+  expect(item.selection.snapshot().candidate?.scope).toEqual(second.scope);
+  expect(item.selection.snapshot().canConfirm).toBe(true);
+  expect(item.registry.snapshot().pending).toBe(false);
+  const record = owner.snapshot().inventory?.records[0];
+  expect(record?.original.projectId).toBe(saved.projectId);
+  expect(record?.original.request.requestId).toBe(receipt.requestId);
+  expect(record?.original.requestHash).toBe(receipt.requestHash);
+  expect(record?.receipt).toEqual(receipt);
+  expect(posts).toBe(1);
+  expect(item.uuidCalls()).toBe(1);
+});
