@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { KeeperVisibility } from "../../types/projects";
 
 export const keeperAutonomySchema = z.enum([
   "suggest-only",
@@ -29,3 +30,56 @@ export const projectKeeperSettingsRequestSchema = z
   })
   .strict();
 export type ProjectKeeperSettings = z.infer<typeof projectKeeperSettingsSchema>;
+
+export const keeperVisibilitySchema = z.enum([
+  "project-metadata",
+  "conversation-only",
+]);
+export const DEFAULT_KEEPER_VISIBILITY: KeeperVisibility = "project-metadata";
+
+/** Future source access only; existing admitted context is never retroactively erased. */
+export function effectiveKeeperVisibility(project: {
+  readonly keeperVisibility?: unknown;
+}): Readonly<{
+  value: KeeperVisibility;
+  source: "default-policy" | "project-catalog";
+}> {
+  const saved = project.keeperVisibility;
+  return Object.freeze({
+    value:
+      saved === undefined
+        ? DEFAULT_KEEPER_VISIBILITY
+        : keeperVisibilitySchema.parse(saved),
+    source: saved === undefined ? "default-policy" : "project-catalog",
+  });
+}
+
+/** Saved projection is richer than the unchanged legacy Smith/autonomy mutation. */
+export const projectKeeperProjectionSchema = projectKeeperSettingsSchema
+  .extend({
+    keeperVisibility: keeperVisibilitySchema.optional(),
+  })
+  .strict();
+export type ProjectKeeperProjection = z.infer<
+  typeof projectKeeperProjectionSchema
+>;
+
+export const projectKeeperVisibilityRequestSchema = z
+  .object({
+    expectedRevision: projectKeeperSettingsRequestSchema.shape.expectedRevision,
+    kind: z.literal("visibility"),
+    keeperVisibility: keeperVisibilitySchema,
+  })
+  .strict();
+export type ProjectKeeperVisibilityRequest = z.infer<
+  typeof projectKeeperVisibilityRequestSchema
+>;
+
+/** The live route adopts this complete union with its visibility store operation. */
+export const projectKeeperMutationRequestSchema = z.union([
+  projectKeeperSettingsRequestSchema,
+  projectKeeperVisibilityRequestSchema,
+]);
+export type ProjectKeeperMutationRequest = z.infer<
+  typeof projectKeeperMutationRequestSchema
+>;
