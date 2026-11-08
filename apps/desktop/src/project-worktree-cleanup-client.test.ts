@@ -1722,3 +1722,223 @@ test("exact original GET settles memory before storage and remains readable with
     ),
   ).toEqual(owner.snapshot().inventory);
 });
+
+test("older GET verification preserves newer terminal warning and queued restore ownership", async () => {
+  const f = ownerFixture();
+  await f.owner.restore();
+  const inventoryKey = [...f.saved.keys()].find((key) =>
+    key.endsWith(".inventory"),
+  );
+  const markerKey = [...f.saved.keys()].find((key) => key.endsWith(".marker"));
+  if (!inventoryKey || !markerKey) throw Error("Expected initialized metadata");
+  const next = await nextCleanupOriginalFixture();
+  const nextConfirmed = {
+    ...confirmed,
+    ...next.request,
+    projectId: next.projectId,
+    requestHash: next.requestHash,
+    audit: {
+      eventId: 2,
+      ulid: "01J00000000000000000000001",
+      ts: "2026-11-08T00:00:06.000Z",
+    },
+    attemptedAt: "2026-11-08T00:00:07.000Z",
+    endedAt: "2026-11-08T00:00:08.000Z",
+  };
+  const baseline = inventoryFrom(
+    [
+      { original, receipt: confirmed },
+      {
+        original: next,
+        receipt: {
+          ...nextConfirmed,
+          state: "unknown",
+          reason: "unconfirmed",
+          endedAt: null,
+        },
+      },
+    ],
+    next.request.requestId,
+  );
+  f.saved.set(inventoryKey, JSON.stringify(baseline));
+  const gate = () => {
+    let resolve = () => {};
+    const promise = new Promise<void>((done) => {
+      resolve = done;
+    });
+    return { promise, open: () => resolve() };
+  };
+  const reachedA = gate(),
+    releaseA = gate(),
+    queuedC = gate();
+  const reachedC = gate(),
+    releaseC = gate();
+  const trace: string[] = [],
+    faults: Error[] = [];
+  const reads: Array<{ url: string; maxBodyBytes: number }> = [];
+  const lockFailure = Error("B acquisition unavailable");
+  let tag = "setup",
+    lockOwner: string | null = null;
+  let armed = false,
+    pausedA = false,
+    pausedC = false,
+    timedOut = false;
+  const owner = new ProjectWorktreeCleanupOwner({
+    ...f.deps,
+    currentScope: () => ({
+      projectId: next.projectId,
+      repository: next.request.repository,
+      worktreeId: next.request.expectedRecord.id,
+    }),
+    readReview: async () => next.review,
+    readReceipt: async (url, limits) => {
+      reads.push({ url, ...limits });
+      return url.includes(next.request.requestId) ? nextConfirmed : confirmed;
+    },
+    withLock: async (work) => {
+      const requested = tag;
+      trace.push(requested + ":queued");
+      if (requested === "B") {
+        faults.push(lockFailure);
+        throw lockFailure;
+      }
+      if (requested === "C") queuedC.open();
+      return f.deps.withLock(async () => {
+        lockOwner = requested;
+        trace.push(requested + ":acquired");
+        try {
+          return await work();
+        } finally {
+          trace.push(requested + ":released");
+          lockOwner = null;
+        }
+      });
+    },
+    hash: async (text) => {
+      const digest = await storedHash(text);
+      if (armed && lockOwner === "A" && !pausedA) {
+        pausedA = true;
+        reachedA.open();
+        await releaseA.promise;
+      }
+      if (armed && lockOwner === "C" && !pausedC) {
+        pausedC = true;
+        reachedC.open();
+        await releaseC.promise;
+      }
+      return digest;
+    },
+  });
+  await owner.restore();
+  expect(owner.snapshot().inventory).toEqual(baseline);
+  await owner.inspect({
+    projectId: next.projectId,
+    repository: next.request.repository,
+    worktreeId: next.request.expectedRecord.id,
+  });
+  const inspection = owner.snapshot().inspection;
+  expect(inspection.phase).toBe("eligible-review");
+  trace.length = 0;
+  f.trace.length = 0;
+  armed = true;
+  const pending: Promise<void>[] = [];
+  let beforeRelease: CleanupBrowserView | undefined;
+  let duringRestore: CleanupBrowserView | undefined;
+  let joined: PromiseSettledResult<void>[] = [];
+  const watchdog = setTimeout(() => {
+    timedOut = true;
+    for (const barrier of [reachedA, releaseA, queuedC, reachedC, releaseC])
+      barrier.open();
+  }, 2000);
+  try {
+    tag = "A";
+    const a = owner.checkOriginal(request.requestId);
+    pending.push(a);
+    await reachedA.promise;
+    tag = "B";
+    const b = owner.checkOriginal(next.request.requestId);
+    pending.push(b);
+    await b;
+    beforeRelease = owner.snapshot();
+    tag = "C";
+    const c = owner.restore();
+    pending.push(c);
+    await queuedC.promise;
+    releaseA.open();
+    await a;
+    await reachedC.promise;
+    duringRestore = owner.snapshot();
+    releaseC.open();
+    await c;
+  } finally {
+    releaseA.open();
+    releaseC.open();
+    joined = await Promise.allSettled(pending);
+    clearTimeout(watchdog);
+    armed = false;
+  }
+  const terminal = inventoryFrom(
+    [
+      { original, receipt: confirmed },
+      { original: next, receipt: nextConfirmed },
+    ],
+    null,
+  );
+  expect(timedOut).toBe(false);
+  expect([pausedA, pausedC]).toEqual([true, true]);
+  expect(faults).toEqual([lockFailure]);
+  expect(joined.map((result) => result.status)).toEqual([
+    "fulfilled",
+    "fulfilled",
+    "fulfilled",
+  ]);
+  expect(trace).toEqual([
+    "A:queued",
+    "A:acquired",
+    "B:queued",
+    "C:queued",
+    "A:released",
+    "C:acquired",
+    "C:released",
+  ]);
+  expect(beforeRelease).toMatchObject({
+    storageError: true,
+    inventory: terminal,
+    inspection,
+  });
+  expect(duringRestore).toMatchObject({
+    phase: "restoring",
+    storageError: true,
+    inventory: terminal,
+    inspection,
+  });
+  expect(owner.snapshot()).toMatchObject({
+    phase: "idle",
+    storageError: false,
+    inventory: terminal,
+    inspection,
+  });
+  expect(reads).toEqual(
+    [original, next].map((held) => ({
+      url:
+        "/projects/" +
+        held.projectId +
+        "/settings/worktree-cleanup/" +
+        held.request.requestId +
+        "?requestHash=" +
+        held.requestHash,
+      maxBodyBytes: 65536,
+    })),
+  );
+  expect(f.trace.filter((event) => event.startsWith("write:"))).toEqual([
+    "write:" + inventoryKey,
+  ]);
+  expect(
+    await readCleanupBrowserInventory(
+      f.saved.get(markerKey) ?? null,
+      f.saved.get(inventoryKey) ?? null,
+      authorityKey,
+      storedHash,
+    ),
+  ).toEqual(terminal);
+});
