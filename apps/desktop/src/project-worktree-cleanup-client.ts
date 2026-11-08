@@ -300,7 +300,7 @@ export class ProjectWorktreeCleanupOwner {
     this.value = freezeCleanupSnapshot(structuredClone(next));
     for (const listener of [...this.listeners]) {
       try {
-        listener(this.value);
+        void Promise.resolve(listener(this.value)).catch(() => undefined);
       } catch {
         /* Observers cannot change verified truth. */
       }

@@ -627,3 +627,143 @@ test("duplicate restore callers await the same paused verification completion", 
     storageError: false,
   });
 }, 15000);
+
+test("cleanup owner initializes marker first and restores immutable truth despite observer failure", async () => {
+  const f = ownerFixture(),
+    initial = f.owner.snapshot();
+  expect(f.trace).toEqual([]);
+  expect(f.owner.snapshot()).toBe(initial);
+  let observed = 0;
+  const unsubscribe = f.owner.subscribe(() => {
+    observed++;
+    throw Error("Observer failure");
+  });
+  await f.owner.restore();
+  const empty = f.owner.snapshot();
+  expect(empty).toMatchObject({
+    phase: "idle",
+    storageError: false,
+    inventory: { version: 1, authorityKey, records: [], activeRequestId: null },
+  });
+  const [markerKey, inventoryKey] = [...f.saved.keys()];
+  if (!markerKey || !inventoryKey)
+    throw Error("Expected both initialized storage keys");
+  expect(f.trace.filter((event) => event.startsWith("write:"))).toEqual([
+    "write:" + markerKey,
+    "write:" + inventoryKey,
+  ]);
+  expect(
+    await readCleanupBrowserInventory(
+      f.saved.get(markerKey) ?? null,
+      f.saved.get(inventoryKey) ?? null,
+      authorityKey,
+      storedHash,
+    ),
+  ).toEqual(empty.inventory);
+  f.saved.set(
+    inventoryKey,
+    rawInventory([{ original, receipt: confirmed }], null),
+  );
+  await f.owner.restore();
+  const known = f.owner.snapshot(),
+    retained = known.inventory?.records[0];
+  if (!retained)
+    throw Error("Expected independently visible saved terminal truth");
+  expect(retained.receipt).toMatchObject({ state: "confirmed" });
+  expect(known.storageError).toBe(false);
+  expect(Object.isFrozen(known)).toBe(true);
+  expect(Object.isFrozen(retained.original.request.expectedRecord)).toBe(true);
+  expect(empty.inventory?.records).toEqual([]);
+  expect(observed).toBeGreaterThan(0);
+  unsubscribe();
+  const reloaded = new ProjectWorktreeCleanupOwner(f.deps);
+  await reloaded.restore();
+  expect(reloaded.snapshot().inventory).toEqual(known.inventory);
+});
+
+test("terminal cleanup observer rejection is handled without escaping or changing truth", async () => {
+  const f = ownerFixture();
+  await f.owner.restore();
+  const inventoryKey = [...f.saved.keys()].find((key) =>
+    key.endsWith(".inventory"),
+  );
+  if (!inventoryKey) throw Error("Expected initialized inventory");
+  f.saved.set(
+    inventoryKey,
+    rawInventory([{ original, receipt: confirmed }], null),
+  );
+  const failure = Error("Async cleanup observer failure");
+  const unhandled: unknown[] = [],
+    tasks: Promise<void>[] = [];
+  let release = () => {},
+    rejected = 0,
+    synchronousNotices = 0,
+    timedOut = false;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const turn = () =>
+    new Promise<void>((resolve) => {
+      setImmediate(() => resolve());
+    });
+  const observe = (reason: unknown) => {
+    unhandled.push(reason);
+  };
+  process.on("unhandledRejection", observe);
+  const unsubscribe = f.owner.subscribe((value) => {
+    if (
+      !value.inventory?.records.some(
+        (row) => row.receipt?.state === "confirmed",
+      )
+    )
+      return;
+    const task = (async () => {
+      await gate;
+      rejected++;
+      throw failure;
+    })();
+    tasks.push(task);
+    return task;
+  });
+  const unsubscribeSecond = f.owner.subscribe((value) => {
+    if (
+      value.inventory?.records.some((row) => row.receipt?.state === "confirmed")
+    )
+      synchronousNotices++;
+  });
+  const watchdog = setTimeout(() => {
+    timedOut = true;
+    release();
+  }, 8000);
+  let completed: PromiseSettledResult<void>[] = [];
+  try {
+    await f.owner.restore();
+    expect(timedOut).toBe(false);
+    expect(synchronousNotices).toBeGreaterThan(0);
+    release();
+    await turn();
+    await turn();
+    expect(rejected).toBeGreaterThan(0);
+    expect(unhandled.filter((reason) => reason !== failure)).toEqual([]);
+    expect(unhandled.filter((reason) => reason === failure)).toEqual([]);
+    expect(f.owner.snapshot().inventory?.records[0]?.receipt).toMatchObject({
+      state: "confirmed",
+    });
+  } finally {
+    unsubscribe();
+    unsubscribeSecond();
+    release();
+    clearTimeout(watchdog);
+    await turn();
+    await turn();
+    completed = await Promise.allSettled(tasks);
+    await turn();
+    process.off("unhandledRejection", observe);
+  }
+  expect(completed.length).toBeGreaterThan(0);
+  expect(
+    completed.every(
+      (result) => result.status === "rejected" && result.reason === failure,
+    ),
+  ).toBe(true);
+}, 15000);
