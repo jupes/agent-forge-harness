@@ -1,5 +1,9 @@
 import { expect, test } from "bun:test";
-import { createCleanupTransport } from "../../apps/desktop/src/use-project-worktree-cleanup";
+import {
+  cleanupAuthorityKey,
+  createCleanupTransport,
+  parseCleanupAuthority,
+} from "../../apps/desktop/src/use-project-worktree-cleanup";
 import { createOperatorClient } from "../../docs/js/operator";
 import { API_PREFIX, OPERATOR_HEADER, TOKEN_ROUTE } from "../hearth/paths";
 
@@ -212,4 +216,57 @@ test("cleanup health requires independent bounded positive-safe identity while p
     );
     await expect(client.health()).rejects.toThrow();
   }
+});
+
+const origin = "http://127.0.0.1:3000";
+test("cleanup authorities preserve exact native spelling and reject noncanonical/foreign/invalid tuples", () => {
+  const key = cleanupAuthorityKey(origin, "C:\\Work\\Ä");
+  expect(parseCleanupAuthority(key, origin).repository).toBe("C:\\Work\\Ä");
+  for (const bad of [
+    "null",
+    "[]",
+    '["http://elsewhere","C:/Work"]',
+    '["http://127.0.0.1:3000", "C:/Work"]',
+    JSON.stringify([origin, ""]),
+    JSON.stringify([origin, "bad\nroot"]),
+    JSON.stringify([origin, "x".repeat(1025)]),
+    JSON.stringify([origin, "C:/Work", "extra"]),
+  ])
+    expect(() => parseCleanupAuthority(bad, origin)).toThrow();
+  expect(() =>
+    parseCleanupAuthority(
+      JSON.stringify(["ftp://example", "C:/Work"]),
+      "ftp://example",
+    ),
+  ).toThrow();
+  expect(() => cleanupAuthorityKey("null", "C:/Work")).toThrow();
+  expect(() => cleanupAuthorityKey(origin + "/", "C:/Work")).toThrow();
+  expect(() =>
+    cleanupAuthorityKey(
+      "https://" + "a".repeat(1100) + ".example",
+      "x".repeat(1024),
+    ),
+  ).toThrow();
+});
+
+test("cleanup oversized authority is rejected before JSON parsing", () => {
+  const originalParse = JSON.parse;
+  const oversized = JSON.stringify([origin, "x".repeat(2049)]);
+  let parses = 0,
+    rejected = false;
+  try {
+    JSON.parse = () => {
+      parses++;
+      throw Error("Oversized input reached parser");
+    };
+    try {
+      parseCleanupAuthority(oversized, origin);
+    } catch {
+      rejected = true;
+    }
+  } finally {
+    JSON.parse = originalParse;
+  }
+  expect(rejected).toBe(true);
+  expect(parses).toBe(0);
 });

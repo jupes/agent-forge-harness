@@ -49,3 +49,32 @@ export function createCleanupTransport(
       )) satisfies OperatorClient["post"],
   };
 }
+
+export function parseCleanupAuthority(key: string, origin: string) {
+  try {
+    if (key.length > 2048) throw Error("Cleanup authority exceeds its limit.");
+    const parsedOrigin = new URL(origin);
+    const tuple = z
+      .tuple([z.string(), cleanupRequestSchema.shape.repository])
+      .parse(JSON.parse(key));
+    if (
+      JSON.stringify(tuple) !== key ||
+      tuple[0] !== origin ||
+      origin === "null" ||
+      parsedOrigin.origin !== origin ||
+      !["http:", "https:"].includes(parsedOrigin.protocol)
+    )
+      throw Error("Invalid cleanup authority.");
+    return { key, origin, repository: tuple[1] };
+  } catch {
+    throw Error("Cleanup authority could not be verified.");
+  }
+}
+
+export function cleanupAuthorityKey(
+  origin: string,
+  repository: string,
+): string {
+  const key = JSON.stringify([origin, repository]);
+  return parseCleanupAuthority(key, origin).key;
+}
