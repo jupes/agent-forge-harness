@@ -2611,6 +2611,9 @@ async function confirmationFixture(
     uuid: string;
     review: unknown;
     reply: () => Promise<Response>;
+    beforeReview?: () => Promise<void>;
+    lockRequested?: () => void;
+    afterHash?: (text: string) => Promise<void>;
   } = {
     scope: {
       projectId,
@@ -2626,18 +2629,37 @@ async function confirmationFixture(
   };
   const trace: {
     minted: number;
+    lockRequests: number;
+    lockEntries: number;
     reviews: Array<{ url: string; maxBodyBytes: number }>;
     hashes: Array<{ text: string; minted: number; writes: number }>;
     writes: string[];
     posts: Array<{ url: string; body: unknown; limits: unknown }>;
-  } = { minted: 0, reviews: [], hashes: [], writes: [], posts: [] };
+  } = {
+    minted: 0,
+    lockRequests: 0,
+    lockEntries: 0,
+    reviews: [],
+    hashes: [],
+    writes: [],
+    posts: [],
+  };
   const owner = new ProjectWorktreeCleanupOwner({
     ...f.deps,
     currentScope: () => control.scope,
     canWrite: () => control.writable,
     readReview: async (url, limits) => {
       trace.reviews.push({ url, ...limits });
+      await control.beforeReview?.();
       return control.review;
+    },
+    withLock: (work) => {
+      trace.lockRequests++;
+      control.lockRequested?.();
+      return f.deps.withLock(async () => {
+        trace.lockEntries++;
+        return work();
+      });
     },
     uuid: () => {
       trace.minted++;
@@ -2650,6 +2672,7 @@ async function confirmationFixture(
         minted: trace.minted,
         writes: trace.writes.length,
       });
+      await control.afterHash?.(text);
       return digest;
     },
     storage: {
@@ -3142,6 +3165,143 @@ test.each([
     storageError: false,
     inventory: empty,
   });
+  expect(f.trace.minted).toBe(0);
+  expect(f.trace.hashes).toEqual([]);
+  expect(f.trace.posts).toEqual([]);
+  expect(f.trace.writes).toEqual([]);
+  expect([...f.saved.entries()]).toEqual(saved);
+});
+
+function confirmationGate() {
+  let resolve = () => {};
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, open: () => resolve() };
+}
+test.each([
+  "review-scope",
+  "review-write",
+  "review-epoch",
+  "lock-scope",
+  "lock-write",
+])("confirmation refuses authority invalidated during the reached %s boundary", async (mode) => {
+  const empty = inventoryFrom([], null);
+  const f = await confirmationFixture(empty);
+  const selected = f.control.scope;
+  if (!selected) throw Error("Expected original selected project");
+  await f.owner.inspect(selected);
+  expect(f.owner.snapshot().inspection.phase).toBe("eligible-review");
+  const saved = [...f.saved.entries()];
+  const reached = confirmationGate(),
+    release = confirmationGate(),
+    holderGate = confirmationGate();
+  const tasks: Promise<void>[] = [];
+  let hookReached = false,
+    holderEntered = false,
+    holderReleased = false;
+  let entriesAtHolder = 0,
+    requestsAtHolder = 0,
+    reservationRequests = 0;
+  let timedOut = false,
+    joined: PromiseSettledResult<void>[] = [];
+  let queuedObservation:
+    | { entries: number; requests: number; released: boolean }
+    | undefined;
+  f.control.beforeReview = async () => {
+    if (hookReached) return;
+    hookReached = true;
+    if (mode.startsWith("lock")) {
+      tasks.push(
+        f.deps.withLock(async () => {
+          holderEntered = true;
+          entriesAtHolder = f.trace.lockEntries;
+          requestsAtHolder = f.trace.lockRequests;
+          holderGate.open();
+          await release.promise;
+          holderReleased = true;
+        }),
+      );
+      await holderGate.promise;
+    } else {
+      reached.open();
+      await release.promise;
+    }
+  };
+  f.control.lockRequested = () => {
+    if (holderEntered && !holderReleased) {
+      reservationRequests++;
+      reached.open();
+    }
+  };
+  const watchdog = setTimeout(() => {
+    timedOut = true;
+    reached.open();
+    holderGate.open();
+    release.open();
+  }, 2000);
+  try {
+    const action = f.owner.confirm();
+    tasks.push(action);
+    await reached.promise;
+    if (mode.startsWith("lock"))
+      queuedObservation = {
+        entries: f.trace.lockEntries,
+        requests: f.trace.lockRequests,
+        released: holderReleased,
+      };
+    if (mode.endsWith("scope")) f.control.scope = null;
+    else if (mode.endsWith("write")) f.control.writable = false;
+    else {
+      const invalidated = f.owner.inspect(null);
+      tasks.push(invalidated);
+      await invalidated;
+      const rereviewed = f.owner.inspect(selected);
+      tasks.push(rereviewed);
+      await rereviewed;
+    }
+    release.open();
+    await action;
+  } finally {
+    release.open();
+    holderGate.open();
+    reached.open();
+    joined = await Promise.allSettled(tasks);
+    clearTimeout(watchdog);
+    delete f.control.beforeReview;
+    delete f.control.lockRequested;
+  }
+  expect(timedOut).toBe(false);
+  expect(hookReached).toBe(true);
+  expect(joined.length).toBeGreaterThan(0);
+  expect(joined.every((result) => result.status === "fulfilled")).toBe(true);
+  if (mode.startsWith("lock")) {
+    expect([holderEntered, holderReleased, reservationRequests]).toEqual([
+      true,
+      true,
+      1,
+    ]);
+    expect(queuedObservation).toEqual({
+      entries: entriesAtHolder,
+      requests: requestsAtHolder + 1,
+      released: false,
+    });
+    expect(f.trace.lockEntries).toBe(entriesAtHolder + 1);
+  } else expect([holderEntered, reservationRequests]).toEqual([false, 0]);
+  expect(f.owner.snapshot()).toMatchObject({
+    phase: "idle",
+    storageError: false,
+    inventory: empty,
+  });
+  expect(f.owner.snapshot().inspection).toMatchObject(
+    mode === "review-epoch"
+      ? {
+          phase: "eligible-review",
+          selection: selected,
+          review,
+        }
+      : { phase: "review-changed", review: null },
+  );
   expect(f.trace.minted).toBe(0);
   expect(f.trace.hashes).toEqual([]);
   expect(f.trace.posts).toEqual([]);
