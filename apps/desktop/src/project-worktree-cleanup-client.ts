@@ -600,3 +600,95 @@ export function cleanupBrowserForProject(
     storageError: view.storageError,
   };
 }
+
+/** known has complete raw/hash provenance; this function performs no I/O or crypto. */
+export function settleCleanupBrowserReceipt(
+  known: CleanupBrowserInventory,
+  requestId: string,
+  rawReceipt: unknown,
+): CleanupBrowserInventory {
+  const inventory = cleanupBrowserInventorySchema.parse(known);
+  const id = cleanupRequestSchema.shape.requestId.parse(requestId);
+  const held = inventory.records.find(
+    (row) => row.original.request.requestId === id,
+  );
+  if (!held) throw Error("No retained cleanup original matches this UUID");
+  const receipt = cleanupReceiptSchema.parse(rawReceipt);
+  cleanupBrowserRecordSchema.parse({ original: held.original, receipt });
+  const before = held.receipt;
+  if (
+    before !== null &&
+    before.state !== "unknown" &&
+    receipt.state === "unknown"
+  ) {
+    if (
+      before.audit.eventId !== receipt.audit.eventId ||
+      before.audit.ulid !== receipt.audit.ulid ||
+      before.audit.ts !== receipt.audit.ts ||
+      (receipt.attemptedAt !== null &&
+        receipt.attemptedAt !== before.attemptedAt)
+    )
+      throw Error("Unknown receipt contradicts verified terminal evidence");
+    return inventory;
+  }
+  const candidate = cleanupBrowserInventorySchema.parse({
+    ...inventory,
+    records: inventory.records.map((row) =>
+      row.original.request.requestId === id ? { ...row, receipt } : row,
+    ),
+    activeRequestId:
+      receipt.state !== "unknown" && inventory.activeRequestId === id
+        ? null
+        : inventory.activeRequestId,
+  });
+  return advanceCleanupBrowserInventory(inventory, candidate);
+}
+/** Both inventories require complete raw/hash provenance; missing history is never repaired. */
+export function reconcileCleanupBrowserInventory(
+  known: CleanupBrowserInventory,
+  fresh: unknown,
+): CleanupBrowserInventory {
+  const retained = cleanupBrowserInventorySchema.parse(known);
+  const baseline = cleanupBrowserInventorySchema.parse(fresh);
+  if (
+    retained.authorityKey !== baseline.authorityKey ||
+    retained.version !== baseline.version
+  )
+    throw Error("Cleanup recovery authority changed");
+  const originals = new Map(
+    retained.records.map((row) => [row.original.request.requestId, row]),
+  );
+  for (const held of retained.records) {
+    const disk = baseline.records.find(
+      (row) =>
+        row.original.request.requestId === held.original.request.requestId,
+    );
+    if (!disk || !sameCleanupOriginal(held.original, disk.original))
+      throw Error("Cleanup recovery lost or changed an original");
+  }
+  const records = baseline.records.map((row) => {
+    const terminal = originals.get(row.original.request.requestId)?.receipt;
+    if (
+      terminal &&
+      terminal.state !== "unknown" &&
+      (row.receipt === null || row.receipt.state === "unknown")
+    )
+      return { ...row, receipt: terminal };
+    return row;
+  });
+  const active = records.find(
+    (row) => row.original.request.requestId === baseline.activeRequestId,
+  );
+  const candidate = cleanupBrowserInventorySchema.parse({
+    ...baseline,
+    records,
+    activeRequestId:
+      active?.receipt && active.receipt.state !== "unknown"
+        ? null
+        : baseline.activeRequestId,
+  });
+  return advanceCleanupBrowserInventory(
+    retained,
+    advanceCleanupBrowserInventory(baseline, candidate),
+  );
+}

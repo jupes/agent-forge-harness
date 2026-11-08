@@ -16,7 +16,9 @@ import {
   cleanupBrowserRecordSchema,
   ProjectWorktreeCleanupOwner,
   readCleanupBrowserInventory,
+  reconcileCleanupBrowserInventory,
   sameCleanupOriginal,
+  settleCleanupBrowserReceipt,
 } from "./project-worktree-cleanup-client";
 
 const projectId = "project-10000000-0000-4000-8000-000000000001";
@@ -1319,4 +1321,182 @@ test.each([
   expect(f.calls.filter((call) => !["scope", "review"].includes(call))).toEqual(
     [],
   );
+});
+
+async function nextCleanupOriginalFixture() {
+  const nextProject = "project-10000000-0000-4000-8000-000000000099";
+  const nextRequest = cleanupRequestSchema.parse({
+    ...request,
+    requestId: "20000000-0000-4000-8000-000000000003",
+    expectedRecord: {
+      ...request.expectedRecord,
+      id: "next-shift-1",
+      branch: "feat/next",
+      beadId: "beta-task",
+      path: request.expectedRecord.path.replace(
+        request.expectedRecord.id,
+        "next-shift-1",
+      ),
+    },
+  });
+  const nextReview = cleanupReviewSchema.options[0].parse({
+    ...review,
+    projectId: nextProject,
+    worktreeId: nextRequest.expectedRecord.id,
+    expectedRecord: nextRequest.expectedRecord,
+    asOf: "2026-11-08T00:00:05.000Z",
+  });
+  return cleanupBrowserOriginalSchema.parse({
+    projectId: nextProject,
+    review: nextReview,
+    request: nextRequest,
+    requestHash: await storedHash(
+      canonicalCleanupRequest(nextProject, nextRequest),
+    ),
+  });
+}
+test("receipt settlement retains the full original while terminal truth absorbs older unknown", () => {
+  const reserved = inventoryReceipt(null);
+  const attempted = settleCleanupBrowserReceipt(
+    reserved,
+    request.requestId,
+    unknownReceipt,
+  );
+  const terminal = settleCleanupBrowserReceipt(
+    attempted,
+    request.requestId,
+    confirmed,
+  );
+  expect(terminal).toEqual(inventoryReceipt(confirmed));
+  expect(terminal.activeRequestId).toBeNull();
+  expect(
+    terminal.records.find(
+      (row) => row.original.request.requestId === request.requestId,
+    )?.original,
+  ).toEqual(original);
+  expect(
+    settleCleanupBrowserReceipt(terminal, request.requestId, {
+      ...unknownReceipt,
+      attemptedAt: null,
+    }),
+  ).toEqual(terminal);
+  expect(() =>
+    settleCleanupBrowserReceipt(attempted, request.requestId, {
+      ...unknownReceipt,
+      attemptedAt: null,
+    }),
+  ).toThrow();
+  const refused = inventoryReceipt({
+    ...confirmed,
+    state: "refused",
+    reason: "not eligible",
+    attemptedAt: null,
+  });
+  expect(
+    settleCleanupBrowserReceipt(refused, request.requestId, {
+      ...unknownReceipt,
+      attemptedAt: null,
+    }),
+  ).toEqual(refused);
+  expect(() =>
+    settleCleanupBrowserReceipt(refused, request.requestId, unknownReceipt),
+  ).toThrow();
+  expect(reserved).toEqual(inventoryReceipt(null));
+});
+test("late original A evidence cannot clear new B or bypass full receipt validation", async () => {
+  const next = await nextCleanupOriginalFixture();
+  const known = inventoryFrom(
+    [
+      { original, receipt: confirmed },
+      { original: next, receipt: null },
+    ],
+    next.request.requestId,
+  );
+  const before = structuredClone(known);
+  for (const receipt of [confirmed, { ...unknownReceipt, attemptedAt: null }])
+    expect(
+      settleCleanupBrowserReceipt(known, request.requestId, receipt),
+    ).toEqual(known);
+  for (const audit of [
+    { ...confirmed.audit, eventId: 2 },
+    { ...confirmed.audit, ulid: "01J00000000000000000000001" },
+    { ...confirmed.audit, ts: "2026-11-08T00:00:02.500Z" },
+  ])
+    expect(() =>
+      settleCleanupBrowserReceipt(known, request.requestId, {
+        ...unknownReceipt,
+        audit,
+      }),
+    ).toThrow();
+  for (const receipt of [
+    {
+      ...unknownReceipt,
+      expectedRecord: {
+        ...request.expectedRecord,
+        path: "/repo/native/root/trees/shift-review-1",
+      },
+    },
+    { ...unknownReceipt, attemptedAt: "2026-11-08T00:00:03.500Z" },
+    { ...confirmed, projectId: next.projectId },
+    { ...confirmed, endedAt: "2026-11-08T00:00:06.000Z" },
+  ])
+    expect(() =>
+      settleCleanupBrowserReceipt(known, request.requestId, receipt),
+    ).toThrow();
+  expect(known).toEqual(before);
+});
+test("reconciliation heals only retained terminal evidence over an existing valid same-original prefix", async () => {
+  const terminal = inventoryReceipt(confirmed);
+  for (const receipt of [
+    null,
+    unknownReceipt,
+    { ...unknownReceipt, attemptedAt: null },
+  ])
+    expect(
+      reconcileCleanupBrowserInventory(terminal, inventoryReceipt(receipt)),
+    ).toEqual(terminal);
+  const next = await nextCleanupOriginalFixture();
+  const fresh = inventoryFrom(
+    [
+      { original, receipt: confirmed },
+      { original: next, receipt: null },
+    ],
+    next.request.requestId,
+  );
+  expect(
+    reconcileCleanupBrowserInventory(inventoryReceipt(unknownReceipt), fresh),
+  ).toEqual(fresh);
+  const saved = structuredClone(fresh);
+  const changedOriginal = {
+    ...original,
+    review: { ...review, asOf: "2026-11-08T00:00:06.000Z" },
+  };
+  for (const invalid of [
+    null,
+    {},
+    inventoryFrom([], null),
+    inventoryFrom(
+      [{ original: changedOriginal, receipt: unknownReceipt }],
+      request.requestId,
+    ),
+    inventoryReceipt({
+      ...unknownReceipt,
+      audit: { ...confirmed.audit, eventId: 2 },
+    }),
+    inventoryReceipt({
+      ...unknownReceipt,
+      attemptedAt: "2026-11-08T00:00:03.500Z",
+    }),
+    inventoryReceipt({
+      ...confirmed,
+      state: "refused",
+      reason: "conflict",
+      attemptedAt: null,
+    }),
+  ])
+    expect(() => reconcileCleanupBrowserInventory(terminal, invalid)).toThrow();
+  expect(() =>
+    reconcileCleanupBrowserInventory(fresh, inventoryReceipt(unknownReceipt)),
+  ).toThrow();
+  expect(fresh).toEqual(saved);
 });
