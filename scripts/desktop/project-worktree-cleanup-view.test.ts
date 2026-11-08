@@ -699,12 +699,20 @@ function liveFixture() {
     reads: 0,
     posts: 0,
     allowDispatch: true,
+    raw: new Map([
+      ["marker", "saved marker"],
+      ["inventory", "saved inventory"],
+    ]),
+    onHealth: (): void => undefined,
     onRead: (): void => undefined,
   };
   const gate = createCleanupContextGate(() => undefined);
   gate.adopt(contextFacts);
   const client = transport(async (url, init) => {
-    if (url.endsWith("/health")) return envelope(behavior.health);
+    if (url.endsWith("/health")) {
+      behavior.onHealth();
+      return envelope(behavior.health);
+    }
     if (init?.method === "POST") behavior.posts++;
     else {
       behavior.reads++;
@@ -720,6 +728,16 @@ function liveFixture() {
       gate,
       client,
       () => behavior.allowDispatch,
+      () => {
+        const pairs = Object.freeze(
+          [...behavior.raw].map((pair) => Object.freeze(pair)),
+        );
+        if (pairs.length !== 2) throw Error("Expected both captured raw keys");
+        return () => {
+          if (!pairs.every(([key, value]) => behavior.raw.get(key) === value))
+            throw Error("Captured raw storage changed");
+        };
+      },
     ),
   };
 }
@@ -3008,3 +3026,97 @@ test("cleanup UI callbacks preserve an uncertain original across navigation and 
   expect(repositoryRefreshes).toEqual([]);
   model.dispose();
 });
+
+test("cleanup live dispatch checks captured raw equality after fresh health", async () => {
+  const item = liveFixture();
+  item.behavior.onHealth = () => {
+    item.behavior.raw.set("inventory", "changed during health");
+  };
+  await expect(
+    item.live.operatorPost("/cleanup", {}, limits),
+  ).rejects.toThrow();
+  expect(item.behavior.posts).toBe(0);
+});
+
+for (const lost of ["marker", "inventory"]) {
+  test(
+    "cleanup dispatch refuses " +
+      lost +
+      " loss during final fresh health without a storage event",
+    async () => {
+      const candidate = candidateFixture(),
+        saved = seedCleanupOriginal(new Map());
+      const browser = registryFixture();
+      const holder: { model?: ReturnType<typeof createCleanupCoordinator> } =
+        {};
+      let entered!: () => void, release!: () => void;
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let paused = false,
+        posts = 0;
+      const model = createCleanupCoordinator({
+        origin,
+        web: browser.web,
+        status: () => "live",
+        routeKey: () => candidate.facts.route,
+        transport: transport(async (url, init) => {
+          if (url.endsWith("/health")) {
+            if (
+              !paused &&
+              holder.model?.snapshot().authorities[0]?.view.phase ===
+                "dispatching"
+            ) {
+              paused = true;
+              entered();
+              await held;
+            }
+            return envelope(currentHealth);
+          }
+          if (init?.method === "POST") {
+            posts++;
+            return new Response("Uncertain fake dispatch", { status: 500 });
+          }
+          return envelope(saved.original.review);
+        }),
+        refreshCatalog: async () => undefined,
+        refreshRepositories: async () => undefined,
+      });
+      holder.model = model;
+      model.adoptContext(candidate.facts);
+      await model.flush();
+      await model.reviewCandidate(candidate.scope);
+      const pending = model.confirmReviewed();
+      await started;
+      const before = model.snapshot().authorities[0]?.view.inventory;
+      const original = before?.records[0]?.original;
+      const key = pair("C:/Work")[lost === "marker" ? 0 : 1];
+      const deleted = key !== undefined && browser.values.delete(key);
+      release();
+      await pending;
+      try {
+        const retained = model.snapshot().authorities[0]?.view.inventory;
+        expect(paused).toBe(true);
+        expect(deleted).toBe(true);
+        expect(original).toBeDefined();
+        expect(original?.projectId).toBe(saved.projectId);
+        expect(retained?.records[0]?.original).toEqual(original);
+        expect(retained?.records[0]?.original.request.requestId).toBe(
+          original?.request.requestId,
+        );
+        expect(retained?.records[0]?.original.requestHash).toBe(
+          original?.requestHash,
+        );
+        expect(retained?.activeRequestId).toBe(original?.request.requestId);
+        expect(model.snapshot().pending).toBe(true);
+        expect(browser.uuidCalls()).toBe(1);
+        expect(posts).toBe(0);
+      } finally {
+        model.dispose();
+      }
+    },
+  );
+}

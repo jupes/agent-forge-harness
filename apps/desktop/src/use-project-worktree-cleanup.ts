@@ -402,6 +402,7 @@ export function createCleanupLiveTransport(
   gate: ReturnType<typeof createCleanupContextGate>,
   transport: ReturnType<typeof createCleanupTransport>,
   canDispatch: () => boolean,
+  captureDispatch: () => () => void,
 ) {
   const healthRead = transport.health.bind(transport);
   const reviewRead = transport.readReview.bind(transport),
@@ -444,6 +445,7 @@ export function createCleanupLiveTransport(
       return data;
     },
     operatorPost: (async (url, body, limits) => {
+      const assertDispatch = captureDispatch();
       const expected = gate.snapshot().generation;
       const before = await fresh(true);
       if (
@@ -454,6 +456,7 @@ export function createCleanupLiveTransport(
         throw Error(
           "The cleanup dispatch context changed. The original is retained.",
         );
+      assertDispatch();
       return post(url, body, limits);
     }) satisfies OperatorClient["post"],
   };
@@ -584,6 +587,7 @@ export function createCleanupOwnerRegistry(deps: {
             ...deps.web,
             storage: () => surface ?? {},
           });
+          const observedRaw = new Map<string, string | null>();
           let created!: Entry;
           const writable = () =>
             active() &&
@@ -616,6 +620,29 @@ export function createCleanupOwnerRegistry(deps: {
               },
             },
             writable,
+            () => {
+              const pairs = Object.freeze(
+                [...observedRaw].map((pair) => Object.freeze(pair)),
+              );
+              const fail = (): never => {
+                discoveryWarning =
+                  "Cleanup recovery metadata changed before dispatch. Saved originals are retained; new cleanup is paused.";
+                throw Error(discoveryWarning);
+              };
+              if (pairs.length !== 2 || pairs.some(([, raw]) => raw === null))
+                fail();
+              return () => {
+                let same = false;
+                try {
+                  same = pairs.every(
+                    ([key, raw]) => capabilities.storage.getItem(key) === raw,
+                  );
+                } catch {
+                  /* Inaccessible raw storage cannot authorize dispatch. */
+                }
+                if (!same) fail();
+              };
+            },
           );
           const owner = new ProjectWorktreeCleanupOwner({
             ...capabilities,
@@ -628,6 +655,7 @@ export function createCleanupOwnerRegistry(deps: {
                   throw Error(
                     "Previously observed cleanup evidence is missing",
                   );
+                observedRaw.set(key, raw);
                 return raw;
               },
               setItem(key, value) {
