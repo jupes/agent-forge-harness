@@ -23,7 +23,7 @@ import {
 } from "../shifts/registry";
 import { scratchDirs } from "../test-scratch";
 import { workspaceKey } from "./scope";
-import { createProjectStore } from "./store";
+import { createProjectStore, projectCatalogPath } from "./store";
 import type { ProjectSources } from "./summary";
 import { readWorktreeCleanupPreflight } from "./worktree-cleanup-preflight";
 import {
@@ -118,9 +118,9 @@ test("cleanup receipts retain exact reviewed identity and coherent outcome evide
   });
 });
 
-async function fixture() {
+async function fixture(rootLeaf = "repo") {
   const base = realpathSync.native(scratch.make("cleanup-service-")),
-    root = join(base, "repo"),
+    root = join(base, rootLeaf),
     home = join(base, "home");
   mkdirSync(join(root, ".git"), { recursive: true });
   const projects = createProjectStore(home),
@@ -599,4 +599,204 @@ test.each([
     ok: true,
     value: [f.row],
   });
+});
+
+function ownerFor(f: Awaited<ReturnType<typeof fixture>>) {
+  return createProjectWorktreeCleanupService(
+    {
+      home: f.home,
+      root: f.root,
+      queueLockFile: join(f.home, "queue-lock.db"),
+      ledgerPath: join(f.home, "ledger.db"),
+      runBd: (args) => readonlyExport(f, args),
+    },
+    { git: f.git },
+  );
+}
+
+test.each([
+  "stale revision",
+  "archived",
+  "deleted",
+  "missing membership",
+] as const)("cleanup current admission rejects %s before source access", async (kind) => {
+  const f = await fixture();
+  let revision = 1;
+  if (kind === "archived" || kind === "deleted") {
+    await f.projects.preferences(f.project.id, 1, { archived: true });
+    revision = 2;
+  }
+  if (kind === "deleted") {
+    // Trusted fixture bypass models externally removed metadata, not legal deletion of an unknown owner.
+    await f.projects.deleteProject(
+      f.project.id,
+      {
+        requestId: "73000000-0000-4000-8000-000000000001",
+        expectedRevision: 2,
+        confirmName: f.project.name,
+      },
+      async () => {},
+    );
+    revision = 3;
+  }
+  if (kind === "missing membership") {
+    const catalog = f.projects.read(),
+      project = catalog.projects[0];
+    if (!project) throw Error("Expected current project");
+    project.workspaces = [
+      {
+        root: f.root,
+        repositories: [join(f.root, "foreign")],
+        epicIds: ["alpha-epic"],
+      },
+    ];
+    writeOwnerOnly(projectCatalogPath(f.home), JSON.stringify(catalog));
+    expect(f.projects.read().projects).toEqual(catalog.projects);
+  }
+  const saved = await savedCleanup(f, false, (request) => ({
+    ...request,
+    expectedCatalogRevision: kind === "stale revision" ? 0 : revision,
+  }));
+  await expect(
+    ownerFor(f).cleanup(f.project.id, saved.original.request, {
+      auditEventId: saved.original.audit.eventId,
+    }),
+  ).rejects.toMatchObject({
+    status: kind === "deleted" ? 404 : 409,
+  });
+  expect({
+    calls: f.calls,
+    rows: readWorktreeCleanupInventory(f.home),
+  }).toEqual({ calls: [], rows: [] });
+});
+
+test
+  .skipIf(process.platform === "win32")
+  .each(["workspace root", "repository"] as const)(
+  "cleanup native membership rejects a literal-backslash %s alias",
+  async (field) => {
+    const f = await fixture("repo/nested"),
+      literal = join(f.root, "..", "..", "repo\\nested");
+    mkdirSync(literal);
+    const catalog = f.projects.read(),
+      project = catalog.projects[0],
+      scope = project?.workspaces[0];
+    if (!project || !scope) throw Error("Expected current workspace");
+    if (field === "workspace root") scope.root = literal;
+    else scope.repositories = [literal];
+    writeOwnerOnly(projectCatalogPath(f.home), JSON.stringify(catalog));
+    expect(f.projects.read().projects[0]?.workspaces).toEqual(
+      project.workspaces,
+    );
+    const saved = await savedCleanup(f, false);
+    await expect(
+      ownerFor(f).cleanup(f.project.id, saved.original.request, {
+        auditEventId: saved.original.audit.eventId,
+      }),
+    ).rejects.toMatchObject({ status: 409 });
+    expect({
+      calls: f.calls,
+      rows: readWorktreeCleanupInventory(f.home),
+    }).toEqual({ calls: [], rows: [] });
+  },
+);
+
+test("cleanup recovery validates exact identity and survives archive and trusted metadata loss", async () => {
+  const f = await fixture(),
+    saved = await savedCleanup(f),
+    owner = ownerFor(f);
+  const read = () =>
+    owner.read(
+      f.project.id,
+      saved.original.request.requestId,
+      saved.original.requestHash,
+    );
+  for (const [project, uuid, hash, status] of [
+    ["bad", saved.original.request.requestId, saved.original.requestHash, 400],
+    [f.project.id, "bad", saved.original.requestHash, 400],
+    [f.project.id, saved.original.request.requestId, "bad", 400],
+    [
+      f.project.id,
+      "74000000-0000-4000-8000-000000000001",
+      saved.original.requestHash,
+      404,
+    ],
+    [
+      "project-74000000-0000-4000-8000-000000000001",
+      saved.original.request.requestId,
+      saved.original.requestHash,
+      409,
+    ],
+    [f.project.id, saved.original.request.requestId, "b".repeat(64), 409],
+  ] as const) {
+    try {
+      owner.read(project, uuid, hash);
+      throw Error("Expected identity refusal");
+    } catch (error) {
+      expect(error).toMatchObject({ status });
+    }
+  }
+  const original = read();
+  await f.projects.preferences(f.project.id, 1, { archived: true });
+  expect(read()).toEqual(original);
+  // Deliberate trusted-store bypass is only an external metadata-loss fixture.
+  await f.projects.deleteProject(
+    f.project.id,
+    {
+      requestId: "75000000-0000-4000-8000-000000000001",
+      expectedRevision: 2,
+      confirmName: f.project.name,
+    },
+    async () => {},
+  );
+  expect(read()).toEqual(original);
+  expect(f.calls).toEqual([]);
+});
+
+test.each([
+  false,
+  true,
+])("cleanup unresolved ownership blocks replacement UUID across projects=%s", async (other) => {
+  const f = await fixture(),
+    retained = await savedCleanup(f);
+  let target = f.project,
+    revision = 1;
+  if (other) {
+    const catalog = await f.projects.create(
+      {
+        slug: "beta",
+        name: "Beta",
+        description: "",
+        icon: "B",
+        workspaces: [
+          { root: f.root, repositories: [f.root], epicIds: ["alpha-epic"] },
+        ],
+      },
+      1,
+    );
+    const project = catalog.projects.find(
+      (project) => project.id !== f.project.id,
+    );
+    if (!project) throw Error("Expected second project");
+    target = project;
+    revision = catalog.revision;
+  }
+  const replacement = await savedCleanup(
+    { ...f, project: target },
+    false,
+    (request) => ({
+      ...request,
+      requestId: "76000000-0000-4000-8000-000000000001",
+      expectedCatalogRevision: revision,
+      expectedHead: "b".repeat(40),
+      expectedRecord: { ...request.expectedRecord, branch: "feat/replacement" },
+    }),
+  );
+  await expect(
+    ownerFor(f).cleanup(target.id, replacement.original.request, {
+      auditEventId: replacement.original.audit.eventId,
+    }),
+  ).rejects.toMatchObject({ status: 409 });
+  expect(readWorktreeCleanupInventory(f.home)).toEqual([retained]);
+  expect(f.calls).toEqual([]);
 });
