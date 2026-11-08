@@ -196,12 +196,18 @@ async function reviewFixture(nested = false) {
     errors: string[] = [];
   let row: WorktreeRecord | undefined,
     root = "",
-    active = false;
+    active = false,
+    dirty = false,
+    dirtyReadCount = 0;
   const git: GitRun = (args, cwd) => {
     calls.push([...args]);
     if (!row || !root) {
       errors.push("Git before fixture initialization");
       return { status: 1, stdout: "", stderr: "Fixture not initialized" };
+    }
+    if (dirty && args.includes("status")) {
+      dirtyReadCount++;
+      return { status: 0, stdout: " M tracked\0", stderr: "" };
     }
     if (args.includes("config")) return { status: 1, stdout: "", stderr: "" };
     if (args.includes("status") || args.includes("ls-files"))
@@ -347,6 +353,10 @@ async function reviewFixture(nested = false) {
     git,
     row: target,
     runBd,
+    makeDirty: () => {
+      dirty = true;
+    },
+    dirtyReads: () => dirtyReadCount,
     pauseExport: (hook: () => Promise<void>) => {
       beforeExport = hook;
     },
@@ -597,3 +607,49 @@ test.each([
   expect(f.h.events(["operator.action"])).toEqual([]);
   expect(existsSync(join(f.h.home, "project-worktree-cleanup"))).toBe(false);
 }, 15000);
+
+test.each([
+  "dirty Git",
+  "malformed export",
+] as const)("review HTTP withholds proof after actual %s observation", async (mode) => {
+  const f = await reviewFixture();
+  expect(await httpReview(f.h, f.row.id)).toMatchObject({ state: "eligible" });
+  let reached = false,
+    delegated = "";
+  if (mode === "dirty Git") f.makeDirty();
+  else {
+    const answer = f.h.bd.answer;
+    if (!answer) throw Error("Expected actual export fixture");
+    f.h.bd.answer = async (args) => {
+      const result = await answer(args);
+      reached = true;
+      delegated = result?.stdout ?? "";
+      return { status: 0, stdout: "not JSON", stderr: "" };
+    };
+  }
+  const proof = await httpReview(f.h, f.row.id);
+  expect(proof).toMatchObject({
+    state: mode === "dirty Git" ? "refused" : "unknown",
+    removalAuthorized: false,
+  });
+  expect("expectedRecord" in proof).toBe(false);
+  if (mode === "dirty Git") expect(f.dirtyReads()).toBeGreaterThan(0);
+  else {
+    expect(reached).toBe(true);
+    expect(delegated).toContain("alpha-task");
+  }
+  expect(f.errors).toEqual([]);
+  expect(
+    f.calls.some((args) =>
+      ["remove", "add", "prune", "branch", "stash"].some((command) =>
+        args.includes(command),
+      ),
+    ),
+  ).toBe(false);
+  expect(readStrictWorktreeRegistry(f.root)).toEqual({
+    ok: true,
+    value: [f.row],
+  });
+  expect(f.h.events(["operator.action"])).toEqual([]);
+  expect(existsSync(join(f.h.home, "project-worktree-cleanup"))).toBe(false);
+});
