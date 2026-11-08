@@ -1790,3 +1790,84 @@ test("cleanup refresh seeds restored history once, then handles first-seen confi
   expect(calls).toHaveLength(2);
   expect(refresher.snapshot().warning).toBeNull();
 });
+
+test("cleanup refresh drains new arrivals during held catalog work and never refreshes B repositories as A's result", async () => {
+  const first = refreshRecord("1"),
+    second = refreshRecord("2");
+  const calls: string[] = [];
+  let current: string | null = first.original.projectId,
+    entered!: () => void,
+    release!: () => void;
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  let catalogs = 0;
+  const refresher = createCleanupPresentationRefresh({
+    currentProject: () => current,
+    isActive: () => true,
+    onChange: () => undefined,
+    refreshCatalog: async () => {
+      calls.push("catalog");
+      if (++catalogs === 1) {
+        entered();
+        await held;
+      }
+    },
+    refreshRepositories: async (id) => {
+      calls.push(id);
+    },
+  });
+  refresher.observe(refreshSnapshot([]));
+  refresher.observe(refreshSnapshot([{ ...first, receipt: null }]));
+  refresher.observe(refreshSnapshot([first]));
+  const pending = refresher.flush();
+  await started;
+  refresher.observe(refreshSnapshot([first, second]));
+  current = "project-10000000-0000-4000-8000-000000000099";
+  release();
+  await pending;
+  expect(calls).toEqual(["catalog", "catalog"]);
+  expect(first.receipt?.state).toBe("confirmed");
+  expect(second.receipt?.state).toBe("confirmed");
+});
+
+test("cleanup refresh failure is sticky, does not retry or mutate receipts, and queued work respects disposal", async () => {
+  const record = refreshRecord("1"),
+    before = JSON.stringify(record);
+  let attempts = 0,
+    notices = 0,
+    repositories = 0,
+    active = true;
+  const refresher = createCleanupPresentationRefresh({
+    currentProject: () => record.original.projectId,
+    isActive: () => active,
+    onChange: () => {
+      notices++;
+    },
+    refreshCatalog: async () => {
+      attempts++;
+      throw Error("refresh failed");
+    },
+    refreshRepositories: async () => {
+      repositories++;
+    },
+  });
+  refresher.observe(refreshSnapshot([]));
+  refresher.observe(refreshSnapshot([record]));
+  await refresher.flush();
+  expect(refresher.snapshot().warning).toContain("receipt is retained");
+  await refresher.flush();
+  expect(attempts).toBe(1);
+  expect(notices).toBe(1);
+  expect(repositories).toBe(0);
+  expect(JSON.stringify(record)).toBe(before);
+  refresher.observe(refreshSnapshot([record, refreshRecord("2")]));
+  const queued = refresher.flush();
+  active = false;
+  await queued;
+  expect(attempts).toBe(1);
+  expect(notices).toBe(1);
+});
