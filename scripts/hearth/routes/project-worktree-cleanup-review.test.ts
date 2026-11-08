@@ -1,8 +1,29 @@
-import { expect, test } from "bun:test";
-import { existsSync } from "node:fs";
+import { afterEach, expect, test } from "bun:test";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { FIXTURE_PROJECT_ID } from "../../projects/testing";
-import { startTestHearth } from "../testing";
+import type { WorktreeRecord } from "../../../types/beads";
+import { openLedger } from "../../ledger/db";
+import { projectCatalogPath } from "../../projects/store";
+import {
+  FIXTURE_PROJECT_ID,
+  projectCatalogFixture,
+} from "../../projects/testing";
+import { cleanupRequestSchema } from "../../projects/worktree-cleanup-protocol";
+import { cleanupReviewSchema } from "../../projects/worktree-cleanup-review-protocol";
+import { runOptions } from "../../scheduler/shift-cli-runtime";
+import { SHIFTS_DIR, writeShiftRecord } from "../../scheduler/shift-store";
+import {
+  type GitRun,
+  readStrictWorktreeRegistry,
+} from "../../scheduler/worktrees";
+import {
+  createProjectShiftRegistry,
+  projectShiftFlags,
+} from "../../shifts/registry";
+import { startTestHearth, type TestHearth } from "../testing";
+import { writeOwnerOnly } from "../token";
+import { validateOperatorEnvelope } from "../validate";
+import { FIXTURE_SHIFT_START, seedProjectShift } from "./project-shift-fixture";
 import {
   createProjectWorktreeCleanupReviewReader,
   createProjectWorktreeCleanupReviewRoute,
@@ -93,3 +114,214 @@ test("cleanup review route validates copied selectors and contains unavailable a
   });
   expect(callbacks).toEqual([]);
 });
+
+test("protected cleanup review returns exact eligible proof then freshly refuses active source", async () => {
+  const f = await reviewFixture();
+  const get = async () => {
+    const response = await fetch(
+      f.h.api +
+        "/projects/" +
+        FIXTURE_PROJECT_ID +
+        "/settings/worktree-cleanup-review/" +
+        f.row.id,
+      {
+        headers: f.h.headers(f.h.hearth.token),
+        signal: AbortSignal.timeout(5000),
+      },
+    );
+    expect(response.status).toBe(200);
+    const body: unknown = await response.json();
+    const checked = validateOperatorEnvelope(body);
+    if (!checked.ok || !checked.value.ok)
+      throw Error("Expected a strict advisory response");
+    return cleanupReviewSchema.parse(checked.value.data);
+  };
+  const started = Date.now(),
+    proof = await get();
+  const expected = cleanupRequestSchema.omit({ requestId: true }).parse({
+    repository: f.h.root,
+    expectedCatalogRevision: 1,
+    expectedRecord: f.row,
+    expectedHead: "a".repeat(40),
+  });
+  expect(proof).toMatchObject({
+    ...expected,
+    projectId: FIXTURE_PROJECT_ID,
+    worktreeId: f.row.id,
+    state: "eligible",
+    reasons: [],
+    removalAuthorized: false,
+  });
+  expect(Date.parse(proof.asOf)).toBeGreaterThanOrEqual(started);
+  expect(Date.parse(proof.asOf)).toBeLessThanOrEqual(Date.now());
+  f.activate();
+  const fresh = await get();
+  expect(fresh).toMatchObject({ state: "refused", removalAuthorized: false });
+  expect("expectedRecord" in fresh).toBe(false);
+  expect(f.errors).toEqual([]);
+  expect(f.exports).toEqual([
+    ["export", "--readonly", "--no-memories"],
+    ["export", "--readonly", "--no-memories"],
+  ]);
+  expect(
+    f.calls.some((args) =>
+      ["remove", "add", "prune", "branch", "stash"].some((command) =>
+        args.includes(command),
+      ),
+    ),
+  ).toBe(false);
+  expect(readStrictWorktreeRegistry(f.h.root)).toEqual({
+    ok: true,
+    value: [f.row],
+  });
+  expect(f.h.events(["operator.action"])).toEqual([]);
+  expect(existsSync(join(f.h.home, "project-worktree-cleanup"))).toBe(false);
+});
+
+const opened: TestHearth[] = [];
+afterEach(async () => {
+  for (const h of opened.splice(0)) await h.close();
+});
+async function reviewFixture() {
+  const calls: string[][] = [],
+    exports: string[][] = [],
+    errors: string[] = [];
+  let row: WorktreeRecord | undefined,
+    root = "",
+    active = false;
+  const git: GitRun = (args, cwd) => {
+    calls.push([...args]);
+    if (!row || !root) {
+      errors.push("Git before fixture initialization");
+      return { status: 1, stdout: "", stderr: "Fixture not initialized" };
+    }
+    if (args.includes("config")) return { status: 1, stdout: "", stderr: "" };
+    if (args.includes("status") || args.includes("ls-files"))
+      return { status: 0, stdout: "", stderr: "" };
+    if (args.includes("list"))
+      return {
+        status: 0,
+        stderr: "",
+        stdout: `worktree ${root}\0HEAD ${"a".repeat(40)}\0branch refs/heads/master\0\0worktree ${row.path}\0HEAD ${"a".repeat(40)}\0branch refs/heads/${row.branch}\0\0`,
+      };
+    if (args.includes("--show-toplevel"))
+      return { status: 0, stdout: cwd, stderr: "" };
+    if (args.includes("--git-common-dir"))
+      return { status: 0, stdout: join(root, ".git"), stderr: "" };
+    if (args.includes("--verify"))
+      return { status: 0, stdout: "a".repeat(40), stderr: "" };
+    errors.push("Unexpected Git fixture operation");
+    return { status: 1, stdout: "", stderr: "Unexpected fixture operation" };
+  };
+  const h = await startTestHearth({ api: { git } });
+  opened.push(h);
+  root = h.root;
+  writeOwnerOnly(
+    projectCatalogPath(h.home),
+    JSON.stringify(projectCatalogFixture(root)),
+  );
+  await seedProjectShift(h);
+  const intent = createProjectShiftRegistry({ home: h.home, root }).read(
+    FIXTURE_PROJECT_ID,
+    FIXTURE_SHIFT_START.requestId,
+  );
+  const bounds = runOptions(projectShiftFlags(intent.request));
+  if (!bounds.ok) throw Error("Invalid immutable Shift options");
+  const { concurrency, forMs, maxBeads, maxUsd, repairs, base } = bounds.value;
+  if (
+    concurrency === undefined ||
+    forMs === undefined ||
+    maxBeads === undefined ||
+    maxUsd === undefined ||
+    repairs === undefined ||
+    base === undefined
+  )
+    throw Error("Expected complete immutable Shift bounds");
+  const beadId = "alpha-task";
+  const target: WorktreeRecord = {
+    id: `${intent.shiftId}-1`,
+    path: join(root, "trees", `${intent.shiftId}-1`),
+    branch: "feat/review",
+    createdAt: intent.createdAt,
+    beadId,
+  };
+  row = target;
+  mkdirSync(target.path, { recursive: true });
+  writeFileSync(
+    join(root, "trees", ".state.json"),
+    JSON.stringify({ worktrees: [target] }),
+  );
+  writeShiftRecord(join(h.home, SHIFTS_DIR), {
+    shiftId: intent.shiftId,
+    workspace: intent.workspace,
+    pid: 1,
+    state: "stopped",
+    startedAt: intent.createdAt,
+    deadline: new Date(Date.parse(intent.createdAt) + forMs).toISOString(),
+    endedAt: new Date(Date.parse(intent.createdAt) + 1000).toISOString(),
+    options: { concurrency, forMs, maxBeads, maxUsd, repairs, base },
+    spentUsd: 0,
+    unpriced: 0,
+    beads: [
+      {
+        beadId,
+        worktree: target.path,
+        branch: target.branch,
+        outcome: "review",
+        attempts: 1,
+        runId: "review-fixture",
+      },
+    ],
+  });
+  openLedger(h.ledger);
+  h.bd.answer = (args) => {
+    exports.push([...args]);
+    if (args[0] !== "export") {
+      errors.push("Unexpected tracker fixture operation");
+      return { status: 1, stdout: "", stderr: "Unexpected fixture operation" };
+    }
+    return {
+      status: 0,
+      stderr: "",
+      stdout: (
+        [
+          ["alpha-epic", "epic", "open"],
+          [beadId, "task", active ? "in_progress" : "closed"],
+        ] as const
+      )
+        .map(([id, type, status]) =>
+          JSON.stringify({
+            _type: "issue",
+            id,
+            issue_type: type,
+            title: id,
+            status,
+            labels: ["project:alpha"],
+            created_at: intent.createdAt,
+            updated_at: intent.createdAt,
+            dependencies:
+              id === beadId
+                ? [
+                    {
+                      type: "parent-child",
+                      issue_id: id,
+                      depends_on_id: "alpha-epic",
+                    },
+                  ]
+                : [],
+          }),
+        )
+        .join("\n"),
+    };
+  };
+  return {
+    h,
+    row: target,
+    calls,
+    exports,
+    errors,
+    activate: () => {
+      active = true;
+    },
+  };
+}
