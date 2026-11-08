@@ -13,6 +13,7 @@ import { basename, join } from "node:path";
 import type { WorktreeEntry } from "../../../types/beads";
 import type { ProjectCatalog } from "../../../types/projects";
 import { createConversationStore } from "../../conversations/store";
+import { appendEvent } from "../../ledger/append";
 import { resolveCheckout } from "../../ledger/workspace";
 import { projectScopePreviewSettingsQuerySchema } from "../../projects/project-scope-preview-protocol";
 import { workspaceKey } from "../../projects/scope";
@@ -3879,4 +3880,164 @@ test("Keeper default save rejects unconfigured and disabled Smiths without chang
   });
   expect(stale.status).toBe(409);
   expect(store.read().revision).toBe(2);
+});
+
+test("Keeper visibility uses the existing audited endpoint independently of unavailable Smith configuration", async () => {
+  const holder: { h?: TestHearth } = {};
+  const auditRevisions: number[] = [];
+  let refuseAudit = false;
+  const h = await startTestHearth({
+    files: { "agent-forge.toml": "[smiths.claude-master]\nenabled = false\n" },
+    api: {
+      appendEvent(event) {
+        const fixture = holder.h;
+        if (!fixture) return { ok: false, error: "Fixture not ready" };
+        if (
+          event.kind === "operator.action" &&
+          event.payload.action === "project.settings.keeper"
+        ) {
+          auditRevisions.push(createProjectStore(fixture.home).read().revision);
+          if (refuseAudit) return { ok: false, error: "Fixture audit refusal" };
+        }
+        return appendEvent(event, { path: fixture.ledger, waitMs: 0 });
+      },
+    },
+  });
+  holder.h = h;
+  opened.push(h);
+  const store = createProjectStore(h.home),
+    catalog = projectCatalogFixture(h.workspace);
+  writeOwnerOnly(projectCatalogPath(h.home), JSON.stringify(catalog));
+  const id = catalog.projects[0]!.id,
+    scope = { hash: "c".repeat(64), count: 0 };
+  const requestId = "2272f7f9-62d2-49b5-8bee-ef5fa87be762";
+  await store.reserveCreate({
+    requestId,
+    expectedCatalogRevision: 1,
+    original: {
+      slug: "reserved",
+      name: "Reserved",
+      description: "",
+      icon: "R",
+      workspaces: catalog.projects[0]!.workspaces,
+    },
+    preflightScope: scope,
+    validateScope: async () => scope,
+  });
+  const save = (body: unknown) =>
+    fetch(h.api + "/projects/" + id + "/settings/keeper", {
+      method: "POST",
+      headers: h.headers(h.hearth.token),
+      body: JSON.stringify(body),
+    });
+  for (const keeperSmith of [
+    "not-configured",
+    "claude-master",
+    "codex-journeyman",
+  ]) {
+    const before = await store.updateKeeper(
+      id,
+      store.read().revision,
+      { keeperSmith, keeperAutonomy: "suggest-only" },
+      () => {},
+    );
+    if (keeperSmith === "codex-journeyman")
+      writeFileSync(join(h.root, "agent-forge.toml"), "[shift]\nfor = false\n");
+    const legacy = await save({
+      expectedRevision: before.revision,
+      keeper: { keeperSmith },
+    });
+    expect(legacy.status).toBe(keeperSmith === "codex-journeyman" ? 503 : 400);
+    expect(store.read()).toEqual(before);
+    const response = await save({
+      expectedRevision: before.revision,
+      kind: "visibility",
+      keeperVisibility: "conversation-only",
+    });
+    expect(response.status).toBe(200);
+    const changed = store.read(),
+      answer: unknown = await response.json();
+    expect(answer).toEqual({
+      ok: true,
+      data: {
+        version: changed.version,
+        revision: changed.revision,
+        projects: changed.projects,
+      },
+      error: null,
+    });
+    expect(changed.projects[0]).toMatchObject({
+      keeperSmith,
+      keeperAutonomy: "suggest-only",
+      keeperVisibility: "conversation-only",
+    });
+    expect(changed.createOperations).toHaveLength(1);
+    expect(changed.createOperations).toEqual(before.createOperations);
+    expect(JSON.stringify(answer)).not.toContain(requestId);
+    expect(auditRevisions.at(-1)).toBe(before.revision);
+    expect(h.events(["operator.action"]).at(-1)).toMatchObject({
+      kind: "operator.action",
+      payload: { action: "project.settings.keeper", target: id },
+    });
+  }
+  const prior = store.read(),
+    auditCount = h.events(["operator.action"]).length;
+  for (const body of [
+    {
+      expectedRevision: prior.revision,
+      kind: "visibility",
+      keeperVisibility: "automatic",
+    },
+    {
+      expectedRevision: prior.revision,
+      kind: "visibility",
+      keeperVisibility: "project-metadata",
+      keeper: {},
+    },
+    {
+      expectedRevision: prior.revision,
+      keeper: { keeperVisibility: "project-metadata" },
+    },
+  ])
+    expect((await save(body)).status).toBe(400);
+  expect(h.events(["operator.action"])).toHaveLength(auditCount);
+  expect(store.read()).toEqual(prior);
+  expect(
+    (
+      await save({
+        expectedRevision: prior.revision - 1,
+        kind: "visibility",
+        keeperVisibility: "project-metadata",
+      })
+    ).status,
+  ).toBe(409);
+  expect(store.read()).toEqual(prior);
+  refuseAudit = true;
+  const unrecorded = await save({
+    expectedRevision: prior.revision,
+    kind: "visibility",
+    keeperVisibility: "project-metadata",
+  });
+  refuseAudit = false;
+  expect(unrecorded.status).toBe(503);
+  expect(store.read()).toEqual(prior);
+  expect(
+    (await save({ expectedRevision: prior.revision, keeper: {} })).status,
+  ).toBe(200);
+  expect(store.read().projects[0]).not.toHaveProperty("keeperSmith");
+  expect(store.read().projects[0]?.keeperVisibility).toBe("conversation-only");
+  expect(store.read().projects[0]?.keeperAutonomy).toBe("suggest-only");
+  const archived = await store.preferences(id, store.read().revision, {
+    archived: true,
+  });
+  expect(
+    (
+      await save({
+        expectedRevision: archived.revision,
+        kind: "visibility",
+        keeperVisibility: "project-metadata",
+      })
+    ).status,
+  ).toBe(409);
+  expect(store.read()).toEqual(archived);
 });
