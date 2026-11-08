@@ -4,7 +4,10 @@ import { API_PREFIX } from "../../../scripts/hearth/paths";
 import { HEARTH_API_VERSION } from "../../../scripts/hearth/protocol";
 import { hasDuplicateObjectKeys } from "../../../scripts/json-object-keys";
 import { cleanupRequestSchema } from "../../../scripts/projects/worktree-cleanup-protocol";
-import type { ProjectRepositoriesSnapshot } from "./project-repositories-client";
+import {
+  type ProjectRepositoriesSnapshot,
+  projectRepositoriesKey,
+} from "./project-repositories-client";
 import {
   type CleanupBrowserScope,
   type CleanupBrowserView,
@@ -678,4 +681,65 @@ export function createCleanupOwnerRegistry(deps: {
       }
     },
   };
+}
+
+/** Reported facts select a candidate; only the owner's full fresh review can authorize confirmation. */
+export function cleanupCandidate(
+  context: CleanupContextFacts | null,
+  observedHealth: unknown,
+  scope: CleanupBrowserScope,
+) {
+  const checkedHealth = health.safeParse(observedHealth);
+  if (!checkedHealth.success || !context) return null;
+  const root = checkedHealth.data.root,
+    data = context.repositoryData;
+  if (
+    checkedHealth.data.apiVersion !== HEARTH_API_VERSION ||
+    !context.catalogReady ||
+    context.projectId === null ||
+    context.projectId !== scope.projectId ||
+    scope.repository !== root ||
+    context.repositoryPhase !== "ready" ||
+    !data ||
+    data.projectId !== context.projectId ||
+    data.catalogRevision !== context.catalogRevision ||
+    context.repositoryRequestedRevision !== context.catalogRevision ||
+    context.repositoryResponseRevision !== context.catalogRevision ||
+    context.repositoryKey === null ||
+    context.repositoryKey !==
+      projectRepositoriesKey(context.projectId, context.catalogRevision)
+  )
+    return null;
+  const workspaces = data.repositories.filter(
+    (workspace) => workspace.workspaceRoot === root,
+  );
+  if (workspaces.length !== 1) return null;
+  const members = workspaces[0]!.repositories.filter(
+    (member) => member.access === "served" && member.path === root,
+  );
+  if (members.length !== 1) return null;
+  const member = members[0]!;
+  if (member.access !== "served") return null;
+  const rows = member.worktrees.filter((row) => row.id === scope.worktreeId);
+  if (rows.length !== 1) return null;
+  const row = rows[0]!;
+  if (row.kind !== "trees" || row.missing) return null;
+  const record = cleanupRequestSchema.shape.expectedRecord
+    .omit({ beadId: true })
+    .safeParse({
+      id: row.id,
+      path: row.path,
+      branch: row.branch,
+      createdAt: row.createdAt,
+    });
+  if (!record.success) return null;
+  return Object.freeze({
+    scope: Object.freeze({
+      projectId: scope.projectId,
+      repository: root,
+      worktreeId: record.data.id,
+    }),
+    catalogRevision: data.catalogRevision,
+    row: Object.freeze(record.data),
+  });
 }

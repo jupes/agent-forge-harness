@@ -4,6 +4,7 @@ import type { CleanupBrowserOriginal } from "../../apps/desktop/src/project-work
 import {
   type CleanupContextFacts,
   cleanupAuthorityKey,
+  cleanupCandidate,
   createCleanupCapabilities,
   createCleanupContextGate,
   createCleanupLiveTransport,
@@ -15,6 +16,12 @@ import {
 } from "../../apps/desktop/src/use-project-worktree-cleanup";
 import { createOperatorClient } from "../../docs/js/operator";
 import { API_PREFIX, OPERATOR_HEADER, TOKEN_ROUTE } from "../hearth/paths";
+import type {
+  ProjectRepositoryMember,
+  ProjectRepositoryRow,
+  ProjectWorktreeFact,
+} from "../projects/project-repositories-protocol";
+
 import {
   type CleanupReceipt,
   canonicalCleanupRequest,
@@ -1136,4 +1143,69 @@ test("registry disposal during an already started health read prevents the later
   ).toEqual([]);
   expect(calls.filter((url) => url.endsWith("/health"))).toHaveLength(1);
   expect({ writes: item.writes(), notices: item.notices() }).toEqual(before);
+});
+
+function candidateFixture() {
+  const saved = seedCleanupOriginal(new Map());
+  const scope = {
+    projectId: saved.projectId,
+    repository: "C:/Work",
+    worktreeId: "saved",
+  };
+  const record = saved.original.request.expectedRecord;
+  const row: ProjectWorktreeFact = {
+    id: record.id,
+    path: record.path,
+    branch: record.branch,
+    createdAt: record.createdAt,
+    kind: "trees",
+    missing: false,
+  };
+  const member: ProjectRepositoryMember = {
+    access: "served",
+    path: scope.repository,
+    name: "Harness",
+    worktrees: [row],
+  };
+  const workspace: ProjectRepositoryRow = {
+    workspaceRoot: scope.repository,
+    repositories: [member],
+  };
+  const data = {
+    projectId: scope.projectId,
+    catalogRevision: 1,
+    repositories: [workspace],
+  };
+  const facts: CleanupContextFacts = {
+    ...contextFacts,
+    projectId: scope.projectId,
+    repositoryKey: JSON.stringify([scope.projectId, 1]),
+    repositoryData: data,
+  };
+  return {
+    scope,
+    row,
+    member,
+    workspace,
+    data,
+    facts,
+    observedHealth: { ...currentHealth },
+  };
+}
+
+test("cleanup candidate pins exact cloned native facts and allows read-only inspection without write/archive capability", () => {
+  const item = candidateFixture();
+  item.facts.writesAllowed = false;
+  item.facts.archived = true;
+  item.facts.connectionPhase = "stopped";
+  item.row.path = "C:\\Work\\trees\\Ä🙂";
+  const found = cleanupCandidate(item.facts, item.observedHealth, item.scope);
+  expect(found?.row.path).toBe("C:\\Work\\trees\\Ä🙂");
+  expect(found?.scope).toEqual(item.scope);
+  expect(found?.catalogRevision).toBe(1);
+  item.row.path = "changed";
+  item.scope.worktreeId = "changed";
+  expect(found?.row.path).toBe("C:\\Work\\trees\\Ä🙂");
+  expect(found?.scope.worktreeId).toBe("saved");
+  expect(Object.isFrozen(found?.row)).toBe(true);
 });
