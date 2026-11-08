@@ -193,3 +193,114 @@ test("raw cleanup inventory verifies every full original including inactive term
   ).rejects.toThrow();
   expect(checked).toHaveLength(2);
 });
+
+test("raw cleanup metadata refuses partial corrupt duplicate foreign and incoherent ownership", async () => {
+  const active = { original, receipt: null },
+    terminal = { original, receipt: confirmed };
+  for (const [savedMarker, savedInventory] of [
+    [null, rawInventory([], null)],
+    [marker, null],
+    ["{", rawInventory([], null)],
+    [
+      marker.replace('"version":1', '"version":1,"\\u0076ersion":1'),
+      rawInventory([], null),
+    ],
+    [
+      marker,
+      rawInventory([], null).replace('"version":1', '"version":1,"version":1'),
+    ],
+    [marker.replace(authorityKey, "foreign"), rawInventory([], null)],
+    [marker, rawInventory([], null).replace(authorityKey, "foreign")],
+    [marker.replace('"version":1', '"version":2'), rawInventory([], null)],
+    [marker, rawInventory([active, active], request.requestId)],
+    [marker, rawInventory([active], null)],
+    [marker, rawInventory([terminal], request.requestId)],
+    [marker, rawInventory([], request.requestId)],
+    [
+      marker,
+      rawInventory(
+        Array.from({ length: 101 }, () => terminal),
+        null,
+      ),
+    ],
+  ] as const)
+    await expect(
+      readCleanupBrowserInventory(
+        savedMarker,
+        savedInventory,
+        authorityKey,
+        storedHash,
+      ),
+    ).rejects.toThrow();
+  expect(
+    await readCleanupBrowserInventory(
+      marker,
+      rawInventory([], null),
+      authorityKey,
+      storedHash,
+    ),
+  ).toEqual({ version: 1, authorityKey, records: [], activeRequestId: null });
+});
+
+test("cleanup raw byte caps apply before JSON parsing or hash work", async () => {
+  const calls: string[] = [];
+  const hash = async (text: string) => {
+    calls.push(text);
+    return storedHash(text);
+  };
+  await expect(
+    readCleanupBrowserInventory(
+      " ".repeat(16385),
+      rawInventory([], null),
+      authorityKey,
+      hash,
+    ),
+  ).rejects.toThrow("byte limit");
+  const multibyte = JSON.stringify({ authorityKey: "é".repeat(600000) });
+  await expect(
+    readCleanupBrowserInventory(marker, multibyte, authorityKey, hash),
+  ).rejects.toThrow("byte limit");
+  expect(calls).toEqual([]);
+});
+
+test("raw inventory independently rejects terminal duplicate UUID and distinct unresolved owners", async () => {
+  const nextRequest = {
+    ...request,
+    requestId: "20000000-0000-4000-8000-000000000003",
+  };
+  const next = cleanupBrowserOriginalSchema.parse({
+    ...original,
+    request: nextRequest,
+    requestHash: await storedHash(
+      canonicalCleanupRequest(projectId, nextRequest),
+    ),
+  });
+  const terminal = cleanupBrowserRecordSchema.parse({
+    original,
+    receipt: confirmed,
+  });
+  const first = cleanupBrowserRecordSchema.parse({ original, receipt: null });
+  const second = cleanupBrowserRecordSchema.parse({
+    original: next,
+    receipt: null,
+  });
+  const checks: string[] = [];
+  const hash = async (text: string) => {
+    checks.push(text);
+    return storedHash(text);
+  };
+  for (const [records, active] of [
+    [[terminal, terminal], null],
+    [[first, second], nextRequest.requestId],
+  ] as const) {
+    await expect(
+      readCleanupBrowserInventory(
+        marker,
+        rawInventory([...records], active),
+        authorityKey,
+        hash,
+      ),
+    ).rejects.toThrow();
+  }
+  expect(checks).toEqual([]);
+});
