@@ -89,6 +89,7 @@ import {
   projectSummaryRoute,
 } from "./project-summaries";
 import { projectWorkbenchRoute } from "./project-workbench";
+import { createProjectWorktreeCleanupRoutes } from "./project-worktree-cleanup";
 import { projectRoutes } from "./projects";
 import { createProviderLoginRoutes } from "./provider-logins";
 import { createProviderReadinessRoutes } from "./providers";
@@ -418,6 +419,16 @@ export interface OperatorTable {
 
 export function operatorRoutes(deps: OperatorDeps): OperatorTable {
   const knowledge = createProjectKnowledgeRoutes(deps.projectKnowledge);
+  const worktreeCleanup = createProjectWorktreeCleanupRoutes(
+    {
+      home: deps.projectHome,
+      root: deps.root,
+      queueLockFile: deps.queueLockFile,
+      ledgerPath: deps.ledgerPath,
+      runBd: deps.runBd,
+    },
+    deps.git === undefined ? {} : { git: deps.git },
+  );
   const { sessions, runs, run, events, reservations, scoreboard } =
     ledgerReads(deps);
   const { queue, smiths, config, worktrees, eligibility, readEligible } =
@@ -593,6 +604,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
     projects,
     ...inboxDispositions.reads,
     ...knowledge.reads,
+    worktreeCleanup.receipt,
     projectRepositoriesRead,
     projectBudgetRead,
     deletionStatus,
@@ -685,6 +697,7 @@ export function operatorRoutes(deps: OperatorDeps): OperatorTable {
       ownedSessions.events,
       ...actions(deps),
       ...knowledge.actions,
+      worktreeCleanup.cleanup,
       ...inboxDispositions.actions,
       ...smithCreates.actions,
       ...smithEdits.actions,

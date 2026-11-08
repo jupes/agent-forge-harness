@@ -122,6 +122,14 @@ import {
   projectCatalogFixture,
   projectFixture,
 } from "../projects/testing";
+import {
+  canonicalCleanupRequest,
+  cleanupRequestSchema,
+} from "../projects/worktree-cleanup-protocol";
+import {
+  readWorktreeCleanupInventory,
+  withWorktreeCleanupLease,
+} from "../projects/worktree-cleanup-store";
 import type { ProviderInspector } from "../providers/inspect";
 import { providerLoginFile } from "../providers/login";
 import type {
@@ -2201,7 +2209,118 @@ async function seedCheckpointReviewRead(h: TestHearth): Promise<void> {
 }
 
 /** One entry per action row of the table; a row with none fails the suite. */
+
+const API_CLEANUP_ACTION_ID = "c2000000-0000-4000-8000-000000000001";
+const API_CLEANUP_READ_ID = "c1000000-0000-4000-8000-000000000001";
+const API_CLEANUP_PATH = `/projects/${FIXTURE_PROJECT_ID}/settings/worktree-cleanup`;
+function apiCleanupRequest(root: string, revision: number, requestId: string) {
+  return cleanupRequestSchema.parse({
+    requestId,
+    repository: root,
+    expectedCatalogRevision: revision,
+    expectedRecord: {
+      id: "shift-api-cleanup-1",
+      path: join(root, "trees", "shift-api-cleanup-1"),
+      branch: "feat/api-cleanup",
+      beadId: "alpha-task",
+      createdAt: "2026-11-07T00:00:00.000Z",
+    },
+    expectedHead: "a".repeat(40),
+  });
+}
+function apiCleanupHash(request: ReturnType<typeof apiCleanupRequest>) {
+  return createHash("sha256")
+    .update(canonicalCleanupRequest(FIXTURE_PROJECT_ID, request))
+    .digest("hex");
+}
+async function seedCleanupRead(h: TestHearth) {
+  const request = apiCleanupRequest(
+    h.root,
+    createProjectStore(h.home).read().revision,
+    API_CLEANUP_READ_ID,
+  );
+  const requestHash = apiCleanupHash(request),
+    stamp = "2026-11-07T00:00:00.000Z";
+  // GET-only metadata: deliberately no event-ledger append, query or open.
+  await withWorktreeCleanupLease(h.home, async (scope) => {
+    scope.write({
+      original: {
+        version: 1,
+        projectId: FIXTURE_PROJECT_ID,
+        request,
+        requestHash,
+        createdAt: stamp,
+        audit: { eventId: 1, ulid: "0".repeat(26), ts: stamp },
+      },
+      phase: "reserved",
+      attemptedAt: null,
+      endedAt: null,
+      reason: null,
+      outcome: null,
+    });
+  });
+  READS["GET /projects/:id/settings/worktree-cleanup/:requestId"] =
+    `${API_CLEANUP_PATH}/${API_CLEANUP_READ_ID}?requestHash=${requestHash}`;
+}
+function cleanupActionFixture(): ActionFixture {
+  const fixture: ActionFixture = {
+    valid: {
+      path: API_CLEANUP_PATH,
+      body: apiCleanupRequest("/fixture", 1, API_CLEANUP_ACTION_ID),
+      status: 200,
+      target: FIXTURE_PROJECT_ID,
+      beadId: "alpha-task",
+    },
+    invalid: { path: API_CLEANUP_PATH, body: { force: true } },
+    prepare: async (h) => {
+      const request = apiCleanupRequest(
+        h.root,
+        createProjectStore(h.home).read().revision,
+        API_CLEANUP_ACTION_ID,
+      );
+      fixture.valid.body = request;
+      fixture.valid.audit = {
+        family: "project-worktree-cleanup",
+        requestId: request.requestId,
+        inputHash: apiCleanupHash(request),
+      };
+    },
+    happened: async (h, answer) => {
+      const row = readWorktreeCleanupInventory(h.home).find(
+        (row) => row.original.request.requestId === API_CLEANUP_ACTION_ID,
+      );
+      expect(row).toMatchObject({ phase: "refused", attemptedAt: null });
+      if (!row) throw Error("Expected a durable cleanup refusal");
+      const expected = cleanupRequestSchema.parse(fixture.valid.body);
+      expect(row.original.request).toEqual(expected);
+      expect(answer).toMatchObject({
+        state: "refused",
+        attemptedAt: null,
+        requestHash: row.original.requestHash,
+      });
+      const event = h
+        .events(["operator.action"])
+        .find(
+          (event) =>
+            event.kind === "operator.action" &&
+            event.payload.action === "project.worktree.cleanup" &&
+            event.payload.requestId === API_CLEANUP_ACTION_ID,
+        );
+      expect(event).toBeDefined();
+      if (!event) throw Error("Expected the actual cleanup audit event");
+      expect(row.original.audit).toEqual({
+        eventId: event.id,
+        ulid: event.ulid,
+        ts: event.ts,
+      });
+      expect(h.shifts.launches).toEqual([]);
+    },
+  };
+  return fixture;
+}
+
 const ACTIONS: Record<string, ActionFixture> = {
+  "POST /projects/:id/settings/worktree-cleanup": cleanupActionFixture(),
   "POST /projects/:id/runs/:slug/checkpoints/:beadId/reviews": {
     valid: {
       path: checkpointReviewPath(FIXTURE_PROJECT_ID),
@@ -5035,6 +5154,7 @@ const ACTIONS: Record<string, ActionFixture> = {
 
 /** A concrete path per read row; a row with none fails the suite. */
 const READS: Record<string, string> = {
+  "GET /projects/:id/settings/worktree-cleanup/:requestId": `${API_CLEANUP_PATH}/${API_CLEANUP_READ_ID}?requestHash=${"a".repeat(64)}`,
   "GET /projects/:id/settings/knowledge": `/projects/${FIXTURE_PROJECT_ID}/settings/knowledge`,
   "GET /projects/:id/settings/knowledge/:requestId": `/projects/${FIXTURE_PROJECT_ID}/settings/knowledge/${API_KNOWLEDGE_REQUEST.requestId}`,
   "GET /projects/:id/settings/deletion": `/projects/${FIXTURE_PROJECT_ID}/settings/deletion`,
@@ -6132,6 +6252,7 @@ describe("a read row or the stream while another connection holds the write lock
     // Inbox exact-original reads use their private store, not the event ledger.
     // Seed a real receipt so this read remains successful while the ledger is locked.
     await seedInboxRead(h);
+    await seedCleanupRead(h);
     seedProjectRepositoriesReadFixture(h);
     const rows = h.hearth.routes.filter(
       (route) => route.kind === "read" || route.kind === "stream",
@@ -7249,6 +7370,7 @@ describe("every read row (iterating the table)", () => {
       "api-project-read",
     );
     await seedInboxRead(h);
+    await seedCleanupRead(h);
     projectCouncilPaths(await seedProjectCouncilReadOriginal(h));
     await seedCheckpointReviewRead(h);
     const projectRepositoryFixture = seedProjectRepositoriesReadFixture(h);
@@ -7323,6 +7445,7 @@ describe("every read row (iterating the table)", () => {
       "api-project-read",
     );
     await seedInboxRead(h);
+    await seedCleanupRead(h);
     projectCouncilPaths(await seedProjectCouncilReadOriginal(h));
     seedProjectRepositoriesReadFixture(h);
     const rows = h.hearth.routes.filter((route) => route.kind === "read");
