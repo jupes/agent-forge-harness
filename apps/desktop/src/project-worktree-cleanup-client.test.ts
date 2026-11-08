@@ -2247,3 +2247,103 @@ test("a valid unknown receipt persists first audit and attempt while retaining t
     },
   ]);
 });
+
+test.each([
+  "both-missing",
+  "marker-missing",
+  "inventory-missing",
+  "corrupt",
+  "foreign",
+])("saved UUID recovery never repairs an initialized %s namespace", async (mode) => {
+  const f = await retainedReceiptFixture(unknownReceipt);
+  expect(f.owner.snapshot()).toMatchObject({
+    storageError: false,
+    inventory: inventoryReceipt(unknownReceipt),
+  });
+  if (mode === "both-missing" || mode === "marker-missing")
+    f.saved.delete(f.markerKey);
+  if (mode === "both-missing" || mode === "inventory-missing")
+    f.saved.delete(f.inventoryKey);
+  if (mode === "corrupt") f.saved.set(f.inventoryKey, "{");
+  if (mode === "foreign") {
+    const foreignKey = "another-cleanup-authority";
+    const foreignMarker = JSON.stringify({
+      version: 1,
+      authorityKey: foreignKey,
+    });
+    const foreignInventory = {
+      ...inventoryReceipt(unknownReceipt),
+      authorityKey: foreignKey,
+    };
+    const foreignRaw = JSON.stringify(foreignInventory);
+    expect(
+      await readCleanupBrowserInventory(
+        foreignMarker,
+        foreignRaw,
+        foreignKey,
+        storedHash,
+      ),
+    ).toEqual(foreignInventory);
+    f.saved.set(f.markerKey, foreignMarker);
+    f.saved.set(f.inventoryKey, foreignRaw);
+  }
+  const badBytes = [...f.saved.entries()];
+  const observations: CleanupBrowserView[] = [];
+  const unsubscribe = f.owner.subscribe((view) => {
+    observations.push(view);
+  });
+  let first: CleanupBrowserView | undefined;
+  let afterFirst: Array<[string, string]> = [];
+  try {
+    f.respond(confirmed);
+    await f.owner.checkOriginal(request.requestId);
+    first = f.owner.snapshot();
+    afterFirst = [...f.saved.entries()];
+    f.respond({ ...unknownReceipt, attemptedAt: null });
+    await f.owner.checkOriginal(request.requestId);
+  } finally {
+    unsubscribe();
+  }
+  const terminal = inventoryReceipt(confirmed);
+  expect(observations[0]).toMatchObject({
+    storageError: false,
+    inventory: terminal,
+  });
+  expect(observations.findIndex((view) => view.storageError)).toBeGreaterThan(
+    0,
+  );
+  expect(
+    observations.every(
+      (view) =>
+        view.inventory?.activeRequestId === null &&
+        view.inventory.records[0]?.receipt?.state === "confirmed",
+    ),
+  ).toBe(true);
+  expect(first).toMatchObject({
+    phase: "storage-unavailable",
+    storageError: true,
+    inventory: terminal,
+  });
+  expect(f.owner.snapshot()).toMatchObject({
+    phase: "storage-unavailable",
+    storageError: true,
+    inventory: terminal,
+  });
+  expect(afterFirst).toEqual(badBytes);
+  expect([...f.saved.entries()]).toEqual(badBytes);
+  expect(f.trace.filter((event) => event.startsWith("write:"))).toEqual([]);
+  expect(f.calls).toEqual([]);
+  expect(f.faults).toEqual([]);
+  expect(f.reads).toEqual(
+    Array.from({ length: 2 }, () => ({
+      url:
+        "/projects/" +
+        projectId +
+        "/settings/worktree-cleanup/" +
+        request.requestId +
+        "?requestHash=" +
+        original.requestHash,
+      maxBodyBytes: 65536,
+    })),
+  );
+});
