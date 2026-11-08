@@ -4,6 +4,7 @@ import { API_PREFIX } from "../../../scripts/hearth/paths";
 import { HEARTH_API_VERSION } from "../../../scripts/hearth/protocol";
 import { hasDuplicateObjectKeys } from "../../../scripts/json-object-keys";
 import { cleanupRequestSchema } from "../../../scripts/projects/worktree-cleanup-protocol";
+import { cleanupReviewSchema } from "../../../scripts/projects/worktree-cleanup-review-protocol";
 import {
   type ProjectRepositoriesSnapshot,
   projectRepositoriesKey,
@@ -742,4 +743,147 @@ export function cleanupCandidate(
     catalogRevision: data.catalogRevision,
     row: Object.freeze(record.data),
   });
+}
+
+export function createCleanupSelectionBinding(deps: {
+  origin: string;
+  gate: ReturnType<typeof createCleanupContextGate>;
+  transport: ReturnType<typeof createCleanupTransport>;
+  registry(): ReturnType<typeof createCleanupOwnerRegistry>;
+  isActive(): boolean;
+}) {
+  type Pin = {
+    candidate: NonNullable<ReturnType<typeof cleanupCandidate>>;
+    generation: number;
+    eligible: boolean;
+  };
+  let selected: Pin | null = null,
+    intent = 0,
+    notice: string | null = null;
+  const healthRead = deps.transport.health.bind(deps.transport),
+    reviewRead = deps.transport.readReview.bind(deps.transport);
+  const clear = (message: string | null = null) => {
+    selected = null;
+    intent++;
+    notice = message;
+    deps.registry().invalidateInspections();
+  };
+  const currentScope = (authorityKey: string): CleanupBrowserScope | null => {
+    const pin = selected,
+      view = deps.gate.snapshot();
+    if (!deps.isActive() || !pin || view.generation !== pin.generation)
+      return null;
+    const current = cleanupCandidate(
+      view.context,
+      view.health,
+      pin.candidate.scope,
+    );
+    if (
+      !current ||
+      current.catalogRevision !== pin.candidate.catalogRevision ||
+      JSON.stringify(current.row) !== JSON.stringify(pin.candidate.row)
+    )
+      return null;
+    try {
+      return authorityKey ===
+        cleanupAuthorityKey(deps.origin, current.scope.repository)
+        ? pin.candidate.scope
+        : null;
+    } catch {
+      return null;
+    }
+  };
+  return {
+    clear,
+    currentScope,
+    snapshot: () => ({ candidate: selected?.candidate ?? null, notice }),
+    canDispatch(authorityKey: string) {
+      if (
+        !selected?.eligible ||
+        !deps.gate.writesAvailable() ||
+        currentScope(authorityKey) === null
+      )
+        return false;
+      const view = deps
+        .registry()
+        .snapshot()
+        .authorities.find((entry) => entry.key === authorityKey)
+        ?.owner.snapshot();
+      return (
+        view?.inspection.phase === "eligible-review" ||
+        view?.phase === "reserving" ||
+        view?.phase === "dispatching"
+      );
+    },
+    async readReview(url: string, limits: { maxBodyBytes: number }) {
+      const pin = selected;
+      if (!pin)
+        throw Error("Select a current worktree before reviewing cleanup.");
+      const key = cleanupAuthorityKey(
+        deps.origin,
+        pin.candidate.scope.repository,
+      );
+      if (currentScope(key) === null)
+        throw Error("The cleanup candidate changed.");
+      const checked = cleanupReviewSchema.parse(await reviewRead(url, limits));
+      if (selected !== pin) throw Error("The cleanup selection changed.");
+      if (currentScope(key) === null) {
+        clear(
+          "The reported worktree changed. Refresh its facts and review again.",
+        );
+        throw Error("The cleanup facts changed.");
+      }
+      const scope = pin.candidate.scope,
+        row = pin.candidate.row;
+      if (
+        checked.projectId !== scope.projectId ||
+        checked.worktreeId !== scope.worktreeId ||
+        (checked.state === "eligible" &&
+          (checked.repository !== scope.repository ||
+            checked.expectedCatalogRevision !== pin.candidate.catalogRevision ||
+            checked.expectedRecord.id !== row.id ||
+            checked.expectedRecord.path !== row.path ||
+            checked.expectedRecord.branch !== row.branch ||
+            checked.expectedRecord.createdAt !== row.createdAt))
+      ) {
+        clear(
+          "The fresh review differs from the displayed repository facts. Refresh the project catalog and review again.",
+        );
+        throw Error("The cleanup review does not match current facts.");
+      }
+      pin.eligible = checked.state === "eligible";
+      return checked;
+    },
+    async reviewCandidate(scope: CleanupBrowserScope) {
+      if (!deps.isActive()) return;
+      clear();
+      const mine = intent;
+      const view = await refreshCleanupHealth(deps.gate, healthRead);
+      if (!deps.isActive() || mine !== intent) return;
+      const candidate = cleanupCandidate(
+        view?.context ?? null,
+        view?.health,
+        scope,
+      );
+      if (!candidate || !view) {
+        notice =
+          "Select current, complete managed worktree facts before reviewing cleanup.";
+        return;
+      }
+      const key = cleanupAuthorityKey(deps.origin, candidate.scope.repository);
+      selected = { candidate, generation: view.generation, eligible: false };
+      await deps.registry().restore();
+      if (mine !== intent || currentScope(key) === null) return;
+      const owner = deps
+        .registry()
+        .snapshot()
+        .authorities.find((entry) => entry.key === key)?.owner;
+      if (!owner) {
+        notice =
+          "Browser cleanup recovery could not be activated. Retained evidence remains unchanged.";
+        return;
+      }
+      await owner.inspect(candidate.scope);
+    },
+  };
 }

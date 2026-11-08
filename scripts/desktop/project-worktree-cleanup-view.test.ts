@@ -9,6 +9,7 @@ import {
   createCleanupContextGate,
   createCleanupLiveTransport,
   createCleanupOwnerRegistry,
+  createCleanupSelectionBinding,
   createCleanupTransport,
   discoverCleanupAuthorities,
   parseCleanupAuthority,
@@ -773,7 +774,9 @@ function registryFixture(
   const values = new Map<string, string>();
   let writes = 0,
     notices = 0,
-    lockStarts = 0;
+    lockStarts = 0,
+    uuidCalls = 0,
+    providerReads = 0;
   const surface = {
     get length() {
       return values.size;
@@ -790,9 +793,12 @@ function registryFixture(
     },
   };
   let registry: ReturnType<typeof createCleanupOwnerRegistry> | undefined;
-  const gate = createCleanupContextGate(() =>
-    registry?.invalidateInspections(),
-  );
+  let selection: ReturnType<typeof createCleanupSelectionBinding> | undefined;
+  const lifecycle = { active: true };
+  const gate = createCleanupContextGate(() => {
+    if (selection) selection.clear();
+    else registry?.invalidateInspections();
+  });
   gate.adopt(contextFacts);
   gate.publishHealth(1, currentHealth);
   const locks = {
@@ -806,13 +812,37 @@ function registryFixture(
       return (typeof options === "function" ? options : callback!)(null);
     },
   };
+  const client = transport(answer);
+  const binding = createCleanupSelectionBinding({
+    origin,
+    gate,
+    transport: client,
+    isActive: () => lifecycle.active,
+    registry: () => {
+      providerReads++;
+      if (!registry) throw Error("Registry was used before construction");
+      return registry;
+    },
+  });
+  selection = binding;
+  const webCrypto = {
+    subtle: crypto.subtle,
+    randomUUID: () => {
+      uuidCalls++;
+      return crypto.randomUUID();
+    },
+  };
   registry = createCleanupOwnerRegistry({
     origin,
     gate,
-    transport: transport(answer),
-    web: { storage: () => surface, locks: () => locks, crypto: () => crypto },
-    currentScope: () => null,
-    canDispatch: () => gate.writesAvailable(),
+    transport: { ...client, readReview: binding.readReview },
+    web: {
+      storage: () => surface,
+      locks: () => locks,
+      crypto: () => webCrypto,
+    },
+    currentScope: binding.currentScope,
+    canDispatch: binding.canDispatch,
     onChange: () => {
       notices++;
     },
@@ -824,6 +854,10 @@ function registryFixture(
     writes: () => writes,
     notices: () => notices,
     lockStarts: () => lockStarts,
+    selection: binding,
+    lifecycle,
+    uuidCalls: () => uuidCalls,
+    providerReads: () => providerReads,
   };
 }
 
@@ -1289,4 +1323,109 @@ test("cleanup candidate rejects stale, foreign, incomplete, ambiguous and unmana
       cleanupCandidate(item.facts, item.observedHealth, item.scope),
     ).toBeNull();
   }
+});
+
+test("cleanup selection binds the real owner read-only and clears old target proof before async selection", async () => {
+  const candidate = candidateFixture(),
+    saved = seedCleanupOriginal(new Map());
+  const calls: Array<{ url: string; method: string }> = [];
+  const item = registryFixture(undefined, async (url, init) => {
+    calls.push({ url, method: init?.method ?? "GET" });
+    return envelope(
+      url.endsWith("/health") ? currentHealth : saved.original.review,
+    );
+  });
+  expect(item.providerReads()).toBe(0);
+  expect(calls).toEqual([]);
+  item.gate.adopt({ ...candidate.facts, writesAllowed: false, archived: true });
+  await item.selection.reviewCandidate(candidate.scope);
+  const owner = item.registry.snapshot().authorities[0]!.owner;
+  expect(owner.snapshot().inspection.phase).toBe("eligible-review");
+  expect(owner.snapshot().inspection.review).toEqual(saved.original.review);
+  expect(item.selection.currentScope(saved.authorityKey)).toEqual(
+    candidate.scope,
+  );
+  expect(item.selection.canDispatch(saved.authorityKey)).toBe(false);
+  const pending = item.selection.reviewCandidate({
+    ...candidate.scope,
+    worktreeId: "other",
+  });
+  expect(owner.snapshot().inspection.phase).toBe("idle");
+  await pending;
+  expect(owner.snapshot().inspection.phase).not.toBe("eligible-review");
+  expect(item.uuidCalls()).toBe(0);
+  expect(calls.some((call) => call.method === "POST")).toBe(false);
+});
+
+test("cleanup selection rejects fresh eligible catalog/path/branch/creation mismatches before any UUID or POST", async () => {
+  const changes: Array<(review: CleanupBrowserOriginal["review"]) => void> = [
+    (review) => {
+      review.expectedCatalogRevision = 2;
+    },
+    (review) => {
+      review.expectedRecord.path = "C:/Work/trees/changed";
+    },
+    (review) => {
+      review.expectedRecord.branch = "feat/changed";
+    },
+    (review) => {
+      review.expectedRecord.createdAt = "2026-11-06T00:00:01.000Z";
+    },
+  ];
+  for (const change of changes) {
+    const candidate = candidateFixture(),
+      saved = seedCleanupOriginal(new Map());
+    const review = structuredClone(saved.original.review);
+    change(review);
+    const calls: Array<{ url: string; method: string }> = [];
+    const item = registryFixture(undefined, async (url, init) => {
+      calls.push({ url, method: init?.method ?? "GET" });
+      return envelope(url.endsWith("/health") ? currentHealth : review);
+    });
+    item.gate.adopt(candidate.facts);
+    await item.selection.reviewCandidate(candidate.scope);
+    const owner = item.registry.snapshot().authorities[0]!.owner;
+    expect(
+      calls.some((call) => call.url.includes("/worktree-cleanup-review/")),
+    ).toBe(true);
+    expect(owner.snapshot().inspection.phase).not.toBe("eligible-review");
+    await owner.confirm();
+    expect(item.selection.currentScope(saved.authorityKey)).toBeNull();
+    expect(item.uuidCalls()).toBe(0);
+    expect(calls.some((call) => call.method === "POST")).toBe(false);
+  }
+});
+
+test("cleanup selection ignores an eligible review that completes after same-triple source replacement", async () => {
+  const candidate = candidateFixture(),
+    saved = seedCleanupOriginal(new Map());
+  let entered!: () => void, release!: () => void;
+  const started = new Promise<void>((resolve) => {
+    entered = resolve;
+  });
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const calls: string[] = [];
+  const item = registryFixture(undefined, async (url, init) => {
+    calls.push(init?.method ?? "GET");
+    if (url.endsWith("/health")) return envelope(currentHealth);
+    entered();
+    await held;
+    return envelope(saved.original.review);
+  });
+  item.gate.adopt(candidate.facts);
+  const pending = item.selection.reviewCandidate(candidate.scope);
+  await started;
+  item.gate.adopt({
+    ...candidate.facts,
+    repositoryData: { ...candidate.data },
+  });
+  release();
+  await pending;
+  const owner = item.registry.snapshot().authorities[0]!.owner;
+  expect(owner.snapshot().inspection.phase).not.toBe("eligible-review");
+  expect(item.selection.currentScope(saved.authorityKey)).toBeNull();
+  expect(item.uuidCalls()).toBe(0);
+  expect(calls.includes("POST")).toBe(false);
 });
