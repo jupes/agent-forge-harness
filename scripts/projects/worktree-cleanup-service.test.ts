@@ -33,7 +33,10 @@ import {
   cleanupRequestSchema,
 } from "./worktree-cleanup-protocol";
 import { createProjectWorktreeCleanupService } from "./worktree-cleanup-service";
-import { withWorktreeCleanupLease } from "./worktree-cleanup-store";
+import {
+  readWorktreeCleanupInventory,
+  withWorktreeCleanupLease,
+} from "./worktree-cleanup-store";
 
 const scratch = scratchDirs();
 afterEach(() => {
@@ -525,4 +528,75 @@ test.each([
     exports,
     initialized: existsSync(join(f.home, "project-worktree-cleanup")),
   }).toEqual({ git: [], exports: 0, initialized: false });
+});
+
+test.each([
+  ["missing event", "missing", ""],
+  ["later event cannot replace the requested ID", "later", ""],
+  ["zero locator", "locator", "0"],
+  ["fractional locator", "locator", "1.5"],
+  ["overflow ULID", "ulid", "8" + "0".repeat(25)],
+  ["invalid ULID", "ulid", "invalid"],
+  ["invalid timestamp", "ts", "unknown"],
+  ["wrong kind", "kind", "friction.recorded"],
+  ["wrong workspace", "workspace", "/foreign"],
+  ["wrong bead", "bead_id", "foreign-task"],
+  ["related run", "run_id", "foreign-run"],
+  ["related session", "session_id", "foreign-session"],
+  ["related executor", "executor", "foreign-provider"],
+  ["wrong action", "$.action", "project.archive"],
+  ["wrong family", "$.family", "project-shift"],
+  ["wrong UUID", "$.requestId", "72000000-0000-4000-8000-000000000001"],
+  ["wrong digest", "$.inputHash", "b".repeat(64)],
+  ["wrong project", "$.target", "project-72000000-0000-4000-8000-000000000001"],
+  ["invalid surface", "$.surface", "untrusted"],
+  ["unrelated change kind", "$.changeKind", "archive"],
+  ["unrelated selector", "$.selector", "foreign"],
+] as const)("cleanup rejects stored audit %s without publishing an original", async (_name, field, value) => {
+  const f = await fixture(),
+    saved = await savedCleanup(f, false);
+  const id = saved.original.audit.eventId,
+    db = openLedger(join(f.home, "ledger.db"));
+  if (field === "later") await savedCleanup(f, false);
+  if (field === "missing" || field === "later")
+    db.query("DELETE FROM events WHERE id = ?").run(id);
+  else if (field === "executor")
+    db.query("UPDATE events SET provider = ?, model = ? WHERE id = ?").run(
+      value,
+      "foreign-model",
+      id,
+    );
+  else if (field.startsWith("$."))
+    db.query(
+      "UPDATE events SET payload = json_set(payload, ?, ?) WHERE id = ?",
+    ).run(field, value, id);
+  else if (field !== "locator")
+    db.query(`UPDATE events SET ${field} = ? WHERE id = ?`).run(value, id);
+  const service = createProjectWorktreeCleanupService(
+    {
+      home: f.home,
+      root: f.root,
+      queueLockFile: join(f.home, "queue-lock.db"),
+      ledgerPath: join(f.home, "ledger.db"),
+      runBd: (args) => readonlyExport(f, args),
+    },
+    { git: f.git },
+  );
+  const error = await service
+    .cleanup(f.project.id, saved.original.request, {
+      auditEventId: field === "locator" ? Number(value) : id,
+    })
+    .then(
+      () => null,
+      (error: unknown) => error,
+    );
+  expect(error).not.toBeNull();
+  expect(readWorktreeCleanupInventory(f.home)).toEqual([]);
+  expect(
+    f.calls.filter((args) => args[0] === "worktree" && args[1] === "remove"),
+  ).toEqual([]);
+  expect(readStrictWorktreeRegistry(f.root)).toEqual({
+    ok: true,
+    value: [f.row],
+  });
 });
