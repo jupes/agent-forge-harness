@@ -9,6 +9,7 @@ import { cleanupReviewSchema } from "../../../scripts/projects/worktree-cleanup-
 import {
   advanceCleanupBrowserInventory,
   type CleanupBrowserInspection,
+  type CleanupBrowserRecord,
   type CleanupBrowserScope,
   type CleanupBrowserView,
   cleanupBrowserForProject,
@@ -2758,4 +2759,77 @@ test.each([
     expect([...f.saved.entries()]).toEqual(saved);
   }
   expect(f.owner.snapshot().storageError).toBe(false);
+});
+
+async function terminalCleanupRows(count: number, template = original) {
+  const rows: CleanupBrowserRecord[] = [];
+  for (let index = 0; index < count; index++) {
+    const nextRequest = cleanupRequestSchema.parse({
+      ...template.request,
+      requestId:
+        "30000000-0000-4000-8000-" + (index + 1).toString(16).padStart(12, "0"),
+    });
+    const nextOriginal = cleanupBrowserOriginalSchema.parse({
+      ...template,
+      request: nextRequest,
+      requestHash: await storedHash(
+        canonicalCleanupRequest(template.projectId, nextRequest),
+      ),
+    });
+    rows.push(
+      cleanupBrowserRecordSchema.parse({
+        original: nextOriginal,
+        receipt: {
+          ...confirmed,
+          ...nextRequest,
+          projectId: template.projectId,
+          requestHash: nextOriginal.requestHash,
+          state: "refused",
+          reason: "x",
+          attemptedAt: null,
+          audit: {
+            eventId: index + 1,
+            ulid: (index + 1).toString().padStart(26, "0"),
+            ts: confirmed.audit.ts,
+          },
+        },
+      }),
+    );
+  }
+  return rows;
+}
+test("a fully valid hundred-row terminal history refuses allocation after verifying every stored hash", async () => {
+  const initial = inventoryFrom(await terminalCleanupRows(100), null);
+  const raw = JSON.stringify(initial);
+  expect(initial.records).toHaveLength(100);
+  expect(initial.activeRequestId).toBeNull();
+  expect(
+    await readCleanupBrowserInventory(marker, raw, authorityKey, storedHash),
+  ).toEqual(initial);
+  const f = await confirmationFixture(initial);
+  const saved = [...f.saved.entries()];
+  const hashOffset = f.trace.hashes.length;
+  await f.owner.inspect(f.control.scope);
+  expect(f.owner.snapshot().inspection.phase).toBe("eligible-review");
+  await f.owner.confirm();
+  const checked = f.trace.hashes.slice(hashOffset);
+  const canonical = initial.records.map((row) =>
+    canonicalCleanupRequest(row.original.projectId, row.original.request),
+  );
+  expect(checked.length).toBeGreaterThanOrEqual(100);
+  expect([...new Set(checked.map((entry) => entry.text))].sort()).toEqual(
+    [...canonical].sort(),
+  );
+  expect(
+    checked.every((entry) => entry.minted === 0 && entry.writes === 0),
+  ).toBe(true);
+  expect(f.trace.minted).toBe(0);
+  expect(f.trace.posts).toEqual([]);
+  expect(f.trace.writes).toEqual([]);
+  expect(f.owner.snapshot()).toMatchObject({
+    storageError: false,
+    inventory: initial,
+    inspection: { phase: "review-changed", review: null },
+  });
+  expect([...f.saved.entries()]).toEqual(saved);
 });
