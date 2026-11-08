@@ -2614,6 +2614,10 @@ async function confirmationFixture(
     beforeReview?: () => Promise<void>;
     lockRequested?: () => void;
     afterHash?: (text: string) => Promise<void>;
+    storageAccess?: (
+      stage: "read" | "before-write" | "after-write",
+      key: string,
+    ) => void;
   } = {
     scope: {
       projectId,
@@ -2676,10 +2680,16 @@ async function confirmationFixture(
       return digest;
     },
     storage: {
-      getItem: f.deps.storage.getItem,
+      getItem(key) {
+        const actual = f.deps.storage.getItem(key);
+        control.storageAccess?.("read", key);
+        return actual;
+      },
       setItem(key, text) {
         trace.writes.push(key);
+        control.storageAccess?.("before-write", key);
         f.deps.storage.setItem(key, text);
+        control.storageAccess?.("after-write", key);
       },
     },
     operatorPost: async (url, body, limits) => {
@@ -3414,4 +3424,96 @@ test.each([
         }
       : { phase: "review-changed", review: null },
   );
+});
+
+async function reservationFaultFixture(mode: string) {
+  const f = await confirmationFixture(inventoryFrom([], null));
+  await f.owner.inspect(f.control.scope);
+  expect(f.owner.snapshot().inspection.phase).toBe("eligible-review");
+  const fault = Error("Reservation " + mode);
+  const evidence: {
+    attempts: number;
+    saved: number;
+    digests: number;
+    faults: Error[];
+    pending: CleanupBrowserView[];
+  } = { attempts: 0, saved: 0, digests: 0, faults: [], pending: [] };
+  let getterReady = false;
+  const fail = () => {
+    evidence.faults.push(fault);
+    throw fault;
+  };
+  f.control.storageAccess = (stage) => {
+    if (f.trace.minted !== 1 || f.owner.snapshot().phase !== "reserving")
+      return;
+    if (stage === "before-write") {
+      evidence.attempts++;
+      evidence.pending.push(f.owner.snapshot());
+      if (mode === "before-save") fail();
+    }
+    if (stage === "after-write") {
+      evidence.saved++;
+      if (mode === "save-then-throw") fail();
+    }
+    if (stage === "read" && getterReady) fail();
+  };
+  f.control.afterHash = async () => {
+    if (evidence.saved === 0 || !mode.startsWith("readback")) return;
+    evidence.digests++;
+    if (mode === "readback-digest") fail();
+    getterReady = true;
+  };
+  try {
+    await f.owner.confirm();
+  } finally {
+    delete f.control.storageAccess;
+    delete f.control.afterHash;
+  }
+  return { ...f, fault, evidence };
+}
+test.each([
+  "before-save",
+  "save-then-throw",
+  "readback-getter",
+  "readback-digest",
+])("attempted reservation %s keeps the full original without dispatch", async (mode) => {
+  const f = await reservationFaultFixture(mode);
+  const pending = inventoryReceipt(null);
+  const saved = mode === "before-save" ? 0 : 1;
+  const digests = mode.startsWith("readback") ? 1 : 0;
+  expect(f.evidence).toMatchObject({
+    attempts: 1,
+    saved,
+    digests,
+    faults: [f.fault],
+  });
+  expect(f.evidence.pending).toHaveLength(1);
+  expect(f.evidence.pending[0]).toMatchObject({
+    phase: "reserving",
+    inventory: pending,
+    storageError: false,
+  });
+  expect(f.owner.snapshot()).toMatchObject({
+    phase: "storage-unavailable",
+    storageError: true,
+    inventory: pending,
+    inspection: { phase: "review-changed", review: null },
+  });
+  expect(f.trace.minted).toBe(1);
+  expect(f.trace.posts).toEqual([]);
+  expect(f.trace.writes).toEqual([f.inventoryKey]);
+  expect(f.trace.hashes.filter((entry) => entry.writes === 1)).toHaveLength(
+    digests,
+  );
+  const expectedDisk = saved ? pending : inventoryFrom([], null);
+  expect(
+    await readCleanupBrowserInventory(
+      f.saved.get(f.markerKey) ?? null,
+      f.saved.get(f.inventoryKey) ?? null,
+      authorityKey,
+      storedHash,
+    ),
+  ).toEqual(expectedDisk);
+  expect(f.saved.get(f.markerKey)).toBe(marker);
+  expect(f.saved.get(f.inventoryKey)).toBe(JSON.stringify(expectedDisk));
 });
