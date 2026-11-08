@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { OperatorPost } from "../../../docs/js/operator";
 import { hasDuplicateObjectKeys } from "../../../scripts/json-object-keys";
 import {
   canonicalCleanupRequest,
@@ -211,4 +212,96 @@ export function advanceCleanupBrowserInventory(
       throw Error("Cleanup recovery changed a terminal receipt");
   }
   return fresh;
+}
+
+export interface CleanupBrowserScope {
+  projectId: string;
+  repository: string;
+  worktreeId: string;
+}
+export interface CleanupBrowserDependencies {
+  authorityKey: string;
+  storage: Pick<Storage, "getItem" | "setItem">;
+  withLock<T>(work: () => Promise<T>): Promise<T>;
+  uuid(): string;
+  hash(text: string): Promise<string>;
+  currentScope(): CleanupBrowserScope | null;
+  canWrite(): boolean;
+  readReview(url: string, limits: { maxBodyBytes: number }): Promise<unknown>;
+  readReceipt(url: string, limits: { maxBodyBytes: number }): Promise<unknown>;
+  operatorPost: OperatorPost;
+}
+export interface CleanupBrowserView {
+  readonly phase:
+    | "idle"
+    | "restoring"
+    | "retained-unconfirmed"
+    | "storage-unavailable";
+  readonly inventory: CleanupBrowserInventory | null;
+  readonly storageError: boolean;
+}
+function freezeCleanupSnapshot<T>(value: T): T {
+  if (value !== null && typeof value === "object") {
+    for (const child of Object.values(value)) freezeCleanupSnapshot(child);
+    Object.freeze(value);
+  }
+  return value;
+}
+export class ProjectWorktreeCleanupOwner {
+  private value: CleanupBrowserView = freezeCleanupSnapshot({
+    phase: "idle",
+    inventory: null,
+    storageError: false,
+  });
+  private listeners = new Set<(value: CleanupBrowserView) => void>();
+  private deps: CleanupBrowserDependencies;
+  private keys: [string, string];
+  constructor(deps: CleanupBrowserDependencies) {
+    const {
+      authorityKey,
+      storage,
+      withLock,
+      uuid,
+      hash,
+      currentScope,
+      canWrite,
+      readReview,
+      readReceipt,
+      operatorPost,
+    } = deps;
+    this.deps = Object.freeze({
+      authorityKey,
+      storage: Object.freeze({
+        getItem: storage.getItem.bind(storage),
+        setItem: storage.setItem.bind(storage),
+      }),
+      withLock: withLock.bind(deps),
+      uuid: uuid.bind(deps),
+      hash: hash.bind(deps),
+      currentScope: currentScope.bind(deps),
+      canWrite: canWrite.bind(deps),
+      readReview: readReview.bind(deps),
+      readReceipt: readReceipt.bind(deps),
+      operatorPost: operatorPost.bind(deps),
+    });
+    const base = "agent-forge.project-worktree-cleanup.v1." + authorityKey;
+    this.keys = [base + ".marker", base + ".inventory"];
+  }
+  snapshot = () => this.value;
+  subscribe = (listener: (value: CleanupBrowserView) => void) => {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  };
+  private publish(next: CleanupBrowserView) {
+    this.value = freezeCleanupSnapshot(structuredClone(next));
+    for (const listener of [...this.listeners]) {
+      try {
+        listener(this.value);
+      } catch {
+        /* Observers cannot change verified truth. */
+      }
+    }
+  }
 }

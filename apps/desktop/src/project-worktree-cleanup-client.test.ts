@@ -10,6 +10,7 @@ import {
   cleanupBrowserInventorySchema,
   cleanupBrowserOriginalSchema,
   cleanupBrowserRecordSchema,
+  ProjectWorktreeCleanupOwner,
   readCleanupBrowserInventory,
   sameCleanupOriginal,
 } from "./project-worktree-cleanup-client";
@@ -450,4 +451,69 @@ test("both terminal cleanup states preserve exact reason end and immutable evide
   expect(
     advanceCleanupBrowserInventory(denied, structuredClone(denied)),
   ).toEqual(denied);
+});
+
+function ownerFixture() {
+  const saved = new Map<string, string>(),
+    trace: string[] = [];
+  let tail = Promise.resolve();
+  const deps = {
+    authorityKey,
+    storage: {
+      getItem(key: string) {
+        trace.push("read:" + key);
+        return saved.get(key) ?? null;
+      },
+      setItem(key: string, value: string) {
+        trace.push("write:" + key);
+        saved.set(key, value);
+      },
+    },
+    withLock: <T>(work: () => Promise<T>): Promise<T> => {
+      const next = tail.then(work);
+      tail = next.then(
+        () => {},
+        () => {},
+      );
+      return next;
+    },
+    uuid: () => request.requestId,
+    hash: storedHash,
+    currentScope: () => ({
+      projectId,
+      repository: request.repository,
+      worktreeId: request.expectedRecord.id,
+    }),
+    canWrite: () => true,
+    readReview: async (): Promise<unknown> => {
+      throw Error("Unexpected review read");
+    },
+    readReceipt: async (): Promise<unknown> => {
+      throw Error("Unexpected receipt read");
+    },
+    operatorPost: async (): Promise<Response> => {
+      throw Error("Unexpected cleanup POST");
+    },
+  };
+  return { saved, trace, deps, owner: new ProjectWorktreeCleanupOwner(deps) };
+}
+test("cleanup owner construction retains a stable immutable initial snapshot without storage I/O", () => {
+  const f = ownerFixture(),
+    snapshot = f.owner.snapshot();
+  expect(f.trace).toEqual([]);
+  expect(f.owner.snapshot()).toBe(snapshot);
+  expect(snapshot).toEqual({
+    phase: "idle",
+    inventory: null,
+    storageError: false,
+  });
+  expect(Object.isFrozen(snapshot)).toBe(true);
+  let calls = 0;
+  const unsubscribe = f.owner.subscribe(() => {
+    calls++;
+  });
+  unsubscribe();
+  unsubscribe();
+  expect(calls).toBe(0);
+  expect(f.trace).toEqual([]);
 });
