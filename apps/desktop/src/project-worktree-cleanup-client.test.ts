@@ -8,6 +8,7 @@ import { cleanupReviewSchema } from "../../../scripts/projects/worktree-cleanup-
 import {
   advanceCleanupBrowserInventory,
   type CleanupBrowserInspection,
+  type CleanupBrowserScope,
   type CleanupBrowserView,
   cleanupBrowserForProject,
   cleanupBrowserInventorySchema,
@@ -951,5 +952,204 @@ test("inspection B survives a paused original restore A without mutating global 
   });
   expect(cleanupBrowserForProject(view, projectId).active?.original).toEqual(
     original,
+  );
+});
+
+async function inspectionFixture() {
+  const f = ownerFixture();
+  await f.owner.restore();
+  const key = [...f.saved.keys()].find((value) => value.endsWith(".inventory"));
+  if (!key) throw Error("Expected initialized inventory");
+  f.saved.set(
+    key,
+    rawInventory([{ original, receipt: unknownReceipt }], request.requestId),
+  );
+  const selection: CleanupBrowserScope = {
+    projectId,
+    repository: request.repository,
+    worktreeId: request.expectedRecord.id,
+  };
+  let scope: CleanupBrowserScope | null = selection,
+    answer: () => Promise<unknown> = async () => review;
+  let scopeHook = () => {};
+  const calls: string[] = [],
+    faults: unknown[] = [];
+  const reads: Array<{ url: string; maxBodyBytes: number }> = [];
+  const owner = new ProjectWorktreeCleanupOwner({
+    ...f.deps,
+    currentScope: () => {
+      calls.push("scope");
+      scopeHook();
+      return scope;
+    },
+    readReview: async (url, limits) => {
+      calls.push("review");
+      reads.push({ url, ...limits });
+      try {
+        return await answer();
+      } catch (error) {
+        faults.push(error);
+        throw error;
+      }
+    },
+    hash: async (text) => {
+      calls.push("hash");
+      return storedHash(text);
+    },
+    uuid: () => {
+      calls.push("uuid");
+      return request.requestId;
+    },
+    operatorPost: async () => {
+      calls.push("POST");
+      throw Error("Unexpected POST");
+    },
+    readReceipt: async () => {
+      calls.push("receipt");
+      throw Error("Unexpected receipt read");
+    },
+  });
+  await owner.restore();
+  f.saved.delete(key);
+  await owner.restore();
+  const baseline = owner.snapshot();
+  if (
+    !baseline.storageError ||
+    baseline.inventory?.activeRequestId !== request.requestId
+  )
+    throw Error("Expected a quarantined retained original fixture");
+  calls.length = 0;
+  f.trace.length = 0;
+  return {
+    ...f,
+    owner,
+    selection,
+    calls,
+    faults,
+    reads,
+    setScope: (value: CleanupBrowserScope | null) => {
+      scope = value;
+    },
+    respond: (value: () => Promise<unknown>) => {
+      answer = value;
+    },
+    onScope: (work: () => void) => {
+      scopeHook = work;
+    },
+  };
+}
+test.each([
+  "refused",
+  "unknown",
+  "foreign-project",
+  "foreign-target",
+  "foreign-root",
+  "malformed",
+  "cap-error",
+] as const)("readonly cleanup inspection retains ownership after %s response", async (mode) => {
+  const f = await inspectionFixture(),
+    before = f.owner.snapshot().inventory;
+  const fault = Error("Protected read receiving byte limit exceeded");
+  let body: unknown = null;
+  if (mode === "refused" || mode === "unknown")
+    body = cleanupReviewSchema.parse({
+      projectId,
+      worktreeId: request.expectedRecord.id,
+      asOf: review.asOf,
+      removalAuthorized: false,
+      state: mode,
+      reasons: ["Not eligible"],
+    });
+  if (mode === "foreign-project")
+    body = cleanupReviewSchema.options[0].parse({
+      ...review,
+      projectId: "project-10000000-0000-4000-8000-000000000099",
+    });
+  if (mode === "foreign-target")
+    body = cleanupReviewSchema.options[0].parse({
+      ...review,
+      worktreeId: "other-shift-1",
+      expectedRecord: {
+        ...request.expectedRecord,
+        id: "other-shift-1",
+        path: request.expectedRecord.path.replace(
+          request.expectedRecord.id,
+          "other-shift-1",
+        ),
+      },
+    });
+  if (mode === "foreign-root")
+    body = cleanupReviewSchema.options[0].parse({
+      ...review,
+      repository: "/foreign-root",
+      expectedRecord: {
+        ...request.expectedRecord,
+        path: "/foreign-root/trees/" + request.expectedRecord.id,
+      },
+    });
+  f.respond(async () => {
+    if (mode === "cap-error") throw fault;
+    return body;
+  });
+  await f.owner.inspect(f.selection);
+  const view = f.owner.snapshot();
+  expect(view.inspection.phase).toBe(
+    mode === "refused" ? "review-refused" : "review-unknown",
+  );
+  if (mode === "refused" || mode === "unknown")
+    expect(view.inspection.review).toEqual(cleanupReviewSchema.parse(body));
+  else expect(view.inspection.review).toBeNull();
+  expect(
+    view.inspection.review !== null &&
+      "expectedRecord" in view.inspection.review,
+  ).toBe(false);
+  expect(view.inventory).toEqual(before);
+  expect(view.storageError).toBe(true);
+  expect(f.trace).toEqual([]);
+  expect(f.calls.filter((call) => !["scope", "review"].includes(call))).toEqual(
+    [],
+  );
+  expect(f.reads).toEqual([
+    {
+      url:
+        "/projects/" +
+        projectId +
+        "/settings/worktree-cleanup-review/" +
+        request.expectedRecord.id,
+      maxBodyBytes: 65536,
+    },
+  ]);
+  expect(f.faults).toEqual(mode === "cap-error" ? [fault] : []);
+});
+test.each([
+  "before",
+  "after",
+] as const)("same-turn scope drift %s read cannot retain proof", async (when) => {
+  const f = await inspectionFixture(),
+    before = f.owner.snapshot().inventory;
+  const changed = { ...f.selection, repository: "/different-native-root" };
+  let reached = false;
+  if (when === "before") f.setScope(changed);
+  else
+    f.respond(async () => {
+      reached = true;
+      f.setScope(changed);
+      return review;
+    });
+  await f.owner.inspect(f.selection);
+  expect(f.owner.snapshot()).toMatchObject({
+    inventory: before,
+    storageError: true,
+    inspection: {
+      phase: "review-changed",
+      selection: f.selection,
+      review: null,
+    },
+  });
+  expect(f.reads).toHaveLength(when === "before" ? 0 : 1);
+  expect(reached).toBe(when === "after");
+  expect(f.trace).toEqual([]);
+  expect(f.calls.filter((call) => !["scope", "review"].includes(call))).toEqual(
+    [],
   );
 });
