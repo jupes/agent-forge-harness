@@ -9,7 +9,7 @@ import {
   unlinkSync,
   writeFileSync,
 } from "node:fs";
-import { join, relative } from "node:path";
+import { dirname, isAbsolute, join, relative } from "node:path";
 import type { WorktreeRecord } from "../../types/beads";
 import { projectRoutes } from "../hearth/routes/projects";
 import { writeOwnerOnly } from "../hearth/token";
@@ -493,18 +493,26 @@ test.each([
           },
         }
       : kind === "relative repository"
-        ? { ...request, repository: relative(process.cwd(), f.root) }
+        ? { ...request, repository: relative(dirname(f.root), f.root) }
         : {
             ...request,
             expectedRecord: {
               ...request.expectedRecord,
               path:
                 kind === "relative target"
-                  ? relative(process.cwd(), request.expectedRecord.path)
+                  ? relative(f.root, request.expectedRecord.path)
                   : join(f.root, "outside"),
             },
           },
   );
+  if (kind === "relative repository" || kind === "relative target") {
+    const path =
+      kind === "relative repository"
+        ? saved.original.request.repository
+        : saved.original.request.expectedRecord.path;
+    expect(path.length).toBeGreaterThan(0);
+    expect(isAbsolute(path)).toBe(false);
+  }
   let exports = 0;
   const service = createProjectWorktreeCleanupService(
     {
