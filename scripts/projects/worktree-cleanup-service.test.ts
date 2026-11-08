@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { join, relative } from "node:path";
 import type { WorktreeRecord } from "../../types/beads";
+import { projectRoutes } from "../hearth/routes/projects";
 import { writeOwnerOnly } from "../hearth/token";
 import { appendEvent } from "../ledger/append";
 import { closeLedger, openLedger } from "../ledger/db";
@@ -1290,3 +1291,102 @@ test("cleanup source timeout leaves late readonly completion inert", async () =>
     calls: f.calls.length,
   }).toEqual(before);
 }, 15000);
+
+test.each([
+  "relative home",
+  "relative root",
+  "missing home",
+  "missing root",
+  "wrong queue",
+  "wrong ledger",
+] as const)("cleanup rejects trusted host %s without initialization or callbacks", async (kind) => {
+  const f = await fixture();
+  let calls = 0;
+  const host = {
+    home: f.home,
+    root: f.root,
+    queueLockFile: join(f.home, "queue-lock.db"),
+    ledgerPath: join(f.home, "ledger.db"),
+    runBd: (args: readonly string[]) => {
+      calls++;
+      return readonlyExport(f, args);
+    },
+  };
+  if (kind === "relative home") host.home = "relative-home";
+  if (kind === "relative root") host.root = "relative-root";
+  if (kind === "missing home") host.home = join(f.home, "missing");
+  if (kind === "missing root") host.root = join(f.root, "missing");
+  if (kind === "wrong queue")
+    host.queueLockFile = join(f.home, "foreign-queue.db");
+  if (kind === "wrong ledger")
+    host.ledgerPath = join(f.home, "foreign-ledger.db");
+  try {
+    createProjectWorktreeCleanupService(host, { git: f.git });
+    throw Error("Expected trusted host refusal");
+  } catch (error) {
+    expect(error).toMatchObject({ status: 503 });
+  }
+  expect({
+    calls,
+    git: f.calls,
+    initialized: existsSync(join(f.home, "project-worktree-cleanup")),
+  }).toEqual({ calls: 0, git: [], initialized: false });
+});
+
+test.each([
+  "unknown",
+  "confirmed",
+] as const)("actual lifecycle deletion guard preserves cleanup %s ownership and recovery", async (phase) => {
+  const f = await fixture(),
+    saved = await savedCleanup(f, phase === "unknown"),
+    owner = ownerFor(f);
+  if (phase === "unknown")
+    await withWorktreeCleanupLease(f.home, async (scope) => {
+      scope.write({
+        ...saved,
+        phase: "unknown",
+        reason: "Cleanup completion was not confirmed",
+      });
+    });
+  else
+    await owner.cleanup(f.project.id, saved.original.request, {
+      auditEventId: saved.original.audit.eventId,
+    });
+  const read = () =>
+    owner.read(
+      f.project.id,
+      saved.original.request.requestId,
+      saved.original.requestHash,
+    );
+  const original = read(),
+    journal = join(f.home, "project-worktree-cleanup", "operations.json");
+  expect(original.state).toBe(phase);
+  const bytes = readFileSync(journal, "utf8"),
+    calls = f.calls.length;
+  await f.projects.preferences(f.project.id, 1, { archived: true });
+  const routes = projectRoutes(f.home, {
+    root: f.root,
+    workspace: f.root,
+    loadScope: async () => {
+      throw Error("Unexpected live scope read");
+    },
+  });
+  // Invoke the existing production deletion guard directly; no transport or authorization is simulated.
+  const result = await routes.deleteProject.effect({
+    id: f.project.id,
+    request: {
+      requestId: "79000000-0000-4000-8000-000000000001",
+      expectedRevision: 2,
+      confirmName: f.project.name,
+    },
+  });
+  expect(result).toMatchObject({ status: phase === "unknown" ? 409 : 200 });
+  if (phase === "unknown")
+    expect(result).toMatchObject({
+      error: expect.stringContaining("cleanup outcome is unknown"),
+    });
+  expect(f.projects.read().projects).toHaveLength(phase === "unknown" ? 1 : 0);
+  expect(read()).toEqual(original);
+  expect(readFileSync(journal, "utf8")).toBe(bytes);
+  expect(f.calls).toHaveLength(calls);
+});
