@@ -56,3 +56,45 @@ export function canonicalCleanupRequest(
     expectedHead: request.expectedHead,
   });
 }
+
+export const cleanupReceiptSchema = cleanupRequestSchema
+  .extend({
+    projectId: z
+      .string()
+      .regex(
+        /^project-[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/,
+      ),
+    requestHash: z.string().regex(/^[a-f0-9]{64}$/),
+    state: z.enum(["confirmed", "refused", "unknown"]),
+    reason: z.string().min(1).max(1000).nullable(),
+    attemptedAt: z.iso.datetime().nullable(),
+    endedAt: z.iso.datetime().nullable(),
+    audit: z
+      .object({
+        eventId: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+        ulid: z.string().regex(/^[0-7][0-9A-HJKMNP-TV-Z]{25}$/),
+        ts: z.iso.datetime(),
+      })
+      .strict(),
+  })
+  .strict()
+  .refine((receipt) => {
+    switch (receipt.state) {
+      case "confirmed":
+        return (
+          receipt.attemptedAt !== null &&
+          receipt.endedAt !== null &&
+          Date.parse(receipt.endedAt) >= Date.parse(receipt.attemptedAt) &&
+          receipt.reason === null
+        );
+      case "refused":
+        return (
+          receipt.attemptedAt === null &&
+          receipt.endedAt !== null &&
+          receipt.reason !== null
+        );
+      case "unknown":
+        return receipt.endedAt === null && receipt.reason !== null;
+    }
+  });
+export type CleanupReceipt = z.infer<typeof cleanupReceiptSchema>;
