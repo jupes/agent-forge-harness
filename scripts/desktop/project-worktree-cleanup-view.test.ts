@@ -1209,3 +1209,84 @@ test("cleanup candidate pins exact cloned native facts and allows read-only insp
   expect(found?.scope.worktreeId).toBe("saved");
   expect(Object.isFrozen(found?.row)).toBe(true);
 });
+
+test("cleanup candidate rejects stale, foreign, incomplete, ambiguous and unmanaged reported facts", () => {
+  const changes: Array<(item: ReturnType<typeof candidateFixture>) => void> = [
+    (item) => {
+      item.scope.projectId = "other";
+    },
+    (item) => {
+      item.facts.catalogReady = false;
+    },
+    (item) => {
+      item.facts.catalogRevision = 2;
+    },
+    (item) => {
+      item.facts.repositoryPhase = "loading";
+    },
+    (item) => {
+      item.facts.repositoryKey = "wrong";
+    },
+    (item) => {
+      item.facts.repositoryRequestedRevision = 2;
+    },
+    (item) => {
+      item.facts.repositoryResponseRevision = 2;
+    },
+    (item) => {
+      item.data.catalogRevision = 2;
+    },
+    (item) => {
+      item.data.projectId = "other";
+    },
+    (item) => {
+      item.workspace.workspaceRoot = "c:/Work";
+    },
+    (item) => {
+      item.member.path = "c:/Work";
+    },
+    (item) => {
+      item.member.access = "approved";
+    },
+    (item) => {
+      item.workspace.repositories = [
+        { access: "unregistered", path: "C:/Work" },
+      ];
+    },
+    (item) => {
+      item.row.kind = "claude";
+    },
+    (item) => {
+      item.row.missing = true;
+    },
+    (item) => {
+      item.row.id = "bad/id";
+      item.scope.worktreeId = "bad/id";
+    },
+    (item) => {
+      item.row.branch = null;
+    },
+    (item) => {
+      delete item.row.createdAt;
+    },
+    (item) => {
+      item.member.worktrees.push({ ...item.row });
+    },
+    (item) => {
+      item.data.repositories.push({ ...item.workspace });
+    },
+    (item) => {
+      item.observedHealth.apiVersion = 999;
+    },
+    (item) => {
+      item.scope.repository = "c:/Work";
+    },
+  ];
+  for (const change of changes) {
+    const item = candidateFixture();
+    change(item);
+    expect(
+      cleanupCandidate(item.facts, item.observedHealth, item.scope),
+    ).toBeNull();
+  }
+});
