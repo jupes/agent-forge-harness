@@ -6,6 +6,7 @@ import {
   cleanupBrowserInventorySchema,
 } from "../../apps/desktop/src/project-worktree-cleanup-client";
 import {
+  bindCleanupSources,
   type CleanupContextFacts,
   cleanupAuthorityKey,
   cleanupCandidate,
@@ -876,6 +877,7 @@ function registryFixture(
     uuidCalls: () => uuidCalls,
     providerReads: () => providerReads,
     web,
+    surface,
     surfaceCaptures: () => surfaceCaptures,
   };
 }
@@ -2129,4 +2131,130 @@ test("cleanup coordinator owns adopted caller facts so mutating them cannot laun
   });
   expect(model.snapshot().canConfirm).toBe(false);
   model.dispose();
+});
+
+test("cleanup source binding filters areas, observes every local key and closes before exactly-once teardown", async () => {
+  const candidate = candidateFixture(),
+    browser = registryFixture(),
+    saved = seedCleanupOriginal(browser.values);
+  const source = { status: "live", route: candidate.facts.route };
+  const calls: string[] = [];
+  const model = createCleanupCoordinator({
+    origin,
+    web: browser.web,
+    status: () => source.status,
+    routeKey: () => source.route,
+    transport: transport(async (url) => {
+      calls.push(url);
+      return envelope(
+        url.endsWith("/health") ? currentHealth : saved.original.review,
+      );
+    }),
+    refreshCatalog: async () => undefined,
+    refreshRepositories: async () => undefined,
+  });
+  const handlers: {
+    status?: () => void;
+    hash?: () => void;
+    storage?: (event: { storageArea: unknown; key: string | null }) => void;
+  } = {};
+  const leaves: Array<{ kind: string; repository: string | null }> = [];
+  let denied = false,
+    areaReads = 0;
+  const register = (kind: "status" | "hash", listener: () => void) => {
+    handlers[kind] = listener;
+    return () => {
+      leaves.push({ kind, repository: model.snapshot().repository });
+    };
+  };
+  model.adoptContext(candidate.facts);
+  const stop = bindCleanupSources(model, {
+    onStatus: (listener) => register("status", listener),
+    onHash: (listener) => register("hash", listener),
+    onStorage(listener) {
+      handlers.storage = listener;
+      return () => {
+        leaves.push({
+          kind: "storage",
+          repository: model.snapshot().repository,
+        });
+      };
+    },
+    localStorage() {
+      areaReads++;
+      if (denied) throw Error("Storage access denied");
+      return browser.surface;
+    },
+  });
+  expect(Object.keys(handlers).sort()).toEqual(["hash", "status", "storage"]);
+  expect(calls).toEqual([]);
+  await model.flush();
+  await model.reviewCandidate(candidate.scope);
+  expect(model.snapshot().canConfirm).toBe(true);
+  const sameStatus = calls.length;
+  handlers.status?.();
+  await model.flush();
+  expect(calls).toHaveLength(sameStatus);
+  handlers.storage?.({ storageArea: {}, key: "session-key" });
+  expect(model.snapshot().canConfirm).toBe(true);
+  source.route = "#/other";
+  handlers.hash?.();
+  source.route = candidate.facts.route;
+  handlers.hash?.();
+  expect(model.snapshot().canConfirm).toBe(false);
+  await model.flush();
+  await model.reviewCandidate(candidate.scope);
+  expect(model.snapshot().canConfirm).toBe(true);
+  browser.values.set("unrelated-preference", "value");
+  handlers.storage?.({
+    storageArea: browser.surface,
+    key: "unrelated-preference",
+  });
+  expect(model.snapshot().canConfirm).toBe(false);
+  await model.flush();
+  await model.reviewCandidate(candidate.scope);
+  expect(model.snapshot().canConfirm).toBe(true);
+  denied = true;
+  handlers.storage?.({
+    storageArea: browser.surface,
+    key: "another-unrelated-key",
+  });
+  expect(model.snapshot().canConfirm).toBe(false);
+  denied = false;
+  await model.flush();
+  browser.values.clear();
+  handlers.storage?.({ storageArea: browser.surface, key: null });
+  await model.flush();
+  expect(
+    model.snapshot().authorities[0]?.view.inventory?.records[0]?.original,
+  ).toEqual(saved.original);
+  expect(browser.writes()).toBe(0);
+  expect(model.snapshot().repository).toBe("C:/Work");
+  stop();
+  stop();
+  expect(leaves).toEqual(
+    ["status", "hash", "storage"].map((kind) => ({ kind, repository: null })),
+  );
+  const before = {
+    calls: calls.length,
+    areas: areaReads,
+    captures: browser.surfaceCaptures(),
+  };
+  source.status = "off";
+  handlers.status?.();
+  source.status = "live";
+  handlers.status?.();
+  handlers.hash?.();
+  handlers.storage?.({ storageArea: browser.surface, key: "late" });
+  await model.flush();
+  expect({
+    calls: calls.length,
+    areas: areaReads,
+    captures: browser.surfaceCaptures(),
+  }).toEqual(before);
+  expect(model.snapshot().canConfirm).toBe(false);
+  expect(
+    model.snapshot().authorities[0]?.view.inventory?.records[0]?.original,
+  ).toEqual(saved.original);
+  expect(browser.uuidCalls()).toBe(0);
 });

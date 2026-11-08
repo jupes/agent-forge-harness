@@ -1251,3 +1251,58 @@ export function createCleanupCoordinator(deps: {
     },
   };
 }
+
+export function bindCleanupSources(
+  model: ReturnType<typeof createCleanupCoordinator>,
+  sources: {
+    onStatus(listener: () => void): () => void;
+    onHash(listener: () => void): () => void;
+    onStorage(
+      listener: (event: { storageArea: unknown; key: string | null }) => void,
+    ): () => void;
+    localStorage(): unknown;
+  },
+) {
+  let closed = false;
+  const leaves: Array<() => void> = [];
+  const stop = () => {
+    if (closed) return;
+    closed = true;
+    model.dispose();
+    for (const leave of leaves) {
+      try {
+        leave();
+      } catch {
+        /* Closed callbacks cannot revive cleanup. */
+      }
+    }
+  };
+  try {
+    leaves.push(
+      sources.onStatus(() => {
+        if (!closed) model.sourceChanged("status");
+      }),
+    );
+    leaves.push(
+      sources.onHash(() => {
+        if (!closed) model.sourceChanged("hash");
+      }),
+    );
+    leaves.push(
+      sources.onStorage((event) => {
+        if (closed) return;
+        try {
+          if (event.storageArea !== sources.localStorage()) return;
+        } catch {
+          /* Inaccessible local storage must close proof and retain originals. */
+        }
+        model.sourceChanged("storage");
+      }),
+    );
+    model.sourceChanged("status");
+  } catch (error) {
+    stop();
+    throw error;
+  }
+  return stop;
+}
