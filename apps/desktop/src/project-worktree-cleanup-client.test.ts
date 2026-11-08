@@ -3517,3 +3517,147 @@ test.each([
   expect(f.saved.get(f.markerKey)).toBe(marker);
   expect(f.saved.get(f.inventoryKey)).toBe(JSON.stringify(expectedDisk));
 });
+
+test.each([
+  "before-save",
+  "save-then-throw",
+  "readback-getter",
+  "readback-digest",
+])("new-owner recovery after %s adopts only actually durable originals without resending", async (mode) => {
+  const f = await reservationFaultFixture(mode);
+  const durable = mode !== "before-save";
+  const pending = inventoryReceipt(null);
+  const expected = durable ? pending : inventoryFrom([], null);
+  expect(f.evidence).toMatchObject({
+    attempts: 1,
+    saved: durable ? 1 : 0,
+    digests: mode.startsWith("readback") ? 1 : 0,
+    faults: [f.fault],
+  });
+  expect(f.owner.snapshot()).toMatchObject({
+    storageError: true,
+    inventory: pending,
+  });
+  expect(
+    await readCleanupBrowserInventory(
+      f.saved.get(f.markerKey) ?? null,
+      f.saved.get(f.inventoryKey) ?? null,
+      authorityKey,
+      storedHash,
+    ),
+  ).toEqual(expected);
+  const saved = [...f.saved.entries()];
+  const selected: CleanupBrowserScope = {
+    projectId,
+    repository: request.repository,
+    worktreeId: request.expectedRecord.id,
+  };
+  let live: CleanupBrowserScope | null = selected,
+    writable = true;
+  let minted = 0,
+    posts = 0,
+    scopeCalls = 0,
+    writeCalls = 0;
+  const writes: string[] = [],
+    hashes: string[] = [],
+    faults: Error[] = [];
+  const reads: Array<{ url: string; maxBodyBytes: number }> = [];
+  const missing = Error("Original receiving dependency returned HTTP 404");
+  const recovered = new ProjectWorktreeCleanupOwner({
+    ...f.deps,
+    currentScope: () => {
+      scopeCalls++;
+      return live;
+    },
+    canWrite: () => {
+      writeCalls++;
+      return writable;
+    },
+    readReview: async () => review,
+    uuid: () => {
+      minted++;
+      return request.requestId;
+    },
+    hash: async (text) => {
+      const digest = await storedHash(text);
+      hashes.push(text);
+      return digest;
+    },
+    storage: {
+      getItem: f.deps.storage.getItem,
+      setItem(key, text) {
+        writes.push(key);
+        f.deps.storage.setItem(key, text);
+      },
+    },
+    operatorPost: async () => {
+      posts++;
+      throw Error("Unexpected recovery POST");
+    },
+    readReceipt: async (url, limits) => {
+      reads.push({ url, ...limits });
+      faults.push(missing);
+      throw missing;
+    },
+  });
+  await recovered.restore();
+  expect([minted, posts]).toEqual([0, 0]);
+  expect(writes).toEqual([]);
+  expect(recovered.snapshot()).toMatchObject({
+    storageError: false,
+    inventory: expected,
+  });
+  if (durable) {
+    await recovered.inspect(selected);
+    expect(recovered.snapshot().inspection.phase).toBe("eligible-review");
+    await recovered.confirm();
+    expect(recovered.snapshot().inventory).toEqual(pending);
+    const gates = [scopeCalls, writeCalls];
+    live = null;
+    writable = false;
+    await recovered.checkOriginal(request.requestId);
+    expect([scopeCalls, writeCalls]).toEqual(gates);
+    expect(reads).toEqual([
+      {
+        url:
+          "/projects/" +
+          projectId +
+          "/settings/worktree-cleanup/" +
+          request.requestId +
+          "?requestHash=" +
+          original.requestHash,
+        maxBodyBytes: 65536,
+      },
+    ]);
+    expect(faults).toEqual([missing]);
+    expect(hashes.length).toBeGreaterThan(0);
+    expect(
+      hashes.every(
+        (text) => text === canonicalCleanupRequest(projectId, request),
+      ),
+    ).toBe(true);
+  } else {
+    expect(reads).toEqual([]);
+    expect(hashes).toEqual([]);
+    expect(faults).toEqual([]);
+  }
+  expect([minted, posts]).toEqual([0, 0]);
+  expect(writes).toEqual([]);
+  expect(recovered.snapshot()).toMatchObject({
+    storageError: false,
+    inventory: expected,
+  });
+  expect([...f.saved.entries()]).toEqual(saved);
+  expect(
+    await readCleanupBrowserInventory(
+      f.saved.get(f.markerKey) ?? null,
+      f.saved.get(f.inventoryKey) ?? null,
+      authorityKey,
+      storedHash,
+    ),
+  ).toEqual(expected);
+  expect(f.owner.snapshot()).toMatchObject({
+    storageError: true,
+    inventory: pending,
+  });
+});
