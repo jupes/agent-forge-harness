@@ -977,6 +977,14 @@ async function inspectionFixture() {
   const reads: Array<{ url: string; maxBodyBytes: number }> = [];
   const owner = new ProjectWorktreeCleanupOwner({
     ...f.deps,
+    withLock: <T>(work: () => Promise<T>): Promise<T> => {
+      calls.push("lock");
+      return f.deps.withLock(work);
+    },
+    canWrite: () => {
+      calls.push("canWrite");
+      return true;
+    },
     currentScope: () => {
       calls.push("scope");
       scopeHook();
@@ -1148,6 +1156,165 @@ test.each([
   });
   expect(f.reads).toHaveLength(when === "before" ? 0 : 1);
   expect(reached).toBe(when === "after");
+  expect(f.trace).toEqual([]);
+  expect(f.calls.filter((call) => !["scope", "review"].includes(call))).toEqual(
+    [],
+  );
+});
+
+test.each([
+  "response",
+  "error",
+  "null",
+] as const)("stale inspection %s cannot replace a newer turn", async (mode) => {
+  const f = await inspectionFixture(),
+    known = f.owner.snapshot().inventory;
+  const nextScope = {
+    ...f.selection,
+    projectId: "project-10000000-0000-4000-8000-000000000099",
+    worktreeId: "next-shift-1",
+  };
+  const nextReview = cleanupReviewSchema.options[0].parse({
+    ...review,
+    ...nextScope,
+    expectedRecord: {
+      ...request.expectedRecord,
+      id: nextScope.worktreeId,
+      branch: "feat/next",
+      beadId: "beta-task",
+      path: request.expectedRecord.path.replace(
+        request.expectedRecord.id,
+        nextScope.worktreeId,
+      ),
+    },
+  });
+  let resolveRead: (value: unknown) => void = () => {},
+    rejectRead: (reason: unknown) => void = () => {},
+    signal = () => {};
+  const oldReply = new Promise<unknown>((resolve, reject) => {
+    resolveRead = resolve;
+    rejectRead = reject;
+  });
+  const entered = new Promise<void>((resolve) => {
+    signal = resolve;
+  });
+  let reached = false,
+    timedOut = false;
+  const failure = Error("Old inspection failed");
+  f.respond(async () => {
+    reached = true;
+    signal();
+    return oldReply;
+  });
+  const old = f.owner.inspect(f.selection);
+  const watchdog = setTimeout(() => {
+    timedOut = true;
+    signal();
+    resolveRead(review);
+  }, 8000);
+  let expected: CleanupBrowserInspection | null = null;
+  try {
+    await entered;
+    if (mode === "null") {
+      const calls = [...f.calls],
+        io = [...f.trace];
+      await f.owner.inspect(null);
+      expect(f.calls).toEqual(calls);
+      expect(f.trace).toEqual(io);
+      expected = f.owner.snapshot().inspection;
+      expect(expected).toEqual({
+        phase: "idle",
+        selection: null,
+        review: null,
+        notice: "",
+      });
+    } else {
+      f.setScope(nextScope);
+      f.respond(async () => nextReview);
+      await f.owner.inspect(nextScope);
+      expected = f.owner.snapshot().inspection;
+      expect(expected).toMatchObject({
+        phase: "eligible-review",
+        selection: nextScope,
+        review: nextReview,
+      });
+    }
+    if (mode === "error") rejectRead(failure);
+    else resolveRead(review);
+    await old;
+  } finally {
+    resolveRead(review);
+    try {
+      await old;
+    } finally {
+      clearTimeout(watchdog);
+    }
+  }
+  expect({ reached, timedOut }).toEqual({ reached: true, timedOut: false });
+  expect(f.owner.snapshot()).toMatchObject({
+    inventory: known,
+    storageError: true,
+    inspection: expected,
+  });
+  expect(f.faults).toEqual(mode === "error" ? [failure] : []);
+  expect(f.reads).toHaveLength(mode === "null" ? 1 : 2);
+  expect(f.reads.every((read) => read.maxBodyBytes === 65536)).toBe(true);
+  expect(f.trace).toEqual([]);
+  expect(f.calls.filter((call) => !["scope", "review"].includes(call))).toEqual(
+    [],
+  );
+}, 15000);
+test.each([
+  "scope-before",
+  "scope-after",
+  "notification",
+  "read-error",
+] as const)("reentrant %s invalidation cannot publish stale inspection state", async (mode) => {
+  const f = await inspectionFixture(),
+    known = f.owner.snapshot().inventory;
+  let reached = false,
+    unsubscribe = () => {};
+  const nested: Promise<void>[] = [];
+  let joined: PromiseSettledResult<void>[] = [];
+  const failure = Error("Read invalidated its own inspection");
+  const invalidate = () => {
+    if (!reached) {
+      reached = true;
+      nested.push(f.owner.inspect(null));
+    }
+  };
+  if (mode === "scope-before" || mode === "scope-after")
+    f.onScope(() => {
+      if (mode === "scope-before" || f.reads.length > 0) invalidate();
+    });
+  if (mode === "notification")
+    unsubscribe = f.owner.subscribe((view) => {
+      if (view.inspection.phase === "checking-review") invalidate();
+    });
+  if (mode === "read-error")
+    f.respond(async () => {
+      invalidate();
+      throw failure;
+    });
+  try {
+    await f.owner.inspect(f.selection);
+  } finally {
+    unsubscribe();
+    joined = await Promise.allSettled(nested);
+  }
+  expect(reached).toBe(true);
+  expect(joined.length).toBeGreaterThan(0);
+  expect(joined.every((result) => result.status === "fulfilled")).toBe(true);
+  expect(f.owner.snapshot()).toMatchObject({
+    inventory: known,
+    storageError: true,
+    inspection: { phase: "idle", selection: null, review: null, notice: "" },
+  });
+  expect(f.reads).toHaveLength(
+    mode === "scope-after" || mode === "read-error" ? 1 : 0,
+  );
+  expect(f.reads.every((read) => read.maxBodyBytes === 65536)).toBe(true);
+  expect(f.faults).toEqual(mode === "read-error" ? [failure] : []);
   expect(f.trace).toEqual([]);
   expect(f.calls.filter((call) => !["scope", "review"].includes(call))).toEqual(
     [],
