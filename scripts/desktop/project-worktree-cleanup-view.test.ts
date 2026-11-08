@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
 import {
   CleanupEligibleReview,
+  CleanupOriginalRecovery,
   CleanupSelectedInspection,
 } from "../../apps/desktop/src/ProjectWorktreeCleanupSettings";
 import {
@@ -2440,4 +2441,138 @@ test("selected cleanup inspection projects the owner union and keeps review read
     expect(textOf(render())).toContain("Choose a reported managed worktree");
     expect(item.uuidCalls()).toBe(0);
   }
+});
+
+test("global cleanup recovery retains every authority and exact original while Check stays read-only", async () => {
+  const values = new Map<string, string>();
+  const saved = seedCleanupOriginal(values);
+  const other = seedCleanupOriginal(new Map(), "C:/Other");
+  const otherAuthority = cleanupAuthorityKey(origin, "C:/Other");
+  values.set(
+    pair("C:/Other")[0]!,
+    JSON.stringify({ version: 1, authorityKey: otherAuthority }),
+  );
+  values.set(
+    pair("C:/Other")[1]!,
+    JSON.stringify({
+      version: 1,
+      authorityKey: otherAuthority,
+      records: [{ original: other.original, receipt: other.receipt }],
+      activeRequestId: null,
+    }),
+  );
+  const calls: Array<{ url: string; method: string }> = [];
+  const item = registryFixture(undefined, async (url, init) => {
+    calls.push({ url, method: init?.method ?? "GET" });
+    return envelope(
+      url.endsWith("/health")
+        ? { ...currentHealth, apiVersion: 999 }
+        : saved.receipt,
+    );
+  });
+  for (const [key, value] of values) item.values.set(key, value);
+  item.gate.adopt({
+    ...contextFacts,
+    projectId: null,
+    writesAllowed: false,
+    archived: true,
+  });
+  item.gate.publishHealth(item.gate.snapshot().generation, {
+    ...currentHealth,
+    apiVersion: 999,
+  });
+  await item.registry.restore();
+  const checks: Array<[string, string]> = [];
+  let checked: Promise<void> | null = null,
+    rechecks = 0;
+  const cleanup = {
+    ...item.registry.snapshot(),
+    hold: "Storage warning retained",
+    presentationWarning: "Catalog refresh failed",
+    consumerWarning: "Recovery connection stopped",
+    checkOriginal: (key: string, id: string) => {
+      checks.push([key, id]);
+      return (checked = item.registry.checkOriginal(key, id));
+    },
+    refreshRecovery: async () => {
+      rechecks++;
+    },
+  };
+  const shown = CleanupOriginalRecovery({ cleanup });
+  expect(findAll(shown, "article")).toHaveLength(2);
+  expect(
+    cleanup.authorities.every(
+      (entry) => entry.view.inventory?.activeRequestId === null,
+    ),
+  ).toBe(true);
+  for (const value of [
+    saved.projectId,
+    "C:/Work",
+    "C:/Other",
+    saved.requestId,
+    saved.original.requestHash,
+    saved.original.review.asOf,
+    saved.original.review.expectedHead,
+    saved.original.review.expectedRecord.path,
+    saved.original.review.expectedRecord.branch,
+    saved.original.review.expectedRecord.beadId,
+    saved.original.review.expectedRecord.createdAt,
+    "Storage warning retained",
+    "Catalog refresh failed",
+    "Recovery connection stopped",
+  ])
+    expect(textOf(shown)).toContain(value);
+  const buttons = findAll(shown, "Button");
+  const checksButtons = buttons.filter(
+    (node) => textOf(node) === "Check original receipt",
+  );
+  const enabled = attrs(checksButtons[0]),
+    unavailable = attrs(checksButtons[1]);
+  expect(enabled.disabled).toBe(false);
+  expect(unavailable.disabled).toBe(true);
+  if (
+    typeof enabled.onClick !== "function" ||
+    typeof unavailable.onClick !== "function"
+  )
+    throw Error("Missing Check action");
+  unavailable.onClick();
+  expect(checks).toEqual([]);
+  enabled.onClick();
+  await checked;
+  expect(checks).toEqual([[saved.authorityKey, saved.requestId]]);
+  expect(
+    calls.filter(
+      (call) =>
+        call.url.includes("/worktree-cleanup/") && call.method === "GET",
+    ),
+  ).toHaveLength(1);
+  expect(calls.some((call) => call.method === "POST")).toBe(false);
+  const foreign = CleanupOriginalRecovery({
+    cleanup: {
+      ...cleanup,
+      authorities: cleanup.authorities.map((entry) => ({
+        ...entry,
+        repository: "C:/Wrong",
+        readsAvailable: true,
+      })),
+    },
+  });
+  const blocked = attrs(
+    findAll(foreign, "Button").filter(
+      (node) => textOf(node) === "Check original receipt",
+    )[0],
+  );
+  expect(blocked.disabled).toBe(true);
+  if (typeof blocked.onClick !== "function")
+    throw Error("Missing guarded Check action");
+  blocked.onClick();
+  expect(checks).toHaveLength(1);
+  const recheck = attrs(buttons[0]);
+  if (typeof recheck.onClick !== "function")
+    throw Error("Missing recovery recheck");
+  recheck.onClick();
+  expect(rechecks).toBe(1);
+  expect(textOf(shown)).not.toContain("Remove reviewed worktree");
+  expect(item.uuidCalls()).toBe(0);
+  expect(otherAuthority).not.toBe(saved.authorityKey);
 });

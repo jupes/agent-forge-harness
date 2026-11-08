@@ -197,3 +197,118 @@ export function CleanupSelectedInspection({
     </section>
   );
 }
+
+type CleanupRecoveryController = Pick<
+  CleanupController,
+  | "authorities"
+  | "hold"
+  | "pending"
+  | "presentationWarning"
+  | "consumerWarning"
+  | "checkOriginal"
+  | "refreshRecovery"
+>;
+
+/** Every saved authority stays visible, including originals from deleted projects. */
+export function CleanupOriginalRecovery({
+  cleanup,
+}: {
+  cleanup: CleanupRecoveryController;
+}) {
+  return (
+    <section class="af-project-keeper" aria-label="Saved cleanup originals">
+      <h3>Saved cleanup originals</h3>
+      <p>
+        These originals are retained across project changes. Checking an
+        original only reads its receipt; it never sends cleanup again.
+      </p>
+      {cleanup.pending && (
+        <p role="status">
+          An unresolved original pauses new cleanup confirmations.
+        </p>
+      )}
+      {cleanup.hold && <p role="alert">Recovery metadata: {cleanup.hold}</p>}
+      {cleanup.presentationWarning && (
+        <p role="alert">Presentation refresh: {cleanup.presentationWarning}</p>
+      )}
+      {cleanup.consumerWarning && <p role="alert">{cleanup.consumerWarning}</p>}
+      <Button onClick={() => void cleanup.refreshRecovery()}>
+        Recheck cleanup recovery
+      </Button>
+      {cleanup.authorities.length === 0 && (
+        <p role="status">
+          No saved cleanup authorities are currently available.
+        </p>
+      )}
+      {cleanup.authorities.map((entry) => (
+        <section
+          key={entry.key}
+          aria-label={"Cleanup authority " + entry.repository}
+        >
+          <h4>Repository authority</h4>
+          <p>
+            <code>{entry.repository}</code>
+          </p>
+          {!entry.readsAvailable && (
+            <p role="status">
+              Receipt checks require a verified connection to this exact
+              repository authority. Saved originals remain visible.
+            </p>
+          )}
+          {entry.view.inventory?.records.length === 0 && (
+            <p>No saved originals for this authority.</p>
+          )}
+          {entry.view.inventory?.records.map(({ original }) => {
+            const matches = original.request.repository === entry.repository;
+            const readable = entry.readsAvailable && matches;
+            return (
+              <article
+                key={original.request.requestId}
+                class="af-project-settings-review"
+                aria-label={
+                  "Saved cleanup original " + original.request.requestId
+                }
+              >
+                <h5>Original cleanup request</h5>
+                <dl>
+                  <div>
+                    <dt>Original UUID</dt>
+                    <dd>
+                      <code>{original.request.requestId}</code>
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Original request hash</dt>
+                    <dd>
+                      <code>{original.requestHash}</code>
+                    </dd>
+                  </div>
+                </dl>
+                {cleanupNativeFacts(original.review)}
+                {!matches && (
+                  <p role="alert">
+                    This original names a different repository than its labelled
+                    authority. Receipt checking is unavailable; the saved
+                    original is retained.
+                  </p>
+                )}
+                <Button
+                  disabled={!readable}
+                  onClick={() => {
+                    if (readable)
+                      void cleanup.checkOriginal(
+                        entry.key,
+                        original.request.requestId,
+                      );
+                  }}
+                >
+                  Check original receipt
+                </Button>
+              </article>
+            );
+          })}
+        </section>
+      ))}
+    </section>
+  );
+}
