@@ -1,9 +1,13 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { CleanupEligibleReview } from "../../apps/desktop/src/ProjectWorktreeCleanupSettings";
+import {
+  CleanupEligibleReview,
+  CleanupSelectedInspection,
+} from "../../apps/desktop/src/ProjectWorktreeCleanupSettings";
 import {
   type CleanupBrowserOriginal,
   type CleanupBrowserRecord,
+  cleanupBrowserForProject,
   cleanupBrowserInventorySchema,
 } from "../../apps/desktop/src/project-worktree-cleanup-client";
 import {
@@ -2338,4 +2342,102 @@ test("eligible cleanup review displays the exact owner observation and gates del
   blocked.onClick();
   expect(delegated).toBe(1);
   expect(item.uuidCalls()).toBe(0);
+});
+
+test("selected cleanup inspection projects the owner union and keeps review read-only and project-scoped", async () => {
+  const states: Array<"refused" | "unknown" | "eligible"> = [
+    "refused",
+    "unknown",
+    "eligible",
+  ];
+  for (const state of states) {
+    const candidate = candidateFixture(),
+      saved = seedCleanupOriginal(new Map());
+    let entered!: () => void, release!: () => void;
+    const started = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const response =
+      state === "eligible"
+        ? saved.original.review
+        : {
+            projectId: saved.projectId,
+            worktreeId: "saved",
+            state,
+            asOf: saved.original.review.asOf,
+            removalAuthorized: false,
+            reasons: ["Exact owner reason: " + state],
+          };
+    const item = registryFixture(undefined, async (url) => {
+      if (url.endsWith("/health")) return envelope(currentHealth);
+      entered();
+      await held;
+      return envelope(response);
+    });
+    item.gate.adopt({
+      ...candidate.facts,
+      writesAllowed: false,
+      archived: true,
+    });
+    const pending = item.selection.reviewCandidate(candidate.scope);
+    await started;
+    const owner = item.registry.snapshot().authorities[0]!.owner;
+    let allowed = true,
+      delegated = 0;
+    const controller = () => ({
+      ...item.selection.snapshot(),
+      projectId: saved.projectId,
+      project: cleanupBrowserForProject(owner.snapshot(), saved.projectId),
+      canReview: () => allowed,
+      reviewCandidate: async () => {
+        delegated++;
+      },
+      confirmReviewed: item.selection.confirmReviewed,
+    });
+    const render = (projectId = saved.projectId) =>
+      CleanupSelectedInspection({ projectId, cleanup: controller() });
+    expect(textOf(render())).toContain("Checking the selected worktree");
+    release();
+    await pending;
+    expect<string>(owner.snapshot().inspection.phase).toBe(
+      state === "eligible" ? "eligible-review" : "review-" + state,
+    );
+    const shown = render();
+    if (state === "eligible")
+      expect(findAll(shown, "CleanupEligibleReview")).toHaveLength(1);
+    else {
+      expect(textOf(shown)).toContain("Exact owner reason: " + state);
+      expect(textOf(shown)).toContain(saved.original.review.asOf);
+    }
+    const otherId = "project-30000000-0000-4000-8000-000000000003";
+    const wrongProject = render(otherId);
+    expect(textOf(wrongProject)).not.toContain(saved.projectId);
+    expect(findAll(wrongProject, "Button")).toHaveLength(0);
+    expect(findAll(wrongProject, "CleanupEligibleReview")).toHaveLength(0);
+    const staleInspection = CleanupSelectedInspection({
+      projectId: otherId,
+      cleanup: { ...controller(), projectId: otherId },
+    });
+    expect(textOf(staleInspection)).not.toContain(saved.projectId);
+    expect(findAll(staleInspection, "CleanupEligibleReview")).toHaveLength(0);
+    const action = attrs(findAll(shown, "Button")[0]);
+    expect(action.disabled).toBe(false);
+    if (typeof action.onClick !== "function")
+      throw Error("Missing review action");
+    allowed = false;
+    action.onClick();
+    expect(delegated).toBe(0);
+    allowed = true;
+    action.onClick();
+    expect(delegated).toBe(1);
+    await owner.inspect({ ...candidate.scope, worktreeId: "different" });
+    expect(owner.snapshot().inspection.phase).toBe("review-changed");
+    expect(textOf(render())).toContain(owner.snapshot().inspection.notice);
+    await owner.inspect(null);
+    expect(textOf(render())).toContain("Choose a reported managed worktree");
+    expect(item.uuidCalls()).toBe(0);
+  }
 });

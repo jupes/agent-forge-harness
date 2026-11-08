@@ -21,7 +21,7 @@ export function CleanupEligibleReview({
     ["Repository", review.repository],
     ["Worktree path", review.expectedRecord.path],
     ["Branch", review.expectedRecord.branch],
-    ["Bead ID", review.expectedRecord.beadId],
+    ["Bead ID", review.expectedRecord.beadId ?? "Not recorded"],
     ["Catalog revision", review.expectedCatalogRevision],
     ["Full HEAD", review.expectedHead],
   ];
@@ -33,8 +33,8 @@ export function CleanupEligibleReview({
       <h4>Review worktree cleanup</h4>
       <p>
         This is an advisory observation. Removal authorized: false. Reviewing
-        does not remove anything. Deliberate confirmation checks the current
-        native guards before attempting to remove this exact worktree.
+        does not remove anything. Confirmation checks this exact worktree again
+        before removal.
       </p>
       <dl class="af-project-settings-current">
         {fields.map(([label, value]) => (
@@ -75,6 +75,113 @@ export function CleanupEligibleReview({
       >
         Remove reviewed worktree
       </Button>
+    </section>
+  );
+}
+
+type SelectedCleanupController = Pick<
+  CleanupController,
+  | "projectId"
+  | "project"
+  | "candidate"
+  | "notice"
+  | "canConfirm"
+  | "canReview"
+  | "reviewCandidate"
+  | "confirmReviewed"
+>;
+
+/** Selected-project observations are separate from the global original inventory. */
+export function CleanupSelectedInspection({
+  projectId,
+  cleanup,
+}: {
+  projectId: string | null;
+  cleanup: SelectedCleanupController;
+}) {
+  const current = projectId !== null && cleanup.projectId === projectId;
+  const observed = cleanup.project?.inspection;
+  const inspection =
+    current &&
+    observed &&
+    observed.phase !== "idle" &&
+    observed.selection.projectId === projectId
+      ? observed
+      : null;
+  const candidate =
+    current && cleanup.candidate?.scope.projectId === projectId
+      ? cleanup.candidate
+      : null;
+  const readable = candidate !== null && cleanup.canReview(candidate.scope);
+  return (
+    <section aria-label="Selected project cleanup inspection">
+      {!inspection && (
+        <p role="status">
+          Choose a reported managed worktree to review cleanup.
+        </p>
+      )}
+      {inspection?.phase === "checking-review" && (
+        <p role="status">Checking the selected worktree…</p>
+      )}
+      {inspection?.phase === "review-changed" && (
+        <p role="status">
+          The cleanup review changed. Review the current worktree again.
+        </p>
+      )}
+      {inspection && inspection.phase !== "eligible-review" && (
+        <>
+          <p>
+            Project <code>{inspection.selection.projectId}</code> · worktree{" "}
+            <code>{inspection.selection.worktreeId}</code> · repository{" "}
+            <code>{inspection.selection.repository}</code>.
+          </p>
+          {inspection.notice && <p role="status">{inspection.notice}</p>}
+          {(inspection.phase === "review-refused" ||
+            inspection.phase === "review-unknown") && (
+            <>
+              <p role="status">
+                Cleanup review:{" "}
+                {inspection.phase === "review-refused" ? "refused" : "unknown"}.
+              </p>
+              {inspection.review && (
+                <>
+                  <p>
+                    Observed at{" "}
+                    <time dateTime={inspection.review.asOf}>
+                      {inspection.review.asOf}
+                    </time>
+                    .
+                  </p>
+                  <ul>
+                    {inspection.review.reasons.map((reason) => (
+                      <li key={reason}>{reason}</li>
+                    ))}
+                  </ul>
+                </>
+              )}
+            </>
+          )}
+        </>
+      )}
+      {inspection?.phase === "eligible-review" && (
+        <CleanupEligibleReview
+          inspection={inspection}
+          canConfirm={cleanup.canConfirm}
+          onConfirm={cleanup.confirmReviewed}
+        />
+      )}
+      {current && cleanup.notice && <p role="status">{cleanup.notice}</p>}
+      {candidate && (
+        <Button
+          disabled={!readable}
+          onClick={() => {
+            if (cleanup.canReview(candidate.scope))
+              void cleanup.reviewCandidate(candidate.scope);
+          }}
+        >
+          Review this worktree again
+        </Button>
+      )}
     </section>
   );
 }
