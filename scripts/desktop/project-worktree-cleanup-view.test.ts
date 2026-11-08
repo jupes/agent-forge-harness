@@ -2,6 +2,7 @@ import { expect, test } from "bun:test";
 import {
   cleanupAuthorityKey,
   createCleanupTransport,
+  discoverCleanupAuthorities,
   parseCleanupAuthority,
 } from "../../apps/desktop/src/use-project-worktree-cleanup";
 import { createOperatorClient } from "../../docs/js/operator";
@@ -269,4 +270,126 @@ test("cleanup oversized authority is rejected before JSON parsing", () => {
   }
   expect(rejected).toBe(true);
   expect(parses).toBe(0);
+});
+
+const prefix = "agent-forge.project-worktree-cleanup.v1.";
+const pair = (root: string) =>
+  ["marker", "inventory"].map(
+    (suffix) => prefix + cleanupAuthorityKey(origin, root) + "." + suffix,
+  );
+function keyStorage(keys: string[]) {
+  return {
+    get length() {
+      return keys.length;
+    },
+    key(index: number) {
+      return keys[index] ?? null;
+    },
+  };
+}
+
+test("cleanup discovery counts current empty authority and finite512/8/16 boundaries without writing", () => {
+  const current = cleanupAuthorityKey(origin, "C:/Current");
+  const seven = Array.from({ length: 7 }, (_, index) =>
+    pair("C:/Root" + index),
+  ).flat();
+  const keys = [
+    ...seven,
+    ...Array.from({ length: 498 }, (_, index) => "unrelated" + index),
+  ];
+  const within = discoverCleanupAuthorities(keyStorage(keys), origin, current);
+  expect(within.hold).toBeNull();
+  expect(within.authorities).toHaveLength(8);
+  expect(within.authorities[0]).toEqual({
+    key: current,
+    origin,
+    repository: "C:/Current",
+    marker: false,
+    inventory: false,
+  });
+  expect(
+    discoverCleanupAuthorities(
+      keyStorage([...keys, "overflow"]),
+      origin,
+      current,
+    ).hold,
+  ).not.toBeNull();
+  const eight = [...seven, ...pair("C:/Eighth")];
+  expect(
+    discoverCleanupAuthorities(keyStorage(eight), origin, null).hold,
+  ).toBeNull();
+  expect(
+    discoverCleanupAuthorities(keyStorage(eight), origin, current).hold,
+  ).not.toBeNull();
+  expect(
+    discoverCleanupAuthorities(
+      keyStorage([...eight, ...pair("C:/Ninth")]),
+      origin,
+      null,
+    ).hold,
+  ).not.toBeNull();
+});
+
+test("cleanup discovery preserves known/current rows on malformed, partial, duplicate, changing and inaccessible metadata", () => {
+  const current = cleanupAuthorityKey(origin, "C:/Current");
+  for (const keys of [
+    [...pair("C:/Saved"), prefix + "bad.reset"],
+    [pair("C:/Saved")[0]!],
+    [prefix + '["elsewhere","C:/Other"].marker'],
+    ["same", "same"],
+  ]) {
+    const before = [...keys];
+    const result = discoverCleanupAuthorities(
+      keyStorage(keys),
+      origin,
+      current,
+    );
+    expect(result.hold).not.toBeNull();
+    expect(result.authorities[0]?.key).toBe(current);
+    expect(keys).toEqual(before);
+  }
+  let calls = 0;
+  const changing = {
+    length: 1,
+    key: () => (++calls === 1 ? "first" : "changed"),
+  };
+  expect(
+    discoverCleanupAuthorities(changing, origin, current).hold,
+  ).not.toBeNull();
+  expect(calls).toBe(2);
+  const inaccessible = {
+    get length(): number {
+      throw Error("denied");
+    },
+    key: () => null,
+  };
+  expect(
+    discoverCleanupAuthorities(inaccessible, origin, current).authorities[0]
+      ?.key,
+  ).toBe(current);
+  expect(
+    discoverCleanupAuthorities(inaccessible, origin, current).hold,
+  ).not.toBeNull();
+});
+
+test("cleanup discovery refuses oversized dedicated keys before regular-expression processing", () => {
+  const oversized = prefix + "x".repeat(2049) + ".inventory";
+  const originalExec = RegExp.prototype.exec;
+  let oversizedRegexCalls = 0;
+  let result: ReturnType<typeof discoverCleanupAuthorities> | undefined;
+  try {
+    RegExp.prototype.exec = function (this: RegExp, input: string) {
+      if (
+        this.source === "^(.*)\\.(marker|inventory)$" &&
+        input.length > 2048 + ".inventory".length
+      )
+        oversizedRegexCalls++;
+      return originalExec.call(this, input);
+    };
+    result = discoverCleanupAuthorities(keyStorage([oversized]), origin, null);
+  } finally {
+    RegExp.prototype.exec = originalExec;
+  }
+  expect(typeof result?.hold).toBe("string");
+  expect(oversizedRegexCalls).toBe(0);
 });
