@@ -5,6 +5,7 @@ import {
   mkdirSync,
   readFileSync,
   realpathSync,
+  unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { join, relative } from "node:path";
@@ -799,4 +800,156 @@ test.each([
   ).rejects.toMatchObject({ status: 409 });
   expect(readWorktreeCleanupInventory(f.home)).toEqual([retained]);
   expect(f.calls).toEqual([]);
+});
+
+test.each([
+  "reserved write failure",
+  "reserved readback loss",
+  "attempt write failure",
+  "attempt readback loss",
+  "terminal write failure",
+  "terminal save then throw",
+  "normal false",
+  "runner throws",
+  "cache publication lost",
+] as const)("cleanup preserves durable evidence after %s", async (kind) => {
+  const f = await fixture(),
+    saved = await savedCleanup(f, false);
+  const journal = join(f.home, "project-worktree-cleanup", "operations.json");
+  const failAt = kind.startsWith("reserved")
+    ? 1
+    : kind.startsWith("attempt")
+      ? 2
+      : kind.startsWith("terminal")
+        ? 3
+        : 0;
+  let writes = 0,
+    removes = 0,
+    faultReached = false;
+  let reserved:
+    | ReturnType<typeof readWorktreeCleanupInventory>[number]
+    | undefined;
+  let attempted: ReturnType<typeof readWorktreeCleanupInventory> = [];
+  let nativeArgs: readonly string[] = [],
+    instrumentationError: unknown = null;
+  const owner = createProjectWorktreeCleanupService(
+    {
+      home: f.home,
+      root: f.root,
+      queueLockFile: join(f.home, "queue-lock.db"),
+      ledgerPath: join(f.home, "ledger.db"),
+      runBd: (args) => readonlyExport(f, args),
+    },
+    {
+      persistJournal: (file, content) => {
+        writes++;
+        if (writes === failAt && kind.endsWith("write failure")) {
+          faultReached = true;
+          throw Error("Injected before-save failure");
+        }
+        writeOwnerOnly(file, content);
+        if (writes === 1) {
+          try {
+            reserved = readWorktreeCleanupInventory(f.home)[0];
+          } catch (error) {
+            instrumentationError = error;
+          }
+        }
+        if (writes === failAt && kind.endsWith("readback loss")) {
+          unlinkSync(file);
+          faultReached = true;
+        }
+        if (writes === failAt && kind === "terminal save then throw") {
+          faultReached = true;
+          throw Error("Injected after-save failure");
+        }
+      },
+      git: (args, cwd, timeout) => {
+        if (args[0] === "worktree" && args[1] === "remove") {
+          removes++;
+          nativeArgs = [...args];
+          try {
+            attempted = readWorktreeCleanupInventory(f.home);
+          } catch (error) {
+            instrumentationError = error;
+          }
+          if (kind === "runner throws") {
+            faultReached = true;
+            throw Error("Injected native uncertainty");
+          }
+          if (kind === "normal false") {
+            faultReached = true;
+            return { status: 1, stdout: "", stderr: "Injected refusal" };
+          }
+          if (kind === "cache publication lost") {
+            unlinkSync(f.registry);
+            mkdirSync(f.registry);
+            faultReached = true;
+          }
+        }
+        return f.git(args, cwd, timeout);
+      },
+    },
+  );
+  const attempt = () =>
+    owner
+      .cleanup(f.project.id, saved.original.request, {
+        auditEventId: saved.original.audit.eventId,
+      })
+      .then(
+        (receipt) => ({ receipt, error: null }),
+        (error: unknown) => ({ receipt: null, error }),
+      );
+  const first = await attempt();
+  expect(instrumentationError).toBeNull();
+  expect(faultReached).toBe(true);
+  expect(writes).toBeGreaterThanOrEqual(failAt || 2);
+  if (removes > 0) {
+    expect(reserved).toBeDefined();
+    expect(reserved?.original).toMatchObject({
+      projectId: f.project.id,
+      request: saved.original.request,
+      requestHash: saved.original.requestHash,
+      audit: saved.original.audit,
+    });
+    expect(attempted).toHaveLength(1);
+    expect(attempted[0]?.original).toEqual(reserved?.original);
+    expect(attempted[0]).toMatchObject({
+      phase: "attempted",
+      attemptedAt: expect.any(String),
+    });
+    expect(nativeArgs).not.toContain("--force");
+  }
+  const unavailable =
+    kind === "reserved write failure" || kind.endsWith("readback loss");
+  if (unavailable) expect(first.error).toMatchObject({ status: 503 });
+  else
+    expect(first.receipt?.state).toBe(
+      kind === "terminal save then throw" ? "confirmed" : "unknown",
+    );
+  expect(removes).toBe(
+    kind.startsWith("reserved") || kind.startsWith("attempt") ? 0 : 1,
+  );
+  const before = { removes, calls: f.calls.length };
+  // No original was written and no native effect was possible in this distinct prepublication case.
+  if (kind === "reserved write failure") {
+    expect(readWorktreeCleanupInventory(f.home)).toEqual([]);
+    return;
+  }
+  expect(await attempt()).toEqual(first);
+  expect({ removes, calls: f.calls.length }).toEqual(before);
+  if (kind !== "terminal save then throw") {
+    const replacement = await savedCleanup(f, false, (request) => ({
+      ...request,
+      requestId: "77000000-0000-4000-8000-000000000001",
+    }));
+    await expect(
+      owner.cleanup(f.project.id, replacement.original.request, {
+        auditEventId: replacement.original.audit.eventId,
+      }),
+    ).rejects.toMatchObject({
+      status: kind.endsWith("readback loss") ? 503 : 409,
+    });
+    expect({ removes, calls: f.calls.length }).toEqual(before);
+  }
 });
