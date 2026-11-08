@@ -222,6 +222,24 @@ export interface CleanupBrowserScope {
   repository: string;
   worktreeId: string;
 }
+const cleanupScopeSchema = z
+  .object({
+    projectId: cleanupReceiptSchema.shape.projectId,
+    repository: cleanupRequestSchema.shape.repository,
+    worktreeId: cleanupRequestSchema.shape.expectedRecord.shape.id,
+  })
+  .strict();
+function sameCleanupScope(
+  left: CleanupBrowserScope | null,
+  right: CleanupBrowserScope,
+) {
+  return (
+    left !== null &&
+    left.projectId === right.projectId &&
+    left.repository === right.repository &&
+    left.worktreeId === right.worktreeId
+  );
+}
 export interface CleanupBrowserDependencies {
   authorityKey: string;
   storage: Pick<Storage, "getItem" | "setItem">;
@@ -292,6 +310,8 @@ export class ProjectWorktreeCleanupOwner {
     inspection: { phase: "idle", selection: null, review: null, notice: "" },
   });
   private listeners = new Set<(value: CleanupBrowserView) => void>();
+  private inspectionEpoch = 0;
+  private reviewedEpoch: number | null = null;
   private initialized = false;
   private restoring: Promise<void> | null = null;
   private deps: CleanupBrowserDependencies;
@@ -342,6 +362,130 @@ export class ProjectWorktreeCleanupOwner {
       } catch {
         /* Observers cannot change verified truth. */
       }
+    }
+  }
+  private publishInspection(
+    turn: number,
+    inspection: CleanupBrowserInspection,
+  ) {
+    if (turn !== this.inspectionEpoch) return;
+    this.reviewedEpoch = inspection.phase === "eligible-review" ? turn : null;
+    this.publish({ ...this.value, inspection });
+  }
+  private async readReview(scope: CleanupBrowserScope): Promise<CleanupReview> {
+    const review = cleanupReviewSchema.parse(
+      await this.deps.readReview(
+        "/projects/" +
+          encodeURIComponent(scope.projectId) +
+          "/settings/worktree-cleanup-review/" +
+          encodeURIComponent(scope.worktreeId),
+        { maxBodyBytes: 65536 },
+      ),
+    );
+    if (
+      review.projectId !== scope.projectId ||
+      review.worktreeId !== scope.worktreeId ||
+      (review.state === "eligible" && review.repository !== scope.repository)
+    )
+      throw Error("Cleanup review does not match the selected native target");
+    return review;
+  }
+  async inspect(selection: CleanupBrowserScope | null) {
+    const turn = ++this.inspectionEpoch;
+    this.reviewedEpoch = null;
+    if (selection === null) {
+      this.publishInspection(turn, {
+        phase: "idle",
+        selection: null,
+        review: null,
+        notice: "",
+      });
+      return;
+    }
+    let selected: CleanupBrowserScope | null = null;
+    try {
+      selected = cleanupScopeSchema.parse(structuredClone(selection));
+      if (turn !== this.inspectionEpoch) return;
+      const before = cleanupScopeSchema
+        .nullable()
+        .parse(structuredClone(this.deps.currentScope()));
+      if (turn !== this.inspectionEpoch) return;
+      if (!sameCleanupScope(before, selected)) {
+        this.publishInspection(turn, {
+          phase: "review-changed",
+          selection: selected,
+          review: null,
+          notice:
+            "Select the current project and worktree before reviewing cleanup.",
+        });
+        return;
+      }
+      this.publishInspection(turn, {
+        phase: "checking-review",
+        selection: selected,
+        review: null,
+        notice: "",
+      });
+      if (turn !== this.inspectionEpoch) return;
+      const review = await this.readReview(selected);
+      if (turn !== this.inspectionEpoch) return;
+      const after = cleanupScopeSchema
+        .nullable()
+        .parse(structuredClone(this.deps.currentScope()));
+      if (turn !== this.inspectionEpoch) return;
+      if (!sameCleanupScope(after, selected)) {
+        this.publishInspection(turn, {
+          phase: "review-changed",
+          selection: selected,
+          review: null,
+          notice: "The current cleanup selection changed. Review it again.",
+        });
+        return;
+      }
+      switch (review.state) {
+        case "eligible":
+          this.publishInspection(turn, {
+            phase: "eligible-review",
+            selection: selected,
+            review,
+            notice: "",
+          });
+          break;
+        case "refused":
+          this.publishInspection(turn, {
+            phase: "review-refused",
+            selection: selected,
+            review,
+            notice: "",
+          });
+          break;
+        case "unknown":
+          this.publishInspection(turn, {
+            phase: "review-unknown",
+            selection: selected,
+            review,
+            notice: "",
+          });
+          break;
+      }
+    } catch {
+      this.publishInspection(
+        turn,
+        selected
+          ? {
+              phase: "review-unknown",
+              selection: selected,
+              review: null,
+              notice:
+                "Cleanup review could not be verified. No original was created.",
+            }
+          : {
+              phase: "idle",
+              selection: null,
+              review: null,
+              notice: "Select a valid current project and managed worktree.",
+            },
+      );
     }
   }
   private raw(): [string | null, string | null] {

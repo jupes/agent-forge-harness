@@ -833,3 +833,123 @@ test("cleanup project projection separates selected review from another original
     cleanupBrowserForProject(settled, projectId).records[0]?.receipt,
   ).toMatchObject({ state: "confirmed", projectId });
 });
+
+test("inspection B survives a paused original restore A without mutating global recovery", async () => {
+  const f = ownerFixture();
+  await f.owner.restore();
+  const inventoryKey = [...f.saved.keys()].find((key) =>
+    key.endsWith(".inventory"),
+  );
+  if (!inventoryKey) throw Error("Expected initialized inventory");
+  f.saved.set(
+    inventoryKey,
+    rawInventory([{ original, receipt: null }], request.requestId),
+  );
+  const selected = {
+    projectId: "project-10000000-0000-4000-8000-000000000099",
+    repository: request.repository,
+    worktreeId: "other-shift-1",
+  };
+  const proof = cleanupReviewSchema.options[0].parse({
+    ...review,
+    ...selected,
+    expectedRecord: {
+      ...request.expectedRecord,
+      id: selected.worktreeId,
+      branch: "feat/beta",
+      beadId: "beta-task",
+      path: request.expectedRecord.path.replace(
+        request.expectedRecord.id,
+        selected.worktreeId,
+      ),
+    },
+  });
+  const reads: Array<{ url: string; maxBodyBytes: number }> = [],
+    effects: string[] = [];
+  let release = () => {},
+    signal = () => {},
+    reached = false,
+    timedOut = false;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const entered = new Promise<void>((resolve) => {
+    signal = resolve;
+  });
+  const owner = new ProjectWorktreeCleanupOwner({
+    ...f.deps,
+    currentScope: () => selected,
+    hash: async (text) => {
+      effects.push("hash");
+      reached = true;
+      signal();
+      await gate;
+      return storedHash(text);
+    },
+    uuid: () => {
+      effects.push("uuid");
+      return request.requestId;
+    },
+    operatorPost: async () => {
+      effects.push("POST");
+      throw Error("Unexpected cleanup POST");
+    },
+    readReview: async (url, limits) => {
+      reads.push({ url, ...limits });
+      return proof;
+    },
+  });
+  const restoring = owner.restore();
+  const watchdog = setTimeout(() => {
+    timedOut = true;
+    signal();
+    release();
+  }, 8000);
+  let inspected: CleanupBrowserInspection | null = null;
+  try {
+    await entered;
+    const before = [...f.trace],
+      caller = { ...selected };
+    const reading = owner.inspect(caller);
+    caller.projectId = projectId;
+    caller.repository = "/changed";
+    caller.worktreeId = "changed";
+    await reading;
+    inspected = owner.snapshot().inspection;
+    expect(inspected).toMatchObject({
+      phase: "eligible-review",
+      selection: selected,
+      review: proof,
+    });
+    expect(owner.snapshot().inventory).toBeNull();
+    expect(f.trace).toEqual(before);
+  } finally {
+    release();
+    await restoring;
+    clearTimeout(watchdog);
+  }
+  expect({ reached, timedOut }).toEqual({ reached: true, timedOut: false });
+  expect(reads).toEqual([
+    {
+      url:
+        "/projects/" +
+        selected.projectId +
+        "/settings/worktree-cleanup-review/" +
+        selected.worktreeId,
+      maxBodyBytes: 65536,
+    },
+  ]);
+  expect(effects).toEqual(["hash"]);
+  const view = owner.snapshot();
+  expect(view.inspection).toEqual(inspected);
+  expect(view.phase).toBe("retained-unconfirmed");
+  expect(cleanupBrowserForProject(view, selected.projectId)).toMatchObject({
+    records: [],
+    active: null,
+    globalHold: true,
+    inspection: inspected,
+  });
+  expect(cleanupBrowserForProject(view, projectId).active?.original).toEqual(
+    original,
+  );
+});
