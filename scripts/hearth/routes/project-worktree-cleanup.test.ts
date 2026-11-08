@@ -1,12 +1,18 @@
 import { Database } from "bun:sqlite";
 import { afterEach, expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import type { WorktreeRecord } from "../../../types/beads";
 import { appendEvent } from "../../ledger/append";
 import { openLedger } from "../../ledger/db";
-import { projectCatalogPath } from "../../projects/store";
+import { createProjectStore, projectCatalogPath } from "../../projects/store";
 import {
   FIXTURE_PROJECT_ID,
   projectCatalogFixture,
@@ -112,7 +118,11 @@ const opened: TestHearth[] = [];
 afterEach(async () => {
   for (const h of opened.splice(0)) await h.close();
 });
-async function eligibleCleanupFixture(api: TestHearthOptions["api"] = {}) {
+async function eligibleCleanupFixture(
+  api: TestHearthOptions["api"] = {},
+  native: "complete" | "throw" = "complete",
+) {
+  const nativeFaults: string[] = [];
   const calls: string[][] = [],
     errors: string[] = [],
     exports: string[][] = [];
@@ -136,6 +146,10 @@ async function eligibleCleanupFixture(api: TestHearthOptions["api"] = {}) {
         errors.push("Could not observe durable attempt at native dispatch");
       }
       removals.push({ args: [...args], rows });
+      if (native === "throw") {
+        nativeFaults.push("throw");
+        throw Error("Injected native uncertainty after durable attempt");
+      }
       return { status: 0, stdout: "", stderr: "" };
     }
     if (args.includes("config")) return { status: 1, stdout: "", stderr: "" };
@@ -267,7 +281,17 @@ async function eligibleCleanupFixture(api: TestHearthOptions["api"] = {}) {
     },
     { membershipOnly: true, includeEmpty: true, omitRuns: true },
   );
-  return { h, row: target, git, calls, errors, exports, load, removals };
+  return {
+    h,
+    row: target,
+    git,
+    calls,
+    errors,
+    exports,
+    load,
+    removals,
+    nativeFaults,
+  };
 }
 
 test("cleanup HTTP confirms one exact audited original and replays only saved receipts", async () => {
@@ -619,4 +643,153 @@ test("cleanup missing internal context and foreign native review cannot enter th
     git: f.calls,
     initialized: existsSync(join(f.h.home, "project-worktree-cleanup")),
   }).toEqual({ source: [], native: [], git: [], initialized: false });
+});
+
+test("unknown cleanup HTTP recovery retains exact evidence and captured host authority", async () => {
+  const f = await eligibleCleanupFixture({}, "throw"),
+    request = fixtureReview(f);
+  const receipt = await cleanupReceipt(await postCleanup(f.h, request));
+  const attempted = f.removals[0]?.rows[0];
+  if (!attempted)
+    throw Error("Expected attempted evidence before native uncertainty");
+  expect(f.nativeFaults).toEqual(["throw"]);
+  expect(f.errors).toEqual([]);
+  expect(receipt).toMatchObject({
+    ...request,
+    projectId: FIXTURE_PROJECT_ID,
+    state: "unknown",
+    audit: attempted.original.audit,
+    attemptedAt: attempted.attemptedAt,
+    requestHash: attempted.original.requestHash,
+  });
+  const identity = {
+    projectId: FIXTURE_PROJECT_ID,
+    requestId: request.requestId,
+    requestHash: receipt.requestHash,
+  };
+  const get = (hash = receipt.requestHash, project = FIXTURE_PROJECT_ID) =>
+    fetch(
+      f.h.api +
+        "/projects/" +
+        project +
+        "/settings/worktree-cleanup/" +
+        request.requestId +
+        "?requestHash=" +
+        hash,
+      {
+        headers: f.h.headers(f.h.hearth.token),
+        signal: AbortSignal.timeout(5000),
+      },
+    );
+  const trace = () => ({
+    git: f.calls.length,
+    source: f.exports.length,
+    native: f.removals.length,
+  });
+  const before = trace();
+  expect(await cleanupReceipt(await postCleanup(f.h, request))).toEqual(
+    receipt,
+  );
+  expect(await cleanupReceipt(await get())).toEqual(receipt);
+  const replacement = await postCleanup(f.h, {
+    ...request,
+    requestId: "a1000000-0000-4000-8000-000000000003",
+  });
+  expect(replacement.status).toBe(409);
+  expect(await apiEnvelope(replacement)).toMatchObject({
+    ok: false,
+    data: null,
+  });
+  const audits = f.h.events(["operator.action"]).length;
+  for (const response of [
+    await get("b".repeat(64)),
+    await get(receipt.requestHash, projectId),
+  ]) {
+    expect(response.status).toBe(409);
+    expect(await apiEnvelope(response)).toMatchObject({
+      ok: false,
+      data: null,
+    });
+  }
+  const originalHost = {
+    home: f.h.home,
+    root: f.h.root,
+    queueLockFile: join(f.h.home, "queue-lock.db"),
+    ledgerPath: f.h.ledger,
+    runBd: f.h.bd.run,
+  };
+  const host = { ...originalHost },
+    controls = { git: f.git };
+  const captured = createProjectWorktreeCleanupRoutes(host, controls);
+  host.home = host.root = host.queueLockFile = host.ledgerPath = "/changed";
+  host.runBd = () => {
+    throw Error("Unexpected mutated source");
+  };
+  controls.git = () => {
+    throw Error("Unexpected mutated Git");
+  };
+  const saved = await captured.receipt.read(identity);
+  expect(saved.status).toBe(200);
+  if (!("data" in saved))
+    throw Error("Expected a saved cleanup receipt response");
+  expect(cleanupReceiptSchema.parse(saved.data)).toEqual(receipt);
+  const other = await startTestHearth();
+  opened.push(other);
+  expect(
+    await createProjectWorktreeCleanupRoutes(
+      { ...originalHost, root: other.root },
+      { git: f.git },
+    ).receipt.read(identity),
+  ).toMatchObject({ status: 409 });
+  const journal = join(f.h.home, "project-worktree-cleanup", "operations.json");
+  const bytes = readFileSync(journal, "utf8"),
+    projects = createProjectStore(f.h.home);
+  await projects.preferences(FIXTURE_PROJECT_ID, 1, { archived: true });
+  expect(await cleanupReceipt(await get())).toEqual(receipt);
+  // Trusted external metadata-loss fixture tests history recovery, not legal project deletion.
+  const catalog = projects.read();
+  catalog.projects = [];
+  writeOwnerOnly(projectCatalogPath(f.h.home), JSON.stringify(catalog));
+  expect(await cleanupReceipt(await get())).toEqual(receipt);
+  expect(readFileSync(journal, "utf8")).toBe(bytes);
+  for (const lost of [true, false]) {
+    if (lost) unlinkSync(journal);
+    else writeOwnerOnly(journal, "{broken");
+    const response = await get();
+    expect(response.status).toBe(503);
+    expect(await apiEnvelope(response)).toMatchObject({
+      ok: false,
+      data: null,
+    });
+    if (lost) expect(existsSync(journal)).toBe(false);
+    else expect(readFileSync(journal, "utf8")).toBe("{broken");
+  }
+  expect(trace()).toEqual(before);
+  expect(f.h.events(["operator.action"])).toHaveLength(audits);
+});
+
+test("unsupported linked cleanup authority is isolated from ordinary Hearth reads", async () => {
+  const h = await startTestHearth({ linkedWorktree: true });
+  opened.push(h);
+  const response = await fetch(
+    h.api +
+      "/projects/" +
+      FIXTURE_PROJECT_ID +
+      "/settings/worktree-cleanup/" +
+      review.requestId +
+      "?requestHash=" +
+      "a".repeat(64),
+    { headers: h.headers(h.hearth.token), signal: AbortSignal.timeout(5000) },
+  );
+  expect(response.status).toBe(503);
+  expect(await apiEnvelope(response)).toMatchObject({ ok: false, data: null });
+  const normal = await fetch(h.api + "/config", {
+    headers: h.headers(h.hearth.token),
+    signal: AbortSignal.timeout(5000),
+  });
+  expect(normal.status).toBe(200);
+  expect(await apiEnvelope(normal)).toMatchObject({ ok: true, error: null });
+  expect(h.bd.calls).toEqual([]);
+  expect(h.shifts.launches).toEqual([]);
+  expect(existsSync(join(h.home, "project-worktree-cleanup"))).toBe(false);
 });
