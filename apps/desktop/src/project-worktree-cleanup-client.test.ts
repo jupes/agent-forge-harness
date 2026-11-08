@@ -1,5 +1,6 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
+import { NotSent } from "../../../docs/js/operator";
 import {
   canonicalCleanupRequest,
   cleanupReceiptSchema,
@@ -3740,4 +3741,203 @@ test.each([
       storedHash,
     ),
   ).toEqual(empty);
+});
+
+test("strict POST uncertainty keeps the durable full original and never resends on new review", async () => {
+  const envelope = { ok: true, data: confirmed, error: null };
+  const success = JSON.stringify(envelope);
+  const duplicate =
+    '{"ok":true,"d\\u0061ta":' +
+    JSON.stringify(confirmed) +
+    ',"data":' +
+    JSON.stringify(confirmed) +
+    ',"error":null}';
+  const oversized = " ".repeat(65537) + success;
+  for (const raw of [duplicate, oversized]) {
+    let decoded: unknown;
+    try {
+      decoded = JSON.parse(raw);
+    } catch {
+      throw Error("Expected otherwise valid success fixture JSON");
+    }
+    expect(decoded).toEqual(envelope);
+  }
+  expect(duplicate).toContain("\\u0061");
+  expect(new TextEncoder().encode(oversized).byteLength).toBeGreaterThan(65536);
+  const foreign: unknown[] = [
+    { ...confirmed, projectId: "project-10000000-0000-4000-8000-000000000099" },
+    { ...confirmed, requestId: "20000000-0000-4000-8000-000000000099" },
+    { ...confirmed, requestHash: "f".repeat(64) },
+    { ...confirmed, repository: "/repo/foreign" },
+    { ...confirmed, expectedCatalogRevision: 4 },
+    { ...confirmed, expectedHead: "b".repeat(40) },
+    ...[
+      { id: "foreign-shift" },
+      { path: "/repo/foreign/trees/foreign-shift" },
+      { branch: "feat/foreign" },
+      { createdAt: "2026-11-07T00:00:00.000Z" },
+      { beadId: "foreign-task" },
+    ].map((change) => ({
+      ...confirmed,
+      expectedRecord: { ...request.expectedRecord, ...change },
+    })),
+  ];
+  const chronology = {
+    ...confirmed,
+    audit: { ...confirmed.audit, ts: "2026-11-08T00:00:03.500Z" },
+  };
+  for (const receipt of [...foreign, chronology])
+    expect(cleanupReceiptSchema.safeParse(receipt).success).toBe(true);
+  const invalid = {
+    ...confirmed,
+    audit: { ...confirmed.audit, ulid: "8" + "0".repeat(25) },
+  };
+  expect(cleanupReceiptSchema.safeParse(invalid).success).toBe(false);
+  const answer = (
+    name: string,
+    raw: string,
+    status = 200,
+    expected: unknown = null,
+  ) => ({
+    name,
+    expected,
+    reply: async () => new Response(raw, { status }),
+  });
+  const cases: Array<{
+    name: string;
+    expected: unknown;
+    reply: () => Promise<Response>;
+  }> = [
+    ...[
+      Error("Transport failed"),
+      new NotSent("Actual operator transport did not send"),
+      RangeError("Receiving dependency rejected its byte cap"),
+    ].map((error) => ({
+      name: error.message,
+      expected: null,
+      reply: async () => {
+        throw error;
+      },
+    })),
+    ...[404, 409, 408, 500].map((status) =>
+      answer("HTTP " + status, success, status),
+    ),
+    answer("malformed JSON", "{"),
+    answer("ok false", JSON.stringify({ ...envelope, ok: false })),
+    answer(
+      "missing envelope field",
+      JSON.stringify({ ok: true, data: confirmed }),
+    ),
+    answer(
+      "non-null envelope error",
+      JSON.stringify({ ...envelope, error: "not success" }),
+    ),
+    answer(
+      "extra envelope field",
+      JSON.stringify({ ...envelope, extra: true }),
+    ),
+    answer("decoded duplicate", duplicate),
+    answer("buffered byte cap", oversized),
+    ...foreign.map((receipt, index) =>
+      answer(
+        "foreign original field " + index,
+        JSON.stringify({ ...envelope, data: receipt }),
+      ),
+    ),
+    answer(
+      "invalid receipt schema",
+      JSON.stringify({ ...envelope, data: invalid }),
+    ),
+    answer(
+      "invalid audit chronology",
+      JSON.stringify({ ...envelope, data: chronology }),
+    ),
+    answer(
+      "valid unknown",
+      JSON.stringify({ ...envelope, data: unknownReceipt }),
+      200,
+      unknownReceipt,
+    ),
+  ];
+  for (const sample of cases) {
+    const f = await confirmationFixture(inventoryFrom([], null));
+    const sent: Array<{
+      raw: Array<[string, string]>;
+      view: CleanupBrowserView;
+      hashes: Array<{ text: string; minted: number; writes: number }>;
+    }> = [];
+    f.control.reply = async () => {
+      sent.push({
+        raw: [...f.saved.entries()],
+        view: f.owner.snapshot(),
+        hashes: [...f.trace.hashes],
+      });
+      return sample.reply();
+    };
+    await f.owner.inspect(f.control.scope);
+    expect(f.owner.snapshot().inspection.phase).toBe("eligible-review");
+    await f.owner.confirm();
+    expect({
+      sample: sample.name,
+      minted: f.trace.minted,
+      posts: f.trace.posts.length,
+      captured: sent.length,
+    }).toEqual({ sample: sample.name, minted: 1, posts: 1, captured: 1 });
+    const atSend = sent[0];
+    if (!atSend) throw Error("Expected actual POST boundary observation");
+    expect(atSend.view).toMatchObject({
+      phase: "dispatching",
+      inventory: inventoryReceipt(null),
+    });
+    expect(atSend.hashes[atSend.hashes.length - 1]).toEqual({
+      text: canonicalCleanupRequest(projectId, request),
+      minted: 1,
+      writes: 1,
+    });
+    const sentMap = new Map(atSend.raw);
+    expect(
+      await readCleanupBrowserInventory(
+        sentMap.get(f.markerKey) ?? null,
+        sentMap.get(f.inventoryKey) ?? null,
+        authorityKey,
+        storedHash,
+      ),
+    ).toEqual(inventoryReceipt(null));
+    expect(f.trace.posts[0]).toEqual({
+      url: "/projects/" + projectId + "/settings/worktree-cleanup",
+      body: request,
+      limits: { maxBodyBytes: 65536 },
+    });
+    const expected = inventoryReceipt(sample.expected);
+    expect(f.owner.snapshot()).toMatchObject({
+      storageError: false,
+      inventory: expected,
+    });
+    const saved = [...f.saved.entries()],
+      writes = f.trace.writes.length;
+    expect(writes).toBe(sample.expected === null ? 1 : 2);
+    await f.owner.confirm();
+    await f.owner.inspect(f.control.scope);
+    await f.owner.confirm();
+    expect([
+      f.trace.minted,
+      f.trace.posts.length,
+      f.trace.writes.length,
+    ]).toEqual([1, 1, writes]);
+    expect(f.owner.snapshot()).toMatchObject({
+      phase: "retained-unconfirmed",
+      storageError: false,
+      inventory: expected,
+      inspection: { phase: "review-changed", review: null },
+    });
+    expect([...f.saved.entries()]).toEqual(saved);
+    expect(
+      await readCleanupBrowserInventory(
+        f.saved.get(f.markerKey) ?? null,
+        f.saved.get(f.inventoryKey) ?? null,
+        authorityKey,
+        storedHash,
+      ),
+    ).toEqual(expected);
+  }
 });
