@@ -38,6 +38,7 @@ import {
   projectGeneralSettingsSchema,
 } from "./project-general-protocol";
 import {
+  keeperVisibilitySchema,
   type ProjectKeeperSettings,
   projectKeeperSettingsSchema,
 } from "./project-keeper-protocol";
@@ -198,6 +199,7 @@ function validProject(value: unknown): value is ProjectRecord {
       "workspaces",
       "keeperSmith",
       "keeperAutonomy",
+      "keeperVisibility",
       "claudeSessionSmith",
       "codexSessionSmith",
       "geminiSessionSmith",
@@ -222,6 +224,8 @@ function validProject(value: unknown): value is ProjectRecord {
     (!Object.hasOwn(value, "keeperAutonomy") ||
       value["keeperAutonomy"] === "suggest-only" ||
       value["keeperAutonomy"] === "propose-for-approval") &&
+    (!Object.hasOwn(value, "keeperVisibility") ||
+      keeperVisibilitySchema.safeParse(value["keeperVisibility"]).success) &&
     time(value["createdAt"]) &&
     time(value["updatedAt"]) &&
     validNew(value)
@@ -840,6 +844,42 @@ export function createProjectStore(
           ...(catalog.createOperations !== undefined
             ? { createOperations: catalog.createOperations }
             : {}),
+        };
+      });
+    },
+    async updateKeeperVisibility(
+      id: string,
+      expectedRevision: number,
+      keeperVisibility: unknown,
+    ): Promise<ProjectCatalog> {
+      const checked = keeperVisibilitySchema.safeParse(keeperVisibility);
+      if (!isProjectId(id) || !checked.success)
+        throw new ProjectStoreError(
+          400,
+          "Expected a project id and valid Keeper visibility.",
+        );
+      return change(expectedRevision, (catalog) => {
+        const project = catalog.projects.find((item) => item.id === id);
+        if (!project)
+          throw new ProjectStoreError(
+            404,
+            "This project is no longer in the catalog.",
+          );
+        if (project.archived)
+          throw new ProjectStoreError(
+            409,
+            "Unarchive this project before changing Keeper visibility.",
+          );
+        return {
+          projects: catalog.projects.map((item) =>
+            item.id === id
+              ? {
+                  ...item,
+                  keeperVisibility: checked.data,
+                  updatedAt: now().toISOString(),
+                }
+              : item,
+          ),
         };
       });
     },

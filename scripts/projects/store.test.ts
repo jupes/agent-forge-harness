@@ -1189,3 +1189,109 @@ test("Keeper defaults persist with revision conflicts and configured validation"
   });
   expect(Object.hasOwn(inherited.projects[0]!, "keeperSmith")).toBe(false);
 });
+
+test("Keeper visibility persists both modes without changing Smith, autonomy or nonempty creation history", async () => {
+  const { home, store, input } = fixture();
+  const created = await store.create(input, 0),
+    id = created.projects[0]!.id;
+  await store.updateKeeper(
+    id,
+    1,
+    { keeperSmith: "unavailable-smith", keeperAutonomy: "suggest-only" },
+    () => {},
+  );
+  await store.create({ ...input, slug: "beta", name: "Beta" }, 2);
+  const requestId = "b9de21b4-1524-4fba-ae40-86189b426ed6";
+  const scope = { hash: "b".repeat(64), count: 0 };
+  await store.reserveCreate({
+    requestId,
+    original: { ...input, slug: "reserved" },
+    expectedCatalogRevision: 3,
+    preflightScope: scope,
+    validateScope: async () => scope,
+  });
+  const before = store.read(),
+    original = store.readCreate(requestId);
+  const beforeProject = before.projects[0];
+  if (!beforeProject) throw Error("Project missing from the canonical fixture");
+  expect(before.createOperations).toHaveLength(1);
+  const changed = await store.updateKeeperVisibility(
+    id,
+    before.revision,
+    "conversation-only",
+  );
+  expect(changed.revision).toBe(before.revision + 1);
+  expect(changed.projects[0]).toEqual({
+    ...beforeProject,
+    keeperVisibility: "conversation-only",
+    updatedAt: expect.any(String),
+  });
+  expect(changed.projects[1]).toEqual(before.projects[1]);
+  expect(changed.createOperations).toEqual(before.createOperations);
+  expect(createProjectStore(home).read()).toEqual(changed);
+  const restored = await store.updateKeeperVisibility(
+    id,
+    changed.revision,
+    "project-metadata",
+  );
+  expect(createProjectStore(home).read().projects[0]?.keeperVisibility).toBe(
+    "project-metadata",
+  );
+  const inherited = await store.updateKeeper(id, restored.revision, {}, () => {
+    throw Error("Omitted Smith must not be validated");
+  });
+  expect(inherited.projects[0]).not.toHaveProperty("keeperSmith");
+  expect(inherited.projects[0]?.keeperAutonomy).toBe("suggest-only");
+  expect(inherited.projects[0]?.keeperVisibility).toBe("project-metadata");
+  expect(createProjectStore(home).readCreate(requestId)).toEqual(original);
+  expect(original?.original).not.toHaveProperty("keeperVisibility");
+});
+
+test("Keeper visibility refuses invalid, stale, missing and archived changes without publishing", async () => {
+  const { store, input } = fixture();
+  const created = await store.create(input, 0),
+    id = created.projects[0]!.id;
+  const current = await store.updateKeeperVisibility(id, 1, "project-metadata");
+  for (const invalid of ["", "automatic", null, {}])
+    await expect(
+      store.updateKeeperVisibility(id, current.revision, invalid),
+    ).rejects.toMatchObject({ status: 400 });
+  await expect(
+    store.updateKeeperVisibility(
+      "bad-id",
+      current.revision,
+      "conversation-only",
+    ),
+  ).rejects.toMatchObject({ status: 400 });
+  await expect(
+    store.updateKeeperVisibility(
+      "project-00000000-0000-4000-8000-000000000000",
+      current.revision,
+      "conversation-only",
+    ),
+  ).rejects.toMatchObject({ status: 404 });
+  await expect(
+    store.updateKeeperVisibility(id, 1, "conversation-only"),
+  ).rejects.toMatchObject({ status: 409 });
+  expect(store.read()).toEqual(current);
+  const archived = await store.preferences(id, current.revision, {
+    archived: true,
+  });
+  await expect(
+    store.updateKeeperVisibility(id, archived.revision, "conversation-only"),
+  ).rejects.toMatchObject({ status: 409 });
+  expect(store.read()).toEqual(archived);
+});
+
+test("Keeper visibility rejects invalid persisted modes in the canonical reopened store", async () => {
+  const { home, store, input } = fixture();
+  const created = await store.create(input, 0);
+  writeOwnerOnly(
+    projectCatalogPath(home),
+    JSON.stringify({
+      ...created,
+      projects: [{ ...created.projects[0], keeperVisibility: "automatic" }],
+    }),
+  );
+  expect(() => createProjectStore(home).read()).toThrow();
+});
