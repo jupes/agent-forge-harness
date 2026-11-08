@@ -1942,3 +1942,144 @@ test("older GET verification preserves newer terminal warning and queued restore
     ),
   ).toEqual(terminal);
 });
+
+test.each([
+  "before-save",
+  "save-then-throw",
+  "readback-getter",
+  "readback-digest",
+])("retained original survives %s and heals only its valid same-original journal", async (mode) => {
+  const f = ownerFixture();
+  await f.owner.restore();
+  const inventoryKey = [...f.saved.keys()].find((key) =>
+    key.endsWith(".inventory"),
+  );
+  const markerKey = [...f.saved.keys()].find((key) => key.endsWith(".marker"));
+  if (!inventoryKey || !markerKey) throw Error("Expected initialized metadata");
+  const prior = inventoryReceipt(unknownReceipt);
+  const terminal = inventoryReceipt(confirmed);
+  f.saved.set(inventoryKey, JSON.stringify(prior));
+  const fault = Error("Injected " + mode);
+  const calls: string[] = [];
+  const reads: Array<{ url: string; maxBodyBytes: number }> = [];
+  const saves: Array<CleanupBrowserView | undefined> = [];
+  let armed = false,
+    savedWrite = false,
+    getterReady = false;
+  let faultCount = 0,
+    readbackDigests = 0;
+  let owner: ProjectWorktreeCleanupOwner | undefined;
+  owner = new ProjectWorktreeCleanupOwner({
+    ...f.deps,
+    currentScope: () => {
+      calls.push("scope");
+      return null;
+    },
+    canWrite: () => {
+      calls.push("canWrite");
+      return false;
+    },
+    uuid: () => {
+      calls.push("uuid");
+      return request.requestId;
+    },
+    operatorPost: async () => {
+      calls.push("POST");
+      throw Error("Unexpected cleanup POST");
+    },
+    readReceipt: async (url, limits) => {
+      reads.push({ url, ...limits });
+      return confirmed;
+    },
+    storage: {
+      getItem(key) {
+        if (armed && getterReady && mode === "readback-getter") {
+          faultCount++;
+          throw fault;
+        }
+        return f.deps.storage.getItem(key);
+      },
+      setItem(key, text) {
+        saves.push(owner?.snapshot());
+        if (armed && mode === "before-save") {
+          faultCount++;
+          throw fault;
+        }
+        f.deps.storage.setItem(key, text);
+        savedWrite = true;
+        if (armed && mode === "save-then-throw") {
+          faultCount++;
+          throw fault;
+        }
+      },
+    },
+    hash: async (text) => {
+      const digest = await storedHash(text);
+      if (armed && savedWrite) {
+        readbackDigests++;
+        if (mode === "readback-getter") getterReady = true;
+        if (mode === "readback-digest") {
+          faultCount++;
+          throw fault;
+        }
+      }
+      return digest;
+    },
+  });
+  await owner.restore();
+  expect(owner.snapshot().inventory).toEqual(prior);
+  f.trace.length = 0;
+  armed = true;
+  await owner.checkOriginal(request.requestId);
+  expect(faultCount).toBe(1);
+  expect(readbackDigests).toBe(mode.startsWith("readback") ? 1 : 0);
+  expect(saves).toHaveLength(1);
+  expect(saves[0]).toMatchObject({ inventory: terminal });
+  expect(owner.snapshot()).toMatchObject({
+    phase: "storage-unavailable",
+    storageError: true,
+    inventory: terminal,
+  });
+  const diskAfterFault = await readCleanupBrowserInventory(
+    f.saved.get(markerKey) ?? null,
+    f.saved.get(inventoryKey) ?? null,
+    authorityKey,
+    storedHash,
+  );
+  expect(diskAfterFault).toEqual(mode === "before-save" ? prior : terminal);
+  armed = false;
+  await owner.checkOriginal(request.requestId);
+  expect(faultCount).toBe(1);
+  expect(saves).toHaveLength(2);
+  expect(owner.snapshot()).toMatchObject({
+    phase: "idle",
+    storageError: false,
+    inventory: terminal,
+    inspection: { phase: "idle", selection: null, review: null },
+  });
+  expect(
+    await readCleanupBrowserInventory(
+      f.saved.get(markerKey) ?? null,
+      f.saved.get(inventoryKey) ?? null,
+      authorityKey,
+      storedHash,
+    ),
+  ).toEqual(terminal);
+  expect(f.saved.get(markerKey)).toBe(marker);
+  expect(reads).toEqual(
+    Array.from({ length: 2 }, () => ({
+      url:
+        "/projects/" +
+        projectId +
+        "/settings/worktree-cleanup/" +
+        request.requestId +
+        "?requestHash=" +
+        original.requestHash,
+      maxBodyBytes: 65536,
+    })),
+  );
+  expect(calls).toEqual([]);
+  expect(f.trace.filter((event) => event.startsWith("write:"))).toHaveLength(
+    mode === "before-save" ? 1 : 2,
+  );
+});
